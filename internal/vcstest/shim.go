@@ -34,8 +34,9 @@ type resolvedTool struct {
 // "not installed" for a tool that is — and one it did request is the first
 // fixture's shim, which the second would then wrap.
 type hostEnv struct {
-	path  string
-	tools []resolvedTool
+	path    string
+	tools   []resolvedTool
+	holders map[*testing.T]bool
 }
 
 var (
@@ -44,27 +45,34 @@ var (
 )
 
 // hostEnvFor captures the PATH the first time the running test resolves a
-// tool, before any vcstest call has replaced it, and drops it when that test
-// ends — t.Setenv restores PATH at the same point, so the next test captures
-// its own. It is keyed on the top-level test so a subtest shares its parent's,
-// and held under a lock because parallel tests reach it at once: a single
-// package-level capture let one test's cleanup drop the entry a concurrent
-// test was still resolving through, and the shim it then wrote held only the
-// tools that survived the drop.
+// tool, before any vcstest call has replaced it, and drops it once every test
+// that reached it has ended — t.Setenv restores PATH at the same point, so
+// the next test captures its own. It is keyed on the top-level test so a
+// subtest shares its parent's and its parallel siblings', and each of them
+// holds the entry until its own cleanup: dropping it with whichever sibling
+// reached it first left a sibling still between resolving and writing its
+// shim to snapshot a fresh, empty entry, and the shim it wrote held no tools.
 func hostEnvFor(t *testing.T) *hostEnv {
 	t.Helper()
 	key, _, _ := strings.Cut(t.Name(), "/")
 	hostMu.Lock()
 	defer hostMu.Unlock()
-	if h, ok := hosts[key]; ok {
+	h, ok := hosts[key]
+	if !ok {
+		h = &hostEnv{path: os.Getenv("PATH"), holders: map[*testing.T]bool{}}
+		hosts[key] = h
+	}
+	if h.holders[t] {
 		return h
 	}
-	h := &hostEnv{path: os.Getenv("PATH")}
-	hosts[key] = h
+	h.holders[t] = true
 	t.Cleanup(func() {
 		hostMu.Lock()
 		defer hostMu.Unlock()
-		delete(hosts, key)
+		delete(h.holders, t)
+		if len(h.holders) == 0 {
+			delete(hosts, key)
+		}
 	})
 	return h
 }

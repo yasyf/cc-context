@@ -125,6 +125,9 @@ func (p dropPlan) orphans() []string {
 
 func runStackDropBranch(cmd *cobra.Command, l lane, branch string, dryRun bool) error {
 	ctx := cmd.Context()
+	if err := stackRequireGit(ctx, l.dir(), dropPrefix); err != nil {
+		return err
+	}
 	commonDir, err := gtCommonDir(ctx, l.dir(), dropPrefix)
 	if err != nil {
 		return err

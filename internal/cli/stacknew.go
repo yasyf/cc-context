@@ -313,12 +313,16 @@ func stackWriteSparse(ctx context.Context, dir render.Dir, sparse stackSparse, h
 			return err
 		}
 	}
-	out, err = render.RunCLI(ctx, dir, "git", []string{"rev-parse", "--path-format=absolute", "--git-path", "index"})
+	return stackPopulateSparse(ctx, dir, "stack new", head)
+}
+
+func stackPopulateSparse(ctx context.Context, dir render.Dir, prefix, head string) error {
+	out, err := render.RunCLI(ctx, dir, "git", []string{"rev-parse", "--path-format=absolute", "--git-path", "index"})
 	if err != nil {
 		return err
 	}
 	index := strings.TrimSpace(out)
-	scratch, err := os.MkdirTemp(filepath.Dir(index), "ccx-stack-new-")
+	scratch, err := os.MkdirTemp(filepath.Dir(index), "ccx-sparse-")
 	if err != nil {
 		return err
 	}
@@ -330,23 +334,23 @@ func stackWriteSparse(ctx context.Context, dir render.Dir, sparse stackSparse, h
 	}
 	extraEnv := []string{"GIT_WORK_TREE=" + privateTree, "GIT_INDEX_FILE=" + privateIndex}
 	if _, err := render.RunCLIEnv(ctx, dir, "git", []string{"-c", "core.splitIndex=false", "read-tree", "-m", "-u", head}, extraEnv); err != nil {
-		return fmt.Errorf("stack new: prepare sparse child: %w", err)
+		return fmt.Errorf("%s: prepare the sparse index of %s: %w", prefix, dir, err)
 	}
-	return stackInstallSparseIndex(ctx, dir, privateIndex, index)
+	return stackInstallSparseIndex(ctx, dir, prefix, privateIndex, index)
 }
 
-func stackInstallSparseIndex(ctx context.Context, dir render.Dir, privateIndex, index string) (err error) {
+func stackInstallSparseIndex(ctx context.Context, dir render.Dir, prefix, privateIndex, index string) (err error) {
 	lockPath := index + ".lock"
-	lock, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) //nolint:gosec // lockPath is the new child's Git index lock
+	lock, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) //nolint:gosec // lockPath is the new worktree's Git index lock
 	if err != nil {
-		return fmt.Errorf("stack new: acquire new child index lock: %w", err)
+		return fmt.Errorf("%s: acquire the index lock of %s: %w", prefix, dir, err)
 	}
 	defer func() { err = errors.Join(err, lock.Close(), os.Remove(lockPath)) }()
 	if err := os.Link(privateIndex, index); err != nil {
-		return fmt.Errorf("stack new: child index already exists or could not be installed: %w", err)
+		return fmt.Errorf("%s: the index of %s already exists or could not be installed: %w", prefix, dir, err)
 	}
 	if _, err := render.RunCLI(ctx, dir, "git", []string{"checkout-index", "--all"}); err != nil {
-		return fmt.Errorf("stack new: populate sparse child without overwriting files: %w", err)
+		return fmt.Errorf("%s: populate %s without overwriting files: %w", prefix, dir, err)
 	}
 	return nil
 }

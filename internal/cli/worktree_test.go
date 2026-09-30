@@ -16,6 +16,7 @@ import (
 
 func runWorktreeCmd(t *testing.T, f *vcstest.Fixture, args ...string) (string, error) {
 	t.Helper()
+	fixtureCleanup(t, f)
 	return runWorktreeCmdIn(f.Context(), t, args...)
 }
 
@@ -391,10 +392,6 @@ func TestWorktreeRmSurfacesBrokenCheckout(t *testing.T) {
 	}
 }
 
-// TestWorktreeRmRefusesForeignCheckout proves rm never resolves a name to a
-// checkout ccx did not mint: a hand-made worktree sharing the name's basename
-// is refused — --force included, since force discards changes, not ownership —
-// with the refusal naming the tree and pointing at git worktree remove.
 func TestWorktreeRmRefusesForeignCheckout(t *testing.T) {
 	f := vcstest.Repo(t, vcstest.Remote())
 	f.Isolate(t)
@@ -407,7 +404,7 @@ func TestWorktreeRmRefusesForeignCheckout(t *testing.T) {
 		if err == nil {
 			t.Fatalf("%v removed a checkout ccx never minted", args)
 		}
-		for _, want := range []string{foreign, "git worktree remove"} {
+		for _, want := range []string{foreign, "ccx vcs worktree rm --path <absolute-path>"} {
 			if !strings.Contains(err.Error(), want) {
 				t.Errorf("%v error = %v, want it to contain %q", args, err, want)
 			}

@@ -22,16 +22,17 @@ func prepareStackPublication(t *testing.T) (*vcstest.Fixture, *stackRebaseRun, [
 	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "feature")
 	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
 	pin := gitAt(t, f.Env(), f.Dir, "rev-parse", "origin/main")
-	b := stackRebaseBranch{Name: "feature", Parent: "main", WasParent: "main", Local: source, Remote: source, Head: source, HeadRef: stackTempRef("feature"), OldBase: base, SourceBase: base, NewBase: pin}
-	var err error
-	b.NewHead, err = stackReplay(f.Context(), render.Dir(f.Dir), &b)
-	if err != nil {
-		t.Fatal(err)
-	}
-	run := &stackRebaseRun{Trunk: "main", Pin: pin, Origin: f.Dir, Roots: []string{"feature"}, Branches: []stackRebaseBranch{b}}
+	b := stackRebaseBranch{Name: "feature", Parent: "main", WasParent: "main", Local: source, Remote: source, Head: source, OldBase: base, SourceBase: base, NewBase: pin}
+	run := &stackRebaseRun{Trunk: "main", Pin: pin, Origin: f.Dir, Roots: []string{"feature"}}
 	if err := stackClaim(filepath.Join(f.Dir, ".git"), run); err != nil {
 		t.Fatal(err)
 	}
+	var err error
+	b.NewHead, err = stackReplay(f.Context(), render.Dir(f.Dir), run, &b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.Branches = []stackRebaseBranch{b}
 	if err := stackSaveRun(run); err != nil {
 		t.Fatal(err)
 	}

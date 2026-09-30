@@ -13,8 +13,17 @@ A fifth rewrite is about correctness rather than tokens: a bare ``gt restack`` -
 ``ccx vcs stack restack``, which fetches first and reaches the stack branches another
 working copy holds — branches a bare ``gt restack`` cannot touch at all.
 
+A sixth family moves a deletion rather than a read, and it never rewrites: every raw
+``git [-C <dir>] worktree remove [-f|--force] <path>`` blocks, steering to
+``ccx vcs worktree rm --path <absolute> [--force]`` — the removal whose tree the ccx cleanup daemon
+deletes instead of git deleting it inline. A removal the hook can map gets the exact ccx command to
+run in its place; one it cannot — a shell-computed path, an unmapped flag, a relative path whose
+directory the line does not prove — gets the reason instead. It blocks rather than rewrites because
+a rewrite reaches Claude Code as an approval of the rewritten command and is dropped whenever
+another hook rewrites the same line first; a block is neither.
+
 A trailing ``# ccx:raw`` comment, or ``CAPT_HOOK_CCX_RAW`` set for the session, runs any of these
-commands as written: no rewrite and no nudge.
+commands as written: no rewrite, no block, and no nudge.
 
 Scoped, summarized, or plumbing variants (``git diff -- <path>``, ``jj diff --stat``,
 ``git show HEAD:file``, ``git log --oneline``) never fire the guard at all.
@@ -27,13 +36,17 @@ for resuming after a ship printed ``CI error``. It never blocks; the watch still
 
 from __future__ import annotations
 
+import glob
+import os
 import re
 import shlex
-from typing import TYPE_CHECKING
+from pathlib import Path
+from typing import TYPE_CHECKING, NamedTuple
 
 from captain_hook import (
     Allow,
     BaseHookEvent,
+    Block,
     Command,
     CommandLine,
     CustomCommandLineCondition,
@@ -41,6 +54,7 @@ from captain_hook import (
     HookResult,
     Input,
     Rewrite,
+    Target,
     Tool,
     Warn,
     on,
@@ -51,12 +65,10 @@ from captain_hook.util import reqenv
 from pydantic import BaseModel
 
 from .common import GIT_DIFF_SUMMARY_FLAGS, ccx_bin, is_single_command
-from .search_common import resolve_operand
+from .search_common import Decline, resolve_operand
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
-    from cc_transcript.command import Occurrence
+    from cc_transcript.command import Occurrence, Word
 
 # `jj diff` is scoped (a positional path) or summarized by one of these; a bare
 # diff with neither dumps the full patch.
@@ -93,6 +105,56 @@ GT_RESTACK_NOTE = (
     "with `# ccx:raw` to run it as written."
 )
 
+WORKTREE_RM_STEER = (
+    "BLOCKED: raw `git worktree remove` deletes the tree inline. `ccx vcs worktree rm --path "
+    "<absolute-path> [--force]` removes the same working copy and hands the tree's deletion to the "
+    "ccx cleanup daemon where one runs."
+)
+WORKTREE_RM_SPLIT = (
+    "- a line continuation splits a word of a `git worktree remove` on this line: write that command on one line."
+)
+WORKTREE_RM_ESCAPE = "End the command with `# ccx:raw` to run it as written."
+
+GIT_GLOBAL_VALUE_FLAGS = (
+    "-C",
+    "-c",
+    "--git-dir",
+    "--work-tree",
+    "--namespace",
+    "--config-env",
+    "--attr-source",
+    "--super-prefix",
+    "--shallow-file",
+)
+GIT_INFO_OPTIONS = ("-h", "--help", "-v", "--version", "--exec-path", "--html-path", "--man-path", "--info-path")
+GIT_EXTRA_WRAPPERS = frozenset(
+    {
+        "builtin",
+        "stdbuf",
+        "setsid",
+        "caffeinate",
+        "noglob",
+        "nocorrect",
+        "ionice",
+        "chrt",
+        "taskset",
+        "arch",
+        "unbuffer",
+        "flock",
+        "watch",
+        "chronic",
+        "script",
+        "strace",
+        "ltrace",
+        "parallel",
+        "find",
+        "rtk",
+        "op",
+        "mise",
+        "direnv",
+    }
+)
+
 RAW_MARKER = re.compile(r"#\s*ccx:raw\b")
 RAW_ENV = "CAPT_HOOK_CCX_RAW"
 
@@ -104,6 +166,28 @@ GH_RUN_WATCH_NUDGE = (
     "tag/release run (no ship commit) and resuming a watch after a ship printed `CI error`. This "
     "command still runs."
 )
+
+
+class WorktreeRemoval(NamedTuple):
+    """One ``git worktree remove`` mapped onto ``ccx vcs worktree rm``, as the shell words to emit.
+
+    ``path`` and ``chdir`` arrive quoted for the shell, or with a leading ``~`` left live for the
+    shell to expand as it would have. ``chdir`` is the ``-C`` directory: entered in a subshell, so
+    ccx finds the repository where git would have and the caller's own cwd never moves, and through
+    ``builtin cd``, so no function or alias named ``cd`` stands in for the ``chdir`` git performs.
+    """
+
+    path: str
+    force: bool
+    chdir: str | None
+
+
+class RemovalWords(NamedTuple):
+    """The words of one ``git worktree remove``: a wrapper ahead of git, git's global options, the rest."""
+
+    wrapper: Word | None
+    options: tuple[Word, ...]
+    tail: tuple[Word, ...]
 
 
 def command_has(cmd: Command, *tokens: str) -> bool:
@@ -215,12 +299,292 @@ def is_log_patch_dump(cmd: Command) -> bool:
     )
 
 
+def head_name(word: Word) -> str:
+    return Path(word.value).name if word.value else ""
+
+
+def worktree_remove_words(cmd: Command) -> RemovalWords | None:
+    """Split a ``git worktree remove`` command into its wrapper, global-option, and trailing words.
+
+    ``None`` for every other command — ``worktree list``/``add``/``prune``, a non-git head, a verb the
+    global-option arity walk does not reach — so only a positively identified removal ever blocks.
+    Two tables widen what the SDK identifies, each because a miss lets the raw removal run. The
+    wrapper set adds heads its unwrapping leaves in place (``builtin``, ``stdbuf``, ``flock``, ``find
+    -exec``, ``mise exec --`` …): behind one of those, git is the first later word named git. The value-flag table adds
+    ``--attr-source``, ``--super-prefix``, and ``--shallow-file``, since an option whose value is
+    mistaken for the verb hides the removal. The walk stops at an option that makes git print and
+    exit (``--version``, ``--exec-path``, ``--html-path`` …), which removes nothing whatever follows.
+    A head outside both tables (``echo git worktree remove``) stays unidentified by design: its
+    words are data.
+    """
+    words = cmd.unwrapped.words
+    if not words:
+        return None
+    start = (
+        next((i for i, word in enumerate(words) if i and head_name(word).casefold() == "git"), 0)
+        if head_name(words[0]) in GIT_EXTRA_WRAPPERS
+        else 0
+    )
+    if head_name(words[start]).casefold() != "git":
+        return None
+    rest = words[start + 1 :]
+    taken = 0
+    while (
+        taken < len(rest)
+        and (arg := rest[taken].value or rest[taken].raw).startswith("-")
+        and arg not in GIT_INFO_OPTIONS
+    ):
+        taken += 2 if arg in GIT_GLOBAL_VALUE_FLAGS and taken + 1 < len(rest) else 1
+    if [word.value for word in rest[taken : taken + 2]] != ["worktree", "remove"]:
+        return None
+    wrapped = start or len(words) != len(cmd.words)
+    return RemovalWords(cmd.words[0] if wrapped else None, rest[:taken], rest[taken + 2 :])
+
+
+def removal_count(line: CommandLine) -> int:
+    return sum(worktree_remove_words(occ.command) is not None for occ in line.occurrences)
+
+
+def split_removal(raw: str, line: CommandLine) -> bool:
+    """Report whether a line continuation hides a removal by splitting one of its identifying words.
+
+    ``gi\\<newline>t worktree remove`` runs as git, but the parser reads the broken word as two. The
+    shell deletes a backslash-newline before it reads words, so the same line parsed without them
+    shows what runs: a removal that appears only there is one the split hid.
+    """
+    return "\\\n" in raw and removal_count(CommandLine.parse(raw.replace("\\\n", ""))) > removal_count(line)
+
+
+def home_anchored(word: Word) -> bool:
+    """Report whether ``word`` is an unquoted ``~`` or ``~/…`` and carries no other expansion.
+
+    The shell turns exactly that spelling into an absolute path under ``$HOME``. ``~user``, a quoted
+    tilde, a glob, or a brace list each expand differently or not at all, and none of them qualifies.
+    """
+    return (
+        word.expandable
+        and word.value is not None
+        and (word.raw == "~" or word.raw.startswith("~/"))
+        and not glob.has_magic(word.value)
+        and "{" not in word.value
+    )
+
+
+def anchored_word(word: Word) -> str | None:
+    """The shell word re-emitting an operand that names one place whatever the cwd, or ``None``.
+
+    An absolute literal is quoted verbatim, so ccx receives the very string git would have. A
+    home-anchored word keeps its ``~`` live and quotes only the remainder, so the same shell expands
+    it exactly as before. A relative, shell-computed, or otherwise expandable word has no such
+    spelling.
+    """
+    if home_anchored(word):
+        return "~/" + shlex.quote(rest) if (rest := word.value[2:]) else word.value
+    if word.value is not None and not word.expandable and word.value.startswith("/"):
+        return shlex.quote(word.value)
+    return None
+
+
+def shell_expanded(word: Word) -> Decline:
+    return Decline(f"`{word.raw}` is expanded by the shell at run time")
+
+
+def spans_plain_words(occ: Occurrence) -> bool:
+    """Report whether the occurrence's source span is exactly its parsed words, each a plain literal.
+
+    The parser lifts a bare command or process substitution out of the argv and keeps an environment
+    prefix off it, so the words alone can under-report what the shell runs. Re-splitting the span
+    text and demanding the same word list back catches every such shape, and holds the parser's
+    dequoting to a second reading before any word is re-quoted. A backslash-newline between words
+    is dropped first, as the shell drops it.
+    """
+    cmd = occ.command
+    if cmd.span is None:
+        return False
+    try:
+        split = shlex.split(occ.line.raw.encode()[slice(*cmd.span)].decode().replace("\\\n", ""))
+    except ValueError:
+        return False
+    return split == [word.value for word in cmd.words]
+
+
+def proven_cwd(occ: Occurrence, cwd: Path | None) -> Path | None:
+    """The directory a relative operand of ``occ`` provably resolves against, or ``None``.
+
+    A flattened occurrence list cannot show a ``cd`` scoped to a subshell, skipped by ``||``, negated
+    by ``!``, held in a function body, or aimed at a directory an earlier command creates — and a
+    removal resolved against the wrong directory names the wrong tree. Two lanes are trusted.
+    Nothing but whitespace precedes the command: it runs first, in the event's own ``cwd``. Or the
+    line opens with a plain ``cd <absolute>`` and a bare ``&&`` joins the command straight to it: it
+    runs solely once that ``cd`` succeeded. The ``cd`` must open the line because an earlier command
+    could set a trap, redefine ``cd``, or re-point a symlink the resolution reads; its operand
+    carries no ``..`` because the shell's ``cd`` is logical there or physical by option, and the two
+    land in different places past a symlink. Everything else returns ``None``.
+    """
+    line = occ.line.raw.encode()
+    start = occ.command.span[0]
+    if not line[:start].strip():
+        return cwd
+    cd = occ.line.occurrences[0]
+    if occ.index != 1 or not spans_plain_words(cd) or line[: cd.command.span[0]].strip():
+        return None
+    match [word.value for word in cd.command.words]:
+        case ["cd", target] if target.startswith("/") and ".." not in target.split("/"):
+            join = line[cd.command.span[1] : start].replace(b"\\\n", b"")
+        case _:
+            return None
+    return Path(target) if not cd.command.words[1].expandable and join.strip() == b"&&" else None
+
+
+def removal_base(chdir: Word | None, occ: Occurrence, cwd: Path | None) -> Path | None:
+    """The directory git resolves a removal's relative operand against, when the line proves one.
+
+    No ``-C`` leaves the proven cwd itself; a ``-C`` hangs off it, an absolute one replacing it. Even
+    an absolute ``-C`` waits on :func:`proven_cwd`: the operand is resolved through the filesystem
+    now, and only a removal nothing else on the line precedes is sure to see the same symlinks when
+    it runs. A home-anchored ``-C`` is known only to the shell.
+    """
+    if (proven := proven_cwd(occ, cwd)) is None or (chdir is not None and chdir.expandable):
+        return None
+    return proven if chdir is None else proven / chdir.value
+
+
+def chdir_word(word: Word) -> str | Decline:
+    """The ``builtin cd -P`` operand standing in for a ``-C`` directory, or why none is faithful.
+
+    ``git -C`` is a bare ``chdir``. A relative directory gains a ``./`` so the shell's ``cd`` neither
+    searches ``CDPATH`` nor reads a leading ``-`` as an option, and ``-P`` keeps ``..`` physical.
+    """
+    if (anchored := anchored_word(word)) is not None:
+        return anchored
+    if word.value is None or word.expandable:
+        return shell_expanded(word)
+    if not word.value:
+        return Decline("an empty `-C` names no directory")
+    return shlex.quote(f"./{word.value}")
+
+
+def worktreerm_parse(occ: Occurrence, cwd: Path | None) -> WorktreeRemoval | Decline | None:
+    """Map one occurrence onto ``ccx vcs worktree rm``: the removal, why it has no exact form, or ``None``.
+
+    ``None`` means the command removes nothing — not a ``git worktree remove``, or one asking for
+    help — and runs untouched. A :class:`Decline` names the first thing that breaks the proof:
+
+    * a word the shell computes (``$VAR``, a substitution, a glob, a brace list, ``~user``), since
+      the hook would be quoting a path it never saw;
+    * a flag other than ``-f``/``--force``, or that flag twice — git's override for a locked working
+      copy, which ccx never removes;
+    * a wrapper, an environment prefix, or a global option other than one ``-C <dir>``, each of which
+      changes what git acts on in a way the ccx form cannot carry;
+    * a nested payload or substitution, whose cwd and quoting belong to another shell, or a command
+      whose words a redirect interleaves, which leaves no span to re-read;
+    * anything but exactly one path operand;
+    * a bare relative name, which git matches against every registered working copy's path suffix
+      before reading it as a path — a lookup only git's own registry can answer;
+    * a ``./``- or ``../``-anchored path whose directory :func:`removal_base` cannot prove.
+
+    What survives is an absolute or home-anchored operand passed through as written, or an anchored
+    relative one resolved against the proven directory with its parent made physical.
+    """
+    if (words := worktree_remove_words(occ.command)) is None:
+        return None
+    operands: list[Word] = []
+    forces = 0
+    flags_open = True
+    for word in words.tail:
+        match word.value:
+            case None:
+                return shell_expanded(word)
+            case "--" if flags_open:
+                flags_open = False
+            case "-h" | "--help" if flags_open:
+                return None
+            case "-f" | "--force" if flags_open:
+                forces += 1
+            case flag if flags_open and flag.startswith("-") and flag != "-":
+                return Decline(f"`{flag}` is not a flag the hook maps — only `-f`/`--force` is")
+            case _:
+                operands.append(word)
+    if occ.nesting:
+        return Decline("it sits inside another command's payload or substitution")
+    if words.wrapper is not None:
+        return Decline(f"it runs under `{words.wrapper.raw}`, which the ccx form would drop")
+    if occ.command.env:
+        return Decline(f"the `{occ.command.env[0][0]}=` prefix changes the environment git runs in")
+    if occ.command.span is None:
+        return Decline("a redirect sits between its words, where the hook cannot re-read them — move it after the path")
+    match words.options:
+        case ():
+            chdir = None
+        case (option, directory) if option.value == "-C":
+            chdir = directory
+        case options:
+            stray = options[2] if options[0].value == "-C" and len(options) > 2 else options[0]
+            return Decline(f"`{stray.raw}` is a global git option beyond the one `-C <dir>` the hook maps")
+    cd = None if chdir is None else chdir_word(chdir)
+    if isinstance(cd, Decline):
+        return cd
+    if not spans_plain_words(occ):
+        return Decline(
+            "a substitution, a line continuation inside a word, or an unreadable quoting supplies part of it, "
+            "not plain literal words"
+        )
+    match operands:
+        case [operand]:
+            pass
+        case []:
+            return Decline("it names no path operand")
+        case _:
+            return Decline("it names more than one path operand")
+    if forces > 1:
+        return Decline(
+            "a repeated `--force` overrides a lock, and `ccx vcs worktree rm` never removes a locked working copy"
+        )
+    if (path := anchored_word(operand)) is not None:
+        return WorktreeRemoval(path, forces == 1, cd)
+    if operand.expandable:
+        return shell_expanded(operand)
+    if operand.value.split("/", 1)[0] not in (".", ".."):
+        return Decline(
+            f"`{operand.raw}` is neither absolute nor `./`-anchored, and git matches such a name against "
+            "every working copy's path suffix before reading it as a path"
+        )
+    if (base := removal_base(chdir, occ, cwd)) is None:
+        return Decline(f"`{operand.raw}` is relative, and this line does not prove the directory it resolves against")
+    return WorktreeRemoval(
+        shlex.quote(os.path.normpath(Target(operand.value, operand.raw, base).path)), forces == 1, cd
+    )
+
+
+def raw_marked(raw: str, line: CommandLine) -> bool:
+    """Report whether ``raw`` carries a ``# ccx:raw`` marker as a comment rather than as an argument.
+
+    The marker counts only outside every parsed word: inside a quoted string or a path it is data
+    the command receives, and must not switch a guard off. A word that holds a nested command's
+    whole span is that payload's container, not a literal, so a comment inside the payload counts.
+    """
+    commands = [(occ.index, occ.command.span) for occ in line.occurrences if occ.command.span is not None]
+    literals = [
+        word.span
+        for occ in line.occurrences
+        for word in occ.command.words
+        if word.span is not None
+        and not any(
+            index != occ.index and word.span[0] <= start and end <= word.span[1] for index, (start, end) in commands
+        )
+    ]
+    return any(
+        not any(start <= offset < end for start, end in literals)
+        for offset in (len(raw[: match.start()].encode()) for match in RAW_MARKER.finditer(raw))
+    )
+
+
 class RawRequested(CustomCommandLineCondition):
-    """Matches a line that opts out of every rewrite here: a ``# ccx:raw`` comment on it, or
+    """Matches a line that opts out of every guard here: a ``# ccx:raw`` comment on it, or
     ``CAPT_HOOK_CCX_RAW`` set for the session."""
 
     def check_command_line(self, evt: BaseHookEvent, cl: CommandLine) -> bool:
-        return RAW_MARKER.search(evt.cmd.raw) is not None or bool(reqenv.getenv(RAW_ENV))
+        return bool(reqenv.getenv(RAW_ENV)) or raw_marked(evt.cmd.raw, cl)
 
 
 class GitDiffPager(CustomCommandLineCondition):
@@ -282,6 +646,17 @@ class GtRestack(CustomCommandLineCondition):
         return any(occurrence_can_rewrite(occ) and is_gt_restack(occ.command) for occ in cl.occurrences)
 
 
+class GitWorktreeRemove(CustomCommandLineCondition):
+    """Matches a line carrying a ``git worktree remove`` anywhere — top level, wrapped, or nested.
+
+    A cheap structural gate; :func:`steer_worktree_remove_to_ccx` is authoritative. ``git worktree
+    list``/``add``/``prune`` and every other git verb stay outside the registration entirely.
+    """
+
+    def check_command_line(self, evt: BaseHookEvent, cl: CommandLine) -> bool:
+        return removal_count(cl) > 0 or split_removal(evt.cmd.raw, cl)
+
+
 def gtrestack_to(evt: BaseHookEvent, occ: Occurrence) -> str | None:
     if not occurrence_can_rewrite(occ) or not is_gt_restack(occ.command):
         return None
@@ -316,6 +691,172 @@ rewrite_command_occurrences(
         Input(command="gt restack # ccx:raw"): Allow(),
     },
 )
+
+
+def worktreerm_command(removal: WorktreeRemoval) -> str:
+    rm = " ".join(["ccx", "vcs", "worktree", "rm", "--path", removal.path, *(["--force"] if removal.force else [])])
+    return rm if removal.chdir is None else f"(builtin cd -P {removal.chdir} && {rm})"
+
+
+def worktreerm_verdict(occ: Occurrence, cwd: Path | None) -> str | None:
+    match worktreerm_parse(occ, cwd):
+        case None:
+            return None
+        case Decline(reason):
+            return f"- `{occ.command.raw}` has no exact ccx form: {reason}."
+        case removal:
+            return f"- `{occ.command.raw}`: run `{worktreerm_command(removal)}` in its place."
+
+
+@on(
+    Event.PreToolUse,
+    only_if=[Tool("Bash"), GitWorktreeRemove()],
+    skip_if=[RawRequested()],
+    tests={
+        Input(command="git worktree remove /tmp/wt"): Block(
+            pattern="`git worktree remove /tmp/wt`: run `ccx vcs worktree rm --path /tmp/wt` in its place"
+        ),
+        Input(command="git worktree remove --force /tmp/wt"): Block(
+            pattern="run `ccx vcs worktree rm --path /tmp/wt --force` in"
+        ),
+        Input(command="git worktree remove -f /tmp/wt"): Block(
+            pattern="run `ccx vcs worktree rm --path /tmp/wt --force` in"
+        ),
+        Input(command="git worktree remove /tmp/wt --force"): Block(
+            pattern="run `ccx vcs worktree rm --path /tmp/wt --force` in"
+        ),
+        Input(command="git worktree remove -- /tmp/wt"): Block(pattern="run `ccx vcs worktree rm --path /tmp/wt` in"),
+        Input(command='git worktree remove "/tmp/my wt"'): Block(
+            pattern="run `ccx vcs worktree rm --path '/tmp/my wt'` in"
+        ),
+        Input(command="git worktree remove /tmp/my\\ wt"): Block(
+            pattern="run `ccx vcs worktree rm --path '/tmp/my wt'` in"
+        ),
+        Input(command="git worktree remove '/tmp/$wt'"): Block(pattern="rm --path '/tmp/\\$wt'` in its place"),
+        Input(command="git worktree remove ~/wt"): Block(pattern="run `ccx vcs worktree rm --path ~/wt` in"),
+        Input(command='git worktree remove ~/"my wt"'): Block(pattern="run `ccx vcs worktree rm --path ~/'my wt'` in"),
+        Input(command="/usr/bin/git worktree remove /tmp/wt"): Block(
+            pattern="run `ccx vcs worktree rm --path /tmp/wt` in"
+        ),
+        Input(command="git -C /repo worktree remove /tmp/wt"): Block(
+            pattern="run `\\(builtin cd -P /repo && ccx vcs worktree rm --path /tmp/wt\\)` in its place"
+        ),
+        Input(command="git -C '/my repo' worktree remove -f /tmp/wt"): Block(
+            pattern="run `\\(builtin cd -P '/my repo' && ccx vcs worktree rm --path /tmp/wt --force\\)` in"
+        ),
+        Input(command="git -C sub worktree remove /tmp/wt"): Block(pattern="`\\(builtin cd -P \\./sub && ccx vcs"),
+        Input(command="git -C ~/repo worktree remove ~/wt"): Block(pattern="`\\(builtin cd -P ~/repo && ccx vcs"),
+        Input(command="git status; git worktree remove /tmp/wt"): Block(
+            pattern="run `ccx vcs worktree rm --path /tmp/wt` in"
+        ),
+        Input(command="git worktree remove /tmp/wt 2>&1 | tail -3"): Block(
+            pattern="run `ccx vcs worktree rm --path /tmp/wt` in"
+        ),
+        Input(command="2>/dev/null git -C /repo worktree remove /tmp/wt"): Block(
+            pattern="builtin cd -P /repo && ccx vcs"
+        ),
+        Input(command="git worktree remove \\\n  /tmp/wt"): Block(
+            pattern="run `ccx vcs worktree rm --path /tmp/wt` in"
+        ),
+        Input(command="git worktree remove /tmp/a && git worktree remove -f /tmp/b"): Block(
+            pattern=(
+                "rm --path /tmp/a` in its place.\n"
+                "- `git worktree remove -f /tmp/b`: run `ccx vcs worktree rm --path /tmp/b --force`"
+            )
+        ),
+        Input(command="git worktree remove $WT"): Block(
+            pattern="has no exact ccx form: `\\$WT` is expanded by the shell"
+        ),
+        Input(command='git worktree remove "$HOME/wt"'): Block(pattern="expanded by the shell"),
+        Input(command="git worktree remove -f $WT"): Block(pattern="expanded by the shell"),
+        Input(command="git worktree remove $(cat wt.txt)"): Block(pattern="substitution"),
+        Input(command="git worktree remove -f `cat wt.txt` /tmp/wt"): Block(pattern="substitution"),
+        Input(command="git worktree remove /tmp/wt <(echo x)"): Block(pattern="substitution"),
+        Input(command="git worktree remove /tmp/wt*"): Block(pattern="expanded by the shell"),
+        Input(command="git worktree remove /tmp/{a,b}"): Block(pattern="expanded by the shell"),
+        Input(command="git worktree remove ~other/wt"): Block(pattern="expanded by the shell"),
+        Input(command="for w in a b; do git worktree remove $w; done"): Block(pattern="expanded by the shell"),
+        Input(command="git worktree remove wt"): Block(pattern="path suffix"),
+        Input(command="git worktree remove .worktrees/wt"): Block(pattern="path suffix"),
+        Input(command="git -C /repo worktree remove wt"): Block(pattern="path suffix"),
+        Input(command="(cd /tmp); git worktree remove ./wt"): Block(pattern="does not prove the directory"),
+        Input(command="pushd /tmp && git worktree remove ./wt"): Block(pattern="does not prove the directory"),
+        Input(command="cd /tmp || git worktree remove ./wt"): Block(pattern="does not prove the directory"),
+        Input(command="! cd /tmp && git worktree remove ./wt"): Block(pattern="does not prove the directory"),
+        Input(command="git -C ~/repo worktree remove ./wt"): Block(pattern="does not prove the directory"),
+        Input(command="cd /tmp/link/.. && git worktree remove ./wt"): Block(pattern="does not prove the directory"),
+        Input(command="git status; cd /tmp && git worktree remove ./wt"): Block(pattern="does not prove the directory"),
+        Input(command="git status; git -C /repo worktree remove ./wt"): Block(pattern="does not prove the directory"),
+        Input(command="git worktree remove -f -f /tmp/wt"): Block(pattern="locked working copy"),
+        Input(command="git worktree remove -ff /tmp/wt"): Block(pattern="`-ff` is not a flag"),
+        Input(command="git worktree remove --expire now /tmp/wt"): Block(pattern="`--expire` is not a flag"),
+        Input(command="git worktree remove"): Block(pattern="no path operand"),
+        Input(command="git worktree remove /tmp/a /tmp/b"): Block(pattern="more than one path operand"),
+        Input(command="sudo git worktree remove /tmp/wt"): Block(pattern="runs under `sudo`"),
+        Input(command="timeout 5 git worktree remove /tmp/wt"): Block(pattern="runs under `timeout`"),
+        Input(command="xargs git worktree remove"): Block(pattern="runs under `xargs`"),
+        Input(command="builtin command git worktree remove /tmp/wt"): Block(pattern="runs under `builtin`"),
+        Input(command="stdbuf -oL git worktree remove /tmp/wt"): Block(pattern="runs under `stdbuf`"),
+        Input(command="noglob git worktree remove /tmp/wt"): Block(pattern="runs under `noglob`"),
+        Input(command="flock /tmp/lock git worktree remove /tmp/wt"): Block(pattern="runs under `flock`"),
+        Input(command="mise exec -- git worktree remove /tmp/wt"): Block(pattern="runs under `mise`"),
+        Input(command="find . -name wt -exec git worktree remove {} \\;"): Block(pattern="runs under `find`"),
+        Input(command="GIT_DIR=/x/.git git worktree remove /tmp/wt"): Block(pattern="`GIT_DIR=` prefix"),
+        Input(command="git -c core.x=y worktree remove /tmp/wt"): Block(pattern="`-c` is a global git option"),
+        Input(command="git --git-dir=/x/.git worktree remove /tmp/wt"): Block(pattern="global git option"),
+        Input(command="git --attr-source HEAD worktree remove /tmp/wt"): Block(pattern="`--attr-source` is a global"),
+        Input(command="git -C /a -C b worktree remove /tmp/wt"): Block(pattern="`-C` is a global git option"),
+        Input(command='git -C "$REPO" worktree remove /tmp/wt'): Block(pattern="expanded by the shell"),
+        Input(command="bash -c 'git worktree remove /tmp/wt'"): Block(pattern="payload or substitution"),
+        Input(command="echo $(git worktree remove /tmp/wt)"): Block(pattern="payload or substitution"),
+        Input(command="git worktree remove 2>/dev/null /tmp/wt"): Block(pattern="redirect sits between its words"),
+        Input(command="gi\\\nt worktree remove /tmp/wt"): Block(pattern="line continuation splits a word"),
+        Input(command="printf '%s\\n' '# ccx:raw'; git worktree remove /tmp/wt"): Block(
+            pattern="rm --path /tmp/wt` in"
+        ),
+        Input(command="git worktree remove '/tmp/#ccx:raw'"): Block(pattern="rm --path '/tmp/#ccx:raw'` in"),
+        Input(command="git worktree remove /tmp/wt # ccx:raw"): Allow(),
+        Input(command="git worktree remove --force /tmp/wt # ccx:raw"): Allow(),
+        Input(command="git worktree remove $WT # ccx:raw"): Allow(),
+        Input(command="sudo git worktree remove /tmp/wt # ccx:raw"): Allow(),
+        Input(command="git worktree remove -h"): Allow(),
+        Input(command="git worktree remove --help"): Allow(),
+        Input(command="git --help worktree remove"): Allow(),
+        Input(command="git --version worktree remove /tmp/wt"): Allow(),
+        Input(command="git --exec-path worktree remove /tmp/wt"): Allow(),
+        Input(command="git worktree list"): Allow(),
+        Input(command="git worktree list --porcelain"): Allow(),
+        Input(command="git worktree prune"): Allow(),
+        Input(command="git worktree add ../wt -b feature"): Allow(),
+        Input(command="git worktree move /tmp/a /tmp/b"): Allow(),
+        Input(command="git worktree lock /tmp/wt"): Allow(),
+        Input(command="git rm -r docs"): Allow(),
+        Input(command="rm -rf /tmp/wt"): Allow(),
+        Input(command="echo git worktree remove /tmp/wt"): Allow(),
+        Input(command="find . -name git -newer worktree"): Allow(),
+        Input(command="watch -n 5 git worktree list"): Allow(),
+        Input(command="git commit -m 'git worktree remove /tmp/wt'"): Allow(),
+        Input(command="ssh host 'git worktree remove /tmp/wt'"): Allow(),
+    },
+)
+def steer_worktree_remove_to_ccx(evt: BaseHookEvent) -> HookResult | None:
+    """Block every raw ``git worktree remove`` on the line, one verdict per removal.
+
+    Running one raw deletes the tree inline, the very thing the ccx form exists to avoid, so nothing
+    falls through: a removal :func:`worktreerm_parse` maps is answered with the exact ccx command to
+    run in its place, one it declines with the reason, and one a line continuation hides with the
+    instruction to unsplit it. Nothing is rewritten. A rewrite would reach Claude Code as an
+    approval of a deletion the caller never saw, and the dispatcher keeps only the first rewrite of
+    a line, so another hook's rewrite of a sibling command would let the raw removal run; a block
+    outranks every rewrite. Lines with no removal, help requests, and the read-only worktree verbs
+    return ``None``.
+    """
+    verdicts = [
+        verdict for occ in evt.cmd.line.occurrences if (verdict := worktreerm_verdict(occ, evt.cwd)) is not None
+    ]
+    if split_removal(evt.cmd.raw, evt.cmd.line):
+        verdicts.append(WORKTREE_RM_SPLIT)
+    return evt.block("\n".join([WORKTREE_RM_STEER, *verdicts, WORKTREE_RM_ESCAPE])) if verdicts else None
 
 
 def gitdiff_args(cmd: Command) -> list[str] | None:

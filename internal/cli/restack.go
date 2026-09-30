@@ -210,6 +210,9 @@ func restackGit(ctx context.Context, cmd *cobra.Command, l lane) (string, error)
 	if err := stackCheckHolders(ctx, l.checkout.Root, []string{branch}, holders); err != nil {
 		return "", err
 	}
+	if err := stackRequireGit(ctx, dir, "restack"); err != nil {
+		return "", err
+	}
 	run, err := restackGitRun(ctx, dir, l.checkout.Root, branch, onto)
 	if err != nil {
 		return "", err
@@ -289,7 +292,6 @@ func restackGitRun(ctx context.Context, dir render.Dir, origin, branch string, o
 			WasParent: onto.Name(),
 			Local:     head,
 			Head:      head,
-			HeadRef:   gtRestackRef(branch),
 			OldBase:   base,
 		}},
 	}, nil

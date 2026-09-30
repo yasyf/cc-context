@@ -399,6 +399,44 @@ func TestLinkPATHNarrowsToItsOwnTools(t *testing.T) {
 	})
 }
 
+// TestSiblingCleanupKeepsAMidBuildShimsTools holds one subtest between
+// resolving its tools and writing its shim while a concurrent sibling, the
+// first to resolve for their shared top-level test, ends and runs its cleanup.
+// The siblings run through concurrent t.Run calls rather than t.Parallel, so
+// the interleaving does not depend on -parallel.
+func TestSiblingCleanupKeepsAMidBuildShimsTools(t *testing.T) {
+	requireHostTool(t, "git")
+	ownerResolved, builderResolved, ownerDone := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	signalOwner := sync.OnceFunc(func() { close(ownerResolved) })
+	signalBuilder := sync.OnceFunc(func() { close(builderResolved) })
+	var wg sync.WaitGroup
+	defer wg.Wait()
+	wg.Go(func() {
+		t.Run("owner", func(t *testing.T) {
+			defer signalOwner()
+			t.Cleanup(func() { close(ownerDone) })
+			resolveTools(t, []string{"git"})
+			signalOwner()
+			<-builderResolved
+		})
+	})
+	t.Run("builder", func(t *testing.T) {
+		defer signalBuilder()
+		<-ownerResolved
+		resolveTools(t, []string{"git"})
+		signalBuilder()
+		<-ownerDone
+		_, bin, _ := installShim(t)
+		resolved, err := lookPath(toolPATH(bin), "git")
+		if err != nil {
+			t.Fatalf("lookPath(git): %v", err)
+		}
+		if want := filepath.Join(bin, "git"); resolved != want {
+			t.Errorf("git resolves to %q, want the shim at %q", resolved, want)
+		}
+	})
+}
+
 func TestAbsentToolSkips(t *testing.T) {
 	var skipped bool
 	t.Run("absent", func(t *testing.T) {
