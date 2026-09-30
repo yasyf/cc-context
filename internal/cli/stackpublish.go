@@ -529,7 +529,7 @@ func stackChooseSourceMoves(ctx context.Context, l lane, run *stackRebaseRun, ho
 		case receipt == nil || receipt.Head != b.NewHead:
 			why = "no receipt names its published head"
 		case at != b.NewHead:
-			if why, err = stackSourceStays(ctx, l, run, *b, at, holders, stays); err != nil {
+			if why, err = stackSourceStays(ctx, l, *b, at, holders, stays); err != nil {
 				return nil, err
 			}
 		}
@@ -543,7 +543,7 @@ func stackChooseSourceMoves(ctx context.Context, l lane, run *stackRebaseRun, ho
 	return left, nil
 }
 
-func stackSourceStays(ctx context.Context, l lane, run *stackRebaseRun, b stackRebaseBranch, at string, holders map[string]string, stays map[string]bool) (string, error) {
+func stackSourceStays(ctx context.Context, l lane, b stackRebaseBranch, at string, holders map[string]string, stays map[string]bool) (string, error) {
 	if stays[b.Parent] {
 		return "stacked on " + b.Parent, nil
 	}
@@ -551,9 +551,6 @@ func stackSourceStays(ctx context.Context, l lane, run *stackRebaseRun, b stackR
 		return "moved since the run started", nil
 	}
 	holder := holders[b.Name]
-	if holder != "" && holder != run.Origin {
-		return "checked out in " + holder, nil
-	}
 	source, err := stackPatchSeries(ctx, l.dir(), cmp.Or(b.SourceBase, b.OldBase), b.Local)
 	if err != nil {
 		return "", err
