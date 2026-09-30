@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -26,7 +27,7 @@ const (
 
 func watchEvents(t *testing.T, events []prWatchEvent) []string {
 	t.Helper()
-	var lines []string
+	lines := make([]string, 0, len(events))
 	for _, e := range events {
 		lines = append(lines, e.String())
 	}
@@ -56,7 +57,9 @@ func TestPRWatchStep(t *testing.T) {
 		{
 			"queued then ejected on a merge conflict",
 			queued,
-			with(queued, func(s *prWatchSnapshot) { s.Queued, s.Evicted, s.Mergeable = false, "it had merge conflicts", "CONFLICTING" }),
+			with(queued, func(s *prWatchSnapshot) {
+				s.Queued, s.Evicted, s.Mergeable = false, "it had merge conflicts", "CONFLICTING"
+			}),
 			[]string{"#7 ejected (it had merge conflicts)", "#7 conflicting"},
 		},
 		{
@@ -112,7 +115,7 @@ func TestPRWatchStep(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			_, events := prWatchStep(7, tt.prev, tt.next)
-			if got := watchEvents(t, events); !reflect.DeepEqual(got, tt.want) {
+			if got := watchEvents(t, events); !slices.Equal(got, tt.want) {
 				t.Errorf("events = %q, want %q", got, tt.want)
 			}
 		})

@@ -16,6 +16,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/yasyf/cc-context/internal/cache"
 	"github.com/yasyf/cc-context/internal/ghapi"
 	"github.com/yasyf/cc-context/internal/gtapi"
 	"github.com/yasyf/cc-context/internal/render"
@@ -422,7 +423,7 @@ func loadPRWatchState(path string) (map[int]prWatchSnapshot, error) {
 	if path == "" {
 		return snaps, nil
 	}
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(filepath.Clean(path))
 	if errors.Is(err, os.ErrNotExist) {
 		return snaps, nil
 	}
@@ -447,14 +448,10 @@ func savePRWatchState(path string, snaps map[int]prWatchSnapshot) error {
 	if err != nil {
 		return fmt.Errorf("pr watch: encode state: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return fmt.Errorf("pr watch: write state: %w", err)
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		return fmt.Errorf("pr watch: write state: %w", err)
-	}
-	if err := os.Rename(tmp, path); err != nil {
+	if err := cache.Store(path, data, 0o600); err != nil {
 		return fmt.Errorf("pr watch: write state: %w", err)
 	}
 	return nil
