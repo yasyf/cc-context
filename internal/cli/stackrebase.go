@@ -223,15 +223,15 @@ rebased from. A branch whose pull request landed is dropped and its children
 move onto what it sat on, leaving its squashed commits behind. A branch whose
 pull request was closed without landing is dropped the same way, and its own
 commits are never replayed; one GitHub closed because its base branch was
-deleted is reopened onto its new parent before the push instead. Other
-working copies and local trunk are left untouched. A branch held by another working copy,
+deleted is reopened onto its new parent before the push instead. Local trunk
+is left untouched. A branch without a pull request held by another working copy,
 or uncommitted work in the invoking checkout, stops publication before any branch
 moves. Empty lanes and another lane's branches above the one checked out here are
 left where they are and named rather than rebased. Once published, a branch's
 local ref moves onto its published head when that head carries the same commits
-as the source, no other working copy holds the branch, and the invoking checkout,
-when it holds the branch, is clean; any other branch keeps its source, with the
-branches above it, and is named.
+as the source and the working copy holding the branch, if any, is clean and is
+moved with it; any other branch keeps its source, with the branches above it,
+and is named.
 
 A conflict stops the run before any ref moves: the rebase is left in progress
 in a workspace of its own, with both sides' intent written out, and

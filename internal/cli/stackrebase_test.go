@@ -334,13 +334,47 @@ func TestStackRebaseMovesEachSourceOntoItsPublishedHead(t *testing.T) {
 	}
 }
 
-func TestStackRebaseLeavesASourceAnotherWorktreeHolds(t *testing.T) {
+// TestStackRebaseMovesASourceAnotherCleanWorktreeHolds pins the one-worktree-
+// per-branch layout ccx vcs stack new cuts: a clean worktree holding base moves
+// onto its published head with it, and feature above it follows.
+func TestStackRebaseMovesASourceAnotherCleanWorktreeHolds(t *testing.T) {
 	t.Parallel()
 	f := stackRebaseRepo(t, "base", "feature")
 	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
 	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "feature")
 	held := f.WorktreePath("held")
 	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", held, "base")
+
+	out, _, err := runStackCmd(t, f, "rebase")
+	if err != nil {
+		t.Fatalf("stack rebase: %v", err)
+	}
+	if !strings.Contains(out, "moved base, feature onto the published heads") {
+		t.Errorf("output = %q, want base and feature moved", out)
+	}
+	for _, branch := range []string{"base", "feature"} {
+		if local, remote := gitAt(t, f.Env(), f.Dir, "rev-parse", branch), gitAt(t, f.Env(), f.RemoteDir, "rev-parse", branch); local != remote {
+			t.Errorf("local %s = %s, want its published head %s", branch, local, remote)
+		}
+	}
+	if status := gitAt(t, f.Env(), held, "status", "--porcelain"); status != "" {
+		t.Errorf("held status = %q, want it aligned with base's published head", status)
+	}
+	if _, err := os.Stat(filepath.Join(held, "upstream.txt")); err != nil {
+		t.Errorf("held lacks trunk's upstream.txt: %v", err)
+	}
+}
+
+func TestStackRebaseLeavesASourceADirtyWorktreeHolds(t *testing.T) {
+	t.Parallel()
+	f := stackRebaseRepo(t, "base", "feature")
+	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "feature")
+	held := f.WorktreePath("held")
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", held, "base")
+	if err := os.WriteFile(filepath.Join(held, "wip.txt"), []byte("wip\n"), 0o600); err != nil {
+		t.Fatalf("write wip.txt: %v", err)
+	}
 	sources := map[string]string{"base": gitAt(t, f.Env(), f.Dir, "rev-parse", "base"), "feature": gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")}
 
 	out, _, err := runStackCmd(t, f, "rebase")
@@ -352,7 +386,7 @@ func TestStackRebaseLeavesASourceAnotherWorktreeHolds(t *testing.T) {
 			t.Errorf("local %s = %s, want its source %s left alone", branch, local, source)
 		}
 	}
-	if want := "left base (checked out in "; !strings.Contains(out, want) || !strings.Contains(out, filepath.Base(held)+"), feature (stacked on base) on their sources") {
+	if want := "left base (uncommitted work in "; !strings.Contains(out, want) || !strings.Contains(out, filepath.Base(held)+"), feature (stacked on base) on their sources") {
 		t.Errorf("output = %q, want base and the feature above it left on their sources", out)
 	}
 }

@@ -106,6 +106,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs stack rebase` moves branches that other clean worktrees hold.**
+  After publishing, a branch checked out in another worktree kept its old
+  commit, and every branch above it stayed too. In Forge-AI/monorepo, where
+  `ccx vcs stack new` gives each branch its own worktree, a rebase from the tip
+  published all six b2-net branches and moved none of them. Such a branch now
+  moves onto its published head, and its worktree is updated with it, when that
+  worktree is clean and the head carries the same commits; a worktree with
+  uncommitted work keeps its branch and names why.
+
+- **`ccx vcs prune` works from a detached HEAD.** It read merged branches from
+  `git branch --merged`, which lists a detached HEAD as `(HEAD detached at
+  origin/dev)`, and passed that label to `git branch -d`. Merged branches now
+  come from `refs/heads/` alone.
+
 - **`ccx vcs stack submit` reopens a pull request its landed parent's deletion
   closed.** When a parent landed and its branch was deleted before the child
   was resubmitted, GitHub closed the child's pull request. `stack submit`
