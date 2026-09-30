@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -252,7 +251,7 @@ func shipPRRepo(ctx context.Context, l lane, plan branchPlan) (string, error) {
 // branch's pull request when there is none and restates exactly the fields this
 // invocation named when there is, so a description someone edited by hand
 // survives a re-ship that does not mention it.
-func shipPR(ctx context.Context, l lane, nwo, branch, trunk, subject string, meta map[string]prMeta, stack []stackEntry) (string, error) {
+func shipPR(ctx context.Context, l lane, nwo, remote, branch, trunk, subject string, meta map[string]prMeta, stack []stackEntry) (string, error) {
 	if l.gt {
 		return shipPRGT(ctx, nwo, meta, stack)
 	}
@@ -267,9 +266,64 @@ func shipPR(ctx context.Context, l lane, nwo, branch, trunk, subject string, met
 		return "", err
 	}
 	if !found {
-		return shipPRCreate(ctx, nwo, branch, trunk, subject, m)
+		if m.base != "" {
+			return shipPRCreate(ctx, nwo, branch, m.base, false, subject, m)
+		}
+		base, err := shipPRBase(ctx, l.dir(), remote, branch, trunk)
+		if err != nil {
+			return "", err
+		}
+		return shipPRCreate(ctx, nwo, branch, base, base != trunk, subject, m)
 	}
 	return shipPREdit(ctx, nwo, pr, m)
+}
+
+// shipPRBase is the base a new pull request opens against when --parent named
+// none: the branch's nearest pushed ancestor the remote trunk does not carry,
+// and trunk when there is none. A branch cut from an unlanded one holds that
+// branch's commits, so a pull request based on trunk proposes them as its own
+// and only the file count says so.
+func shipPRBase(ctx context.Context, dir render.Dir, remote, branch, trunk string) (string, error) {
+	if remote == "" || trunk == "" {
+		return trunk, nil
+	}
+	remoteRefs := "refs/remotes/" + remote + "/"
+	out, err := render.RunCLI(ctx, dir, "git", []string{
+		"for-each-ref", "--merged=refs/heads/" + branch, "--no-merged=" + remoteRefs + trunk,
+		"--format=%(refname:lstrip=3)", remoteRefs,
+	})
+	if err != nil {
+		return "", fmt.Errorf("ship: git for-each-ref --merged %s --no-merged %s%s: %w", branch, remoteRefs, trunk, err)
+	}
+	base, nearest := trunk, 0
+	for line := range strings.Lines(out) {
+		name := strings.TrimSpace(line)
+		if name == "" || name == branch || name == "HEAD" {
+			continue
+		}
+		ahead, err := gitCommitsAhead(ctx, dir, "ship", remoteRefs+name, "refs/heads/"+branch)
+		if err != nil {
+			return "", err
+		}
+		// A second name for the branch's own head is no base: it proposes nothing.
+		if ahead == 0 || (base != trunk && ahead >= nearest) {
+			continue
+		}
+		base, nearest = name, ahead
+	}
+	if base == trunk {
+		return trunk, nil
+	}
+	// ship fetches without --prune, so a landed parent whose branch the merge
+	// deleted still has a remote-tracking ref here; GitHub answers 422 for it.
+	live, err := render.RunCLI(ctx, dir, "git", []string{"ls-remote", "--heads", remote, "refs/heads/" + base})
+	if err != nil {
+		return "", fmt.Errorf("ship: git ls-remote --heads %s %s: %w", remote, base, err)
+	}
+	if strings.TrimSpace(live) == "" {
+		return trunk, nil
+	}
+	return base, nil
 }
 
 // lookupPR resolves branch's open pull request over REST, which answers an
@@ -295,13 +349,13 @@ func lookupPR(ctx context.Context, nwo, branch string) (prState, bool, error) {
 // resolve to the parent and can target upstream. The body is only what the
 // caller stated, never the commit message, which would publish
 // withSessionTrailer's Claude-Session-Id line into the description.
-func shipPRCreate(ctx context.Context, nwo, branch, trunk, subject string, m prMeta) (string, error) {
+func shipPRCreate(ctx context.Context, nwo, branch, base string, picked bool, subject string, m prMeta) (string, error) {
 	title := m.title
 	if title == "" {
 		title = subject
 	}
 	draft := m.draft != nil && *m.draft
-	out, err := render.RunCLI(ctx, render.Ambient, "gh", prCreateArgv(nwo, branch, cmp.Or(m.base, trunk), title, m.bodyPath, draft))
+	out, err := render.RunCLI(ctx, render.Ambient, "gh", prCreateArgv(nwo, branch, base, title, m.bodyPath, draft))
 	if err != nil {
 		return "", fmt.Errorf("ship: gh api create pull: %w", err)
 	}
@@ -310,6 +364,9 @@ func shipPRCreate(ctx context.Context, nwo, branch, trunk, subject string, m prM
 		return "", fmt.Errorf("ship: parse gh api create pull: %w", err)
 	}
 	seg := fmt.Sprintf("opened PR #%d %s", pr.Number, pr.URL)
+	if picked {
+		seg += " onto " + base
+	}
 	if draft {
 		seg += " [draft]"
 	}

@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"slices"
 	"strings"
 	"time"
@@ -205,9 +206,64 @@ func timedOut(runCtx context.Context, bin string, err error) error {
 // ErrStalled marks a child a WithProgress guard killed for making no progress.
 var ErrStalled = errors.New("stalled")
 
+// ErrSignalled marks work stopped by a signal delivered to ccx itself.
+var ErrSignalled = errors.New("signalled")
+
+// signalError is the cancellation cause WithSignalCancel records, so a child
+// that died alongside ccx can be told from one that failed on its own.
+type signalError struct{ sig os.Signal }
+
+func (e signalError) Error() string { return "ccx received " + e.sig.String() }
+func (e signalError) Unwrap() error { return ErrSignalled }
+
+// WithSignalCancel returns ctx cancelled when one of sigs arrives, recording
+// the signal as the cancellation cause. It replaces [os/signal.NotifyContext]
+// at ccx's root so a child killed by the same signal is reported as a casualty
+// of ccx's own termination rather than a failure of its own. The first signal
+// stops the relay, so a second one takes its default action.
+func WithSignalCancel(ctx context.Context, sigs ...os.Signal) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancelCause(ctx)
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, sigs...)
+	go func() {
+		select {
+		case sig := <-ch:
+			signal.Stop(ch)
+			cancel(signalError{sig: sig})
+		case <-ctx.Done():
+		}
+	}()
+	return ctx, func() {
+		signal.Stop(ch)
+		cancel(context.Canceled)
+	}
+}
+
+// signalled names ccx's own termination as the reason a child died, when a
+// signal to ccx cancelled the work and the child was killed rather than
+// exiting on its own. A child killed by a signal ccx did not receive is a
+// failure of its own and returns nil.
+func signalled(runCtx context.Context, bin string, err error) error {
+	cause := context.Cause(runCtx)
+	if !errors.Is(cause, ErrSignalled) || !killedBySignal(err) {
+		return nil
+	}
+	return fmt.Errorf("%s did not fail: %w while it ran, and a wrapper that signals the whole process group — timeout(1) does — kills the child with ccx, so the exit code is the wrapper's: %w", bin, cause, err)
+}
+
+// killedBySignal reports whether the child was terminated by a signal, which
+// os/exec reports as an exit code of -1.
+func killedBySignal(err error) bool {
+	var exitErr *exec.ExitError
+	return errors.As(err, &exitErr) && exitErr.ExitCode() == -1
+}
+
 // failure wraps a child's failure with its stderr, or names the deadline when
 // runTimeout is what killed it.
 func failure(runCtx context.Context, bin string, err error, stderr string) error {
+	if signal := signalled(runCtx, bin, err); signal != nil {
+		return signal
+	}
 	if timeout := timedOut(runCtx, bin, err); timeout != nil {
 		return timeout
 	}
@@ -292,6 +348,9 @@ func RunCLIStreamSplitEnv(ctx context.Context, dir Dir, bin string, argv []strin
 	cmd.Stdout = outW
 	cmd.Stderr = errW
 	if err := cmd.Run(); err != nil {
+		if signal := signalled(runCtx, bin, err); signal != nil {
+			return signal
+		}
 		if timeout := timedOut(runCtx, bin, err); timeout != nil {
 			return timeout
 		}
@@ -349,6 +408,9 @@ func RunCLIExitCodeEnv(ctx context.Context, dir Dir, bin string, argv, extraEnv 
 	if err == nil {
 		return stdout.String(), 0, stderr.String(), nil
 	}
+	if signal := signalled(runCtx, bin, err); signal != nil {
+		return "", 0, "", signal
+	}
 	if timeout := timedOut(runCtx, bin, err); timeout != nil {
 		return "", 0, "", timeout
 	}
@@ -379,6 +441,9 @@ func RunCLIProbe(ctx context.Context, dir Dir, bin string, argv []string) (strin
 	err := cmd.Run()
 	if err == nil {
 		return stdout.String(), 0, stderr.String(), nil
+	}
+	if signal := signalled(runCtx, bin, err); signal != nil {
+		return stdout.String(), 0, stderr.String(), signal
 	}
 	if timeout := timedOut(runCtx, bin, err); timeout != nil {
 		return stdout.String(), 0, stderr.String(), timeout
