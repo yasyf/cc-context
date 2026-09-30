@@ -255,8 +255,14 @@ func TestStackNewPublishedParentInheritsSparseBeforeCheckout(t *testing.T) {
 	if files := gitAt(t, f.Env(), child, "diff", "--name-only", receipt.Head+".."+published); files != "keep/child.txt" {
 		t.Fatalf("child publication files = %q", files)
 	}
-	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "parent"); got != receipt.Source {
-		t.Fatal("child publication moved parent source")
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "parent"); got != receipt.Head {
+		t.Fatalf("parent = %s, want the clean caller moved onto its publication %s", got, receipt.Head)
+	}
+	if status := gitAt(t, f.Env(), f.Dir, "status", "--porcelain"); status != "" {
+		t.Fatalf("caller status = %q, want it aligned with parent's publication", status)
+	}
+	if _, err := os.Stat(filepath.Join(f.Dir, "excluded", "large.txt")); !os.IsNotExist(err) {
+		t.Fatalf("aligning the caller materialized excluded/large.txt: %v", err)
 	}
 }
 
