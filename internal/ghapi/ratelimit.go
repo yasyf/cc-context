@@ -2,8 +2,10 @@ package ghapi
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -24,30 +26,47 @@ const maxRateLimitRetries = 3
 // worth it: only a 403/429 whose Retry-After — or whose exhausted-quota reset —
 // lands within maxRateLimitWait is waited on.
 func retryDelay(status int, header http.Header, now time.Time) (time.Duration, bool) {
+	wait, ok := limitWait(status, header, now)
+	if !ok || wait > maxRateLimitWait {
+		return 0, false
+	}
+	return wait, true
+}
+
+// limitWait reads the wait a 403/429 names: its Retry-After, else its exhausted
+// quota's reset. It reports false when the response names no wait at all.
+func limitWait(status int, header http.Header, now time.Time) (time.Duration, bool) {
 	if status != http.StatusForbidden && status != http.StatusTooManyRequests {
 		return 0, false
 	}
 	if after := strings.TrimSpace(header.Get("Retry-After")); after != "" {
 		if seconds, err := strconv.Atoi(after); err == nil {
-			return boundedWait(time.Duration(seconds) * time.Second)
+			return max(time.Duration(seconds)*time.Second, 0), true
 		}
 		if when, err := http.ParseTime(after); err == nil {
-			return boundedWait(when.Sub(now))
+			return max(when.Sub(now), 0), true
 		}
 	}
 	if header.Get("X-RateLimit-Remaining") == "0" {
 		if reset, err := strconv.ParseInt(header.Get("X-RateLimit-Reset"), 10, 64); err == nil {
-			return boundedWait(time.Unix(reset, 0).Sub(now))
+			return max(time.Unix(reset, 0).Sub(now), 0), true
 		}
 	}
 	return 0, false
 }
 
-func boundedWait(d time.Duration) (time.Duration, bool) {
-	if d > maxRateLimitWait {
-		return 0, false
+// RateLimited reports whether err is GitHub refusing a request for rate rather
+// than failing it, and the wait GitHub named, zero when it named none.
+func RateLimited(err error) (time.Duration, bool) {
+	var status *StatusError
+	if errors.As(err, &status) {
+		return status.RetryAfter, status.Limited
 	}
-	return max(d, 0), true
+	var gql *GraphQLError
+	if errors.As(err, &gql) {
+		return 0, slices.ContainsFunc(gql.Messages, func(m GraphQLMessage) bool { return m.Type == "RATE_LIMITED" })
+	}
+	return 0, false
 }
 
 func sleep(ctx context.Context, d time.Duration) error {
