@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/yasyf/cc-context/internal/gtmeta"
 	"github.com/yasyf/cc-context/internal/render"
+	"github.com/yasyf/cc-context/internal/vcs"
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
@@ -523,5 +525,94 @@ func TestStackPublicationFinishesMovingSourcesAfterAnInterruptedMove(t *testing.
 	}
 	if err := stackCompletePublication(f.Context(), dir, common, saved); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// stackPublishedElsewhere publishes feature, then hands it to a second worktree,
+// the per-branch layout ccx vcs stack new cuts.
+func stackPublishedElsewhere(t *testing.T) (*vcstest.Fixture, *stackRebaseRun, lane, string, string) {
+	t.Helper()
+	f, run, plan := prepareStackPublication(t)
+	dir := render.Dir(f.Dir)
+	if err := stackPushPublication(f.Context(), dir, gtSubmit{prefix: "test", publication: run}, plan); err != nil {
+		t.Fatal(err)
+	}
+	if err := stackRecordPublication(f.Context(), dir, run, plan); err != nil {
+		t.Fatal(err)
+	}
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
+	held := f.WorktreePath("held")
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", held, "feature")
+	l, err := resolveLane(f.Context(), "stack", f.Dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return f, run, l, filepath.Join(f.Dir, ".git"), held
+}
+
+// TestStackPublicationRechecksAHolderOnResume stops a run after it chose to move
+// feature and before the ref moved; meanwhile the holding worktree gains an
+// ignored file the published head tracks. The resumed move refuses rather than
+// overwrite it.
+func TestStackPublicationRechecksAHolderOnResume(t *testing.T) {
+	f, run, l, common, held := stackPublishedElsewhere(t)
+	source := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")
+	holders, err := vcs.BranchHolders(f.Context(), l.checkout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if left, err := stackChooseSourceMoves(f.Context(), l, run, holders); err != nil || len(left) != 0 {
+		t.Fatalf("choose = %q, %v, want feature moved", left, err)
+	}
+	run.SourcesMoving = true
+	if err := stackSaveRun(run); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(common, "info", "exclude"), []byte("upstream.txt\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(held, "upstream.txt"), []byte("local\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := stackOnlyTestRun(common)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := stackMovePublishedSources(f.Context(), l, common, saved); err == nil || !strings.Contains(err.Error(), "would overwrite upstream.txt") {
+		t.Fatalf("resumed move = %v, want the ignored file refused", err)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature"); got != source {
+		t.Errorf("feature = %s, want it left on its source %s", got, source)
+	}
+	if content, err := os.ReadFile(filepath.Join(held, "upstream.txt")); err != nil || string(content) != "local\n" {
+		t.Errorf("held upstream.txt = %q, %v, want it untouched", content, err)
+	}
+}
+
+// TestStackPublicationAlignsOnlyTheCurrentHolder switches the holding worktree
+// to another branch at the moment the refs move: the move re-reads the holders,
+// so that worktree is not realigned onto feature's published head.
+func TestStackPublicationAlignsOnlyTheCurrentHolder(t *testing.T) {
+	f, run, l, common, held := stackPublishedElsewhere(t)
+	realGit := shipDisplaceShim(t, f, "git")
+	marker := filepath.Join(t.TempDir(), "switched")
+	writeShipExecutable(t, f.ShimBin, "git", fmt.Sprintf(`#!/bin/sh
+if [ "$1" = update-ref ] && [ "$2" = --stdin ] && [ ! -e %[1]q ]; then
+  %[2]q -C %[3]q switch -q -c unrelated || exit $?
+  : > %[1]q
+fi
+exec %[2]q "$@"
+`, marker, realGit, held))
+
+	report, err := stackMovePublishedSources(f.Context(), l, common, run)
+	if err != nil || report != "moved feature onto the published heads" {
+		t.Fatalf("move = %q, %v, want feature moved", report, err)
+	}
+	if branch := gitAt(t, f.Env(), held, "branch", "--show-current"); branch != "unrelated" {
+		t.Errorf("held is on %q, want unrelated", branch)
+	}
+	if status := gitAt(t, f.Env(), held, "status", "--porcelain"); status != "" {
+		t.Errorf("held status = %q, want unrelated left as it was", status)
 	}
 }
