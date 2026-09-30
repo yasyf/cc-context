@@ -186,7 +186,7 @@ func (p *pass) target(n int) target {
 	} else {
 		open = !known || last.State == "OPEN"
 	}
-	t.activity = open && (inQueue(info) || !known || inQueue(last.Graphite) || last.queueLabelled())
+	t.activity = open && (inQueue(info) || !known || inQueue(last.Graphite) || last.QueueLabelled())
 	return t
 }
 
@@ -344,14 +344,13 @@ func (p *pass) record(node prNode, t target, i int, resp response) (PR, error) {
 	if t.squash == "" {
 		return pr, nil
 	}
-	for _, check := range []struct{ alias, branch string }{{"t", p.out.trunk.Name}, {"b", t.base}} {
+	for _, check := range []struct{ alias, branch string }{{"b", t.base}, {"t", p.out.trunk.Name}} {
 		var compared *compareNode
 		if err := decode(resp.Repository[check.alias+strconv.Itoa(i)], &compared); err != nil {
 			return PR{}, err
 		}
-		if compared != nil && compared.Compare != nil && (compared.Compare.Status == "BEHIND" || compared.Compare.Status == "IDENTICAL") {
-			pr.LandedOn = check.branch
-			break
+		if compared != nil && compared.Compare != nil && (compared.Compare.Status == "BEHIND" || compared.Compare.Status == "IDENTICAL") && !slices.Contains(pr.SquashOn, check.branch) {
+			pr.SquashOn = append(pr.SquashOn, check.branch)
 		}
 	}
 	return pr, nil

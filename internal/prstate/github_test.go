@@ -43,13 +43,13 @@ func TestPollReadsQueueActivityAndWhereTheSquashLanded(t *testing.T) {
 		t.Fatal(err)
 	}
 	queued := st.PRs[189]
-	if !strings.HasPrefix(queued.Activity, ActivityHeading) || !queued.queueLabelled() || !inQueue(queued.Graphite) {
+	if !strings.HasPrefix(queued.Activity, ActivityHeading) || !queued.QueueLabelled() || !inQueue(queued.Graphite) {
 		t.Errorf("#189 = %+v, want its merge activity, label, and Graphite queue record", queued)
 	}
 	if queued.Graphite.Body != "" || queued.Graphite.Versions != nil {
 		t.Errorf("#189 graphite = %+v, want body and versions left out of the cache", queued.Graphite)
 	}
-	if landed := st.PRs[190]; landed.LandedOn != "main" || !landed.settled() {
+	if landed := st.PRs[190]; fmt.Sprint(landed.SquashOn) != "[main]" || !landed.settled() {
 		t.Errorf("#190 = %+v, want its squash landed on main", landed)
 	}
 	query := gh.queries[0]

@@ -28,9 +28,9 @@ const (
 	// machine's requests, however far out the reset it advertised.
 	ProbeEvery = 2 * time.Minute
 
-	// QueueLabel and QueueLabelFast are the labels Graphite's merge queue
-	// watches.
-	QueueLabel     = "merge"
+	// QueueLabel is the label that puts a pull request in Graphite's queue.
+	QueueLabel = "merge"
+	// QueueLabelFast is the label that puts it in the queue's fast lane.
 	QueueLabelFast = "merge-fast"
 	// ActivityHeading opens the merge activity comment Graphite's queue edits in
 	// place on each pull request it handles.
@@ -81,7 +81,7 @@ type PR struct {
 	Rollup           *Rollup                `json:"rollup,omitempty"`
 	Activity         string                 `json:"activity,omitempty"`
 	Graphite         *gtapi.PullRequestInfo `json:"graphite,omitempty"`
-	LandedOn         string                 `json:"landedOn,omitempty"`
+	SquashOn         []string               `json:"squashOn,omitempty"`
 	PolledAt         time.Time              `json:"polledAt"`
 }
 
@@ -384,10 +384,11 @@ func (st *State) absorb(p poll, now time.Time) {
 }
 
 func (pr PR) settled() bool {
-	return pr.State != "" && pr.State != "OPEN" && pr.LandedOn != ""
+	return pr.State != "" && pr.State != "OPEN" && len(pr.SquashOn) > 0
 }
 
-func (pr PR) queueLabelled() bool {
+// QueueLabelled reports whether pr carries a label Graphite's queue watches.
+func (pr PR) QueueLabelled() bool {
 	return slices.Contains(pr.Labels, QueueLabel) || slices.Contains(pr.Labels, QueueLabelFast)
 }
 

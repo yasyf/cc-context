@@ -13,10 +13,12 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/yasyf/cc-context/internal/ghapi"
+	"github.com/yasyf/cc-context/internal/prstate"
 )
 
 const (
@@ -152,7 +154,7 @@ func (p *scriptedPoller) poll(_ context.Context, numbers []int, _ map[int]prWatc
 }
 
 func watchTick(snaps map[int]prWatchSnapshot) prWatchTick {
-	return prWatchTick{snapshots: snaps, remaining: 5000, resetAt: time.Date(2026, 9, 30, 7, 0, 0, 0, time.UTC)}
+	return prWatchTick{snapshots: snaps}
 }
 
 func newTestWatchRun(poller prWatchPoller, o prWatchOpts, out io.Writer, slept *[]time.Duration) prWatchRun {
@@ -245,12 +247,12 @@ func TestPRWatchRunUntilLandedFailsOnAClosedPR(t *testing.T) {
 	}
 }
 
-func TestPRWatchRunBacksOffToTheRateLimitReset(t *testing.T) {
+func TestPRWatchRunSleepsToTheNextProbeWhileRateLimited(t *testing.T) {
 	t.Parallel()
-	low := watchTick(map[int]prWatchSnapshot{5: {State: "OPEN", Head: watchHeadA}})
-	low.remaining = 40
+	probeAt := time.Date(2026, 9, 30, 6, 2, 0, 0, time.UTC)
+	limited := &prstate.LimitedError{Backoff: prstate.Backoff{Since: probeAt.Add(-2 * time.Minute), ProbeAt: probeAt, Reason: "rate limit"}}
 	done := watchTick(map[int]prWatchSnapshot{5: {State: "CLOSED", Head: watchHeadA, Squash: watchSquash}})
-	poller := &scriptedPoller{ticks: []prWatchTick{low, done}}
+	poller := &scriptedPoller{ticks: []prWatchTick{{}, done}, errs: []error{limited}}
 	var out bytes.Buffer
 	var slept []time.Duration
 	run := newTestWatchRun(poller, prWatchOpts{interval: time.Minute, until: prWatchUntilLanded}, &out, &slept)
@@ -258,11 +260,23 @@ func TestPRWatchRunBacksOffToTheRateLimitReset(t *testing.T) {
 	if err := run.watch(context.Background(), []int{5}, map[int]prWatchSnapshot{}); err != nil {
 		t.Fatalf("watch: %v", err)
 	}
-	if !strings.Contains(out.String(), "rate-limited until 2026-09-30T07:00:00Z\n") {
-		t.Errorf("output = %q, want one rate-limited line", out.String())
+	if !strings.Contains(out.String(), "rate-limited until 2026-09-30T06:02:00Z\n") {
+		t.Errorf("output = %q, want one rate-limited line naming the probe", out.String())
 	}
-	if len(slept) != 1 || slept[0] != time.Hour {
-		t.Errorf("slept = %v, want the hour to the reset", slept)
+	if len(slept) != 1 || slept[0] != 2*time.Minute {
+		t.Errorf("slept = %v, want the two minutes to the probe", slept)
+	}
+}
+
+func TestPRWatchRunStopsOnAMissingPR(t *testing.T) {
+	t.Parallel()
+	poller := &scriptedPoller{errs: []error{&prstate.MissingError{Repo: "o/r", PRs: []int{99999}}}}
+	var slept []time.Duration
+	run := newTestWatchRun(poller, prWatchOpts{interval: time.Minute, until: prWatchUntilLanded}, io.Discard, &slept)
+
+	err := run.watch(context.Background(), []int{99999}, map[int]prWatchSnapshot{})
+	if err == nil || !strings.Contains(err.Error(), "o/r has no pull request #99999") || len(poller.asked) != 1 {
+		t.Fatalf("err = %v after %d polls, want the missing PR named at once", err, len(poller.asked))
 	}
 }
 
@@ -329,13 +343,16 @@ func TestPRWatchRunGivesUpAfterRepeatedFailures(t *testing.T) {
 }
 
 type watchGitHub struct {
-	t        *testing.T
-	response string
-	vars     []map[string]any
-	queries  []string
+	t         *testing.T
+	mu        sync.Mutex
+	responses []string
+	vars      []map[string]any
+	queries   []string
 }
 
 func (g *watchGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
 	if r.URL.Path != "/graphql" {
 		g.t.Errorf("path = %s, want /graphql", r.URL.Path)
 	}
@@ -348,36 +365,49 @@ func (g *watchGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	g.queries = append(g.queries, req.Query)
 	g.vars = append(g.vars, req.Variables)
-	_, _ = io.WriteString(w, g.response)
+	_, _ = io.WriteString(w, g.responses[min(len(g.queries), len(g.responses))-1])
+}
+
+// stubPRState points the shared pull request cache at a scratch directory and
+// its GitHub reads at a server answering the nth query with the nth response,
+// repeating the last.
+func stubPRState(t *testing.T, responses ...string) *watchGitHub {
+	t.Helper()
+	github := &watchGitHub{t: t, responses: responses}
+	ts := httptest.NewServer(github)
+	t.Cleanup(ts.Close)
+	root := t.TempDir()
+	priorAPI, priorRoot := reviewsAPI, prStateRoot
+	reviewsAPI = func() *ghapi.Client { return ghapi.New(ts.URL) }
+	prStateRoot = func() (string, error) { return root, nil }
+	t.Cleanup(func() { reviewsAPI, prStateRoot = priorAPI, priorRoot })
+	t.Setenv("GH_TOKEN", "pr-state-test-token")
+	return github
 }
 
 func TestPRWatchPollReadsQueueEvictionAndTrunkSquash(t *testing.T) {
-	t.Setenv("GH_TOKEN", "watch-test-token")
-	activity, err := json.Marshal(prActivityEvicted)
-	if err != nil {
-		t.Fatal(err)
-	}
-	github := &watchGitHub{t: t, response: fmt.Sprintf(`{"data":{
+	github := stubPRState(t, fmt.Sprintf(`{"data":{
 		"rateLimit":{"remaining":4900,"resetAt":"2026-09-30T07:00:00Z"},
 		"repository":{
-			"trunk":{"target":{"history":{"nodes":[
+			"trunk":{"name":"dev","target":{"history":{"nodes":[
 				{"oid":"1111111111111111111111111111111111111111","messageHeadline":"api: fix (#261180)"},
 				{"oid":"%s","messageHeadline":"ci: 🚀 add a deploy pipeline (#25116)"}]}}},
-			"p0":{"number":26918,"state":"OPEN","headRefOid":"%s","mergeable":"CONFLICTING","reviewDecision":"APPROVED",
+			"p0":{"number":25116,"state":"CLOSED","headRefOid":"%s","mergeable":"UNKNOWN","reviewDecision":"APPROVED",
+				"checks":{"nodes":[]}},
+			"t0":{"compare":{"status":"BEHIND"}},
+			"p1":{"number":26918,"state":"OPEN","headRefOid":"%s","mergeable":"CONFLICTING","reviewDecision":"APPROVED",
 				"checks":{"nodes":[{"commit":{"statusCheckRollup":{"state":"FAILURE","contexts":{"nodes":[
 					{"__typename":"CheckRun","name":"lint","conclusion":"SUCCESS","status":"COMPLETED"},
 					{"__typename":"StatusContext","context":"buildkite/tests","state":"FAILURE"}]}}}}]},
-				"comments":{"nodes":[{"body":"thanks"},{"body":%s}]}},
-			"p1":{"number":25116,"state":"CLOSED","headRefOid":"%s","mergeable":"UNKNOWN","reviewDecision":"APPROVED",
-				"checks":{"nodes":[]}},
-			"m1":{"compare":{"status":"BEHIND"}}
-		}}}`, watchSquash, watchHeadA, activity, watchHeadB)}
-	ts := httptest.NewServer(github)
-	t.Cleanup(ts.Close)
+				"comments":{"nodes":[{"body":"thanks"},{"body":%s}]}}
+		}}}`, watchSquash, watchHeadB, watchHeadA, mustJSON(t, prActivityEvicted)))
 	_, gt := stubPRInfo(t, prInfoEvicted, prInfoLanded)
-	source := prWatchSource{gh: ghapi.New(ts.URL), gt: gt, owner: "Forge-AI", name: "monorepo", warn: io.Discard}
+	store, err := openPRState(withGTAPI(t.Context(), gt), "Forge-AI/monorepo", io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	tick, err := source.poll(context.Background(), []int{26918, 25116}, map[int]prWatchSnapshot{26918: {State: "OPEN", Queued: true}})
+	tick, err := prWatchSource{store: store}.poll(t.Context(), []int{25116, 26918}, map[int]prWatchSnapshot{26918: {State: "OPEN", Queued: true}})
 	if err != nil {
 		t.Fatalf("poll: %v", err)
 	}
@@ -392,69 +422,68 @@ func TestPRWatchPollReadsQueueEvictionAndTrunkSquash(t *testing.T) {
 	if landed := tick.snapshots[25116]; landed.Squash != watchSquash {
 		t.Errorf("#25116 squash = %q, want the trunk commit whose subject ends (#25116)", landed.Squash)
 	}
-	if tick.remaining != 4900 {
-		t.Errorf("remaining = %d", tick.remaining)
-	}
 	query := github.queries[0]
 	if !strings.Contains(query, "rateLimit { remaining resetAt }") || strings.Count(query, "comments(last: 100)") != 1 {
 		t.Errorf("query reads the activity of more than the queued PR, or skips the rate limit:\n%s", query)
 	}
-	if github.vars[0]["m1"] != "9cc33f055dc4db19da6eb13a210a810297ccdc05" {
+	if github.vars[0]["m0"] != "9cc33f055dc4db19da6eb13a210a810297ccdc05" {
 		t.Errorf("vars = %v, want Graphite's merge commit compared against the trunk", github.vars[0])
 	}
 }
 
+func mustJSON(t *testing.T, v any) string {
+	t.Helper()
+	data, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
 func TestPRWatchSnapshotOfLandingAndQueueEvidence(t *testing.T) {
 	t.Parallel()
-	trunk := prWatchHistory{Name: "dev"}
-	trunk.Target.History.Nodes = append(trunk.Target.History.Nodes, struct {
-		OID             string `json:"oid"`
-		MessageHeadline string `json:"messageHeadline"`
-	}{OID: watchSquash, MessageHeadline: "ci: add a deploy pipeline (#27949)"})
+	trunk := prstate.Trunk{Name: "dev", History: []prstate.Commit{{OID: watchSquash, Headline: "ci: add a deploy pipeline (#27949)"}}}
 	merged := decodePRInfo(t, prInfoLanded)
 	queued := prWatchSnapshot{State: "OPEN", Head: watchHeadA, Queued: true}
 
 	t.Run("graphite merged before github closed holds the queue", func(t *testing.T) {
 		t.Parallel()
-		snap := prWatchSnapshotOf(25116, prWatchNode{State: "OPEN", HeadRefOid: watchHeadA}, trunk, merged, true, false, queued)
+		snap := prWatchSnapshotOf(25116, prstate.PR{State: "OPEN", HeadRefOid: watchHeadA, Graphite: &merged}, trunk, queued)
 		if !snap.Queued {
 			t.Fatalf("snap = %+v, want the queue held so no ejection is reported", snap)
 		}
 	})
 	t.Run("merged into a parent branch is not a landing", func(t *testing.T) {
 		t.Parallel()
-		node := prWatchNode{State: "MERGED", BaseRefName: "yasyf/parent", HeadRefOid: watchHeadA}
-		node.MergeCommit = &struct {
-			OID string `json:"oid"`
-		}{OID: watchHeadB}
-		if snap := prWatchSnapshotOf(4, node, trunk, merged, true, false, queued); snap.landed() {
+		pr := prstate.PR{State: "MERGED", BaseRefName: "yasyf/parent", HeadRefOid: watchHeadA, MergeCommit: watchHeadB, SquashOn: []string{"yasyf/parent"}, Graphite: &merged}
+		if snap := prWatchSnapshotOf(4, pr, trunk, queued); snap.landed() {
 			t.Fatalf("snap = %+v, want no landing from a merge into a parent", snap)
 		}
 	})
 	t.Run("a closed pr whose squash is on the trunk lands", func(t *testing.T) {
 		t.Parallel()
-		snap := prWatchSnapshotOf(27949, prWatchNode{State: "CLOSED", HeadRefOid: watchHeadA}, trunk, merged, true, false, queued)
+		snap := prWatchSnapshotOf(27949, prstate.PR{State: "CLOSED", HeadRefOid: watchHeadA, Graphite: &merged}, trunk, queued)
 		if snap.Squash != watchSquash {
 			t.Fatalf("squash = %q", snap.Squash)
 		}
 	})
+	t.Run("graphite's squash on the trunk lands", func(t *testing.T) {
+		t.Parallel()
+		snap := prWatchSnapshotOf(25116, prstate.PR{State: "CLOSED", HeadRefOid: watchHeadA, SquashOn: []string{"dev"}, Graphite: &merged}, trunk, queued)
+		if snap.Squash != merged.MergeCommitSha {
+			t.Fatalf("squash = %q, want Graphite's", snap.Squash)
+		}
+	})
 	t.Run("a closure graphite cannot answer stays pollable", func(t *testing.T) {
 		t.Parallel()
-		snap := prWatchSnapshotOf(1, prWatchNode{State: "CLOSED", HeadRefOid: watchHeadA}, trunk, merged, false, false, queued)
+		snap := prWatchSnapshotOf(1, prstate.PR{State: "CLOSED", HeadRefOid: watchHeadA}, trunk, queued)
 		if snap.terminal() {
 			t.Fatalf("snap = %+v, want it left open until the evidence arrives", snap)
 		}
 	})
 	t.Run("a failing rollup with no failing check read is red", func(t *testing.T) {
 		t.Parallel()
-		node := prWatchNode{State: "OPEN", HeadRefOid: watchHeadA}
-		node.Checks.Nodes = append(node.Checks.Nodes, struct {
-			Commit struct {
-				StatusCheckRollup *statusRollup `json:"statusCheckRollup"`
-			} `json:"commit"`
-		}{})
-		node.Checks.Nodes[0].Commit.StatusCheckRollup = &statusRollup{State: "FAILURE"}
-		snap := prWatchSnapshotOf(2, node, trunk, merged, false, false, prWatchSnapshot{})
+		snap := prWatchSnapshotOf(2, prstate.PR{State: "OPEN", HeadRefOid: watchHeadA, Rollup: &prstate.Rollup{State: "FAILURE"}, Graphite: &merged}, trunk, prWatchSnapshot{})
 		if !reflect.DeepEqual(snap.Failing, []string{"rollup failure"}) {
 			t.Fatalf("failing = %q", snap.Failing)
 		}

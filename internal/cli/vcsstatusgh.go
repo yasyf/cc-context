@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yasyf/cc-context/internal/prstate"
 	"github.com/yasyf/cc-context/internal/render"
 )
 
@@ -83,14 +84,7 @@ type statusActor struct {
 
 // statusContextNode is one entry of a check rollup, which is a CheckRun or a
 // commit status and spells its name and verdict differently in each case.
-type statusContextNode struct {
-	Typename   string `json:"__typename"`
-	Name       string `json:"name"`
-	Conclusion string `json:"conclusion"`
-	Status     string `json:"status"`
-	Context    string `json:"context"`
-	State      string `json:"state"`
-}
+type statusContextNode = prstate.Context
 
 // statusRef is a GraphQL object referenced only by its object id.
 type statusRef struct {
@@ -114,12 +108,7 @@ type statusEventNode struct {
 
 // statusRollup is the head commit's aggregate check state and the contexts
 // behind it.
-type statusRollup struct {
-	State    string `json:"state"`
-	Contexts struct {
-		Nodes []statusContextNode `json:"nodes"`
-	} `json:"contexts"`
-}
+type statusRollup = prstate.Rollup
 
 // statusPRNode is one pull request as GitHub answers statusPRFields.
 type statusPRNode struct {

@@ -311,7 +311,7 @@ func TestSettledPRsAreNotPolledAgain(t *testing.T) {
 	}
 	if err := seed.save(State{
 		PolledAt: epoch,
-		PRs:      map[int]PR{188: {Number: 188, State: "MERGED", LandedOn: "main", PolledAt: epoch}},
+		PRs:      map[int]PR{188: {Number: 188, State: "MERGED", SquashOn: []string{"main"}, PolledAt: epoch}},
 		Leases:   Leases{PRs: map[int]time.Time{188: epoch}},
 	}); err != nil {
 		t.Fatal(err)
@@ -320,7 +320,7 @@ func TestSettledPRsAreNotPolledAgain(t *testing.T) {
 	c.now = epoch.Add(time.Hour)
 
 	st, err := store.Read(testCtx(t), Want{PRs: []int{188}})
-	if err != nil || st.PRs[188].LandedOn != "main" || gh.requests() != 0 {
+	if err != nil || fmt.Sprint(st.PRs[188].SquashOn) != "[main]" || gh.requests() != 0 {
 		t.Errorf("read = %v, %+v after %d requests; want the landed record served with no poll", err, st.PRs[188], gh.requests())
 	}
 }

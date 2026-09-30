@@ -2,17 +2,11 @@ package cli
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
-	"maps"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
-	"reflect"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -102,106 +96,6 @@ func TestClassifyPRQueue(t *testing.T) {
 	}
 }
 
-// stubPRGraphQL answers the nth gh call with the nth response, repeating the
-// last one past the end.
-func stubPRGraphQL(t *testing.T, responses ...string) string {
-	t.Helper()
-	dir := t.TempDir()
-	for i, response := range responses {
-		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("response%d.json", i+1)), []byte(response), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	program := "#!/bin/sh\nprintf 'call\\n' >> \"$GH_CALLS\"\nprintf '%s\\n' \"$@\" > \"$GH_ARGS\"\n" +
-		"n=$(wc -l < \"$GH_CALLS\" | tr -d ' ')\n[ \"$n\" -gt " + strconv.Itoa(len(responses)) + " ] && n=" + strconv.Itoa(len(responses)) + "\n" +
-		"cat \"$GH_RESPONSES/response$n.json\"\n"
-	writeShipExecutable(t, dir, "gh", program)
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("GH_CALLS", filepath.Join(dir, "calls"))
-	t.Setenv("GH_ARGS", filepath.Join(dir, "args"))
-	t.Setenv("GH_RESPONSES", dir)
-	return dir
-}
-
-func TestPRCommitsOnBaseBatchesGraphQL(t *testing.T) {
-	dir := stubPRGraphQL(t, `{"data":{"repository":{"b0":{"c0":{"status":"BEHIND"},"c1":{"status":"IDENTICAL"},"c2":{"status":"AHEAD"}},"b1":{"c0":{"status":"DIVERGED"}}}}}`)
-	candidates := []prCommitCandidate{
-		{number: 1, base: "dev", sha: "a"},
-		{number: 2, base: "dev", sha: "b"},
-		{number: 3, base: "feature/work", sha: "c"},
-		{number: 4, base: "dev", sha: "d"},
-	}
-	got, err := prCommitsOnBase(context.Background(), "Forge-AI/monorepo", candidates)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want := map[int]string{1: "dev", 2: "dev", 3: "", 4: ""}; !maps.Equal(got, want) {
-		t.Errorf("reachability = %v, want %v", got, want)
-	}
-	calls, err := os.ReadFile(filepath.Join(dir, "calls"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(calls) != "call\n" {
-		t.Errorf("gh calls = %q, want one", calls)
-	}
-	args, err := os.ReadFile(filepath.Join(dir, "args"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{"api\ngraphql\n", "b0=refs/heads/dev", "b1=refs/heads/feature/work", "s0_0=a", "s0_1=b", "s0_2=d", "s1_0=c", "c0: compare(headRef: $s0_0)", "c1: compare(headRef: $s0_1)", "c2: compare(headRef: $s0_2)"} {
-		if !strings.Contains(string(args), want) {
-			t.Errorf("gh args missing %q: %s", want, args)
-		}
-	}
-}
-
-// TestPRCommitsOnBaseReadsADeletedBaseFromTheDefaultBranch is a stacked pull
-// request read after its parent landed: Graphite still records the parent as
-// its base, the queue deleted that branch, and the squash sits on the default
-// branch.
-func TestPRCommitsOnBaseReadsADeletedBaseFromTheDefaultBranch(t *testing.T) {
-	dir := stubPRGraphQL(t, `{"data":{"repository":{"defaultBranchRef":{"name":"dev"},"b0":null}}}`,
-		`{"data":{"repository":{"defaultBranchRef":{"name":"dev"},"b0":{"c0":{"status":"BEHIND"}}}}}`)
-
-	got, err := prCommitsOnBase(context.Background(), "Forge-AI/monorepo", []prCommitCandidate{{number: 25249, base: "yasyf/parent", sha: "a"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if fmt.Sprint(got) != "map[25249:dev]" {
-		t.Errorf("landed on = %v, want #25249 on dev", got)
-	}
-	args, err := os.ReadFile(filepath.Join(dir, "args"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(args), "b0=refs/heads/dev") {
-		t.Errorf("the second compare was not against dev: %s", args)
-	}
-}
-
-func TestPRCommitsOnBaseRefusesUnverified(t *testing.T) {
-	tests := []struct {
-		name, response, want string
-	}{
-		{"missing branch", `{"data":{"repository":{"b0":null}}}`, `base branch "dev" not found`},
-		{"missing comparison", `{"data":{"repository":{"b0":{"c0":null}}}}`, "compare a with dev: no result"},
-		{"unknown status", `{"data":{"repository":{"b0":{"c0":{"status":"UNKNOWN"}}}}}`, `unknown status "UNKNOWN"`},
-		{"GraphQL error", `{"errors":[{"message":"query failed"}]}`, "query failed"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			stubPRGraphQL(t, tt.response)
-			_, err := prCommitsOnBase(context.Background(), "Forge-AI/monorepo", []prCommitCandidate{{number: 1, base: "dev", sha: "a"}})
-			if err == nil || !strings.Contains(err.Error(), tt.want) {
-				t.Errorf("err = %v, want %q", err, tt.want)
-			}
-		})
-	}
-}
-
-// stubPRInfo serves pull-request-info from the recorded payloads and records
-// each request's numbers and repository.
 func stubPRInfo(t *testing.T, payloads ...string) (*[]gtapi.PullRequestInfoRequest, *gtapi.Client) {
 	t.Helper()
 	var asked []gtapi.PullRequestInfoRequest
@@ -220,57 +114,38 @@ func stubPRInfo(t *testing.T, payloads ...string) (*[]gtapi.PullRequestInfoReque
 	return &asked, gtapi.NewWithToken(srv.URL, "gt-stub-token")
 }
 
-func stubCommitsOnBase(t *testing.T, onBase map[string]bool) *[][]prCommitCandidate {
-	t.Helper()
-	var compared [][]prCommitCandidate
-	prev := prCommitsOnBase
-	prCommitsOnBase = func(_ context.Context, _ string, candidates []prCommitCandidate) (map[int]string, error) {
-		compared = append(compared, slices.Clone(candidates))
-		got := make(map[int]string, len(candidates))
-		for _, candidate := range candidates {
-			if onBase[candidate.sha] {
-				got[candidate.number] = candidate.base
-			}
-		}
-		return got, nil
+// prNode renders one pull request the way the shared poll's GraphQL query
+// answers it; extra is spliced in as further fields.
+func prNode(number int, state string, extra string) string {
+	node := fmt.Sprintf(`{"number":%d,"state":%q,"title":"t","createdAt":"2026-09-28T15:00:00Z","author":{"login":"yasyf"},`+
+		`"baseRefName":"dev","headRefName":"yasyf/pr-%d","headRefOid":"a37cf143f3cf1022fcb1c106059b3fb336e44203","mergeable":"MERGEABLE",`+
+		`"mergeStateStatus":"CLEAN","reviewDecision":"APPROVED","changedFiles":2,"mergeCommit":null,"labels":{"nodes":[]},`+
+		`"checks":{"nodes":[]}`, number, state, number)
+	if extra != "" {
+		node += "," + extra
 	}
-	t.Cleanup(func() { prCommitsOnBase = prev })
-	return &compared
+	return node + "}"
 }
 
-func prActivityRoute(number int, bodies ...string) ghRoute {
-	comments := make([]map[string]string, 0, len(bodies))
+func prComments(bodies ...string) string {
+	nodes := make([]string, 0, len(bodies))
 	for _, body := range bodies {
-		comments = append(comments, map[string]string{"body": body})
+		encoded, _ := json.Marshal(body)
+		nodes = append(nodes, fmt.Sprintf(`{"body":%s}`, encoded))
 	}
-	page, _ := json.Marshal([][]map[string]string{comments})
-	return ghRoute{
-		argv:   []string{"api", "--paginate", "--slurp", fmt.Sprintf("repos/Forge-AI/monorepo/issues/%d/comments?per_page=100", number)},
-		stdout: string(page),
-	}
+	return `"comments":{"nodes":[` + strings.Join(nodes, ",") + `]}`
 }
 
-func prLabelRoute(label string, numbers ...int) ghRoute {
-	var stdout strings.Builder
-	for _, n := range numbers {
-		fmt.Fprintf(&stdout, "%d\n", n)
-	}
-	return ghRoute{
-		argv:   []string{"api", "--paginate", "repos/Forge-AI/monorepo/issues?state=open&labels=" + label + "&per_page=100", "--jq", ".[].number"},
-		stdout: stdout.String(),
-	}
+func prPoll(fields ...string) string {
+	return `{"data":{"rateLimit":{"remaining":4900,"resetAt":"2026-09-30T08:00:00Z"},"repository":{` +
+		`"trunk":{"name":"dev","target":{"history":{"nodes":[]}}}` + prefixComma(strings.Join(fields, ",")) + `}}}`
 }
 
-func readGHCalls(t *testing.T, calls string) []string {
-	t.Helper()
-	data, err := os.ReadFile(calls)
-	if os.IsNotExist(err) {
-		return nil
+func prefixComma(s string) string {
+	if s == "" {
+		return ""
 	}
-	if err != nil {
-		t.Fatal(err)
-	}
-	return strings.Split(strings.TrimSpace(string(data)), "\n")
+	return "," + s
 }
 
 func runPRStatusCmd(t *testing.T, client *gtapi.Client, args ...string) (string, error) {
@@ -286,13 +161,15 @@ func runPRStatusCmd(t *testing.T, client *gtapi.Client, args ...string) (string,
 	return out.String(), err
 }
 
-// TestPRStatusReportsEachQueueState pins the three answers against the recorded
-// Graphite payloads, in the order the numbers were asked, and that only a
-// recorded squash costs a compare against the base.
 func TestPRStatusReportsEachQueueState(t *testing.T) {
 	asked, client := stubPRInfo(t, prInfoLanded, prInfoOpen, prInfoQueued)
-	compared := stubCommitsOnBase(t, map[string]bool{"9cc33f055dc4db19da6eb13a210a810297ccdc05": true})
-	calls := installGHRoutes(t, prActivityRoute(25121), prActivityRoute(25131, "LGTM"), prLabelRoute("merge", 23925), prLabelRoute("merge-fast"))
+	github := stubPRState(t, prPoll(
+		`"p0":`+prNode(25116, "CLOSED", ""),
+		`"t0":{"compare":{"status":"BEHIND"}}`,
+		`"b0":{"compare":{"status":"BEHIND"}}`,
+		`"p1":`+prNode(25121, "OPEN", prComments()),
+		`"p2":`+prNode(25131, "OPEN", prComments("LGTM")),
+	))
 
 	out, err := runPRStatusCmd(t, client, "--repo", "Forge-AI/monorepo", "25121", "#25131", "25116")
 	if err != nil {
@@ -308,27 +185,31 @@ func TestPRStatusReportsEachQueueState(t *testing.T) {
 		t.Fatalf("graphite asked %d times, want one batched request", len(*asked))
 	}
 	req := (*asked)[0]
-	if req.RepoOwner != "Forge-AI" || req.RepoName != "monorepo" || !slices.Equal(req.PRNumbers, []int{25121, 25131, 25116}) || !req.Consistent {
-		t.Errorf("request = %+v, want Forge-AI/monorepo #25121 #25131 #25116, consistent", req)
+	if req.RepoOwner != "Forge-AI" || req.RepoName != "monorepo" || !slices.Equal(req.PRNumbers, []int{25116, 25121, 25131}) || !req.Consistent {
+		t.Errorf("request = %+v, want Forge-AI/monorepo #25116 #25121 #25131, consistent", req)
 	}
-	if want := [][]prCommitCandidate{{{number: 25116, base: "dev", sha: "9cc33f055dc4db19da6eb13a210a810297ccdc05"}}}; !reflect.DeepEqual(*compared, want) {
-		t.Errorf("compares = %v, want %v", *compared, want)
+	if len(github.queries) != 1 || github.vars[0]["m0"] != "9cc33f055dc4db19da6eb13a210a810297ccdc05" || github.vars[0]["b0"] != "refs/heads/dev" {
+		t.Errorf("graphql = %d queries, vars %v; want one batch comparing only the recorded squash", len(github.queries), github.vars)
 	}
-	got := readGHCalls(t, calls)
-	if len(got) != 3 || slices.ContainsFunc(got, func(call string) bool { return strings.Contains(call, "issues/25131/comments") }) {
-		t.Errorf("gh calls = %q, want the queued pull request's comments and the two label listings, never an unlabelled one's comments", got)
+}
+
+func TestPRStatusSharesOnePollAcrossInvocations(t *testing.T) {
+	_, client := stubPRInfo(t, prInfoQueued)
+	github := stubPRState(t, prPoll(`"p0":`+prNode(25121, "OPEN", prComments())))
+
+	for range 2 {
+		if _, err := runPRStatusCmd(t, client, "--repo", "Forge-AI/monorepo", "25121"); err != nil {
+			t.Fatalf("pr status: %v", err)
+		}
+	}
+	if len(github.queries) != 1 {
+		t.Errorf("graphql queries = %d, want the second status served from the shared cache", len(github.queries))
 	}
 }
 
 func TestPRStatusReadsALabelledPRTheQueueDropped(t *testing.T) {
 	_, client := stubPRInfo(t, `{"prNumber":26918,"state":"OPEN","baseRefName":"dev","mergeQueueStatus":null,"mergeCommitSha":null}`)
-	stubCommitsOnBase(t, nil)
-	calls := installGHRoutes(t,
-		prLabelRoute("merge", 26918),
-		prLabelRoute("merge-fast"),
-		prActivityRoute(26918, prActivityEvicted),
-		ghRoute{argv: []string{"api", "repos/Forge-AI/monorepo/pulls/26918"}, stdout: `{"number":26918,"state":"open","mergeable_state":"clean"}`},
-	)
+	stubPRState(t, prPoll(`"p0":`+strings.Replace(prNode(26918, "OPEN", prComments(prActivityEvicted)), `"labels":{"nodes":[]}`, `"labels":{"nodes":[{"name":"merge"}]}`, 1)))
 
 	out, err := runPRStatusCmd(t, client, "--repo", "Forge-AI/monorepo", "26918")
 	if err != nil {
@@ -337,18 +218,24 @@ func TestPRStatusReadsALabelledPRTheQueueDropped(t *testing.T) {
 	if want := "#26918  evicted: it had merge conflicts at Sep 28, 3:32 PM UTC\n"; out != want {
 		t.Errorf("report = %q, want %q", out, want)
 	}
-	if got := readGHCalls(t, calls); len(got) != 4 {
-		t.Errorf("gh calls = %q, want two label listings, the comments read and the pull request read", got)
+}
+
+func TestPRStatusIgnoresActivityOfAnUnlabelledPROutOfTheQueue(t *testing.T) {
+	_, client := stubPRInfo(t, `{"prNumber":26918,"state":"OPEN","baseRefName":"dev","mergeQueueStatus":null,"mergeCommitSha":null}`)
+	stubPRState(t, prPoll(`"p0":`+prNode(26918, "OPEN", prComments(prActivityEvicted))))
+
+	out, err := runPRStatusCmd(t, client, "--repo", "Forge-AI/monorepo", "26918")
+	if err != nil {
+		t.Fatalf("pr status: %v", err)
+	}
+	if want := "#26918  not queued · open\n"; out != want {
+		t.Errorf("report = %q, want %q", out, want)
 	}
 }
 
 func TestPRStatusReportsAnEviction(t *testing.T) {
 	_, client := stubPRInfo(t, prInfoEvicted)
-	stubCommitsOnBase(t, nil)
-	calls := installGHRoutes(t,
-		prActivityRoute(26918, "Stack comment", prActivityEvicted),
-		ghRoute{argv: []string{"api", "repos/Forge-AI/monorepo/pulls/26918"}, stdout: `{"number":26918,"state":"open","mergeable":false,"mergeable_state":"dirty","labels":[]}`},
-	)
+	stubPRState(t, prPoll(`"p0":`+strings.Replace(prNode(26918, "OPEN", prComments("Stack comment", prActivityEvicted)), `"CLEAN"`, `"DIRTY"`, 1)))
 
 	out, err := runPRStatusCmd(t, client, "--repo", "Forge-AI/monorepo", "26918")
 	if err != nil {
@@ -357,17 +244,11 @@ func TestPRStatusReportsAnEviction(t *testing.T) {
 	if want := "#26918  evicted: it had merge conflicts at Sep 28, 3:32 PM UTC · conflicting\n"; out != want {
 		t.Errorf("report = %q, want %q", out, want)
 	}
-	got := readGHCalls(t, calls)
-	if len(got) != 2 {
-		t.Errorf("gh calls = %q, want the comments read and the pull request read", got)
-	}
-	assertNoGraphQL(t, calls)
 }
 
 func TestPRStatusJSON(t *testing.T) {
 	_, client := stubPRInfo(t, prInfoQueued)
-	compared := stubCommitsOnBase(t, nil)
-	installGHRoutes(t, prActivityRoute(25121))
+	stubPRState(t, prPoll(`"p0":`+prNode(25121, "OPEN", prComments())))
 
 	out, err := runPRStatusCmd(t, client, "--repo", "Forge-AI/monorepo", "--json", "25121")
 	if err != nil {
@@ -380,9 +261,6 @@ func TestPRStatusJSON(t *testing.T) {
 	want := []prQueueReport{{Number: 25121, Queue: prQueueQueued, State: "OPEN", Base: "dev", Enqueued: "b103a57671412a4e260ecd9763ba764e66053d15"}}
 	if !slices.Equal(got, want) {
 		t.Errorf("report = %+v, want %+v", got, want)
-	}
-	if len(*compared) != 0 {
-		t.Errorf("compares = %v, want none", *compared)
 	}
 }
 
@@ -399,10 +277,33 @@ func TestPRStatusRefuses(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			_, client := stubPRInfo(t, prInfoQueued)
-			stubCommitsOnBase(t, nil)
+			stubPRState(t, prPoll(`"p0":`+prNode(25121, "OPEN", prComments()), `"p1":`+prNode(99999, "OPEN", prComments())))
 			if _, err := runPRStatusCmd(t, client, tt.args...); err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Errorf("err = %v, want it to contain %q", err, tt.want)
 			}
 		})
+	}
+}
+
+func TestPRStateReportsRecordsAndLanes(t *testing.T) {
+	_, client := stubPRInfo(t, prInfoQueued)
+	stubPRState(t, prPoll(
+		`"l0":{"totalCount":1,"nodes":[{"name":"yasyf/v3-x/a","associatedPullRequests":{"nodes":[{"number":25121}]}}]}`,
+		`"p0":`+prNode(25121, "OPEN", prComments()),
+	))
+	cmd := newVcsPRCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"state", "--repo", "Forge-AI/monorepo", "--lane-prefix", "yasyf/v3-x/", "25121"})
+	if err := cmd.ExecuteContext(withGTAPI(t.Context(), client)); err != nil {
+		t.Fatalf("pr state: %v", err)
+	}
+	var got prStateReport
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal %q: %v", out.String(), err)
+	}
+	pr := got.PRs[25121]
+	if got.Trunk != "dev" || fmt.Sprint(got.Lanes["yasyf/v3-x/"]) != "[25121]" || pr.HeadRefName != "yasyf/pr-25121" || pr.Graphite == nil {
+		t.Errorf("report = %+v", got)
 	}
 }
