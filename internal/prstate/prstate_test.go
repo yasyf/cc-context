@@ -96,8 +96,31 @@ func testCtx(t *testing.T) context.Context {
 	return render.WithEnv(t.Context(), "GH_TOKEN=prstate-test", "GITHUB_TOKEN=")
 }
 
+// echoGraphite answers every pull-request-info request with an open record
+// naming each pull request's head branch the way the fixtures do, as Graphite
+// does for a repository it tracks.
+func echoGraphite(t *testing.T) *gtapi.Client {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req gtapi.PullRequestInfoRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode graphite request: %v", err)
+		}
+		prs := make([]string, 0, len(req.PRNumbers))
+		for _, n := range req.PRNumbers {
+			prs = append(prs, fmt.Sprintf(`{"prNumber":%d,"state":"OPEN","baseRefName":"main","headRefName":"yasyf/gh-budget/pr-%d"}`, n, n))
+		}
+		_, _ = fmt.Fprintf(w, `{"result":{"status":"ok","prs":[%s]}}`, strings.Join(prs, ","))
+	}))
+	t.Cleanup(srv.Close)
+	return gtapi.NewWithToken(srv.URL, "gt-stub-token")
+}
+
 func newStore(t *testing.T, dir string, c *clock, gt *gtapi.Client, replies ...reply) (*Store, *fakeGitHub) {
 	t.Helper()
+	if gt == nil {
+		gt = echoGraphite(t)
+	}
 	fake := &fakeGitHub{t: t, replies: replies}
 	ts := httptest.NewServer(fake)
 	t.Cleanup(ts.Close)
@@ -415,7 +438,7 @@ func TestALaneIsFreshOnlyWithEveryMemberRead(t *testing.T) {
 	if st.fresh(Want{Prefixes: []string{"yasyf/gh-budget/"}}, epoch) {
 		t.Error("a lane whose member was never read reads fresh")
 	}
-	st.PRs[190] = PR{Number: 190, State: "OPEN", PolledAt: epoch}
+	st.PRs[190] = PR{Number: 190, State: "OPEN", Children: []int{}, PolledAt: epoch}
 	if !st.fresh(Want{Prefixes: []string{"yasyf/gh-budget/"}}, epoch.Add(time.Second)) {
 		t.Error("a lane with every member just read reads stale")
 	}

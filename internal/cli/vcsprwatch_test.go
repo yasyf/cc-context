@@ -392,10 +392,10 @@ func TestPRWatchPollReadsQueueEvictionAndTrunkSquash(t *testing.T) {
 			"trunk":{"name":"dev","target":{"history":{"nodes":[
 				{"oid":"1111111111111111111111111111111111111111","messageHeadline":"api: fix (#261180)"},
 				{"oid":"%s","messageHeadline":"ci: 🚀 add a deploy pipeline (#25116)"}]}}},
-			"p0":{"number":25116,"state":"CLOSED","headRefOid":"%s","mergeable":"UNKNOWN","reviewDecision":"APPROVED",
+			"p0":{"number":25116,"state":"CLOSED","headRefName":"yasyf/pr-25116","headRefOid":"%s","mergeable":"UNKNOWN","reviewDecision":"APPROVED",
 				"checks":{"nodes":[]}},
 			"t0":{"compare":{"status":"BEHIND"}},
-			"p1":{"number":26918,"state":"OPEN","headRefOid":"%s","mergeable":"CONFLICTING","reviewDecision":"APPROVED",
+			"p1":{"number":26918,"state":"OPEN","headRefName":"yasyf/pr-26918","headRefOid":"%s","mergeable":"CONFLICTING","reviewDecision":"APPROVED",
 				"checks":{"nodes":[{"commit":{"statusCheckRollup":{"state":"FAILURE","contexts":{"nodes":[
 					{"__typename":"CheckRun","name":"lint","conclusion":"SUCCESS","status":"COMPLETED"},
 					{"__typename":"StatusContext","context":"buildkite/tests","state":"FAILURE"}]}}}}]},

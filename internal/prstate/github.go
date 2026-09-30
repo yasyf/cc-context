@@ -1,6 +1,7 @@
 package prstate
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -19,9 +20,13 @@ const (
 	chunkSize = 40
 
 	prFields = "number state title createdAt author { login } baseRefName headRefName headRefOid mergeable mergeStateStatus " +
-		"reviewDecision changedFiles mergeCommit { oid } labels(first: 50) { nodes { name } } " +
+		"reviewDecision changedFiles mergeCommit { oid } labels(first: 50) { nodes { name } } files(first: 100) { nodes { path } } " +
+		"latestOpinionatedReviews(first: 50) { nodes { state author { login } } } " +
+		"timelineItems(itemTypes: [LABELED_EVENT, UNLABELED_EVENT], last: 50) { nodes { __typename " +
+		"... on LabeledEvent { createdAt label { name } actor { login } } ... on UnlabeledEvent { createdAt label { name } actor { login } } } } " +
+		"baseRef { associatedPullRequests(states: [OPEN], first: 5) { nodes { number } } } " +
 		"checks: commits(last: 1) { nodes { commit { status { state } statusCheckRollup { state contexts(last: 100) { nodes { __typename " +
-		"... on CheckRun { name conclusion status } ... on StatusContext { context state } } } } } } }"
+		"... on CheckRun { name conclusion status detailsUrl } ... on StatusContext { context state targetUrl } } } } } } }"
 	activityFields = " comments(last: 100) { nodes { body } }"
 	probeQuery     = "query { viewer { login } rateLimit { remaining resetAt } }"
 )
@@ -59,6 +64,7 @@ type target struct {
 	activity bool
 	squash   string
 	base     string
+	head     string
 }
 
 type prNode struct {
@@ -99,6 +105,48 @@ type prNode struct {
 			Body string `json:"body"`
 		} `json:"nodes"`
 	} `json:"comments"`
+	Files struct {
+		Nodes []struct {
+			Path string `json:"path"`
+		} `json:"nodes"`
+	} `json:"files"`
+	Reviews struct {
+		Nodes []struct {
+			State  string `json:"state"`
+			Author *struct {
+				Login string `json:"login"`
+			} `json:"author"`
+		} `json:"nodes"`
+	} `json:"latestOpinionatedReviews"`
+	Timeline struct {
+		Nodes []struct {
+			Typename  string    `json:"__typename"`
+			CreatedAt time.Time `json:"createdAt"`
+			Label     *struct {
+				Name string `json:"name"`
+			} `json:"label"`
+			Actor *struct {
+				Login string `json:"login"`
+			} `json:"actor"`
+		} `json:"nodes"`
+	} `json:"timelineItems"`
+	BaseRef *struct {
+		AssociatedPullRequests numbersNode `json:"associatedPullRequests"`
+	} `json:"baseRef"`
+}
+
+type numbersNode struct {
+	Nodes []struct {
+		Number int `json:"number"`
+	} `json:"nodes"`
+}
+
+func (n numbersNode) numbers() []int {
+	numbers := make([]int, 0, len(n.Nodes))
+	for _, node := range n.Nodes {
+		numbers = append(numbers, node.Number)
+	}
+	return numbers
 }
 
 type trunkNode struct {
@@ -178,15 +226,19 @@ func (p *pass) target(n int) target {
 	if !fresh {
 		info = last.Graphite
 	}
-	t := target{number: n}
+	t := target{number: n, head: last.HeadRefName}
 	var open bool
 	if info != nil {
 		open = info.State == gtapi.PROpen
 		t.squash, t.base = info.MergeCommitSha, info.BaseRefName
+		t.head = cmp.Or(t.head, info.HeadRefName)
 	} else {
 		open = !known || last.State == "OPEN"
 	}
 	t.activity = open && (inQueue(info) || !known || inQueue(last.Graphite) || last.QueueLabelled())
+	if !open {
+		t.head = ""
+	}
 	return t
 }
 
@@ -280,6 +332,11 @@ func (g *GitHub) query(ctx context.Context, chunk []target, first bool, prefixes
 			selection += activityFields
 		}
 		fmt.Fprintf(&fields, "    p%d: pullRequest(number: $p%d) { %s }\n", i, i, selection)
+		if t.head != "" {
+			decls = append(decls, fmt.Sprintf("$h%d: String!", i))
+			vars[fmt.Sprintf("h%d", i)] = t.head
+			fmt.Fprintf(&fields, "    c%d: pullRequests(baseRefName: $h%d, states: [OPEN], first: 20) { nodes { number } }\n", i, i)
+		}
 		if t.squash == "" {
 			continue
 		}
@@ -325,6 +382,34 @@ func (p *pass) record(node prNode, t target, i int, resp response) (PR, error) {
 	}
 	for _, label := range node.Labels.Nodes {
 		pr.Labels = append(pr.Labels, label.Name)
+	}
+	for _, file := range node.Files.Nodes {
+		pr.Files = append(pr.Files, file.Path)
+	}
+	for _, review := range node.Reviews.Nodes {
+		if review.Author != nil {
+			pr.Reviews = append(pr.Reviews, Review{Author: review.Author.Login, State: review.State})
+		}
+	}
+	for _, event := range node.Timeline.Nodes {
+		if event.Label == nil {
+			continue
+		}
+		labelled := LabelEvent{At: event.CreatedAt, Label: event.Label.Name, Added: event.Typename == "LabeledEvent"}
+		if event.Actor != nil {
+			labelled.Actor = event.Actor.Login
+		}
+		pr.LabelEvents = append(pr.LabelEvents, labelled)
+	}
+	if node.BaseRef != nil {
+		pr.Parents = node.BaseRef.AssociatedPullRequests.numbers()
+	}
+	if t.head != "" && t.head == node.HeadRefName {
+		var children numbersNode
+		if err := decode(resp.Repository["c"+strconv.Itoa(i)], &children); err != nil {
+			return PR{}, err
+		}
+		pr.Children = children.numbers()
 	}
 	if len(node.Checks.Nodes) > 0 {
 		commit := node.Checks.Nodes[0].Commit
@@ -386,6 +471,7 @@ func inQueue(info *gtapi.PullRequestInfo) bool {
 func dropNotFound(chunk []target, gql *ghapi.GraphQLError) ([]target, []int, bool) {
 	gonePR := map[int]bool{}
 	noCompare := map[int]bool{}
+	noChildren := map[int]bool{}
 	for _, m := range gql.Messages {
 		if m.Type != "NOT_FOUND" || len(m.Path) < 2 || m.Path[0] != "repository" {
 			return nil, nil, false
@@ -403,6 +489,8 @@ func dropNotFound(chunk []target, gql *ghapi.GraphQLError) ([]target, []int, boo
 			gonePR[i] = true
 		case 't', 'b':
 			noCompare[i] = true
+		case 'c':
+			noChildren[i] = true
 		default:
 			return nil, nil, false
 		}
@@ -416,6 +504,9 @@ func dropNotFound(chunk []target, gql *ghapi.GraphQLError) ([]target, []int, boo
 		}
 		if noCompare[i] {
 			t.squash = ""
+		}
+		if noChildren[i] {
+			t.head = ""
 		}
 		kept = append(kept, t)
 	}

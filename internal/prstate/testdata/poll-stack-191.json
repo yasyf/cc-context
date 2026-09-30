@@ -30,7 +30,7 @@
     "author": {
      "login": "yasyf"
     },
-    "baseRefName": "main",
+    "baseRefName": "yasyf/gh-budget/pr-190",
     "headRefName": "yasyf/gh-budget/pr-191",
     "headRefOid": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
     "mergeable": "MERGEABLE",
@@ -58,14 +58,16 @@
           "nodes": [
            {
             "__typename": "CheckRun",
-            "name": "test",
+            "name": "ai-review",
             "conclusion": "SUCCESS",
-            "status": "COMPLETED"
+            "status": "COMPLETED",
+            "detailsUrl": "https://github.com/yasyf/cc-context/pull/191#ai"
            },
            {
             "__typename": "StatusContext",
             "context": "buildkite/tests",
-            "state": "SUCCESS"
+            "state": "FAILURE",
+            "targetUrl": "https://buildkite.com/forge/test/builds/9#job"
            }
           ]
          }
@@ -73,7 +75,73 @@
        }
       }
      ]
+    },
+    "files": {
+     "nodes": [
+      {
+       "path": "internal/prstate/prstate.go"
+      },
+      {
+       "path": "internal/prstate/github.go"
+      }
+     ]
+    },
+    "latestOpinionatedReviews": {
+     "nodes": [
+      {
+       "state": "APPROVED",
+       "author": {
+        "login": "poetic-svc"
+       }
+      },
+      {
+       "state": "CHANGES_REQUESTED",
+       "author": {
+        "login": "reviewer"
+       }
+      }
+     ]
+    },
+    "timelineItems": {
+     "nodes": [
+      {
+       "__typename": "LabeledEvent",
+       "createdAt": "2026-09-30T06:00:00Z",
+       "label": {
+        "name": "merge"
+       },
+       "actor": {
+        "login": "yasyf"
+       }
+      },
+      {
+       "__typename": "UnlabeledEvent",
+       "createdAt": "2026-09-30T06:05:00Z",
+       "label": {
+        "name": "merge"
+       },
+       "actor": {
+        "login": "graphite-app"
+       }
+      }
+     ]
+    },
+    "baseRef": {
+     "associatedPullRequests": {
+      "nodes": [
+       {
+        "number": 190
+       }
+      ]
+     }
     }
+   },
+   "c0": {
+    "nodes": [
+     {
+      "number": 192
+     }
+    ]
    }
   }
  }

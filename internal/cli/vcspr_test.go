@@ -19,11 +19,11 @@ import (
 // mergedAt, and Graphite keeps isInGraphiteMq set), and #23925 still carrying a
 // merge label the queue had dropped.
 const (
-	prInfoQueued    = `{"prNumber":25121,"state":"OPEN","baseRefName":"dev","mergeQueueStatus":{"isInGraphiteMq":true,"enqueuedCommit":"b103a57671412a4e260ecd9763ba764e66053d15"},"mergeCommitSha":null}`
-	prInfoOpen      = `{"prNumber":25131,"state":"OPEN","baseRefName":"dev","mergeQueueStatus":null,"mergeCommitSha":null}`
-	prInfoLanded    = `{"prNumber":25116,"state":"MERGED","baseRefName":"dev","mergeQueueStatus":{"isInGraphiteMq":true,"enqueuedCommit":"bea3a53bca0f57ff156ff9c1ca60c6831f2c0f69"},"mergeCommitSha":"9cc33f055dc4db19da6eb13a210a810297ccdc05"}`
-	prInfoStaleFlag = `{"prNumber":23925,"state":"OPEN","baseRefName":"dev","mergeQueueStatus":null,"mergeCommitSha":null}`
-	prInfoAbandoned = `{"prNumber":24001,"state":"CLOSED","baseRefName":"dev","mergeQueueStatus":{"isInGraphiteMq":true,"enqueuedCommit":"aaaa"},"mergeCommitSha":null}`
+	prInfoQueued    = `{"prNumber":25121,"state":"OPEN","baseRefName":"dev","headRefName":"yasyf/pr-25121","mergeQueueStatus":{"isInGraphiteMq":true,"enqueuedCommit":"b103a57671412a4e260ecd9763ba764e66053d15"},"mergeCommitSha":null}`
+	prInfoOpen      = `{"prNumber":25131,"state":"OPEN","baseRefName":"dev","headRefName":"yasyf/pr-25131","mergeQueueStatus":null,"mergeCommitSha":null}`
+	prInfoLanded    = `{"prNumber":25116,"state":"MERGED","baseRefName":"dev","headRefName":"yasyf/pr-25116","mergeQueueStatus":{"isInGraphiteMq":true,"enqueuedCommit":"bea3a53bca0f57ff156ff9c1ca60c6831f2c0f69"},"mergeCommitSha":"9cc33f055dc4db19da6eb13a210a810297ccdc05"}`
+	prInfoStaleFlag = `{"prNumber":23925,"state":"OPEN","baseRefName":"dev","headRefName":"yasyf/pr-23925","mergeQueueStatus":null,"mergeCommitSha":null}`
+	prInfoAbandoned = `{"prNumber":24001,"state":"CLOSED","baseRefName":"dev","headRefName":"yasyf/pr-24001","mergeQueueStatus":{"isInGraphiteMq":true,"enqueuedCommit":"aaaa"},"mergeCommitSha":null}`
 )
 
 // #26918 on 2026-09-28: the queue admitted it at 15:29, evicted it for merge
@@ -31,7 +31,7 @@ const (
 // The activity comment is the one GitHub served, posted through the enqueuing
 // user's token rather than graphite-app's.
 const (
-	prInfoEvicted     = `{"prNumber":26918,"state":"OPEN","baseRefName":"dev","mergeQueueStatus":{"isInGraphiteMq":true,"enqueuedCommit":"a37cf143f3cf1022fcb1c106059b3fb336e44203"},"mergeCommitSha":null}`
+	prInfoEvicted     = `{"prNumber":26918,"state":"OPEN","baseRefName":"dev","headRefName":"yasyf/pr-26918","mergeQueueStatus":{"isInGraphiteMq":true,"enqueuedCommit":"a37cf143f3cf1022fcb1c106059b3fb336e44203"},"mergeCommitSha":null}`
 	prActivityEvicted = "### Merge activity\n\n" +
 		"* **Sep 28, 3:29 PM UTC**: The merge label 'merge' was detected. This PR will be added to the [Graphite merge queue](https://app.graphite.com/merges?org=Forge-AI&repo=monorepo) once it meets the requirements.\n" +
 		"* **Sep 28, 3:29 PM UTC**: `yasyf` added this pull request to the [Graphite merge queue](https://app.graphite.com/merges?org=Forge-AI&repo=monorepo).\n" +
@@ -208,7 +208,7 @@ func TestPRStatusSharesOnePollAcrossInvocations(t *testing.T) {
 }
 
 func TestPRStatusReadsALabelledPRTheQueueDropped(t *testing.T) {
-	_, client := stubPRInfo(t, `{"prNumber":26918,"state":"OPEN","baseRefName":"dev","mergeQueueStatus":null,"mergeCommitSha":null}`)
+	_, client := stubPRInfo(t, `{"prNumber":26918,"state":"OPEN","baseRefName":"dev","headRefName":"yasyf/pr-26918","mergeQueueStatus":null,"mergeCommitSha":null}`)
 	stubPRState(t, prPoll(`"p0":`+strings.Replace(prNode(26918, "OPEN", prComments(prActivityEvicted)), `"labels":{"nodes":[]}`, `"labels":{"nodes":[{"name":"merge"}]}`, 1)))
 
 	out, err := runPRStatusCmd(t, client, "--repo", "Forge-AI/monorepo", "26918")
@@ -221,7 +221,7 @@ func TestPRStatusReadsALabelledPRTheQueueDropped(t *testing.T) {
 }
 
 func TestPRStatusIgnoresActivityOfAnUnlabelledPROutOfTheQueue(t *testing.T) {
-	_, client := stubPRInfo(t, `{"prNumber":26918,"state":"OPEN","baseRefName":"dev","mergeQueueStatus":null,"mergeCommitSha":null}`)
+	_, client := stubPRInfo(t, `{"prNumber":26918,"state":"OPEN","baseRefName":"dev","headRefName":"yasyf/pr-26918","mergeQueueStatus":null,"mergeCommitSha":null}`)
 	stubPRState(t, prPoll(`"p0":`+prNode(26918, "OPEN", prComments(prActivityEvicted))))
 
 	out, err := runPRStatusCmd(t, client, "--repo", "Forge-AI/monorepo", "26918")
@@ -305,5 +305,27 @@ func TestPRStateReportsRecordsAndLanes(t *testing.T) {
 	pr := got.PRs[25121]
 	if got.Trunk != "dev" || fmt.Sprint(got.Lanes["yasyf/v3-x/"]) != "[25121]" || pr.HeadRefName != "yasyf/pr-25121" || pr.Graphite == nil {
 		t.Errorf("report = %+v", got)
+	}
+}
+
+func TestPRStateReportsEveryOpenParentBelowATip(t *testing.T) {
+	_, client := stubPRInfo(t, prInfoQueued, prInfoOpen)
+	stubPRState(t,
+		prPoll(`"p0":`+prNode(25121, "OPEN", `"baseRef":{"associatedPullRequests":{"nodes":[{"number":25131}]}}`), `"c0":{"nodes":[]}`),
+		prPoll(`"p0":`+prNode(25131, "OPEN", `"baseRef":{"associatedPullRequests":{"nodes":[]}}`)),
+	)
+	cmd := newVcsPRCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"state", "--repo", "Forge-AI/monorepo", "25121"})
+	if err := cmd.ExecuteContext(withGTAPI(t.Context(), client)); err != nil {
+		t.Fatalf("pr state: %v", err)
+	}
+	var got prStateReport
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal %q: %v", out.String(), err)
+	}
+	if fmt.Sprint(got.PRs[25121].Parents) != "[25131]" || got.PRs[25131].Number != 25131 {
+		t.Errorf("report = %+v, want the tip and its parent #25131", got.PRs)
 	}
 }

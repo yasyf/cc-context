@@ -39,6 +39,7 @@ const (
 	leaseTTL         = 15 * time.Minute
 	keepFor          = 24 * time.Hour
 	defaultLimitWait = time.Minute
+	maxFollowUps     = 8
 	rateFloor        = 100
 	stateFile        = "state.json"
 )
@@ -83,7 +84,27 @@ type PR struct {
 	Activity         string                 `json:"activity,omitempty"`
 	Graphite         *gtapi.PullRequestInfo `json:"graphite,omitempty"`
 	SquashOn         []string               `json:"squashOn,omitempty"`
+	Files            []string               `json:"files,omitempty"`
+	Reviews          []Review               `json:"reviews,omitempty"`
+	LabelEvents      []LabelEvent           `json:"labelEvents,omitempty"`
+	Parents          []int                  `json:"parents,omitempty"`
+	Children         []int                  `json:"children"`
 	PolledAt         time.Time              `json:"polledAt"`
+}
+
+// Review is one reviewer's standing verdict: their latest approving or
+// change-requesting review.
+type Review struct {
+	Author string `json:"author"`
+	State  string `json:"state"`
+}
+
+// LabelEvent is one label added to or removed from a pull request.
+type LabelEvent struct {
+	At    time.Time `json:"at"`
+	Label string    `json:"label"`
+	Actor string    `json:"actor,omitempty"`
+	Added bool      `json:"added"`
 }
 
 // Rollup is the head commit's aggregate check state and the contexts behind
@@ -101,8 +122,10 @@ type Context struct {
 	Name       string `json:"name,omitempty"`
 	Conclusion string `json:"conclusion,omitempty"`
 	Status     string `json:"status,omitempty"`
+	DetailsURL string `json:"detailsUrl,omitempty"`
 	Context    string `json:"context,omitempty"`
 	State      string `json:"state,omitempty"`
+	TargetURL  string `json:"targetUrl,omitempty"`
 }
 
 // Trunk is the default branch and its newest hundred commits.
@@ -248,10 +271,17 @@ func (s *Store) read(ctx context.Context, want Want) (State, error) {
 	if err := s.pollInto(ctx, &st, req, now); err != nil {
 		return st, err
 	}
-	if unread := st.unread(req.Prefixes, now); len(unread) > 0 && st.Backoff == nil {
+	polled := req.PRs
+	for range maxFollowUps {
+		unread := st.unread(req.Prefixes, polled, now)
+		if len(unread) == 0 || st.Backoff != nil {
+			break
+		}
+		st.Leases.renew(Want{PRs: unread}, now)
 		if err := s.pollInto(ctx, &st, Want{PRs: unread}, now); err != nil {
 			return st, err
 		}
+		polled = unread
 	}
 	if missing := slices.DeleteFunc(slices.Clone(want.PRs), func(n int) bool { _, ok := st.PRs[n]; return ok }); len(missing) > 0 {
 		return st, &MissingError{Repo: s.src.owner + "/" + s.src.name, PRs: missing}
@@ -325,11 +355,28 @@ func (l *Leases) renew(want Want, now time.Time) {
 }
 
 func (st State) fresh(want Want, now time.Time) bool {
-	for _, n := range want.PRs {
-		pr, ok := st.PRs[n]
-		if !ok || !pr.settled() && now.Sub(pr.PolledAt) >= MinInterval {
-			return false
+	seen := map[int]bool{}
+	var current func(n int) bool
+	current = func(n int) bool {
+		if seen[n] {
+			return true
 		}
+		seen[n] = true
+		pr, ok := st.PRs[n]
+		switch {
+		case !ok:
+			return false
+		case pr.settled():
+			return true
+		case now.Sub(pr.PolledAt) >= MinInterval:
+			return false
+		case pr.State != "OPEN":
+			return true
+		}
+		return pr.Children != nil && !slices.ContainsFunc(pr.Parents, func(parent int) bool { return !current(parent) })
+	}
+	if slices.ContainsFunc(want.PRs, func(n int) bool { return !current(n) }) {
+		return false
 	}
 	for _, prefix := range want.Prefixes {
 		lane, ok := st.Lanes[prefix]
@@ -340,13 +387,28 @@ func (st State) fresh(want Want, now time.Time) bool {
 	return true
 }
 
-func (st State) unread(prefixes []string, now time.Time) []int {
+func (st State) unread(prefixes []string, polled []int, now time.Time) []int {
 	var unread []int
+	add := func(n int) {
+		if pr := st.PRs[n]; pr.PolledAt.Before(now) && !pr.settled() && !slices.Contains(unread, n) {
+			unread = append(unread, n)
+		}
+	}
 	for _, prefix := range prefixes {
 		for _, n := range st.Lanes[prefix].PRs {
-			if pr := st.PRs[n]; pr.PolledAt.Before(now) && !pr.settled() && !slices.Contains(unread, n) {
-				unread = append(unread, n)
-			}
+			add(n)
+		}
+	}
+	for _, n := range polled {
+		pr, ok := st.PRs[n]
+		if !ok || pr.State != "OPEN" {
+			continue
+		}
+		for _, parent := range pr.Parents {
+			add(parent)
+		}
+		if pr.Children == nil && !slices.Contains(unread, n) {
+			unread = append(unread, n)
 		}
 	}
 	slices.Sort(unread)
