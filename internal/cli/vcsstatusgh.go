@@ -272,7 +272,7 @@ func statusQueryPRs(ctx context.Context, l lane, branches []string) (statusPRRes
 	argv := make([]string, 0, 8+2*len(branches))
 	argv = append(argv, "api", "graphql", "-F", "owner={owner}", "-F", "repo={repo}")
 	for i, branch := range branches {
-		argv = append(argv, "-f", downstackPRAlias(i)+"="+branch)
+		argv = append(argv, "-f", headPRAlias(i)+"="+branch)
 	}
 	argv = append(argv, "-f", "query="+statusPRQuery(len(branches)))
 	out, err := render.RunCLI(ctx, l.dir(), "gh", argv)
@@ -288,14 +288,14 @@ func statusQueryPRs(ctx context.Context, l lane, branches []string) (statusPRRes
 
 // statusPRQuery renders one aliased pullRequests field per branch, sharing one
 // fragment so the wire text stays flat in the stack's size. It orders and
-// filters exactly as downstackPRQuery does, so both resolve the same pull
+// filters exactly as headPRQuery does, so both resolve the same pull
 // request for a branch that carries more than one.
 func statusPRQuery(n int) string {
 	decls := make([]string, 0, n+2)
 	decls = append(decls, "$owner: String!", "$repo: String!")
 	var fields strings.Builder
 	for i := range n {
-		alias := downstackPRAlias(i)
+		alias := headPRAlias(i)
 		decls = append(decls, "$"+alias+": String!")
 		fmt.Fprintf(&fields, "    %s: pullRequests(headRefName: $%s, first: 1, orderBy: {field: CREATED_AT, direction: DESC})"+
 			" { nodes { ...prStatus } }\n", alias, alias)
@@ -691,7 +691,7 @@ const statusEmptyOID = "0000000000000000000000000000000000000000"
 // statusBranchNode decodes the pull request found by head ref name, which is
 // how a branch still carrying its own name resolves.
 func statusBranchNode(r statusPRResponse, i int) *statusPRNode {
-	raw, ok := r.Data.Repository[downstackPRAlias(i)]
+	raw, ok := r.Data.Repository[headPRAlias(i)]
 	if !ok {
 		return nil
 	}

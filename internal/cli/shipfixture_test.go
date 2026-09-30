@@ -1314,11 +1314,7 @@ func ghRunListArgvFor(sha string) []string {
 // makes, in place of a gh pr view per branch. branches are base-first, the order
 // infoDownstack aliases them in.
 func ghDownstackPRArgv(branches ...string) []string {
-	argv := []string{"gh", "api", "graphql", "-F", "owner={owner}", "-F", "repo={repo}"}
-	for i, b := range branches {
-		argv = append(argv, "-f", fmt.Sprintf("b%d=%s", i, b))
-	}
-	return append(argv, "-f", "query="+downstackPRQuery(len(branches)))
+	return append([]string{"gh", "api"}, ghHeadPRsArgv(branches)...)
 }
 
 func assertInvocations(t *testing.T, got, want [][]string) {

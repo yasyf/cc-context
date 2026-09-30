@@ -350,63 +350,29 @@ func infoDownstack(ctx context.Context, l lane, chain []string) []stackEntry {
 	return entries
 }
 
-// resolveDownstackPRs fills every entry's pull request from one gh api graphql
-// call, which is the only batch gh exposes: pr list --head takes a single branch,
-// so a list-based batch would have to over-fetch and filter, making --limit a
-// correctness knob. {owner} and {repo} are gh's own placeholders for the
-// repository of the working directory, so the batch needs no metadata lookup.
+// resolveDownstackPRs fills every entry's pull request from one batched read.
 func resolveDownstackPRs(ctx context.Context, l lane, entries []stackEntry) {
-	argv := make([]string, 0, 8+2*len(entries))
-	argv = append(argv, "api", "graphql", "-F", "owner={owner}", "-F", "repo={repo}")
+	branches := make([]string, len(entries))
 	for i, entry := range entries {
-		argv = append(argv, "-f", downstackPRAlias(i)+"="+entry.Branch)
+		branches[i] = entry.Branch
 	}
-	argv = append(argv, "-f", "query="+downstackPRQuery(len(entries)))
-	out, err := render.RunCLI(ctx, l.dir(), "gh", argv)
+	heads, err := ghHeadPRs(ctx, l.dir(), branches)
 	if err != nil {
-		return
-	}
-	var resp struct {
-		Data struct {
-			Repository map[string]struct {
-				Nodes []struct {
-					Number      int    `json:"number"`
-					URL         string `json:"url"`
-					Body        string `json:"body"`
-					BaseRefName string `json:"baseRefName"`
-					Commits     struct {
-						Nodes []struct {
-							Commit struct {
-								StatusCheckRollup struct {
-									State string `json:"state"`
-								} `json:"statusCheckRollup"`
-							} `json:"commit"`
-						} `json:"nodes"`
-					} `json:"commits"`
-					prLanding
-				} `json:"nodes"`
-			} `json:"repository"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal([]byte(out), &resp); err != nil {
 		return
 	}
 	var closes []prQueueClose
 	at := map[int]int{}
 	for i := range entries {
-		nodes := resp.Data.Repository[downstackPRAlias(i)].Nodes
-		if len(nodes) == 0 {
+		node, found := heads[entries[i].Branch]
+		if !found {
 			continue
 		}
-		node := nodes[0]
 		entries[i].PR = node.Number
 		entries[i].URL = node.URL
 		entries[i].HasBody = strings.TrimSpace(node.Body) != ""
 		entries[i].State = node.State
 		entries[i].MergedAt = node.MergedAt
-		if commits := node.Commits.Nodes; len(commits) > 0 {
-			entries[i].Checks = commits[0].Commit.StatusCheckRollup.State
-		}
+		entries[i].Checks = node.checks()
 		switch node.verdict(l.gt) {
 		case prLanded:
 			entries[i].Merged = true
@@ -418,35 +384,6 @@ func resolveDownstackPRs(ctx context.Context, l lane, entries []stackEntry) {
 	for number, landed := range resolveQueueLandings(ctx, l.dir(), closes) {
 		entries[at[number]].Merged = landed
 	}
-}
-
-// downstackPRAlias names one branch's field in the batched query. A GraphQL
-// alias takes neither "/" nor "." nor "-", which branch names do, so the
-// branch's position stands in for its name.
-func downstackPRAlias(i int) string {
-	return fmt.Sprintf("b%d", i)
-}
-
-// downstackPRQuery renders one aliased pullRequests field per branch, selecting
-// what a caller weighing a submit needs of the whole stack in one round trip:
-// the body ship would overwrite, how each pull request ended, and the head
-// commit's check rollup. It names no state filter, because gh pr view — the
-// per-branch call this replaced — has none either and resolves a merged pull
-// request just as happily; and it orders descending because that is the one gh
-// picks. A branch resubmitted after its first pull request closed carries two,
-// and the oldest is the one ship must never write a body onto.
-func downstackPRQuery(n int) string {
-	decls := make([]string, 0, n+2)
-	decls = append(decls, "$owner: String!", "$repo: String!")
-	var fields strings.Builder
-	for i := range n {
-		alias := downstackPRAlias(i)
-		decls = append(decls, "$"+alias+": String!")
-		fmt.Fprintf(&fields, "    %s: pullRequests(headRefName: $%s, first: 1, orderBy: {field: CREATED_AT, direction: DESC})"+
-			" { nodes { number url body baseRefName %s commits(last: 1) { nodes { commit { statusCheckRollup { state } } } } } }\n",
-			alias, alias, prLandingFields)
-	}
-	return fmt.Sprintf("query(%s) {\n  repository(owner: $owner, name: $repo) {\n%s  }\n}", strings.Join(decls, ", "), fields.String())
 }
 
 // infoWorktree places this working copy inside its repository and names the

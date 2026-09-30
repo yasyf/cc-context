@@ -326,14 +326,14 @@ func TestStatusNodesPrefersTheHeadRefName(t *testing.T) {
 	byCommit := "{\"associatedPullRequests\":{\"nodes\":[{\"number\":9,\"headRefOid\":\"" + head + "\"}]}}"
 	r := statusPRResponse{}
 	r.Data.Repository = map[string]json.RawMessage{
-		downstackPRAlias(0): json.RawMessage(byName),
-		statusHeadAlias(0):  json.RawMessage(byCommit),
+		headPRAlias(0):     json.RawMessage(byName),
+		statusHeadAlias(0): json.RawMessage(byCommit),
 	}
 	nodes := statusNodes(r, []string{"feature"})
 	if len(nodes) != 1 || nodes[0] == nil || nodes[0].Number != 5 {
 		t.Fatalf("statusNodes = %+v, want the head-ref match (#5)", nodes)
 	}
-	delete(r.Data.Repository, downstackPRAlias(0))
+	delete(r.Data.Repository, headPRAlias(0))
 	nodes = statusNodes(r, []string{"renamed"})
 	if len(nodes) != 1 || nodes[0] != nil {
 		t.Fatalf("statusNodes = %+v, want nothing by name — the commit lookup is a second round trip", nodes)

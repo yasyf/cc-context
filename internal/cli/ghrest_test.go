@@ -4,10 +4,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -47,43 +47,26 @@ exit 1
 	return filepath.Join(dir, "calls")
 }
 
-func ghRecordedRoute(t *testing.T, scenario string) ghRoute {
+// ghHeadPRsRoute answers the batched head read for branches with one
+// repository object per alias, in branches' order; an empty node list is a
+// branch with no pull request.
+func ghHeadPRsRoute(t *testing.T, branches []string, nodes ...string) ghRoute {
 	t.Helper()
-	g := loadGHGolden(t, scenario)
-	return ghRoute{argv: g.argv, stdout: g.stdout}
+	fields := make([]string, len(branches))
+	for i := range branches {
+		fields[i] = fmt.Sprintf("%q: {\"nodes\": [%s]}", headPRAlias(i), nodes[i])
+	}
+	return ghRoute{argv: append([]string{"api"}, ghHeadPRsArgv(branches)...), stdout: `{"data": {"repository": {` + strings.Join(fields, ", ") + `}}}`}
 }
 
-func ghNewestPullArgv(branch string) []string {
-	return []string{"api", "repos/{owner}/{repo}/pulls?head={owner}%3A" + strings.ReplaceAll(branch, "/", "%2F") + "&state=all&sort=created&direction=desc&per_page=1"}
-}
-
-func assertNoGraphQL(t *testing.T, calls string) {
-	t.Helper()
-	data, err := os.ReadFile(calls)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(data), "graphql") {
-		t.Errorf("a stack read went through GraphQL:\n%s", data)
-	}
-}
-
-func TestStackQueryPRsReadsOverREST(t *testing.T) {
-	const openBranch = "o1/add-latest-pre-release-and-pin-flags-to-gh-extension-upgrade/nysoxynolqlo"
-	var open ghPull
-	if err := json.Unmarshal([]byte(loadGHGolden(t, "rest-pull-open").stdout), &open); err != nil {
-		t.Fatal(err)
-	}
-	calls := installGHRoutes(t,
-		ghRecordedRoute(t, "rest-pulls-head-merged"),
-		ghRecordedRoute(t, "rest-pulls-head-newest"),
-		ghRecordedRoute(t, "rest-pulls-head-closed"),
-		ghRecordedRoute(t, "rest-pulls-head-none"),
-		ghRecordedRoute(t, "rest-issue-closed-by"),
-		ghRoute{argv: ghNewestPullArgv(openBranch), stdout: loadGHGolden(t, "rest-pulls-head-open").stdout},
-		ghRoute{argv: []string{"api", "repos/{owner}/{repo}/pulls/13982"}, stdout: loadGHGolden(t, "rest-pull-open").stdout},
-	)
-	branches := []string{"fix-ship-help-graphite-demote", "yasyf/transcript-ccx-issues", "stack-rebase-per-root", "no-such-branch", openBranch}
+func TestStackQueryPRsReadsTheStackInOneGraphQLCall(t *testing.T) {
+	branches := []string{"merged", "abandoned", "open", "none"}
+	calls := installGHRoutes(t, ghHeadPRsRoute(t, branches,
+		`{"number": 3, "url": "u3", "state": "MERGED", "mergedAt": "2026-09-25T00:00:00Z", "baseRefName": "main", "headRefOid": "h3", "mergeable": "UNKNOWN", "labels": {"nodes": []}, "timelineItems": {"nodes": []}}`,
+		`{"number": 64, "url": "u64", "state": "CLOSED", "mergedAt": null, "baseRefName": "main", "headRefOid": "h64", "mergeable": "UNKNOWN", "labels": {"nodes": []}, "timelineItems": {"nodes": [{"actor": {"login": "someone"}}]}}`,
+		`{"number": 13982, "url": "u13982", "title": "open one", "body": "b", "state": "OPEN", "mergedAt": null, "baseRefName": "base", "headRefOid": "h13982", "mergeable": "CONFLICTING", "labels": {"nodes": [{"name": "merge"}]}, "timelineItems": {"nodes": []}}`,
+		``,
+	))
 	prs, err := stackQueryPRs(context.Background(), render.Dir(t.TempDir()), "main", branches)
 	if err != nil {
 		t.Fatalf("stackQueryPRs: %v", err)
@@ -95,10 +78,9 @@ func TestStackQueryPRsReadsOverREST(t *testing.T) {
 		landed    bool
 	}
 	for branch, w := range map[string]want{
-		"fix-ship-help-graphite-demote": {3, "MERGED", statusUnknown, true},
-		"yasyf/transcript-ccx-issues":   {2, "MERGED", statusUnknown, true},
-		"stack-rebase-per-root":         {64, "CLOSED", statusUnknown, false},
-		openBranch:                      {13982, "OPEN", "CONFLICTING", false},
+		"merged":    {3, "MERGED", statusUnknown, true},
+		"abandoned": {64, "CLOSED", statusUnknown, false},
+		"open":      {13982, "OPEN", "CONFLICTING", false},
 	} {
 		pr := prs[branch]
 		if pr == nil {
@@ -110,17 +92,24 @@ func TestStackQueryPRsReadsOverREST(t *testing.T) {
 				branch, pr.Number, pr.State, pr.Mergeable, pr.Landed, w.number, w.state, w.mergeable, w.landed)
 		}
 	}
-	if pr := prs[openBranch]; pr != nil && (pr.Head != open.Head.SHA || pr.Base != open.Base.Ref || pr.URL != open.HTMLURL || pr.Title != open.Title) {
-		t.Errorf("open PR = %+v, want head %s base %s url %s title %q", pr, open.Head.SHA, open.Base.Ref, open.HTMLURL, open.Title)
+	if pr := prs["open"]; pr != nil && (pr.Head != "h13982" || pr.Base != "base" || pr.URL != "u13982" || pr.Title != "open one" || pr.Body != "b" || !slices.Equal(pr.Labels, []string{"merge"})) {
+		t.Errorf("open PR = %+v, want every field of its node", pr)
 	}
-	if pr, ok := prs["no-such-branch"]; ok {
-		t.Errorf("no-such-branch resolved to %+v", pr)
+	if pr, ok := prs["none"]; ok {
+		t.Errorf("none resolved to %+v", pr)
 	}
-	assertNoGraphQL(t, calls)
+	data, err := os.ReadFile(calls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls := strings.Count(string(data), "api "); calls != 1 {
+		t.Errorf("gh ran %d times, want one batched call:\n%s", calls, data)
+	}
 }
 
-func TestStackQueryPRsReadsTheQueueCloseOverREST(t *testing.T) {
-	closed := ghRecordedRoute(t, "rest-pulls-head-closed")
+func TestStackQueryPRsResolvesTheQueueClose(t *testing.T) {
+	branches := []string{"stack-rebase-per-root"}
+	closedByQueue := `{"number": 64, "url": "u64", "state": "CLOSED", "mergedAt": null, "baseRefName": "main", "headRefOid": "h64", "mergeable": "UNKNOWN", "labels": {"nodes": []}, "timelineItems": {"nodes": [{"actor": {"login": "graphite-app"}}]}}`
 	for _, tt := range []struct {
 		name     string
 		comments string
@@ -131,18 +120,16 @@ func TestStackQueryPRsReadsTheQueueCloseOverREST(t *testing.T) {
 		{"queue left no comment", loadGHGolden(t, "rest-issue-comments").stdout, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			calls := installGHRoutes(t, closed,
-				ghRoute{argv: []string{"api", "repos/{owner}/{repo}/issues/64", "--jq", `.closed_by.login // ""`}, stdout: "graphite-app[bot]\n"},
+			installGHRoutes(t, ghHeadPRsRoute(t, branches, closedByQueue),
 				ghRoute{argv: []string{"api", "--paginate", "--slurp", "repos/{owner}/{repo}/issues/64/comments?per_page=100"}, stdout: tt.comments},
 			)
-			prs, err := stackQueryPRs(context.Background(), render.Dir(t.TempDir()), "main", []string{"stack-rebase-per-root"})
+			prs, err := stackQueryPRs(context.Background(), render.Dir(t.TempDir()), "main", branches)
 			if err != nil {
 				t.Fatalf("stackQueryPRs: %v", err)
 			}
 			if got := prs["stack-rebase-per-root"].Landed; got != tt.landed {
 				t.Errorf("landed = %v, want %v", got, tt.landed)
 			}
-			assertNoGraphQL(t, calls)
 		})
 	}
 }
@@ -177,8 +164,8 @@ func TestGHAPIWaitsOutASecondaryRateLimit(t *testing.T) {
 	f := shipRepo(t)
 	ghRateLimitedGH(t, f, 2, "4990")
 
-	if _, found, err := ghNewestPull(f.Context(), render.Dir(f.Dir), "feature"); err != nil || found {
-		t.Fatalf("ghNewestPull = found %v, %v; want none after waiting out the limit", found, err)
+	if _, err := ghAPI(f.Context(), render.Dir(f.Dir), "repos/{owner}/{repo}/pulls"); err != nil {
+		t.Fatalf("ghAPI = %v, want an answer after waiting out the limit", err)
 	}
 }
 
@@ -186,9 +173,9 @@ func TestGHAPIFailsAnExhaustedQuotaAtOnce(t *testing.T) {
 	f := shipRepo(t)
 	ghRateLimitedGH(t, f, 1, "0")
 
-	_, _, err := ghNewestPull(f.Context(), render.Dir(f.Dir), "feature")
+	_, err := ghAPI(f.Context(), render.Dir(f.Dir), "repos/{owner}/{repo}/pulls")
 	if err == nil || !strings.HasSuffix(err.Error(), "exit status 1: gh: API rate limit exceeded for user ID 1. (HTTP 403)") {
-		t.Fatalf("ghNewestPull error = %v, want only gh's rate limit refusal", err)
+		t.Fatalf("ghAPI error = %v, want only gh's rate limit refusal", err)
 	}
 }
 

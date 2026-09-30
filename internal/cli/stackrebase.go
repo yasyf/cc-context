@@ -3122,31 +3122,19 @@ func stackSaveRun(run *stackRebaseRun) error {
 }
 
 func stackQueryPRs(ctx context.Context, dir render.Dir, trunk string, branches []string) (map[string]*stackPR, error) {
+	heads, err := ghHeadPRs(ctx, dir, branches)
+	if err != nil {
+		return nil, err
+	}
 	prs := map[string]*stackPR{}
 	var closes []prQueueClose
 	byNumber := map[int]*stackPR{}
-	for _, branch := range branches {
-		p, found, err := ghNewestPull(ctx, dir, branch)
-		if err != nil {
-			return nil, err
-		}
-		if !found {
-			continue
-		}
-		if p.State == "open" {
-			if p, err = ghPullAt(ctx, dir, p.Number); err != nil {
-				return nil, err
-			}
-		}
-		landing, err := ghLanding(ctx, dir, p, true)
-		if err != nil {
-			return nil, err
-		}
+	for branch, p := range heads {
 		pr := &stackPR{
-			Number: p.Number, URL: p.HTMLURL, Title: p.Title, Body: p.Body, State: landing.State,
-			Base: p.Base.Ref, Head: p.Head.SHA, Mergeable: p.mergeable(), Labels: p.labelNames(),
+			Number: p.Number, URL: p.URL, Title: p.Title, Body: p.Body, State: p.State,
+			Base: p.BaseRefName, Head: p.HeadRefOid, Mergeable: p.Mergeable, Labels: p.labelNames(),
 		}
-		switch landing.verdict(true) {
+		switch p.verdict(true) {
 		case prLanded:
 			pr.Landed = true
 		case prQueueClosed:

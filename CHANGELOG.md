@@ -106,6 +106,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Stack runs read their pull requests in one GraphQL call.** `ccx vcs stack
+  rebase`, `stack submit`, `stack restack`, and `ship` read each branch's pull
+  request over REST, three requests a branch, so lanes sharing one token ran
+  the REST quota dry: in Forge-AI/monorepo, `ship --tip-only` stopped on
+  "read the stack's pull requests: gh api ... API rate limit exceeded". One
+  batched `gh api graphql` query now reads every branch's newest pull request,
+  the reader `ccx vcs info` already used, which both now share.
+
 - **`ccx vcs stack submit` reopens a pull request its landed parent's deletion
   closed.** When a parent landed and its branch was deleted before the child
   was resubmitted, GitHub closed the child's pull request. `stack submit`

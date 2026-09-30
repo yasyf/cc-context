@@ -29,7 +29,7 @@ merged_pr=13084
 # is how GitHub produces the null "line" that ghPRComment holds as *int.
 outdated_pr=14003
 # Two branches of $own_repo: one carrying a single pull request, one carrying two
-# (the descending-order case downstackPRQuery and reviewsBranchQuery both pick).
+# (the descending-order case headPRQuery and reviewsBranchQuery both pick).
 own_branch_one="fix-ship-help-graphite-demote"
 own_branch_two="yasyf/transcript-ccx-issues"
 own_sha="8ce0dcf1c1b66a60e890985c77a52064c6cfcb49"
@@ -177,7 +177,7 @@ downstack_query() {
 	fields=''
 	for ((i = 0; i < n; i++)); do
 		decls="$decls, \$b$i: String!"
-		fields="$fields    b$i: pullRequests(headRefName: \$b$i, first: 1, orderBy: {field: CREATED_AT, direction: DESC}) { nodes { number url body baseRefName $landing_fields $checks_fields } }
+		fields="$fields    b$i: pullRequests(headRefName: \$b$i, first: 1, orderBy: {field: CREATED_AT, direction: DESC}) { nodes { number url title body baseRefName headRefOid mergeable labels(first: 50) { nodes { name } } $landing_fields $checks_fields } }
 "
 	done
 	printf 'query(%s) {\n  repository(owner: $owner, name: $repo) {\n%s  }\n}' "$decls" "$fields"

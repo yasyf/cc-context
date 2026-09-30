@@ -2,11 +2,9 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -51,25 +49,6 @@ func (p ghPull) graphQLState() string {
 		return "MERGED"
 	}
 	return strings.ToUpper(p.State)
-}
-
-func (p ghPull) mergeable() string {
-	switch {
-	case p.Mergeable == nil:
-		return statusUnknown
-	case *p.Mergeable:
-		return "MERGEABLE"
-	default:
-		return "CONFLICTING"
-	}
-}
-
-func (p ghPull) labelNames() []string {
-	names := make([]string, 0, len(p.Labels))
-	for _, label := range p.Labels {
-		names = append(names, label.Name)
-	}
-	return names
 }
 
 // ghRateLimitWait is how long one secondary rate limit is waited out when
@@ -146,52 +125,6 @@ func ghDebugRefusal(stderr string) string {
 		}
 	}
 	return strings.TrimSpace(stderr)
-}
-
-func ghNewestPull(ctx context.Context, dir render.Dir, branch string) (ghPull, bool, error) {
-	endpoint := ghRepoPath + "/pulls?head={owner}%3A" + url.QueryEscape(branch) + "&state=all&sort=created&direction=desc&per_page=1"
-	out, err := ghAPI(ctx, dir, endpoint)
-	if err != nil {
-		return ghPull{}, false, fmt.Errorf("gh api: list the pull requests of %s: %w", branch, err)
-	}
-	var prs []ghPull
-	if err := json.Unmarshal([]byte(out), &prs); err != nil {
-		return ghPull{}, false, fmt.Errorf("gh api: parse the pull requests of %s: %w", branch, err)
-	}
-	if len(prs) == 0 {
-		return ghPull{}, false, nil
-	}
-	return prs[0], true, nil
-}
-
-func ghPullAt(ctx context.Context, dir render.Dir, number int) (ghPull, error) {
-	out, err := ghAPI(ctx, dir, fmt.Sprintf("%s/pulls/%d", ghRepoPath, number))
-	if err != nil {
-		return ghPull{}, fmt.Errorf("gh api: read PR #%d: %w", number, err)
-	}
-	var pr ghPull
-	if err := json.Unmarshal([]byte(out), &pr); err != nil {
-		return ghPull{}, fmt.Errorf("gh api: parse PR #%d: %w", number, err)
-	}
-	return pr, nil
-}
-
-func ghLanding(ctx context.Context, dir render.Dir, p ghPull, gt bool) (prLanding, error) {
-	landing := prLanding{State: p.graphQLState(), MergedAt: p.MergedAt}
-	if !gt || landing.State != "CLOSED" {
-		return landing, nil
-	}
-	out, err := ghAPI(ctx, dir, fmt.Sprintf("%s/issues/%d", ghRepoPath, p.Number), "--jq", `.closed_by.login // ""`)
-	if err != nil {
-		return prLanding{}, fmt.Errorf("gh api: read who closed PR #%d: %w", p.Number, err)
-	}
-	// REST names an app's account with the [bot] suffix GraphQL leaves off.
-	if login := strings.TrimSuffix(strings.TrimSpace(out), "[bot]"); login != "" {
-		var closed prCloseEvent
-		closed.Actor.Login = login
-		landing.TimelineItems.Nodes = []prCloseEvent{closed}
-	}
-	return landing, nil
 }
 
 func ghPullPath(nwo string, number int) string {
