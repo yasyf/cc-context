@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`ccx vcs stack rebase`, `restack`, and `submit` can stop at a branch.**
+  `--to <branch>` leaves branches above `<branch>` out of the run. In
+  Forge-AI/monorepo, a dry run from `yasyf/v3-b2-net/forge-dns-2` also
+  planned b2-data's `sanddb`, `restate`, and `rsw-cp`, stacked above
+  `yasyf/v3-b2-net/valkey`; `--to yasyf/v3-b2-net/valkey` stops at b2-net's
+  tip. Each seed keeps its downstack; of its upstack, only the branches
+  `<branch>` sits on, and `<branch>` itself, join. The checked-out branch and
+  every branch `--parent`, `--linearize`, or `--landed` names must be
+  `<branch>` or sit below it. Trunk,
+  untracked branches, and `--to` with `--all-lanes` are refused; `restack`
+  accepts the flag only on the Graphite lane. Runs without `--to` are unchanged.
+
 - **`ccx vcs pr watch` streams pull request transitions until they land.**
   Events are `queued`, `ejected`, `conflicting`, `red`, `green`, `approved`,
   `approval-dismissed`, `new-head`, `landed`, and `closed-without-squash`.
