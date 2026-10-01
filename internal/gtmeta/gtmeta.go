@@ -27,6 +27,9 @@ const (
 	repoConfig = ".graphite_repo_config"
 )
 
+// StateFrozen is the hold gt freeze records on a branch.
+const StateFrozen = "frozen"
+
 // validationValid is what gt records for a branch whose parent it resolved.
 const validationValid = "VALID"
 
@@ -90,7 +93,7 @@ func readState(ctx context.Context, commonDir string, remoteTrunk bool) (State, 
 }
 
 func readStateOrphans(ctx context.Context, commonDir string, remoteTrunk bool) (State, []Orphan, error) {
-	trunk, err := readTrunk(commonDir)
+	trunk, err := ReadTrunk(commonDir)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -193,7 +196,10 @@ func dsn(path string) string {
 	return "file:" + (&url.URL{Path: path}).String() + "?mode=ro&_pragma=busy_timeout(5000)"
 }
 
-func readTrunk(commonDir string) (string, error) {
+// ReadTrunk returns the trunk named in the repo config of the Graphite
+// repository whose git common dir is commonDir, without starting gt or touching
+// its metadata.
+func ReadTrunk(commonDir string) (string, error) {
 	path := filepath.Join(commonDir, repoConfig)
 	payload, err := os.ReadFile(path) //nolint:gosec // path is the caller's own git common dir
 	if err != nil {
@@ -300,6 +306,18 @@ func Rows(ctx context.Context, commonDir string) ([]Row, error) {
 // A row the branch already has, one gt could not resolve or one written after
 // the caller read the state, is rewritten in place and leaves its old parent.
 func AdoptRoot(ctx context.Context, commonDir, branch, trunk, base, head string) error {
+	return adoptRoot(ctx, commonDir, branch, trunk, base, head, "none")
+}
+
+// AdoptFrozen records a branch's fork on trunk as AdoptRoot does, under the hold
+// gt freeze puts a branch under: a restack leaves it where it is and a submit
+// never pushes it, so a branch another repository owns can carry lanes here
+// without any of them rewriting it.
+func AdoptFrozen(ctx context.Context, commonDir, branch, trunk, base, head string) error {
+	return adoptRoot(ctx, commonDir, branch, trunk, base, head, StateFrozen)
+}
+
+func adoptRoot(ctx context.Context, commonDir, branch, trunk, base, head, state string) error {
 	path := filepath.Join(commonDir, metadataDB)
 	db, err := sql.Open("sqlite", writableDSN(path))
 	if err != nil {
@@ -321,13 +339,13 @@ func AdoptRoot(ctx context.Context, commonDir, branch, trunk, base, head string)
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO branch_metadata
 		(branch_name, parent_branch_name, parent_branch_revision, branch_revision, validation_result, state, children)
-		VALUES (?, ?, ?, ?, ?, 'none', '[]')
+		VALUES (?, ?, ?, ?, ?, ?, '[]')
 		ON CONFLICT(branch_name) DO UPDATE SET
 			parent_branch_name = excluded.parent_branch_name,
 			parent_branch_revision = excluded.parent_branch_revision,
 			branch_revision = excluded.branch_revision,
 			validation_result = excluded.validation_result,
-			state = excluded.state`, branch, trunk, base, head, validationValid); err != nil {
+			state = excluded.state`, branch, trunk, base, head, validationValid, state); err != nil {
 		return fmt.Errorf("gtmeta: adopt root %q in %q: %w", branch, path, err)
 	}
 	if previous != "" && previous != trunk {

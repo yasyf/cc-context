@@ -401,6 +401,7 @@ func fixtureEnv(t *testing.T, base, home string, tools []resolvedTool) []string 
 		"CLAUDE_PLUGIN_DATA=" + pluginData,
 		"CLAUDE_CODE_SESSION_ID=",
 		"GRAPHITE_AUTH_TOKEN=",
+		"CCX_STACK_NEW=",
 		"PATH=" + toolPATH(interp),
 	}
 }

@@ -258,6 +258,9 @@ func vcsPushPublication(ctx context.Context, dir render.Dir, remote, branch, hea
 }
 
 func vcsPushGit(ctx context.Context, dir render.Dir, remote, branch, head string, noVerify bool) (string, error) {
+	if err := thinRefuseAdoptedPush(ctx, dir, "push", []string{branch}); err != nil {
+		return "", err
+	}
 	ref := "refs/heads/" + branch
 	refspec := head + ":" + ref
 	trunkName, _, err := gitRemoteHead(ctx, dir, "push", remote)
@@ -281,6 +284,9 @@ func vcsPushGit(ctx context.Context, dir render.Dir, remote, branch, head string
 		if _, err := render.RunCLI(ctx, dir, "git", gitPushArgv(noVerify, remote, refspec)); err != nil {
 			return "", fmt.Errorf("push: git push: %w", err)
 		}
+		if err := thinRecordPush(ctx, dir, remote, map[string]string{branch: head}); err != nil {
+			return "", fmt.Errorf("push: %w", err)
+		}
 		return fmt.Sprintf("pushed %s → %s · created %s/%s at %s", branch, remote, remote, branch, shortOID(head)), nil
 	}
 	if tip == head {
@@ -293,6 +299,9 @@ func vcsPushGit(ctx context.Context, dir render.Dir, remote, branch, head string
 	if ancestor {
 		if _, err := render.RunCLI(ctx, dir, "git", gitPushArgv(noVerify, remote, refspec)); err != nil {
 			return "", fmt.Errorf("push: git push: %w", err)
+		}
+		if err := thinRecordPush(ctx, dir, remote, map[string]string{branch: head}); err != nil {
+			return "", fmt.Errorf("push: %w", err)
 		}
 		return fmt.Sprintf("pushed %s → %s · %s..%s", branch, remote, shortOID(tip), shortOID(head)), nil
 	}
@@ -326,6 +335,9 @@ func vcsPushGit(ctx context.Context, dir render.Dir, remote, branch, head string
 			return "", fmt.Errorf("push: %s/%s moved off %s after this run graded it — someone pushed mid-run; fetch and reconcile before moving it again: %w", remote, branch, shortOID(tip), err)
 		}
 		return "", fmt.Errorf("push: git push: %w", err)
+	}
+	if err := thinRecordPush(ctx, dir, remote, map[string]string{branch: head}); err != nil {
+		return "", fmt.Errorf("push: %w", err)
 	}
 	return fmt.Sprintf("force-pushed %s → %s · replaced %s with %s", branch, remote, shortOID(tip), shortOID(head)), nil
 }

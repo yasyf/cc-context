@@ -127,6 +127,9 @@ func shipPushGitExpected(ctx context.Context, dir render.Dir, remote, branch, ex
 	if err != nil {
 		return fmt.Errorf("ship: publish %s/%s with expected remote %s failed; the pinned lease was not refreshed — inspect and reconcile before retrying: %w", remote, branch, expected, err)
 	}
+	if err := thinRecordPush(ctx, dir, remote, map[string]string{branch: source}); err != nil {
+		return err
+	}
 	current, err := gtRestackHead(ctx, "ship", dir, branch)
 	if err != nil {
 		return fmt.Errorf("ship: published %s to %s/%s but could not recheck the local branch: %w", source, remote, branch, err)

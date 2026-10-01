@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -17,11 +18,18 @@ import (
 )
 
 type stackNewOpts struct {
-	parent     string
-	path       string
-	published  bool
-	sparse     bool
-	noCheckout bool
+	parent      string
+	path        string
+	published   bool
+	sparse      bool
+	noCheckout  bool
+	thin        bool
+	fullHistory bool
+	deepen      bool
+	depth       int
+	depthSet    bool
+	maxDepth    int
+	includes    []string
 }
 
 type stackSparse struct {
@@ -31,19 +39,44 @@ type stackSparse struct {
 
 func runStackNew(cmd *cobra.Command, name string, options stackNewOpts) error {
 	ctx := cmd.Context()
-	l, err := resolveLane(ctx, "stack new", workingDir(ctx), false)
+	src, err := resolveLane(ctx, "stack new", workingDir(ctx), false)
 	if err != nil {
 		return err
 	}
-	if options.published && !l.gt {
+	storage, err := stackStorageOf(ctx, options)
+	if err != nil {
+		return err
+	}
+	inStore, err := thinIsStore(ctx, src.checkout)
+	if err != nil {
+		return fmt.Errorf("stack new: %w", err)
+	}
+	if storage == storageFullHistory && inStore {
+		return fmt.Errorf("stack new: %s is a thin store, so no lane cut here carries full history — run --full-history from a full checkout of the repository", src.root)
+	}
+	thin := storage == storageThin && !inStore
+	sparseLane := options.sparse || (storage == storageThin || inStore) && !options.noCheckout
+	if options.published && !src.gt {
 		return errors.New("stack new: --published-parent requires the graphite lane")
 	}
-	if (options.sparse || options.noCheckout) && l.checkout.Kind != vcs.Git {
-		return errors.New("stack new: sparse and no-checkout creation require a Git checkout")
+	if (options.sparse || options.noCheckout || storage == storageThin) && src.checkout.Kind != vcs.Git {
+		return errors.New("stack new: sparse, no-checkout, and thin creation require a Git checkout")
+	}
+	if options.noCheckout && thin {
+		return fmt.Errorf("stack new: a thin lane is a sparse checkout, so --no-checkout conflicts with %s=thin", stackNewEnv)
+	}
+	if len(options.includes) > 0 && !sparseLane {
+		return errors.New("stack new: --include checks out directories in a sparse lane — pass it with --thin or --sparse")
+	}
+	if (options.depthSet || options.deepen) && !thin {
+		return errors.New("stack new: --depth and --deepen apply only to a thin lane cut from a full checkout")
+	}
+	if options.depth < 1 || options.maxDepth < 1 {
+		return fmt.Errorf("stack new: --depth %d and --max-depth %d must both be positive", options.depth, options.maxDepth)
 	}
 	parent := options.parent
 	if parent == "" {
-		parent, err = gitCurrentBranch(ctx, l.dir(), "stack new")
+		parent, err = gitCurrentBranch(ctx, src.dir(), "stack new")
 		if err != nil {
 			return err
 		}
@@ -51,27 +84,65 @@ func runStackNew(cmd *cobra.Command, name string, options stackNewOpts) error {
 	if parent == "" {
 		return errors.New("stack new: HEAD is detached here, so there is no branch to stack on — check one out, or name it with --parent")
 	}
-	path, err := stackNewPath(ctx, l.checkout, name, options.path)
+	var sparse *stackSparse
+	switch {
+	case options.sparse:
+		read, err := stackReadSparse(ctx, src.dir())
+		if err != nil {
+			return err
+		}
+		sparse = &read
+	case sparseLane:
+		inherited, err := stackThinSparse(ctx, src.dir())
+		if err != nil {
+			return err
+		}
+		sparse = &inherited
+	}
+	if sparse != nil && (thin || inStore) {
+		hydrated := stackWithMetadata(*sparse)
+		sparse = &hydrated
+	}
+	l := src
+	var segs []string
+	var adopted *stackPublication
+	if thin {
+		s, err := thinSourceOf(ctx, src)
+		if err != nil {
+			return err
+		}
+		store, created, err := thinEnsureStore(ctx, cmd.ErrOrStderr(), src, s, options)
+		if err != nil {
+			return err
+		}
+		if created {
+			segs = append(segs, "created thin store "+store.root)
+		}
+		l = store
+		if adopted, err = stackThinParent(ctx, src, store, parent, s.trunk, options); err != nil {
+			return err
+		}
+		if adopted != nil {
+			deepened, err := thinAdopt(ctx, src, store, adopted, s.trunk, options)
+			if err != nil {
+				return err
+			}
+			if deepened > 0 {
+				segs = append(segs, fmt.Sprintf("deepened %s by %d commits to reach %s", store.root, deepened, shortOID(adopted.Base)))
+			}
+		}
+	}
+	path, err := stackNewPath(ctx, l.checkout, name, options.path, src.checkout)
 	if err != nil {
 		return err
 	}
-	var sparse stackSparse
-	if options.sparse {
-		sparse, err = stackReadSparse(ctx, l.dir())
-		if err != nil {
-			return err
-		}
-	}
-	start := parent
-	if !options.published {
-		start, err = stackNewStart(ctx, l, parent)
-		if err != nil {
-			return err
-		}
-	}
+	var start string
 	var receipt *stackPublication
 	var common string
-	if options.published {
+	switch {
+	case adopted != nil:
+		start = adopted.Head
+	case options.published:
 		common, err = gtCommonDir(ctx, l.dir(), "stack new")
 		if err != nil {
 			return err
@@ -90,12 +161,17 @@ func runStackNew(cmd *cobra.Command, name string, options stackNewOpts) error {
 			return err
 		}
 		start = receipt.Head
+	default:
+		start, err = stackNewStart(ctx, l, parent)
+		if err != nil {
+			return err
+		}
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return err
 	}
 	args := []string{"worktree", "add"}
-	if options.sparse || options.noCheckout {
+	if sparse != nil || options.noCheckout {
 		args = append(args, "--no-checkout")
 	}
 	args = append(args, "-b", name, path, start)
@@ -104,17 +180,25 @@ func runStackNew(cmd *cobra.Command, name string, options stackNewOpts) error {
 	}
 	created := render.Dir(path)
 	finish := func() error {
-		if options.sparse {
+		if sparse != nil {
 			head, err := stackRevParse(ctx, created, "HEAD")
 			if err != nil {
 				return err
 			}
-			if receipt != nil && head != receipt.Head {
+			if want := stackNewPinned(receipt, adopted); want != "" && head != want {
 				return errors.New("stack new: child ref changed before sparse population")
 			}
-			if err := stackWriteSparse(ctx, created, sparse, head); err != nil {
+			if err := stackWriteSparse(ctx, created, *sparse, head); err != nil {
 				return err
 			}
+			if len(options.includes) > 0 {
+				if err := stackAddCone(ctx, "stack new", created, options.includes); err != nil {
+					return err
+				}
+			}
+		}
+		if adopted != nil {
+			return stackFinishAdopted(ctx, cmd.ErrOrStderr(), src, l, created, path, name, adopted)
 		}
 		if receipt == nil {
 			if err := stackFormLane(ctx, cmd.ErrOrStderr(), l, created, name, parent); err != nil {
@@ -148,7 +232,90 @@ func runStackNew(cmd *cobra.Command, name string, options stackNewOpts) error {
 		}
 		return fmt.Errorf("stack new: child %s at %s is incomplete; its worktree, ref, and metadata were retained for inspection: %w", name, path, err)
 	}
-	cmd.Println(strings.Join([]string{"cut " + name + " onto " + parent, path}, shipSep))
+	cmd.Println(strings.Join(append(segs, "cut "+name+" onto "+parent, path), shipSep))
+	return nil
+}
+
+func stackNewPinned(receipts ...*stackPublication) string {
+	for _, r := range receipts {
+		if r != nil {
+			return r.Head
+		}
+	}
+	return ""
+}
+
+func stackThinParent(ctx context.Context, src, store lane, parent, trunk string, options stackNewOpts) (*stackPublication, error) {
+	if parent == trunk {
+		return nil, nil
+	}
+	present, err := gitRefExists(ctx, store.dir(), "stack new", gtRestackRef(parent))
+	if err != nil {
+		return nil, err
+	}
+	adopted, err := thinAdopted(ctx, store, parent)
+	if err != nil {
+		return nil, err
+	}
+	if present && !adopted {
+		return nil, stackThinSameParent(ctx, src, store, parent)
+	}
+	if !options.published {
+		return nil, fmt.Errorf("stack new: %s lives outside thin store %s; pass --published-parent to bring its publication in, or create the lane with --full-history", parent, store.root)
+	}
+	receipt, err := stackReadPublication(ctx, src.dir(), parent)
+	if err != nil {
+		return nil, err
+	}
+	if receipt == nil {
+		return nil, fmt.Errorf("stack new: %s has no publication receipt; publish it first", parent)
+	}
+	if err := stackVerifyNewParent(ctx, src.dir(), receipt); err != nil {
+		return nil, err
+	}
+	if err := stackVerifyNewRemote(ctx, src.dir(), receipt); err != nil {
+		return nil, err
+	}
+	return receipt, nil
+}
+
+func stackThinSameParent(ctx context.Context, src, store lane, parent string) error {
+	ref := gtRestackRef(parent)
+	inSource, err := gitRefExists(ctx, src.dir(), "stack new", ref)
+	if err != nil || !inSource {
+		return err
+	}
+	want, err := stackRevParse(ctx, src.dir(), ref)
+	if err != nil {
+		return err
+	}
+	got, err := stackRevParse(ctx, store.dir(), ref)
+	if err != nil {
+		return err
+	}
+	if got != want {
+		return fmt.Errorf("stack new: thin store %s has its own %s at %s, but %s here is at %s; nothing changed — cut the lane from the store's checkout of %s, or create it with --full-history", store.root, parent, shortOID(got), parent, shortOID(want), parent)
+	}
+	return nil
+}
+
+func stackFinishAdopted(ctx context.Context, errW io.Writer, src, store lane, created render.Dir, path, name string, receipt *stackPublication) error {
+	if err := stackFormLane(ctx, errW, store, created, name, receipt.Branch); err != nil {
+		return stackUndoNew(ctx, store, path, name, receipt.Branch, err)
+	}
+	if err := gtmeta.RecordRestacked(ctx, store.checkout.CommonDir, map[string]string{name: receipt.Head}); err != nil {
+		return err
+	}
+	if err := stackVerifyNewParent(ctx, src.dir(), receipt); err != nil {
+		return err
+	}
+	head, err := stackRevParse(ctx, created, "HEAD")
+	if err != nil {
+		return err
+	}
+	if head != receipt.Head {
+		return errors.New("stack new: child ref changed during creation")
+	}
 	return nil
 }
 
@@ -168,7 +335,7 @@ func stackUndoNew(ctx context.Context, l lane, path, name, parent string, cause 
 	return fmt.Errorf("%w %s and its worktree, since gt could not adopt it onto %s — track %s first with gt track --parent <its parent> %s, or name a tracked parent with --parent: %w", errStackNewUndone, name, parent, parent, parent, cause)
 }
 
-func stackNewPath(ctx context.Context, checkout vcs.Checkout, name, requested string) (string, error) {
+func stackNewPath(ctx context.Context, checkout vcs.Checkout, name, requested string, source vcs.Checkout) (string, error) {
 	path, err := mintWorktreePath(ctx, "stack new", checkout, strings.ReplaceAll(name, "/", "-"))
 	if err != nil {
 		return "", err
@@ -196,7 +363,7 @@ func stackNewPath(ctx context.Context, checkout vcs.Checkout, name, requested st
 			ancestor = filepath.Dir(ancestor)
 		}
 	}
-	for _, root := range []string{checkout.Root, checkout.MainRoot} {
+	for _, root := range []string{checkout.Root, checkout.MainRoot, source.Root, source.MainRoot} {
 		if root == "" {
 			continue
 		}
@@ -270,30 +437,68 @@ func stackConfigBool(ctx context.Context, dir render.Dir, key string, worktree b
 }
 
 func stackReadSparse(ctx context.Context, dir render.Dir) (stackSparse, error) {
-	perWorktree, err := stackConfigBool(ctx, dir, "extensions.worktreeConfig", false)
+	sparse, active, err := stackActiveSparse(ctx, dir)
 	if err != nil {
 		return stackSparse{}, err
+	}
+	if !active {
+		return stackSparse{}, errors.New("stack new: --sparse requires active per-worktree sparse configuration in the caller")
+	}
+	return sparse, nil
+}
+
+func stackThinSparse(ctx context.Context, dir render.Dir) (stackSparse, error) {
+	sparse, active, err := stackActiveSparse(ctx, dir)
+	if err != nil || active {
+		return sparse, err
+	}
+	return stackSparse{patterns: []byte("/*\n!/*/\n"), cone: true}, nil
+}
+
+func stackWithMetadata(s stackSparse) stackSparse {
+	patterns := slices.Clone(s.patterns)
+	have := map[string]bool{}
+	for line := range strings.Lines(string(patterns)) {
+		have[strings.TrimSpace(line)] = true
+	}
+	for _, dir := range thinMetadataDirs {
+		pattern := "/" + dir + "/"
+		if have[pattern] {
+			continue
+		}
+		if len(patterns) > 0 && patterns[len(patterns)-1] != '\n' {
+			patterns = append(patterns, '\n')
+		}
+		patterns = append(patterns, pattern+"\n"...)
+	}
+	return stackSparse{patterns: patterns, cone: s.cone}
+}
+
+func stackActiveSparse(ctx context.Context, dir render.Dir) (stackSparse, bool, error) {
+	perWorktree, err := stackConfigBool(ctx, dir, "extensions.worktreeConfig", false)
+	if err != nil {
+		return stackSparse{}, false, err
 	}
 	active, err := stackConfigBool(ctx, dir, "core.sparseCheckout", true)
 	if err != nil {
-		return stackSparse{}, err
+		return stackSparse{}, false, err
 	}
 	if !perWorktree || !active {
-		return stackSparse{}, errors.New("stack new: --sparse requires active per-worktree sparse configuration in the caller")
+		return stackSparse{}, false, nil
 	}
 	cone, err := stackConfigBool(ctx, dir, "core.sparseCheckoutCone", true)
 	if err != nil {
-		return stackSparse{}, err
+		return stackSparse{}, false, err
 	}
 	out, err := render.RunCLI(ctx, dir, "git", []string{"rev-parse", "--path-format=absolute", "--git-path", "info/sparse-checkout"})
 	if err != nil {
-		return stackSparse{}, err
+		return stackSparse{}, false, err
 	}
 	patterns, err := os.ReadFile(strings.TrimSpace(out))
 	if err != nil {
-		return stackSparse{}, err
+		return stackSparse{}, false, err
 	}
-	return stackSparse{patterns: patterns, cone: cone}, nil
+	return stackSparse{patterns: patterns, cone: cone}, true, nil
 }
 
 func stackWriteSparse(ctx context.Context, dir render.Dir, sparse stackSparse, head string) error {

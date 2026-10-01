@@ -2225,8 +2225,14 @@ func gtPushArgv(s gtSubmit, plan []gtSubmitBranch) []string {
 // push is retried once on the head that push left, and refused for any branch
 // whose remote moved by other hands.
 func gtPushStack(ctx context.Context, dir render.Dir, s gtSubmit, plan []gtSubmitBranch) error {
+	if err := thinRefuseAdoptedPush(ctx, dir, s.prefix, slices.Collect(maps.Keys(gtPushedHeads(plan)))); err != nil {
+		return err
+	}
 	_, err := render.RunCLI(ctx, dir, "git", gtPushArgv(s, plan))
-	if err == nil || !gitPushStaleLease(err) {
+	if err == nil {
+		return thinRecordPush(ctx, dir, "origin", gtPushedHeads(plan))
+	}
+	if !gitPushStaleLease(err) {
 		return gtPushFailure(s, plan, err)
 	}
 	var moved []string
@@ -2251,13 +2257,27 @@ func gtPushStack(ctx context.Context, dir render.Dir, s gtSubmit, plan []gtSubmi
 	}
 	if len(moved) == 0 {
 		_, err = render.RunCLI(ctx, dir, "git", gtPushArgv(s, plan))
-		if err == nil || !gitPushStaleLease(err) {
+		if err == nil {
+			return thinRecordPush(ctx, dir, "origin", gtPushedHeads(plan))
+		}
+		if !gitPushStaleLease(err) {
 			return gtPushFailure(s, plan, err)
 		}
 		moved = gtStaleRefs(err)
 	}
 	problem := "remote " + strings.Join(moved, ", ") + " changed since last submit, by a push this repository did not make — fetch it and fold in what it added, then submit again"
 	return &gtAdvice{advice: gtStuck(s.prefix, problem, s.suffix), cause: err}
+}
+
+func gtPushedHeads(plan []gtSubmitBranch) map[string]string {
+	pushed := make(map[string]string, len(plan))
+	for _, b := range plan {
+		pushed[b.name] = b.head
+		if b.parkedOn != "" {
+			pushed[b.parkedOn] = b.baseSha
+		}
+	}
+	return pushed
 }
 
 func gtPushFailure(s gtSubmit, plan []gtSubmitBranch, err error) error {

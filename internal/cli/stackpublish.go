@@ -287,6 +287,9 @@ func stackPushPublication(ctx context.Context, dir render.Dir, s gtSubmit, plan 
 	if run.Publishing && !slices.Equal(run.PushTargets, targets) {
 		return errors.New("stack publication: push plan changed during recovery; retained original replay pins")
 	}
+	if err := thinRefuseAdoptedPush(ctx, dir, "stack publication", slices.Collect(maps.Keys(gtPushedHeads(plan)))); err != nil {
+		return err
+	}
 	if err := stackRecoverPublication(ctx, dir, run); err != nil {
 		return err
 	}
@@ -307,6 +310,9 @@ func stackPushPublication(ctx context.Context, dir render.Dir, s gtSubmit, plan 
 			if readErr != nil || !matched {
 				return errors.Join(gtPushFailure(s, plan, err), readErr)
 			}
+		}
+		if err := thinRecordPush(ctx, dir, "origin", gtPushedHeads(plan)); err != nil {
+			return err
 		}
 		run.Pushed = true
 		return stackSaveRun(run)
@@ -520,7 +526,7 @@ func stackCheckPendingHolders(ctx context.Context, holders map[string]string, pe
 	for i, m := range pending {
 		branches[i] = m.branch
 	}
-	if err := stackCheckClean(ctx, branches, holders); err != nil {
+	if err := stackCheckClean(ctx, branches, holders, stackResumeAdvice); err != nil {
 		return err
 	}
 	return gtRestackRefuseClobbers(ctx, stackRebasePrefix, holders, pending)
@@ -625,7 +631,7 @@ func stackCheckLocalOnly(ctx context.Context, l lane, run *stackRebaseRun) error
 	if err != nil {
 		return fmt.Errorf("%s: %w", stackRebasePrefix, err)
 	}
-	if err := stackCheckHolders(ctx, run.Origin, movers, holders); err != nil {
+	if err := stackCheckHolders(ctx, run.Origin, movers, holders, stackResumeAdvice); err != nil {
 		return err
 	}
 	return gtRestackRefuseClobbers(ctx, stackRebasePrefix, holders, moves)

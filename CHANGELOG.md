@@ -19,6 +19,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`ccx vcs stack new <name> --thin` creates sparse agent lanes in a shallow store.**
+  Lanes are linked worktrees of the ccx-owned clone at
+  `~/.claude/stores/<key>/<repo>`; ccx never deletes the store.
+  Store keys keep non-default ports and path case; local origins stay as
+  given after cleaning.
+  Lanes cut from inside the store are sparse like their caller.
+  Every lane checks out tracked top-level `.claude` and `.agents` alongside
+  root files and selected directories, without running Git hooks, project
+  hooks, or setup scripts or installing dependencies.
+  `CCX_STACK_NEW=thin|full` selects the default; `--thin` and `--full-history`
+  select it explicitly. `--depth` sets history depth on first creation, and
+  repeatable `--include` adds directories. `--published-parent` adopts a
+  verified parent published onto trunk and freezes its head in the store.
+  ccx refuses a divergent store-owned same-named parent before changes,
+  naming both commits; all store push paths refuse branches marked as
+  adopted, even after interrupted adoption.
+  Keep thin mode opt-in per agent: source-local cc-notes are unavailable in
+  the independent store, lane notes stay there without copying or syncing,
+  and source notes remain untouched; do not set `CCX_STACK_NEW=thin` globally.
+
+  `--deepen` permits explicit deepening in doubling steps, bounded by
+  `--max-depth`. Rebase, submit, restack, and ship refuse incomplete ancestry
+  before anything moves and name the fetch needed to deepen. After each push
+  ccx makes from the store, it records the lane's remote-tracking ref with
+  `update by push`, preserving leases while the fetch refspec stays limited
+  to trunk. `worktree rm` removes lanes through the store's registry and the
+  existing macOS cleanup daemon; unpushed branches remain in the store.
+
 - **`ccx vcs stack restack --parent <branch>` changes a git branch's parent.**
   It fetches and replays the branch onto `origin/<branch>`, starting at the
   later of its fork points on the new parent and its pull request's old base.
@@ -513,6 +541,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A branch gt holds (`gt freeze`, or a merge in progress) is no longer a
   refusal: it keeps its head, is not pushed, and its children restack onto
   that head and open their pull requests against it.
+
+- **A stack rebase refusal names how to resume or drop a saved run.**
+  When a branch to move was checked out or dirty in another working copy,
+  the refusal said `no branches moved — ... retry with ccx` even though the
+  run's state was already saved. Retrying then hit `already in progress`.
+  A refusal inside a saved run now names `ccx vcs stack continue` to resume
+  or `ccx vcs stack abort` to drop it. Only refusals before a run exists say
+  to retry.
 
 ### Upgrade
 

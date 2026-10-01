@@ -218,6 +218,11 @@ func restackGit(ctx context.Context, cmd *cobra.Command, l lane, parent string) 
 			}
 		}
 	}
+	if trunkName != "" {
+		if err := stackRequireHistory(ctx, dir, "restack", remote, trunkName, map[string]string{branch: gtRestackRef(branch)}); err != nil {
+			return "", err
+		}
+	}
 
 	var trunk vcs.Trunk
 	if !recorded && trunkName != "" {
@@ -264,7 +269,7 @@ func restackGit(ctx context.Context, cmd *cobra.Command, l lane, parent string) 
 	if err != nil {
 		return "", fmt.Errorf("restack: %w", err)
 	}
-	if err := stackCheckHolders(ctx, l.checkout.Root, []string{branch}, holders); err != nil {
+	if err := stackCheckHolders(ctx, l.checkout.Root, []string{branch}, holders, stackRetryAdvice); err != nil {
 		return "", err
 	}
 	if err := stackRequireGit(ctx, dir, "restack"); err != nil {

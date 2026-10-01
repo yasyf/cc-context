@@ -85,7 +85,7 @@ func gtRestackChain(ctx context.Context, prefix string, c vcs.Checkout, dir rend
 	if err != nil {
 		return gtRestackResult{}, err
 	}
-	if err := stackCheckClean(ctx, movers, holders); err != nil {
+	if err := stackCheckClean(ctx, movers, holders, stackRetryAdvice); err != nil {
 		return gtRestackResult{held: held}, err
 	}
 
