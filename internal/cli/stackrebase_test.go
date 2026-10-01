@@ -143,6 +143,23 @@ func TestStackRemoteHeadsSkipsMatchingTrackingRefs(t *testing.T) {
 	}
 }
 
+// TestStackRemoteHeadsIgnoresTailMatches gives origin the tag
+// refs/tags/refs/heads/feature, which git ls-remote's tail match also returns
+// for refs/heads/feature.
+func TestStackRemoteHeadsIgnoresTailMatches(t *testing.T) {
+	f := shipRepo(t, vcstest.Remote())
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "main:feature", "main:refs/tags/refs/heads/feature")
+	want := shipHead(t, f)
+
+	heads, err := stackRemoteHeads(f.Context(), render.Dir(f.Dir), "origin", []string{"feature"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(heads) != 1 || heads["feature"] != want {
+		t.Fatalf("heads = %v, want only feature at %s", heads, want)
+	}
+}
+
 func stackOnto(t *testing.T, f *vcstest.Fixture, ancestor, branch string) bool {
 	t.Helper()
 	ok, err := gitIsAncestor(f.Context(), render.Dir(f.Dir), "test", ancestor, branch)

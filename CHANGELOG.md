@@ -112,7 +112,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ref refs/heads/yasyf/v3-bg-pulumi-base`. Origin's fetch refspecs still named
   that deleted branch, so the fetch blocked a push of an unrelated branch.
   Push now asks `git ls-remote` for its branch and the trunk named by
-  `origin/HEAD`, fetches only those whose remote-tracking refs differ, and
+  `origin/HEAD`, or by the remote's own `HEAD` when `origin/HEAD` is unset,
+  fetches only those whose remote-tracking refs differ, and
   takes its lease from the reported tip. Configured fetch refspecs no longer
   affect push. When the remote has deleted the branch, a stale local
   `origin/<branch>` no longer causes a lease failure with `(stale info)` and

@@ -259,21 +259,21 @@ func vcsPushPublication(ctx context.Context, dir render.Dir, remote, branch, hea
 func vcsPushGit(ctx context.Context, dir render.Dir, remote, branch, head string, noVerify bool) (string, error) {
 	ref := "refs/heads/" + branch
 	refspec := head + ":" + ref
-	remoteRef := "refs/remotes/" + remote + "/" + branch
-	trunk, err := gitRemoteHead(ctx, dir, remote)
+	trunkName, err := gitRemoteHead(ctx, dir, remote)
 	if err != nil {
 		return "", err
 	}
-	if trunk == remoteRef {
-		trunk = ""
-	}
 	fetch := []string{branch}
-	if trunk != "" {
-		fetch = append(fetch, strings.TrimPrefix(trunk, "refs/remotes/"+remote+"/"))
+	if trunkName != "" && trunkName != branch {
+		fetch = append(fetch, trunkName)
 	}
 	heads, err := stackRemoteHeads(ctx, dir, remote, fetch, head)
 	if err != nil {
 		return "", err
+	}
+	trunk := ""
+	if trunkName != branch && heads[trunkName] != "" {
+		trunk = "refs/remotes/" + remote + "/" + trunkName
 	}
 	tip := heads[branch]
 	if tip == "" {
@@ -368,17 +368,29 @@ func gitOnlyCopies(ctx context.Context, dir render.Dir, prefix, from, to, trunk 
 	return err == nil && n == 0, err
 }
 
-// gitRemoteHead is the ref remote's HEAD points at, empty when it names none.
+// gitRemoteHead names the branch remote's HEAD points at: the one
+// refs/remotes/<remote>/HEAD records, else the remote's own answer, since a
+// fetch of explicit refspecs never records it. Empty when neither names one.
 func gitRemoteHead(ctx context.Context, dir render.Dir, remote string) (string, error) {
 	ref := "refs/remotes/" + remote + "/HEAD"
 	out, code, _, err := render.RunCLIExitCode(ctx, dir, "git", []string{"symbolic-ref", "-q", ref})
 	if err != nil {
 		return "", fmt.Errorf("push: git symbolic-ref %s: %w", ref, err)
 	}
-	if code != 0 {
-		return "", nil
+	if name, ok := strings.CutPrefix(strings.TrimSpace(out), "refs/remotes/"+remote+"/"); code == 0 && ok {
+		return name, nil
 	}
-	return strings.TrimSpace(out), nil
+	out, err = render.RunCLI(ctx, dir, "git", []string{"ls-remote", "--symref", remote, "HEAD"})
+	if err != nil {
+		return "", fmt.Errorf("push: git ls-remote --symref %s HEAD: %w", remote, err)
+	}
+	for line := range strings.Lines(out) {
+		target, name, _ := strings.Cut(strings.TrimSpace(line), "\t")
+		if branch, ok := strings.CutPrefix(target, "ref: refs/heads/"); ok && name == "HEAD" {
+			return branch, nil
+		}
+	}
+	return "", nil
 }
 
 func gitCommitsNotIn(ctx context.Context, dir render.Dir, prefix, rev, exclude string) ([]string, error) {

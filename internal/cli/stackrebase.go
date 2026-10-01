@@ -1313,7 +1313,9 @@ func stackPublishedParent(receipt *stackPublication, remote string, submitted gt
 func stackRemoteHeads(ctx context.Context, dir render.Dir, remote string, branches []string, negotiationTip string) (map[string]string, error) {
 	argv := make([]string, 0, 2+len(branches))
 	argv = append(argv, "ls-remote", remote)
+	wanted := make(map[string]string, len(branches))
 	for _, b := range branches {
+		wanted[gtRestackRef(b)] = b
 		argv = append(argv, gtRestackRef(b))
 	}
 	out, err := render.RunCLI(ctx, dir, "git", argv)
@@ -1323,11 +1325,9 @@ func stackRemoteHeads(ctx context.Context, dir render.Dir, remote string, branch
 	heads := map[string]string{}
 	for line := range strings.Lines(out) {
 		sha, ref, ok := strings.Cut(strings.TrimSpace(line), "\t")
-		if !ok {
-			continue
+		if name, want := wanted[ref]; ok && want {
+			heads[name] = sha
 		}
-		name := strings.TrimPrefix(ref, "refs/heads/")
-		heads[name] = sha
 	}
 	if len(heads) == 0 {
 		return heads, nil
