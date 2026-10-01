@@ -23,9 +23,10 @@ import (
 )
 
 type watchmanStatus struct {
-	Roots   []rawRoot   `json:"roots"`
-	Clients []rawClient `json:"clients"`
-	SelfPID int         `json:"-"`
+	Roots     []rawRoot   `json:"roots"`
+	Clients   []rawClient `json:"clients"`
+	SelfPID   int         `json:"-"`
+	ServerPID int         `json:"-"`
 }
 
 type rawRoot struct {

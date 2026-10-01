@@ -2599,7 +2599,33 @@ func stackMismatchLine(ws string) string {
 }
 
 func stackUnregistered(prefix, ws string) error {
-	return fmt.Errorf("%s: %s was opened by an older ccx that saved no registration for it, so ccx cannot tell it from another worktree at that path and leaves it alone — remove it yourself with ccx vcs worktree rm --path %s, then run ccx vcs stack abort", prefix, ws, ws)
+	return fmt.Errorf("%s: %s was opened by an older ccx that saved no registration for it, so this run cannot go on — ccx vcs stack abort drops the run and removes the workspace git registers there, or remove it yourself with ccx vcs worktree rm --path %s, then run ccx vcs stack abort", prefix, ws, ws)
+}
+
+func stackUnidentified(ws string) error {
+	return fmt.Errorf("%s: %s was opened by an older ccx that saved no registration for it, and git does not register a detached worktree of this repository named for it there, so it is left alone — remove it yourself with ccx vcs worktree rm --path %s, then run ccx vcs stack abort", stackRebasePrefix, ws, ws)
+}
+
+// stackAdoptLegacyWorkspace recovers the registration a pre-0.66.1 run never
+// saved, from the worktree git registers at the path: its admin directory
+// must be this repository's and named for the workspace, and its HEAD
+// detached, as every conflict workspace ccx opens is.
+func stackAdoptLegacyWorkspace(ctx context.Context, commonDir string, c *stackConflict) (cleanup.Registration, error) {
+	observed, err := cleanupObserveWorkspace(c.Workspace)
+	if err != nil {
+		return cleanup.Registration{}, fmt.Errorf("%s: %w", stackRebasePrefix, err)
+	}
+	common, err := filepath.EvalSymlinks(commonDir)
+	if err != nil {
+		return cleanup.Registration{}, fmt.Errorf("%s: %w", stackRebasePrefix, err)
+	}
+	if filepath.Dir(observed.AdminDir) != filepath.Join(common, "worktrees") || filepath.Base(observed.AdminDir) != filepath.Base(c.Workspace) {
+		return cleanup.Registration{}, stackUnidentified(c.Workspace)
+	}
+	if _, err := render.RunCLI(ctx, render.Dir(c.Workspace), "git", []string{"symbolic-ref", "-q", "HEAD"}); err == nil {
+		return cleanup.Registration{}, stackUnidentified(c.Workspace)
+	}
+	return observed, nil
 }
 
 func stackReleaseWorkspace(ctx context.Context, l lane, commonDir string, c *stackConflict, force bool) (string, error) {
@@ -2613,7 +2639,9 @@ func stackReleaseWorkspace(ctx context.Context, l lane, commonDir string, c *sta
 		if absent {
 			return stackReleaseInline(ctx, l, c)
 		}
-		return "", stackUnregistered(stackRebasePrefix, ws)
+		if c.Registration, err = stackAdoptLegacyWorkspace(ctx, commonDir, c); err != nil {
+			return "", err
+		}
 	}
 	receipt, err := cleanupDeferWorkspace(ctx, commonDir, ws, stackCleanupOwner, c.Registration, force)
 	switch {
