@@ -287,6 +287,9 @@ func stackPushPublication(ctx context.Context, dir render.Dir, s gtSubmit, plan 
 	if run.Publishing && !slices.Equal(run.PushTargets, targets) {
 		return errors.New("stack publication: push plan changed during recovery; retained original replay pins")
 	}
+	if err := thinRefuseAdoptedPush(ctx, dir, "stack publication", slices.Collect(maps.Keys(gtPushedHeads(plan)))); err != nil {
+		return err
+	}
 	if err := stackRecoverPublication(ctx, dir, run); err != nil {
 		return err
 	}

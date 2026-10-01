@@ -258,6 +258,9 @@ func vcsPushPublication(ctx context.Context, dir render.Dir, remote, branch, hea
 }
 
 func vcsPushGit(ctx context.Context, dir render.Dir, remote, branch, head string, noVerify bool) (string, error) {
+	if err := thinRefuseAdoptedPush(ctx, dir, "push", []string{branch}); err != nil {
+		return "", err
+	}
 	ref := "refs/heads/" + branch
 	refspec := head + ":" + ref
 	trunkName, _, err := gitRemoteHead(ctx, dir, "push", remote)

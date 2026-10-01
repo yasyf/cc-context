@@ -2225,6 +2225,9 @@ func gtPushArgv(s gtSubmit, plan []gtSubmitBranch) []string {
 // push is retried once on the head that push left, and refused for any branch
 // whose remote moved by other hands.
 func gtPushStack(ctx context.Context, dir render.Dir, s gtSubmit, plan []gtSubmitBranch) error {
+	if err := thinRefuseAdoptedPush(ctx, dir, s.prefix, slices.Collect(maps.Keys(gtPushedHeads(plan)))); err != nil {
+		return err
+	}
 	_, err := render.RunCLI(ctx, dir, "git", gtPushArgv(s, plan))
 	if err == nil {
 		return thinRecordPush(ctx, dir, "origin", gtPushedHeads(plan))

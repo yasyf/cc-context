@@ -690,3 +690,24 @@ func thinRecordBranchPush(ctx context.Context, dir render.Dir, remote, branch st
 	}
 	return thinRecordPush(ctx, dir, remote, map[string]string{branch: head})
 }
+
+func thinRefuseAdoptedPush(ctx context.Context, dir render.Dir, prefix string, branches []string) error {
+	ck, store, err := thinDirIsStore(ctx, dir)
+	if err != nil || !store {
+		return err
+	}
+	out, err := render.RunCLI(ctx, dir, "git", []string{"for-each-ref", "--format=%(refname)", thinAdoptedPrefix})
+	if err != nil {
+		return fmt.Errorf("%s: list the parents adopted into %s: %w", prefix, ck.Root, err)
+	}
+	marks := map[string]bool{}
+	for line := range strings.Lines(out) {
+		marks[strings.TrimSpace(line)] = true
+	}
+	for _, branch := range slices.Sorted(slices.Values(branches)) {
+		if marks[thinAdoptedRef(branch)] {
+			return fmt.Errorf("%s: %s was adopted into thin store %s from the source checkout that owns it, and ccx never pushes an adopted parent from the store; nothing was pushed — publish %s from that checkout", prefix, branch, ck.Root, branch)
+		}
+	}
+	return nil
+}

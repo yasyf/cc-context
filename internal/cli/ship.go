@@ -1733,6 +1733,9 @@ func shipPushGit(ctx context.Context, dir render.Dir, o shipOpts, branch, trunk,
 	if err != nil {
 		return "", 0, fmt.Errorf("ship: %w", err)
 	}
+	if err := thinRefuseAdoptedPush(ctx, dir, "ship", []string{branch}); err != nil {
+		return "", 0, err
+	}
 	if o.expectRemote != "" {
 		return remote, 0, shipPushGitExpected(ctx, dir, remote, branch, o.expectRemote, o.noVerify)
 	}

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"os"
@@ -146,18 +147,35 @@ func thinOnto(t *testing.T, f *vcstest.Fixture, dir, ancestor, branch string) bo
 	return ok
 }
 
-func thinGTState(t *testing.T, store, branch string) string {
+type thinGTRow struct {
+	state, parentRevision, branchRevision string
+}
+
+func thinGTRowOf(t *testing.T, store, branch string) (thinGTRow, bool) {
 	t.Helper()
 	db, err := sql.Open("sqlite", filepath.Join(store, ".git", ".graphite_metadata.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = db.Close() }()
-	var state string
-	if err := db.QueryRow(`SELECT state FROM branch_metadata WHERE branch_name = ?`, branch).Scan(&state); err != nil {
-		t.Fatalf("read %s's gt state: %v", branch, err)
+	var row thinGTRow
+	err = db.QueryRow(`SELECT COALESCE(state, ''), COALESCE(parent_branch_revision, ''), COALESCE(branch_revision, '') FROM branch_metadata WHERE branch_name = ?`, branch).Scan(&row.state, &row.parentRevision, &row.branchRevision)
+	if errors.Is(err, sql.ErrNoRows) {
+		return thinGTRow{}, false
 	}
-	return state
+	if err != nil {
+		t.Fatalf("read %s's gt row: %v", branch, err)
+	}
+	return row, true
+}
+
+func thinGTState(t *testing.T, store, branch string) string {
+	t.Helper()
+	row, ok := thinGTRowOf(t, store, branch)
+	if !ok {
+		t.Fatalf("%s has no gt row", branch)
+	}
+	return row.state
 }
 
 func thinGTParent(t *testing.T, f *vcstest.Fixture, dir, branch string) string {
@@ -531,6 +549,181 @@ func TestStackNewThinAdoptsAPublishedParent(t *testing.T) {
 		t.Errorf("child submit moved the store's parent to %s", got)
 	}
 	thinRequireSource(t, f, before)
+}
+
+var thinAdoptArgs = []string{"--parent", "parent", "--published-parent", "--thin", "--deepen", "--max-depth", "64"}
+
+func thinRequireAdopted(t *testing.T, f *vcstest.Fixture, store string, receipt *stackPublication) {
+	t.Helper()
+	for ref, want := range map[string]string{
+		"refs/heads/parent":                      receipt.Head,
+		thinAdoptedRef("parent"):                 receipt.Head,
+		stackPublicationRef("parent", "receipt"): receipt.OID,
+	} {
+		if got := gitAt(t, f.Env(), store, "rev-parse", ref); got != want {
+			t.Errorf("store %s = %s, want %s", ref, got, want)
+		}
+	}
+	row, ok := thinGTRowOf(t, store, "parent")
+	if want := (thinGTRow{state: "frozen", parentRevision: receipt.Base, branchRevision: receipt.Head}); !ok || row != want {
+		t.Errorf("parent's gt row = %+v, %v, want %+v", row, ok, want)
+	}
+}
+
+func thinPublishParentAgain(t *testing.T, f *vcstest.Fixture, prior *stackPublication) *stackPublication {
+	t.Helper()
+	thinCommit(t, f, f.Dir, "parent.txt", "more parent work\n")
+	if _, errOut, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("source submit: %v\n%s", err, errOut)
+	}
+	receipt, err := stackReadPublication(f.Context(), render.Dir(f.Dir), "parent")
+	if err != nil || receipt == nil || receipt.Head == prior.Head {
+		t.Fatalf("second publication = %#v, %v, want a new head past %s", receipt, err, shortOID(prior.Head))
+	}
+	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "parent"); got != receipt.Head {
+		t.Fatalf("remote parent = %s, want the second publication %s", got, receipt.Head)
+	}
+	return receipt
+}
+
+func TestStackThinAdoptedParentAdvancesUnderAChild(t *testing.T) {
+	t.Parallel()
+	f, first := thinPublishedParent(t)
+	stubOpenPRs(t, f, nil, "parent", "child1", "child2")
+	store := thinTestStore(t, f)
+	_, child1 := thinNew(t, f, f.Dir, append([]string{"child1"}, thinAdoptArgs...)...)
+	own := thinCommit(t, f, child1, "child1.txt", "child1 work\n")
+	thinRequireAdopted(t, f, store, first)
+
+	second := thinPublishParentAgain(t, f, first)
+	before := thinSnap(t, f)
+	out, child2 := thinNew(t, f, f.Dir, append([]string{"child2"}, thinAdoptArgs...)...)
+	if strings.Contains(out, "deepened") {
+		t.Errorf("stack new = %q, want no deepen for a base the store already holds", out)
+	}
+	thinRequireAdopted(t, f, store, second)
+	if got := gitAt(t, f.Env(), child2, "rev-parse", "HEAD"); got != second.Head {
+		t.Errorf("child2 head = %s, want the refreshed parent %s", got, second.Head)
+	}
+	for lane, want := range map[string]string{"child1": first.Head, "child2": second.Head} {
+		row, ok := thinGTRowOf(t, store, lane)
+		if !ok || row.parentRevision != want {
+			t.Errorf("%s's gt parent revision = %+v, %v, want the fork pinned at %s", lane, row, ok, shortOID(want))
+		}
+	}
+	if got := gitAt(t, f.Env(), child1, "rev-parse", "HEAD"); got != own {
+		t.Fatalf("refreshing the parent moved child1 to %s", got)
+	}
+
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	out, errOut, err := runStackCmdIn(t, f, child1, "submit")
+	if err != nil {
+		t.Fatalf("child1 submit: %v\n%s", err, errOut)
+	}
+	t.Logf("child1 submit:\n%s", out)
+	head := gitAt(t, f.Env(), child1, "rev-parse", "HEAD")
+	if head == own || !thinOnto(t, f, store, second.Head, "child1") {
+		t.Errorf("child1 = %s, want it replayed onto the parent's new head %s (was %s)", shortOID(head), shortOID(second.Head), shortOID(own))
+	}
+	if got := gitAt(t, f.Env(), store, "rev-list", "--count", "parent..child1"); got != "1" {
+		t.Errorf("commits above parent = %s, want child1's one", got)
+	}
+	if got := gitAt(t, f.Env(), store, "diff", "--name-only", "parent", "child1"); got != "child1.txt" {
+		t.Errorf("child1 changes %q above parent, want child1.txt alone", got)
+	}
+	if row, ok := thinGTRowOf(t, store, "child1"); !ok || row.parentRevision != second.Head {
+		t.Errorf("child1's gt parent revision = %+v, %v, want the new fork %s", row, ok, shortOID(second.Head))
+	}
+	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "parent"); got != second.Head {
+		t.Errorf("remote parent = %s, want the source's publication %s untouched", got, second.Head)
+	}
+	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "child1"); got != head {
+		t.Errorf("remote child1 = %s, want %s", got, head)
+	}
+	if heads := api.submitHeads(); slices.Contains(heads, "parent") || !slices.Contains(heads, "child1") {
+		t.Errorf("submitted %v, want child1 alone", heads)
+	}
+	thinRequireAdopted(t, f, store, second)
+	for _, sha := range []string{first.Head, own} {
+		if code := thinGitCode(t, f, store, "cat-file", "-e", sha+"^{commit}"); code != 0 {
+			t.Errorf("the old fork %s left the store", shortOID(sha))
+		}
+	}
+	thinRequireSource(t, f, before)
+}
+
+func TestStackThinPartialAdoptionNeverPushesTheParent(t *testing.T) {
+	t.Parallel()
+	f, receipt := thinPublishedParent(t)
+	store := thinTestStore(t, f)
+	child := thinTestLane(t, f, "child")
+	thinNew(t, f, f.Dir, "lane1", "--parent", "main", "--thin", "--depth", strconv.Itoa(thinTestDepth))
+	db := filepath.Join(store, ".git", ".graphite_metadata.db")
+	if err := os.Chmod(db, 0o444); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := runStackCmd(t, f, append([]string{"new", "child"}, thinAdoptArgs...)...)
+	if chmodErr := os.Chmod(db, 0o644); chmodErr != nil {
+		t.Fatal(chmodErr)
+	}
+	if err == nil || !strings.Contains(err.Error(), "gtmeta: adopt root") {
+		t.Fatalf("stack new over a read-only gt database = %v, want the adoption refused", err)
+	}
+	if _, statErr := os.Stat(child); !os.IsNotExist(statErr) {
+		t.Errorf("partial adoption left the lane %s: %v", child, statErr)
+	}
+	for _, ref := range []string{"refs/heads/parent", thinAdoptedRef("parent")} {
+		if got := gitAt(t, f.Env(), store, "rev-parse", ref); got != receipt.Head {
+			t.Errorf("store %s = %s, want %s", ref, got, receipt.Head)
+		}
+	}
+	if row, ok := thinGTRowOf(t, store, "parent"); ok {
+		t.Fatalf("partial adoption left parent a gt row %+v", row)
+	}
+
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	ws := filepath.Join(t.TempDir(), "parent-ws")
+	mustRun(t, f.Env(), store, "git", "worktree", "add", "-q", ws, "parent")
+	orphan := thinCommit(t, f, ws, "parent.txt", "store work\n")
+	mustRun(t, f.Env(), ws, "gt", "track", "-f", "--parent", "main", "--no-interactive")
+	if got := thinGTState(t, store, "parent"); got == "frozen" {
+		t.Fatalf("gt track left parent frozen")
+	}
+	remote := thinRefs(t, f, f.RemoteDir)
+	_, errOut, err := runStackCmdIn(t, f, ws, "submit")
+	if err == nil || !strings.Contains(err.Error(), "never pushes") || !strings.Contains(err.Error(), "parent") {
+		t.Errorf("stack submit of the orphaned parent = %v\n%s, want the adoption mark refusing the push", err, errOut)
+	}
+	writeShipFile(t, ws, "parent.txt", "more store work\n")
+	_, errOut, err = runShipCmdFull(f.ContextIn(ws), t, "--no-gt", "--no-watch", "--no-pr", "-m", "more store work")
+	if err == nil || !strings.Contains(err.Error(), "never pushes") || !strings.Contains(err.Error(), "parent") {
+		t.Errorf("ship of the orphaned parent = %v\n%s, want the adoption mark refusing the push", err, errOut)
+	}
+	if got := thinRefs(t, f, f.RemoteDir); got != remote {
+		t.Errorf("the orphaned parent reached the remote:\n%s\n→\n%s", remote, got)
+	}
+	if heads := api.submitHeads(); len(heads) != 0 {
+		t.Errorf("submitted %v, want nothing", heads)
+	}
+	if got := gitAt(t, f.Env(), store, "rev-parse", thinAdoptedRef("parent")); got != receipt.Head {
+		t.Errorf("adoption mark = %s, want %s", got, receipt.Head)
+	}
+
+	if got := gitAt(t, f.Env(), store, "rev-parse", "refs/heads/parent"); got == receipt.Head || got == orphan {
+		t.Errorf("store parent = %s, want the refused ship's commit past %s", got, shortOID(orphan))
+	}
+	mustRun(t, f.Env(), store, "git", "worktree", "remove", "--force", ws)
+	mustRun(t, f.Env(), store, "git", "update-ref", "refs/heads/parent", receipt.Head)
+	_, lane := thinNew(t, f, f.Dir, append([]string{"child"}, thinAdoptArgs...)...)
+	if lane != child {
+		t.Errorf("retried stack new cut %s, want %s", lane, child)
+	}
+	thinRequireAdopted(t, f, store, receipt)
+	if got := thinGTParent(t, f, child, "child"); got != "parent" {
+		t.Errorf("child's gt parent = %s, want parent", got)
+	}
 }
 
 func thinRequireNoChild(t *testing.T, f *vcstest.Fixture, store, child string) {
