@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -99,6 +100,93 @@ func TestVcsPushCreatesRemoteBranch(t *testing.T) {
 	f := shipRepo(t, vcstest.Remote())
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "feat")
 	head := pushCommit(t, f, "a.txt", "a\n", "test: 🧪 a")
+	shipResetLog(t, f)
+
+	got, err := runVcsPushCmd(f.Context(), t)
+	if err != nil {
+		t.Fatalf("push error = %v", err)
+	}
+	if want := "pushed feat → origin · created origin/feat at " + shortOID(head); got != want {
+		t.Errorf("summary = %q, want %q", got, want)
+	}
+	if remote := shipRemoteTip(t, f, "origin", "feat"); remote != head {
+		t.Errorf("origin feat = %s, want %s", remote, head)
+	}
+}
+
+// TestVcsPushFetchesOnlyTheBranchItMoves configures origin to fetch a branch the
+// remote has since deleted, which fails a bare git fetch origin with "couldn't
+// find remote ref" before push grades anything.
+func TestVcsPushFetchesOnlyTheBranchItMoves(t *testing.T) {
+	f := shipRepo(t, vcstest.Remote())
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "main", "main:gone")
+	mustRun(t, f.Env(), f.Dir, "git", "config", "remote.origin.fetch", "+refs/heads/main:refs/remotes/origin/main")
+	mustRun(t, f.Env(), f.Dir, "git", "config", "--add", "remote.origin.fetch", "+refs/heads/gone:refs/remotes/origin/gone")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "--delete", "gone")
+	tip := shipHead(t, f)
+	head := pushCommit(t, f, "a.txt", "a\n", "test: 🧪 a")
+	shipResetLog(t, f)
+
+	got, err := runVcsPushCmd(f.Context(), t)
+	if err != nil {
+		t.Fatalf("push error = %v", err)
+	}
+	if want := "pushed main → origin · " + shortOID(tip) + ".." + shortOID(head); got != want {
+		t.Errorf("summary = %q, want %q", got, want)
+	}
+	if remote := shipRemoteTip(t, f, "origin", "main"); remote != head {
+		t.Errorf("origin main = %s, want %s", remote, head)
+	}
+}
+
+// TestVcsPushServerRestackWithNoRemoteHead restacks feat onto a newer main on
+// the server, in a clone with no refs/remotes/origin/HEAD: the remote names its
+// trunk, so main's commit is not counted as work feat never held.
+func TestVcsPushServerRestackWithNoRemoteHead(t *testing.T) {
+	f := shipRepo(t, vcstest.Remote())
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "main")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "feat")
+	pushCommit(t, f, "a.txt", "a\n", "test: 🧪 a")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "feat")
+	clone := filepath.Join(filepath.Dir(f.Dir), "upstream")
+	mustRun(t, f.Env(), filepath.Dir(f.Dir), "git", "clone", "-q", f.RemoteDir, clone)
+	mustRun(t, f.Env(), clone, "git", "config", "user.email", "t@t.t")
+	mustRun(t, f.Env(), clone, "git", "config", "user.name", "t")
+	writeShipFile(t, clone, "c.txt", "c\n")
+	mustRun(t, f.Env(), clone, "git", "add", "-A")
+	mustRun(t, f.Env(), clone, "git", "commit", "-qm", "test: 🧪 c")
+	mustRun(t, f.Env(), clone, "git", "push", "-q", "origin", "main")
+	mustRun(t, f.Env(), clone, "git", "switch", "-q", "feat")
+	mustRun(t, f.Env(), clone, "git", "rebase", "-q", "main")
+	mustRun(t, f.Env(), clone, "git", "push", "-q", "--force", "origin", "feat")
+	tip := gitAt(t, f.Env(), clone, "rev-parse", "HEAD")
+	head := pushCommit(t, f, "b.txt", "b\n", "test: 🧪 b")
+	mustRun(t, f.Env(), f.Dir, "git", "remote", "set-head", "origin", "-d")
+	shipResetLog(t, f)
+
+	got, err := runVcsPushCmd(f.Context(), t)
+	if err != nil {
+		t.Fatalf("push error = %v", err)
+	}
+	if want := "force-pushed feat → origin · replaced " + shortOID(tip) + " with " + shortOID(head); got != want {
+		t.Errorf("summary = %q, want %q", got, want)
+	}
+	if remote := shipRemoteTip(t, f, "origin", "feat"); remote != head {
+		t.Errorf("origin feat = %s, want %s", remote, head)
+	}
+}
+
+// TestVcsPushRecreatesABranchTheRemoteDeleted leaves origin/feat behind after
+// origin deletes feat: the stale ref is no lease to force against, so push
+// creates the branch again.
+func TestVcsPushRecreatesABranchTheRemoteDeleted(t *testing.T) {
+	f := shipRepo(t, vcstest.Remote())
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "feat")
+	pushCommit(t, f, "a.txt", "a\n", "test: 🧪 a")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "feat")
+	mustRun(t, f.Env(), f.Dir, "git", "--git-dir="+f.RemoteDir, "update-ref", "-d", "refs/heads/feat")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-q", "--amend", "-m", "test: 🧪 a, rewritten")
+	head := shipHead(t, f)
 	shipResetLog(t, f)
 
 	got, err := runVcsPushCmd(f.Context(), t)

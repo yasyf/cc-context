@@ -30,15 +30,17 @@ Ship answers that by rebasing the local branch onto the remote, which for a
 deliberate rewrite is backwards — it replays the new commits onto the history
 they replaced. Push is the other answer: it moves the remote to the local head.
 
-Push fetches first and grades what it finds. A remote head that is an ancestor of
-HEAD fast-forwards, pushed with no force at all. A remote head this branch itself
-once held — one its reflog still carries, as an entry or as an ancestor of one —
-is a rewrite, and the push carries --force-with-lease pinned to the head this run
-observed, so it lands only while the remote still sits where the grading found
-it. A refused lease is reported rather than retried: something advanced the branch
-mid-run, and reconciling that is a person's call. A remote head no reflog entry
-of this branch reaches is work this branch has never held — a divergence, not a
-rewrite — and push refuses it, naming the commits the force would drop.
+Push fetches the branch and the remote's trunk, and only those, then grades what
+it finds. A branch the remote does not hold is created. A remote head that is an
+ancestor of HEAD fast-forwards, pushed with no force at all. A remote head this
+branch itself once held — one its reflog still carries, as an entry or as an
+ancestor of one — is a rewrite, and the push carries --force-with-lease pinned
+to the head this run observed, so it lands only while the remote still sits
+where the grading found it. A refused lease is reported rather than retried:
+something advanced the branch mid-run, and reconciling that is a person's
+call. A remote head no reflog entry of this branch reaches is work this branch
+has never held — a divergence, not a rewrite — and push refuses it, naming the
+commits the force would drop.
 
 Push moves one branch and nothing else. A graphite stack's bases live in
 Graphite's own record, which only ccx vcs stack submit writes. A branch a stack
@@ -255,25 +257,30 @@ func vcsPushPublication(ctx context.Context, dir render.Dir, remote, branch, hea
 }
 
 func vcsPushGit(ctx context.Context, dir render.Dir, remote, branch, head string, noVerify bool) (string, error) {
-	if err := gitFetch(ctx, dir, remote); err != nil {
-		return "", fmt.Errorf("push: git fetch %s: %w", remote, err)
-	}
 	ref := "refs/heads/" + branch
 	refspec := head + ":" + ref
-	remoteRef := "refs/remotes/" + remote + "/" + branch
-	present, err := gitRefExists(ctx, dir, "push", remoteRef)
+	trunkName, err := gitRemoteHead(ctx, dir, remote)
 	if err != nil {
 		return "", err
 	}
-	if !present {
+	fetch := []string{branch}
+	if trunkName != "" && trunkName != branch {
+		fetch = append(fetch, trunkName)
+	}
+	heads, err := stackRemoteHeads(ctx, dir, remote, fetch, head)
+	if err != nil {
+		return "", err
+	}
+	trunk := ""
+	if trunkName != branch && heads[trunkName] != "" {
+		trunk = "refs/remotes/" + remote + "/" + trunkName
+	}
+	tip := heads[branch]
+	if tip == "" {
 		if _, err := render.RunCLI(ctx, dir, "git", gitPushArgv(noVerify, remote, refspec)); err != nil {
 			return "", fmt.Errorf("push: git push: %w", err)
 		}
 		return fmt.Sprintf("pushed %s → %s · created %s/%s at %s", branch, remote, remote, branch, shortOID(head)), nil
-	}
-	tip, err := gitRevParse(ctx, dir, "push", remoteRef)
-	if err != nil {
-		return "", err
 	}
 	if tip == head {
 		return fmt.Sprintf("%s/%s already at %s — nothing to push", remote, branch, shortOID(head)), nil
@@ -300,13 +307,6 @@ func vcsPushGit(ctx context.Context, dir render.Dir, remote, branch, head string
 		rewrite = receipt != nil && receipt.Head == tip
 	}
 	if !rewrite {
-		trunk, err := gitRemoteHead(ctx, dir, remote)
-		if err != nil {
-			return "", err
-		}
-		if trunk == remoteRef {
-			trunk = ""
-		}
 		if rewrite, err = gitOnlyCopies(ctx, dir, "push", tip, head, trunk); err != nil {
 			return "", err
 		}
@@ -368,17 +368,29 @@ func gitOnlyCopies(ctx context.Context, dir render.Dir, prefix, from, to, trunk 
 	return err == nil && n == 0, err
 }
 
-// gitRemoteHead is the ref remote's HEAD points at, empty when it names none.
+// gitRemoteHead names the branch remote's HEAD points at: the one
+// refs/remotes/<remote>/HEAD records, else the remote's own answer, since a
+// fetch of explicit refspecs never records it. Empty when neither names one.
 func gitRemoteHead(ctx context.Context, dir render.Dir, remote string) (string, error) {
 	ref := "refs/remotes/" + remote + "/HEAD"
 	out, code, _, err := render.RunCLIExitCode(ctx, dir, "git", []string{"symbolic-ref", "-q", ref})
 	if err != nil {
 		return "", fmt.Errorf("push: git symbolic-ref %s: %w", ref, err)
 	}
-	if code != 0 {
-		return "", nil
+	if name, ok := strings.CutPrefix(strings.TrimSpace(out), "refs/remotes/"+remote+"/"); code == 0 && ok {
+		return name, nil
 	}
-	return strings.TrimSpace(out), nil
+	out, err = render.RunCLI(ctx, dir, "git", []string{"ls-remote", "--symref", remote, "HEAD"})
+	if err != nil {
+		return "", fmt.Errorf("push: git ls-remote --symref %s HEAD: %w", remote, err)
+	}
+	for line := range strings.Lines(out) {
+		target, name, _ := strings.Cut(strings.TrimSpace(line), "\t")
+		if branch, ok := strings.CutPrefix(target, "ref: refs/heads/"); ok && name == "HEAD" {
+			return branch, nil
+		}
+	}
+	return "", nil
 }
 
 func gitCommitsNotIn(ctx context.Context, dir render.Dir, prefix, rev, exclude string) ([]string, error) {
