@@ -1045,6 +1045,9 @@ func stackKept(ctx context.Context, dir render.Dir, state gtState, tr vcs.Trunk,
 // commits under any sha.
 func stackStrayReason(ctx context.Context, dir render.Dir, state gtState, tr vcs.Trunk, branch, parent, effective string, pr *stackPR) (string, error) {
 	if pr != nil && pr.State == "OPEN" && pr.Base != "" && pr.base() != parent && pr.base() != effective {
+		if pr.Base == fmt.Sprintf("graphite-base/%d", pr.Number) && pr.ParkedFrom == "" {
+			return fmt.Sprintf("gt records its parent as %s, but its pull request #%d sits on Graphite's %s and this clone never submitted it — name its real parent with ccx vcs stack rebase --parent %s=<branch>", parent, pr.Number, pr.Base, branch), nil
+		}
 		return fmt.Sprintf("gt records its parent as %s, but its pull request #%d is based on %s — re-record it with gt track --parent %s %s", parent, pr.Number, pr.base(), pr.base(), branch), nil
 	}
 	if parent == tr.Name() {

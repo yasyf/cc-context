@@ -2490,8 +2490,8 @@ func TestStackRebaseCarriesABranchGraphiteParkedOnItsBase(t *testing.T) {
 			if carried := stackOnto(t, f, "base", "feature") && stackOnto(t, f, "origin/main", "feature"); carried != tt.carried {
 				t.Errorf("feature carried onto the restacked base = %t, want %t:\n%s%s", carried, tt.carried, out, errOut)
 			}
-			if !tt.carried && !strings.Contains(errOut, "left feature alone") {
-				t.Errorf("stderr = %q, want feature named as left alone", errOut)
+			if !tt.carried && (!strings.Contains(errOut, "left feature alone") || strings.Contains(errOut, "--parent graphite-base/27090")) {
+				t.Errorf("stderr = %q, want feature named as left alone, never re-parented onto graphite-base/27090", errOut)
 			}
 		})
 	}
