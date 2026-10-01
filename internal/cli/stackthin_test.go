@@ -1060,12 +1060,10 @@ func thinPushFiles(t *testing.T, f *vcstest.Fixture, files map[string]string, ex
 	for name, content := range files {
 		writeShipFile(t, clone, name, content)
 	}
-	for _, name := range executable {
-		if err := os.Chmod(filepath.Join(clone, name), 0o700); err != nil {
-			t.Fatal(err)
-		}
-	}
 	mustRun(t, f.Env(), clone, "git", "add", "-A")
+	for _, name := range executable {
+		mustRun(t, f.Env(), clone, "git", "update-index", "--chmod=+x", name)
+	}
 	mustRun(t, f.Env(), clone, "git", "commit", "-qm", "metadata")
 	mustRun(t, f.Env(), clone, "git", "push", "-q", "origin", "main")
 	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
