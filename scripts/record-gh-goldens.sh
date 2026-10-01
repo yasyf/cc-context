@@ -330,6 +330,41 @@ record rest-pull-open api "repos/$foreign_repo/pulls/$open_pr"
 record rest-issue-closed-by api "repos/{owner}/{repo}/issues/$own_closed_pr" --jq '.closed_by.login // ""'
 record rest-issue-comments api --paginate --slurp "repos/$foreign_repo/issues/$open_pr/comments?per_page=100"
 
+### ship's pull request create — an error with an empty JSON body
+
+# GitHub cannot fail on demand, so a local stand-in answers ship's create.
+if wanted rest-pull-create-empty-error; then
+	python3 - "$streams/port" <<-'PY' &
+		import http.server, pathlib, sys
+
+		class EmptyError(http.server.BaseHTTPRequestHandler):
+		    def do_POST(self):
+		        self.rfile.read(int(self.headers["Content-Length"]))
+		        self.send_response(502)
+		        self.send_header("Content-Type", "application/json; charset=utf-8")
+		        self.send_header("Content-Length", "0")
+		        self.end_headers()
+
+		    def log_message(self, *args):
+		        pass
+
+		server = http.server.HTTPServer(("127.0.0.1", 0), EmptyError)
+		server.timeout = 30
+		pathlib.Path(sys.argv[1]).write_text(str(server.server_port))
+		server.handle_request()
+	PY
+	stand_in=$!
+	until [ -s "$streams/port" ]; do sleep 0.1; done
+	(
+		unset NO_PROXY no_proxy
+		export GH_HOST=github.localhost GH_TOKEN=placeholder GH_ENTERPRISE_TOKEN=placeholder GH_DEBUG=api
+		export HTTP_PROXY="http://127.0.0.1:$(cat "$streams/port")"
+		record rest-pull-create-empty-error api -X POST "repos/$own_repo/pulls" \
+			-f head=no-such-branch -f base=main -f "title=record gh goldens" -f body=
+	)
+	wait "$stand_in"
+fi
+
 ### ccx vcs stack rebase — the batched GraphQL read ahead of the REST one
 
 record_http stack-graphql-own graphql \

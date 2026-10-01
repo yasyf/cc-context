@@ -355,22 +355,39 @@ func shipPRCreate(ctx context.Context, nwo, branch, base string, picked bool, su
 		title = subject
 	}
 	draft := m.draft != nil && *m.draft
-	out, err := render.RunCLI(ctx, render.Ambient, "gh", prCreateArgv(nwo, branch, base, title, m.bodyPath, draft))
+	pr, err := createPR(ctx, nwo, branch, base, title, m.bodyPath, draft)
 	if err != nil {
-		return "", fmt.Errorf("ship: gh api create pull: %w", err)
-	}
-	var pr prState
-	if err := json.Unmarshal([]byte(out), &pr); err != nil {
-		return "", fmt.Errorf("ship: parse gh api create pull: %w", err)
+		return "", err
 	}
 	seg := fmt.Sprintf("opened PR #%d %s", pr.Number, pr.URL)
 	if picked {
 		seg += " onto " + base
 	}
-	if draft {
+	if pr.IsDraft {
 		seg += " [draft]"
 	}
 	return seg, nil
+}
+
+// createPR posts the pull request. GitHub can open one and still answer an
+// error, so a refused create fails only when the branch has no open pull
+// request afterward.
+func createPR(ctx context.Context, nwo, branch, base, title, bodyPath string, draft bool) (prState, error) {
+	argv := prCreateArgv(nwo, branch, base, title, bodyPath, draft)
+	out, err := ghAPI(ctx, render.Ambient, argv[1:]...)
+	if err != nil {
+		pr, found, lookupErr := lookupPR(ctx, nwo, branch)
+		if found {
+			return pr, nil
+		}
+		retry := ghCommand(prCreateArgv(nwo, branch, base, title, prRetryBody(bodyPath), draft))
+		return prState{}, prStepError("the push", "create", []string{retry}, errors.Join(err, lookupErr))
+	}
+	var pr prState
+	if err := json.Unmarshal([]byte(out), &pr); err != nil {
+		return prState{}, fmt.Errorf("ship: parse gh api create pull: %w", err)
+	}
+	return pr, nil
 }
 
 func prCreateArgv(nwo, branch, trunk, title, bodyPath string, draft bool) []string {
@@ -408,12 +425,12 @@ func shipPREdit(ctx context.Context, nwo string, pr prState, m prMeta) (string, 
 			if ready != nil {
 				retry = append(retry, ghCommand(ready))
 			}
-			return "", prRestateError("the push", retry, err)
+			return "", prStepError("the push", "restate", retry, err)
 		}
 	}
 	if ready != nil {
 		if _, err := render.RunCLI(ctx, render.Ambient, "gh", ready); err != nil {
-			return "", prRestateError("the push", []string{ghCommand(ready)}, err)
+			return "", prStepError("the push", "restate", []string{ghCommand(ready)}, err)
 		}
 		fields = append(fields, readyField)
 	}
@@ -440,23 +457,28 @@ func prEditArgv(nwo string, number int, m prMeta) []string {
 	return ghPatchPullArgv(nwo, number, fields...)
 }
 
-// prRetryArgv is prEditArgv as a person re-runs it. A body ship read from stdin
-// lives in a temp file ship deletes on the way out, so its retry reads stdin
-// again.
+// prRetryArgv is prEditArgv as a person re-runs it.
 func prRetryArgv(nwo string, number int, m prMeta) []string {
-	if m.bodyPath != "" && filepath.Dir(m.bodyPath) == filepath.Clean(os.TempDir()) &&
-		strings.HasPrefix(filepath.Base(m.bodyPath), prBodyTempPrefix) {
-		m.bodyPath = prBodyStdin
-	}
+	m.bodyPath = prRetryBody(m.bodyPath)
 	return prEditArgv(nwo, number, m)
 }
 
-// prRestateError reports a restate that failed after the branch already
-// reached GitHub, naming the commands that finish only the restate, so a
-// caller does not read the whole ship as failed and re-run it.
-func prRestateError(done string, retry []string, err error) error {
-	return fmt.Errorf("ship: %s already happened; only the pull request restate failed — finish it with: %s: %w",
-		done, strings.Join(retry, " && "), err)
+// prRetryBody is the body file a person re-runs a pull request write with. A
+// body ship read from stdin lives in a temp file ship deletes on the way out,
+// so its retry reads stdin again.
+func prRetryBody(path string) string {
+	if filepath.Dir(path) == filepath.Clean(os.TempDir()) && strings.HasPrefix(filepath.Base(path), prBodyTempPrefix) {
+		return prBodyStdin
+	}
+	return path
+}
+
+// prStepError reports a pull request step that failed after the branch
+// already reached GitHub, naming the commands that finish only that step, so
+// a caller does not read the whole ship as failed and re-run it.
+func prStepError(done, step string, retry []string, err error) error {
+	return fmt.Errorf("ship: %s already happened; only the pull request %s failed — finish it with: %s: %w",
+		done, step, strings.Join(retry, " && "), err)
 }
 
 // shipPRGT backfills the pull requests the submit just opened, over the
@@ -479,7 +501,7 @@ func shipPRGT(ctx context.Context, nwo string, meta map[string]prMeta, stack []s
 			return "", fmt.Errorf("ship: --pr-title/--pr-body-file named %s, which has no pull request", entry.Branch)
 		}
 		if _, err := render.RunCLI(ctx, render.Ambient, "gh", prEditArgv(nwo, entry.PR, m)); err != nil {
-			return "", prRestateError("the push and graphite submit", prRestatesLeft(nwo, meta, stack[:i+1]), err)
+			return "", prStepError("the push and graphite submit", "restate", prRestatesLeft(nwo, meta, stack[:i+1]), err)
 		}
 		segs = append(segs, fmt.Sprintf("PR #%d %s", entry.PR, strings.Join(fields, "+")))
 	}

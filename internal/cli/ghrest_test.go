@@ -210,6 +210,28 @@ func TestGHAPIFailsAnExhaustedQuotaAtOnce(t *testing.T) {
 	}
 }
 
+func TestGHDebugRefusal(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		stderr string
+		want   string
+	}{
+		{"empty error body", loadGHGolden(t, "rest-pull-create-empty-error").stderr, "unexpected end of JSON input (HTTP 502 Bad Gateway)"},
+		{"status already named", "< HTTP/2.0 404 Not Found\n\n* Request took 9ms\ngh: Not Found (HTTP 404)\n", "gh: Not Found (HTTP 404)"},
+		{"no response logged", "gh: could not connect\n", "gh: could not connect"},
+		{"last request unanswered", "* Request at now\n< HTTP/2.0 200 OK\n\n* Request took 9ms\n* Request at now\n* Request took 9ms\nEOF\n", "EOF"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := ghDebugRefusal(tt.stderr); got != tt.want {
+				t.Errorf("ghDebugRefusal = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestGHRateLimitDelay(t *testing.T) {
 	t.Parallel()
 	const page = "* Request to https://api.github.com/x?page=1\n< HTTP/2.0 200 OK\n< X-Ratelimit-Remaining: 0\n\n[]\n* Request took 9ms\n"

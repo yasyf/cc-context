@@ -1013,8 +1013,17 @@ case "$1 $2" in
   "repo view") printf '%s' "$GH_REPO_VIEW_JSON" ;;
   "api -X")
     case "$3 $4" in
-      "GET "*/pulls) printf '%s' "${GH_PULLS_JSON:-[]}" ;;
-      "POST "*/pulls) printf '%s' "$GH_PULL_CREATE_JSON" ;;
+      "GET "*/pulls)
+        if [ -n "$GH_PULL_CREATED_MARK" ] && [ -e "$GH_PULL_CREATED_MARK" ]; then
+          printf '%s' "$GH_PULLS_AFTER_CREATE_JSON"
+        else
+          printf '%s' "${GH_PULLS_JSON:-[]}"
+        fi ;;
+      "POST "*/pulls)
+        if [ -n "$GH_PULL_CREATED_MARK" ]; then : > "$GH_PULL_CREATED_MARK"; fi
+        printf '%s' "$GH_PULL_CREATE_STDERR" >&2
+        printf '%s' "$GH_PULL_CREATE_JSON"
+        exit "${GH_PULL_CREATE_EXIT:-0}" ;;
       *) if [ -n "$GH_PR_EDIT_FAIL" ]; then printf '%s\n' "$GH_PR_EDIT_FAIL" >&2; exit 1; fi ;;
     esac ;;
   "api graphql")
