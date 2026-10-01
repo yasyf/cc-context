@@ -102,7 +102,6 @@ type stackRebaseRun struct {
 	Pin           string `json:"pin"`
 	NoPush        bool   `json:"no_push"`
 	Git           bool   `json:"git,omitempty"`
-	Retarget      *restackRetarget `json:"retarget,omitempty"`
 	Origin        string `json:"origin"`
 	Draft         bool   `json:"draft,omitempty"`
 	NoVerify      bool   `json:"no_verify,omitempty"`
@@ -113,6 +112,7 @@ type stackRebaseRun struct {
 	To            string `json:"to,omitempty"`
 	deferPush     bool
 	Ship          *stackShipIntent         `json:"ship,omitempty"`
+	Retarget      *restackRetarget         `json:"retarget,omitempty"`
 	Aligned       bool                     `json:"aligned,omitempty"`
 	Applied       bool                     `json:"applied,omitempty"`
 	Publishing    bool                     `json:"publishing,omitempty"`
