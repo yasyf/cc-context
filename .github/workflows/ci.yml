@@ -290,7 +290,7 @@ jobs:
           chmod +x "$HOME/.local/bin/cc-notes"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: capt-hook pack test
-        run: uvx --isolated 'capt-hook>=12.72.0' pack test plugin
+        run: uvx --isolated 'capt-hook>=12.74.0' pack test plugin
       # The declarative harness can only inject a string tool_response; the dict
       # shapes Claude Code hands the guards (record_json_shape's real input, and the
       # rest of the guard/session-state unit tests) are covered by pytest over the

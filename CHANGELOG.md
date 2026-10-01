@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   argv and regex parsers for `find`, `sed`, `head`, `curl`, `wget`, `grep`,
   `rg`, and `git worktree remove` are replaced by command schemas, and the
   `gt restack` rewrite is dropped because the captain-hook graphite pack
-  already provides it. CI now runs `capt-hook` 12.72.0 or newer, whose lint
+  already provides it. CI now runs `capt-hook` 12.74.0 or newer, whose lint
   grades every hook.
 
 ### Added
