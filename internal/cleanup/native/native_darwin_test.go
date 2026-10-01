@@ -364,8 +364,9 @@ func sequenced[T any](values []T, read int) T {
 }
 
 type staged struct {
-	parent    uint32
-	starts    []uint64
+	parent     uint32
+	identities []unix.Errno
+	starts     []uint64
 	micros    []uint64
 	reads     int
 	effective uint32
@@ -421,6 +422,10 @@ func (k *staged) lib(t *testing.T) *libSystem {
 	info := answering(t, func(flavor int, buf uintptr) (uintptr, unix.Errno) {
 		switch flavor {
 		case flavorBSDInfo:
+			if errno := sequenced(k.identities, k.reads); errno != 0 {
+				k.reads++
+				return 0, errno
+			}
 			bsd := at[procBSDInfo](buf)
 			*bsd = procBSDInfo{
 				status: 2, ppid: k.parent, uid: k.effective, ruid: k.actual, tdev: noDevice,
@@ -589,6 +594,8 @@ func TestInspectSelectsEvidence(t *testing.T) {
 		{"a descriptor before an argument", arguer, staged{open: opens}, scan{}, &cleanup.Holder{Evidence: cleanup.EvidenceFD, Path: f.real + "/file"}, false},
 		{"an argument last", arguer, staged{}, scan{}, &cleanup.Holder{Evidence: cleanup.EvidenceArgv, Path: f.real + "/sub"}, false},
 		{"nothing in the tree", sleeper, staged{}, scan{}, nil, false},
+		{"a pid gone once the kernel refused to identify it", arguer, staged{identities: []unix.Errno{unix.EPERM, unix.ESRCH}, cwd: works}, scan{}, nil, false},
+		{"a live pid the kernel refuses to identify", arguer, staged{identities: []unix.Errno{unix.EPERM}, cwd: works}, scan{}, nil, true},
 		{"the requester's arguments", arguer, staged{}, scan{requester: arguer, named: true}, nil, false},
 		{"not the arguments of a pid no requester named", arguer, staged{}, scan{requester: arguer}, &cleanup.Holder{Evidence: cleanup.EvidenceArgv, Path: f.real + "/sub"}, false},
 		{"not another requester's arguments", arguer, staged{}, scan{requester: sleeper, named: true}, &cleanup.Holder{Evidence: cleanup.EvidenceArgv, Path: f.real + "/sub"}, false},

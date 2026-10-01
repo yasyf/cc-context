@@ -106,6 +106,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Worktree cleanup skips an exited pid the kernel refused to identify.**
+  `ccx vcs worktree rm` refused with
+  `native: identify pid 89224: operation not permitted` even though that pid
+  had already exited; an immediate retry succeeded. The macOS guard already
+  skipped `ESRCH` but refused on any other identification error. It now
+  re-checks whether the pid has exited and skips it when the kernel reports
+  `ESRCH`, a zombie, or a process in exit. A live pid the kernel still refuses
+  to identify keeps refusing cleanup with the same error.
+
 - **`ccx vcs ship` reports a pull request create GitHub refused after the
   push.** Creating `yasyf/cc-remote`'s first pull request failed with
   `ship: gh api create pull: gh: exit status 1: unexpected end of JSON input`.
