@@ -164,6 +164,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs ship --no-push` fetches the trunk before a Graphite restack.**
+  A stale `origin/<trunk>` could make a published parent look off its parent.
+  The restack replayed it onto the older trunk as a second copy of its own
+  commit and moved the child onto that copy. Ship now fetches that ref and
+  re-reads Graphite state before the in-place restack. The fetch moves no
+  local branch or working copy. If it fails, the commit remains and the error
+  directs the caller to `ccx vcs stack restack` once the fetch succeeds.
+  A `--no-push` ship that needs no restack still makes no network call.
+
 - **`ccx vcs ship --amend` leases on the branch's own last push after a local
   rebase.** On the plain-git lane, an amend after rebasing refused with
   `does not match the pre-amend head` because the lease named the rebased

@@ -1925,7 +1925,7 @@ func (f *gtTrunkFetch) stop() {
 // gtTrunkRefOffline reads the remote-tracking trunk without fetching, for the
 // checks that run on every ship rather than only on a submit. Containment only
 // grows, so a ref left behind still answers "already in trunk" correctly where a
-// fetch would only widen the answer, and a --no-push ship stays off the network.
+// fetch would only widen the answer.
 func gtTrunkRefOffline(ctx context.Context, dir render.Dir, prefix, trunk string) (vcs.Trunk, error) {
 	remote, err := vcs.GitRemoteFor(ctx, dir, "HEAD")
 	if err != nil {
