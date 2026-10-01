@@ -106,6 +106,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Worktree cleanup no longer counts the Watchman server as a client of
+  itself.** The watcher census exempted only its own `debug-status`
+  connection, so the server's loopback connection, which places no
+  subscription, read as an "unaccounted watchman client pid 1417
+  (/opt/homebrew/bin/watchman --foreground …) connected with no subscription
+  placing it" and refused `ccx vcs worktree rm` of a landed worktree. The
+  census now reads the server's pid from `get-pid` and marks that
+  connection `server`; every other unplaced client still refuses.
+
+- **`ccx vcs stack abort` drops a run whose conflict workspace an older ccx
+  opened.** A run stopped before 0.66.1 saved no registration for its
+  workspace, so abort and continue refused with "was opened by an older ccx
+  that saved no registration for it … remove it yourself with ccx vcs
+  worktree rm --path <ws>, then run ccx vcs stack abort", and a worker
+  upgraded mid-run fell back to raw pushes. Abort now recovers the
+  registration from the worktree git registers at the path, when its admin
+  directory is this repository's and named for the workspace and its HEAD is
+  detached, and removes it with the run; continue and regenerate name abort
+  as the one step. A worktree at the path that fails that test is still left
+  alone, with the manual removal named.
+
 - **Worktree cleanup skips an approved Apple service's descriptor whose
   inode the kernel refuses to resolve.** The guard discounted a descriptor
   only when the kernel refused to describe it at all; one it described by a

@@ -450,6 +450,7 @@ func (d Deps) gate(ctx context.Context, target string, exact bool) (gateResult, 
 	if err != nil {
 		return gateResult{}, err
 	}
+	status.ServerPID = srv.PID
 	var g gateResult
 	for _, raw := range status.Roots {
 		switch {
@@ -510,6 +511,7 @@ func (d Deps) freshBlockers(ctx context.Context, worktree, root string, targets 
 	if err != nil {
 		return nil, false, err
 	}
+	status.ServerPID = srv.PID
 	var blockers []string
 	watched := false
 	for _, raw := range status.Roots {
@@ -570,7 +572,7 @@ func (d Deps) clientBlockers(ctx context.Context, status watchmanStatus, targets
 	conns := map[int]int{}
 	for _, c := range clients {
 		switch {
-		case c.Self || c.Gone:
+		case c.Self || c.Server || c.Gone:
 			continue
 		case c.Unexamined:
 			unexamined++

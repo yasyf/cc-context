@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -320,11 +321,11 @@ func TestStackRepeatedStopsKeepTheFirstRegistration(t *testing.T) {
 	stackAssertCleared(t, f)
 }
 
-// TestStackLegacyConflictRecordIsLeftAlone pins what happens to a run an older
-// ccx stopped, which saved no registration: nothing reads or removes its
-// workspace, since it cannot be told from another worktree at that path, and
-// abort goes through once the path is empty.
-func TestStackLegacyConflictRecordIsLeftAlone(t *testing.T) {
+// TestStackLegacyConflictRecordIsAdoptedByAbort pins what happens to a run an
+// older ccx stopped, which saved no registration: continue and regenerate
+// refuse, naming abort, and abort recovers the registration from the detached
+// worktree git registers at the path, then removes it with the run.
+func TestStackLegacyConflictRecordIsAdoptedByAbort(t *testing.T) {
 	t.Parallel()
 	f := stackRebaseRepo(t, "base", "feature")
 	ws := stackPlantWorkspace(t, f)
@@ -332,10 +333,10 @@ func TestStackLegacyConflictRecordIsLeftAlone(t *testing.T) {
 	stackPlantBranches(t, f, "base", stackRebaseBranch{Name: "feature"})
 	svc := stackDeferTo(t, f, cleanup.Receipt{}, cleanup.ErrUnsupported)
 
-	for _, verb := range []string{"abort", "continue", "regenerate"} {
+	for _, verb := range []string{"continue", "regenerate"} {
 		_, _, err := runStackCmd(t, f, verb, "--stack", "base")
-		if err == nil || !strings.Contains(err.Error(), " — remove it yourself with ccx vcs worktree rm --path "+ws+", then run ccx vcs stack abort") {
-			t.Fatalf("%s = %v, want the refusal naming ccx vcs worktree rm --path %s", verb, err, ws)
+		if err == nil || !strings.Contains(err.Error(), " — ccx vcs stack abort drops the run and removes the workspace git registers there, or remove it yourself with ccx vcs worktree rm --path "+ws+", then run ccx vcs stack abort") {
+			t.Fatalf("%s = %v, want the refusal naming ccx vcs stack abort", verb, err)
 		}
 		assertIntact(t, f, ws)
 		if c := stackRunConflict(t, f); c == nil || c.Workspace != ws || c.Registration != (cleanup.Registration{}) {
@@ -344,6 +345,49 @@ func TestStackLegacyConflictRecordIsLeftAlone(t *testing.T) {
 	}
 	if asked := svc.asked(); len(asked) != 0 {
 		t.Errorf("defer requests = %+v, want none for a record without a registration", asked)
+	}
+
+	out, _, err := runStackCmd(t, f, "abort", "--stack", "base")
+	if err != nil {
+		t.Fatalf("abort of the legacy run: %v", err)
+	}
+	if out != "aborted · no branch moved" {
+		t.Errorf("abort output = %q, want the run dropped", out)
+	}
+	if asked := svc.asked(); len(asked) != 1 || asked[0].Worktree != ws || asked[0].Expected.Validate() != nil || !asked[0].Force {
+		t.Errorf("defer requests = %+v, want one forced removal of %s under the recovered registration", asked, ws)
+	}
+	if _, err := os.Lstat(ws); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("Lstat(%s) = %v, want the workspace removed", ws, err)
+	}
+	if worktreeRegistered(t, f.Env(), f.Dir, ws) {
+		t.Errorf("git still registers %s, want it pruned", ws)
+	}
+	stackAssertCleared(t, f)
+}
+
+// TestStackLegacyConflictRecordLeavesAnotherWorktreeAlone pins the guard on
+// that recovery: a worktree at the path with a branch checked out is not one
+// ccx opened, so abort refuses and names ccx vcs worktree rm.
+func TestStackLegacyConflictRecordLeavesAnotherWorktreeAlone(t *testing.T) {
+	t.Parallel()
+	f := stackRebaseRepo(t, "base", "feature")
+	ws := f.WorktreePath("conflict-feature")
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", "-b", "impostor", ws, "feature")
+	stackPlantConflict(t, f, time.Minute, &stackConflict{Branch: "feature", Workspace: ws}, "base")
+	stackPlantBranches(t, f, "base", stackRebaseBranch{Name: "feature"})
+	svc := stackDeferTo(t, f, cleanup.Receipt{}, cleanup.ErrUnsupported)
+
+	_, _, err := runStackCmd(t, f, "abort", "--stack", "base")
+	if err == nil || !strings.Contains(err.Error(), "git does not register a detached worktree of this repository named for it there, so it is left alone — remove it yourself with ccx vcs worktree rm --path "+ws+", then run ccx vcs stack abort") {
+		t.Fatalf("abort = %v, want the refusal naming ccx vcs worktree rm --path %s", err, ws)
+	}
+	assertIntact(t, f, ws)
+	if asked := svc.asked(); len(asked) != 0 {
+		t.Errorf("defer requests = %+v, want none for a worktree ccx did not open", asked)
+	}
+	if c := stackRunConflict(t, f); c == nil || c.Registration != (cleanup.Registration{}) {
+		t.Errorf("run conflict = %+v, want the legacy record kept", c)
 	}
 
 	mustRun(t, f.Env(), f.Dir, "git", "worktree", "remove", "--force", ws)
@@ -357,9 +401,6 @@ func TestStackLegacyConflictRecordIsLeftAlone(t *testing.T) {
 	}
 	if out != want {
 		t.Errorf("abort output = %q, want %q", out, want)
-	}
-	if asked := svc.asked(); len(asked) != 0 {
-		t.Errorf("defer requests = %+v, want none for a path already gone", asked)
 	}
 	stackAssertCleared(t, f)
 }

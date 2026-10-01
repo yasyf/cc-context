@@ -172,6 +172,12 @@ func TestPlanRefusesEveryUnclearConsumer(t *testing.T) {
 			want:  []string{"unaccounted watchman client pid 603"},
 		},
 		{
+			name: "the watchman server connected to itself",
+			setup: func(f fixture) {
+				f.w.client(4242, "/opt/homebrew/bin/watchman", "/opt/homebrew/bin/watchman --foreground --logfile=/var/log/watchman.log")
+			},
+		},
+		{
 			name:  "protected client with no subscription",
 			setup: func(f fixture) { f.w.client(604, "relay", "relay --validate") },
 			want:  []string{"protected consumer pid 604 (relay --validate) connected with no subscription"},

@@ -108,7 +108,8 @@ type Query struct {
 
 // Client is one connection to the Watchman server; Roots lists the roots it
 // subscribes to. Self marks the census's own debug-status request, matched by
-// the exact pid it ran as; Unexamined marks a connection whose pid is past
+// the exact pid it ran as; Server marks the Watchman server's own connection
+// to itself; Unexamined marks a connection whose pid is past
 // [Deps.MaxClients] and was not looked up.
 type Client struct {
 	PID        int      `json:"pid,omitempty"`
@@ -118,6 +119,7 @@ type Client struct {
 	Protected  bool     `json:"protected,omitempty"`
 	Gone       bool     `json:"gone,omitempty"`
 	Self       bool     `json:"self,omitempty"`
+	Server     bool     `json:"server,omitempty"`
 	Unexamined bool     `json:"unexamined,omitempty"`
 	Roots      []string `json:"roots,omitempty"`
 }
@@ -159,6 +161,7 @@ func (d Deps) censusWatchman(ctx context.Context) (Watchman, error) {
 	if err != nil {
 		return Watchman{}, err
 	}
+	status.ServerPID = srv.PID
 	w := Watchman{Available: true, Version: srv.Version, PID: srv.PID, ClientBound: d.MaxClients}
 	examine := status.Roots
 	if len(examine) > d.MaxRoots {
@@ -276,6 +279,8 @@ func (d Deps) inspectClients(ctx context.Context, status watchmanStatus) ([]Clie
 		case c.PID == 0:
 		case c.PID == status.SelfPID:
 			c.Self = true
+		case c.PID == status.ServerPID:
+			c.Server = true
 		case slices.Contains(lookup, c.PID):
 		case len(lookup) < d.MaxClients:
 			lookup = append(lookup, c.PID)
@@ -289,7 +294,7 @@ func (d Deps) inspectClients(ctx context.Context, status watchmanStatus) ([]Clie
 		return nil, err
 	}
 	for i, c := range clients {
-		if c.PID == 0 || c.Self || c.Unexamined {
+		if c.PID == 0 || c.Self || c.Server || c.Unexamined {
 			continue
 		}
 		proc, ok := procs[c.PID]
@@ -389,6 +394,8 @@ func (r Report) Render() string {
 			switch {
 			case c.Self:
 				b.WriteString(" self")
+			case c.Server:
+				b.WriteString(" server")
 			case c.Unexamined:
 				fmt.Fprintf(&b, " not examined (bounded at %d pids)", w.ClientBound)
 			case c.Gone:
