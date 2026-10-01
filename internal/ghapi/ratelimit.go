@@ -47,6 +47,12 @@ func limitWait(status int, header http.Header, now time.Time) (time.Duration, bo
 			return max(when.Sub(now), 0), true
 		}
 	}
+	return quotaReset(header, now)
+}
+
+// quotaReset reads the wait until an exhausted quota resets, reporting false
+// when the response's quota is not spent.
+func quotaReset(header http.Header, now time.Time) (time.Duration, bool) {
 	if header.Get("X-RateLimit-Remaining") == "0" {
 		if reset, err := strconv.ParseInt(header.Get("X-RateLimit-Reset"), 10, 64); err == nil {
 			return max(time.Unix(reset, 0).Sub(now), 0), true
@@ -64,7 +70,9 @@ func RateLimited(err error) (time.Duration, bool) {
 	}
 	var gql *GraphQLError
 	if errors.As(err, &gql) {
-		return 0, slices.ContainsFunc(gql.Messages, func(m GraphQLMessage) bool { return m.Type == "RATE_LIMITED" })
+		return gql.RetryAfter, gql.Exhausted || slices.ContainsFunc(gql.Messages, func(m GraphQLMessage) bool {
+			return strings.HasPrefix(m.Type, "RATE_LIMIT") || strings.Contains(strings.ToLower(m.Message), "rate limit")
+		})
 	}
 	return 0, false
 }

@@ -64,7 +64,9 @@ type GraphQLMessage struct {
 // GraphQLError is a 200 response whose body carried GraphQL errors. It unwraps
 // to ErrNotFound when any entry is typed NOT_FOUND.
 type GraphQLError struct {
-	Messages []GraphQLMessage
+	Messages   []GraphQLMessage
+	Exhausted  bool
+	RetryAfter time.Duration
 }
 
 func (e *GraphQLError) Error() string {

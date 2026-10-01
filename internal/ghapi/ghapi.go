@@ -97,7 +97,7 @@ func GraphQL[T any](ctx context.Context, c *Client, query string, variables map[
 	if err != nil {
 		return out, fmt.Errorf("ghapi: encode graphql request: %w", err)
 	}
-	payload, _, err := c.do(ctx, http.MethodPost, "/graphql", body)
+	payload, header, err := c.do(ctx, http.MethodPost, "/graphql", body)
 	if err != nil {
 		return out, err
 	}
@@ -109,7 +109,8 @@ func GraphQL[T any](ctx context.Context, c *Client, query string, variables map[
 		return out, fmt.Errorf("ghapi: decode graphql response: %w", err)
 	}
 	if len(resp.Errors) > 0 {
-		return out, &GraphQLError{Messages: resp.Errors}
+		wait, exhausted := quotaReset(header, time.Now())
+		return out, &GraphQLError{Messages: resp.Errors, Exhausted: exhausted, RetryAfter: wait}
 	}
 	return resp.Data, nil
 }

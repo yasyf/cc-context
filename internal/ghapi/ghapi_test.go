@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -299,6 +300,26 @@ func TestGraphQLErrorsAreTyped(t *testing.T) {
 	}
 }
 
+func TestGraphQLQuotaRefusalIsRateLimited(t *testing.T) {
+	t.Parallel()
+	reset := time.Now().Add(20 * time.Minute)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-RateLimit-Remaining", "0")
+		w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(reset.Unix(), 10))
+		_, _ = fmt.Fprint(w, `{"errors":[{"type":"RATE_LIMIT","code":"graphql_rate_limit","message":"API rate limit already exceeded for user ID 709645."}]}`)
+	}))
+	t.Cleanup(ts.Close)
+
+	_, err := GraphQL[struct{}](context.Background(), testClient(ts.URL, fixedToken("tok")), "query{viewer{login}}", nil)
+	wait, limited := RateLimited(err)
+	if !limited {
+		t.Fatalf("RateLimited(%v) = false, want the spent quota read as a rate limit", err)
+	}
+	if wait <= 19*time.Minute || wait > 20*time.Minute {
+		t.Errorf("wait = %s, want the time left until the quota resets", wait)
+	}
+}
+
 func TestRateLimitRetryHonorsRetryAfter(t *testing.T) {
 	t.Parallel()
 	var requests atomic.Int32
@@ -430,6 +451,8 @@ func TestRateLimitedTypesEachRefusal(t *testing.T) {
 		{name: "Retry-After past the in-call cap", err: statusError("GET", "u", http.StatusTooManyRequests, http.Header{"Retry-After": {"600"}}, nil, time.Now()), wait: 10 * time.Minute, limited: true},
 		{name: "permission 403", err: statusError("GET", "u", http.StatusForbidden, http.Header{}, []byte(`{"message":"Resource not accessible by integration"}`), time.Now())},
 		{name: "graphql RATE_LIMITED", err: &GraphQLError{Messages: []GraphQLMessage{{Type: "RATE_LIMITED", Message: "API rate limit exceeded"}}}, limited: true},
+		{name: "graphql RATE_LIMIT already exceeded", err: &GraphQLError{Messages: []GraphQLMessage{{Type: "RATE_LIMIT", Message: "API rate limit already exceeded for user ID 709645."}}}, limited: true},
+		{name: "graphql spent quota", err: &GraphQLError{Messages: []GraphQLMessage{{Type: "FORBIDDEN"}}, Exhausted: true, RetryAfter: time.Minute}, wait: time.Minute, limited: true},
 		{name: "graphql NOT_FOUND", err: &GraphQLError{Messages: []GraphQLMessage{{Type: "NOT_FOUND"}}}},
 		{name: "transport failure", err: errors.New("dial tcp: refused")},
 	}

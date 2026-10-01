@@ -267,7 +267,9 @@ ccx vcs stack regenerate reruns its generator in the workspace.
 
 After the rewrite, gt's parents are recorded, the stack is force-pushed under
 the remote heads recorded at the start, and one verdict line per pull request
-names its pushed head, parent, and mergeability. Labels are never touched.
+names its pushed head, parent, and mergeability; when GitHub cannot be read
+for it, the run says so and still moves the local refs and finishes. Labels are
+never touched.
 
 stack rebase never opens a pull request. A stack none of whose branches has one
 is rebased locally as if --no-push were given. In a stack mixing the two, a
@@ -3257,7 +3259,8 @@ func stackVerdict(ctx context.Context, cmd *cobra.Command, dir render.Dir, run *
 	lagUntil := time.Now().Add(stackHeadLagWait)
 	for try := 0; ; try++ {
 		if prs, err = stackPRs(ctx, dir, run.Trunk, live); err != nil {
-			return fmt.Errorf("stack rebase: pushed, but the verdict could not read the pull requests: %w", err)
+			_, werr := fmt.Fprintf(cmd.ErrOrStderr(), "stack rebase: pushed, but the verdict could not read the pull requests: %v\n", err)
+			return werr
 		}
 		var wait time.Duration
 		switch {
