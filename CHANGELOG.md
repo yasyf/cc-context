@@ -22,11 +22,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`ccx vcs stack new <name> --thin` creates sparse agent lanes in a shallow store.**
   Lanes are linked worktrees of the ccx-owned clone at
   `~/.claude/stores/<key>/<repo>`; ccx never deletes the store.
+  Store keys keep non-default ports and path case; local origins stay as
+  given after cleaning.
   Lanes cut from inside the store are sparse like their caller.
   `CCX_STACK_NEW=thin|full` selects the default; `--thin` and `--full-history`
   select it explicitly. `--depth` sets history depth on first creation, and
   repeatable `--include` adds directories. `--published-parent` adopts a
   verified parent published onto trunk and freezes its head in the store.
+  ccx refuses a divergent store-owned same-named parent before changes,
+  naming both commits; all store push paths refuse branches marked as
+  adopted, even after interrupted adoption.
 
   `--deepen` permits explicit deepening in doubling steps, bounded by
   `--max-depth`. Rebase, submit, restack, and ship refuse incomplete ancestry

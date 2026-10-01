@@ -17,11 +17,21 @@ worktree of the same store and is sparse like its caller, with or without
 `--thin` and regardless of the `CCX_STACK_NEW` default. Only `--no-checkout`
 skips materializing files there; stacking works as usual.
 
-The store is a non-bare clone at `~/.claude/stores/<key>/<repo>`. `<key>` is
-the first 12 hex digits of SHA-256 over the canonical remote:
-`host/owner/name`, lowercase, without `.git`. `<repo>` is the source checkout's
-directory name. Lanes use the same pool as other lanes:
-`~/.claude/worktrees/<repo>/<lane>`.
+The store is a non-bare clone at `~/.claude/stores/<key>/<repo>`. Only a
+checkout at the exact path its own origin derives counts as a thin store.
+`<repo>` is the source checkout's directory name. Lanes use the same pool
+as other lanes: `~/.claude/worktrees/<repo>/<lane>`.
+
+`<key>` is the first 12 hex digits of SHA-256 over the canonical remote. For
+hosted remotes (URLs or scp-style `user@host:path`), that is the lowercased
+host, plus `:port` only for a non-default port, then `/` and the path with
+surrounding slashes and one trailing `.git` removed, preserving path case.
+Default ports are 22 for ssh, 80 for http, 443 for https, and 9418 for git.
+
+A local origin (an absolute path or `file://` URL) is used as given after
+cleaning, preserving case and `.git`. A `file://` URL naming a host other
+than `localhost` is refused. Different spellings of one repository can get
+separate stores; ccx never merges remotes it cannot prove identical.
 
 On first use, the default clone uses
 `git clone --no-local --no-checkout --depth=256 --filter=blob:none --no-tags --single-branch --branch <trunk> --ref-format=files`.
@@ -105,6 +115,20 @@ frozen: no submit from the store pushes or rewrites it. Only parents
 published onto trunk can be adopted. An unpublished parent is refused,
 naming `--published-parent` or `--full-history`.
 
+Every store push path (`stack submit`, stack publication, `ship` on the git
+and gt lanes, and `ccx vcs push`) refuses before pushing a branch with ccx's
+adoption mark, even if an interrupted adoption left it without a frozen
+Graphite record. The refusal directs you to publish from the source
+checkout that owns the branch. Retry the adopting `stack new` to repair an
+interrupted adoption.
+
+When the source republishes an adopted parent, the next
+`stack new ... --published-parent` from the source refreshes the store's
+branch, adoption mark, frozen record, and receipt to the new published
+head. Existing children keep their recorded fork, so their next rebase or
+submit replays only their own commits onto that head; the parent itself is
+never pushed.
+
 ### Deepen to reach the parent's published base
 
 If the published base lies beyond the store's history, creation refuses.
@@ -130,7 +154,9 @@ segment. A refused deepen can leave the store deeper; history only grows.
 | `--full-history` inside the thin store | Run it from the full source checkout |
 | `--include` outside the store without `--thin` or `--sparse` | Select `--thin` or `--sparse`, or run from inside the store |
 | Invalid `CCX_STACK_NEW` value | Set `thin` or `full`, or unset it |
+| The store's own same-named parent differs from the source parent | Creation refuses before changes and names both commits; cut from the store's checkout of that branch, or use `--full-history` |
 | A source-only parent lacks a verified publication onto trunk | Use `--published-parent` after publishing onto trunk, or `--full-history` from the full checkout |
+| A store push targets a branch with ccx's adoption mark, even without a frozen Graphite record | Publish from the source checkout that owns it; retry the adopting `stack new` to repair an interrupted adoption |
 | The published base is outside the store's history | Retry with `--deepen` and an explicit `--max-depth` cap if needed |
 
 In a shallow repository, `ccx vcs stack rebase`, `submit`, `restack`, and
@@ -139,7 +165,8 @@ branch's history. The refusal names the branch and the explicit command
 `git -C <store> fetch --deepen=<commits> origin <trunk>`, where `<store>` is
 the store's main checkout even when the refusal comes from a lane. Run that
 command to grow the available history before retrying. These operations
-never deepen an existing store implicitly.
+never deepen an existing store implicitly. Object and history probes report
+Git failures as errors instead of treating them as missing commits.
 
 ## Remove a lane
 
