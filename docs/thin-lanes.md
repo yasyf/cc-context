@@ -23,7 +23,9 @@ there; stacking works as usual.
 The store is a non-bare clone at `~/.claude/stores/<key>/<repo>`. Only a
 checkout at the exact path its own origin derives counts as a thin store.
 `<repo>` is the source checkout's directory name. Lanes use the same pool
-as other lanes: `~/.claude/worktrees/<repo>/<lane>`.
+as other lanes: `~/.claude/worktrees/<repo>/<lane>`. Checkouts of one remote
+share a store only when their directories have the same name; a checkout
+named differently gets its own store under the same key.
 
 `<key>` is the first 12 hex digits of SHA-256 over the canonical remote. For
 hosted remotes (URLs or scp-style `user@host:path`), that is the lowercased

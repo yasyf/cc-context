@@ -222,6 +222,7 @@ func TestThinCanonicalRemote(t *testing.T) {
 		{"/srv/git/Repo.git", "/srv/git/Repo.git"},
 		{"/srv/git/repo.git", "/srv/git/repo.git"},
 		{"/srv/git/repo", "/srv/git/repo"},
+		{"https://user:s3cret@host/team/repo.git", "host/team/repo"},
 	}
 	for _, tt := range tests {
 		got, err := thinCanonicalRemote(tt.raw)
@@ -229,9 +230,12 @@ func TestThinCanonicalRemote(t *testing.T) {
 			t.Errorf("thinCanonicalRemote(%q) = %q, %v, want %q", tt.raw, got, err, tt.want)
 		}
 	}
-	for _, raw := range []string{"relative/repo", "https://github.com/", "file://relative/repo"} {
-		if got, err := thinCanonicalRemote(raw); err == nil {
+	for _, raw := range []string{"relative/repo", "https://github.com/", "file://relative/repo", "https://user:s3cret@host:bad/team/repo"} {
+		got, err := thinCanonicalRemote(raw)
+		if err == nil {
 			t.Errorf("thinCanonicalRemote(%q) = %q, want an error", raw, got)
+		} else if strings.Contains(err.Error(), "s3cret") || strings.Contains(err.Error(), raw) {
+			t.Errorf("thinCanonicalRemote(%q) error %q echoes the remote", raw, err)
 		}
 	}
 }
