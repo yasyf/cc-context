@@ -125,7 +125,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that failed (`read its arguments: input/output error`, a one-off watchman
   census), or a holder that may leave — retries after 30 seconds, doubling
   per consecutive transient block up to ten minutes, instead of
-  waiting for a hand `ccx vcs cleanup retry`. Every other reason still waits
+  waiting for a hand `ccx vcs cleanup retry`. That covers a payload's
+  deletion admission too, which proves the payload idle afresh on every
+  attempt. Every other reason still waits
   for the operator. A deferred removal whose tree is gone finishes once git
   no longer registers it, and names `git worktree prune` while it does.
 
@@ -164,6 +166,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   request; while GitHub still reports the older head, the pushed one stands
   for up to ten minutes. GitHub's REST view of #28635 trailed a
   `stack continue` push by more than four minutes on 2026-10-01.
+
+- **A publish re-reads a pull request GitHub still shows at its old head.**
+  After `ccx vcs stack submit`, `stack continue`, or a `ccx vcs ship` that
+  publishes a stack run pushes, the verdict re-reads every open pull request
+  whose head GitHub still reports as the one before the push, every five
+  seconds for up to thirty. A head that never catches up is labelled
+  `stale read: GitHub still shows <old> 30s after the push of <new> — re-run
+  ccx vcs stack submit if it stays`.
+
+- **`ccx vcs stack regenerate` owns every file below a declared directory.**
+  A `[[generated]]` path naming a directory, such as Forge-AI/monorepo's
+  `infra/ci/src/generated/row-graph`, now owns the files nested under it
+  (`row-graph/accounts/*.generated.json`). Before, a conflict in one of them
+  was refused as an unresolved file no generator owns.
+
+- **`ccx vcs stack list`, `status`, `submit`, and `drop` name the repair for a
+  branch Graphite does not track.** Instead of `gt state has no parent for
+  <branch>`, the refusal reads `<branch> is not tracked by Graphite, so it
+  sits on no stack — adopt it with gt track <branch> --parent <parent> (its
+  nearest tracked ancestor), then rerun`.
 
 - **`ccx vcs ship` reports a pull request create GitHub refused after the
   push.** Creating `yasyf/cc-remote`'s first pull request failed with

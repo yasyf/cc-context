@@ -36,6 +36,8 @@ const (
 	stackBriefLines     = 25
 	stackCulprits       = 10
 	stackVerdictTries   = 4
+	stackHeadLagWait    = 30 * time.Second
+	stackHeadLagRetry   = 5 * time.Second
 	stackStaleAfter     = 5 * time.Minute
 	stackAbandonedAfter = 2 * time.Hour
 	stackReplayMajor    = 2
@@ -3126,17 +3128,25 @@ func stackWriteRefs(ctx context.Context, dir render.Dir, run *stackRebaseRun) er
 func stackVerdict(ctx context.Context, cmd *cobra.Command, dir render.Dir, run *stackRebaseRun, live []string) error {
 	var prs map[string]*stackPR
 	var err error
-	for try := range stackVerdictTries {
+	lagUntil := time.Now().Add(stackHeadLagWait)
+	for try := 0; ; try++ {
 		if prs, err = stackPRs(ctx, dir, run.Trunk, live); err != nil {
 			return fmt.Errorf("stack rebase: pushed, but the verdict could not read the pull requests: %w", err)
 		}
-		if !stackAnyUnknown(prs) || try == stackVerdictTries-1 {
+		var wait time.Duration
+		switch {
+		case stackAnyLagging(run, prs) && time.Now().Add(stackHeadLagRetry).Before(lagUntil):
+			wait = stackHeadLagRetry
+		case stackAnyUnknown(prs) && try < stackVerdictTries-1:
+			wait = statusMergeableRetry
+		}
+		if wait == 0 {
 			break
 		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(statusMergeableRetry):
+		case <-time.After(wait):
 		}
 	}
 	for _, name := range live {
@@ -3149,8 +3159,8 @@ func stackVerdict(ctx context.Context, cmd *cobra.Command, dir render.Dir, run *
 			continue
 		}
 		fields = append(fields, fmt.Sprintf("#%d", pr.Number), fmt.Sprintf("head %.12s", pr.Head), "parent "+b.Parent, strings.ToLower(pr.Mergeable))
-		if pr.Head != b.NewHead {
-			fields = append(fields, fmt.Sprintf("GitHub still shows %.12s, pushed %.12s", pr.Head, b.NewHead))
+		if stackHeadLags(pr, b) {
+			fields = append(fields, fmt.Sprintf("stale read: GitHub still shows %.12s %s after the push of %.12s — re-run ccx vcs stack submit if it stays", pr.Head, stackHeadLagWait, b.NewHead))
 		}
 		if pr.Base != b.Parent {
 			fields = append(fields, "base "+pr.Base+" ≠ parent")
@@ -3161,6 +3171,21 @@ func stackVerdict(ctx context.Context, cmd *cobra.Command, dir render.Dir, run *
 		cmd.Println(strings.Join(fields, shipSep))
 	}
 	return nil
+}
+
+// stackHeadLags is a pull request GitHub still reads at another head than the
+// one just pushed; its REST view has trailed a push by minutes.
+func stackHeadLags(pr *stackPR, b *stackRebaseBranch) bool {
+	return pr.State == "OPEN" && pr.Head != "" && pr.Head != b.NewHead
+}
+
+func stackAnyLagging(run *stackRebaseRun, prs map[string]*stackPR) bool {
+	for name, pr := range prs {
+		if pr != nil && stackHeadLags(pr, run.branch(name)) {
+			return true
+		}
+	}
+	return false
 }
 
 func stackAnyUnknown(prs map[string]*stackPR) bool {

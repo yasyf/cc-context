@@ -1483,13 +1483,20 @@ func TestTransientBlockageRetriesWithBackoffUpToTheCeiling(t *testing.T) {
 	})
 }
 
-func TestTransientBlockageOnAPhysicalPhaseWaitsForRetry(t *testing.T) {
-	bubble(t, DefaultTuning(), func(_ *testing.T, h *harness) {
-		h.seed("a", 1, cleanup.PhaseUnregistered, func(job *cleanup.Job) { job.Block(job.Created, "activity", "zsh (pid 7) in the payload") })
+func TestTransientBlockageOnAPhysicalPhaseRetriesThroughAdmission(t *testing.T) {
+	bubble(t, DefaultTuning(), func(t *testing.T, h *harness) {
+		job := h.seed("a", 1, cleanup.PhaseDeleting, func(job *cleanup.Job) {
+			job.Block(h.clock.Now(), "activity", "could not verify that the payload is idle: native: inspect pid 81401 (bash): read its arguments: input/output error")
+		})
+		h.deleter.put("a", &payload{entries: 100})
 		h.start()
 		h.expectEvents()
-		h.clock.Advance(time.Hour)
-		h.expectEvents()
-		h.expectTimers()
+		h.expectTimers(30 * time.Second)
+
+		h.clock.Advance(30 * time.Second)
+		h.expectEvents("sample", "admit:a", "open:a", "step:a")
+		if got := h.status(job.ID); got.Phase != cleanup.PhaseDone || got.Removed != 100 {
+			t.Errorf("job = phase %s, removed %d; want done, 100 once admission passed again", got.Phase, got.Removed)
+		}
 	})
 }

@@ -2345,3 +2345,30 @@ func TestStackContinueDiscardsInlineOnlyWhereCleanupIsUnsupported(t *testing.T) 
 		})
 	}
 }
+
+func TestStackVerdictRereadsAPullRequestGitHubStillShowsAtTheOldHead(t *testing.T) {
+	t.Parallel()
+	run := &stackRebaseRun{Trunk: "main", Branches: []stackRebaseBranch{{Name: "feature", Parent: "main", NewHead: "bbbbbbbbbbbbbbbb"}}}
+	var reads int
+	ctx := withStackPRs(t.Context(), func(context.Context, render.Dir, string, []string) (map[string]*stackPR, error) {
+		reads++
+		head := "aaaaaaaaaaaaaaaa"
+		if reads > 1 {
+			head = "bbbbbbbbbbbbbbbb"
+		}
+		return map[string]*stackPR{"feature": {Number: 7, State: "OPEN", Head: head, Base: "main", Mergeable: "MERGEABLE"}}, nil
+	})
+	cmd := newStackCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+
+	if err := stackVerdict(ctx, cmd, "", run, []string{"feature"}); err != nil {
+		t.Fatal(err)
+	}
+	if reads != 2 {
+		t.Errorf("reads = %d, want the lagging head re-read once", reads)
+	}
+	if got := out.String(); strings.Contains(got, "stale read") || !strings.Contains(got, "head bbbbbbbbbbbb") {
+		t.Errorf("verdict = %q, want the pushed head and no stale label once GitHub caught up", got)
+	}
+}

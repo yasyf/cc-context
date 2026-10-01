@@ -106,6 +106,19 @@ func TestStackListNamesTheWorkingCopyHoldingEachBranch(t *testing.T) {
 	}
 }
 
+func TestStackListNamesTheParentToTrackAnUntrackedBranchOnto(t *testing.T) {
+	f := shipGTRepo(t, vcstest.GTStack("base"))
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "loose", "base")
+	writeShipFile(t, f.Dir, "loose.txt", "loose\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "-A")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "loose")
+
+	_, _, err := runStackCmd(t, f, "list")
+	if err == nil || !strings.Contains(err.Error(), "loose is not tracked by Graphite") || !strings.Contains(err.Error(), "gt track loose --parent base") {
+		t.Fatalf("stack list on an untracked branch = %v, want a refusal naming gt track loose --parent base", err)
+	}
+}
+
 func TestStackListJSON(t *testing.T) {
 	for _, stale := range []bool{false, true} {
 		name := "restacked"

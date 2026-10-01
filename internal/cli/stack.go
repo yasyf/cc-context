@@ -292,6 +292,9 @@ func gtStackAll(ctx context.Context, dir render.Dir, prefix string) ([]string, g
 		return nil, nil, fmt.Errorf("%s: %s is trunk, and every stack in the repository sits on it — check out a branch of the one you mean", prefix, trunk)
 	}
 	stack, err := gtDownstack(prefix, state, branch, trunk)
+	if untracked := (*errGTUntracked)(nil); errors.As(err, &untracked) {
+		return nil, nil, gtUntrackedRefusal(ctx, dir, prefix, state, trunk, branch)
+	}
 	if err != nil {
 		return nil, nil, err
 	}
@@ -301,6 +304,16 @@ func gtStackAll(ctx context.Context, dir render.Dir, prefix string) ([]string, g
 		return nil, nil, err
 	}
 	return append(stack, up...), state, nil
+}
+
+// gtUntrackedRefusal names the repair for a branch gt never tracked: the
+// parent gt track would adopt it onto, so the refusal is one command from done.
+func gtUntrackedRefusal(ctx context.Context, dir render.Dir, prefix string, state gtState, trunk, branch string) error {
+	parent, err := gtNearestTracked(ctx, dir, state, trunk, branch)
+	if err != nil {
+		return err
+	}
+	return fmt.Errorf("%s: %s is not tracked by Graphite, so it sits on no stack — adopt it with gt track %s --parent %s (its nearest tracked ancestor), then rerun", prefix, branch, branch, parent)
 }
 
 // gtStackUpTo narrows gtStackAll's stack to the branches from trunk up to and

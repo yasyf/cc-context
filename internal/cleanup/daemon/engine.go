@@ -553,7 +553,13 @@ func (e *Engine) work(ctx context.Context) error {
 			}
 			continue
 		}
-		job, physical := e.physicalDue()
+		job, physical := e.physicalDue(now)
+		if physical && job.Blocked != nil {
+			var err error
+			if job, err = e.unblock(job); err != nil {
+				return err
+			}
+		}
 		if e.active != nil && (!physical || e.active.id != job.ID) {
 			if err := e.park(); err != nil {
 				return err
@@ -652,7 +658,7 @@ func (e *Engine) logicalDue(now time.Time) (cleanup.Job, bool) {
 // own: RetryAfter past the first block, doubling per consecutive transient
 // block up to RetryCeiling. Any other blockage waits for Retry.
 func (e *Engine) retryAt(job cleanup.Job) (time.Time, bool) {
-	if job.Blocked == nil || !job.Phase.Logical() || !transient(job.Blocked.Reason) {
+	if job.Blocked == nil || !transient(job.Blocked.Reason) {
 		return time.Time{}, false
 	}
 	streak := 0
@@ -677,12 +683,18 @@ func transient(reason string) bool {
 	return reason == "activity" || reason == "watchers"
 }
 
-func (e *Engine) physicalDue() (cleanup.Job, bool) {
+func (e *Engine) physicalDue(now time.Time) (cleanup.Job, bool) {
 	if e.paused {
 		return cleanup.Job{}, false
 	}
 	for _, job := range e.ordered() {
-		if job.Phase.Physical() && job.Blocked == nil {
+		if !job.Phase.Physical() {
+			continue
+		}
+		if job.Blocked == nil {
+			return job, true
+		}
+		if at, ok := e.retryAt(job); ok && !now.Before(at) {
 			return job, true
 		}
 	}
