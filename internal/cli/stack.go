@@ -142,7 +142,10 @@ before any branch moves.
 
 A branch another working copy has checked out is that lane's, so it is skipped
 and named with the working copy holding it, along with every branch stacked
-above it; --include submits it anyway. One whose pull request landed is no
+above it; --include submits it anyway. A branch above the one checked out here
+that was never pushed is local work, not this submit's: it and everything
+stacked on it are skipped and named the same way, so its conflict never holds
+back the pull requests below it. One whose pull request landed is no
 lane's any more: it is dropped like any landed branch, and the branches on it
 move onto trunk.
 
@@ -373,7 +376,11 @@ func runStackSubmit(cmd *cobra.Command, o shipOpts, include []string, to string)
 	if err != nil {
 		return err
 	}
-	chain, skipped, err := stackOwnBranches(stack, stackState, holders, l.checkout.Root, append(slices.Clone(include), landed...))
+	unpushed, err := stackUnpushedAbove(ctx, l.dir(), stack)
+	if err != nil {
+		return err
+	}
+	chain, skipped, err := stackOwnBranches(stack, stackState, holders, unpushed, l.checkout.Root, append(slices.Clone(include), landed...))
 	if err != nil {
 		return err
 	}
@@ -452,12 +459,46 @@ func stackLandedElsewhere(ctx context.Context, l lane, stack []string, state gtS
 }
 
 type stackSkip struct {
-	branch string
-	holder string
-	on     string
+	branch   string
+	holder   string
+	on       string
+	unpushed bool
 }
 
-func stackOwnBranches(stack []string, state gtState, holders map[string]string, root string, include []string) ([]string, []stackSkip, error) {
+func stackUnpushedAbove(ctx context.Context, dir render.Dir, stack []string) (map[string]bool, error) {
+	current, err := gitCurrentBranch(ctx, dir, "stack submit")
+	if err != nil {
+		return nil, err
+	}
+	above := stack[slices.Index(stack, current)+1:]
+	if len(above) == 0 {
+		return nil, nil
+	}
+	remote, err := vcs.GitRemoteFor(ctx, dir, "HEAD")
+	if err != nil {
+		return nil, fmt.Errorf("stack submit: %w", err)
+	}
+	argv := []string{"ls-remote", "--heads", remote}
+	for _, branch := range above {
+		argv = append(argv, gtRestackRef(branch))
+	}
+	out, err := render.RunCLI(ctx, dir, "git", argv)
+	if err != nil {
+		return nil, fmt.Errorf("stack submit: git ls-remote %s: %w", remote, err)
+	}
+	unpushed := map[string]bool{}
+	for _, branch := range above {
+		unpushed[branch] = true
+	}
+	for line := range strings.Lines(out) {
+		if _, ref, ok := strings.Cut(strings.TrimSpace(line), "\t"); ok {
+			delete(unpushed, strings.TrimPrefix(ref, "refs/heads/"))
+		}
+	}
+	return unpushed, nil
+}
+
+func stackOwnBranches(stack []string, state gtState, holders map[string]string, unpushed map[string]bool, root string, include []string) ([]string, []stackSkip, error) {
 	for _, name := range include {
 		if !slices.Contains(stack, name) {
 			return nil, nil, fmt.Errorf("stack submit: --include %s names no branch of this stack (%s)", name, strings.Join(stack, ", "))
@@ -476,6 +517,9 @@ func stackOwnBranches(stack []string, state gtState, holders map[string]string, 
 		case holder != "" && holder != root && !slices.Contains(include, branch):
 			skip[branch] = true
 			skipped = append(skipped, stackSkip{branch: branch, holder: holder})
+		case unpushed[branch] && !slices.Contains(include, branch):
+			skip[branch] = true
+			skipped = append(skipped, stackSkip{branch: branch, unpushed: true})
 		default:
 			own = append(own, branch)
 		}
@@ -489,13 +533,16 @@ func stackAnnounceSkipped(errW io.Writer, skipped []stackSkip) error {
 	}
 	named := make([]string, 0, len(skipped))
 	for _, s := range skipped {
-		if s.holder != "" {
+		switch {
+		case s.holder != "":
 			named = append(named, fmt.Sprintf("%s (checked out in %s)", s.branch, s.holder))
-			continue
+		case s.unpushed:
+			named = append(named, fmt.Sprintf("%s (never pushed, above the branch here)", s.branch))
+		default:
+			named = append(named, fmt.Sprintf("%s (stacked on %s)", s.branch, s.on))
 		}
-		named = append(named, fmt.Sprintf("%s (stacked on %s)", s.branch, s.on))
 	}
-	if _, err := fmt.Fprintf(errW, "stack submit: skipping %s — another lane owns them; pass --include <branch> to submit one anyway\n", strings.Join(named, ", ")); err != nil {
+	if _, err := fmt.Fprintf(errW, "stack submit: skipping %s — pass --include <branch> to submit one anyway\n", strings.Join(named, ", ")); err != nil {
 		return fmt.Errorf("stack submit: name the skipped branches: %w", err)
 	}
 	return nil

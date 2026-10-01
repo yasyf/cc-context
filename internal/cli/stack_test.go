@@ -1379,3 +1379,43 @@ func TestStackRebaseRefusesAParentOverrideTheRunLeavesOut(t *testing.T) {
 		t.Errorf("lane moved to %s on a refusal", got)
 	}
 }
+
+func TestStackSubmitSkipsAnUnpushedBranchAboveTheOneHere(t *testing.T) {
+	f := shipGTRepo(t, vcstest.GTStack("base", "feature", "top"))
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "base")
+	shipResetLog(t, f)
+
+	_, errOut, err := runStackCmd(t, f, "submit")
+	if err != nil {
+		t.Fatalf("stack submit: %v\n%s", err, errOut)
+	}
+	if heads := api.submitHeads(); !slices.Equal(heads, []string{"base"}) {
+		t.Errorf("submit posts = %v, want base alone — feature and top were never pushed", heads)
+	}
+	for _, branch := range []string{"feature", "top"} {
+		if gitBranchExists(t, f.Env(), f.RemoteDir, branch) {
+			t.Errorf("origin carries %s — the submit published a local-only branch above the one here", branch)
+		}
+	}
+	if want := "skipping feature (never pushed, above the branch here), top (stacked on feature)"; !strings.Contains(errOut, want) {
+		t.Errorf("stderr = %q, want %q", errOut, want)
+	}
+}
+
+func TestStackSubmitStillPublishesAPushedBranchAboveTheOneHere(t *testing.T) {
+	f := shipGTRepo(t, vcstest.GTStack("base", "feature"))
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "feature")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "base")
+	shipResetLog(t, f)
+
+	if _, errOut, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("stack submit: %v\n%s", err, errOut)
+	}
+	if heads := api.submitHeads(); !slices.Equal(heads, []string{"base", "feature"}) {
+		t.Errorf("submit posts = %v, want base then feature", heads)
+	}
+}

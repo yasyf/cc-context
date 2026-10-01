@@ -287,7 +287,7 @@ func TestStackSubmitDropsALandedParentAnotherWorktreeHolds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stack submit: %v\n%s", err, errOut)
 	}
-	if strings.Contains(errOut, "another lane owns them") {
+	if strings.Contains(errOut, "skipping a (") {
 		t.Errorf("stderr = %q, want the landed a dropped rather than skipped as another lane's", errOut)
 	}
 	if !strings.Contains(out, "a · drop (#41 landed)") {
