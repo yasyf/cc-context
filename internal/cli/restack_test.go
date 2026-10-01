@@ -381,6 +381,29 @@ func TestRestackGitConflictStopsInAWorkspaceAndContinues(t *testing.T) {
 	}
 }
 
+// TestRestackGitContinueWaitsForTheLiveRestack runs stack continue from a
+// second process while the restack that stopped on the conflict still lives:
+// the git lane's run must name its owner as precisely as the gt lane's does.
+func TestRestackGitContinueWaitsForTheLiveRestack(t *testing.T) {
+	f := restackGitConflict(t)
+	if _, _, err := runRestackCmd(t, f); err == nil {
+		t.Fatal("restack succeeded over a conflicting rebase, want it to stop in a workspace")
+	}
+
+	cmd := exec.Command(os.Args[0], "vcs", "stack", "continue") //nolint:gosec // the test binary itself, run as ccx through TestMain
+	cmd.Dir = f.Dir
+	cmd.Env = append(append(os.Environ(), f.Env()...), "CCX_TEST_STACK_CONTINUE=1")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("a second process continued a restack whose owner still runs:\n%s", out)
+	}
+	for _, want := range []string{fmt.Sprintf("pid %d on ", os.Getpid()), "is still driving the stack rebase of feature"} {
+		if !strings.Contains(string(out), want) {
+			t.Errorf("continue = %s, want %q", out, want)
+		}
+	}
+}
+
 // TestRestackGitRefusesUncommittedWork holds the git lane to the stack rebase
 // rule: the working copy a rebased branch is reset in must be clean, and the
 // refusal comes before any workspace opens or ref moves.
@@ -513,7 +536,7 @@ func TestRestackGitConflictNeverAdvisesPushingTrunk(t *testing.T) {
 	}
 }
 
-func restackGitStacked(t *testing.T, prs map[string]dropSeed) *vcstest.Fixture {
+func restackGitStacked(t *testing.T, prs map[string]dropSeed) (*vcstest.Fixture, *dropGH) {
 	t.Helper()
 	f := shipRepo(t, vcstest.Remote(), vcstest.Branch("base"))
 	f.Isolate(t)
@@ -526,9 +549,9 @@ func restackGitStacked(t *testing.T, prs map[string]dropSeed) *vcstest.Fixture {
 		restackRun(t, f, f.Dir, "git", "commit", "-qm", name)
 		restackRun(t, f, f.Dir, "git", "push", "-q", "origin", name)
 	}
-	installDropGH(t, f, prs)
+	gh := installDropGH(t, f, prs)
 	restackReset(t, f)
-	return f
+	return f, gh
 }
 
 func TestRestackGitReplaysOntoThePullRequestBase(t *testing.T) {
@@ -544,7 +567,7 @@ func TestRestackGitReplaysOntoThePullRequestBase(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			f := restackGitStacked(t, tt.prs)
+			f, _ := restackGitStacked(t, tt.prs)
 			restackAdvanceRemote(t, f, tt.onto, "upstream.txt", "upstream\n")
 
 			out, _, err := runRestackCmd(t, f)
@@ -566,7 +589,7 @@ func TestRestackGitReplaysOntoThePullRequestBase(t *testing.T) {
 }
 
 func TestRestackGitAlreadyOnThePullRequestBase(t *testing.T) {
-	f := restackGitStacked(t, map[string]dropSeed{"feature": {number: 2, state: "OPEN", base: "base"}})
+	f, _ := restackGitStacked(t, map[string]dropSeed{"feature": {number: 2, state: "OPEN", base: "base"}})
 	restackAdvanceRemote(t, f, "main", "upstream.txt", "upstream\n")
 	before := restackRev(t, f, f.Dir, "HEAD")
 	restackReset(t, f)
@@ -595,7 +618,7 @@ func TestRestackGitFailsWhenThePullRequestLookupFails(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			f := restackGitStacked(t, nil)
+			f, _ := restackGitStacked(t, nil)
 			if tt.uncached {
 				clearRepoRecord(f.Context(), t, f.Dir)
 			}
@@ -622,7 +645,7 @@ func TestRestackGitFailsWhenThePullRequestLookupFails(t *testing.T) {
 }
 
 func TestRestackGitLeavesARewrittenParentsCommitsBehind(t *testing.T) {
-	f := restackGitStacked(t, map[string]dropSeed{"feature": {number: 2, state: "OPEN", base: "base"}})
+	f, _ := restackGitStacked(t, map[string]dropSeed{"feature": {number: 2, state: "OPEN", base: "base"}})
 	restackAdvanceRemote(t, f, "main", "upstream.txt", "upstream\n")
 	clone := filepath.Join(t.TempDir(), "upstream")
 	restackRun(t, f, filepath.Dir(clone), "git", "clone", "-q", "--branch", "base", f.RemoteDir, clone)
@@ -646,6 +669,145 @@ func TestRestackGitLeavesARewrittenParentsCommitsBehind(t *testing.T) {
 	if got := restackRead(t, filepath.Join(f.Dir, "base.txt")); got != "base, revised\n" {
 		t.Errorf("base.txt = %q, want the rewritten base's content", got)
 	}
+}
+
+func TestRestackGitParentMovesThePullRequest(t *testing.T) {
+	f, gh := restackGitStacked(t, map[string]dropSeed{"feature": {number: 2, state: "OPEN", base: "main"}})
+	restackAdvanceRemote(t, f, "main", "upstream.txt", "upstream\n")
+	restackAdvanceRemote(t, f, "base", "base2.txt", "base, again\n")
+	published := restackRev(t, f, f.Dir, "feature")
+
+	out, _, err := runRestackCmd(t, f, "--parent", "base")
+	if err != nil {
+		t.Fatalf("restack --parent base: %v", err)
+	}
+	if want := "fetched · rebased onto base · force-pushed feature → origin"; !strings.HasPrefix(out, want) {
+		t.Errorf("output = %q, want prefix %q", out, want)
+	}
+	if want := "retargeted PR #2 onto base (was main)"; !strings.HasSuffix(out, want) {
+		t.Errorf("output = %q, want suffix %q", out, want)
+	}
+	if got := gh.pr(2); got != "OPEN base" {
+		t.Errorf("PR #2 = %q, want it open on base", got)
+	}
+	if !stackOnto(t, f, "refs/remotes/origin/base", "feature") {
+		t.Error("feature is not on the fetched base")
+	}
+	if stackOnto(t, f, "refs/remotes/origin/main", "feature") {
+		t.Error("feature carries main's newer commits, which its new parent does not")
+	}
+	if got := strings.TrimSpace(restackRun(t, f, f.Dir, "git", "rev-list", "--count", "refs/remotes/origin/base..feature")); got != "1" {
+		t.Errorf("commits above base = %s, want feature's own 1", got)
+	}
+	if local, remote := restackRev(t, f, f.Dir, "feature"), restackRev(t, f, f.Dir, "refs/remotes/origin/feature"); local != remote {
+		t.Errorf("origin/feature = %s, want the rebased %s", remote, local)
+	}
+	invocations := restackInvocations(t, f)
+	push := dropStep(t, invocations, "git", "push", "--force-with-lease=refs/heads/feature:"+published)
+	if retarget := dropStep(t, invocations, "gh", "PATCH", "repos/yasyf/cc-context/pulls/2", "base=base"); retarget < push {
+		t.Error("the pull request moved onto base before the branch it shows was pushed")
+	}
+}
+
+func TestRestackGitParentAlreadyThereRetargetsOnly(t *testing.T) {
+	f, gh := restackGitStacked(t, map[string]dropSeed{"feature": {number: 2, state: "OPEN", base: "main"}})
+	published := restackRev(t, f, f.Dir, "feature")
+
+	out, _, err := runRestackCmd(t, f, "--parent", "base")
+	if err != nil {
+		t.Fatalf("restack --parent base: %v", err)
+	}
+	if want := "fetched · already on base · origin/feature already at " + published[:12] + " — nothing to push · retargeted PR #2 onto base (was main)"; out != want {
+		t.Errorf("output = %q, want %q", out, want)
+	}
+	if got := restackRev(t, f, f.Dir, "feature"); got != published {
+		t.Errorf("feature moved from %s to %s while already on base", published, got)
+	}
+	if got := gh.pr(2); got != "OPEN base" {
+		t.Errorf("PR #2 = %q, want it open on base", got)
+	}
+}
+
+func TestRestackGitParentLeavesTheOldBaseBehind(t *testing.T) {
+	f, gh := restackGitStacked(t, map[string]dropSeed{"feature": {number: 2, state: "OPEN", base: "base"}})
+
+	out, _, err := runRestackCmd(t, f, "--parent", "main")
+	if err != nil {
+		t.Fatalf("restack --parent main: %v", err)
+	}
+	if want := "fetched · rebased onto main"; !strings.HasPrefix(out, want) {
+		t.Errorf("output = %q, want prefix %q — main already sits under feature, but base's commit still has to come out", out, want)
+	}
+	if got := strings.TrimSpace(restackRun(t, f, f.Dir, "git", "rev-list", "--count", "refs/remotes/origin/main..feature")); got != "1" {
+		t.Errorf("commits above main = %s, want feature's own 1", got)
+	}
+	if _, err := os.Stat(filepath.Join(f.Dir, "base.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("base.txt stat = %v, want base's file gone with its commit", err)
+	}
+	if got := gh.pr(2); got != "OPEN main" {
+		t.Errorf("PR #2 = %q, want it open on main", got)
+	}
+}
+
+func TestRestackGitParentRefusesForkPointsOnSeparateLines(t *testing.T) {
+	f, _ := restackGitStacked(t, map[string]dropSeed{"feature": {number: 2, state: "OPEN", base: "other"}})
+	restackRun(t, f, f.Dir, "git", "switch", "-qc", "other", "main")
+	restackWrite(t, filepath.Join(f.Dir, "other.txt"), "other\n")
+	restackRun(t, f, f.Dir, "git", "add", "other.txt")
+	restackRun(t, f, f.Dir, "git", "commit", "-qm", "other")
+	restackRun(t, f, f.Dir, "git", "push", "-q", "origin", "other")
+	restackRun(t, f, f.Dir, "git", "switch", "-q", "feature")
+	restackRun(t, f, f.Dir, "git", "merge", "-q", "--no-edit", "other")
+	restackRun(t, f, f.Dir, "git", "push", "-q", "origin", "feature")
+	before := restackRev(t, f, f.Dir, "feature")
+	restackReset(t, f)
+
+	_, _, err := runRestackCmd(t, f, "--parent", "base")
+	if err == nil || !strings.Contains(err.Error(), "on separate lines of history, so no single replay leaves out both bases' commits") {
+		t.Fatalf("error = %v, want the separate-lines refusal", err)
+	}
+	if after := restackRev(t, f, f.Dir, "feature"); after != before {
+		t.Errorf("feature moved from %s to %s on a refusal", before, after)
+	}
+	assertNoRestackMutation(t, restackInvocations(t, f))
+}
+
+func TestRestackGitParentWithoutAPullRequestStaysLocal(t *testing.T) {
+	f, _ := restackGitStacked(t, nil)
+	restackAdvanceRemote(t, f, "base", "base2.txt", "base, again\n")
+	published := restackRev(t, f, f.Dir, "refs/remotes/origin/feature")
+
+	out, _, err := runRestackCmd(t, f, "--parent", "base")
+	if err != nil {
+		t.Fatalf("restack --parent base: %v", err)
+	}
+	if want := "fetched · rebased onto base"; out != want {
+		t.Errorf("output = %q, want %q", out, want)
+	}
+	if !stackOnto(t, f, "refs/remotes/origin/base", "feature") {
+		t.Error("feature is not on the fetched base")
+	}
+	if got := restackRev(t, f, f.Dir, "refs/remotes/origin/feature"); got != published {
+		t.Errorf("origin/feature moved from %s to %s with no pull request to retarget", published, got)
+	}
+}
+
+func TestRestackParentRefusals(t *testing.T) {
+	t.Run("graphite lane", func(t *testing.T) {
+		f := restackGTRepo(t, "feature")
+		_, _, err := runRestackCmd(t, f, "--parent", "main")
+		if want := "restack: --parent on the graphite lane is ccx vcs stack rebase --parent <branch>=<parent>"; err == nil || err.Error() != want {
+			t.Errorf("error = %v, want %q", err, want)
+		}
+	})
+	t.Run("onto itself", func(t *testing.T) {
+		f, _ := restackGitStacked(t, nil)
+		_, _, err := runRestackCmd(t, f, "--parent", "feature")
+		if want := "restack: --parent moves a branch onto another, and feature cannot sit on feature"; err == nil || err.Error() != want {
+			t.Errorf("error = %v, want %q", err, want)
+		}
+		assertNoRestackMutation(t, restackInvocations(t, f))
+	})
 }
 
 func TestRestackJJAlreadyUpToDate(t *testing.T) {

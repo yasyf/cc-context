@@ -30,8 +30,9 @@ func gtBranchCount(n int) string {
 }
 
 type restackOpts struct {
-	noGT bool
-	to   string
+	noGT   bool
+	to     string
+	parent string
 }
 
 func newRestackCmd() *cobra.Command {
@@ -50,7 +51,13 @@ when it has none. The working copy holding it, which must be clean, is then
 moved onto the new head. A conflict moves nothing: the rebase stops in
 a conflict-<branch> workspace with rerere off, and ccx vcs stack continue
 finishes it once the files are resolved and added, or ccx vcs stack abort drops
-it.`,
+it.
+
+--parent <branch> moves a plain-git branch onto another branch: it is replayed
+from the nearer of its fork points on <branch> and on its pull request's base
+onto the fetched <branch>, so the old base's newer commits stay out. With an
+open pull request it is then pushed as ccx vcs push pushes, under a lease on the
+head the push observed, and the pull request is retargeted onto <branch>.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runRestack(cmd, o)
@@ -58,6 +65,7 @@ it.`,
 	}
 	cmd.Flags().BoolVar(&o.noGT, "no-gt", false, "ignore a live graphite config and fall back to the jj/git detection")
 	cmd.Flags().StringVar(&o.to, "to", "", stackToUsage+" (gt lane only)")
+	cmd.Flags().StringVar(&o.parent, "parent", "", "move the branch onto this branch, then push it and retarget its open pull request there (git lane only)")
 	return cmd
 }
 
@@ -67,11 +75,17 @@ func runRestack(cmd *cobra.Command, o restackOpts) error {
 	if err != nil {
 		return err
 	}
+	if l.gt && o.parent != "" {
+		return errors.New("restack: --parent on the graphite lane is ccx vcs stack rebase --parent <branch>=<parent>")
+	}
 	if l.gt {
 		return runStackRebase(cmd, stackRebaseOpts{noPush: true, to: o.to})
 	}
 	if o.to != "" {
 		return fmt.Errorf("restack: --to stops a Graphite stack, and this repository is on the %s lane", kindLabel(l.kind))
+	}
+	if o.parent != "" && l.kind != vcs.Git {
+		return fmt.Errorf("restack: --parent moves a git branch, and this repository is on the %s lane", kindLabel(l.kind))
 	}
 
 	var summary string
@@ -79,7 +93,7 @@ func runRestack(cmd *cobra.Command, o restackOpts) error {
 	case vcs.JJ:
 		summary, err = restackJJ(ctx, l.dir())
 	case vcs.Git:
-		summary, err = restackGit(ctx, cmd, l)
+		summary, err = restackGit(ctx, cmd, l, o.parent)
 	default:
 		panic(fmt.Sprintf("restack: unsupported vcs kind %d", l.kind))
 	}
@@ -161,7 +175,7 @@ func jjRestackOntoTrunk(ctx context.Context, dir render.Dir, trunk string) (int,
 // rerere off, for ccx vcs stack continue or ccx vcs stack abort. The working
 // copy holding the branch must be clean, as a stack rebase requires. A rebase
 // finished here prints its own summary and returns an empty one.
-func restackGit(ctx context.Context, cmd *cobra.Command, l lane) (string, error) {
+func restackGit(ctx context.Context, cmd *cobra.Command, l lane, parent string) (string, error) {
 	dir := l.dir()
 	branch, err := gitCurrentBranch(ctx, dir, "restack")
 	if err != nil {
@@ -182,17 +196,29 @@ func restackGit(ctx context.Context, cmd *cobra.Command, l lane) (string, error)
 	if err != nil {
 		return "", fmt.Errorf("restack: %w", err)
 	}
-	onto := trunk
+	if parent != "" && (branch == trunk.Name() || parent == branch) {
+		return "", fmt.Errorf("restack: --parent moves a branch onto another, and %s cannot sit on %s", branch, parent)
+	}
+	was := trunk
+	var retarget *restackRetarget
 	if branch != trunk.Name() {
-		if onto, err = restackGitParent(ctx, dir, remote, branch, trunk); err != nil {
+		if was, retarget, err = restackGitParent(ctx, dir, remote, branch, trunk); err != nil {
 			return "", err
 		}
+	}
+	onto := was
+	if parent != "" {
+		if onto, err = vcs.TrunkFromName(ctx, dir, remote, parent); err != nil {
+			return "", fmt.Errorf("restack: --parent %s: %w", parent, err)
+		}
+	} else {
+		retarget = nil
 	}
 	upToDate, err := gitIsAncestor(ctx, dir, "restack", string(onto.Ref()), "HEAD")
 	if err != nil {
 		return "", fmt.Errorf("restack: compare HEAD with %s: %w", onto.Ref(), err)
 	}
-	if upToDate {
+	if upToDate && parent == "" {
 		return "fetched · already up to date", nil
 	}
 
@@ -213,10 +239,11 @@ func restackGit(ctx context.Context, cmd *cobra.Command, l lane) (string, error)
 	if err := stackRequireGit(ctx, dir, "restack"); err != nil {
 		return "", err
 	}
-	run, err := restackGitRun(ctx, dir, l.checkout.Root, branch, onto)
+	run, err := restackGitRun(ctx, dir, l.checkout.Root, branch, onto, was)
 	if err != nil {
 		return "", err
 	}
+	run.Retarget = retarget
 	commonDir, err := gtCommonDir(ctx, dir, "restack")
 	if err != nil {
 		return "", err
@@ -237,30 +264,78 @@ func restackGit(ctx context.Context, cmd *cobra.Command, l lane) (string, error)
 	return "", stackDrive(ctx, cmd, l, commonDir, run)
 }
 
-func restackGitParent(ctx context.Context, dir render.Dir, remote, branch string, trunk vcs.Trunk) (vcs.Trunk, error) {
+// restackRetarget is the open pull request a --parent restack publishes and
+// moves, read before anything moved.
+type restackRetarget struct {
+	Remote string `json:"remote"`
+	Repo   string `json:"repo"`
+	PR     int    `json:"pr"`
+	Base   string `json:"base"`
+	Pushed bool   `json:"pushed,omitempty"`
+}
+
+// restackGitParent is the base branch's open pull request names, trunk when it
+// has none, and that pull request.
+func restackGitParent(ctx context.Context, dir render.Dir, remote, branch string, trunk vcs.Trunk) (vcs.Trunk, *restackRetarget, error) {
 	repo, err := vcs.LookupRepo(ctx, dir, false)
 	if err != nil {
-		return vcs.Trunk{}, fmt.Errorf("restack: %w", err)
+		return vcs.Trunk{}, nil, fmt.Errorf("restack: %w", err)
 	}
 	out, err := render.RunCLI(ctx, render.Ambient, "gh", ghPullsByHeadArgv(repo.NameWithOwner, branch, "open"))
 	if err != nil {
-		return vcs.Trunk{}, fmt.Errorf("restack: list the open pull requests of %s: %w", branch, err)
+		return vcs.Trunk{}, nil, fmt.Errorf("restack: list the open pull requests of %s: %w", branch, err)
 	}
 	var prs []ghPull
 	if err := json.Unmarshal([]byte(out), &prs); err != nil {
-		return vcs.Trunk{}, fmt.Errorf("restack: parse the open pull requests of %s: %w", branch, err)
+		return vcs.Trunk{}, nil, fmt.Errorf("restack: parse the open pull requests of %s: %w", branch, err)
 	}
-	if len(prs) == 0 || prs[0].Base.Ref == trunk.Name() {
-		return trunk, nil
+	if len(prs) == 0 {
+		return trunk, nil, nil
 	}
-	parent, err := vcs.TrunkFromName(ctx, dir, remote, prs[0].Base.Ref)
+	pr := &restackRetarget{Remote: remote, Repo: repo.NameWithOwner, PR: prs[0].Number, Base: prs[0].Base.Ref}
+	if pr.Base == trunk.Name() {
+		return trunk, pr, nil
+	}
+	parent, err := vcs.TrunkFromName(ctx, dir, remote, pr.Base)
 	if err != nil {
-		return vcs.Trunk{}, fmt.Errorf("restack: PR #%d is based on %s: %w", prs[0].Number, prs[0].Base.Ref, err)
+		return vcs.Trunk{}, nil, fmt.Errorf("restack: PR #%d is based on %s: %w", pr.PR, pr.Base, err)
 	}
-	return parent, nil
+	return parent, pr, nil
 }
 
-func restackGitRun(ctx context.Context, dir render.Dir, origin, branch string, onto vcs.Trunk) (*stackRebaseRun, error) {
+// restackGitPublish pushes a branch a --parent restack moved and then
+// retargets its pull request onto the new parent, so the pull request never
+// shows the old commits against the new base. save records the push, so a run
+// killed before the retarget resumes past it under ccx vcs stack continue.
+func restackGitPublish(ctx context.Context, dir render.Dir, branch, head, parent string, r *restackRetarget, save func() error) (string, error) {
+	retarget := ghPatchPullArgv(r.Repo, r.PR, "-f", "base="+parent)
+	var pushed string
+	if !r.Pushed {
+		local, err := stackRevParse(ctx, dir, gtRestackRef(branch))
+		if err != nil {
+			return "", err
+		}
+		if local != head {
+			return "", fmt.Errorf("restack: %s moved to %.12s after this run rewrote it to %.12s, so nothing was pushed or retargeted", branch, local, head)
+		}
+		if pushed, err = vcsPushGit(ctx, dir, r.Remote, branch, head, false); err != nil {
+			return "", fmt.Errorf("restack: %s sits on %s locally, but the push failed — finish with ccx vcs push, then %s: %w", branch, parent, ghCommand(retarget), err)
+		}
+		r.Pushed = true
+		if err := save(); err != nil {
+			return "", err
+		}
+	}
+	if r.Base == parent {
+		return pushed, nil
+	}
+	if _, err := render.RunCLI(ctx, render.Ambient, "gh", retarget); err != nil {
+		return "", fmt.Errorf("restack: %s is on %s and pushed; only retargeting PR #%d failed — finish it with: %s: %w", branch, parent, r.PR, ghCommand(retarget), err)
+	}
+	return strings.TrimPrefix(fmt.Sprintf("%s%sretargeted PR #%d onto %s (was %s)", pushed, shipSep, r.PR, parent, r.Base), shipSep), nil
+}
+
+func restackGitRun(ctx context.Context, dir render.Dir, origin, branch string, onto, was vcs.Trunk) (*stackRebaseRun, error) {
 	pin, err := stackRevParse(ctx, dir, string(onto.Ref()))
 	if err != nil {
 		return nil, err
@@ -273,23 +348,29 @@ func restackGitRun(ctx context.Context, dir render.Dir, origin, branch string, o
 	if err != nil {
 		return nil, err
 	}
+	if was.Name() != onto.Name() {
+		if base, err = restackGitNearerBase(ctx, dir, branch, onto, was, head, base); err != nil {
+			return nil, err
+		}
+	}
 	host, err := os.Hostname()
 	if err != nil {
 		return nil, fmt.Errorf("restack: %w", err)
 	}
 	return &stackRebaseRun{
-		Trunk:  onto.Name(),
-		Pin:    pin,
-		NoPush: true,
-		Git:    true,
-		Origin: origin,
-		Roots:  []string{branch},
-		Pid:    os.Getpid(),
-		Host:   host,
+		Trunk:   onto.Name(),
+		Pin:     pin,
+		NoPush:  true,
+		Git:     true,
+		Origin:  origin,
+		Roots:   []string{branch},
+		Pid:     os.Getpid(),
+		Started: stackProcStart(os.Getpid()),
+		Host:    host,
 		Branches: []stackRebaseBranch{{
 			Name:      branch,
 			Parent:    onto.Name(),
-			WasParent: onto.Name(),
+			WasParent: was.Name(),
 			Local:     head,
 			Head:      head,
 			OldBase:   base,
@@ -310,4 +391,35 @@ func restackGitForkPoint(ctx context.Context, dir render.Dir, onto vcs.Trunk, pi
 	default:
 		return "", fmt.Errorf("restack: git merge-base --fork-point %s: exit %d: %s", onto.Ref(), code, strings.TrimSpace(stderr))
 	}
+}
+
+// restackGitNearerBase is where the branch's own commits start when it moves
+// off was: the later of its fork points on was and on the new parent, so
+// neither base's commits are replayed as the branch's. Fork points on separate
+// lines of history leave no single start that excludes both, and refuse.
+func restackGitNearerBase(ctx context.Context, dir render.Dir, branch string, onto, was vcs.Trunk, head, base string) (string, error) {
+	wasPin, err := stackRevParse(ctx, dir, string(was.Ref()))
+	if err != nil {
+		return "", err
+	}
+	wasBase, err := restackGitForkPoint(ctx, dir, was, wasPin, head)
+	if err != nil {
+		return "", err
+	}
+	later, err := gitIsAncestor(ctx, dir, "restack", base, wasBase)
+	if err != nil {
+		return "", err
+	}
+	if later {
+		return wasBase, nil
+	}
+	earlier, err := gitIsAncestor(ctx, dir, "restack", wasBase, base)
+	if err != nil {
+		return "", err
+	}
+	if earlier {
+		return base, nil
+	}
+	return "", fmt.Errorf("restack: %s forked from %s at %.12s and from %s at %.12s, on separate lines of history, so no single replay leaves out both bases' commits — move it by hand with git rebase --onto %s <the parent of its first own commit> %s",
+		branch, onto.Name(), base, was.Name(), wasBase, onto.Ref(), branch)
 }
