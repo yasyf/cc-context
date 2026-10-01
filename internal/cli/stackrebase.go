@@ -51,18 +51,18 @@ var stackGitRebaseArgs = []string{"-c", "rerere.enabled=false", "-c", "rebase.up
 var stackReplayRebaseArgs = []string{"--no-fork-point", "--no-rebase-merges", "--reapply-cherry-picks", "--keep-empty", "--empty=drop"}
 
 type stackPR struct {
-	Number    int      `json:"number"`
-	URL       string   `json:"url"`
-	Title     string   `json:"title"`
-	Body      string   `json:"body"`
-	State     string   `json:"state"`
-	Base      string   `json:"base"`
-	Head      string   `json:"head"`
-	Mergeable string   `json:"mergeable"`
-	Labels    []string `json:"labels,omitempty"`
-	Landed    bool     `json:"landed"`
-	BaseGone  bool     `json:"base_gone,omitempty"`
-	ParkedFrom string `json:"parked_from,omitempty"`
+	Number     int      `json:"number"`
+	URL        string   `json:"url"`
+	Title      string   `json:"title"`
+	Body       string   `json:"body"`
+	State      string   `json:"state"`
+	Base       string   `json:"base"`
+	Head       string   `json:"head"`
+	Mergeable  string   `json:"mergeable"`
+	Labels     []string `json:"labels,omitempty"`
+	Landed     bool     `json:"landed"`
+	BaseGone   bool     `json:"base_gone,omitempty"`
+	ParkedFrom string   `json:"parked_from,omitempty"`
 }
 
 func (p *stackPR) base() string {
