@@ -395,7 +395,7 @@ func runShip(cmd *cobra.Command, o shipOpts) (err error) {
 	}
 	var prNWO string
 	if prRun && !o.noPush {
-		if prNWO, err = shipPRRepo(ctx, l, plan); err != nil {
+		if prNWO, err = shipPRRepo(ctx, l, plan, meta[plan.name].base); err != nil {
 			return err
 		}
 	}
