@@ -139,6 +139,41 @@ func ghPREditArgv(number int, fields ...string) []string {
 	return append([]string{"gh", "api", "-X", "PATCH", fmt.Sprintf("repos/%s/pulls/%d", fakePRRepo, number), "--silent"}, fields...)
 }
 
+// The updatePullRequest mutations the GraphQL restate fallback sends.
+const (
+	prUpdateBody      = `mutation($id:ID!,$body:String!){updatePullRequest(input:{pullRequestId:$id,body:$body}){clientMutationId}}`
+	prUpdateTitleBody = `mutation($id:ID!,$title:String!,$body:String!){updatePullRequest(input:{pullRequestId:$id,title:$title,body:$body}){clientMutationId}}`
+)
+
+// prNodeIDGolden is the node id GitHub recorded for a pull request, which the
+// fake gh answers the GraphQL fallback's lookup with.
+func prNodeIDGolden(t *testing.T) string {
+	t.Helper()
+	var pr struct {
+		NodeID string `json:"node_id"`
+	}
+	if err := json.Unmarshal([]byte(ghStdout(t, "rest-pull-open")), &pr); err != nil || pr.NodeID == "" {
+		t.Fatalf("golden rest-pull-open node_id = %q: %v", pr.NodeID, err)
+	}
+	return pr.NodeID
+}
+
+// ghPRNodeIDArgv is the GraphQL lookup of a pull request's node id.
+func ghPRNodeIDArgv(number int) []string {
+	return []string{
+		"gh", "api", "graphql", "-f", "owner=yasyf", "-f", "repo=cc-context", "-F", "number=" + strconv.Itoa(number),
+		"-f", "query=" + prNodeIDQuery, "--jq", ".data.repository.pullRequest.id",
+	}
+}
+
+// ghPRUpdateRetry is the GraphQL restate a refusal names for one pull request,
+// as a person pastes it.
+func ghPRUpdateRetry(number int, mutation string, fields ...string) string {
+	lookup := fmt.Sprintf("gh api graphql -f owner=yasyf -f repo=cc-context -F number=%d -f '%s' --jq .data.repository.pullRequest.id",
+		number, "query="+prNodeIDQuery)
+	return "gh api graphql --silent -f '" + "query=" + mutation + "' " + strings.Join(fields, " ") + ` -f id="$(` + lookup + `)"`
+}
+
 func isPRLookup(inv []string) bool {
 	return len(inv) > 4 && inv[0] == "gh" && inv[1] == "api" && inv[2] == "-X" && inv[3] == "GET" && strings.HasSuffix(inv[4], "/pulls")
 }
@@ -754,6 +789,8 @@ func TestShipPRRestateFailureNamesTheRetry(t *testing.T) {
 			`"feature2":{"parents":[{"ref":"feature","sha":"feedface"}]}}`)
 		gt.prs["feature"], gt.prs["feature2"] = 6, 7
 		t.Setenv("GH_PR_EDIT_FAIL", "gh: API rate limit exceeded (HTTP 403)")
+		t.Setenv("GH_PR_NODE_ID", prNodeIDGolden(t))
+		t.Setenv("GH_PR_GRAPHQL_FAIL", "gh: API rate limit exceeded")
 		tipBody := writePRBody(t, "tip.md", "tip body\n")
 		midBody := writePRBody(t, "mid.md", "mid body\n")
 
@@ -764,7 +801,9 @@ func TestShipPRRestateFailureNamesTheRetry(t *testing.T) {
 		}
 		want := `ship: the push and graphite submit already happened; only the pull request restate failed — finish it with: ` +
 			`gh api -X PATCH repos/yasyf/cc-context/pulls/7 --silent -f 'title=Tip title' -F body=@` + tipBody +
-			` && gh api -X PATCH repos/yasyf/cc-context/pulls/6 --silent -F body=@` + midBody + `: `
+			` && gh api -X PATCH repos/yasyf/cc-context/pulls/6 --silent -F body=@` + midBody +
+			`, or over GraphQL: ` + ghPRUpdateRetry(7, prUpdateTitleBody, "-f 'title=Tip title'", "-F body=@"+tipBody) +
+			` && ` + ghPRUpdateRetry(6, prUpdateBody, "-F body=@"+midBody) + `: `
 		if !strings.HasPrefix(err.Error(), want) {
 			t.Errorf("error = %q, want prefix %q", err, want)
 		}
@@ -777,6 +816,8 @@ func TestShipPRRestateFailureNamesTheRetry(t *testing.T) {
 		pr := prFromListGolden(t, "rest-pulls-head-open")
 		t.Setenv("GH_PULLS_JSON", ghStdout(t, "rest-pulls-head-open"))
 		t.Setenv("GH_PR_EDIT_FAIL", "gh: API rate limit exceeded (HTTP 403)")
+		t.Setenv("GH_PR_NODE_ID", prNodeIDGolden(t))
+		t.Setenv("GH_PR_GRAPHQL_FAIL", "gh: API rate limit exceeded")
 		body := writePRBody(t, "body.md", "regenerated\n")
 
 		_, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", body)
@@ -784,7 +825,8 @@ func TestShipPRRestateFailureNamesTheRetry(t *testing.T) {
 			t.Fatal("ship succeeded over a refused restate")
 		}
 		want := fmt.Sprintf("ship: the push already happened; only the pull request restate failed — finish it with: "+
-			"gh api -X PATCH repos/yasyf/cc-context/pulls/%d --silent -F body=@%s: ", pr.Number, body)
+			"gh api -X PATCH repos/yasyf/cc-context/pulls/%d --silent -F body=@%s, or over GraphQL: %s: ",
+			pr.Number, body, ghPRUpdateRetry(pr.Number, prUpdateBody, "-F body=@"+body))
 		if !strings.HasPrefix(err.Error(), want) {
 			t.Errorf("error = %q, want prefix %q", err, want)
 		}
@@ -797,16 +839,100 @@ func TestShipPRRestateFailureNamesTheRetry(t *testing.T) {
 		pr := prFromListGolden(t, "rest-pulls-head-draft")
 		t.Setenv("GH_PULLS_JSON", ghStdout(t, "rest-pulls-head-draft"))
 		t.Setenv("GH_PR_EDIT_FAIL", "gh: API rate limit exceeded (HTTP 403)")
+		t.Setenv("GH_PR_NODE_ID", prNodeIDGolden(t))
+		t.Setenv("GH_PR_GRAPHQL_FAIL", "gh: API rate limit exceeded")
 
 		_, err := runShipCmdStdin(t, f, strings.NewReader("piped body\n"), "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", "-", "--publish")
 		if err == nil {
 			t.Fatal("ship succeeded over a refused restate")
 		}
-		want := fmt.Sprintf("finish it with: gh api -X PATCH repos/yasyf/cc-context/pulls/%d --silent -F body=@- && gh pr ready %d --repo yasyf/cc-context: ",
-			pr.Number, pr.Number)
+		ready := fmt.Sprintf("gh pr ready %d --repo yasyf/cc-context", pr.Number)
+		want := fmt.Sprintf("finish it with: gh api -X PATCH repos/yasyf/cc-context/pulls/%d --silent -F body=@- && %s, or over GraphQL: %s && %s: ",
+			pr.Number, ready, ghPRUpdateRetry(pr.Number, prUpdateBody, "-F body=@-"), ready)
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error = %q, want it to carry %q", err, want)
 		}
+	})
+	t.Run("a refusal that is no rate limit", func(t *testing.T) {
+		f := shipPRFixture(t, vcstest.Branch("feature"))
+		pr := prFromListGolden(t, "rest-pulls-head-open")
+		t.Setenv("GH_PULLS_JSON", ghStdout(t, "rest-pulls-head-open"))
+		t.Setenv("GH_PR_EDIT_FAIL", "gh: Validation Failed (HTTP 422)")
+		body := writePRBody(t, "body.md", "regenerated\n")
+
+		_, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", body)
+		if err == nil {
+			t.Fatal("ship succeeded over a refused restate")
+		}
+		want := fmt.Sprintf("finish it with: gh api -X PATCH repos/yasyf/cc-context/pulls/%d --silent -F body=@%s: ", pr.Number, body)
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want it to carry %q", err, want)
+		}
+		for _, inv := range vcstest.Invocations(t, f.ArgvLog) {
+			if slices.Contains(inv, "graphql") {
+				t.Errorf("ship ran %v — only a rate limit falls back to GraphQL", inv)
+			}
+		}
+	})
+}
+
+// TestShipPRRestateFallsBackToGraphQL is the restate of Forge-AI/monorepo#29086:
+// a secondary rate limit refused the REST write while the GraphQL budget stood
+// open, so ship finishes it with updatePullRequest instead of failing.
+func TestShipPRRestateFallsBackToGraphQL(t *testing.T) {
+	nodeID := prNodeIDGolden(t)
+	t.Run("graphite lane", func(t *testing.T) {
+		log, gt := setupShipGT(t, true)
+		gt.prs["feature"] = 7
+		t.Setenv("GH_PR_EDIT_FAIL", "gh: API rate limit exceeded for user ID 1. (HTTP 403)")
+		t.Setenv("GH_PR_NODE_ID", nodeID)
+		body := writePRBody(t, "body.md", "why this change\n")
+
+		got, err := runShipCmd(gt.ctx(context.Background()), t, "-m", "fix: frobnicate", "--no-watch", "--pr-title", "Better title", "--pr-body-file", body)
+		if err != nil {
+			t.Fatalf("ship error = %v", err)
+		}
+		if want := ` · set PR #7 title+body`; !strings.HasSuffix(got, want) {
+			t.Errorf("summary = %q, want suffix %q", got, want)
+		}
+		var gh [][]string
+		for _, inv := range readInvocations(t, log) {
+			if inv[0] == "gh" {
+				gh = append(gh, inv)
+			}
+		}
+		assertInvocations(t, gh, [][]string{
+			ghPREditArgv(7, "-f", "title=Better title", "-F", "body=@"+body),
+			ghPRNodeIDArgv(7),
+			{"gh", "api", "graphql", "--silent", "-f", "query=" + prUpdateTitleBody, "-f", "title=Better title", "-F", "body=@" + body, "-f", "id=" + nodeID},
+		})
+	})
+	t.Run("git lane", func(t *testing.T) {
+		f := shipPRFixture(t, vcstest.Branch("feature"))
+		pr := prFromListGolden(t, "rest-pulls-head-open")
+		t.Setenv("GH_PULLS_JSON", ghStdout(t, "rest-pulls-head-open"))
+		t.Setenv("GH_PR_EDIT_FAIL", "gh: You have exceeded a secondary rate limit. (HTTP 403)")
+		t.Setenv("GH_PR_NODE_ID", nodeID)
+		body := writePRBody(t, "body.md", "regenerated\n")
+
+		got, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", body)
+		if err != nil {
+			t.Fatalf("ship error = %v", err)
+		}
+		if want := fmt.Sprintf(" · updated PR #%d %s (body)", pr.Number, pr.URL); !strings.HasSuffix(got, want) {
+			t.Errorf("summary = %q, want suffix %q", got, want)
+		}
+		var gh [][]string
+		for _, inv := range vcstest.Invocations(t, f.ArgvLog) {
+			if inv[0] == "gh" && !isPRLookup(inv) {
+				gh = append(gh, inv)
+			}
+		}
+		assertInvocations(t, gh, [][]string{
+			ghPREditArgv(pr.Number, "-F", "body=@"+body),
+			ghPRNodeIDArgv(pr.Number),
+			{"gh", "api", "graphql", "--silent", "-f", "query=" + prUpdateBody, "-F", "body=@" + body, "-f", "id=" + nodeID},
+		})
 	})
 }
 

@@ -203,6 +203,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs ship` finishes a pull request restate over GraphQL when REST is
+  rate limited.** GitHub can refuse the REST `PATCH` with a secondary rate
+  limit while the GraphQL budget is untouched, which failed the ship after its
+  push and submit had landed. A rate-limited restate now looks up the pull
+  request's node id and sends `updatePullRequest` with the same stated fields.
+  When both refuse, the error names the GraphQL commands beside the REST ones.
+
 - **A failed probe no longer strands a clean, pushed worktree.** A Watchman
   command that outlived its 10s bound, and a process whose arguments the kernel
   could not produce (`input/output error` while it replaced its image), refused

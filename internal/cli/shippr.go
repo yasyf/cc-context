@@ -404,7 +404,7 @@ func createPR(ctx context.Context, nwo, branch, base, title, bodyPath string, dr
 			continue
 		}
 		retry := ghCommand(prCreateArgv(nwo, branch, base, title, prRetryBody(bodyPath), draft))
-		return prState{}, prStepError("the push", "create", []string{retry}, errors.Join(err, lookupErr))
+		return prState{}, prStepError("the push", "create", []string{retry}, nil, errors.Join(err, lookupErr))
 	}
 }
 
@@ -438,17 +438,22 @@ func shipPREdit(ctx context.Context, nwo string, pr prState, m prMeta) (string, 
 		}
 	}
 	if len(fields) > 0 {
-		if _, err := render.RunCLI(ctx, render.Ambient, "gh", prEditArgv(nwo, pr.Number, m)); err != nil {
-			retry := []string{ghCommand(prRetryArgv(nwo, pr.Number, m))}
+		if viaGraphQL, err := restatePR(ctx, nwo, pr.Number, m); err != nil {
+			var then []string
 			if ready != nil {
-				retry = append(retry, ghCommand(ready))
+				then = []string{ghCommand(ready)}
 			}
-			return "", prStepError("the push", "restate", retry, err)
+			retry := append([]string{ghCommand(prRetryArgv(nwo, pr.Number, m))}, then...)
+			var graphQL []string
+			if viaGraphQL {
+				graphQL = append([]string{prUpdateRetry(nwo, pr.Number, m)}, then...)
+			}
+			return "", prStepError("the push", "restate", retry, graphQL, err)
 		}
 	}
 	if ready != nil {
 		if _, err := render.RunCLI(ctx, render.Ambient, "gh", ready); err != nil {
-			return "", prStepError("the push", "restate", []string{ghCommand(ready)}, err)
+			return "", prStepError("the push", "restate", []string{ghCommand(ready)}, nil, err)
 		}
 		fields = append(fields, readyField)
 	}
@@ -475,6 +480,62 @@ func prEditArgv(nwo string, number int, m prMeta) []string {
 	return ghPatchPullArgv(nwo, number, fields...)
 }
 
+// restatePR writes the stated fields over REST, and over GraphQL's
+// updatePullRequest when REST refuses with a rate limit: GitHub meters the two
+// apart, so a secondary limit on REST writes leaves GraphQL open. viaGraphQL
+// reports that the fallback ran.
+func restatePR(ctx context.Context, nwo string, number int, m prMeta) (viaGraphQL bool, err error) {
+	_, err = render.RunCLI(ctx, render.Ambient, "gh", prEditArgv(nwo, number, m))
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "rate limit") {
+		return false, err
+	}
+	id, gqlErr := render.RunCLI(ctx, render.Ambient, "gh", prNodeIDArgv(nwo, number))
+	if gqlErr == nil {
+		_, gqlErr = render.RunCLI(ctx, render.Ambient, "gh", append(prUpdateArgv(m), "-f", "id="+strings.TrimSpace(id)))
+	}
+	if gqlErr != nil {
+		return true, errors.Join(err, fmt.Errorf("graphql fallback: %w", gqlErr))
+	}
+	return true, nil
+}
+
+const prNodeIDQuery = `query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$number){id}}}`
+
+func prNodeIDArgv(nwo string, number int) []string {
+	owner, repo, _ := strings.Cut(nwo, "/")
+	return []string{
+		"api", "graphql", "-f", "owner=" + owner, "-f", "repo=" + repo, "-F", "number=" + strconv.Itoa(number),
+		"-f", "query=" + prNodeIDQuery, "--jq", ".data.repository.pullRequest.id",
+	}
+}
+
+// prUpdateArgv is prEditArgv over GraphQL, less the pull request's node id,
+// declaring only the stated fields so an unstated one is never written.
+func prUpdateArgv(m prMeta) []string {
+	vars, input, fields := []string{"$id:ID!"}, []string{"pullRequestId:$id"}, []string{}
+	if m.title != "" {
+		vars, input = append(vars, "$title:String!"), append(input, "title:$title")
+		fields = append(fields, "-f", "title="+m.title)
+	}
+	if m.bodyPath != "" {
+		vars, input = append(vars, "$body:String!"), append(input, "body:$body")
+		fields = append(fields, "-F", "body=@"+m.bodyPath)
+	}
+	if m.base != "" {
+		vars, input = append(vars, "$base:String!"), append(input, "baseRefName:$base")
+		fields = append(fields, "-f", "base="+m.base)
+	}
+	query := fmt.Sprintf("mutation(%s){updatePullRequest(input:{%s}){clientMutationId}}", strings.Join(vars, ","), strings.Join(input, ","))
+	return append([]string{"api", "graphql", "--silent", "-f", "query=" + query}, fields...)
+}
+
+// prUpdateRetry is prUpdateArgv as a person re-runs it, the node id looked up
+// inline.
+func prUpdateRetry(nwo string, number int, m prMeta) string {
+	m.bodyPath = prRetryBody(m.bodyPath)
+	return ghCommand(prUpdateArgv(m)) + ` -f id="$(` + ghCommand(prNodeIDArgv(nwo, number)) + `)"`
+}
+
 // prRetryArgv is prEditArgv as a person re-runs it.
 func prRetryArgv(nwo string, number int, m prMeta) []string {
 	m.bodyPath = prRetryBody(m.bodyPath)
@@ -493,10 +554,14 @@ func prRetryBody(path string) string {
 
 // prStepError reports a pull request step that failed after the branch
 // already reached GitHub, naming the commands that finish only that step, so
-// a caller does not read the whole ship as failed and re-run it.
-func prStepError(done, step string, retry []string, err error) error {
-	return fmt.Errorf("ship: %s already happened; only the pull request %s failed — finish it with: %s: %w",
-		done, step, strings.Join(retry, " && "), err)
+// a caller does not read the whole ship as failed and re-run it. graphQL is the
+// same step over GraphQL, when REST refused it with a rate limit.
+func prStepError(done, step string, retry, graphQL []string, err error) error {
+	finish := strings.Join(retry, " && ")
+	if len(graphQL) > 0 {
+		finish += ", or over GraphQL: " + strings.Join(graphQL, " && ")
+	}
+	return fmt.Errorf("ship: %s already happened; only the pull request %s failed — finish it with: %s: %w", done, step, finish, err)
 }
 
 // shipPRGT backfills the pull requests the submit just opened, over the
@@ -518,8 +583,12 @@ func shipPRGT(ctx context.Context, nwo string, meta map[string]prMeta, stack []s
 		if entry.PR == 0 {
 			return "", fmt.Errorf("ship: --pr-title/--pr-body-file named %s, which has no pull request", entry.Branch)
 		}
-		if _, err := render.RunCLI(ctx, render.Ambient, "gh", prEditArgv(nwo, entry.PR, m)); err != nil {
-			return "", prStepError("the push and graphite submit", "restate", prRestatesLeft(nwo, meta, stack[:i+1]), err)
+		if viaGraphQL, err := restatePR(ctx, nwo, entry.PR, m); err != nil {
+			retry, graphQL := prRestatesLeft(nwo, meta, stack[:i+1])
+			if !viaGraphQL {
+				graphQL = nil
+			}
+			return "", prStepError("the push and graphite submit", "restate", retry, graphQL, err)
 		}
 		segs = append(segs, fmt.Sprintf("PR #%d %s", entry.PR, strings.Join(fields, "+")))
 	}
@@ -530,18 +599,18 @@ func shipPRGT(ctx context.Context, nwo string, meta map[string]prMeta, stack []s
 }
 
 // prRestatesLeft is every restate shipPRGT had yet to make when one failed, in
-// the order it makes them.
-func prRestatesLeft(nwo string, meta map[string]prMeta, stack []stackEntry) []string {
-	var left []string
+// the order it makes them, over REST and over GraphQL.
+func prRestatesLeft(nwo string, meta map[string]prMeta, stack []stackEntry) (rest, graphQL []string) {
 	for i := len(stack) - 1; i >= 0; i-- {
 		entry := stack[i]
 		m := meta[entry.Branch]
 		if entry.PR == 0 || len(m.stated()) == 0 {
 			continue
 		}
-		left = append(left, ghCommand(prRetryArgv(nwo, entry.PR, m)))
+		rest = append(rest, ghCommand(prRetryArgv(nwo, entry.PR, m)))
+		graphQL = append(graphQL, prUpdateRetry(nwo, entry.PR, m))
 	}
-	return left
+	return rest, graphQL
 }
 
 // prNumberFromURL reads the pull request number off the URL gh pr create prints,
