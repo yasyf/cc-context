@@ -541,6 +541,7 @@ type gtSubmit struct {
 	leases      map[string]string
 	trunkHead   string
 	publication *stackRebaseRun
+	otherLanes  []string
 }
 
 func gtStuck(prefix, problem, suffix string) string {
@@ -1493,6 +1494,8 @@ func shipPushGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, meta ma
 		sub.publication = c.restack
 		sub.trunkHead = c.restack.Pin
 		sub.leases = stackPublicationLeases(c.restack)
+	} else if !o.allLanes {
+		sub.otherLanes = slices.DeleteFunc(slices.Clone(chain), func(name string) bool { return branchLane(name) == branchLane(branch) })
 	}
 	commonDir, err := c.common(ctx)
 	if err != nil {
@@ -1558,6 +1561,13 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 		return nil, nil, err
 	}
 	branches, held := gtDropHeld(state, branches)
+	if others := slices.DeleteFunc(slices.Clone(branches), func(name string) bool { return !slices.Contains(s.otherLanes, name) }); len(others) > 0 {
+		branches = slices.DeleteFunc(branches, func(name string) bool { return slices.Contains(others, name) })
+		held = append(held, others...)
+		if _, err := fmt.Fprintf(errW, "%s: not pushing %s — another lane's; --all-lanes pushes them\n", s.prefix, strings.Join(others, ", ")); err != nil {
+			return nil, nil, fmt.Errorf("%s: name the other lanes' branches: %w", s.prefix, err)
+		}
+	}
 	if len(branches) == 0 {
 		if s.publication != nil {
 			if err := stackRecordPublication(ctx, l.dir(), s.publication, nil); err != nil {

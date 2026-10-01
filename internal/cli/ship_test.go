@@ -6574,6 +6574,40 @@ func TestShipGTAnchorsTheBaseOnTheRemoteTrunk(t *testing.T) {
 	}
 }
 
+func TestShipGTLeavesAnotherLanesBranchUnpushed(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want []string
+	}{
+		{name: "this lane", want: []string{"l18/feature"}},
+		{name: "all lanes", args: []string{"--all-lanes"}, want: []string{"l30/base", "l18/feature"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			log, _ := setupShipGT(t, true)
+			api := stubGTAPI(t)
+			t.Setenv("GIT_BRANCH", "l18/feature")
+			setGTState(t, `{"main":{"trunk":true},"l30/base":{"parents":[{"ref":"main","sha":"deadbeef"}]},`+
+				`"l18/feature":{"parents":[{"ref":"l30/base","sha":"beadfeed"}]}}`)
+
+			_, errStr, err := runShipCmdFull(api.ctx(context.Background()), t, append([]string{"-m", "fix: frobnicate", "--no-watch"}, tt.args...)...)
+			if err != nil {
+				t.Fatalf("ship error = %v (stderr=%q)", err, errStr)
+			}
+			if heads := api.submitHeads(); !slices.Equal(heads, tt.want) {
+				t.Errorf("submit posts = %v, want %v", heads, tt.want)
+			}
+			if refs := gtPushedRefs(readInvocations(t, log)); !slices.Equal(refs, tt.want) {
+				t.Errorf("pushed %v, want %v", refs, tt.want)
+			}
+			if mentioned := strings.Contains(errStr, "ship: not pushing l30/base — another lane's"); mentioned != (tt.args == nil) {
+				t.Errorf("stderr = %q, want the other lane named: %t", errStr, tt.args == nil)
+			}
+		})
+	}
+}
+
 // TestShipGTSkipsBranchesTrunkContains is the incident the anchoring exists
 // for: a harness worktree branch holding nothing origin's trunk lacks sat in
 // the chain, read as a stack member against a local trunk nine commits behind,
