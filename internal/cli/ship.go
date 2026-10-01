@@ -1723,9 +1723,9 @@ func shipPushJJReject(ctx context.Context, dir render.Dir, target, moveOp string
 }
 
 func shipPushGit(ctx context.Context, dir render.Dir, o shipOpts, branch, trunk, preAmendSHA string) (string, int, error) {
-	remote, err := gitRemoteFor(ctx, dir, "ship", branch)
+	remote, err := vcs.GitRemoteFor(ctx, dir, branch)
 	if err != nil {
-		return "", 0, err
+		return "", 0, fmt.Errorf("ship: %w", err)
 	}
 	if o.expectRemote != "" {
 		return remote, 0, shipPushGitExpected(ctx, dir, remote, branch, o.expectRemote, o.noVerify)
@@ -1760,29 +1760,6 @@ func gitPushArgv(noVerify bool, args ...string) []string {
 	return append(argv, args...)
 }
 
-// gitRemoteFor resolves the remote that branch.<branch>.remote configures, so a
-// triangular or non-origin-only repo fetches, rebases, and pushes against the
-// same remote. git config --get exits 1 when unset; that and an empty value both
-// default to origin. Any other exit is an error, prefixed with the command that
-// asked — ship, restack, and info all do.
-func gitRemoteFor(ctx context.Context, dir render.Dir, prefix, branch string) (string, error) {
-	out, code, stderr, err := render.RunCLIExitCode(ctx, dir, "git", []string{"config", "--get", "branch." + branch + ".remote"})
-	if err != nil {
-		return "", fmt.Errorf("%s: git config branch.%s.remote: %w", prefix, branch, err)
-	}
-	switch code {
-	case 0:
-		if r := strings.TrimSpace(out); r != "" {
-			return r, nil
-		}
-		return "origin", nil
-	case 1:
-		return "origin", nil
-	default:
-		return "", fmt.Errorf("%s: git config branch.%s.remote: exit %d: %s", prefix, branch, code, strings.TrimSpace(stderr))
-	}
-}
-
 func shipAmendKept(ctx context.Context, dir render.Dir, preAmendSHA string, err error) error {
 	head, headErr := gitRevParse(ctx, dir, "ship", "HEAD")
 	if headErr != nil {
@@ -1796,9 +1773,10 @@ func shipAmendKept(ctx context.Context, dir render.Dir, preAmendSHA string, err 
 
 // shipPushGitAmend pushes an amended commit without ever fetching. It tries a
 // plain push first (an amend of an unpushed commit fast-forwards, no force) and
-// only on a non-fast-forward rejection force-pushes with a lease pinned to
-// preAmendSHA, so the force lands iff the remote still sits on the rewritten
-// commit. A stale or rejected lease is terminal.
+// only on a non-fast-forward rejection force-pushes with a lease pinned to the
+// remote head, provided that head is the rewritten commit or one this branch's
+// reflog holds: its own last push, before a local rebase and amend. A head the
+// branch never held, or a stale or rejected lease, is terminal.
 func shipPushGitAmend(ctx context.Context, dir render.Dir, remote, branch, preAmendSHA string, noVerify bool) error {
 	_, err := render.RunCLI(ctx, dir, "git", gitPushArgv(noVerify, remote, branch))
 	if err == nil {
@@ -1807,14 +1785,45 @@ func shipPushGitAmend(ctx context.Context, dir render.Dir, remote, branch, preAm
 	if !gitPushRejected(err) {
 		return fmt.Errorf("ship: git push: %w", err)
 	}
-	lease := fmt.Sprintf("--force-with-lease=%s:%s", branch, preAmendSHA)
+	refusal := fmt.Sprintf("ship: %s/%s is not a head %s has held — someone may have built on the commit you amended; inspect and reconcile the remote, then verify its exact commit before running ccx vcs ship --no-gt --no-commit --expect-remote <full-remote-oid>", remote, branch, branch)
+	tip, err := shipAmendLease(ctx, dir, remote, branch, preAmendSHA)
+	if err != nil {
+		return err
+	}
+	if tip == "" {
+		return errors.New(refusal)
+	}
+	lease := fmt.Sprintf("--force-with-lease=%s:%s", branch, tip)
 	if _, err := render.RunCLI(ctx, dir, "git", gitPushArgv(noVerify, remote, lease, branch)); err != nil {
 		if gitPushStaleLease(err) || gitPushRejected(err) {
-			return fmt.Errorf("ship: %s/%s does not match the pre-amend head — someone may have built on the commit you amended, or it was rebased locally; inspect and reconcile the remote, then verify its exact commit before running ccx vcs ship --no-gt --no-commit --expect-remote <full-remote-oid>: %w", remote, branch, err)
+			return fmt.Errorf("%s: %w", refusal, err)
 		}
 		return fmt.Errorf("ship: git push: %w", err)
 	}
 	return nil
+}
+
+// shipAmendLease is the remote head an amend may force over: the rewritten
+// commit, or a head the branch's reflog holds, as a push before a local rebase
+// leaves it. Empty when the remote holds anything else.
+func shipAmendLease(ctx context.Context, dir render.Dir, remote, branch, preAmendSHA string) (string, error) {
+	ref := "refs/heads/" + branch
+	out, err := render.RunCLI(ctx, dir, "git", []string{"ls-remote", remote, ref})
+	if err != nil {
+		return "", fmt.Errorf("ship: git ls-remote %s %s: %w", remote, ref, err)
+	}
+	tip, _, _ := strings.Cut(strings.TrimSpace(out), "\t")
+	if tip == "" || tip == preAmendSHA {
+		return tip, nil
+	}
+	if _, code, _, err := render.RunCLIExitCodeEnv(ctx, dir, "git", []string{"cat-file", "-e", tip + "^{commit}"}, gitRecordedHistoryEnv); err != nil || code != 0 {
+		return "", err
+	}
+	held, err := gitReflogHolds(ctx, dir, "ship", branch, tip)
+	if err != nil || !held {
+		return "", err
+	}
+	return tip, nil
 }
 
 // shipPushGitOnce is one non-amend push attempt: fetch the branch and trunk,

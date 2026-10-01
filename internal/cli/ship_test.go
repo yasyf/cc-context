@@ -1987,7 +1987,6 @@ func TestShipGitPushRetry(t *testing.T) {
 		want        [][]string
 		rebased     int
 		remoteCount int
-		lease       bool
 		wantErr     []string
 	}{
 		{
@@ -2031,10 +2030,9 @@ func TestShipGitPushRetry(t *testing.T) {
 			wantErr: []string{"rebase onto origin/main conflicts", "f.txt"},
 		},
 		{
-			// The amend push never fetches, so the lease is pinned to the commit
-			// this checkout last saw on the remote — which the upstream commit has
-			// already moved past.
-			name: "amend stale lease never fetches or retries",
+			// The amend push never fetches, so the upstream commit the remote moved
+			// to is one this branch never held, and no lease is offered over it.
+			name: "amend over a foreign head never fetches or retries",
 			args: []string{"--amend"},
 			build: func(t *testing.T, f *vcstest.Fixture) {
 				shipAmendable(t, f, vcs.Git)
@@ -2042,7 +2040,6 @@ func TestShipGitPushRetry(t *testing.T) {
 				shipDivergeRemote(t, f, "main", "u.txt", "upstream\n")
 			},
 			remoteCount: 3,
-			lease:       true,
 			want: [][]string{
 				{"git", "branch", "--show-current"},
 				gitTrunkArgv,
@@ -2053,6 +2050,8 @@ func TestShipGitPushRetry(t *testing.T) {
 				{"git", "log", "-1", "--format=%h%x00%s"},
 				{"git", "config", "--get", "branch.main.remote"},
 				{"git", "push", "--no-follow-tags", "--quiet", "origin", "main"},
+				{"git", "ls-remote", "origin", "refs/heads/main"},
+				{"git", "cat-file", "-e", "@UPSTREAM^{commit}"},
 			},
 			wantErr: []string{"built on the commit you amended"},
 		},
@@ -2084,9 +2083,13 @@ func TestShipGitPushRetry(t *testing.T) {
 			shipResetLog(t, f)
 
 			got, err := runShipCmd(f.Context(), t, append([]string{"-m", "fix: frobnicate", "--no-watch"}, tt.args...)...)
-			want := tt.want
-			if tt.lease {
-				want = append(want, []string{"git", "push", "--no-follow-tags", "--quiet", "origin", "--force-with-lease=main:" + before, "main"})
+			upstream := gitAt(t, f.Env(), f.Dir, "--git-dir="+f.RemoteDir, "rev-parse", "refs/heads/main")
+			want := make([][]string, len(tt.want))
+			for i, argv := range tt.want {
+				want[i] = make([]string, len(argv))
+				for j, arg := range argv {
+					want[i][j] = strings.ReplaceAll(arg, "@UPSTREAM", upstream)
+				}
 			}
 			assertInvocations(t, vcstest.Invocations(t, f.ArgvLog), want)
 			if n := remoteCount(t, f, "main"); n != tt.remoteCount {
@@ -7289,5 +7292,105 @@ func TestShipGitFetchesOnlyTheRefsItReads(t *testing.T) {
 	}
 	if got, want := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "refs/heads/feature"), gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD"); got != want {
 		t.Errorf("remote feature = %s, want the shipped head %s", got, want)
+	}
+}
+
+// shipPushedFeature commits feature work, pushes it, and moves main past it on
+// the remote and locally, returning the feature head the remote holds.
+func shipPushedFeature(t *testing.T) (*vcstest.Fixture, string) {
+	t.Helper()
+	f := shipRepo(t, vcstest.Remote(), vcstest.Branch("feature"))
+	writeShipFile(t, f.Dir, "feature.txt", "feature\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "feature.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "feature")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "feature")
+	pushed := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD")
+	shipDivergeRemote(t, f, "main", "u.txt", "upstream\n")
+	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin", "+refs/heads/main:refs/remotes/origin/main")
+	writeShipFile(t, f.Dir, "feature.txt", "amended\n")
+	return f, pushed
+}
+
+func TestShipGitAmendAfterALocalRebaseLeasesTheLastPush(t *testing.T) {
+	f, pushed := shipPushedFeature(t)
+	mustRun(t, f.Env(), f.Dir, "git", "rebase", "-q", "--autostash", "origin/main")
+
+	if _, err := runShipCmd(f.Context(), t, "--amend", "-m", "feature", "--no-watch", "--no-pr"); err != nil {
+		t.Fatalf("ship error = %v, want the amend published over this branch's own last push", err)
+	}
+	head := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD")
+	if got := gitAt(t, f.Env(), f.Dir, "--git-dir="+f.RemoteDir, "rev-parse", "refs/heads/feature"); got != head {
+		t.Errorf("remote feature = %s, want the amended head %s", got, head)
+	}
+	lease := []string{"git", "push", "--no-follow-tags", "--quiet", "--no-verify", "origin", "--force-with-lease=feature:" + pushed, "feature"}
+	if !slices.ContainsFunc(vcstest.Invocations(t, f.ArgvLog), func(inv []string) bool { return slices.Equal(inv, lease) }) {
+		t.Errorf("invocations lack %v, the lease on the last push", lease)
+	}
+}
+
+func TestShipGitAmendRefusesAFetchedForeignHead(t *testing.T) {
+	f, _ := shipPushedFeature(t)
+	foreign := shipFetchedForeignFeature(t, f)
+	mustRun(t, f.Env(), f.Dir, "git", "rebase", "-q", "--autostash", "origin/main")
+
+	_, err := runShipCmd(f.Context(), t, "--amend", "-m", "feature", "--no-watch", "--no-pr")
+	if err == nil || !strings.Contains(err.Error(), "origin/feature is not a head feature has held") {
+		t.Fatalf("error = %v, want the foreign-head refusal", err)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "--git-dir="+f.RemoteDir, "rev-parse", "refs/heads/feature"); got != foreign {
+		t.Errorf("remote feature = %s, want the foreign head %s untouched", got, foreign)
+	}
+}
+
+func TestShipGitPushesALocallyTrackingBranchToOrigin(t *testing.T) {
+	f := shipRepo(t, vcstest.Remote(), vcstest.Dirty(), vcstest.Branch("feature"))
+	mustRun(t, f.Env(), f.Dir, "git", "config", "branch.feature.remote", ".")
+
+	if _, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--no-pr"); err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	if got, want := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "refs/heads/feature"), gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD"); got != want {
+		t.Errorf("origin feature = %s, want the shipped head %s", got, want)
+	}
+}
+
+// shipFetchedForeignFeature lands a commit on origin's feature from another
+// clone and fetches it, returning that foreign head.
+func shipFetchedForeignFeature(t *testing.T, f *vcstest.Fixture) string {
+	t.Helper()
+	theirs := filepath.Join(filepath.Dir(f.Dir), "theirs")
+	mustRun(t, f.Env(), filepath.Dir(f.Dir), "git", "clone", "-q", "-b", "feature", f.RemoteDir, theirs)
+	writeShipFile(t, theirs, "theirs.txt", "theirs\n")
+	mustRun(t, f.Env(), theirs, "git", "add", "theirs.txt")
+	mustRun(t, f.Env(), theirs, "git", "-c", "user.email=t@t.t", "-c", "user.name=t", "commit", "-qm", "theirs")
+	mustRun(t, f.Env(), theirs, "git", "push", "-q", "origin", "feature")
+	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin", "+refs/heads/feature:refs/remotes/origin/feature")
+	return gitAt(t, f.Env(), f.Dir, "rev-parse", "refs/remotes/origin/feature")
+}
+
+func TestShipGitAmendRefusesAForeignHeadSplicedIntoTheReflog(t *testing.T) {
+	for _, splice := range []string{"replace", "graft"} {
+		t.Run(splice, func(t *testing.T) {
+			f, pushed := shipPushedFeature(t)
+			tree := gitAt(t, f.Env(), f.Dir, "rev-parse", pushed+"^{tree}")
+			side := gitAt(t, f.Env(), f.Dir, "commit-tree", tree, "-p", pushed, "-m", "side")
+			mustRun(t, f.Env(), f.Dir, "git", "update-ref", "-m", "side", "refs/heads/feature", side)
+			mustRun(t, f.Env(), f.Dir, "git", "update-ref", "-m", "back", "refs/heads/feature", pushed)
+			foreign := shipFetchedForeignFeature(t, f)
+			if splice == "replace" {
+				mustRun(t, f.Env(), f.Dir, "git", "replace", "--graft", side, foreign)
+			} else {
+				grafts := gitAt(t, f.Env(), f.Dir, "rev-parse", "--git-path", "info/grafts")
+				writeShipFile(t, f.Dir, grafts, side+" "+foreign+"\n")
+			}
+
+			_, err := runShipCmd(f.Context(), t, "--amend", "-m", "feature", "--no-watch", "--no-pr")
+			if err == nil || !strings.Contains(err.Error(), "origin/feature is not a head feature has held") {
+				t.Fatalf("error = %v, want the foreign-head refusal", err)
+			}
+			if got := gitAt(t, f.Env(), f.Dir, "--git-dir="+f.RemoteDir, "rev-parse", "refs/heads/feature"); got != foreign {
+				t.Errorf("remote feature = %s, want the foreign head %s untouched", got, foreign)
+			}
+		})
 	}
 }
