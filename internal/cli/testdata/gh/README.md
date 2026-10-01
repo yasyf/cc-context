@@ -80,8 +80,8 @@ review comments, a draft pull request).
 
 ## Where a recording deviates from production argv
 
-Three scenarios could not be captured with the exact argv production sends. Each
-still holds bytes GitHub produced; only the request differs, and only as noted.
+Four scenarios could not be captured with the exact argv production sends. Each
+still holds bytes `gh` printed; only the request differs, and only as noted.
 
 - **`cli/viewer-graphql`** asks for `organizations(first:1)` where production asks
   for `first:100`. The signed-in account belongs to twelve organizations and only
@@ -96,6 +96,12 @@ still holds bytes GitHub produced; only the request differs, and only as noted.
   **`cli/guidelines-repo-view-populated`** name their repository positionally.
   Production runs `gh repo view` with no argument, against the working
   directory's repository, and there is only one of those to record from.
+- **`cli/rest-pull-create-empty-error`** is the one response GitHub did not
+  send. GitHub cannot be made to fail on demand, so `gh` posts ship's create, under
+  ship's `GH_DEBUG=api`, to a local server that answers a 502 with an empty JSON
+  body. That is the shape `gh` reports only as `unexpected end of JSON input`,
+  the error a real create to `yasyf/cc-remote` failed with. `gh` reaches the server
+  as `github.localhost` through `HTTP_PROXY`, with a placeholder token.
 
 ## Not yet recorded — 2026-08-02
 

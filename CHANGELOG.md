@@ -106,6 +106,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs ship` reports a pull request create GitHub refused after the
+  push.** Creating `yasyf/cc-remote`'s first pull request failed with
+  `ship: gh api create pull: gh: exit status 1: unexpected end of JSON input`.
+  GitHub answered with an error status and an empty JSON body, and `gh`
+  reports that body only as a parse failure. The error didn't say the push had
+  landed or how to finish, so the lane fell back to a raw `gh pr create`. Ship
+  now runs the create under `GH_DEBUG=api` and names the logged status, as in
+  `unexpected end of JSON input (HTTP 502 Bad Gateway)`. When the branch has
+  an open pull request after a refused create, ship reports it as opened.
+  Otherwise, the error says the push already happened and names the `gh api -X
+  POST` command that opens the pull request.
+
 - **Worktree cleanup no longer counts the Watchman server as a client of
   itself.** The watcher census exempted only its own `debug-status`
   connection, so the server's loopback connection, which places no

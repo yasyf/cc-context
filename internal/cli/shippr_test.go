@@ -196,6 +196,61 @@ func TestShipPRCreateGitLane(t *testing.T) {
 	}
 }
 
+// shipPRCreateRefused points the fake gh at a branch with no pull request and a
+// create GitHub answers with an error whose JSON body is empty.
+func shipPRCreateRefused(t *testing.T) {
+	t.Helper()
+	t.Setenv("GH_PULLS_JSON", ghStdout(t, "rest-pulls-head-none"))
+	refused := loadGHGolden(t, "rest-pull-create-empty-error")
+	t.Setenv("GH_PULL_CREATE_STDERR", refused.stderr)
+	t.Setenv("GH_PULL_CREATE_EXIT", strconv.Itoa(refused.exit))
+}
+
+// TestShipPRCreateRefused is cc-remote's first pull request: gh reported
+// GitHub's empty-bodied refusal only as "unexpected end of JSON input", and
+// ship failed without saying the push had landed or how to finish.
+func TestShipPRCreateRefused(t *testing.T) {
+	t.Run("no pull request", func(t *testing.T) {
+		f := shipPRFixture(t, vcstest.Branch("feature"))
+		shipPRCreateRefused(t)
+		body := writePRBody(t, "body.md", "why this change\n")
+
+		_, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--pr-title", "Better title", "--pr-body-file", body)
+		want := "ship: the push already happened; only the pull request create failed — finish it with: " +
+			"gh api -X POST repos/yasyf/cc-context/pulls -f head=feature -f base=main -f 'title=Better title' -F body=@" + body +
+			": gh: exit status 1: unexpected end of JSON input (HTTP 502 Bad Gateway)"
+		if err == nil || err.Error() != want {
+			t.Errorf("error = %v, want %q", err, want)
+		}
+		if n := remoteCount(t, f, "feature"); n != 2 {
+			t.Errorf("origin feature holds %d commits, want the push the create followed", n)
+		}
+	})
+	t.Run("opened anyway", func(t *testing.T) {
+		f := shipPRFixture(t, vcstest.Branch("feature"))
+		shipPRCreateRefused(t)
+		t.Setenv("GH_PULL_CREATED_MARK", filepath.Join(t.TempDir(), "created"))
+		t.Setenv("GH_PULLS_AFTER_CREATE_JSON", ghStdout(t, "rest-pulls-head-open"))
+		pr := prFromListGolden(t, "rest-pulls-head-open")
+		body := writePRBody(t, "body.md", "why this change\n")
+
+		got, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--pr-title", "Better title", "--pr-body-file", body)
+		if err != nil {
+			t.Fatalf("ship error = %v", err)
+		}
+		lookup := append([]string{"gh"}, ghPullsByHeadArgv(fakePRRepo, "feature", "open")...)
+		assertInvocations(t, vcstest.Invocations(t, f.ArgvLog), append(shipPRPushed("feature"),
+			lookup,
+			shipPRBaseArgv("feature", "main"),
+			[]string{"gh", "api", "-X", "POST", "repos/" + fakePRRepo + "/pulls", "-f", "head=feature", "-f", "base=main", "-f", "title=Better title", "-F", "body=@" + body},
+			lookup,
+		))
+		if want := fmt.Sprintf(" · opened PR #%d %s", pr.Number, pr.URL); !strings.HasSuffix(got, want) {
+			t.Errorf("summary = %q, want suffix %q", got, want)
+		}
+	})
+}
+
 func TestShipMessageFromPRFlags(t *testing.T) {
 	f := shipPRFixture(t, vcstest.Branch("feature"))
 	shipPRCreated(t)

@@ -138,14 +138,39 @@ func ghDebugLastResponse(stderr string) http.Header {
 }
 
 // ghDebugRefusal is gh's own error, which it prints after GH_DEBUG=api's log
-// of the last request closes.
+// of the last request closes. gh names the status only of an error body it
+// could parse, so an empty one gets the status line the log recorded.
 func ghDebugRefusal(stderr string) string {
+	refusal := stderr
 	if i := strings.LastIndex(stderr, "* Request took "); i >= 0 {
 		if _, after, ok := strings.Cut(stderr[i:], "\n"); ok {
-			stderr = after
+			refusal = after
 		}
 	}
-	return strings.TrimSpace(stderr)
+	refusal = strings.TrimSpace(refusal)
+	status := ghDebugLastStatus(stderr)
+	code, _, _ := strings.Cut(status, " ")
+	if status == "" || strings.Contains(refusal, "(HTTP "+code+")") {
+		return refusal
+	}
+	return fmt.Sprintf("%s (HTTP %s)", refusal, status)
+}
+
+// ghDebugLastStatus is the status GH_DEBUG=api logged for the last request,
+// "502 Bad Gateway" off its "< HTTP/2.0 502 Bad Gateway" line, and empty when
+// that request got no response.
+func ghDebugLastStatus(stderr string) string {
+	status := ""
+	for _, line := range strings.Split(stderr, "\n") {
+		line = strings.TrimRight(line, "\r")
+		if strings.HasPrefix(line, "* Request at ") {
+			status = ""
+		}
+		if rest, ok := strings.CutPrefix(line, "< HTTP/"); ok {
+			_, status, _ = strings.Cut(rest, " ")
+		}
+	}
+	return status
 }
 
 func ghNewestPull(ctx context.Context, dir render.Dir, branch string) (ghPull, bool, error) {
