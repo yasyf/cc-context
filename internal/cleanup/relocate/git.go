@@ -128,9 +128,30 @@ func (r *Relocator) checkedOutSubmodule(ctx context.Context, git, tree string) (
 	return found, errors.Join(err, inspect)
 }
 
-func (r *Relocator) pushed(ctx context.Context, git, repo, head string) (bool, error) {
+func (r *Relocator) pushed(ctx context.Context, git, repo, branch, head string) (bool, error) {
 	if head == "" {
 		return true, nil
+	}
+	if branch != "" {
+		out, err := r.git(ctx, git, "--git-dir="+repo, "config", "--get", "branch."+branch+".remote")
+		if err != nil && !quietMiss(err, out) {
+			return false, err
+		}
+		remote := strings.TrimSpace(out)
+		if remote == "" || remote == "." {
+			remote = "origin"
+		}
+		ref := "refs/remotes/" + remote + "/" + branch
+		out, err = r.git(ctx, git, "--git-dir="+repo, "show-ref", "--verify", "--quiet", ref)
+		if err == nil {
+			out, err = r.git(ctx, git, "--git-dir="+repo, "merge-base", "--is-ancestor", head, ref)
+			if err == nil {
+				return true, nil
+			}
+		}
+		if !quietMiss(err, out) {
+			return false, err
+		}
 	}
 	out, err := r.git(ctx, git, "--git-dir="+repo, "for-each-ref", "--count=1", "--contains", head, "--format=%(refname)", "refs/remotes/")
 	if err != nil {

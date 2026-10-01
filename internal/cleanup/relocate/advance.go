@@ -380,7 +380,7 @@ func (r *Relocator) unlisted(ctx context.Context, job *cleanup.Job, vetted *bool
 	case !errors.Is(err, cleanup.ErrUnlisted):
 		return reason, err.Error()
 	}
-	pushed, pushErr := r.pushed(ctx, job.Git, job.Repo, job.Head)
+	pushed, pushErr := r.pushed(ctx, job.Git, job.Repo, job.Branch, job.Head)
 	switch {
 	case pushErr != nil:
 		return "git", pushErr.Error()

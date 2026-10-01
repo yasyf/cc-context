@@ -2,6 +2,7 @@ package relocate
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -105,5 +106,82 @@ func TestEveryGitChildOfAnAdoptionIsIsolatedFromTheProject(t *testing.T) {
 	q.absent(marker)
 	if got := q.run(q.repo, "rev-parse", q.ref); got != q.head {
 		t.Errorf("legacy ref = %s, want %s", got, q.head)
+	}
+}
+
+func TestPushedUsesExactRemoteWitnessBeforeScanning(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		remote   string
+		exact    string
+		other    bool
+		want     bool
+		fallback bool
+	}{
+		{name: "origin exact witness", remote: "origin", exact: "feature", want: true},
+		{name: "configured remote witness", remote: "upstream", exact: "feature", want: true},
+		{name: "missing exact ref", remote: "origin", other: true, want: true, fallback: true},
+		{name: "non-containing exact ref", remote: "origin", exact: "main", other: true, want: true, fallback: true},
+		{name: "no witness", remote: "origin", exact: "main", fallback: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFixture(t)
+			job := f.accept()
+			if tt.remote != "origin" {
+				f.run(f.repo, "config", "branch.feature.remote", tt.remote)
+			}
+			ref := "refs/remotes/" + tt.remote + "/feature"
+			if tt.exact != "" {
+				f.run(f.repo, "update-ref", ref, tt.exact)
+			}
+			if tt.other {
+				f.run(f.repo, "update-ref", "refs/remotes/another/witness", "feature")
+			}
+			git, log := f.recorder()
+			got, err := f.relocator.pushed(context.Background(), git, f.common, job.Branch, job.Head)
+			if err != nil || got != tt.want {
+				t.Fatalf("pushed = %t, %v; want %t", got, err, tt.want)
+			}
+			prefix := "--git-dir=" + f.common + " "
+			want := []string{prefix + "config --get branch.feature.remote", prefix + "show-ref --verify --quiet " + ref}
+			if tt.exact != "" {
+				want = append(want, prefix+"merge-base --is-ancestor "+job.Head+" "+ref)
+			}
+			if tt.fallback {
+				want = append(want, prefix+"for-each-ref --count=1 --contains "+job.Head+" --format=%(refname) refs/remotes/")
+			}
+			f.recorded(log, want)
+		})
+	}
+}
+
+func TestExactPushedWitnessDoesNotBypassActivity(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		activate func(*fixture) string
+	}{
+		{name: "active holder", activate: func(f *fixture) string { return f.holdAt(f.worktree).Error() }},
+		{name: "unreadable evidence", activate: func(f *fixture) string {
+			f.guard = func(context.Context, string) error { return errors.New("native process evidence unreadable") }
+			return "could not verify that " + f.worktree + " is idle: native process evidence unreadable"
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFixture(t)
+			f.run(f.repo, "update-ref", "refs/remotes/origin/feature", "feature")
+			job := f.accept()
+			var detail string
+			f.watchers.retire = func(context.Context, string) error {
+				detail = tt.activate(f)
+				return errListingTimedOut
+			}
+			f.advance(&job)
+			f.blocked(&job, cleanup.PhasePrepared, "activity", detail)
+			if f.id(f.worktree) != job.Tree {
+				t.Fatal("the active tree moved despite its native guard")
+			}
+			f.absent(job.Registered)
+			f.absent(job.Payload)
+		})
 	}
 }
