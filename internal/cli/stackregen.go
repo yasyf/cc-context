@@ -40,7 +40,9 @@ type regenGenerator struct {
 }
 
 func (g regenGenerator) owns(path string) bool {
-	return slices.ContainsFunc(g.Paths, func(pattern string) bool { return doublestar.MatchUnvalidated(pattern, path) })
+	return slices.ContainsFunc(g.Paths, func(pattern string) bool {
+		return doublestar.MatchUnvalidated(pattern, path) || doublestar.MatchUnvalidated(strings.TrimSuffix(pattern, "/")+"/**", path)
+	})
 }
 
 func regenLoad(ctx context.Context, dir render.Dir, rev string) ([]regenGenerator, error) {

@@ -57,12 +57,11 @@ func TestStackSubmitLeavesDirtyTrunkAndItsIndexLockUntouched(t *testing.T) {
 	}
 }
 
-func TestStackSubmitKeepsConflictForContinue(t *testing.T) {
+func TestStackSubmitContinueMovesTheSourceOntoItsResolution(t *testing.T) {
 	f := shipGTRepo(t, vcstest.GTStack("base"))
 	stubStackPRs(t, f, nil)
 	stackConflicting(t, f)
 	before := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")
-	sourceBase := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
 	_, _, err := runStackCmd(t, f, "submit")
 	if err == nil || !strings.Contains(err.Error(), "ccx vcs stack continue") || strings.Contains(err.Error(), "gt restack") {
 		t.Fatalf("conflict: %v", err)
@@ -76,32 +75,36 @@ func TestStackSubmitKeepsConflictForContinue(t *testing.T) {
 	}
 	writeShipFile(t, run.Conflict.Workspace, "c.txt", "trunk\nfeature\n")
 	mustRun(t, f.Env(), run.Conflict.Workspace, "git", "add", "c.txt")
-	if _, _, err := runStackCmdIn(t, f, run.Conflict.Workspace, "continue"); err != nil {
+	out, _, err := runStackCmdIn(t, f, run.Conflict.Workspace, "continue")
+	if err != nil {
 		t.Fatal(err)
-	}
-	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature"); got != before {
-		t.Fatalf("continue moved source feature: %s != %s", got, before)
 	}
 	remote := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature")
 	parent := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
 	if remote == before || !stackOnto(t, f, parent, remote) || !stackOnto(t, f, "origin/main", remote) {
 		t.Fatalf("continued publication %s lost its published parent %s or fresh trunk", remote, parent)
 	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature"); got != remote {
+		t.Fatalf("source feature = %s, want it moved onto the resolution it published, %s", got, remote)
+	}
+	if !strings.Contains(out, "moved base, feature onto the published heads") {
+		t.Errorf("continue output = %q, want the sources moved", out)
+	}
 	receipt, err := stackReadPublication(f.Context(), render.Dir(f.Dir), "feature")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if receipt == nil || receipt.Source != before || receipt.SourceBase != sourceBase || receipt.Head != remote || receipt.Base != parent || receipt.Parent != "base" {
+	if receipt == nil || receipt.Source != remote || receipt.SourceBase != parent || receipt.Head != remote || receipt.Base != parent || receipt.Parent != "base" {
 		t.Fatalf("continued publication receipt = %+v", receipt)
 	}
 	if got := gitAt(t, f.Env(), f.RemoteDir, "show", "feature:c.txt"); got != "trunk\nfeature" {
 		t.Fatalf("published resolution = %q", got)
 	}
-	if got, err := os.ReadFile(filepath.Join(f.Dir, "c.txt")); err != nil || string(got) != "feature\n" {
-		t.Fatalf("source conflict file changed: %q %v", got, err)
+	if got, err := os.ReadFile(filepath.Join(f.Dir, "c.txt")); err != nil || string(got) != "trunk\nfeature\n" {
+		t.Fatalf("source conflict file = %q (%v), want the resolution checked out", got, err)
 	}
 	if staged, unstaged := gitAt(t, f.Env(), f.Dir, "diff", "--cached"), gitAt(t, f.Env(), f.Dir, "diff"); staged != "" || unstaged != "" {
-		t.Fatalf("source checkout changed after continue: staged=%q unstaged=%q", staged, unstaged)
+		t.Fatalf("source checkout dirty after continue: staged=%q unstaged=%q", staged, unstaged)
 	}
 }
 

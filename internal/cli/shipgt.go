@@ -1638,6 +1638,9 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 			return nil, nil, err
 		}
 	}
+	if s.publication != nil {
+		plan = slices.DeleteFunc(plan, func(b gtSubmitBranch) bool { return s.publication.branch(b.name).Pinned })
+	}
 	for i, b := range plan {
 		if lease, ok := s.leases[b.name]; ok {
 			plan[i].lease, plan[i].leaseSet = lease, true
@@ -1732,7 +1735,30 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 			entries[created.Head] = stackEntry{Branch: created.Head, PR: created.PRNumber, URL: created.PRURL, HasBody: strings.TrimSpace(submit[i].body) != "", State: string(gtapi.PROpen), metaApplied: s.publication != nil && s.publication.TipOnly}
 		}
 	}
+	gtRecordPushed(ctx, errW, owner+"/"+name, submit, entries)
 	return gtPlanNames(submit), entries, nil
+}
+
+// gtRecordPushed writes each pushed head into the shared pull request cache so
+// a status read before GitHub shows the push answers with the head that was
+// pushed; the cache is advisory, so a write that fails only warns.
+func gtRecordPushed(ctx context.Context, errW io.Writer, repo string, submit []gtSubmitBranch, entries map[string]stackEntry) {
+	heads := map[int]string{}
+	for _, b := range submit {
+		if e := entries[b.name]; e.PR != 0 {
+			heads[e.PR] = b.head
+		}
+	}
+	if len(heads) == 0 {
+		return
+	}
+	store, err := openPRState(ctx, repo, errW)
+	if err == nil {
+		err = store.Pushed(ctx, heads)
+	}
+	if err != nil {
+		_, _ = fmt.Fprintf(errW, "ship: record the pushed heads in the pull request cache: %v\n", err)
+	}
 }
 
 func gtTipOnlyPlan(plan []gtSubmitBranch, run *stackRebaseRun) ([]gtSubmitBranch, error) {

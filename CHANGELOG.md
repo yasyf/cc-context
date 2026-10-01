@@ -103,6 +103,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`ccx vcs stack submit` leaves another lane's branch at its published
+  head.** A branch checked out in another working copy that the submitted
+  branch sits on is kept at the head its pull request shows: it is neither
+  replayed onto trunk nor pushed, and the branch above it is published onto
+  that head. The run says so: `keeping <branch> (checked out in <path>) at
+  their published heads`. A held branch nothing own sits on is skipped as
+  before. In Forge-AI/monorepo, a submit from `yasyf/v3-l21-dev-check/check`
+  on 2026-10-01 printed `skipping yasyf/v3-l01-release-start/start (checked
+  out in …)` and then replayed and force-pushed that branch and
+  `yasyf/v3-l31-release-cli-verbs/verbs` with it, rewriting #28669 and
+  #28662 from a lane that owned neither: once every member was skipped the
+  run fell back to the whole stack, and the tip's receipt pulled its
+  published parents back in. A held parent that was never pushed is refused,
+  since there is no published head to stack on.
+
+- **`ccx vcs stack continue` moves the source branch onto the resolution it
+  published.** A branch replayed through a conflict the run's workspace
+  resolved is moved onto its published head once the push lands, like any
+  cleanly replayed branch; the resolved patches differ from the source's by
+  construction, so that difference no longer leaves it `on their sources`.
+  The earlier read kept Forge-AI/monorepo's `sentry-graphql-fingerprint`
+  checkout a commit behind #28635's head after a `ccx vcs ship --tip-only`
+  conflict was resolved.
+
+- **`ccx vcs pr status` and `pr state` serve a backoff-refused read from the
+  cache, marked stale.** When GitHub's rate limit refuses a poll past the
+  wait a command allows, records the cache already holds are printed with
+  `stale, polled <time>` on each `pr status` line and a `stale` object in
+  `--json` and `pr state` output naming the poll time, the next probe, and
+  the backoff's reason. A pull request the cache never polled, including one
+  only a push recorded, still fails naming the next probe.
+
+- **The cleanup daemon retries a transient blockage on its own.** A job
+  blocked on `activity` or `watchers` — a process census or watcher read
+  that failed (`read its arguments: input/output error`, a one-off watchman
+  census), or a holder that may leave — retries after 30 seconds, doubling
+  per consecutive transient block up to ten minutes, instead of
+  waiting for a hand `ccx vcs cleanup retry`. That covers a payload's
+  deletion admission too, which proves the payload idle afresh on every
+  attempt. Every other reason still waits
+  for the operator. A deferred removal whose tree is gone finishes once git
+  no longer registers it, and names `git worktree prune` while it does.
+
 - **`ccx vcs pr watch` and `ccx vcs pr status` read through the shared cache.**
   A poll fetches Graphite's `pull-request-info` once for the leased PRs and
   batches GitHub GraphQL reads in chunks of 40 PRs. Newly discovered lane PRs
@@ -143,6 +186,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   re-checks whether the pid has exited and skips it when the kernel reports
   `ESRCH`, a zombie, or a process in exit. A live pid the kernel still refuses
   to identify keeps refusing cleanup with the same error.
+
+- **A push records its head in the shared pull request cache.** `ccx vcs
+  ship`, `stack submit`, and `stack continue` record each pushed head
+  against its pull request number as soon as the Graphite submit returns,
+  and lease the pull request so the next poll reads it. The record's
+  `pushedHead` sits beside GitHub's `headRefOid`, which keeps describing the
+  head GitHub shows and the checks that ran on it, until GitHub reports the
+  push or ten minutes pass. GitHub's REST view of #28635 trailed a
+  `stack continue` push by more than four minutes on 2026-10-01.
+
+- **A publish re-reads a pull request GitHub still shows at its old head.**
+  After `ccx vcs stack submit`, `stack continue`, or a `ccx vcs ship` that
+  publishes a stack run pushes, the verdict re-reads every open pull request
+  whose head GitHub still reports as the one before the push, every five
+  seconds for up to thirty. A head that never catches up is labelled
+  `stale read: GitHub still shows <old> 30s after the push of <new> — re-run
+  ccx vcs stack submit if it stays`.
+
+- **`ccx vcs stack regenerate` owns every file below a declared directory.**
+  A `[[generated]]` path naming a directory, such as Forge-AI/monorepo's
+  `infra/ci/src/generated/row-graph`, now owns the files nested under it
+  (`row-graph/accounts/*.generated.json`). Before, a conflict in one of them
+  was refused as an unresolved file no generator owns.
+
+- **`ccx vcs stack list`, `status`, `submit`, and `drop` name the repair for a
+  branch Graphite does not track.** Instead of `gt state has no parent for
+  <branch>`, the refusal reads `<branch> is not tracked by Graphite, so it
+  sits on no stack — adopt it with gt track <branch> --parent <parent> (its
+  nearest tracked ancestor), then rerun`.
 
 - **`ccx vcs ship` reports a pull request create GitHub refused after the
   push.** Creating `yasyf/cc-remote`'s first pull request failed with

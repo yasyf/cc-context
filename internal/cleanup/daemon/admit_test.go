@@ -15,12 +15,12 @@ func TestBlockedAdmissionSkipsTheJobAndTheNextProceeds(t *testing.T) {
 		next := h.seed("b", 2, cleanup.PhaseUnregistered)
 		h.deleter.put("a", &payload{entries: 100})
 		h.deleter.put("b", &payload{entries: 100})
-		h.relocator.script("admit:a", blockWith(h.clock, "activity", "zsh (pid 7) working in the payload"))
+		h.relocator.script("admit:a", blockWith(h.clock, "reconcile", "a tree sits at the registered path"))
 		h.start()
 		h.expectEvents("sample", "admit:a", "admit:b", "open:b", "step:b")
 		h.expectTimers()
 
-		wantBlockage := cleanup.Blockage{Reason: "activity", Detail: "zsh (pid 7) working in the payload", At: h.clock.Now()}
+		wantBlockage := cleanup.Blockage{Reason: "reconcile", Detail: "a tree sits at the registered path", At: h.clock.Now()}
 		for source, job := range map[string]cleanup.Job{"engine": h.status(held.ID), "journal": h.journaled(held.ID)} {
 			if job.Phase != cleanup.PhaseDeleting || job.Blocked == nil || *job.Blocked != wantBlockage || job.Removed != 0 {
 				t.Errorf("%s job a = phase %s, blockage %+v, removed %d; want deleting, %+v, 0", source, job.Phase, job.Blocked, job.Removed, wantBlockage)
@@ -60,7 +60,7 @@ func TestResumeAdmitsThePayloadAfreshAndHonorsABlock(t *testing.T) {
 		}
 		h.expectEvents("close:a")
 		h.clock.Advance(time.Second)
-		h.relocator.script("admit:a", blockWith(h.clock, "activity", "zsh (pid 7) working in the payload"))
+		h.relocator.script("admit:a", blockWith(h.clock, "reconcile", "a tree sits at the registered path"))
 		if err := h.engine.Resume(ctx); err != nil {
 			t.Fatalf("Resume() = %v", err)
 		}
@@ -68,7 +68,7 @@ func TestResumeAdmitsThePayloadAfreshAndHonorsABlock(t *testing.T) {
 		h.clock.Advance(time.Hour)
 		h.expectEvents()
 
-		wantBlockage := cleanup.Blockage{Reason: "activity", Detail: "zsh (pid 7) working in the payload", At: h.clock.Now().Add(-time.Hour)}
+		wantBlockage := cleanup.Blockage{Reason: "reconcile", Detail: "a tree sits at the registered path", At: h.clock.Now().Add(-time.Hour)}
 		got := h.journaled(job.ID)
 		if got.Phase != cleanup.PhaseDeleting || got.Blocked == nil || *got.Blocked != wantBlockage || got.Removed != 100 {
 			t.Errorf("journal after the resume = phase %s, blockage %+v, removed %d; want deleting, %+v, 100", got.Phase, got.Blocked, got.Removed, wantBlockage)

@@ -1200,3 +1200,27 @@ func TestAdvanceBlocksWhenAWorktreeRodeInWithTheMove(t *testing.T) {
 		t.Errorf("admin gitdir = %q, want %q", got, want)
 	}
 }
+
+func TestAdvanceDeferredWhoseTreeVanished(t *testing.T) {
+	f := newFixture(t)
+	job := f.intend()
+	if err := os.RemoveAll(f.worktree); err != nil {
+		t.Fatal(err)
+	}
+
+	f.advance(&job)
+
+	f.blocked(&job, cleanup.PhaseQueued, "identity", fmt.Sprintf("%s is gone, but git still registers it at %s; git worktree prune drops the registration, then ccx vcs cleanup retry finishes the job", f.worktree, f.adminDir))
+
+	f.run(f.repo, "worktree", "prune")
+	job.Blocked = nil
+	f.advance(&job)
+
+	if job.Phase != cleanup.PhaseDone || job.Blocked != nil {
+		t.Fatalf("job is at %s with blockage %+v, want done", job.Phase, job.Blocked)
+	}
+	f.stored(&job)
+	if got, want := f.listing(), f.mainEntry(); got != want {
+		t.Errorf("worktree list = %q, want %q", got, want)
+	}
+}

@@ -292,6 +292,9 @@ func gtStackAll(ctx context.Context, dir render.Dir, prefix string) ([]string, g
 		return nil, nil, fmt.Errorf("%s: %s is trunk, and every stack in the repository sits on it — check out a branch of the one you mean", prefix, trunk)
 	}
 	stack, err := gtDownstack(prefix, state, branch, trunk)
+	if untracked := (*errGTUntracked)(nil); errors.As(err, &untracked) {
+		return nil, nil, gtUntrackedRefusal(ctx, dir, prefix, state, trunk, branch)
+	}
 	if err != nil {
 		return nil, nil, err
 	}
@@ -301,6 +304,16 @@ func gtStackAll(ctx context.Context, dir render.Dir, prefix string) ([]string, g
 		return nil, nil, err
 	}
 	return append(stack, up...), state, nil
+}
+
+// gtUntrackedRefusal names the repair for a branch gt never tracked: the
+// parent gt track would adopt it onto, so the refusal is one command from done.
+func gtUntrackedRefusal(ctx context.Context, dir render.Dir, prefix string, state gtState, trunk, branch string) error {
+	parent, err := gtNearestTracked(ctx, dir, state, trunk, branch)
+	if err != nil {
+		return err
+	}
+	return fmt.Errorf("%s: %s is not tracked by Graphite, so it sits on no stack — adopt it with gt track %s --parent %s (its nearest tracked ancestor), then rerun", prefix, branch, branch, parent)
 }
 
 // gtStackUpTo narrows gtStackAll's stack to the branches from trunk up to and
@@ -373,14 +386,14 @@ func runStackSubmit(cmd *cobra.Command, o shipOpts, include []string, to string)
 	if err != nil {
 		return err
 	}
-	chain, skipped, err := stackOwnBranches(stack, stackState, holders, l.checkout.Root, append(slices.Clone(include), landed...))
+	chain, pinned, skipped, err := stackOwnBranches(stack, stackState, holders, l.checkout.Root, append(slices.Clone(include), landed...))
 	if err != nil {
 		return err
 	}
-	if err := stackAnnounceSkipped(errW, skipped); err != nil {
+	if err := stackAnnounceSkipped(errW, pinned, skipped); err != nil {
 		return err
 	}
-	return runStackRebase(cmd, stackRebaseOpts{members: chain, landed: o.landed, draft: o.draft, ship: intent, submit: true, dropCommits: o.dropCommits, to: to})
+	return runStackRebase(cmd, stackRebaseOpts{members: chain, pinned: stackSkipNames(pinned), landed: o.landed, draft: o.draft, ship: intent, submit: true, dropCommits: o.dropCommits, to: to})
 }
 
 // stackSubmitIntent carries --pr-title and --pr-body-file into the run as a ship
@@ -454,49 +467,73 @@ func stackLandedElsewhere(ctx context.Context, l lane, stack []string, state gtS
 type stackSkip struct {
 	branch string
 	holder string
-	on     string
 }
 
-func stackOwnBranches(stack []string, state gtState, holders map[string]string, root string, include []string) ([]string, []stackSkip, error) {
+func stackSkipNames(skips []stackSkip) []string {
+	names := make([]string, 0, len(skips))
+	for _, s := range skips {
+		names = append(names, s.branch)
+	}
+	return names
+}
+
+// stackOwnBranches keeps a held branch an own branch sits on in the run,
+// pinned at its published head, so the own branch lands on it without the run
+// replaying or pushing another lane's work; a held branch nothing own sits on
+// is left out.
+func stackOwnBranches(stack []string, state gtState, holders map[string]string, root string, include []string) (members []string, pinned, skipped []stackSkip, err error) {
 	for _, name := range include {
 		if !slices.Contains(stack, name) {
-			return nil, nil, fmt.Errorf("stack submit: --include %s names no branch of this stack (%s)", name, strings.Join(stack, ", "))
+			return nil, nil, nil, fmt.Errorf("stack submit: --include %s names no branch of this stack (%s)", name, strings.Join(stack, ", "))
 		}
 	}
-	skip := map[string]bool{}
-	var own []string
-	var skipped []stackSkip
+	held := map[string]string{}
 	for _, branch := range stack {
-		parent := state[branch].Parents[0].Ref
-		holder := holders[branch]
-		switch {
-		case skip[parent]:
-			skip[branch] = true
-			skipped = append(skipped, stackSkip{branch: branch, on: parent})
-		case holder != "" && holder != root && !slices.Contains(include, branch):
-			skip[branch] = true
-			skipped = append(skipped, stackSkip{branch: branch, holder: holder})
-		default:
-			own = append(own, branch)
+		if holder := holders[branch]; holder != "" && holder != root && !slices.Contains(include, branch) {
+			held[branch] = holder
 		}
 	}
-	return own, skipped, nil
-}
-
-func stackAnnounceSkipped(errW io.Writer, skipped []stackSkip) error {
-	if len(skipped) == 0 {
-		return nil
-	}
-	named := make([]string, 0, len(skipped))
-	for _, s := range skipped {
-		if s.holder != "" {
-			named = append(named, fmt.Sprintf("%s (checked out in %s)", s.branch, s.holder))
+	pins := map[string]bool{}
+	for _, branch := range stack {
+		if held[branch] != "" {
 			continue
 		}
-		named = append(named, fmt.Sprintf("%s (stacked on %s)", s.branch, s.on))
+		for parent := state[branch].Parents[0].Ref; held[parent] != "" && !pins[parent]; parent = state[parent].Parents[0].Ref {
+			pins[parent] = true
+		}
 	}
-	if _, err := fmt.Fprintf(errW, "stack submit: skipping %s — another lane owns them; pass --include <branch> to submit one anyway\n", strings.Join(named, ", ")); err != nil {
-		return fmt.Errorf("stack submit: name the skipped branches: %w", err)
+	for _, branch := range stack {
+		switch {
+		case pins[branch]:
+			members = append(members, branch)
+			pinned = append(pinned, stackSkip{branch: branch, holder: held[branch]})
+		case held[branch] != "":
+			skipped = append(skipped, stackSkip{branch: branch, holder: held[branch]})
+		default:
+			members = append(members, branch)
+		}
+	}
+	return members, pinned, skipped, nil
+}
+
+func stackAnnounceSkipped(errW io.Writer, pinned, skipped []stackSkip) error {
+	for _, group := range []struct {
+		skips []stackSkip
+		verb  string
+	}{
+		{pinned, "keeping %s at their published heads"},
+		{skipped, "skipping %s"},
+	} {
+		if len(group.skips) == 0 {
+			continue
+		}
+		named := make([]string, 0, len(group.skips))
+		for _, s := range group.skips {
+			named = append(named, fmt.Sprintf("%s (checked out in %s)", s.branch, s.holder))
+		}
+		if _, err := fmt.Fprintf(errW, "stack submit: "+group.verb+" — another lane owns them; pass --include <branch> to submit one anyway\n", strings.Join(named, ", ")); err != nil {
+			return fmt.Errorf("stack submit: name the skipped branches: %w", err)
+		}
 	}
 	return nil
 }

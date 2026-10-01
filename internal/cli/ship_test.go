@@ -5489,8 +5489,8 @@ func TestShipGTResumeAfterRestackConflict(t *testing.T) {
 	if got := gitAt(t, f.Env(), f.Dir, "show", published+":c.txt"); got != "resolved" {
 		t.Fatalf("published conflict resolution = %q", got)
 	}
-	if got := shipHead(t, f); got != source {
-		t.Fatal("continuation moved source")
+	if got := shipHead(t, f); got == source || got != published {
+		t.Fatalf("source = %s, want it moved onto the published resolution %s", got, published)
 	}
 }
 

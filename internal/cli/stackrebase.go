@@ -36,6 +36,8 @@ const (
 	stackBriefLines     = 25
 	stackCulprits       = 10
 	stackVerdictTries   = 4
+	stackHeadLagWait    = 30 * time.Second
+	stackHeadLagRetry   = 5 * time.Second
 	stackStaleAfter     = 5 * time.Minute
 	stackAbandonedAfter = 2 * time.Hour
 	stackReplayMajor    = 2
@@ -83,6 +85,8 @@ type stackRebaseBranch struct {
 	Landed      string            `json:"landed,omitempty"`
 	Held        string            `json:"held,omitempty"`
 	Kept        bool              `json:"kept,omitempty"`
+	Pinned      bool              `json:"pinned,omitempty"`
+	Resolved    bool              `json:"resolved,omitempty"`
 	LocalOnly   bool              `json:"local_only,omitempty"`
 	Moved       bool              `json:"moved,omitempty"`
 	PR          *stackPR          `json:"pr,omitempty"`
@@ -165,6 +169,7 @@ type stackRebaseOpts struct {
 	dryRun      bool
 	noPush      bool
 	members     []string
+	pinned      []string
 	draft       bool
 	noVerify    bool
 	deferPush   bool
@@ -705,8 +710,14 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 		return nil, fmt.Errorf("stack rebase: %w", err)
 	}
 	if !o.noPush {
+		planned := members
 		if members, roots, err = stackWithPublishedParents(ctx, l.dir(), retargeted, submitted, trunk, members, roots, overrides); err != nil {
 			return nil, err
+		}
+		if o.submit {
+			if o.pinned, err = stackPinHeldParents(ctx, l, planned, members, o.pinned); err != nil {
+				return nil, err
+			}
 		}
 	}
 	if above := slices.DeleteFunc(slices.Clone(members), func(name string) bool { return upTo == nil || slices.Contains(upTo, name) }); len(above) > 0 {
@@ -887,6 +898,11 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 		switch {
 		case queued[name] && (named || (name == o.tip && b.Local != b.Remote)):
 			return nil, fmt.Errorf("stack rebase: %s is in the merge queue as %s, and moving it would evict it — take it out of the queue first", name, b.PR)
+		case slices.Contains(o.pinned, name):
+			if !stackPinPublished(b) {
+				return nil, fmt.Errorf("stack submit: %s is another lane's and has never been pushed, so there is no published head to stack on — submit it from its own working copy first, or pass --include %s", name, name)
+			}
+			b.Kept, b.Pinned = true, true
 		case queued[name] || (moving != nil && !moving[name]):
 			b.Kept = stackPinPublished(b)
 		case o.tip != "" && name != o.tip:
@@ -1164,6 +1180,22 @@ func stackRetargeted(state gtState, overrides map[string]string) gtState {
 		out[child] = s
 	}
 	return out
+}
+
+// stackPinHeldParents pins a published parent stackWithPublishedParents
+// brought back when another working copy holds it, so a submit keeps it at
+// its published head like any held ancestor gt still records.
+func stackPinHeldParents(ctx context.Context, l lane, planned, members, pinned []string) ([]string, error) {
+	holders, err := vcs.BranchHolders(ctx, l.checkout)
+	if err != nil {
+		return nil, fmt.Errorf("stack submit: %w", err)
+	}
+	for _, name := range members {
+		if holder := holders[name]; holder != "" && holder != l.checkout.Root && !slices.Contains(planned, name) && !slices.Contains(pinned, name) {
+			pinned = append(pinned, name)
+		}
+	}
+	return pinned, nil
 }
 
 // stackWithPublishedParents adds back the parent a member was last published
@@ -1993,7 +2025,7 @@ func stackPinResolved(ctx context.Context, dir render.Dir, run *stackRebaseRun, 
 	if err := stackPinHead(ctx, dir, pin, head, was); err != nil {
 		return err
 	}
-	b.NewHead = head
+	b.NewHead, b.Resolved = head, true
 	return stackSaveRun(run)
 }
 
@@ -2998,7 +3030,7 @@ func stackReplanLanded(ctx context.Context, cmd *cobra.Command, l lane, commonDi
 	if err := stackCheckSources(ctx, l.dir(), run); err != nil {
 		return err
 	}
-	var members []string
+	var members, pinned []string
 	vetted := map[string]string{}
 	replayed := map[string]stackRebaseBranch{}
 	for _, b := range run.Branches {
@@ -3007,9 +3039,12 @@ func stackReplanLanded(ctx context.Context, cmd *cobra.Command, l lane, commonDi
 			vetted[b.Name] = b.Remote
 			replayed[b.Name] = b
 		}
+		if b.Pinned {
+			pinned = append(pinned, b.Name)
+		}
 	}
 	next, err := stackPlan(ctx, l, commonDir, stackRebaseOpts{
-		members: members, landed: landed, vetted: vetted, replayed: replayed, draft: run.Draft, noVerify: run.NoVerify, ship: run.Ship,
+		members: members, pinned: pinned, landed: landed, vetted: vetted, replayed: replayed, draft: run.Draft, noVerify: run.NoVerify, ship: run.Ship,
 		tip: run.Tip, tipOnly: run.TipOnly, dropCommits: run.DropCommits, allLanes: run.AllLanes, to: run.To,
 	})
 	if err != nil {
@@ -3020,7 +3055,7 @@ func stackReplanLanded(ctx context.Context, cmd *cobra.Command, l lane, commonDi
 	}
 	for i := range next.Branches {
 		if b := run.branch(next.Branches[i].Name); b != nil {
-			next.Branches[i].LocalOnly = b.LocalOnly
+			next.Branches[i].LocalOnly, next.Branches[i].Resolved = b.LocalOnly, b.Resolved
 		}
 	}
 	next.dir = run.dir
@@ -3128,17 +3163,25 @@ func stackWriteRefs(ctx context.Context, dir render.Dir, run *stackRebaseRun) er
 func stackVerdict(ctx context.Context, cmd *cobra.Command, dir render.Dir, run *stackRebaseRun, live []string) error {
 	var prs map[string]*stackPR
 	var err error
-	for try := range stackVerdictTries {
+	lagUntil := time.Now().Add(stackHeadLagWait)
+	for try := 0; ; try++ {
 		if prs, err = stackPRs(ctx, dir, run.Trunk, live); err != nil {
 			return fmt.Errorf("stack rebase: pushed, but the verdict could not read the pull requests: %w", err)
 		}
-		if !stackAnyUnknown(prs) || try == stackVerdictTries-1 {
+		var wait time.Duration
+		switch {
+		case stackAnyLagging(run, prs) && time.Now().Add(stackHeadLagRetry).Before(lagUntil):
+			wait = stackHeadLagRetry
+		case stackAnyUnknown(prs) && try < stackVerdictTries-1:
+			wait = statusMergeableRetry
+		}
+		if wait == 0 {
 			break
 		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(statusMergeableRetry):
+		case <-time.After(wait):
 		}
 	}
 	for _, name := range live {
@@ -3151,8 +3194,8 @@ func stackVerdict(ctx context.Context, cmd *cobra.Command, dir render.Dir, run *
 			continue
 		}
 		fields = append(fields, fmt.Sprintf("#%d", pr.Number), fmt.Sprintf("head %.12s", pr.Head), "parent "+b.Parent, strings.ToLower(pr.Mergeable))
-		if pr.Head != b.NewHead {
-			fields = append(fields, fmt.Sprintf("GitHub still shows %.12s, pushed %.12s", pr.Head, b.NewHead))
+		if stackHeadLags(pr, b) {
+			fields = append(fields, fmt.Sprintf("stale read: GitHub still shows %.12s %s after the push of %.12s — re-run ccx vcs stack submit if it stays", pr.Head, stackHeadLagWait, b.NewHead))
 		}
 		if pr.Base != b.Parent {
 			fields = append(fields, "base "+pr.Base+" ≠ parent")
@@ -3163,6 +3206,21 @@ func stackVerdict(ctx context.Context, cmd *cobra.Command, dir render.Dir, run *
 		cmd.Println(strings.Join(fields, shipSep))
 	}
 	return nil
+}
+
+// stackHeadLags is a pull request GitHub still reads at another head than the
+// one just pushed; its REST view has trailed a push by minutes.
+func stackHeadLags(pr *stackPR, b *stackRebaseBranch) bool {
+	return pr.State == "OPEN" && pr.Head != "" && pr.Head != b.NewHead
+}
+
+func stackAnyLagging(run *stackRebaseRun, prs map[string]*stackPR) bool {
+	for name, pr := range prs {
+		if pr != nil && stackHeadLags(pr, run.branch(name)) {
+			return true
+		}
+	}
+	return false
 }
 
 func stackAnyUnknown(prs map[string]*stackPR) bool {

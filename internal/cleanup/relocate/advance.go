@@ -228,6 +228,9 @@ func (r *Relocator) release(ctx context.Context, job *cleanup.Job, vetted *bool)
 	if err := r.unretired(ctx, job.Original); err != nil {
 		var active *cleanup.ActiveError
 		if !errors.As(err, &active) {
+			if tree, sightErr := sight(job.Original); sightErr == nil && !tree.exists {
+				return r.vanished(ctx, job)
+			}
 			return r.block(ctx, job, "activity", unclear(job.Original, err))
 		}
 		if err := ctx.Err(); err != nil {
@@ -247,6 +250,9 @@ func (r *Relocator) release(ctx context.Context, job *cleanup.Job, vetted *bool)
 	if err != nil {
 		return r.block(ctx, job, "identity", err.Error())
 	}
+	if !seen.original.exists {
+		return r.vanished(ctx, job)
+	}
 	if !seen.original.is(job.Tree) || !seen.admin.is(job.Admin) {
 		return r.block(ctx, job, "identity", seen.describe(job))
 	}
@@ -264,6 +270,20 @@ func (r *Relocator) release(ctx context.Context, job *cleanup.Job, vetted *bool)
 		return r.block(ctx, job, reason, detail)
 	}
 	return r.enter(job, cleanup.PhasePrepared)
+}
+
+// vanished settles a deferred removal whose tree left its path by other hands:
+// with its registration gone too there is nothing left to remove, and with the
+// registration still there only git worktree prune can drop it.
+func (r *Relocator) vanished(ctx context.Context, job *cleanup.Job) (bool, error) {
+	admin, err := sight(job.AdminDir)
+	if err != nil {
+		return r.block(ctx, job, "identity", err.Error())
+	}
+	if admin.exists {
+		return r.block(ctx, job, "identity", fmt.Sprintf("%s is gone, but git still registers it at %s; git worktree prune drops the registration, then ccx vcs cleanup retry finishes the job", job.Original, job.AdminDir))
+	}
+	return r.enter(job, cleanup.PhaseDone)
 }
 
 func headChanged(job *cleanup.Job, tree, head string) string {

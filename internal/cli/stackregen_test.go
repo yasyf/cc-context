@@ -732,3 +732,23 @@ func TestStackRebaseLeavesACleanlyReplayedGeneratedFileAlone(t *testing.T) {
 		})
 	}
 }
+
+func TestRegenGeneratorOwnsEverythingBelowADeclaredDirectory(t *testing.T) {
+	t.Parallel()
+	g := regenGenerator{Paths: []string{"infra/generated/row-graph", "gen/*.txt"}, Run: "true"}
+	tests := []struct {
+		path string
+		want bool
+	}{
+		{"infra/generated/row-graph", true},
+		{"infra/generated/row-graph/accounts/core.generated.json", true},
+		{"infra/generated/row-graph-old/x.json", false},
+		{"gen/out.txt", true},
+		{"gen/nested/out.txt", false},
+	}
+	for _, tt := range tests {
+		if got := g.owns(tt.path); got != tt.want {
+			t.Errorf("owns(%q) = %v, want %v", tt.path, got, tt.want)
+		}
+	}
+}
