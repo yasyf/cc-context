@@ -164,6 +164,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs ship --amend` leases on the branch's own last push after a local
+  rebase.** On the plain-git lane, an amend after rebasing refused with
+  `does not match the pre-amend head` because the lease named the rebased
+  commit, which had never reached the remote. Ship now reads the remote
+  head with `git ls-remote` and leases on it when it matches the pre-amend
+  head or a local commit reachable from the branch's reflog, without
+  fetching. A foreign head still refuses with
+  `origin/<branch> is not a head <branch> has held`, even after a fetch;
+  `--expect-remote` remains the explicit override. Ship and `ccx vcs push`
+  also now share the remote resolver, completing #209's fix by using
+  `origin` for `branch.<name>.remote = .` instead of failing with
+  `fatal: invalid refspec '+refs/heads/feature:refs/remotes/./feature'`.
+
 - **`ccx vcs push` fetches only the branch it moves and the trunk.**
   In Forge-AI/monorepo on 2026-10-01, a push stopped with
   `push: git fetch origin: git: exit status 128: fatal: couldn't find remote

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -83,9 +84,9 @@ func runVcsPush(cmd *cobra.Command, o vcsPushOpts) error {
 	if branch == "" {
 		return errors.New("push: HEAD is detached — check out the branch you mean to move")
 	}
-	remote, err := gitRemoteFor(ctx, dir, "push", branch)
+	remote, err := vcs.GitRemoteFor(ctx, dir, branch)
 	if err != nil {
-		return err
+		return fmt.Errorf("push: %w", err)
 	}
 	head, err := gitRevParse(ctx, dir, "push", "HEAD")
 	if err != nil {
@@ -345,16 +346,24 @@ func gitReflogHolds(ctx context.Context, dir render.Dir, prefix, branch, sha str
 			continue
 		}
 		seen[entry] = true
-		held, err := gitIsAncestor(ctx, dir, prefix, sha, entry)
+		_, code, stderr, err := render.RunCLIExitCodeEnv(ctx, dir, "git", []string{"merge-base", "--is-ancestor", sha, entry}, gitRecordedHistoryEnv)
 		if err != nil {
-			return false, err
+			return false, fmt.Errorf("%s: git merge-base --is-ancestor: %w", prefix, err)
 		}
-		if held {
+		if code == 0 {
 			return true, nil
+		}
+		if code != 1 {
+			return false, fmt.Errorf("%s: git merge-base --is-ancestor: exit %d: %s", prefix, code, strings.TrimSpace(stderr))
 		}
 	}
 	return false, nil
 }
+
+// gitRecordedHistoryEnv reads the commit graph as recorded, without the
+// replace refs or grafts that can splice a foreign commit into a branch's
+// ancestry, and without a partial clone fetching a commit it lacks.
+var gitRecordedHistoryEnv = []string{"GIT_NO_REPLACE_OBJECTS=1", "GIT_GRAFT_FILE=" + os.DevNull, "GIT_NO_LAZY_FETCH=1"}
 
 // gitOnlyCopies reports whether every commit from carries past to, outside
 // trunk, has a patch-for-patch copy in to: a server-side restack of to's own
