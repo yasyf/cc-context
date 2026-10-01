@@ -140,7 +140,7 @@ func receive[T any](t *testing.T, ch <-chan T, what string) T {
 
 func fixture(t *testing.T, d *fakeDaemon) starter {
 	t.Helper()
-	dir, err := os.MkdirTemp("/tmp", "ccxa")
+	dir, err := os.MkdirTemp(os.TempDir(), "ccxa")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -456,11 +456,20 @@ func TestConnectOutdatedNeverExits(t *testing.T) {
 		lingers: 1 << 30,
 	}
 	s := fixture(t, d)
-	s.Timeout = 100 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	alive := s.alive
+	s.alive = func(pid int) bool {
+		running := alive(pid)
+		if d.count("alive 41") == 2 {
+			cancel()
+		}
+		return running
+	}
 
-	ctl, err := s.connect(context.Background())
-	if !errors.Is(err, context.DeadlineExceeded) || ctl != nil {
-		t.Fatalf("connect() = %v, %v; want nil and an error wrapping %v", ctl, err, context.DeadlineExceeded)
+	ctl, err := s.connect(ctx)
+	if !errors.Is(err, context.Canceled) || ctl != nil {
+		t.Fatalf("connect() = %v, %v; want nil and an error wrapping %v", ctl, err, context.Canceled)
 	}
 	if got := d.count("apply"); got != 0 {
 		t.Errorf("apply ran %d times, want 0 while the outdated daemon still runs", got)

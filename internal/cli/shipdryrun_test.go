@@ -112,6 +112,24 @@ func TestShipDryRunNamesTheTrackParent(t *testing.T) {
 	}
 }
 
+func TestShipDryRunParentAtTrunkSkipsInference(t *testing.T) {
+	f := shipGTRepo(t)
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "same-head")
+	mustRun(t, f.Env(), f.Dir, "gt", "track", "-f", "--no-interactive")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "adopt")
+	shipGTReady(t, f)
+
+	report := dryRunReport(t, f, "-m", "fix: frobnicate")
+	if parent := dryRunValues(report, "parent"); len(parent) != 1 || !strings.HasPrefix(parent[0], "main"+shipSep) {
+		t.Fatalf("parent = %v, want trunk despite the tracked branch at its head", parent)
+	}
+	for _, inv := range shipGTInvocations(t, f) {
+		if slices.Contains(inv, "--batch-check=%(objectname) %(objecttype)") {
+			t.Errorf("branch at trunk reached automatic parent inference: %v", inv)
+		}
+	}
+}
+
 func TestShipDryRunOrdersOnlyContainedTrackedBranches(t *testing.T) {
 	f := shipGTRepo(t)
 	shipGTStack(t, f, "x", "y")
