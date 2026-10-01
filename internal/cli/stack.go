@@ -70,8 +70,24 @@ the freshly fetched remote trunk, leaving the local trunk branch where it is.
 --published-parent uses the parent's recorded publication only when its source,
 remote head, and submission metadata still match. --sparse copies this checkout's
 per-worktree sparse configuration before populating the child. --no-checkout leaves
-files unmaterialized instead. --path names a new location outside both checkouts.
-Sparse and no-checkout creation require a Git checkout.
+files unmaterialized instead. --include checks out more directories in a sparse
+lane. --path names a new location outside the checkout you run this from, its
+main checkout, and the thin store. Sparse, no-checkout, and thin creation require
+a Git checkout.
+
+--thin cuts the lane into the repository's thin store: one clone per repository
+under $HOME/.claude/stores, with --depth commits of trunk history (256 unless the
+store already exists), no blobs until a checkout needs them, no tags, a fetch of
+trunk alone, and a sparse checkout of root files plus this checkout's sparse set.
+The first thin lane creates the store; a lane cut from a checkout of the store is
+a linked worktree of it whatever the flags say. A parent the store does not hold
+needs --published-parent: its publication is verified against this checkout and
+the remote, and the store takes it frozen at its published head, so no submit
+from the store rewrites it. When its published base lies past the store's
+history, --deepen fetches trunk history down to it, never more than --max-depth
+commits; without it the lane is refused. --full-history cuts the lane from this
+checkout's own full history instead, and is refused in a thin store.
+CCX_STACK_NEW=thin or full picks the default when neither flag is given.
 
 Outside the graphite lane the branch is cut the same way and nothing records
 its parent: ship opens its pull request against trunk, and a restack replays it
@@ -89,8 +105,19 @@ A jj workspace would not — it has no .git for gt to read.`,
 	cmd.Flags().BoolVar(&options.published, "published-parent", false, "start at the parent's verified publication receipt")
 	cmd.Flags().BoolVar(&options.sparse, "sparse", false, "inherit this checkout's sparse patterns before materializing files")
 	cmd.Flags().BoolVar(&options.noCheckout, "no-checkout", false, "create the tracked child without materializing files")
-	cmd.Flags().StringVar(&options.path, "path", "", "new destination outside the source and main checkout")
+	cmd.Flags().StringVar(&options.path, "path", "", "new destination outside the source checkout, its main checkout, and the thin store")
+	cmd.Flags().BoolVar(&options.thin, "thin", false, "cut the lane into the repository's shallow, partial, sparse thin store")
+	cmd.Flags().BoolVar(&options.fullHistory, "full-history", false, "cut the lane from this checkout's full history, overriding "+stackNewEnv)
+	cmd.Flags().BoolVar(&options.deepen, "deepen", false, "fetch trunk history down to a published parent's base the thin store lacks")
+	cmd.Flags().IntVar(&options.depth, "depth", thinDefaultDepth, "commits of trunk history a new thin store starts with")
+	cmd.Flags().IntVar(&options.maxDepth, "max-depth", thinDefaultMaxDepth, "most commits --deepen may fetch")
+	cmd.Flags().StringArrayVar(&options.includes, "include", nil, "also check out this directory in a sparse lane (repeatable)")
 	cmd.MarkFlagsMutuallyExclusive("sparse", "no-checkout")
+	cmd.MarkFlagsMutuallyExclusive("thin", "full-history")
+	cmd.MarkFlagsMutuallyExclusive("thin", "no-checkout")
+	cmd.PreRun = func(cmd *cobra.Command, _ []string) {
+		options.depthSet = cmd.Flags().Changed("depth")
+	}
 	return cmd
 }
 

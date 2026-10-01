@@ -452,7 +452,7 @@ func regenCheckout(ctx context.Context, ws render.Dir, o stackRegenOpts) error {
 		return err
 	}
 	if !o.full {
-		return stackAddCone(ctx, ws, o.includes)
+		return stackAddCone(ctx, "stack regenerate", ws, o.includes)
 	}
 	if _, err := render.RunCLI(ctx, ws, "git", []string{"sparse-checkout", "disable"}); err != nil {
 		return fmt.Errorf("stack regenerate: check out all of %s: %w", ws, err)

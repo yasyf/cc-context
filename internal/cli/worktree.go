@@ -541,6 +541,22 @@ func runWorktreeRm(cmd *cobra.Command, name string, opts worktreeRmOptions) erro
 		if target != nil {
 			return removeGitWorktree(ctx, cmd, l, *target, opts)
 		}
+		store, ok, err := worktreeThinStore(ctx, l)
+		if err != nil {
+			return err
+		}
+		if ok {
+			list, err := vcs.Worktrees(ctx, store.checkout)
+			if err != nil {
+				return fmt.Errorf("worktree rm: %w", err)
+			}
+			if target, err = matchPoolWorktree(list, name, minted); err != nil || target != nil {
+				if err != nil {
+					return err
+				}
+				return removeGitWorktree(ctx, cmd, store, *target, opts)
+			}
+		}
 	}
 	workspace, err := jjWorkspaceOf(minted, l.checkout)
 	if err != nil {
@@ -566,7 +582,15 @@ func runWorktreeRmPath(cmd *cobra.Command, opts worktreeRmOptions) error {
 	}
 	path, err := filepath.EvalSymlinks(opts.path)
 	if errors.Is(err, fs.ErrNotExist) {
-		return missingWorktreePath(ctx, l, filepath.Clean(opts.path))
+		err := missingWorktreePath(ctx, l, filepath.Clean(opts.path))
+		if !errors.Is(err, ErrNotFound) {
+			return err
+		}
+		store, ok, storeErr := worktreeThinStore(ctx, l)
+		if storeErr != nil || !ok {
+			return errors.Join(err, storeErr)
+		}
+		return missingWorktreePath(ctx, store, filepath.Clean(opts.path))
 	}
 	if err != nil {
 		return fmt.Errorf("worktree rm: --path: %w", err)
@@ -581,7 +605,14 @@ func runWorktreeRmPath(cmd *cobra.Command, opts worktreeRmOptions) error {
 	case target.Root != path:
 		return fmt.Errorf("worktree rm: %s is inside the working copy %s, not its root", path, target.Root)
 	case target.CommonDir != l.checkout.CommonDir:
-		return fmt.Errorf("worktree rm: %s is a working copy of %s, not of this repository", path, target.CommonDir)
+		store, ok, err := worktreeThinStore(ctx, l)
+		if err != nil {
+			return err
+		}
+		if !ok || target.CommonDir != store.checkout.CommonDir {
+			return fmt.Errorf("worktree rm: %s is a working copy of %s, not of this repository", path, target.CommonDir)
+		}
+		l = store
 	}
 	list, err := vcs.Worktrees(ctx, l.checkout)
 	if err != nil {
@@ -593,6 +624,19 @@ func runWorktreeRmPath(cmd *cobra.Command, opts worktreeRmOptions) error {
 		}
 	}
 	return fmt.Errorf("worktree rm: this repository registers no worktree at %s: %w", path, ErrNotFound)
+}
+
+// worktreeThinStore is the thin store a full checkout's thin lanes are linked
+// worktrees of, so rm removes one through the registry that holds it.
+func worktreeThinStore(ctx context.Context, l lane) (lane, bool, error) {
+	if l.checkout.Kind != vcs.Git || l.checkout.MainRoot == "" {
+		return lane{}, false, nil
+	}
+	inStore, err := thinIsStore(ctx, l.checkout)
+	if err != nil || inStore {
+		return lane{}, false, err
+	}
+	return thinStoreOf(ctx, "worktree rm", l)
 }
 
 func missingWorktreePath(ctx context.Context, l lane, path string) error {

@@ -19,6 +19,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`ccx vcs stack new <name> --thin` creates sparse agent lanes in a shallow store.**
+  Lanes are linked worktrees of the ccx-owned clone at
+  `~/.claude/stores/<key>/<repo>`; ccx never deletes the store.
+  `CCX_STACK_NEW=thin|full` selects the default; `--thin` and `--full-history`
+  select it explicitly. `--depth` sets history depth on first creation, and
+  repeatable `--include` adds directories. `--published-parent` adopts a
+  verified parent published onto trunk and freezes its head in the store.
+
+  `--deepen` permits explicit deepening in doubling steps, bounded by
+  `--max-depth`. Rebase, submit, restack, and ship refuse incomplete ancestry
+  before anything moves and name the fetch needed to deepen. After each push
+  ccx makes from the store, it records the lane's remote-tracking ref with
+  `update by push`, preserving leases while the fetch refspec stays limited
+  to trunk. `worktree rm` removes lanes through the store's registry and the
+  existing macOS cleanup daemon; unpushed branches remain in the store.
+
 - **`ccx vcs stack restack --parent <branch>` changes a git branch's parent.**
   It fetches and replays the branch onto `origin/<branch>`, starting at the
   later of its fork points on the new parent and its pull request's old base.

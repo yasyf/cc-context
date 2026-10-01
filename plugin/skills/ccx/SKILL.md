@@ -381,6 +381,14 @@ ccx vcs guidelines                               # PR templates + contribution r
 
 #### Stack workspaces and cleanup
 
+`ccx vcs stack new <name> --thin` creates a sparse lane in a ccx-owned shallow
+store. Set `CCX_STACK_NEW=thin` in agent environments to make it the default;
+unset or `full` keeps a linked worktree of the current checkout. Explicit
+`--thin` or `--full-history` selects the mode; `--full-history` is refused
+inside the store, where the `full` environment default still uses the store.
+Use `--include <dir>` to expand the lane and `--deepen --max-depth <n>` to
+permit bounded deepening when a published parent's base is out of reach.
+
 `ccx vcs stack rebase` requires Git 2.56 or newer. Clean replay uses the saved
 old base, head, and new base without checking out files, touching an index, or
 running hooks. It linearizes merge commits. Existing run selection, output

@@ -750,6 +750,13 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	if err != nil {
 		return nil, err
 	}
+	locals := make(map[string]string, len(members))
+	for _, name := range members {
+		locals[name] = retargeted[name].Head
+	}
+	if err := stackRequireHistory(ctx, l.dir(), prefix, tr.Remote(), trunk, locals); err != nil {
+		return nil, err
+	}
 	if err := stackMarkBaseGone(ctx, l.dir(), tr, prs); err != nil {
 		return nil, err
 	}
@@ -764,6 +771,9 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	}
 	remotes, err := stackRemoteHeads(ctx, l.dir(), stackRebasePrefix, tr.Remote(), members, pin)
 	if err != nil {
+		return nil, err
+	}
+	if err := stackRequireHistory(ctx, l.dir(), prefix, tr.Remote(), trunk, remotes); err != nil {
 		return nil, err
 	}
 
@@ -2276,17 +2286,17 @@ func stackWidenCone(ctx context.Context, ws string, paths []string) (bool, error
 		return true, nil
 	}
 	slices.Sort(dirs)
-	return true, stackAddCone(ctx, render.Dir(ws), slices.Compact(dirs))
+	return true, stackAddCone(ctx, stackRebasePrefix, render.Dir(ws), slices.Compact(dirs))
 }
 
-func stackAddCone(ctx context.Context, ws render.Dir, dirs []string) error {
+func stackAddCone(ctx context.Context, prefix string, ws render.Dir, dirs []string) error {
 	argv := make([]string, 0, 4+len(dirs))
 	argv = append(argv, "sparse-checkout", "add", "--skip-checks", "--")
 	for _, dir := range dirs {
 		argv = append(argv, "./"+path.Clean(dir)+"/")
 	}
 	if _, err := render.RunCLI(ctx, ws, "git", argv); err != nil {
-		return fmt.Errorf("stack rebase: check out %s in %s: %w", strings.Join(dirs, ", "), ws, err)
+		return fmt.Errorf("%s: check out %s in %s: %w", prefix, strings.Join(dirs, ", "), ws, err)
 	}
 	return nil
 }
@@ -3021,7 +3031,7 @@ func stackFinish(ctx context.Context, cmd *cobra.Command, l lane, commonDir stri
 		if err != nil {
 			return fmt.Errorf("%s: %w", prefix, err)
 		}
-		if err := stackCheckHolders(ctx, run.Origin, movers, holders); err != nil {
+		if err := stackCheckHolders(ctx, run.Origin, movers, holders, stackResumeAdvice); err != nil {
 			return err
 		}
 		if err := gtRestackRefuseClobbers(ctx, prefix, holders, moves); err != nil {
@@ -3170,7 +3180,7 @@ func stackFinishGit(ctx context.Context, cmd *cobra.Command, l lane, commonDir s
 		if err != nil {
 			return fmt.Errorf("restack: %w", err)
 		}
-		if err := stackCheckHolders(ctx, run.Origin, []string{b.Name}, holders); err != nil {
+		if err := stackCheckHolders(ctx, run.Origin, []string{b.Name}, holders, stackResumeAdvice); err != nil {
 			return err
 		}
 		if err := gtRestackRefuseClobbers(ctx, "restack", holders, []restackMove{move}); err != nil {
@@ -3534,18 +3544,25 @@ func stackMarkBaseGone(ctx context.Context, dir render.Dir, tr vcs.Trunk, prs ma
 	return nil
 }
 
-func stackCheckHolders(ctx context.Context, origin string, movers []string, holders map[string]string) error {
+const (
+	stackRetryAdvice  = "retry with ccx"
+	stackResumeAdvice = "resume the run with ccx vcs stack continue, or drop it with ccx vcs stack abort"
+)
+
+// stackCheckHolders takes the advice its refusal ends on: a refusal before a run
+// exists is retried, and one inside a run the state already records is resumed.
+func stackCheckHolders(ctx context.Context, origin string, movers []string, holders map[string]string, advice string) error {
 	for _, branch := range movers {
 		if holder := holders[branch]; holder != "" && holder != origin {
-			return fmt.Errorf("stack rebase: %s is checked out in %s; no branches moved — finish or detach that checkout, then retry with ccx", branch, holder)
+			return fmt.Errorf("stack rebase: %s is checked out in %s; no branches moved — finish or detach that checkout, then %s", branch, holder, advice)
 		}
 	}
-	return stackCheckClean(ctx, movers, holders)
+	return stackCheckClean(ctx, movers, holders, advice)
 }
 
 // stackCheckClean refuses a move under a working copy with uncommitted work,
 // which realigning that copy onto the moved branch would overwrite.
-func stackCheckClean(ctx context.Context, movers []string, holders map[string]string) error {
+func stackCheckClean(ctx context.Context, movers []string, holders map[string]string, advice string) error {
 	for _, branch := range movers {
 		holder := holders[branch]
 		if holder == "" {
@@ -3556,7 +3573,7 @@ func stackCheckClean(ctx context.Context, movers []string, holders map[string]st
 			return err
 		}
 		if status != "" {
-			return fmt.Errorf("stack rebase: %s has uncommitted work; no branches moved — commit or move that work, then retry with ccx", holder)
+			return fmt.Errorf("stack rebase: %s has uncommitted work; no branches moved — commit or move that work, then %s", holder, advice)
 		}
 	}
 	return nil

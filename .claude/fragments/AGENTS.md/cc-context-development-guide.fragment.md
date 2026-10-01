@@ -32,6 +32,12 @@ for sparse expansion, manual dependency setup, and explicit
 state and build outputs private to each workspace; download and compiler
 caches can remain shared.
 
+Use `ccx vcs stack new <name> --thin` or set `CCX_STACK_NEW=thin` for agent
+lanes backed by `~/.claude/stores/<key>/<repo>`. ccx never deletes the store;
+unpushed branches survive lane removal. Deepening requires explicit
+`--deepen`, bounded by `--max-depth`. Follow [the thin-lane guide](docs/thin-lanes.md)
+for sparse expansion, published parents, and ancestry refusals.
+
 Use `ccx vcs worktree rm <name>` or `--path <absolute-path>` for authorized
 unused trees. On macOS, logical removal precedes queued physical deletion;
 `--wait` waits for deletion. `--force` discards dirty work only and never
