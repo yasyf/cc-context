@@ -26,6 +26,8 @@ var approvedServices = []string{
 	"/usr/libexec/nsurlsessiond",
 	"/usr/libexec/UserEventAgent",
 	"/usr/libexec/lsd",
+	"/usr/libexec/knowledge-agent",
+	"/System/Library/PrivateFrameworks/CoreDuetContext.framework/Versions/A/Resources/ContextStoreAgent",
 }
 
 type birth struct {
@@ -81,16 +83,20 @@ func (s *scan) service(process cleanup.ProcessID) (birth, error) {
 	return birth{seconds: bsd.start, micros: bsd.startMicros}, nil
 }
 
+func denied(err error) bool {
+	return errors.Is(err, unix.EPERM) || errors.Is(err, unix.EACCES)
+}
+
 func (p *descriptorPass) refused(fd int32, refusal error) (string, error) {
 	if p.approval == nil {
 		born, err := p.service(p.process)
 		if err != nil {
-			return "", fmt.Errorf("read its descriptor %d: %w; its owner is not an approved Apple service: %w", fd, refusal, err)
+			return "", fmt.Errorf("%w; its owner is not an approved Apple service: %w", refusal, err)
 		}
 		p.approval = &approval{fd: fd, refusal: refusal, born: born}
 	}
 	node, err := p.lib.vnodeIdentityOfFD(p.process.PID, fd)
-	if errors.Is(err, unix.EPERM) || errors.Is(err, unix.EACCES) || errors.Is(err, unix.EBADF) || errors.Is(err, unix.ENOENT) {
+	if denied(err) || errors.Is(err, unix.EBADF) || errors.Is(err, unix.ENOENT) {
 		return "", nil
 	}
 	if err != nil {
@@ -110,10 +116,10 @@ func (p *descriptorPass) confirm() error {
 	first := p.approval
 	born, err := p.service(p.process)
 	if err != nil {
-		return fmt.Errorf("read its descriptor %d: %w; its owner no longer passes for an approved Apple service: %w", first.fd, first.refusal, err)
+		return fmt.Errorf("%w; its owner no longer passes for an approved Apple service: %w", first.refusal, err)
 	}
 	if born != first.born {
-		return fmt.Errorf("read its descriptor %d: %w; its pid passed from the service started at %d.%06d to a process started at %d.%06d while its descriptors were read", first.fd, first.refusal, first.born.seconds, first.born.micros, born.seconds, born.micros)
+		return fmt.Errorf("%w; its pid passed from the service started at %d.%06d to a process started at %d.%06d while its descriptors were read", first.refusal, first.born.seconds, first.born.micros, born.seconds, born.micros)
 	}
 	return nil
 }
@@ -123,7 +129,7 @@ func (s *scan) heldByID(node *vnodeInfo) (string, error) {
 		return "", nil
 	}
 	path, err := s.lib.pathByID(node.fsid, node.ino)
-	if errors.Is(err, unix.ENOENT) {
+	if denied(err) || errors.Is(err, unix.ENOENT) {
 		return "", nil
 	}
 	if err != nil {

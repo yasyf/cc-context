@@ -645,8 +645,10 @@ func TestApprovedServices(t *testing.T) {
 		"/usr/libexec/nsurlsessiond",
 		"/usr/libexec/UserEventAgent",
 		"/usr/libexec/lsd",
+		"/usr/libexec/knowledge-agent",
+		"/System/Library/PrivateFrameworks/CoreDuetContext.framework/Versions/A/Resources/ContextStoreAgent",
 	}
-	if len(approvedServices) != 8 || !slices.Equal(approvedServices, want) {
+	if len(approvedServices) != 10 || !slices.Equal(approvedServices, want) {
 		t.Fatalf("approvedServices = %q, want exactly %q", approvedServices, want)
 	}
 	for _, program := range approvedServices {
@@ -672,6 +674,7 @@ func TestInspectApprovedServices(t *testing.T) {
 		relocated    = "/private/tmp/x/usr/libexec/lsd"
 		contextStore = "/System/Library/PrivateFrameworks/CoreDuetContext.framework/Versions/A/Resources/ContextStoreAgent"
 		knowledge    = "/usr/libexec/knowledge-agent"
+		trustd       = "/usr/libexec/trustd"
 		dataVolume   = "/System/Volumes/Data"
 	)
 	f := plant(t)
@@ -682,6 +685,9 @@ func TestInspectApprovedServices(t *testing.T) {
 	outside := vnodeRecord(t, f.outside, realPath(t, f.outside))
 	unresolved := vnodeRecord(t, f.file, "")
 	unresolved.fsid = [2]int32{-1, -1}
+	unprovable := vnodeRecord(t, hide(t, f.tree), filepath.Join(hide(t, f.outside), "file"))
+	lock(t, f.tree)
+	lock(t, f.outside)
 	file := &cleanup.Holder{Evidence: cleanup.EvidenceFD, Path: f.real + "/file"}
 	approved := func(*staged) {}
 	run := func(program string) func(*staged) {
@@ -709,6 +715,9 @@ func TestInspectApprovedServices(t *testing.T) {
 		{"a refused descriptor whose vnode is in the tree", sleeper, func(k *staged) { k.opaque, k.vnode = 0, opens }, file, nil, "", 1},
 		{"a refused descriptor whose vnode resolves to no path", sleeper, func(k *staged) { k.opaque, k.vnode = 0, unresolved }, nil, unix.ENOTSUP, "", 1},
 		{"a refused descriptor whose vnode the kernel fails to read", sleeper, func(k *staged) { k.opaque = unix.EIO }, nil, unix.EIO, "", 1},
+		{"a descriptor at a path not proven to name its file, whose inode the kernel refuses to resolve", sleeper, func(k *staged) { k.denied, k.open = 0, unprovable }, nil, nil, "", 2},
+		{"such a descriptor whose vnode the kernel describes, then refuses to resolve again", sleeper, func(k *staged) { k.denied, k.open, k.opaque, k.vnode = 0, unprovable, 0, unprovable }, nil, nil, "", 2},
+		{"such a descriptor of an unapproved owner", sleeper, func(k *staged) { k.denied, k.open, k.programs = 0, unprovable, []string{trustd} }, nil, unix.EACCES, "does not name: permission denied; its owner is not an approved Apple service: its executable is " + trustd, 1},
 		{"a descriptor the kernel fails to read", sleeper, func(k *staged) { k.denied = unix.EIO }, nil, unix.EIO, "", 0},
 		{"descriptors that cannot be listed", sleeper, func(k *staged) { k.unlisted = unix.EIO }, nil, unix.EIO, "", 0},
 		{"a working directory in the tree", sleeper, func(k *staged) { k.cwd = works }, &cleanup.Holder{Evidence: cleanup.EvidenceCwd, Path: f.real + "/sub"}, nil, "", 0},
@@ -716,11 +725,12 @@ func TestInspectApprovedServices(t *testing.T) {
 		{"a readable descriptor in the tree after a refused one", sleeper, func(k *staged) { k.beside = opens }, file, nil, "", 1},
 		{"a readable descriptor beside the tree after a refused one", sleeper, func(k *staged) { k.beside = outside }, nil, nil, "", 2},
 		{"no refused descriptor, so no owner to verify", sleeper, func(k *staged) { k.denied, k.open, k.programs = 0, outside, []string{relocated} }, nil, nil, "", 0},
-		{"ContextStoreAgent", sleeper, run(contextStore), nil, unix.EPERM, contextStore, 1},
-		{"knowledge-agent", sleeper, run(knowledge), nil, unix.EPERM, knowledge, 1},
+		{"ContextStoreAgent", sleeper, run(contextStore), nil, nil, "", 2},
+		{"knowledge-agent", sleeper, run(knowledge), nil, nil, "", 2},
+		{"trustd", sleeper, run(trustd), nil, unix.EPERM, trustd, 1},
 		{"an approved name at another location", sleeper, run(relocated), nil, unix.EPERM, relocated, 1},
 		{"an approved path with a suffix", sleeper, run(lsd + "/"), nil, unix.EPERM, lsd + "/", 1},
-		{"an unapproved owner refused with EACCES", sleeper, func(k *staged) { k.denied, k.programs = unix.EACCES, []string{knowledge} }, nil, unix.EACCES, knowledge, 1},
+		{"an unapproved owner refused with EACCES", sleeper, func(k *staged) { k.denied, k.programs = unix.EACCES, []string{trustd} }, nil, unix.EACCES, trustd, 1},
 		{"an executable path the kernel withholds", sleeper, func(k *staged) { k.unlocated = unix.ESRCH }, nil, unix.EPERM, "executable path", 1},
 		{"an executable on a volume mounted elsewhere", sleeper, func(k *staged) { k.mount = dataVolume }, nil, unix.EPERM, dataVolume, 1},
 		{"an executable on the writable data volume", sleeper, func(k *staged) { k.mount, k.volume = dataVolume, 0x04909080 }, nil, unix.EPERM, dataVolume, 1},

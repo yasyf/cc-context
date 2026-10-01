@@ -106,6 +106,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Worktree cleanup skips an approved Apple service's descriptor whose
+  inode the kernel refuses to resolve.** The guard discounted a descriptor
+  only when the kernel refused to describe it at all; one it described by a
+  path that could not be proven, and then refused to resolve by inode with
+  EPERM or EACCES, failed every cleanup. On macOS, `knowledge-agent` and
+  `ContextStoreAgent` hold streams under the SIP-restricted
+  `/private/var/db/biome` on the same volume as `~/.claude`, so
+  `ccx vcs worktree rm`, `--dry-run` included, refused every worktree with
+  "could not verify that … is idle: … resolve inode … which the kernel path …
+  does not name: permission denied". That refusal now takes the same
+  approved-service path as a withheld descriptor, verified before and after
+  the pass, and `/usr/libexec/knowledge-agent` and
+  `CoreDuetContext.framework/Versions/A/Resources/ContextStoreAgent` join the
+  approved services. A descriptor of any other process that the kernel will
+  not place still refuses cleanup with the same message.
+
 - **Worktree cleanup accepts a worktree whose submodules are not checked
   out.** Cleanup refused any worktree whose index held a submodule entry,
   but git refuses to move a worktree only when one of those submodules is

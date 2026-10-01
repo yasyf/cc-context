@@ -33,11 +33,11 @@ import (
 // descriptors, alone, of each retiring watcher ctx names, matched on both its
 // pid and the second the kernel started it, and only while that pid still
 // names that process once the rest of it has been read; and each descriptor of
-// an approved Apple service that the kernel refuses to describe twice, with
-// EPERM or EACCES both times: once asked for the descriptor's path, and once
-// asked for its vnode alone.
+// an approved Apple service that the kernel refuses to place, with EPERM or
+// EACCES: refused the descriptor's path and then its vnode alone, or given a
+// path not proven to name the file and then refused the path of its inode.
 //
-// An approved service is one of the eight executables in approvedServices,
+// An approved service is one of the ten executables in approvedServices,
 // told by the kernel's record and never by name: proc_pidpath gives exactly a
 // listed path, that path is on the read-only root snapshot mounted at "/",
 // csops reports a valid platform binary that is not being debugged, the uid
@@ -304,13 +304,16 @@ func (p *descriptorPass) place(fd int32) (string, error) {
 	if errors.Is(err, unix.EBADF) || errors.Is(err, unix.ENOENT) {
 		return "", nil
 	}
-	if errors.Is(err, unix.EPERM) || errors.Is(err, unix.EACCES) {
-		return p.refused(fd, err)
+	if denied(err) {
+		return p.refused(fd, fmt.Errorf("read its descriptor %d: %w", fd, err))
 	}
 	if err != nil {
 		return "", fmt.Errorf("read its descriptor %d: %w", fd, err)
 	}
 	path, err := p.held(node)
+	if denied(err) {
+		return p.refused(fd, fmt.Errorf("locate its descriptor %d: %w", fd, err))
+	}
 	if err != nil {
 		return "", fmt.Errorf("locate its descriptor %d: %w", fd, err)
 	}
