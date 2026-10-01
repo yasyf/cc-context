@@ -18,22 +18,22 @@ import pytest
 from conftest import fake_run
 
 from hooks import common
-from hooks.common import LITERAL_SAFE, ccx_supports
+from hooks.common import LITERAL_SAFE, ccx_supports, rewrote_note
 
 
 class TestLiteralSafe:
     @pytest.mark.parametrize(
         "pattern",
         [
-            "foo_bar",  # word chars + underscore
-            "foo bar",  # space
-            "a.b/c:d",  # dot, slash, colon
-            "foo.bar",  # a bare dot is whitelisted — literal in a fixed-string rg query
+            "foo_bar",
+            "foo bar",
+            "a.b/c:d",
+            "foo.bar",
             "user@host",
             "a,b",
             "key=value",
-            "c++",  # `+` is whitelisted
-            "path/to-file",  # trailing `-` in the class is a literal hyphen
+            "c++",
+            "path/to-file",
         ],
     )
     def test_accepts_literal(self, pattern: str) -> None:
@@ -42,24 +42,23 @@ class TestLiteralSafe:
     @pytest.mark.parametrize(
         "pattern",
         [
-            "a|b",  # BRE alternation
-            "^foo",  # anchor
-            "foo$",  # anchor
-            "a{2}",  # quantifier
-            "(group)",  # group
-            "a?b",  # glob/regex metachar
-            "*.go",  # glob metachar
-            "[abc]",  # class
-            "back\\slash",  # escape
-            "semi;colon",  # not in the whitelist
-            "",  # empty never matches — `+` requires ≥1 char
+            "a|b",
+            "^foo",
+            "foo$",
+            "a{2}",
+            "(group)",
+            "a?b",
+            "*.go",
+            "[abc]",
+            "back\\slash",
+            "semi;colon",
+            "",
         ],
     )
     def test_rejects_metachar(self, pattern: str) -> None:
         assert not LITERAL_SAFE.match(pattern)
 
     def test_dot_whitelisted_star_is_the_rejector(self) -> None:
-        # `.` is in the whitelist, so a bare dot passes; `foo.*bar` fails *only* because of `*`.
         assert LITERAL_SAFE.match("foo.bar")
         assert not LITERAL_SAFE.match("foo.*bar")
         assert not LITERAL_SAFE.match("foo*bar")
@@ -99,3 +98,7 @@ class TestCcxSupports:
 
         monkeypatch.setattr(common.subprocess, "run", boom)
         assert not ccx_supports("code", "grep", flag="--ignore-case")
+
+
+def test_rewrote_note_names_the_replacement_without_the_original() -> None:
+    assert rewrote_note("ccx code read --full", "same content") == "Rewrote the command to `ccx code read --full`: same content."

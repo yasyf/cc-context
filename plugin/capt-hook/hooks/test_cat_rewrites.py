@@ -116,7 +116,6 @@ class TestCatTo:
         big.write_bytes(b"x" * (cat_rewrites.LARGE_READ_BYTES + 1))
         evt, occ = evt_occ(f"cat {big}")
         assert cat_rewrites.cat_to(evt, occ) is None
-        assert cat_rewrites.BareCat().check_command_line(evt, evt.cmd.line) is False
 
     def test_multi_file_allows_regardless_of_size(self, tmp_path: Path) -> None:
         files = [tmp_path / name for name in ("a.md", "b.md")]
@@ -124,7 +123,6 @@ class TestCatTo:
             file.write_bytes(b"x" * (cat_rewrites.LARGE_READ_BYTES + 1))
         evt, occ = evt_occ(f"cat {files[0]} {files[1]}")
         assert cat_rewrites.cat_to(evt, occ) is None
-        assert cat_rewrites.BareCat().check_command_line(evt, evt.cmd.line) is False
 
     def test_compound_rewrites_only_the_large_occurrence(self, tmp_path: Path) -> None:
         big = tmp_path / "big.md"

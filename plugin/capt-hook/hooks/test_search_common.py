@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from captain_hook import Call, Cmd, CommandLine
 
 from hooks import search_common
 
@@ -117,19 +118,25 @@ class TestAnyGitIgnored:
         assert search_common.any_git_ignored(["build"], cwd=None) is False
 
 
+def first_call(command: str) -> Call:
+    cmd = Cmd(CommandLine.parse(command), raw=command)
+    return cmd.calls()[0]
+
+
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
         ("grep foo $(printf /p)", True),
         ("grep foo `printf x`", True),
         ("grep foo '$(printf x)'", True),  # textual: a quoted `$(` still forfeits the rewrite
+        ("grep foo \"$(pwd)/src\"", True),
         ("grep -n foo $d/host.go", False),  # a bare `$VAR` is not a substitution
         ("grep foo src/", False),
     ],
-    ids=["dollar-paren", "backtick", "quoted-subst", "var-only", "plain"],
+    ids=["dollar-paren", "backtick", "quoted-subst", "double-quoted-subst", "var-only", "plain"],
 )
-def test_has_command_substitution(raw: str, expected: bool) -> None:
-    assert search_common.has_command_substitution(raw) is expected
+def test_forfeits_substitution(raw: str, expected: bool) -> None:
+    assert search_common.forfeits_substitution(first_call(raw)) is expected
 
 
 @pytest.mark.parametrize(
@@ -165,18 +172,35 @@ def test_forfeits_count(args: tuple[str, ...], expected: bool) -> None:
 
 
 @pytest.mark.parametrize(
-    ("args", "expected"),
+    ("command", "expected"),
     [
-        (("-rn", "foo", "src/"), ["foo", "src/"]),  # tolerant: over-includes the pattern
-        (("-A", "3", "foo", "."), ["3", "foo", "."]),  # unknown value arity not resolved — that is fine here
-        (("foo", "--", "-weird.py"), ["foo", "-weird.py"]),  # post `--` positionals kept
-        (("-", "foo"), ["-", "foo"]),  # a lone `-` (stdin) is a positional
-        (("--recursive", "foo"), ["foo"]),  # long flags dropped
+        ("grep -rn foo src/", ["foo", "src/"]),  # tolerant: over-includes the pattern
+        ("grep -A 3 foo .", ["3", "foo", "."]),  # unknown value arity not resolved — that is fine here
+        ("grep foo -- -weird.py", ["foo", "-weird.py"]),  # post `--` positionals kept
+        ("grep - foo", ["-", "foo"]),  # a lone `-` (stdin) is a positional
+        ("grep --recursive foo", ["foo"]),  # long flags dropped
+        ("grep --include='*.go' 'a b' x", ["a b", "x"]),  # dequoted words
     ],
-    ids=["short-bundle", "value-flag", "double-dash", "stdin-dash", "long-flag"],
+    ids=["short-bundle", "value-flag", "double-dash", "stdin-dash", "long-flag", "dequoted"],
 )
-def test_path_operands_raw(args: tuple[str, ...], expected: list[str]) -> None:
-    assert search_common.path_operands_raw(args) == expected
+def test_loose_operands(command: str, expected: list[str]) -> None:
+    assert search_common.loose_operands(first_call(command)) == expected
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("grep --recursive=oops foo .", True),
+        ("grep --ignore-case=x foo .", True),
+        ("grep --recursive foo .", False),
+        ("grep foo -- --recursive=oops", False),  # after `--` it is an operand
+        ("grep --color=always foo .", False),  # not a value-less flag
+    ],
+    ids=["glued-recursive", "glued-ignore-case", "bare", "after-separator", "valued-flag"],
+)
+def test_glued_value(command: str, expected: bool) -> None:
+    flags = frozenset({"--recursive", "--ignore-case"})
+    assert search_common.glued_value(first_call(command), flags) is expected
 
 
 def test_resolved_is_dir(tmp_path: Path) -> None:
@@ -233,12 +257,3 @@ class TestGrepGlob:
 def test_brace() -> None:
     assert search_common.brace(["src"]) == "src"
     assert search_common.brace(["src", "internal"]) == "{src,internal}"
-
-
-@pytest.mark.parametrize(
-    ("raw", "expected"),
-    [("'*.go'", "*.go"), ('"a b"', "a b"), ("plain", "plain"), ("'unbalanced", "'unbalanced")],
-    ids=["single", "double", "plain", "unbalanced"],
-)
-def test_unquote(raw: str, expected: str) -> None:
-    assert search_common.unquote(raw) == expected

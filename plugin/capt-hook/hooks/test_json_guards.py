@@ -81,6 +81,18 @@ class TestWraps:
     def test_ccx_executable_is_never_wrappable(self) -> None:
         assert not wraps(occurrence("/opt/homebrew/bin/ccx exec --json x"))
 
+    def test_wrapper_around_ccx_format_is_never_wrappable(self) -> None:
+        assert not wraps(occurrence("sudo ccx format -- gh pr list --json x"))
+
+    def test_time_prefix_wraps_the_inner_argv(self) -> None:
+        assert wraps(occurrence("time gh pr list --json number"))
+
+    def test_non_ascii_argument_wraps(self) -> None:
+        assert wraps(occurrence('printf done; gh pr list --search "café" --json number', index=1))
+
+    def test_bare_substitution_never_wraps(self) -> None:
+        assert not wraps(occurrence("gh pr view --json x --repo $(git remote get-url origin)"))
+
     def test_wrap_json_uses_occurrence_raw(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(json_guards, "ccx_bin", lambda: "/tmp/ccx binary")
         occ = occurrence('printf done; gh pr list --json number --search "is:open draft:false"', index=1)
@@ -154,18 +166,18 @@ class TestHasStreamingFlag:
         ],
     )
     def test_positive(self, command: str) -> None:
-        assert has_streaming_flag(CommandLine.parse(command))
+        assert has_streaming_flag(CommandLine.parse(command).primary)
 
     @pytest.mark.parametrize(
         "command",
         [
             "gh pr list --json number",
             "kubectl get pods -o json",
-            "gh run watch 123 --json status",  # `watch` here is a subcommand, not a flag
+            "gh run watch 123 --json status",
         ],
     )
     def test_negative(self, command: str) -> None:
-        assert not has_streaming_flag(CommandLine.parse(command))
+        assert not has_streaming_flag(CommandLine.parse(command).primary)
 
 
 class TestIsPlainArgv:
@@ -174,10 +186,10 @@ class TestIsPlainArgv:
         [
             "gh pr list --json number",
             'gh pr list --json number --search "is:open draft:false"',
-            "gh pr list --json x --limit $N",  # bash expands $N after the wrap's --
-            # A quoted substitution survives the word-split comparison verbatim;
-            # bash expands the spliced raw text after the wrap's -- identically.
+            "gh pr list --json x --limit $N",
             'gh pr list --json number --search "$(cat q.txt)"',
+            'gh pr list --search "café ü" --json number',
+            "gh  pr list\t--json number",
         ],
     )
     def test_positive(self, command: str) -> None:
@@ -186,20 +198,17 @@ class TestIsPlainArgv:
     @pytest.mark.parametrize(
         "command",
         [
-            # Env prefix: spliced after `ccx format --`, the assignment execs as
-            # argv[0] — "executable file not found in $PATH".
             "GH_HOST=x.example.com gh pr list --json number",
-            # Subshell: bare parens after `--` are a bash syntax error.
             "(gh pr list --json number)",
-            # Shell keyword: `time` after `--` stops being a keyword.
             "time gh pr list --json number",
-            # Builtins with no binary counterpart fail as literal argv[0]s.
             "exec gh pr list --json number",
             "eval gh pr list --json number",
             "source render.sh --json",
             ". render.sh --json",
-            # Command substitution the parser folded out of args — bail conservatively.
             "gh pr view --json x --repo $(git remote get-url origin)",
+            "kubectl get pods -o json > pods.json",
+            "gh pr list --json number # trailing",
+            "printf done; gh pr list --json number",
         ],
     )
     def test_negative(self, command: str) -> None:
@@ -212,8 +221,6 @@ class TestHeadHasJsonOutputFlag:
         [
             "gh pr list --json number,title | jq '.[].title'",
             "kubectl get pods -o json | python3 -c 'pass'",
-            # head args still carry --json after the wrap — callers must pair this
-            # helper with already_wrapped, as exec_guards' JsonPipedToFilter does.
             "ccx format -- gh pr list --json x | jq .",
         ],
     )
@@ -236,10 +243,10 @@ class TestAlreadyWrapped:
     @pytest.mark.parametrize(
         "command",
         [
-            # The wrapped line still carries --json; failing to recognize the wrap
-            # would make the json_guards rewrite re-wrap its own output forever.
             "ccx format -- gh pr list --json x",
             "/opt/homebrew/bin/ccx format -- kubectl get pods -o json",
+            "ccx format -- gh pr list --json x | jq .",
+            "sudo ccx format -- gh pr list --json x",
         ],
     )
     def test_positive(self, command: str) -> None:
@@ -248,7 +255,7 @@ class TestAlreadyWrapped:
     @pytest.mark.parametrize(
         "command",
         [
-            "gh pr list --json x",  # bare JSON-flagged command — still gets rewritten
+            "gh pr list --json x",
             "ccx repo overview",
         ],
     )
@@ -280,8 +287,8 @@ class TestLooksLikeJson:
             '{"a": 1}',
             "  [1, 2, 3]  ",
             '[{"id": 1}, {"id": 2}]',
-            '{"a": 1}\n{"a": 2}\n',  # NDJSON
-            '\n{"a": 1}\n\n{"a": 2}\n',  # NDJSON with blank lines
+            '{"a": 1}\n{"a": 2}\n',
+            '\n{"a": 1}\n\n{"a": 2}\n',
             '"a string"',
             "42",
             "true",
@@ -301,7 +308,7 @@ class TestLooksLikeJson:
             "plain log line\nanother log line",
             "Error: something failed",
             '{"a": 1} trailing garbage',
-            '[1, 2,',  # truncated
+            '[1, 2,',
         ],
     )
     def test_not_json(self, text: str) -> None:
@@ -313,8 +320,6 @@ class TestLooksLikeJson:
 
     @pytest.mark.parametrize("value", [{"stdout": "{}"}, None, 42, ["{}"], b"", b"plain log"])
     def test_non_text_returns_false(self, value: object) -> None:
-        # A non-str/bytes argument (a structured tool_response mapping slipping
-        # through) must return False, never raise on the missing `.strip`.
         assert not looks_like_json(value)
 
 
@@ -338,10 +343,8 @@ class TestShapesStore:
             record_shape(evt, f"tool-{i}")
         shapes = load_shapes(evt)
         assert len(shapes) == 256
-        # oldest evicted, newest kept
         assert "tool-0" not in shapes
         assert "tool-265" in shapes
-        # the on-disk order is oldest-first, newest-last
         store = state_dir / "hooks" / "durable" / "global" / "json_shapes.json"
         assert json.loads(store.read_text())["shapes"][-1] == "tool-265"
 
@@ -349,11 +352,11 @@ class TestShapesStore:
         evt = fake_evt()
         for i in range(256):
             record_shape(evt, f"tool-{i}")
-        record_shape(evt, "tool-0")  # touch the oldest
-        record_shape(evt, "fresh")  # push one over the cap
+        record_shape(evt, "tool-0")
+        record_shape(evt, "fresh")
         shapes = load_shapes(evt)
-        assert "tool-0" in shapes  # survived eviction by being touched
-        assert "tool-1" not in shapes  # became the new oldest, evicted
+        assert "tool-0" in shapes
+        assert "tool-1" not in shapes
 
 
 class TestSeenEmittingJson:
@@ -371,9 +374,9 @@ class TestSeenEmittingJson:
         cond = SeenEmittingJson()
         session = tmp_path / "s1"
         first = self.pre_event("gh issue view 123", session)
-        second = self.pre_event("gh issue view 456", session)  # same shape, different value
+        second = self.pre_event("gh issue view 456", session)
         assert cond.check_command_line(first, first.cmd.line)
-        assert not cond.check_command_line(second, second.cmd.line)  # self-gated within session
+        assert not cond.check_command_line(second, second.cmd.line)
 
     def test_recorded_shape_fires_again_in_new_session(self, tmp_path: Path) -> None:
         record_shape(fake_evt(), shape("terraform output"))
@@ -396,8 +399,6 @@ class TestSeenEmittingJson:
         assert not cond.check_command_line(evt, evt.cmd.line)
 
     def test_ccx_shape_never_fires_even_if_recorded(self, tmp_path: Path) -> None:
-        # The durable store is global and long-lived: a `ccx exec` shape recorded
-        # before ccx commands were excluded must not nudge wrapping ccx in ccx format.
         record_shape(fake_evt(), shape("ccx exec 'async def main(): return 1'"))
         cond = SeenEmittingJson()
         evt = self.pre_event("ccx exec 'async def main(): return 2'", tmp_path / "s1")
@@ -413,7 +414,6 @@ class TestRecordJsonShape:
     prior test fed no `tool_response` at all, so the crash went unseen.
     """
 
-    # The exact shape Claude Code surfaces for a Bash tool result.
     RESP = {"stdout": "", "stderr": "", "interrupted": False, "isImage": False, "noOutputExpected": False}
 
     def post_event(self, command: str, tool_response: object, session_dir: Path) -> PostToolUseEvent:
@@ -424,28 +424,21 @@ class TestRecordJsonShape:
         )
 
     def test_dict_json_stdout_records_shape(self, tmp_path: Path) -> None:
-        # The regression: a dict tool_response with JSON stdout used to crash on
-        # `dict.strip`; now its shape is learned.
         evt = self.post_event("terraform output", {**self.RESP, "stdout": '{"a": 1}'}, tmp_path / "s1")
         record_json_shape(evt)
         assert load_shapes(evt) == {shape("terraform output")}
 
     def test_dict_plain_text_stdout_records_nothing(self, tmp_path: Path) -> None:
-        # The live repro: a `which ccx`-style dict whose stdout is plain text — no
-        # crash, and nothing learned.
         evt = self.post_event("which ccx", {**self.RESP, "stdout": "/opt/homebrew/bin/ccx\nv0.6.1"}, tmp_path / "s2")
         record_json_shape(evt)
         assert load_shapes(evt) == set()
 
     def test_string_json_stdout_still_records_shape(self, tmp_path: Path) -> None:
-        # The declared `str` shape still works: a bare-string tool_response emitting
-        # JSON is learned.
         evt = self.post_event("kubectl get pods -o wide", '[{"id": 1}, {"id": 2}]', tmp_path / "s3")
         record_json_shape(evt)
         assert load_shapes(evt) == {shape("kubectl get pods -o wide")}
 
     def test_empty_dict_stdout_records_nothing(self, tmp_path: Path) -> None:
-        # Missing/empty stdout is no output to shape — the early return, never a crash.
         evt = self.post_event("echo hi", self.RESP, tmp_path / "s4")
         record_json_shape(evt)
         assert load_shapes(evt) == set()

@@ -1,121 +1,124 @@
-"""Grep guard: rewrite a tree-shaped ``grep`` file search to ``ccx code grep``, block the unmappable rest; everything else runs raw."""
+"""Grep guards: steer transcript and dependency searches, rewrite a tree-shaped ``grep`` to ``ccx code grep``."""
 
 from __future__ import annotations
 
-import re
 from typing import TYPE_CHECKING
 
 from captain_hook import (
     Allow,
-    BaseHookEvent,
     Block,
     Call,
-    CommandLine,
-    CustomCommandLineCondition,
+    CommandSchema,
+    Event,
     Input,
+    Operand,
+    Option,
     PreToolUseEvent,
     Rewrite,
     Rewritten,
+    Tool,
+    hook,
     rewrite_command_occurrences,
 )
 
 from .common import LITERAL_SAFE, ccx_supports
 from .search_common import (
-    CONTEXT_SHORT,
+    CONTEXT_OPTIONS,
     DEP_STEER,
-    Decline,
+    TRANSCRIPT_STEER,
+    TRANSCRIPTS,
     GrepCall,
-    any_git_ignored,
+    SearchTargets,
+    UnpipedSearch,
+    bound_texts,
     build_ccx_grep,
-    decline_clause,
+    context_flags,
     forfeits_operand,
+    forfeits_substitution,
+    glued_value,
     grep_glob,
-    has_command_substitution,
-    has_dependency_segment,
-    is_transcript_path,
-    note_text,
-    path_operands_raw,
+    loose_operands,
     resolve_operand,
     resolved_is_dir,
-    search_block,
-    unquote,
+    search_note,
+    targets_dependency,
+    targets_transcript,
+    unparsed,
+    word_text,
 )
 
 if TYPE_CHECKING:
     from pathlib import Path
 
     from captain_hook import HookResult, WalkContext
-    from cc_transcript.command import Command, Occurrence
+    from cc_transcript.command import Occurrence
 
+GREP_FLOOD = (
+    "Raw `grep` over a directory floods context. "
+    "Run `ccx code grep '<text>'` (`--regex` for a pattern), or grep explicit files."
+)
 
-# grep flags ccx code grep subsumes as no-ops on its literal, always-recursive, line-numbered
-# engine. `-l` and `-F` change output/semantics, so the note discloses their drop; the rest are silent.
-DROP_SHORT = frozenset("rRnHhsIFl")
-DROP_LONG = frozenset(
+GREP = CommandSchema(
+    "grep",
+    operands=(Operand("operands", count="*"),),
+    options=(
+        Option("ignore_case", ("-i", "--ignore-case"), bool),
+        Option("word", ("-w", "--word-regexp"), bool),
+        Option("extended", ("-E", "--extended-regexp"), bool),
+        Option("basic", ("-G", "--basic-regexp"), bool),
+        Option("fixed", ("-F", "--fixed-strings"), bool),
+        Option("files_with_matches", ("-l", "--files-with-matches"), bool),
+        Option("recursive", ("-r", "-R", "--recursive", "--dereference-recursive"), bool),
+        Option(
+            "cosmetic",
+            (
+                "-n", "-H", "-h", "-s", "-I", "--line-number", "--with-filename", "--no-filename",
+                "--no-messages", "--color", "--colour",
+            ),
+            bool,
+        ),
+        Option(
+            "unmapped_flag",
+            (
+                "-x", "-c", "-q", "-L", "-P", "-z", "-a", "-U", "-b", "-T", "-o", "-v", "-y", "-Z", "-u", "-V",
+                "--no-ignore-case", "--line-regexp", "--count", "--files-without-match", "--quiet", "--silent",
+                "--perl-regexp", "--null", "--null-data", "--text", "--byte-offset", "--initial-tab", "--binary",
+                "--only-matching", "--line-buffered", "--invert-match", "--unix-byte-offsets", "--version",
+            ),
+            bool,
+        ),
+        *CONTEXT_OPTIONS,
+        Option("include", ("--include",)),
+        Option("pattern", ("-e", "--regexp")),
+        Option("pattern_file", ("-f", "--file")),
+        Option(
+            "unmapped_value",
+            (
+                "-m", "-d", "-D", "--max-count", "--directories", "--devices", "--exclude", "--include-dir",
+                "--exclude-dir", "--exclude-from", "--binary-files", "--label", "--group-separator",
+                "--context-separator",
+            ),
+        ),
+    ),
+)
+
+UNMAPPED = frozenset({"unmapped_flag", "unmapped_value", "pattern_file"})
+
+NO_VALUE_FLAGS = frozenset(
     {
-        "recursive",
-        "dereference-recursive",
-        "line-number",
-        "with-filename",
-        "no-filename",
-        "no-messages",
-        "files-with-matches",
+        "--recursive", "--dereference-recursive", "--line-number", "--with-filename", "--no-filename",
+        "--no-messages", "--files-with-matches", "--ignore-case", "--word-regexp", "--extended-regexp",
+        "--basic-regexp", "--fixed-strings",
     }
 )
 
-# Long flags that take no value: native grep errors on `--recursive=oops`, so an attached value
-# declines the rewrite instead of silently discarding it.
-NO_VALUE_LONG = DROP_LONG | frozenset(
-    {"ignore-case", "word-regexp", "extended-regexp", "basic-regexp", "fixed-strings"}
-)
-
-# Regex metacharacters per grep dialect. A pattern carrying NONE of the active dialect's
-# metachars is a plain literal in that dialect (→ literal rewrite when ccx-literal-safe); one
-# carrying any is handed to `translate_pattern`, which admits it onto `--regex` only when its
-# meaning is identical in grep and the Rust-regex engine. BRE reads `+ ? | ( ) { }` as literal
-# (so `a+` under the default is a literal), ERE as metachars.
 BRE_METACHARS = frozenset(".*^$[\\")
 ERE_METACHARS = BRE_METACHARS | frozenset("+?|(){}")
 
-# Chars the validator treats as a plain literal atom — identical in grep BRE/ERE and Rust regex.
-# `.` (the any-char wildcard, also an atom) is admitted here too. Brackets, backslash, quotes,
-# backticks, and a non-terminal `$` are excluded: shell-active chars stay out as defense in depth
-# atop the downstream shlex-quoting, and bracket/backslash constructs diverge across dialects.
 REGEX_ATOM = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_ .:@,=/-")
 
-# Chars whose backslash-escape is a literal of that char in grep BRE/ERE AND Rust regex (`\.` a literal
-# dot, `\\` a literal backslash), so `translate_pattern` passes them through verbatim in both dialects.
-# Every other backslash escape (`\d`, `\w`, `\b`, `\<`, `\1`) diverges or has no Rust form → refused.
 REGEX_ESCAPED_LITERAL = frozenset(".*[]^$\\")
 
-# Known-arity grep flag tables for the tolerant `grep_operands` lexer: to separate a flag's value
-# token from a path operand. An UNKNOWN flag makes `grep_operands` return None (no rewrite, the raw
-# dir-operand scan then feeds shape detection). `-e`/`-f` (and `--regexp`/`--file`) supply the pattern.
-# Membership is arity, never rewritability: `-v` lexes here yet `grep_parse` still declines it.
-BOUNDED_BOOL_SHORT = frozenset("iwxcqLlrRnHhsIFEGPzaUbTovyZuV")
-BOUNDED_VALUE_SHORT = frozenset("mABCdD")
-BOUNDED_PATTERN_SHORT = frozenset("ef")
-BOUNDED_BOOL_LONG = frozenset(
-    {
-        "ignore-case", "no-ignore-case", "word-regexp", "line-regexp", "count",
-        "files-with-matches", "files-without-match", "quiet", "silent",
-        "no-filename", "with-filename", "line-number", "recursive", "dereference-recursive",
-        "extended-regexp", "fixed-strings", "basic-regexp", "perl-regexp", "null", "null-data",
-        "text", "byte-offset", "no-messages", "initial-tab", "color", "colour", "binary", "only-matching",
-        "line-buffered", "invert-match", "unix-byte-offsets", "version",
-    }
-)
-BOUNDED_VALUE_LONG = frozenset(
-    {
-        "max-count", "after-context", "before-context", "context", "directories", "devices",
-        "include", "exclude", "include-dir", "exclude-dir", "exclude-from", "binary-files",
-        "label", "group-separator", "context-separator",
-    }
-)
-BOUNDED_PATTERN_LONG = frozenset({"regexp", "file"})
-
-# An allowlist: a missing suffix costs one un-rewritten grep, a data suffix wrongly present
-# changes what runs. Logs, JSON, YAML and extensionless paths belong to raw grep/rg.
 SOURCE_SUFFIXES = frozenset(
     {
         ".bash", ".c", ".cc", ".cjs", ".clj", ".cljs", ".cpp", ".cs", ".cxx", ".dart",
@@ -128,13 +131,7 @@ SOURCE_SUFFIXES = frozenset(
 
 
 def grep_targets(paths: list[str], include: str | None, *, cwd: Path | None) -> tuple[str, list[str]] | None:
-    """Split grep's path args into a ``(glob, path_operands)`` pair, or ``None`` to block.
-
-    Two or more explicit non-directory operands (no ``--include``, no ``.``-widening) carry as
-    ``ccx code grep`` positionals — the multi-file form (ccx ≥ v0.11.0) — with an empty glob.
-    Everything else routes through :func:`grep_glob`: a directory, a lone file (``--glob file`` for
-    old-binary compat), an ``--include``, or repo-wide widening yield a glob and no path operands.
-    """
+    """Split path operands into ``(glob, file_operands)``: several explicit files ride as positionals, the rest as a glob."""
     if include == "*":
         include = None
     if include is None and not any(p in (".", "./") for p in paths) and len(paths) >= 2:
@@ -145,35 +142,25 @@ def grep_targets(paths: list[str], include: str | None, *, cwd: Path | None) -> 
 
 
 def valid_brace(body: str) -> bool:
-    """Report whether an interval body (``{m}``/``{m,n}``/``{m,}``) is digits-and-comma with every
-    bound within GNU grep's ``RE_DUP_MAX`` (32767) ceiling — above it GNU errors while Rust compiles,
-    so an oversized interval must not rewrite. An over-length body short-circuits before Python's
-    int-conversion limit can raise.
-    """
-    if len(body) > 11 or re.fullmatch(r"\d+(,\d*)?", body) is None:
+    """Whether an interval body is ``m``, ``m,`` or ``m,n`` with every bound within GNU's 32767 ceiling."""
+    low, comma, high = body.partition(",")
+    if len(body) > 11 or not low.isdecimal() or (comma and high and not high.isdecimal()):
         return False
-    return all(int(part) <= 32767 for part in body.split(",") if part)
+    return all(int(part) <= 32767 for part in (low, high) if part)
 
 
 def translate_pattern(pattern: str, ere: bool) -> str | None:
-    """Translate ``pattern`` to the ``ccx code grep --regex`` (Rust-regex) dialect, or ``None`` when unrewritable.
+    """Translate a grep BRE (or ERE when ``ere``) pattern to Rust-regex, or ``None`` when its meaning would change.
 
-    A position-aware dialect translation — not a character whitelist, which can't distinguish a literal
-    mid-pattern ``^`` (grep) from an anchor (Rust). Admits only constructs whose meaning is identical in
-    grep (BRE when ``ere`` is false, else ERE) and Rust regex, emitting each in its Rust spelling; the
-    returned string equals the input for an already-ERE pattern. Accepted: plain atoms
-    (:data:`REGEX_ATOM`, ``.`` the wildcard); ``*`` (and ``+``/``?`` under ERE) never leading or stacked;
-    ``^`` only first and ``$`` only last; ``|`` alternation, balanced ``()`` groups, and digits-only
-    ``{m,n}`` intervals (ERE bare, BRE backslashed ``\\|`` ``\\(`` ``\\)`` ``\\{m,n\\}``); the escaped
-    literals :data:`REGEX_ESCAPED_LITERAL` verbatim; and, under BRE, bare ``+ ? ( ) { } |`` — literals in
-    BRE — emitted backslash-escaped so Rust reads them as literals too. Brackets, backreferences, and any
-    other backslash escape are not rewritable.
+    Admits plain atoms, ``.``, non-leading unstacked ``*`` (``+``/``?`` under ERE), a leading ``^``, a
+    trailing ``$``, alternation, balanced groups, digit intervals, and escaped literals; BRE's literal
+    ``+ ? ( ) { } |`` are emitted escaped.
     """
     n = len(pattern)
     out: list[str] = []
     depth = 0
-    quantifiable = False  # a preceding atom a quantifier may bind
-    quantifier = False  # the preceding token was itself a quantifier (no stacking)
+    quantifiable = False
+    quantifier = False
     i = 0
     while i < n:
         c = pattern[i]
@@ -209,7 +196,7 @@ def translate_pattern(pattern: str, ere: bool) -> str | None:
                 i += 2
             elif not ere and nxt == "{":
                 if not quantifiable or quantifier:
-                    return None  # an interval is a quantifier — GNU BRE rejects a leading or stacked one
+                    return None
                 close = pattern.find("\\}", i + 2)
                 if close == -1 or not valid_brace(pattern[i + 2 : close]):
                     return None
@@ -217,7 +204,7 @@ def translate_pattern(pattern: str, ere: bool) -> str | None:
                 quantifiable = quantifier = True
                 i = close + 2
             else:
-                return None  # backref \1-\9, \b, \w, \<, \>, a trailing \, … — refused
+                return None
             continue
         if c in REGEX_ATOM:
             out.append(c)
@@ -254,7 +241,7 @@ def translate_pattern(pattern: str, ere: bool) -> str | None:
             quantifiable, quantifier = True, False
         elif ere and c == "{":
             if not quantifiable or quantifier:
-                return None  # an interval is a quantifier — a leading or stacked one diverges from Rust
+                return None
             close = pattern.find("}", i)
             if close == -1 or not valid_brace(pattern[i + 1 : close]):
                 return None
@@ -270,467 +257,231 @@ def translate_pattern(pattern: str, ere: bool) -> str | None:
     return "".join(out) if depth == 0 else None
 
 
-def grep_parse(occ: Occurrence, *, cwd: Path | None = None) -> GrepCall | Decline:
-    """Parse one direct, unpiped ``grep`` occurrence into its ccx-rewritable shape, or a :class:`Decline`
-    naming what refused.
-
-    Rewrites only a direct invocation whose flags all fall in the DROP/MAP sets and whose one pattern
-    is a plain literal (:data:`LITERAL_SAFE`) or a dialect-faithful regex (:func:`translate_pattern`).
-    A pipe-sink occurrence, a wrapper-prefixed grep, and an env-prefixed grep decline here.
-    Exit-code / output-mode shapes (``-c -q -o -v -L -x``), PCRE (``-P``), multi-pattern searches
-    (repeated ``-e``), a value-taking short glued into a bundle (``-rnC3``), and out-of-repo path
-    operands (absolute / ``~`` / ``..``, via :func:`grep_glob`) all decline the rewrite. Every decline
-    carries the offending flag or pattern verbatim — the block message quotes it instead of guessing.
-    """
-    cmd = occ.command
-    if occ.prev_op == "|":
-        return Decline("a piped grep post-processes its input instead of searching a tree")
-    if cmd.env:
-        return Decline("an env prefix (`VAR=… grep`) hides the flags a rewrite would have to map")
-    if cmd.executable != "grep":
-        return Decline(f"the `{cmd.executable}` wrapper prefix keeps the rewrite off")
-    args = cmd.args
-    pattern: str | None = None
-    e_count = 0
-    include: str | None = None
-    positionals: list[str] = []
-    context_args: list[tuple[str, str]] = []
-    ignore_case = word = dropped_l = dropped_fixed = ere = bre = False
-    i, n = 0, len(args)
-    while i < n:
-        a = args[i]
-        if a == "--":
-            positionals.extend(args[i + 1 :])
-            break
-        if a == "-" or not a.startswith("-"):
-            positionals.append(a)
-            i += 1
-            continue
-        if a.startswith("--"):
-            name, sep, val = a[2:].partition("=")
-            if sep and name in NO_VALUE_LONG:
-                return Decline(f"grep itself rejects a value on `--{name}`")
-            if name == "ignore-case":
-                ignore_case = True
-            elif name == "word-regexp":
-                word = True
-            elif name == "extended-regexp":
-                ere = True
-            elif name == "basic-regexp":
-                bre = True
-            elif name == "fixed-strings":
-                dropped_fixed = True
-            elif name == "perl-regexp":
-                return Decline("`--perl-regexp` is PCRE, which has no ccx equivalent")
-            elif name in ("after-context", "before-context", "context"):
-                if sep:
-                    if not unquote(val).isdigit():
-                        return Decline(f"`--{name}` needs a numeric count")
-                    count = unquote(val)
-                else:
-                    if i + 1 >= n or not args[i + 1].isdigit():
-                        return Decline(f"`--{name}` needs a numeric count")
-                    count = args[i + 1]
-                    i += 1
-                context_args.append((f"--{name}", count))
-            elif name == "include":
-                if include is not None:
-                    return Decline("a repeated `--include`")
-                if sep:
-                    include = unquote(val)
-                elif i + 1 < n:
-                    include = args[i + 1]
-                    i += 1
-                else:
-                    return Decline("`--include` with no glob")
-            elif name == "regexp":
-                e_count += 1
-                if sep:
-                    pattern = unquote(val)
-                elif i + 1 < n:
-                    pattern = args[i + 1]
-                    i += 1
-                else:
-                    return Decline("`--regexp` with no pattern")
-            elif name in ("color", "colour"):
-                pass
-            elif name in DROP_LONG:
-                dropped_l = dropped_l or name == "files-with-matches"
-            else:
-                return Decline(f"the `--{name}` flag has no ccx equivalent")
-            i += 1
-            continue
-        body = a[1:]
-        head = body[0]
-        if head in CONTEXT_SHORT:
-            if len(body) > 1:
-                if not unquote(body[1:]).isdigit():
-                    return Decline(f"`-{head}` needs a numeric count")
-                count = unquote(body[1:])
-            elif i + 1 < n and args[i + 1].isdigit():
-                count = args[i + 1]
-                i += 1
-            else:
-                return Decline(f"`-{head}` needs a numeric count")
-            context_args.append((f"-{head}", count))
-        elif head == "e":
-            e_count += 1
-            if len(body) > 1:
-                pattern = unquote(body[1:])
-            elif i + 1 < n:
-                pattern = args[i + 1]
-                i += 1
-            else:
-                return Decline("`-e` with no pattern")
-        elif head in ("m", "f"):  # -m N (max-count), -f FILE (pattern file) → block
-            return Decline(f"`-{head}` has no ccx equivalent")
-        elif len(body) == 1:
-            if head == "i":
-                ignore_case = True
-            elif head == "w":
-                word = True
-            elif head == "E":
-                ere = True
-            elif head == "G":
-                bre = True
-            elif head == "P":
-                return Decline("`-P` is PCRE, which has no ccx equivalent")
-            elif head in DROP_SHORT:
-                dropped_l = dropped_l or head == "l"
-                dropped_fixed = dropped_fixed or head == "F"
-            else:
-                return Decline(f"`-{head}` has no ccx equivalent")
-        elif all(ch in DROP_SHORT or ch in ("E", "G", "i", "w") for ch in body):
-            dropped_l = dropped_l or "l" in body
-            dropped_fixed = dropped_fixed or "F" in body
-            ere = ere or "E" in body
-            bre = bre or "G" in body
-            ignore_case = ignore_case or "i" in body
-            word = word or "w" in body
-        else:
-            unmappable = "".join(c for c in dict.fromkeys(body) if c not in DROP_SHORT and c not in ("E", "G", "i", "w"))
-            return Decline(f"the `{a}` bundle carries `-{unmappable}`, which has no ccx equivalent")
-        i += 1
-    if e_count > 1:
-        return Decline("a multi-pattern search (repeated `-e`/`--regexp`)")
-    if pattern is None:
-        if not positionals:
-            return Decline("no pattern operand")
+def grep_parse(call: Call) -> GrepCall | None:
+    """The ccx-rewritable shape of one direct, unpiped, unwrapped ``grep`` call, or ``None``."""
+    source = call.occurrence.command
+    if call.occurrence.prev_op == "|" or source.env or source.executable != "grep":
+        return None
+    arguments = GREP.bind(call)
+    if not arguments.complete or glued_value(call, NO_VALUE_FLAGS) or arguments.values.keys() & UNMAPPED:
+        return None
+    patterns = bound_texts(arguments, "pattern")
+    positionals = bound_texts(arguments, "operands")
+    includes = bound_texts(arguments, "include")
+    if len(patterns) > 1 or len(includes) > 1:
+        return None
+    if patterns:
+        pattern, paths = patterns[0], positionals
+    elif positionals:
         pattern, paths = positionals[0], positionals[1:]
     else:
-        paths = positionals
-    if not pattern:
-        return Decline("an empty pattern")
-    if pattern.startswith("-"):
-        return Decline(f"the flag-shaped pattern `{pattern}`")
-    if dropped_fixed and (ere or bre):
-        return Decline("`-F` with `-E`/`-G` — grep itself errors on conflicting matchers")
+        return None
+    if not pattern or pattern.startswith("-"):
+        return None
+    values = arguments.values
+    fixed, ere, bre = "fixed" in values, "extended" in values, "basic" in values
+    if fixed and (ere or bre):
+        return None
     regex = False
-    if dropped_fixed:
-        # -F forces literal; a pattern ccx's literal engine can't take faithfully isn't rewritable.
+    if fixed:
         if not LITERAL_SAFE.match(pattern):
-            return Decline(f"the pattern `{pattern}` isn't literal-safe for ccx under `-F`")
+            return None
     elif any(c in (ERE_METACHARS if ere else BRE_METACHARS) for c in pattern):
-        translated = translate_pattern(pattern, ere)
-        if translated is None:
-            return Decline(f"the pattern `{pattern}` doesn't translate to ccx's regex dialect")
-        pattern = translated  # BRE spellings (`\|`, `\(…\)`) rewritten to the Rust-regex dialect
-        regex = True
+        if (translated := translate_pattern(pattern, ere)) is None:
+            return None
+        pattern, regex = translated, True
     elif not LITERAL_SAFE.match(pattern):
-        return Decline(f"the pattern `{pattern}` isn't literal-safe for ccx")
-    targets = grep_targets(paths, include, cwd=cwd)
+        return None
+    context = context_flags(arguments)
+    if any(not count.isdigit() for _, count in context):
+        return None
+    targets = grep_targets(paths, includes[0] if includes else None, cwd=call.cwd)
     if targets is None:
-        target = " ".join(paths) if paths else f"--include {include}"
-        return Decline(f"the target `{target}` has no single in-repo glob")
+        return None
     glob, path_ops = targets
-    native_context = bool(context_args) and ccx_supports("code", "grep", flag="--after-context")
+    native_context = bool(context) and ccx_supports("code", "grep", flag="--after-context")
     return GrepCall(
         pattern,
         glob,
-        "" if not context_args or native_context else "3",
-        tuple(context_args) if native_context else (),
-        ignore_case,
-        word,
-        dropped_l,
-        dropped_fixed,
-        count_dropped=bool(context_args) and not native_context,
+        "" if not context or native_context else "3",
+        tuple(context) if native_context else (),
+        "ignore_case" in values,
+        "word" in values,
+        "files_with_matches" in values,
+        fixed,
+        count_dropped=bool(context) and not native_context,
         regex=regex,
         paths=tuple(path_ops),
     )
 
 
-def grep_operands(cmd: Command) -> list[str] | None:
-    """Extract a ``grep``'s explicit path operands (the pattern excluded), or ``None`` if unparseable.
+def grep_operands(call: Call) -> list[str] | None:
+    """A ``grep``'s path operands (the pattern excluded), or ``None`` when an unknown flag stops the binding."""
+    arguments = GREP.bind(call)
+    if unparsed(GREP, arguments):
+        return None
+    positionals = bound_texts(arguments, "operands")
+    pattern_from_flag = "pattern" in arguments.values or "pattern_file" in arguments.values
+    return positionals if pattern_from_flag else positionals[1:]
 
-    A tolerant walk over grep's flag arities (:data:`BOUNDED_BOOL_SHORT` and friends). It separates path
-    operands from the pattern and from flag values, feeding the policy steers (transcript / dependency
-    source) and tree-shape detection. An unknown flag returns ``None`` — the steers skip and shape
-    detection falls back to a raw dir scan, never a wrong block.
+
+def spells_recursive(text: str) -> bool:
+    if text.startswith("--"):
+        return text.partition("=")[0] in ("--recursive", "--dereference-recursive")
+    return text.startswith("-") and ("r" in text or "R" in text)
+
+
+def grep_recursive(call: Call) -> bool:
+    """Whether a grep recurses: a bound ``-r``/``-R``, or a recursive spelling among the words an unknown flag left unread."""
+    arguments = GREP.bind(call)
+    if "recursive" in arguments.values:
+        return True
+    unread = [word_text(word) for word in arguments.unread]
+    options = unread[: unread.index("--")] if "--" in unread else unread
+    return any(spells_recursive(text) for text in options)
+
+
+def grep_tree_shaped(call: Call) -> bool:
+    """Whether a grep searches a directory: recursive with no operand, or a ``.``/``..``/directory operand.
+
+    Under an unknown flag, only a recursive grep with a literal ``.``/``..`` operand counts.
     """
-    args = cmd.args
-    positionals: list[str] = []
-    pattern_from_flag = False
-    i, n = 0, len(args)
-    while i < n:
-        a = args[i]
-        if a == "--":
-            positionals.extend(args[i + 1 :])
-            break
-        if a == "-" or not a.startswith("-"):
-            positionals.append(a)
-            i += 1
-            continue
-        if a.startswith("--"):
-            name, sep, _ = a[2:].partition("=")
-            if name in BOUNDED_PATTERN_LONG:
-                pattern_from_flag = True
-                if not sep:
-                    i += 1
-            elif name in BOUNDED_VALUE_LONG:
-                if not sep:
-                    i += 1
-            elif name not in BOUNDED_BOOL_LONG:
-                return None
-            i += 1
-            continue
-        body = a[1:]
-        head = body[0]
-        if head in BOUNDED_PATTERN_SHORT:
-            pattern_from_flag = True
-            if len(a) == 2 and i + 1 < n:
-                i += 1
-        elif head in BOUNDED_VALUE_SHORT:
-            if len(a) == 2 and i + 1 < n:
-                i += 1
-        elif "m" in body[1:]:
-            prefix, _, count = body.partition("m")
-            if body.count("m") != 1 or not all(ch in BOUNDED_BOOL_SHORT for ch in prefix):
-                return None
-            if not count and i + 1 < n:
-                i += 1
-        elif not all(ch in BOUNDED_BOOL_SHORT for ch in body):
-            return None
-        i += 1
-    if not pattern_from_flag and positionals:
-        return positionals[1:]
-    return positionals
-
-
-def grep_recursive(args: tuple[str, ...]) -> bool:
-    """Whether a grep's flags request a recursive walk (``-r``/``-R``/``--recursive``/
-    ``--dereference-recursive``). Scanned before the first bare ``--`` and tolerant of unknown flags —
-    it feeds tree-shape detection, never a rewrite."""
-    for a in args[: args.index("--")] if "--" in args else args:
-        if a.startswith("--"):
-            if a[2:].partition("=")[0] in ("recursive", "dereference-recursive"):
-                return True
-        elif a.startswith("-") and a != "-" and ("r" in a[1:] or "R" in a[1:]):
-            return True
-    return False
-
-
-def grep_tree_shaped(cmd: Command, *, cwd: Path | None) -> bool:
-    """Whether a grep is a directory-wide flood — the one positive shape the block fires on.
-
-    A recursive grep with no path operand (it recurses the cwd), or any grep whose operand is
-    ``.``/``..`` or stats as a directory (the emitter would rewrite it to a recursive ``ccx code grep``,
-    and an unmappable one steers to ccx). An explicit file, an unstattable ``$VAR``/missing operand, or a
-    non-recursive operand-less grep is not tree-shaped — it runs raw. When :func:`grep_operands` cannot
-    map an unknown flag it returns ``None``: the shape then rests on a literal ``.``/``..`` token among
-    the raw path-like operands paired with a recursive flag (``grep -r --weird foo .`` stays tree-shaped),
-    never a filesystem stat of the raw tokens — an operand that happens to name a real dir under an
-    unparseable flag must not block a bounded explicit-file search.
-    """
-    ops = grep_operands(cmd)
-    if ops is None:
-        return grep_recursive(cmd.args) and any(p.rstrip("/") in (".", "..") for p in path_operands_raw(cmd.args))
-    return (grep_recursive(cmd.args) and not ops) or any(resolved_is_dir(p, cwd) for p in ops)
+    recursive = grep_recursive(call)
+    if (ops := grep_operands(call)) is None:
+        return recursive and any(p.rstrip("/") in (".", "..") for p in loose_operands(call))
+    return (recursive and not ops) or any(resolved_is_dir(p, call.cwd) for p in ops)
 
 
 def is_source_file(p: str, cwd: Path | None) -> bool:
-    """Whether one path operand names an existing file carrying a :data:`SOURCE_SUFFIXES` suffix.
-
-    Both halves are load-bearing. The suffix keeps a log / JSON / YAML / markdown target on the raw
-    engine; the stat keeps a missing, ``$VAR``, or unexpanded-glob operand off the rewrite, so an
-    operand whose shape the guard cannot see always runs raw.
-    """
     path = resolve_operand(p, cwd)
     return path is not None and path.suffix.lower() in SOURCE_SUFFIXES and path.is_file()
 
 
-def grep_source_shaped(cmd: Command, *, cwd: Path | None) -> bool:
-    """Whether a grep names explicit source files and nothing else — the bounded rewritable shape.
-
-    Bounded by its operands rather than a flood, so this shape never reaches the block lane: it
-    rewrites for ccx's anchors and line references, or runs raw. Every operand must clear
-    :func:`is_source_file`, so one log/JSON/absent sibling takes the whole occurrence back to raw
-    grep, and an operand-less grep (whose target is the cwd tree) is not this shape at all.
-    """
-    ops = grep_operands(cmd)
-    return bool(ops) and all(is_source_file(p, cwd) for p in ops)
+def grep_source_shaped(call: Call) -> bool:
+    """Whether a grep names only existing source files."""
+    ops = grep_operands(call)
+    return bool(ops) and all(is_source_file(p, call.cwd) for p in ops)
 
 
-def grep_to(occ: Occurrence, *, cwd: Path | None = None) -> str | None:
-    """The ``ccx code grep`` rewrite for a grep occurrence, or ``None`` when the emitter cannot map it."""
-    parsed = grep_parse(occ, cwd=cwd)
-    return build_ccx_grep(parsed) if isinstance(parsed, GrepCall) else None
-
-
-class GrepFlood(CustomCommandLineCondition):
-    """Match a line carrying any unpiped ``grep`` occurrence.
-
-    A cheap structural gate; :func:`grep_visit` is authoritative, returning a per-occurrence verdict.
-    Matching on ``Call.name`` keeps wrapper prefixes transparent and reaches an absolute-path or quoted
-    spelling (``/usr/bin/grep``, ``"grep"``); a pure ``… | grep`` filter (no unpiped grep) stays outside
-    the registration entirely.
-    """
-
-    def check_command_line(self, evt: BaseHookEvent, cl: CommandLine) -> bool:
-        return any(call.occurrence.prev_op != "|" for call in evt.cmd.calls("grep"))
-
-
-def grep_block(evt: PreToolUseEvent, cl: CommandLine, *, reason: str = "") -> str:
-    return search_block(
-        evt,
-        "grep",
-        grep_operands,
-        "BLOCKED: raw `grep` for a recursive/tree-wide file search floods context. "
-        "Use `ccx code grep <text>` / `ccx code search` for code; the built-in Grep tool or `rg` for "
-        "literal content in non-source files. Several terms? One call covers them: "
-        "`ccx code grep 'a|b|c' --regex`. Simple tree greps auto-rewrite to `ccx code grep`"
-        f"{decline_clause(reason)}"
-        "Escape hatch: pipe input into it (`… | grep`), or name explicit files.",
-        cl=cl,
-    )
+def grep_to(call: Call) -> str | None:
+    return build_ccx_grep(parsed) if (parsed := grep_parse(call)) is not None else None
 
 
 def grep_visit(evt: PreToolUseEvent, occ: Occurrence, ctx: WalkContext) -> str | Rewritten | HookResult | None:
-    """Per-occurrence verdict under the fail-open doctrine.
+    """Rewrite a tree-shaped or source-file grep, block an unmappable tree-shaped one, and run everything else raw.
 
-    Non-grep occurrences pass. The policy steers scan the parsed path operands (pattern excluded),
-    falling back to the raw path-like tokens (:func:`path_operands_raw`) when the flag walk can't parse —
-    an unparseable flag can't blind them, though the fallback over-matches (the pattern token rides
-    along): a transcript operand blocks with the cc-transcript steer; a dependency segment (``.venv/…``,
-    ``node_modules/…``, ``.git/…``) or a directory operand the repo's own ``git check-ignore`` reports
-    ignored (``dist/``, a generated tree) blocks with the dep-reader steer — all fire even through
-    pipes, while an ignored plain file stays bounded and runs raw. A grep consuming a pipe runs verbatim
-    (post-processing). Two shapes reach the emitter: a tree-shaped flood, and a
-    :func:`grep_source_shaped` search over explicit source files. They differ only in what an
-    unmappable one does — the flood blocks with the steer, the bounded source search runs raw, since
-    a search its own operands already bound has nothing to steer away from. Everything else (a
-    log/JSON/YAML/absent operand, an operand-less non-recursive grep) runs raw before either fires.
-    A grep whose raw text carries a ``$(…)``/backtick substitution runs raw
-    (the parser drops the operand, so a rewrite would silently widen scope). A path operand carrying a
-    shell expansion or glob metachar forfeits the rewrite and runs raw (never a lossy emission). Otherwise
-    an unmappable *flood* (``-P``, an exotic regex, an unknown flag over ``.``) blocks with the steer
-    naming the :class:`Decline`'s reason, while a mappable shape the local ``ccx`` binary is too old (or absent) to emit runs raw — infra
-    unavailability never blocks. A block rides a :class:`HookResult` that aborts the walk, discarding any
-    sibling rewrite.
+    Substitutions, expanding operands, and a ``ccx`` too old to express the search all run raw.
     """
     call = Call(evt.cmd, occ, ctx.cwd)
-    if call.name != "grep":
+    if call.name != "grep" or occ.prev_op == "|":
         return None
-    inner = call.command
-    ops = grep_operands(inner)
-    steer_ops = path_operands_raw(inner.args) if ops is None else ops
-    if any(is_transcript_path(p) for p in steer_ops):
-        return evt.block(grep_block(evt, evt.cmd.line))
-    if any(has_dependency_segment(p) for p in steer_ops) or any_git_ignored(steer_ops, cwd=ctx.cwd):
-        return evt.block(DEP_STEER)
-    if occ.prev_op == "|":
+    flood = grep_tree_shaped(call)
+    if not flood and not grep_source_shaped(call):
         return None
-    flood = grep_tree_shaped(inner, cwd=ctx.cwd)
-    if not flood and not grep_source_shaped(inner, cwd=ctx.cwd):
+    if forfeits_substitution(call):
         return None
-    if has_command_substitution(occ.command.raw):
+    if (ops := grep_operands(call)) and any(forfeits_operand(p) for p in ops):
         return None
-    if ops and any(forfeits_operand(p) for p in ops):
-        return None
-    parsed = grep_parse(occ, cwd=ctx.cwd)
-    if isinstance(parsed, Decline):
-        return evt.block(grep_block(evt, evt.cmd.line, reason=parsed.reason)) if flood else None
-    text = build_ccx_grep(parsed)
-    if text is None:
+    if (parsed := grep_parse(call)) is None:
+        return evt.block(GREP_FLOOD) if flood else None
+    if (text := build_ccx_grep(parsed)) is None:
         return None
     if ctx.spliceable:
-        return Rewritten(text, note=note_text(occ.command.raw, parsed))
-    reason = "this tool call takes no in-place rewrite"
-    return evt.block(grep_block(evt, evt.cmd.line, reason=reason)) if flood else None
+        return Rewritten(text, note=search_note(parsed))
+    return evt.block(GREP_FLOOD) if flood else None
 
+
+hook(
+    Event.PreToolUse,
+    only_if=[Tool("Bash"), SearchTargets("grep", grep_operands, targets_transcript)],
+    message=TRANSCRIPT_STEER,
+    block=True,
+    tests={
+        Input(command=f"grep -r foo {TRANSCRIPTS}/"): Block(pattern="cc-transcript"),
+        Input(command=f"grep -r foo {TRANSCRIPTS}/ | head"): Block(pattern="cc-transcript"),
+        Input(command=f"grep foo {TRANSCRIPTS}/proj/session; grep -v bar ."): Block(pattern="cc-transcript"),
+        Input(command=f"/usr/bin/grep -r foo {TRANSCRIPTS}/"): Block(pattern="cc-transcript"),
+        Input(command="grep -r foo ~/.claude/plugins/"): Allow(),
+        Input(command=f"cat x | grep foo {TRANSCRIPTS}/proj/session"): Allow(),
+    },
+)
+
+hook(
+    Event.PreToolUse,
+    only_if=[Tool("Bash"), SearchTargets("grep", grep_operands, targets_dependency)],
+    message=DEP_STEER,
+    block=True,
+    tests={
+        Input(command="grep -r foo .git/ | head"): Block(pattern="dep-reader"),
+        Input(command="grep -rn foo .venv/lib/"): Block(pattern="dep-reader"),
+        Input(command="grep -r foo node_modules/express | head"): Block(pattern="dep-reader"),
+        Input(command="grep -rn '.venv' README.md"): Allow(),
+        Input(command="grep -rn foo . | grep -v node_modules"): Allow(),
+    },
+)
 
 rewrite_command_occurrences(
-    only_if=[GrepFlood()],
+    only_if=[UnpipedSearch("grep")],
     visit=grep_visit,
     tests={
-        # Rewrite — tree-shaped via a `.` operand or `-r` with no path (disk-independent). Path→glob
-        # shapes classify each operand against the filesystem, so they live in test_grep_guards.py
-        # (TestGrepPathGlobbing) where a tmp tree and pinned cwd make the classification deterministic.
-        Input(command="grep -rn foo"): Rewrite(pattern="code grep foo"),  # recursive, no path → repo-wide
-        Input(command="grep --recursive foo ."): Rewrite(pattern="code grep foo"),  # long recursive no-op
-        Input(command="grep -rn --include='*.go' foo ."): Rewrite(pattern="--glob '*.go'"),  # `.` + include → repo-wide glob
-        Input(command="grep -A 7 foo ."): Rewrite(pattern="-A=7"),  # native context count preserved
-        Input(command="grep -rn foo . src/"): Rewrite(pattern="code grep foo"),  # `.` sibling widens to whole repo, no --glob
-        Input(command="echo x; grep -r foo ."): Rewrite(pattern="echo x; "),  # splice only grep; sibling stays byte-identical
-        Input(command="grep -ri foo"): Rewrite(pattern="code grep foo"),  # -ri bundle maps -i (probe); recursive repo-wide
-        Input(command="grep -riw foo"): Rewrite(pattern="-i -w"),  # -riw bundle maps both MAP shorts; recursive
-        Input(command="grep foo ."): Rewrite(pattern="code grep foo"),  # `.` operand → tree-shaped → repo-wide rewrite
-        # Regex rewrites — a validator-cleared pattern maps onto `ccx code grep --regex` (disk-independent
-        # `.` widening; the --regex probe hits the real plugin/bin/ccx, which supports it since v0.11.0):
-        Input(command="grep 'foo.*' ."): Rewrite(pattern="--regex"),  # BRE-safe metachars → regex on rg engine
-        Input(command="grep -E 'a|b' ."): Rewrite(pattern="--regex"),  # ERE alternation → regex on rg engine
-        Input(command="grep -E 'a+' ."): Rewrite(pattern="--regex"),  # ERE `+` is a quantifier → validator → regex
-        Input(command="grep 'a+' ."): Rewrite(pattern="code grep a+"),  # BRE `+` is literal → literal rewrite, no --regex
-        Input(command="grep 'a\\|b' ."): Rewrite(pattern="--regex"),  # BRE `\|` → ERE `|` alternation, rewritten to regex
-        Input(command="grep 'x\\(ab\\)\\+' ."): Rewrite(pattern="--regex"),  # BRE group + `\+` → `(ab)+` on the rg engine
-        Input(command="grep 'foo$' ."): Rewrite(pattern="--regex"),  # `$` in the PATTERN is an anchor, not a path
-        # Block — tree-shaped (via `.`) but the emitter can't map the flag/pattern, which the message names:
-        Input(command="grep -rnC3 foo ."): Block(pattern="the `-rnC3` bundle carries `-C3`"),  # value short in a bundle
-        Input(command="grep -v foo ."): Block(pattern="didn't map: `-v` has no ccx equivalent"),  # inversion named
-        Input(command="grep -rv foo ."): Block(),  # `-v` lexes for arity now, but still never rewrites (a flipped result set)
-        Input(command="grep --recursive=oops foo ."): Block(),  # native grep rejects a value on a no-value long
-        Input(command="grep -P 'x(?=y)' ."): Block(),  # PCRE (-P) never maps; `.` is a dir → tree-shaped
-        Input(command="grep 'a^b' ."): Block(),  # BRE mid-pattern `^`: literal in grep, an anchor in Rust → not rewritable
-        Input(command="grep -F 'foo.*' ."): Block(),  # -F forces literal; `foo.*` isn't ccx-literal-safe → no --regex flip
-        Input(command="grep -E -F foo ."): Block(),  # -F with -E: conflicting matchers, grep errors → block
-        Input(command="grep -q foo ."): Block(),  # exit-code contract over a dir
-        Input(command="grep -c foo ."): Block(),  # count mode over a dir
-        Input(command="grep -o foo ."): Block(),  # -o over a dir → tree-wide
-        Input(command="grep -e foo -e bar ."): Block(),  # multiple -e over a dir
-        Input(command="grep -f patterns.txt ."): Block(),  # -f pattern-file over a dir
-        Input(command="GREP_OPTIONS=-v grep foo ."): Block(),  # env-prefixed grep over `.` can't rewrite (env unseen)
-        # Allow — explicit-file searches run raw (not tree-shaped): a file operand, a `~`/`$`/missing
-        # path, or an absolute file is bounded by its operand, so the guard never fires. Flip of prior
-        # Block rows — the whole point of the fail-open doctrine:
-        Input(command="grep foo /var/log/x.log"): Allow(),  # absolute data file → runs raw
-        Input(command="grep foo ~/notes.md"): Allow(),  # `~` file operand → not a dir → runs raw
-        Input(command="grep foo ghost.py"): Allow(),  # missing operand → not a dir → runs raw
-        Input(command="grep -n foo $d/host.go"): Allow(),  # `$VAR` operand → unstattable → runs raw
-        Input(command="grep foo ~/app.log"): Allow(),  # `~` data file → runs raw
-        Input(command="grep -q pat missing.html"): Allow(),  # missing file → not tree-shaped
-        Input(command="grep -l foo a.html b.html"): Allow(),  # two file operands → not tree-shaped
-        Input(command="grep -o localhost /etc/hosts"): Allow(),  # -o over an absolute file → not tree-shaped
-        Input(command="grep -oHnb . AGENTS.md"): Allow(),  # prefixes over a single file → not tree-shaped
-        Input(command="grep -c needle *"): Allow(),  # unexpanded glob operand → not a dir → runs raw
-        Input(command="grep -c needle file{1..10000}"): Allow(),  # unexpanded brace operand → runs raw
-        Input(command="grep -r foo logs.json"): Allow(),  # -r on a missing operand → not a dir → runs raw
+        Input(command="grep -rn foo"): Rewrite(pattern="code grep foo"),
+        Input(command="grep --recursive foo ."): Rewrite(pattern="code grep foo"),
+        Input(command="grep -rn --include='*.go' foo ."): Rewrite(pattern="--glob '*.go'"),
+        Input(command="grep -A 7 foo ."): Rewrite(pattern="-A=7"),
+        Input(command="grep -rn foo . src/"): Rewrite(pattern="code grep foo"),
+        Input(command="echo x; grep -r foo ."): Rewrite(pattern="echo x; "),
+        Input(command="grep -ri foo"): Rewrite(pattern="code grep foo"),
+        Input(command="grep -riw foo"): Rewrite(pattern="-i -w"),
+        Input(command="grep foo ."): Rewrite(pattern="code grep foo"),
+        Input(command="grep 'foo.*' ."): Rewrite(pattern="--regex"),
+        Input(command="grep -E 'a|b' ."): Rewrite(pattern="--regex"),
+        Input(command="grep -E 'a+' ."): Rewrite(pattern="--regex"),
+        Input(command="grep 'a+' ."): Rewrite(pattern="code grep a+"),
+        Input(command="grep 'a\\|b' ."): Rewrite(pattern="--regex"),
+        Input(command="grep 'x\\(ab\\)\\+' ."): Rewrite(pattern="--regex"),
+        Input(command="grep 'foo$' ."): Rewrite(pattern="--regex"),
+        Input(command="grep -rnC3 foo ."): Block(pattern="ccx code grep"),
+        Input(command="grep -v foo ."): Block(pattern="ccx code grep"),
+        Input(command="grep -rv foo ."): Block(),
+        Input(command="grep --recursive=oops foo ."): Block(),
+        Input(command="grep -P 'x(?=y)' ."): Block(),
+        Input(command="grep 'a^b' ."): Block(),
+        Input(command="grep -F 'foo.*' ."): Block(),
+        Input(command="grep -E -F foo ."): Block(),
+        Input(command="grep -q foo ."): Block(),
+        Input(command="grep -c foo ."): Block(),
+        Input(command="grep -o foo ."): Block(),
+        Input(command="grep -e foo -e bar ."): Block(),
+        Input(command="grep -f patterns.txt ."): Block(),
+        Input(command="GREP_OPTIONS=-v grep foo ."): Block(),
+        Input(command="grep foo /var/log/x.log"): Allow(),
+        Input(command="grep foo ~/notes.md"): Allow(),
+        Input(command="grep foo ghost.py"): Allow(),
+        Input(command="grep -n foo $d/host.go"): Allow(),
+        Input(command="grep foo ~/app.log"): Allow(),
+        Input(command="grep -q pat missing.html"): Allow(),
+        Input(command="grep -l foo a.html b.html"): Allow(),
+        Input(command="grep -o localhost /etc/hosts"): Allow(),
+        Input(command="grep -oHnb . AGENTS.md"): Allow(),
+        Input(command="grep -c needle *"): Allow(),
+        Input(command="grep -c needle file{1..10000}"): Allow(),
+        Input(command="grep -r foo logs.json"): Allow(),
         Input(
             command="curl -sL -o /tmp/ch-live.html https://yasyf.github.io/captain-hook/ && "
             "wc -c < /tmp/ch-live.html && for m in 'id=\"links\"' gd-hero; do "
             "printf '%s: %s\\n' \"$m\" \"$(grep -c \"$m\" /tmp/ch-live.html)\"; done"
-        ): Allow(),  # -c over a file the curl creates later in the same compound
+        ): Allow(),
         Input(command="grep -i err app.log | head"): Allow(),
         Input(command="grep foo ghost.py | wc -l"): Allow(),
-        Input(command="grep -oi points b_jetblue_jun.json"): Allow(),  # -o on a single data file → not tree-shaped
-        # The source-file lane's exclusions; its positive rows stat their operands, so they live in
-        # pytest (TestGrepSourceFileShape).
-        Input(command="grep -n adoptionPinRefusals build.log"): Allow(),  # .log is off SOURCE_SUFFIXES
-        Input(command="grep -n version package.json"): Allow(),  # .json is off SOURCE_SUFFIXES
-        Input(command="grep -n image compose.yaml"): Allow(),  # .yaml is off SOURCE_SUFFIXES
-        Input(command="cat api/src/Team.ts | grep adoptionPinRefusals"): Allow(),  # pipe filter
-        Input(command="grep -n adoptionPinRefusals api/src/Team.ts | head"): Allow(),  # downstream pipe
-        Input(command="grep -n adoptionPinRefusals ghost.ts"): Allow(),  # .ts but absent → runs raw
-        Input(command="echo x > gen.json; grep -i points gen.json"): Allow(),  # created earlier in the compound
-        Input(command="cd sub && grep foo notes.json"): Allow(),  # cd-relative file operand → not tree-shaped
+        Input(command="grep -oi points b_jetblue_jun.json"): Allow(),
+        Input(command="grep -n adoptionPinRefusals build.log"): Allow(),
+        Input(command="grep -n version package.json"): Allow(),
+        Input(command="grep -n image compose.yaml"): Allow(),
+        Input(command="cat api/src/Team.ts | grep adoptionPinRefusals"): Allow(),
+        Input(command="grep -n adoptionPinRefusals api/src/Team.ts | head"): Allow(),
+        Input(command="grep -n adoptionPinRefusals ghost.ts"): Allow(),
+        Input(command="echo x > gen.json; grep -i points gen.json"): Allow(),
+        Input(command="cd sub && grep foo notes.json"): Allow(),
         Input(command="grep -r foo src/ | head"): Allow(),
         Input(command="grep -r x . | head -n 100000"): Rewrite(pattern="code grep x"),
         Input(command="grep -r x . | head -c 100000000"): Rewrite(pattern="code grep x"),
@@ -741,47 +492,26 @@ rewrite_command_occurrences(
         Input(command="grep -rn public_edge_test --include=* . | grep -v node_modules | head"): Rewrite(
             pattern="code grep public_edge_test |"
         ),
-        Input(command="grep -rni goldens -l . | grep -v node_modules"): Rewrite(
-            pattern="code grep goldens -i -l"
-        ),
+        Input(command="grep -rni goldens -l . | grep -v node_modules"): Rewrite(pattern="code grep goldens -i -l"),
         Input(command="grep -rn foo . | sort"): Rewrite(pattern="code grep foo"),
         Input(command="grep -r foo . | tail -f"): Rewrite(pattern="code grep foo"),
-        # Transcript policy steer — fires even through a downstream pipe (checked before the pipe):
-        Input(command="grep -r foo ~/.claude/projects/"): Block(pattern="cc-transcript"),
-        Input(command="grep -r foo ~/.claude/projects/ | head"): Block(pattern="cc-transcript"),
-        # Dep policy steer — a VCS-store segment blocks textually; ignored-dir shapes rest on
-        # `git check-ignore` and live in pytest (TestDependencyDirTargets), never inline.
-        Input(command="grep -r foo .git/ | head"): Block(pattern="ccx repo locate"),
-        # Mixed transcript + flood: the block carries BOTH the default steer and the cc-transcript line.
-        Input(command="grep foo ~/.claude/projects/main.jsonl; grep -v bar ."): Block(pattern="cc-transcript"),
-        # Per-occurrence splices: a non-tree-shaped sibling stays byte-identical while the tree grep splices.
         Input(command="grep -i points data.json && grep foo ."): Rewrite(pattern="grep -i points data.json && "),
         Input(command="grep -c foo data.json && grep -rn bar ."): Rewrite(pattern="grep -c foo data.json && "),
-        Input(command="grep foo $d/host.go; grep bar ."): Rewrite(pattern="grep foo $d/host.go; "),  # $VAR sibling runs raw
-        # Per-occurrence blocks: one flooding grep aborts the whole line.
-        Input(command="grep -c foo . && grep -rn bar ."): Block(),  # `-c` over `.` floods → vetoes the line
-        Input(command="echo x; grep -c foo ."): Block(),  # one flooding grep blocks the compound line
-        # Substitution forfeits the rewrite (parser drops the operand); the rest runs raw under fail-open.
-        Input(command="grep -r foo $(dir)"): Allow(),  # tree via -r, but `$(…)` forfeits the rewrite → runs raw
-        Input(command="grep foo $(printf /tmp/target)"): Allow(),  # substitution operand → not tree-shaped → runs raw
-        Input(command="grep -n foo `printf x`"): Allow(),  # backtick operand → runs raw
-        Input(command="grep -r . . '$(printf x)'"): Allow(),  # `$(` in raw forfeits the rewrite → runs raw (doctrine 5)
-        # Fix 5: a path operand carrying an expansion/glob metachar forfeits the rewrite → runs raw
-        # (never a block, never a lossy/mis-globbed emission). `~` and `[` are the two triggers below.
-        Input(command="grep -r . . ~/notes.md"): Allow(),  # `~` operand → forfeit → runs raw
-        Input(command="grep -r foo 'src[old]/' ."): Allow(),  # `[old]` would mis-glob as a class → forfeit → runs raw
-        # Fix 3: an unknown grep flag makes `grep_operands` return None; tree-shape then needs a recursive
-        # flag AND a literal `.`/`..` token — never a stat of the raw tokens.
-        Input(command="grep -r --weird foo ."): Block(),  # `-r` + literal `.` → tree-shaped; `--weird` unmappable → block
-        # Fix 2: `.claude/projects` must be consecutive path segments — a lookalike substring is not a transcript.
-        Input(command="grep needle docs/x.claude/projects-notes.md"): Allow(),  # not a transcript, not a dir → runs raw
-        # Wrapper transparency — the 2026-07-17 decision: a wrapped tree grep stays gated (direct-only rewrite).
+        Input(command="grep foo $d/host.go; grep bar ."): Rewrite(pattern="grep foo $d/host.go; "),
+        Input(command="grep -c foo . && grep -rn bar ."): Block(),
+        Input(command="echo x; grep -c foo ."): Block(),
+        Input(command="grep -r foo $(dir)"): Allow(),
+        Input(command="grep foo $(printf /tmp/target)"): Allow(),
+        Input(command="grep -n foo `printf x`"): Allow(),
+        Input(command="grep -r . . '$(printf x)'"): Allow(),
+        Input(command="grep -r . . ~/notes.md"): Allow(),
+        Input(command="grep -r foo 'src[old]/' ."): Allow(),
+        Input(command="grep -r --weird foo ."): Block(),
+        Input(command="grep needle docs/notes.md"): Allow(),
         Input(command="sudo grep foo ."): Block(),
         Input(command="timeout 10 grep foo ."): Block(),
         Input(command="/usr/bin/grep -rn foo ."): Block(),
         Input(command='"grep" -rn foo .'): Block(),
-        Input(command="/usr/bin/grep -r foo ~/.claude/projects/"): Block(pattern="cc-transcript"),
-        # Existing Allow neighbors — piped grep, non-grep, ccx exec pass-through:
         Input(command="ls | grep foo"): Allow(),
         Input(command="cat x | grep foo | sort"): Allow(),
         Input(command="git log --grep=fix"): Allow(),

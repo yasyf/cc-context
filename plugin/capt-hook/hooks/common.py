@@ -1,140 +1,81 @@
-"""Shared constants and helpers for the cc-context guard pack.
-
-The guards steer Claude away from the handful of tool invocations that reliably
-flood the context window — an unbounded ``Read`` of a huge file, a full ``git
-diff``, raw ``grep`` file searches, ``sed -n A,Bp`` / ``cat`` line dumps, recursive
-``ls``/``find`` trees, whole-page web fetches (``WebFetch``, an unpiped ``curl``/``wget``
-page dump) — and toward the ``ccx`` tools that return the same information compactly
-(``ccx code outline``, ``ccx code read --section``, ``ccx vcs diff``, ``ccx repo find``,
-``ccx code symbol``, ``ccx code grep``, ``ccx web outline``, ``ccx web read --section``,
-``ccx web search``). The MCP tools
-(``mcp__cc-context__ccx_code_outline`` and friends) mirror the query surface, plus
-``ccx_exec``/``ccx_exec_tools`` for sandboxed multi-call composition.
-
-The themed guard modules import these as ``from .common import ...``. The module
-registers no hooks, so discovery loads it as a harmless no-op.
-"""
+"""Shared constants and helpers for the cc-context guard pack; registers no hooks."""
 
 from __future__ import annotations
 
 import functools
 import json
 import re
-import shlex
 import subprocess
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from captain_hook import BaseHookEvent, CommandLine, Deque, DurableState, resolve_binary
 
-# A Read with neither offset nor limit pulls the whole file into context. Past this
-# size (~5k tokens) the dump is a token-bomb worth steering to an outline; below it
-# the cost is negligible, so the block only bites genuinely large files. (50 KB was
-# too lenient — a ~32 KB / 8k-token source file slipped through unblocked.)
+if TYPE_CHECKING:
+    from captain_hook import Call, Command
+    from cc_transcript.command import Occurrence
+
+CCX_SERVERS = frozenset({"cc-context", "plugin_cc-context_cc-context"})
+
 LARGE_READ_BYTES = 20_000
 
-# The injected `limit` for the large-file Read rewrite — a windowed head instead of a hard
-# block, with the note steering to `ccx code outline` + `--section` for the rest.
 READ_WINDOW_LINES = 100
 
-# How much of a file the text/binary sniff reads. A NUL byte in this prefix is git's own
-# binary heuristic, and it needs no decode step — so a multi-byte character split at the
-# window edge can never misclassify a UTF-8 file.
 SNIFF_BYTES = 8_000
 
-# `git diff` is allowed when scoped (a pathspec after `--`) or summarized (one of
-# these stat-only flags). A bare/range diff with no such narrowing is the bomb.
 GIT_DIFF_SUMMARY_FLAGS = ("--stat", "--numstat", "--shortstat", "--name-only", "--name-status", "--dirstat")
 
-# Identifier-alternation heuristic for the rg/grep nudge: at least two terms joined
-# by `|`, each looking like a code identifier (letters/digits/underscore, no spaces).
 IDENT_ALT = re.compile(r"\b[A-Za-z_]\w*(?:\|[A-Za-z_]\w*)+\b")
 
-# Pattern chars safe to rewrite onto ccx's fixed-string grep: an excluded regex/glob
-# metachar (`*?[^$(){}|`) changes meaning as a literal rg query or in the ccx grep argv.
 LITERAL_SAFE = re.compile(r"^[\w ./:@,=+-]+$")
 
-# JSON-output flags that mark a command as worth wrapping in `ccx format`. The glued
-# forms (`--json`, `-ojson`, `-o=json`, `--output=json`, `--format=json`) are caught
-# by a single regex over each arg; the two-token forms (`-o json`, `--output json`,
-# `--format json`) need adjacency, handled by `has_json_output_flag`.
 JSON_FLAG_GLUED = re.compile(r"^(--json(=.*)?|-o=?json|--(output|format)=json)$")
 JSON_VALUE_FLAGS = ("-o", "--output", "--format")
 
-# Watch/follow flags mark a command that streams until killed. `ccx format`
-# buffers the child's whole stdout and converts only after exit, so wrapping a
-# never-exiting command yields zero output until the Bash tool times out.
 STREAMING_FLAGS = frozenset({"-w", "-f", "--watch", "--watch-only", "--follow"})
 
-# Shell words the parser accepts as an executable but whose meaning changes (or
-# vanishes) outside bash: `time` is a keyword; `command`/`builtin`/`exec`/`eval`/
-# `source`/`.` are builtins with no binary counterpart. After `ccx format --`
-# they would exec as literal binaries, so the wrap bails.
 SHELL_WORD_EXECUTABLES = frozenset({"time", "command", "builtin", "exec", "eval", "source", "."})
 
-# A command-shape subcommand token is a lowercase command word (`view`, `get`,
-# `list`). Positional *values* (`123`, `/path`, `file.json`, `NAME=v`, uppercase
-# refs) are not, so they drop out of the shape — `gh issue view 123` and `gh issue
-# view 456` collapse to one shape, while `gh issue view` and `gh pr view` do not.
 SUBCOMMAND_TOKEN = re.compile(r"^[a-z][a-z0-9-]*$")
 
 
-def is_large(path: Path) -> bool:
-    """Report whether ``path`` exists and exceeds :data:`LARGE_READ_BYTES`.
+def rewrote_note(dst: str, gain: str = "same output, token-bounded") -> str:
+    return f"Rewrote the command to `{dst}`: {gain}."
 
-    A missing path is not large — the Read of a nonexistent file fails on its own
-    and never reaches a token budget worth guarding.
-    """
+
+def call_of(evt: BaseHookEvent, occ: Occurrence) -> Call:
+    return next(call for call in evt.cmd.calls() if call.occurrence.index == occ.index)
+
+
+def command_expands(command: Command, markers: tuple[str, ...] = ("$", "`")) -> bool:
+    return any(word.value is None or any(marker in word.raw for marker in markers) for word in command.words)
+
+
+def is_large(path: Path) -> bool:
     return path.is_file() and path.stat().st_size > LARGE_READ_BYTES
 
 
 def is_text(path: Path) -> bool:
-    """Report whether ``path`` holds text a line window can bound.
-
-    A binary payload — an image, a PDF, a compiled object — has no line window to fall
-    back to and no ``ccx`` view, so the guards that steer a read toward a slice leave it
-    alone. Non-UTF-8 text (latin-1 and friends) still reads as text: it has lines.
-    """
     with path.open("rb") as f:
         return b"\0" not in f.read(SNIFF_BYTES)
 
 
 def carries_expansion(token: str, *, tilde_only: bool = False) -> bool:
-    """Whether ``token`` carries a shell expansion (``~``/``$``) a rewrite's quoting would suppress.
+    """Whether ``token`` holds a ``~``/``$`` expansion that a single-quoted rewrite would freeze.
 
-    A rewrite that ``shlex.quote()``s a path wraps a leading ``~`` or a ``$`` token in single quotes,
-    and the shell that later runs the rewritten ``ccx`` command never expands ``~``/``$`` inside single
-    quotes — ccx then receives a literal ``~/foo`` or ``$d/foo`` that does not exist. Declining the
-    rewrite lets the original command fall through to Allow, where the shell expands the token as
-    intended. ``~`` expands only at word start (``~/foo``, ``~user/foo``), so a mid-token ``~``
-    (``foo~bar.go``) is literal and does not count. ``tilde_only`` is for emitters that embed the token
-    in double quotes (the find/ls glob forms): ``$`` still expands inside double quotes, so only a
-    leading ``~`` stays frozen there.
+    ``tilde_only`` is for emitters that embed the token in double quotes, where ``$`` still expands.
     """
     return token.startswith("~") or (not tilde_only and "$" in token)
 
 
 def ccx_bin() -> str | None:
-    """Resolve an absolute, executable ``ccx`` path for the rewrite guards, or ``None``.
-
-    Tries ``$CLAUDE_PLUGIN_ROOT/bin/ccx``, the ``plugin/bin/ccx`` symlink relative to
-    this file (the installer points it at a brew binary, the downloaded payload, or a
-    dev build), then ``shutil.which("ccx")``. Returns ``None`` when none resolves, so
-    a rewrite guard can fall back to a hard block instead of emitting a broken command.
-    """
+    """Resolve ``ccx`` from ``$CLAUDE_PLUGIN_ROOT/bin``, the plugin's ``bin`` symlink, or ``PATH``."""
     return resolve_binary("ccx", extra_dirs=[Path(__file__).resolve().parents[2] / "bin"])
 
 
 @functools.cache
 def ccx_supports(*subcmd: str, flag: str | None = None) -> bool:
-    """Report whether the local ``ccx`` binary supports ``subcmd`` (and optionally ``flag``).
-
-    Runs ``ccx <subcmd…> --help`` and reports ``True`` iff it exits 0 and — when ``flag`` is
-    given — the flag substring appears in the help text (stdout or stderr). Gates rewrites
-    that need a newer ``ccx`` than a brew-first consumer may hold: the plugin can ship ahead
-    of the binary, so a rewrite onto an unreleased subcommand or flag must probe first. An
-    unresolvable ``ccx`` (:func:`ccx_bin` returns ``None``) reports ``False``, so the caller
-    falls back to a hard block. Cached per process — the probe runs at most once per key.
-    """
+    """Whether ``ccx <subcmd…> --help`` exits 0 and, when ``flag`` is given, mentions it."""
     ccx = ccx_bin()
     if ccx is None:
         return False
@@ -151,163 +92,96 @@ def json_flagged(args: tuple[str, ...]) -> bool:
 
 
 def has_json_output_flag(cl: CommandLine) -> bool:
-    """Report whether the primary command carries a JSON-output flag.
-
-    Catches the glued forms (``--json``, ``-ojson``, ``-o=json``, ``--output=json``,
-    ``--format=json``) directly, and the two-token forms (``-o json``, ``--output
-    json``, ``--format json``) by scanning argument adjacency.
-    """
     return json_flagged(cl.primary.args)
 
 
 def head_has_json_output_flag(cl: CommandLine) -> bool:
-    """Report whether the line's *first* command carries a JSON-output flag.
-
-    :func:`has_json_output_flag` inspects ``cl.primary`` — the line's last command,
-    the right grain for the single-command ``ccx format`` wrap. A pipe steer cares about
-    the producer at the head of the pipeline instead (``<cmd --json> | jq``).
-    """
     return json_flagged(cl.head.args)
 
 
-def is_ccx_command(cl: CommandLine) -> bool:
-    """Report whether the primary command runs the ``ccx`` binary itself.
+def runs_ccx(command: Command) -> bool:
+    return Path(command.unwrapped.executable).name == "ccx"
 
-    ccx output is already token-bounded (``ccx exec`` return values are budget-capped
-    and rendered in their leanest encoding), so the JSON-shape learner must skip it — a
-    learned ``ccx exec`` shape would nudge wrapping ccx in ``ccx format``, which is
-    wrong advice.
-    """
-    return Path(cl.primary.executable).name == "ccx"
+
+def is_ccx_command(cl: CommandLine) -> bool:
+    return runs_ccx(cl.primary)
 
 
 def already_wrapped(cl: CommandLine) -> bool:
-    """Report whether the command line is already a ``ccx format`` wrap.
-
-    Load-bearing for the ``json_guards`` rewrite: the wrapped line still carries its
-    JSON-output flag, so failing to recognize the wrap would re-wrap it forever.
-    """
-    return "ccx format" in cl.raw
+    return cl.q.any_command(lambda command: runs_ccx(command) and command.unwrapped.args[:1] == ("format",))
 
 
 def is_single_command(cl: CommandLine) -> bool:
-    """Report whether the line is one command — no pipe, redirect, or ``&&``/``;`` chain."""
     return len(cl.parts) == 1 and not cl.q.uses_redirect()
 
 
-def has_streaming_flag(cl: CommandLine) -> bool:
-    """Report whether the primary command carries a watch/follow flag (:data:`STREAMING_FLAGS`).
+def has_streaming_flag(command: Command) -> bool:
+    return any(a.split("=", 1)[0] in STREAMING_FLAGS for a in command.args)
 
-    Catches both the bare (``--watch``, ``-w``) and glued (``--watch=true``) forms.
+
+def spells_argv(command: Command, text: str, span: tuple[int, int] | None) -> bool:
+    """Whether ``span`` of ``text`` holds only ``command``'s own words, separated by whitespace.
+
+    An env prefix, a shell-word executable, or anything the parser folded out of the
+    words (a bare substitution, a redirect, a subshell paren) fails the check.
     """
-    return any(a.split("=", 1)[0] in STREAMING_FLAGS for a in cl.primary.args)
+    if span is None or command.env or command.executable in SHELL_WORD_EXECUTABLES:
+        return False
+    source = text.encode()
+    cursor, end = span
+    for word in command.words:
+        if word.span is None or source[cursor : word.span[0]].strip():
+            return False
+        cursor = word.span[1]
+    return not source[cursor:end].strip()
 
 
 def is_plain_argv(cl: CommandLine) -> bool:
-    """Report whether the raw line is exactly the primary command's argv.
-
-    The ``ccx format -- <raw>`` rewrite splices the raw text after ``--``, where
-    bash re-parses it as plain words for ccx to exec directly: an env-assignment
-    prefix becomes a bogus argv[0] (``exec`` fails), a subshell becomes a bash
-    syntax error, and a shell keyword like ``time`` stops being a keyword. Safe
-    iff the command carries no env prefix, its executable is a real word (not in
-    :data:`SHELL_WORD_EXECUTABLES`), and the raw text word-splits to exactly the
-    parsed executable + args. Structure the parser folded out of the argv (a bare
-    command substitution, a redirect) fails that comparison and bails; quoted
-    substitutions and variable expansions survive it verbatim and wrap safely —
-    bash expands the spliced raw text after ``--`` exactly as it would the
-    original line.
-    """
-    if cl.primary.env or cl.primary.executable in SHELL_WORD_EXECUTABLES:
-        return False
-    try:
-        words = shlex.split(cl.raw)
-    except ValueError:
-        return False
-    return words == [cl.primary.executable, *cl.primary.args]
+    return spells_argv(cl.primary, cl.raw, (0, len(cl.raw.encode())))
 
 
 def command_shape(cl: CommandLine) -> str:
-    """Return a stable identity for a command, collapsing argument *values*.
-
-    The shape is ``executable`` + subcommand tokens (lowercase command words like
-    ``view``/``get``, per :data:`SUBCOMMAND_TOKEN`) + sorted flag *names* (values
-    dropped), so ``gh issue view 123`` and ``gh issue view 456`` share one shape
-    while ``gh issue view`` and ``gh pr view`` do not. A heuristic: it ignores flag
-    *order* and positional/flag argument values, the right grain for "have I seen
-    this kind of command emit JSON before". Distinguishing a subcommand from a
-    positional value is command grammar, not syntax, so the rule errs toward
-    distinctness — an unrecognized value-shaped token drops, a word-shaped one stays.
-    """
+    """The executable, its leading subcommand words, and its sorted flag names, values dropped."""
     cmd = cl.primary
     subcommands: list[str] = []
     for a in cmd.args:
         if a.startswith("-"):
-            break  # a flag begins; everything after is a flag arg or positional value
+            break
         if SUBCOMMAND_TOKEN.match(a):
             subcommands.append(a)
     flags = sorted(a.split("=", 1)[0] for a in cmd.args if a.startswith("-"))
     return " ".join([cmd.executable, *subcommands, *flags])
 
 
-def looks_like_json(s: object) -> bool:
-    """Report whether ``s`` is JSON or NDJSON, by a real parse (never a first-char sniff).
-
-    Returns ``True`` when the trimmed text parses as a single JSON document, or when
-    it is NDJSON — every non-empty line parses on its own. A first-character check
-    would false-positive on prose that happens to start with ``[`` or ``{``, so the
-    parse is mandatory. A non-``str``/``bytes`` argument — a structured tool_response
-    mapping reaching a caller — is never JSON text, so it returns ``False`` rather than
-    raising on the missing ``.strip``.
-    """
-    if not isinstance(s, (str, bytes)):
-        return False
-    trimmed = s.strip()
-    if not trimmed:
-        return False
+def parses_as_json(text: str | bytes) -> bool:
     try:
-        json.loads(trimmed)
-        return True
-    except ValueError:
-        pass
-    lines = [ln for ln in trimmed.splitlines() if ln.strip()]
-    if len(lines) < 2:
-        return False
-    try:
-        for ln in lines:
-            json.loads(ln)
+        json.loads(text)
     except ValueError:
         return False
     return True
 
 
-class JsonShapes(DurableState, scope="global"):
-    """Cross-session store of command shapes observed emitting JSON.
+def looks_like_json(s: object) -> bool:
+    """Whether ``s`` is text holding one JSON document or NDJSON lines, by a real parse."""
+    if not isinstance(s, (str, bytes)) or not (trimmed := s.strip()):
+        return False
+    if parses_as_json(trimmed):
+        return True
+    lines = [ln for ln in trimmed.splitlines() if ln.strip()]
+    return len(lines) >= 2 and all(parses_as_json(ln) for ln in lines)
 
-    The bounded deque is capped at enough shapes to cover a session's worth of distinct
-    JSON-emitting commands without growing unbounded; it auto-evicts oldest-first.
-    """
+
+class JsonShapes(DurableState, scope="global"):
+    """Command shapes observed emitting JSON, oldest first."""
 
     shapes: Deque[256]
 
 
 def load_shapes(evt: BaseHookEvent) -> set[str]:
-    """Load the set of command shapes observed emitting JSON, empty on a cold cache.
-
-    Honors ``$CAPTAIN_HOOK_STATE_DIR`` via the durable store; a missing or corrupt store
-    yields an empty set.
-    """
     return set(JsonShapes.load(evt).shapes)
 
 
 def record_shape(evt: BaseHookEvent, shape: str) -> None:
-    """Record ``shape`` in the durable store, moving an already-present shape to newest.
-
-    The read-modify-write runs under the durable store's file lock and persists atomically,
-    so concurrent ``PostToolUse`` recorders never corrupt or lose the file. A plain append
-    neither dedups nor refreshes recency, so a shape already present is removed before
-    re-appending; the bounded deque then evicts oldest-first.
-    """
     with JsonShapes.mutate(evt) as s:
         if shape in s.shapes:
             s.shapes.remove(shape)

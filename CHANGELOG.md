@@ -6,6 +6,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Guard-pack messages and rewrite notes are static and short.** Every block,
+  nudge, and rewrite note is at most two sentences and 300 characters, names the
+  command to run, and no longer echoes the command it rewrote. Hand-rolled
+  argv and regex parsers for `find`, `sed`, `head`, `curl`, `wget`, `grep`,
+  `rg`, and `git worktree remove` are replaced by command schemas, and the
+  `gt restack` rewrite is dropped because the captain-hook graphite pack
+  already provides it. CI now runs `capt-hook` 12.72.0 or newer, whose lint
+  grades every hook.
+
 ### Added
 
 - **`ccx vcs stack restack --parent <branch>` changes a git branch's parent.**

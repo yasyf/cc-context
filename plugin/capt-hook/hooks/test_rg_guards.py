@@ -22,9 +22,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from captain_hook.events import PreToolUseEvent
+from captain_hook import Call
 from captain_hook.types import HookResult
-from cc_transcript.command import Occurrence
 
 from conftest import (
     FILES_WITH_MATCHES_HELP,
@@ -41,32 +40,32 @@ from hooks import common, grep_guards, rg_guards, search_common
 from hooks.common import ccx_supports
 
 
-def event_occurrence(command: str, index: int = 0) -> tuple[PreToolUseEvent, Occurrence]:
+def call_at(command: str, index: int = 0) -> Call:
     evt = make_evt(command)
-    return evt, evt.cmd.line.occurrences[index]
+    return Call(evt.cmd, evt.cmd.line.occurrences[index], evt.cwd)
 
 
 def rg_rewrite(command: str, index: int = 0) -> str | None:
-    evt, occ = event_occurrence(command, index)
-    return rg_guards.rg_to(occ, cwd=evt.cwd)
+    return rg_guards.rg_to(call_at(command, index))
 
 
 def rg_verdict(command: str) -> HookResult | str | None:
     """The whole-line verdict from the ``visit=`` walk: a block ``HookResult``, a rewrite string, or
-    ``None`` for a genuine allow (the thinned ``RgFlood`` gate is no longer the allow signal)."""
+    ``None`` for a genuine allow."""
     return run_visit(make_evt(command), rg_guards.rg_visit)
 
 
 def rg_rewrite_note(command: str) -> str:
-    evt, occ = event_occurrence(command)
-    parsed = rg_guards.rg_parse(occ, cwd=evt.cwd)
-    assert isinstance(parsed, search_common.GrepCall)
-    return search_common.note_text(occ.command.raw, parsed)
+    parsed = rg_guards.rg_parse(call_at(command))
+    assert parsed is not None
+    return search_common.search_note(parsed)
 
 
-def grep_rewrite(command: str) -> str | None:
-    evt, occ = event_occurrence(command)
-    return grep_guards.grep_to(occ, cwd=evt.cwd)
+def dep_steer(command: str, program: str) -> bool:
+    operands = {"grep": grep_guards.grep_operands, "rg": rg_guards.rg_operands}[program]
+    evt = make_evt(command)
+    condition = search_common.SearchTargets(program, operands, search_common.targets_dependency)
+    return condition.check_command_line(evt, evt.cmd.line)
 
 
 def grep_verdict(command: str) -> HookResult | str | None:
@@ -157,7 +156,7 @@ class TestRgFilesWithMatches:
         probe(monkeypatch, FILES_WITH_MATCHES_HELP)
         assert rg_rewrite(command) == "/fake/ccx code grep foo -l"
         assert rg_rewrite_note(command) == (
-            f"Rewrote `{command}` → `ccx code grep`: same literal search, token-bounded."
+            "Rewrote the command to `ccx code grep`: same literal search, token-bounded."
         )
 
     @pytest.mark.parametrize("command", ["rg -l foo", "rg --files-with-matches foo"])
@@ -165,8 +164,7 @@ class TestRgFilesWithMatches:
         probe(monkeypatch, NATIVE_CONTEXT_HELP)
         assert rg_rewrite(command) == "/fake/ccx code grep foo"
         assert rg_rewrite_note(command) == (
-            f"Rewrote `{command}` → `ccx code grep`: same literal search, token-bounded. "
-            "`-l` dropped — ccx returns the matching lines, not just filenames."
+            "Rewrote the command to `ccx code grep`: same literal search, token-bounded; matching lines, not a file list."
         )
 
     def test_l_with_context_suppresses_context_flags(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -228,48 +226,43 @@ class TestDependencyDirTargets:
         monkeypatch.chdir(tmp_path)
         return tmp_path
 
-    def test_rg_dep_segment_blocks_with_dep_steer(self) -> None:
-        verdict = rg_verdict("rg -n 'class ToolUse' .venv/lib/ -A 20 | head")
-        assert isinstance(verdict, HookResult) and "ccx repo locate" in verdict.message
+    @pytest.mark.parametrize(
+        ("command", "program"),
+        [
+            ("rg -n 'class ToolUse' .venv/lib/ -A 20 | head", "rg"),
+            ("rg --hidden needle .venv/ | head", "rg"),
+            ("grep -rn foo .venv/", "grep"),
+            ("grep -r foo node_modules/express | head", "grep"),
+            ("grep -rn foo generated/", "grep"),
+            ("grep -rv foo generated/", "grep"),
+        ],
+        ids=["rg-dep-segment", "rg-unparsed-flag", "grep-dep-segment", "grep-undotted", "ignored-dir", "invert-ignored-dir"],
+    )
+    def test_dependency_target_steers(self, command: str, program: str) -> None:
+        assert dep_steer(command, program)
 
-    def test_rg_unparseable_flag_cannot_blind_the_steer(self) -> None:
-        verdict = rg_verdict("rg --hidden needle .venv/ | head")
-        assert isinstance(verdict, HookResult) and "ccx repo locate" in verdict.message
+    @pytest.mark.parametrize(
+        ("command", "program"),
+        [
+            ("grep -i err app.log | head", "grep"),
+            ("rg -l x ~/.claude/plugins/", "rg"),
+            ("grep -rn foo ~/.config/fish/", "grep"),
+            ("grep -rn '.venv' README.md", "grep"),
+            ("grep -rn foo . | grep -v generated", "grep"),
+            ("rg -n foo . | rg -P generated", "rg"),
+        ],
+        ids=["ignored-file", "home-plugins", "home-config", "dep-lookalike-pattern", "grep-invert-filter", "rg-pcre-filter"],
+    )
+    def test_non_dependency_targets_run(self, command: str, program: str) -> None:
+        assert not dep_steer(command, program)
 
-    def test_grep_dep_segment_blocks_with_dep_steer(self) -> None:
-        verdict = grep_verdict("grep -rn foo .venv/")
-        assert isinstance(verdict, HookResult) and "ccx repo locate" in verdict.message
-
-    def test_grep_undotted_dep_segment_blocks(self) -> None:
-        verdict = grep_verdict("grep -r foo node_modules/express | head")
-        assert isinstance(verdict, HookResult) and "ccx repo locate" in verdict.message
-
-    def test_ignored_dir_blocks_via_check_ignore(self) -> None:
-        verdict = grep_verdict("grep -rn foo generated/")
-        assert isinstance(verdict, HookResult) and "ccx repo locate" in verdict.message
-
-    def test_ignored_file_runs_raw(self) -> None:
+    def test_rewrite_lane_ignores_the_filter_stage(self) -> None:
+        assert grep_verdict("grep -rn foo . | grep -v generated") == "/fake/ccx code grep foo | grep -v generated"
+        assert rg_verdict("rg -n foo . | rg -P generated") is None
         assert grep_verdict("grep -i err app.log | head") is None
-
-    def test_home_dotdirs_run_raw(self) -> None:
         assert rg_verdict("rg -l x ~/.claude/plugins/") is None
         assert grep_verdict("grep -rn foo ~/.config/fish/") is None
-
-    def test_dep_lookalike_pattern_runs_raw(self) -> None:
         assert grep_verdict("grep -rn '.venv' README.md") is None
-
-    def test_invert_filter_stage_is_not_a_dep_target(self) -> None:
-        # The incident: `-v` was missing from the arity table, so the filter stage fell back to raw
-        # tokens and its PATTERN (`generated`, a git-ignored dir here) read as a dependency target.
-        assert grep_verdict("grep -rn foo . | grep -v generated") == (
-            "/fake/ccx code grep foo | grep -v generated"
-        )
-        assert rg_verdict("rg -n foo . | rg -P generated") is None
-
-    def test_invert_over_an_ignored_dir_still_blocks(self) -> None:
-        # …while a real ignored-dir operand under the same flag still steers to dep-reader.
-        verdict = grep_verdict("grep -rv foo generated/")
-        assert isinstance(verdict, HookResult) and "ccx repo locate" in verdict.message
 
 
 class TestRgOccurrenceRewrite:
@@ -277,17 +270,18 @@ class TestRgOccurrenceRewrite:
         monkeypatch.setattr(search_common, "ccx_bin", lambda: "/fake/ccx")
         evt = make_evt("printf 'left  side'; rg foo")
         occurrence = evt.cmd.line.occurrences[1]
-        replacement = rg_guards.rg_to(occurrence)
+        replacement = rg_guards.rg_to(Call(evt.cmd, occurrence, evt.cwd))
         assert replacement == "/fake/ccx code grep foo"
         assert evt.cmd.line.splice({occurrence.index: replacement}) == (
             "printf 'left  side'; /fake/ccx code grep foo"
         )
 
     def test_wrapped_rg_matches_but_never_rewrites(self) -> None:
-        evt, occurrence = event_occurrence("sudo rg foo .")
-        assert occurrence.command.unwrapped.executable == "rg"
-        assert rg_guards.RgFlood().check_command_line(evt, evt.cmd.line) is True
-        assert rg_guards.rg_to(occurrence) is None
+        evt = make_evt("sudo rg foo .")
+        call = call_at("sudo rg foo .")
+        assert call.command.executable == "rg"
+        assert search_common.UnpipedSearch("rg").check_command_line(evt, evt.cmd.line) is True
+        assert rg_guards.rg_to(call) is None
         assert isinstance(rg_verdict("sudo rg foo ."), HookResult)
 
 

@@ -138,7 +138,7 @@ class TestGate:
         assert result is not None
         assert result.action is Action.block
         assert "already read" in result.message
-        assert str(f.resolve()) in result.message
+        assert "ccx code read" in result.message
 
     def test_sliced_reread_allows(self, tmp_path: Path) -> None:
         sd = tmp_path / "s"
@@ -153,7 +153,7 @@ class TestGate:
         result = gate_reread(read_pre(f, sd))
         assert result is not None
         assert result.action is Action.block
-        assert "you just edited" in result.message
+        assert "You just edited" in result.message
         assert "ccx vcs diff" in result.message
 
     def test_write_then_full_read_blocks(self, tmp_path: Path) -> None:
@@ -163,7 +163,7 @@ class TestGate:
         result = gate_reread(read_pre(f, sd))
         assert result is not None
         assert result.action is Action.block
-        assert "you just edited" in result.message
+        assert "You just edited" in result.message
 
     def test_unseen_path_allows(self, tmp_path: Path) -> None:
         sd = tmp_path / "s"
