@@ -164,6 +164,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A stack rebase never replays a parent's commits as the child's own.**
+  When a parent's lane rewrote and pushed it from its own working copy, the
+  child could sit on a head of the parent that neither the local branch, gt's
+  recorded parent revision, nor the local reflog remembered. The rebase then
+  fell back to the merge base with the parent's current head and replayed the
+  parent's old commits along with the child's, and `ship --tip-only` pushed
+  them. The rebase now also reads the fork point from the reflog of
+  `origin/<parent>`, which records each head a fetch saw, and takes the
+  furthest of the two. When neither reflog places a branch that stays on that
+  parent, it refuses, naming gt's recorded revision, the parent's local and
+  published heads, and the `git rebase --onto` and `gt track --parent`
+  commands that fix it. A branch leaving the parent, landed or named away by
+  `--parent`, keeps the merge-base fallback.
+
 - **`ccx vcs ship --no-push` fetches the trunk before a Graphite restack.**
   A stale `origin/<trunk>` could make a published parent look off its parent.
   The restack replayed it onto the older trunk as a second copy of its own

@@ -916,7 +916,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 		b := byName[name]
 		if b.Landed == "" && b.Held == "" {
 			if b.OldBase == "" {
-				if b.OldBase, err = stackOldBase(ctx, l.dir(), trunk, pin, state, b, byName); err != nil {
+				if b.OldBase, err = stackOldBase(ctx, l.dir(), tr, pin, state, b, byName); err != nil {
 					return nil, err
 				}
 			}
@@ -1750,28 +1750,25 @@ func stackOrder(trunk string, byName map[string]*stackRebaseBranch) ([]string, e
 	return order, nil
 }
 
-// stackOldBase is the commit a branch's own work starts after: the furthest of
-// its parent's recorded head and gt's recorded parent revision that the branch
-// contains, or, when a rewrite of the parent left it none, the fork point the
-// parent's reflog names. A branch leaving that parent, landed or named away by
-// --parent, has it moved up to where the branch meets trunk when trunk already
-// holds everything between. All are read before anything moves, so a push mid-run
-// never changes the answer, a squash-landed parent's commits stay behind, and
-// a branch already moved off a landed parent onto trunk replays only its own.
-func stackOldBase(ctx context.Context, dir render.Dir, trunk, pin string, state gtState, self *stackRebaseBranch, byName map[string]*stackRebaseBranch) (string, error) {
+// stackOldBase is where a branch's own work starts: the furthest recorded parent
+// head it contains, else the furthest fork point in the parent's local and
+// remote-tracking reflogs. A branch staying on the parent is refused past that;
+// one leaving it takes its merge base, or trunk's when trunk holds the rest.
+func stackOldBase(ctx context.Context, dir render.Dir, tr vcs.Trunk, pin string, state gtState, self *stackRebaseBranch, byName map[string]*stackRebaseBranch) (string, error) {
 	s := state[self.Name]
 	onTrunk, err := stackMergeBase(ctx, dir, self.Head, pin)
 	if err != nil {
 		return "", err
 	}
-	if s.Parents[0].Ref == trunk {
+	parent := s.Parents[0].Ref
+	if parent == tr.Name() {
 		return stackPastFork(ctx, dir, s.Parents[0].SHA, onTrunk, self.Head)
 	}
-	candidates := []string{state[s.Parents[0].Ref].Head, s.Parents[0].SHA}
-	if head := byName[s.Parents[0].Ref]; head != nil {
+	candidates := []string{state[parent].Head, s.Parents[0].SHA}
+	if head := byName[parent]; head != nil {
 		candidates = []string{head.Head, head.Local, s.Parents[0].SHA}
 	} else {
-		receipt, err := stackReadPublication(ctx, dir, s.Parents[0].Ref)
+		receipt, err := stackReadPublication(ctx, dir, parent)
 		if err != nil {
 			return "", err
 		}
@@ -1779,12 +1776,59 @@ func stackOldBase(ctx context.Context, dir render.Dir, trunk, pin string, state 
 			candidates = append([]string{receipt.Head}, candidates...)
 		}
 	}
+	best, err := stackFurthest(ctx, dir, self.Head, candidates)
+	if err != nil {
+		return "", err
+	}
+	if best == "" {
+		pushed := "refs/remotes/" + tr.Remote() + "/" + parent
+		published, err := gitRefExists(ctx, dir, stackRebasePrefix, pushed)
+		if err != nil {
+			return "", err
+		}
+		refs := []string{gtRestackRef(parent)}
+		if published {
+			refs = append(refs, pushed)
+		}
+		var forks []string
+		for _, ref := range refs {
+			fork, err := stackForkPoint(ctx, dir, ref, self.Head)
+			if err != nil {
+				return "", err
+			}
+			forks = append(forks, fork)
+		}
+		if best, err = stackFurthest(ctx, dir, self.Head, forks); err != nil {
+			return "", err
+		}
+		if best == "" && self.Parent == parent {
+			return "", stackNoOldBase(ctx, dir, tr, state, self.Name, published)
+		}
+		if best == "" {
+			if best, err = stackMergeBase(ctx, dir, self.Head, candidates[0]); err != nil {
+				return "", err
+			}
+		}
+	}
+	if self.Parent == parent {
+		return best, nil
+	}
+	behind, err := gitIsAncestor(ctx, dir, stackRebasePrefix, best, onTrunk)
+	if err != nil || behind {
+		return onTrunk, err
+	}
+	return best, nil
+}
+
+// stackFurthest is the candidate head contains that every other contained
+// candidate is an ancestor of, or empty when head contains none of them.
+func stackFurthest(ctx context.Context, dir render.Dir, head string, candidates []string) (string, error) {
 	best := ""
 	for _, candidate := range candidates {
 		if candidate == "" || candidate == best {
 			continue
 		}
-		ok, err := gitIsAncestor(ctx, dir, stackRebasePrefix, candidate, self.Head)
+		ok, err := gitIsAncestor(ctx, dir, stackRebasePrefix, candidate, head)
 		if err != nil {
 			return "", err
 		}
@@ -1803,24 +1847,21 @@ func stackOldBase(ctx context.Context, dir render.Dir, trunk, pin string, state 
 			best = candidate
 		}
 	}
-	if best == "" {
-		if best, err = stackForkPoint(ctx, dir, s.Parents[0].Ref, self.Head); err != nil {
-			return "", err
-		}
-	}
-	if best == "" {
-		if best, err = stackMergeBase(ctx, dir, self.Head, candidates[0]); err != nil {
-			return "", err
-		}
-	}
-	if self.Parent == s.Parents[0].Ref {
-		return best, nil
-	}
-	behind, err := gitIsAncestor(ctx, dir, stackRebasePrefix, best, onTrunk)
-	if err != nil || behind {
-		return onTrunk, err
-	}
 	return best, nil
+}
+
+func stackNoOldBase(ctx context.Context, dir render.Dir, tr vcs.Trunk, state gtState, name string, published bool) error {
+	parent := state[name].Parents[0].Ref
+	pushed := "never pushed"
+	if published {
+		head, err := gitRevParse(ctx, dir, stackRebasePrefix, "refs/remotes/"+tr.Remote()+"/"+parent)
+		if err != nil {
+			return err
+		}
+		pushed = "at " + shortSHA(head) + " on " + tr.Remote()
+	}
+	return fmt.Errorf("stack rebase: %s carries no head of %s that gt or a reflog remembers — gt records it on %s, and %s is at %s here and %s — so its own commits cannot be told from %s's; move them onto %s with git rebase --onto %s <%s's last commit in %s> %s, then gt track --parent %s %s",
+		name, parent, shortSHA(state[name].Parents[0].SHA), parent, shortSHA(state[parent].Head), pushed, parent, parent, parent, parent, name, name, parent, name)
 }
 
 // stackBaseInTrunk reports whether base..head replays commits trunk already
@@ -1865,10 +1906,10 @@ func stackMergeBase(ctx context.Context, dir render.Dir, a, b string) (string, e
 	return strings.TrimSpace(out), nil
 }
 
-func stackForkPoint(ctx context.Context, dir render.Dir, parent, head string) (string, error) {
-	out, code, stderr, err := render.RunCLIExitCode(ctx, dir, "git", []string{"merge-base", "--fork-point", gtRestackRef(parent), head})
+func stackForkPoint(ctx context.Context, dir render.Dir, ref, head string) (string, error) {
+	out, code, stderr, err := render.RunCLIExitCode(ctx, dir, "git", []string{"merge-base", "--fork-point", ref, head})
 	if err != nil {
-		return "", fmt.Errorf("stack rebase: git merge-base --fork-point %s %.12s: %w", parent, head, err)
+		return "", fmt.Errorf("stack rebase: git merge-base --fork-point %s %.12s: %w", ref, head, err)
 	}
 	switch code {
 	case 0:
@@ -1876,7 +1917,7 @@ func stackForkPoint(ctx context.Context, dir render.Dir, parent, head string) (s
 	case 1:
 		return "", nil
 	default:
-		return "", fmt.Errorf("stack rebase: git merge-base --fork-point %s %.12s: exit %d: %s", parent, head, code, strings.TrimSpace(stderr))
+		return "", fmt.Errorf("stack rebase: git merge-base --fork-point %s %.12s: exit %d: %s", ref, head, code, strings.TrimSpace(stderr))
 	}
 }
 
