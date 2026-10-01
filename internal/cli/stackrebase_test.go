@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/yasyf/cc-context/internal/cleanup"
+	"github.com/yasyf/cc-context/internal/ghapi"
 	"github.com/yasyf/cc-context/internal/gtmeta"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcstest"
@@ -1288,6 +1289,45 @@ func TestStackRebaseMovesAnUnheldSourceWhosePublishedHeadCarriesOtherChanges(t *
 	}
 	if got := gitAt(t, f.Env(), f.Dir, "show", "base:more.txt"); got != "more" {
 		t.Errorf("local base lacks the remote's commit: more.txt = %q", got)
+	}
+}
+
+func TestStackRebaseFinishesWhenTheVerdictCannotReadThePullRequests(t *testing.T) {
+	t.Parallel()
+	f := stackRebaseRepo(t, "base", "feature")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "feature")
+	pushed := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
+	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	prs := map[string]*stackPR{"base": {Number: 9000, Title: "base", State: "OPEN"}, "feature": {Number: 9001, Title: "feature", State: "OPEN"}}
+	query := func(ctx context.Context, _ render.Dir, _ string, branches []string) (map[string]*stackPR, error) {
+		head, err := exec.CommandContext(ctx, "git", "--git-dir="+f.RemoteDir, "rev-parse", "base").Output() //nolint:gosec // the fixture's own bare remote
+		if err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(string(head)) != pushed {
+			return nil, &ghapi.GraphQLError{Messages: []ghapi.GraphQLMessage{{Type: "FORBIDDEN", Message: "Resource not accessible"}}}
+		}
+		out := map[string]*stackPR{}
+		for _, b := range branches {
+			out[b] = prs[b]
+		}
+		return out, nil
+	}
+	f.Decorate(func(parent context.Context) context.Context { return withStackPRs(parent, query) })
+	shipResetLog(t, f)
+
+	out, errOut, err := runStackCmd(t, f, "rebase")
+	if err != nil {
+		t.Fatalf("stack rebase: %v", err)
+	}
+	if want := "pushed, but the verdict could not read the pull requests"; !strings.Contains(errOut, want) {
+		t.Errorf("stderr = %q, want %q", errOut, want)
+	}
+	if !strings.Contains(out, "moved base, feature onto the published heads") {
+		t.Errorf("output = %q, want the sources moved after the unread verdict", out)
+	}
+	if left, _ := os.ReadDir(filepath.Join(f.Dir, ".git", stackRebaseStateDir)); len(left) != 0 {
+		t.Errorf("run state left behind: %v", left)
 	}
 }
 
