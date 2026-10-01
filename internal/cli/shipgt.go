@@ -826,40 +826,52 @@ func gtInferParent(ctx context.Context, c *gtCache, branch string) (parent, pick
 	return nearest, "", err
 }
 
-// gtNearestTracked is the branch gt track -f would adopt onto: of the tracked
-// branches this one already contains, the one every other candidate is an
-// ancestor of. Trunk is the floor, so a branch cut straight off it lands there.
-// One for-each-ref names every contained branch, so only those are ordered,
-// walked in name order, which keeps the answer the same across runs when two of
-// them are siblings rather than a chain. A branch another lane deletes mid-walk
-// drops out of the candidates.
 func gtNearestTracked(ctx context.Context, dir render.Dir, state gtState, trunk, branch string) (string, error) {
-	var refs []string
+	var candidates []string
 	for name := range state {
 		if name != branch && name != trunk && !gtRecordedAbove(state, name, branch) {
-			refs = append(refs, gtRestackRef(name))
+			candidates = append(candidates, name)
 		}
 	}
-	if len(refs) == 0 {
+	if len(candidates) == 0 {
 		return trunk, nil
 	}
-	slices.Sort(refs)
-	out, err := render.RunCLIStdin(ctx, dir, "git", []string{
-		"for-each-ref", "--merged=" + gtRestackRef(branch), "--format=%(refname)", "--stdin",
-	}, []byte(strings.Join(refs, "\n")+"\n"))
-	if err != nil {
-		return "", fmt.Errorf("ship: git for-each-ref --merged %s: %w", branch, err)
+	slices.Sort(candidates)
+	var refs strings.Builder
+	for _, name := range candidates {
+		refs.WriteString(gtRestackRef(name) + "\n")
 	}
-	var names []string
-	for _, ref := range strings.Fields(out) {
-		name := strings.TrimPrefix(ref, "refs/heads/")
-		if _, tracked := state[name]; tracked && name != branch && name != trunk && !gtRecordedAbove(state, name, branch) {
-			names = append(names, name)
+	out, err := render.RunCLIStdin(ctx, dir, "git", []string{"cat-file", "--batch-check=%(objectname) %(objecttype)"}, []byte(refs.String()))
+	if err != nil {
+		return "", fmt.Errorf("ship: resolve tracked parent refs: %w", err)
+	}
+	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
+	if len(lines) != len(candidates) {
+		return "", fmt.Errorf("ship: resolve tracked parent refs: got %d results for %d refs", len(lines), len(candidates))
+	}
+	heads := make(map[string]string, len(candidates))
+	for i, line := range lines {
+		fields := strings.Fields(line)
+		if len(fields) != 2 || (fields[1] != "commit" && (fields[0] != gtRestackRef(candidates[i]) || fields[1] != "missing")) {
+			return "", fmt.Errorf("ship: resolve tracked parent ref %s: %q", candidates[i], line)
+		}
+		if fields[1] == "commit" {
+			heads[candidates[i]] = fields[0]
 		}
 	}
-	slices.Sort(names)
+	out, err = render.RunCLI(ctx, dir, "git", []string{"rev-list", gtRestackRef(trunk) + ".." + gtRestackRef(branch)})
+	if err != nil {
+		return "", fmt.Errorf("ship: list %s's commits above %s: %w", branch, trunk, err)
+	}
+	contained := make(map[string]bool)
+	for _, head := range strings.Fields(out) {
+		contained[head] = true
+	}
 	nearest := trunk
-	for _, name := range names {
+	for _, name := range candidates {
+		if !contained[heads[name]] {
+			continue
+		}
 		ahead, err := gitIsAncestor(ctx, dir, "ship", gtRestackRef(nearest), gtRestackRef(name))
 		if err != nil {
 			if present, refErr := gitRefExists(ctx, dir, "ship", gtRestackRef(name)); refErr != nil || present {
