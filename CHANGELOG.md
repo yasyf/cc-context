@@ -178,6 +178,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a report that someone pushed mid-run. Push creates the branch and reports
   `pushed feat → origin · created origin/feat at <sha>`.
 
+- **`ccx vcs stack restack` fetches only the refs it reads.**
+  On the git lane, restack ran a bare `git fetch <remote>`, which aborted with
+  `couldn't find remote ref refs/heads/<x>` when a configured fetch refspec
+  named a deleted branch. Restack now asks `git ls-remote` for trunk, the open
+  PR's base and the branch named by `--parent`, then fetches only those whose
+  remote-tracking refs differ. When `origin/HEAD` is unset, it asks the
+  remote's `HEAD` and leaves `origin/HEAD` unwritten. A branch among them that
+  the remote no longer holds is refused as `restack: origin has no branch
+  <name>` instead of read from a stale remote-tracking ref. Restack's helper
+  errors use `restack:` in place of `push:` or `stack rebase:`.
+
 - **Worktree cleanup skips an exited pid the kernel refused to identify.**
   `ccx vcs worktree rm` refused with
   `native: identify pid 89224: operation not permitted` even though that pid

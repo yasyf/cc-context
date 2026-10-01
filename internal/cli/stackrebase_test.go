@@ -99,7 +99,7 @@ func TestStackRemoteHeadsSkipsMatchingTrackingRefs(t *testing.T) {
 	before := strings.TrimSpace(mustRun(t, nil, local, "git", "rev-parse", "refs/remotes/origin/feature"))
 	trace := filepath.Join(base, "unchanged.json")
 	t.Setenv("GIT_TRACE2_EVENT", trace)
-	heads, err := stackRemoteHeads(context.Background(), render.Dir(local), "origin", []string{"feature"}, "")
+	heads, err := stackRemoteHeads(context.Background(), render.Dir(local), stackRebasePrefix, "origin", []string{"feature"}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +127,7 @@ func TestStackRemoteHeadsSkipsMatchingTrackingRefs(t *testing.T) {
 	want := strings.TrimSpace(mustRun(t, nil, upstream, "git", "rev-parse", "HEAD"))
 	trace = filepath.Join(base, "changed.json")
 	t.Setenv("GIT_TRACE2_EVENT", trace)
-	heads, err = stackRemoteHeads(context.Background(), render.Dir(local), "origin", []string{"feature"}, "")
+	heads, err = stackRemoteHeads(context.Background(), render.Dir(local), stackRebasePrefix, "origin", []string{"feature"}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +151,7 @@ func TestStackRemoteHeadsIgnoresTailMatches(t *testing.T) {
 	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "main:feature", "main:refs/tags/refs/heads/feature")
 	want := shipHead(t, f)
 
-	heads, err := stackRemoteHeads(f.Context(), render.Dir(f.Dir), "origin", []string{"feature"}, "")
+	heads, err := stackRemoteHeads(f.Context(), render.Dir(f.Dir), stackRebasePrefix, "origin", []string{"feature"}, "")
 	if err != nil {
 		t.Fatal(err)
 	}

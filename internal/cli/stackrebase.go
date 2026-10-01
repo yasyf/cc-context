@@ -743,7 +743,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	if err != nil {
 		return nil, err
 	}
-	remotes, err := stackRemoteHeads(ctx, l.dir(), tr.Remote(), members, pin)
+	remotes, err := stackRemoteHeads(ctx, l.dir(), stackRebasePrefix, tr.Remote(), members, pin)
 	if err != nil {
 		return nil, err
 	}
@@ -1225,7 +1225,7 @@ func stackWithPublishedParents(ctx context.Context, dir render.Dir, state gtStat
 		remotes := map[string]string{}
 		if len(outran) > 0 {
 			var err error
-			if remotes, err = stackRemoteHeads(ctx, dir, "origin", outran, ""); err != nil {
+			if remotes, err = stackRemoteHeads(ctx, dir, stackRebasePrefix, "origin", outran, ""); err != nil {
 				return nil, nil, err
 			}
 		}
@@ -1343,7 +1343,7 @@ func stackPublishedParent(receipt *stackPublication, remote string, submitted gt
 	return receipt.Parent
 }
 
-func stackRemoteHeads(ctx context.Context, dir render.Dir, remote string, branches []string, negotiationTip string) (map[string]string, error) {
+func stackRemoteHeads(ctx context.Context, dir render.Dir, prefix, remote string, branches []string, negotiationTip string) (map[string]string, error) {
 	argv := make([]string, 0, 2+len(branches))
 	argv = append(argv, "ls-remote", remote)
 	wanted := make(map[string]string, len(branches))
@@ -1353,7 +1353,7 @@ func stackRemoteHeads(ctx context.Context, dir render.Dir, remote string, branch
 	}
 	out, err := render.RunCLI(ctx, dir, "git", argv)
 	if err != nil {
-		return nil, fmt.Errorf("stack rebase: git ls-remote %s: %w", remote, err)
+		return nil, fmt.Errorf("%s: git ls-remote %s: %w", prefix, remote, err)
 	}
 	heads := map[string]string{}
 	for line := range strings.Lines(out) {
@@ -1372,7 +1372,7 @@ func stackRemoteHeads(ctx context.Context, dir render.Dir, remote string, branch
 	}
 	localOut, err := render.RunCLIStdin(ctx, dir, "git", []string{"for-each-ref", "--format=%(refname) %(objectname)", "--stdin"}, []byte(strings.Join(refs, "\n")+"\n"))
 	if err != nil {
-		return nil, fmt.Errorf("stack rebase: git for-each-ref: %w", err)
+		return nil, fmt.Errorf("%s: git for-each-ref: %w", prefix, err)
 	}
 	local := map[string]string{}
 	for line := range strings.Lines(localOut) {
@@ -1395,7 +1395,7 @@ func stackRemoteHeads(ctx context.Context, dir render.Dir, remote string, branch
 	}
 	if len(fetch) > baseLen {
 		if err := gitFetch(ctx, dir, fetch...); err != nil {
-			return nil, fmt.Errorf("stack rebase: git fetch %s: %w", remote, err)
+			return nil, fmt.Errorf("%s: git fetch %s: %w", prefix, remote, err)
 		}
 	}
 	return heads, nil
