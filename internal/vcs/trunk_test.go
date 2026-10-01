@@ -223,6 +223,15 @@ func TestGitRemoteFor(t *testing.T) {
 		t.Fatalf("remote = %q, want upstream", got)
 	}
 
+	runGit(t, f, dir, "config", "branch.main.remote", ".")
+	got, err = GitRemoteFor(f.Context(), render.Dir(dir), "main")
+	if err != nil {
+		t.Fatalf("GitRemoteFor: %v", err)
+	}
+	if got != "origin" {
+		t.Fatalf("remote = %q, want origin for a branch tracking a local one", got)
+	}
+
 	broken := vcstest.Repo(t, vcstest.BrokenGitDir())
 	if _, err := GitRemoteFor(broken.Context(), render.Dir(broken.Dir), "main"); err == nil {
 		t.Fatal("GitRemoteFor on a broken checkout succeeded")

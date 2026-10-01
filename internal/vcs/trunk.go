@@ -71,8 +71,9 @@ func TrunkFromName(ctx context.Context, dir render.Dir, remote, name string) (Tr
 
 // GitRemoteFor resolves the remote that branch.<branch>.remote configures, so a
 // triangular or non-origin-only repository fetches, rebases, and pushes against
-// the same remote. git config --get exits 1 when the key is unset; that and an
-// empty value both mean origin. Any other exit is an error.
+// the same remote. git config --get exits 1 when the key is unset; that, an
+// empty value, and "." (a branch tracking a local one) all mean origin. Any
+// other exit is an error.
 func GitRemoteFor(ctx context.Context, dir render.Dir, branch string) (string, error) {
 	key := "branch." + branch + ".remote"
 	out, code, stderr, err := render.RunCLIExitCode(ctx, dir, "git", []string{"config", "--get", key})
@@ -81,7 +82,7 @@ func GitRemoteFor(ctx context.Context, dir render.Dir, branch string) (string, e
 	}
 	switch code {
 	case 0:
-		if remote := strings.TrimSpace(out); remote != "" {
+		if remote := strings.TrimSpace(out); remote != "" && remote != "." {
 			return remote, nil
 		}
 		return "origin", nil
