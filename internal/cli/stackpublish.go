@@ -569,6 +569,9 @@ func stackSourceStays(ctx context.Context, l lane, b stackRebaseBranch, at strin
 		return "moved since the run started", nil
 	}
 	holder := holders[b.Name]
+	if holder == "" {
+		return "", nil
+	}
 	if !b.Resolved {
 		source, err := stackPatchSeries(ctx, l.dir(), cmp.Or(b.SourceBase, b.OldBase), b.Local)
 		if err != nil {
@@ -581,9 +584,6 @@ func stackSourceStays(ctx context.Context, l lane, b stackRebaseBranch, at strin
 		if source == nil || published == nil || !slices.Equal(source, published) {
 			return "its published head carries other changes", nil
 		}
-	}
-	if holder == "" {
-		return "", nil
 	}
 	status, err := render.RunCLI(ctx, render.Dir(holder), "git", []string{"status", "--porcelain", "--untracked-files=normal"})
 	if err != nil {

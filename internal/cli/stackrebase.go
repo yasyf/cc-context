@@ -241,11 +241,11 @@ onto its new parent before the push instead. Local trunk is left untouched. A
 branch without a pull request held by another working copy,
 or uncommitted work in the invoking checkout, stops publication before any branch
 moves. Empty lanes and another lane's branches above the one checked out here are
-left where they are and named rather than rebased. Once published, a branch's
-local ref moves onto its published head when that head carries the same commits
-as the source and the working copy holding the branch, if any, is clean and is
-moved with it; any other branch keeps its source, with the branches above it,
-and is named.
+left where they are and named rather than rebased. Once published, the local
+ref of a branch no working copy holds moves onto its published head; a held
+branch moves only when that head carries the same commits as the source and
+its working copy is clean and is moved with it; any other branch keeps its
+source, with the branches above it, and is named.
 
 A conflict stops the run before any ref moves: the conflicted branch alone is
 rebased again in a sparse workspace of its own, holding the root files and the
