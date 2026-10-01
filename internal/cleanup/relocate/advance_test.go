@@ -532,6 +532,9 @@ func TestAdvanceRemovesAPushedTreeWhoseProcessListingTimedOut(t *testing.T) {
 		{"retiring the watchers", func(f *fixture) {
 			f.watchers.retire = func(context.Context, string) error { return errListingTimedOut }
 		}},
+		{"checking the quarantine", func(f *fixture) {
+			f.watchers.quarantine = func(context.Context, string) error { return errListingTimedOut }
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -563,6 +566,23 @@ func TestAdvanceBlocksAnUnpushedTreeWhoseProcessListingTimedOut(t *testing.T) {
 	f.blocked(&job, cleanup.PhasePrepared, "watchers", fmt.Sprintf("%v; no remote-tracking ref holds %s's head %s", errListingTimedOut, f.worktree, job.Head))
 	if got := f.id(f.worktree); got != job.Tree {
 		t.Errorf("worktree identity = %v, want the tree %v", got, job.Tree)
+	}
+}
+
+func TestAdvanceRevetsADeferredTreeWhoseProcessListingTimedOut(t *testing.T) {
+	f := newFixture(t)
+	f.run(f.repo, "update-ref", "refs/remotes/origin/feature", "feature")
+	job := f.intend()
+	f.watchers.retire = func(context.Context, string) error {
+		f.write(filepath.Join(f.worktree, "late.txt"), "late\n")
+		return errListingTimedOut
+	}
+
+	f.advance(&job)
+
+	f.blocked(&job, cleanup.PhasePrepared, "dirty", "uncommitted changes: late.txt")
+	if got := f.read(filepath.Join(f.worktree, "late.txt")); got != "late\n" {
+		t.Errorf("late.txt = %q, want it left in place", got)
 	}
 }
 
