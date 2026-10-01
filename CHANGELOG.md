@@ -117,8 +117,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   wait a command allows, records the cache already holds are printed with
   `stale, polled <time>` on each `pr status` line and a `stale` object in
   `--json` and `pr state` output naming the poll time, the next probe, and
-  the backoff's reason. A pull request the cache never polled still fails
-  naming the next probe.
+  the backoff's reason. A pull request the cache never polled, including one
+  only a push recorded, still fails naming the next probe.
 
 - **The cleanup daemon retries a transient blockage on its own.** A job
   blocked on `activity` or `watchers` — a process census or watcher read
@@ -158,13 +158,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ESRCH`, a zombie, or a process in exit. A live pid the kernel still refuses
   to identify keeps refusing cleanup with the same error.
 
-- **A push writes its head into the shared pull request cache.** `ccx vcs
+- **A push records its head in the shared pull request cache.** `ccx vcs
   ship`, `stack submit`, and `stack continue` record each pushed head
   against its pull request number as soon as the Graphite submit returns,
-  so a `pr status`, `pr state`, or `pr watch` read before GitHub shows the
-  push answers with the pushed head. The next poll re-reads the pull
-  request; while GitHub still reports the older head, the pushed one stands
-  for up to ten minutes. GitHub's REST view of #28635 trailed a
+  and lease the pull request so the next poll reads it. The record's
+  `pushedHead` sits beside GitHub's `headRefOid`, which keeps describing the
+  head GitHub shows and the checks that ran on it, until GitHub reports the
+  push or ten minutes pass. GitHub's REST view of #28635 trailed a
   `stack continue` push by more than four minutes on 2026-10-01.
 
 - **A publish re-reads a pull request GitHub still shows at its old head.**

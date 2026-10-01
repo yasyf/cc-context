@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -85,10 +86,10 @@ type PR struct {
 	Graphite         *gtapi.PullRequestInfo `json:"graphite,omitempty"`
 	SquashOn         []string               `json:"squashOn,omitempty"`
 	PolledAt         time.Time              `json:"polledAt"`
-	// PushedAt is when this machine last pushed HeadRefOid, set while GitHub
-	// has yet to show that head; the other fields still describe the head it
-	// did show.
-	PushedAt time.Time `json:"pushedAt,omitzero"`
+	// PushedHead is the head this machine pushed at PushedAt, kept while
+	// GitHub still shows another; HeadRefOid and the checks stay GitHub's.
+	PushedHead string    `json:"pushedHead,omitempty"`
+	PushedAt   time.Time `json:"pushedAt,omitzero"`
 }
 
 // Rollup is the head commit's aggregate check state and the contexts behind
@@ -231,9 +232,10 @@ func (s *Store) Pushed(ctx context.Context, heads map[int]string) error {
 		now := s.now()
 		for n, head := range heads {
 			pr := st.PRs[n]
-			pr.Number, pr.HeadRefOid, pr.PushedAt = n, head, now
+			pr.Number, pr.PushedHead, pr.PushedAt = n, head, now
 			st.PRs[n] = pr
 		}
+		st.Leases.renew(Want{PRs: slices.Collect(maps.Keys(heads))}, now)
 		return s.save(st)
 	})
 }
@@ -355,7 +357,7 @@ func (l *Leases) renew(want Want, now time.Time) {
 // old, so a reader the budget refused can serve it labelled stale.
 func (st State) Covers(want Want) bool {
 	for _, n := range want.PRs {
-		if _, ok := st.PRs[n]; !ok {
+		if pr, ok := st.PRs[n]; !ok || pr.PolledAt.IsZero() {
 			return false
 		}
 	}
@@ -424,8 +426,8 @@ func (st *State) absorb(p poll, now time.Time) {
 	}
 	for n, pr := range p.prs {
 		pr.PolledAt = now
-		if was := st.PRs[n]; was.PushedAt.After(was.PolledAt) && pr.HeadRefOid != was.HeadRefOid && now.Sub(was.PushedAt) < pushLag {
-			pr.HeadRefOid, pr.PushedAt = was.HeadRefOid, was.PushedAt
+		if was := st.PRs[n]; was.PushedHead != "" && pr.HeadRefOid != was.PushedHead && now.Sub(was.PushedAt) < pushLag {
+			pr.PushedHead, pr.PushedAt = was.PushedHead, was.PushedAt
 		}
 		st.PRs[n] = pr
 	}

@@ -709,8 +709,14 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 		return nil, fmt.Errorf("stack rebase: %w", err)
 	}
 	if !o.noPush {
+		planned := members
 		if members, roots, err = stackWithPublishedParents(ctx, l.dir(), retargeted, submitted, trunk, members, roots, overrides); err != nil {
 			return nil, err
+		}
+		if o.submit {
+			if o.pinned, err = stackPinHeldParents(ctx, l, planned, members, o.pinned); err != nil {
+				return nil, err
+			}
 		}
 	}
 	if above := slices.DeleteFunc(slices.Clone(members), func(name string) bool { return upTo == nil || slices.Contains(upTo, name) }); len(above) > 0 {
@@ -1173,6 +1179,22 @@ func stackRetargeted(state gtState, overrides map[string]string) gtState {
 		out[child] = s
 	}
 	return out
+}
+
+// stackPinHeldParents pins a published parent stackWithPublishedParents
+// brought back when another working copy holds it, so a submit keeps it at
+// its published head like any held ancestor gt still records.
+func stackPinHeldParents(ctx context.Context, l lane, planned, members, pinned []string) ([]string, error) {
+	holders, err := vcs.BranchHolders(ctx, l.checkout)
+	if err != nil {
+		return nil, fmt.Errorf("stack submit: %w", err)
+	}
+	for _, name := range members {
+		if holder := holders[name]; holder != "" && holder != l.checkout.Root && !slices.Contains(planned, name) && !slices.Contains(pinned, name) {
+			pinned = append(pinned, name)
+		}
+	}
+	return pinned, nil
 }
 
 // stackWithPublishedParents adds back the parent a member was last published

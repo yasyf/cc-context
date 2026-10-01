@@ -621,7 +621,7 @@ func (e *Engine) wake(physical bool) (time.Time, bool) {
 		if job.Phase == cleanup.PhaseWaiting && job.Blocked == nil {
 			consider(e.checked[job.ID].Add(e.tuning.Recheck))
 		}
-		if at, ok := e.retryAt(job); ok {
+		if at, ok := e.retryAt(job); ok && !(e.paused && job.Phase.Physical()) {
 			consider(at)
 		}
 	}
@@ -714,6 +714,9 @@ func (e *Engine) advance(ctx context.Context, job cleanup.Job) (cleanup.Job, err
 	switch {
 	case err != nil:
 		return job, fmt.Errorf("%w: job %s rests at %s: %w", ErrStopped, job.ID, job.Phase, err)
+	case job.Phase == cleanup.PhaseDone:
+		delete(e.checked, job.ID)
+		return job, e.finish(job)
 	case job.Blocked != nil, !job.Phase.Logical():
 		delete(e.checked, job.ID)
 	case job.Phase == cleanup.PhaseWaiting:
