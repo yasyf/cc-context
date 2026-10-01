@@ -519,6 +519,73 @@ func TestAdvanceBlocksBeforeTheMove(t *testing.T) {
 	}
 }
 
+var errListingTimedOut = fmt.Errorf("list processes: %w: ps: %w", cleanup.ErrUnlisted, context.DeadlineExceeded)
+
+func TestAdvanceRemovesAPushedTreeWhoseProcessListingTimedOut(t *testing.T) {
+	tests := []struct {
+		name    string
+		arrange func(f *fixture)
+	}{
+		{"naming the watchers", func(f *fixture) {
+			f.watchers.retiring = func(context.Context, string) ([]cleanup.ProcessID, error) { return nil, errListingTimedOut }
+		}},
+		{"retiring the watchers", func(f *fixture) {
+			f.watchers.retire = func(context.Context, string) error { return errListingTimedOut }
+		}},
+		{"checking the quarantine", func(f *fixture) {
+			f.watchers.quarantine = func(context.Context, string) error { return errListingTimedOut }
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFixture(t)
+			f.run(f.repo, "update-ref", "refs/remotes/origin/feature", "feature")
+			job := f.accept()
+			tt.arrange(f)
+
+			f.advance(&job)
+
+			f.finished(&job)
+			f.absent(f.worktree)
+			for i, discount := range f.discounts {
+				if len(discount) != 0 {
+					t.Errorf("guard %d discounted %v, want nothing discounted", i, discount)
+				}
+			}
+		})
+	}
+}
+
+func TestAdvanceBlocksAnUnpushedTreeWhoseProcessListingTimedOut(t *testing.T) {
+	f := newFixture(t)
+	job := f.accept()
+	f.watchers.retire = func(context.Context, string) error { return errListingTimedOut }
+
+	f.advance(&job)
+
+	f.blocked(&job, cleanup.PhasePrepared, "watchers", fmt.Sprintf("%v; no remote-tracking ref holds %s's head %s", errListingTimedOut, f.worktree, job.Head))
+	if got := f.id(f.worktree); got != job.Tree {
+		t.Errorf("worktree identity = %v, want the tree %v", got, job.Tree)
+	}
+}
+
+func TestAdvanceRevetsADeferredTreeWhoseProcessListingTimedOut(t *testing.T) {
+	f := newFixture(t)
+	f.run(f.repo, "update-ref", "refs/remotes/origin/feature", "feature")
+	job := f.intend()
+	f.watchers.retire = func(context.Context, string) error {
+		f.write(filepath.Join(f.worktree, "late.txt"), "late\n")
+		return errListingTimedOut
+	}
+
+	f.advance(&job)
+
+	f.blocked(&job, cleanup.PhasePrepared, "dirty", "uncommitted changes: late.txt")
+	if got := f.read(filepath.Join(f.worktree, "late.txt")); got != "late\n" {
+		t.Errorf("late.txt = %q, want it left in place", got)
+	}
+}
+
 func TestAdvanceFinishesGitRewritesUnderACancelledContext(t *testing.T) {
 	f := newFixture(t)
 	job, err := f.relocator.Accept(context.Background(), 1, f.request(true))

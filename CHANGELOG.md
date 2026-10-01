@@ -164,6 +164,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A worktree removal survives a process listing that times out.** Naming or
+  retiring a tree's watchers, and checking that the cleanup folder is
+  unwatched, runs `ps` and `lsof` under a 5s bound, and a slow
+  process table left the cleanup job blocked at `prepared (watchers)` until a
+  manual retry. A timed-out listing is now a warning. The job moves the tree
+  when a remote-tracking ref holds its head, and the activity guard still
+  checks it, discounting no watcher, after a fresh check for uncommitted
+  changes. A head no remote-tracking ref holds keeps
+  the job blocked, naming that head.
+
 - **A stack rebase never replays a parent's commits as the child's own.**
   When a parent's lane rewrote and pushed it from its own working copy, the
   child could sit on a head of the parent that neither the local branch, gt's

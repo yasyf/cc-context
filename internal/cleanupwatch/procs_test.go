@@ -3,6 +3,7 @@ package cleanupwatch
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yasyf/cc-context/internal/cleanup"
 	"github.com/yasyf/cc-context/internal/render"
 )
 
@@ -208,6 +210,28 @@ func TestProcTableProcesses(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+type stalled struct{}
+
+func (stalled) Run(ctx context.Context, _ render.Dir, name string, _ ...string) (Output, error) {
+	<-ctx.Done()
+	return Output{}, fmt.Errorf("%s: %w", name, ctx.Err())
+}
+
+func TestProcTableMarksATimedOutListing(t *testing.T) {
+	table := ProcTable{Run: stalled{}, Timeout: time.Millisecond, MaxDaemons: 4}
+	if _, err := table.FSMonitorDaemons(context.Background()); !errors.Is(err, cleanup.ErrUnlisted) {
+		t.Errorf("FSMonitorDaemons error = %v, want cleanup.ErrUnlisted", err)
+	}
+	if _, err := table.Processes(context.Background(), []int{7}); !errors.Is(err, cleanup.ErrUnlisted) {
+		t.Errorf("Processes error = %v, want cleanup.ErrUnlisted", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := table.FSMonitorDaemons(ctx); errors.Is(err, cleanup.ErrUnlisted) || !errors.Is(err, context.Canceled) {
+		t.Errorf("FSMonitorDaemons under a cancelled caller = %v, want context.Canceled alone", err)
 	}
 }
 

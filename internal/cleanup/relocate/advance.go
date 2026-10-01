@@ -327,15 +327,11 @@ func (r *Relocator) move(ctx context.Context, job *cleanup.Job, vetted *bool) (r
 	if nested != "" {
 		return "reconcile", fmt.Sprintf("worktree %s is registered inside %s", nested, job.Original)
 	}
-	watchers, err := r.retiring(ctx, job.Original)
-	if err != nil {
-		return "watchers", err.Error()
+	if reason, detail := r.unlisted(ctx, job, vetted, "watchers", r.retire(ctx, job.Original)); reason != "" {
+		return reason, detail
 	}
-	if err := r.cfg.Watchers.Retire(cleanup.WithRetiring(ctx, watchers), job.Original); err != nil {
-		return "watchers", err.Error()
-	}
-	if err := r.cfg.Watchers.CheckQuarantine(ctx, r.cfg.Journal.Layout().JobDir(job.ID)); err != nil {
-		return "quarantine", err.Error()
+	if reason, detail := r.unlisted(ctx, job, vetted, "quarantine", r.cfg.Watchers.CheckQuarantine(ctx, r.cfg.Journal.Layout().JobDir(job.ID))); reason != "" {
+		return reason, detail
 	}
 	if holders := r.held(ctx, job.Original); holders != "" {
 		return "activity", holders
@@ -366,6 +362,33 @@ func (r *Relocator) move(ctx context.Context, job *cleanup.Job, vetted *bool) (r
 		return "git", err.Error()
 	}
 	slog.Warn("cleanup: git worktree move failed after the tree left its original state", "job", job.ID, "error", err)
+	return "", ""
+}
+
+func (r *Relocator) retire(ctx context.Context, tree string) error {
+	watchers, err := r.retiring(ctx, tree)
+	if err != nil {
+		return err
+	}
+	return r.cfg.Watchers.Retire(cleanup.WithRetiring(ctx, watchers), tree)
+}
+
+func (r *Relocator) unlisted(ctx context.Context, job *cleanup.Job, vetted *bool, reason string, err error) (string, string) {
+	switch {
+	case err == nil:
+		return "", ""
+	case !errors.Is(err, cleanup.ErrUnlisted):
+		return reason, err.Error()
+	}
+	pushed, pushErr := r.pushed(ctx, job.Git, job.Repo, job.Head)
+	switch {
+	case pushErr != nil:
+		return "git", pushErr.Error()
+	case !pushed:
+		return reason, fmt.Sprintf("%v; no remote-tracking ref holds %s's head %s", err, job.Original, job.Head)
+	}
+	*vetted = false
+	slog.Warn("cleanup: moving a pushed tree whose watchers could not be listed", "job", job.ID, "tree", job.Original, "check", reason, "error", err)
 	return "", ""
 }
 

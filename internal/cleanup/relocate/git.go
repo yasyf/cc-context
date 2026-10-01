@@ -128,6 +128,17 @@ func (r *Relocator) checkedOutSubmodule(ctx context.Context, git, tree string) (
 	return found, errors.Join(err, inspect)
 }
 
+func (r *Relocator) pushed(ctx context.Context, git, repo, head string) (bool, error) {
+	if head == "" {
+		return true, nil
+	}
+	out, err := r.git(ctx, git, "--git-dir="+repo, "for-each-ref", "--count=1", "--contains", head, "--format=%(refname)", "refs/remotes/")
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(out) != "", nil
+}
+
 const dirtyShown = 5
 
 func (r *Relocator) dirt(ctx context.Context, git, tree string) (string, error) {
