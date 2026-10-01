@@ -80,10 +80,10 @@ under $HOME/.claude/stores, with --depth commits of trunk history (256 unless th
 store already exists), no blobs until a checkout needs them, no tags, a fetch of
 trunk alone, and a sparse checkout of root files plus this checkout's sparse set.
 The first thin lane creates the store; a lane cut from a checkout of the store is
-a linked worktree of it whatever the flags say. A parent the store does not hold
-needs --published-parent: its publication is verified against this checkout and
-the remote, and the store takes it frozen at its published head, so no submit
-from the store rewrites it. When its published base lies past the store's
+a linked worktree of it whatever the flags say, sparse like its caller unless
+--no-checkout is given. A parent the store does not hold needs --published-parent:
+its publication is verified against this checkout and the remote, and the store
+takes it frozen at its published head, so no submit from the store rewrites it. When its published base lies past the store's
 history, --deepen fetches trunk history down to it, never more than --max-depth
 commits; without it the lane is refused. --full-history cuts the lane from this
 checkout's own full history instead, and is refused in a thin store.

@@ -322,12 +322,10 @@ func thinPrepareStore(ctx context.Context, src lane, s thinSource, dir render.Di
 	return nil
 }
 
-// thinVerifyStore also catches a local-path clone git took without the
-// transport, which ignores --depth and --filter with only a warning.
+// thinVerifyStore never requires a shallow file: git writes none when history is
+// shorter than the depth, and drops it once a deepen reaches the root. The
+// promisor keys still catch a local-path clone that skipped the transport.
 func thinVerifyStore(ctx context.Context, root string, s thinSource) error {
-	if _, err := os.Lstat(filepath.Join(root, ".git", "shallow")); err != nil {
-		return fmt.Errorf("stack new: %s is not a shallow thin store: %w", root, err)
-	}
 	out, err := render.RunCLI(ctx, render.Dir(root), "git", []string{"config", "--get-regexp", `^remote\.` + thinRemote + `\.`})
 	if err != nil {
 		return fmt.Errorf("stack new: read %s's remote: %w", root, err)
@@ -632,7 +630,7 @@ func stackRequireHistory(ctx context.Context, dir render.Dir, prefix, remote, tr
 			}
 		}
 		if !whole {
-			return fmt.Errorf("%s: %s's history in %s stops at its shallow boundary before it meets %s/%s; nothing moved — fetch the missing history explicitly with git -C %s fetch --deepen=<commits> %s %s, then run this again", prefix, name, ck.Root, remote, trunk, ck.Root, remote, trunk)
+			return fmt.Errorf("%s: %s's history in %s stops at its shallow boundary before it meets %s/%s; nothing moved — fetch the missing history explicitly with git -C %s fetch --deepen=<commits> %s %s, then run this again", prefix, name, ck.MainRoot, remote, trunk, ck.MainRoot, remote, trunk)
 		}
 	}
 	return nil
@@ -645,11 +643,7 @@ func thinRecordPush(ctx context.Context, dir render.Dir, remote string, pushed m
 	if len(pushed) == 0 {
 		return nil
 	}
-	ck, err := vcs.ResolveCheckout(string(dir))
-	if err != nil {
-		return err
-	}
-	store, err := thinIsStore(ctx, ck)
+	ck, store, err := thinDirIsStore(ctx, dir)
 	if err != nil || !store {
 		return err
 	}
@@ -665,7 +659,19 @@ func thinRecordPush(ctx context.Context, dir render.Dir, remote string, pushed m
 	return nil
 }
 
+func thinDirIsStore(ctx context.Context, dir render.Dir) (vcs.Checkout, bool, error) {
+	ck, err := vcs.ResolveCheckout(string(dir))
+	if err != nil {
+		return vcs.Checkout{}, false, err
+	}
+	store, err := thinIsStore(ctx, ck)
+	return ck, store, err
+}
+
 func thinRecordBranchPush(ctx context.Context, dir render.Dir, remote, branch string) error {
+	if _, store, err := thinDirIsStore(ctx, dir); err != nil || !store {
+		return err
+	}
 	head, err := stackRevParse(ctx, dir, gtRestackRef(branch))
 	if err != nil {
 		return err

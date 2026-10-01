@@ -1846,11 +1846,7 @@ func shipPushGitOnce(ctx context.Context, dir render.Dir, remote, branch, trunk 
 		return 0, err
 	}
 	if trunk != "" && trunk != branch {
-		head, err := stackRevParse(ctx, dir, "HEAD")
-		if err != nil {
-			return 0, err
-		}
-		if err := stackRequireHistory(ctx, dir, "ship", remote, trunk, map[string]string{branch: head, remote + "/" + branch: heads[branch]}); err != nil {
+		if err := stackRequireHistory(ctx, dir, "ship", remote, trunk, map[string]string{branch: "HEAD", remote + "/" + branch: heads[branch]}); err != nil {
 			return 0, err
 		}
 	}

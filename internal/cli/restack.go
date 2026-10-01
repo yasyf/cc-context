@@ -219,11 +219,7 @@ func restackGit(ctx context.Context, cmd *cobra.Command, l lane, parent string) 
 		}
 	}
 	if trunkName != "" {
-		head, err := stackRevParse(ctx, dir, gtRestackRef(branch))
-		if err != nil {
-			return "", err
-		}
-		if err := stackRequireHistory(ctx, dir, "restack", remote, trunkName, map[string]string{branch: head}); err != nil {
+		if err := stackRequireHistory(ctx, dir, "restack", remote, trunkName, map[string]string{branch: gtRestackRef(branch)}); err != nil {
 			return "", err
 		}
 	}

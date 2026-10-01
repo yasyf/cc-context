@@ -54,17 +54,21 @@ func runStackNew(cmd *cobra.Command, name string, options stackNewOpts) error {
 		return fmt.Errorf("stack new: %s is a thin store, so no lane cut here carries full history — run --full-history from a full checkout of the repository", src.root)
 	}
 	thin := storage == storageThin && !inStore
+	sparseLane := options.sparse || (storage == storageThin || inStore) && !options.noCheckout
 	if options.published && !src.gt {
 		return errors.New("stack new: --published-parent requires the graphite lane")
 	}
 	if (options.sparse || options.noCheckout || storage == storageThin) && src.checkout.Kind != vcs.Git {
 		return errors.New("stack new: sparse, no-checkout, and thin creation require a Git checkout")
 	}
-	if options.noCheckout && storage == storageThin {
+	if options.noCheckout && thin {
 		return fmt.Errorf("stack new: a thin lane is a sparse checkout, so --no-checkout conflicts with %s=thin", stackNewEnv)
 	}
-	if len(options.includes) > 0 && !options.sparse && storage != storageThin {
+	if len(options.includes) > 0 && !sparseLane {
 		return errors.New("stack new: --include checks out directories in a sparse lane — pass it with --thin or --sparse")
+	}
+	if (options.depthSet || options.deepen) && !thin {
+		return errors.New("stack new: --depth and --deepen apply only to a thin lane cut from a full checkout")
 	}
 	if options.depth < 1 || options.maxDepth < 1 {
 		return fmt.Errorf("stack new: --depth %d and --max-depth %d must both be positive", options.depth, options.maxDepth)
@@ -87,7 +91,7 @@ func runStackNew(cmd *cobra.Command, name string, options stackNewOpts) error {
 			return err
 		}
 		sparse = &read
-	case storage == storageThin:
+	case sparseLane:
 		inherited, err := stackThinSparse(ctx, src.dir())
 		if err != nil {
 			return err
@@ -127,7 +131,7 @@ func runStackNew(cmd *cobra.Command, name string, options stackNewOpts) error {
 	if err != nil {
 		return err
 	}
-	start := parent
+	var start string
 	var receipt *stackPublication
 	var common string
 	switch {
