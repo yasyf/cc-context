@@ -197,22 +197,45 @@ func TestShipPRCreateGitLane(t *testing.T) {
 }
 
 // shipPRCreateRefused points the fake gh at a branch with no pull request and a
-// create GitHub answers with an error whose JSON body is empty.
-func shipPRCreateRefused(t *testing.T) {
+// create GitHub answers refusals times with a 502 whose JSON body is empty, and
+// with a recorded pull request after that.
+func shipPRCreateRefused(t *testing.T, refusals int) {
 	t.Helper()
 	t.Setenv("GH_PULLS_JSON", ghStdout(t, "rest-pulls-head-none"))
 	refused := loadGHGolden(t, "rest-pull-create-empty-error")
 	t.Setenv("GH_PULL_CREATE_STDERR", refused.stderr)
 	t.Setenv("GH_PULL_CREATE_EXIT", strconv.Itoa(refused.exit))
+	t.Setenv("GH_PULL_CREATE_REFUSALS", strconv.Itoa(refusals))
+	posts := filepath.Join(t.TempDir(), "posts")
+	if err := os.WriteFile(posts, nil, 0o600); err != nil {
+		t.Fatalf("write %s: %v", posts, err)
+	}
+	t.Setenv("GH_PULL_CREATE_LOG", posts)
+	t.Setenv("GH_PULL_CREATE_JSON", ghStdout(t, "rest-pull-open"))
+}
+
+func isPRCreate(inv []string) bool {
+	return len(inv) > 4 && inv[0] == "gh" && inv[1] == "api" && inv[2] == "-X" && inv[3] == "POST" && strings.HasSuffix(inv[4], "/pulls")
+}
+
+func prCreates(t *testing.T, f *vcstest.Fixture) int {
+	t.Helper()
+	n := 0
+	for _, inv := range vcstest.Invocations(t, f.ArgvLog) {
+		if isPRCreate(inv) {
+			n++
+		}
+	}
+	return n
 }
 
 // TestShipPRCreateRefused is cc-remote's first pull request: gh reported
-// GitHub's empty-bodied refusal only as "unexpected end of JSON input", and
-// ship failed without saying the push had landed or how to finish.
+// GitHub's empty-bodied 502 only as "unexpected end of JSON input", and ship
+// failed without saying the push had landed or how to finish.
 func TestShipPRCreateRefused(t *testing.T) {
 	t.Run("no pull request", func(t *testing.T) {
 		f := shipPRFixture(t, vcstest.Branch("feature"))
-		shipPRCreateRefused(t)
+		shipPRCreateRefused(t, prCreateAttempts)
 		body := writePRBody(t, "body.md", "why this change\n")
 
 		_, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--pr-title", "Better title", "--pr-body-file", body)
@@ -225,11 +248,30 @@ func TestShipPRCreateRefused(t *testing.T) {
 		if n := remoteCount(t, f, "feature"); n != 2 {
 			t.Errorf("origin feature holds %d commits, want the push the create followed", n)
 		}
+		if n := prCreates(t, f); n != prCreateAttempts {
+			t.Errorf("ship posted %d creates, want %d", n, prCreateAttempts)
+		}
+	})
+	t.Run("posted again", func(t *testing.T) {
+		f := shipPRFixture(t, vcstest.Branch("feature"))
+		shipPRCreateRefused(t, 1)
+		created := shipPRCreated(t)
+		body := writePRBody(t, "body.md", "why this change\n")
+
+		got, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--pr-title", "Better title", "--pr-body-file", body)
+		if err != nil {
+			t.Fatalf("ship error = %v", err)
+		}
+		if want := fmt.Sprintf(" · opened PR #%d %s", created.Number, created.URL); !strings.HasSuffix(got, want) {
+			t.Errorf("summary = %q, want suffix %q", got, want)
+		}
+		if n := prCreates(t, f); n != 2 {
+			t.Errorf("ship posted %d creates, want the refused one and the one after it", n)
+		}
 	})
 	t.Run("opened anyway", func(t *testing.T) {
 		f := shipPRFixture(t, vcstest.Branch("feature"))
-		shipPRCreateRefused(t)
-		t.Setenv("GH_PULL_CREATED_MARK", filepath.Join(t.TempDir(), "created"))
+		shipPRCreateRefused(t, 1)
 		t.Setenv("GH_PULLS_AFTER_CREATE_JSON", ghStdout(t, "rest-pulls-head-open"))
 		pr := prFromListGolden(t, "rest-pulls-head-open")
 		body := writePRBody(t, "body.md", "why this change\n")

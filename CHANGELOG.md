@@ -118,6 +118,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Otherwise, the error says the push already happened and names the `gh api -X
   POST` command that opens the pull request.
 
+- **`ccx vcs ship` posts a pull request create once more after a server
+  error.** After #202, ship still stopped after one post when the branch had
+  no open pull request. It now posts again when GitHub refuses with a 5xx
+  status and the lookup succeeds and finds none. A pull request GitHub
+  opened anyway is reported without another post; GitHub refuses a second
+  open pull request for one head and base. Ship makes at most two creates,
+  then names the `gh api -X POST` command that finishes the create if neither
+  opens one. A 4xx refusal, a request with no response, or a failed lookup
+  does not trigger another create.
+
 - **Worktree cleanup no longer counts the Watchman server as a client of
   itself.** The watcher census exempted only its own `debug-status`
   connection, so the server's loopback connection, which places no

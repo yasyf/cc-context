@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -369,25 +370,35 @@ func shipPRCreate(ctx context.Context, nwo, branch, base string, picked bool, su
 	return seg, nil
 }
 
+// prCreateAttempts bounds the creates a server error may repeat.
+const prCreateAttempts = 2
+
 // createPR posts the pull request. GitHub can open one and still answer an
 // error, so a refused create fails only when the branch has no open pull
-// request afterward.
+// request afterward. A server error that left none is posted again: GitHub
+// refuses a second open pull request for one head and base.
 func createPR(ctx context.Context, nwo, branch, base, title, bodyPath string, draft bool) (prState, error) {
 	argv := prCreateArgv(nwo, branch, base, title, bodyPath, draft)
-	out, err := ghAPI(ctx, render.Ambient, argv[1:]...)
-	if err != nil {
+	for attempt := 1; ; attempt++ {
+		out, err := ghAPI(ctx, render.Ambient, argv[1:]...)
+		if err == nil {
+			var pr prState
+			if err := json.Unmarshal([]byte(out), &pr); err != nil {
+				return prState{}, fmt.Errorf("ship: parse gh api create pull: %w", err)
+			}
+			return pr, nil
+		}
 		pr, found, lookupErr := lookupPR(ctx, nwo, branch)
 		if found {
 			return pr, nil
 		}
+		var refusal *ghRefusal
+		if attempt < prCreateAttempts && lookupErr == nil && errors.As(err, &refusal) && refusal.status >= http.StatusInternalServerError {
+			continue
+		}
 		retry := ghCommand(prCreateArgv(nwo, branch, base, title, prRetryBody(bodyPath), draft))
 		return prState{}, prStepError("the push", "create", []string{retry}, errors.Join(err, lookupErr))
 	}
-	var pr prState
-	if err := json.Unmarshal([]byte(out), &pr); err != nil {
-		return prState{}, fmt.Errorf("ship: parse gh api create pull: %w", err)
-	}
-	return pr, nil
 }
 
 func prCreateArgv(nwo, branch, trunk, title, bodyPath string, draft bool) []string {

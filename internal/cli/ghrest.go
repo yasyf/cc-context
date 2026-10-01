@@ -87,6 +87,18 @@ func ghAPI(ctx context.Context, dir render.Dir, args ...string) (string, error) 
 	return ghAPIWaiting(ctx, dir, ghRateLimitWait, args...)
 }
 
+// ghRefusal is a gh api call that failed: gh's exit status and own error, and
+// the HTTP status of its last request, zero when that request got no response.
+type ghRefusal struct {
+	exit    int
+	status  int
+	message string
+}
+
+func (r *ghRefusal) Error() string {
+	return fmt.Sprintf("gh: exit status %d: %s", r.exit, r.message)
+}
+
 func ghAPIWaiting(ctx context.Context, dir render.Dir, wait time.Duration, args ...string) (string, error) {
 	for waits := 0; ; waits++ {
 		out, code, stderr, err := render.RunCLIExitCodeEnv(ctx, dir, "gh", append([]string{"api"}, args...), []string{"GH_DEBUG=api"})
@@ -94,7 +106,9 @@ func ghAPIWaiting(ctx context.Context, dir render.Dir, wait time.Duration, args 
 			return out, err
 		}
 		refusal := ghDebugRefusal(stderr)
-		failure := fmt.Errorf("gh: exit status %d: %s", code, refusal)
+		status, _, _ := strings.Cut(ghDebugLastStatus(stderr), " ")
+		httpStatus, _ := strconv.Atoi(status)
+		failure := &ghRefusal{exit: code, status: httpStatus, message: refusal}
 		delay, ok := ghRateLimitDelay(ghDebugLastResponse(stderr), wait)
 		if !ok || waits == ghRateLimitRetries || !strings.Contains(strings.ToLower(refusal), "rate limit") {
 			return "", failure
