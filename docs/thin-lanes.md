@@ -12,8 +12,10 @@ ccx vcs stack new agent-work --thin
 ```
 
 ccx creates the thin store on first use, then cuts the lane as a linked
-worktree of that store. From a store lane, `--thin` cuts another linked
-worktree of the same store; stacking works as usual.
+worktree of that store. From a store lane, every new lane is a linked
+worktree of the same store and is sparse like its caller, with or without
+`--thin` and regardless of the `CCX_STACK_NEW` default. Only `--no-checkout`
+skips materializing files there; stacking works as usual.
 
 The store is a non-bare clone at `~/.claude/stores/<key>/<repo>`. `<key>` is
 the first 12 hex digits of SHA-256 over the canonical remote:
@@ -58,7 +60,8 @@ ccx vcs stack new agent-default
 Keep it unset in human terminals to retain the existing behavior: a linked
 worktree sharing the checkout's history. `CCX_STACK_NEW=full` selects that
 same behavior. Inside the store, the `full` environment default still cuts
-a linked worktree of the store; it does not supply full history.
+a linked worktree of the store, sparse like its caller; it does not supply
+full history.
 
 Explicit `--thin` and `--full-history` flags override the environment
 default. Any value other than `thin` or `full` is an error.
@@ -73,8 +76,9 @@ active. Otherwise, they start with root files only. For a repository with
 ccx vcs stack new agent-files --thin --include src --include tools
 ```
 
-`--include DIR` is repeatable and requires `--thin` or the existing `--sparse`
-mode. From inside a lane, expand the checkout as work requires:
+`--include DIR` is repeatable and, outside the store, requires `--thin` or
+`--sparse`. It is refused with `--no-checkout`. From inside a lane, expand
+the checkout as work requires:
 
 ```sh
 git sparse-checkout add src tools
@@ -121,9 +125,10 @@ segment. A refused deepen can leave the store deeper; history only grows.
 
 | Refusal | Action |
 | --- | --- |
+| `--depth` or `--deepen` without a thin lane cut from a full checkout | Pass them with `--thin` from the full checkout, or drop them |
 | Explicit `--depth` with an existing store | Omit `--depth`; it applies only when creating the store |
 | `--full-history` inside the thin store | Run it from the full source checkout |
-| `--include` without thin or sparse creation | Select `--thin` or `--sparse` |
+| `--include` outside the store without `--thin` or `--sparse` | Select `--thin` or `--sparse`, or run from inside the store |
 | Invalid `CCX_STACK_NEW` value | Set `thin` or `full`, or unset it |
 | A source-only parent lacks a verified publication onto trunk | Use `--published-parent` after publishing onto trunk, or `--full-history` from the full checkout |
 | The published base is outside the store's history | Retry with `--deepen` and an explicit `--max-depth` cap if needed |
@@ -131,9 +136,10 @@ segment. A refused deepen can leave the store deeper; history only grows.
 In a shallow repository, `ccx vcs stack rebase`, `submit`, `restack`, and
 `ship` refuse before anything moves when the shallow boundary cuts a
 branch's history. The refusal names the branch and the explicit command
-`git -C <store> fetch --deepen=<n> origin <trunk>`. Run that command to grow
-the available history before retrying. These operations never deepen an
-existing store implicitly.
+`git -C <store> fetch --deepen=<commits> origin <trunk>`, where `<store>` is
+the store's main checkout even when the refusal comes from a lane. Run that
+command to grow the available history before retrying. These operations
+never deepen an existing store implicitly.
 
 ## Remove a lane
 

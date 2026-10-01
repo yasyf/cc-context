@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`ccx vcs stack new <name> --thin` creates sparse agent lanes in a shallow store.**
   Lanes are linked worktrees of the ccx-owned clone at
   `~/.claude/stores/<key>/<repo>`; ccx never deletes the store.
+  Lanes cut from inside the store are sparse like their caller.
   `CCX_STACK_NEW=thin|full` selects the default; `--thin` and `--full-history`
   select it explicitly. `--depth` sets history depth on first creation, and
   repeatable `--include` adds directories. `--published-parent` adopts a
@@ -507,6 +508,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A branch gt holds (`gt freeze`, or a merge in progress) is no longer a
   refusal: it keeps its head, is not pushed, and its children restack onto
   that head and open their pull requests against it.
+
+- **A stack rebase refusal names how to resume or drop a saved run.**
+  When a branch to move was checked out or dirty in another working copy,
+  the refusal said `no branches moved — ... retry with ccx` even though the
+  run's state was already saved. Retrying then hit `already in progress`.
+  A refusal inside a saved run now names `ccx vcs stack continue` to resume
+  or `ccx vcs stack abort` to drop it. Only refusals before a run exists say
+  to retry.
 
 ### Upgrade
 
