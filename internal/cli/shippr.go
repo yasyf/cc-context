@@ -238,13 +238,16 @@ func materializeStdin(r io.Reader) (string, func(), error) {
 // does it before any mutation: an unreachable GitHub is a refusal, not a
 // half-finished ship. A plan that stays on trunk outside the graphite lane
 // opens no pull request, so it needs no repository.
-func shipPRRepo(ctx context.Context, l lane, plan branchPlan) (string, error) {
+func shipPRRepo(ctx context.Context, l lane, plan branchPlan, base string) (string, error) {
 	if !l.gt && plan.trunk != "" && plan.name == plan.trunk {
 		return "", nil
 	}
 	repo, err := vcs.LookupRepo(ctx, l.dir(), false)
 	if err != nil {
 		return "", fmt.Errorf("ship: a pull request needs GitHub metadata: %w", err)
+	}
+	if !l.gt && plan.trunk == "" && base == "" {
+		return "", fmt.Errorf("ship: %w; pass --parent <base-branch> to name the pull request base before publishing", vcs.ErrNoTrunk)
 	}
 	return repo.NameWithOwner, nil
 }
