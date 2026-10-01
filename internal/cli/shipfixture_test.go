@@ -1014,16 +1014,25 @@ case "$1 $2" in
   "api -X")
     case "$3 $4" in
       "GET "*/pulls)
-        if [ -n "$GH_PULL_CREATED_MARK" ] && [ -e "$GH_PULL_CREATED_MARK" ]; then
+        posts=
+        if [ -n "$GH_PULLS_AFTER_CREATE_JSON" ]; then IFS= read -r posts < "$GH_PULL_CREATE_LOG" || :; fi
+        if [ -n "$posts" ]; then
           printf '%s' "$GH_PULLS_AFTER_CREATE_JSON"
         else
           printf '%s' "${GH_PULLS_JSON:-[]}"
         fi ;;
       "POST "*/pulls)
-        if [ -n "$GH_PULL_CREATED_MARK" ]; then : > "$GH_PULL_CREATED_MARK"; fi
-        printf '%s' "$GH_PULL_CREATE_STDERR" >&2
-        printf '%s' "$GH_PULL_CREATE_JSON"
-        exit "${GH_PULL_CREATE_EXIT:-0}" ;;
+        if [ -n "$GH_PULL_CREATE_REFUSALS" ]; then
+          posts=
+          IFS= read -r posts < "$GH_PULL_CREATE_LOG" || :
+          posts=x$posts
+          printf '%s\n' "$posts" > "$GH_PULL_CREATE_LOG"
+          if [ "${#posts}" -le "$GH_PULL_CREATE_REFUSALS" ]; then
+            printf '%s' "$GH_PULL_CREATE_STDERR" >&2
+            exit "$GH_PULL_CREATE_EXIT"
+          fi
+        fi
+        printf '%s' "$GH_PULL_CREATE_JSON" ;;
       *) if [ -n "$GH_PR_EDIT_FAIL" ]; then printf '%s\n' "$GH_PR_EDIT_FAIL" >&2; exit 1; fi ;;
     esac ;;
   "api graphql")
