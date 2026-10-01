@@ -748,7 +748,7 @@ class TestTranscriptSteer:
 
     def fires(self, command: str) -> bool:
         evt = make_evt(command)
-        condition = search_common.SearchTargets("grep", grep_guards.grep_operands, search_common.targets_transcript)
+        condition = search_common.SearchTargets(grep_guards.GREP, grep_guards.grep_operands, search_common.targets_transcript)
         return condition.check_command_line(evt, evt.cmd.line)
 
     @pytest.mark.parametrize(
@@ -766,8 +766,13 @@ class TestTranscriptSteer:
 
     @pytest.mark.parametrize(
         "command",
-        ["grep needle docs/x.claude/projects-notes.md", "cat x | grep foo ~/.claude/projects/main.jsonl"],
-        ids=["lookalike", "piped-only"],
+        [
+            "grep needle docs/x.claude/projects-notes.md",
+            "cat x | grep foo ~/.claude/projects/main.jsonl",
+            f"grep -E 'landing-desk' {search_common.EXAMPLE_SESSION}/tool-results/toolu_01H.txt",
+            "grep -n lint notes.md ~/.claude/projects/p/memory/capt-hook-call-args.md 2>/dev/null | head -8",
+        ],
+        ids=["lookalike", "piped-only", "tool-result", "memory-file"],
     )
     def test_silent(self, command: str) -> None:
         assert not self.fires(command)

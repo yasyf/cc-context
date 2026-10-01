@@ -203,6 +203,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Transcript, dependency, and root-manifest guards stop blocking unrelated
+  searches and subproject manifest reads.** Transcript matching now covers
+  session and subagent transcripts and their containing directories, including
+  globs, while excluding persisted tool results, memory notes, and subagent
+  metadata. When an undeclared flag triggers fallback parsing, declared option
+  values such as `-g '!**/node_modules/**'` stay out of the search targets.
+  Bare `cat pyproject.toml` and `cat package.json` calls are blocked only when
+  the effective cwd, including any preceding `cd`, is the git toplevel.
+  Subdirectory and non-repository calls run, while the justified transcript and
+  dependency blocks from the session remain covered by regression tests.
+
 - **`ccx vcs ship` finishes a pull request restate over GraphQL when REST is
   rate limited.** GitHub can refuse the REST `PATCH` with a secondary rate
   limit while the GraphQL budget is untouched, which failed the ship after its

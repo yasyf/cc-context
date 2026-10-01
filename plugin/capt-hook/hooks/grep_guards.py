@@ -25,7 +25,9 @@ from .common import LITERAL_SAFE, ccx_supports
 from .search_common import (
     CONTEXT_OPTIONS,
     DEP_STEER,
+    EXAMPLE_SESSION,
     TRANSCRIPT_STEER,
+    TRANSCRIPT_SUFFIX,
     TRANSCRIPTS,
     GrepCall,
     SearchTargets,
@@ -348,7 +350,7 @@ def grep_tree_shaped(call: Call) -> bool:
     """
     recursive = grep_recursive(call)
     if (ops := grep_operands(call)) is None:
-        return recursive and any(p.rstrip("/") in (".", "..") for p in loose_operands(call))
+        return recursive and any(p.rstrip("/") in (".", "..") for p in loose_operands(call, GREP))
     return (recursive and not ops) or any(resolved_is_dir(p, call.cwd) for p in ops)
 
 
@@ -393,22 +395,28 @@ def grep_visit(evt: PreToolUseEvent, occ: Occurrence, ctx: WalkContext) -> str |
 
 hook(
     Event.PreToolUse,
-    only_if=[Tool("Bash"), SearchTargets("grep", grep_operands, targets_transcript)],
+    only_if=[Tool("Bash"), SearchTargets(GREP, grep_operands, targets_transcript)],
     message=TRANSCRIPT_STEER,
     block=True,
     tests={
         Input(command=f"grep -r foo {TRANSCRIPTS}/"): Block(pattern="cc-transcript"),
         Input(command=f"grep -r foo {TRANSCRIPTS}/ | head"): Block(pattern="cc-transcript"),
-        Input(command=f"grep foo {TRANSCRIPTS}/proj/session; grep -v bar ."): Block(pattern="cc-transcript"),
+        Input(command=f"grep foo {EXAMPLE_SESSION}{TRANSCRIPT_SUFFIX}; grep -v bar ."): Block(pattern="cc-transcript"),
         Input(command=f"/usr/bin/grep -r foo {TRANSCRIPTS}/"): Block(pattern="cc-transcript"),
+        Input(command=f"grep -n foo {EXAMPLE_SESSION}/subagents/agent-a1{TRANSCRIPT_SUFFIX}"): Block(
+            pattern="cc-transcript"
+        ),
+        Input(command=f"grep -r foo {EXAMPLE_SESSION}/"): Block(pattern="cc-transcript"),
         Input(command="grep -r foo ~/.claude/plugins/"): Allow(),
-        Input(command=f"cat x | grep foo {TRANSCRIPTS}/proj/session"): Allow(),
+        Input(command=f"cat x | grep foo {EXAMPLE_SESSION}{TRANSCRIPT_SUFFIX}"): Allow(),
+        Input(command=f"grep -E 'landing-desk' {EXAMPLE_SESSION}/tool-results/toolu_01H.txt"): Allow(),
+        Input(command=f"grep -n lint notes.md {TRANSCRIPTS}/-Users-me-repo/memory/capt-hook-call-args.md"): Allow(),
     },
 )
 
 hook(
     Event.PreToolUse,
-    only_if=[Tool("Bash"), SearchTargets("grep", grep_operands, targets_dependency)],
+    only_if=[Tool("Bash"), SearchTargets(GREP, grep_operands, targets_dependency)],
     message=DEP_STEER,
     block=True,
     tests={

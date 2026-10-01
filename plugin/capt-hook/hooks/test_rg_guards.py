@@ -62,9 +62,12 @@ def rg_rewrite_note(command: str) -> str:
 
 
 def dep_steer(command: str, program: str) -> bool:
-    operands = {"grep": grep_guards.grep_operands, "rg": rg_guards.rg_operands}[program]
+    schema, operands = {
+        "grep": (grep_guards.GREP, grep_guards.grep_operands),
+        "rg": (rg_guards.RG, rg_guards.rg_operands),
+    }[program]
     evt = make_evt(command)
-    condition = search_common.SearchTargets(program, operands, search_common.targets_dependency)
+    condition = search_common.SearchTargets(schema, operands, search_common.targets_dependency)
     return condition.check_command_line(evt, evt.cmd.line)
 
 
@@ -250,8 +253,19 @@ class TestDependencyDirTargets:
             ("grep -rn '.venv' README.md", "grep"),
             ("grep -rn foo . | grep -v generated", "grep"),
             ("rg -n foo . | rg -P generated", "rg"),
+            ("rg -n -l 'gpt-5.6-sol' --hidden -g '!**/node_modules/**' . | head -20", "rg"),
+            ("grep -rn --weird --exclude-dir node_modules foo src", "grep"),
         ],
-        ids=["ignored-file", "home-plugins", "home-config", "dep-lookalike-pattern", "grep-invert-filter", "rg-pcre-filter"],
+        ids=[
+            "ignored-file",
+            "home-plugins",
+            "home-config",
+            "dep-lookalike-pattern",
+            "grep-invert-filter",
+            "rg-pcre-filter",
+            "rg-exclusion-glob",
+            "grep-exclusion-dir",
+        ],
     )
     def test_non_dependency_targets_run(self, command: str, program: str) -> None:
         assert not dep_steer(command, program)

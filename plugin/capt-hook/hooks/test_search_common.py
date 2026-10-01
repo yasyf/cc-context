@@ -9,7 +9,9 @@ from pathlib import Path
 import pytest
 from captain_hook import Call, Cmd, CommandLine
 
-from hooks import search_common
+from hooks import grep_guards, rg_guards, search_common
+
+SESSION = search_common.EXAMPLE_SESSION
 
 
 @pytest.mark.parametrize(
@@ -21,8 +23,33 @@ from hooks import search_common
         ("data.jsonl", False),
         ("src/claude/projects", False),
         ("docs/x.claude/projects-notes.md", False),  # lookalike substring, not consecutive segments
+        (SESSION, True),
+        (f"{SESSION}/subagents/", True),
+        (f"{SESSION}/subagents/agent-a1.jsonl", True),
+        ("~/.claude/projects/p/*.jsonl", True),
+        (f"{SESSION}/subagents/agent-a1.meta.json", False),
+        (f"{SESSION}/tool-results/toolu_01H.txt", False),
+        (f"{SESSION}/tool-results", False),
+        ("~/.claude/projects/p/memory/flake-triage.md", False),
+        ("~/.claude/projects/p/memory", False),
     ],
-    ids=["home-jsonl", "bare-dir", "abs-nested", "plain-jsonl", "not-hidden", "substring-lookalike"],
+    ids=[
+        "home-jsonl",
+        "bare-dir",
+        "abs-nested",
+        "plain-jsonl",
+        "not-hidden",
+        "substring-lookalike",
+        "session-dir",
+        "subagents-dir",
+        "subagent-transcript",
+        "transcript-glob",
+        "subagent-meta",
+        "tool-result",
+        "tool-results-dir",
+        "memory-file",
+        "memory-dir",
+    ],
 )
 def test_is_transcript_path(path: str, expected: bool) -> None:
     assert search_common.is_transcript_path(path) is expected
@@ -175,16 +202,28 @@ def test_forfeits_count(args: tuple[str, ...], expected: bool) -> None:
     ("command", "expected"),
     [
         ("grep -rn foo src/", ["foo", "src/"]),  # tolerant: over-includes the pattern
-        ("grep -A 3 foo .", ["3", "foo", "."]),  # unknown value arity not resolved — that is fine here
+        ("grep -A 3 foo .", ["foo", "."]),
+        ("rg --hidden -g '!**/node_modules/**' -ng '!**/target/**' foo .", ["foo", "."]),
+        ("rg --hidden --weird value foo .", ["value", "foo", "."]),
         ("grep foo -- -weird.py", ["foo", "-weird.py"]),  # post `--` positionals kept
         ("grep - foo", ["-", "foo"]),  # a lone `-` (stdin) is a positional
         ("grep --recursive foo", ["foo"]),  # long flags dropped
         ("grep --include='*.go' 'a b' x", ["a b", "x"]),  # dequoted words
     ],
-    ids=["short-bundle", "value-flag", "double-dash", "stdin-dash", "long-flag", "dequoted"],
+    ids=[
+        "short-bundle",
+        "value-flag",
+        "glob-values",
+        "undeclared-value",
+        "double-dash",
+        "stdin-dash",
+        "long-flag",
+        "dequoted",
+    ],
 )
 def test_loose_operands(command: str, expected: list[str]) -> None:
-    assert search_common.loose_operands(first_call(command)) == expected
+    schema = rg_guards.RG if command.startswith("rg") else grep_guards.GREP
+    assert search_common.loose_operands(first_call(command), schema) == expected
 
 
 @pytest.mark.parametrize(

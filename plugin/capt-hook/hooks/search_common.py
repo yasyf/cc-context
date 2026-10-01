@@ -33,6 +33,10 @@ if TYPE_CHECKING:
 
 TRANSCRIPTS = "/".join(("~", ".claude", "projects"))
 
+TRANSCRIPT_SUFFIX = ".".join(("", "jsonl"))
+
+EXAMPLE_SESSION = f"{TRANSCRIPTS}/-Users-me-repo/900424b6-7393-480c-a26a-f1bd21da6e57"
+
 TRANSCRIPT_STEER = (
     "Session transcripts are searched with `cc-transcript`, never raw `grep` or `rg`. "
     "Run `cc-transcript grep '<pattern>' <transcript>`."
@@ -48,6 +52,8 @@ SEARCH_EXECUTABLES = ("rg", "grep")
 NL_PHRASE = re.compile(r"^[a-z]+(?: [a-z]+)+$")
 
 INCLUDE_SAFE = re.compile(r"^[\w*?./\[\]-]+$")
+
+SESSION_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
 DEPENDENCY_SEGMENTS = frozenset({".git", ".jj", ".hg", ".svn", ".venv", "node_modules", "site-packages", "dist-packages"})
 
@@ -169,17 +175,34 @@ def glued_value(call: Call, flags: frozenset[str]) -> bool:
     return False
 
 
-def loose_operands(call: Call) -> list[str]:
-    """Every non-option word plus everything after a bare ``--``; over-includes the pattern."""
+def loose_operands(call: Call, schema: CommandSchema) -> list[str]:
+    """Every non-option word plus everything after a bare ``--``, skipping a declared value option's value.
+
+    Over-includes the pattern and an undeclared option's value.
+    """
     out: list[str] = []
     after_separator = False
+    value_pending = False
     for word in call.command.words[1:]:
         text = word_text(word)
-        if after_separator or text == "-" or not text.startswith("-"):
+        if value_pending:
+            value_pending = False
+        elif after_separator or text == "-" or not text.startswith("-"):
             out.append(text)
         elif text == "--":
             after_separator = True
+        else:
+            value_pending = awaits_value(text, schema)
     return out
+
+
+def awaits_value(flag: str, schema: CommandSchema) -> bool:
+    """Whether an option word leaves a declared value to the next word: a long value flag, or a cluster ending in one."""
+    takes_value = {alias for option in schema.options if option.type is not bool for alias in option.flags}
+    if flag.startswith("--"):
+        return flag in takes_value
+    shorts = [f"-{letter}" for letter in flag[1:]]
+    return next((i for i, short in enumerate(shorts) if short in takes_value), None) == len(shorts) - 1
 
 
 def context_flags(arguments: Arguments) -> list[tuple[str, str]]:
@@ -208,27 +231,52 @@ class UnpipedSearch(CustomCommandLineCondition):
 
 @dataclass(frozen=True)
 class SearchTargets(CustomCommandLineCondition):
-    """Matches a line with an unpiped ``program`` call where some ``program`` call's path operands satisfy ``targets``.
+    """Matches a line with an unpiped ``schema`` program call where some such call's path operands satisfy ``targets``.
 
     Operands come from the strict binding, or :func:`loose_operands` when it stops at an unknown flag.
     """
 
-    program: str
+    schema: CommandSchema
     operands: Callable[[Call], list[str] | None]
     targets: Callable[[list[str], Path | None], bool]
 
     def check_command_line(self, evt: BaseHookEvent, cl: CommandLine) -> bool:
-        calls = evt.cmd.calls(self.program)
-        return unpiped(evt, self.program) and any(
-            self.targets(loose_operands(call) if (ops := self.operands(call)) is None else ops, call.cwd)
-            for call in calls
+        program = self.schema.program
+        return unpiped(evt, program) and any(
+            self.targets(loose_operands(call, self.schema) if (ops := self.operands(call)) is None else ops, call.cwd)
+            for call in evt.cmd.calls(program)
         )
 
 
 def is_transcript_path(p: str) -> bool:
-    """Whether a path has the consecutive segments ``.claude`` then ``projects``."""
-    segs = p.split("/")
-    return any(segs[i] == ".claude" and segs[i + 1] == "projects" for i in range(len(segs) - 1))
+    """Whether a path is a session transcript under the projects store, or a directory holding one.
+
+    The store, a project, a session, and its ``subagents`` dir hold transcripts; a ``jsonl`` file sits
+    at the session or agent level. A session's ``tool-results`` and a project's ``memory`` hold none.
+    """
+    segs = [seg for seg in p.split("/") if seg]
+    pairs = zip(segs, segs[1:])
+    if (start := next((i + 2 for i, pair in enumerate(pairs) if pair == (".claude", "projects")), None)) is None:
+        return False
+    match segs[start:]:
+        case [] | [_]:
+            return True
+        case [_, leaf]:
+            return names_transcript(leaf) or names_session(leaf)
+        case [_, session, "subagents"]:
+            return names_session(session)
+        case [_, session, "subagents", leaf]:
+            return names_session(session) and names_transcript(leaf)
+        case _:
+            return False
+
+
+def names_session(seg: str) -> bool:
+    return SESSION_ID.fullmatch(seg) is not None or any(c in seg for c in "*?[")
+
+
+def names_transcript(seg: str) -> bool:
+    return seg.endswith(TRANSCRIPT_SUFFIX) or any(c in seg for c in "*?[")
 
 
 def has_dependency_segment(p: str) -> bool:

@@ -25,7 +25,9 @@ from .common import LITERAL_SAFE, ccx_supports
 from .search_common import (
     CONTEXT_OPTIONS,
     DEP_STEER,
+    EXAMPLE_SESSION,
     TRANSCRIPT_STEER,
+    TRANSCRIPT_SUFFIX,
     TRANSCRIPTS,
     GrepCall,
     SearchTargets,
@@ -189,22 +191,33 @@ def rg_visit(evt: PreToolUseEvent, occ: Occurrence, ctx: WalkContext) -> str | R
 
 hook(
     Event.PreToolUse,
-    only_if=[Tool("Bash"), SearchTargets("rg", rg_operands, targets_transcript)],
+    only_if=[Tool("Bash"), SearchTargets(RG, rg_operands, targets_transcript)],
     message=TRANSCRIPT_STEER,
     block=True,
     tests={
         Input(command=f"rg foo {TRANSCRIPTS}/"): Block(pattern="cc-transcript"),
         Input(command=f"rg --no-ignore foo {TRANSCRIPTS}/ | head"): Block(pattern="cc-transcript"),
-        Input(command=f"rg foo {TRANSCRIPTS}/proj/session; rg -v bar ."): Block(pattern="cc-transcript"),
+        Input(command=f"rg foo {EXAMPLE_SESSION}{TRANSCRIPT_SUFFIX}; rg -v bar ."): Block(pattern="cc-transcript"),
         Input(command=f"/opt/homebrew/bin/rg foo {TRANSCRIPTS}/"): Block(pattern="cc-transcript"),
+        Input(command=f"rg -o -m 3 'Exit code' {EXAMPLE_SESSION}{TRANSCRIPT_SUFFIX} | head -3"): Block(
+            pattern="cc-transcript"
+        ),
+        Input(command=f"rg foo {TRANSCRIPTS}/proj/*/subagents/*{TRANSCRIPT_SUFFIX}"): Block(pattern="cc-transcript"),
         Input(command="rg -l x ~/.claude/plugins/"): Allow(),
-        Input(command=f"cat x | rg foo {TRANSCRIPTS}/proj/session"): Allow(),
+        Input(command=f"cat x | rg foo {EXAMPLE_SESSION}{TRANSCRIPT_SUFFIX}"): Allow(),
+        Input(command=f"rg -o '\"slug\": \"[^\"]*\"' {EXAMPLE_SESSION}/tool-results/bo61h71tu.txt"): Allow(),
+        Input(
+            command="cat >> ~/.claude/scratch/inbox/orca-desk.md <<'EOF'\n"
+            f"- R459: retro, see {EXAMPLE_SESSION}{TRANSCRIPT_SUFFIX}\n"
+            "EOF\n"
+            f'rg -n "explicitly dropped" {TRANSCRIPTS}/-Users-me-repo/memory/release-v3.md'
+        ): Allow(),
     },
 )
 
 hook(
     Event.PreToolUse,
-    only_if=[Tool("Bash"), SearchTargets("rg", rg_operands, targets_dependency)],
+    only_if=[Tool("Bash"), SearchTargets(RG, rg_operands, targets_dependency)],
     message=DEP_STEER,
     block=True,
     tests={
@@ -213,8 +226,14 @@ hook(
         Input(
             command='rg -n "class ToolUse" .venv/lib/python3.13/site-packages/cc_transcript/ -A 20 | head -40'
         ): Block(pattern="dep-reader"),
+        Input(command="rg --hidden -g '*.py' needle node_modules/express | head"): Block(pattern="dep-reader"),
         Input(command="rg -n foo . | rg -v node_modules"): Allow(),
         Input(command="rg -n foo . | rg -P node_modules"): Allow(),
+        Input(command="rg -n -l \"gpt-5.6-sol\" --hidden -g '!**/node_modules/**' . | head -20"): Allow(),
+        Input(
+            command="rg -n --no-messages -g '!**/node_modules/**' -g '!**/target/**' -e 'no_watch' "
+            "--max-count 3 cc-skills/plugins 2>/dev/null | head"
+        ): Allow(),
     },
 )
 

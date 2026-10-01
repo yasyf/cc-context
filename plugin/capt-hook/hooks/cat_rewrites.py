@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shlex
+import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -29,6 +30,8 @@ if TYPE_CHECKING:
     from cc_transcript.command import Occurrence
 
 ROOT_MANIFESTS = ("go.mod", "AGENTS.md", "CLAUDE.md", "pyproject.toml", "Taskfile.yml", "package.json")
+
+AT_ROOT = {"git -C /usr rev-parse": "/usr"}
 
 
 def is_root_manifest(path: str) -> bool:
@@ -78,9 +81,18 @@ def cat_to(evt: BaseHookEvent, occ: Occurrence) -> str | None:
     return None
 
 
+def is_git_toplevel(cwd: Path | None) -> bool:
+    if cwd is None:
+        return False
+    top = subprocess.run(["git", "-C", str(cwd), "rev-parse", "--show-toplevel"], capture_output=True, text=True)
+    return top.returncode == 0 and Path(top.stdout.strip()).resolve() == cwd.resolve()
+
+
 class ManifestCat(CustomCommandLineCondition):
     def check_command_line(self, evt: BaseHookEvent, cl: CommandLine) -> bool:
-        return not line_has_heredoc(evt) and any(is_manifest_cat(occ) for occ in cl.occurrences)
+        return not line_has_heredoc(evt) and any(
+            is_manifest_cat(call.occurrence) and is_git_toplevel(call.cwd) for call in evt.cmd.calls()
+        )
 
 
 hook(
@@ -92,17 +104,25 @@ hook(
     ),
     block=True,
     tests={
-        Input(command="cat go.mod"): Block(pattern="ccx repo overview"),
-        Input(command="cat README.md"): Block(pattern="ccx repo overview"),
-        Input(command="bat CLAUDE.md"): Block(pattern="ccx repo overview"),
-        Input(command="cat ./package.json"): Block(pattern="ccx code read"),
-        Input(command="cat go.mod; echo x"): Block(pattern="ccx repo overview"),
-        Input(command="/bin/cat go.mod"): Block(pattern="ccx repo overview"),
-        Input(command='"cat" go.mod'): Block(pattern="ccx repo overview"),
-        Input(command="sudo cat go.mod"): Allow(),
-        Input(command="cat internal/go.mod"): Allow(),
-        Input(command="cat main.go"): Allow(),
-        Input(command="cat go.mod | grep module"): Allow(),
+        Input(command="cat go.mod", cwd="/usr", commands=AT_ROOT): Block(pattern="ccx repo overview"),
+        Input(command="cat README.md", cwd="/usr", commands=AT_ROOT): Block(pattern="ccx repo overview"),
+        Input(command="bat CLAUDE.md", cwd="/usr", commands=AT_ROOT): Block(pattern="ccx repo overview"),
+        Input(command="cat ./package.json", cwd="/usr", commands=AT_ROOT): Block(pattern="ccx code read"),
+        Input(command="cat go.mod; echo x", cwd="/usr", commands=AT_ROOT): Block(pattern="ccx repo overview"),
+        Input(command="/bin/cat go.mod", cwd="/usr", commands=AT_ROOT): Block(pattern="ccx repo overview"),
+        Input(command='"cat" go.mod', cwd="/usr", commands=AT_ROOT): Block(pattern="ccx repo overview"),
+        Input(command="cd /usr && cat pyproject.toml", cwd="/", commands=AT_ROOT): Block(
+            pattern="ccx repo overview"
+        ),
+        Input(command="cd lib && cat pyproject.toml", cwd="/usr", commands=AT_ROOT): Allow(),
+        Input(command="cd bin && cat package.json", cwd="/usr", commands=AT_ROOT): Allow(),
+        Input(command="cat go.mod", cwd="/usr/lib", commands={"git -C /usr/lib rev-parse": "/usr"}): Allow(),
+        Input(command="cat go.mod", cwd="/"): Allow(),
+        Input(command="cat go.mod"): Allow(),
+        Input(command="sudo cat go.mod", cwd="/usr", commands=AT_ROOT): Allow(),
+        Input(command="cat internal/go.mod", cwd="/usr", commands=AT_ROOT): Allow(),
+        Input(command="cat main.go", cwd="/usr", commands=AT_ROOT): Allow(),
+        Input(command="cat go.mod | grep module", cwd="/usr", commands=AT_ROOT): Allow(),
         Input(
             command="ccx exec --file - <<'PY'\n"
             'async def main(): return await sh("cat go.mod")\n'
