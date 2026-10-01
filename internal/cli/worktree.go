@@ -626,8 +626,6 @@ func runWorktreeRmPath(cmd *cobra.Command, opts worktreeRmOptions) error {
 	return fmt.Errorf("worktree rm: this repository registers no worktree at %s: %w", path, ErrNotFound)
 }
 
-// worktreeThinStore is the thin store a full checkout's thin lanes are linked
-// worktrees of, so rm removes one through the registry that holds it.
 func worktreeThinStore(ctx context.Context, l lane) (lane, bool, error) {
 	if l.checkout.Kind != vcs.Git || l.checkout.MainRoot == "" {
 		return lane{}, false, nil

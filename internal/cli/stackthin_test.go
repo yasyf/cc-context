@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/yasyf/cc-context/internal/render"
+	"github.com/yasyf/cc-context/internal/vcs"
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
@@ -73,8 +74,7 @@ func thinTestHome(t *testing.T, f *vcstest.Fixture) string {
 
 func thinTestStore(t *testing.T, f *vcstest.Fixture) string {
 	t.Helper()
-	canonical := strings.ToLower(strings.TrimSuffix(strings.Trim(f.RemoteDir, "/"), ".git"))
-	sum := sha256.Sum256([]byte(canonical))
+	sum := sha256.Sum256([]byte(filepath.Clean(f.RemoteDir)))
 	return filepath.Join(thinTestHome(t, f), ".claude", "stores", hex.EncodeToString(sum[:])[:12], filepath.Base(f.Dir))
 }
 
@@ -191,11 +191,19 @@ func thinPublishedParent(t *testing.T) (*vcstest.Fixture, *stackPublication) {
 func TestThinCanonicalRemote(t *testing.T) {
 	t.Parallel()
 	tests := []struct{ raw, want string }{
-		{"git@github.com:Yasyf/cc-context.git", "github.com/yasyf/cc-context"},
+		{"git@GitHub.com:yasyf/cc-context.git", "github.com/yasyf/cc-context"},
 		{"https://github.com/yasyf/cc-context", "github.com/yasyf/cc-context"},
+		{"https://github.com:443/yasyf/cc-context", "github.com/yasyf/cc-context"},
 		{"ssh://git@github.com/yasyf/cc-context.git/", "github.com/yasyf/cc-context"},
-		{"file:///srv/git/repo.git", "srv/git/repo"},
-		{"/srv/git/repo.git", "srv/git/repo"},
+		{"ssh://git@github.com:22/yasyf/cc-context.git", "github.com/yasyf/cc-context"},
+		{"ssh://git@host:2222/team/repo.git", "host:2222/team/repo"},
+		{"ssh://git@host:2200/team/repo.git", "host:2200/team/repo"},
+		{"https://[::1]:8443/team/repo", "[::1]:8443/team/repo"},
+		{"git@host:Team/Repo.git", "host/Team/Repo"},
+		{"file:///srv/git/Repo.git", "/srv/git/Repo.git"},
+		{"/srv/git/Repo.git", "/srv/git/Repo.git"},
+		{"/srv/git/repo.git", "/srv/git/repo.git"},
+		{"/srv/git/repo", "/srv/git/repo"},
 	}
 	for _, tt := range tests {
 		got, err := thinCanonicalRemote(tt.raw)
@@ -203,7 +211,7 @@ func TestThinCanonicalRemote(t *testing.T) {
 			t.Errorf("thinCanonicalRemote(%q) = %q, %v, want %q", tt.raw, got, err, tt.want)
 		}
 	}
-	for _, raw := range []string{"relative/repo", "https://github.com/"} {
+	for _, raw := range []string{"relative/repo", "https://github.com/", "file://relative/repo"} {
 		if got, err := thinCanonicalRemote(raw); err == nil {
 			t.Errorf("thinCanonicalRemote(%q) = %q, want an error", raw, got)
 		}
@@ -731,4 +739,95 @@ func thinFootprint(t *testing.T, f *vcstest.Fixture, dir string) (int, int) {
 		stats[key] = n
 	}
 	return stats["count"] + stats["in-pack"], stats["size"] + stats["size-pack"]
+}
+
+func TestThinIsStoreRequiresTheDerivedPath(t *testing.T) {
+	t.Parallel()
+	f := thinRepo(t)
+	thinGrowTrunk(t, f, 6)
+	store := thinTestStore(t, f)
+	_, lane := thinNew(t, f, f.Dir, "lane1", "--thin", "--depth", strconv.Itoa(thinTestDepth))
+	decoy := filepath.Join(filepath.Dir(filepath.Dir(store)), "0123456789ab", filepath.Base(store))
+	mustRun(t, f.Env(), filepath.Dir(store), "git", "clone", "-q", "--no-local", f.RemoteDir, decoy)
+	head := gitAt(t, f.Env(), decoy, "rev-parse", "HEAD")
+	for _, tt := range []struct {
+		dir  string
+		want bool
+	}{{store, true}, {lane, true}, {decoy, false}, {f.Dir, false}} {
+		ck, err := vcs.ResolveCheckout(tt.dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, err := thinIsStore(f.ContextIn(tt.dir), ck); err != nil || got != tt.want {
+			t.Errorf("thinIsStore(%s) = %v, %v, want %v", tt.dir, got, err, tt.want)
+		}
+	}
+	if err := thinRecordPush(f.ContextIn(decoy), render.Dir(decoy), "origin", map[string]string{"decoy": head}); err != nil {
+		t.Fatal(err)
+	}
+	if present, err := gitRefExists(f.ContextIn(decoy), render.Dir(decoy), "test", "refs/remotes/origin/decoy"); err != nil || present {
+		t.Errorf("push tracking wrote into a checkout that only sits where a store would: %v %v", present, err)
+	}
+}
+
+func TestThinHistoryProbesPropagateFailures(t *testing.T) {
+	t.Parallel()
+	f := thinRepo(t)
+	thinGrowTrunk(t, f, 6)
+	store := thinTestStore(t, f)
+	thinNew(t, f, f.Dir, "lane1", "--thin", "--depth", strconv.Itoa(thinTestDepth))
+	ctx, dir := f.ContextIn(store), render.Dir(store)
+	if ok, err := thinReachable(ctx, dir, strings.Repeat("0", 40), "refs/remotes/origin/main"); err != nil || ok {
+		t.Errorf("absent commit = %v, %v, want unreachable without error", ok, err)
+	}
+	tree := gitAt(t, f.Env(), store, "rev-parse", "HEAD^{tree}")
+	if _, err := thinReachable(ctx, dir, tree, "refs/remotes/origin/main"); err == nil {
+		t.Error("a tree passed for a commit was taken as unreachable, want an error")
+	}
+	notRepo := t.TempDir()
+	if _, err := thinReachable(f.ContextIn(notRepo), render.Dir(notRepo), strings.Repeat("0", 40), "HEAD"); err == nil {
+		t.Error("a failing cat-file was taken as an absent commit, want an error")
+	}
+	shallow, err := stackShallowSet(filepath.Join(store, ".git"))
+	if err != nil || len(shallow) == 0 {
+		t.Fatalf("shallow set = %v, %v", shallow, err)
+	}
+	if _, err := stackRangeWhole(ctx, dir, shallow, "refs/heads/no-such-branch"); err == nil {
+		t.Error("a failing rev-list was taken as a cut range, want an error")
+	}
+	err = stackRequireHistory(ctx, dir, "test", "origin", "main", map[string]string{"ghost": "refs/heads/no-such-branch"})
+	if err == nil || strings.Contains(err.Error(), "shallow boundary") {
+		t.Errorf("a failing merge-base = %v, want the git failure, not a history refusal", err)
+	}
+}
+
+func TestStackNewThinRefusesADivergentSameNamedParent(t *testing.T) {
+	t.Parallel()
+	f := thinRepo(t, "p")
+	thinGrowTrunk(t, f, 6)
+	store := thinTestStore(t, f)
+	_, native := thinNew(t, f, f.Dir, "p", "--thin", "--depth", strconv.Itoa(thinTestDepth), "--parent", "main")
+	thinCommit(t, f, native, "native.txt", "store's own p\n")
+	source, storeHead := gitAt(t, f.Env(), f.Dir, "rev-parse", "p"), gitAt(t, f.Env(), store, "rev-parse", "p")
+	if source == storeHead {
+		t.Fatal("fixture needs the source and store p to differ")
+	}
+	storeRefs, sourceRefs := thinRefs(t, f, store), thinRefs(t, f, f.Dir)
+
+	_, _, err := runStackCmd(t, f, "new", "child", "--thin")
+	if err == nil || !strings.Contains(err.Error(), "has its own p at "+shortOID(storeHead)) || !strings.Contains(err.Error(), "at "+shortOID(source)) {
+		t.Fatalf("stack new = %v, want the divergent same-named parent refused", err)
+	}
+	if got := thinRefs(t, f, store); got != storeRefs {
+		t.Errorf("refusal moved store refs:\n%s\n→\n%s", storeRefs, got)
+	}
+	if got := thinRefs(t, f, f.Dir); got != sourceRefs {
+		t.Errorf("refusal moved source refs")
+	}
+	if _, err := os.Stat(thinTestLane(t, f, "child")); !os.IsNotExist(err) {
+		t.Errorf("refusal left a lane: %v", err)
+	}
+	if out, lane := thinNew(t, f, native, "child"); gitAt(t, f.Env(), lane, "rev-parse", "HEAD") != gitAt(t, f.Env(), store, "rev-parse", "p") {
+		t.Errorf("child cut from the store's own p = %q, want it on the store's p", out)
+	}
 }

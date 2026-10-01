@@ -3549,8 +3549,6 @@ const (
 	stackResumeAdvice = "resume the run with ccx vcs stack continue, or drop it with ccx vcs stack abort"
 )
 
-// stackCheckHolders takes the advice its refusal ends on: a refusal before a run
-// exists is retried, and one inside a run the state already records is resumed.
 func stackCheckHolders(ctx context.Context, origin string, movers []string, holders map[string]string, advice string) error {
 	for _, branch := range movers {
 		if holder := holders[branch]; holder != "" && holder != origin {

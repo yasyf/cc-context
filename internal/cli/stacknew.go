@@ -240,9 +240,6 @@ func stackNewPinned(receipts ...*stackPublication) string {
 	return ""
 }
 
-// stackThinParent returns the receipt a parent outside the store is adopted
-// from, verified against the source checkout and the remote, or nil for trunk
-// and for a branch the store holds as its own.
 func stackThinParent(ctx context.Context, src, store lane, parent, trunk string, options stackNewOpts) (*stackPublication, error) {
 	if parent == trunk {
 		return nil, nil
@@ -256,7 +253,7 @@ func stackThinParent(ctx context.Context, src, store lane, parent, trunk string,
 		return nil, err
 	}
 	if present && !adopted {
-		return nil, nil
+		return nil, stackThinSameParent(ctx, src, store, parent)
 	}
 	if !options.published {
 		return nil, fmt.Errorf("stack new: %s lives outside thin store %s; pass --published-parent to bring its publication in, or create the lane with --full-history", parent, store.root)
@@ -277,9 +274,26 @@ func stackThinParent(ctx context.Context, src, store lane, parent, trunk string,
 	return receipt, nil
 }
 
-// stackFinishAdopted tracks a lane onto the parent the store adopted, then
-// re-verifies that parent's publication against the source checkout it came
-// from, the one place a newer publication of it would show.
+func stackThinSameParent(ctx context.Context, src, store lane, parent string) error {
+	ref := gtRestackRef(parent)
+	inSource, err := gitRefExists(ctx, src.dir(), "stack new", ref)
+	if err != nil || !inSource {
+		return err
+	}
+	want, err := stackRevParse(ctx, src.dir(), ref)
+	if err != nil {
+		return err
+	}
+	got, err := stackRevParse(ctx, store.dir(), ref)
+	if err != nil {
+		return err
+	}
+	if got != want {
+		return fmt.Errorf("stack new: thin store %s has its own %s at %s, but %s here is at %s; nothing changed — cut the lane from the store's checkout of %s, or create it with --full-history", store.root, parent, shortOID(got), parent, shortOID(want), parent)
+	}
+	return nil
+}
+
 func stackFinishAdopted(ctx context.Context, errW io.Writer, src, store lane, created render.Dir, path, name string, receipt *stackPublication) error {
 	if err := stackFormLane(ctx, errW, store, created, name, receipt.Branch); err != nil {
 		return stackUndoNew(ctx, store, path, name, receipt.Branch, err)
@@ -428,8 +442,6 @@ func stackReadSparse(ctx context.Context, dir render.Dir) (stackSparse, error) {
 	return sparse, nil
 }
 
-// stackThinSparse is the caller's per-worktree sparse set when it has one, and
-// root files alone otherwise: a thin lane is always sparse.
 func stackThinSparse(ctx context.Context, dir render.Dir) (stackSparse, error) {
 	sparse, active, err := stackActiveSparse(ctx, dir)
 	if err != nil || active {

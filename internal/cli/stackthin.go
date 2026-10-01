@@ -9,9 +9,9 @@ import (
 	"io"
 	"io/fs"
 	"maps"
+	"net"
 	"net/url"
 	"os"
-	"path"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -35,6 +35,7 @@ const (
 var (
 	thinStoreConfig    = []string{"feature.experimental=true", "feature.manyFiles=true", "pack.threads=2"}
 	thinMirroredConfig = []string{"user.name", "user.email", "user.signingkey", "commit.gpgsign", nogtKey}
+	thinDefaultPorts   = map[string]string{"ssh": "22", "git+ssh": "22", "ssh+git": "22", "git": "9418", "http": "80", "https": "443"}
 )
 
 type stackStorage int
@@ -68,8 +69,6 @@ type thinSource struct {
 	trunk     string
 }
 
-// thinSourceOf reads trunk off the graphite repo config rather than gt state,
-// which adopts orphan rows and leaves gt's refresher running git in the source.
 func thinSourceOf(ctx context.Context, src lane) (thinSource, error) {
 	remote, err := vcs.GitRemoteFor(ctx, src.dir(), "HEAD")
 	if err != nil {
@@ -98,31 +97,43 @@ func thinSourceOf(ctx context.Context, src lane) (thinSource, error) {
 }
 
 func thinCanonicalRemote(raw string) (string, error) {
-	var host, p string
 	switch {
+	case filepath.IsAbs(raw):
+		return filepath.Clean(raw), nil
 	case strings.Contains(raw, "://"):
 		u, err := url.Parse(raw)
 		if err != nil {
 			return "", fmt.Errorf("parse remote %q: %w", raw, err)
 		}
-		host, p = u.Hostname(), u.Path
-	case filepath.IsAbs(raw):
-		p = raw
+		if u.Scheme == "file" {
+			if u.Host != "" && u.Host != "localhost" || !filepath.IsAbs(u.Path) {
+				return "", fmt.Errorf("remote %q names no absolute path", raw)
+			}
+			return filepath.Clean(u.Path), nil
+		}
+		host := strings.ToLower(u.Hostname())
+		if port := u.Port(); port != "" && port != thinDefaultPorts[u.Scheme] {
+			host = net.JoinHostPort(host, port)
+		}
+		return thinHostedRemote(raw, host, u.Path)
 	default:
-		var ok bool
-		host, p, ok = strings.Cut(raw, ":")
+		host, p, ok := strings.Cut(raw, ":")
 		if !ok {
 			return "", fmt.Errorf("remote %q is neither a URL, an scp-style address, nor an absolute path", raw)
 		}
 		if _, after, found := strings.Cut(host, "@"); found {
 			host = after
 		}
+		return thinHostedRemote(raw, strings.ToLower(host), p)
 	}
+}
+
+func thinHostedRemote(raw, host, p string) (string, error) {
 	p = strings.TrimSuffix(strings.Trim(p, "/"), ".git")
-	if p == "" {
+	if host == "" || p == "" {
 		return "", fmt.Errorf("remote %q names no repository", raw)
 	}
-	return strings.ToLower(path.Join(host, p)), nil
+	return host + "/" + p, nil
 }
 
 func thinStoresRoot(ctx context.Context) (string, error) {
@@ -136,18 +147,16 @@ func thinStoresRoot(ctx context.Context) (string, error) {
 	return filepath.Join(home, ".claude", "stores"), nil
 }
 
-// thinStorePath keeps the source's basename last so mintWorktreePath mints the
-// store's lanes into the repository's existing pool.
-func thinStorePath(ctx context.Context, src vcs.Checkout, canonical string) (string, error) {
-	if src.MainRoot == "" {
-		return "", fmt.Errorf("stack new: %s has no main working copy to name a thin store after", src.Root)
+func thinStorePath(ctx context.Context, mainRoot, canonical string) (string, error) {
+	if mainRoot == "" {
+		return "", errors.New("stack new: no main working copy to name a thin store after")
 	}
 	root, err := thinStoresRoot(ctx)
 	if err != nil {
 		return "", fmt.Errorf("stack new: %w", err)
 	}
 	sum := sha256.Sum256([]byte(canonical))
-	return filepath.Join(root, hex.EncodeToString(sum[:])[:12], filepath.Base(src.MainRoot)), nil
+	return filepath.Join(root, hex.EncodeToString(sum[:])[:12], filepath.Base(mainRoot)), nil
 }
 
 func thinIsStore(ctx context.Context, c vcs.Checkout) (bool, error) {
@@ -163,11 +172,18 @@ func thinIsStore(ctx context.Context, c vcs.Checkout) (bool, error) {
 		return false, err
 	}
 	parts := strings.Split(rel, string(filepath.Separator))
-	return len(parts) == 3 && parts[0] != ".." && parts[2] == ".git", nil
+	if len(parts) != 3 || parts[0] == ".." || parts[2] != ".git" {
+		return false, nil
+	}
+	store := filepath.Dir(c.CommonDir)
+	canonical, ok, err := thinRemoteOf(ctx, render.Dir(store), thinRemote)
+	if err != nil || !ok {
+		return false, err
+	}
+	want, err := thinStorePath(ctx, store, canonical)
+	return want == store, err
 }
 
-// thinStoreOf finds src's thin store by its remote alone: a checkout with no
-// remote, or a remote no store was cut from, has none.
 func thinStoreOf(ctx context.Context, prefix string, src lane) (lane, bool, error) {
 	remote, err := vcs.GitRemoteFor(ctx, src.dir(), "HEAD")
 	if err != nil {
@@ -177,7 +193,7 @@ func thinStoreOf(ctx context.Context, prefix string, src lane) (lane, bool, erro
 	if err != nil || !ok {
 		return lane{}, false, err
 	}
-	root, err := thinStorePath(ctx, src.checkout, canonical)
+	root, err := thinStorePath(ctx, src.checkout.MainRoot, canonical)
 	if err != nil {
 		return lane{}, false, err
 	}
@@ -212,7 +228,7 @@ func thinRemoteOf(ctx context.Context, dir render.Dir, remote string) (string, b
 }
 
 func thinEnsureStore(ctx context.Context, errW io.Writer, src lane, s thinSource, o stackNewOpts) (lane, bool, error) {
-	root, err := thinStorePath(ctx, src.checkout, s.canonical)
+	root, err := thinStorePath(ctx, src.checkout.MainRoot, s.canonical)
 	if err != nil {
 		return lane{}, false, err
 	}
@@ -248,9 +264,6 @@ func thinEnsureStore(ctx context.Context, errW io.Writer, src lane, s thinSource
 	return store, created, nil
 }
 
-// thinCreateStore clones into a sibling staging dir and renames it into place:
-// two lanes creating the store at once need no lock, and the rename that loses
-// drops its copy and reports it created nothing.
 func thinCreateStore(ctx context.Context, src lane, s thinSource, root string, depth int) (bool, error) {
 	parent := filepath.Dir(root)
 	if err := os.MkdirAll(parent, 0o750); err != nil {
@@ -322,9 +335,6 @@ func thinPrepareStore(ctx context.Context, src lane, s thinSource, dir render.Di
 	return nil
 }
 
-// thinVerifyStore never requires a shallow file: git writes none when history is
-// shorter than the depth, and drops it once a deepen reaches the root. The
-// promisor keys still catch a local-path clone that skipped the transport.
 func thinVerifyStore(ctx context.Context, root string, s thinSource) error {
 	out, err := render.RunCLI(ctx, render.Dir(root), "git", []string{"config", "--get-regexp", `^remote\.` + thinRemote + `\.`})
 	if err != nil {
@@ -452,8 +462,6 @@ func thinAdopt(ctx context.Context, src, store lane, receipt *stackPublication, 
 	return deepened, thinCopyReceipt(ctx, src, store, receipt)
 }
 
-// thinDeepen grows the store with --deepen only: --depth on an existing shallow
-// repository can mark commits other lanes stand on as boundaries, hiding history.
 func thinDeepen(ctx context.Context, store lane, trunk, base string, o stackNewOpts) (int, error) {
 	total := 0
 	for step := o.depth; ; step *= 2 {
@@ -493,14 +501,17 @@ func thinFetchDeepen(ctx context.Context, store lane, trunk string, step int) er
 	}
 }
 
-// thinReachable never lazy-fetches: in a partial clone, looking up a missing
-// commit downloads its whole history.
 func thinReachable(ctx context.Context, dir render.Dir, commit, rev string) (bool, error) {
-	_, code, _, err := render.RunCLIExitCodeEnv(ctx, dir, "git", []string{"cat-file", "-e", commit + "^{commit}"}, gitRecordedHistoryEnv)
-	if err != nil || code != 0 {
+	_, code, stderr, err := render.RunCLIExitCodeEnv(ctx, dir, "git", []string{"cat-file", "-e", commit}, gitRecordedHistoryEnv)
+	switch {
+	case err != nil:
 		return false, err
+	case code == 1:
+		return false, nil
+	case code != 0:
+		return false, fmt.Errorf("git cat-file -e %s: exit %d: %s", shortOID(commit), code, strings.TrimSpace(stderr))
 	}
-	_, code, stderr, err := render.RunCLIExitCodeEnv(ctx, dir, "git", []string{"merge-base", "--is-ancestor", commit, rev}, gitRecordedHistoryEnv)
+	_, code, stderr, err = render.RunCLIExitCodeEnv(ctx, dir, "git", []string{"merge-base", "--is-ancestor", commit, rev}, gitRecordedHistoryEnv)
 	switch {
 	case err != nil:
 		return false, err
@@ -591,9 +602,12 @@ func stackShallowSet(commonDir string) (map[string]bool, error) {
 }
 
 func stackRangeWhole(ctx context.Context, dir render.Dir, shallow map[string]bool, revs ...string) (bool, error) {
-	out, code, _, err := render.RunCLIExitCodeEnv(ctx, dir, "git", append([]string{"rev-list"}, revs...), gitRecordedHistoryEnv)
-	if err != nil || code != 0 {
+	out, code, stderr, err := render.RunCLIExitCodeEnv(ctx, dir, "git", append([]string{"rev-list"}, revs...), gitRecordedHistoryEnv)
+	if err != nil {
 		return false, err
+	}
+	if code != 0 {
+		return false, fmt.Errorf("git rev-list %s: exit %d: %s", strings.Join(revs, " "), code, strings.TrimSpace(stderr))
 	}
 	for _, sha := range strings.Fields(out) {
 		if shallow[sha] {
@@ -603,8 +617,6 @@ func stackRangeWhole(ctx context.Context, dir render.Dir, shallow map[string]boo
 	return true, nil
 }
 
-// stackRequireHistory walks only each head's own commits, so a side branch cut
-// deep in trunk's merge history refuses nothing.
 func stackRequireHistory(ctx context.Context, dir render.Dir, prefix, remote, trunk string, heads map[string]string) error {
 	ck, err := vcs.ResolveCheckout(string(dir))
 	if err != nil {
@@ -619,9 +631,12 @@ func stackRequireHistory(ctx context.Context, dir render.Dir, prefix, remote, tr
 		if heads[name] == "" {
 			continue
 		}
-		_, code, _, err := render.RunCLIExitCodeEnv(ctx, dir, "git", []string{"merge-base", heads[name], trunkRef}, gitRecordedHistoryEnv)
+		_, code, stderr, err := render.RunCLIExitCodeEnv(ctx, dir, "git", []string{"merge-base", heads[name], trunkRef}, gitRecordedHistoryEnv)
 		if err != nil {
 			return err
+		}
+		if code > 1 {
+			return fmt.Errorf("%s: git merge-base %s %s: exit %d: %s", prefix, heads[name], trunkRef, code, strings.TrimSpace(stderr))
 		}
 		whole := code == 0
 		if whole {
@@ -636,9 +651,6 @@ func stackRequireHistory(ctx context.Context, dir render.Dir, prefix, remote, tr
 	return nil
 }
 
-// thinRecordPush writes the remote-tracking refs a push from a thin store leaves
-// none of, since its trunk-only refspec maps no lane branch, with the reflog
-// entry git writes for a mapped ref, so leases and gtPushedHere read it.
 func thinRecordPush(ctx context.Context, dir render.Dir, remote string, pushed map[string]string) error {
 	if len(pushed) == 0 {
 		return nil
