@@ -755,7 +755,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	if err != nil {
 		return nil, err
 	}
-	left = append(otherLanes, left...)
+	left = slices.Concat(otherLanes, left)
 	pin, err := gtTrunkHead(ctx, l.dir(), prefix, tr)
 	if err != nil {
 		return nil, err
