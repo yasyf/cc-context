@@ -140,9 +140,9 @@ func parked(job *cleanup.Job, detail string) string {
 	)
 }
 
-func (r *Relocator) held(ctx context.Context, tree string) string {
+func (r *Relocator) held(ctx context.Context, job *cleanup.Job, tree string) string {
 	err := r.cfg.Guard(ctx, tree)
-	if err == nil {
+	if err == nil || r.excused(ctx, job, tree, err) {
 		return ""
 	}
 	var active *cleanup.ActiveError
@@ -225,7 +225,7 @@ func (r *Relocator) Advance(ctx context.Context, job *cleanup.Job) error {
 }
 
 func (r *Relocator) release(ctx context.Context, job *cleanup.Job, vetted *bool) (bool, error) {
-	if err := r.unretired(ctx, job.Original); err != nil {
+	if err := r.unretired(ctx, job); err != nil {
 		var active *cleanup.ActiveError
 		if !errors.As(err, &active) {
 			if tree, sightErr := sight(job.Original); sightErr == nil && !tree.exists {
@@ -333,7 +333,7 @@ func (r *Relocator) move(ctx context.Context, job *cleanup.Job, vetted *bool) (r
 	if reason, detail := r.unlisted(ctx, job, vetted, "quarantine", r.cfg.Watchers.CheckQuarantine(ctx, r.cfg.Journal.Layout().JobDir(job.ID))); reason != "" {
 		return reason, detail
 	}
-	if holders := r.held(ctx, job.Original); holders != "" {
+	if holders := r.held(ctx, job, job.Original); holders != "" {
 		return "activity", holders
 	}
 	if reason, detail := r.vet(ctx, job, job.Original, vetted); reason != "" {
@@ -377,7 +377,7 @@ func (r *Relocator) unlisted(ctx context.Context, job *cleanup.Job, vetted *bool
 	switch {
 	case err == nil:
 		return "", ""
-	case !errors.Is(err, cleanup.ErrUnlisted):
+	case !errors.Is(err, cleanup.ErrUnprobed):
 		return reason, err.Error()
 	}
 	pushed, pushErr := r.pushed(ctx, job.Git, job.Repo, job.Branch, job.Head)
@@ -390,6 +390,21 @@ func (r *Relocator) unlisted(ctx context.Context, job *cleanup.Job, vetted *bool
 	*vetted = false
 	slog.Warn("cleanup: moving a pushed tree whose watchers could not be listed", "job", job.ID, "tree", job.Original, "check", reason, "error", err)
 	return "", ""
+}
+
+func (r *Relocator) excused(ctx context.Context, job *cleanup.Job, tree string, err error) bool {
+	var active *cleanup.ActiveError
+	if !errors.Is(err, cleanup.ErrUnprobed) || errors.As(err, &active) {
+		return false
+	}
+	if dirt, dirtErr := r.dirt(ctx, job.Git, tree); dirtErr != nil || dirt != "" {
+		return false
+	}
+	if pushed, pushErr := r.pushed(ctx, job.Git, job.Repo, job.Branch, job.Head); pushErr != nil || !pushed {
+		return false
+	}
+	slog.Warn("cleanup: treating a clean, pushed tree as idle past a failed probe", "job", job.ID, "tree", tree, "error", err)
+	return true
 }
 
 func settleLinks(job *cleanup.Job, expected cleanup.Links) error {
@@ -446,7 +461,7 @@ func (r *Relocator) detach(ctx context.Context, job *cleanup.Job, vetted *bool) 
 	if head != job.Head {
 		return r.block(ctx, job, "identity", headChanged(job, job.Registered, head))
 	}
-	if holders := r.held(ctx, job.Registered); holders != "" {
+	if holders := r.held(ctx, job, job.Registered); holders != "" {
 		return r.block(ctx, job, "activity", parked(job, holders))
 	}
 	if reason, detail := r.vet(ctx, job, job.Registered, vetted); reason != "" {

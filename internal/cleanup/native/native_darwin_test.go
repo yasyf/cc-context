@@ -367,27 +367,27 @@ type staged struct {
 	parent     uint32
 	identities []unix.Errno
 	starts     []uint64
-	micros    []uint64
-	reads     int
-	effective uint32
-	actual    uint32
-	terminal  uint32
-	cwd       *vnodeInfoPath
-	open      *vnodeInfoPath
-	denied    unix.Errno
-	vnode     *vnodeInfoPath
-	opaque    unix.Errno
-	repeated  bool
-	beside    *vnodeInfoPath
-	unlisted  unix.Errno
-	programs  []string
-	located   int
-	unlocated unix.Errno
-	mount     string
-	volume    uint32
-	unmounted unix.Errno
-	signing   uint32
-	unsigned  unix.Errno
+	micros     []uint64
+	reads      int
+	effective  uint32
+	actual     uint32
+	terminal   uint32
+	cwd        *vnodeInfoPath
+	open       *vnodeInfoPath
+	denied     unix.Errno
+	vnode      *vnodeInfoPath
+	opaque     unix.Errno
+	repeated   bool
+	beside     *vnodeInfoPath
+	unlisted   unix.Errno
+	programs   []string
+	located    int
+	unlocated  unix.Errno
+	mount      string
+	volume     uint32
+	unmounted  unix.Errno
+	signing    uint32
+	unsigned   unix.Errno
 }
 
 func agent(program string, started uint64) staged {
@@ -1654,5 +1654,20 @@ func TestBackground(t *testing.T) {
 	}
 	if after := scheduling(t); after != before {
 		t.Errorf("the test process itself changed: %s, was %s", after, before)
+	}
+}
+
+func TestVerdictReportsUnreadArgumentsOnlyWithoutHolders(t *testing.T) {
+	holder := cleanup.Holder{PID: 7, Name: "vim", Evidence: cleanup.EvidenceCwd, Path: "/wt"}
+	unread := []string{"native: inspect pid 97627 (binrun): read its arguments: input/output error"}
+	var active *cleanup.ActiveError
+	if err := verdict("/wt", []cleanup.Holder{holder}, unread); !errors.As(err, &active) || errors.Is(err, cleanup.ErrUnprobed) {
+		t.Errorf("verdict with a holder = %v, want the holder alone", err)
+	}
+	if err := verdict("/wt", nil, unread); !errors.Is(err, cleanup.ErrUnprobed) || !strings.Contains(err.Error(), "pid 97627") {
+		t.Errorf("verdict with only unread arguments = %v, want cleanup.ErrUnprobed naming pid 97627", err)
+	}
+	if err := verdict("/wt", nil, nil); err != nil {
+		t.Errorf("verdict with nothing = %v, want nil", err)
 	}
 }

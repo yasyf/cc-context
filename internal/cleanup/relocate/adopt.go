@@ -341,7 +341,7 @@ func (r *Relocator) vouch(ctx context.Context, job *cleanup.Job) (reason, detail
 			return "quarantine", err.Error()
 		}
 	}
-	if holders := r.held(ctx, job.Source); holders != "" {
+	if holders := r.held(ctx, job, job.Source); holders != "" {
 		return "activity", holders
 	}
 	tree, err := sight(job.Source)

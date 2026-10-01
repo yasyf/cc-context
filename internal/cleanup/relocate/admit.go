@@ -54,7 +54,7 @@ func (r *Relocator) admission(ctx context.Context, job *cleanup.Job) (reason, de
 	if err := r.cfg.Watchers.CheckQuarantine(ctx, r.cfg.Journal.Layout().JobDir(job.ID)); err != nil {
 		return "quarantine", err.Error()
 	}
-	if holders := r.held(ctx, job.Payload); holders != "" {
+	if holders := r.held(ctx, job, job.Payload); holders != "" {
 		return "activity", holders
 	}
 	return "", ""

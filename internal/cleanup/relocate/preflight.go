@@ -274,16 +274,19 @@ func (r *Relocator) retiring(ctx context.Context, tree string) ([]cleanup.Proces
 	return watchers, nil
 }
 
-func (r *Relocator) unretired(ctx context.Context, tree string) error {
-	watchers, err := r.retiring(ctx, tree)
+func (r *Relocator) unretired(ctx context.Context, job *cleanup.Job) error {
+	watchers, err := r.retiring(ctx, job.Original)
 	switch {
-	case errors.Is(err, cleanup.ErrUnlisted):
-		slog.Warn("cleanup: guarding a tree whose watchers could not be listed", "tree", tree, "error", err)
-		return r.cfg.Guard(ctx, tree)
+	case errors.Is(err, cleanup.ErrUnprobed):
+		slog.Warn("cleanup: guarding a tree whose watchers could not be listed", "tree", job.Original, "error", err)
 	case err != nil:
 		return err
 	}
-	return r.cfg.Guard(cleanup.WithRetiring(ctx, watchers), tree)
+	err = r.cfg.Guard(cleanup.WithRetiring(ctx, watchers), job.Original)
+	if err != nil && r.excused(ctx, job, job.Original, err) {
+		return nil
+	}
+	return err
 }
 
 func idle(tree string, err error) error {
@@ -331,10 +334,10 @@ func (r *Relocator) preflight(ctx context.Context, req cleanup.Request) (cleanup
 			return cleanup.Job{}, refuse(job.Original, "dirty", "%s", dirt)
 		}
 	}
-	if err := idle(job.Original, r.unretired(ctx, job.Original)); err != nil {
+	if err := r.capture(ctx, &job); err != nil {
 		return cleanup.Job{}, err
 	}
-	if err := r.capture(ctx, &job); err != nil {
+	if err := idle(job.Original, r.unretired(ctx, &job)); err != nil {
 		return cleanup.Job{}, err
 	}
 	return job, nil

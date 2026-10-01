@@ -21,9 +21,10 @@ var (
 	ErrUnknownJob = errors.New("cleanup: no such job")
 	// ErrIdentity reports a file that is not the one a job captured.
 	ErrIdentity = errors.New("cleanup: identity mismatch")
-	// ErrUnlisted reports a process listing that timed out, so the watchers
-	// of a tree could be neither named nor ruled out.
-	ErrUnlisted = errors.New("cleanup: the process listing timed out")
+	// ErrUnprobed reports a process or watcher probe that timed out or could
+	// not read a process, so what holds a tree could be neither named nor
+	// ruled out.
+	ErrUnprobed = errors.New("cleanup: a process or watcher probe failed")
 )
 
 // Request asks for one registered linked worktree to be removed now.

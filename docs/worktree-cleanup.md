@@ -95,9 +95,10 @@ Watcher retirement belongs to removal of an authorized unused tree. It checks
 current consumers, processes, and terminal activity, removes only roots inside
 that tree, and verifies removal. Git fsmonitor ownership comes from its socket
 and metadata; a process working directory alone is insufficient evidence.
-When the process listing times out, retirement is skipped with a warning: the
-tree is removed only if a remote-tracking ref holds its head, and the activity
-guard still checks it without discounting any watcher.
+When a process or Watchman probe times out, or the activity guard cannot read
+a process's arguments, the failure is a warning: the tree is removed only if it
+has no uncommitted changes and a remote-tracking ref holds its head, and the
+activity guard still refuses any holder it finds.
 
 Scope watcher configuration changes to the authorized unused trees too.
 Applying settings to an existing root requires checking that it is idle before
