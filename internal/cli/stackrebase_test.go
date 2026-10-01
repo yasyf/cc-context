@@ -1261,6 +1261,36 @@ func TestStackRebaseTakesARemoteThatIsAhead(t *testing.T) {
 	}
 }
 
+func TestStackRebaseMovesAnUnheldSourceWhosePublishedHeadCarriesOtherChanges(t *testing.T) {
+	t.Parallel()
+	f := stackRebaseRepo(t, "base", "feature")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "feature")
+	clone := filepath.Join(t.TempDir(), "other")
+	mustRun(t, f.Env(), filepath.Dir(clone), "git", "clone", "-q", "--branch", "base", f.RemoteDir, clone)
+	writeShipFile(t, clone, "more.txt", "more\n")
+	mustRun(t, f.Env(), clone, "git", "add", "more.txt")
+	mustRun(t, f.Env(), clone, "git", "-c", "user.email=t@t.t", "-c", "user.name=t", "commit", "-qm", "more")
+	mustRun(t, f.Env(), clone, "git", "push", "-q", "origin", "base")
+	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	shipResetLog(t, f)
+
+	out, _, err := runStackCmd(t, f, "rebase")
+	if err != nil {
+		t.Fatalf("stack rebase: %v", err)
+	}
+	if !strings.Contains(out, "moved base, feature onto the published heads") {
+		t.Errorf("output = %q, want base and feature moved", out)
+	}
+	for _, branch := range []string{"base", "feature"} {
+		if local, remote := gitAt(t, f.Env(), f.Dir, "rev-parse", branch), gitAt(t, f.Env(), f.RemoteDir, "rev-parse", branch); local != remote {
+			t.Errorf("local %s = %s, want its published head %s", branch, local, remote)
+		}
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "show", "base:more.txt"); got != "more" {
+		t.Errorf("local base lacks the remote's commit: more.txt = %q", got)
+	}
+}
+
 func TestStackRebaseDryRunMovesNothing(t *testing.T) {
 	t.Parallel()
 	f := stackRebaseRepo(t, "base", "feature")
