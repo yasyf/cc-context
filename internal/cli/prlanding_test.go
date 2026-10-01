@@ -2,7 +2,12 @@ package cli
 
 import (
 	"encoding/json"
+	"maps"
+	"slices"
 	"testing"
+
+	"github.com/yasyf/cc-context/internal/render"
+	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
 // The four shapes GitHub answers a landing question with. The merged one is
@@ -104,6 +109,25 @@ func TestPRSquashSubject(t *testing.T) {
 		if got := pattern.MatchString(subject); got != want {
 			t.Errorf("prSquashSubject(20486) on %q = %t, want %t", subject, got, want)
 		}
+	}
+}
+
+// TestPRSquashesOnBase pins the one read of base's history that answers every
+// queue close at once: only a subject ending in the number cites it, so a longer
+// number, a mid-subject cross-reference, and an unfetched base cite nothing.
+func TestPRSquashesOnBase(t *testing.T) {
+	f := vcstest.Repo(t, vcstest.Remote())
+	restackSquashRemote(t, f, "main", "ci: 🔧 keep the bake pinned (#20486)", "bake")
+	restackSquashRemote(t, f, "main", "ci: 🔧 revert of (#30) on a branch", "revert")
+	restackSquashRemote(t, f, "main", "api: 🐛 a longer one (#204861)", "longer")
+	gitAt(t, f.Env(), f.Dir, "fetch", "-q", "origin")
+
+	got := slices.Sorted(maps.Keys(prSquashesOnBase(t.Context(), render.Dir(f.Dir), "main")))
+	if !slices.Equal(got, []int{20486, 204861}) {
+		t.Errorf("prSquashesOnBase(main) = %v, want [20486 204861]", got)
+	}
+	if got := prSquashesOnBase(t.Context(), render.Dir(f.Dir), "unfetched"); len(got) != 0 {
+		t.Errorf("prSquashesOnBase(unfetched) = %v, want none", got)
 	}
 }
 

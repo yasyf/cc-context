@@ -1,15 +1,14 @@
 package cli
 
 import (
+	"context"
 	"database/sql"
-	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
-	"github.com/yasyf/cc-context/internal/gtapi"
 	"github.com/yasyf/cc-context/internal/gtmeta"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcs"
@@ -172,7 +171,7 @@ func TestPruneRepairsAStackOverAForgottenParent(t *testing.T) {
 		t.Fatalf("ResolveTrunk: %v", err)
 	}
 	api := stubGTAPI(t)
-	plan, err := prunePlanFor(api.ctx(t.Context()), dir, pruneGTLane, trunk, commonDir)
+	plan, err := prunePlanFor(prunePRs(api.ctx(t.Context()), nil), dir, pruneGTLane, trunk, commonDir)
 	if err != nil {
 		t.Fatalf("prunePlanFor: %v", err)
 	}
@@ -293,24 +292,25 @@ func TestPruneDeletesMergedBranchesFromADetachedHead(t *testing.T) {
 }
 
 // TestPruneSeesSquashLandings pins the landing git branch --merged cannot see:
-// a pull request Graphite reports MERGED at the branch's own head is deleted,
-// while one whose branch moved past the merged head, one a worktree holds, one
-// gt reports as diverged, and one with no merged pull request all survive.
+// a pull request GitHub reports landed at the branch's own head is deleted,
+// while one whose branch moved past the landed head, one a worktree holds, one
+// gt reports as diverged, and one with no landed pull request all survive.
 func TestPruneSeesSquashLandings(t *testing.T) {
 	t.Parallel()
 	f, dir, trunk, commonDir := pruneSquashFixture(t, "landed", "moved", "held", "diverged", "open")
 	api := stubGTAPI(t)
-	for i, branch := range []string{"landed", "held", "diverged"} {
-		api.merged[branch] = gtStubMerged{number: 10 + i, head: gitAt(t, f.Env(), f.Dir, "rev-parse", branch)}
+	prs := map[string]*stackPR{}
+	for _, branch := range []string{"landed", "moved", "held", "diverged"} {
+		prs[branch] = &stackPR{Head: gitAt(t, f.Env(), f.Dir, "rev-parse", branch), Landed: true}
 	}
-	api.merged["moved"] = gtStubMerged{number: 20, head: gitAt(t, f.Env(), f.Dir, "rev-parse", "moved")}
+	prs["open"] = &stackPR{Head: gitAt(t, f.Env(), f.Dir, "rev-parse", "open")}
 	gitAt(t, f.Env(), f.Dir, "switch", "-q", "moved")
 	gitAt(t, f.Env(), f.Dir, "commit", "-q", "--allow-empty", "-m", "past the merge")
 	gitAt(t, f.Env(), f.Dir, "switch", "-q", "main")
 	gitAt(t, f.Env(), f.Dir, "worktree", "add", "-q", filepath.Join(t.TempDir(), "held"), "held")
 	pruneMarkDiverged(t, commonDir, "diverged")
 
-	plan, err := prunePlanFor(api.ctx(t.Context()), dir, pruneGTLane, trunk, commonDir)
+	plan, err := prunePlanFor(prunePRs(api.ctx(t.Context()), prs), dir, pruneGTLane, trunk, commonDir)
 	if err != nil {
 		t.Fatalf("prunePlanFor: %v", err)
 	}
@@ -351,21 +351,20 @@ func TestPruneSeesSquashLandings(t *testing.T) {
 	}
 }
 
-// TestPruneSeesAQueueLandingGraphiteRecordsClosed pins the landing the merge
-// queue leaves: Graphite records the pull request CLOSED, and only the squash
-// subject on trunk says it landed. The branch goes with its git config; a
-// CLOSED pull request with no squash is an abandonment and survives.
-func TestPruneSeesAQueueLandingGraphiteRecordsClosed(t *testing.T) {
+// TestPruneDeletesALandedBranchWithItsConfig pins what a squash delete takes
+// with it: the branch goes with its git config, and a pull request that closed
+// without landing leaves its branch alone.
+func TestPruneDeletesALandedBranchWithItsConfig(t *testing.T) {
 	f, dir, trunk, commonDir := pruneSquashFixture(t, "queued", "abandoned")
 	api := stubGTAPI(t)
-	api.merged["queued"] = gtStubMerged{number: 30, head: gitAt(t, f.Env(), f.Dir, "rev-parse", "queued"), state: gtapi.PRClosed}
-	api.merged["abandoned"] = gtStubMerged{number: 31, head: gitAt(t, f.Env(), f.Dir, "rev-parse", "abandoned"), state: gtapi.PRClosed}
-	restackSquashRemote(t, f, "main", "queued (#30)", "queued")
-	gitAt(t, f.Env(), f.Dir, "fetch", "-q", "origin")
+	prs := map[string]*stackPR{
+		"queued":    {Number: 30, Head: gitAt(t, f.Env(), f.Dir, "rev-parse", "queued"), Landed: true},
+		"abandoned": {Number: 31, Head: gitAt(t, f.Env(), f.Dir, "rev-parse", "abandoned"), State: "CLOSED"},
+	}
 	gitAt(t, f.Env(), f.Dir, "config", "branch.queued.remote", "origin")
 	gitAt(t, f.Env(), f.Dir, "config", "branch.queued.merge", "refs/heads/queued")
 
-	plan, err := prunePlanFor(api.ctx(t.Context()), dir, pruneGTLane, trunk, commonDir)
+	plan, err := prunePlanFor(prunePRs(api.ctx(t.Context()), prs), dir, pruneGTLane, trunk, commonDir)
 	if err != nil {
 		t.Fatalf("prunePlanFor: %v", err)
 	}
@@ -392,9 +391,9 @@ func TestPruneSeesAQueueLandingGraphiteRecordsClosed(t *testing.T) {
 func TestPruneRefusesASquashBranchThatMoved(t *testing.T) {
 	f, dir, trunk, commonDir := pruneSquashFixture(t, "landed")
 	api := stubGTAPI(t)
-	api.merged["landed"] = gtStubMerged{number: 10, head: gitAt(t, f.Env(), f.Dir, "rev-parse", "landed")}
+	prs := map[string]*stackPR{"landed": {Number: 10, Head: gitAt(t, f.Env(), f.Dir, "rev-parse", "landed"), Landed: true}}
 
-	plan, err := prunePlanFor(api.ctx(t.Context()), dir, pruneGTLane, trunk, commonDir)
+	plan, err := prunePlanFor(prunePRs(api.ctx(t.Context()), prs), dir, pruneGTLane, trunk, commonDir)
 	if err != nil {
 		t.Fatalf("prunePlanFor: %v", err)
 	}
@@ -416,9 +415,9 @@ func TestPruneRefusesASquashBranchThatMoved(t *testing.T) {
 func TestPruneRefusesASquashBranchCheckedOutAfterThePlan(t *testing.T) {
 	f, dir, trunk, commonDir := pruneSquashFixture(t, "landed")
 	api := stubGTAPI(t)
-	api.merged["landed"] = gtStubMerged{number: 10, head: gitAt(t, f.Env(), f.Dir, "rev-parse", "landed")}
+	prs := map[string]*stackPR{"landed": {Number: 10, Head: gitAt(t, f.Env(), f.Dir, "rev-parse", "landed"), Landed: true}}
 
-	plan, err := prunePlanFor(api.ctx(t.Context()), dir, pruneGTLane, trunk, commonDir)
+	plan, err := prunePlanFor(prunePRs(api.ctx(t.Context()), prs), dir, pruneGTLane, trunk, commonDir)
 	if err != nil {
 		t.Fatalf("prunePlanFor: %v", err)
 	}
@@ -432,31 +431,17 @@ func TestPruneRefusesASquashBranchCheckedOutAfterThePlan(t *testing.T) {
 	}
 }
 
-// TestPruneBatchesTheSquashLookup pins the request size: a repository with
-// thousands of branches asks Graphite in bounded batches, not one request
-// naming every branch.
-func TestPruneBatchesTheSquashLookup(t *testing.T) {
-	f, dir, trunk, commonDir := pruneSquashFixture(t, "seed")
-	head := gitAt(t, f.Env(), f.Dir, "rev-parse", "seed")
-	for i := range pruneLandedBatch + 50 {
-		gitAt(t, f.Env(), f.Dir, "branch", fmt.Sprintf("b%03d", i), head)
-	}
-	api := stubGTAPI(t)
-
-	if _, err := prunePlanFor(api.ctx(t.Context()), dir, pruneGTLane, trunk, commonDir); err != nil {
-		t.Fatalf("prunePlanFor: %v", err)
-	}
-	requests := api.infoRequests()
-	asked := 0
-	for _, heads := range requests {
-		if len(heads) > pruneLandedBatch {
-			t.Errorf("one request named %d branches, want at most %d", len(heads), pruneLandedBatch)
+// prunePRs answers prune's pull-request reads from prs in place of GitHub.
+func prunePRs(ctx context.Context, prs map[string]*stackPR) context.Context {
+	return withStackPRs(ctx, func(_ context.Context, _ render.Dir, _ string, branches []string) (map[string]*stackPR, error) {
+		asked := map[string]*stackPR{}
+		for _, branch := range branches {
+			if pr, ok := prs[branch]; ok {
+				asked[branch] = pr
+			}
 		}
-		asked += len(heads)
-	}
-	if len(requests) != 2 || asked != pruneLandedBatch+51 {
-		t.Errorf("%d requests naming %d branches, want 2 naming %d", len(requests), asked, pruneLandedBatch+51)
-	}
+		return asked, nil
+	})
 }
 
 func pruneMarkDiverged(t *testing.T, commonDir, branch string) {

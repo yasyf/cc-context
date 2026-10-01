@@ -7,12 +7,9 @@ import (
 	"slices"
 	"sort"
 	"strings"
-	"sync"
 
 	"github.com/spf13/cobra"
-	"golang.org/x/sync/errgroup"
 
-	"github.com/yasyf/cc-context/internal/gtapi"
 	"github.com/yasyf/cc-context/internal/gtmeta"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcs"
@@ -31,10 +28,11 @@ func newPruneCmd() *cobra.Command {
 		Long: `Delete local branches already merged into trunk, forget their graphite rows, and reparent the rows they leave behind.
 
 A squash landing leaves no ancestry for git to see, so on the graphite lane a
-branch also counts as merged when Graphite reports its pull request MERGED at
-exactly the branch's local head, or CLOSED there with the merge queue's squash,
-the commit whose subject ends (#<number>), on the fetched trunk; a branch
-carrying a commit the merged pull request did not is left alone, and the delete
+branch also counts as merged when GitHub reports its pull request merged at
+exactly the branch's local head, or closed there by the Graphite merge queue
+with its squash, the commit whose subject ends (#<number>), on the fetched
+trunk; a branch carrying a commit the landed pull request did not is left alone,
+and the delete
 refuses if the head moved since. A deleted branch takes its branch.<name> git
 config with it.
 
@@ -156,7 +154,7 @@ func prunePlanFor(ctx context.Context, dir render.Dir, l lane, trunk vcs.Trunk, 
 	for _, branch := range merged {
 		delete(candidates, branch)
 	}
-	squashed, err := pruneSquashLanded(ctx, dir, l, trunk, candidates)
+	squashed, err := pruneSquashLanded(ctx, dir, trunk, candidates)
 	if err != nil {
 		return prunePlan{}, err
 	}
@@ -289,94 +287,22 @@ func pruneLiveBranches(ctx context.Context, dir render.Dir) (map[string]string, 
 	return live, nil
 }
 
-// pruneLandedBatch bounds the head refs one pull-request-info request names.
-const pruneLandedBatch = 100
-
-// pruneSquashLanded asks Graphite which candidates landed as a squash, and
-// returns each one whose merged pull request's newest version is exactly the
-// branch's local head: a branch that moved past what merged carries work the
-// squash never took.
-func pruneSquashLanded(ctx context.Context, dir render.Dir, l lane, trunk vcs.Trunk, heads map[string]string) (map[string]string, error) {
-	merged, err := gtMergedHeads(ctx, dir, l, "prune", trunk.Name(), slices.Sorted(maps.Keys(heads)))
+// pruneSquashLanded returns each candidate whose pull request landed at exactly
+// the branch's local head: a branch that moved past what landed carries work
+// the squash never took. GitHub answers, not Graphite, whose pull-request-info
+// finds a pull request by head name only while it is still open.
+func pruneSquashLanded(ctx context.Context, dir render.Dir, trunk vcs.Trunk, heads map[string]string) (map[string]string, error) {
+	prs, err := stackPRs(ctx, dir, trunk.Name(), slices.Sorted(maps.Keys(heads)))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("prune: %w", err)
 	}
 	landed := map[string]string{}
-	for branch, head := range merged {
-		if heads[branch] == head {
-			landed[branch] = head
+	for branch, pr := range prs {
+		if pr.Landed && pr.Head == heads[branch] {
+			landed[branch] = pr.Head
 		}
 	}
 	return landed, nil
-}
-
-func gtMergedHeads(ctx context.Context, dir render.Dir, l lane, prefix, trunk string, branches []string) (map[string]string, error) {
-	if len(branches) == 0 {
-		return nil, nil
-	}
-	owner, name, err := gtRepoOwnerName(ctx, l, prefix)
-	if err != nil {
-		return nil, err
-	}
-	client := gtAPI(ctx)
-	var mu sync.Mutex
-	merged := map[string]string{}
-	g, gctx := errgroup.WithContext(ctx)
-	g.SetLimit(4)
-	for batch := range slices.Chunk(branches, pruneLandedBatch) {
-		g.Go(func() error {
-			infos, err := client.PullRequestInfo(gctx, gtapi.PullRequestInfoRequest{
-				RepoOwner:        owner,
-				RepoName:         name,
-				PRHeadRefNames:   batch,
-				TrunkBranchNames: []string{trunk},
-				Callsite:         "ccx",
-			})
-			if err != nil {
-				return fmt.Errorf("%s: graphite pull-request-info: %w", prefix, err)
-			}
-			mu.Lock()
-			defer mu.Unlock()
-			for _, pr := range infos {
-				if slices.Contains(batch, pr.HeadRefName) && pruneLanded(gctx, dir, trunk, pr) {
-					merged[pr.HeadRefName] = pruneMergedHead(pr)
-				}
-			}
-			return nil
-		})
-	}
-	if err := g.Wait(); err != nil {
-		return nil, err
-	}
-	return merged, nil
-}
-
-// pruneLanded reports whether a pull request landed: Graphite reads it MERGED,
-// or it reads CLOSED, as a queue landing can, and the squash the queue writes
-// is on trunk. Only the checkout's own trunk is read for that squash, so a
-// CLOSED pull request costs no request and one this checkout has not fetched
-// the landing of is left alone.
-func pruneLanded(ctx context.Context, dir render.Dir, trunk string, pr gtapi.PullRequestInfo) bool {
-	switch pr.State {
-	case gtapi.PRMerged:
-		return true
-	case gtapi.PRClosed:
-		return prSquashOnBase(ctx, dir, trunk, pr.PRNumber) != ""
-	default:
-		return false
-	}
-}
-
-// pruneMergedHead is the head of a pull request's newest version, empty when
-// Graphite recorded none.
-func pruneMergedHead(pr gtapi.PullRequestInfo) string {
-	newest := gtapi.PRVersion{}
-	for _, v := range pr.Versions {
-		if v.CreatedAt >= newest.CreatedAt {
-			newest = v
-		}
-	}
-	return newest.HeadSha
 }
 
 // pruneApply deletes with git branch -d, never -D: every merged branch in the
