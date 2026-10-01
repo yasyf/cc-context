@@ -4,7 +4,6 @@ resources = []
 behaves_like = "Edit"
 span_edit = { path = "path", content = "content", delete = "delete" }
 
-# gating only: previews (apply falsy) over-match, accepted
 [tools.ccx_code_replace]
 behaves_like = "Write"
 

@@ -20,12 +20,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from captain_hook import CommandLine
-from captain_hook.context import HookContext
-from captain_hook.events import PreToolUseEvent
-from captain_hook.session import SessionStore
+from captain_hook import Call
 from captain_hook.types import HookResult
-from cc_transcript.command import Occurrence
 
 from conftest import (
     FILES_WITH_MATCHES_HELP,
@@ -42,27 +38,30 @@ from hooks import common, grep_guards, rg_guards, search_common
 from hooks.common import ccx_supports
 
 
-def event_occurrence(command: str, index: int = 0) -> tuple[PreToolUseEvent, Occurrence]:
+def call_at(command: str, index: int = 0) -> Call:
     evt = make_evt(command)
-    return evt, evt.cmd.line.occurrences[index]
+    return Call(evt.cmd, evt.cmd.line.occurrences[index], evt.cwd)
 
 
 def grep_rewrite(command: str, index: int = 0) -> str | None:
-    evt, occ = event_occurrence(command, index)
-    return grep_guards.grep_to(occ, cwd=evt.cwd)
+    return grep_guards.grep_to(call_at(command, index))
 
 
 def grep_verdict(command: str) -> HookResult | str | None:
     """The whole-line verdict from the ``visit=`` walk: a block ``HookResult``, a rewrite string, or
-    ``None`` for a genuine allow (the thinned ``GrepFlood`` gate is no longer the allow signal)."""
+    ``None`` for a genuine allow (the ``UnpipedSearch`` gate is no longer the allow signal)."""
     return run_visit(make_evt(command), grep_guards.grep_visit)
 
 
 def grep_rewrite_note(command: str) -> str:
-    evt, occ = event_occurrence(command)
-    parsed = grep_guards.grep_parse(occ, cwd=evt.cwd)
-    assert isinstance(parsed, search_common.GrepCall)
-    return search_common.note_text(occ.command.raw, parsed)
+    parsed = grep_guards.grep_parse(call_at(command))
+    assert parsed is not None
+    return search_common.search_note(parsed)
+
+
+def unpiped_grep(command: str) -> bool:
+    evt = make_evt(command)
+    return search_common.UnpipedSearch("grep").check_command_line(evt, evt.cmd.line)
 
 
 class TestGrepIgnoreCaseWord:
@@ -148,7 +147,7 @@ class TestGrepFilesWithMatches:
         probe(monkeypatch, FILES_WITH_MATCHES_HELP)
         assert grep_rewrite(command) == "/fake/ccx code grep foo -l"
         assert grep_rewrite_note(command) == (
-            f"Rewrote `{command}` → `ccx code grep`: same literal search, token-bounded."
+            "Rewrote the command to `ccx code grep`: same literal search, token-bounded."
         )
 
     @pytest.mark.parametrize("command", ["grep -rl foo .", "grep --files-with-matches foo ."])
@@ -156,8 +155,7 @@ class TestGrepFilesWithMatches:
         probe(monkeypatch, NATIVE_CONTEXT_HELP)
         assert grep_rewrite(command) == "/fake/ccx code grep foo"
         assert grep_rewrite_note(command) == (
-            f"Rewrote `{command}` → `ccx code grep`: same literal search, token-bounded. "
-            "`-l` dropped — ccx returns the matching lines, not just filenames."
+            "Rewrote the command to `ccx code grep`: same literal search, token-bounded; matching lines, not a file list."
         )
 
     def test_l_with_context_suppresses_context_flags(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -196,28 +194,23 @@ class TestGrepNote:
     def test_discloses_l_fixed_without_native_context(self, monkeypatch: pytest.MonkeyPatch) -> None:
         probe(monkeypatch, NATIVE_CONTEXT_HELP)
         note = grep_rewrite_note("grep -rlF -C 3 foo")
-        assert "`-l`" in note and "`-F`" in note and "--expand" not in note
+        assert "not a file list" in note and "--expand" not in note
 
     def test_context_fallback_discloses_count_drop(self, monkeypatch: pytest.MonkeyPatch) -> None:
         probe(monkeypatch, REGEX_SUPPORTS_HELP)
         note = grep_rewrite_note("grep -rn -C 3 foo")
-        assert "count was dropped" in note and "--expand=3` adds 3 context lines around each hit" in note
+        assert "3 context lines, not your `-A/-B/-C` count" in note
 
     def test_dot_pattern_regex_rewrites_not_literal(self) -> None:
-        # `.` is a dialect metachar, so grep now rewrites it faithfully as a regex — the note names
-        # the engine, not the old any-char-literal disclosure. rg still literal-rewrites `.` (its
-        # default engine reads `.` as a wildcard the literal search can't honor), so the
-        # `.`-literal disclosure stays live there.
         grep_note = grep_rewrite_note("grep -rn foo.bar")
-        assert "regex on the rg engine" in grep_note and "any-char" not in grep_note
-        rg_evt, rg_occ = event_occurrence("rg foo.bar")
-        rg_parsed = rg_guards.rg_parse(rg_occ, cwd=rg_evt.cwd)
-        assert isinstance(rg_parsed, search_common.GrepCall)
-        assert "any-char" in search_common.note_text(rg_occ.command.raw, rg_parsed)
+        assert "regex search on the rg engine" in grep_note and "matches literally" not in grep_note
+        rg_parsed = rg_guards.rg_parse(call_at("rg foo.bar"))
+        assert rg_parsed is not None
+        assert "`.` matches literally" in search_common.search_note(rg_parsed)
 
     def test_no_dot_carries_no_dot_disclosure(self) -> None:
         note = grep_rewrite_note("grep -rn foobar")
-        assert "any-char" not in note
+        assert "matches literally" not in note
 
     def test_plain_rewrite_carries_no_disclosures(self) -> None:
         note = grep_rewrite_note("grep -rn foobar")
@@ -411,7 +404,7 @@ class TestRegexRewritable:
     def test_rejects_dialect_divergent(self, command: str) -> None:
         # Unrewritable over `.` (a tree-wide dir, unbounded): no rewrite, so the condition fires (block).
         assert grep_rewrite(command) is None
-        assert grep_guards.GrepFlood().check_command_line(make_evt(command), CommandLine.parse(command)) is True
+        assert unpiped_grep(command) is True
 
 
 class TestGrepDialectClassification:
@@ -538,15 +531,13 @@ class TestGrepRegexRewrite:
         # fails, so infra unavailability runs raw (allow), never a block. The emitter still declines and
         # the flood condition still matches; the allow lands at the visitor.
         probe(monkeypatch, SUPPORTS_HELP)
-        cl = CommandLine.parse("grep 'foo.*' .")
         assert grep_rewrite("grep 'foo.*' .") is None
-        assert grep_guards.GrepFlood().check_command_line(make_evt("grep 'foo.*' ."), cl) is True
+        assert unpiped_grep("grep 'foo.*' .") is True
         assert grep_verdict("grep 'foo.*' .") is None
 
     def test_regex_note_discloses_rg_engine(self) -> None:
-        # The note for a regex rewrite names the engine; the dot-literal disclosure does not apply.
         note = grep_rewrite_note("grep 'foo.*' .")
-        assert "regex on the rg engine" in note and "any-char" not in note
+        assert "regex search on the rg engine" in note and "matches literally" not in note
 
 
 class TestGrepMultiFilePaths:
@@ -713,7 +704,7 @@ class TestGrepOccurrenceRewrite:
         evt = make_evt("echo x; grep -r foo .")
         cl = evt.cmd.line
         grep_occ = cl.occurrences[1]
-        replacement = grep_guards.grep_to(grep_occ)
+        replacement = grep_guards.grep_to(Call(evt.cmd, grep_occ, evt.cwd))
         assert replacement == "/fake/ccx code grep foo"
         assert cl.splice({grep_occ.index: replacement}) == "echo x; /fake/ccx code grep foo"
 
@@ -722,15 +713,14 @@ class TestGrepOccurrenceRewrite:
         assert isinstance(grep_verdict("echo x; grep -c foo ."), HookResult)
 
     def test_wrapped_grep_matches_but_never_rewrites(self) -> None:
-        evt, occ = event_occurrence("sudo grep foo .")
-        assert occ.command.unwrapped.executable == "grep"
-        assert grep_guards.GrepFlood().check_command_line(evt, evt.cmd.line) is True
-        assert grep_guards.grep_to(occ) is None
+        call = call_at("sudo grep foo .")
+        assert call.command.executable == "grep"
+        assert unpiped_grep("sudo grep foo .") is True
+        assert grep_guards.grep_to(call) is None
         assert isinstance(grep_verdict("sudo grep foo ."), HookResult)
 
     def test_spanless_grep_rechecks_and_blocks(self) -> None:
-        _evt, occ = event_occurrence("grep foo > out .")
-        assert occ.command.span is None
+        assert call_at("grep foo > out .").occurrence.command.span is None
         assert isinstance(grep_verdict("grep foo > out ."), HookResult)
 
 
@@ -753,31 +743,34 @@ class TestInfraNoneAllows:
         assert isinstance(grep_verdict("grep -P 'x(?=y)' ."), HookResult)
 
 
-class TestTranscriptBlockMessage:
-    """`search_block` tunes the block per the line's transcript operands: all-transcript → the
-    cc-transcript steer alone; a transcript operand mixed with an ordinary flood → the default steer
-    PLUS one appended cc-transcript line (never transcript-only).
-    """
+class TestTranscriptSteer:
+    """The transcript steer fires on any grep whose operands include a session transcript, wrapped or mixed."""
 
-    def bash_pre(self, command: str) -> PreToolUseEvent:
-        ctx = HookContext(session=SessionStore(None), transcript=None, settings=None)
-        return PreToolUseEvent(_raw={"tool_name": "Bash", "tool_input": {"command": command}}, ctx=ctx)
+    def fires(self, command: str) -> bool:
+        evt = make_evt(command)
+        condition = search_common.SearchTargets("grep", grep_guards.grep_operands, search_common.targets_transcript)
+        return condition.check_command_line(evt, evt.cmd.line)
 
-    def test_mixed_line_carries_both_steers(self) -> None:
-        # A transcript operand alongside a `.` tree flood → the block names BOTH the default steer and cc-transcript.
-        evt = self.bash_pre("grep foo ~/.claude/projects/main.jsonl; grep bar .")
-        message = grep_guards.grep_block(evt, evt.cmd.line)
-        assert "floods context" in message and "cc-transcript" in message
-        assert message != search_common.TRANSCRIPT_STEER  # not transcript-only
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "grep foo ~/.claude/projects/main.jsonl; grep bar .",
+            "grep -r foo ~/.claude/projects/",
+            "sudo grep foo ~/.claude/projects/main.jsonl; grep bar .",
+            "grep -r --weird foo ~/.claude/projects/ | head",
+        ],
+        ids=["mixed", "all-transcript", "wrapped", "unparsed-flag"],
+    )
+    def test_fires(self, command: str) -> None:
+        assert self.fires(command)
 
-    def test_all_transcript_line_is_steer_only(self) -> None:
-        evt = self.bash_pre("grep -r foo ~/.claude/projects/")
-        assert grep_guards.grep_block(evt, evt.cmd.line) == search_common.TRANSCRIPT_STEER
-
-    def test_wrapped_transcript_occurrence_contributes_to_mixed_message(self) -> None:
-        evt = self.bash_pre("sudo grep foo ~/.claude/projects/main.jsonl; grep bar .")
-        message = grep_guards.grep_block(evt, evt.cmd.line)
-        assert "floods context" in message and "cc-transcript" in message
+    @pytest.mark.parametrize(
+        "command",
+        ["grep needle docs/x.claude/projects-notes.md", "cat x | grep foo ~/.claude/projects/main.jsonl"],
+        ids=["lookalike", "piped-only"],
+    )
+    def test_silent(self, command: str) -> None:
+        assert not self.fires(command)
 
 
 class TestGrepBundleMap:

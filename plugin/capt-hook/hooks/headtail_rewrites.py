@@ -1,11 +1,8 @@
-"""Rewrite each standalone bounded ``head`` file occurrence to ``ccx code read
---section 1-N`` in place, with one merged ``note`` back to the model. Only ``-n N``,
-``-N``, and bare single-file forms rewrite. Everything else runs unchanged.
-"""
+"""Rewrite a standalone bounded single-file ``head`` to ``ccx code read --section 1-N``."""
 
 from __future__ import annotations
 
-import re
+import os
 import shlex
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -22,83 +19,69 @@ from captain_hook import (
     rewrite_command_occurrences,
 )
 
-from .common import carries_expansion, ccx_bin
+from .common import carries_expansion, ccx_bin, command_expands, rewrote_note
 
 if TYPE_CHECKING:
     from cc_transcript.command import Occurrence
 
 
-def int_or_none(s: str) -> int | None:
-    try:
-        return int(s) if s.isdigit() else None
-    except ValueError:
-        return None
+MAX_COUNT_DIGITS = 4000
 
 
-def headtail_parse(cmd: Command) -> tuple[str, str, int | None, list[str]] | None:
+def line_count(raw: str) -> int | None:
+    return int(raw) if raw.isascii() and raw.isdigit() and len(raw) <= MAX_COUNT_DIGITS else None
+
+
+def headtail_parse(cmd: Command) -> tuple[str, int | None, list[str]] | None:
     exe = cmd.executable
     if exe not in ("head", "tail") or cmd.env:
         return None
     match list(cmd.args):
         case []:
-            return exe, "line", None, []
-        case ["-n", raw_count, *files] if (count := int_or_none(raw_count)) is not None:
-            return exe, "line", count, files
-        case [short_count, *files] if re.fullmatch(r"-\d+", short_count) and (
-            count := int_or_none(short_count[1:])
-        ) is not None:
-            return exe, "line", count, files
+            return exe, None, []
+        case ["-n", raw_count, *files] if (count := line_count(raw_count)) is not None:
+            return exe, count, files
+        case [short_count, *files] if short_count.startswith("-") and (count := line_count(short_count[1:])) is not None:
+            return exe, count, files
         case files if not any(arg.startswith("-") for arg in files):
-            return exe, "line", None, files
+            return exe, None, files
         case _:
             return None
 
 
-def headtail_file_parts(occ: Occurrence) -> tuple[str, str, int | None, list[str]] | None:
+def headtail_file_parts(occ: Occurrence) -> tuple[str, int | None, list[str]] | None:
     cmd = occ.command
-    if occ.piped or cmd.redirects or any(char in cmd.raw for char in "$`") or (parsed := headtail_parse(cmd)) is None:
+    if occ.piped or cmd.redirects or command_expands(cmd) or (parsed := headtail_parse(cmd)) is None:
         return None
-    return parsed if parsed[3] and not any(carries_expansion(file) for file in parsed[3]) else None
+    return parsed if parsed[2] and not any(carries_expansion(file) for file in parsed[2]) else None
 
 
 def headtail_to(evt: BaseHookEvent, occ: Occurrence) -> str | None:
     if (parsed := headtail_file_parts(occ)) is None:
         return None
-    exe, mode, count, files = parsed
-    if exe != "head" or mode != "line" or len(files) != 1:
+    exe, count, files = parsed
+    if exe != "head" or len(files) != 1:
         return None
     path = Path(files[0])
     if not path.is_absolute():
         if evt.cwd is None:
             return None
         path = evt.cwd / path
-    try:
-        if not path.is_file():
-            return None
-    except OSError:
-        return None
-    if (ccx := ccx_bin()) is None:
+    if not os.path.isfile(path) or (ccx := ccx_bin()) is None:
         return None
     n = count if count is not None else 10
     return f"{shlex.quote(ccx)} code read {shlex.quote(files[0])} --section 1-{n}"
 
 
 class HeadTailFile(CustomCommandLineCondition):
-    """Matches a standalone single-file ``head`` occurrence that can rewrite."""
-
     def check_command_line(self, evt: BaseHookEvent, cl: CommandLine) -> bool:
         return any(headtail_to(evt, occ) is not None for occ in cl.occurrences)
-
-
-def headtail_note(evt: BaseHookEvent, pairs: list[tuple[Occurrence, str]]) -> str:
-    commands = ", ".join(f"`{occ.command.raw}`" for occ, _ in pairs)
-    return f"Rewrote {commands} → `ccx code read --section`: same lines, token-bounded."
 
 
 rewrite_command_occurrences(
     only_if=[HeadTailFile()],
     to=headtail_to,
-    note=headtail_note,
+    note=rewrote_note("ccx code read --section", "same lines, token-bounded"),
     tests={
         Input(command="head -40 {file}", file=FileFixture(size=64, name="f.go")): Rewrite(
             pattern="f.go --section 1-40"

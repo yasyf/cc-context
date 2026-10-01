@@ -1,117 +1,87 @@
-"""Rewrite positively identified ``find`` enumerations to ``ccx repo find "<glob>"``.
-Ambiguous or unrewritable forms pass through untouched.
-"""
+"""Rewrite positively identified ``find`` enumerations to ``ccx repo find "<glob>"``."""
 
 from __future__ import annotations
 
 import os
 import shlex
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from captain_hook import (
     Allow,
     BaseHookEvent,
-    Command,
-    CommandLine,
-    CustomCommandLineCondition,
     Input,
+    Option,
     Rewrite,
     rewrite_command_occurrences,
 )
+from captain_hook.command_schemas import FIND
 
-from .common import carries_expansion, ccx_bin
+from .common import call_of, carries_expansion, ccx_bin, rewrote_note
 
 if TYPE_CHECKING:
     from cc_transcript.command import Occurrence
 
-ACTIONS = ("-exec", "-execdir", "-delete", "-print0", "-ok")
 NAME_FLAGS = ("-name", "-iname")
+TYPE_FLAGS = ("-type",)
+PRINT_FLAGS = ("-print",)
+LISTING_FLAGS = (*NAME_FLAGS, *TYPE_FLAGS, *PRINT_FLAGS)
+
+FIND_LISTING = replace(
+    FIND,
+    options=(
+        *(
+            replace(option, flags=tuple(flag for flag in option.flags if flag not in LISTING_FLAGS))
+            for option in FIND.options
+            if option.name != "command"
+        ),
+        Option("pattern", NAME_FLAGS),
+        Option("type", TYPE_FLAGS),
+        Option("print", PRINT_FLAGS, bool),
+    ),
+)
 
 
-def args_type_f(args: tuple[str, ...]) -> bool:
-    return any(a == "-type" and i + 1 < len(args) and args[i + 1] == "f" for i, a in enumerate(args))
-
-
-def find_name_filter(args: tuple[str, ...]) -> str | None:
-    return next((args[i + 1] for i, a in enumerate(args) if a in NAME_FLAGS and i + 1 < len(args)), None)
-
-
-def is_find_enumeration(cmd: Command) -> bool:
-    """Report whether ``cmd`` is ``find`` used to *list* matches (no action flag) — a context
-    flood.
-
-    A valid ``-name``/``-iname`` filter or a ``-type f`` walk enumerates paths. Action
-    forms, unsupported filters, and expansion-bearing dirs fall through untouched.
-    """
-    if cmd.executable != "find" or cmd.redirects:
-        return False
-    args = cmd.args
-    if any(a in ACTIONS or a in ("-path", "-regex") for a in args):
-        return False
-    path = args[0] if args and not args[0].startswith("-") else None
-    if path is not None and carries_expansion(path):
-        return False
-    return find_name_filter(args) is not None or args_type_f(args)
-
-
-class FindEnumeration(CustomCommandLineCondition):
-    """Matches a ``;``/``&&``/``|``-joined line carrying a rewritable ``find`` enumeration
-    occurrence — a context flood. The steer is ``ccx repo find`` or Glob.
-    """
-
-    def check_command_line(self, evt: BaseHookEvent, cl: CommandLine) -> bool:
-        return any(not occ.piped and is_find_enumeration(occ.command) for occ in cl.occurrences)
-
-
-def find_glob(args: tuple[str, ...]) -> str | None:
-    """Return the ``ccx repo find`` glob for a positively identified enumeration.
-
-    A ``-name``/``-iname`` filter maps to `<dir>/**/<pat>`; a ``-type f`` walk maps to
-    `<dir>/**`, with the repository root represented by `**`.
-    """
-    raw = args[0] if args and not args[0].startswith("-") else None
-    path = os.path.normpath(raw) if raw is not None else "."
-    if pattern := find_name_filter(args):
-        prefix = "" if path == "." else f"{path}/"
-        return f"{prefix}**/{pattern}"
-    if args_type_f(args):
-        return "**" if path == "." else f"{path}/**"
-    return None
-
-
-def find_to(evt: BaseHookEvent, occ: "Occurrence") -> str | None:
+def find_glob(evt: BaseHookEvent, occ: Occurrence) -> str | None:
     cmd = occ.command
-    if occ.piped or cmd.redirects:
-        return None  # only rewrite what the splice can reproduce in full
-    if not is_find_enumeration(cmd):
+    if occ.piped or cmd.redirects or cmd.executable != "find":
         return None
-    glob = find_glob(cmd.args)
-    if glob is not None and (ccx := ccx_bin()):
-        return f'{shlex.quote(ccx)} repo find "{glob}"'
+    arguments = FIND_LISTING.bind(call_of(evt, occ))
+    if not arguments.complete or arguments.values.get("predicate") or arguments.values.get("expression"):
+        return None
+    roots = arguments.values["roots"]
+    if len(roots) != 1 or roots[0] is None or carries_expansion(str(roots[0])):
+        return None
+    root = os.path.normpath(str(roots[0]))
+    patterns = arguments.values.get("pattern", ())
+    types = arguments.values.get("type", ())
+    if patterns:
+        prefix = "" if root == "." else f"{root}/"
+        return f"{prefix}**/{patterns[0]}"
+    if types == ("f",):
+        return "**" if root == "." else f"{root}/**"
     return None
 
 
-def find_note(evt: BaseHookEvent, pairs: "list[tuple[Occurrence, str]]") -> str:
-    globs = ", ".join(f'"{find_glob(occ.command.args)}"' for occ, _ in pairs)
-    return f"Rewrote `find` → `ccx repo find {globs}`: same paths, token-bounded."
+def find_to(evt: BaseHookEvent, occ: Occurrence) -> str | None:
+    if (glob := find_glob(evt, occ)) is None or (ccx := ccx_bin()) is None:
+        return None
+    return f'{shlex.quote(ccx)} repo find "{glob}"'
 
 
 rewrite_command_occurrences(
-    only_if=[FindEnumeration()],
     to=find_to,
-    note=find_note,
+    note=rewrote_note('ccx repo find "<glob>"', "same paths, token-bounded"),
     tests={
         Input(command="find . -name '*.go'"): Rewrite(pattern='repo find "**/*.go"'),
-        # A piped enumeration keeps today's exemption — never converted to a block.
         Input(command="find . -name '*.go' | wc -l"): Allow(),
         Input(command="find src -iname '*.PY'"): Rewrite(pattern='repo find "src/**/*.PY"'),
-        Input(command="find src -type f"): Rewrite(pattern='repo find "src/**"'),  # bare -type f, scoped
+        Input(command="find src -type f"): Rewrite(pattern='repo find "src/**"'),
         Input(command="find . -type f"): Rewrite(pattern='repo find "**"'),
         Input(command="find -type f"): Rewrite(pattern='repo find "**"'),
         Input(command="find .// -type f"): Rewrite(pattern='repo find "**"'),
         Input(command="find ./. -type f"): Rewrite(pattern='repo find "**"'),
-        Input(command="find src// -type f"): Rewrite(pattern='repo find "src/**"'),  # trailing slashes cleaned
-        # Expansion-bearing dirs decline so the shell can expand the original command.
+        Input(command="find src// -type f"): Rewrite(pattern='repo find "src/**"'),
         Input(command="find ~/src -type f"): Allow(),
         Input(command="find ~/src -name '*.go'"): Allow(),
         Input(command="find $d -type f"): Allow(),
@@ -121,8 +91,9 @@ rewrite_command_occurrences(
         Input(command="find . -name '*.go' -exec rm {} +"): Allow(),
         Input(command="find . -name '*.go' -delete"): Allow(),
         Input(command="find . -name '*.go' -print0 | xargs rm"): Allow(),
-        Input(command="find . -type d"): Allow(),  # -type d is not the file flood we steer
-        # Compound line: the `cd` occurrence survives verbatim so the glob roots after it.
+        Input(command="find . -type d"): Allow(),
+        Input(command="find src lib -name '*.go'"): Allow(),
+        Input(command="find . -name '*.go' -mtime -1"): Allow(),
         Input(command="cd src && find . -name '*.go'"): Rewrite(pattern="cd src && "),
     },
 )
