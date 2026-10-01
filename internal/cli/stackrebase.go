@@ -83,6 +83,8 @@ type stackRebaseBranch struct {
 	Landed      string            `json:"landed,omitempty"`
 	Held        string            `json:"held,omitempty"`
 	Kept        bool              `json:"kept,omitempty"`
+	Pinned      bool              `json:"pinned,omitempty"`
+	Resolved    bool              `json:"resolved,omitempty"`
 	LocalOnly   bool              `json:"local_only,omitempty"`
 	Moved       bool              `json:"moved,omitempty"`
 	PR          *stackPR          `json:"pr,omitempty"`
@@ -164,6 +166,7 @@ type stackRebaseOpts struct {
 	dryRun      bool
 	noPush      bool
 	members     []string
+	pinned      []string
 	draft       bool
 	noVerify    bool
 	deferPush   bool
@@ -886,6 +889,11 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 		switch {
 		case queued[name] && (named || (name == o.tip && b.Local != b.Remote)):
 			return nil, fmt.Errorf("stack rebase: %s is in the merge queue as %s, and moving it would evict it — take it out of the queue first", name, b.PR)
+		case slices.Contains(o.pinned, name):
+			if !stackPinPublished(b) {
+				return nil, fmt.Errorf("stack submit: %s is another lane's and has never been pushed, so there is no published head to stack on — submit it from its own working copy first, or pass --include %s", name, name)
+			}
+			b.Kept, b.Pinned = true, true
 		case queued[name] || (moving != nil && !moving[name]):
 			b.Kept = stackPinPublished(b)
 		case o.tip != "" && name != o.tip:
@@ -1992,7 +2000,7 @@ func stackPinResolved(ctx context.Context, dir render.Dir, run *stackRebaseRun, 
 	if err := stackPinHead(ctx, dir, pin, head, was); err != nil {
 		return err
 	}
-	b.NewHead = head
+	b.NewHead, b.Resolved = head, true
 	return stackSaveRun(run)
 }
 
@@ -2997,7 +3005,7 @@ func stackReplanLanded(ctx context.Context, cmd *cobra.Command, l lane, commonDi
 	if err := stackCheckSources(ctx, l.dir(), run); err != nil {
 		return err
 	}
-	var members []string
+	var members, pinned []string
 	vetted := map[string]string{}
 	replayed := map[string]stackRebaseBranch{}
 	for _, b := range run.Branches {
@@ -3006,9 +3014,12 @@ func stackReplanLanded(ctx context.Context, cmd *cobra.Command, l lane, commonDi
 			vetted[b.Name] = b.Remote
 			replayed[b.Name] = b
 		}
+		if b.Pinned {
+			pinned = append(pinned, b.Name)
+		}
 	}
 	next, err := stackPlan(ctx, l, commonDir, stackRebaseOpts{
-		members: members, landed: landed, vetted: vetted, replayed: replayed, draft: run.Draft, noVerify: run.NoVerify, ship: run.Ship,
+		members: members, pinned: pinned, landed: landed, vetted: vetted, replayed: replayed, draft: run.Draft, noVerify: run.NoVerify, ship: run.Ship,
 		tip: run.Tip, tipOnly: run.TipOnly, dropCommits: run.DropCommits, allLanes: run.AllLanes, to: run.To,
 	})
 	if err != nil {
@@ -3019,7 +3030,7 @@ func stackReplanLanded(ctx context.Context, cmd *cobra.Command, l lane, commonDi
 	}
 	for i := range next.Branches {
 		if b := run.branch(next.Branches[i].Name); b != nil {
-			next.Branches[i].LocalOnly = b.LocalOnly
+			next.Branches[i].LocalOnly, next.Branches[i].Resolved = b.LocalOnly, b.Resolved
 		}
 	}
 	next.dir = run.dir

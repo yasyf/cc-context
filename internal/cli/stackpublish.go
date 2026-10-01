@@ -569,16 +569,18 @@ func stackSourceStays(ctx context.Context, l lane, b stackRebaseBranch, at strin
 		return "moved since the run started", nil
 	}
 	holder := holders[b.Name]
-	source, err := stackPatchSeries(ctx, l.dir(), cmp.Or(b.SourceBase, b.OldBase), b.Local)
-	if err != nil {
-		return "", err
-	}
-	published, err := stackPatchSeries(ctx, l.dir(), b.NewBase, b.NewHead)
-	if err != nil {
-		return "", err
-	}
-	if source == nil || published == nil || !slices.Equal(source, published) {
-		return "its published head carries other changes", nil
+	if !b.Resolved {
+		source, err := stackPatchSeries(ctx, l.dir(), cmp.Or(b.SourceBase, b.OldBase), b.Local)
+		if err != nil {
+			return "", err
+		}
+		published, err := stackPatchSeries(ctx, l.dir(), b.NewBase, b.NewHead)
+		if err != nil {
+			return "", err
+		}
+		if source == nil || published == nil || !slices.Equal(source, published) {
+			return "its published head carries other changes", nil
+		}
 	}
 	if holder == "" {
 		return "", nil

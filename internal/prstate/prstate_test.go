@@ -439,3 +439,82 @@ func TestAnotherReadersPollReadsWhatALeasedLaneDiscovers(t *testing.T) {
 		t.Errorf("vars %v, #191 %+v; want the lane's new #191 read in the same Read", gh.vars, st.PRs[191])
 	}
 }
+
+func TestAPushedHeadIsReadUntilGitHubShowsIt(t *testing.T) {
+	t.Parallel()
+	c := &clock{now: epoch}
+	caughtUp := reply{body: strings.ReplaceAll(fixture(t, "poll-190.json"), "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1", "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2")}
+	store, gh := newStore(t, t.TempDir(), c, nil, ok(t, "poll-190.json"), ok(t, "poll-190.json"), caughtUp)
+	want := Want{PRs: []int{190}}
+
+	if _, err := store.Read(testCtx(t), want); err != nil {
+		t.Fatal(err)
+	}
+	c.now = c.now.Add(time.Second)
+	if err := store.Pushed(testCtx(t), map[int]string{190: "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"}); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Read(testCtx(t), want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pr := st.PRs[190]; pr.HeadRefOid != "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2" || !pr.PushedAt.Equal(epoch.Add(time.Second)) || gh.requests() != 2 {
+		t.Errorf("after the push = head %s pushed %s with %d requests, want the pushed head kept over the poll that still showed the old one", pr.HeadRefOid, pr.PushedAt, gh.requests())
+	}
+	if len(c.slept) != 1 || c.slept[0] != MinInterval-time.Second {
+		t.Errorf("slept %v, want the rest of the minimum interval before re-polling", c.slept)
+	}
+
+	c.now = c.now.Add(MinInterval)
+	st, err = store.Read(testCtx(t), want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pr := st.PRs[190]; pr.HeadRefOid != "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2" || !pr.PushedAt.IsZero() || gh.requests() != 3 {
+		t.Errorf("once GitHub shows the push = head %s pushed %s with %d requests, want the push marker cleared", pr.HeadRefOid, pr.PushedAt, gh.requests())
+	}
+}
+
+func TestAPushedHeadGitHubNeverShowsExpires(t *testing.T) {
+	t.Parallel()
+	c := &clock{now: epoch}
+	store, _ := newStore(t, t.TempDir(), c, nil, ok(t, "poll-190.json"), ok(t, "poll-190.json"))
+	want := Want{PRs: []int{190}}
+
+	if err := store.Pushed(testCtx(t), map[int]string{190: "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"}); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Read(testCtx(t), want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pr := st.PRs[190]; pr.HeadRefOid != "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2" || pr.State != "OPEN" {
+		t.Errorf("first read = %+v, want the pushed head over a record the poll filled in", pr)
+	}
+	c.now = c.now.Add(pushLag)
+	if st, err = store.Read(testCtx(t), want); err != nil {
+		t.Fatal(err)
+	}
+	if pr := st.PRs[190]; pr.HeadRefOid != "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1" || !pr.PushedAt.IsZero() {
+		t.Errorf("read past the push window = %+v, want GitHub's head taken back", pr)
+	}
+}
+
+func TestCoversNeedsEveryRecordAndLane(t *testing.T) {
+	t.Parallel()
+	st := State{PRs: map[int]PR{1: {}, 2: {}}, Lanes: map[string]Lane{"a/": {PRs: []int{1}}, "b/": {PRs: []int{3}}}}
+	for _, tt := range []struct {
+		want Want
+		ok   bool
+	}{
+		{Want{PRs: []int{1, 2}}, true},
+		{Want{PRs: []int{1, 3}}, false},
+		{Want{Prefixes: []string{"a/"}}, true},
+		{Want{Prefixes: []string{"b/"}}, false},
+		{Want{Prefixes: []string{"c/"}}, false},
+	} {
+		if got := st.Covers(tt.want); got != tt.ok {
+			t.Errorf("Covers(%+v) = %t, want %t", tt.want, got, tt.ok)
+		}
+	}
+}

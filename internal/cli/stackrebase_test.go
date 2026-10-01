@@ -1575,11 +1575,11 @@ func TestStackContinueDropsAParentThatLandedMidRun(t *testing.T) {
 	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); got != landedAt {
 		t.Errorf("source base = %s, want unchanged %s", got, landedAt)
 	}
-	if got := stackParent(t, f, "feature"); got != source.Parent {
-		t.Errorf("feature's gt parent = %s, want unchanged %s", got, source.Parent)
+	if got := stackParent(t, f, "feature"); got != "main" {
+		t.Errorf("feature's gt parent = %s, want main once base landed under it", got)
 	}
 	source.Parent = "main"
-	published := stackAssertKeptSource(t, f, source)
+	published := stackAssertRebasePublication(t, f, source)
 	if n := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", "origin/main.."+published); n != "1" {
 		t.Errorf("published feature holds %s commits over trunk, want its own 1", n)
 	}
@@ -1799,10 +1799,6 @@ func TestStackContinuePublishesARunSavedWithoutSourceBases(t *testing.T) {
 				t.Fatalf("continue: %v", err)
 			}
 			for _, branch := range published {
-				if branch == "feature" {
-					stackAssertKeptSource(t, f, sources[branch])
-					continue
-				}
 				stackAssertRebasePublication(t, f, sources[branch])
 			}
 			if left, _ := os.ReadDir(filepath.Join(f.Dir, ".git", stackRebaseStateDir)); len(left) != 0 {

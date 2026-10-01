@@ -1379,3 +1379,67 @@ func TestStackRebaseRefusesAParentOverrideTheRunLeavesOut(t *testing.T) {
 		t.Errorf("lane moved to %s on a refusal", got)
 	}
 }
+
+// TestStackSubmitKeepsAnotherLanesParentAtItsPublishedHead is the l21 shape of
+// 2026-10-01: the branch submitted here sits on one another working copy
+// holds. The parent stays at the head its pull request shows and is neither
+// replayed nor pushed, and the child is published onto that head.
+func TestStackSubmitKeepsAnotherLanesParentAtItsPublishedHead(t *testing.T) {
+	f := shipGTRepo(t)
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	shipGTStack(t, f, "base")
+	api.prs["base"] = 7
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("publish base: %v", err)
+	}
+	published := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
+	shipGTStack(t, f, "feature")
+	lane := restackSiblingPath(t, "lane")
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", lane, "base")
+	restackAdvanceRemote(t, f, "main", "upstream.txt", "upstream\n")
+	posted := len(api.submitHeads())
+	shipResetLog(t, f)
+
+	_, errOut, err := runStackCmd(t, f, "submit")
+	if err != nil {
+		t.Fatalf("stack submit: %v", err)
+	}
+	if heads := api.submitHeads()[posted:]; !slices.Equal(heads, []string{"feature"}) {
+		t.Errorf("submit posts = %v, want feature alone — base is another lane's", heads)
+	}
+	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base"); got != published {
+		t.Errorf("origin base = %s, want its published head %s left alone", got, published)
+	}
+	if got := gitAt(t, f.Env(), lane, "rev-parse", "HEAD"); got != published {
+		t.Errorf("the lane holding base is at %s, want it untouched at %s", got, published)
+	}
+	feature := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature")
+	if !stackOnto(t, f, published, feature) || stackOnto(t, f, "origin/main", feature) {
+		t.Errorf("published feature %s is not stacked on base's published head %s", feature, published)
+	}
+	if want := "stack submit: keeping base (checked out in " + lane + ") at their published heads"; !strings.Contains(errOut, want) {
+		t.Errorf("stderr = %q, want %q", errOut, want)
+	}
+}
+
+func TestStackSubmitRefusesToStackOnAnUnpublishedBranchAnotherLaneHolds(t *testing.T) {
+	f := shipGTRepo(t)
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	shipGTStack(t, f, "base", "feature")
+	lane := restackSiblingPath(t, "lane")
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", lane, "base")
+	shipResetLog(t, f)
+
+	_, _, err := runStackCmd(t, f, "submit")
+	if err == nil || !strings.Contains(err.Error(), "base is another lane's and has never been pushed") {
+		t.Fatalf("stack submit = %v, want the unpublished parent refused", err)
+	}
+	if heads := api.submitHeads(); len(heads) != 0 {
+		t.Errorf("submit posts = %v, want none", heads)
+	}
+	if gitBranchExists(t, f.Env(), f.RemoteDir, "base") || gitBranchExists(t, f.Env(), f.RemoteDir, "feature") {
+		t.Error("origin carries a branch of the refused submit")
+	}
+}

@@ -337,7 +337,7 @@ func TestBlockedJobWaitsForRetryAndResumesFromItsPhase(t *testing.T) {
 	bubble(t, DefaultTuning(), func(t *testing.T, h *harness) {
 		ctx := context.Background()
 		job := h.seed("a", 1, cleanup.PhaseMoved)
-		h.relocator.script("a", blockWith(h.clock, "activity", "zsh (pid 7) in the tree"))
+		h.relocator.script("a", blockWith(h.clock, "git", "worktree move failed"))
 		h.start()
 		h.expectEvents("advance:a@moved")
 		h.expectTimers()
@@ -346,7 +346,7 @@ func TestBlockedJobWaitsForRetryAndResumesFromItsPhase(t *testing.T) {
 		h.expectTimers()
 
 		blocked := h.status(job.ID)
-		wantBlockage := cleanup.Blockage{Reason: "activity", Detail: "zsh (pid 7) in the tree", At: h.clock.Now().Add(-time.Hour)}
+		wantBlockage := cleanup.Blockage{Reason: "git", Detail: "worktree move failed", At: h.clock.Now().Add(-time.Hour)}
 		if blocked.State() != cleanup.StateBlocked || blocked.Phase != cleanup.PhaseMoved || *blocked.Blocked != wantBlockage {
 			t.Fatalf("blocked job = state %s, phase %s, blockage %+v; want blocked, moved, %+v", blocked.State(), blocked.Phase, blocked.Blocked, wantBlockage)
 		}
@@ -1448,4 +1448,48 @@ func TestNewRejectsAnIncompleteConfig(t *testing.T) {
 	if err := engine.Run(context.Background()); err != nil {
 		t.Errorf("Run() after Stop = %v, want nil at once", err)
 	}
+}
+
+func TestTransientBlockageRetriesWithBackoffUpToTheCeiling(t *testing.T) {
+	tuning := DefaultTuning()
+	tuning.RetryCeiling = time.Minute
+	bubble(t, tuning, func(t *testing.T, h *harness) {
+		job := h.seed("a", 1, cleanup.PhasePrepared)
+		h.relocator.script("a", blockWith(h.clock, "activity", "could not verify that the tree is idle: read its arguments: input/output error"))
+		h.start()
+		h.expectEvents("advance:a@prepared")
+		h.expectTimers(30 * time.Second)
+
+		h.clock.Advance(29 * time.Second)
+		h.expectEvents()
+		h.clock.Advance(time.Second)
+		h.expectEvents("advance:a@prepared")
+		h.expectTimers(time.Minute)
+		if blocked := h.status(job.ID); blocked.State() != cleanup.StateBlocked || len(blocked.Errors) != 2 {
+			t.Fatalf("after one retry = state %s with %d errors, want blocked again with both attempts noted", blocked.State(), len(blocked.Errors))
+		}
+
+		h.clock.Advance(time.Minute)
+		h.expectEvents("advance:a@prepared")
+		h.expectTimers(time.Minute)
+
+		h.relocator.script("a", nil)
+		h.clock.Advance(time.Minute)
+		h.expectEvents("advance:a@prepared", "sample", "admit:a", "open:a")
+		h.expectTimers()
+		if got := h.status(job.ID).Phase; got != cleanup.PhaseDone {
+			t.Errorf("job phase = %s, want done once the inspection cleared", got)
+		}
+	})
+}
+
+func TestTransientBlockageOnAPhysicalPhaseWaitsForRetry(t *testing.T) {
+	bubble(t, DefaultTuning(), func(_ *testing.T, h *harness) {
+		h.seed("a", 1, cleanup.PhaseUnregistered, func(job *cleanup.Job) { job.Block(job.Created, "activity", "zsh (pid 7) in the payload") })
+		h.start()
+		h.expectEvents()
+		h.clock.Advance(time.Hour)
+		h.expectEvents()
+		h.expectTimers()
+	})
 }

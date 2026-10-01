@@ -44,6 +44,26 @@ type prQueueReport struct {
 	Evicted     string       `json:"evicted,omitempty"`
 	EvictedAt   string       `json:"evicted_at,omitempty"`
 	Conflicting bool         `json:"conflicting,omitempty"`
+	Stale       *prStale     `json:"stale,omitempty"`
+}
+
+// prStale marks a record the cache served while GitHub's rate limit refused a
+// poll: it is as old as PolledAt, and nothing polls again before ProbeAt.
+type prStale struct {
+	PolledAt time.Time `json:"polledAt"`
+	ProbeAt  time.Time `json:"probeAt"`
+	Reason   string    `json:"reason"`
+}
+
+func (s *prStale) String() string {
+	return "stale, polled " + s.PolledAt.UTC().Format(time.RFC3339)
+}
+
+func staleAt(limited *prstate.Backoff, polledAt time.Time) *prStale {
+	if limited == nil {
+		return nil
+	}
+	return &prStale{PolledAt: polledAt, ProbeAt: limited.ProbeAt, Reason: limited.Reason}
 }
 
 // prStateRoot is where every ccx process keeps the shared pull request cache;
@@ -108,9 +128,10 @@ once its parent lands.
 Every read goes through the machine-wide pull request cache ccx vcs pr watch
 shares, polled at most once per 30 seconds per repository. While GitHub
 rate-limits the machine the command waits for the next probe, up to ten
-minutes. The queue closes what it
-lands, so a landed pull request reads CLOSED with a null mergedAt on GitHub;
-the squash is what settles it.
+minutes, then answers from the cache with each line marked "stale, polled
+<time>"; a pull request the cache never polled fails naming the next probe.
+The queue closes what it lands, so a landed pull request reads CLOSED with a
+null mergedAt on GitHub; the squash is what settles it.
 
 A queued pull request names the commit the queue admitted. A push after
 admission does not move it: the queue lands that commit and drops the rest.`,
@@ -130,6 +151,7 @@ type prStateReport struct {
 	Trunk    string             `json:"trunk"`
 	Lanes    map[string][]int   `json:"lanes"`
 	PRs      map[int]prstate.PR `json:"prs"`
+	Stale    *prStale           `json:"stale,omitempty"`
 }
 
 func newVcsPRStateCmd() *cobra.Command {
@@ -145,8 +167,10 @@ object. Records are at most 30 seconds old; a read of anything older polls
 GitHub once for every pull request any process on the machine watches in the
 repository, the same poll ccx vcs pr watch and ccx vcs pr status share.
 
-While GitHub rate-limits the machine the command fails naming the next probe,
-unless --wait allows sitting it out.`,
+While GitHub rate-limits the machine the command sits it out for as long as
+--wait allows, then serves the cached records with a top-level "stale" object
+naming when they were polled and when the next probe is; records the cache
+never held fail naming the next probe.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runVcsPRState(cmd, args, repo, prefixes, wait)
 		},
@@ -177,11 +201,11 @@ func runVcsPRState(cmd *cobra.Command, args []string, repo string, prefixes []st
 	if err != nil {
 		return fmt.Errorf("pr state: %w", err)
 	}
-	st, err := readPRStateWaiting(ctx, store, prstate.Want{PRs: numbers, Prefixes: prefixes}, wait)
+	st, limited, err := readPRStateWaiting(ctx, store, prstate.Want{PRs: numbers, Prefixes: prefixes}, wait)
 	if err != nil {
 		return fmt.Errorf("pr state: %w", err)
 	}
-	report := prStateReport{Repo: repo, PolledAt: st.PolledAt, Trunk: st.Trunk.Name, Lanes: map[string][]int{}, PRs: map[int]prstate.PR{}}
+	report := prStateReport{Repo: repo, PolledAt: st.PolledAt, Trunk: st.Trunk.Name, Lanes: map[string][]int{}, PRs: map[int]prstate.PR{}, Stale: staleAt(limited, st.PolledAt)}
 	for _, prefix := range prefixes {
 		report.Lanes[prefix] = st.Lanes[prefix].PRs
 		numbers = append(numbers, st.Lanes[prefix].PRs...)
@@ -236,7 +260,7 @@ func collectPRQueue(ctx context.Context, repo string, numbers []int, warn io.Wri
 	if err != nil {
 		return nil, fmt.Errorf("pr status: %w", err)
 	}
-	st, err := readPRStateWaiting(ctx, store, prstate.Want{PRs: numbers}, prStatusRateLimitWait)
+	st, limited, err := readPRStateWaiting(ctx, store, prstate.Want{PRs: numbers}, prStatusRateLimitWait)
 	if err != nil {
 		return nil, fmt.Errorf("pr status: %w", err)
 	}
@@ -244,6 +268,9 @@ func collectPRQueue(ctx context.Context, repo string, numbers []int, warn io.Wri
 	for _, number := range numbers {
 		pr := st.PRs[number]
 		if pr.Graphite == nil {
+			if limited != nil {
+				return nil, fmt.Errorf("pr status: the cache has never polled %s#%d, and github %s; next probe at %s", repo, number, limited.Reason, limited.ProbeAt.UTC().Format(time.RFC3339))
+			}
 			return nil, fmt.Errorf("pr status: graphite has no record of %s#%d", repo, number)
 		}
 		info := *pr.Graphite
@@ -260,23 +287,31 @@ func collectPRQueue(ctx context.Context, repo string, numbers []int, warn io.Wri
 		}
 		r := classifyPRQueue(info, landedOn, activity)
 		r.Conflicting = r.Queue == prQueueEvicted && pr.MergeStateStatus == "DIRTY"
+		r.Stale = staleAt(limited, pr.PolledAt)
 		reports = append(reports, r)
 	}
 	return reports, nil
 }
 
 // readPRStateWaiting reads through store, sitting out GitHub's rate limit to
-// each next probe for as long as wait allows.
-func readPRStateWaiting(ctx context.Context, store *prstate.Store, want prstate.Want, wait time.Duration) (prstate.State, error) {
+// each next probe for as long as wait allows. A refusal past that returns the
+// cached state with the backoff that refused it when the cache covers want,
+// and the refusal itself when it does not.
+func readPRStateWaiting(ctx context.Context, store *prstate.Store, want prstate.Want, wait time.Duration) (prstate.State, *prstate.Backoff, error) {
 	deadline := time.Now().Add(wait)
 	for {
 		st, err := store.Read(ctx, want)
 		var limited *prstate.LimitedError
-		if !errors.As(err, &limited) || limited.ProbeAt.After(deadline) {
-			return st, err
+		switch {
+		case !errors.As(err, &limited):
+			return st, nil, err
+		case limited.ProbeAt.After(deadline) && st.Covers(want):
+			return st, &limited.Backoff, nil
+		case limited.ProbeAt.After(deadline):
+			return st, nil, err
 		}
 		if err := sleepCtx(ctx, time.Until(limited.ProbeAt)); err != nil {
-			return st, err
+			return st, nil, err
 		}
 	}
 }
@@ -331,6 +366,9 @@ func renderPRQueue(reports []prQueueReport) string {
 			}
 		case prQueueNotQueued:
 			fmt.Fprintf(&b, " · %s", strings.ToLower(r.State))
+		}
+		if r.Stale != nil {
+			b.WriteString(" · " + r.Stale.String())
 		}
 		b.WriteString("\n")
 	}

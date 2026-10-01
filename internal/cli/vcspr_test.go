@@ -6,11 +6,15 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yasyf/cc-context/internal/gtapi"
+	"github.com/yasyf/cc-context/internal/prstate"
 )
 
 // Graphite's pull-request-info answers for Forge-AI/monorepo on 2026-09-24:
@@ -305,5 +309,102 @@ func TestPRStateReportsRecordsAndLanes(t *testing.T) {
 	pr := got.PRs[25121]
 	if got.Trunk != "dev" || fmt.Sprint(got.Lanes["yasyf/v3-x/"]) != "[25121]" || pr.HeadRefName != "yasyf/pr-25121" || pr.Graphite == nil {
 		t.Errorf("report = %+v", got)
+	}
+}
+
+func prStateBackdate(t *testing.T, by time.Duration) {
+	t.Helper()
+	root, err := prStateRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "Forge-AI", "monorepo", "state.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var st prstate.State
+	if err := json.Unmarshal(data, &st); err != nil {
+		t.Fatal(err)
+	}
+	st.PolledAt = st.PolledAt.Add(-by)
+	for n, pr := range st.PRs {
+		pr.PolledAt = pr.PolledAt.Add(-by)
+		st.PRs[n] = pr
+	}
+	if data, err = json.Marshal(st); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPRStatusServesTheCacheMarkedStaleWhileRateLimited(t *testing.T) {
+	_, client := stubPRInfo(t, prInfoQueued)
+	drained := strings.Replace(prPoll(`"p0":`+prNode(25121, "OPEN", prComments())), `"remaining":4900,"resetAt":"2026-09-30T08:00:00Z"`, `"remaining":12,"resetAt":"2099-01-01T00:00:00Z"`, 1)
+	github := stubPRState(t, drained)
+
+	fresh, err := runPRStatusCmd(t, client, "--repo", "Forge-AI/monorepo", "25121")
+	if err != nil {
+		t.Fatalf("pr status: %v", err)
+	}
+	if want := "#25121  queued · enqueued b103a576 into dev\n"; fresh != want {
+		t.Errorf("fresh report = %q, want %q", fresh, want)
+	}
+	prStateBackdate(t, time.Minute)
+
+	out, err := runPRStatusCmd(t, client, "--repo", "Forge-AI/monorepo", "25121")
+	if err != nil {
+		t.Fatalf("pr status under the quota backoff: %v", err)
+	}
+	if !strings.HasPrefix(out, "#25121  queued · enqueued b103a576 into dev · stale, polled 20") || len(github.queries) != 1 {
+		t.Errorf("stale report = %q after %d polls, want the cached verdict marked stale with no new poll", out, len(github.queries))
+	}
+	jsonOut, err := runPRStatusCmd(t, client, "--repo", "Forge-AI/monorepo", "--json", "25121")
+	if err != nil {
+		t.Fatalf("pr status --json under the quota backoff: %v", err)
+	}
+	var got []prQueueReport
+	if err := json.Unmarshal([]byte(jsonOut), &got); err != nil {
+		t.Fatalf("unmarshal %q: %v", jsonOut, err)
+	}
+	if len(got) != 1 || got[0].Stale == nil || got[0].Stale.Reason != "quota below the floor" || got[0].Stale.ProbeAt.Year() != 2099 || got[0].Stale.PolledAt.IsZero() {
+		t.Errorf("json report = %+v, want a stale marker naming the backoff and the poll time", got)
+	}
+
+	_, err = runPRStatusCmd(t, client, "--repo", "Forge-AI/monorepo", "25121", "99999")
+	if err == nil || !strings.Contains(err.Error(), "github quota below the floor") || !strings.Contains(err.Error(), "next probe at 2099-01-01T00:00:00Z") {
+		t.Errorf("err = %v, want the refusal for a pull request the cache never polled", err)
+	}
+}
+
+func TestPRStateMarksABackoffServedReadStale(t *testing.T) {
+	_, client := stubPRInfo(t, prInfoQueued)
+	drained := strings.Replace(prPoll(`"p0":`+prNode(25121, "OPEN", prComments())), `"remaining":4900,"resetAt":"2026-09-30T08:00:00Z"`, `"remaining":12,"resetAt":"2099-01-01T00:00:00Z"`, 1)
+	stubPRState(t, drained)
+	run := func() prStateReport {
+		t.Helper()
+		cmd := newVcsPRCmd()
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetArgs([]string{"state", "--repo", "Forge-AI/monorepo", "25121"})
+		if err := cmd.ExecuteContext(withGTAPI(t.Context(), client)); err != nil {
+			t.Fatalf("pr state: %v", err)
+		}
+		var got prStateReport
+		if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+			t.Fatalf("unmarshal %q: %v", out.String(), err)
+		}
+		return got
+	}
+
+	if got := run(); got.Stale != nil {
+		t.Errorf("fresh report carries a stale marker: %+v", got.Stale)
+	}
+	prStateBackdate(t, time.Minute)
+	got := run()
+	if got.Stale == nil || got.Stale.Reason != "quota below the floor" || !got.Stale.PolledAt.Equal(got.PolledAt) || got.PRs[25121].HeadRefName != "yasyf/pr-25121" {
+		t.Errorf("report = %+v, want the cached record served with a stale marker", got)
 	}
 }

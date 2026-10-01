@@ -38,6 +38,7 @@ const (
 
 	leaseTTL         = 15 * time.Minute
 	keepFor          = 24 * time.Hour
+	pushLag          = 10 * time.Minute
 	defaultLimitWait = time.Minute
 	rateFloor        = 100
 	stateFile        = "state.json"
@@ -84,6 +85,10 @@ type PR struct {
 	Graphite         *gtapi.PullRequestInfo `json:"graphite,omitempty"`
 	SquashOn         []string               `json:"squashOn,omitempty"`
 	PolledAt         time.Time              `json:"polledAt"`
+	// PushedAt is when this machine last pushed HeadRefOid, set while GitHub
+	// has yet to show that head; the other fields still describe the head it
+	// did show.
+	PushedAt time.Time `json:"pushedAt,omitzero"`
 }
 
 // Rollup is the head commit's aggregate check state and the contexts behind
@@ -211,6 +216,28 @@ func (s *Store) Read(ctx context.Context, want Want) (State, error) {
 	return st, err
 }
 
+// Pushed records the head this machine just pushed to each pull request, so
+// a read before GitHub shows it answers with the pushed head rather than the
+// one polled before the push.
+func (s *Store) Pushed(ctx context.Context, heads map[int]string) error {
+	return cache.WithLock(ctx, s.dir, "poll", func() error {
+		st, err := s.load()
+		if err != nil {
+			return err
+		}
+		if st.PRs == nil {
+			st.PRs = map[int]PR{}
+		}
+		now := s.now()
+		for n, head := range heads {
+			pr := st.PRs[n]
+			pr.Number, pr.HeadRefOid, pr.PushedAt = n, head, now
+			st.PRs[n] = pr
+		}
+		return s.save(st)
+	})
+}
+
 func (s *Store) read(ctx context.Context, want Want) (State, error) {
 	st, err := s.load()
 	if err != nil {
@@ -324,10 +351,27 @@ func (l *Leases) renew(want Want, now time.Time) {
 	}
 }
 
+// Covers reports whether st holds a record for everything want names, however
+// old, so a reader the budget refused can serve it labelled stale.
+func (st State) Covers(want Want) bool {
+	for _, n := range want.PRs {
+		if _, ok := st.PRs[n]; !ok {
+			return false
+		}
+	}
+	for _, prefix := range want.Prefixes {
+		lane, ok := st.Lanes[prefix]
+		if !ok || !st.Covers(Want{PRs: lane.PRs}) {
+			return false
+		}
+	}
+	return true
+}
+
 func (st State) fresh(want Want, now time.Time) bool {
 	for _, n := range want.PRs {
 		pr, ok := st.PRs[n]
-		if !ok || !pr.settled() && now.Sub(pr.PolledAt) >= MinInterval {
+		if !ok || pr.PushedAt.After(pr.PolledAt) || !pr.settled() && now.Sub(pr.PolledAt) >= MinInterval {
 			return false
 		}
 	}
@@ -380,6 +424,9 @@ func (st *State) absorb(p poll, now time.Time) {
 	}
 	for n, pr := range p.prs {
 		pr.PolledAt = now
+		if was := st.PRs[n]; was.PushedAt.After(was.PolledAt) && pr.HeadRefOid != was.HeadRefOid && now.Sub(was.PushedAt) < pushLag {
+			pr.HeadRefOid, pr.PushedAt = was.HeadRefOid, was.PushedAt
+		}
 		st.PRs[n] = pr
 	}
 	for prefix, prs := range p.lanes {

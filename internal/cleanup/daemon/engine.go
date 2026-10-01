@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -59,6 +60,11 @@ type Tuning struct {
 	ResumeSamples int
 	// Recheck is the interval between activity checks of a waiting job.
 	Recheck time.Duration
+	// RetryAfter is the first retry of a job blocked on a transient
+	// inspection; each consecutive transient block doubles it up to
+	// RetryCeiling.
+	RetryAfter   time.Duration
+	RetryCeiling time.Duration
 	// KeepDone is how many finished records the journal retains.
 	KeepDone int
 	// StatusLimit is the default cap on the jobs one report carries.
@@ -77,6 +83,8 @@ func DefaultTuning() Tuning {
 		ResumeBelow:   25,
 		ResumeSamples: 3,
 		Recheck:       30 * time.Second,
+		RetryAfter:    30 * time.Second,
+		RetryCeiling:  10 * time.Minute,
 		KeepDone:      100,
 		StatusLimit:   50,
 	}
@@ -86,8 +94,8 @@ func (t Tuning) validate() error {
 	switch {
 	case t.Rate <= 0, t.SliceEntries <= 0, t.SliceBudget <= 0:
 		return fmt.Errorf("rate %d, slice of %d entries or %s: all must be positive", t.Rate, t.SliceEntries, t.SliceBudget)
-	case t.SampleEvery <= 0, t.Recheck <= 0:
-		return fmt.Errorf("sample interval %s and recheck interval %s must be positive", t.SampleEvery, t.Recheck)
+	case t.SampleEvery <= 0, t.Recheck <= 0, t.RetryAfter <= 0, t.RetryCeiling < t.RetryAfter:
+		return fmt.Errorf("sample interval %s, recheck interval %s and first retry %s must be positive, and the retry ceiling %s at least the first retry", t.SampleEvery, t.Recheck, t.RetryAfter, t.RetryCeiling)
 	case t.ResumeBelow <= 0, t.PauseAbove < t.ResumeBelow, t.ResumeSamples <= 0:
 		return fmt.Errorf("throttle pauses above %v and resumes after %d samples below %v", t.PauseAbove, t.ResumeSamples, t.ResumeBelow)
 	case t.KeepDone < 0, t.StatusLimit <= 0:
@@ -534,6 +542,12 @@ func (e *Engine) work(ctx context.Context) error {
 		}
 		now := e.clock.Now()
 		if job, ok := e.logicalDue(now); ok {
+			if job.Blocked != nil {
+				var err error
+				if job, err = e.unblock(job); err != nil {
+					return err
+				}
+			}
 			if _, err := e.advance(ctx, job); isFatal(err) {
 				return err
 			}
@@ -601,6 +615,9 @@ func (e *Engine) wake(physical bool) (time.Time, bool) {
 		if job.Phase == cleanup.PhaseWaiting && job.Blocked == nil {
 			consider(e.checked[job.ID].Add(e.tuning.Recheck))
 		}
+		if at, ok := e.retryAt(job); ok {
+			consider(at)
+		}
 	}
 	if physical {
 		consider(e.gov.next())
@@ -613,7 +630,13 @@ func (e *Engine) wake(physical bool) (time.Time, bool) {
 
 func (e *Engine) logicalDue(now time.Time) (cleanup.Job, bool) {
 	for _, job := range e.ordered() {
-		if !job.Phase.Logical() || job.Blocked != nil {
+		if !job.Phase.Logical() {
+			continue
+		}
+		if job.Blocked != nil {
+			if at, ok := e.retryAt(job); ok && !now.Before(at) {
+				return job, true
+			}
 			continue
 		}
 		if at, ok := e.checked[job.ID]; ok && job.Phase == cleanup.PhaseWaiting && now.Before(at.Add(e.tuning.Recheck)) {
@@ -622,6 +645,36 @@ func (e *Engine) logicalDue(now time.Time) (cleanup.Job, bool) {
 		return job, true
 	}
 	return cleanup.Job{}, false
+}
+
+// retryAt is when a job blocked on a transient inspection — a process census
+// or watcher read that failed, or a holder that may leave — retries on its
+// own: RetryAfter past the first block, doubling per consecutive transient
+// block up to RetryCeiling. Any other blockage waits for Retry.
+func (e *Engine) retryAt(job cleanup.Job) (time.Time, bool) {
+	if job.Blocked == nil || !job.Phase.Logical() || !transient(job.Blocked.Reason) {
+		return time.Time{}, false
+	}
+	streak := 0
+	for i := len(job.Errors) - 1; i >= 0; i-- {
+		reason, _, _ := strings.Cut(job.Errors[i].Message, ": ")
+		if !transient(reason) {
+			break
+		}
+		streak++
+	}
+	delay := e.tuning.RetryAfter
+	for range max(streak-1, 0) {
+		if delay >= e.tuning.RetryCeiling {
+			break
+		}
+		delay *= 2
+	}
+	return job.Blocked.At.Add(min(delay, e.tuning.RetryCeiling)), true
+}
+
+func transient(reason string) bool {
+	return reason == "activity" || reason == "watchers"
 }
 
 func (e *Engine) physicalDue() (cleanup.Job, bool) {
