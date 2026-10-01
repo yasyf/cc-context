@@ -223,6 +223,26 @@ func TestRestackGitAsksTheRemoteForAnUnsetTrunk(t *testing.T) {
 	}
 }
 
+// TestRestackGitRefusesAParentTheRemoteDeleted keeps origin/base after the
+// remote deleted base: restack must not replay onto the stale tracking ref.
+func TestRestackGitRefusesAParentTheRemoteDeleted(t *testing.T) {
+	f := shipRepo(t, vcstest.Remote(), vcstest.Branch("feature"))
+	f.Isolate(t)
+	installDropGH(t, f, nil)
+	restackRun(t, f, f.Dir, "git", "push", "-q", "origin", "main:base")
+	restackRun(t, f, f.Dir, "git", "update-ref", "refs/remotes/origin/base", "main")
+	restackRun(t, f, f.Dir, "git", "push", "-q", "origin", "--delete", "base")
+	head := restackRev(t, f, f.Dir, "HEAD")
+
+	_, _, err := runRestackCmd(t, f, "--parent", "base")
+	if err == nil || err.Error() != "restack: origin has no branch base" {
+		t.Fatalf("error = %v, want the missing-branch refusal", err)
+	}
+	if got := restackRev(t, f, f.Dir, "HEAD"); got != head {
+		t.Errorf("HEAD = %s, want %s unmoved", got, head)
+	}
+}
+
 func TestRestackGitFastForwardsTrunk(t *testing.T) {
 	f := vcstest.Repo(t, vcstest.Remote())
 	f.Isolate(t)

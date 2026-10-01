@@ -207,15 +207,20 @@ func restackGit(ctx context.Context, cmd *cobra.Command, l lane, parent string) 
 		fetch = append(fetch, retarget.Base)
 	}
 	fetch = slices.DeleteFunc(fetch, func(name string) bool { return name == "" })
-	heads := map[string]string{}
 	if len(fetch) > 0 {
-		if heads, err = stackRemoteHeads(ctx, dir, "restack", remote, fetch, ""); err != nil {
+		heads, err := stackRemoteHeads(ctx, dir, "restack", remote, fetch, "")
+		if err != nil {
 			return "", err
+		}
+		for _, name := range fetch {
+			if heads[name] == "" {
+				return "", fmt.Errorf("restack: %s has no branch %s", remote, name)
+			}
 		}
 	}
 
 	var trunk vcs.Trunk
-	if !recorded && heads[trunkName] != "" {
+	if !recorded && trunkName != "" {
 		trunk, err = vcs.TrunkFromName(ctx, dir, remote, trunkName)
 	} else {
 		trunk, err = vcs.ResolveTrunk(ctx, dir, remote)
