@@ -203,6 +203,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs prune` finds branches whose pull requests squash-landed.**
+  On the Graphite lane, it uses the GitHub reader from `stack rebase` and
+  requires the landed PR's head to match the local branch; Graphite's lookup
+  by head name only returns open PRs. Queue checks read history once per base.
+  A monorepo dry run found 388 squash-landed branches where v0.67.2 found none;
+  batching cut the patched run from 4m50s to 39s, and user CPU from 197s to 0.4s.
+
 - **`ccx vcs ship` finishes a pull request restate over GraphQL when REST is
   rate limited.** GitHub can refuse the REST `PATCH` with a secondary rate
   limit while the GraphQL budget is untouched, which failed the ship after its

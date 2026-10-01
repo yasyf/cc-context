@@ -130,6 +130,30 @@ func prSquashOnBase(ctx context.Context, dir render.Dir, base string, number int
 	return ""
 }
 
+// prSquashCited matches the pull request number a queue squash's subject ends in.
+var prSquashCited = regexp.MustCompile(`\(#(\d+)\)$`)
+
+// prSquashesOnBase names every pull request a squash subject on this checkout's
+// copy of the base branch cites, in one read of its history: a prune answering
+// hundreds of queue closes would otherwise run one git log apiece.
+func prSquashesOnBase(ctx context.Context, dir render.Dir, base string) map[int]bool {
+	if base == "" {
+		return nil
+	}
+	out, err := render.RunCLI(ctx, dir, "git", []string{"log", "--format=%s", "origin/" + base})
+	if err != nil {
+		return nil
+	}
+	cited := map[int]bool{}
+	for _, subject := range strings.Split(out, "\n") {
+		if m := prSquashCited.FindStringSubmatch(subject); m != nil {
+			number, _ := strconv.Atoi(m[1])
+			cited[number] = true
+		}
+	}
+	return cited
+}
+
 // prQueueClose is one pull request the Graphite merge queue closed, and the base
 // branch its squash would be on.
 type prQueueClose struct {
@@ -148,8 +172,12 @@ type prQueueClose struct {
 func resolveQueueLandings(ctx context.Context, dir render.Dir, closes []prQueueClose) map[int]bool {
 	landed := make(map[int]bool, len(closes))
 	ask := make([]int, 0, len(closes))
+	squashed := map[string]map[int]bool{}
 	for _, closed := range closes {
-		if prSquashOnBase(ctx, dir, closed.Base, closed.Number) != "" {
+		if _, read := squashed[closed.Base]; !read {
+			squashed[closed.Base] = prSquashesOnBase(ctx, dir, closed.Base)
+		}
+		if squashed[closed.Base][closed.Number] {
 			landed[closed.Number] = true
 			continue
 		}
