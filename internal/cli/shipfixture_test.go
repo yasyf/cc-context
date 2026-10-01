@@ -1037,6 +1037,8 @@ case "$1 $2" in
     esac ;;
   "api graphql")
     case "$*" in
+      *updatePullRequest*) if [ -n "$GH_PR_GRAPHQL_FAIL" ]; then printf '%s\n' "$GH_PR_GRAPHQL_FAIL" >&2; exit 1; fi ;;
+      *'pullRequest(number:$number){id}'*) printf '%s\n' "$GH_PR_NODE_ID" ;;
       *pullRequests*)
         # One aliased field per branch, off the same GH_PR_VIEW_* fixtures the
         # per-branch gh pr view read; an empty node set is a branch with no PR.
