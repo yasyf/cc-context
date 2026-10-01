@@ -398,11 +398,11 @@ func stackFinishPublication(ctx context.Context, cmd *cobra.Command, l lane, com
 	}
 	leases := stackPublicationLeases(run)
 	sub := gtSubmit{prefix: stackRebasePrefix, suffix: " — source checkouts are untouched; run ccx vcs stack continue to resume publication", leases: leases, trunkHead: run.Pin, draft: run.Draft, noVerify: run.NoVerify, publication: run}
-	_, entries, err := gtSubmitStack(ctx, l, cmd.ErrOrStderr(), sub, commonDir, state, tr, live, "")
+	published, entries, err := gtSubmitStack(ctx, l, cmd.ErrOrStderr(), sub, commonDir, state, tr, live, "")
 	if err != nil {
 		return err
 	}
-	cmd.Printf("published %d branches\nproposing %d commit(s), %d file(s)\n", len(live), commits, files)
+	cmd.Printf("published %d branches\nproposing %d commit(s), %d file(s)\n", len(published), commits, files)
 	if run.Ship != nil {
 		if err := stackFinishShip(ctx, cmd, l, run, entries); err != nil {
 			return err

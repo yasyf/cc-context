@@ -146,6 +146,11 @@ above it; --include submits it anyway. One whose pull request landed is no
 lane's any more: it is dropped like any landed branch, and the branches on it
 move onto trunk.
 
+A branch whose name differs from the checked-out branch's before the last slash
+is another lane's too: one this lane sits on is kept at its published head,
+neither pushed nor submitted, and named on stderr; the rest are left out.
+--all-lanes, or --include for one branch, submits them anyway.
+
 Above the branch checked out here, a branch belongs to another lane when the
 rest of the record contradicts its gt parent: its open pull request is based on
 neither that parent nor the branch a landed parent leaves it on, or its history
@@ -174,7 +179,8 @@ the run leaves out, is refused before anything moves.`,
 	cmd.Flags().BoolVar(&o.draft, "draft", false, "open new PRs as drafts")
 	cmd.Flags().StringArrayVar(&o.prTitle, "pr-title", nil, "title for a pull request: <branch>=<title>, or a bare title for the branch checked out here (repeatable)")
 	cmd.Flags().StringArrayVar(&o.prBodyFile, "pr-body-file", nil, "body file for a pull request: <branch>=<path>, or a bare path for the branch checked out here; - reads stdin (repeatable)")
-	cmd.Flags().StringArrayVar(&include, "include", nil, "submit this branch even though another working copy has it checked out (repeatable)")
+	cmd.Flags().StringArrayVar(&include, "include", nil, "submit this branch even though another working copy has it checked out or it is another lane's (repeatable)")
+	cmd.Flags().BoolVar(&o.allLanes, "all-lanes", false, "submit the branches of other lanes too, a lane being the branch name before its last slash")
 	cmd.Flags().StringArrayVar(&o.landed, "landed", nil, "treat <branch> as landed and drop it (repeatable)")
 	cmd.Flags().BoolVar(&o.dropCommits, "drop-commits", false, stackDropCommitsUsage)
 	cmd.Flags().StringVar(&to, "to", "", stackToUsage)
@@ -393,7 +399,7 @@ func runStackSubmit(cmd *cobra.Command, o shipOpts, include []string, to string)
 	if err := stackAnnounceSkipped(errW, pinned, skipped); err != nil {
 		return err
 	}
-	return runStackRebase(cmd, stackRebaseOpts{members: chain, pinned: stackSkipNames(pinned), landed: o.landed, draft: o.draft, ship: intent, submit: true, dropCommits: o.dropCommits, to: to})
+	return runStackRebase(cmd, stackRebaseOpts{members: chain, pinned: stackSkipNames(pinned), landed: o.landed, draft: o.draft, ship: intent, submit: true, dropCommits: o.dropCommits, to: to, include: include, otherLanes: o.allLanes})
 }
 
 // stackSubmitIntent carries --pr-title and --pr-body-file into the run as a ship

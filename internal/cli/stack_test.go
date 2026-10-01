@@ -287,6 +287,62 @@ func TestStackSubmitGoesThroughTheGraphiteAPI(t *testing.T) {
 	}
 }
 
+func stackOtherLaneRepo(t *testing.T) (*vcstest.Fixture, *gtAPIStub, string) {
+	t.Helper()
+	f := shipGTRepo(t, vcstest.GTParentStack("l30/base", "l18/feature"))
+	stubOpenPRs(t, f, nil, "l30/base", "l18/feature")
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "l30/base", "l18/feature")
+	published := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "l30/base")
+	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	shipResetLog(t, f)
+	return f, api, published
+}
+
+func TestStackSubmitKeepsAnotherLanesBranchAtItsPublishedHead(t *testing.T) {
+	for _, args := range [][]string{{"submit"}, {"rebase"}, {"rebase", "--parent", "l18/feature=l30/base"}} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			f, api, published := stackOtherLaneRepo(t)
+
+			out, errOut, err := runStackCmd(t, f, args...)
+			if err != nil {
+				t.Fatalf("stack %v: %v", args, err)
+			}
+			if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "l30/base"); got != published {
+				t.Errorf("origin l30/base = %s, want it left at its published head %s", got, published)
+			}
+			if heads := api.submitHeads(); !slices.Equal(heads, []string{"l18/feature"}) {
+				t.Errorf("submit posts = %v, want l18/feature alone", heads)
+			}
+			feature := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "l18/feature")
+			if !stackOnto(t, f, published, feature) {
+				t.Errorf("origin l18/feature %s is not on l30/base's published head %s", feature, published)
+			}
+			if want := "not pushing l30/base — another lane's"; !strings.Contains(errOut, want) {
+				t.Errorf("stderr = %q, want %q", errOut, want)
+			}
+			if !strings.Contains(out, "published 1 branches\n") {
+				t.Errorf("report = %q, want only l18/feature counted as published", out)
+			}
+		})
+	}
+}
+
+func TestStackSubmitAllLanesPushesAnotherLanesBranch(t *testing.T) {
+	f, api, published := stackOtherLaneRepo(t)
+
+	if _, _, err := runStackCmd(t, f, "submit", "--all-lanes"); err != nil {
+		t.Fatalf("stack submit --all-lanes: %v", err)
+	}
+	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "l30/base"); got == published || !stackOnto(t, f, "origin/main", got) {
+		t.Errorf("origin l30/base = %s, want it rebased onto the new trunk", got)
+	}
+	if heads := api.submitHeads(); !slices.Equal(heads, []string{"l30/base", "l18/feature"}) {
+		t.Errorf("submit posts = %v, want both lanes", heads)
+	}
+}
+
 func TestStackSubmitReportsWhatItProposes(t *testing.T) {
 	f := shipGTRepo(t, vcstest.GTStack("base", "feature"))
 	shipResetLog(t, f)

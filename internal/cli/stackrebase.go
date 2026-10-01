@@ -135,6 +135,7 @@ type stackRebaseRun struct {
 	dir           string
 	saved         time.Time
 	left          []stackLeft
+	lanePins      []string
 }
 
 // stackLeft is a branch of the stack a run leaves exactly where it is: an
@@ -183,6 +184,8 @@ type stackRebaseOpts struct {
 	dropCommits bool
 	restack     bool
 	allLanes    bool
+	otherLanes  bool
+	include     []string
 	to          string
 }
 
@@ -225,7 +228,9 @@ out, even when its branches sit on one this run moves. --to <branch> stops the
 run at <branch>: of the branches stacked above a seed, only those <branch> sits
 on, and <branch> itself, join it. Every seed must be <branch> or sit below it;
 any other <branch> is refused, as is one a member was last published onto. --all-lanes widens the run to every branch gt
-tracks.
+tracks. Without it, a pushing run keeps a branch whose name differs from the
+checked-out branch's before the last slash at its published head when this lane
+sits on it, never pushing or submitting it, and leaves out the rest of that lane.
 
 Every branch's local and remote head is recorded before anything moves, and each
 branch is replayed from the base it was recorded on (--onto <new parent>
@@ -384,6 +389,11 @@ func stackBegin(ctx context.Context, cmd *cobra.Command, l lane, commonDir strin
 	}
 	if err := stackAnnounceLeft(cmd, run.left); err != nil {
 		return err
+	}
+	if pins := slices.DeleteFunc(slices.Clone(run.lanePins), func(name string) bool { return run.branch(name) == nil || !run.branch(name).Pinned }); len(pins) > 0 {
+		if _, err := fmt.Fprintf(cmd.ErrOrStderr(), "stack rebase: not pushing %s — another lane's, kept at their published heads; --all-lanes pushes them\n", strings.Join(pins, ", ")); err != nil {
+			return err
+		}
 	}
 	cmd.Println(strings.Join(stackPlanLines(run), "\n"))
 	regen, err := stackRegenPlan(ctx, l.dir(), run)
@@ -720,6 +730,12 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 			}
 		}
 	}
+	var otherLanes []stackLeft
+	var lanePins []string
+	if !o.noPush && !o.allLanes && !o.otherLanes && o.replayed == nil && current != "" && current != trunk {
+		members, lanePins, otherLanes = stackPinOtherLanes(retargeted, current, members, o.include)
+		o.pinned = append(o.pinned, slices.DeleteFunc(slices.Clone(lanePins), func(name string) bool { return slices.Contains(o.pinned, name) })...)
+	}
 	if above := slices.DeleteFunc(slices.Clone(members), func(name string) bool { return upTo == nil || slices.Contains(upTo, name) }); len(above) > 0 {
 		return nil, fmt.Errorf("stack rebase: --to %s cannot stop there: %s, above it, is where a branch of the run was last published", o.to, strings.Join(above, ", "))
 	}
@@ -739,6 +755,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	if err != nil {
 		return nil, err
 	}
+	left = append(otherLanes, left...)
 	pin, err := gtTrunkHead(ctx, l.dir(), prefix, tr)
 	if err != nil {
 		return nil, err
@@ -752,7 +769,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	if err != nil {
 		return nil, fmt.Errorf("stack rebase: %w", err)
 	}
-	run := &stackRebaseRun{Trunk: trunk, Pin: pin, NoPush: o.noPush, Origin: l.checkout.Root, Draft: o.draft, NoVerify: o.noVerify, Tip: o.tip, TipOnly: o.tipOnly, DropCommits: o.dropCommits, AllLanes: o.allLanes, To: o.to, deferPush: o.deferPush, Ship: o.ship, Roots: roots, Pid: os.Getpid(), Started: stackProcStart(os.Getpid()), Host: host, left: left}
+	run := &stackRebaseRun{Trunk: trunk, Pin: pin, NoPush: o.noPush, Origin: l.checkout.Root, Draft: o.draft, NoVerify: o.noVerify, Tip: o.tip, TipOnly: o.tipOnly, DropCommits: o.dropCommits, AllLanes: o.allLanes, To: o.to, deferPush: o.deferPush, Ship: o.ship, Roots: roots, Pid: os.Getpid(), Started: stackProcStart(os.Getpid()), Host: host, left: left, lanePins: lanePins}
 	own := map[string]bool{}
 	if current != "" && current != trunk {
 		down, err := gtDownstack(stackRebasePrefix, retargeted, current, trunk)
@@ -900,7 +917,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 			return nil, fmt.Errorf("stack rebase: %s is in the merge queue as %s, and moving it would evict it — take it out of the queue first", name, b.PR)
 		case slices.Contains(o.pinned, name):
 			if !stackPinPublished(b) {
-				return nil, fmt.Errorf("stack submit: %s is another lane's and has never been pushed, so there is no published head to stack on — submit it from its own working copy first, or pass --include %s", name, name)
+				return nil, fmt.Errorf("stack submit: %s is another lane's and has never been pushed, so there is no published head to stack on — submit it from its own working copy first, or take it into this run with --include %s or --all-lanes", name, name)
 			}
 			b.Kept, b.Pinned = true, true
 		case queued[name] || (moving != nil && !moving[name]):
@@ -1180,6 +1197,39 @@ func stackRetargeted(state gtState, overrides map[string]string) gtState {
 		out[child] = s
 	}
 	return out
+}
+
+func branchLane(branch string) string {
+	return branch[:max(strings.LastIndexByte(branch, '/'), 0)]
+}
+
+// stackPinOtherLanes pins at its published head each branch of another lane,
+// one whose name differs from the checked-out branch's before the last slash,
+// that this lane sits on, and leaves out the rest of the other lanes.
+func stackPinOtherLanes(state gtState, current string, members, include []string) (kept, pinned []string, left []stackLeft) {
+	lane := branchLane(current)
+	other := func(name string) bool { return branchLane(name) != lane && !slices.Contains(include, name) }
+	carried := map[string]bool{}
+	for _, name := range members {
+		if other(name) {
+			continue
+		}
+		for parent := state[name].Parents[0].Ref; other(parent) && slices.Contains(members, parent) && !carried[parent]; parent = state[parent].Parents[0].Ref {
+			carried[parent] = true
+		}
+	}
+	for _, name := range members {
+		switch {
+		case !other(name):
+			kept = append(kept, name)
+		case carried[name]:
+			kept = append(kept, name)
+			pinned = append(pinned, name)
+		default:
+			left = append(left, stackLeft{branch: name, why: "it is lane " + branchLane(name) + "'s, not " + lane + "'s; --all-lanes takes it"})
+		}
+	}
+	return kept, pinned, left
 }
 
 // stackPinHeldParents pins a published parent stackWithPublishedParents
