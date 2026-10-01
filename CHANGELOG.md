@@ -164,9 +164,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A child Graphite parked on `graphite-base/<number>` restacks with its
+  parent.** When a parent's submit moved a child's pull request onto its
+  temporary `graphite-base/<number>` base, `stack rebase` and `stack submit`
+  read that base as the child's real parent. They left the child and everything
+  above it in place, and suggested `gt track --parent graphite-base/<number>`,
+  which would re-parent the child onto the parent's old tip. Such a base now
+  counts as agreeing with the gt parent, so the child is replayed and
+  resubmitted onto its parent, and Graphite moves the pull request back.
+
 - **A worktree removal survives a process listing that times out.** Naming or
   retiring a tree's watchers, and checking that the cleanup folder is
-  unwatched, runs `ps` and `lsof` under a 5s bound, and a slow
+  unwatched, runs `ps` and `lsof` under a bound, now 30s rather than 5s, and a slow
   process table left the cleanup job blocked at `prepared (watchers)` until a
   manual retry. A timed-out listing is now a warning. The job moves the tree
   when a remote-tracking ref holds its head, and the activity guard still
