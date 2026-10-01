@@ -172,9 +172,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   parent's old commits along with the child's, and `ship --tip-only` pushed
   them. The rebase now also reads the fork point from the reflog of
   `origin/<parent>`, which records each head a fetch saw, and takes the
-  furthest of the two. When neither reflog places the branch, it refuses,
-  naming gt's recorded revision, the parent's local and published heads, and
-  the `git rebase --onto` and `gt track --parent` commands that fix it.
+  furthest of the two. When neither reflog places a branch that stays on that
+  parent, it refuses, naming gt's recorded revision, the parent's local and
+  published heads, and the `git rebase --onto` and `gt track --parent`
+  commands that fix it. A branch leaving the parent, landed or named away by
+  `--parent`, keeps the merge-base fallback.
 
 - **`ccx vcs ship --no-push` fetches the trunk before a Graphite restack.**
   A stale `origin/<trunk>` could make a published parent look off its parent.

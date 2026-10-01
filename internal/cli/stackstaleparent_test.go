@@ -51,6 +51,26 @@ func TestStackRebaseRefusesABranchNoReflogPlacesOnItsParent(t *testing.T) {
 	}
 }
 
+func TestStackRebaseKeepsAChildOffALandedParentWithoutReflogs(t *testing.T) {
+	f := shipGTRepo(t)
+	stackOffLandedParent(t, f)
+	mustRun(t, f.Env(), f.Dir, "git", "reflog", "expire", "--expire=now", "--all")
+
+	if _, _, err := runStackCmd(t, f, "rebase", "--dry-run", "--no-push"); err != nil {
+		t.Fatalf("stack rebase refused a child already on trunk: %v", err)
+	}
+}
+
+func TestStackRebaseMovesAChildNamedOntoTrunkWithoutReflogs(t *testing.T) {
+	f := stackRebaseRepo(t, "a", "b")
+	mustRun(t, f.Env(), f.Dir, "git", "rebase", "-q", "--onto", "origin/main", "a", "b")
+	mustRun(t, f.Env(), f.Dir, "git", "reflog", "expire", "--expire=now", "--all")
+
+	if _, _, err := runStackCmd(t, f, "rebase", "--dry-run", "--no-push", "--parent", "b=main"); err != nil {
+		t.Fatalf("stack rebase refused b named onto trunk: %v", err)
+	}
+}
+
 func stackStaleParentRepo(t *testing.T) *vcstest.Fixture {
 	t.Helper()
 	f := shipGTRepo(t, vcstest.GTStack("base", "feature"))

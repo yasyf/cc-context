@@ -1750,11 +1750,10 @@ func stackOrder(trunk string, byName map[string]*stackRebaseBranch) ([]string, e
 	return order, nil
 }
 
-// stackOldBase is the commit a branch's own work starts after: the furthest
-// recorded parent head it contains, else the furthest fork point in the reflogs
-// of the parent's local and remote-tracking refs, else a refusal, since any
-// other base replays the parent's commits. A branch leaving that parent starts
-// where it meets trunk when trunk already holds everything between.
+// stackOldBase is where a branch's own work starts: the furthest recorded parent
+// head it contains, else the furthest fork point in the parent's local and
+// remote-tracking reflogs. A branch staying on the parent is refused past that;
+// one leaving it takes its merge base, or trunk's when trunk holds the rest.
 func stackOldBase(ctx context.Context, dir render.Dir, tr vcs.Trunk, pin string, state gtState, self *stackRebaseBranch, byName map[string]*stackRebaseBranch) (string, error) {
 	s := state[self.Name]
 	onTrunk, err := stackMergeBase(ctx, dir, self.Head, pin)
@@ -1802,8 +1801,13 @@ func stackOldBase(ctx context.Context, dir render.Dir, tr vcs.Trunk, pin string,
 		if best, err = stackFurthest(ctx, dir, self.Head, forks); err != nil {
 			return "", err
 		}
-		if best == "" {
+		if best == "" && self.Parent == parent {
 			return "", stackNoOldBase(ctx, dir, tr, state, self.Name, published)
+		}
+		if best == "" {
+			if best, err = stackMergeBase(ctx, dir, self.Head, candidates[0]); err != nil {
+				return "", err
+			}
 		}
 	}
 	if self.Parent == parent {
