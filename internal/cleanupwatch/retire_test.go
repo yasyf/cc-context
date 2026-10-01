@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 type fixture struct {
@@ -795,6 +796,42 @@ func TestRetireReportsAnUnverifiedFSMonitorStop(t *testing.T) {
 				t.Errorf("Outcome = %+v, want both roots retired and no verified stop", out)
 			}
 		})
+	}
+}
+
+type slowProcs struct {
+	inner Processes
+	delay time.Duration
+}
+
+func (p slowProcs) FSMonitorDaemons(ctx context.Context) ([]Process, error) {
+	time.Sleep(p.delay)
+	return p.inner.FSMonitorDaemons(ctx)
+}
+
+func (p slowProcs) Processes(ctx context.Context, pids []int) (map[int]Process, error) {
+	return p.inner.Processes(ctx, pids)
+}
+
+func TestRetireBoundsTheSettleWaitBySlowListings(t *testing.T) {
+	f := newFixture(t)
+	f.w.stubborn = true
+	d := f.w.deps()
+	d.SettleTries, d.SettleInterval = 50, time.Millisecond
+	d.Procs = slowProcs{inner: d.Procs, delay: 40 * time.Millisecond}
+	p, err := Plan(context.Background(), d, f.wt)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	start := time.Now()
+	_, err = Retire(context.Background(), d, p)
+
+	if err == nil || !strings.Contains(err.Error(), f.expand("fsmonitor daemon 101 still serves WT after stop")) {
+		t.Fatalf("Retire error = %v, want the unverified stop", err)
+	}
+	if elapsed := time.Since(start); elapsed > 1500*time.Millisecond {
+		t.Errorf("Retire took %s, want the settle wait bounded by its 50ms budget, not 50 slow listings", elapsed)
 	}
 }
 

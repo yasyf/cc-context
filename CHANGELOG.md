@@ -170,8 +170,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   read that base as the child's real parent. They left the child and everything
   above it in place, and suggested `gt track --parent graphite-base/<number>`,
   which would re-parent the child onto the parent's old tip. Such a base now
-  counts as agreeing with the gt parent, so the child is replayed and
-  resubmitted onto its parent, and Graphite moves the pull request back.
+  counts as agreeing with the gt parent when gt last submitted the child on
+  that parent, so the child is replayed and resubmitted onto it and Graphite
+  moves the pull request back. A child last submitted on another branch, or
+  never submitted from this clone, is still left in place, now naming the
+  branch it was submitted on.
 
 - **A worktree removal survives a process listing that times out.** Naming or
   retiring a tree's watchers, and checking that the cleanup folder is
@@ -181,7 +184,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   when a remote-tracking ref holds its head, and the activity guard still
   checks it, discounting no watcher, after a fresh check for uncommitted
   changes. A head no remote-tracking ref holds keeps
-  the job blocked, naming that head.
+  the job blocked, naming that head. The wait for a stopped fsmonitor daemon
+  to exit keeps its 5s budget however slowly each listing answers.
 
 - **A stack rebase never replays a parent's commits as the child's own.**
   When a parent's lane rewrote and pushed it from its own working copy, the

@@ -2461,19 +2461,38 @@ func TestStackVerdictRereadsAPullRequestGitHubStillShowsAtTheOldHead(t *testing.
 }
 
 func TestStackRebaseCarriesABranchGraphiteParkedOnItsBase(t *testing.T) {
-	f := stackRebaseRepo(t, "base", "feature")
-	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
-	stubOpenPRs(t, f, map[string]*stackPR{"feature": {Number: 27090, Title: "feature", State: "OPEN", Base: "graphite-base/27090"}}, "base")
-	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "base")
+	tests := []struct {
+		name      string
+		submitted string
+		carried   bool
+	}{
+		{name: "last submitted on its gt parent", submitted: "base", carried: true},
+		{name: "last submitted on another branch", submitted: "other"},
+		{name: "never submitted"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := stackRebaseRepo(t, "base", "feature")
+			if tt.submitted != "" {
+				head := strings.TrimSpace(mustRun(t, f.Env(), f.Dir, "git", "rev-parse", "feature"))
+				if err := gtmeta.RecordSubmitted(context.Background(), filepath.Join(f.Dir, ".git"), map[string]gtmeta.Version{"feature": {HeadSha: head, BaseName: tt.submitted}}); err != nil {
+					t.Fatalf("record feature's submit: %v", err)
+				}
+			}
+			stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+			stubOpenPRs(t, f, map[string]*stackPR{"feature": {Number: 27090, Title: "feature", State: "OPEN", Base: "graphite-base/27090"}}, "base")
+			mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "base")
 
-	out, _, err := runStackCmd(t, f, "rebase", "--no-push")
-	if err != nil {
-		t.Fatalf("stack rebase: %v", err)
-	}
-	if strings.Contains(out, "graphite-base/27090") {
-		t.Errorf("stack rebase read the graphite-base branch as feature's parent:\n%s", out)
-	}
-	if !stackOnto(t, f, "base", "feature") || !stackOnto(t, f, "origin/main", "feature") {
-		t.Errorf("feature was left off the restacked base:\n%s", out)
+			out, errOut, err := runStackCmd(t, f, "rebase", "--no-push")
+			if err != nil {
+				t.Fatalf("stack rebase: %v", err)
+			}
+			if carried := stackOnto(t, f, "base", "feature") && stackOnto(t, f, "origin/main", "feature"); carried != tt.carried {
+				t.Errorf("feature carried onto the restacked base = %t, want %t:\n%s%s", carried, tt.carried, out, errOut)
+			}
+			if !tt.carried && !strings.Contains(errOut, "left feature alone") {
+				t.Errorf("stderr = %q, want feature named as left alone", errOut)
+			}
+		})
 	}
 }

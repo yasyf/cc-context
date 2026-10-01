@@ -62,10 +62,22 @@ type stackPR struct {
 	Labels    []string `json:"labels,omitempty"`
 	Landed    bool     `json:"landed"`
 	BaseGone  bool     `json:"base_gone,omitempty"`
+	ParkedFrom string `json:"parked_from,omitempty"`
 }
 
-func (p *stackPR) parked() bool {
-	return p.Base == fmt.Sprintf("graphite-base/%d", p.Number)
+func (p *stackPR) base() string {
+	if p.ParkedFrom != "" {
+		return p.ParkedFrom
+	}
+	return p.Base
+}
+
+func stackMarkParked(prs map[string]*stackPR, submitted map[string]gtmeta.Version) {
+	for name, pr := range prs {
+		if pr.Base == fmt.Sprintf("graphite-base/%d", pr.Number) {
+			pr.ParkedFrom = submitted[name].BaseName
+		}
+	}
 }
 
 func (p *stackPR) String() string {
@@ -757,6 +769,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	if err := stackMarkBaseGone(ctx, l.dir(), tr, prs); err != nil {
 		return nil, err
 	}
+	stackMarkParked(prs, submitted)
 	members, left, err := stackKept(ctx, l.dir(), state, tr, current, members, prs, overrides, o.landed)
 	if err != nil {
 		return nil, err
@@ -1031,8 +1044,8 @@ func stackKept(ctx context.Context, dir render.Dir, state gtState, tr vcs.Trunk,
 // parent's landing leaves it on, or a history carrying none of the parent's own
 // commits under any sha.
 func stackStrayReason(ctx context.Context, dir render.Dir, state gtState, tr vcs.Trunk, branch, parent, effective string, pr *stackPR) (string, error) {
-	if pr != nil && pr.State == "OPEN" && pr.Base != "" && !pr.parked() && pr.Base != parent && pr.Base != effective {
-		return fmt.Sprintf("gt records its parent as %s, but its pull request #%d is based on %s — re-record it with gt track --parent %s %s", parent, pr.Number, pr.Base, pr.Base, branch), nil
+	if pr != nil && pr.State == "OPEN" && pr.Base != "" && pr.base() != parent && pr.base() != effective {
+		return fmt.Sprintf("gt records its parent as %s, but its pull request #%d is based on %s — re-record it with gt track --parent %s %s", parent, pr.Number, pr.base(), pr.base(), branch), nil
 	}
 	if parent == tr.Name() {
 		return "", nil
@@ -1126,7 +1139,7 @@ func stackRefuseForeignBelow(ctx context.Context, dir render.Dir, state gtState,
 			return err
 		}
 		pr := prs[down[carrier]]
-		disowned := pr != nil && pr.State == "OPEN" && pr.Base != "" && !pr.parked() && !slices.Contains(down[carrier+1:i+1], pr.Base)
+		disowned := pr != nil && pr.State == "OPEN" && pr.Base != "" && !slices.Contains(down[carrier+1:i+1], pr.base())
 		if !none || (fromEmpty && !disowned) {
 			continue
 		}
