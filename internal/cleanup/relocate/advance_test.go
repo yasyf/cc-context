@@ -519,6 +519,53 @@ func TestAdvanceBlocksBeforeTheMove(t *testing.T) {
 	}
 }
 
+var errListingTimedOut = fmt.Errorf("list processes: %w: ps: %w", cleanup.ErrUnlisted, context.DeadlineExceeded)
+
+func TestAdvanceRemovesAPushedTreeWhoseProcessListingTimedOut(t *testing.T) {
+	tests := []struct {
+		name    string
+		arrange func(f *fixture)
+	}{
+		{"naming the watchers", func(f *fixture) {
+			f.watchers.retiring = func(context.Context, string) ([]cleanup.ProcessID, error) { return nil, errListingTimedOut }
+		}},
+		{"retiring the watchers", func(f *fixture) {
+			f.watchers.retire = func(context.Context, string) error { return errListingTimedOut }
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFixture(t)
+			f.run(f.repo, "update-ref", "refs/remotes/origin/feature", "feature")
+			job := f.accept()
+			tt.arrange(f)
+
+			f.advance(&job)
+
+			f.finished(&job)
+			f.absent(f.worktree)
+			for i, discount := range f.discounts {
+				if len(discount) != 0 {
+					t.Errorf("guard %d discounted %v, want nothing discounted", i, discount)
+				}
+			}
+		})
+	}
+}
+
+func TestAdvanceBlocksAnUnpushedTreeWhoseProcessListingTimedOut(t *testing.T) {
+	f := newFixture(t)
+	job := f.accept()
+	f.watchers.retire = func(context.Context, string) error { return errListingTimedOut }
+
+	f.advance(&job)
+
+	f.blocked(&job, cleanup.PhasePrepared, "watchers", fmt.Sprintf("%v; no remote-tracking ref holds %s's head %s", errListingTimedOut, f.worktree, job.Head))
+	if got := f.id(f.worktree); got != job.Tree {
+		t.Errorf("worktree identity = %v, want the tree %v", got, job.Tree)
+	}
+}
+
 func TestAdvanceFinishesGitRewritesUnderACancelledContext(t *testing.T) {
 	f := newFixture(t)
 	job, err := f.relocator.Accept(context.Background(), 1, f.request(true))

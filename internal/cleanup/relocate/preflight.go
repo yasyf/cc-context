@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -275,7 +276,11 @@ func (r *Relocator) retiring(ctx context.Context, tree string) ([]cleanup.Proces
 
 func (r *Relocator) unretired(ctx context.Context, tree string) error {
 	watchers, err := r.retiring(ctx, tree)
-	if err != nil {
+	switch {
+	case errors.Is(err, cleanup.ErrUnlisted):
+		slog.Warn("cleanup: guarding a tree whose watchers could not be listed", "tree", tree, "error", err)
+		return r.cfg.Guard(ctx, tree)
+	case err != nil:
 		return err
 	}
 	return r.cfg.Guard(cleanup.WithRetiring(ctx, watchers), tree)

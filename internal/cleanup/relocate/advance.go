@@ -327,12 +327,8 @@ func (r *Relocator) move(ctx context.Context, job *cleanup.Job, vetted *bool) (r
 	if nested != "" {
 		return "reconcile", fmt.Sprintf("worktree %s is registered inside %s", nested, job.Original)
 	}
-	watchers, err := r.retiring(ctx, job.Original)
-	if err != nil {
-		return "watchers", err.Error()
-	}
-	if err := r.cfg.Watchers.Retire(cleanup.WithRetiring(ctx, watchers), job.Original); err != nil {
-		return "watchers", err.Error()
+	if reason, detail := r.retire(ctx, job); reason != "" {
+		return reason, detail
 	}
 	if err := r.cfg.Watchers.CheckQuarantine(ctx, r.cfg.Journal.Layout().JobDir(job.ID)); err != nil {
 		return "quarantine", err.Error()
@@ -366,6 +362,28 @@ func (r *Relocator) move(ctx context.Context, job *cleanup.Job, vetted *bool) (r
 		return "git", err.Error()
 	}
 	slog.Warn("cleanup: git worktree move failed after the tree left its original state", "job", job.ID, "error", err)
+	return "", ""
+}
+
+func (r *Relocator) retire(ctx context.Context, job *cleanup.Job) (reason, detail string) {
+	watchers, err := r.retiring(ctx, job.Original)
+	if err == nil {
+		err = r.cfg.Watchers.Retire(cleanup.WithRetiring(ctx, watchers), job.Original)
+	}
+	switch {
+	case err == nil:
+		return "", ""
+	case !errors.Is(err, cleanup.ErrUnlisted):
+		return "watchers", err.Error()
+	}
+	pushed, pushErr := r.pushed(ctx, job.Git, job.Repo, job.Head)
+	switch {
+	case pushErr != nil:
+		return "git", pushErr.Error()
+	case !pushed:
+		return "watchers", fmt.Sprintf("%v; no remote-tracking ref holds %s's head %s", err, job.Original, job.Head)
+	}
+	slog.Warn("cleanup: moving a pushed tree whose watchers could not be listed", "job", job.ID, "tree", job.Original, "error", err)
 	return "", ""
 }
 
