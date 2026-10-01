@@ -104,11 +104,11 @@ func thinCanonicalRemote(raw string) (string, error) {
 	case strings.Contains(raw, "://"):
 		u, err := url.Parse(raw)
 		if err != nil {
-			return "", fmt.Errorf("parse remote %q: %w", raw, err)
+			return "", errors.New("the remote URL does not parse")
 		}
 		if u.Scheme == "file" {
 			if u.Host != "" && u.Host != "localhost" || !filepath.IsAbs(u.Path) {
-				return "", fmt.Errorf("remote %q names no absolute path", raw)
+				return "", errors.New("the file remote names no local absolute path")
 			}
 			return filepath.Clean(u.Path), nil
 		}
@@ -116,23 +116,23 @@ func thinCanonicalRemote(raw string) (string, error) {
 		if port := u.Port(); port != "" && port != thinDefaultPorts[u.Scheme] {
 			host = net.JoinHostPort(host, port)
 		}
-		return thinHostedRemote(raw, host, u.Path)
+		return thinHostedRemote(host, u.Path)
 	default:
 		host, p, ok := strings.Cut(raw, ":")
 		if !ok {
-			return "", fmt.Errorf("remote %q is neither a URL, an scp-style address, nor an absolute path", raw)
+			return "", errors.New("the remote is neither a URL, an scp-style address, nor an absolute path")
 		}
 		if _, after, found := strings.Cut(host, "@"); found {
 			host = after
 		}
-		return thinHostedRemote(raw, strings.ToLower(host), p)
+		return thinHostedRemote(strings.ToLower(host), p)
 	}
 }
 
-func thinHostedRemote(raw, host, p string) (string, error) {
+func thinHostedRemote(host, p string) (string, error) {
 	p = strings.TrimSuffix(strings.Trim(p, "/"), ".git")
 	if host == "" || p == "" {
-		return "", fmt.Errorf("remote %q names no repository", raw)
+		return "", errors.New("the remote names no host and repository")
 	}
 	return host + "/" + p, nil
 }
@@ -195,7 +195,7 @@ func thinIsStore(ctx context.Context, c vcs.Checkout) (bool, error) {
 		return false, err
 	}
 	if want != store {
-		return false, fmt.Errorf("%s sits where ccx keeps thin stores but its %s remote %s derives %s, so ccx will not treat it as an ordinary checkout — restore remote.%s.url or move it out of %s", store, thinRemote, strings.TrimSpace(out), want, thinRemote, root)
+		return false, fmt.Errorf("%s sits where ccx keeps thin stores but its %s remote (%s) derives %s, so ccx will not treat it as an ordinary checkout — restore remote.%s.url or move it out of %s", store, thinRemote, canonical, want, thinRemote, root)
 	}
 	return true, nil
 }
@@ -296,7 +296,7 @@ func thinCreateStore(ctx context.Context, src lane, s thinSource, root string, d
 		argv = append(argv, "-c", kv)
 	}
 	if _, err := render.RunCLI(ctx, render.Dir(stage), "git", append(argv, s.url, staged)); err != nil {
-		return false, fmt.Errorf("stack new: clone a thin store of %s: %w", s.url, err)
+		return false, fmt.Errorf("stack new: clone a thin store of %s: %w", s.canonical, err)
 	}
 	if err := thinVerifyStore(ctx, staged, s); err != nil {
 		return false, err
@@ -378,7 +378,7 @@ func thinVerifyStore(ctx context.Context, root string, s thinSource) error {
 		canonical, _ = thinCanonicalRemote(urls[0])
 	}
 	if canonical != s.canonical {
-		return fmt.Errorf("stack new: %s is a thin store of %q, not of %s", root, got["url"], s.canonical)
+		return fmt.Errorf("stack new: %s is not a thin store of %s: its %s remote reads as %q", root, s.canonical, thinRemote, canonical)
 	}
 	return nil
 }
