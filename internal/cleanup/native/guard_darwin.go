@@ -158,7 +158,7 @@ type scan struct {
 
 func (s *scan) inspect(pid int) (cleanup.Holder, bool, error) {
 	bsd, err := pidInfo[procBSDInfo](s.lib, pid, flavorBSDInfo)
-	if errors.Is(err, unix.ESRCH) {
+	if errors.Is(err, unix.ESRCH) || err != nil && s.exited(pid) {
 		return cleanup.Holder{}, false, nil
 	}
 	if err != nil {
