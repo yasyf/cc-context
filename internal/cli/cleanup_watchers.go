@@ -227,7 +227,7 @@ core.fsmonitor setting that starts it.
 The census is read-only and bounded. Watchman is asked only through --no-spawn,
 so a stopped server stays stopped; at most 256 roots and 64 client pids are
 inspected, at most 64 fsmonitor daemons are examined, and each Watchman or Git
-command gets 10s and each ps or lsof 5s. What falls past a bound is listed as
+command gets 10s and each ps or lsof 30s. What falls past a bound is listed as
 not examined rather than dropped.
 It never contacts or starts the cleanup daemon, and it retires nothing.`,
 		Args: cobra.NoArgs,

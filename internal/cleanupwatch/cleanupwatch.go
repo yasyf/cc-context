@@ -111,7 +111,7 @@ func NewDeps(guard ActivityGuard) Deps {
 	run := ExecRunner{}
 	return Deps{
 		Run:            run,
-		Procs:          ProcTable{Run: run, Timeout: 5 * time.Second, MaxDaemons: 64},
+		Procs:          ProcTable{Run: run, Timeout: 30 * time.Second, MaxDaemons: 64},
 		Guard:          guard,
 		Protected:      DefaultProtected,
 		MaxRoots:       256,

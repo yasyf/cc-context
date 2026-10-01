@@ -229,6 +229,49 @@ func TestStackSubmitRetargetsAParkedPullRequest(t *testing.T) {
 	}
 }
 
+func TestStackSubmitReplaysAChildGitHubShowsParked(t *testing.T) {
+	f := shipGTRepo(t)
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	api.parkOn(f)
+	shipGTStack(t, f, "p", "c", "g")
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("stack submit: %v", err)
+	}
+	api.prs["p"], api.prs["c"], api.prs["g"] = 100, 101, 102
+	api.mu.Lock()
+	api.parkChildren([]gtapi.PreSubmitBranch{{HeadRefName: "p", PRNumber: 100}})
+	api.mu.Unlock()
+	stubOpenPRs(t, f, map[string]*stackPR{"c": {Number: 101, Title: "c", State: "OPEN", Base: "graphite-base/101"}}, "p", "g")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "p")
+	writeShipFile(t, f.Dir, "p.txt", "amended\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "p.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-q", "--amend", "--no-edit")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "--force", "origin", "p")
+	posted := len(api.submitHeads())
+	shipResetLog(t, f)
+
+	_, errOut, err := runStackCmd(t, f, "submit")
+	if err != nil {
+		t.Fatalf("stack submit: %v (stderr=%q)", err, errOut)
+	}
+	if strings.Contains(errOut, "graphite-base/101") {
+		t.Errorf("stack submit read graphite-base/101 as c's parent:\n%s", errOut)
+	}
+	if !stackOnto(t, f, "p", "c") || !stackOnto(t, f, "c", "g") {
+		t.Errorf("c and g were left off the amended p:\n%s", errOut)
+	}
+	if heads := api.submitHeads()[posted:]; !slices.Contains(heads, "c") || !slices.Contains(heads, "g") {
+		t.Errorf("submit posts = %v, want c and g resubmitted on the amended p", heads)
+	}
+	if entry := api.submitEntry("c"); entry.Base != "p" {
+		t.Errorf("c submitted on %q, want its gt parent p", entry.Base)
+	}
+	if parked := api.parkedPRs(); len(parked) != 0 {
+		t.Errorf("parked %v after the submit, want every pull request on its parent", parked)
+	}
+}
+
 // TestShipGTResubmitsTheChildOfAResubmittedBranch is the ship that left its
 // tip's parent parked: trunk moved, so the bottom branch was resubmitted on
 // the new trunk while the unchanged middle one was left out, and Graphite's

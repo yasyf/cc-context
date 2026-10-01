@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/yasyf/cc-context/internal/render"
 )
@@ -340,6 +341,7 @@ func (d Deps) stopFSMonitor(ctx context.Context, gitDir, worktree string, owner 
 	if err := d.daemonGit(ctx, gitDir, worktree, "stop"); err != nil && exitCode(err) != 1 {
 		return fmt.Errorf("stop fsmonitor daemon %d: %w", owner.PID, err)
 	}
+	settled := time.Now().Add(time.Duration(d.SettleTries) * d.SettleInterval)
 	for range d.SettleTries {
 		alive, err := d.daemonAlive(ctx, owner.PID, sockets)
 		if err != nil {
@@ -347,6 +349,9 @@ func (d Deps) stopFSMonitor(ctx context.Context, gitDir, worktree string, owner 
 		}
 		if !alive {
 			return d.verifyNotWatching(ctx, gitDir, worktree)
+		}
+		if time.Now().After(settled) {
+			break
 		}
 		if err := sleep(ctx, d.SettleInterval); err != nil {
 			return err
