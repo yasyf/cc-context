@@ -35,6 +35,7 @@ const (
 var (
 	thinStoreConfig    = []string{"feature.experimental=true", "feature.manyFiles=true", "pack.threads=2"}
 	thinMirroredConfig = []string{"user.name", "user.email", "user.signingkey", "commit.gpgsign", nogtKey}
+	thinMetadataDirs   = []string{".claude", ".agents"}
 	thinDefaultPorts   = map[string]string{"ssh": "22", "git+ssh": "22", "ssh+git": "22", "git": "9418", "http": "80", "https": "443"}
 )
 
@@ -176,12 +177,27 @@ func thinIsStore(ctx context.Context, c vcs.Checkout) (bool, error) {
 		return false, nil
 	}
 	store := filepath.Dir(c.CommonDir)
-	canonical, ok, err := thinRemoteOf(ctx, render.Dir(store), thinRemote)
-	if err != nil || !ok {
+	out, code, stderr, err := render.RunCLIExitCode(ctx, render.Dir(store), "git", []string{"config", "--get", "remote." + thinRemote + ".url"})
+	switch {
+	case err != nil:
 		return false, err
+	case code == 1:
+		return false, fmt.Errorf("%s sits where ccx keeps thin stores but has no %s remote, so ccx will not treat it as an ordinary checkout — restore remote.%s.url or move it out of %s", store, thinRemote, thinRemote, root)
+	case code != 0:
+		return false, fmt.Errorf("read the url of %s in %s: %s", thinRemote, store, strings.TrimSpace(stderr))
+	}
+	canonical, err := thinCanonicalRemote(strings.TrimSpace(out))
+	if err != nil {
+		return false, fmt.Errorf("%s sits where ccx keeps thin stores but its %s remote is unreadable: %w", store, thinRemote, err)
 	}
 	want, err := thinStorePath(ctx, store, canonical)
-	return want == store, err
+	if err != nil {
+		return false, err
+	}
+	if want != store {
+		return false, fmt.Errorf("%s sits where ccx keeps thin stores but its %s remote %s derives %s, so ccx will not treat it as an ordinary checkout — restore remote.%s.url or move it out of %s", store, thinRemote, strings.TrimSpace(out), want, thinRemote, root)
+	}
+	return true, nil
 }
 
 func thinStoreOf(ctx context.Context, prefix string, src lane) (lane, bool, error) {
@@ -692,22 +708,46 @@ func thinRecordBranchPush(ctx context.Context, dir render.Dir, remote, branch st
 }
 
 func thinRefuseAdoptedPush(ctx context.Context, dir render.Dir, prefix string, branches []string) error {
+	if len(branches) == 0 {
+		return nil
+	}
 	ck, store, err := thinDirIsStore(ctx, dir)
-	if err != nil || !store {
-		return err
-	}
-	out, err := render.RunCLI(ctx, dir, "git", []string{"for-each-ref", "--format=%(refname)", thinAdoptedPrefix})
 	if err != nil {
-		return fmt.Errorf("%s: list the parents adopted into %s: %w", prefix, ck.Root, err)
+		return fmt.Errorf("%s: %w", prefix, err)
 	}
-	marks := map[string]bool{}
-	for line := range strings.Lines(out) {
-		marks[strings.TrimSpace(line)] = true
+	if !store {
+		return nil
 	}
-	for _, branch := range slices.Sorted(slices.Values(branches)) {
-		if marks[thinAdoptedRef(branch)] {
+	names := slices.Sorted(slices.Values(branches))
+	var marks strings.Builder
+	for _, name := range names {
+		marks.WriteString(thinAdoptedRef(name) + "\n")
+	}
+	out, err := render.RunCLIStdin(ctx, dir, "git", []string{"cat-file", "--batch-check"}, []byte(marks.String()))
+	if err != nil {
+		return fmt.Errorf("%s: look up the adoption marks in %s: %w", prefix, ck.Root, err)
+	}
+	rows := slices.Collect(strings.Lines(out))
+	if len(rows) != len(names) {
+		return fmt.Errorf("%s: git cat-file --batch-check answered %d rows for %d adoption marks in %s", prefix, len(rows), len(names), ck.Root)
+	}
+	for i, branch := range names {
+		fields := strings.Fields(rows[i])
+		switch {
+		case len(fields) == 2 && fields[0] == thinAdoptedRef(branch) && fields[1] == "missing":
+		case len(fields) == 3 && thinIsOID(fields[0]):
 			return fmt.Errorf("%s: %s was adopted into thin store %s from the source checkout that owns it, and ccx never pushes an adopted parent from the store; nothing was pushed — publish %s from that checkout", prefix, branch, ck.Root, branch)
+		default:
+			return fmt.Errorf("%s: git cat-file --batch-check answered %q for %s's adoption mark in %s", prefix, strings.TrimSpace(rows[i]), branch, ck.Root)
 		}
 	}
 	return nil
+}
+
+func thinIsOID(s string) bool {
+	if len(s) != 40 && len(s) != 64 {
+		return false
+	}
+	_, err := hex.DecodeString(s)
+	return err == nil
 }

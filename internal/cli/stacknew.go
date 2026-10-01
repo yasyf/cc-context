@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -97,6 +98,10 @@ func runStackNew(cmd *cobra.Command, name string, options stackNewOpts) error {
 			return err
 		}
 		sparse = &inherited
+	}
+	if sparse != nil && (thin || inStore) {
+		hydrated := stackWithMetadata(*sparse)
+		sparse = &hydrated
 	}
 	l := src
 	var segs []string
@@ -448,6 +453,25 @@ func stackThinSparse(ctx context.Context, dir render.Dir) (stackSparse, error) {
 		return sparse, err
 	}
 	return stackSparse{patterns: []byte("/*\n!/*/\n"), cone: true}, nil
+}
+
+func stackWithMetadata(s stackSparse) stackSparse {
+	patterns := slices.Clone(s.patterns)
+	have := map[string]bool{}
+	for line := range strings.Lines(string(patterns)) {
+		have[strings.TrimSpace(line)] = true
+	}
+	for _, dir := range thinMetadataDirs {
+		pattern := "/" + dir + "/"
+		if have[pattern] {
+			continue
+		}
+		if len(patterns) > 0 && patterns[len(patterns)-1] != '\n' {
+			patterns = append(patterns, '\n')
+		}
+		patterns = append(patterns, pattern+"\n"...)
+	}
+	return stackSparse{patterns: patterns, cone: s.cone}
 }
 
 func stackActiveSparse(ctx context.Context, dir render.Dir) (stackSparse, bool, error) {

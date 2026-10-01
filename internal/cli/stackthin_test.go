@@ -458,8 +458,26 @@ func TestStackThinSubmitRecordsPushTracking(t *testing.T) {
 	}
 
 	second := thinCommit(t, f, lane, "lane1.txt", "two\n")
+	shipResetLog(t, f)
 	if _, errOut, err := runStackCmdIn(t, f, lane, "submit"); err != nil {
 		t.Fatalf("second submit: %v\n%s", err, errOut)
+	}
+	lookups := 0
+	for _, argv := range vcstest.Invocations(t, f.ArgvLog) {
+		if slices.Equal(argv, []string{"git", "cat-file", "--batch-check"}) {
+			lookups++
+		}
+		if len(argv) > 1 && argv[1] == "for-each-ref" && slices.Contains(argv, "--format=%(refname)") {
+			t.Errorf("submit enumerated refs for the adoption marks: %v", argv)
+		}
+		for _, arg := range argv {
+			if strings.HasPrefix(arg, thinAdoptedPrefix) {
+				t.Errorf("submit swept the adoption-mark namespace: %v", argv)
+			}
+		}
+	}
+	if lookups != 1 {
+		t.Errorf("submit looked up adoption marks %d times, want one batched lookup", lookups)
 	}
 	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "lane1"); got != second {
 		t.Errorf("remote lane1 = %s, want %s", got, second)
@@ -660,11 +678,11 @@ func TestStackThinPartialAdoptionNeverPushesTheParent(t *testing.T) {
 	child := thinTestLane(t, f, "child")
 	thinNew(t, f, f.Dir, "lane1", "--parent", "main", "--thin", "--depth", strconv.Itoa(thinTestDepth))
 	db := filepath.Join(store, ".git", ".graphite_metadata.db")
-	if err := os.Chmod(db, 0o444); err != nil {
+	if err := os.Chmod(db, 0o400); err != nil {
 		t.Fatal(err)
 	}
 	_, _, err := runStackCmd(t, f, append([]string{"new", "child"}, thinAdoptArgs...)...)
-	if chmodErr := os.Chmod(db, 0o644); chmodErr != nil {
+	if chmodErr := os.Chmod(db, 0o600); chmodErr != nil {
 		t.Fatal(chmodErr)
 	}
 	if err == nil || !strings.Contains(err.Error(), "gtmeta: adopt root") {
@@ -946,7 +964,7 @@ func TestThinIsStoreRequiresTheDerivedPath(t *testing.T) {
 	for _, tt := range []struct {
 		dir  string
 		want bool
-	}{{store, true}, {lane, true}, {decoy, false}, {f.Dir, false}} {
+	}{{store, true}, {lane, true}, {f.Dir, false}} {
 		ck, err := vcs.ResolveCheckout(tt.dir)
 		if err != nil {
 			t.Fatal(err)
@@ -955,8 +973,15 @@ func TestThinIsStoreRequiresTheDerivedPath(t *testing.T) {
 			t.Errorf("thinIsStore(%s) = %v, %v, want %v", tt.dir, got, err, tt.want)
 		}
 	}
-	if err := thinRecordPush(f.ContextIn(decoy), render.Dir(decoy), "origin", map[string]string{"decoy": head}); err != nil {
+	ck, err := vcs.ResolveCheckout(decoy)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if got, err := thinIsStore(f.ContextIn(decoy), ck); err == nil || !strings.Contains(err.Error(), "derives "+store) {
+		t.Errorf("thinIsStore(decoy) = %v, %v, want a refusal naming the store its remote derives", got, err)
+	}
+	if err := thinRecordPush(f.ContextIn(decoy), render.Dir(decoy), "origin", map[string]string{"decoy": head}); err == nil {
+		t.Error("push tracking accepted a store-shaped checkout whose remote derives another store")
 	}
 	if present, err := gitRefExists(f.ContextIn(decoy), render.Dir(decoy), "test", "refs/remotes/origin/decoy"); err != nil || present {
 		t.Errorf("push tracking wrote into a checkout that only sits where a store would: %v %v", present, err)
@@ -1022,5 +1047,121 @@ func TestStackNewThinRefusesADivergentSameNamedParent(t *testing.T) {
 	}
 	if out, lane := thinNew(t, f, native, "child"); gitAt(t, f.Env(), lane, "rev-parse", "HEAD") != gitAt(t, f.Env(), store, "rev-parse", "p") {
 		t.Errorf("child cut from the store's own p = %q, want it on the store's p", out)
+	}
+}
+
+func thinPushFiles(t *testing.T, f *vcstest.Fixture, files map[string]string, executable ...string) {
+	t.Helper()
+	clone := filepath.Join(t.TempDir(), "upstream")
+	mustRun(t, f.Env(), filepath.Dir(clone), "git", "clone", "-q", "--branch", "main", f.RemoteDir, clone)
+	for _, kv := range [][2]string{{"user.email", "t@t.t"}, {"user.name", "t"}, {"commit.gpgsign", "false"}} {
+		mustRun(t, f.Env(), clone, "git", "config", kv[0], kv[1])
+	}
+	for name, content := range files {
+		writeShipFile(t, clone, name, content)
+	}
+	for _, name := range executable {
+		if err := os.Chmod(filepath.Join(clone, name), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustRun(t, f.Env(), clone, "git", "add", "-A")
+	mustRun(t, f.Env(), clone, "git", "commit", "-qm", "metadata")
+	mustRun(t, f.Env(), clone, "git", "push", "-q", "origin", "main")
+	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
+}
+
+func TestStackNewThinHydratesAgentMetadata(t *testing.T) {
+	t.Parallel()
+	f := thinRepo(t)
+	thinGrowTrunk(t, f, 6)
+	marker := filepath.Join(t.TempDir(), "ran")
+	hook := "#!/bin/sh\ntouch '" + marker + "'\n"
+	thinPushFiles(t, f, map[string]string{
+		".claude/settings.json":          `{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":".claude/hooks/session-start.sh"}]}]}}` + "\n",
+		".claude/hooks/session-start.sh": hook,
+		".agents/skills/demo/SKILL.md":   "---\nname: demo\n---\nDemo skill.\n",
+		"scripts/setup.sh":               hook + "echo setup\n",
+		"docs/object-hierarchy.md":       "# Objects\n",
+		"CLAUDE.md":                      "@docs/object-hierarchy.md\n",
+	}, ".claude/hooks/session-start.sh", "scripts/setup.sh")
+	before := thinSnap(t, f)
+	store := thinTestStore(t, f)
+
+	_, lane := thinNew(t, f, f.Dir, "lane1", "--thin", "--depth", strconv.Itoa(thinTestDepth))
+	for _, name := range []string{"CLAUDE.md", ".claude/settings.json", ".claude/hooks/session-start.sh", ".agents/skills/demo/SKILL.md"} {
+		if _, err := os.Stat(filepath.Join(lane, name)); err != nil {
+			t.Errorf("%s missing from the thin lane: %v", name, err)
+		}
+	}
+	if info, err := os.Stat(filepath.Join(lane, ".claude", "hooks", "session-start.sh")); err != nil || info.Mode()&0o111 == 0 {
+		t.Errorf("project hook lost its executable bit: %v %v", info, err)
+	}
+	for _, dir := range []string{"scripts", "docs", "excluded", "keep"} {
+		if _, err := os.Stat(filepath.Join(lane, dir)); !os.IsNotExist(err) {
+			t.Errorf("%s materialized in the thin lane: %v", dir, err)
+		}
+	}
+	for _, name := range []string{"scripts/setup.sh", "docs/object-hierarchy.md"} {
+		blob := gitAt(t, f.Env(), lane, "rev-parse", "HEAD:"+name)
+		if code := thinGitCode(t, f, lane, "cat-file", "-e", blob); code == 0 {
+			t.Errorf("%s's blob reached the store", name)
+		}
+	}
+
+	writeShipExecutable(t, filepath.Join(store, ".git", "hooks"), "post-checkout", hook)
+	_, nested := thinNew(t, f, lane, "lane2")
+	if _, err := os.Stat(filepath.Join(nested, ".agents", "skills", "demo", "SKILL.md")); err != nil {
+		t.Errorf("nested lane lost the project skill: %v", err)
+	}
+	_, second := thinNew(t, f, f.Dir, "lane3", "--thin")
+	if _, err := os.Stat(filepath.Join(second, ".claude", "settings.json")); err != nil {
+		t.Errorf("second lane lost the project settings: %v", err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Errorf("lane creation ran a hook or setup script: %v", err)
+	}
+
+	mustRun(t, f.Env(), lane, "git", "sparse-checkout", "add", "docs")
+	if got, err := os.ReadFile(filepath.Join(lane, "docs", "object-hierarchy.md")); err != nil || string(got) != "# Objects\n" {
+		t.Errorf("explicit hydration of an imported doc = %q, %v", got, err)
+	}
+	thinRequireSource(t, f, before)
+}
+
+func TestStackThinRefusesPushAfterStoreIdentityChanges(t *testing.T) {
+	t.Parallel()
+	f := thinRepo(t)
+	stubOpenPRs(t, f, nil, "lane1")
+	thinGrowTrunk(t, f, 6)
+	store := thinTestStore(t, f)
+	_, lane := thinNew(t, f, f.Dir, "lane1", "--thin", "--depth", strconv.Itoa(thinTestDepth))
+	thinCommit(t, f, lane, "lane1.txt", "one\n")
+	other := filepath.Join(t.TempDir(), "other.git")
+	mustRun(t, f.Env(), filepath.Dir(other), "git", "clone", "-q", "--bare", f.RemoteDir, other)
+	remote, mirror := thinRefs(t, f, f.RemoteDir), thinRefs(t, f, other)
+
+	mustRun(t, f.Env(), store, "git", "remote", "set-url", "origin", other)
+	_, _, err := runStackCmdIn(t, f, lane, "submit")
+	if err == nil || !strings.Contains(err.Error(), "sits where ccx keeps thin stores") || !strings.Contains(err.Error(), "derives") {
+		t.Fatalf("submit after the store's origin changed = %v, want the identity refusal", err)
+	}
+	if got := thinRefs(t, f, other); got != mirror {
+		t.Errorf("refused submit pushed to the new origin:\n%s\n→\n%s", mirror, got)
+	}
+	if got := thinRefs(t, f, f.RemoteDir); got != remote {
+		t.Errorf("refused submit pushed to the old origin")
+	}
+
+	mustRun(t, f.Env(), store, "git", "remote", "remove", "origin")
+	ck, err := vcs.ResolveCheckout(lane)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := thinIsStore(f.ContextIn(lane), ck); err == nil || !strings.Contains(err.Error(), "has no origin remote") {
+		t.Errorf("thinIsStore without an origin = %v, %v, want the identity refusal", got, err)
+	}
+	if err := thinRefuseAdoptedPush(f.ContextIn(lane), render.Dir(lane), "push", []string{"lane1"}); err == nil {
+		t.Error("the adopted-parent guard passed a store whose identity it could not establish")
 	}
 }

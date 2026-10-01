@@ -76,17 +76,19 @@ main checkout, and the thin store. Sparse, no-checkout, and thin creation requir
 a Git checkout.
 
 --thin cuts the lane into the repository's thin store: one clone per repository
-under $HOME/.claude/stores, with --depth commits of trunk history (256 unless the
-store already exists), no blobs until a checkout needs them, no tags, a fetch of
-trunk alone, and a sparse checkout of root files plus this checkout's sparse set.
-The first thin lane creates the store; a lane cut from a checkout of the store is
-a linked worktree of it whatever the flags say, sparse like its caller unless
---no-checkout is given. A parent the store does not hold needs --published-parent:
-its publication is verified against this checkout and the remote, and the store
-takes it frozen at its published head, so no submit from the store rewrites it. When its published base lies past the store's
-history, --deepen fetches trunk history down to it, never more than --max-depth
-commits; without it the lane is refused. --full-history cuts the lane from this
-checkout's own full history instead, and is refused in a thin store.
+under $HOME/.claude/stores, with --depth commits of trunk history (256 unless
+the store already exists), no blobs until a checkout needs them, no tags, a
+fetch of trunk alone, and a sparse checkout of root files, the tracked .claude
+and .agents directories, and this checkout's sparse set. The first thin lane
+creates the store; a lane cut from a checkout of the store is a linked worktree
+of it whatever the flags say, sparse like its caller unless --no-checkout is
+given. A parent the store does not hold needs --published-parent: its
+publication is verified against this checkout and the remote, and the store
+takes it frozen at its published head, so no submit from the store rewrites it.
+When its published base lies past the store's history, --deepen fetches trunk
+history down to it, never more than --max-depth commits; without it the lane is
+refused. --full-history cuts the lane from this checkout's own full history
+instead, and is refused in a thin store.
 CCX_STACK_NEW=thin or full picks the default when neither flag is given.
 
 Outside the graphite lane the branch is cut the same way and nothing records
