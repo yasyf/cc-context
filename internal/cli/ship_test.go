@@ -7394,3 +7394,41 @@ func TestShipGitAmendRefusesAForeignHeadSplicedIntoTheReflog(t *testing.T) {
 		})
 	}
 }
+
+// TestShipGTNoPushRestacksOntoTheFetchedTrunk is monorepo-consumer-2's
+// --no-push ship: base was restacked onto a trunk this clone's origin/main has
+// not fetched, so replaying against the stale ref moved base back onto it as a
+// second copy of its own commit and the child onto that copy.
+func TestShipGTNoPushRestacksOntoTheFetchedTrunk(t *testing.T) {
+	f := shipGTRepo(t, vcstest.GTStack("base", "feature"))
+	stale := gitAt(t, f.Env(), f.Dir, "rev-parse", "refs/remotes/origin/main")
+	restackAdvanceRemote(t, f, "main", "trunk2.txt", "trunk2\n")
+	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin", "+refs/heads/main:refs/remotes/origin/main")
+	trunk := gitAt(t, f.Env(), f.Dir, "rev-parse", "refs/remotes/origin/main")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "base")
+	mustRun(t, f.Env(), f.Dir, "git", "rebase", "-q", "origin/main")
+	commonDir := gitAt(t, f.Env(), f.Dir, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	if err := gtmeta.RecordRestacked(t.Context(), commonDir, map[string]string{"base": trunk}); err != nil {
+		t.Fatalf("record base as restacked: %v", err)
+	}
+	published := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "feature")
+	mustRun(t, f.Env(), f.Dir, "git", "update-ref", "refs/remotes/origin/main", stale)
+	shipGTReady(t, f)
+
+	if _, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push"); err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); got != published {
+		t.Errorf("base = %s, want it left on the fetched trunk at %s", got, published)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", "base..feature"); got != "2" {
+		t.Errorf("feature carries %s commits above base, want its own commit and the shipped one", got)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "merge-base", "base", "feature"); got != published {
+		t.Errorf("feature forks from base at %s, want base's head %s", got, published)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "refs/remotes/origin/main"); got != trunk {
+		t.Errorf("origin/main = %s, want the fetched trunk %s", got, trunk)
+	}
+}
