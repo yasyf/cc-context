@@ -269,7 +269,7 @@ func stackRemoteMatchesPublication(ctx context.Context, dir render.Dir, remote s
 	for i, target := range targets {
 		names[i] = target.Name
 	}
-	heads, err := stackRemoteHeads(ctx, dir, remote, names, "")
+	heads, err := stackRemoteHeads(ctx, dir, stackRebasePrefix, remote, names, "")
 	if err != nil {
 		return false, err
 	}

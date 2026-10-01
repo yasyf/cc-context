@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -188,22 +189,47 @@ func restackGit(ctx context.Context, cmd *cobra.Command, l lane, parent string) 
 	if err != nil {
 		return "", fmt.Errorf("restack: %w", err)
 	}
-	if err := gitFetch(ctx, dir, remote); err != nil {
-		return "", fmt.Errorf("restack: git fetch %s: %w", remote, err)
+	if parent == branch {
+		return "", fmt.Errorf("restack: --parent moves a branch onto another, and %s cannot sit on %s", branch, parent)
+	}
+	trunkName, recorded, err := gitRemoteHead(ctx, dir, "restack", remote)
+	if err != nil {
+		return "", err
+	}
+	var retarget *restackRetarget
+	if trunkName != "" && branch != trunkName {
+		if retarget, err = restackGitPR(ctx, dir, remote, branch); err != nil {
+			return "", err
+		}
+	}
+	fetch := []string{trunkName, parent}
+	if retarget != nil {
+		fetch = append(fetch, retarget.Base)
+	}
+	fetch = slices.DeleteFunc(fetch, func(name string) bool { return name == "" })
+	heads := map[string]string{}
+	if len(fetch) > 0 {
+		if heads, err = stackRemoteHeads(ctx, dir, "restack", remote, fetch, ""); err != nil {
+			return "", err
+		}
 	}
 
-	trunk, err := vcs.ResolveTrunk(ctx, dir, remote)
+	var trunk vcs.Trunk
+	if !recorded && heads[trunkName] != "" {
+		trunk, err = vcs.TrunkFromName(ctx, dir, remote, trunkName)
+	} else {
+		trunk, err = vcs.ResolveTrunk(ctx, dir, remote)
+	}
 	if err != nil {
 		return "", fmt.Errorf("restack: %w", err)
 	}
-	if parent != "" && (branch == trunk.Name() || parent == branch) {
+	if parent != "" && branch == trunk.Name() {
 		return "", fmt.Errorf("restack: --parent moves a branch onto another, and %s cannot sit on %s", branch, parent)
 	}
 	was := trunk
-	var retarget *restackRetarget
-	if branch != trunk.Name() {
-		if was, retarget, err = restackGitParent(ctx, dir, remote, branch, trunk); err != nil {
-			return "", err
+	if retarget != nil && retarget.Base != trunk.Name() {
+		if was, err = vcs.TrunkFromName(ctx, dir, remote, retarget.Base); err != nil {
+			return "", fmt.Errorf("restack: PR #%d is based on %s: %w", retarget.PR, retarget.Base, err)
 		}
 	}
 	onto := was
@@ -274,33 +300,25 @@ type restackRetarget struct {
 	Pushed bool   `json:"pushed,omitempty"`
 }
 
-// restackGitParent is the base branch's open pull request names, trunk when it
-// has none, and that pull request.
-func restackGitParent(ctx context.Context, dir render.Dir, remote, branch string, trunk vcs.Trunk) (vcs.Trunk, *restackRetarget, error) {
+// restackGitPR is the branch's open pull request, nil when it has none; its
+// base is the branch's parent.
+func restackGitPR(ctx context.Context, dir render.Dir, remote, branch string) (*restackRetarget, error) {
 	repo, err := vcs.LookupRepo(ctx, dir, false)
 	if err != nil {
-		return vcs.Trunk{}, nil, fmt.Errorf("restack: %w", err)
+		return nil, fmt.Errorf("restack: %w", err)
 	}
 	out, err := render.RunCLI(ctx, render.Ambient, "gh", ghPullsByHeadArgv(repo.NameWithOwner, branch, "open"))
 	if err != nil {
-		return vcs.Trunk{}, nil, fmt.Errorf("restack: list the open pull requests of %s: %w", branch, err)
+		return nil, fmt.Errorf("restack: list the open pull requests of %s: %w", branch, err)
 	}
 	var prs []ghPull
 	if err := json.Unmarshal([]byte(out), &prs); err != nil {
-		return vcs.Trunk{}, nil, fmt.Errorf("restack: parse the open pull requests of %s: %w", branch, err)
+		return nil, fmt.Errorf("restack: parse the open pull requests of %s: %w", branch, err)
 	}
 	if len(prs) == 0 {
-		return trunk, nil, nil
+		return nil, nil
 	}
-	pr := &restackRetarget{Remote: remote, Repo: repo.NameWithOwner, PR: prs[0].Number, Base: prs[0].Base.Ref}
-	if pr.Base == trunk.Name() {
-		return trunk, pr, nil
-	}
-	parent, err := vcs.TrunkFromName(ctx, dir, remote, pr.Base)
-	if err != nil {
-		return vcs.Trunk{}, nil, fmt.Errorf("restack: PR #%d is based on %s: %w", pr.PR, pr.Base, err)
-	}
-	return parent, pr, nil
+	return &restackRetarget{Remote: remote, Repo: repo.NameWithOwner, PR: prs[0].Number, Base: prs[0].Base.Ref}, nil
 }
 
 // restackGitPublish pushes a branch a --parent restack moved and then

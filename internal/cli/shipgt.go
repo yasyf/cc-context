@@ -1816,7 +1816,7 @@ func gtParkedBases(ctx context.Context, dir render.Dir, plan []gtSubmitBranch, k
 	if len(parked) == 0 {
 		return nil
 	}
-	heads, err := stackRemoteHeads(ctx, dir, "origin", parked, trunkHead)
+	heads, err := stackRemoteHeads(ctx, dir, stackRebasePrefix, "origin", parked, trunkHead)
 	if err != nil {
 		return err
 	}

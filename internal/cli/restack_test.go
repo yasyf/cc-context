@@ -171,6 +171,58 @@ func TestRestackGitRebasesOntoTrunk(t *testing.T) {
 	}
 }
 
+// TestRestackGitFetchesOnlyTheRefsItReads configures origin to fetch a branch
+// the remote has since deleted, which fails a bare git fetch origin with
+// "couldn't find remote ref" before restack reads anything.
+func TestRestackGitFetchesOnlyTheRefsItReads(t *testing.T) {
+	f := shipRepo(t, vcstest.Remote(), vcstest.Branch("feature"))
+	f.Isolate(t)
+	installDropGH(t, f, nil)
+	restackWrite(t, filepath.Join(f.Dir, "feature.txt"), "feature\n")
+	restackRun(t, f, f.Dir, "git", "add", "feature.txt")
+	restackRun(t, f, f.Dir, "git", "commit", "-qm", "feature")
+	restackRun(t, f, f.Dir, "git", "push", "-q", "origin", "main:gone")
+	restackRun(t, f, f.Dir, "git", "config", "remote.origin.fetch", "+refs/heads/main:refs/remotes/origin/main")
+	restackRun(t, f, f.Dir, "git", "config", "--add", "remote.origin.fetch", "+refs/heads/gone:refs/remotes/origin/gone")
+	restackRun(t, f, f.Dir, "git", "push", "-q", "origin", "--delete", "gone")
+	restackAdvanceRemote(t, f, "main", "upstream.txt", "upstream\n")
+
+	out, _, err := runRestackCmd(t, f)
+	if err != nil {
+		t.Fatalf("restack: %v", err)
+	}
+	if want := "fetched · rebased onto main"; out != want {
+		t.Fatalf("output = %q, want %q", out, want)
+	}
+	if _, err := os.Stat(filepath.Join(f.Dir, "upstream.txt")); err != nil {
+		t.Errorf("stat upstream.txt: %v — the rebase did not replay onto the fetched trunk", err)
+	}
+}
+
+// TestRestackGitAsksTheRemoteForAnUnsetTrunk leaves refs/remotes/origin/HEAD
+// unset while the remote's HEAD names main: restack takes the remote's answer,
+// which a fetch of explicit refspecs never records.
+func TestRestackGitAsksTheRemoteForAnUnsetTrunk(t *testing.T) {
+	f := shipRepo(t, vcstest.Remote(), vcstest.NoOriginHead(), vcstest.Branch("feature"))
+	f.Isolate(t)
+	installDropGH(t, f, nil)
+	restackWrite(t, filepath.Join(f.Dir, "feature.txt"), "feature\n")
+	restackRun(t, f, f.Dir, "git", "add", "feature.txt")
+	restackRun(t, f, f.Dir, "git", "commit", "-qm", "feature")
+	restackAdvanceRemote(t, f, "main", "upstream.txt", "upstream\n")
+
+	out, _, err := runRestackCmd(t, f)
+	if err != nil {
+		t.Fatalf("restack: %v", err)
+	}
+	if want := "fetched · rebased onto main"; out != want {
+		t.Fatalf("output = %q, want %q", out, want)
+	}
+	if _, err := os.Stat(filepath.Join(f.Dir, "upstream.txt")); err != nil {
+		t.Errorf("stat upstream.txt: %v — the rebase did not replay onto the fetched trunk", err)
+	}
+}
+
 func TestRestackGitFastForwardsTrunk(t *testing.T) {
 	f := vcstest.Repo(t, vcstest.Remote())
 	f.Isolate(t)
