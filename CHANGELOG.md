@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`ccx vcs stack restack --parent <branch>` changes a git branch's parent.**
+  It fetches and replays the branch onto `origin/<branch>`, starting at the
+  later of its fork points on the new parent and its pull request's old base.
+  Fork points on separate lines of history are refused before anything moves.
+  With an open pull request, it pushes using the same rules as `ccx vcs push`,
+  then retargets the PR, so it never shows the old commits against the new
+  base. Without a pull request, the rebase stays local. A conflict stops in a
+  workspace for `ccx vcs stack continue` or `ccx vcs stack abort`; continue
+  also finishes the push and retarget. A branch whose own commits already
+  start at the parent's head is published and retargeted without a replay.
+  This replaces the raw rebase and PR base edit needed to move
+  `yasyf/cc-remote#6` from `main` onto `ccr-core`, the branch of parent PR
+  #10. The flag refuses on Graphite and jj, when moving trunk, or when the
+  parent is the branch itself.
+
 - **`ccx vcs stack rebase`, `restack`, and `submit` can stop at a branch.**
   `--to <branch>` leaves branches above `<branch>` out of the run. In
   Forge-AI/monorepo, a dry run from `yasyf/v3-b2-net/forge-dns-2` also

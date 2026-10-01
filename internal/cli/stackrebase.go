@@ -102,6 +102,7 @@ type stackRebaseRun struct {
 	Pin           string `json:"pin"`
 	NoPush        bool   `json:"no_push"`
 	Git           bool   `json:"git,omitempty"`
+	Retarget      *restackRetarget `json:"retarget,omitempty"`
 	Origin        string `json:"origin"`
 	Draft         bool   `json:"draft,omitempty"`
 	NoVerify      bool   `json:"no_verify,omitempty"`
@@ -3071,10 +3072,22 @@ func stackFinishGit(ctx context.Context, cmd *cobra.Command, l lane, commonDir s
 			return err
 		}
 	}
+	summary := "fetched" + shipSep + "rebased onto " + run.Trunk
+	if b.NewHead == b.Local {
+		summary = "fetched" + shipSep + "already on " + run.Trunk
+	}
+	if run.Retarget != nil {
+		published, err := restackGitPublish(ctx, l.dir(), b.Name, b.NewHead, run.Trunk, run.Retarget, func() error { return stackSaveRun(run) })
+		if err != nil {
+			return errors.Join(err, stackDropPublicationPins(ctx, l.dir(), run), stackClearRun(commonDir, run))
+		}
+		if published != "" {
+			summary += shipSep + published
+		}
+	}
 	if err := errors.Join(stackDropPublicationPins(ctx, l.dir(), run), stackClearRun(commonDir, run)); err != nil {
 		return fmt.Errorf("restack: %s is rebased, but clearing the run failed: %w", b.Name, err)
 	}
-	summary := "fetched" + shipSep + "rebased onto " + run.Trunk
 	if l.note != "" {
 		summary = fmt.Sprintf("lane %s (%s)%s%s", kindLabel(l.kind), l.note, shipSep, summary)
 	}
