@@ -53,9 +53,10 @@ import (
 // directory or file whose path cannot be proven: Guard makes one pass and
 // retries nothing. A process caught replacing its image, whose arguments the
 // kernel cannot produce, does not stop the pass: when the rest of the scan
-// finds no holder, Guard fails with [cleanup.ErrUnprobed] naming it. It does not see a file that is only memory-mapped, a
-// process of another uid, an argument given as a relative path, or a process
-// that exits before the scan reaches it. A removed directory or file sits in
+// finds no holder, Guard fails with [cleanup.ErrUnprobed] naming it. It does
+// not see a file that is only memory-mapped, a process of another uid, an
+// argument given as a relative path, or a process that exits before the scan
+// reaches it. A removed directory or file sits in
 // no tree and holds nothing.
 func Guard(ctx context.Context, worktree string) error {
 	lib, err := loadLibSystem()

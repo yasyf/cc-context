@@ -397,8 +397,10 @@ func (r *Relocator) excused(ctx context.Context, job *cleanup.Job, tree string, 
 	if !errors.Is(err, cleanup.ErrUnprobed) || errors.As(err, &active) {
 		return false
 	}
-	if dirt, dirtErr := r.dirt(ctx, job.Git, tree); dirtErr != nil || dirt != "" {
-		return false
+	if tree == job.Original || tree == job.Registered {
+		if dirt, dirtErr := r.dirt(ctx, job.Git, tree); dirtErr != nil || dirt != "" {
+			return false
+		}
 	}
 	if pushed, pushErr := r.pushed(ctx, job.Git, job.Repo, job.Branch, job.Head); pushErr != nil || !pushed {
 		return false
