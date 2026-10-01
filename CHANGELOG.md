@@ -106,6 +106,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs push` fetches only the branch it moves and the trunk.**
+  In Forge-AI/monorepo on 2026-10-01, a push stopped with
+  `push: git fetch origin: git: exit status 128: fatal: couldn't find remote
+  ref refs/heads/yasyf/v3-bg-pulumi-base`. Origin's fetch refspecs still named
+  that deleted branch, so the fetch blocked a push of an unrelated branch.
+  Push now asks `git ls-remote` for its branch and the trunk named by
+  `origin/HEAD`, fetches only those whose remote-tracking refs differ, and
+  takes its lease from the reported tip. Configured fetch refspecs no longer
+  affect push. When the remote has deleted the branch, a stale local
+  `origin/<branch>` no longer causes a lease failure with `(stale info)` and
+  a report that someone pushed mid-run. Push creates the branch and reports
+  `pushed feat → origin · created origin/feat at <sha>`.
+
 - **Worktree cleanup skips an exited pid the kernel refused to identify.**
   `ccx vcs worktree rm` refused with
   `native: identify pid 89224: operation not permitted` even though that pid

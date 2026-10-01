@@ -113,6 +113,56 @@ func TestVcsPushCreatesRemoteBranch(t *testing.T) {
 	}
 }
 
+// TestVcsPushFetchesOnlyTheBranchItMoves configures origin to fetch a branch the
+// remote has since deleted, which fails a bare git fetch origin with "couldn't
+// find remote ref" before push grades anything.
+func TestVcsPushFetchesOnlyTheBranchItMoves(t *testing.T) {
+	f := shipRepo(t, vcstest.Remote())
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "main", "main:gone")
+	mustRun(t, f.Env(), f.Dir, "git", "config", "remote.origin.fetch", "+refs/heads/main:refs/remotes/origin/main")
+	mustRun(t, f.Env(), f.Dir, "git", "config", "--add", "remote.origin.fetch", "+refs/heads/gone:refs/remotes/origin/gone")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "--delete", "gone")
+	tip := shipHead(t, f)
+	head := pushCommit(t, f, "a.txt", "a\n", "test: 🧪 a")
+	shipResetLog(t, f)
+
+	got, err := runVcsPushCmd(f.Context(), t)
+	if err != nil {
+		t.Fatalf("push error = %v", err)
+	}
+	if want := "pushed main → origin · " + shortOID(tip) + ".." + shortOID(head); got != want {
+		t.Errorf("summary = %q, want %q", got, want)
+	}
+	if remote := shipRemoteTip(t, f, "origin", "main"); remote != head {
+		t.Errorf("origin main = %s, want %s", remote, head)
+	}
+}
+
+// TestVcsPushRecreatesABranchTheRemoteDeleted leaves origin/feat behind after
+// origin deletes feat: the stale ref is no lease to force against, so push
+// creates the branch again.
+func TestVcsPushRecreatesABranchTheRemoteDeleted(t *testing.T) {
+	f := shipRepo(t, vcstest.Remote())
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "feat")
+	pushCommit(t, f, "a.txt", "a\n", "test: 🧪 a")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "feat")
+	mustRun(t, f.Env(), f.Dir, "git", "--git-dir="+f.RemoteDir, "update-ref", "-d", "refs/heads/feat")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-q", "--amend", "-m", "test: 🧪 a, rewritten")
+	head := shipHead(t, f)
+	shipResetLog(t, f)
+
+	got, err := runVcsPushCmd(f.Context(), t)
+	if err != nil {
+		t.Fatalf("push error = %v", err)
+	}
+	if want := "pushed feat → origin · created origin/feat at " + shortOID(head); got != want {
+		t.Errorf("summary = %q, want %q", got, want)
+	}
+	if remote := shipRemoteTip(t, f, "origin", "feat"); remote != head {
+		t.Errorf("origin feat = %s, want %s", remote, head)
+	}
+}
+
 func TestVcsPushUpToDate(t *testing.T) {
 	f := shipRepo(t, vcstest.Remote())
 	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "main")
