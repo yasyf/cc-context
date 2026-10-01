@@ -834,9 +834,19 @@ func gtInferParent(ctx context.Context, c *gtCache, branch string) (parent, pick
 // them are siblings rather than a chain. A branch another lane deletes mid-walk
 // drops out of the candidates.
 func gtNearestTracked(ctx context.Context, dir render.Dir, state gtState, trunk, branch string) (string, error) {
-	out, err := render.RunCLI(ctx, dir, "git", []string{
-		"for-each-ref", "--merged=" + gtRestackRef(branch), "--format=%(refname)", "refs/heads/",
-	})
+	var refs []string
+	for name := range state {
+		if name != branch && name != trunk && !gtRecordedAbove(state, name, branch) {
+			refs = append(refs, gtRestackRef(name))
+		}
+	}
+	if len(refs) == 0 {
+		return trunk, nil
+	}
+	slices.Sort(refs)
+	out, err := render.RunCLIStdin(ctx, dir, "git", []string{
+		"for-each-ref", "--merged=" + gtRestackRef(branch), "--format=%(refname)", "--stdin",
+	}, []byte(strings.Join(refs, "\n")+"\n"))
 	if err != nil {
 		return "", fmt.Errorf("ship: git for-each-ref --merged %s: %w", branch, err)
 	}
@@ -1095,7 +1105,11 @@ func gtCommitBeforeMove(ctx context.Context, l lane, o shipOpts, plan branchPlan
 			replayed[path] = true
 		}
 	}
-	entries, err := vcs.GitStatus(ctx, vcs.GitArgs{Dir: l.dir(), Sub: []string{"status", "--untracked-files=all"}})
+	if len(replayed) == 0 {
+		return true, nil
+	}
+	paths := slices.Sorted(maps.Keys(replayed))
+	entries, err := vcs.GitStatus(ctx, vcs.GitArgs{Dir: l.dir(), Sub: []string{"status", "--untracked-files=all"}, Paths: paths})
 	if err != nil {
 		return false, fmt.Errorf("ship: %w", err)
 	}

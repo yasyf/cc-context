@@ -130,6 +130,9 @@ func TestShipDryRunOrdersOnlyContainedTrackedBranches(t *testing.T) {
 		t.Fatalf("parent = %v, want the nearest tracked ancestor b", parent)
 	}
 	for _, inv := range shipGTInvocations(t, f) {
+		if slices.Contains(inv, "for-each-ref") && slices.Contains(inv, "--merged=refs/heads/c") && slices.Contains(inv, "--format=%(refname)") && !slices.Contains(inv, "--stdin") {
+			t.Errorf("parent inference scanned every local branch: %v", inv)
+		}
 		if !slices.Contains(inv, "--is-ancestor") {
 			continue
 		}
