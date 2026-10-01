@@ -41,7 +41,7 @@ func thinGrowTrunk(t *testing.T, f *vcstest.Fixture, commits int) {
 	}
 	for i := offset; i < offset+commits; i++ {
 		var seed [32]byte
-		seed[0], seed[1] = byte(i), byte(i>>8)
+		copy(seed[:], fmt.Sprintf("blob-%d", i))
 		blob := make([]byte, 32<<10)
 		if _, err := rand.NewChaCha8(seed).Read(blob); err != nil {
 			t.Fatal(err)
@@ -238,11 +238,11 @@ func TestStackNewThinCreatesAThinStore(t *testing.T) {
 		}
 	}
 	for args, want := range map[string]string{
-		"rev-parse --is-shallow-repository":    "true",
-		"rev-parse --show-ref-format":          "files",
-		"rev-list --count origin/main":         strconv.Itoa(thinTestDepth),
+		"rev-parse --is-shallow-repository":     "true",
+		"rev-parse --show-ref-format":           "files",
+		"rev-list --count origin/main":          strconv.Itoa(thinTestDepth),
 		"symbolic-ref refs/remotes/origin/HEAD": "refs/remotes/origin/main",
-		"for-each-ref refs/tags":               "",
+		"for-each-ref refs/tags":                "",
 	} {
 		if got := gitAt(t, f.Env(), store, strings.Fields(args)...); got != want {
 			t.Errorf("store %s = %q, want %q", args, got, want)
