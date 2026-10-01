@@ -7,8 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 func (r *Relocator) command(ctx context.Context, git string, args ...string) (*exec.Cmd, *bytes.Buffer) {
@@ -104,14 +108,24 @@ func (r *Relocator) branch(ctx context.Context, git, tree string) (string, error
 	return strings.TrimSpace(out), nil
 }
 
-func (r *Relocator) hasGitlink(ctx context.Context, git, tree string) (bool, error) {
-	found := false
-	err := r.stream(ctx, git, '\n', func(head []byte) {
-		if bytes.HasPrefix(head, []byte("160000 ")) {
-			found = true
+func (r *Relocator) checkedOutSubmodule(ctx context.Context, git, tree string) (string, error) {
+	var found string
+	var inspect error
+	err := r.stream(ctx, git, 0, func(head []byte) {
+		meta, name, ok := bytes.Cut(head, []byte{'\t'})
+		if found != "" || inspect != nil || !ok || !bytes.HasPrefix(meta, []byte("160000 ")) {
+			return
 		}
-	}, "-C", tree, "ls-files", "--stage")
-	return found, err
+		path := filepath.Join(tree, string(name))
+		_, err := os.Lstat(filepath.Join(path, ".git"))
+		switch {
+		case err == nil:
+			found = path
+		case !errors.Is(err, fs.ErrNotExist) && !errors.Is(err, syscall.ENOTDIR):
+			inspect = err
+		}
+	}, "-C", tree, "ls-files", "--stage", "-z")
+	return found, errors.Join(err, inspect)
 }
 
 const dirtyShown = 5

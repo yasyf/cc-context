@@ -221,12 +221,12 @@ func (r *Relocator) screen(ctx context.Context, job cleanup.Job) error {
 	_, err = os.Lstat(filepath.Join(job.Original, ".gitmodules"))
 	switch {
 	case err == nil:
-		gitlink, err := r.hasGitlink(ctx, job.Git, job.Original)
+		submodule, err := r.checkedOutSubmodule(ctx, job.Git, job.Original)
 		if err != nil {
 			return fmt.Errorf("cleanup: inspect %s: %w", job.Original, err)
 		}
-		if gitlink {
-			return refuse(job.Original, "submodules", "worktree has submodules in its index; git cannot move it")
+		if submodule != "" {
+			return refuse(job.Original, "submodules", "worktree has a submodule checked out at %s; git cannot move it", submodule)
 		}
 	case !errors.Is(err, fs.ErrNotExist):
 		return fmt.Errorf("cleanup: inspect %s: %w", job.Original, err)

@@ -244,10 +244,11 @@ func TestAcceptRefusals(t *testing.T) {
 			}
 			return f.worktree, "worktree has initialized submodules under " + modules
 		}},
-		{"gitlink in the index", "submodules", func(f *fixture) (string, string) {
+		{"checked-out submodule", "submodules", func(f *fixture) (string, string) {
+			f.run(f.worktree, "init", "-q", "sub")
 			f.write(filepath.Join(f.worktree, ".gitmodules"), "[submodule \"sub\"]\n\tpath = sub\n\turl = ../sub\n")
 			f.run(f.worktree, "update-index", "--add", "--cacheinfo", "160000,"+f.run(f.worktree, "rev-parse", "HEAD")+",sub")
-			return f.worktree, "worktree has submodules in its index; git cannot move it"
+			return f.worktree, "worktree has a submodule checked out at " + filepath.Join(f.worktree, "sub") + "; git cannot move it"
 		}},
 		{"nested worktree", "nested", func(f *fixture) (string, string) {
 			inner := filepath.Join(f.worktree, "inner")
@@ -309,6 +310,37 @@ func TestAcceptForceOverridesDirtiness(t *testing.T) {
 	}
 	if got := f.read(filepath.Join(job.Payload, "scratch.txt")); got != "scratch\n" {
 		t.Errorf("payload scratch.txt = %q, want %q", got, "scratch\n")
+	}
+}
+
+func TestAcceptMovesAWorktreeWhoseSubmodulesAreNotCheckedOut(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		dir  bool
+	}{
+		{"empty submodule directory", true},
+		{"submodule outside a sparse checkout", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFixture(t)
+			f.write(filepath.Join(f.worktree, ".gitmodules"), "[submodule \"sub\"]\n\tpath = vendor/sub\n\turl = ../sub\n")
+			f.run(f.worktree, "update-index", "--add", "--cacheinfo", "160000,"+f.run(f.worktree, "rev-parse", "HEAD")+",vendor/sub")
+			f.run(f.worktree, "add", ".gitmodules")
+			f.run(f.worktree, "commit", "-q", "-m", "submodule")
+			if tt.dir {
+				if err := os.MkdirAll(filepath.Join(f.worktree, "vendor", "sub"), 0o700); err != nil {
+					t.Fatalf("mkdir: %v", err)
+				}
+			} else {
+				f.run(f.worktree, "sparse-checkout", "set", "--no-cone", "/*", "!/vendor/")
+			}
+
+			job := f.accept()
+			f.advance(&job)
+
+			f.finished(&job)
+			f.absent(f.worktree)
+		})
 	}
 }
 
