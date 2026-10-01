@@ -106,6 +106,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Worktree cleanup accepts a worktree whose submodules are not checked
+  out.** Cleanup refused any worktree whose index held a submodule entry,
+  but git refuses to move a worktree only when one of those submodules is
+  checked out. In Forge-AI/monorepo, whose index carries
+  `fde-docs/vendor/book-of-iris`, `ccx vcs worktree rm` refused clean
+  worktrees, and `ccx vcs stack continue` and `abort` refused to close their
+  sparse conflict workspaces, which left the run stuck. Cleanup now refuses
+  only a submodule with a `.git` at its path, and names that path.
+
 - **`ccx vcs stack rebase` moves branches that other clean worktrees hold.**
   After publishing, a branch checked out in another worktree kept its old
   commit, and every branch above it stayed too. In Forge-AI/monorepo, where
