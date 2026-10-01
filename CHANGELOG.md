@@ -25,6 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Store keys keep non-default ports and path case; local origins stay as
   given after cleaning.
   Lanes cut from inside the store are sparse like their caller.
+  Every lane checks out tracked top-level `.claude` and `.agents` alongside
+  root files and selected directories, without running Git hooks, project
+  hooks, or setup scripts or installing dependencies.
   `CCX_STACK_NEW=thin|full` selects the default; `--thin` and `--full-history`
   select it explicitly. `--depth` sets history depth on first creation, and
   repeatable `--include` adds directories. `--published-parent` adopts a
@@ -32,6 +35,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ccx refuses a divergent store-owned same-named parent before changes,
   naming both commits; all store push paths refuse branches marked as
   adopted, even after interrupted adoption.
+  Keep thin mode opt-in per agent: source-local cc-notes are unavailable in
+  the independent store, lane notes stay there without copying or syncing,
+  and source notes remain untouched; do not set `CCX_STACK_NEW=thin` globally.
 
   `--deepen` permits explicit deepening in doubling steps, bounded by
   `--max-depth`. Rebase, submit, restack, and ship refuse incomplete ancestry

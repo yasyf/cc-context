@@ -382,8 +382,10 @@ ccx vcs guidelines                               # PR templates + contribution r
 #### Stack workspaces and cleanup
 
 `ccx vcs stack new <name> --thin` creates a sparse lane in a ccx-owned shallow
-store. Set `CCX_STACK_NEW=thin` in agent environments to make it the default;
-unset or `full` keeps a linked worktree of the current checkout. Explicit
+store; tracked `.claude` and `.agents` are checked out without running hooks
+or setup scripts. Keep thin mode opt-in: set `CCX_STACK_NEW=thin` per agent
+only where source-local cc-notes are not needed; do not set it globally.
+Unset or `full` keeps a linked worktree of the current checkout. Explicit
 `--thin` or `--full-history` selects the mode; `--full-history` is refused
 inside the store, where the `full` environment default still uses the store.
 Use `--include <dir>` to expand the lane and `--deepen --max-depth <n>` to

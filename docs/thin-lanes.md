@@ -14,8 +14,11 @@ ccx vcs stack new agent-work --thin
 ccx creates the thin store on first use, then cuts the lane as a linked
 worktree of that store. From a store lane, every new lane is a linked
 worktree of the same store and is sparse like its caller, with or without
-`--thin` and regardless of the `CCX_STACK_NEW` default. Only `--no-checkout`
-skips materializing files there; stacking works as usual.
+`--thin` and regardless of the `CCX_STACK_NEW` default. Every lane also checks
+out tracked top-level `.claude` and `.agents` directories for project hooks,
+settings, skills, and instructions, alongside root files and inherited or
+`--include` directories. Only `--no-checkout` skips materializing files
+there; stacking works as usual.
 
 The store is a non-bare clone at `~/.claude/stores/<key>/<repo>`. Only a
 checkout at the exact path its own origin derives counts as a thin store.
@@ -42,8 +45,10 @@ stores are never deepened implicitly.
 The store fetches only trunk, sets `origin/HEAD` and trunk tracking, and keeps
 only root files in its own sparse cone checkout. It persists
 `feature.experimental=true`, `feature.manyFiles=true`, and `pack.threads=2`.
-ccx initializes Graphite there when the source uses Graphite. Creation runs
-no hooks; set up dependencies manually inside the lane.
+ccx initializes Graphite there when the source uses Graphite. Creation only
+checks out tracked files: it runs no Git hooks, project hooks, or setup
+scripts and installs no dependencies. Set up dependencies manually inside
+the lane.
 
 Output segments are joined by ` · `: `created thin store <path>` on first
 use, an optional deepening report, `cut <name> onto <parent>`, then the new
@@ -60,7 +65,11 @@ The flag is refused inside the ccx thin store.
 
 ## Make thin lanes the default for agents
 
-Set `CCX_STACK_NEW=thin` in the agent's environment. In an agent shell:
+Thin lanes cannot see the source checkout's local cc-notes data, and notes
+written in a thin lane stay in the store. ccx does not copy or sync notes.
+Keep thin mode opt-in: use `--thin`, or set `CCX_STACK_NEW=thin` per agent
+only where that separation is acceptable. Do not set it globally. In an
+agent shell:
 
 ```sh
 export CCX_STACK_NEW=thin
@@ -79,8 +88,10 @@ default. Any value other than `thin` or `full` is an error.
 ## Check out more directories
 
 Thin lanes inherit the source checkout's per-worktree sparse patterns when
-active. Otherwise, they start with root files only. For a repository with
-`src` and `tools` directories, include both when creating the lane:
+active. Every lane also checks out root files and tracked top-level
+`.claude` and `.agents` directories; creation runs no hooks or setup scripts
+and installs no dependencies. For a repository with `src` and `tools`
+directories, include both when creating the lane:
 
 ```sh
 ccx vcs stack new agent-files --thin --include src --include tools
@@ -93,6 +104,11 @@ the checkout as work requires:
 ```sh
 git sparse-checkout add src tools
 ```
+
+Other paths imported by agent instructions are not discovered automatically.
+For a `CLAUDE.md` or `AGENTS.md` import such as `@docs/object-hierarchy.md`,
+pass `--include docs` at creation or run `git sparse-checkout add docs`
+inside the lane.
 
 Blobs download on demand. Dependency setup remains manual; keep mutable
 install state and build outputs private to each workspace, as described in
@@ -202,6 +218,11 @@ call Orca.
 
 ## Account for the limits
 
+- cc-notes keeps its records (`refs/cc-notes/*` objects and caches) in each
+  checkout's Git common directory. The thin store is an independent clone
+  that fetches trunk only, so source-local notes are absent and lane notes
+  stay in the store. ccx does not copy or sync notes; the source checkout's
+  notes are untouched. Keep thin mode opt-in per agent; do not set it globally.
 - ccx downloads a remote branch head someone else based below the shallow
   boundary before refusing for incomplete ancestry.
 - Reflog fork-point evidence in the store is thinner than in a long-lived
