@@ -222,16 +222,23 @@ func (stalled) Run(ctx context.Context, _ render.Dir, name string, _ ...string) 
 
 func TestProcTableMarksATimedOutListing(t *testing.T) {
 	table := ProcTable{Run: stalled{}, Timeout: time.Millisecond, MaxDaemons: 4}
-	if _, err := table.FSMonitorDaemons(context.Background()); !errors.Is(err, cleanup.ErrUnlisted) {
-		t.Errorf("FSMonitorDaemons error = %v, want cleanup.ErrUnlisted", err)
+	if _, err := table.FSMonitorDaemons(context.Background()); !errors.Is(err, cleanup.ErrUnprobed) {
+		t.Errorf("FSMonitorDaemons error = %v, want cleanup.ErrUnprobed", err)
 	}
-	if _, err := table.Processes(context.Background(), []int{7}); !errors.Is(err, cleanup.ErrUnlisted) {
-		t.Errorf("Processes error = %v, want cleanup.ErrUnlisted", err)
+	if _, err := table.Processes(context.Background(), []int{7}); !errors.Is(err, cleanup.ErrUnprobed) {
+		t.Errorf("Processes error = %v, want cleanup.ErrUnprobed", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := table.FSMonitorDaemons(ctx); errors.Is(err, cleanup.ErrUnlisted) || !errors.Is(err, context.Canceled) {
+	if _, err := table.FSMonitorDaemons(ctx); errors.Is(err, cleanup.ErrUnprobed) || !errors.Is(err, context.Canceled) {
 		t.Errorf("FSMonitorDaemons under a cancelled caller = %v, want context.Canceled alone", err)
+	}
+}
+
+func TestWatchmanMarksATimedOutProbe(t *testing.T) {
+	d := Deps{Run: stalled{}, Timeout: time.Millisecond}
+	if _, err := d.probe(context.Background()); !errors.Is(err, cleanup.ErrUnprobed) {
+		t.Errorf("probe error = %v, want cleanup.ErrUnprobed", err)
 	}
 }
 

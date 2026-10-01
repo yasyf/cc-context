@@ -80,6 +80,27 @@ func TestAdmitPassesAProvenPayload(t *testing.T) {
 	}
 }
 
+func TestAdmitPassesAPushedPayloadPastAFailedProbe(t *testing.T) {
+	for _, pushed := range []bool{true, false} {
+		t.Run(fmt.Sprintf("pushed=%t", pushed), func(t *testing.T) {
+			f := newFixture(t)
+			if pushed {
+				f.run(f.repo, "update-ref", "refs/remotes/origin/feature", "feature")
+			}
+			job := f.unregistered()
+			f.guard = func(context.Context, string) error { return errArgumentsUnread }
+
+			if err := f.relocator.Admit(context.Background(), &job); err != nil {
+				t.Fatalf("Admit() error = %v", err)
+			}
+
+			if blocked := job.Blocked != nil; blocked == pushed {
+				t.Errorf("blockage = %+v with the head pushed = %t, want blocked only when unpushed", job.Blocked, pushed)
+			}
+		})
+	}
+}
+
 func TestAdmitPassesAnAbsentPayload(t *testing.T) {
 	f := newFixture(t)
 	job := f.unregistered()

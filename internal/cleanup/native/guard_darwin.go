@@ -49,12 +49,14 @@ import (
 //
 // A worktree that is itself a symlink, or a process that has not exited and
 // cannot be read in full, is an error rather than a pass. That covers a
-// descriptor the kernel refuses to describe in any other process, a directory
-// or file whose path cannot be proven, and a process caught replacing its
-// image, whose arguments the kernel cannot produce: Guard makes one pass and
-// retries nothing. It does not see a file that is only memory-mapped, a
-// process of another uid, an argument given as a relative path, or a process
-// that exits before the scan reaches it. A removed directory or file sits in
+// descriptor the kernel refuses to describe in any other process and a
+// directory or file whose path cannot be proven: Guard makes one pass and
+// retries nothing. A process caught replacing its image, whose arguments the
+// kernel cannot produce, does not stop the pass: when the rest of the scan
+// finds no holder, Guard fails with [cleanup.ErrUnprobed] naming it. It does
+// not see a file that is only memory-mapped, a process of another uid, an
+// argument given as a relative path, or a process that exits before the scan
+// reaches it. A removed directory or file sits in
 // no tree and holds nothing.
 func Guard(ctx context.Context, worktree string) error {
 	lib, err := loadLibSystem()
@@ -70,11 +72,16 @@ func Guard(ctx context.Context, worktree string) error {
 		return err
 	}
 	var holders []cleanup.Holder
+	var unread []string
 	for _, pid := range pids {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		holder, held, err := scan.inspect(int(pid))
+		if errors.Is(err, errUnreadArguments) {
+			unread = append(unread, err.Error())
+			continue
+		}
 		if err != nil {
 			return err
 		}
@@ -82,7 +89,16 @@ func Guard(ctx context.Context, worktree string) error {
 			holders = append(holders, holder)
 		}
 	}
-	return active(worktree, holders)
+	return verdict(worktree, holders, unread)
+}
+
+var errUnreadArguments = errors.New("read its arguments")
+
+func verdict(worktree string, holders []cleanup.Holder, unread []string) error {
+	if len(holders) > 0 || len(unread) == 0 {
+		return active(worktree, holders)
+	}
+	return fmt.Errorf("%w: %s", cleanup.ErrUnprobed, strings.Join(unread, "; "))
 }
 
 func newScan(ctx context.Context, lib *libSystem, worktree string) (*scan, error) {
@@ -323,11 +339,11 @@ func (p *descriptorPass) place(fd int32) (string, error) {
 func (s *scan) argument(pid int) (string, error) {
 	raw, err := unix.SysctlRaw("kern.procargs2", pid)
 	if err != nil {
-		return "", fmt.Errorf("read its arguments: %w", err)
+		return "", fmt.Errorf("%w: %w", errUnreadArguments, err)
 	}
 	args, err := arguments(raw)
 	if err != nil {
-		return "", fmt.Errorf("read its arguments: %w", err)
+		return "", fmt.Errorf("%w: %w", errUnreadArguments, err)
 	}
 	for _, arg := range args {
 		if path, names := s.names(arg); names {

@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"golang.org/x/sync/errgroup"
+
+	"github.com/yasyf/cc-context/internal/cleanup"
 )
 
 // Retirement is the read-only plan for one exact worktree: the Watchman roots
@@ -66,6 +68,13 @@ type gateResult struct {
 	Blockers  []string
 }
 
+func (g gateResult) fail(err error) error {
+	if len(g.Blockers) > 0 && errors.Is(err, cleanup.ErrUnprobed) {
+		return refused(g.Blockers)
+	}
+	return err
+}
+
 // Plan takes the fresh, read-only retirement plan for worktree. It mutates
 // nothing; a zero-consumer snapshot alone never authorizes a retirement.
 func Plan(ctx context.Context, d Deps, worktree string) (Retirement, error) {
@@ -79,7 +88,7 @@ func Plan(ctx context.Context, d Deps, worktree string) (Retirement, error) {
 	}
 	own, err := d.fsmonitorOwnership(ctx, id.Path)
 	if err != nil {
-		return Retirement{}, err
+		return Retirement{}, g.fail(err)
 	}
 	roots, unpinned := pinRoots(g.Roots)
 	blockers := append(g.Blockers, unpinned...)
@@ -458,13 +467,13 @@ func (d Deps) gate(ctx context.Context, target string, exact bool) (gateResult, 
 			g.Roots = append(g.Roots, raw.Path)
 			c, err := d.consumers(ctx, raw.Path)
 			if err != nil {
-				return gateResult{}, err
+				return gateResult{}, g.fail(err)
 			}
 			g.Blockers = append(g.Blockers, d.blockers(raw.Path, raw.Queries, c)...)
 		case under(target, raw.Path):
 			cov, blockers, err := d.ancestor(ctx, raw, target)
 			if err != nil {
-				return gateResult{}, err
+				return gateResult{}, g.fail(err)
 			}
 			g.Ancestors = append(g.Ancestors, cov)
 			g.Blockers = append(g.Blockers, blockers...)
@@ -473,7 +482,7 @@ func (d Deps) gate(ctx context.Context, target string, exact bool) (gateResult, 
 	slices.SortStableFunc(g.Roots, func(a, b string) int { return len(b) - len(a) })
 	clientBlockers, err := d.clientBlockers(ctx, status, g.Roots)
 	if err != nil {
-		return gateResult{}, err
+		return gateResult{}, g.fail(err)
 	}
 	g.Blockers = append(g.Blockers, clientBlockers...)
 	return g, nil

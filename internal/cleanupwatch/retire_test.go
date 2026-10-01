@@ -3,12 +3,15 @@ package cleanupwatch
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/yasyf/cc-context/internal/cleanup"
 )
 
 type fixture struct {
@@ -811,6 +814,30 @@ func (p slowProcs) FSMonitorDaemons(ctx context.Context) ([]Process, error) {
 
 func (p slowProcs) Processes(ctx context.Context, pids []int) (map[int]Process, error) {
 	return p.inner.Processes(ctx, pids)
+}
+
+type unlistedProcs struct{ inner Processes }
+
+func (p unlistedProcs) FSMonitorDaemons(context.Context) ([]Process, error) {
+	return nil, fmt.Errorf("list processes: %w: ps: %w", cleanup.ErrUnprobed, context.DeadlineExceeded)
+}
+
+func (p unlistedProcs) Processes(ctx context.Context, pids []int) (map[int]Process, error) {
+	return p.inner.Processes(ctx, pids)
+}
+
+func TestPlanKeepsAKnownConsumerPastAFailedProbe(t *testing.T) {
+	f := newFixture(t)
+	f.w.subscribe(f.nested, fakeSub{Name: "watchman-make", PID: 601, Client: 3})
+	f.w.client(601, "python3.12", "python3 /opt/homebrew/bin/watchman-make -p '**/*.proto'")
+	d := f.w.deps()
+	d.Procs = unlistedProcs{inner: d.Procs}
+
+	_, err := Plan(context.Background(), d, f.wt)
+
+	if !errors.Is(err, ErrRefused) || errors.Is(err, cleanup.ErrUnprobed) || !strings.Contains(err.Error(), "watchman-make") {
+		t.Fatalf("Plan error = %v, want the watchman-make consumer refused, never excusable as a failed probe", err)
+	}
 }
 
 func TestRetireBoundsTheSettleWaitBySlowListings(t *testing.T) {

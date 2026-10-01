@@ -519,7 +519,7 @@ func TestAdvanceBlocksBeforeTheMove(t *testing.T) {
 	}
 }
 
-var errListingTimedOut = fmt.Errorf("list processes: %w: ps: %w", cleanup.ErrUnlisted, context.DeadlineExceeded)
+var errListingTimedOut = fmt.Errorf("list processes: %w: ps: %w", cleanup.ErrUnprobed, context.DeadlineExceeded)
 
 func TestAdvanceRemovesAPushedTreeWhoseProcessListingTimedOut(t *testing.T) {
 	tests := []struct {
@@ -551,6 +551,49 @@ func TestAdvanceRemovesAPushedTreeWhoseProcessListingTimedOut(t *testing.T) {
 				if len(discount) != 0 {
 					t.Errorf("guard %d discounted %v, want nothing discounted", i, discount)
 				}
+			}
+		})
+	}
+}
+
+var errArgumentsUnread = fmt.Errorf("%w: native: inspect pid 97627 (binrun): read its arguments: input/output error", cleanup.ErrUnprobed)
+
+func TestAcceptAndAdvanceTreatACleanPushedTreeAsIdlePastAFailedProbe(t *testing.T) {
+	f := newFixture(t)
+	f.run(f.repo, "update-ref", "refs/remotes/origin/feature", "feature")
+	f.guard = func(context.Context, string) error { return errArgumentsUnread }
+
+	job := f.accept()
+	f.advance(&job)
+
+	f.finished(&job)
+	f.absent(f.worktree)
+}
+
+func TestAcceptRefusesAProbeFailureOnAnUnpushedOrDirtyTree(t *testing.T) {
+	tests := []struct {
+		name    string
+		arrange func(f *fixture)
+	}{
+		{"unpushed", func(*fixture) {}},
+		{"dirty", func(f *fixture) {
+			f.run(f.repo, "update-ref", "refs/remotes/origin/feature", "feature")
+			f.write(filepath.Join(f.worktree, "late.txt"), "late\n")
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFixture(t)
+			tt.arrange(f)
+			f.guard = func(context.Context, string) error { return errArgumentsUnread }
+
+			_, err := f.relocator.Accept(context.Background(), 1, f.request(tt.name == "dirty"))
+
+			if err == nil || !strings.Contains(err.Error(), "read its arguments: input/output error") {
+				t.Fatalf("Accept() error = %v, want the failed probe named", err)
+			}
+			if got := f.id(f.worktree); got.Ino == 0 {
+				t.Errorf("worktree identity = %v, want the tree left in place", got)
 			}
 		})
 	}

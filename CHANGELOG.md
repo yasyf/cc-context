@@ -175,6 +175,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A failed probe no longer strands a clean, pushed worktree.** A Watchman
+  command that outlived its 10s bound, and a process whose arguments the kernel
+  could not produce (`input/output error` while it replaced its image), refused
+  `ccx vcs worktree rm` or blocked its cleanup job. Both now count as a failed
+  probe, like a timed-out `ps` or `lsof`. The activity guard finishes its scan
+  past an unreadable process and still refuses any holder it finds. When it
+  finds none, the removal goes ahead if the tree has no uncommitted changes and
+  a remote-tracking ref holds its head. Otherwise it is refused as before.
+
 - **A child Graphite parked on `graphite-base/<number>` restacks with its
   parent.** When a parent's submit moved a child's pull request onto its
   temporary `graphite-base/<number>` base, `stack rebase` and `stack submit`

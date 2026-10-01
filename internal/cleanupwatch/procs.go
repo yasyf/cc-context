@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"path/filepath"
 	"slices"
@@ -12,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yasyf/cc-context/internal/cleanup"
 	"github.com/yasyf/cc-context/internal/render"
 )
 
@@ -109,12 +107,7 @@ func (p ProcTable) Processes(ctx context.Context, pids []int) (map[int]Process, 
 }
 
 func (p ProcTable) run(ctx context.Context, name string, args ...string) ([]byte, error) {
-	bounded, cancel := context.WithTimeout(ctx, p.Timeout)
-	defer cancel()
-	out, err := p.Run.Run(bounded, render.Ambient, name, args...)
-	if err != nil && ctx.Err() == nil && errors.Is(bounded.Err(), context.DeadlineExceeded) {
-		return nil, fmt.Errorf("%w: %w", cleanup.ErrUnlisted, err)
-	}
+	out, err := RunBounded(ctx, p.Run, p.Timeout, render.Ambient, name, args...)
 	return out.Stdout, err
 }
 

@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yasyf/cc-context/internal/cleanup"
 	"github.com/yasyf/cc-context/internal/lookpath"
 	"github.com/yasyf/cc-context/internal/render"
 )
@@ -164,9 +165,19 @@ func (d Deps) run(ctx context.Context, dir render.Dir, name string, args ...stri
 }
 
 func (d Deps) runPID(ctx context.Context, dir render.Dir, name string, args ...string) (Output, error) {
-	ctx, cancel := context.WithTimeout(ctx, d.Timeout)
+	return RunBounded(ctx, d.Run, d.Timeout, dir, name, args...)
+}
+
+// RunBounded runs one command under timeout. A command that outlives timeout
+// while ctx is still live fails with [cleanup.ErrUnprobed].
+func RunBounded(ctx context.Context, run Runner, timeout time.Duration, dir render.Dir, name string, args ...string) (Output, error) {
+	bounded, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	return d.Run.Run(ctx, dir, name, args...)
+	out, err := run.Run(bounded, dir, name, args...)
+	if err != nil && ctx.Err() == nil && errors.Is(bounded.Err(), context.DeadlineExceeded) {
+		return Output{}, fmt.Errorf("%w: %w", cleanup.ErrUnprobed, err)
+	}
+	return out, err
 }
 
 func (d Deps) guard(ctx context.Context, path string) error {

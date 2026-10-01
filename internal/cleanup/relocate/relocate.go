@@ -100,7 +100,7 @@ func (r *Relocator) Intend(ctx context.Context, seq uint64, req cleanup.DeferReq
 		return cleanup.Job{}, err
 	}
 
-	verdict := r.unretired(ctx, job.Original)
+	verdict := r.unretired(ctx, &job)
 	if err := ctx.Err(); err != nil {
 		return cleanup.Job{}, err
 	}
