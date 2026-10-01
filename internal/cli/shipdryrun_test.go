@@ -112,10 +112,19 @@ func TestShipDryRunNamesTheTrackParent(t *testing.T) {
 	}
 }
 
-// TestShipDryRunOrdersOnlyContainedTrackedBranches pins the cost of that answer:
-// one for-each-ref names the tracked branches the untracked one contains, and
-// only those are ordered, so a repository with thousands of tracked siblings
-// costs no ancestry check per sibling.
+func TestShipDryRunParentAtTrunkIsTrunk(t *testing.T) {
+	f := shipGTRepo(t)
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "same-head")
+	mustRun(t, f.Env(), f.Dir, "gt", "track", "-f", "--no-interactive")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "adopt")
+	shipGTReady(t, f)
+
+	report := dryRunReport(t, f, "-m", "fix: frobnicate")
+	if parent := dryRunValues(report, "parent"); len(parent) != 1 || !strings.HasPrefix(parent[0], "main"+shipSep) {
+		t.Fatalf("parent = %v, want trunk despite the tracked branch at its head", parent)
+	}
+}
+
 func TestShipDryRunOrdersOnlyContainedTrackedBranches(t *testing.T) {
 	f := shipGTRepo(t)
 	shipGTStack(t, f, "x", "y")
@@ -129,7 +138,14 @@ func TestShipDryRunOrdersOnlyContainedTrackedBranches(t *testing.T) {
 	if parent := dryRunValues(report, "parent"); len(parent) != 1 || !strings.HasPrefix(parent[0], "b"+shipSep) {
 		t.Fatalf("parent = %v, want the nearest tracked ancestor b", parent)
 	}
+	exact := false
 	for _, inv := range shipGTInvocations(t, f) {
+		if slices.Contains(inv, "cat-file") && slices.Contains(inv, "--batch-check=%(objectname) %(objecttype)") {
+			exact = true
+		}
+		if slices.Contains(inv, "for-each-ref") && slices.Contains(inv, "--merged=refs/heads/c") && slices.Contains(inv, "--format=%(refname)") {
+			t.Errorf("parent inference scanned every local branch: %v", inv)
+		}
 		if !slices.Contains(inv, "--is-ancestor") {
 			continue
 		}
@@ -138,6 +154,9 @@ func TestShipDryRunOrdersOnlyContainedTrackedBranches(t *testing.T) {
 				t.Errorf("ancestry check %v ran on %s, which c does not contain", inv, sibling)
 			}
 		}
+	}
+	if !exact {
+		t.Fatal("parent inference did not batch exact tracked ref lookups")
 	}
 }
 

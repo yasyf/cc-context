@@ -4733,7 +4733,7 @@ func TestShipGTAdoptsPastATrackedBranchDeletedMidWalk(t *testing.T) {
 	shipGTReady(t, f)
 	bin := t.TempDir()
 	writeExecutable(t, filepath.Join(bin, "git"), "#!/bin/sh\nPATH=${PATH#"+bin+":}\n"+
-		"case \"$*\" in *for-each-ref\\ --merged=*) git \"$@\"; rc=$?; git update-ref -d refs/heads/gone; exit $rc ;; esac\n"+
+		"case \"$*\" in *cat-file\\ --batch-check=*) git \"$@\"; rc=$?; git update-ref -d refs/heads/gone; exit $rc ;; esac\n"+
 		"exec git \"$@\"\n")
 	f.PrependPATH(bin)
 
