@@ -1318,6 +1318,18 @@ func jjPlanArgv() [][]string {
 // every plain-git ship.
 var gitTrunkArgv = []string{"git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"}
 
+// gitForEachRefStdinArgv is the local tracking-ref read that follows a push's
+// ls-remote of its branch and trunk.
+var gitForEachRefStdinArgv = []string{"git", "for-each-ref", "--format=%(refname) %(objectname)", "--stdin"}
+
+// shipFetchArgv is the fetch of one remote branch whose tracking ref is behind.
+func shipFetchArgv(remote, branch string) []string {
+	return []string{
+		"git", "fetch", "--quiet", "--no-tags", "--no-write-fetch-head", "--negotiation-tip=HEAD",
+		remote, "+refs/heads/" + branch + ":refs/remotes/" + remote + "/" + branch,
+	}
+}
+
 // The CI watch's three gh calls, for want-lists long enough that spelling them
 // out buries the argv under test.
 var (

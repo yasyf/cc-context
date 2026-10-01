@@ -85,8 +85,8 @@ func shipPRPushed(branch string) [][]string {
 		{"git", "branch", "--show-current"},
 		{"git", "log", "-1", "--format=%h%x00%s"},
 		{"git", "config", "--get", "branch." + branch + ".remote"},
-		{"git", "fetch", "origin"},
-		{"git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/" + branch},
+		{"git", "ls-remote", "origin", "refs/heads/" + branch, "refs/heads/main"},
+		gitForEachRefStdinArgv,
 		{"git", "push", "--no-follow-tags", "--quiet", "--no-verify", "origin", branch},
 	}
 }
@@ -181,7 +181,9 @@ func TestShipPRCreateGitLane(t *testing.T) {
 	invocations := vcstest.Invocations(t, f.ArgvLog)
 	assertInvocations(t, invocations, append(shipPRPushed("feature"),
 		append([]string{"gh"}, ghPullsByHeadArgv(fakePRRepo, "feature", "open")...),
-		shipPRBaseArgv("feature", "main"),
+		[]string{"git", "ls-remote", "origin", "refs/heads/main"},
+		gitForEachRefStdinArgv,
+		shipPRBaseArgv,
 		[]string{"gh", "api", "-X", "POST", "repos/" + fakePRRepo + "/pulls", "-f", "head=feature", "-f", "base=main", "-f", "title=Better title", "-F", "body=@" + body},
 	))
 	assertNoGraphQLArgv(t, invocations)
@@ -283,7 +285,9 @@ func TestShipPRCreateRefused(t *testing.T) {
 		lookup := append([]string{"gh"}, ghPullsByHeadArgv(fakePRRepo, "feature", "open")...)
 		assertInvocations(t, vcstest.Invocations(t, f.ArgvLog), append(shipPRPushed("feature"),
 			lookup,
-			shipPRBaseArgv("feature", "main"),
+			[]string{"git", "ls-remote", "origin", "refs/heads/main"},
+			gitForEachRefStdinArgv,
+			shipPRBaseArgv,
 			[]string{"gh", "api", "-X", "POST", "repos/" + fakePRRepo + "/pulls", "-f", "head=feature", "-f", "base=main", "-f", "title=Better title", "-F", "body=@" + body},
 			lookup,
 		))
@@ -1041,14 +1045,9 @@ func TestPRNumberFromURL(t *testing.T) {
 	}
 }
 
-// shipPRBaseArgv is the ancestor scan ship runs to pick a new pull request's
-// base when --parent named none.
-func shipPRBaseArgv(branch, trunk string) []string {
-	return []string{
-		"git", "for-each-ref", "--merged=refs/heads/" + branch,
-		"--no-merged=refs/remotes/origin/" + trunk, "--format=%(refname:lstrip=3)", "refs/remotes/origin/",
-	}
-}
+// shipPRBaseArgv is the remote heads read ship runs to pick a new pull
+// request's base when --parent named none.
+var shipPRBaseArgv = []string{"git", "ls-remote", "--heads", "origin"}
 
 func TestShipPRCreateGitLaneBasesOnAnUnlandedParent(t *testing.T) {
 	f := shipPRFixture(t)
@@ -1111,5 +1110,89 @@ func TestShipPRCreateGitLaneSkipsAParentTheRemoteNoLongerHas(t *testing.T) {
 	}
 	if strings.Contains(got, "onto base") {
 		t.Errorf("summary = %q, want no base the remote no longer has", got)
+	}
+}
+
+// shipPRCreateBase is the base= field of the pull request create ship posted.
+func shipPRCreateBase(t *testing.T, f *vcstest.Fixture) string {
+	t.Helper()
+	for _, inv := range vcstest.Invocations(t, f.ArgvLog) {
+		if len(inv) > 3 && inv[0] == "gh" && inv[3] == "POST" {
+			for _, arg := range inv {
+				if base, ok := strings.CutPrefix(arg, "base="); ok {
+					return base
+				}
+			}
+		}
+	}
+	t.Fatal("ship posted no pull request create")
+	return ""
+}
+
+func shipPRCreateNoParent(t *testing.T, f *vcstest.Fixture) string {
+	t.Helper()
+	shipPRCreated(t)
+	body := writePRBody(t, "body.md", "why this change\n")
+	if _, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--pr-title", "Better title", "--pr-body-file", body); err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	return shipPRCreateBase(t, f)
+}
+
+func TestShipPRCreateGitLaneBasesOnTheNearestPushedAncestor(t *testing.T) {
+	f := shipPRFixture(t)
+	shipCutPushedParent(t, f, "base", "mid")
+	writeShipFile(t, f.Dir, "mid.txt", "mid\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "mid.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "mid")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "mid")
+	mustRun(t, f.Env(), f.Dir, "git", "checkout", "-q", "-b", "feature")
+
+	if base := shipPRCreateNoParent(t, f); base != "mid" {
+		t.Errorf("base = %q, want the nearest pushed ancestor mid", base)
+	}
+}
+
+func TestShipPRCreateGitLaneBasesOnAParentPushedFromAnotherClone(t *testing.T) {
+	f := shipPRFixture(t)
+	shipCutPushedParent(t, f, "base", "feature")
+	mustRun(t, f.Env(), f.Dir, "git", "update-ref", "-d", "refs/remotes/origin/base")
+
+	if base := shipPRCreateNoParent(t, f); base != "base" {
+		t.Errorf("base = %q, want base, which the remote holds though no tracking ref names it", base)
+	}
+}
+
+func TestShipPRCreateGitLaneBasesOnTrunkWithoutAPushedAncestor(t *testing.T) {
+	f := shipPRFixture(t)
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "main:landed")
+	mustRun(t, f.Env(), f.Dir, "git", "checkout", "-q", "-b", "other")
+	writeShipFile(t, f.Dir, "other.txt", "other\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "other.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "other")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "other")
+	mustRun(t, f.Env(), f.Dir, "git", "checkout", "-q", "main")
+	mustRun(t, f.Env(), f.Dir, "git", "checkout", "-q", "-b", "feature")
+
+	if base := shipPRCreateNoParent(t, f); base != "main" {
+		t.Errorf("base = %q, want trunk: landed is already on main and other is no ancestor", base)
+	}
+}
+
+func TestShipPRCreateGitLaneAmendMeasuresAgainstTheRemoteTrunk(t *testing.T) {
+	f := shipPRFixture(t)
+	shipCutPushedParent(t, f, "base", "feature")
+	writeShipFile(t, f.Dir, "feature.txt", "feature\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "feature.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "feature")
+	mustRun(t, f.Env(), f.RemoteDir, "git", "update-ref", "refs/heads/main", "refs/heads/base")
+	shipPRCreated(t)
+	body := writePRBody(t, "body.md", "why this change\n")
+
+	if _, err := runShipCmd(f.Context(), t, "--amend", "--no-watch", "--pr-title", "Better title", "--pr-body-file", body); err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	if base := shipPRCreateBase(t, f); base != "main" {
+		t.Errorf("base = %q, want main, which already carries base though origin/main had not seen it", base)
 	}
 }

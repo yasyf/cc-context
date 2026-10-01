@@ -194,8 +194,8 @@ func TestShipCommitPushWatch(t *testing.T) {
 					{"git", "branch", "--show-current"},
 					{"git", "log", "-1", "--format=%h%x00%s"},
 					{"git", "config", "--get", "branch.main.remote"},
-					{"git", "fetch", "origin"},
-					{"git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main"},
+					{"git", "ls-remote", "origin", "refs/heads/main"},
+					gitForEachRefStdinArgv,
 					{"git", "merge-base", "--is-ancestor", "refs/remotes/origin/main", "HEAD"},
 					{"git", "push", "--no-follow-tags", "--quiet", "origin", "main"},
 					{"git", "rev-parse", "HEAD"},
@@ -1508,8 +1508,8 @@ func TestShipGitUsesPostCommitBranch(t *testing.T) {
 		{"git", "branch", "--show-current"},
 		{"git", "log", "-1", "--format=%h%x00%s"},
 		{"git", "config", "--get", "branch.other.remote"},
-		{"git", "fetch", "origin"},
-		{"git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/other"},
+		{"git", "ls-remote", "origin", "refs/heads/other", "refs/heads/main"},
+		gitForEachRefStdinArgv,
 		{"git", "push", "--no-follow-tags", "--quiet", "origin", "other"},
 	})
 }
@@ -1705,8 +1705,8 @@ func TestShipGitRebase(t *testing.T) {
 			remote: "origin",
 			want: append(plan,
 				[]string{"git", "config", "--get", "branch.main.remote"},
-				[]string{"git", "fetch", "origin"},
-				[]string{"git", "rev-parse", "--verify", "--quiet", remoteRef},
+				[]string{"git", "ls-remote", "origin", "refs/heads/main"},
+				gitForEachRefStdinArgv,
 				[]string{"git", "merge-base", "--is-ancestor", remoteRef, "HEAD"},
 				[]string{"git", "push", "--no-follow-tags", "--quiet", "origin", "main"}),
 		},
@@ -1720,8 +1720,9 @@ func TestShipGitRebase(t *testing.T) {
 			rebased: 1,
 			want: append(plan,
 				[]string{"git", "config", "--get", "branch.main.remote"},
-				[]string{"git", "fetch", "origin"},
-				[]string{"git", "rev-parse", "--verify", "--quiet", remoteRef},
+				[]string{"git", "ls-remote", "origin", "refs/heads/main"},
+				gitForEachRefStdinArgv,
+				shipFetchArgv("origin", "main"),
 				[]string{"git", "merge-base", "--is-ancestor", remoteRef, "HEAD"},
 				[]string{"git", "rev-parse", "--path-format=absolute", "--git-path", "rebase-merge"},
 				[]string{"git", "rev-parse", "--path-format=absolute", "--git-path", "rebase-apply"},
@@ -1738,8 +1739,9 @@ func TestShipGitRebase(t *testing.T) {
 			},
 			want: append(plan,
 				[]string{"git", "config", "--get", "branch.main.remote"},
-				[]string{"git", "fetch", "origin"},
-				[]string{"git", "rev-parse", "--verify", "--quiet", remoteRef},
+				[]string{"git", "ls-remote", "origin", "refs/heads/main"},
+				gitForEachRefStdinArgv,
+				shipFetchArgv("origin", "main"),
 				[]string{"git", "merge-base", "--is-ancestor", remoteRef, "HEAD"},
 				[]string{"git", "rev-parse", "--path-format=absolute", "--git-path", "rebase-merge"},
 				[]string{"git", "rev-parse", "--path-format=absolute", "--git-path", "rebase-apply"},
@@ -1752,7 +1754,7 @@ func TestShipGitRebase(t *testing.T) {
 			wantErr: []string{"rebase onto origin/main conflicts in: f.txt", "resolve manually", "if you rewrote main on purpose, ccx vcs push moves origin/main onto your head"},
 		},
 		{
-			// rev-parse exits 1 on a branch nobody has pushed, so the rebase is
+			// ls-remote reports no branch nobody has pushed, so the rebase is
 			// skipped; a non-trunk branch runs no hooks either.
 			name:   "missing remote branch skips rebase",
 			opts:   []vcstest.Opt{vcstest.Branch("feature")},
@@ -1766,8 +1768,8 @@ func TestShipGitRebase(t *testing.T) {
 				{"git", "branch", "--show-current"},
 				{"git", "log", "-1", "--format=%h%x00%s"},
 				{"git", "config", "--get", "branch.feature.remote"},
-				{"git", "fetch", "origin"},
-				{"git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/feature"},
+				{"git", "ls-remote", "origin", "refs/heads/feature", "refs/heads/main"},
+				gitForEachRefStdinArgv,
 				{"git", "push", "--no-follow-tags", "--quiet", "--no-verify", "origin", "feature"},
 			},
 		},
@@ -1781,8 +1783,8 @@ func TestShipGitRebase(t *testing.T) {
 			remote: "backup",
 			want: append(plan,
 				[]string{"git", "config", "--get", "branch.main.remote"},
-				[]string{"git", "fetch", "backup"},
-				[]string{"git", "rev-parse", "--verify", "--quiet", "refs/remotes/backup/main"},
+				[]string{"git", "ls-remote", "backup", "refs/heads/main"},
+				gitForEachRefStdinArgv,
 				[]string{"git", "merge-base", "--is-ancestor", "refs/remotes/backup/main", "HEAD"},
 				[]string{"git", "push", "--no-follow-tags", "--quiet", "backup", "main"}),
 		},
@@ -1799,8 +1801,9 @@ func TestShipGitRebase(t *testing.T) {
 			},
 			want: append(plan,
 				[]string{"git", "config", "--get", "branch.main.remote"},
-				[]string{"git", "fetch", "origin"},
-				[]string{"git", "rev-parse", "--verify", "--quiet", remoteRef},
+				[]string{"git", "ls-remote", "origin", "refs/heads/main"},
+				gitForEachRefStdinArgv,
+				shipFetchArgv("origin", "main"),
 				[]string{"git", "merge-base", "--is-ancestor", remoteRef, "HEAD"},
 				[]string{"git", "rev-parse", "--path-format=absolute", "--git-path", "rebase-merge"}),
 			wantErr: []string{"ship: a rebase is already in progress here", "ccx never aborts a rebase it did not start"},
@@ -1959,14 +1962,15 @@ func TestShipGitPushRetry(t *testing.T) {
 	}
 	remoteRef := "refs/remotes/origin/main"
 	attempt := [][]string{
-		{"git", "fetch", "origin"},
-		{"git", "rev-parse", "--verify", "--quiet", remoteRef},
+		{"git", "ls-remote", "origin", "refs/heads/main"},
+		gitForEachRefStdinArgv,
 		{"git", "merge-base", "--is-ancestor", remoteRef, "HEAD"},
 		{"git", "push", "--no-follow-tags", "--quiet", "origin", "main"},
 	}
 	rebasingAttempt := [][]string{
-		{"git", "fetch", "origin"},
-		{"git", "rev-parse", "--verify", "--quiet", remoteRef},
+		{"git", "ls-remote", "origin", "refs/heads/main"},
+		gitForEachRefStdinArgv,
+		shipFetchArgv("origin", "main"),
 		{"git", "merge-base", "--is-ancestor", remoteRef, "HEAD"},
 		{"git", "rev-parse", "--path-format=absolute", "--git-path", "rebase-merge"},
 		{"git", "rev-parse", "--path-format=absolute", "--git-path", "rebase-apply"},
@@ -2011,8 +2015,9 @@ func TestShipGitPushRetry(t *testing.T) {
 			},
 			remoteCount: 2,
 			want: slices.Concat(plan, attempt, [][]string{
-				{"git", "fetch", "origin"},
-				{"git", "rev-parse", "--verify", "--quiet", remoteRef},
+				{"git", "ls-remote", "origin", "refs/heads/main"},
+				gitForEachRefStdinArgv,
+				shipFetchArgv("origin", "main"),
 				{"git", "merge-base", "--is-ancestor", remoteRef, "HEAD"},
 				{"git", "rev-parse", "--path-format=absolute", "--git-path", "rebase-merge"},
 				{"git", "rev-parse", "--path-format=absolute", "--git-path", "rebase-apply"},
@@ -7270,4 +7275,19 @@ func gitLogSubjects(t *testing.T, f *vcstest.Fixture, revRange string) []string 
 		return nil
 	}
 	return strings.Split(out, "\n")
+}
+
+func TestShipGitFetchesOnlyTheRefsItReads(t *testing.T) {
+	f := shipRepo(t, vcstest.Remote(), vcstest.Dirty(), vcstest.Branch("feature"))
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "main:gone")
+	mustRun(t, f.Env(), f.Dir, "git", "config", "remote.origin.fetch", "+refs/heads/main:refs/remotes/origin/main")
+	mustRun(t, f.Env(), f.Dir, "git", "config", "--add", "remote.origin.fetch", "+refs/heads/gone:refs/remotes/origin/gone")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "--delete", "gone")
+
+	if _, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--no-pr"); err != nil {
+		t.Fatalf("ship error = %v, want the push unaffected by a refspec naming a deleted branch", err)
+	}
+	if got, want := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "refs/heads/feature"), gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD"); got != want {
+		t.Errorf("remote feature = %s, want the shipped head %s", got, want)
+	}
 }

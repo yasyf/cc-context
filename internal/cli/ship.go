@@ -1817,20 +1817,22 @@ func shipPushGitAmend(ctx context.Context, dir render.Dir, remote, branch, preAm
 	return nil
 }
 
-// shipPushGitOnce is one non-amend push attempt: fetch the remote, rebase onto
-// <remote>/<branch> when it advanced past HEAD, then push. A rejected push moves
-// no local ref, so it re-enters as a *pushRejectedError with no rollback.
+// shipPushGitOnce is one non-amend push attempt: fetch the branch and trunk,
+// rebase onto <remote>/<branch> when it advanced past HEAD, then push. A
+// rejected push moves no local ref, so it re-enters as a *pushRejectedError
+// with no rollback.
 func shipPushGitOnce(ctx context.Context, dir render.Dir, remote, branch, trunk string, noVerify bool) (int, error) {
-	if err := gitFetch(ctx, dir, remote); err != nil {
-		return 0, fmt.Errorf("ship: git fetch %s: %w", remote, err)
+	fetch := []string{branch}
+	if trunk != "" && trunk != branch {
+		fetch = append(fetch, trunk)
 	}
-	remoteRef := "refs/remotes/" + remote + "/" + branch
-	present, err := gitRefExists(ctx, dir, "ship", remoteRef)
+	heads, err := stackRemoteHeads(ctx, dir, "ship", remote, fetch, "HEAD")
 	if err != nil {
 		return 0, err
 	}
+	remoteRef := "refs/remotes/" + remote + "/" + branch
 	rebased := 0
-	if present {
+	if heads[branch] != "" {
 		ancestor, err := gitIsAncestor(ctx, dir, "ship", remoteRef, "HEAD")
 		if err != nil {
 			return 0, err

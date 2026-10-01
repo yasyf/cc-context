@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -280,49 +281,55 @@ func shipPR(ctx context.Context, l lane, nwo, remote, branch, trunk, subject str
 }
 
 // shipPRBase is the base a new pull request opens against when --parent named
-// none: the branch's nearest pushed ancestor the remote trunk does not carry,
-// and trunk when there is none. A branch cut from an unlanded one holds that
-// branch's commits, so a pull request based on trunk proposes them as its own
-// and only the file count says so.
+// none: the nearest ancestor of the branch that a remote branch points at and
+// the remote trunk does not carry, and trunk when there is none. A branch cut
+// from an unlanded one holds that branch's commits, so a pull request based on
+// trunk proposes them as its own and only the file count says so.
 func shipPRBase(ctx context.Context, dir render.Dir, remote, branch, trunk string) (string, error) {
 	if remote == "" || trunk == "" {
 		return trunk, nil
 	}
-	remoteRefs := "refs/remotes/" + remote + "/"
-	out, err := render.RunCLI(ctx, dir, "git", []string{
-		"for-each-ref", "--merged=refs/heads/" + branch, "--no-merged=" + remoteRefs + trunk,
-		"--format=%(refname:lstrip=3)", remoteRefs,
-	})
+	if _, err := stackRemoteHeads(ctx, dir, "ship", remote, []string{trunk}, ""); err != nil {
+		return "", err
+	}
+	out, err := render.RunCLI(ctx, dir, "git", []string{"ls-remote", "--heads", remote})
 	if err != nil {
-		return "", fmt.Errorf("ship: git for-each-ref --merged %s --no-merged %s%s: %w", branch, remoteRefs, trunk, err)
+		return "", fmt.Errorf("ship: git ls-remote --heads %s: %w", remote, err)
+	}
+	heads := map[string][]string{}
+	for line := range strings.Lines(out) {
+		sha, ref, _ := strings.Cut(strings.TrimSpace(line), "\t")
+		name, ok := strings.CutPrefix(ref, "refs/heads/")
+		if ok && name != branch && name != trunk {
+			heads[sha] = append(heads[sha], name)
+		}
+	}
+	if len(heads) == 0 {
+		return trunk, nil
+	}
+	head := "refs/heads/" + branch
+	exclude := "^refs/remotes/" + remote + "/" + trunk
+	out, err = render.RunCLI(ctx, dir, "git", []string{"rev-list", head, exclude})
+	if err != nil {
+		return "", fmt.Errorf("ship: git rev-list %s %s: %w", head, exclude, err)
+	}
+	candidates := map[string]string{}
+	for line := range strings.Lines(out) {
+		sha := strings.TrimSpace(line)
+		for _, name := range heads[sha] {
+			candidates[name] = sha
+		}
 	}
 	base, nearest := trunk, 0
-	for line := range strings.Lines(out) {
-		name := strings.TrimSpace(line)
-		if name == "" || name == branch || name == "HEAD" {
-			continue
-		}
-		ahead, err := gitCommitsAhead(ctx, dir, "ship", remoteRefs+name, "refs/heads/"+branch)
+	for _, name := range slices.Sorted(maps.Keys(candidates)) {
+		ahead, err := gitCommitsAhead(ctx, dir, "ship", candidates[name], head)
 		if err != nil {
 			return "", err
 		}
-		// A second name for the branch's own head is no base: it proposes nothing.
 		if ahead == 0 || (base != trunk && ahead >= nearest) {
 			continue
 		}
 		base, nearest = name, ahead
-	}
-	if base == trunk {
-		return trunk, nil
-	}
-	// ship fetches without --prune, so a landed parent whose branch the merge
-	// deleted still has a remote-tracking ref here; GitHub answers 422 for it.
-	live, err := render.RunCLI(ctx, dir, "git", []string{"ls-remote", "--heads", remote, "refs/heads/" + base})
-	if err != nil {
-		return "", fmt.Errorf("ship: git ls-remote --heads %s %s: %w", remote, base, err)
-	}
-	if strings.TrimSpace(live) == "" {
-		return trunk, nil
 	}
 	return base, nil
 }

@@ -189,6 +189,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   <name>` instead of read from a stale remote-tracking ref. Restack's helper
   errors use `restack:` in place of `push:` or `stack rebase:`.
 
+- **`ccx vcs ship` fetches only its branch and trunk and bases new PRs on
+  the remote's heads.** On the plain-git lane, a bare `git fetch <remote>`
+  aborted with `ship: git fetch origin: git: exit status 128: fatal: couldn't
+  find remote ref refs/heads/gone` when a configured fetch refspec named a
+  deleted branch. Ship now asks `git ls-remote` for its branch and trunk,
+  then fetches only those whose remote-tracking refs differ. A stale
+  tracking ref for a deleted branch no longer becomes a rebase target.
+  Without `--parent`, a new PR uses the nearest ancestor named by a remote
+  head whose commit the remote trunk lacks, or trunk when none qualifies.
+  A parent pushed from another clone counts without a local tracking ref;
+  a deleted parent does not. Selecting the base reads the remote trunk first,
+  so an `--amend` ship, which skips the push's fetch, no longer bases a PR on
+  a parent trunk already carries. A branch whose `branch.<name>.remote` is
+  `.`, tracking a local branch, now ships, pushes, and restacks against
+  `origin` instead of failing on the refspec `refs/remotes/./<branch>`.
+
 - **Worktree cleanup skips an exited pid the kernel refused to identify.**
   `ccx vcs worktree rm` refused with
   `native: identify pid 89224: operation not permitted` even though that pid
