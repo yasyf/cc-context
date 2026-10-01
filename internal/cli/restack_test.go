@@ -381,6 +381,29 @@ func TestRestackGitConflictStopsInAWorkspaceAndContinues(t *testing.T) {
 	}
 }
 
+// TestRestackGitContinueWaitsForTheLiveRestack runs stack continue from a
+// second process while the restack that stopped on the conflict still lives:
+// the git lane's run must name its owner as precisely as the gt lane's does.
+func TestRestackGitContinueWaitsForTheLiveRestack(t *testing.T) {
+	f := restackGitConflict(t)
+	if _, _, err := runRestackCmd(t, f); err == nil {
+		t.Fatal("restack succeeded over a conflicting rebase, want it to stop in a workspace")
+	}
+
+	cmd := exec.Command(os.Args[0], "vcs", "stack", "continue") //nolint:gosec // the test binary itself, run as ccx through TestMain
+	cmd.Dir = f.Dir
+	cmd.Env = append(append(os.Environ(), f.Env()...), "CCX_TEST_STACK_CONTINUE=1")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("a second process continued a restack whose owner still runs:\n%s", out)
+	}
+	for _, want := range []string{fmt.Sprintf("pid %d on ", os.Getpid()), "is still driving the stack rebase of feature"} {
+		if !strings.Contains(string(out), want) {
+			t.Errorf("continue = %s, want %q", out, want)
+		}
+	}
+}
+
 // TestRestackGitRefusesUncommittedWork holds the git lane to the stack rebase
 // rule: the working copy a rebased branch is reset in must be clean, and the
 // refusal comes before any workspace opens or ref moves.

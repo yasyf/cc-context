@@ -44,7 +44,9 @@ func TestMain(m *testing.M) {
 	cleanupServeDefault = func(context.Context) error {
 		panic("cli: the cleanup daemon was served from a test")
 	}
-	if os.Getenv("CCX_TEST_APPLY_SELECTION") == "1" && len(os.Args) > 2 && os.Args[1] == "vcs" && os.Args[2] == "apply-selection" {
+	applySelection := os.Getenv("CCX_TEST_APPLY_SELECTION") == "1" && len(os.Args) > 2 && os.Args[1] == "vcs" && os.Args[2] == "apply-selection"
+	stackContinue := os.Getenv("CCX_TEST_STACK_CONTINUE") == "1" && len(os.Args) > 3 && os.Args[1] == "vcs" && os.Args[2] == "stack" && os.Args[3] == "continue"
+	if applySelection || stackContinue {
 		root := NewRootCmd()
 		root.SetArgs(os.Args[1:])
 		if err := root.Execute(); err != nil {

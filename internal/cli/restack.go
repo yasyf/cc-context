@@ -358,14 +358,15 @@ func restackGitRun(ctx context.Context, dir render.Dir, origin, branch string, o
 		return nil, fmt.Errorf("restack: %w", err)
 	}
 	return &stackRebaseRun{
-		Trunk:  onto.Name(),
-		Pin:    pin,
-		NoPush: true,
-		Git:    true,
-		Origin: origin,
-		Roots:  []string{branch},
-		Pid:    os.Getpid(),
-		Host:   host,
+		Trunk:   onto.Name(),
+		Pin:     pin,
+		NoPush:  true,
+		Git:     true,
+		Origin:  origin,
+		Roots:   []string{branch},
+		Pid:     os.Getpid(),
+		Started: stackProcStart(os.Getpid()),
+		Host:    host,
 		Branches: []stackRebaseBranch{{
 			Name:      branch,
 			Parent:    onto.Name(),
