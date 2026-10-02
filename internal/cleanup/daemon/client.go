@@ -51,26 +51,43 @@ func (c *Client) Hello(ctx context.Context) (cleanup.Info, error) {
 	return *reply.Info, nil
 }
 
-// Shutdown asks the daemon to stop and returns once its socket is gone or
-// refuses connections, which the daemon arranges only after its engine has
-// flushed. Any other failure to connect says nothing about the daemon and is
-// returned.
-func (c *Client) Shutdown(ctx context.Context) error {
-	if _, err := c.roundTrip(ctx, request{Op: opShutdown}); err != nil {
+// Shutdown sends the stop on one connection whose peer verify accepts, then
+// returns once that process no longer serves the socket: it is gone, refuses
+// connections, or another process answers. Other connect failures are returned.
+func (c *Client) Shutdown(ctx context.Context, verify func(cleanup.Peer) error) error {
+	conn, err := c.connect(ctx)
+	if err != nil {
+		return err
+	}
+	peer, err := peerCred(conn)
+	if err != nil {
+		_ = conn.Close()
+		return fmt.Errorf("%w: %s: %w", cleanup.ErrUnidentifiedPeer, c.socket, err)
+	}
+	if err := verify(peer); err != nil {
+		_ = conn.Close()
+		return err
+	}
+	if _, err := send(ctx, conn, request{Op: opShutdown}); err != nil {
 		return err
 	}
 	for wait := shutdownPoll; ; wait = min(wait*2, shutdownPollMax) {
 		conn, err := c.connect(ctx)
-		if ctx.Err() != nil {
+		if err == nil {
+			serving, peerErr := peerPID(conn)
+			_ = conn.Close()
+			if peerErr == nil && serving != peer.PID {
+				return nil
+			}
+		}
+		switch {
+		case ctx.Err() != nil:
 			return ctx.Err()
-		}
-		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ECONNREFUSED) {
+		case errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ECONNREFUSED):
 			return nil
-		}
-		if err != nil {
+		case err != nil:
 			return err
 		}
-		_ = conn.Close()
 		timer := time.NewTimer(wait)
 		select {
 		case <-timer.C:
@@ -159,26 +176,30 @@ func (c *Client) job(ctx context.Context, req request) (cleanup.Job, error) {
 	return *reply.Job, nil
 }
 
-func (c *Client) connect(ctx context.Context) (net.Conn, error) {
+func (c *Client) connect(ctx context.Context) (*net.UnixConn, error) {
 	conn, err := (&net.Dialer{}).DialContext(ctx, "unix", c.socket)
 	if err != nil {
 		return nil, fmt.Errorf("cleanup daemon: connect to %s: %w", c.socket, err)
 	}
-	return conn, nil
+	return conn.(*net.UnixConn), nil
 }
 
 func (c *Client) roundTrip(ctx context.Context, req request) (response, error) {
+	conn, err := c.connect(ctx)
+	if err != nil {
+		return response{}, err
+	}
+	return send(ctx, conn, req)
+}
+
+func send(ctx context.Context, conn net.Conn, req request) (response, error) {
+	defer func() { _ = conn.Close() }()
+	defer context.AfterFunc(ctx, func() { _ = conn.Close() })()
 	req.Protocol, req.Version = cleanup.Protocol, version.String()
 	data, err := durable.Marshal(req)
 	if err != nil {
 		return response{}, fmt.Errorf("cleanup daemon: encode the %s request: %w", req.Op, err)
 	}
-	conn, err := c.connect(ctx)
-	if err != nil {
-		return response{}, err
-	}
-	defer func() { _ = conn.Close() }()
-	defer context.AfterFunc(ctx, func() { _ = conn.Close() })()
 	line, err := exchange(conn, data)
 	if ctx.Err() != nil {
 		return response{}, ctx.Err()

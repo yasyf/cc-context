@@ -256,18 +256,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   program copy and applying the `LaunchAgent`, until apply returns. Every
   daemon version holds the serve lock for its whole life. A vacancy check
   alone left a race: a daemon could start before install and have its program
-  replaced and its `LaunchAgent` reloaded underneath it. If a daemon takes
-  the serve lock first, the command installs and applies nothing and stops
-  nothing. It waits up to the agent timeout for that daemon to answer.
-  It uses a current daemon or reports an error saying it was left running.
-  An outdated daemon is stopped and confirmed exited before its program
-  copy is replaced, so a stop timeout leaves the old copy intact. Apply has
-  a 15s timeout; a starting daemon now waits up to 30s for the serve lock,
-  up from 2s, so it can wait out the apply that launches it. A daemon that
-  closes without replying, never sends its hello, or holds the serve lock
-  behind a refusing or missing socket is still probed again under the start
-  lock. If it still does not answer, the command reports an error before
-  any install or apply.
+  replaced and its `LaunchAgent` reloaded underneath it. If another daemon
+  takes over the socket before the stop or takes the serve lock first, the
+  command installs and applies nothing and stops nothing. It waits up to the
+  agent timeout for that daemon to answer, then uses a current daemon or
+  reports an error saying it was left running. Before stopping an outdated
+  daemon, the command records its process start time. It sends the stop only
+  on a connection whose kernel peer credentials match its process ID and the
+  client's user ID and whose serving process still has that start time. It
+  sends nothing on other connections and never retries the stop on a new
+  one. This works with older daemons without a wire protocol change. If the
+  process start time or peer credentials cannot be read, the command stops,
+  installs, and applies nothing and reports that the outdated daemon could
+  not be verified and is left running. After a verified stop, the socket
+  wait also ends if a different process answers; the command still confirms
+  the outdated daemon's exit before replacing its program copy, so a stop
+  timeout leaves the old copy intact. Apply has a 15s timeout; a starting
+  daemon now waits up to 30s for the serve lock, up from 2s, so it can wait
+  out the apply that launches it. A daemon that closes without replying,
+  never sends its hello, or holds the serve lock behind a refusing or
+  missing socket is still probed again under the start lock. If it still
+  does not answer, the command reports an error before any install or apply.
 
   After the v0.67.3 upgrade, status replaced the v0.67.2 program and requested
   shutdown; while draining a roughly 15-minute relocation, the daemon accepted

@@ -47,6 +47,7 @@ type fakeDaemon struct {
 	applyHangs bool
 	lingers    int
 	exiting    int
+	foreignUID bool
 	events     []string
 	sockets    []string
 	entered    chan struct{}
@@ -86,13 +87,31 @@ func (c fakeControl) Hello(ctx context.Context) (cleanup.Info, error) {
 	return cleanup.Info{}, errRefused
 }
 
-func (c fakeControl) Shutdown(context.Context) error {
+func (c fakeControl) Shutdown(_ context.Context, verify func(cleanup.Peer) error) error {
+	c.d.mu.Lock()
+	serving, uid := c.d.serving, os.Getuid()
+	if c.d.foreignUID {
+		uid++
+	}
+	c.d.mu.Unlock()
+	if serving == nil {
+		return errRefused
+	}
+	err := verify(cleanup.Peer{PID: serving.PID, UID: uid})
 	c.d.mu.Lock()
 	defer c.d.mu.Unlock()
+	if err != nil {
+		c.d.events = append(c.d.events, "refused "+strconv.Itoa(serving.PID))
+		return err
+	}
 	c.d.events = append(c.d.events, "shutdown")
 	c.d.serving = nil
 	c.d.exiting = c.d.lingers
 	return nil
+}
+
+func birth(pid int) (time.Time, error) {
+	return time.Unix(int64(pid), 0), nil
 }
 
 func (d *fakeDaemon) dial(socket string) cleanup.Control {
@@ -197,6 +216,7 @@ func fixture(t *testing.T, d *fakeDaemon) starter {
 		apply: d.apply,
 		alive: d.alive,
 		held:  d.held,
+		born:  birth,
 	}
 }
 
@@ -696,6 +716,150 @@ func TestConnectLeavesADaemonThatTakesTheServeLockFirst(t *testing.T) {
 			}
 			if _, err := os.Lstat(s.Layout.ProgramPath()); !errors.Is(err, fs.ErrNotExist) {
 				t.Errorf("program copy stat error = %v, want nothing installed under the daemon that started first", err)
+			}
+		})
+	}
+}
+
+func TestConnectStopsOnlyTheOutdatedDaemonItObserved(t *testing.T) {
+	current := cleanup.Info{Version: "v1.2.3", Protocol: cleanup.Protocol, PID: 42}
+	older := cleanup.Info{Version: "v1.2.2", Protocol: cleanup.Protocol, PID: 41}
+	oldest := cleanup.Info{Version: "v1.2.1", Protocol: cleanup.Protocol, PID: 39}
+	reused := cleanup.Info{Version: "v1.2.3", Protocol: cleanup.Protocol, PID: 41}
+	errStart := errors.New("sysctl kern.proc.pid: input/output error")
+	tests := []struct {
+		name       string
+		successor  *cleanup.Info
+		foreignUID bool
+		recordErr  error
+		recordLate bool
+		verifyErr  error
+		reborn     bool
+		wantEvents []string
+		wantReady  bool
+		wantInfo   cleanup.Info
+		wantErrs   []error
+	}{
+		{
+			name:       "a current daemon that replaces the outdated one before its shutdown is kept",
+			successor:  &current,
+			wantEvents: []string{"hello", "hello", "refused 42"},
+			wantReady:  true,
+			wantInfo:   current,
+		},
+		{
+			name:       "an outdated daemon that replaces the outdated one before its shutdown is left running",
+			successor:  &oldest,
+			wantEvents: []string{"hello", "hello", "refused 39"},
+			wantReady:  true,
+			wantErrs:   []error{errStartedElsewhere, errOutdatedAfterStart},
+		},
+		{
+			name:       "a daemon that reuses the outdated one's pid is kept",
+			successor:  &reused,
+			reborn:     true,
+			wantEvents: []string{"hello", "hello", "refused 41"},
+			wantReady:  true,
+			wantInfo:   reused,
+		},
+		{
+			name:       "a socket served under another uid is left running",
+			foreignUID: true,
+			wantEvents: []string{"hello", "hello", "refused 41"},
+			wantReady:  true,
+			wantErrs:   []error{errStartedElsewhere, errOutdatedAfterStart},
+		},
+		{
+			name:       "a daemon that reused the pid before its start was recorded is never asked to stop",
+			recordLate: true,
+			wantEvents: []string{"hello", "hello"},
+			wantReady:  true,
+			wantErrs:   []error{errStartedElsewhere, errOutdatedAfterStart},
+		},
+		{
+			name:       "an outdated daemon whose start cannot be read is never asked to stop",
+			recordErr:  errStart,
+			wantEvents: []string{"hello", "hello"},
+			wantErrs:   []error{errUnverified, errStart},
+		},
+		{
+			name:       "a peer whose start cannot be read is sent nothing",
+			verifyErr:  errStart,
+			wantEvents: []string{"hello", "hello", "refused 41"},
+			wantErrs:   []error{errUnverified, errStart},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := &fakeDaemon{serving: &older, starts: &current, foreignUID: tt.foreignUID}
+			s := fixture(t, d)
+			s.Timeout = 100 * time.Millisecond
+			observed := false
+			s.born = func(pid int) (time.Time, error) {
+				if !observed {
+					observed = true
+					if tt.recordErr != nil {
+						return time.Time{}, tt.recordErr
+					}
+					if tt.recordLate {
+						return time.Now(), nil
+					}
+					if tt.successor != nil {
+						d.mu.Lock()
+						d.serving = tt.successor
+						d.mu.Unlock()
+					}
+					return birth(pid)
+				}
+				if tt.verifyErr != nil {
+					return time.Time{}, tt.verifyErr
+				}
+				start, err := birth(pid)
+				if tt.reborn {
+					start = start.Add(time.Microsecond)
+				}
+				return start, err
+			}
+
+			ctl, err := s.connect(t.Context())
+			for _, want := range tt.wantErrs {
+				if !errors.Is(err, want) {
+					t.Errorf("connect() error = %v, want it to wrap %v", err, want)
+				}
+			}
+			switch {
+			case len(tt.wantErrs) == 0 && err != nil:
+				t.Fatalf("connect() error = %v, want the daemon serving the socket", err)
+			case len(tt.wantErrs) == 0:
+				if info, err := ctl.Hello(context.Background()); err != nil || info != tt.wantInfo {
+					t.Errorf("returned control answers %+v, %v; want the daemon serving the socket, %+v", info, err, tt.wantInfo)
+				}
+			case ctl != nil:
+				t.Errorf("connect() control = %v, want nil beside an error", ctl)
+			case !strings.Contains(err.Error(), "it is left running"):
+				t.Errorf("connect() error = %q, want it to say the daemon is left running", err)
+			}
+			events, _ := d.recorded()
+			if len(events) < len(tt.wantEvents) || !slices.Equal(events[:len(tt.wantEvents)], tt.wantEvents) {
+				t.Fatalf("events = %q, want %q first", events, tt.wantEvents)
+			}
+			readiness := events[len(tt.wantEvents):]
+			if got := len(readiness) > 0; got != tt.wantReady {
+				t.Errorf("events after the refusal = %q, want readiness polled: %v", readiness, tt.wantReady)
+			}
+			for _, e := range readiness {
+				if e != "hello" {
+					t.Errorf("event %q after the refusal, want only readiness hellos", e)
+				}
+			}
+			if got := d.count("shutdown"); got != 0 {
+				t.Errorf("shutdown reached a daemon %d times, want 0: only the observed outdated daemon may be stopped", got)
+			}
+			if got := d.count("apply"); got != 0 {
+				t.Errorf("apply ran %d times, want 0: the LaunchAgent must not be applied over a daemon this client did not stop", got)
+			}
+			if _, err := os.Lstat(s.Layout.ProgramPath()); !errors.Is(err, fs.ErrNotExist) {
+				t.Errorf("program copy stat error = %v, want nothing installed over a daemon this client did not stop", err)
 			}
 		})
 	}

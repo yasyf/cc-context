@@ -26,6 +26,9 @@ var (
 	// could not read a process, so what holds a tree could be neither named
 	// nor ruled out.
 	ErrUnprobed = errors.New("cleanup: a process or watcher probe failed")
+	// ErrUnidentifiedPeer reports a daemon connection whose serving process the
+	// kernel would not name, so nothing was sent on it.
+	ErrUnidentifiedPeer = errors.New("cleanup: the process serving the daemon socket could not be identified")
 )
 
 // Request asks for one registered linked worktree to be removed now.
@@ -313,15 +316,23 @@ type Adopter interface {
 	Adopt(ctx context.Context, r AdoptRequest) (Receipt, error)
 }
 
+// Peer is the process serving the daemon socket, as the kernel reports it for
+// one connection.
+type Peer struct {
+	PID int
+	UID int
+}
+
 // Control is a Service reached over the daemon's socket, with the two verbs a
 // client needs to replace the daemon behind it.
 type Control interface {
 	Service
 	// Hello identifies the serving daemon.
 	Hello(ctx context.Context) (Info, error)
-	// Shutdown asks the daemon to finish its current bounded step, flush its
-	// journal, and exit, returning once it has stopped serving.
-	Shutdown(ctx context.Context) error
+	// Shutdown stops the daemon after its current step and journal flush,
+	// returning once it stops serving. It sends only on a connection whose
+	// Peer verify accepts and returns a refusal with nothing sent.
+	Shutdown(ctx context.Context, verify func(Peer) error) error
 }
 
 // RefusedError is a removal the preflight refused before anything was

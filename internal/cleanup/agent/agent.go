@@ -41,7 +41,8 @@ var (
 	errOutdatedAfterStart = errors.New("cleanup agent: an outdated daemon answered after the restart")
 	errNoDaemon           = errors.New("cleanup agent: no cleanup daemon accepts connections")
 	errUnresponsive       = errors.New("cleanup agent: the cleanup daemon did not answer")
-	errStartedElsewhere   = errors.New("cleanup agent: a daemon took the serve lock before this client could start one")
+	errStartedElsewhere   = errors.New("cleanup agent: another daemon started first")
+	errUnverified         = errors.New("cleanup agent: the outdated daemon's process could not be verified; it is left running")
 
 	releasePattern = regexp.MustCompile(`^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`)
 )
@@ -79,6 +80,7 @@ type starter struct {
 	apply func(ctx context.Context) error
 	alive func(pid int) bool
 	held  func(lock string) (bool, error)
+	born  func(pid int) (time.Time, error)
 }
 
 // Outdated reports whether a client at version client replaces a daemon at
@@ -260,28 +262,37 @@ func (s starter) connect(ctx context.Context) (cleanup.Control, error) {
 		return nil, err
 	}
 	defer func() { _ = lock.Close() }()
+	observed := time.Now()
 	ctl, info, found, err := s.probe(ctx, socket)
 	if err != nil || found == current {
 		return ctl, err
 	}
 	if found == stale {
-		if err := s.shutdown(ctx, ctl, info.PID); err != nil {
+		err = s.shutdown(ctx, ctl, info.PID, observed)
+		switch {
+		case errors.Is(err, errStartedElsewhere):
+			return s.leave(ctx, socket, err)
+		case err != nil:
 			return nil, err
 		}
 	}
 	err = s.launch(ctx)
 	switch {
 	case errors.Is(err, errStartedElsewhere):
-		slog.Info("cleanup agent: leaving the daemon that started first to come up", "err", err)
-		ready, readyErr := s.ready(ctx, socket)
-		if readyErr != nil {
-			return nil, fmt.Errorf("%w; it is left running: %w", err, readyErr)
-		}
-		return ready, nil
+		return s.leave(ctx, socket, err)
 	case err != nil:
 		return nil, err
 	}
 	return s.ready(ctx, socket)
+}
+
+func (s starter) leave(ctx context.Context, socket string, cause error) (cleanup.Control, error) {
+	slog.Info("cleanup agent: leaving the daemon that started first to come up", "err", cause)
+	ready, err := s.ready(ctx, socket)
+	if err != nil {
+		return nil, fmt.Errorf("%w; it is left running: %w", cause, err)
+	}
+	return ready, nil
 }
 
 func (s starter) launch(ctx context.Context) error {
@@ -307,7 +318,7 @@ func (s starter) claim(ctx context.Context) (*durable.Lock, error) {
 	case ctx.Err() != nil:
 		return nil, fmt.Errorf("cleanup agent: take the serve lock %s: %w", path, ctx.Err())
 	case errors.Is(err, durable.ErrLockBusy):
-		return nil, fmt.Errorf("%w: %s", errStartedElsewhere, path)
+		return nil, fmt.Errorf("%w: it holds the serve lock %s", errStartedElsewhere, path)
 	}
 	return nil, fmt.Errorf("cleanup agent: take the serve lock %s: %w", path, err)
 }
@@ -348,11 +359,22 @@ func (s starter) lock(ctx context.Context) (*durable.Lock, error) {
 	return lock, nil
 }
 
-func (s starter) shutdown(ctx context.Context, ctl cleanup.Control, pid int) error {
+func (s starter) shutdown(ctx context.Context, ctl cleanup.Control, pid int, observed time.Time) error {
+	start, err := s.born(pid)
+	switch {
+	case err != nil:
+		return fmt.Errorf("%w: pid %d: %w", errUnverified, pid, err)
+	case !start.Before(observed):
+		return fmt.Errorf("%w: pid %d started %s, after this client asked the outdated daemon for its hello at %s", errStartedElsewhere, pid, start.Format(time.RFC3339Nano), observed.Format(time.RFC3339Nano))
+	}
 	ctx, cancel := context.WithTimeout(ctx, s.timeout())
 	defer cancel()
 	slog.Info("cleanup agent: stopping an outdated daemon", "client", s.Version, "pid", pid)
-	if err := ctl.Shutdown(ctx); err != nil {
+	err = ctl.Shutdown(ctx, s.verifier(pid, start))
+	switch {
+	case errors.Is(err, cleanup.ErrUnidentifiedPeer):
+		return fmt.Errorf("%w: pid %d: %w", errUnverified, pid, err)
+	case err != nil:
 		return fmt.Errorf("cleanup agent: stop the outdated daemon: %w", err)
 	}
 	for delay := pollFloor; s.alive(pid); delay = min(2*delay, pollCeiling) {
@@ -363,6 +385,22 @@ func (s starter) shutdown(ctx context.Context, ctl cleanup.Control, pid int) err
 		}
 	}
 	return nil
+}
+
+func (s starter) verifier(pid int, start time.Time) func(cleanup.Peer) error {
+	return func(peer cleanup.Peer) error {
+		if peer.PID != pid || peer.UID != os.Getuid() {
+			return fmt.Errorf("%w: pid %d (uid %d) serves the socket, not the outdated daemon (pid %d, uid %d)", errStartedElsewhere, peer.PID, peer.UID, pid, os.Getuid())
+		}
+		got, err := s.born(peer.PID)
+		switch {
+		case err != nil:
+			return fmt.Errorf("%w: pid %d: %w", errUnverified, peer.PID, err)
+		case !got.Equal(start):
+			return fmt.Errorf("%w: pid %d started %s serves the socket, not the outdated daemon started %s", errStartedElsewhere, peer.PID, got.Format(time.RFC3339Nano), start.Format(time.RFC3339Nano))
+		}
+		return nil
+	}
 }
 
 func (s starter) start(ctx context.Context) error {

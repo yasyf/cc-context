@@ -5,12 +5,19 @@ import (
 	"net"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/yasyf/cc-context/internal/cleanup"
 )
 
 func peerPID(conn *net.UnixConn) (int, error) {
+	peer, err := peerCred(conn)
+	return peer.PID, err
+}
+
+func peerCred(conn *net.UnixConn) (cleanup.Peer, error) {
 	raw, err := conn.SyscallConn()
 	if err != nil {
-		return 0, fmt.Errorf("reach the socket: %w", err)
+		return cleanup.Peer{}, fmt.Errorf("reach the socket: %w", err)
 	}
 	var (
 		cred    *unix.Ucred
@@ -19,10 +26,10 @@ func peerPID(conn *net.UnixConn) (int, error) {
 	if err := raw.Control(func(fd uintptr) {
 		cred, readErr = unix.GetsockoptUcred(int(fd), unix.SOL_SOCKET, unix.SO_PEERCRED) //nolint:gosec // an open descriptor fits an int
 	}); err != nil {
-		return 0, fmt.Errorf("reach the socket: %w", err)
+		return cleanup.Peer{}, fmt.Errorf("reach the socket: %w", err)
 	}
 	if readErr != nil {
-		return 0, fmt.Errorf("read SO_PEERCRED: %w", readErr)
+		return cleanup.Peer{}, fmt.Errorf("read SO_PEERCRED: %w", readErr)
 	}
-	return int(cred.Pid), nil
+	return cleanup.Peer{PID: int(cred.Pid), UID: int(cred.Uid)}, nil
 }
