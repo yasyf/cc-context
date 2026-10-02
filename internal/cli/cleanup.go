@@ -242,8 +242,16 @@ func readCleanupStatus(ctx context.Context, svc cleanup.Service, q cleanup.Query
 	return report, err
 }
 
-func waitCleanupJob(ctx context.Context, svc cleanup.Service, id string) (cleanup.Job, error) {
-	var seen cleanup.Phase
+func waitCleanupReceipt(ctx context.Context, receipt cleanup.Receipt) error {
+	svc, err := cleanupReadService(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = waitCleanupJob(ctx, svc, receipt.JobID, cleanup.Phase(receipt.State))
+	return err
+}
+
+func waitCleanupJob(ctx context.Context, svc cleanup.Service, id string, seen cleanup.Phase) (cleanup.Job, error) {
 	for delay := cleanupWaitPollFloor; ; delay = min(2*delay, cleanupWaitPollCeiling) {
 		report, err := readCleanupStatus(ctx, svc, cleanup.Query{JobID: id})
 		if seen != "" && errors.Is(err, cleanup.ErrUnknownJob) {
@@ -352,7 +360,7 @@ the daemon leaves any one poll unanswered for ` + cleanupStatusTimeout.String() 
 			if err != nil {
 				return fmt.Errorf("cleanup wait: %w", err)
 			}
-			job, err := waitCleanupJob(ctx, svc, args[0])
+			job, err := waitCleanupJob(ctx, svc, args[0], "")
 			if err != nil {
 				return cleanupJobErr("cleanup wait", args[0], err)
 			}
