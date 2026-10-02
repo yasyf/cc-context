@@ -468,24 +468,28 @@ func TestPRCIOf(t *testing.T) {
 		{
 			"running with nothing failed",
 			rollupOf("PENDING", checkRun("lint", "SUCCESS", "COMPLETED"), checkRun("Graphite / mergeability_check", "", "IN_PROGRESS")),
-			prCIReport{State: prCIPending, Running: 1}, "ci pending: 1 running",
+			prCIReport{State: prCIPending, Running: 1},
+			"ci pending: 1 running",
 		},
 		{
 			"a re-run's newest attempt wins",
 			rollupOf("SUCCESS", checkRun("test", "FAILURE", "COMPLETED"), checkRun("test", "SUCCESS", "COMPLETED")),
-			prCIReport{State: prCIGreen}, "ci green",
+			prCIReport{State: prCIGreen},
+			"ci green",
 		},
 		{
 			"a failed rollup with nothing failing under it",
 			rollupOf("ERROR", checkRun("lint", "SUCCESS", "COMPLETED")),
-			prCIReport{State: prCIRed, Rollup: "ERROR"}, "ci red: rollup error",
+			prCIReport{State: prCIRed, Rollup: "ERROR"},
+			"ci red: rollup error",
 		},
 		{
 			"failures named and capped",
 			rollupOf("FAILURE", checkRun("a", "FAILURE", "COMPLETED"), checkRun("b", "CANCELLED", "COMPLETED"),
 				checkRun("c", "TIMED_OUT", "COMPLETED"), prstate.Context{Typename: "StatusContext", Context: "buildkite/test", State: "ERROR"},
 				checkRun("e", "", "IN_PROGRESS")),
-			prCIReport{State: prCIRed, Failing: []string{"a", "b", "c", "buildkite/test"}, Running: 1}, "ci red: a, b, c +1 more",
+			prCIReport{State: prCIRed, Failing: []string{"a", "b", "c", "buildkite/test"}, Running: 1},
+			"ci red: a, b, c +1 more",
 		},
 	}
 	for _, tt := range tests {
@@ -514,7 +518,8 @@ func TestPRApprovalOf(t *testing.T) {
 		{"approved by the bot", "APPROVED", []prstate.Review{{Author: "forge-pr-reviewer", State: "APPROVED"}}, prApproved, "approved by forge-pr-reviewer"},
 		{
 			"one approval short",
-			"REVIEW_REQUIRED", []prstate.Review{{Author: "poetic-svc", State: "APPROVED"}},
+			"REVIEW_REQUIRED",
+			[]prstate.Review{{Author: "poetic-svc", State: "APPROVED"}},
 			prReviewRequired, "review required, approved by poetic-svc",
 		},
 		{"changes requested", "CHANGES_REQUESTED", []prstate.Review{{Author: "yasyf", State: "CHANGES_REQUESTED"}}, prChangesRequested, "changes requested by yasyf"},
@@ -551,7 +556,8 @@ func TestPRVerdict(t *testing.T) {
 		{
 			"every cause named",
 			prStatusReport{prQueueReport: open, CI: prCIReport{State: prCIPending}, Approval: prApprovalReport{State: prReviewRequired}},
-			prstate.PR{Draft: true, Mergeable: "CONFLICTING"}, "blocked:draft,conflict,ci-pending,unapproved",
+			prstate.PR{Draft: true, Mergeable: "CONFLICTING"},
+			"blocked:draft,conflict,ci-pending,unapproved",
 		},
 		{"changes requested", prStatusReport{prQueueReport: open, CI: green, Approval: prApprovalReport{State: prChangesRequested}}, prstate.PR{}, "blocked:changes-requested"},
 		{"closed", prStatusReport{prQueueReport: prQueueReport{Queue: prQueueNotQueued, State: "CLOSED"}, CI: green, Approval: approved}, prstate.PR{}, "blocked:closed"},
