@@ -85,6 +85,8 @@ type PR struct {
 	Mergeable        string                 `json:"mergeable"`
 	MergeStateStatus string                 `json:"mergeStateStatus"`
 	ReviewDecision   string                 `json:"reviewDecision"`
+	Reviews          []Review               `json:"reviews,omitempty"`
+	Draft            bool                   `json:"draft,omitempty"`
 	ChangedFiles     int                    `json:"changedFiles"`
 	MergeCommit      string                 `json:"mergeCommit,omitempty"`
 	Labels           []string               `json:"labels,omitempty"`
@@ -98,6 +100,12 @@ type PR struct {
 	// GitHub still shows another; HeadRefOid and the checks stay GitHub's.
 	PushedHead string    `json:"pushedHead,omitempty"`
 	PushedAt   time.Time `json:"pushedAt,omitzero"`
+}
+
+// Review is one reviewer's latest approving or change-requesting review.
+type Review struct {
+	Author string `json:"author"`
+	State  string `json:"state"`
 }
 
 // Rollup is the head commit's aggregate check state and the contexts behind

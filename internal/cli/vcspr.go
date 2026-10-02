@@ -29,6 +29,28 @@ const (
 	prQueueEvicted   prQueueState = "evicted"
 )
 
+type prCIState string
+
+const (
+	prCIGreen   prCIState = "green"
+	prCIRed     prCIState = "red"
+	prCIPending prCIState = "pending"
+	prCINone    prCIState = "none"
+)
+
+type prApprovalState string
+
+const (
+	prApproved         prApprovalState = "approved"
+	prChangesRequested prApprovalState = "changes-requested"
+	prReviewRequired   prApprovalState = "review-required"
+	prNoReview         prApprovalState = "none"
+)
+
+const prVerdictLandable = "landable"
+
+const prNamedFailures = 3
+
 var prStatusRateLimitWait = 10 * time.Minute
 
 // prQueueReport is one pull request's queue state, with the evidence that
@@ -45,6 +67,26 @@ type prQueueReport struct {
 	EvictedAt   string       `json:"evicted_at,omitempty"`
 	Conflicting bool         `json:"conflicting,omitempty"`
 	Stale       *prStale     `json:"stale,omitempty"`
+}
+
+type prStatusReport struct {
+	prQueueReport
+	CI       prCIReport       `json:"ci"`
+	Approval prApprovalReport `json:"approval"`
+	Verdict  string           `json:"verdict"`
+}
+
+type prCIReport struct {
+	State   prCIState `json:"state"`
+	Failing []string  `json:"failing,omitempty"`
+	Running int       `json:"running,omitempty"`
+	Rollup  string    `json:"rollup,omitempty"`
+}
+
+type prApprovalReport struct {
+	State            prApprovalState `json:"state"`
+	Approvers        []string        `json:"approvers,omitempty"`
+	ChangesRequested []string        `json:"changes_requested_by,omitempty"`
 }
 
 // prStale marks a record the cache served while GitHub's rate limit refused a
@@ -102,11 +144,21 @@ func newVcsPRStatusCmd() *cobra.Command {
 	var o vcsPRStatusOpts
 	cmd := &cobra.Command{
 		Use:   "status <number>...",
-		Short: "Report whether each pull request is queued, evicted, not queued, or landed",
-		Long: `Report whether each pull request is queued, evicted, not queued, or landed.
+		Short: "Report each pull request's queue state, CI, approval, and whether it can land",
+		Long: `Report whether each pull request is queued, evicted, not queued, or landed,
+along with the checks on its head, its approval, and a one-word verdict.
 
 Pass all pull request numbers in one invocation. The command fetches their
-statuses together and prints one result per pull request in input order.
+statuses together and prints one line per pull request in input order.
+
+CI is red when any check on the head failed, naming the first few, pending
+while any has not finished, green once something passed and nothing failed or
+runs, and none when nothing graded the head. Approval is GitHub's
+reviewDecision, which counts the reviews the base branch's protection counts,
+bot approvals included, followed by who approved or requested changes. The
+verdict is landed, queued, landable for an open pull request that is green,
+approved, not a draft, and not conflicting, and otherwise blocked: followed by
+every cause, such as blocked:ci-red,unapproved.
 
 The answer comes from Graphite's own record of the pull request, the one gt
 reads, so a pull request enqueued from the Graphite web UI reads queued even
@@ -255,7 +307,7 @@ func runVcsPRStatus(cmd *cobra.Command, args []string, o vcsPRStatusOpts) error 
 	return nil
 }
 
-func collectPRQueue(ctx context.Context, repo string, numbers []int, warn io.Writer) ([]prQueueReport, error) {
+func collectPRQueue(ctx context.Context, repo string, numbers []int, warn io.Writer) ([]prStatusReport, error) {
 	store, err := openPRState(ctx, repo, warn)
 	if err != nil {
 		return nil, fmt.Errorf("pr status: %w", err)
@@ -264,7 +316,7 @@ func collectPRQueue(ctx context.Context, repo string, numbers []int, warn io.Wri
 	if err != nil {
 		return nil, fmt.Errorf("pr status: %w", err)
 	}
-	reports := make([]prQueueReport, 0, len(numbers))
+	reports := make([]prStatusReport, 0, len(numbers))
 	for _, number := range numbers {
 		pr := st.PRs[number]
 		if pr.Graphite == nil {
@@ -288,9 +340,98 @@ func collectPRQueue(ctx context.Context, repo string, numbers []int, warn io.Wri
 		r := classifyPRQueue(info, landedOn, activity)
 		r.Conflicting = r.Queue == prQueueEvicted && pr.MergeStateStatus == "DIRTY"
 		r.Stale = staleAt(limited, pr.PolledAt)
-		reports = append(reports, r)
+		report := prStatusReport{prQueueReport: r, CI: prCIOf(pr.Rollup), Approval: prApprovalOf(pr)}
+		report.Verdict = prVerdict(report, pr)
+		reports = append(reports, report)
 	}
 	return reports, nil
+}
+
+func prCIOf(rollup *prstate.Rollup) prCIReport {
+	checks := statusChecks(rollup)
+	r := prCIReport{State: prCINone}
+	for _, c := range checks {
+		switch statusClassify(c.State) {
+		case statusFailed:
+			r.Failing = append(r.Failing, c.Name)
+		case statusRunning:
+			r.Running++
+		}
+	}
+	switch {
+	case len(r.Failing) > 0:
+		r.State = prCIRed
+	case r.Running > 0:
+		r.State = prCIPending
+	case rollup != nil && statusClassify(rollup.State) == statusFailed:
+		r.State, r.Rollup = prCIRed, rollup.State
+	case statusGraded(checks) > 0:
+		r.State = prCIGreen
+	}
+	return r
+}
+
+func prApprovalOf(pr prstate.PR) prApprovalReport {
+	var r prApprovalReport
+	for _, review := range pr.Reviews {
+		switch review.State {
+		case "APPROVED":
+			r.Approvers = append(r.Approvers, review.Author)
+		case "CHANGES_REQUESTED":
+			r.ChangesRequested = append(r.ChangesRequested, review.Author)
+		}
+	}
+	switch {
+	case pr.ReviewDecision == "APPROVED":
+		r.State = prApproved
+	case pr.ReviewDecision == "CHANGES_REQUESTED":
+		r.State = prChangesRequested
+	case pr.ReviewDecision == "REVIEW_REQUIRED":
+		r.State = prReviewRequired
+	case len(r.ChangesRequested) > 0:
+		r.State = prChangesRequested
+	case len(r.Approvers) > 0:
+		r.State = prApproved
+	default:
+		r.State = prNoReview
+	}
+	return r
+}
+
+func prVerdict(r prStatusReport, pr prstate.PR) string {
+	switch {
+	case r.Queue == prQueueLanded:
+		return string(prQueueLanded)
+	case r.Queue == prQueueQueued:
+		return string(prQueueQueued)
+	case r.State != "OPEN":
+		return "blocked:" + strings.ToLower(r.State)
+	}
+	var causes []string
+	if pr.Draft {
+		causes = append(causes, "draft")
+	}
+	if pr.Mergeable == "CONFLICTING" || r.Conflicting {
+		causes = append(causes, "conflict")
+	}
+	switch r.CI.State {
+	case prCIRed:
+		causes = append(causes, "ci-red")
+	case prCIPending:
+		causes = append(causes, "ci-pending")
+	case prCINone:
+		causes = append(causes, "no-ci")
+	}
+	switch r.Approval.State {
+	case prChangesRequested:
+		causes = append(causes, "changes-requested")
+	case prReviewRequired, prNoReview:
+		causes = append(causes, "unapproved")
+	}
+	if len(causes) == 0 {
+		return prVerdictLandable
+	}
+	return "blocked:" + strings.Join(causes, ",")
 }
 
 // readPRStateWaiting reads through store, sitting out GitHub's rate limit to
@@ -350,7 +491,7 @@ func classifyPRQueue(info gtapi.PullRequestInfo, landedOn, activity string) prQu
 	return r
 }
 
-func renderPRQueue(reports []prQueueReport) string {
+func renderPRQueue(reports []prStatusReport) string {
 	var b strings.Builder
 	for _, r := range reports {
 		fmt.Fprintf(&b, "#%d  %s", r.Number, r.Queue)
@@ -367,10 +508,45 @@ func renderPRQueue(reports []prQueueReport) string {
 		case prQueueNotQueued:
 			fmt.Fprintf(&b, " · %s", strings.ToLower(r.State))
 		}
+		b.WriteString(shipSep + prCIValue(r.CI) + shipSep + prApprovalValue(r.Approval) + shipSep + r.Verdict)
 		if r.Stale != nil {
 			b.WriteString(" · " + r.Stale.String())
 		}
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+func prCIValue(ci prCIReport) string {
+	switch {
+	case len(ci.Failing) > 0:
+		named, rest := ci.Failing, ""
+		if len(named) > prNamedFailures {
+			named, rest = named[:prNamedFailures], fmt.Sprintf(" +%d more", len(ci.Failing)-prNamedFailures)
+		}
+		return "ci red: " + strings.Join(named, ", ") + rest
+	case ci.Rollup != "":
+		return "ci red: rollup " + strings.ToLower(ci.Rollup)
+	case ci.State == prCIPending:
+		return fmt.Sprintf("ci pending: %d running", ci.Running)
+	}
+	return "ci " + string(ci.State)
+}
+
+func prApprovalValue(a prApprovalReport) string {
+	switch a.State {
+	case prApproved:
+		if len(a.Approvers) == 0 {
+			return "approved"
+		}
+		return "approved by " + strings.Join(a.Approvers, ", ")
+	case prChangesRequested:
+		return "changes requested by " + strings.Join(a.ChangesRequested, ", ")
+	case prReviewRequired:
+		if len(a.Approvers) == 0 {
+			return "review required"
+		}
+		return "review required, approved by " + strings.Join(a.Approvers, ", ")
+	}
+	return "no review"
 }
