@@ -333,17 +333,24 @@ func TestCleanupWorktreeRmRefusedWhilePaused(t *testing.T) {
 	f := vcstest.Repo(t)
 	f.Isolate(t)
 	h := fixtureCleanup(t, f)
+	svc := &rmWaitService{Service: h.engine, t: t}
+	f.Decorate(func(ctx context.Context) context.Context { return withCleanup(ctx, svc) })
 	path := addPoolWorktree(t, f, "feat")
 	if err := h.engine.Pause(f.Context()); err != nil {
 		t.Fatalf("pause: %v", err)
 	}
 
-	out, err := runWorktreeCmd(t, f, "rm", "feat")
-	if want := "worktree rm: " + cleanup.ErrPaused.Error(); !errors.Is(err, cleanup.ErrPaused) || err.Error() != want {
-		t.Fatalf("rm while paused = %v, want %q", err, want)
+	for _, args := range [][]string{{"rm", "feat"}, {"rm", "feat", "--wait"}} {
+		out, err := runWorktreeCmd(t, f, args...)
+		if want := "worktree rm: " + cleanup.ErrPaused.Error(); !errors.Is(err, cleanup.ErrPaused) || err.Error() != want {
+			t.Fatalf("%v while paused = %v, want %q", args, err, want)
+		}
+		if out != "" {
+			t.Errorf("%v while paused printed %q, want nothing removed", args, out)
+		}
 	}
-	if out != "" {
-		t.Errorf("rm while paused printed %q, want nothing removed", out)
+	if len(svc.queries) != 0 {
+		t.Errorf("status requests = %+v, want none once the removal is refused", svc.queries)
 	}
 	assertIntact(t, f, path)
 	if jobs := journaledJobs(t, h); len(jobs) != 0 {
@@ -356,7 +363,7 @@ func TestCleanupWorktreeRmRefusedWhilePaused(t *testing.T) {
 	if err := h.engine.Resume(f.Context()); err != nil {
 		t.Fatalf("resume: %v", err)
 	}
-	out, err = runWorktreeCmd(t, f, "rm", "feat")
+	out, err := runWorktreeCmd(t, f, "rm", "feat")
 	if err != nil {
 		t.Fatalf("rm after the resume: %v", err)
 	}
@@ -869,14 +876,13 @@ func TestCleanupWorktreeRmWaitNeedsTheJobSeenDone(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			f := vcstest.Repo(t)
 			f.Isolate(t)
-			h := fixtureCleanup(t, f)
-			if err := h.engine.Pause(f.Context()); err != nil {
-				t.Fatalf("pause: %v", err)
-			}
+			tuning := cleanupTuning()
+			tuning.SampleEvery = time.Hour
+			h := attachCleanup(t, f, newCleanupHarness(t, f, tuning))
 			var restarted *daemon.Engine
 			svc := &rmWaitService{Service: h.engine, t: t, handoff: func(r cleanup.Receipt) cleanup.Service {
 				if r.State != cleanup.State(cleanup.PhaseUnregistered) {
-					t.Fatalf("receipt = %+v, want it unregistered while deletion is paused", r)
+					t.Fatalf("receipt = %+v, want it unregistered while the governor's baseline sample holds deletion", r)
 				}
 				if err := h.engine.Stop(f.Context()); err != nil {
 					t.Fatalf("stop the first engine: %v", err)
