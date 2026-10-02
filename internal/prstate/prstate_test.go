@@ -177,6 +177,65 @@ func TestReadWaitsOutTheMinimumIntervalForANewPR(t *testing.T) {
 	}
 }
 
+func TestReadersWaitingOutTheIntervalShareTheNextPoll(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c := &clock{now: epoch}
+	first, firstGH := newStore(t, dir, c, nil, ok(t, "poll-190.json"), ok(t, "poll-189-190.json"))
+	second, secondGH := newStore(t, dir, c, nil)
+	ctx, cancel := context.WithTimeout(testCtx(t), 10*time.Second)
+	defer cancel()
+
+	if _, err := first.Read(ctx, Want{PRs: []int{190}}); err != nil {
+		t.Fatal(err)
+	}
+	c.now = epoch.Add(10 * time.Second)
+	second.sleep = func(ctx context.Context, d time.Duration) error {
+		c.now = c.now.Add(d)
+		_, err := first.Read(ctx, Want{PRs: []int{190}})
+		return err
+	}
+	st, err := second.Read(ctx, Want{PRs: []int{189}})
+	if err != nil {
+		t.Fatalf("second read: %v", err)
+	}
+	if firstGH.requests() != 2 || secondGH.requests() != 0 || st.PRs[189].HeadRefOid == "" {
+		t.Fatalf("requests = %d, %d; #189 = %+v; want the sleeping reader's lease read by the other store's poll", firstGH.requests(), secondGH.requests(), st.PRs[189])
+	}
+	if got := firstGH.vars[1]; got["p0"] != float64(189) || got["p1"] != float64(190) {
+		t.Errorf("second poll vars = %v, want #189's lease beside #190", got)
+	}
+}
+
+func TestAReaderThatWaitedReturnsTheFailureOfThePollItWaitedFor(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c := &clock{now: epoch}
+	first, _ := newStore(t, dir, c, nil, ok(t, "poll-190.json"), reply{status: http.StatusBadGateway})
+	second, secondGH := newStore(t, dir, c, nil)
+	ctx, cancel := context.WithTimeout(testCtx(t), 10*time.Second)
+	defer cancel()
+
+	if _, err := first.Read(ctx, Want{PRs: []int{190}}); err != nil {
+		t.Fatal(err)
+	}
+	c.now = epoch.Add(10 * time.Second)
+	second.sleep = func(ctx context.Context, d time.Duration) error {
+		c.now = c.now.Add(d)
+		if _, err := first.Read(ctx, Want{PRs: []int{190}}); err == nil {
+			t.Error("read through a 502 succeeded")
+		}
+		return nil
+	}
+	_, err := second.Read(ctx, Want{PRs: []int{189}})
+	if err == nil || !strings.Contains(err.Error(), "the poll at 2026-09-30T07:00:30Z failed") || !strings.Contains(err.Error(), "502") {
+		t.Errorf("read = %v, want the failure of the poll it waited for", err)
+	}
+	if secondGH.requests() != 0 {
+		t.Errorf("requests = %d, want none before the interval ends", secondGH.requests())
+	}
+}
+
 func TestSecondaryLimitProbesEveryTwoMinutesAndResumesOnTheFirst200(t *testing.T) {
 	t.Parallel()
 	limited := reply{status: http.StatusForbidden, header: map[string]string{"Retry-After": "3600"}, body: `{"message":"You have exceeded a secondary rate limit."}`}
