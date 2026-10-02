@@ -112,6 +112,31 @@ git diff --cached
 ccx vcs stack continue
 ```
 
+## Repair a pull request Graphite does not track
+
+After a push, the verdict line for each open pull request ends with its
+GitHub mergeability. It reads `untracked by graphite` instead when Graphite's
+`mergeability-status` holds no row for the pull request after 20 seconds, the
+state `stack-enqueue` reads as `UNTRACKED` however green GitHub shows it. A
+parent that landed under the pull request leaves it there. Graphite's
+server-side stack graph keeps the old parent, and a resubmit of an unchanged
+head does not rewrite it.
+
+`ccx vcs stack submit` repairs it. It republishes each untracked branch with a
+new head, the same tree, parents, author, and message under a later committer
+date, restacks the branches above it, and checks Graphite again:
+
+```text
+repairing · Graphite holds no mergeability record for:
+#29427 feature/api · parent dev · Graphite tracks no stack for it · its server-side parent is still feature/pools
+repaired · #29427 republished with a fresh head and tracked by Graphite
+```
+
+When Graphite still holds no row, the command exits non-zero naming each pull
+request and the parent Graphite last recorded for it. `stack rebase` and
+`stack continue` exit non-zero for an untracked pull request without repairing
+it; run `ccx vcs stack submit` to repair.
+
 ## Check publication before retrying
 
 Separate stacks can run concurrently. The existing run records select the run

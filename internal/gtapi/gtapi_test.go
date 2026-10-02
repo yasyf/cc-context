@@ -263,6 +263,35 @@ func TestPreSubmitPullRequests(t *testing.T) {
 	}
 }
 
+func TestMergeabilityStatusesOmitsAnUntrackedPullRequest(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/graphite/mergeability-status" {
+			t.Errorf("request = %s %s, want POST /graphite/mergeability-status", r.Method, r.URL.Path)
+		}
+		assertHeaders(t, r, true)
+		sent := decodeBody(t, r)
+		if sent["repoOwner"] != "Forge-AI" || sent["repoName"] != "monorepo" {
+			t.Errorf("params = %v, want repoOwner=Forge-AI repoName=monorepo", sent)
+		}
+		if numbers, ok := sent["prNumbers"].([]any); !ok || len(numbers) != 2 {
+			t.Errorf("prNumbers = %v, want 2 entries", sent["prNumbers"])
+		}
+		_, _ = fmt.Fprint(w, `{"mergeabilityStatuses":[{"prNumber":29438,"forgeSource":"github","mergeabilityStatus":"READY_TO_MERGE"}]}`)
+	}))
+	t.Cleanup(ts.Close)
+
+	got, err := testClient(ts.URL).MergeabilityStatuses(context.Background(), "Forge-AI", "monorepo", []int{29427, 29438})
+	if err != nil {
+		t.Fatalf("MergeabilityStatuses: %v", err)
+	}
+	if status, tracked := got[29438]; !tracked || status != "READY_TO_MERGE" {
+		t.Errorf("29438 = %q, %t, want READY_TO_MERGE tracked", status, tracked)
+	}
+	if status, tracked := got[29427]; tracked {
+		t.Errorf("29427 = %q, want it absent: Graphite tracks no stack for it", status)
+	}
+}
+
 func TestPreSubmitErrorResultIsTyped(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = fmt.Fprint(w, `{"result":{"error":"repo not synced"}}`)

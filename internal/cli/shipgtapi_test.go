@@ -41,6 +41,7 @@ type gtAPIStub struct {
 	presubmitError string
 	submitErrors   map[string]string
 	queued         map[string]bool
+	untracked      map[int]gtStubUntracked
 	nextPR         int
 	// parked maps a branch to the graphite-base branch pre-submit moved its
 	// pull request onto; remote reads and writes that branch on origin.
@@ -58,6 +59,12 @@ type gtStubMerged struct {
 	number int
 	head   string
 	state  gtapi.PRState
+}
+
+type gtStubUntracked struct {
+	base  string
+	head  string
+	stuck bool
 }
 
 // gtStubSubmit is one submit post: the raw body ccx sent, and the lone entry
@@ -129,6 +136,7 @@ func newGTAPIStub(t *testing.T) *gtAPIStub {
 		bodies:       map[string]string{},
 		submitErrors: map[string]string{},
 		queued:       map[string]bool{},
+		untracked:    map[int]gtStubUntracked{},
 		parked:       map[string]string{},
 		nextPR:       100,
 	}
@@ -175,6 +183,16 @@ func (s *gtAPIStub) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		s.infoHeads = append(s.infoHeads, req.PRHeadRefNames)
 		prs := []map[string]any{}
+		var numbers []int
+		_ = json.Unmarshal(req.PRNumbers, &numbers)
+		for _, number := range numbers {
+			if u, ok := s.untracked[number]; ok {
+				prs = append(prs, map[string]any{
+					"prNumber": number, "state": "OPEN", "url": gtStubPRURL(number),
+					"versions": []map[string]any{{"headSha": u.head, "baseName": u.base, "createdAt": "2026-09-02T00:00:00.000Z"}},
+				})
+			}
+		}
 		for _, branch := range req.PRHeadRefNames {
 			if number := s.prs[branch]; number != 0 {
 				pr := map[string]any{
@@ -203,6 +221,18 @@ func (s *gtAPIStub) serve(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		s.write(w, map[string]any{"result": map[string]any{"status": "ok", "prs": prs}})
+	case "/graphite/mergeability-status":
+		var req struct {
+			PRNumbers []int `json:"prNumbers"`
+		}
+		s.decode(r, &req)
+		rows := []map[string]any{}
+		for _, number := range req.PRNumbers {
+			if _, untracked := s.untracked[number]; !untracked {
+				rows = append(rows, map[string]any{"prNumber": number, "forgeSource": "github", "mergeabilityStatus": "READY_TO_MERGE"})
+			}
+		}
+		s.write(w, map[string]any{"mergeabilityStatuses": rows})
 	case "/graphite/cli/submit/pre-submit-pull-requests":
 		if s.presubmitError != "" {
 			s.write(w, map[string]any{"result": map[string]any{"error": s.presubmitError}})
@@ -264,6 +294,9 @@ func (s *gtAPIStub) submit(w http.ResponseWriter, r *http.Request) {
 		} else {
 			s.remote("update-ref", "refs/heads/"+base, entry.BaseSha)
 		}
+	}
+	if u, ok := s.untracked[entry.PRNumber]; ok && !u.stuck && entry.HeadSha != u.head {
+		delete(s.untracked, entry.PRNumber)
 	}
 	number, status := s.nextPR, "created"
 	if entry.Action == gtapi.SubmitUpdate {

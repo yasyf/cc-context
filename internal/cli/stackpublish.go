@@ -414,7 +414,7 @@ func stackFinishPublication(ctx context.Context, cmd *cobra.Command, l lane, com
 			return err
 		}
 	}
-	if err := stackVerdict(ctx, cmd, l.dir(), run, live); err != nil {
+	if err := stackVerdict(ctx, cmd, l, run, live); err != nil {
 		return err
 	}
 	if err := stackMoveLocalOnly(ctx, cmd, l, commonDir, run); err != nil {
