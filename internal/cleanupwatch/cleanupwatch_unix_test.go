@@ -26,6 +26,17 @@ func fifo(t *testing.T, dir, name string) string {
 	return path
 }
 
+func releaseOnCleanup(t *testing.T, block string) {
+	t.Cleanup(func() {
+		release, err := os.OpenFile(block, os.O_WRONLY|syscall.O_NONBLOCK, 0) //nolint:gosec // the fifo is the test's own
+		if err != nil {
+			return
+		}
+		_, _ = release.Write([]byte("x\n"))
+		_ = release.Close()
+	})
+}
+
 func openFIFO(t *testing.T, path string, flag int, stuck string) *os.File {
 	t.Helper()
 	opened := make(chan *os.File, 1)
@@ -49,14 +60,14 @@ func openFIFO(t *testing.T, path string, flag int, stuck string) *os.File {
 	return nil
 }
 
-func TestExecRunnerDeadlineKillsOnlyTheDirectChild(t *testing.T) {
+func TestExecRunnerCancelKillsOnlyTheDirectChild(t *testing.T) {
 	dir := t.TempDir()
 	live, block := fifo(t, dir, "live"), fifo(t, dir, "block")
-	const deadline = 200 * time.Millisecond
+	releaseOnCleanup(t, block)
 	child := &exec.Cmd{}
 	render.BoundChild(child)
-	limit := deadline + child.WaitDelay + 5*time.Second
-	ctx, cancel := context.WithTimeout(context.Background(), deadline)
+	limit := child.WaitDelay + 5*time.Second
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	result := make(chan error, 1)
@@ -66,15 +77,16 @@ func TestExecRunnerDeadlineKillsOnlyTheDirectChild(t *testing.T) {
 	}()
 	descendant := openFIFO(t, live, os.O_RDONLY, "the descendant never opened the live fifo")
 	defer func() { _ = descendant.Close() }()
+	cancel()
 
 	var err error
 	select {
 	case err = <-result:
 	case <-time.After(limit):
-		t.Fatalf("Run did not return within %s: the descendant holding the pipes was waited on past WaitDelay", limit)
+		t.Fatalf("Run did not return within %s of the cancel: the descendant holding the pipes was waited on past WaitDelay", limit)
 	}
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Errorf("Run error = %v, want context.DeadlineExceeded", err)
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("Run error = %v, want context.Canceled", err)
 	}
 
 	release := openFIFO(t, block, os.O_WRONLY, "the descendant was signalled: nothing reads the block fifo")

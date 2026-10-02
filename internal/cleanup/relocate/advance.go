@@ -168,7 +168,7 @@ func (r *Relocator) vet(ctx context.Context, job *cleanup.Job, tree string, vett
 }
 
 func (r *Relocator) block(ctx context.Context, job *cleanup.Job, reason, detail string) (bool, error) {
-	if err := ctx.Err(); err != nil {
+	if err := ctx.Err(); err != nil && reason != timeoutReason {
 		return false, err
 	}
 	job.Block(r.cfg.Now(), reason, detail)
@@ -184,17 +184,11 @@ func (r *Relocator) enter(job *cleanup.Job, phase cleanup.Phase) (bool, error) {
 	return true, nil
 }
 
-// Advance resumes job from the phase its record holds, trusting that phase only
-// as far as the filesystem agrees with it. It never deletes a tree, never
-// touches the original path once the tree has left it, and never runs git's
-// repair or prune. A tree it did not find clean earlier in the same call is
-// checked for uncommitted changes again before the move and before the
-// detaching rename, unless the job is forced. The detaching rename waits on
-// the registry naming nothing in the job folder but the parked tree itself,
-// and PhaseUnregistered is published only once the registry names nothing at
-// or inside the job folder at all, and nothing the move carried along with the
-// tree. A cancelled ctx returns ctx's error, whatever phase the call reached,
-// and journals no blockage.
+// Advance resumes job from the phase its record holds, trusting it only as far
+// as the filesystem agrees. It never deletes a tree, touches the original path
+// once the tree has left it, or runs git's repair or prune. A cancelled ctx
+// returns ctx's error and journals only a blockage the cancellation did not
+// cause: a running mutation that expires its own budget.
 func (r *Relocator) Advance(ctx context.Context, job *cleanup.Job) error {
 	vetted := false
 	for {

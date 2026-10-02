@@ -113,10 +113,11 @@ or apply.
 
 Shutdown cancels the worker's current step. Git reads stop; an `update-ref`,
 `worktree move`, or `worktree remove` already running finishes or reaches its
-budget before the step yields. The relocation ladder stops at the next
-durably saved phase, and a restart resumes from that phase. Shutdown waits
-for at most one active Git command's budget, plus up to five seconds if a
-descendant keeps its output pipes open.
+budget before the step yields. One that reaches its budget is recorded as a
+timeout, and the restart retries it with the usual backoff. The relocation
+ladder stops at the next durably saved phase, and a restart resumes from that
+phase. Shutdown waits for at most one active Git command's budget, plus up to
+five seconds if a descendant keeps its output pipes open.
 
 During the v0.67.3 upgrade incident, the draining daemon accepted each new
 connection and closed it at once without a reply, so status saw an empty

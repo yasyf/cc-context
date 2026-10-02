@@ -23,6 +23,7 @@ const (
 	defaultGitBudget = time.Minute
 	maxStdout        = 64 << 10
 	maxStderr        = 8 << 10
+	timeoutReason    = "timeout"
 )
 
 type capped struct {
@@ -115,7 +116,7 @@ func unprobed(ctx, bounded context.Context, err error) error {
 
 func gitReason(err error) string {
 	if errors.Is(err, cleanup.ErrUnprobed) {
-		return "timeout"
+		return timeoutReason
 	}
 	return "git"
 }

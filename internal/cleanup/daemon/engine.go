@@ -246,11 +246,11 @@ func (e *Engine) Run(ctx context.Context) error {
 	return errors.Join(e.work(steps), e.park())
 }
 
-// Stop cancels the worker's current step and waits for it to flush and return:
-// a git read is killed and its job rests unblocked at the phase on record, a
-// git mutation already running finishes or expires at its budget before the
-// step yields, and a slice in flight completes. A command not started by then
-// is answered with ErrStopped. It is idempotent, and works before Run.
+// Stop cancels the worker's current step and waits for it to return: a git
+// read is killed and its job rests unblocked at the phase on record, a git
+// mutation already running finishes or expires at its budget (journaled as a
+// timeout) before the step yields, and a slice in flight completes. A command
+// not started by then is answered with ErrStopped. Idempotent; works before Run.
 func (e *Engine) Stop(ctx context.Context) error {
 	e.quitOnce.Do(func() { close(e.quit) })
 	if !e.started.Load() {

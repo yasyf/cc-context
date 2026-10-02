@@ -19,7 +19,7 @@ import (
 	"github.com/yasyf/cc-context/internal/render"
 )
 
-const shortBudget = time.Second
+const shortBudget = 3 * time.Second
 
 func (f *fixture) fifo(name string) string {
 	f.t.Helper()
@@ -30,25 +30,49 @@ func (f *fixture) fifo(name string) string {
 	return path
 }
 
-func (f *fixture) holdingGit(hold string, after bool) (git, marker, ran string) {
+func releaseOnCleanup(t *testing.T, block string) {
+	t.Cleanup(func() {
+		release, err := os.OpenFile(block, os.O_WRONLY|syscall.O_NONBLOCK, 0) //nolint:gosec // the fifo is the test's own
+		if err != nil {
+			return
+		}
+		_, _ = release.Write([]byte("x\n"))
+		_ = release.Close()
+	})
+}
+
+func (f *fixture) holdingGit(hold string, after bool) (git, marker, entered, ran string) {
 	f.t.Helper()
 	git = filepath.Join(f.root, "holding-git")
 	marker = filepath.Join(f.root, "holding")
 	ran = filepath.Join(f.root, "ran-before-holding")
+	entered = f.fifo("entered")
 	never := f.fifo("never-written")
+	releaseOnCleanup(f.t, never)
 	run := ""
 	if after {
 		run = fmt.Sprintf("\t\t%s \"$@\"\n\t\t: > %s\n", f.git, ran)
 	}
 	script := fmt.Sprintf(
-		"#!/bin/sh\nif [ -e %s ]; then\n\tcase \" $* \" in *\" %s \"*)\n%s\t\tread x < %s\n\t\texit 1\n\tesac\nfi\nexec %s \"$@\"\n",
-		marker, hold, run, never, f.git,
+		"#!/bin/sh\nif [ -e %s ]; then\n\tcase \" $* \" in *\" %s \"*)\n\t\texec 3>%s\n%s\t\tread x < %s\n\t\texit 1\n\tesac\nfi\nexec %s \"$@\"\n",
+		marker, hold, entered, run, never, f.git,
 	)
 	f.write(marker, "")
 	if err := os.WriteFile(git, []byte(script), 0o700); err != nil { //nolint:gosec // the script stands in for git and is executed
 		f.t.Fatalf("write holding git: %v", err)
 	}
-	return git, marker, ran
+	return git, marker, entered, ran
+}
+
+func (f *fixture) awaited(result <-chan error, what string) error {
+	f.t.Helper()
+	select {
+	case err := <-result:
+		return err
+	case <-time.After(30 * time.Second):
+		f.t.Fatalf("%s did not return within 30s", what)
+		return nil
+	}
 }
 
 func openFIFO(t *testing.T, path string, flag int, stuck string) *os.File {
@@ -78,27 +102,31 @@ func TestAdvanceBlocksAnInterruptedGitStepAsATimeoutThenRecovers(t *testing.T) {
 	moveArgv := func(f *fixture, job cleanup.Job) string {
 		return "--git-dir=" + f.common + " -c worktree.useRelativePaths=false worktree move " + f.worktree + " " + job.Registered
 	}
+	removeArgv := func(f *fixture, job cleanup.Job) string {
+		return "--git-dir=" + f.common + " worktree remove " + job.Registered
+	}
 	atOriginal := func(f *fixture, _ cleanup.Job) string { return f.worktree }
+	atRegistered := func(_ *fixture, job cleanup.Job) string { return job.Registered }
+	atPayload := func(_ *fixture, job cleanup.Job) string { return job.Payload }
 	tests := []struct {
 		name  string
 		hold  string
 		after bool
 		read  bool
+		stop  bool
 		phase cleanup.Phase
 		argv  func(f *fixture, job cleanup.Job) string
 		tree  func(f *fixture, job cleanup.Job) string
 	}{
-		{"update-ref killed once it had run", "update-ref", true, false, cleanup.PhasePrepared, func(f *fixture, job cleanup.Job) string {
+		{"update-ref killed once it had run", "update-ref", true, false, false, cleanup.PhasePrepared, func(f *fixture, job cleanup.Job) string {
 			return "--git-dir=" + f.common + " update-ref " + job.RecoveryRef + " " + job.Head
 		}, atOriginal},
-		{"worktree move killed before it ran", "worktree move", false, false, cleanup.PhasePrepared, moveArgv, atOriginal},
-		{"worktree move killed once it had run", "worktree move", true, false, cleanup.PhasePrepared, moveArgv, func(_ *fixture, job cleanup.Job) string {
-			return job.Registered
-		}},
-		{"worktree remove killed once it had run", "worktree remove", true, false, cleanup.PhaseDetached, func(f *fixture, job cleanup.Job) string {
-			return "--git-dir=" + f.common + " worktree remove " + job.Registered
-		}, func(_ *fixture, job cleanup.Job) string { return job.Payload }},
-		{"status killed before it answered", "status", false, true, cleanup.PhasePrepared, func(f *fixture, _ cleanup.Job) string {
+		{"worktree move killed before it ran", "worktree move", false, false, false, cleanup.PhasePrepared, moveArgv, atOriginal},
+		{"worktree move killed once it had run", "worktree move", true, false, false, cleanup.PhasePrepared, moveArgv, atRegistered},
+		{"worktree move expired under a stop", "worktree move", true, false, true, cleanup.PhasePrepared, moveArgv, atRegistered},
+		{"worktree remove killed once it had run", "worktree remove", true, false, false, cleanup.PhaseDetached, removeArgv, atPayload},
+		{"worktree remove expired under a stop", "worktree remove", true, false, true, cleanup.PhaseDetached, removeArgv, atPayload},
+		{"status killed before it answered", "status", false, true, false, cleanup.PhasePrepared, func(f *fixture, _ cleanup.Job) string {
 			return "-C " + f.worktree + " status --porcelain=v1 -z --untracked-files=normal --ignore-submodules=none"
 		}, atOriginal},
 	}
@@ -107,10 +135,21 @@ func TestAdvanceBlocksAnInterruptedGitStepAsATimeoutThenRecovers(t *testing.T) {
 			f := newFixture(t)
 			f.bound(shortBudget)
 			job := f.accept()
-			git, marker, ran := f.holdingGit(tt.hold, tt.after)
+			git, marker, entered, ran := f.holdingGit(tt.hold, tt.after)
 			job.Git = git
 
-			f.advance(&job)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			advanced := make(chan error, 1)
+			go func() { advanced <- f.relocator.Advance(ctx, &job) }()
+			held := openFIFO(t, entered, os.O_RDONLY, "the held "+tt.hold+" never entered")
+			defer func() { _ = held.Close() }()
+			if tt.stop {
+				cancel()
+			}
+			if err := f.awaited(advanced, "Advance()"); err != nil {
+				t.Fatalf("Advance() error = %v, want the expired %s journaled", err, tt.hold)
+			}
 
 			killed := "git " + tt.argv(f, job) + ": signal: killed"
 			detail := fmt.Sprintf("interrupted at its %s budget: %s", shortBudget, killed)
@@ -154,6 +193,7 @@ func TestAdvanceBlocksAnInterruptedGitStepAsATimeoutThenRecovers(t *testing.T) {
 func (f *fixture) forkingGit(then string) (git, live, block string) {
 	f.t.Helper()
 	live, block = f.fifo("live"), f.fifo("block")
+	releaseOnCleanup(f.t, block)
 	git = filepath.Join(f.root, "forking-git")
 	script := fmt.Sprintf("#!/bin/sh\n( exec 3>%s; read x < %s ) &\n%s\n", live, block, then)
 	if err := os.WriteFile(git, []byte(script), 0o700); err != nil { //nolint:gosec // the script stands in for git and is executed
