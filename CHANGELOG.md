@@ -263,19 +263,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reports an error saying it was left running.
 
   Before sending hello under the start lock, the command reads and keeps the
-  kernel peer credentials and process start time on that connection. The reply
-  proves the saved identity belongs to the process that answered. It sends the
-  stop only on a connection whose kernel peer credentials match that process
-  ID and the client's user ID, with the same process start time. No comparison
-  with the client's clock is involved, so a backward clock step cannot
-  authorize stopping a daemon that reused the process ID.
+  kernel peer process and user IDs and the process's kernel unique ID on
+  that connection. On macOS, this is `p_uniqueid`, read through the existing
+  `proc_pidinfo` helper. The reply proves the saved identity belongs to the
+  process that answered. Before sending the stop, the command checks that
+  the shutdown connection's kernel peer matches the saved process ID and
+  the client's user ID, with the same kernel unique ID. The kernel never
+  reuses that unique ID within a boot, so neither a reused process ID nor a
+  clock step, even one that repeats the old start time, can make a different
+  process match. No start time or clock is compared.
 
   It sends nothing on other connections and never retries the stop on a new
   one. This works with older daemons without a wire protocol change. If the
-  process start time or peer credentials cannot be read, or the hello's
-  process ID differs from the kernel's, the command stops, installs, and
-  applies nothing and reports that the daemon could not be verified and is
-  left running.
+  unique ID or peer credentials cannot be read, including on hosts other
+  than macOS, or the hello's process ID differs from the kernel's, the command
+  reports that the daemon could not be verified. It leaves the daemon
+  running and stops, installs, and applies nothing.
 
   After a verified stop, the socket wait also ends if a different process
   answers; the command still confirms the outdated daemon's exit before

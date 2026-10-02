@@ -20,6 +20,7 @@ import (
 
 	"github.com/yasyf/cc-context/internal/cleanup"
 	"github.com/yasyf/cc-context/internal/cleanup/daemon"
+	"github.com/yasyf/cc-context/internal/cleanup/native"
 )
 
 const standInSocketEnv = "CCX_AGENT_STAND_IN_DAEMON"
@@ -169,9 +170,9 @@ func TestConnectNeverStopsADaemonThatReplacedTheObservedOne(t *testing.T) {
 			applied++
 			return nil
 		},
-		alive: processAlive,
-		held:  serveLockHeld,
-		born:  processStart,
+		alive:    processAlive,
+		held:     serveLockHeld,
+		identify: native.ProcessUniqueID,
 	}
 	observedPeer := func(peer cleanup.Peer) {
 		if peer.PID != observed.cmd.Process.Pid {

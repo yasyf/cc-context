@@ -51,8 +51,8 @@ type fakeDaemon struct {
 	exiting    int
 	foreignUID bool
 	kernelPID  int
-	started    time.Time
-	bornErr    error
+	unique     uint64
+	uniqueErr  error
 	greeted    func()
 	events     []string
 	sockets    []string
@@ -137,8 +137,8 @@ func (c fakeControl) Shutdown(_ context.Context, verify func(cleanup.Peer) error
 	return nil
 }
 
-func birth(pid int) (time.Time, error) {
-	return time.Unix(int64(pid), 0), nil
+func identity(pid int) uint64 {
+	return 1<<32 | uint64(pid) //nolint:gosec // a pid is non-negative
 }
 
 func (d *fakeDaemon) peer(serving *cleanup.Info) cleanup.Peer {
@@ -152,16 +152,16 @@ func (d *fakeDaemon) peer(serving *cleanup.Info) cleanup.Peer {
 	return cleanup.Peer{PID: pid, UID: uid}
 }
 
-func (d *fakeDaemon) born(pid int) (time.Time, error) {
+func (d *fakeDaemon) identify(pid int) (uint64, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	switch {
-	case d.bornErr != nil:
-		return time.Time{}, d.bornErr
-	case d.serving != nil && pid == d.serving.PID && !d.started.IsZero():
-		return d.started, nil
+	case d.uniqueErr != nil:
+		return 0, d.uniqueErr
+	case d.serving != nil && pid == d.serving.PID && d.unique != 0:
+		return d.unique, nil
 	}
-	return birth(pid)
+	return identity(pid), nil
 }
 
 func (d *fakeDaemon) dial(socket string) cleanup.Control {
@@ -263,10 +263,10 @@ func fixture(t *testing.T, d *fakeDaemon) starter {
 			Dial:    d.dial,
 			Timeout: 5 * time.Second,
 		},
-		apply: d.apply,
-		alive: d.alive,
-		held:  d.held,
-		born:  d.born,
+		apply:    d.apply,
+		alive:    d.alive,
+		held:     d.held,
+		identify: d.identify,
 	}
 }
 
@@ -790,23 +790,23 @@ func TestConnectStopsOnlyTheOutdatedDaemonItObserved(t *testing.T) {
 	older := cleanup.Info{Version: "v1.2.2", Protocol: cleanup.Protocol, PID: 41}
 	oldest := cleanup.Info{Version: "v1.2.1", Protocol: cleanup.Protocol, PID: 39}
 	reused := cleanup.Info{Version: "v1.2.3", Protocol: cleanup.Protocol, PID: 41}
-	errStart := errors.New("sysctl kern.proc.pid: input/output error")
-	olderBorn, _ := birth(older.PID)
+	twin := cleanup.Info{Version: "v1.2.2", Protocol: cleanup.Protocol, PID: 41}
+	errIdentity := errors.New("native: identify pid 41: input/output error")
+	olderUnique := identity(older.PID)
 	tests := []struct {
-		name          string
-		observedStart time.Time
-		kernelPID     int
-		foreignUID    bool
-		recordErr     error
-		successor     *cleanup.Info
-		reborn        time.Time
-		verifyErr     error
-		wantEvents    []string
-		wantReady     bool
-		wantStopped   bool
-		wantInfo      cleanup.Info
-		wantErrs      []error
-		wantText      string
+		name        string
+		kernelPID   int
+		foreignUID  bool
+		recordErr   error
+		successor   *cleanup.Info
+		reborn      uint64
+		verifyErr   error
+		wantEvents  []string
+		wantReady   bool
+		wantStopped bool
+		wantInfo    cleanup.Info
+		wantErrs    []error
+		wantText    string
 	}{
 		{
 			name:       "a current daemon that replaces the outdated one after its hello is kept",
@@ -823,20 +823,21 @@ func TestConnectStopsOnlyTheOutdatedDaemonItObserved(t *testing.T) {
 			wantErrs:   []error{errStartedElsewhere, errOutdatedAfterStart},
 		},
 		{
-			name:       "a daemon that reuses the pid after the hello with a later start is refused",
+			name:       "a current daemon that reuses the pid after the hello is refused by its unique id and kept",
 			successor:  &reused,
-			reborn:     olderBorn.Add(time.Microsecond),
+			reborn:     olderUnique + 1,
 			wantEvents: []string{"hello", "hello", "refused 41"},
 			wantReady:  true,
 			wantInfo:   reused,
 		},
 		{
-			name:       "a daemon that reuses the pid after the hello with an earlier start, the clock rolled back, is refused",
-			successor:  &reused,
-			reborn:     olderBorn.Add(-time.Hour),
+			name:       "a twin of the outdated daemon after the hello, the same pid, uid, and version, is refused by its unique id",
+			successor:  &twin,
+			reborn:     olderUnique + 1,
 			wantEvents: []string{"hello", "hello", "refused 41"},
 			wantReady:  true,
-			wantInfo:   reused,
+			wantErrs:   []error{errStartedElsewhere, errOutdatedAfterStart},
+			wantText:   fmt.Sprintf("pid 41 (unique id %d) serves the socket, not the outdated daemon (pid 41, unique id %d)", olderUnique+1, olderUnique),
 		},
 		{
 			name:       "a socket served under another uid is left running",
@@ -846,16 +847,22 @@ func TestConnectStopsOnlyTheOutdatedDaemonItObserved(t *testing.T) {
 			wantErrs:   []error{errStartedElsewhere, errOutdatedAfterStart},
 		},
 		{
-			name:       "an outdated daemon whose start cannot be read on its hello connection is never asked to stop",
-			recordErr:  errStart,
+			name:       "an outdated daemon whose identity cannot be read on its hello connection is never asked to stop",
+			recordErr:  errIdentity,
 			wantEvents: []string{"hello", "hello"},
-			wantErrs:   []error{errUnverified, errStart},
+			wantErrs:   []error{errUnverified, errIdentity},
 		},
 		{
-			name:       "a peer whose start cannot be read is sent nothing",
-			verifyErr:  errStart,
+			name:       "a host that identifies no process leaves the outdated daemon running",
+			recordErr:  cleanup.ErrUnsupported,
+			wantEvents: []string{"hello", "hello"},
+			wantErrs:   []error{errUnverified, cleanup.ErrUnsupported},
+		},
+		{
+			name:       "a peer whose identity cannot be read is sent nothing",
+			verifyErr:  errIdentity,
 			wantEvents: []string{"hello", "hello", "refused 41"},
-			wantErrs:   []error{errUnverified, errStart},
+			wantErrs:   []error{errUnverified, errIdentity},
 		},
 		{
 			name:       "a hello naming a pid other than the kernel's peer is never asked to stop",
@@ -865,12 +872,11 @@ func TestConnectStopsOnlyTheOutdatedDaemonItObserved(t *testing.T) {
 			wantText:   "the hello names pid 41 but the kernel names pid 77",
 		},
 		{
-			name:          "an outdated daemon born in the future, the clock since rolled back, is stopped and replaced",
-			observedStart: time.Now().Add(time.Hour),
-			wantEvents:    []string{"hello", "hello", "shutdown", "alive 41", "apply"},
-			wantReady:     true,
-			wantStopped:   true,
-			wantInfo:      current,
+			name:        "an outdated daemon still the process its hello identified is stopped and replaced",
+			wantEvents:  []string{"hello", "hello", "shutdown", "alive 41", "apply"},
+			wantReady:   true,
+			wantStopped: true,
+			wantInfo:    current,
 		},
 	}
 	for _, tt := range tests {
@@ -878,19 +884,18 @@ func TestConnectStopsOnlyTheOutdatedDaemonItObserved(t *testing.T) {
 			d := &fakeDaemon{
 				serving:    &older,
 				starts:     &current,
-				started:    tt.observedStart,
 				kernelPID:  tt.kernelPID,
 				foreignUID: tt.foreignUID,
-				bornErr:    tt.recordErr,
+				uniqueErr:  tt.recordErr,
 			}
 			d.greeted = func() {
 				d.mu.Lock()
 				defer d.mu.Unlock()
 				if tt.successor != nil {
-					d.serving, d.started = tt.successor, tt.reborn
+					d.serving, d.unique = tt.successor, tt.reborn
 				}
 				if tt.verifyErr != nil {
-					d.bornErr = tt.verifyErr
+					d.uniqueErr = tt.verifyErr
 				}
 			}
 			s := fixture(t, d)

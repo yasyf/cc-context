@@ -27,3 +27,7 @@ func Guard(_ context.Context, _ string) error { return cleanup.ErrUnsupported }
 // Background reports cleanup.ErrUnsupported and leaves the process's
 // scheduling as it was.
 func Background() error { return cleanup.ErrUnsupported }
+
+// ProcessUniqueID reports cleanup.ErrUnsupported: no process is identified
+// off darwin.
+func ProcessUniqueID(int) (uint64, error) { return 0, cleanup.ErrUnsupported }

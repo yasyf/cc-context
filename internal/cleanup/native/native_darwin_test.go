@@ -1511,6 +1511,25 @@ func TestListFDs(t *testing.T) {
 	}
 }
 
+func TestProcessUniqueID(t *testing.T) {
+	own, err := ProcessUniqueID(os.Getpid())
+	if err != nil {
+		t.Fatalf("ProcessUniqueID(this process): %v", err)
+	}
+	if own == 0 {
+		t.Error("ProcessUniqueID(this process) = 0, want the kernel's unique id")
+	}
+	if again, err := ProcessUniqueID(os.Getpid()); err != nil || again != own {
+		t.Errorf("ProcessUniqueID(this process) again = %d, %v; want %d", again, err, own)
+	}
+	if parent, err := ProcessUniqueID(os.Getppid()); err != nil || parent == own {
+		t.Errorf("ProcessUniqueID(the parent) = %d, %v; want an id other than this process's %d", parent, err, own)
+	}
+	if _, err := ProcessUniqueID(exitedPID(t)); !errors.Is(err, unix.ESRCH) {
+		t.Errorf("ProcessUniqueID(an exited process) = %v, want ESRCH", err)
+	}
+}
+
 func TestListPIDsGrowsUntilItFits(t *testing.T) {
 	lib, err := loadLibSystem()
 	if err != nil {

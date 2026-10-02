@@ -77,18 +77,18 @@ const (
 
 type starter struct {
 	Options
-	apply func(ctx context.Context) error
-	alive func(pid int) bool
-	held  func(lock string) (bool, error)
-	born  func(pid int) (time.Time, error)
+	apply    func(ctx context.Context) error
+	alive    func(pid int) bool
+	held     func(lock string) (bool, error)
+	identify func(pid int) (uint64, error)
 }
 
 type greeting func(cleanup.Control, context.Context) (cleanup.Info, error)
 
 type incarnation struct {
-	peer  cleanup.Peer
-	start time.Time
-	err   error
+	peer   cleanup.Peer
+	unique uint64
+	err    error
 }
 
 // Outdated reports whether a client at version client replaces a daemon at
@@ -336,8 +336,8 @@ func (s starter) claim(ctx context.Context) (*durable.Lock, error) {
 func (s starter) pinning(seen *incarnation) greeting {
 	return func(ctl cleanup.Control, ctx context.Context) (cleanup.Info, error) {
 		return ctl.Greet(ctx, func(peer cleanup.Peer) {
-			start, err := s.born(peer.PID)
-			*seen = incarnation{peer: peer, start: start, err: err}
+			unique, err := s.identify(peer.PID)
+			*seen = incarnation{peer: peer, unique: unique, err: err}
 		})
 	}
 }
@@ -410,12 +410,12 @@ func (s starter) verifier(seen incarnation) func(cleanup.Peer) error {
 		if peer.PID != seen.peer.PID || peer.UID != os.Getuid() {
 			return fmt.Errorf("%w: pid %d (uid %d) serves the socket, not the outdated daemon (pid %d, uid %d)", errStartedElsewhere, peer.PID, peer.UID, seen.peer.PID, os.Getuid())
 		}
-		got, err := s.born(peer.PID)
+		got, err := s.identify(peer.PID)
 		switch {
 		case err != nil:
 			return fmt.Errorf("%w: pid %d: %w", errUnverified, peer.PID, err)
-		case !got.Equal(seen.start):
-			return fmt.Errorf("%w: pid %d started %s serves the socket, not the outdated daemon started %s", errStartedElsewhere, peer.PID, got.Format(time.RFC3339Nano), seen.start.Format(time.RFC3339Nano))
+		case got != seen.unique:
+			return fmt.Errorf("%w: pid %d (unique id %d) serves the socket, not the outdated daemon (pid %d, unique id %d)", errStartedElsewhere, peer.PID, got, seen.peer.PID, seen.unique)
 		}
 		return nil
 	}

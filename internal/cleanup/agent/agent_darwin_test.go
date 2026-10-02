@@ -6,7 +6,6 @@ import (
 	"os/exec"
 	"reflect"
 	"testing"
-	"time"
 
 	"github.com/yasyf/daemonkit/launchd"
 
@@ -64,26 +63,5 @@ func TestProcessAlive(t *testing.T) {
 				t.Errorf("processAlive(%d) = %v, want %v", tt.pid, got, tt.want)
 			}
 		})
-	}
-}
-
-func TestProcessStart(t *testing.T) {
-	first, err := processStart(os.Getpid())
-	if err != nil {
-		t.Fatalf("processStart(self) = %v", err)
-	}
-	if first.IsZero() || first.After(time.Now()) {
-		t.Errorf("processStart(self) = %s, want a start time in the past", first)
-	}
-	again, err := processStart(os.Getpid())
-	if err != nil || !again.Equal(first) {
-		t.Errorf("processStart(self) again = %s, %v; want the same start %s", again, err, first)
-	}
-	child := exec.Command("/usr/bin/true")
-	if err := child.Run(); err != nil {
-		t.Fatal(err)
-	}
-	if got, err := processStart(child.Process.Pid); err == nil {
-		t.Errorf("processStart(reaped child) = %s, want an error", got)
 	}
 }

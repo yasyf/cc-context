@@ -11,9 +11,9 @@ import (
 	"time"
 
 	"github.com/yasyf/daemonkit/launchd"
-	"golang.org/x/sys/unix"
 
 	"github.com/yasyf/cc-context/internal/cleanup"
+	"github.com/yasyf/cc-context/internal/cleanup/native"
 )
 
 const servicePath = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
@@ -31,11 +31,11 @@ const servicePath = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/s
 func Connect(ctx context.Context, o Options) (cleanup.Control, error) {
 	spec := Spec(o.Layout)
 	s := starter{
-		Options: o,
-		apply:   func(ctx context.Context) error { return launchd.Apply(ctx, o.Launchctl, spec) },
-		alive:   processAlive,
-		held:    serveLockHeld,
-		born:    processStart,
+		Options:  o,
+		apply:    func(ctx context.Context) error { return launchd.Apply(ctx, o.Launchctl, spec) },
+		alive:    processAlive,
+		held:     serveLockHeld,
+		identify: native.ProcessUniqueID,
 	}
 	return s.connect(ctx)
 }
@@ -67,14 +67,6 @@ func Spec(layout cleanup.Layout) launchd.Agent {
 
 func processAlive(pid int) bool {
 	return syscall.Kill(pid, 0) == nil
-}
-
-func processStart(pid int) (time.Time, error) {
-	proc, err := unix.SysctlKinfoProc("kern.proc.pid", pid)
-	if err != nil {
-		return time.Time{}, fmt.Errorf("cleanup agent: read the start time of pid %d: %w", pid, err)
-	}
-	return time.Unix(proc.Proc.P_starttime.Unix()), nil
 }
 
 func serveLockHeld(lock string) (bool, error) {
