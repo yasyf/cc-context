@@ -225,6 +225,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Concurrent `ccx vcs pr status` and `pr state` readers no longer queue 30
+  seconds apiece.** A reader asking for a pull request the last poll did not
+  read slept out the 30-second poll interval while holding the cache's lock, so
+  every other reader on the machine waited behind it, and each one with a new
+  pull request added another 30 seconds. Three concurrent readers took 18, 50,
+  and 81 seconds while GitHub answered in 3, and the landing desk's
+  `ledger.py summary` and `pr status` calls hit their timeouts. A reader now
+  records its lease, sleeps without the lock, and is served by the next poll
+  any reader sends. When that poll failed, the waiting reader returns its
+  error, naming when it failed and when the next poll goes out, and sends no
+  poll of its own before then.
+
 - **A busy cleanup daemon no longer hangs `stack continue`, `stack abort`, or
   `worktree rm`.** The daemon runs one removal at a time, and a handoff
   waited on it with no deadline. Under heavy load, one `worktree rm` held the
