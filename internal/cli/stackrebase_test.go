@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strconv"
@@ -2432,6 +2433,115 @@ func TestStackContinueDiscardsInlineOnlyWhereCleanupIsUnsupported(t *testing.T) 
 			sparseAssertWorkspace(t, f, ws, inside)
 		})
 	}
+}
+
+func TestStackContinueKeepsItsRunWhileCleanupIsPausedAndPublishesOnceAfterResume(t *testing.T) {
+	f := shipGTRepo(t, vcstest.GTStack("base"))
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	stubOpenPRs(t, f, nil, "base", "feature")
+	stackConflicting(t, f)
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "feature")
+	sources := stackRebaseSourceSnapshot(t, f, "base", "feature")
+	_, _, err := runStackCmd(t, f, "rebase")
+	if err == nil {
+		t.Fatal("stack rebase succeeded, want the conflict on feature")
+	}
+	ws := stackWorkspaceOf(t, err)
+	writeShipFile(t, ws, "c.txt", "trunk\nfeature\n")
+	mustRun(t, f.Env(), ws, "git", "add", "c.txt")
+	remote := map[string]string{}
+	for _, branch := range []string{"base", "feature"} {
+		remote[branch] = gitAt(t, f.Env(), f.RemoteDir, "rev-parse", branch)
+	}
+	h := fixtureCleanup(t, f)
+	if err := h.engine.Pause(f.Context()); err != nil {
+		t.Fatalf("pause: %v", err)
+	}
+	shipResetLog(t, f)
+
+	out, _, err := runStackCmd(t, f, "continue")
+	want := "stack rebase: cleanup defer " + ws + ": " + cleanup.ErrPaused.Error() + " — nothing was removed, and " + ws + " is left where it is; the run is kept, so continue can run again"
+	if !errors.Is(err, cleanup.ErrPaused) || err.Error() != want {
+		t.Fatalf("continue while paused = %v, want %q", err, want)
+	}
+	if !strings.Contains(out, "resolved feature at ") {
+		t.Errorf("continue output = %q, want the resolution pinned before the refused release", out)
+	}
+	run, err := stackOnlyTestRun(filepath.Join(f.Dir, ".git"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Conflict == nil || run.Conflict.Workspace != ws {
+		t.Fatalf("run conflict = %+v, want the kept run still naming %s", run.Conflict, ws)
+	}
+	if b := run.branch("feature"); b == nil || !b.Resolved || b.NewHead == "" {
+		t.Errorf("run's feature = %+v, want its resolution saved for the retry", b)
+	}
+	if refs := gtPushedRefs(shipGTInvocations(t, f)); len(refs) != 0 {
+		t.Errorf("continue pushed %v while cleanup was paused", refs)
+	}
+	if heads := api.submitHeads(); len(heads) != 0 {
+		t.Errorf("continue submitted %v while cleanup was paused", heads)
+	}
+	for branch, head := range remote {
+		if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", branch); got != head {
+			t.Errorf("origin %s = %s, want it untouched at %s", branch, got, head)
+		}
+	}
+	sparseAssertWorkspace(t, f, ws, true)
+	if jobs := journaledJobs(t, h); len(jobs) != 0 {
+		t.Errorf("journaled jobs = %v, want none while paused", jobs)
+	}
+	if removals := stackRemovals(t, f); len(removals) != 0 {
+		t.Errorf("continue removed worktrees itself: %q", removals)
+	}
+
+	if err := h.engine.Resume(f.Context()); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	shipResetLog(t, f)
+	out, _, err = runStackCmd(t, f, "continue")
+	if err != nil {
+		t.Fatalf("continue after the resume: %v", err)
+	}
+	if strings.Contains(out, "resolved feature") || !strings.Contains(out, "published 2 branches") {
+		t.Errorf("continue output = %q, want the saved resolution reused and the stack published", out)
+	}
+	handed := regexp.MustCompile(`handed ` + regexp.QuoteMeta(ws) + ` to cleanup job ([0-9a-f]{16}-[0-9a-f]{6}), [a-z]+`).FindStringSubmatch(out)
+	if handed == nil {
+		t.Fatalf("continue output = %q, want the workspace handed to a cleanup job", out)
+	}
+	for _, branch := range []string{"base", "feature"} {
+		stackAssertRebasePublication(t, f, sources[branch])
+	}
+	pushes := 0
+	for _, inv := range shipGTInvocations(t, f) {
+		if inv[0] != "git" {
+			continue
+		}
+		switch stackGitSubcommand(inv) {
+		case "push":
+			pushes++
+		case "replay":
+			t.Errorf("continue after the resume ran %v, want the saved resolution reused", inv)
+		}
+	}
+	if pushes != 1 {
+		t.Errorf("continue after the resume pushed %d times, want once", pushes)
+	}
+	if heads := slices.Sorted(slices.Values(api.submitHeads())); !slices.Equal(heads, []string{"base", "feature"}) {
+		t.Errorf("submit posts = %v, want base and feature once each", heads)
+	}
+	if states, _ := filepath.Glob(filepath.Join(f.Dir, ".git", stackRebaseStateDir, "*", stackRebaseState)); len(states) != 0 {
+		t.Errorf("continue left run state behind: %q", states)
+	}
+	ctx, cancel := context.WithTimeout(f.Context(), time.Minute)
+	defer cancel()
+	if job, err := h.engine.Wait(ctx, handed[1]); err != nil || job.Phase != cleanup.PhaseDone {
+		t.Fatalf("wait on the deferred removal = phase %s, blockage %+v, %v; want done once the queue resumed", job.Phase, job.Blocked, err)
+	}
+	sparseAssertWorkspace(t, f, ws, false)
 }
 
 func TestStackVerdictRereadsAPullRequestGitHubStillShowsAtTheOldHead(t *testing.T) {

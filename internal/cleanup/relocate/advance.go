@@ -168,7 +168,7 @@ func (r *Relocator) vet(ctx context.Context, job *cleanup.Job, tree string, vett
 }
 
 func (r *Relocator) block(ctx context.Context, job *cleanup.Job, reason, detail string) (bool, error) {
-	if err := ctx.Err(); err != nil {
+	if err := ctx.Err(); err != nil && reason != timeoutReason {
 		return false, err
 	}
 	job.Block(r.cfg.Now(), reason, detail)
@@ -184,17 +184,13 @@ func (r *Relocator) enter(job *cleanup.Job, phase cleanup.Phase) (bool, error) {
 	return true, nil
 }
 
-// Advance resumes job from the phase its record holds, trusting that phase only
-// as far as the filesystem agrees with it. It never deletes a tree, never
-// touches the original path once the tree has left it, and never runs git's
-// repair or prune. A tree it did not find clean earlier in the same call is
-// checked for uncommitted changes again before the move and before the
-// detaching rename, unless the job is forced. The detaching rename waits on
-// the registry naming nothing in the job folder but the parked tree itself,
-// and PhaseUnregistered is published only once the registry names nothing at
-// or inside the job folder at all, and nothing the move carried along with the
-// tree. A cancelled ctx returns ctx's error, whatever phase the call reached,
-// and journals no blockage.
+// Advance resumes job from the phase its record holds, trusting it only as far
+// as the filesystem agrees. It never deletes a tree, touches the original path
+// once the tree has left it, or runs git's repair or prune.
+//
+// A cancelled ctx returns its error and journals nothing, unless a git step
+// expired its own budget, as a mutation can past the cancellation; then it
+// journals a timeout blockage and returns nil.
 func (r *Relocator) Advance(ctx context.Context, job *cleanup.Job) error {
 	vetted := false
 	for {
@@ -342,7 +338,7 @@ func (r *Relocator) move(ctx context.Context, job *cleanup.Job, vetted *bool) (r
 
 	if job.Head != "" {
 		if _, err := r.rewrite(ctx, job.Git, "--git-dir="+job.Repo, "update-ref", job.RecoveryRef, job.Head); err != nil {
-			return "git", err.Error()
+			return gitReason(err), err.Error()
 		}
 	}
 	tree, err := sight(job.Original)
@@ -355,6 +351,9 @@ func (r *Relocator) move(ctx context.Context, job *cleanup.Job, vetted *bool) (r
 	_, err = r.rewrite(ctx, job.Git, "--git-dir="+job.Repo, "-c", "worktree.useRelativePaths=false", "worktree", "move", job.Original, job.Registered)
 	if err == nil {
 		return "", ""
+	}
+	if errors.Is(err, cleanup.ErrUnprobed) {
+		return gitReason(err), err.Error()
 	}
 	seen, seeErr := observe(job, false)
 	if seeErr == nil && seen.untouched(job) && linkDrift(job.Original, job.AdminDir, job.Links) == "" {
@@ -534,7 +533,7 @@ func (r *Relocator) unregister(ctx context.Context, job *cleanup.Job, _ *bool) (
 	}
 	if len(entries) > 0 {
 		if _, err := r.rewrite(ctx, job.Git, "--git-dir="+job.Repo, "worktree", "remove", job.Registered); err != nil {
-			return r.block(ctx, job, "git", err.Error())
+			return r.block(ctx, job, gitReason(err), err.Error())
 		}
 	}
 	return r.publish(ctx, job)

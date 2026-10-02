@@ -373,11 +373,13 @@ the daemon leaves any one poll unanswered for ` + cleanupStatusTimeout.String() 
 func newCleanupPauseCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "pause",
-		Short: "Stop physical deletion across the queue",
-		Long: `Stop physical deletion across the queue.
+		Short: "Pause the deletion queue",
+		Long: `Pause the deletion queue.
 
-Logical removals still run, so "worktree rm" keeps freeing paths; their trees
-wait in the queue, durably, until "resume".`,
+Physical deletion stops, every job mid-removal rests at its phase, and a new
+"worktree rm", stack workspace release, or "cleanup adopt" is refused before
+anything is inspected, journaled, or moved. The switch is durable: a restarted
+daemon stays paused until "resume".`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
@@ -397,7 +399,7 @@ wait in the queue, durably, until "resume".`,
 func newCleanupResumeCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "resume",
-		Short: "Let physical deletion continue across the queue",
+		Short: "Let the deletion queue run again",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()

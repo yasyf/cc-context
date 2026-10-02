@@ -159,13 +159,14 @@ func (c *Client) Wait(ctx context.Context, jobID string) (cleanup.Job, error) {
 	return job, err
 }
 
-// Pause stops physical deletion queue-wide.
+// Pause stops the queue: every job rests at its phase and new removals are
+// refused until Resume.
 func (c *Client) Pause(ctx context.Context) error {
 	_, err := c.roundTrip(ctx, request{Op: opPause})
 	return err
 }
 
-// Resume lets physical deletion continue.
+// Resume lets the queue run again.
 func (c *Client) Resume(ctx context.Context) error {
 	_, err := c.roundTrip(ctx, request{Op: opResume})
 	return err

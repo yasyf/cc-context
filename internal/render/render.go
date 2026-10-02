@@ -421,12 +421,10 @@ func RunCLIExitCodeEnv(ctx context.Context, dir Dir, bin string, argv, extraEnv 
 	return "", 0, "", fmt.Errorf("%s: %w: %s", bin, err, strings.TrimSpace(stderr.String()))
 }
 
-// BoundProbe makes cmd, built by its caller, the probe RunCLIProbe runs: it
-// leads its own process group, cancelling its context SIGKILLs that group, and
-// Wait gives up on output pipes a descendant still holds waitDelay after the
-// child is gone, so the caller's deadline bounds the whole call.
-func BoundProbe(cmd *exec.Cmd) {
-	configureProbeCommand(cmd)
+// BoundChild bounds cmd without a process group: cancellation kills the direct
+// child alone, never a descendant, and Wait gives up on pipes a descendant
+// still holds waitDelay after the child is gone.
+func BoundChild(cmd *exec.Cmd) {
 	cmd.WaitDelay = waitDelay
 }
 

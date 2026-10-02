@@ -19,35 +19,92 @@ import (
 	"github.com/yasyf/cc-context/internal/render"
 )
 
-const readTimeout = time.Minute
+const (
+	defaultGitBudget = time.Minute
+	maxStdout        = 64 << 10
+	maxStderr        = 8 << 10
+	timeoutReason    = "timeout"
+)
 
-func (r *Relocator) command(ctx context.Context, git string, args ...string) (*exec.Cmd, *bytes.Buffer) {
+type capped struct {
+	limit   int
+	kept    []byte
+	dropped int
+}
+
+func (c *capped) Write(p []byte) (int, error) {
+	keep := min(len(p), c.limit-len(c.kept))
+	c.kept = append(c.kept, p[:keep]...)
+	c.dropped += len(p) - keep
+	return len(p), nil
+}
+
+func (c *capped) said() string {
+	said := strings.TrimSpace(string(c.kept))
+	if c.dropped == 0 {
+		return said
+	}
+	return fmt.Sprintf("%s [%d more bytes dropped]", said, c.dropped)
+}
+
+type interrupted struct {
+	budget time.Duration
+	err    error
+}
+
+func (e interrupted) Error() string {
+	return fmt.Sprintf("interrupted at its %s budget: %v", e.budget, e.err)
+}
+
+func (e interrupted) Unwrap() []error { return []error{cleanup.ErrUnprobed, e.err} }
+
+func (r *Relocator) budget() time.Duration {
+	if r.cfg.GitBudget == 0 {
+		return defaultGitBudget
+	}
+	return r.cfg.GitBudget
+}
+
+func (r *Relocator) command(ctx context.Context, git string, args ...string) (*exec.Cmd, *capped) {
 	cmd := exec.CommandContext(ctx, git, append([]string{"-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "--no-optional-locks"}, args...)...) //nolint:gosec // git is the absolute path the request validated; the argv is the relocator's own
 	cmd.Env = r.cfg.GitEnv
-	render.BoundProbe(cmd)
-	stderr := &bytes.Buffer{}
+	render.BoundChild(cmd)
+	stderr := &capped{limit: maxStderr}
 	cmd.Stderr = stderr
 	return cmd, stderr
 }
 
 func (r *Relocator) git(ctx context.Context, git string, args ...string) (string, error) {
-	bounded, cancel := context.WithTimeout(ctx, readTimeout)
+	bounded, cancel := context.WithTimeout(ctx, r.budget())
 	defer cancel()
 	out, err := r.run(bounded, git, args...)
 	return out, unprobed(ctx, bounded, err)
 }
 
 func (r *Relocator) rewrite(ctx context.Context, git string, args ...string) (string, error) {
-	return r.run(context.WithoutCancel(ctx), git, args...)
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	bounded, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.budget())
+	defer cancel()
+	out, err := r.run(bounded, git, args...)
+	if err != nil && errors.Is(bounded.Err(), context.DeadlineExceeded) {
+		return out, interrupted{budget: r.budget(), err: err}
+	}
+	return out, err
 }
 
 func (r *Relocator) run(ctx context.Context, git string, args ...string) (string, error) {
 	cmd, stderr := r.command(ctx, git, args...)
-	stdout, err := cmd.Output()
-	if err != nil {
-		return string(stdout), gitFailure(args, err, stderr)
+	stdout := &capped{limit: maxStdout}
+	cmd.Stdout = stdout
+	if err := cmd.Run(); err != nil {
+		return string(stdout.kept), gitFailure(args, err, stderr)
 	}
-	return string(stdout), nil
+	if stdout.dropped > 0 {
+		return "", fmt.Errorf("git %s: wrote %d bytes to stdout past its %d-byte cap", strings.Join(args, " "), stdout.dropped, maxStdout)
+	}
+	return string(stdout.kept), nil
 }
 
 func unprobed(ctx, bounded context.Context, err error) error {
@@ -59,32 +116,32 @@ func unprobed(ctx, bounded context.Context, err error) error {
 
 func gitReason(err error) string {
 	if errors.Is(err, cleanup.ErrUnprobed) {
-		return "timeout"
+		return timeoutReason
 	}
 	return "git"
 }
 
 func (r *Relocator) stream(ctx context.Context, git string, delim byte, visit func(head []byte), args ...string) error {
-	bounded, cancel := context.WithTimeout(ctx, readTimeout)
+	bounded, cancel := context.WithTimeout(ctx, r.budget())
 	defer cancel()
 	return unprobed(ctx, bounded, r.scan(bounded, git, delim, visit, args...))
 }
 
 func (r *Relocator) scan(ctx context.Context, git string, delim byte, visit func(head []byte), args ...string) error {
 	cmd, stderr := r.command(ctx, git, args...)
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
-	}
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
-	}
-	scanErr := eachRecord(stdout, delim, visit)
-	if scanErr != nil {
-		scanErr = errors.Join(scanErr, stdout.Close())
-	}
-	if err := cmd.Wait(); err != nil {
-		return gitFailure(args, err, stderr)
+	records, feed := io.Pipe()
+	cmd.Stdout = feed
+	scanned := make(chan error, 1)
+	go func() {
+		err := eachRecord(records, delim, visit)
+		_ = records.CloseWithError(err)
+		scanned <- err
+	}()
+	runErr := cmd.Run()
+	_ = feed.Close()
+	scanErr := <-scanned
+	if runErr != nil {
+		return gitFailure(args, runErr, stderr)
 	}
 	if scanErr != nil {
 		return fmt.Errorf("git %s: read output: %w", strings.Join(args, " "), scanErr)
@@ -92,8 +149,8 @@ func (r *Relocator) scan(ctx context.Context, git string, delim byte, visit func
 	return nil
 }
 
-func gitFailure(args []string, err error, stderr *bytes.Buffer) error {
-	said := strings.TrimSpace(stderr.String())
+func gitFailure(args []string, err error, stderr *capped) error {
+	said := stderr.said()
 	if said == "" {
 		return fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
 	}

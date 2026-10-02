@@ -219,10 +219,10 @@ func New(cfg Config) (*Engine, error) {
 }
 
 // Run is the single worker. It loads the journal, resumes every unfinished job
-// from the phase its record holds, and returns nil once ctx is done or Stop is
-// called, after journaling the active deletion's progress. It returns an error
-// only when the journal could not be read or written: it never keeps mutating
-// what it cannot record.
+// from its recorded phase, and returns nil once ctx is done or Stop is called,
+// after journaling the active deletion's progress. Stop cancels the running
+// step's context too, so a stop is seen at that step's next check. It returns
+// an error only when the journal could not be read or written.
 func (e *Engine) Run(ctx context.Context) error {
 	if !e.started.CompareAndSwap(false, true) {
 		return errors.New("cleanup daemon: the engine is already running")
@@ -234,15 +234,23 @@ func (e *Engine) Run(ctx context.Context) error {
 	if err := e.load(); err != nil {
 		return err
 	}
-	return errors.Join(e.work(ctx), e.park())
+	steps, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go func() {
+		select {
+		case <-e.quit:
+			cancel()
+		case <-steps.Done():
+		}
+	}()
+	return errors.Join(e.work(steps), e.park())
 }
 
-// Stop lets the worker finish the one slice or ladder step it is in, flush,
-// and return. A command the worker has not started by then is answered with
-// ErrStopped. It never cancels the context that step runs under; only Run's
-// own context does. It is idempotent, and stops an engine whose Run has not
-// started yet: every call on that engine is answered with ErrStopped whether
-// or not Run ever starts.
+// Stop cancels the worker's current step and waits for it to return: a git
+// read is killed and its job rests unblocked at the phase on record, a git
+// mutation already running finishes or expires at its budget (journaled as a
+// timeout) before the step yields, and a slice in flight completes. A command
+// not started by then is answered with ErrStopped. Idempotent; works before Run.
 func (e *Engine) Stop(ctx context.Context) error {
 	e.quitOnce.Do(func() { close(e.quit) })
 	if !e.started.Load() {
@@ -285,7 +293,8 @@ func (e *Engine) Defer(ctx context.Context, r cleanup.DeferRequest) (cleanup.Rec
 
 // Adopt journals a tree the retired janitor parked and relocates it into its
 // job folder on the worker. A repeat of a request whose tree still sits at its
-// source rejoins the job the first one journaled.
+// source rejoins the job the first one journaled. While the queue is paused it
+// is cleanup.ErrPaused, before any preflight or record.
 func (e *Engine) Adopt(ctx context.Context, r cleanup.AdoptRequest) (cleanup.Receipt, error) {
 	if err := r.Validate(); err != nil {
 		return cleanup.Receipt{}, fmt.Errorf("cleanup daemon: adopt request: %w", err)
@@ -384,17 +393,18 @@ func (e *Engine) Wait(ctx context.Context, jobID string) (cleanup.Job, error) {
 	}
 }
 
-// Pause stops physical deletion queue-wide. The deletion it interrupts is
-// closed and its progress journaled before Pause returns, so no entry goes
-// after it until a Resume has the payload admitted afresh. Logical removals
-// keep running.
+// Pause stops the queue: the deletion it interrupts is closed and its progress
+// journaled before Pause returns, every other job rests at its journaled phase
+// with no recheck or retry, and Remove, Defer, and Adopt are refused with
+// cleanup.ErrPaused. The switch is journaled, so a restarted daemon stays paused.
 func (e *Engine) Pause(ctx context.Context) error {
 	_, err := call(ctx, e, func(context.Context) (struct{}, error) { return struct{}{}, e.pause(true) })
 	return err
 }
 
-// Resume lets physical deletion continue. The payload is admitted and
-// reopened, and so re-verified, before another entry goes.
+// Resume lets the queue run again: rested jobs go on from their phase, new
+// removals are taken, and a payload is admitted and reopened, and so
+// re-verified, before another entry goes.
 func (e *Engine) Resume(ctx context.Context) error {
 	_, err := call(ctx, e, func(context.Context) (struct{}, error) { return struct{}{}, e.pause(false) })
 	return err
@@ -618,10 +628,13 @@ func (e *Engine) wake(physical bool) (time.Time, bool) {
 		}
 	}
 	for _, job := range e.ordered() {
+		if e.paused {
+			break
+		}
 		if job.Phase == cleanup.PhaseWaiting && job.Blocked == nil {
 			consider(e.checked[job.ID].Add(e.tuning.Recheck))
 		}
-		if at, ok := e.retryAt(job); ok && (!e.paused || !job.Phase.Physical()) {
+		if at, ok := e.retryAt(job); ok {
 			consider(at)
 		}
 	}
@@ -635,6 +648,9 @@ func (e *Engine) wake(physical bool) (time.Time, bool) {
 }
 
 func (e *Engine) logicalDue(now time.Time) (cleanup.Job, bool) {
+	if e.paused {
+		return cleanup.Job{}, false
+	}
 	for _, job := range e.ordered() {
 		if !job.Phase.Logical() {
 			continue
@@ -828,6 +844,9 @@ func (e *Engine) park() error {
 }
 
 func (e *Engine) remove(ctx context.Context, r cleanup.Request) (cleanup.Receipt, error) {
+	if e.paused {
+		return cleanup.Receipt{}, cleanup.ErrPaused
+	}
 	job, found, err := e.revive(sittingAt(r.Worktree, r.Force))
 	if err != nil {
 		return cleanup.Receipt{}, err
@@ -842,6 +861,9 @@ func (e *Engine) remove(ctx context.Context, r cleanup.Request) (cleanup.Receipt
 }
 
 func (e *Engine) adopt(ctx context.Context, r cleanup.AdoptRequest) (cleanup.Receipt, error) {
+	if e.paused {
+		return cleanup.Receipt{}, cleanup.ErrPaused
+	}
 	job, found, err := e.revive(parkedAt(r))
 	if err != nil {
 		return cleanup.Receipt{}, err
@@ -873,6 +895,9 @@ func (e *Engine) relocate(ctx context.Context, job cleanup.Job) (cleanup.Receipt
 }
 
 func (e *Engine) intend(ctx context.Context, r cleanup.DeferRequest) (cleanup.Receipt, error) {
+	if e.paused {
+		return cleanup.Receipt{}, cleanup.ErrPaused
+	}
 	job, found, err := e.revive(boundTo(r))
 	if err != nil {
 		return cleanup.Receipt{}, err

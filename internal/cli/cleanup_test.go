@@ -79,7 +79,11 @@ func fixtureCleanup(t *testing.T, f *vcstest.Fixture) *cleanupHarness {
 	if h, ok := testCleanups.Load(f); ok {
 		return h.(*cleanupHarness)
 	}
-	h := newCleanupHarness(t, f, cleanupTuning())
+	return attachCleanup(t, f, newCleanupHarness(t, f, cleanupTuning()))
+}
+
+func attachCleanup(t *testing.T, f *vcstest.Fixture, h *cleanupHarness) *cleanupHarness {
+	t.Helper()
 	t.Cleanup(func() { testCleanups.Delete(f) })
 	preview := relocate.New(h.config).Preview
 	f.Decorate(func(ctx context.Context) context.Context {
@@ -89,7 +93,7 @@ func fixtureCleanup(t *testing.T, f *vcstest.Fixture) *cleanupHarness {
 	return h
 }
 
-func newCleanupHarness(t *testing.T, f *vcstest.Fixture, tuning daemon.Tuning) *cleanupHarness {
+func newCleanupConfig(t *testing.T, f *vcstest.Fixture) *cleanupHarness {
 	t.Helper()
 	h := &cleanupHarness{layout: cleanup.Layout{Root: filepath.Join(filepath.Dir(f.Dir), "cleanup")}}
 	journal, err := cleanup.OpenJournal(h.layout)
@@ -97,8 +101,47 @@ func newCleanupHarness(t *testing.T, f *vcstest.Fixture, tuning daemon.Tuning) *
 		t.Fatalf("open cleanup journal: %v", err)
 	}
 	h.config = relocate.Config{Journal: journal, Guard: h.guard, Watchers: h, GitEnv: f.Env(), Now: time.Now}
+	return h
+}
+
+func newCleanupHarness(t *testing.T, f *vcstest.Fixture, tuning daemon.Tuning) *cleanupHarness {
+	t.Helper()
+	h := newCleanupConfig(t, f)
 	h.engine = startCleanupEngine(t, h.config, tuning)
 	return h
+}
+
+func pausedHarness(t *testing.T, f *vcstest.Fixture, tuning daemon.Tuning, names ...string) (h *cleanupHarness, ids, paths []string) {
+	t.Helper()
+	h = newCleanupConfig(t, f)
+	ids, paths = unregisterPaused(t, f, h, names...)
+	h.engine = startCleanupEngine(t, h.config, tuning)
+	return h, ids, paths
+}
+
+func unregisterPaused(t *testing.T, f *vcstest.Fixture, h *cleanupHarness, names ...string) (ids, paths []string) {
+	t.Helper()
+	ctx := f.Context()
+	git := render.LookPath(ctx, "git")
+	relocator := relocate.New(h.config)
+	var seq uint64
+	for _, name := range names {
+		seq++
+		path := filepath.Join(filepath.Dir(f.Dir), "checkouts", name)
+		addLinkedWorktree(t, f.Env(), f.Dir, path, "")
+		job, err := relocator.Accept(ctx, seq, cleanup.Request{Worktree: path, Git: git})
+		if err != nil {
+			t.Fatalf("accept %s: %v", path, err)
+		}
+		if err := relocator.Advance(ctx, &job); err != nil || job.Phase != cleanup.PhaseUnregistered || job.Blocked != nil {
+			t.Fatalf("advance %s = phase %s, blockage %+v, %v; want it unregistered", path, job.Phase, job.Blocked, err)
+		}
+		ids, paths = append(ids, job.ID), append(paths, path)
+	}
+	if err := h.config.Journal.SaveSwitch(cleanup.Switch{Paused: true}); err != nil {
+		t.Fatalf("pause the journal: %v", err)
+	}
+	return ids, paths
 }
 
 func cleanupTuning() daemon.Tuning {
@@ -283,6 +326,51 @@ func TestCleanupWorktreeRmQueuesDeletion(t *testing.T) {
 		t.Errorf("recovery refs = %q, want %q", got, want)
 	}
 	mustRun(t, f.Env(), f.Dir, "git", "rev-parse", "--verify", "refs/heads/feat")
+}
+
+func TestCleanupWorktreeRmRefusedWhilePaused(t *testing.T) {
+	requireCleanupDaemon(t)
+	f := vcstest.Repo(t)
+	f.Isolate(t)
+	h := fixtureCleanup(t, f)
+	svc := &rmWaitService{Service: h.engine, t: t}
+	f.Decorate(func(ctx context.Context) context.Context { return withCleanup(ctx, svc) })
+	path := addPoolWorktree(t, f, "feat")
+	if err := h.engine.Pause(f.Context()); err != nil {
+		t.Fatalf("pause: %v", err)
+	}
+
+	for _, args := range [][]string{{"rm", "feat"}, {"rm", "feat", "--wait"}} {
+		out, err := runWorktreeCmd(t, f, args...)
+		if want := "worktree rm: " + cleanup.ErrPaused.Error(); !errors.Is(err, cleanup.ErrPaused) || err.Error() != want {
+			t.Fatalf("%v while paused = %v, want %q", args, err, want)
+		}
+		if out != "" {
+			t.Errorf("%v while paused printed %q, want nothing removed", args, out)
+		}
+	}
+	if len(svc.queries) != 0 {
+		t.Errorf("status requests = %+v, want none once the removal is refused", svc.queries)
+	}
+	assertIntact(t, f, path)
+	if jobs := journaledJobs(t, h); len(jobs) != 0 {
+		t.Errorf("journaled jobs = %v, want none", jobs)
+	}
+	if refs := recoveryRefs(t, f); refs != "" {
+		t.Errorf("recovery refs = %q, want none", refs)
+	}
+
+	if err := h.engine.Resume(f.Context()); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	out, err := runWorktreeCmd(t, f, "rm", "feat")
+	if err != nil {
+		t.Fatalf("rm after the resume: %v", err)
+	}
+	if want := "removed feat · git worktree · " + path + " · deletion queued " + queuedJobID(t, out) + "\n"; out != want {
+		t.Errorf("rm after the resume = %q, want %q", out, want)
+	}
+	assertGone(t, path)
 }
 
 func TestCleanupWorktreeRmWait(t *testing.T) {
@@ -788,14 +876,13 @@ func TestCleanupWorktreeRmWaitNeedsTheJobSeenDone(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			f := vcstest.Repo(t)
 			f.Isolate(t)
-			h := fixtureCleanup(t, f)
-			if err := h.engine.Pause(f.Context()); err != nil {
-				t.Fatalf("pause: %v", err)
-			}
+			tuning := cleanupTuning()
+			tuning.SampleEvery = time.Hour
+			h := attachCleanup(t, f, newCleanupHarness(t, f, tuning))
 			var restarted *daemon.Engine
 			svc := &rmWaitService{Service: h.engine, t: t, handoff: func(r cleanup.Receipt) cleanup.Service {
 				if r.State != cleanup.State(cleanup.PhaseUnregistered) {
-					t.Fatalf("receipt = %+v, want it unregistered while deletion is paused", r)
+					t.Fatalf("receipt = %+v, want it unregistered while the governor's baseline sample holds deletion", r)
 				}
 				if err := h.engine.Stop(f.Context()); err != nil {
 					t.Fatalf("stop the first engine: %v", err)
@@ -980,24 +1067,38 @@ func TestCleanupGitRelativePATH(t *testing.T) {
 func TestCleanupQueueCommands(t *testing.T) {
 	f := vcstest.Repo(t)
 	f.Isolate(t)
-	h := fixtureCleanup(t, f)
+	h := newCleanupConfig(t, f)
 	ctx := f.Context()
 	git := render.LookPath(ctx, "git")
-	first := filepath.Join(filepath.Dir(f.Dir), "checkouts", "first")
+	ids, paths := unregisterPaused(t, f, h, "first")
+	firstID, first := ids[0], paths[0]
 	second := filepath.Join(filepath.Dir(f.Dir), "checkouts", "second")
-	addLinkedWorktree(t, f.Env(), f.Dir, first, "")
+	third := filepath.Join(filepath.Dir(f.Dir), "checkouts", "third")
 	addLinkedWorktree(t, f.Env(), f.Dir, second, "")
+	addLinkedWorktree(t, f.Env(), f.Dir, third, "")
+	h.refuseRetire(errors.New("watcher still attached"))
+	blocked, err := relocate.New(h.config).Accept(ctx, 2, cleanup.Request{Worktree: second, Git: git})
+	if err != nil {
+		t.Fatalf("accept %s: %v", second, err)
+	}
+	if err := relocate.New(h.config).Advance(ctx, &blocked); err != nil || blocked.Phase != cleanup.PhasePrepared || blocked.Blocked == nil || blocked.Blocked.Reason != "watchers" {
+		t.Fatalf("advance %s = phase %s, blockage %+v, %v; want prepared and blocked on watchers", second, blocked.Phase, blocked.Blocked, err)
+	}
+	blockedID := blocked.ID
+	h.engine = startCleanupEngine(t, h.config, cleanupTuning())
+	attachCleanup(t, f, h)
 	header := "cleanup daemon test · pid " + strconv.Itoa(os.Getpid()) + " · governor "
 
 	if out, err := runCleanupCmd(t, f, "pause"); err != nil || out != "deletion paused\n" {
 		t.Fatalf("pause = %q, %v; want %q", out, err, "deletion paused\n")
 	}
-	receipt, err := h.engine.Remove(ctx, cleanup.Request{Worktree: first, Git: git})
-	if err != nil {
-		t.Fatalf("remove %s: %v", first, err)
+	_, err = h.engine.Remove(ctx, cleanup.Request{Worktree: third, Git: git})
+	if !errors.Is(err, cleanup.ErrPaused) {
+		t.Fatalf("remove %s while paused = %v, want ErrPaused", third, err)
 	}
-	if receipt.State != cleanup.State(cleanup.PhaseUnregistered) {
-		t.Fatalf("receipt state = %s, want %s", receipt.State, cleanup.PhaseUnregistered)
+	assertIntact(t, f, third)
+	if got := journaledJobs(t, h); len(got) != 2 {
+		t.Errorf("journaled jobs = %v, want only the two seeded before the pause", got)
 	}
 
 	out, err := runCleanupCmd(t, f, "status")
@@ -1005,11 +1106,14 @@ func TestCleanupQueueCommands(t *testing.T) {
 		t.Fatalf("status error = %v", err)
 	}
 	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
-	if len(lines) != 2 || !strings.HasPrefix(lines[0], header) || !strings.HasSuffix(lines[0], " · deletion paused") {
-		t.Fatalf("status = %q, want a paused header and one job", out)
+	if len(lines) != 3 || !strings.HasPrefix(lines[0], header) || !strings.HasSuffix(lines[0], " · deletion paused") {
+		t.Fatalf("status = %q, want a paused header and two jobs", out)
 	}
-	if want := receipt.JobID + " · paused · " + first + " · 0 entries"; lines[1] != want {
+	if want := firstID + " · paused · " + first + " · 0 entries"; lines[1] != want {
 		t.Errorf("status job line = %q, want %q", lines[1], want)
+	}
+	if want := blockedID + " · blocked · " + second + " · 0 entries · watchers: "; !strings.HasPrefix(lines[2], want) || !strings.Contains(lines[2], "watcher still attached") {
+		t.Errorf("status job line = %q, want it starting %q naming the watcher", lines[2], want)
 	}
 	out, err = runCleanupCmd(t, f, "status", "--json")
 	if err != nil {
@@ -1019,17 +1123,10 @@ func TestCleanupQueueCommands(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &report); err != nil {
 		t.Fatalf("unmarshal report: %v\n%s", err, out)
 	}
-	if !report.Paused || report.Version != "test" || len(report.Jobs) != 1 || report.Jobs[0].ID != receipt.JobID || report.Jobs[0].Phase != cleanup.PhaseUnregistered {
-		t.Errorf("report = %+v, want paused with job %s unregistered", report, receipt.JobID)
+	if !report.Paused || report.Version != "test" || len(report.Jobs) != 2 || report.Jobs[0].ID != firstID || report.Jobs[0].Phase != cleanup.PhaseUnregistered {
+		t.Errorf("report = %+v, want paused with job %s unregistered first", report, firstID)
 	}
 
-	h.refuseRetire(errors.New("watcher still attached"))
-	_, err = h.engine.Remove(ctx, cleanup.Request{Worktree: second, Git: git})
-	var blocked *cleanup.BlockedError
-	if !errors.As(err, &blocked) || blocked.Job.Blocked.Reason != "watchers" {
-		t.Fatalf("remove %s error = %v, want a watchers *cleanup.BlockedError", second, err)
-	}
-	blockedID := blocked.Job.ID
 	assertIntact(t, f, second)
 	out, err = runCleanupCmd(t, f, "status", blockedID)
 	if err != nil {
@@ -1044,7 +1141,7 @@ func TestCleanupQueueCommands(t *testing.T) {
 		t.Fatalf("status --limit 1 error = %v", err)
 	}
 	lines = strings.Split(strings.TrimSuffix(out, "\n"), "\n")
-	if len(lines) != 3 || lines[1] != receipt.JobID+" · paused · "+first+" · 0 entries" || lines[2] != "omitted 1 more job" {
+	if len(lines) != 3 || lines[1] != firstID+" · paused · "+first+" · 0 entries" || lines[2] != "omitted 1 more job" {
 		t.Errorf("status --limit 1 = %q, want the first job and one omitted", out)
 	}
 
@@ -1056,10 +1153,14 @@ func TestCleanupQueueCommands(t *testing.T) {
 	if want := "retried " + blockedID + " · prepared · " + second + " · 0 entries\n"; out != want {
 		t.Errorf("retry = %q, want %q", out, want)
 	}
+	if retried := cleanupJob(t, f, h, blockedID); retried.Phase != cleanup.PhasePrepared || retried.Blocked != nil {
+		t.Errorf("retried job = phase %s, blockage %+v; want it resting unblocked at prepared while the queue is paused", retried.Phase, retried.Blocked)
+	}
+	assertIntact(t, f, second)
 	if out, err := runCleanupCmd(t, f, "resume"); err != nil || out != "deletion resumed\n" {
 		t.Fatalf("resume = %q, %v; want %q", out, err, "deletion resumed\n")
 	}
-	for _, job := range []struct{ id, path string }{{receipt.JobID, first}, {blockedID, second}} {
+	for _, job := range []struct{ id, path string }{{firstID, first}, {blockedID, second}} {
 		out, err := runCleanupCmd(t, f, "wait", job.id)
 		if err != nil {
 			t.Fatalf("wait %s error = %v", job.id, err)
@@ -1535,25 +1636,6 @@ func (s *handoffStatus) Status(ctx context.Context, q cleanup.Query) (cleanup.Re
 	return s.Service.Status(ctx, q)
 }
 
-func queuePaused(t *testing.T, f *vcstest.Fixture, h *cleanupHarness, names ...string) (ids, paths []string) {
-	t.Helper()
-	ctx := f.Context()
-	if err := h.engine.Pause(ctx); err != nil {
-		t.Fatalf("pause: %v", err)
-	}
-	git := render.LookPath(ctx, "git")
-	for _, name := range names {
-		path := filepath.Join(filepath.Dir(f.Dir), "checkouts", name)
-		addLinkedWorktree(t, f.Env(), f.Dir, path, "")
-		receipt, err := h.engine.Remove(ctx, cleanup.Request{Worktree: path, Git: git})
-		if err != nil || receipt.State != cleanup.State(cleanup.PhaseUnregistered) {
-			t.Fatalf("remove %s = %+v, %v; want it unregistered while deletion is paused", path, receipt, err)
-		}
-		ids, paths = append(ids, receipt.JobID), append(paths, path)
-	}
-	return ids, paths
-}
-
 func TestCleanupWaitNeedsTheJobSeenDone(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -1569,8 +1651,7 @@ func TestCleanupWaitNeedsTheJobSeenDone(t *testing.T) {
 			f.Isolate(t)
 			tuning := cleanupTuning()
 			tuning.KeepDone = tt.keepDone
-			h := newCleanupHarness(t, f, tuning)
-			ids, paths := queuePaused(t, f, h, "first", "second")
+			h, ids, paths := pausedHarness(t, f, tuning, "first", "second")
 			first, last := ids[0], ids[1]
 			svc := &handoffStatus{Service: h.engine, handoff: func() cleanup.Service {
 				ctx, cancel := context.WithTimeout(f.Context(), 10*time.Second)
@@ -1627,8 +1708,7 @@ func TestCleanupWaitNeedsTheJobSeenDone(t *testing.T) {
 func TestCleanupWaitReportsARecordDamagedAcrossARestart(t *testing.T) {
 	f := vcstest.Repo(t)
 	f.Isolate(t)
-	h := newCleanupHarness(t, f, cleanupTuning())
-	ids, _ := queuePaused(t, f, h, "feat")
+	h, ids, _ := pausedHarness(t, f, cleanupTuning(), "feat")
 	id := ids[0]
 	var restarted *daemon.Engine
 	svc := &handoffStatus{Service: h.engine, handoff: func() cleanup.Service {

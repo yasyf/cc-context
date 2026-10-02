@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yasyf/cc-context/internal/cleanup"
 )
@@ -219,5 +220,88 @@ func TestUnprobedMarksOnlyAReadThatOutlivedItsBound(t *testing.T) {
 	}
 	if err := unprobed(live, expired, nil); err != nil {
 		t.Errorf("unprobed of a read that succeeded = %v, want nil", err)
+	}
+}
+
+func TestInterruptedMutationReadsAsATimeout(t *testing.T) {
+	killed := errors.New("git --git-dir=/repo/.git worktree move /wt /registered: signal: killed")
+	err := interrupted{budget: 1500 * time.Millisecond, err: killed}
+	if got := gitReason(err); got != "timeout" {
+		t.Errorf("gitReason = %q, want timeout", got)
+	}
+	if !errors.Is(err, killed) {
+		t.Errorf("interrupted does not wrap %v", killed)
+	}
+	if got, want := err.Error(), "interrupted at its 1.5s budget: "+killed.Error(); got != want {
+		t.Errorf("Error() = %q, want %q", got, want)
+	}
+}
+
+func TestCappedKeepsTheHeadAndCountsTheRest(t *testing.T) {
+	tests := []struct {
+		name    string
+		limit   int
+		writes  []string
+		kept    string
+		dropped int
+		said    string
+	}{
+		{"under the cap", 8, []string{"ab", "cd"}, "abcd", 0, "abcd"},
+		{"exactly the cap", 4, []string{"ab", "cd"}, "abcd", 0, "abcd"},
+		{"a write straddling the cap", 4, []string{"ab", "cdef"}, "abcd", 2, "abcd [2 more bytes dropped]"},
+		{"writes past the cap", 4, []string{"abcdef", "gh", "i"}, "abcd", 5, "abcd [5 more bytes dropped]"},
+		{"whitespace trimmed before the marker", 4, []string{"a\n\n\n", "bc"}, "a\n\n\n", 2, "a [2 more bytes dropped]"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := &capped{limit: tt.limit}
+			for _, w := range tt.writes {
+				n, err := c.Write([]byte(w))
+				if n != len(w) || err != nil {
+					t.Fatalf("Write(%q) = %d, %v; want %d, nil", w, n, err, len(w))
+				}
+			}
+			if string(c.kept) != tt.kept || c.dropped != tt.dropped {
+				t.Errorf("kept %q dropped %d, want %q and %d", c.kept, c.dropped, tt.kept, tt.dropped)
+			}
+			if got := c.said(); got != tt.said {
+				t.Errorf("said() = %q, want %q", got, tt.said)
+			}
+		})
+	}
+}
+
+func TestGitOutputIsBounded(t *testing.T) {
+	const noise = 1 << 20
+	f := newFixture(t)
+	loud := filepath.Join(f.root, "loud-git")
+	script := fmt.Sprintf("#!/bin/sh\ncase \" $* \" in\n*\" stderr \"*) yes stderr-noise | head -c %d >&2; exit 1;;\n*\" stdout \"*) yes stdout-noise | head -c %d;;\nesac\n", noise, noise)
+	if err := os.WriteFile(loud, []byte(script), 0o700); err != nil { //nolint:gosec // the script stands in for git and is executed
+		t.Fatalf("write loud git: %v", err)
+	}
+	kept := strings.TrimSpace(strings.Repeat("stderr-noise\n", maxStderr/len("stderr-noise\n")+1)[:maxStderr])
+
+	tests := []struct {
+		name    string
+		stream  string
+		wantOut string
+		wantErr string
+	}{
+		{"stderr is kept to its cap with the drop counted", "stderr", "", fmt.Sprintf("git stderr: exit status 1: %s [%d more bytes dropped]", kept, noise-maxStderr)},
+		{"stdout past its cap is a broken git", "stdout", "", fmt.Sprintf("git stdout: wrote %d bytes to stdout past its %d-byte cap", noise-maxStdout, maxStdout)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := f.relocator.git(context.Background(), loud, tt.stream)
+			if err == nil || err.Error() != tt.wantErr {
+				t.Errorf("git() error = %v\nwant %s", err, tt.wantErr)
+			}
+			if out != tt.wantOut {
+				t.Errorf("git() stdout = %q, want %q", out, tt.wantOut)
+			}
+			if got := gitReason(err); got != "git" {
+				t.Errorf("gitReason = %q, want git", got)
+			}
+		})
 	}
 }

@@ -246,13 +246,18 @@ func TestProgressIsJournaledAtMostOnceAMinute(t *testing.T) {
 	})
 }
 
-func TestQueuePauseStopsSlicesNotRemovals(t *testing.T) {
+func TestQueuePauseRestsEveryJobAndRefusesNewWork(t *testing.T) {
 	bubble(t, DefaultTuning(), func(t *testing.T, h *harness) {
 		ctx := context.Background()
 		job := h.seed("a", 1, cleanup.PhaseUnregistered)
 		h.deleter.put("a", &payload{entries: 300})
+		waiting := h.seed("w", 2, cleanup.PhaseWaiting)
+		h.relocator.script("w", stayWaiting)
+		retrying := h.seed("r", 3, cleanup.PhasePrepared, func(job *cleanup.Job) {
+			job.Block(job.Created, "activity", "zsh (pid 7) in the tree")
+		})
 		h.start()
-		h.expectEvents("sample", "admit:a", "open:a", "step:a")
+		h.expectEvents("advance:w@waiting", "sample", "admit:a", "open:a", "step:a")
 		h.expectTimers(400 * time.Millisecond)
 
 		if err := h.engine.Pause(ctx); err != nil {
@@ -267,18 +272,33 @@ func TestQueuePauseStopsSlicesNotRemovals(t *testing.T) {
 		if got := h.journaled(job.ID).Removed; got != 100 {
 			t.Errorf("journaled removed = %d, want 100", got)
 		}
-		h.clock.Advance(10 * time.Second)
+		h.clock.Advance(time.Hour)
 		h.expectEvents()
-
-		receipt, err := h.engine.Remove(ctx, h.request("b"))
-		if err != nil {
-			t.Fatalf("Remove(b) under a queue pause = %v", err)
-		}
-		if receipt.State != cleanup.State(cleanup.PhaseUnregistered) {
-			t.Errorf("Remove(b) state = %s, want unregistered", receipt.State)
-		}
-		h.expectEvents("accept:b", "advance:b@prepared")
 		h.expectTimers()
+
+		for _, tt := range []struct {
+			name string
+			ask  func() error
+		}{
+			{"remove", func() error { _, err := h.engine.Remove(ctx, h.request("b")); return err }},
+			{"defer", func() error { _, err := h.engine.Defer(ctx, h.deferral("d")); return err }},
+			{"adopt", func() error { _, err := h.engine.Adopt(ctx, h.adoption("q")); return err }},
+		} {
+			if err := tt.ask(); !errors.Is(err, cleanup.ErrPaused) {
+				t.Errorf("%s under a queue pause = %v, want ErrPaused", tt.name, err)
+			}
+		}
+		h.expectEvents()
+		h.expectTimers()
+		jobs, damaged, err := h.journal.Load()
+		if err != nil || len(damaged) != 0 || len(jobs) != 3 {
+			t.Fatalf("Load() = %d jobs, damaged %v, %v; want the three seeded and nothing new", len(jobs), damaged, err)
+		}
+		for _, seeded := range []cleanup.Job{waiting, retrying} {
+			if got := h.journaled(seeded.ID); got.Phase != seeded.Phase || (got.Blocked == nil) != (seeded.Blocked == nil) {
+				t.Errorf("%s rests at %s, blocked %t; want %s, blocked %t", h.rec.name(seeded.ID), got.Phase, got.Blocked != nil, seeded.Phase, seeded.Blocked != nil)
+			}
+		}
 		report, err := h.engine.Status(ctx, cleanup.Query{})
 		if err != nil || !report.Paused {
 			t.Fatalf("Status() paused = %t, %v; want true", report.Paused, err)
@@ -287,7 +307,7 @@ func TestQueuePauseStopsSlicesNotRemovals(t *testing.T) {
 		if err := h.engine.Resume(ctx); err != nil {
 			t.Fatalf("Resume() = %v", err)
 		}
-		h.expectEvents("sample", "admit:a", "open:a", "step:a")
+		h.expectEvents("advance:w@waiting", "advance:r@prepared", "sample", "admit:a", "open:a", "step:a")
 		h.expectTimers(400 * time.Millisecond)
 		if sw, err := h.journal.LoadSwitch(); err != nil || sw.Paused {
 			t.Errorf("LoadSwitch() after resume = %+v, %v; want unpaused", sw, err)
@@ -298,6 +318,14 @@ func TestQueuePauseStopsSlicesNotRemovals(t *testing.T) {
 		if got := h.status(job.ID); got.State() != cleanup.State(cleanup.PhaseDeleting) || got.Removed != 200 {
 			t.Errorf("resumed job = state %s, removed %d; want deleting, 200", got.State(), got.Removed)
 		}
+		if got := h.status(retrying.ID); got.Phase != cleanup.PhaseUnregistered || got.Blocked != nil {
+			t.Errorf("retried job = phase %s, blockage %+v; want unregistered and unblocked once the queue resumed", got.Phase, got.Blocked)
+		}
+		receipt, err := h.engine.Remove(ctx, h.request("b"))
+		if err != nil || receipt.State != cleanup.State(cleanup.PhaseUnregistered) {
+			t.Fatalf("Remove(b) after the resume = %+v, %v; want it unregistered", receipt, err)
+		}
+		h.expectEvents("accept:b", "advance:b@prepared")
 	})
 }
 
@@ -843,14 +871,18 @@ func TestDeferRejoinsOnlyTheJobItsRegistrationBinds(t *testing.T) {
 }
 
 func TestCancelledAdvanceStopsTheWorkerAndLeavesTheJobRunnable(t *testing.T) {
+	seedMoved := func(h *harness) { h.seed("a", 1, cleanup.PhaseMoved) }
 	tests := []struct {
 		name   string
 		seed   func(h *harness)
 		remove bool
+		stop   bool
 		phase  cleanup.Phase
 	}{
-		{"on the worker's own pass", func(h *harness) { h.seed("a", 1, cleanup.PhaseMoved) }, false, cleanup.PhaseMoved},
-		{"inside a remove command", func(*harness) {}, true, cleanup.PhasePrepared},
+		{"on the worker's own pass", seedMoved, false, false, cleanup.PhaseMoved},
+		{"inside a remove command", func(*harness) {}, true, false, cleanup.PhasePrepared},
+		{"on the worker's own pass, by Stop", seedMoved, false, true, cleanup.PhaseMoved},
+		{"inside a remove command, by Stop", func(*harness) {}, true, true, cleanup.PhasePrepared},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -873,10 +905,29 @@ func TestCancelledAdvanceStopsTheWorkerAndLeavesTheJobRunnable(t *testing.T) {
 				if got := <-h.relocator.entered; got != "a" {
 					t.Fatalf("the relocator entered %q, want a", got)
 				}
-				cancel()
+				stopped := make(chan error, 1)
+				if tt.stop {
+					go func() { stopped <- engine.Stop(context.Background()) }()
+					synctest.Wait()
+					select {
+					case err := <-stopped:
+						t.Fatalf("Stop() = %v while the advance was still in flight", err)
+					default:
+					}
+				} else {
+					cancel()
+				}
 				gate <- struct{}{}
 				if err := <-running; err != nil {
 					t.Fatalf("Run() = %v, want nil: a cancelled advance is a stop, not a journal failure", err)
+				}
+				if tt.stop {
+					if err := <-stopped; err != nil {
+						t.Errorf("Stop() = %v", err)
+					}
+					if err := engine.Stop(context.Background()); err != nil {
+						t.Errorf("a second Stop() = %v, want nil", err)
+					}
 				}
 				if tt.remove {
 					err := <-removed
@@ -908,43 +959,6 @@ func TestCancelledAdvanceStopsTheWorkerAndLeavesTheJobRunnable(t *testing.T) {
 			})
 		})
 	}
-}
-
-func TestStopLetsTheAdvanceInFlightFinishUncancelled(t *testing.T) {
-	bubble(t, DefaultTuning(), func(t *testing.T, h *harness) {
-		job := h.seed("a", 1, cleanup.PhasePrepared)
-		h.deleter.put("a", &payload{entries: 100})
-		gate := make(chan struct{})
-		h.relocator.gates["a"] = gate
-		h.start()
-		if got := <-h.relocator.entered; got != "a" {
-			t.Fatalf("the relocator entered %q, want a", got)
-		}
-		engine, running := h.engine, h.running
-		h.engine = nil
-		stopped := make(chan error, 1)
-		go func() { stopped <- engine.Stop(context.Background()) }()
-		synctest.Wait()
-		select {
-		case err := <-stopped:
-			t.Fatalf("Stop() = %v while the advance was still in flight", err)
-		default:
-		}
-		gate <- struct{}{}
-		if err := <-stopped; err != nil {
-			t.Errorf("Stop() = %v", err)
-		}
-		if err := <-running; err != nil {
-			t.Errorf("Run() = %v", err)
-		}
-		h.expectEvents("advance:a@prepared")
-		if got := h.journaled(job.ID); got.Phase != cleanup.PhaseUnregistered || got.Blocked != nil {
-			t.Errorf("journal after the stop = phase %s, blockage %+v; want the step finished at unregistered", got.Phase, got.Blocked)
-		}
-		if err := engine.Stop(context.Background()); err != nil {
-			t.Errorf("a second Stop() = %v, want nil", err)
-		}
-	})
 }
 
 func TestRequesterRidesOnlyTheCommandThatNamedIt(t *testing.T) {

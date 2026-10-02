@@ -61,6 +61,7 @@ type fixture struct {
 	discounts [][]cleanup.ProcessID
 	watchers  *fakeWatchers
 	clock     time.Time
+	budget    time.Duration
 	relocator *Relocator
 }
 
@@ -146,10 +147,16 @@ func (f *fixture) over(journal *cleanup.Journal) {
 			f.discounts = append(f.discounts, cleanup.RetiringFrom(ctx))
 			return f.guard(ctx, worktree)
 		},
-		Watchers: f.watchers,
-		GitEnv:   f.env,
-		Now:      func() time.Time { return f.clock },
+		Watchers:  f.watchers,
+		GitEnv:    f.env,
+		GitBudget: f.budget,
+		Now:       func() time.Time { return f.clock },
 	})
+}
+
+func (f *fixture) bound(budget time.Duration) {
+	f.budget = budget
+	f.over(f.journal)
 }
 
 func (f *fixture) try(dir string, args ...string) (string, error) {

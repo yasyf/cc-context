@@ -629,12 +629,13 @@ func TestAdvanceRevetsADeferredTreeWhoseProcessListingTimedOut(t *testing.T) {
 	}
 }
 
-func TestAdvanceFinishesGitRewritesUnderACancelledContext(t *testing.T) {
+func TestAdvanceStartsNoGitRewriteUnderACancelledContext(t *testing.T) {
 	f := newFixture(t)
 	job, err := f.relocator.Accept(context.Background(), 1, f.request(true))
 	if err != nil {
 		t.Fatalf("Accept() error = %v", err)
 	}
+	accepted := job
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	f.guard = func(context.Context, string) error {
@@ -646,19 +647,16 @@ func TestAdvanceFinishesGitRewritesUnderACancelledContext(t *testing.T) {
 		t.Fatalf("Advance() error = %v, want context.Canceled", err)
 	}
 
-	if job.Phase != cleanup.PhaseMoved || job.Blocked != nil {
-		t.Fatalf("job is at %s with blockage %+v, want moved and unblocked", job.Phase, job.Blocked)
+	if !reflect.DeepEqual(job, accepted) {
+		t.Fatalf("job = %+v, want it untouched at %+v", job, accepted)
 	}
 	f.stored(&job)
-	f.absent(f.worktree)
-	if got := f.id(job.Registered); got != job.Tree {
-		t.Errorf("registered identity = %v, want the tree %v", got, job.Tree)
+	f.absent(job.Registered)
+	if got := f.id(f.worktree); got != job.Tree {
+		t.Errorf("identity at %s = %v, want the tree %v still there", f.worktree, got, job.Tree)
 	}
-	if got, want := f.read(filepath.Join(f.adminDir, "gitdir")), expectedAdminGitdir(job); got != want {
-		t.Errorf("admin gitdir = %q, want %q", got, want)
-	}
-	if got := f.run(f.repo, "rev-parse", job.RecoveryRef); got != job.Head {
-		t.Errorf("recovery ref = %s, want %s", got, job.Head)
+	if got, err := f.try(f.repo, "rev-parse", "--verify", "--quiet", job.RecoveryRef); err == nil {
+		t.Errorf("recovery ref = %s, want none written", got)
 	}
 }
 

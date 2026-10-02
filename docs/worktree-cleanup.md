@@ -38,10 +38,17 @@ their publication rules. The public command group is `ccx vcs cleanup`.
 | --- | --- |
 | `ccx vcs cleanup status [job-id] --json` | Report the queue, or one job, with progress and any blockage |
 | `ccx vcs cleanup wait <job-id>` | Wait for one job to finish; report a blockage if it cannot proceed |
-| `ccx vcs cleanup pause` | Pause physical deletion across the queue |
-| `ccx vcs cleanup resume` | Resume physical deletion across the queue |
+| `ccx vcs cleanup pause` | Stop preparation, relocation, and deletion; refuse new removals |
+| `ccx vcs cleanup resume` | Resume the queue |
 | `ccx vcs cleanup retry <job-id>` | Retry a blocked job from its recorded phase after its cause is addressed |
 | `ccx vcs cleanup watchers --json` | Inspect watcher roots and consumers without retiring them |
+
+`pause` holds queued jobs at their recorded phases until `resume`, with no
+retries or inactivity checks. The pause survives daemon restarts. While
+paused, the daemon rejects `worktree rm`, `cleanup adopt`, and deferred
+workspace releases before any preparation or Git work. The error names
+`ccx vcs cleanup resume`. If `stack continue` reaches a refused release, it
+keeps its run state; retrying after resume reuses completed work.
 
 `ccx vcs cleanup status` and `ccx vcs cleanup wait` are read-only: they query
 only the running daemon with one 5s hello and bounded requests, including
@@ -104,6 +111,14 @@ refusing or missing socket, the command probes again under the start lock.
 If it still does not answer, the command reports an error before any install
 or apply.
 
+Shutdown cancels the worker's current step. Git reads stop; an `update-ref`,
+`worktree move`, or `worktree remove` already running finishes or reaches its
+budget before the step yields. One that reaches its budget is recorded as a
+timeout, and the restart retries it with the usual backoff. The relocation
+ladder stops at the next durably saved phase, and a restart resumes from that
+phase. Shutdown waits for at most one active Git command's budget, plus up to
+five seconds if a descendant keeps its output pipes open.
+
 During the v0.67.3 upgrade incident, the draining daemon accepted each new
 connection and closed it at once without a reply, so status saw an empty
 reply and the shutdown wait never saw a refusal.
@@ -126,7 +141,7 @@ view.
 | Logical removal succeeded | The original tree is gone and its Git registration is removed; queued data can still occupy disk space |
 | Waiting for inactivity | A completed internal workspace remains at its original path while a session holds it |
 | Physical deletion in progress | The daemon is deleting the relocated data in bounded slices |
-| Paused | Deletion is held; the job remains durable |
+| Paused | Preparation, relocation, and deletion are held at the recorded phase |
 | Blocked | The job needs attention; its error and recorded phase explain where it stopped |
 | Done | Physical deletion finished |
 
@@ -139,6 +154,12 @@ The queue survives daemon restarts. It records each phase and checks the
 captured worktree identity before continuing. A path reused by another actor
 is not permission to delete the replacement. Identity mismatches and other
 errors block the job with diagnostics.
+
+Every Git command used for relocation has a finite budget, one minute by
+default. An expired budget blocks the job with the transient `timeout`
+reason at its recorded phase; it retries with the existing backoff. Captured
+Git error output has a byte limit. Cancellation signals only the direct
+child, never a process group.
 
 The daemon limits physical deletion to bounded slices and a capped rate,
 yields to new logical removals, and pauses deletion while `fseventsd` is busy.
