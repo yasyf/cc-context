@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -179,9 +180,9 @@ func TestPRStatusReportsEachQueueState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pr status: %v", err)
 	}
-	want := "#25121  queued · enqueued b103a576 into dev\n" +
-		"#25131  not queued · open\n" +
-		"#25116  landed · squash 9cc33f05 on dev\n"
+	want := "#25121  queued · enqueued b103a576 into dev · ci none · approved · queued\n" +
+		"#25131  not queued · open · ci none · approved · blocked:no-ci\n" +
+		"#25116  landed · squash 9cc33f05 on dev · ci none · approved · landed\n"
 	if out != want {
 		t.Errorf("report =\n%s\nwant\n%s", out, want)
 	}
@@ -219,7 +220,7 @@ func TestPRStatusReadsALabelledPRTheQueueDropped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pr status: %v", err)
 	}
-	if want := "#26918  evicted: it had merge conflicts at Sep 28, 3:32 PM UTC\n"; out != want {
+	if want := "#26918  evicted: it had merge conflicts at Sep 28, 3:32 PM UTC · ci none · approved · blocked:no-ci\n"; out != want {
 		t.Errorf("report = %q, want %q", out, want)
 	}
 }
@@ -232,7 +233,7 @@ func TestPRStatusIgnoresActivityOfAnUnlabelledPROutOfTheQueue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pr status: %v", err)
 	}
-	if want := "#26918  not queued · open\n"; out != want {
+	if want := "#26918  not queued · open · ci none · approved · blocked:no-ci\n"; out != want {
 		t.Errorf("report = %q, want %q", out, want)
 	}
 }
@@ -245,7 +246,7 @@ func TestPRStatusReportsAnEviction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pr status: %v", err)
 	}
-	if want := "#26918  evicted: it had merge conflicts at Sep 28, 3:32 PM UTC · conflicting\n"; out != want {
+	if want := "#26918  evicted: it had merge conflicts at Sep 28, 3:32 PM UTC · conflicting · ci none · approved · blocked:conflict,no-ci\n"; out != want {
 		t.Errorf("report = %q, want %q", out, want)
 	}
 }
@@ -258,12 +259,17 @@ func TestPRStatusJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pr status --json: %v", err)
 	}
-	var got []prQueueReport
+	var got []prStatusReport
 	if err := json.Unmarshal([]byte(out), &got); err != nil {
 		t.Fatalf("unmarshal %q: %v", out, err)
 	}
-	want := []prQueueReport{{Number: 25121, Queue: prQueueQueued, State: "OPEN", Base: "dev", Enqueued: "b103a57671412a4e260ecd9763ba764e66053d15"}}
-	if !slices.Equal(got, want) {
+	want := []prStatusReport{{
+		prQueueReport: prQueueReport{Number: 25121, Queue: prQueueQueued, State: "OPEN", Base: "dev", Enqueued: "b103a57671412a4e260ecd9763ba764e66053d15"},
+		CI:            prCIReport{State: prCINone},
+		Approval:      prApprovalReport{State: prApproved},
+		Verdict:       "queued",
+	}}
+	if !reflect.DeepEqual(got, want) {
 		t.Errorf("report = %+v, want %+v", got, want)
 	}
 }
@@ -349,7 +355,7 @@ func TestPRStatusServesTheCacheMarkedStaleWhileRateLimited(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pr status: %v", err)
 	}
-	if want := "#25121  queued · enqueued b103a576 into dev\n"; fresh != want {
+	if want := "#25121  queued · enqueued b103a576 into dev · ci none · approved · queued\n"; fresh != want {
 		t.Errorf("fresh report = %q, want %q", fresh, want)
 	}
 	prStateBackdate(t, time.Minute)
@@ -358,7 +364,7 @@ func TestPRStatusServesTheCacheMarkedStaleWhileRateLimited(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pr status under the quota backoff: %v", err)
 	}
-	if !strings.HasPrefix(out, "#25121  queued · enqueued b103a576 into dev · stale, polled 20") || len(github.queries) != 1 {
+	if !strings.HasPrefix(out, "#25121  queued · enqueued b103a576 into dev · ci none · approved · queued · stale, polled 20") || len(github.queries) != 1 {
 		t.Errorf("stale report = %q after %d polls, want the cached verdict marked stale with no new poll", out, len(github.queries))
 	}
 	jsonOut, err := runPRStatusCmd(t, client, "--repo", "Forge-AI/monorepo", "--json", "25121")
@@ -406,5 +412,158 @@ func TestPRStateMarksABackoffServedReadStale(t *testing.T) {
 	got := run()
 	if got.Stale == nil || got.Stale.Reason != "quota below the floor" || !got.Stale.PolledAt.Equal(got.PolledAt) || got.PRs[25121].HeadRefName != "yasyf/pr-25121" {
 		t.Errorf("report = %+v, want the cached record served with a stale marker", got)
+	}
+}
+
+// GitHub's answer for Forge-AI/monorepo on 2026-10-02, titles and branches
+// scrubbed: #29551 green, #29552 and #29558 with buildkite/test failed and
+// Graphite's mergeability check running, all approved by a user and the bot.
+func TestPRStatusReadsCIAndApprovalFromARealPoll(t *testing.T) {
+	poll, err := os.ReadFile(filepath.Join(ghPkgDir, "testdata", "prstatus", "monorepo-29551-29552-29558.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, client := stubPRInfo(t,
+		`{"prNumber":29551,"state":"OPEN","baseRefName":"dev","mergeQueueStatus":null,"mergeCommitSha":null}`,
+		`{"prNumber":29552,"state":"OPEN","baseRefName":"dev","mergeQueueStatus":null,"mergeCommitSha":null}`,
+		`{"prNumber":29558,"state":"OPEN","baseRefName":"dev","mergeQueueStatus":null,"mergeCommitSha":null}`,
+	)
+	github := stubPRState(t, string(poll))
+
+	out, err := runPRStatusCmd(t, client, "--repo", "Forge-AI/monorepo", "29551", "29552", "29558")
+	if err != nil {
+		t.Fatalf("pr status: %v", err)
+	}
+	want := "#29551  not queued · open · ci green · approved by poetic-svc, forge-pr-reviewer · landable\n" +
+		"#29552  not queued · open · ci red: buildkite/test · approved by poetic-svc, forge-pr-reviewer · blocked:ci-red\n" +
+		"#29558  not queued · open · ci red: buildkite/test · approved by poetic-svc, forge-pr-reviewer · blocked:ci-red\n"
+	if out != want {
+		t.Errorf("report =\n%s\nwant\n%s", out, want)
+	}
+	if len(github.queries) != 1 || !strings.Contains(github.queries[0], "latestOpinionatedReviews") || !strings.Contains(github.queries[0], "isDraft") {
+		t.Errorf("graphql = %d queries, want one batch asking for reviews and draft state", len(github.queries))
+	}
+}
+
+func rollupOf(state string, contexts ...prstate.Context) *prstate.Rollup {
+	r := &prstate.Rollup{State: state}
+	r.Contexts.Nodes = contexts
+	return r
+}
+
+func checkRun(name, conclusion, status string) prstate.Context {
+	return prstate.Context{Typename: "CheckRun", Name: name, Conclusion: conclusion, Status: status}
+}
+
+func TestPRCIOf(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		rollup *prstate.Rollup
+		want   prCIReport
+		line   string
+	}{
+		{"nothing reported", nil, prCIReport{State: prCINone}, "ci none"},
+		{"only skipped", rollupOf("SUCCESS", checkRun("request", "SKIPPED", "COMPLETED")), prCIReport{State: prCINone}, "ci none"},
+		{
+			"running with nothing failed",
+			rollupOf("PENDING", checkRun("lint", "SUCCESS", "COMPLETED"), checkRun("Graphite / mergeability_check", "", "IN_PROGRESS")),
+			prCIReport{State: prCIPending, Running: 1}, "ci pending: 1 running",
+		},
+		{
+			"a re-run's newest attempt wins",
+			rollupOf("SUCCESS", checkRun("test", "FAILURE", "COMPLETED"), checkRun("test", "SUCCESS", "COMPLETED")),
+			prCIReport{State: prCIGreen}, "ci green",
+		},
+		{
+			"a failed rollup with nothing failing under it",
+			rollupOf("ERROR", checkRun("lint", "SUCCESS", "COMPLETED")),
+			prCIReport{State: prCIRed, Rollup: "ERROR"}, "ci red: rollup error",
+		},
+		{
+			"failures named and capped",
+			rollupOf("FAILURE", checkRun("a", "FAILURE", "COMPLETED"), checkRun("b", "CANCELLED", "COMPLETED"),
+				checkRun("c", "TIMED_OUT", "COMPLETED"), prstate.Context{Typename: "StatusContext", Context: "buildkite/test", State: "ERROR"},
+				checkRun("e", "", "IN_PROGRESS")),
+			prCIReport{State: prCIRed, Failing: []string{"a", "b", "c", "buildkite/test"}, Running: 1}, "ci red: a, b, c +1 more",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := prCIOf(tt.rollup)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("prCIOf = %+v, want %+v", got, tt.want)
+			}
+			if line := prCIValue(got); line != tt.line {
+				t.Errorf("prCIValue = %q, want %q", line, tt.line)
+			}
+		})
+	}
+}
+
+func TestPRApprovalOf(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		decision string
+		reviews  []prstate.Review
+		want     prApprovalState
+		line     string
+	}{
+		{"approved by the bot", "APPROVED", []prstate.Review{{Author: "forge-pr-reviewer", State: "APPROVED"}}, prApproved, "approved by forge-pr-reviewer"},
+		{
+			"one approval short",
+			"REVIEW_REQUIRED", []prstate.Review{{Author: "poetic-svc", State: "APPROVED"}},
+			prReviewRequired, "review required, approved by poetic-svc",
+		},
+		{"changes requested", "CHANGES_REQUESTED", []prstate.Review{{Author: "yasyf", State: "CHANGES_REQUESTED"}}, prChangesRequested, "changes requested by yasyf"},
+		{"a base requiring no review", "", []prstate.Review{{Author: "yasyf", State: "APPROVED"}}, prApproved, "approved by yasyf"},
+		{"no review at all", "", nil, prNoReview, "no review"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := prApprovalOf(prstate.PR{ReviewDecision: tt.decision, Reviews: tt.reviews})
+			if got.State != tt.want {
+				t.Errorf("prApprovalOf = %+v, want %s", got, tt.want)
+			}
+			if line := prApprovalValue(got); line != tt.line {
+				t.Errorf("prApprovalValue = %q, want %q", line, tt.line)
+			}
+		})
+	}
+}
+
+func TestPRVerdict(t *testing.T) {
+	t.Parallel()
+	green := prCIReport{State: prCIGreen}
+	approved := prApprovalReport{State: prApproved}
+	open := prQueueReport{Queue: prQueueNotQueued, State: "OPEN"}
+	tests := []struct {
+		name   string
+		report prStatusReport
+		pr     prstate.PR
+		want   string
+	}{
+		{"green and approved", prStatusReport{prQueueReport: open, CI: green, Approval: approved}, prstate.PR{}, "landable"},
+		{"evicted but clear", prStatusReport{prQueueReport: prQueueReport{Queue: prQueueEvicted, State: "OPEN"}, CI: green, Approval: approved}, prstate.PR{}, "landable"},
+		{
+			"every cause named",
+			prStatusReport{prQueueReport: open, CI: prCIReport{State: prCIPending}, Approval: prApprovalReport{State: prReviewRequired}},
+			prstate.PR{Draft: true, Mergeable: "CONFLICTING"}, "blocked:draft,conflict,ci-pending,unapproved",
+		},
+		{"changes requested", prStatusReport{prQueueReport: open, CI: green, Approval: prApprovalReport{State: prChangesRequested}}, prstate.PR{}, "blocked:changes-requested"},
+		{"closed", prStatusReport{prQueueReport: prQueueReport{Queue: prQueueNotQueued, State: "CLOSED"}, CI: green, Approval: approved}, prstate.PR{}, "blocked:closed"},
+		{"queued", prStatusReport{prQueueReport: prQueueReport{Queue: prQueueQueued, State: "OPEN"}, CI: prCIReport{State: prCIPending}}, prstate.PR{}, "queued"},
+		{"landed", prStatusReport{prQueueReport: prQueueReport{Queue: prQueueLanded, State: "MERGED"}}, prstate.PR{}, "landed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := prVerdict(tt.report, tt.pr); got != tt.want {
+				t.Errorf("prVerdict = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }

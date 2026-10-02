@@ -1,0 +1,278 @@
+{
+ "data": {
+  "rateLimit": {
+   "remaining": 4740,
+   "resetAt": "2026-10-02T22:46:40Z"
+  },
+  "repository": {
+   "p0": {
+    "number": 29551,
+    "state": "OPEN",
+    "title": "t",
+    "createdAt": "2026-10-02T20:07:05Z",
+    "author": {
+     "login": "yasyf"
+    },
+    "isDraft": false,
+    "baseRefName": "dev",
+    "headRefName": "yasyf/pr-29551",
+    "headRefOid": "eb8dbfd40a4c985e609484e5c29aac068267feb9",
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "CLEAN",
+    "reviewDecision": "APPROVED",
+    "latestOpinionatedReviews": {
+     "nodes": [
+      {
+       "state": "APPROVED",
+       "author": {
+        "login": "poetic-svc"
+       }
+      },
+      {
+       "state": "APPROVED",
+       "author": {
+        "login": "forge-pr-reviewer"
+       }
+      }
+     ]
+    },
+    "changedFiles": 8,
+    "mergeCommit": null,
+    "labels": {
+     "nodes": [
+      {
+       "name": "externally-merged"
+      }
+     ]
+    },
+    "checks": {
+     "nodes": [
+      {
+       "commit": {
+        "status": {
+         "state": "SUCCESS"
+        },
+        "statusCheckRollup": {
+         "state": "SUCCESS",
+         "contexts": {
+          "nodes": [
+           {
+            "__typename": "CheckRun",
+            "name": "label",
+            "conclusion": "SUCCESS",
+            "status": "COMPLETED"
+           },
+           {
+            "__typename": "CheckRun",
+            "name": "Graphite / mergeability_check",
+            "conclusion": "SUCCESS",
+            "status": "COMPLETED"
+           },
+           {
+            "__typename": "CheckRun",
+            "name": "ai-review",
+            "conclusion": "SUCCESS",
+            "status": "COMPLETED"
+           },
+           {
+            "__typename": "StatusContext",
+            "context": "buildkite/test",
+            "state": "SUCCESS"
+           },
+           {
+            "__typename": "CheckRun",
+            "name": "ci-timing",
+            "conclusion": "SUCCESS",
+            "status": "COMPLETED"
+           }
+          ]
+         }
+        }
+       }
+      }
+     ]
+    }
+   },
+   "p1": {
+    "number": 29552,
+    "state": "OPEN",
+    "title": "t",
+    "createdAt": "2026-10-02T20:08:34Z",
+    "author": {
+     "login": "yasyf"
+    },
+    "isDraft": false,
+    "baseRefName": "yasyf/dsf-deploy-resolve-direct",
+    "headRefName": "yasyf/pr-29552",
+    "headRefOid": "8cf1cf3d437a1d938a4a43c282800083d0aa8359",
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "UNSTABLE",
+    "reviewDecision": "APPROVED",
+    "latestOpinionatedReviews": {
+     "nodes": [
+      {
+       "state": "APPROVED",
+       "author": {
+        "login": "poetic-svc"
+       }
+      },
+      {
+       "state": "APPROVED",
+       "author": {
+        "login": "forge-pr-reviewer"
+       }
+      }
+     ]
+    },
+    "changedFiles": 11,
+    "mergeCommit": null,
+    "labels": {
+     "nodes": []
+    },
+    "checks": {
+     "nodes": [
+      {
+       "commit": {
+        "status": {
+         "state": "FAILURE"
+        },
+        "statusCheckRollup": {
+         "state": "FAILURE",
+         "contexts": {
+          "nodes": [
+           {
+            "__typename": "CheckRun",
+            "name": "request",
+            "conclusion": "SKIPPED",
+            "status": "COMPLETED"
+           },
+           {
+            "__typename": "CheckRun",
+            "name": "label",
+            "conclusion": "SUCCESS",
+            "status": "COMPLETED"
+           },
+           {
+            "__typename": "CheckRun",
+            "name": "supersede",
+            "conclusion": "SUCCESS",
+            "status": "COMPLETED"
+           },
+           {
+            "__typename": "StatusContext",
+            "context": "buildkite/test",
+            "state": "FAILURE"
+           },
+           {
+            "__typename": "CheckRun",
+            "name": "Graphite / mergeability_check",
+            "conclusion": null,
+            "status": "IN_PROGRESS"
+           },
+           {
+            "__typename": "CheckRun",
+            "name": "ai-review",
+            "conclusion": "SUCCESS",
+            "status": "COMPLETED"
+           }
+          ]
+         }
+        }
+       }
+      }
+     ]
+    }
+   },
+   "p2": {
+    "number": 29558,
+    "state": "OPEN",
+    "title": "t",
+    "createdAt": "2026-10-02T20:32:10Z",
+    "author": {
+     "login": "yasyf"
+    },
+    "isDraft": false,
+    "baseRefName": "yasyf/dsf-dashboard-publish-on-dev",
+    "headRefName": "yasyf/pr-29558",
+    "headRefOid": "db88469c23e7ddfdf809ec9ebfa615ee1a817769",
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "UNSTABLE",
+    "reviewDecision": "APPROVED",
+    "latestOpinionatedReviews": {
+     "nodes": [
+      {
+       "state": "APPROVED",
+       "author": {
+        "login": "poetic-svc"
+       }
+      },
+      {
+       "state": "APPROVED",
+       "author": {
+        "login": "forge-pr-reviewer"
+       }
+      }
+     ]
+    },
+    "changedFiles": 14,
+    "mergeCommit": null,
+    "labels": {
+     "nodes": []
+    },
+    "checks": {
+     "nodes": [
+      {
+       "commit": {
+        "status": {
+         "state": "FAILURE"
+        },
+        "statusCheckRollup": {
+         "state": "FAILURE",
+         "contexts": {
+          "nodes": [
+           {
+            "__typename": "CheckRun",
+            "name": "request",
+            "conclusion": "SKIPPED",
+            "status": "COMPLETED"
+           },
+           {
+            "__typename": "CheckRun",
+            "name": "label",
+            "conclusion": "SUCCESS",
+            "status": "COMPLETED"
+           },
+           {
+            "__typename": "CheckRun",
+            "name": "supersede",
+            "conclusion": "SUCCESS",
+            "status": "COMPLETED"
+           },
+           {
+            "__typename": "StatusContext",
+            "context": "buildkite/test",
+            "state": "FAILURE"
+           },
+           {
+            "__typename": "CheckRun",
+            "name": "Graphite / mergeability_check",
+            "conclusion": null,
+            "status": "IN_PROGRESS"
+           },
+           {
+            "__typename": "CheckRun",
+            "name": "ai-review",
+            "conclusion": "SUCCESS",
+            "status": "COMPLETED"
+           }
+          ]
+         }
+        }
+       }
+      }
+     ]
+    }
+   }
+  }
+ }
+}

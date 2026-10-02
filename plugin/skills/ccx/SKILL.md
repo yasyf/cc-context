@@ -357,6 +357,15 @@ on it, and a stale merge label the queue dropped reads `not queued`. `landed` me
 squash Graphite recorded is reachable from the base branch on GitHub or from
 the default branch.
 
+Each line also reads the checks on the PR's head as `ci green`, `ci red:` with
+the failing check names, `ci pending: N running`, or `ci none`. It names the
+approval as GitHub's `reviewDecision` counts it, bot approvals included, with
+the approvers' logins. It ends in one verdict. `landable` is an open PR that is
+green, approved, not a draft, and not conflicting; `landed` and `queued` need no
+merge label; anything else reads `blocked:` with every cause, such as
+`blocked:ci-red,unapproved`. CI and approval ride the same batched poll, so
+they cost no extra request.
+
 `pr status`, `pr watch`, and `pr state` share cached reads across processes
 for 30 seconds per repository. Repeated reads within that interval do not
 poll again; an uncached PR waits out the interval. `pr status` waits through
@@ -374,7 +383,7 @@ template exactly:
 ccx vcs info                                     # which lane a ship would take, and why
 ccx vcs status                                   # every branch, its PR, and what blocks it
 ccx vcs status --json                            # the same report as a structure
-ccx vcs pr status 123 124                         # queued, not queued, evicted, or landed, per PR
+ccx vcs pr status 123 124                         # queue state, CI, approval, and verdict, per PR
 ccx vcs pr state 123 124 --lane-prefix yasyf/work/  # shared cache records and lane PRs, as JSON
 ccx vcs guidelines                               # PR templates + contribution rules, verbatim
 ```

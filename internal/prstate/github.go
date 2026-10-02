@@ -18,8 +18,8 @@ import (
 const (
 	chunkSize = 40
 
-	prFields = "number state title createdAt author { login } baseRefName headRefName headRefOid mergeable mergeStateStatus " +
-		"reviewDecision changedFiles mergeCommit { oid } labels(first: 50) { nodes { name } } " +
+	prFields = "number state title createdAt author { login } isDraft baseRefName headRefName headRefOid mergeable mergeStateStatus " +
+		"reviewDecision latestOpinionatedReviews(first: 20) { nodes { state author { login } } } changedFiles mergeCommit { oid } labels(first: 50) { nodes { name } } " +
 		"checks: commits(last: 1) { nodes { commit { status { state } statusCheckRollup { state contexts(last: 100) { nodes { __typename " +
 		"... on CheckRun { name conclusion status } ... on StatusContext { context state } } } } } } }"
 	activityFields = " comments(last: 100) { nodes { body } }"
@@ -72,10 +72,19 @@ type prNode struct {
 	Mergeable        string    `json:"mergeable"`
 	MergeStateStatus string    `json:"mergeStateStatus"`
 	ReviewDecision   string    `json:"reviewDecision"`
+	IsDraft          bool      `json:"isDraft"`
 	ChangedFiles     int       `json:"changedFiles"`
 	Author           *struct {
 		Login string `json:"login"`
 	} `json:"author"`
+	LatestOpinionatedReviews struct {
+		Nodes []struct {
+			State  string `json:"state"`
+			Author *struct {
+				Login string `json:"login"`
+			} `json:"author"`
+		} `json:"nodes"`
+	} `json:"latestOpinionatedReviews"`
 	MergeCommit *struct {
 		OID string `json:"oid"`
 	} `json:"mergeCommit"`
@@ -310,6 +319,7 @@ func (p *pass) record(node prNode, t target, i int, resp response) (PR, error) {
 		Mergeable:        node.Mergeable,
 		MergeStateStatus: node.MergeStateStatus,
 		ReviewDecision:   node.ReviewDecision,
+		Draft:            node.IsDraft,
 		ChangedFiles:     node.ChangedFiles,
 		Activity:         last.Activity,
 		Graphite:         p.infos[t.number],
@@ -325,6 +335,13 @@ func (p *pass) record(node prNode, t target, i int, resp response) (PR, error) {
 	}
 	for _, label := range node.Labels.Nodes {
 		pr.Labels = append(pr.Labels, label.Name)
+	}
+	for _, r := range node.LatestOpinionatedReviews.Nodes {
+		review := Review{State: r.State}
+		if r.Author != nil {
+			review.Author = r.Author.Login
+		}
+		pr.Reviews = append(pr.Reviews, review)
 	}
 	if len(node.Checks.Nodes) > 0 {
 		commit := node.Checks.Nodes[0].Commit

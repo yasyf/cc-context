@@ -29,6 +29,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`ccx vcs pr status` shows each pull request's CI, approval, and verdict.**
+  Every line now carries the checks on the head, read as `ci green`,
+  `ci red:` with the failing check names, `ci pending: N running`, or
+  `ci none`. It names the approval as GitHub's `reviewDecision` counts it,
+  with the approvers' logins. It ends in one verdict, which is `landed`,
+  `queued`, `landable`, or `blocked:` with every cause, such as
+  `blocked:ci-red,unapproved`. `--json` adds `ci`,
+  `approval`, and `verdict` objects. The shared pull request poll now also
+  reads each pull request's draft state and latest reviews, in the same
+  batched GraphQL request.
+
 - **GitHub reads can run on a GitHub App's quota.** When
   `~/.config/ccx/github-app.toml` names an app (`client_id` and a
   `private_key_command` that prints its key), the reads behind `vcs status`,
