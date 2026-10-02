@@ -19,7 +19,7 @@ require (
 	github.com/sergi/go-diff v1.4.0
 	github.com/spf13/pflag v1.0.9
 	github.com/tetratelabs/wazero v1.12.0
-	github.com/yasyf/daemonkit v0.31.1
+	github.com/yasyf/daemonkit v0.32.3
 	github.com/yuin/goldmark v1.8.2
 	golang.org/x/net v0.55.0
 	golang.org/x/sync v0.21.0
