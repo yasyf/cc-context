@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 
 from captain_hook import (
     Allow,
+    Annotated,
     Arguments,
     BaseHookEvent,
     Block,
@@ -162,6 +163,7 @@ def page_dump_to(evt: BaseHookEvent, occ: Occurrence) -> str | None:
 
 
 rewrite_command_occurrences(
+    skip_if=[Annotated("raw")],
     to=page_dump_to,
     note=rewrote_note("ccx web read <url> --full", "the page as readable markdown, token-bounded"),
     tests={
@@ -187,6 +189,8 @@ rewrite_command_occurrences(
         Input(command="curl https://example.com && echo done"): Rewrite(pattern="ccx web read"),
         Input(command="mkdir -p out && curl -s https://example.com/page"): Rewrite(pattern="mkdir -p out && "),
         Input(command="curl https://example.com 2>/dev/null"): Rewrite(pattern="ccx web read"),
+        Input(command="curl -sSL https://example.com/page # ccx:raw"): Allow(),
+        Input(command="echo '# ccx:raw'; curl -sSL https://example.com/page"): Rewrite(pattern="ccx web read"),
         Input(command="timeout 10 curl https://example.com/big.html"): Allow(),
         Input(command="sudo curl https://example.com/page"): Allow(),
         Input(command="env TOKEN=x curl https://example.com/page"): Allow(),

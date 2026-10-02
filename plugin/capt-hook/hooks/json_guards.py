@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 from captain_hook import (
     Allow,
+    Annotated,
     BaseHookEvent,
     CommandLine,
     CustomCommandLineCondition,
@@ -64,6 +65,7 @@ def wrap_json(evt: BaseHookEvent, occ: Occurrence) -> str | None:
 
 
 rewrite_command_occurrences(
+    skip_if=[Annotated("raw")],
     to=wrap_json,
     note=rewrote_note("ccx format -- <cmd>", "same data, re-encoded to its leanest shape"),
     tests={
@@ -73,6 +75,8 @@ rewrite_command_occurrences(
         Input(command="gh pr list --json x | jq .[]"): Allow(),
         Input(command="kubectl get pods -o json > pods.json"): Allow(),
         Input(command="ls -la"): Allow(),
+        Input(command="gh pr list --json number # ccx:raw"): Allow(),
+        Input(command="gh pr list --json number --search '# ccx:raw'"): Rewrite(pattern="format -- gh pr list"),
         Input(command="curl --json '{}' https://api.example.com/v1"): Rewrite(pattern="format -- curl --json"),
         Input(command='gh pr list --json number --search "is:open draft:false"'): Rewrite(
             pattern="format -- gh pr list --json number --search"

@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 from captain_hook import (
     Allow,
+    Annotated,
     Block,
     Call,
     CommandSchema,
@@ -400,6 +401,7 @@ def grep_visit(evt: PreToolUseEvent, occ: Occurrence, ctx: WalkContext) -> str |
 hook(
     Event.PreToolUse,
     only_if=[Tool("Bash"), SearchTargets(GREP, grep_operands, targets_transcript)],
+    skip_if=[Annotated("raw")],
     message=TRANSCRIPT_STEER,
     block=True,
     tests={
@@ -413,6 +415,8 @@ hook(
         Input(command=f"grep -r foo {EXAMPLE_SESSION}/"): Block(pattern="cc-transcript"),
         Input(command=f"grep -r needle {EXAMPLE_SESSION}/*/"): Block(pattern="cc-transcript"),
         Input(command="grep -r foo ~/.claude/plugins/"): Allow(),
+        Input(command=f"grep -r foo {TRANSCRIPTS}/ # ccx:raw"): Allow(),
+        Input(command=f"echo '# ccx:raw'; grep -r foo {TRANSCRIPTS}/"): Block(pattern="cc-transcript"),
         Input(command=f"cat x | grep foo {EXAMPLE_SESSION}{TRANSCRIPT_SUFFIX}"): Allow(),
         Input(command=f"grep -E 'landing-desk' {EXAMPLE_SESSION}/tool-results/toolu_01H.txt"): Allow(),
         Input(command=f"grep -n lint notes.md {TRANSCRIPTS}/-Users-me-repo/memory/capt-hook-call-args.md"): Allow(),
@@ -422,6 +426,7 @@ hook(
 hook(
     Event.PreToolUse,
     only_if=[Tool("Bash"), SearchTargets(GREP, grep_operands, targets_dependency)],
+    skip_if=[Annotated("raw")],
     message=DEP_STEER,
     block=True,
     tests={
@@ -429,12 +434,15 @@ hook(
         Input(command="grep -rn foo .venv/lib/"): Block(pattern="dep-reader"),
         Input(command="grep -r foo node_modules/express | head"): Block(pattern="dep-reader"),
         Input(command="grep -rn '.venv' README.md"): Allow(),
+        Input(command="grep -rn foo .venv/lib/ # ccx:raw"): Allow(),
+        Input(command="echo '# ccx:raw'; grep -rn foo .venv/lib/"): Block(pattern="dep-reader"),
         Input(command="grep -rn foo . | grep -v node_modules"): Allow(),
     },
 )
 
 rewrite_command_occurrences(
     only_if=[UnpipedSearch("grep")],
+    skip_if=[Annotated("raw")],
     visit=grep_visit,
     tests={
         Input(command="grep -rn foo"): Rewrite(pattern="code grep foo"),
@@ -456,6 +464,9 @@ rewrite_command_occurrences(
         Input(command="grep -rnC3 foo ."): Block(pattern="ccx code grep"),
         Input(command="grep -v foo ."): Block(pattern="ccx code grep"),
         Input(command="grep -rv foo ."): Block(),
+        Input(command="grep -rn foo . # ccx:raw"): Allow(),
+        Input(command="grep -v foo . # ccx:raw"): Allow(),
+        Input(command="echo '# ccx:raw'; grep -rn foo ."): Rewrite(pattern="code grep foo"),
         Input(command="grep -rhoE 'log (append|show)' /tmp"): Allow(),
         Input(command="grep --recursive=oops foo ."): Block(),
         Input(command="grep -P 'x(?=y)' ."): Block(),

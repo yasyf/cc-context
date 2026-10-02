@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 from captain_hook import (
     Allow,
+    Annotated,
     Block,
     Call,
     CommandSchema,
@@ -193,6 +194,7 @@ def rg_visit(evt: PreToolUseEvent, occ: Occurrence, ctx: WalkContext) -> str | R
 hook(
     Event.PreToolUse,
     only_if=[Tool("Bash"), SearchTargets(RG, rg_operands, targets_transcript)],
+    skip_if=[Annotated("raw")],
     message=TRANSCRIPT_STEER,
     block=True,
     tests={
@@ -206,6 +208,8 @@ hook(
         Input(command=f"rg foo {TRANSCRIPTS}/proj/*/subagents/*{TRANSCRIPT_SUFFIX}"): Block(pattern="cc-transcript"),
         Input(command=f"rg needle {EXAMPLE_SESSION}/*/agent-a1{TRANSCRIPT_SUFFIX}"): Block(pattern="cc-transcript"),
         Input(command="rg -l x ~/.claude/plugins/"): Allow(),
+        Input(command=f"rg foo {TRANSCRIPTS}/ # ccx:raw"): Allow(),
+        Input(command=f"echo '# ccx:raw'; rg foo {TRANSCRIPTS}/"): Block(pattern="cc-transcript"),
         Input(command=f"cat x | rg foo {EXAMPLE_SESSION}{TRANSCRIPT_SUFFIX}"): Allow(),
         Input(command=f"rg -o '\"slug\": \"[^\"]*\"' {EXAMPLE_SESSION}/tool-results/bo61h71tu.txt"): Allow(),
         Input(
@@ -220,6 +224,7 @@ hook(
 hook(
     Event.PreToolUse,
     only_if=[Tool("Bash"), SearchTargets(RG, rg_operands, targets_dependency)],
+    skip_if=[Annotated("raw")],
     message=DEP_STEER,
     block=True,
     tests={
@@ -232,6 +237,8 @@ hook(
         Input(command="rg --hidden --glob 'node_modules/**' needle ."): Block(pattern="dep-reader"),
         Input(command="rg -n foo . | rg -v node_modules"): Allow(),
         Input(command="rg -n foo . | rg -P node_modules"): Allow(),
+        Input(command="rg x .jj/repo | head # ccx:raw"): Allow(),
+        Input(command="echo '# ccx:raw'; rg x .jj/repo | head"): Block(pattern="dep-reader"),
         Input(command="rg -n -l \"gpt-5.6-sol\" --hidden -g '!**/node_modules/**' . | head -20"): Allow(),
         Input(
             command="rg -n --no-messages -g '!**/node_modules/**' -g '!**/target/**' -e 'no_watch' "
@@ -242,6 +249,7 @@ hook(
 
 rewrite_command_occurrences(
     only_if=[UnpipedSearch("rg")],
+    skip_if=[Annotated("raw")],
     visit=rg_visit,
     tests={
         Input(command="rg foo"): Rewrite(pattern="code grep foo"),
@@ -262,6 +270,9 @@ rewrite_command_occurrences(
         Input(command="rg -P 'x(?=y)' ."): Block(),
         Input(command="rg -U foo ."): Block(),
         Input(command="rg -uu foo"): Block(),
+        Input(command="rg foo # ccx:raw"): Allow(),
+        Input(command="rg -v bar . # ccx:raw"): Allow(),
+        Input(command="echo '# ccx:raw'; rg foo"): Rewrite(pattern="code grep foo"),
         Input(command="rg -r repl foo"): Block(),
         Input(command="rg -e a -e b ."): Block(),
         Input(command="rg -m 5 foo ."): Block(),

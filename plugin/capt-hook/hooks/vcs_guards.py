@@ -8,13 +8,13 @@ as written.
 from __future__ import annotations
 
 import os
-import re
 import shlex
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from captain_hook import (
     Allow,
+    Annotated,
     BaseHookEvent,
     Block,
     Cmd,
@@ -26,12 +26,10 @@ from captain_hook import (
     Runs,
     Tool,
     Warn,
-    ast_grep,
     hook,
     nudge,
     rewrite_command_occurrences,
 )
-from captain_hook.util import reqenv
 
 from .common import ccx_bin, is_single_command, rewrote_note
 from .search_common import resolve_operand
@@ -92,10 +90,6 @@ GIT_EXTRA_WRAPPERS = frozenset(
     }
 )
 
-RAW_MARKER = re.compile(r"#\s*ccx:raw\b")
-RAW_ENV = "CAPT_HOOK_CCX_RAW"
-
-
 def occurrence_can_rewrite(occ: Occurrence) -> bool:
     """Report whether an occurrence can be replaced without dropping shell semantics."""
     cmd = occ.command
@@ -115,30 +109,6 @@ def rewritable_args(occ: Occurrence, executable: str) -> tuple[str, ...]:
 
 def ccx_command(*args: str) -> str | None:
     return None if (ccx := ccx_bin()) is None else shlex.join([ccx, *args])
-
-
-def payload_sources(cl: CommandLine) -> list[str]:
-    """The dequoted words of ``cl`` that hold a nested command's payload, such as the script of ``bash -c``."""
-    nested = [occ.command.span for occ in cl.occurrences if occ.nesting and occ.command.span is not None]
-    return [
-        word.value
-        for occ in cl.occurrences
-        for word in occ.command.words
-        if word.value is not None
-        and word.span is not None
-        and any(word.span[0] <= start and end <= word.span[1] for start, end in nested)
-    ]
-
-
-class RawRequested(CustomCommandLineCondition):
-    """Matches a ``# ccx:raw`` shell comment on the line, or ``CAPT_HOOK_CCX_RAW`` set for the session."""
-
-    def check_command_line(self, evt: BaseHookEvent, cl: CommandLine) -> bool:
-        return bool(reqenv.getenv(RAW_ENV)) or any(
-            RAW_MARKER.search(comment.text)
-            for source in (evt.cmd.raw, *payload_sources(cl))
-            for comment in ast_grep.comments(source, "bash")
-        )
 
 
 def word_name(word: Word) -> str:
@@ -202,7 +172,7 @@ class GitWorktreeRemove(CustomCommandLineCondition):
 hook(
     Event.PreToolUse,
     only_if=[Tool("Bash"), GitWorktreeRemove()],
-    skip_if=[RawRequested()],
+    skip_if=[Annotated("raw")],
     message=WORKTREE_RM_BLOCK,
     block=True,
     tests={
@@ -231,7 +201,10 @@ hook(
         Input(command="gi\\\nt worktree remove /tmp/wt"): Block(pattern="ccx vcs worktree rm"),
         Input(command="printf '%s\\n' '# ccx:raw'; git worktree remove /tmp/wt"): Block(pattern="ccx vcs worktree rm"),
         Input(command="git worktree remove '/tmp/#ccx:raw'"): Block(pattern="ccx vcs worktree rm"),
+        Input(command="git commit -m 'note # ccx:raw' && git worktree remove /tmp/wt"): Block(pattern="worktree rm"),
+        Input(command="git worktree remove /tmp/wt # ccx:rawish"): Block(pattern="ccx vcs worktree rm"),
         Input(command="git worktree remove /tmp/wt # ccx:raw"): Allow(),
+        Input(command="bash -c 'git worktree remove /tmp/wt # ccx:raw'"): Allow(),
         Input(command="sudo git worktree remove /tmp/wt # ccx:raw"): Allow(),
         Input(command="git worktree remove -h"): Allow(),
         Input(command="git worktree remove --help"): Allow(),
@@ -265,7 +238,7 @@ def gitdiff_to(evt: BaseHookEvent, occ: Occurrence) -> str | None:
 
 rewrite_command_occurrences(
     only_if=[Runs("git", "diff")],
-    skip_if=[RawRequested()],
+    skip_if=[Annotated("raw")],
     to=gitdiff_to,
     note=rewrote_note(
         "ccx vcs diff", "the same change set as a per-file summary; scope it with `git diff -- <path>` for raw hunks"
@@ -295,6 +268,7 @@ rewrite_command_occurrences(
         Input(command="git diff > out.patch"): Allow(),
         Input(command="git diff | head"): Allow(),
         Input(command="git diff # ccx:raw"): Allow(),
+        Input(command="git diff; echo '# ccx:raw'"): Rewrite(pattern="vcs diff; echo"),
     },
 )
 
@@ -305,7 +279,7 @@ def jjdiff_to(evt: BaseHookEvent, occ: Occurrence) -> str | None:
 
 rewrite_command_occurrences(
     only_if=[Runs("jj", "diff")],
-    skip_if=[RawRequested()],
+    skip_if=[Annotated("raw")],
     to=jjdiff_to,
     note=rewrote_note(
         "ccx vcs diff", "the same working-copy changes as a per-file summary; scope it with `jj diff <path>` for raw hunks"
@@ -322,6 +296,7 @@ rewrite_command_occurrences(
         Input(command="jj diff -r @- internal/cli/root.go"): Allow(),
         Input(command="jj status"): Allow(),
         Input(command="jj diff # ccx:raw"): Allow(),
+        Input(command="jj diff; echo '# ccx:raw'"): Rewrite(pattern="vcs diff; echo"),
     },
 )
 
@@ -338,7 +313,7 @@ def gitshow_to(evt: BaseHookEvent, occ: Occurrence) -> str | None:
 
 rewrite_command_occurrences(
     only_if=[Runs("git", "show")],
-    skip_if=[RawRequested()],
+    skip_if=[Annotated("raw")],
     to=gitshow_to,
     note=rewrote_note(
         "ccx vcs show", "the commit message plus a per-file summary; `git show <ref>:<path>` still prints one file"
@@ -359,6 +334,7 @@ rewrite_command_occurrences(
         Input(command="git show -s HEAD"): Allow(),
         Input(command="git status"): Allow(),
         Input(command="git show # ccx:raw"): Allow(),
+        Input(command="git show; echo '# ccx:raw'"): Rewrite(pattern="vcs show; echo"),
     },
 )
 
@@ -424,7 +400,7 @@ def logpatch_to(evt: BaseHookEvent, occ: Occurrence) -> str | None:
 
 rewrite_command_occurrences(
     only_if=[Runs("git", "log")],
-    skip_if=[RawRequested()],
+    skip_if=[Annotated("raw")],
     to=logpatch_to,
     note=rewrote_note("ccx vcs history", "a per-commit sha, subject, and changed-symbols summary that follows renames"),
     tests={
@@ -454,6 +430,7 @@ rewrite_command_occurrences(
         Input(command="jj log"): Allow(),
         Input(command="jj log -r @-"): Allow(),
         Input(command="git log -p -- whatever # ccx:raw"): Allow(),
+        Input(command="git log -p -- whatever; echo '# ccx:raw'"): Rewrite(pattern="vcs history whatever; echo"),
     },
 )
 
@@ -468,7 +445,7 @@ class GhRunWatchSingle(CustomCommandLineCondition):
 nudge(
     GH_RUN_WATCH_NUDGE,
     only_if=[Tool("Bash"), GhRunWatchSingle()],
-    skip_if=[RawRequested()],
+    skip_if=[Annotated("raw")],
     events=Event.PreToolUse,
     max_fires=1,
     tests={

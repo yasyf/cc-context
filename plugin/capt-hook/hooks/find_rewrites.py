@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 from captain_hook import (
     Allow,
+    Annotated,
     BaseHookEvent,
     Input,
     Option,
@@ -70,6 +71,7 @@ def find_to(evt: BaseHookEvent, occ: Occurrence) -> str | None:
 
 
 rewrite_command_occurrences(
+    skip_if=[Annotated("raw")],
     to=find_to,
     note=rewrote_note('ccx repo find "<glob>"', "same paths, token-bounded"),
     tests={
@@ -95,5 +97,7 @@ rewrite_command_occurrences(
         Input(command="find src lib -name '*.go'"): Allow(),
         Input(command="find . -name '*.go' -mtime -1"): Allow(),
         Input(command="cd src && find . -name '*.go'"): Rewrite(pattern="cd src && "),
+        Input(command="find . -name '*.go' # ccx:raw"): Allow(),
+        Input(command="echo '# ccx:raw'; find . -name '*.go'"): Rewrite(pattern='repo find "**/*.go"'),
     },
 )
