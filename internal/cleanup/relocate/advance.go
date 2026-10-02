@@ -158,7 +158,7 @@ func (r *Relocator) vet(ctx context.Context, job *cleanup.Job, tree string, vett
 	}
 	dirt, err := r.dirt(ctx, job.Git, tree)
 	if err != nil {
-		return "git", err.Error()
+		return gitReason(err), err.Error()
 	}
 	if dirt != "" {
 		return "dirty", dirt
@@ -261,7 +261,7 @@ func (r *Relocator) release(ctx context.Context, job *cleanup.Job, vetted *bool)
 	}
 	head, err := r.head(ctx, job.Git, job.Original)
 	if err != nil {
-		return r.block(ctx, job, "git", err.Error())
+		return r.block(ctx, job, gitReason(err), err.Error())
 	}
 	if head != job.Head {
 		return r.block(ctx, job, "identity", headChanged(job, job.Original, head))
@@ -340,9 +340,8 @@ func (r *Relocator) move(ctx context.Context, job *cleanup.Job, vetted *bool) (r
 		return reason, detail
 	}
 
-	rewriting := context.WithoutCancel(ctx)
 	if job.Head != "" {
-		if _, err := r.git(rewriting, job.Git, "--git-dir="+job.Repo, "update-ref", job.RecoveryRef, job.Head); err != nil {
+		if _, err := r.rewrite(ctx, job.Git, "--git-dir="+job.Repo, "update-ref", job.RecoveryRef, job.Head); err != nil {
 			return "git", err.Error()
 		}
 	}
@@ -353,7 +352,7 @@ func (r *Relocator) move(ctx context.Context, job *cleanup.Job, vetted *bool) (r
 	if !tree.is(job.Tree) {
 		return "identity", fmt.Sprintf("%s is %s, the job captured tree %s", job.Original, tree, label(job.Tree))
 	}
-	_, err = r.git(rewriting, job.Git, "--git-dir="+job.Repo, "-c", "worktree.useRelativePaths=false", "worktree", "move", job.Original, job.Registered)
+	_, err = r.rewrite(ctx, job.Git, "--git-dir="+job.Repo, "-c", "worktree.useRelativePaths=false", "worktree", "move", job.Original, job.Registered)
 	if err == nil {
 		return "", ""
 	}
@@ -383,7 +382,7 @@ func (r *Relocator) unlisted(ctx context.Context, job *cleanup.Job, vetted *bool
 	pushed, pushErr := r.pushed(ctx, job.Git, job.Repo, job.Branch, job.Head)
 	switch {
 	case pushErr != nil:
-		return "git", pushErr.Error()
+		return gitReason(pushErr), pushErr.Error()
 	case !pushed:
 		return reason, fmt.Sprintf("%v; no remote-tracking ref holds %s's head %s", err, job.Original, job.Head)
 	}
@@ -458,7 +457,7 @@ func (r *Relocator) detach(ctx context.Context, job *cleanup.Job, vetted *bool) 
 	}
 	head, err := r.head(ctx, job.Git, job.Registered)
 	if err != nil {
-		return r.block(ctx, job, "git", err.Error())
+		return r.block(ctx, job, gitReason(err), err.Error())
 	}
 	if head != job.Head {
 		return r.block(ctx, job, "identity", headChanged(job, job.Registered, head))
@@ -534,7 +533,7 @@ func (r *Relocator) unregister(ctx context.Context, job *cleanup.Job, _ *bool) (
 		}
 	}
 	if len(entries) > 0 {
-		if _, err := r.git(context.WithoutCancel(ctx), job.Git, "--git-dir="+job.Repo, "worktree", "remove", job.Registered); err != nil {
+		if _, err := r.rewrite(ctx, job.Git, "--git-dir="+job.Repo, "worktree", "remove", job.Registered); err != nil {
 			return r.block(ctx, job, "git", err.Error())
 		}
 	}

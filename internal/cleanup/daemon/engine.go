@@ -654,9 +654,10 @@ func (e *Engine) logicalDue(now time.Time) (cleanup.Job, bool) {
 }
 
 // retryAt is when a job blocked on a transient inspection — a process census
-// or watcher read that failed, or a holder that may leave — retries on its
-// own: RetryAfter past the first block, doubling per consecutive transient
-// block up to RetryCeiling. Any other blockage waits for Retry.
+// or watcher read that failed, a git read that timed out, or a holder that may
+// leave — retries on its own: RetryAfter past the first block, doubling per
+// consecutive transient block up to RetryCeiling. Any other blockage waits for
+// Retry.
 func (e *Engine) retryAt(job cleanup.Job) (time.Time, bool) {
 	if job.Blocked == nil || !transient(job.Blocked.Reason) {
 		return time.Time{}, false
@@ -680,7 +681,7 @@ func (e *Engine) retryAt(job cleanup.Job) (time.Time, bool) {
 }
 
 func transient(reason string) bool {
-	return reason == "activity" || reason == "watchers"
+	return reason == "activity" || reason == "watchers" || reason == "timeout"
 }
 
 func (e *Engine) physicalDue(now time.Time) (cleanup.Job, bool) {

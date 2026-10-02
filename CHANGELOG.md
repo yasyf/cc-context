@@ -225,6 +225,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A busy cleanup daemon no longer hangs `stack continue`, `stack abort`, or
+  `worktree rm`.** The daemon runs one removal at a time, and a handoff
+  waited on it with no deadline. Under heavy load, one `worktree rm` held the
+  worker for eleven minutes while a `stack continue` waited behind it. A
+  handoff now gives up after two minutes and says the daemon is busy;
+  `continue` and `abort` keep their run, and running the command again rejoins
+  the job. Each read-only git command a removal runs is bounded at a minute,
+  and one that times out blocks its job with the transient `timeout` reason,
+  retried with the same backoff as a failed watcher read. The watcher and
+  process probes now kill their whole process group at their deadline and
+  stop waiting on pipes a descendant still holds, so the 10 s and 30 s
+  limits hold.
+
 - **Transcript, dependency, and root-manifest guards stop blocking unrelated
   searches and subproject manifest reads.** Transcript matching now covers
   session and subagent transcripts and their containing directories, including

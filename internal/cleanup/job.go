@@ -116,7 +116,7 @@ type Links struct {
 // Blockage is why a job stopped and what an operator needs to know to move it.
 type Blockage struct {
 	// Reason is a short stable category: activity, identity, dirty, watchers,
-	// quarantine, git, reconcile, delete, or journal.
+	// quarantine, git, timeout, reconcile, delete, or journal.
 	Reason string    `json:"reason"`
 	Detail string    `json:"detail"`
 	At     time.Time `json:"at"`

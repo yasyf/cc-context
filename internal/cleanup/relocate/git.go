@@ -13,17 +13,35 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
+
+	"github.com/yasyf/cc-context/internal/cleanup"
+	"github.com/yasyf/cc-context/internal/render"
 )
+
+const readTimeout = time.Minute
 
 func (r *Relocator) command(ctx context.Context, git string, args ...string) (*exec.Cmd, *bytes.Buffer) {
 	cmd := exec.CommandContext(ctx, git, append([]string{"-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "--no-optional-locks"}, args...)...) //nolint:gosec // git is the absolute path the request validated; the argv is the relocator's own
 	cmd.Env = r.cfg.GitEnv
+	render.BoundProbe(cmd)
 	stderr := &bytes.Buffer{}
 	cmd.Stderr = stderr
 	return cmd, stderr
 }
 
 func (r *Relocator) git(ctx context.Context, git string, args ...string) (string, error) {
+	bounded, cancel := context.WithTimeout(ctx, readTimeout)
+	defer cancel()
+	out, err := r.run(bounded, git, args...)
+	return out, unprobed(ctx, bounded, err)
+}
+
+func (r *Relocator) rewrite(ctx context.Context, git string, args ...string) (string, error) {
+	return r.run(context.WithoutCancel(ctx), git, args...)
+}
+
+func (r *Relocator) run(ctx context.Context, git string, args ...string) (string, error) {
 	cmd, stderr := r.command(ctx, git, args...)
 	stdout, err := cmd.Output()
 	if err != nil {
@@ -32,7 +50,27 @@ func (r *Relocator) git(ctx context.Context, git string, args ...string) (string
 	return string(stdout), nil
 }
 
+func unprobed(ctx, bounded context.Context, err error) error {
+	if err != nil && ctx.Err() == nil && errors.Is(bounded.Err(), context.DeadlineExceeded) {
+		return fmt.Errorf("%w: %w", cleanup.ErrUnprobed, err)
+	}
+	return err
+}
+
+func gitReason(err error) string {
+	if errors.Is(err, cleanup.ErrUnprobed) {
+		return "timeout"
+	}
+	return "git"
+}
+
 func (r *Relocator) stream(ctx context.Context, git string, delim byte, visit func(head []byte), args ...string) error {
+	bounded, cancel := context.WithTimeout(ctx, readTimeout)
+	defer cancel()
+	return unprobed(ctx, bounded, r.scan(bounded, git, delim, visit, args...))
+}
+
+func (r *Relocator) scan(ctx context.Context, git string, delim byte, visit func(head []byte), args ...string) error {
 	cmd, stderr := r.command(ctx, git, args...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
