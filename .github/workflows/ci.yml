@@ -280,7 +280,7 @@ jobs:
       - name: Provision NLP resources (spaCy en_core_web_sm + oewn:2025 lexicon)
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: uv run --no-project --with capt-hook python -c "from captain_hook.util.model_cache import ensure_nlp_resources; ensure_nlp_resources()"
+        run: uv run --no-project --with 'capt-hook>=12.77.0' python -c "from captain_hook.util.model_cache import ensure_nlp_resources; ensure_nlp_resources()"
       - name: Install cc-notes binary onto PATH
         env:
           GH_TOKEN: ${{ github.token }}
@@ -290,14 +290,14 @@ jobs:
           chmod +x "$HOME/.local/bin/cc-notes"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: capt-hook pack test
-        run: uvx --isolated 'capt-hook>=12.74.0' pack test plugin
+        run: uvx --isolated 'capt-hook>=12.77.0' pack test plugin
       # The declarative harness can only inject a string tool_response; the dict
       # shapes Claude Code hands the guards (record_json_shape's real input, and the
       # rest of the guard/session-state unit tests) are covered by pytest over the
       # whole directory instead. Pinned to 3.13 with published capt-hook, matching
       # the harness.
       - name: Guard-pack pytest
-        run: PYTHONPATH=plugin/capt-hook uv run --no-project --no-config --python 3.13 --with capt-hook --with pytest python -m pytest plugin/capt-hook/hooks/
+        run: PYTHONPATH=plugin/capt-hook uv run --no-project --no-config --python 3.13 --with 'capt-hook>=12.77.0' --with pytest python -m pytest plugin/capt-hook/hooks/
 
   descriptor-agreement:
     runs-on: ubuntu-latest

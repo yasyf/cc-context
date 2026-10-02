@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 
 from captain_hook import (
     Allow,
+    Annotated,
     BaseHookEvent,
     Block,
     CommandLine,
@@ -99,6 +100,7 @@ class ManifestCat(CustomCommandLineCondition):
 hook(
     Event.PreToolUse,
     only_if=[Tool("Bash"), ManifestCat()],
+    skip_if=[Annotated("raw")],
     message=(
         "`cat` of a root manifest dumps what `ccx repo overview` already summarizes. "
         "Run `ccx repo overview`, or `ccx code read <file> --full` for the raw file."
@@ -126,6 +128,8 @@ hook(
         Input(command='cd "$PWD" && cat package.json', cwd="/usr/lib", commands={"git -C /usr/lib rev-parse": "/usr"}): Allow(),
         Input(command="sudo cat go.mod", cwd="/usr", commands=AT_ROOT): Allow(),
         Input(command="cat internal/go.mod", cwd="/usr", commands=AT_ROOT): Allow(),
+        Input(command="cat go.mod # ccx:raw", cwd="/usr", commands=AT_ROOT): Allow(),
+        Input(command="echo '# ccx:raw'; cat go.mod", cwd="/usr", commands=AT_ROOT): Block(pattern="ccx repo overview"),
         Input(command="cat main.go", cwd="/usr", commands=AT_ROOT): Allow(),
         Input(command="cat go.mod | grep module", cwd="/usr", commands=AT_ROOT): Allow(),
         Input(
@@ -138,6 +142,7 @@ hook(
 
 
 rewrite_command_occurrences(
+    skip_if=[Annotated("raw")],
     to=cat_to,
     note=rewrote_note("ccx code read --full", "same content, token-bounded"),
     tests={
@@ -149,6 +154,10 @@ rewrite_command_occurrences(
         ),
         Input(command="sudo cat {file}", file=FileFixture(size=LARGE_READ_BYTES + 1, name="big.md")): Allow(),
         Input(command="cat {file}", file=FileFixture(size=64, name="small.md")): Allow(),
+        Input(command="cat {file} # ccx:raw", file=FileFixture(size=LARGE_READ_BYTES + 1, name="big.md")): Allow(),
+        Input(command="echo '# ccx:raw'; cat {file}", file=FileFixture(size=LARGE_READ_BYTES + 1, name="big.md")): Rewrite(
+            pattern="code read /"
+        ),
         Input(command="cat /etc/hosts"): Allow(),
         Input(command="cat /nonexistent/trip.json"): Allow(),
         Input(command="cat /etc/hosts /etc/hosts"): Allow(),

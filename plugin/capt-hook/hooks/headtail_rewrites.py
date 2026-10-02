@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 from captain_hook import (
     Allow,
+    Annotated,
     BaseHookEvent,
     Command,
     CommandLine,
@@ -80,6 +81,7 @@ class HeadTailFile(CustomCommandLineCondition):
 
 rewrite_command_occurrences(
     only_if=[HeadTailFile()],
+    skip_if=[Annotated("raw")],
     to=headtail_to,
     note=rewrote_note("ccx code read --section", "same lines, token-bounded"),
     tests={
@@ -118,5 +120,9 @@ rewrite_command_occurrences(
             pattern="echo x; "
         ),
         Input(command="echo x; tail -20 f.go"): Allow(),
+        Input(command="head -40 {file} # ccx:raw", file=FileFixture(size=64, name="f.go")): Allow(),
+        Input(command="echo '# ccx:raw'; head -40 {file}", file=FileFixture(size=64, name="f.go")): Rewrite(
+            pattern="--section 1-40"
+        ),
     },
 )

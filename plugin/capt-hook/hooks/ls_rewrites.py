@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from captain_hook import (
     Allow,
+    Annotated,
     BaseHookEvent,
     Block,
     Command,
@@ -74,6 +75,7 @@ def ls_to(evt: BaseHookEvent, occ: "Occurrence") -> str | None:
 
 rewrite_command_occurrences(
     only_if=[LsRecursive()],
+    skip_if=[Annotated("raw")],
     to=ls_to,
     block='`ls -R` walks the whole tree into context. Run `ccx repo find "<glob>"` to list paths by pattern.',
     note=rewrote_note('ccx repo find "<glob>"', "same paths, token-bounded"),
@@ -92,6 +94,8 @@ rewrite_command_occurrences(
         Input(command="echo x; ls -R src"): Rewrite(pattern='echo x; '),
         Input(command="ls -R src | wc -l"): Allow(),
         Input(command="ls -R src > out.txt"): Allow(),
+        Input(command="ls -R src # ccx:raw"): Allow(),
+        Input(command="echo '# ccx:raw'; ls -R src"): Rewrite(pattern='repo find "src/**"'),
     },
 )
 
@@ -114,6 +118,7 @@ def is_scan_root(path: str) -> bool:
 hook(
     Event.PreToolUse,
     only_if=[Tool("Bash"), LsWorkspaceRoot()],
+    skip_if=[Annotated("raw")],
     message=(
         "`ls` of a workspace or module-cache root floods context. "
         "Run `ccx repo locate <name>` to find a repo or module, or `ccx repo overview` to orient."
@@ -131,5 +136,7 @@ hook(
         Input(command="ls src/Code"): Allow(),
         Input(command="ls ~/Code; echo hi"): Block(pattern="ccx repo locate"),
         Input(command="ls ~/Code | wc -l"): Allow(),
+        Input(command="ls ~/Code # ccx:raw"): Allow(),
+        Input(command="echo '# ccx:raw'; ls ~/Code"): Block(pattern="ccx repo locate"),
     },
 )

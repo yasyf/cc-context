@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from captain_hook import (
     Allow,
+    Annotated,
     BaseHookEvent,
     CommandLine,
     CustomCommandLineCondition,
@@ -92,6 +93,7 @@ def vcs_ship_to(evt: BaseHookEvent) -> str | None:
 
 rewrite_command(
     only_if=[CcxPipedToSink(CODE_READ)],
+    skip_if=[Annotated("raw")],
     to=code_read_to,
     note=rewrote_note("ccx code read --section 1-N", "same lines, no dropped overflow footer"),
     tests={
@@ -107,6 +109,8 @@ rewrite_command(
         Input(command="ccx code read f.go --full | head --lines=5"): Allow(),
         Input(command="ccx code read $FILE --full | head -5"): Allow(),
         Input(command="ccx code read f.go --section 1-5"): Allow(),
+        Input(command="ccx code read f.go --full | head -5 # ccx:raw"): Allow(),
+        Input(command="ccx code read '# ccx:raw' --full | head -5"): Rewrite(pattern="--section 1-5"),
         Input(command="ccx code grep foo | head -5"): Allow(),
         Input(command="ccx code grep foo | jq . | head -3"): Allow(),
         Input(command="rg foo | head -5"): Allow(),
@@ -118,6 +122,7 @@ rewrite_command(
 
 rewrite_command(
     only_if=[CcxPipedToSink(REPO_FIND)],
+    skip_if=[Annotated("raw")],
     to=repo_find_to,
     note="Dropped the `| head` pipe: `ccx repo find` output is already token-budget-capped.",
     tests={
@@ -125,11 +130,14 @@ rewrite_command(
         Input(command="ccx repo find $(printf '**/*.go') | head -20"): Allow(),
         Input(command='ccx repo find "**/*.go" | tail -20'): Allow(),
         Input(command='ccx repo find "**/*.go"'): Allow(),
+        Input(command='ccx repo find "**/*.go" | head -20 # ccx:raw'): Allow(),
+        Input(command="ccx repo find '# ccx:raw' | head -20"): Rewrite(pattern="repo find"),
     },
 )
 
 rewrite_command(
     only_if=[CcxPipedToSink(VCS_SHIP)],
+    skip_if=[Annotated("raw")],
     to=vcs_ship_to,
     note="Dropped the pipe after `ccx vcs ship`, which would mask its exit status.",
     tests={
@@ -141,5 +149,7 @@ rewrite_command(
         Input(command="ccx vcs ship -m `printf fix` | tail -20"): Allow(),
         Input(command="ccx exec 'x' | head -3"): Allow(),
         Input(command="ccx vcs ship -m fix"): Allow(),
+        Input(command="ccx vcs ship -m fix | tail -20 # ccx:raw"): Allow(),
+        Input(command="ccx vcs ship -m '# ccx:raw' | tail -20"): Rewrite(pattern="vcs ship -m"),
     },
 )

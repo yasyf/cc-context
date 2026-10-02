@@ -1,5 +1,5 @@
 """Tests for the ``git log -p`` -> ``ccx vcs history`` rewrite builder, the ``git worktree remove`` block
-condition, the ``# ccx:raw`` escape, and the ``gh run watch`` nudge condition.
+condition, and the ``gh run watch`` nudge condition.
 
 Run from the repo root against the captain-hook source env::
 
@@ -27,7 +27,7 @@ from captain_hook.session import SessionStore
 
 from conftest import make_evt
 from hooks import vcs_guards
-from hooks.vcs_guards import GhRunWatchSingle, GitWorktreeRemove, RawRequested
+from hooks.vcs_guards import GhRunWatchSingle, GitWorktreeRemove
 
 MAIN_T = "/transcripts/main.jsonl"
 FAKE_CCX = "/fake/ccx"
@@ -405,62 +405,6 @@ class TestWorktreeRemoveUntouched:
     )
     def test_no_match(self, command: str) -> None:
         assert removes_worktree(command) is False
-
-
-class TestRawRequested:
-    """The explicit escape: a ``# ccx:raw`` comment on the line, or ``CAPT_HOOK_CCX_RAW`` in the environment."""
-
-    @pytest.mark.parametrize(
-        "command, requested",
-        [
-            ("git worktree remove $WT # ccx:raw", True),
-            ("git worktree remove /pool/wt #ccx:raw", True),
-            ("git worktree remove /pool/wt;# ccx:raw", True),
-            ("sudo git worktree remove /pool/wt && echo done # ccx:raw", True),
-            ("# ccx:raw\ngit worktree remove /pool/wt", True),
-            ("bash -c 'git diff # ccx:raw'", True),
-            ("echo $(git diff # ccx:raw\n)", True),
-            ("git worktree remove $WT", False),
-            ("git worktree remove /pool/wt # ccx:rawish", False),
-            ("git worktree remove /pool/wt # raw", False),
-            ("git worktree remove '/pool/#ccx:raw'", False),
-            ("git worktree remove ../#ccx:raw", False),
-            ("printf '%s\\n' '# ccx:raw'; git worktree remove /pool/wt", False),
-            ("git commit -m 'explain # ccx:raw' && git worktree remove /pool/wt", False),
-            ("bash -c 'echo \"# ccx:raw\"; git worktree remove /pool/wt'", False),
-        ],
-        ids=[
-            "marker",
-            "marker_unspaced",
-            "marker_after_semicolon",
-            "marker_after_chain",
-            "marker_on_its_own_line",
-            "marker_in_nested_payload_comment",
-            "marker_in_substitution_comment",
-            "absent",
-            "longer_word",
-            "other_comment",
-            "inside_quoted_path",
-            "inside_bare_path",
-            "inside_string_argument",
-            "inside_commit_message",
-            "inside_nested_string_argument",
-        ],
-    )
-    def test_marker(self, monkeypatch: pytest.MonkeyPatch, command: str, requested: bool) -> None:
-        monkeypatch.delenv(vcs_guards.RAW_ENV, raising=False)
-        evt = make_evt(command)
-        assert RawRequested().check_command_line(evt, evt.cmd.line) is requested
-
-    def test_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv(vcs_guards.RAW_ENV, "1")
-        evt = make_evt("git worktree remove $WT")
-        assert RawRequested().check_command_line(evt, evt.cmd.line) is True
-
-    def test_empty_env_is_not_a_request(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv(vcs_guards.RAW_ENV, "")
-        evt = make_evt("git worktree remove $WT")
-        assert RawRequested().check_command_line(evt, evt.cmd.line) is False
 
 
 class TestWorktreeRemoveRealGit:

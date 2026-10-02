@@ -22,7 +22,7 @@ from spawnllm import ClaudeConfig, RunSpec
 from .config import BENCH_DIR, Config
 from .types import Task
 
-CAPT_HOOK = "capt-hook>=3.14.0"
+CAPT_HOOK = "capt-hook>=12.77.0"
 CCX_ARMS = ("ccx-mcp", "ccx-cli")
 PATCHES_DIR = BENCH_DIR / "tasks" / "patches"
 

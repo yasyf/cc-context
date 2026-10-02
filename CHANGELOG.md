@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`# ccx:raw` runs any guarded Bash command as written.** Every blocking
+  guard and rewrite in the pack now skips on captain-hook's `Annotated("raw")`:
+  the `grep` and `rg` searches and their transcript and dependency steers, the
+  `cat`, `ls`, `find`, `head`, `sed`, `curl`/`wget`, and `ccx format` rewrites,
+  the `ccx` head/tail repipes, and the existing `git`/`jj` reads and
+  `git worktree remove` block. The marker counts only in a real shell comment,
+  so a quoted `'# ccx:raw'` argument does not escape, and
+  `CAPT_HOOK_CCX_RAW=1` still covers a whole session. The pack, its CI, and the
+  plugin dependency now require `capt-hook` 12.77.0 or newer.
+
 - **Guard-pack messages and rewrite notes are static and short.** Every block,
   nudge, and rewrite note is at most two sentences and 300 characters, names the
   command to run, and no longer echoes the command it rewrote. Hand-rolled

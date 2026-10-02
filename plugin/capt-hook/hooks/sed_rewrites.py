@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from captain_hook import (
     Allow,
+    Annotated,
     BaseHookEvent,
     CommandSchema,
     Input,
@@ -46,6 +47,7 @@ def sed_to(evt: BaseHookEvent, occ: Occurrence) -> str | None:
 
 
 rewrite_command_occurrences(
+    skip_if=[Annotated("raw")],
     to=sed_to,
     note=rewrote_note("ccx code read --section", "same lines, token-bounded"),
     tests={
@@ -61,5 +63,7 @@ rewrite_command_occurrences(
         ): Allow(),
         Input(command="echo x; sed -n 10,40p f.go"): Rewrite(pattern='echo x; '),
         Input(command="cat f | sed -n '1,2p'; echo y"): Allow(),
+        Input(command="sed -n 10,40p f.go # ccx:raw"): Allow(),
+        Input(command="echo '# ccx:raw'; sed -n 10,40p f.go"): Rewrite(pattern="--section 10-40"),
     },
 )
