@@ -213,8 +213,10 @@ func TestAReaderThatWaitedReturnsTheFailureOfThePollItWaitedFor(t *testing.T) {
 	c := &clock{now: epoch}
 	first, _ := newStore(t, dir, c, nil, ok(t, "poll-190.json"), reply{status: http.StatusBadGateway})
 	second, secondGH := newStore(t, dir, c, nil)
+	ctx, cancel := context.WithTimeout(testCtx(t), 10*time.Second)
+	defer cancel()
 
-	if _, err := first.Read(testCtx(t), Want{PRs: []int{190}}); err != nil {
+	if _, err := first.Read(ctx, Want{PRs: []int{190}}); err != nil {
 		t.Fatal(err)
 	}
 	c.now = epoch.Add(10 * time.Second)
@@ -225,7 +227,7 @@ func TestAReaderThatWaitedReturnsTheFailureOfThePollItWaitedFor(t *testing.T) {
 		}
 		return nil
 	}
-	_, err := second.Read(testCtx(t), Want{PRs: []int{189}})
+	_, err := second.Read(ctx, Want{PRs: []int{189}})
 	if err == nil || !strings.Contains(err.Error(), "the poll at 2026-09-30T07:00:30Z failed") || !strings.Contains(err.Error(), "502") {
 		t.Errorf("read = %v, want the failure of the poll it waited for", err)
 	}
