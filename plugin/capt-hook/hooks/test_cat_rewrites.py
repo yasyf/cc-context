@@ -13,6 +13,8 @@ deterministic emitted command.
 
 from __future__ import annotations
 
+import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -156,6 +158,49 @@ class TestManifestClassifier:
     def test_is_manifest_cat(self, command: str, expected: bool) -> None:
         _, occ = evt_occ(command)
         assert cat_rewrites.is_manifest_cat(occ) is expected
+
+
+class TestManifestCatAtToplevel:
+    """The root-manifest block fires only for a manifest at the git toplevel of the call's cd-threaded cwd."""
+
+    @pytest.fixture
+    def repo(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+        monkeypatch.setenv("GIT_CONFIG_SYSTEM", os.devnull)
+        root = tmp_path / "repo"
+        (sub := root / "plugins" / "long-running").mkdir(parents=True)
+        subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+        for manifest in (root / "pyproject.toml", sub / "pyproject.toml", sub / "package.json"):
+            manifest.write_text("x\n")
+        return root
+
+    def fires(self, command: str, cwd: Path) -> bool:
+        evt = make_evt(command, cwd)
+        return cat_rewrites.ManifestCat().check_command_line(evt, evt.cmd.line)
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "cd {repo}/plugins/long-running && cat pyproject.toml; sed -n 1,80p tests/test_handoff.py",
+            "cd {repo}/plugins/long-running && ls -laR capt-hook | head -40; cat pyproject.toml",
+            "cd plugins/long-running && cat package.json",
+        ],
+        ids=["subproject-pyproject", "subproject-after-ls", "subproject-package-json"],
+    )
+    def test_subproject_manifest_runs(self, repo: Path, command: str) -> None:
+        assert not self.fires(command.format(repo=repo), repo)
+
+    @pytest.mark.parametrize(
+        "command",
+        ["cat pyproject.toml", "cd {repo}/plugins && cd .. && cat pyproject.toml"],
+        ids=["at-root", "cd-back-to-root"],
+    )
+    def test_toplevel_manifest_blocks(self, repo: Path, command: str) -> None:
+        assert self.fires(command.format(repo=repo), repo)
+
+    def test_outside_a_repo_runs(self, tmp_path: Path) -> None:
+        (tmp_path / "go.mod").write_text("module x\n")
+        assert not self.fires("cat go.mod", tmp_path)
 
 
 class TestLineHasHeredoc:

@@ -16,6 +16,8 @@ Here the probe boundary (``ccx_bin`` + ``subprocess.run``) is monkeypatched and 
 
 from __future__ import annotations
 
+import os
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -748,7 +750,7 @@ class TestTranscriptSteer:
 
     def fires(self, command: str) -> bool:
         evt = make_evt(command)
-        condition = search_common.SearchTargets("grep", grep_guards.grep_operands, search_common.targets_transcript)
+        condition = search_common.SearchTargets(grep_guards.GREP, grep_guards.grep_operands, search_common.targets_transcript)
         return condition.check_command_line(evt, evt.cmd.line)
 
     @pytest.mark.parametrize(
@@ -766,8 +768,13 @@ class TestTranscriptSteer:
 
     @pytest.mark.parametrize(
         "command",
-        ["grep needle docs/x.claude/projects-notes.md", "cat x | grep foo ~/.claude/projects/main.jsonl"],
-        ids=["lookalike", "piped-only"],
+        [
+            "grep needle docs/x.claude/projects-notes.md",
+            "cat x | grep foo ~/.claude/projects/main.jsonl",
+            f"grep -E 'landing-desk' {search_common.EXAMPLE_SESSION}/tool-results/toolu_01H.txt",
+            "grep -n lint notes.md ~/.claude/projects/p/memory/capt-hook-call-args.md 2>/dev/null | head -8",
+        ],
+        ids=["lookalike", "piped-only", "tool-result", "memory-file"],
     )
     def test_silent(self, command: str) -> None:
         assert not self.fires(command)
@@ -791,3 +798,35 @@ class TestGrepBundleMap:
     def test_ri_bundle_relative_dir_maps_ignore_case(self, monkeypatch: pytest.MonkeyPatch) -> None:
         probe(monkeypatch, SUPPORTS_HELP)
         assert grep_rewrite("grep -n 'semble' -ri bench/ -l") == "/fake/ccx code grep semble -i --glob 'bench/**'"
+
+
+class TestScratchTree:
+    """A tree-shaped grep over a scratch directory outside any repository runs raw; the same tree inside a
+    repository, or a plain directory, still blocks."""
+
+    @pytest.fixture
+    def notes(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        monkeypatch.setattr(search_common, "ccx_bin", lambda: "/fake/ccx")
+        (notes := tmp_path / "scratch" / "release-v3").mkdir(parents=True)
+        return notes
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "cd {notes}; grep -rhoE 'log (append|show)' --include=*.md --include=*.sh . | sort",
+            "cd {notes} && grep -rn service_tier --include=*.md --include=*.json -l . 2>/dev/null | head",
+            "grep -rl 06ca99cdcd --include=*.md -s {notes}",
+        ],
+        ids=["dot-operand", "files-with-matches", "absolute-operand"],
+    )
+    def test_scratch_notes_run_raw(self, notes: Path, command: str) -> None:
+        assert grep_verdict(command.format(notes=notes)) is None
+
+    def test_scratch_inside_a_repo_blocks(self, notes: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+        subprocess.run(["git", "init", "-q"], cwd=notes.parent.parent, check=True)
+        assert isinstance(grep_verdict(f"cd {notes}; grep -rhoE 'log' ."), HookResult)
+
+    def test_plain_directory_blocks(self, tmp_path: Path) -> None:
+        (notes := tmp_path / "notes").mkdir()
+        assert isinstance(grep_verdict(f"cd {notes}; grep -rhoE 'log' ."), HookResult)

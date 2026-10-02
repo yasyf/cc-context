@@ -23,6 +23,9 @@ from captain_hook import (
     nudge,
 )
 
+from captain_hook.util.scratch import is_scratch_path
+from captain_hook.util.vcs import in_vcs_repo
+
 from .common import IDENT_ALT, ccx_bin, ccx_supports, rewrote_note
 
 if TYPE_CHECKING:
@@ -32,6 +35,10 @@ if TYPE_CHECKING:
     from cc_transcript.command import Word
 
 TRANSCRIPTS = "/".join(("~", ".claude", "projects"))
+
+TRANSCRIPT_SUFFIX = ".".join(("", "jsonl"))
+
+EXAMPLE_SESSION = f"{TRANSCRIPTS}/-Users-me-repo/900424b6-7393-480c-a26a-f1bd21da6e57"
 
 TRANSCRIPT_STEER = (
     "Session transcripts are searched with `cc-transcript`, never raw `grep` or `rg`. "
@@ -48,6 +55,10 @@ SEARCH_EXECUTABLES = ("rg", "grep")
 NL_PHRASE = re.compile(r"^[a-z]+(?: [a-z]+)+$")
 
 INCLUDE_SAFE = re.compile(r"^[\w*?./\[\]-]+$")
+
+NO_TRANSCRIPTS = frozenset({"tool-results", "memory"})
+
+SESSION_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
 DEPENDENCY_SEGMENTS = frozenset({".git", ".jj", ".hg", ".svn", ".venv", "node_modules", "site-packages", "dist-packages"})
 
@@ -169,17 +180,38 @@ def glued_value(call: Call, flags: frozenset[str]) -> bool:
     return False
 
 
-def loose_operands(call: Call) -> list[str]:
-    """Every non-option word plus everything after a bare ``--``; over-includes the pattern."""
+def loose_operands(call: Call, schema: CommandSchema) -> list[str]:
+    """Every non-option word plus everything after a bare ``--``, skipping a declared value option's value.
+
+    A positive ``glob`` value stays, since it selects paths; a negated one is dropped. Over-includes the
+    pattern and an undeclared option's value.
+    """
     out: list[str] = []
     after_separator = False
+    pending: Option | None = None
     for word in call.command.words[1:]:
         text = word_text(word)
-        if after_separator or text == "-" or not text.startswith("-"):
+        if pending is not None:
+            if pending.name == "glob" and not text.startswith("!"):
+                out.append(text)
+            pending = None
+        elif after_separator or text == "-" or not text.startswith("-"):
             out.append(text)
         elif text == "--":
             after_separator = True
+        else:
+            pending = awaited_option(text, schema)
     return out
+
+
+def awaited_option(flag: str, schema: CommandSchema) -> Option | None:
+    """The declared value option an option word leaves its value to: a long flag, or a cluster ending in one."""
+    takes_value = {alias: option for option in schema.options if option.type is not bool for alias in option.flags}
+    if flag.startswith("--"):
+        return takes_value.get(flag)
+    shorts = [f"-{letter}" for letter in flag[1:]]
+    index = next((i for i, short in enumerate(shorts) if short in takes_value), None)
+    return takes_value[shorts[-1]] if index == len(shorts) - 1 else None
 
 
 def context_flags(arguments: Arguments) -> list[tuple[str, str]]:
@@ -208,27 +240,60 @@ class UnpipedSearch(CustomCommandLineCondition):
 
 @dataclass(frozen=True)
 class SearchTargets(CustomCommandLineCondition):
-    """Matches a line with an unpiped ``program`` call where some ``program`` call's path operands satisfy ``targets``.
+    """Matches a line with an unpiped ``schema`` program call where some such call's path operands satisfy ``targets``.
 
     Operands come from the strict binding, or :func:`loose_operands` when it stops at an unknown flag.
     """
 
-    program: str
+    schema: CommandSchema
     operands: Callable[[Call], list[str] | None]
     targets: Callable[[list[str], Path | None], bool]
 
     def check_command_line(self, evt: BaseHookEvent, cl: CommandLine) -> bool:
-        calls = evt.cmd.calls(self.program)
-        return unpiped(evt, self.program) and any(
-            self.targets(loose_operands(call) if (ops := self.operands(call)) is None else ops, call.cwd)
-            for call in calls
+        program = self.schema.program
+        return unpiped(evt, program) and any(
+            self.targets(loose_operands(call, self.schema) if (ops := self.operands(call)) is None else ops, call.cwd)
+            for call in evt.cmd.calls(program)
         )
 
 
 def is_transcript_path(p: str) -> bool:
-    """Whether a path has the consecutive segments ``.claude`` then ``projects``."""
-    segs = p.split("/")
-    return any(segs[i] == ".claude" and segs[i + 1] == "projects" for i in range(len(segs) - 1))
+    """Whether a path is a session transcript under the projects store, or a directory or glob reaching one.
+
+    The store, a project, a session, and its ``subagents`` dir hold transcripts; a ``jsonl`` file sits
+    at the session or agent level. A session's ``tool-results`` and a project's ``memory`` hold none.
+    """
+    segs = [seg for seg in p.split("/") if seg]
+    pairs = zip(segs, segs[1:])
+    if (start := next((i + 2 for i, pair in enumerate(pairs) if pair == (".claude", "projects")), None)) is None:
+        return False
+    match segs[start:]:
+        case [] | [_]:
+            return True
+        case [_, *under] if any(map(has_glob, under)):
+            return globs_transcript(under)
+        case [_, leaf]:
+            return leaf.endswith(TRANSCRIPT_SUFFIX) or names_session(leaf)
+        case [_, session, "subagents"]:
+            return names_session(session)
+        case [_, session, "subagents", leaf]:
+            return names_session(session) and leaf.endswith(TRANSCRIPT_SUFFIX)
+        case _:
+            return False
+
+
+def has_glob(seg: str) -> bool:
+    return any(c in seg for c in "*?[")
+
+
+def names_session(seg: str) -> bool:
+    return SESSION_ID.fullmatch(seg) is not None
+
+
+def globs_transcript(under: list[str]) -> bool:
+    """Whether a glob below a project can reach a transcript, never through ``tool-results`` or ``memory``."""
+    leaf = under[-1]
+    return NO_TRANSCRIPTS.isdisjoint(under) and (leaf.endswith(TRANSCRIPT_SUFFIX) or leaf[-1] in "*?]")
 
 
 def has_dependency_segment(p: str) -> bool:
@@ -291,6 +356,15 @@ def resolved_is_dir(p: str, cwd: Path | None) -> bool:
     if p.rstrip("/") in (".", ".."):
         return True
     return (path := resolve_operand(p, cwd)) is not None and path.is_dir()
+
+
+def scratch_tree(ops: list[str], cwd: Path | None) -> bool:
+    """Whether every directory a search walks is a scratch directory outside any git or jj repository."""
+    roots = [p for p in ops if resolved_is_dir(p, cwd)] or ["."]
+    paths = [resolve_operand(p, cwd) for p in roots]
+    return all(
+        path is not None and is_scratch_path(resolved := path.resolve()) and not in_vcs_repo(resolved) for path in paths
+    )
 
 
 def brace(dirs: list[str]) -> str:
