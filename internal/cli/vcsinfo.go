@@ -362,7 +362,7 @@ func resolveDownstackPRs(ctx context.Context, l lane, entries []stackEntry) {
 		argv = append(argv, "-f", downstackPRAlias(i)+"="+entry.Branch)
 	}
 	argv = append(argv, "-f", "query="+downstackPRQuery(len(entries)))
-	out, err := render.RunCLI(ctx, l.dir(), "gh", argv)
+	out, err := ghRead(ctx, l.dir(), argv)
 	if err != nil {
 		return
 	}

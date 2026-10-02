@@ -29,6 +29,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **GitHub reads can run on a GitHub App's quota.** When
+  `~/.config/ccx/github-app.toml` names an app (`client_id` and a
+  `private_key_command` that prints its key), the reads behind `vcs status`,
+  `vcs pr status` and `watch`, `vcs reviews`, `vcs info`, and ship's CI watch
+  use a read-only installation token for the repository instead of the gh
+  user's. Tokens are cached per installation under the user cache dir and
+  shared by every ccx process. Writes stay on the user. Reads also stay on
+  the user when the app is not installed on the repository, when minting
+  fails, or when `GH_TOKEN` or `GITHUB_TOKEN` is set. `ccx vcs auth status`
+  prints which identity each repository's reads and writes use, along with
+  each identity's remaining GraphQL quota.
+
 - **`ccx vcs stack new <name> --thin` creates sparse agent lanes in a shallow store.**
   Lanes are linked worktrees of the ccx-owned clone at
   `~/.claude/stores/<key>/<repo>`; ccx never deletes the store.

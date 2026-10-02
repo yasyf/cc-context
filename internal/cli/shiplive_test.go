@@ -69,6 +69,10 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	prStateRoot = func() (string, error) { return filepath.Join(scratch, "prstate"), nil }
+	if err := os.Setenv("XDG_CONFIG_HOME", filepath.Join(scratch, "xdg-config")); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 	code := m.Run()
 	_ = os.RemoveAll(scratch)
 	vcstest.Cleanup()

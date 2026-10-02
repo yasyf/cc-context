@@ -221,7 +221,7 @@ func resolveReviewsClient(ctx context.Context) (reviewsClient, error) {
 	if !ok {
 		return reviewsClient{}, fmt.Errorf("reviews: %q is not owner/name", repo.NameWithOwner)
 	}
-	return reviewsClient{api: reviewsAPI(), owner: owner, repo: name, gt: l.gt, dir: l.dir()}, nil
+	return reviewsClient{api: reviewsAPI().ForRepo(repo.NameWithOwner), owner: owner, repo: name, gt: l.gt, dir: l.dir()}, nil
 }
 
 // reviewsAlias names one target's field in a batched query. A GraphQL alias

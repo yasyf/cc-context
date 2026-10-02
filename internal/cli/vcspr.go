@@ -71,7 +71,7 @@ func staleAt(limited *prstate.Backoff, polledAt time.Time) *prStale {
 var prStateRoot = prstate.DefaultRoot
 
 func openPRState(ctx context.Context, repo string, warn io.Writer) (*prstate.Store, error) {
-	src, err := prstate.NewGitHub(reviewsAPI(), gtAPI(ctx), repo, warn)
+	src, err := prstate.NewGitHub(reviewsAPI().ForRepo(repo), gtAPI(ctx), repo, warn)
 	if err != nil {
 		return nil, err
 	}
