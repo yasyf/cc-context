@@ -26,10 +26,10 @@ func stackPublishedBehindTrunk(t *testing.T, file string) (*vcstest.Fixture, map
 
 func TestStackSubmitLeavesACleanPublishedBranchOnItsTrunk(t *testing.T) {
 	for _, tc := range []struct {
-		name      string
-		args      []string
-		wantPlan  string
-		restack bool
+		name     string
+		args     []string
+		wantPlan string
+		restack  bool
 	}{
 		{"stays", nil, "base" + shipSep + "stays on ", false},
 		{"restack", []string{"--restack"}, "base" + shipSep + "onto main" + shipSep + "from ", true},
@@ -123,8 +123,8 @@ func TestStackSubmitMovesTheChildOfALandedParentOntoTrunk(t *testing.T) {
 
 func TestShipLeavesACleanPublishedTipOnItsTrunk(t *testing.T) {
 	for _, tc := range []struct {
-		name      string
-		args      []string
+		name    string
+		args    []string
 		restack bool
 	}{
 		{"stays", nil, false},

@@ -977,7 +977,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 			if err := stackOwnWork(ctx, l.dir(), tr, pin, b); err != nil {
 				return nil, err
 			}
-			if o.stayClean && b.Parent == trunk && b.WasParent == trunk && b.Remote != "" && b.OldBase != pin {
+			if o.stayClean && b.Parent == trunk && b.WasParent == trunk && b.Remote != "" && b.OldBase != pin && (b.PR == nil || b.PR.Mergeable != "CONFLICTING") {
 				if b.Stays, err = stackMergesClean(ctx, l.dir(), pin, b.Head); err != nil {
 					return nil, err
 				}

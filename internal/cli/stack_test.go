@@ -924,7 +924,7 @@ func TestStackSubmitAdoptsARemoteReplayAfterPublication(t *testing.T) {
 	stackAdvanceTrunk(t, f, "later.txt", "later\n")
 	shipResetLog(t, f)
 
-	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+	if _, _, err := runStackCmd(t, f, "submit", "--restack"); err != nil {
 		t.Fatalf("stack submit over a replay of its own publication = %v, want the replay adopted", err)
 	}
 	remote := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
