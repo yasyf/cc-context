@@ -186,9 +186,11 @@ func (r *Relocator) enter(job *cleanup.Job, phase cleanup.Phase) (bool, error) {
 
 // Advance resumes job from the phase its record holds, trusting it only as far
 // as the filesystem agrees. It never deletes a tree, touches the original path
-// once the tree has left it, or runs git's repair or prune. A cancelled ctx
-// returns ctx's error and journals only a blockage the cancellation did not
-// cause: a running mutation that expires its own budget.
+// once the tree has left it, or runs git's repair or prune.
+//
+// A cancelled ctx returns its error and journals nothing, unless a git step
+// expired its own budget, as a mutation can past the cancellation; then it
+// journals a timeout blockage and returns nil.
 func (r *Relocator) Advance(ctx context.Context, job *cleanup.Job) error {
 	vetted := false
 	for {

@@ -62,12 +62,12 @@ type Relocator interface {
 	//
 	// It returns nil with job at PhaseUnregistered on success, nil with job at
 	// PhaseWaiting when a deferred job's tree is still held, and nil with
-	// job.Blocked set when the job needs an operator. The error is non-nil only
-	// when the journal itself could not be written, or when ctx was cancelled:
-	// a cancelled call returns ctx's error and leaves the record at its last
-	// journaled phase, never blocked, so the next Advance resumes it. A step
-	// that rewrites git's own state runs to completion even when ctx is
-	// cancelled under it.
+	// job.Blocked set when the job needs an operator. The error is the journal's
+	// when it could not be written, and ctx's when ctx was cancelled, leaving
+	// the record unblocked at its last journaled phase for the next Advance. A
+	// step rewriting git's state runs on past the cancellation until it ends or
+	// expires its budget; a git step that expired its own budget journals a
+	// timeout blockage and returns nil, cancelled or not.
 	Advance(ctx context.Context, job *Job) error
 	// Admit is the gate every physical deletion passes each time its payload is
 	// opened: first, after a restart, and after any pause. It proves afresh

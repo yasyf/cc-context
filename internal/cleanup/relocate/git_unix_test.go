@@ -30,38 +30,64 @@ func (f *fixture) fifo(name string) string {
 	return path
 }
 
-func releaseOnCleanup(t *testing.T, block string) {
+func releaseOnCleanup(t *testing.T, live, block string) {
 	t.Cleanup(func() {
-		release, err := os.OpenFile(block, os.O_WRONLY|syscall.O_NONBLOCK, 0) //nolint:gosec // the fifo is the test's own
+		watch, err := syscall.Open(live, syscall.O_RDONLY|syscall.O_NONBLOCK, 0)
 		if err != nil {
+			t.Errorf("watch %s: %v", live, err)
 			return
 		}
-		_, _ = release.Write([]byte("x\n"))
-		_ = release.Close()
+		defer func() { _ = syscall.Close(watch) }()
+		deadline := time.Now().Add(30 * time.Second)
+		for {
+			if release, err := os.OpenFile(block, os.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil { //nolint:gosec // the fifo is the test's own
+				_, _ = release.Write([]byte("x\n"))
+				_ = release.Close()
+			}
+			if n, err := syscall.Read(watch, make([]byte, 1)); n == 0 && err == nil {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Errorf("%s still had a writer 30s into teardown: its holder never exited", live)
+				return
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
 	})
 }
 
-func (f *fixture) holdingGit(hold string, after bool) (git, marker, entered, ran string) {
+func (f *fixture) holdingGit(hold string, after bool) (git, marker, entered, acked, ran string) {
 	f.t.Helper()
 	git = filepath.Join(f.root, "holding-git")
 	marker = filepath.Join(f.root, "holding")
 	ran = filepath.Join(f.root, "ran-before-holding")
-	entered = f.fifo("entered")
+	entered, acked = f.fifo("entered"), f.fifo("acked")
 	never := f.fifo("never-written")
-	releaseOnCleanup(f.t, never)
+	releaseOnCleanup(f.t, entered, never)
 	run := ""
 	if after {
 		run = fmt.Sprintf("\t\t%s \"$@\"\n\t\t: > %s\n", f.git, ran)
 	}
 	script := fmt.Sprintf(
-		"#!/bin/sh\nif [ -e %s ]; then\n\tcase \" $* \" in *\" %s \"*)\n\t\texec 3>%s\n%s\t\tread x < %s\n\t\texit 1\n\tesac\nfi\nexec %s \"$@\"\n",
-		marker, hold, entered, run, never, f.git,
+		"#!/bin/sh\nif [ -e %s ]; then\n\tcase \" $* \" in *\" %s \"*)\n\t\texec 3>%s\n\t\tread x < %s\n%s\t\tread x < %s\n\t\texit 1\n\tesac\nfi\nexec %s \"$@\"\n",
+		marker, hold, entered, acked, run, never, f.git,
 	)
 	f.write(marker, "")
 	if err := os.WriteFile(git, []byte(script), 0o700); err != nil { //nolint:gosec // the script stands in for git and is executed
 		f.t.Fatalf("write holding git: %v", err)
 	}
-	return git, marker, entered, ran
+	return git, marker, entered, acked, ran
+}
+
+func (f *fixture) acknowledge(acked, hold string) {
+	f.t.Helper()
+	ack := openFIFO(f.t, acked, os.O_WRONLY, "the held "+hold+" never awaited its acknowledgement")
+	if _, err := ack.Write([]byte("x\n")); err != nil {
+		f.t.Fatalf("acknowledge the held %s: %v", hold, err)
+	}
+	if err := ack.Close(); err != nil {
+		f.t.Fatalf("close the acknowledgement fifo: %v", err)
+	}
 }
 
 func (f *fixture) awaited(result <-chan error, what string) error {
@@ -135,7 +161,7 @@ func TestAdvanceBlocksAnInterruptedGitStepAsATimeoutThenRecovers(t *testing.T) {
 			f := newFixture(t)
 			f.bound(shortBudget)
 			job := f.accept()
-			git, marker, entered, ran := f.holdingGit(tt.hold, tt.after)
+			git, marker, entered, acked, ran := f.holdingGit(tt.hold, tt.after)
 			job.Git = git
 
 			ctx, cancel := context.WithCancel(context.Background())
@@ -147,6 +173,7 @@ func TestAdvanceBlocksAnInterruptedGitStepAsATimeoutThenRecovers(t *testing.T) {
 			if tt.stop {
 				cancel()
 			}
+			f.acknowledge(acked, tt.hold)
 			if err := f.awaited(advanced, "Advance()"); err != nil {
 				t.Fatalf("Advance() error = %v, want the expired %s journaled", err, tt.hold)
 			}
@@ -193,7 +220,7 @@ func TestAdvanceBlocksAnInterruptedGitStepAsATimeoutThenRecovers(t *testing.T) {
 func (f *fixture) forkingGit(then string) (git, live, block string) {
 	f.t.Helper()
 	live, block = f.fifo("live"), f.fifo("block")
-	releaseOnCleanup(f.t, block)
+	releaseOnCleanup(f.t, live, block)
 	git = filepath.Join(f.root, "forking-git")
 	script := fmt.Sprintf("#!/bin/sh\n( exec 3>%s; read x < %s ) &\n%s\n", live, block, then)
 	if err := os.WriteFile(git, []byte(script), 0o700); err != nil { //nolint:gosec // the script stands in for git and is executed

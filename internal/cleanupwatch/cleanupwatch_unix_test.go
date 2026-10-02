@@ -26,14 +26,29 @@ func fifo(t *testing.T, dir, name string) string {
 	return path
 }
 
-func releaseOnCleanup(t *testing.T, block string) {
+func releaseOnCleanup(t *testing.T, live, block string) {
 	t.Cleanup(func() {
-		release, err := os.OpenFile(block, os.O_WRONLY|syscall.O_NONBLOCK, 0) //nolint:gosec // the fifo is the test's own
+		watch, err := syscall.Open(live, syscall.O_RDONLY|syscall.O_NONBLOCK, 0)
 		if err != nil {
+			t.Errorf("watch %s: %v", live, err)
 			return
 		}
-		_, _ = release.Write([]byte("x\n"))
-		_ = release.Close()
+		defer func() { _ = syscall.Close(watch) }()
+		deadline := time.Now().Add(30 * time.Second)
+		for {
+			if release, err := os.OpenFile(block, os.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil { //nolint:gosec // the fifo is the test's own
+				_, _ = release.Write([]byte("x\n"))
+				_ = release.Close()
+			}
+			if n, err := syscall.Read(watch, make([]byte, 1)); n == 0 && err == nil {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Errorf("%s still had a writer 30s into teardown: its holder never exited", live)
+				return
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
 	})
 }
 
@@ -63,7 +78,7 @@ func openFIFO(t *testing.T, path string, flag int, stuck string) *os.File {
 func TestExecRunnerCancelKillsOnlyTheDirectChild(t *testing.T) {
 	dir := t.TempDir()
 	live, block := fifo(t, dir, "live"), fifo(t, dir, "block")
-	releaseOnCleanup(t, block)
+	releaseOnCleanup(t, live, block)
 	child := &exec.Cmd{}
 	render.BoundChild(child)
 	limit := child.WaitDelay + 5*time.Second
