@@ -33,6 +33,7 @@ var queuedJobPattern = regexp.MustCompile(`deletion queued ([0-9a-f]{16}-[0-9a-f
 
 type cleanupHarness struct {
 	layout cleanup.Layout
+	config relocate.Config
 	engine *daemon.Engine
 	active atomic.Bool
 
@@ -78,18 +79,40 @@ func fixtureCleanup(t *testing.T, f *vcstest.Fixture) *cleanupHarness {
 	if h, ok := testCleanups.Load(f); ok {
 		return h.(*cleanupHarness)
 	}
+	h := newCleanupHarness(t, f, cleanupTuning())
+	t.Cleanup(func() { testCleanups.Delete(f) })
+	preview := relocate.New(h.config).Preview
+	f.Decorate(func(ctx context.Context) context.Context {
+		return withCleanupPreview(withCleanup(ctx, h.engine), preview)
+	})
+	testCleanups.Store(f, h)
+	return h
+}
+
+func newCleanupHarness(t *testing.T, f *vcstest.Fixture, tuning daemon.Tuning) *cleanupHarness {
+	t.Helper()
 	h := &cleanupHarness{layout: cleanup.Layout{Root: filepath.Join(filepath.Dir(f.Dir), "cleanup")}}
 	journal, err := cleanup.OpenJournal(h.layout)
 	if err != nil {
 		t.Fatalf("open cleanup journal: %v", err)
 	}
-	config := relocate.Config{Journal: journal, Guard: h.guard, Watchers: h, GitEnv: f.Env(), Now: time.Now}
+	h.config = relocate.Config{Journal: journal, Guard: h.guard, Watchers: h, GitEnv: f.Env(), Now: time.Now}
+	h.engine = startCleanupEngine(t, h.config, tuning)
+	return h
+}
+
+func cleanupTuning() daemon.Tuning {
 	tuning := daemon.DefaultTuning()
 	tuning.Rate = 1_000_000
 	tuning.SampleEvery = 5 * time.Millisecond
 	tuning.Recheck = 20 * time.Millisecond
+	return tuning
+}
+
+func startCleanupEngine(t *testing.T, config relocate.Config, tuning daemon.Tuning) *daemon.Engine {
+	t.Helper()
 	engine, err := daemon.New(daemon.Config{
-		Journal:   journal,
+		Journal:   config.Journal,
 		Relocator: relocate.New(config),
 		Deleter:   rmtree.Deleter{},
 		CPU:       idleCPU{},
@@ -103,7 +126,6 @@ func fixtureCleanup(t *testing.T, f *vcstest.Fixture) *cleanupHarness {
 	done := make(chan error, 1)
 	go func() { done <- engine.Run(ctx) }()
 	t.Cleanup(func() {
-		testCleanups.Delete(f)
 		if err := engine.Stop(context.Background()); err != nil {
 			t.Errorf("stop cleanup engine: %v", err)
 		}
@@ -112,13 +134,20 @@ func fixtureCleanup(t *testing.T, f *vcstest.Fixture) *cleanupHarness {
 		}
 		cancel()
 	})
-	h.engine = engine
-	preview := relocate.New(config).Preview
-	f.Decorate(func(ctx context.Context) context.Context {
-		return withCleanupPreview(withCleanup(ctx, engine), preview)
-	})
-	testCleanups.Store(f, h)
-	return h
+	return engine
+}
+
+func runCleanupWith(t *testing.T, svc cleanup.Service, args ...string) (string, error) {
+	t.Helper()
+	cmd := newCleanupCmd() //nolint:contextcheck // ExecuteContext below is what sets cmd's context
+	cmd.SilenceUsage = true
+	cmd.SilenceErrors = true
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs(args)
+	err := cmd.ExecuteContext(withCleanup(context.Background(), svc))
+	return out.String(), err
 }
 
 func runCleanupCmd(t *testing.T, f *vcstest.Fixture, args ...string) (string, error) {
@@ -1154,8 +1183,9 @@ func TestCleanupAdopt(t *testing.T) {
 }
 
 type statusReply struct {
-	job cleanup.Job
-	err error
+	job     cleanup.Job
+	damaged []cleanup.Damaged
+	err     error
 }
 
 type scriptedStatus struct {
@@ -1178,7 +1208,7 @@ func (s *scriptedStatus) Status(ctx context.Context, q cleanup.Query) (cleanup.R
 	if reply.err != nil {
 		return cleanup.Report{}, reply.err
 	}
-	return cleanup.Report{Jobs: []cleanup.Job{reply.job}}, nil
+	return cleanup.Report{Jobs: []cleanup.Job{reply.job}, Damaged: reply.damaged}, nil
 }
 
 func (s *scriptedStatus) Wait(context.Context, string) (cleanup.Job, error) {
@@ -1191,10 +1221,13 @@ func TestCleanupReadVerbsBoundEachRequest(t *testing.T) {
 		id        = "0000000000000000-000000"
 		statusErr = "cleanup status: the daemon answered its hello but sent no report within 10s: context deadline exceeded"
 		waitErr   = "cleanup wait: the daemon answered its hello but sent no report within 10s: context deadline exceeded"
+		vanished  = "cleanup wait: job " + id + " was last seen deleting, and the daemon "
 	)
 	running := cleanup.Job{ID: id, Phase: cleanup.PhaseDeleting, Original: "/w/feat", Removed: 3}
 	done := cleanup.Job{ID: id, Phase: cleanup.PhaseDone, Original: "/w/feat", Removed: 7}
 	blocked := cleanup.Job{ID: id, Phase: cleanup.PhaseDeleting, Original: "/w/feat", Blocked: &cleanup.Blockage{Reason: "delete", Detail: "operation not permitted"}}
+	other := cleanup.Job{ID: "0000000000000001-000000", Phase: cleanup.PhaseQueued, Original: "/w/other"}
+	torn := cleanup.Damaged{ID: id, Error: "record truncated"}
 	stalled := statusReply{err: context.DeadlineExceeded}
 	one := cleanup.Query{JobID: id}
 	tests := []struct {
@@ -1207,6 +1240,8 @@ func TestCleanupReadVerbsBoundEachRequest(t *testing.T) {
 		wantDeadline bool
 		wantBlocked  bool
 		wantNotFound bool
+		wantMissing  bool
+		wantDamaged  bool
 	}{
 		{
 			name:         "status stalled after the hello",
@@ -1256,11 +1291,28 @@ func TestCleanupReadVerbsBoundEachRequest(t *testing.T) {
 			wantBlocked: true,
 		},
 		{
-			name:        "wait reports a job pruned after it was seen as done",
+			name:        "wait never reports done a job that vanished after it was seen deleting",
 			args:        []string{"wait", id},
-			replies:     []statusReply{{job: running}, {err: cleanup.ErrUnknownJob}},
-			wantQueries: []cleanup.Query{one, one},
-			wantOut:     id + " · done · /w/feat · 3 entries\n",
+			replies:     []statusReply{{job: running}, {err: cleanup.ErrUnknownJob}, {job: other}},
+			wantQueries: []cleanup.Query{one, one, {}},
+			wantErr:     vanished + "no longer holds it: its completion cannot be proven, since it may have finished and been pruned or its record was lost",
+			wantMissing: true,
+		},
+		{
+			name:        "wait names the damaged record of a job that vanished",
+			args:        []string{"wait", id},
+			replies:     []statusReply{{job: running}, {err: cleanup.ErrUnknownJob}, {job: other, damaged: []cleanup.Damaged{{ID: "0000000000000002-000000", Error: "record names job 0000000000000003-000000"}, torn}}},
+			wantQueries: []cleanup.Query{one, one, {}},
+			wantErr:     vanished + "now reports its record damaged: record truncated",
+			wantDamaged: true,
+		},
+		{
+			name:         "wait fails when the queue read after a vanished job stalls",
+			args:         []string{"wait", id},
+			replies:      []statusReply{{job: running}, {err: cleanup.ErrUnknownJob}, stalled},
+			wantQueries:  []cleanup.Query{one, one, {}},
+			wantErr:      vanished + "no longer holds it; reading the queue for a damaged record: the daemon answered its hello but sent no report within 10s: context deadline exceeded",
+			wantDeadline: true,
 		},
 		{
 			name:         "wait on a job never seen is not found",
@@ -1289,15 +1341,8 @@ func TestCleanupReadVerbsBoundEachRequest(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			svc := &scriptedStatus{t: t, replies: tt.replies}
-			cmd := newCleanupCmd() //nolint:contextcheck // ExecuteContext below is what sets cmd's context
-			cmd.SilenceUsage = true
-			cmd.SilenceErrors = true
-			var out bytes.Buffer
-			cmd.SetOut(&out)
-			cmd.SetErr(&out)
-			cmd.SetArgs(tt.args)
 
-			err := cmd.ExecuteContext(withCleanup(context.Background(), svc))
+			out, err := runCleanupWith(t, svc, tt.args...)
 			if tt.wantErr == "" && err != nil {
 				t.Fatalf("%v error = %v, want none", tt.args, err)
 			}
@@ -1314,13 +1359,167 @@ func TestCleanupReadVerbsBoundEachRequest(t *testing.T) {
 			if got := errors.As(err, &blockage); got != tt.wantBlocked || (got && *blockage.Job.Blocked != *blocked.Blocked) {
 				t.Errorf("errors.As(err, *cleanup.BlockedError) = %v (%+v), want %v carrying the job's blockage", got, blockage, tt.wantBlocked)
 			}
+			var missing *cleanupJobMissingError
+			if got := errors.As(err, &missing); got != tt.wantMissing || (got && (*missing != (cleanupJobMissingError{id: id, seen: cleanup.PhaseDeleting}) || ExitCode(err) != 1)) {
+				t.Errorf("errors.As(err, *cleanupJobMissingError) = %v (%+v, exit %d), want %v naming the job last seen deleting at exit 1", got, missing, ExitCode(err), tt.wantMissing)
+			}
+			var damaged *cleanupJobDamagedError
+			if got := errors.As(err, &damaged); got != tt.wantDamaged || (got && (*damaged != (cleanupJobDamagedError{damaged: torn, seen: cleanup.PhaseDeleting}) || ExitCode(err) != 1)) {
+				t.Errorf("errors.As(err, *cleanupJobDamagedError) = %v (%+v, exit %d), want %v carrying the torn record last seen deleting at exit 1", got, damaged, ExitCode(err), tt.wantDamaged)
+			}
 			if !slices.Equal(svc.queries, tt.wantQueries) {
 				t.Errorf("status requests = %+v, want %+v", svc.queries, tt.wantQueries)
 			}
-			if out.String() != tt.wantOut {
-				t.Errorf("output = %q, want %q", out.String(), tt.wantOut)
+			if out != tt.wantOut {
+				t.Errorf("output = %q, want %q", out, tt.wantOut)
 			}
 		})
+	}
+}
+
+type handoffStatus struct {
+	cleanup.Service
+	handoff func() cleanup.Service
+	queries []cleanup.Query
+}
+
+func (s *handoffStatus) Status(ctx context.Context, q cleanup.Query) (cleanup.Report, error) {
+	if len(s.queries) == 1 {
+		s.Service = s.handoff()
+	}
+	s.queries = append(s.queries, q)
+	return s.Service.Status(ctx, q)
+}
+
+func queuePaused(t *testing.T, f *vcstest.Fixture, h *cleanupHarness, names ...string) (ids, paths []string) {
+	t.Helper()
+	ctx := f.Context()
+	if err := h.engine.Pause(ctx); err != nil {
+		t.Fatalf("pause: %v", err)
+	}
+	git := render.LookPath(ctx, "git")
+	for _, name := range names {
+		path := filepath.Join(filepath.Dir(f.Dir), "checkouts", name)
+		addLinkedWorktree(t, f.Env(), f.Dir, path, "")
+		receipt, err := h.engine.Remove(ctx, cleanup.Request{Worktree: path, Git: git})
+		if err != nil || receipt.State != cleanup.State(cleanup.PhaseUnregistered) {
+			t.Fatalf("remove %s = %+v, %v; want it unregistered while deletion is paused", path, receipt, err)
+		}
+		ids, paths = append(ids, receipt.JobID), append(paths, path)
+	}
+	return ids, paths
+}
+
+func TestCleanupWaitNeedsTheJobSeenDone(t *testing.T) {
+	tests := []struct {
+		name     string
+		keepDone int
+		pruned   bool
+	}{
+		{"a job finished between polls is done", 2, false},
+		{"a job pruned between polls is never reported done", 1, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := vcstest.Repo(t)
+			f.Isolate(t)
+			tuning := cleanupTuning()
+			tuning.KeepDone = tt.keepDone
+			h := newCleanupHarness(t, f, tuning)
+			ids, paths := queuePaused(t, f, h, "first", "second")
+			first, last := ids[0], ids[1]
+			svc := &handoffStatus{Service: h.engine, handoff: func() cleanup.Service {
+				ctx, cancel := context.WithTimeout(f.Context(), 10*time.Second)
+				defer cancel()
+				if err := h.engine.Resume(ctx); err != nil {
+					t.Fatalf("resume: %v", err)
+				}
+				if job, err := h.engine.Wait(ctx, last); err != nil || job.Phase != cleanup.PhaseDone {
+					t.Fatalf("engine wait %s = %+v, %v; want it done", last, job, err)
+				}
+				if err := h.engine.Pause(ctx); err != nil {
+					t.Fatalf("pause behind %s's finish: %v", last, err)
+				}
+				return h.engine
+			}}
+
+			out, err := runCleanupWith(t, svc, "wait", first)
+
+			assertGone(t, h.layout.Payload(first))
+			if !tt.pruned {
+				if want := []cleanup.Query{{JobID: first}, {JobID: first}}; !slices.Equal(svc.queries, want) {
+					t.Errorf("status requests = %+v, want %+v", svc.queries, want)
+				}
+				if err != nil {
+					t.Fatalf("wait error = %v, want the job done", err)
+				}
+				done := cleanupJob(t, f, h, first)
+				if want := first + " · done · " + paths[0] + " · " + strconv.FormatUint(done.Removed, 10) + " entries\n"; out != want || done.Phase != cleanup.PhaseDone || done.Removed == 0 {
+					t.Errorf("wait = %q (phase %s, removed %d), want %q with entries counted", out, done.Phase, done.Removed, want)
+				}
+				return
+			}
+			if want := []cleanup.Query{{JobID: first}, {JobID: first}, {}}; !slices.Equal(svc.queries, want) {
+				t.Errorf("status requests = %+v, want %+v", svc.queries, want)
+			}
+			want := "cleanup wait: job " + first + " was last seen unregistered, and the daemon no longer holds it: its completion cannot be proven, since it may have finished and been pruned or its record was lost"
+			var missing *cleanupJobMissingError
+			if !errors.As(err, &missing) || err.Error() != want || *missing != (cleanupJobMissingError{id: first, seen: cleanup.PhaseUnregistered}) {
+				t.Errorf("wait error = %v, want %q as a *cleanupJobMissingError", err, want)
+			}
+			if errors.Is(err, ErrNotFound) || ExitCode(err) != 1 {
+				t.Errorf("wait error %v exits %d, want a failure at exit 1 that is not a not-found", err, ExitCode(err))
+			}
+			if out != "" {
+				t.Errorf("wait output = %q, want nothing reported done", out)
+			}
+			if got := journaledJobs(t, h); !slices.Equal(got, []string{last}) {
+				t.Errorf("journaled jobs = %v, want only %s once %s was pruned", got, last, first)
+			}
+		})
+	}
+}
+
+func TestCleanupWaitReportsARecordDamagedAcrossARestart(t *testing.T) {
+	f := vcstest.Repo(t)
+	f.Isolate(t)
+	h := newCleanupHarness(t, f, cleanupTuning())
+	ids, _ := queuePaused(t, f, h, "feat")
+	id := ids[0]
+	var restarted *daemon.Engine
+	svc := &handoffStatus{Service: h.engine, handoff: func() cleanup.Service {
+		if err := h.engine.Stop(f.Context()); err != nil {
+			t.Fatalf("stop the first engine: %v", err)
+		}
+		if err := os.WriteFile(h.layout.RecordPath(id), []byte("{"), 0o600); err != nil {
+			t.Fatalf("tear the record of %s: %v", id, err)
+		}
+		restarted = startCleanupEngine(t, h.config, cleanupTuning())
+		return restarted
+	}}
+
+	out, err := runCleanupWith(t, svc, "wait", id)
+
+	if want := []cleanup.Query{{JobID: id}, {JobID: id}, {}}; !slices.Equal(svc.queries, want) {
+		t.Fatalf("status requests = %+v, want %+v", svc.queries, want)
+	}
+	report, statusErr := restarted.Status(f.Context(), cleanup.Query{})
+	if statusErr != nil || len(report.Damaged) != 1 || report.Damaged[0].ID != id || report.Damaged[0].Error == "" {
+		t.Fatalf("restarted status = damaged %+v, %v; want the torn record of %s", report.Damaged, statusErr, id)
+	}
+	want := "cleanup wait: job " + id + " was last seen unregistered, and the daemon now reports its record damaged: " + report.Damaged[0].Error
+	var damaged *cleanupJobDamagedError
+	if !errors.As(err, &damaged) || err.Error() != want || *damaged != (cleanupJobDamagedError{damaged: report.Damaged[0], seen: cleanup.PhaseUnregistered}) {
+		t.Errorf("wait error = %v, want %q as a *cleanupJobDamagedError", err, want)
+	}
+	if errors.Is(err, ErrNotFound) || ExitCode(err) != 1 {
+		t.Errorf("wait error %v exits %d, want a failure at exit 1 that is not a not-found", err, ExitCode(err))
+	}
+	if out != "" {
+		t.Errorf("wait output = %q, want nothing reported done", out)
+	}
+	if _, err := os.Lstat(h.layout.Payload(id)); err != nil {
+		t.Errorf("lstat the payload of %s = %v, want its tree still undeleted", id, err)
 	}
 }
 

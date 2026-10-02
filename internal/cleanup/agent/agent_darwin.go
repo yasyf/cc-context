@@ -19,9 +19,11 @@ const servicePath = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/s
 
 // Connect returns a control for a serving daemon at least as new as this
 // client. When no daemon accepts connections, or the one answering is
-// Outdated, it refreshes the program copy, stops the outdated daemon and waits
-// for its process to exit, and applies the LaunchAgent, all under the start
-// lock; a daemon speaking a newer protocol is refused rather than downgraded.
+// Outdated, it stops the outdated daemon and waits for its process to exit,
+// then takes the serve lock and, holding it, refreshes the program copy and
+// applies the LaunchAgent, all under the start lock. A daemon that takes the
+// serve lock first is waited for and never installed or applied over; a daemon
+// speaking a newer protocol is refused rather than downgraded.
 // A daemon that does not answer, including one still holding the serve lock
 // behind a socket that refuses, is probed once more under the start lock and
 // reported, never installed or applied over.

@@ -594,6 +594,111 @@ func TestConnectOutdatedNeverExits(t *testing.T) {
 	if got := d.count("alive 41"); got < 2 {
 		t.Errorf("the outdated daemon's process was checked %d times, want repeated checks", got)
 	}
+	if _, err := os.Lstat(s.Layout.ProgramPath()); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("program copy stat error = %v, want nothing installed while the outdated daemon still runs", err)
+	}
+}
+
+func TestConnectLeavesADaemonThatTakesTheServeLockFirst(t *testing.T) {
+	current := cleanup.Info{Version: "v1.2.3", Protocol: cleanup.Protocol, PID: 42}
+	older := cleanup.Info{Version: "v1.2.2", Protocol: cleanup.Protocol, PID: 41}
+	tests := []struct {
+		name          string
+		serving       *cleanup.Info
+		barrier       string
+		answers       *cleanup.Info
+		wantProbes    []string
+		wantShutdowns int
+		wantErr       error
+	}{
+		{
+			name:       "no daemon, then one that never answers starts after the probe under the start lock",
+			barrier:    "held",
+			wantProbes: []string{"hello", "held serve.lock", "hello", "held serve.lock"},
+			wantErr:    errStartedElsewhere,
+		},
+		{
+			name:       "no daemon, then a current one starts after the probe under the start lock",
+			barrier:    "held",
+			answers:    &current,
+			wantProbes: []string{"hello", "held serve.lock", "hello", "held serve.lock"},
+		},
+		{
+			name:          "outdated daemon exits, then one that never answers starts before this client",
+			serving:       &older,
+			barrier:       "alive",
+			wantProbes:    []string{"hello", "hello", "shutdown", "alive 41"},
+			wantShutdowns: 1,
+			wantErr:       errStartedElsewhere,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := &fakeDaemon{serving: tt.serving, starts: &current}
+			s := fixture(t, d)
+			s.Timeout = 100 * time.Millisecond
+			admit := func() {
+				ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+				defer cancel()
+				lock, err := durable.AcquireLock(ctx, s.Layout.ServeLockPath())
+				if err != nil {
+					t.Fatalf("the starting daemon's AcquireLock() = %v", err)
+				}
+				t.Cleanup(func() { _ = lock.Close() })
+				d.mu.Lock()
+				defer d.mu.Unlock()
+				d.serving = tt.answers
+			}
+			held, alive := s.held, s.alive
+			s.held = func(lock string) (bool, error) {
+				observed, err := held(lock)
+				if tt.barrier == "held" && d.count("held serve.lock") == 2 {
+					admit()
+				}
+				return observed, err
+			}
+			s.alive = func(pid int) bool {
+				running := alive(pid)
+				if tt.barrier == "alive" && !running {
+					admit()
+				}
+				return running
+			}
+
+			ctl, err := s.connect(t.Context())
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("connect() error = %v, want %v", err, tt.wantErr)
+			}
+			if tt.wantErr != nil {
+				if ctl != nil {
+					t.Errorf("connect() control = %v, want nil beside an error", ctl)
+				}
+				if want := "; it is left running: cleanup agent: the daemon was not ready within 100ms"; !strings.Contains(err.Error(), want) {
+					t.Errorf("connect() error = %q, want it to contain %q", err, want)
+				}
+			} else if info, err := ctl.Hello(context.Background()); err != nil || info != current {
+				t.Errorf("returned control answers %+v, %v; want the daemon that started first, %+v", info, err, current)
+			}
+			events, _ := d.recorded()
+			if len(events) <= len(tt.wantProbes) || !slices.Equal(events[:len(tt.wantProbes)], tt.wantProbes) {
+				t.Fatalf("events = %q, want %q and then readiness hellos", events, tt.wantProbes)
+			}
+			for _, e := range events[len(tt.wantProbes):] {
+				if e != "hello" {
+					t.Errorf("event %q after the daemon took the serve lock, want only readiness hellos", e)
+				}
+			}
+			if got := d.count("apply"); got != 0 {
+				t.Errorf("apply ran %d times, want 0: the LaunchAgent must not be applied over the daemon that started first", got)
+			}
+			if got := d.count("shutdown"); got != tt.wantShutdowns {
+				t.Errorf("shutdown ran %d times, want %d", got, tt.wantShutdowns)
+			}
+			if _, err := os.Lstat(s.Layout.ProgramPath()); !errors.Is(err, fs.ErrNotExist) {
+				t.Errorf("program copy stat error = %v, want nothing installed under the daemon that started first", err)
+			}
+		})
+	}
 }
 
 func TestConnectStartLockBusy(t *testing.T) {

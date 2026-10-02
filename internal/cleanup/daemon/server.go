@@ -13,14 +13,11 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/yasyf/daemonkit/durable"
 
 	"github.com/yasyf/cc-context/internal/cleanup"
 )
-
-const serveLockWait = 2 * time.Second
 
 type server struct {
 	engine   *Engine
@@ -58,7 +55,7 @@ func listen(ctx context.Context, e *Engine, layout cleanup.Layout) (*server, err
 	if err := layout.Ensure(); err != nil {
 		return nil, err
 	}
-	lockCtx, cancel := context.WithTimeout(ctx, serveLockWait)
+	lockCtx, cancel := context.WithTimeout(ctx, cleanup.ServeLockWait)
 	lock, err := durable.AcquireLock(lockCtx, layout.ServeLockPath())
 	cancel()
 	if err != nil {

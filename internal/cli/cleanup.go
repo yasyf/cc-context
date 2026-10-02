@@ -36,6 +36,24 @@ type cleanupPreviewKey struct{}
 
 type cleanupPreviewer func(ctx context.Context, r cleanup.Request) (cleanup.Job, error)
 
+type cleanupJobDamagedError struct {
+	damaged cleanup.Damaged
+	seen    cleanup.Phase
+}
+
+func (e *cleanupJobDamagedError) Error() string {
+	return fmt.Sprintf("job %s was last seen %s, and the daemon now reports its record damaged: %s", e.damaged.ID, e.seen, e.damaged.Error)
+}
+
+type cleanupJobMissingError struct {
+	id   string
+	seen cleanup.Phase
+}
+
+func (e *cleanupJobMissingError) Error() string {
+	return fmt.Sprintf("job %s was last seen %s, and the daemon no longer holds it: its completion cannot be proven, since it may have finished and been pruned or its record was lost", e.id, e.seen)
+}
+
 func withCleanup(ctx context.Context, svc cleanup.Service) context.Context {
 	return context.WithValue(ctx, cleanupKey{}, svc)
 }
@@ -225,18 +243,17 @@ func readCleanupStatus(ctx context.Context, svc cleanup.Service, q cleanup.Query
 }
 
 func waitCleanupJob(ctx context.Context, svc cleanup.Service, id string) (cleanup.Job, error) {
-	var seen *cleanup.Job
+	var seen cleanup.Phase
 	for delay := cleanupWaitPollFloor; ; delay = min(2*delay, cleanupWaitPollCeiling) {
 		report, err := readCleanupStatus(ctx, svc, cleanup.Query{JobID: id})
-		if seen != nil && errors.Is(err, cleanup.ErrUnknownJob) {
-			seen.Phase = cleanup.PhaseDone
-			return *seen, nil
+		if seen != "" && errors.Is(err, cleanup.ErrUnknownJob) {
+			return cleanup.Job{}, vanishedCleanupJob(ctx, svc, id, seen)
 		}
 		if err != nil {
 			return cleanup.Job{}, err
 		}
 		job := report.Jobs[0]
-		seen = &job
+		seen = job.Phase
 		switch {
 		case job.Phase == cleanup.PhaseDone:
 			return job, nil
@@ -249,6 +266,17 @@ func waitCleanupJob(ctx context.Context, svc cleanup.Service, id string) (cleanu
 		case <-time.After(delay):
 		}
 	}
+}
+
+func vanishedCleanupJob(ctx context.Context, svc cleanup.Service, id string, seen cleanup.Phase) error {
+	report, err := readCleanupStatus(ctx, svc, cleanup.Query{})
+	if err != nil {
+		return fmt.Errorf("job %s was last seen %s, and the daemon no longer holds it; reading the queue for a damaged record: %w", id, seen, err)
+	}
+	if i := slices.IndexFunc(report.Damaged, func(d cleanup.Damaged) bool { return d.ID == id }); i >= 0 {
+		return &cleanupJobDamagedError{damaged: report.Damaged[i], seen: seen}
+	}
+	return &cleanupJobMissingError{id: id, seen: seen}
 }
 
 func cleanupJobIDArg(cmd *cobra.Command, args []string) error {

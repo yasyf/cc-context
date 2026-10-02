@@ -1,6 +1,8 @@
 // Package agent keeps one current cleanup daemon serving for the user: it
 // installs the daemon's own copy of the executable and its LaunchAgent,
-// replaces a daemon older than the client asking, and never downgrades one.
+// replaces a daemon older than the client asking, and never downgrades one. It
+// installs and applies only while holding the daemon's serve lock, so it never
+// does either over a daemon that started first.
 // Reach only observes: it greets whichever daemon serves the socket and never
 // installs, stops, or starts one. A socket that refuses or is missing counts as
 // no daemon only while no process holds the daemon's serve lock.
@@ -28,6 +30,7 @@ import (
 
 const (
 	defaultTimeout = 15 * time.Second
+	claimWait      = time.Second
 	pollFloor      = 10 * time.Millisecond
 	pollCeiling    = 250 * time.Millisecond
 )
@@ -38,6 +41,7 @@ var (
 	errOutdatedAfterStart = errors.New("cleanup agent: an outdated daemon answered after the restart")
 	errNoDaemon           = errors.New("cleanup agent: no cleanup daemon accepts connections")
 	errUnresponsive       = errors.New("cleanup agent: the cleanup daemon did not answer")
+	errStartedElsewhere   = errors.New("cleanup agent: a daemon took the serve lock before this client could start one")
 
 	releasePattern = regexp.MustCompile(`^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`)
 )
@@ -56,7 +60,9 @@ type Options struct {
 	Launchctl func(ctx context.Context, path string, args ...string) (output string, code int, err error)
 	// Timeout bounds each wait: a hello, the start lock, an outdated daemon's
 	// shutdown and exit, applying the LaunchAgent, and readiness after a
-	// start. Zero is 15s.
+	// start. Zero is 15s. It must stay under cleanup.ServeLockWait: the daemon
+	// an apply launches waits that long for the serve lock this client holds
+	// until the apply returns.
 	Timeout time.Duration
 }
 
@@ -258,18 +264,52 @@ func (s starter) connect(ctx context.Context) (cleanup.Control, error) {
 	if err != nil || found == current {
 		return ctl, err
 	}
-	if _, err := InstallProgram(s.Layout, s.Source); err != nil {
-		return nil, err
-	}
 	if found == stale {
 		if err := s.shutdown(ctx, ctl, info.PID); err != nil {
 			return nil, err
 		}
 	}
-	if err := s.start(ctx); err != nil {
+	err = s.launch(ctx)
+	switch {
+	case errors.Is(err, errStartedElsewhere):
+		slog.Info("cleanup agent: leaving the daemon that started first to come up", "err", err)
+		ready, readyErr := s.ready(ctx, socket)
+		if readyErr != nil {
+			return nil, fmt.Errorf("%w; it is left running: %w", err, readyErr)
+		}
+		return ready, nil
+	case err != nil:
 		return nil, err
 	}
 	return s.ready(ctx, socket)
+}
+
+func (s starter) launch(ctx context.Context) error {
+	lock, err := s.claim(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = lock.Close() }()
+	if _, err := InstallProgram(s.Layout, s.Source); err != nil {
+		return err
+	}
+	return s.start(ctx)
+}
+
+func (s starter) claim(ctx context.Context) (*durable.Lock, error) {
+	path := s.Layout.ServeLockPath()
+	bounded, cancel := context.WithTimeout(ctx, claimWait)
+	defer cancel()
+	lock, err := durable.AcquireLock(bounded, path)
+	switch {
+	case err == nil:
+		return lock, nil
+	case ctx.Err() != nil:
+		return nil, fmt.Errorf("cleanup agent: take the serve lock %s: %w", path, ctx.Err())
+	case errors.Is(err, durable.ErrLockBusy):
+		return nil, fmt.Errorf("%w: %s", errStartedElsewhere, path)
+	}
+	return nil, fmt.Errorf("cleanup agent: take the serve lock %s: %w", path, err)
 }
 
 func (s starter) probe(ctx context.Context, socket string) (cleanup.Control, cleanup.Info, standing, error) {
