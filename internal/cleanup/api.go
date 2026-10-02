@@ -12,7 +12,7 @@ import (
 // Protocol is the version of the daemon's wire protocol. A client and a daemon
 // that disagree on it refuse each other rather than guess. Both sides decode
 // strictly, so any change to a request or reply shape bumps it.
-const Protocol = 1
+const Protocol = 2
 
 var (
 	// ErrUnsupported reports a platform the daemon does not run on; removal
@@ -300,10 +300,10 @@ type Service interface {
 	// Wait returns once the job is done, or with a *BlockedError once it
 	// blocks.
 	Wait(ctx context.Context, jobID string) (Job, error)
-	// Pause stops physical deletion queue-wide. Logical removals still run,
-	// and every job stays durable.
+	// Pause stops the queue: every job rests at its journaled phase and
+	// Remove, Defer, and Adopt return ErrPaused until Resume, across restarts.
 	Pause(ctx context.Context) error
-	// Resume lets physical deletion continue.
+	// Resume lets the queue run again, rested jobs and new removals alike.
 	Resume(ctx context.Context) error
 	// Retry clears a job's blockage and lets it run again from the phase it
 	// stopped in.

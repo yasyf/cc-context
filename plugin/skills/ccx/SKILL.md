@@ -429,9 +429,10 @@ bounded slices. Use `--wait` to wait for deletion, and
 does not prove completion. Linux keeps synchronous removal.
 
 `ccx vcs cleanup wait <job-id>` waits for one job; `retry <job-id>` retries a
-blocked job after its cause is addressed. `ccx vcs cleanup pause` and `resume`
-control physical deletion across the queue. Status bounds its output and
-reports omitted jobs without scanning files for totals or an ETA.
+blocked job after its cause is addressed. `ccx vcs cleanup pause` stops the
+queue, deletion and new removals alike, and `resume` lets it run again. Status
+bounds its output and reports omitted jobs without scanning files for totals
+or an ETA.
 
 `ccx vcs cleanup watchers --json` inspects watchers without changing them.
 Retire watcher roots or change their configuration only for authorized unused

@@ -38,8 +38,8 @@ their publication rules. The public command group is `ccx vcs cleanup`.
 | --- | --- |
 | `ccx vcs cleanup status [job-id] --json` | Report the queue, or one job, with progress and any blockage |
 | `ccx vcs cleanup wait <job-id>` | Wait for one job to finish; report a blockage if it cannot proceed |
-| `ccx vcs cleanup pause` | Pause physical deletion across the queue |
-| `ccx vcs cleanup resume` | Resume physical deletion across the queue |
+| `ccx vcs cleanup pause` | Pause the queue: deletion stops, every job rests at its phase, and new removals are refused |
+| `ccx vcs cleanup resume` | Resume the queue |
 | `ccx vcs cleanup retry <job-id>` | Retry a blocked job from its recorded phase after its cause is addressed |
 | `ccx vcs cleanup watchers --json` | Inspect watcher roots and consumers without retiring them |
 

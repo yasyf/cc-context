@@ -128,19 +128,19 @@ func (r *Relocator) stream(ctx context.Context, git string, delim byte, visit fu
 
 func (r *Relocator) scan(ctx context.Context, git string, delim byte, visit func(head []byte), args ...string) error {
 	cmd, stderr := r.command(ctx, git, args...)
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
-	}
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
-	}
-	scanErr := eachRecord(stdout, delim, visit)
-	if scanErr != nil {
-		scanErr = errors.Join(scanErr, stdout.Close())
-	}
-	if err := cmd.Wait(); err != nil {
-		return gitFailure(args, err, stderr)
+	records, feed := io.Pipe()
+	cmd.Stdout = feed
+	scanned := make(chan error, 1)
+	go func() {
+		err := eachRecord(records, delim, visit)
+		_ = records.CloseWithError(err)
+		scanned <- err
+	}()
+	runErr := cmd.Run()
+	_ = feed.Close()
+	scanErr := <-scanned
+	if runErr != nil {
+		return gitFailure(args, runErr, stderr)
 	}
 	if scanErr != nil {
 		return fmt.Errorf("git %s: read output: %w", strings.Join(args, " "), scanErr)

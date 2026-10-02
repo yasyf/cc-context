@@ -151,18 +151,53 @@ func TestAdvanceBlocksAnInterruptedGitStepAsATimeoutThenRecovers(t *testing.T) {
 	}
 }
 
+func (f *fixture) forkingGit(then string) (git, live, block string) {
+	f.t.Helper()
+	live, block = f.fifo("live"), f.fifo("block")
+	git = filepath.Join(f.root, "forking-git")
+	script := fmt.Sprintf("#!/bin/sh\n( exec 3>%s; read x < %s ) &\n%s\n", live, block, then)
+	if err := os.WriteFile(git, []byte(script), 0o700); err != nil { //nolint:gosec // the script stands in for git and is executed
+		f.t.Fatalf("write forking git: %v", err)
+	}
+	return git, live, block
+}
+
+func descendantLimit() time.Duration {
+	child := &exec.Cmd{}
+	render.BoundChild(child)
+	return shortBudget + child.WaitDelay + 5*time.Second
+}
+
+func releaseDescendant(t *testing.T, descendant *os.File, block string) {
+	t.Helper()
+	release := openFIFO(t, block, os.O_WRONLY, "the descendant was signalled: nothing reads the block fifo")
+	if _, err := release.Write([]byte("x\n")); err != nil {
+		t.Fatalf("release the descendant: %v", err)
+	}
+	if err := release.Close(); err != nil {
+		t.Fatalf("close the block fifo: %v", err)
+	}
+	exited := make(chan error, 1)
+	go func() {
+		_, err := descendant.Read(make([]byte, 1))
+		exited <- err
+	}()
+	select {
+	case err := <-exited:
+		if !errors.Is(err, io.EOF) {
+			t.Errorf("live fifo read = %v, want EOF once the released descendant exits", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the released descendant never exited")
+	}
+}
+
 func TestGitBudgetKillsOnlyTheDirectChild(t *testing.T) {
 	f := newFixture(t)
 	f.bound(shortBudget)
-	live, block, hold := f.fifo("live"), f.fifo("block"), f.fifo("hold")
-	forking := filepath.Join(f.root, "forking-git")
-	script := fmt.Sprintf("#!/bin/sh\n( exec 3>%s; read x < %s ) &\nread x < %s\n", live, block, hold)
-	if err := os.WriteFile(forking, []byte(script), 0o700); err != nil { //nolint:gosec // the script stands in for git and is executed
-		t.Fatalf("write forking git: %v", err)
-	}
-	child := &exec.Cmd{}
-	render.BoundChild(child)
-	limit := shortBudget + child.WaitDelay + 5*time.Second
+	hold := f.fifo("hold")
+	forking, live, block := f.forkingGit("read x < " + hold)
+	limit := descendantLimit()
 
 	started := time.Now()
 	result := make(chan error, 1)
@@ -186,24 +221,43 @@ func TestGitBudgetKillsOnlyTheDirectChild(t *testing.T) {
 		t.Errorf("rewrite error = %v, want the direct child killed at its budget", err)
 	}
 
-	release := openFIFO(t, block, os.O_WRONLY, "the descendant was signalled: nothing reads the block fifo")
-	if _, err := release.Write([]byte("x\n")); err != nil {
-		t.Fatalf("release the descendant: %v", err)
+	releaseDescendant(t, descendant, block)
+}
+
+func TestStreamedReadGivesUpOnStdoutADescendantHolds(t *testing.T) {
+	tests := []struct {
+		name string
+		then func(f *fixture) string
+		want error
+	}{
+		{"git exited at once", func(*fixture) string { return "exit 0" }, exec.ErrWaitDelay},
+		{"git killed at its budget", func(f *fixture) string { return "read x < " + f.fifo("hold") }, cleanup.ErrUnprobed},
 	}
-	if err := release.Close(); err != nil {
-		t.Fatalf("close the block fifo: %v", err)
-	}
-	exited := make(chan error, 1)
-	go func() {
-		_, err := descendant.Read(make([]byte, 1))
-		exited <- err
-	}()
-	select {
-	case err := <-exited:
-		if !errors.Is(err, io.EOF) {
-			t.Errorf("live fifo read = %v, want EOF once the released descendant exits", err)
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("the released descendant never exited")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFixture(t)
+			f.bound(shortBudget)
+			forking, live, block := f.forkingGit(tt.then(f))
+			limit := descendantLimit()
+
+			result := make(chan error, 1)
+			go func() {
+				result <- f.relocator.stream(context.Background(), forking, 0, func([]byte) {}, "status")
+			}()
+			descendant := openFIFO(t, live, os.O_RDONLY, "the descendant never opened the live fifo")
+			defer func() { _ = descendant.Close() }()
+
+			var err error
+			select {
+			case err = <-result:
+			case <-time.After(limit):
+				t.Fatalf("stream did not return within %s: the read waited on the stdout the descendant holds", limit)
+			}
+			if !errors.Is(err, tt.want) {
+				t.Errorf("stream error = %v, want %v", err, tt.want)
+			}
+
+			releaseDescendant(t, descendant, block)
+		})
 	}
 }

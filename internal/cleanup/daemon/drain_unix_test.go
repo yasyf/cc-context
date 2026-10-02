@@ -256,9 +256,23 @@ func (f *gitFixture) awaitEntry(hold string) {
 
 func (f *gitFixture) releaseHeld() {
 	f.t.Helper()
-	file, err := os.OpenFile(f.release, os.O_WRONLY|syscall.O_NONBLOCK, 0) //nolint:gosec // the fifo is the test's own
-	if err != nil {
+	opened := make(chan *os.File, 1)
+	failed := make(chan error, 1)
+	go func() {
+		file, err := os.OpenFile(f.release, os.O_WRONLY, 0) //nolint:gosec // the fifo is the test's own
+		if err != nil {
+			failed <- err
+			return
+		}
+		opened <- file
+	}()
+	var file *os.File
+	select {
+	case file = <-opened:
+	case err := <-failed:
 		f.t.Fatalf("release the held git: %v", err)
+	case <-time.After(drainWait):
+		f.t.Fatalf("the held git never read the release fifo within %s", drainWait)
 	}
 	if _, err := file.Write([]byte("x\n")); err != nil {
 		f.t.Fatalf("release the held git: %v", err)
