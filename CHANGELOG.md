@@ -256,6 +256,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to run first. Reorders that never put a branch below the base its PR
   targets, such as linearizing two sibling PRs, still push.
 
+- **Cleanup shutdown bounds Git work, and pause holds the whole queue.**
+  Every relocation Git command has a configurable budget, one minute by
+  default. Reads cancel on shutdown; streamed Git reads stay bounded even
+  when a descendant keeps stdout open. Mutations finish or time out before
+  the worker yields at a saved phase. Jobs resume there after restart;
+  timeouts retry with the existing backoff. Captured error output has a
+  byte limit. Cancellation signals only direct children, including watcher
+  census commands; no cleanup subprocess is signalled as a process group.
+  Descendants are left alone, with a bounded wait for their output pipes.
+
+  Pause stops preparation, relocation, and deletion. The daemon rejects
+  removals, adoptions, and deferred releases before Git work, naming
+  `ccx vcs cleanup resume`. Queued jobs keep their phases; `stack continue`
+  keeps completed work for a retry after resume.
+
+  Protocol 2 adds `paused`; `cleanup status`/`cleanup wait` refuse a
+  protocol-1 daemon until the next queue-changing command replaces it.
+
 - **`worktree rm --wait` bounds its wait requests.** After removal, it uses
   the same read-only polling as `cleanup wait`: one bounded hello and a 10s
   limit per status request, replacing the server-side wait with no deadline.
