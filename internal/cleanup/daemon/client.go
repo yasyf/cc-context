@@ -42,6 +42,28 @@ func Dial(socket string) *Client { return &Client{socket: socket} }
 // daemon speaks, so a client can tell an older daemon from a newer one.
 func (c *Client) Hello(ctx context.Context) (cleanup.Info, error) {
 	reply, err := c.roundTrip(ctx, request{Op: opHello})
+	return hello(reply, err)
+}
+
+// Greet is Hello on one connection whose kernel peer observe receives before
+// the hello is sent, so what observe records belongs to the process whose
+// reply follows.
+func (c *Client) Greet(ctx context.Context, observe func(cleanup.Peer)) (cleanup.Info, error) {
+	conn, err := c.connect(ctx)
+	if err != nil {
+		return cleanup.Info{}, err
+	}
+	peer, err := peerCred(conn)
+	if err != nil {
+		_ = conn.Close()
+		return cleanup.Info{}, fmt.Errorf("%w: %s: %w", cleanup.ErrUnidentifiedPeer, c.socket, err)
+	}
+	observe(peer)
+	reply, err := send(ctx, conn, request{Op: opHello})
+	return hello(reply, err)
+}
+
+func hello(reply response, err error) (cleanup.Info, error) {
 	if err != nil {
 		return cleanup.Info{}, err
 	}

@@ -323,12 +323,16 @@ type Peer struct {
 	UID int
 }
 
-// Control is a Service reached over the daemon's socket, with the two verbs a
+// Control is a Service reached over the daemon's socket, with the verbs a
 // client needs to replace the daemon behind it.
 type Control interface {
 	Service
 	// Hello identifies the serving daemon.
 	Hello(ctx context.Context) (Info, error)
+	// Greet is Hello on one connection whose kernel peer observe receives
+	// before the hello is sent, so what observe records belongs to the
+	// process whose reply follows.
+	Greet(ctx context.Context, observe func(Peer)) (Info, error)
 	// Shutdown stops the daemon after its current step and journal flush,
 	// returning once it stops serving. It sends only on a connection whose
 	// Peer verify accepts and returns a refusal with nothing sent.

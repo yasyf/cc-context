@@ -114,6 +114,21 @@ func (d *standIn) stop(t *testing.T) []string {
 	return d.ops
 }
 
+type replacedAfterGreet struct {
+	cleanup.Control
+	observed func(cleanup.Peer)
+	replace  func()
+}
+
+func (c replacedAfterGreet) Greet(ctx context.Context, observe func(cleanup.Peer)) (cleanup.Info, error) {
+	info, err := c.Control.Greet(ctx, func(peer cleanup.Peer) {
+		c.observed(peer)
+		observe(peer)
+	})
+	c.replace()
+	return info, err
+}
+
 func TestConnectNeverStopsADaemonThatReplacedTheObservedOne(t *testing.T) {
 	root, err := os.MkdirTemp("/tmp", "ccxs")
 	if err != nil {
@@ -141,13 +156,13 @@ func TestConnectNeverStopsADaemonThatReplacedTheObservedOne(t *testing.T) {
 		observedOps []string
 		successor   *standIn
 		applied     int
+		dials       int
 	)
 	s := starter{
 		Options: Options{
 			Layout:  layout,
 			Version: "v1.2.3",
 			Source:  source,
-			Dial:    func(socket string) cleanup.Control { return daemon.Dial(socket) },
 			Timeout: 5 * time.Second,
 		},
 		apply: func(context.Context) error {
@@ -156,17 +171,24 @@ func TestConnectNeverStopsADaemonThatReplacedTheObservedOne(t *testing.T) {
 		},
 		alive: processAlive,
 		held:  serveLockHeld,
+		born:  processStart,
 	}
-	s.born = func(pid int) (time.Time, error) {
-		start, err := processStart(pid)
-		if successor == nil {
-			if pid != observed.cmd.Process.Pid {
-				t.Errorf("recorded the start of pid %d, want the observed daemon's pid %d", pid, observed.cmd.Process.Pid)
-			}
-			observedOps = observed.stop(t)
-			successor = startStandIn(t, socket)
+	observedPeer := func(peer cleanup.Peer) {
+		if peer.PID != observed.cmd.Process.Pid {
+			t.Errorf("observed pid %d on the hello connection, want the observed daemon's pid %d", peer.PID, observed.cmd.Process.Pid)
 		}
-		return start, err
+	}
+	replace := func() {
+		observedOps = observed.stop(t)
+		successor = startStandIn(t, socket)
+	}
+	s.Dial = func(socket string) cleanup.Control {
+		dials++
+		ctl := daemon.Dial(socket)
+		if dials != 2 {
+			return ctl
+		}
+		return replacedAfterGreet{Control: ctl, observed: observedPeer, replace: replace}
 	}
 
 	ctl, err := s.connect(t.Context())

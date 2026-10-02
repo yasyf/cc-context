@@ -62,11 +62,16 @@ record was lost. A job never seen is still "not found" (exit 3).
 `launchd` starts the daemon at login; queue-changing commands that reach the
 daemon (`ccx vcs worktree rm`, `ccx vcs cleanup pause`/`resume`/`retry`/`adopt`,
 and deferred removals) install and start or replace it. Under the start
-lock, they record the outdated daemon's process start time. They send the
-stop only on a connection whose kernel peer credentials match its process
-ID and the client's user ID and whose serving process still has that start
-time. They send nothing on any other connection and never retry the stop on
-a new one. This works with older daemons without a wire protocol change.
+lock, they read and keep the kernel peer credentials and process start time
+on the hello connection, before sending hello. The reply on that connection
+proves the saved identity belongs to the process that answered.
+
+They send the stop only on a connection whose kernel peer credentials match
+that process ID and the client's user ID, with the same process start time.
+No comparison with the client's clock is involved, so a backward clock step
+cannot authorize stopping a daemon that reused the process ID. They send
+nothing on any other connection and never retry the stop on a new one. This
+works with older daemons without a wire protocol change.
 
 After a verified stop, the socket wait also ends if a different process
 answers; they still confirm the outdated daemon's exit before replacing
@@ -80,13 +85,13 @@ If another daemon takes over the socket before the stop or takes the serve
 lock first, the command installs and applies nothing and stops nothing.
 It waits up to the agent timeout for that daemon to answer, uses it if it
 is current, and otherwise reports an error saying it was left running. When
-the process start time or peer credentials cannot be read, the command
-stops, installs, and applies nothing and reports that the outdated daemon
-could not be verified and is left running. If a daemon accepts and closes
-without replying, never sends its hello, or holds its serve lock behind a
-refusing or missing socket, the command probes again under the start lock.
-If it still does not answer, the command reports an error before any
-install or apply.
+the process start time or peer credentials cannot be read, or the hello's
+process ID differs from the kernel's, the command stops, installs, and
+applies nothing and reports that the daemon could not be verified and is
+left running. If a daemon accepts and closes without replying, never sends
+its hello, or holds its serve lock behind a refusing or missing socket, the
+command probes again under the start lock. If it still does not answer, the
+command reports an error before any install or apply.
 
 During the v0.67.3 upgrade incident, the draining daemon accepted each new
 connection and closed it at once without a reply, so status saw an empty

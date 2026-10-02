@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strconv"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -553,6 +554,95 @@ func TestClientShutdownSendsNothingToARefusedPeer(t *testing.T) {
 	}
 	if got := <-received; got.err != nil || len(got.data) != 0 {
 		t.Errorf("the refused peer received %q, %v; want nothing before the connection closed", got.data, got.err)
+	}
+}
+
+func TestClientGreetObservesTheServingPeer(t *testing.T) {
+	ctx := context.Background()
+	f := serveFixture(t, nil)
+	var observed []cleanup.Peer
+	info, err := f.client.Greet(ctx, func(peer cleanup.Peer) { observed = append(observed, peer) })
+	if err != nil {
+		t.Fatalf("Greet() = %v", err)
+	}
+	if want := []cleanup.Peer{{PID: os.Getpid(), UID: os.Getuid()}}; !slices.Equal(observed, want) {
+		t.Errorf("observe saw %+v, want the serving process %+v once", observed, want)
+	}
+	hello, err := f.client.Hello(ctx)
+	if err != nil || hello != info {
+		t.Errorf("Hello() = %+v, %v; want Greet's %+v", hello, err, info)
+	}
+}
+
+func TestClientGreetSendsNothingBeforeObserve(t *testing.T) {
+	root, err := os.MkdirTemp("/tmp", "ccxc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(root); err != nil {
+			t.Errorf("remove %s: %v", root, err)
+		}
+	})
+	socket := filepath.Join(root, "s")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = listener.Close() }()
+	type accepted struct {
+		conn net.Conn
+		err  error
+	}
+	conns := make(chan accepted, 1)
+	go func() {
+		conn, err := listener.Accept()
+		conns <- accepted{conn: conn, err: err}
+	}()
+	hello := fmt.Sprintf(`{"info":{"version":"v0.0.1","protocol":%d,"pid":7}}`, cleanup.Protocol)
+	served := make(chan error, 1)
+	var (
+		early    int
+		earlyErr error
+	)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	info, err := Dial(socket).Greet(ctx, func(cleanup.Peer) {
+		got := <-conns
+		if got.err != nil {
+			t.Fatalf("Accept() = %v", got.err)
+		}
+		raw, err := got.conn.(*net.UnixConn).SyscallConn()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := raw.Read(func(fd uintptr) bool {
+			early, earlyErr = syscall.Read(int(fd), make([]byte, 1))
+			return true
+		}); err != nil {
+			t.Fatal(err)
+		}
+		go func() {
+			defer func() { _ = got.conn.Close() }()
+			if _, err := bufio.NewReader(got.conn).ReadBytes('\n'); err != nil {
+				served <- err
+				return
+			}
+			_, err := got.conn.Write([]byte(hello + "\n"))
+			served <- err
+		}()
+	})
+	if err != nil {
+		t.Fatalf("Greet() = %v", err)
+	}
+	if want := (cleanup.Info{Version: "v0.0.1", Protocol: cleanup.Protocol, PID: 7}); info != want {
+		t.Errorf("Greet() = %+v, want %+v", info, want)
+	}
+	if early > 0 || !errors.Is(earlyErr, syscall.EAGAIN) {
+		t.Errorf("the daemon had %d bytes, %v buffered when observe ran; want none and %v: nothing is sent before observe", early, earlyErr, syscall.EAGAIN)
+	}
+	if err := <-served; err != nil {
+		t.Errorf("the stand-in daemon = %v", err)
 	}
 }
 
