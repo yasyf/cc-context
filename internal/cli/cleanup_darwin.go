@@ -22,7 +22,10 @@ import (
 	"github.com/yasyf/cc-context/internal/version"
 )
 
-const cleanupDaemonized = true
+const (
+	cleanupDaemonized   = true
+	cleanupReachTimeout = 5 * time.Second
+)
 
 func connectCleanup(ctx context.Context) (cleanup.Service, error) {
 	exe, err := os.Executable()
@@ -41,6 +44,14 @@ func connectCleanup(ctx context.Context) (cleanup.Service, error) {
 	})
 	if err != nil {
 		return nil, fmt.Errorf("cleanup: reach the deletion daemon: %w", err)
+	}
+	return control, nil
+}
+
+func reachCleanup(ctx context.Context) (cleanup.Service, error) {
+	control, err := agent.Reach(ctx, cleanup.DefaultLayout(), func(socket string) cleanup.Control { return daemon.Dial(socket) }, cleanupReachTimeout)
+	if err != nil {
+		return nil, fmt.Errorf("cleanup: read the deletion daemon: %w", err)
 	}
 	return control, nil
 }

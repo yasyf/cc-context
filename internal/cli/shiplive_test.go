@@ -38,6 +38,9 @@ func TestMain(m *testing.M) {
 	cleanupDefault = func(context.Context) (cleanup.Service, error) {
 		panic("cli: the cleanup daemon was reached on a context no test decorated")
 	}
+	cleanupReadDefault = func(context.Context) (cleanup.Service, error) {
+		panic("cli: the cleanup daemon was read on a context no test decorated")
+	}
 	cleanupPreviewDefault = func(context.Context, cleanup.Request) (cleanup.Job, error) {
 		panic("cli: the cleanup preflight was reached on a context no test decorated")
 	}

@@ -10,7 +10,8 @@ import (
 )
 
 // Protocol is the version of the daemon's wire protocol. A client and a daemon
-// that disagree on it refuse each other rather than guess.
+// that disagree on it refuse each other rather than guess. Both sides decode
+// strictly, so any change to a request or reply shape bumps it.
 const Protocol = 1
 
 var (

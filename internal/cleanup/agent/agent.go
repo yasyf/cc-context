@@ -1,6 +1,9 @@
 // Package agent keeps one current cleanup daemon serving for the user: it
 // installs the daemon's own copy of the executable and its LaunchAgent,
 // replaces a daemon older than the client asking, and never downgrades one.
+// Reach only observes: it greets whichever daemon serves the socket and never
+// installs, stops, or starts one. A socket that refuses or is missing counts as
+// no daemon only while no process holds the daemon's serve lock.
 package agent
 
 import (
@@ -31,7 +34,10 @@ const (
 
 var (
 	errNewerProtocol      = errors.New("cleanup agent: the daemon speaks a newer protocol; upgrade ccx")
+	errOlderProtocol      = errors.New("cleanup agent: the daemon speaks an older protocol; the next queue-changing command replaces it")
 	errOutdatedAfterStart = errors.New("cleanup agent: an outdated daemon answered after the restart")
+	errNoDaemon           = errors.New("cleanup agent: no cleanup daemon accepts connections")
+	errUnresponsive       = errors.New("cleanup agent: the cleanup daemon did not answer")
 
 	releasePattern = regexp.MustCompile(`^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`)
 )
@@ -49,7 +55,8 @@ type Options struct {
 	// Launchctl runs /bin/launchctl on behalf of launchd.Apply.
 	Launchctl func(ctx context.Context, path string, args ...string) (output string, code int, err error)
 	// Timeout bounds each wait: a hello, the start lock, an outdated daemon's
-	// shutdown and exit, and readiness after a start. Zero is 15s.
+	// shutdown and exit, applying the LaunchAgent, and readiness after a
+	// start. Zero is 15s.
 	Timeout time.Duration
 }
 
@@ -65,6 +72,7 @@ type starter struct {
 	Options
 	apply func(ctx context.Context) error
 	alive func(pid int) bool
+	held  func(lock string) (bool, error)
 }
 
 // Outdated reports whether a client at version client replaces a daemon at
@@ -175,13 +183,67 @@ func digest(r io.Reader) ([sha256.Size]byte, error) {
 	return [sha256.Size]byte(h.Sum(nil)), nil
 }
 
+func (s starter) reach(ctx context.Context) (cleanup.Control, error) {
+	socket, err := s.Layout.Socket()
+	if err != nil {
+		return nil, err
+	}
+	ctl, info, err := s.greet(ctx, socket)
+	switch {
+	case errors.Is(err, errNoDaemon):
+		return nil, fmt.Errorf("%w; launchd starts one at login, and the next ccx command that queues or steers deletion, such as worktree rm or cleanup pause, installs and starts it", err)
+	case err != nil:
+		return nil, err
+	case info.Protocol > cleanup.Protocol:
+		return nil, fmt.Errorf("%w: daemon %s (pid %d) speaks protocol %d, this ccx %d", errNewerProtocol, info.Version, info.PID, info.Protocol, cleanup.Protocol)
+	case info.Protocol < cleanup.Protocol:
+		return nil, fmt.Errorf("%w: daemon %s (pid %d) speaks protocol %d, this ccx %d", errOlderProtocol, info.Version, info.PID, info.Protocol, cleanup.Protocol)
+	}
+	return ctl, nil
+}
+
+func (s starter) greet(ctx context.Context, socket string) (cleanup.Control, cleanup.Info, error) {
+	bounded, cancel := context.WithTimeout(ctx, s.timeout())
+	defer cancel()
+	ctl := s.Dial(socket)
+	info, err := ctl.Hello(bounded)
+	switch {
+	case err == nil:
+		return ctl, info, nil
+	case ctx.Err() != nil:
+		return nil, cleanup.Info{}, fmt.Errorf("cleanup agent: hello to %s: %w", socket, ctx.Err())
+	case errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ECONNREFUSED):
+		return nil, cleanup.Info{}, s.vacant(socket, err)
+	case bounded.Err() != nil:
+		return nil, cleanup.Info{}, fmt.Errorf("%w: %s sent no hello within %s", errUnresponsive, socket, s.timeout())
+	case errors.Is(err, io.EOF) || errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ECONNRESET):
+		return nil, cleanup.Info{}, fmt.Errorf("%w: %s closed the connection without a hello; a daemon told to shut down refuses requests until it exits: %w", errUnresponsive, socket, err)
+	}
+	return nil, cleanup.Info{}, fmt.Errorf("%w: hello to %s: %w", errUnresponsive, socket, err)
+}
+
+func (s starter) vacant(socket string, refused error) error {
+	lock := s.Layout.ServeLockPath()
+	held, err := s.held(lock)
+	switch {
+	case err != nil:
+		return fmt.Errorf("cleanup agent: hello to %s: %w; %w", socket, refused, err)
+	case held:
+		return fmt.Errorf("%w: a daemon holds the serve lock %s but is not accepting connections on %s: %w", errUnresponsive, lock, socket, refused)
+	}
+	return fmt.Errorf("%w on %s: %w", errNoDaemon, socket, refused)
+}
+
 func (s starter) connect(ctx context.Context) (cleanup.Control, error) {
 	socket, err := s.Layout.Socket()
 	if err != nil {
 		return nil, err
 	}
 	ctl, _, found, err := s.probe(ctx, socket)
-	if err != nil || found == current {
+	switch {
+	case errors.Is(err, errUnresponsive):
+		slog.Debug("cleanup agent: the daemon did not answer; probing again under the start lock", "socket", socket, "err", err)
+	case err != nil || found == current:
 		return ctl, err
 	}
 	if err := s.Layout.Ensure(); err != nil {
@@ -204,20 +266,20 @@ func (s starter) connect(ctx context.Context) (cleanup.Control, error) {
 			return nil, err
 		}
 	}
-	if err := s.apply(ctx); err != nil {
-		return nil, fmt.Errorf("cleanup agent: start the daemon: %w", err)
+	if err := s.start(ctx); err != nil {
+		return nil, err
 	}
 	return s.ready(ctx, socket)
 }
 
 func (s starter) probe(ctx context.Context, socket string) (cleanup.Control, cleanup.Info, standing, error) {
-	ctx, cancel := context.WithTimeout(ctx, s.timeout())
-	defer cancel()
-	ctl := s.Dial(socket)
-	info, err := ctl.Hello(ctx)
-	if err != nil {
+	ctl, info, err := s.greet(ctx, socket)
+	switch {
+	case errors.Is(err, errNoDaemon):
 		slog.Debug("cleanup agent: no daemon answered", "socket", socket, "err", err)
 		return nil, cleanup.Info{}, absent, nil
+	case err != nil:
+		return nil, cleanup.Info{}, absent, err
 	}
 	found, err := s.judge(info)
 	if err != nil {
@@ -261,6 +323,21 @@ func (s starter) shutdown(ctx context.Context, ctl cleanup.Control, pid int) err
 		}
 	}
 	return nil
+}
+
+func (s starter) start(ctx context.Context) error {
+	bounded, cancel := context.WithTimeout(ctx, s.timeout())
+	defer cancel()
+	err := s.apply(bounded)
+	switch {
+	case err == nil:
+		return nil
+	case ctx.Err() != nil:
+		return fmt.Errorf("cleanup agent: start the daemon: %w", ctx.Err())
+	case bounded.Err() != nil:
+		return fmt.Errorf("cleanup agent: start the daemon: launchd did not finish within %s: %w", s.timeout(), err)
+	}
+	return fmt.Errorf("cleanup agent: start the daemon: %w", err)
 }
 
 func (s starter) ready(ctx context.Context, socket string) (cleanup.Control, error) {

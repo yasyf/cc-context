@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -17,7 +18,15 @@ import (
 	"github.com/yasyf/cc-context/internal/render"
 )
 
-const legacyQuarantineOwner = "legacy quarantine import"
+const (
+	legacyQuarantineOwner  = "legacy quarantine import"
+	cleanupStatusTimeout   = 10 * time.Second
+	cleanupWaitPollFloor   = 10 * time.Millisecond
+	cleanupWaitPollCeiling = time.Second
+)
+
+const cleanupReadNote = `It reads the running daemon and never installs, starts, or replaces one; an
+older daemon on this ccx's protocol still answers.`
 
 var cleanupHandoffTimeout = 2 * time.Minute
 
@@ -38,6 +47,15 @@ func cleanupService(ctx context.Context) (cleanup.Service, error) {
 		return svc, nil
 	}
 	return cleanupDefault(ctx)
+}
+
+var cleanupReadDefault = reachCleanup
+
+func cleanupReadService(ctx context.Context) (cleanup.Service, error) {
+	if svc, ok := ctx.Value(cleanupKey{}).(cleanup.Service); ok {
+		return svc, nil
+	}
+	return cleanupReadDefault(ctx)
 }
 
 func withCleanupPreview(ctx context.Context, preview cleanupPreviewer) context.Context {
@@ -154,8 +172,10 @@ jobs first in queue order, then the most recently finished, under a header
 naming the daemon, its fseventsd throttle, and whether deletion is paused. The
 report is bounded by --limit and says how many jobs it omitted; it never scans
 a tree for a total or estimates time remaining. While deletion is paused, a job
-waiting only on physical deletion reads "paused".`,
-		Args: cobra.MaximumNArgs(1),
+waiting only on physical deletion reads "paused".
+
+` + cleanupReadNote,
+		Args: cobra.MatchAll(cobra.MaximumNArgs(1), cleanupJobIDArg),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if limit < 0 {
 				return fmt.Errorf("cleanup status: --limit %d is negative", limit)
@@ -174,11 +194,11 @@ waiting only on physical deletion reads "paused".`,
 
 func runCleanupStatus(cmd *cobra.Command, q cleanup.Query, asJSON bool) error {
 	ctx := cmd.Context()
-	svc, err := cleanupService(ctx)
+	svc, err := cleanupReadService(ctx)
 	if err != nil {
 		return fmt.Errorf("cleanup status: %w", err)
 	}
-	report, err := svc.Status(ctx, q)
+	report, err := readCleanupStatus(ctx, svc, q)
 	if err != nil {
 		return cleanupJobErr("cleanup status", q.JobID, err)
 	}
@@ -191,6 +211,50 @@ func runCleanupStatus(cmd *cobra.Command, q cleanup.Query, asJSON bool) error {
 		return nil
 	}
 	cmd.Print(renderCleanupReport(report))
+	return nil
+}
+
+func readCleanupStatus(ctx context.Context, svc cleanup.Service, q cleanup.Query) (cleanup.Report, error) {
+	ctx, cancel := context.WithTimeout(ctx, cleanupStatusTimeout)
+	defer cancel()
+	report, err := svc.Status(ctx, q)
+	if errors.Is(err, context.DeadlineExceeded) {
+		return cleanup.Report{}, fmt.Errorf("the daemon answered its hello but sent no report within %s: %w", cleanupStatusTimeout, err)
+	}
+	return report, err
+}
+
+func waitCleanupJob(ctx context.Context, svc cleanup.Service, id string) (cleanup.Job, error) {
+	var seen *cleanup.Job
+	for delay := cleanupWaitPollFloor; ; delay = min(2*delay, cleanupWaitPollCeiling) {
+		report, err := readCleanupStatus(ctx, svc, cleanup.Query{JobID: id})
+		if seen != nil && errors.Is(err, cleanup.ErrUnknownJob) {
+			seen.Phase = cleanup.PhaseDone
+			return *seen, nil
+		}
+		if err != nil {
+			return cleanup.Job{}, err
+		}
+		job := report.Jobs[0]
+		seen = &job
+		switch {
+		case job.Phase == cleanup.PhaseDone:
+			return job, nil
+		case job.Blocked != nil:
+			return job, &cleanup.BlockedError{Job: job}
+		}
+		select {
+		case <-ctx.Done():
+			return cleanup.Job{}, ctx.Err()
+		case <-time.After(delay):
+		}
+	}
+}
+
+func cleanupJobIDArg(cmd *cobra.Command, args []string) error {
+	if slices.Contains(args, "") {
+		return fmt.Errorf("cleanup %s: the job id is empty", cmd.Name())
+	}
 	return nil
 }
 
@@ -249,15 +313,18 @@ func newCleanupWaitCmd() *cobra.Command {
 		Long: `Wait until one job's tree is deleted.
 
 It returns once the job is done, and fails with the blockage when the job stops
-for an operator instead.`,
-		Args: cobra.ExactArgs(1),
+for an operator instead. It polls the job's status until then, and fails when
+the daemon leaves any one poll unanswered for ` + cleanupStatusTimeout.String() + `.
+
+` + cleanupReadNote,
+		Args: cobra.MatchAll(cobra.ExactArgs(1), cleanupJobIDArg),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			svc, err := cleanupService(ctx)
+			svc, err := cleanupReadService(ctx)
 			if err != nil {
 				return fmt.Errorf("cleanup wait: %w", err)
 			}
-			job, err := svc.Wait(ctx, args[0])
+			job, err := waitCleanupJob(ctx, svc, args[0])
 			if err != nil {
 				return cleanupJobErr("cleanup wait", args[0], err)
 			}
@@ -319,7 +386,7 @@ func newCleanupRetryCmd() *cobra.Command {
 
 A blocked job is never retried on its own: address the cause its blockage
 names, then retry it. The job re-verifies everything it checked before.`,
-		Args: cobra.ExactArgs(1),
+		Args: cobra.MatchAll(cobra.ExactArgs(1), cleanupJobIDArg),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			svc, err := cleanupService(ctx)

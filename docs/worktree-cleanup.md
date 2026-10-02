@@ -43,6 +43,25 @@ their publication rules. The public command group is `ccx vcs cleanup`.
 | `ccx vcs cleanup retry <job-id>` | Retry a blocked job from its recorded phase after its cause is addressed |
 | `ccx vcs cleanup watchers --json` | Inspect watcher roots and consumers without retiring them |
 
+`ccx vcs cleanup status` and `ccx vcs cleanup wait` are read-only: they query
+only the running daemon with one 5s hello and bounded requests, including
+older versions that speak the same protocol. `cleanup wait` polls status
+with a 10s limit per request and backs off up to 1s between polls; it reports
+a finished job pruned from the queue as finished. `cleanup status`,
+`cleanup wait`, and `cleanup retry` reject an empty job ID.
+They never install a program copy, stop or replace the daemon, apply the
+`LaunchAgent`, or take the start lock, and both fail if no daemon is running.
+`launchd` starts the daemon at login; queue-changing commands that reach the
+daemon (`ccx vcs worktree rm`, `ccx vcs cleanup pause`/`resume`/`retry`/`adopt`,
+and deferred removals) install and start or replace it, with a 15s agent
+timeout on `LaunchAgent` apply. If the daemon accepts and closes without
+replying, never sends its hello, or holds its serve lock behind a refusing or
+missing socket, those commands probe once more under the start lock and
+report an error if it still does not answer, before any install or
+`LaunchAgent` apply. During the v0.67.3 upgrade incident, the draining daemon
+accepted each new connection and closed it at once without a reply, so status
+saw an empty reply and the shutdown wait never saw a refusal.
+
 Inspect queue progress as JSON:
 
 ```sh

@@ -238,6 +238,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stop waiting on pipes a descendant still holds, so the 10 s and 30 s
   limits hold.
 
+- **Cleanup status and wait no longer replace the daemon.** Both use bounded,
+  read-only requests to the running daemon, including older versions with the
+  same protocol. `cleanup wait` polls status with a 10s limit per request and
+  backoff up to 1s between polls and reports a finished job pruned from the
+  queue as finished. `cleanup status`, `cleanup wait`, and `cleanup retry`
+  reject an empty job ID, so `cleanup status ""` no longer prints the whole
+  queue.
+
+  Queue-changing commands that reach the daemon (`ccx vcs worktree rm`,
+  `ccx vcs cleanup pause`/`resume`/`retry`/`adopt`, and deferred removals)
+  probe once more under the start lock if the daemon accepts and closes
+  without replying, never sends its hello, or holds its serve lock behind a
+  refusing or missing socket. If it still does not answer, they report an error
+  before any install or `LaunchAgent` apply, instead of installing and
+  starting a replacement. Applying the `LaunchAgent` has the 15s agent timeout.
+
+  After the v0.67.3 upgrade, status replaced the v0.67.2 program and requested
+  shutdown; while draining a roughly 15-minute relocation, the daemon accepted
+  each new connection and closed it at once without a reply. Status saw an
+  empty reply, and the shutdown wait never saw a refusal, causing status to
+  time out.
+
 - **Transcript, dependency, and root-manifest guards stop blocking unrelated
   searches and subproject manifest reads.** Transcript matching now covers
   session and subagent transcripts and their containing directories, including

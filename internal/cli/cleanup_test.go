@@ -9,12 +9,15 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/spf13/cobra"
 
 	"github.com/yasyf/cc-context/internal/cleanup"
 	"github.com/yasyf/cc-context/internal/cleanup/daemon"
@@ -1150,6 +1153,177 @@ func TestCleanupAdopt(t *testing.T) {
 	}
 }
 
+type statusReply struct {
+	job cleanup.Job
+	err error
+}
+
+type scriptedStatus struct {
+	cleanup.Service
+	t       *testing.T
+	replies []statusReply
+	queries []cleanup.Query
+}
+
+func (s *scriptedStatus) Status(ctx context.Context, q cleanup.Query) (cleanup.Report, error) {
+	poll := len(s.queries)
+	if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) > cleanupStatusTimeout {
+		s.t.Errorf("status request %d deadline = %v (set %v), want one within %s", poll, deadline, ok, cleanupStatusTimeout)
+	}
+	if poll == len(s.replies) {
+		s.t.Fatalf("status request %d outran the %d scripted replies", poll, len(s.replies))
+	}
+	s.queries = append(s.queries, q)
+	reply := s.replies[poll]
+	if reply.err != nil {
+		return cleanup.Report{}, reply.err
+	}
+	return cleanup.Report{Jobs: []cleanup.Job{reply.job}}, nil
+}
+
+func (s *scriptedStatus) Wait(context.Context, string) (cleanup.Job, error) {
+	s.t.Error("cleanup wait held one Wait request open with no bound, want bounded status polls")
+	return cleanup.Job{}, errors.New("unbounded wait")
+}
+
+func TestCleanupReadVerbsBoundEachRequest(t *testing.T) {
+	const (
+		id        = "0000000000000000-000000"
+		statusErr = "cleanup status: the daemon answered its hello but sent no report within 10s: context deadline exceeded"
+		waitErr   = "cleanup wait: the daemon answered its hello but sent no report within 10s: context deadline exceeded"
+	)
+	running := cleanup.Job{ID: id, Phase: cleanup.PhaseDeleting, Original: "/w/feat", Removed: 3}
+	done := cleanup.Job{ID: id, Phase: cleanup.PhaseDone, Original: "/w/feat", Removed: 7}
+	blocked := cleanup.Job{ID: id, Phase: cleanup.PhaseDeleting, Original: "/w/feat", Blocked: &cleanup.Blockage{Reason: "delete", Detail: "operation not permitted"}}
+	stalled := statusReply{err: context.DeadlineExceeded}
+	one := cleanup.Query{JobID: id}
+	tests := []struct {
+		name         string
+		args         []string
+		replies      []statusReply
+		wantQueries  []cleanup.Query
+		wantOut      string
+		wantErr      string
+		wantDeadline bool
+		wantBlocked  bool
+		wantNotFound bool
+	}{
+		{
+			name:         "status stalled after the hello",
+			args:         []string{"status"},
+			replies:      []statusReply{stalled},
+			wantQueries:  []cleanup.Query{{}},
+			wantErr:      statusErr,
+			wantDeadline: true,
+		},
+		{
+			name:         "status of one job stalled after the hello",
+			args:         []string{"status", id},
+			replies:      []statusReply{stalled},
+			wantQueries:  []cleanup.Query{one},
+			wantErr:      statusErr,
+			wantDeadline: true,
+		},
+		{
+			name:         "wait stalled after the hello",
+			args:         []string{"wait", id},
+			replies:      []statusReply{stalled},
+			wantQueries:  []cleanup.Query{one},
+			wantErr:      waitErr,
+			wantDeadline: true,
+		},
+		{
+			name:         "wait stalled on a later poll",
+			args:         []string{"wait", id},
+			replies:      []statusReply{{job: running}, {job: running}, stalled},
+			wantQueries:  []cleanup.Query{one, one, one},
+			wantErr:      waitErr,
+			wantDeadline: true,
+		},
+		{
+			name:        "wait polls until the job is done",
+			args:        []string{"wait", id},
+			replies:     []statusReply{{job: running}, {job: running}, {job: done}},
+			wantQueries: []cleanup.Query{one, one, one},
+			wantOut:     id + " · done · /w/feat · 7 entries\n",
+		},
+		{
+			name:        "wait fails with the blockage",
+			args:        []string{"wait", id},
+			replies:     []statusReply{{job: running}, {job: blocked}},
+			wantQueries: []cleanup.Query{one, one},
+			wantErr:     "cleanup wait: cleanup job " + id + " is blocked at deleting (delete): operation not permitted",
+			wantBlocked: true,
+		},
+		{
+			name:        "wait reports a job pruned after it was seen as done",
+			args:        []string{"wait", id},
+			replies:     []statusReply{{job: running}, {err: cleanup.ErrUnknownJob}},
+			wantQueries: []cleanup.Query{one, one},
+			wantOut:     id + " · done · /w/feat · 3 entries\n",
+		},
+		{
+			name:         "wait on a job never seen is not found",
+			args:         []string{"wait", id},
+			replies:      []statusReply{{err: cleanup.ErrUnknownJob}},
+			wantQueries:  []cleanup.Query{one},
+			wantErr:      "cleanup wait: job " + id + " not found: cleanup: no such job",
+			wantNotFound: true,
+		},
+		{
+			name:    "wait refuses an empty job id",
+			args:    []string{"wait", ""},
+			wantErr: "cleanup wait: the job id is empty",
+		},
+		{
+			name:    "status refuses an empty job id",
+			args:    []string{"status", ""},
+			wantErr: "cleanup status: the job id is empty",
+		},
+		{
+			name:    "retry refuses an empty job id",
+			args:    []string{"retry", ""},
+			wantErr: "cleanup retry: the job id is empty",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := &scriptedStatus{t: t, replies: tt.replies}
+			cmd := newCleanupCmd() //nolint:contextcheck // ExecuteContext below is what sets cmd's context
+			cmd.SilenceUsage = true
+			cmd.SilenceErrors = true
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+			cmd.SetErr(&out)
+			cmd.SetArgs(tt.args)
+
+			err := cmd.ExecuteContext(withCleanup(context.Background(), svc))
+			if tt.wantErr == "" && err != nil {
+				t.Fatalf("%v error = %v, want none", tt.args, err)
+			}
+			if tt.wantErr != "" && (err == nil || err.Error() != tt.wantErr) {
+				t.Fatalf("%v error = %v, want %q", tt.args, err, tt.wantErr)
+			}
+			if got := errors.Is(err, ErrNotFound) && errors.Is(err, cleanup.ErrUnknownJob) && ExitCode(err) == 3; got != tt.wantNotFound {
+				t.Errorf("err %v is a not-found exiting 3 = %v, want %v", err, got, tt.wantNotFound)
+			}
+			if got := errors.Is(err, context.DeadlineExceeded); got != tt.wantDeadline {
+				t.Errorf("errors.Is(err, context.DeadlineExceeded) = %v, want %v", got, tt.wantDeadline)
+			}
+			var blockage *cleanup.BlockedError
+			if got := errors.As(err, &blockage); got != tt.wantBlocked || (got && *blockage.Job.Blocked != *blocked.Blocked) {
+				t.Errorf("errors.As(err, *cleanup.BlockedError) = %v (%+v), want %v carrying the job's blockage", got, blockage, tt.wantBlocked)
+			}
+			if !slices.Equal(svc.queries, tt.wantQueries) {
+				t.Errorf("status requests = %+v, want %+v", svc.queries, tt.wantQueries)
+			}
+			if out.String() != tt.wantOut {
+				t.Errorf("output = %q, want %q", out.String(), tt.wantOut)
+			}
+		})
+	}
+}
+
 func TestCleanupRenderReport(t *testing.T) {
 	at := time.Date(2026, 9, 30, 8, 0, 0, 0, time.UTC)
 	tests := []struct {
@@ -1216,6 +1390,20 @@ func TestCleanupRenderReport(t *testing.T) {
 }
 
 func TestCleanupEntryPointsUndecorated(t *testing.T) {
+	const (
+		reached = "cli: the cleanup daemon was reached on a context no test decorated"
+		read    = "cli: the cleanup daemon was read on a context no test decorated"
+	)
+	osArgs := os.Args
+	t.Cleanup(func() { os.Args = osArgs })
+	os.Args = []string{osArgs[0], "stray-positional"}
+	verb := func(newCmd func() *cobra.Command, args ...string) func() {
+		return func() {
+			cmd := newCmd() //nolint:contextcheck // ExecuteContext below is what sets cmd's context
+			cmd.SetArgs(append([]string{}, args...))
+			_ = cmd.ExecuteContext(context.Background())
+		}
+	}
 	tests := []struct {
 		name string
 		call func()
@@ -1224,22 +1412,25 @@ func TestCleanupEntryPointsUndecorated(t *testing.T) {
 		{
 			name: "service",
 			call: func() { _, _ = cleanupService(context.Background()) },
-			want: "cli: the cleanup daemon was reached on a context no test decorated",
+			want: reached,
 		},
+		{
+			name: "read service",
+			call: func() { _, _ = cleanupReadService(context.Background()) },
+			want: read,
+		},
+		{name: "status verb", call: verb(newCleanupStatusCmd), want: read},
+		{name: "status verb for one job", call: verb(newCleanupStatusCmd, "0000000000000000-000000"), want: read},
+		{name: "wait verb", call: verb(newCleanupWaitCmd, "0000000000000000-000000"), want: read},
+		{name: "pause verb", call: verb(newCleanupPauseCmd), want: reached},
+		{name: "resume verb", call: verb(newCleanupResumeCmd), want: reached},
+		{name: "retry verb", call: verb(newCleanupRetryCmd, "0000000000000000-000000"), want: reached},
 		{
 			name: "preview",
 			call: func() { _, _ = cleanupPreview(context.Background())(context.Background(), cleanup.Request{}) },
 			want: "cli: the cleanup preflight was reached on a context no test decorated",
 		},
-		{
-			name: "serve",
-			call: func() {
-				cmd := newCleanupServeCmd() //nolint:contextcheck // ExecuteContext below is what sets cmd's context
-				cmd.SetArgs([]string{})
-				_ = cmd.ExecuteContext(context.Background())
-			},
-			want: "cli: the cleanup daemon was served from a test",
-		},
+		{name: "serve", call: verb(newCleanupServeCmd), want: "cli: the cleanup daemon was served from a test"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
