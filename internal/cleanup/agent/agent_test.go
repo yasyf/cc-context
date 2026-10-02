@@ -277,9 +277,11 @@ func observeContention(t *testing.T, contention error, round func(t *testing.T) 
 	for n := 1; ; n++ {
 		var (
 			err     error
+			ran     bool
 			settled bool
 		)
 		passed := t.Run(fmt.Sprintf("round %d", n), func(t *testing.T) {
+			ran = true
 			err = round(t)
 			if errors.Is(err, contention) || !errors.Is(err, context.DeadlineExceeded) {
 				settled = true
@@ -287,7 +289,7 @@ func observeContention(t *testing.T, contention error, round func(t *testing.T) 
 			}
 		})
 		switch {
-		case settled || !passed:
+		case settled || !passed || !ran:
 			return
 		case time.Now().After(deadline):
 			t.Fatalf("no round observed the held lock within 30s: %v", err)
