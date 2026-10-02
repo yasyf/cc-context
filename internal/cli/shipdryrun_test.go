@@ -125,6 +125,18 @@ func TestShipDryRunParentAtTrunkIsTrunk(t *testing.T) {
 	}
 }
 
+func TestShipDryRunNewBranchFromAnUntrackedBaseLevelWithTrunk(t *testing.T) {
+	f := shipGTRepo(t)
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "v3-lane-base", "origin/main")
+	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	shipGTReady(t, f)
+
+	report := dryRunReport(t, f, "-m", "fix: frobnicate", "--new-branch=lane-fix")
+	if parent := dryRunValues(report, "parent"); len(parent) != 1 || !strings.HasPrefix(parent[0], "main"+shipSep) || !strings.Contains(parent[0], "cuts lane-fix with git") {
+		t.Fatalf("parent = %v, want lane-fix cut with git onto trunk", parent)
+	}
+}
+
 func TestShipDryRunOrdersOnlyContainedTrackedBranches(t *testing.T) {
 	f := shipGTRepo(t)
 	shipGTStack(t, f, "x", "y")
