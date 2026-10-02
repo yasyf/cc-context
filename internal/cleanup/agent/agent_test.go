@@ -194,12 +194,12 @@ func (d *fakeDaemon) apply(ctx context.Context) error {
 	d.events = append(d.events, "apply")
 	hangs := d.applyHangs
 	d.mu.Unlock()
+	if d.entered != nil {
+		d.enter.Do(func() { close(d.entered) })
+	}
 	if hangs {
 		<-ctx.Done()
 		return ctx.Err()
-	}
-	if d.entered != nil {
-		d.enter.Do(func() { close(d.entered) })
 	}
 	if d.gate != nil {
 		<-d.gate
@@ -263,6 +263,7 @@ func fixture(t *testing.T, d *fakeDaemon) starter {
 			Dial:    d.dial,
 			Timeout: 5 * time.Second,
 		},
+		lockWait: 5 * time.Second,
 		apply:    d.apply,
 		alive:    d.alive,
 		held:     d.held,
@@ -613,13 +614,18 @@ func TestConnect(t *testing.T) {
 }
 
 func TestConnectReportsACancelledCallerDuringStart(t *testing.T) {
-	d := &fakeDaemon{applyHangs: true}
+	d := &fakeDaemon{applyHangs: true, entered: make(chan struct{})}
 	s := fixture(t, d)
 	s.Timeout = 5 * time.Second
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	stop := time.AfterFunc(100*time.Millisecond, cancel)
-	defer stop.Stop()
+	go func() {
+		select {
+		case <-d.entered:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
 
 	ctl, err := s.connect(ctx)
 	if !errors.Is(err, context.Canceled) || ctl != nil {
@@ -957,7 +963,7 @@ func TestConnectStopsOnlyTheOutdatedDaemonItObserved(t *testing.T) {
 func TestConnectStartLockBusy(t *testing.T) {
 	d := &fakeDaemon{starts: &cleanup.Info{Version: "v1.2.3", Protocol: cleanup.Protocol}}
 	s := fixture(t, d)
-	s.Timeout = 50 * time.Millisecond
+	s.lockWait = 50 * time.Millisecond
 	if err := s.Layout.Ensure(); err != nil {
 		t.Fatal(err)
 	}
@@ -978,6 +984,27 @@ func TestConnectStartLockBusy(t *testing.T) {
 	}
 	if _, err := os.Lstat(s.Layout.ProgramPath()); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("program copy stat error = %v, want nothing installed without the lock", err)
+	}
+}
+
+func TestLockTimeout(t *testing.T) {
+	tests := []struct {
+		name     string
+		lockWait time.Duration
+		timeout  time.Duration
+		want     time.Duration
+	}{
+		{"both unset is the default", 0, 0, defaultTimeout},
+		{"unset lock wait follows the timeout", 0, 100 * time.Millisecond, 100 * time.Millisecond},
+		{"set lock wait overrides the timeout", 5 * time.Second, 100 * time.Millisecond, 5 * time.Second},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := starter{Options: Options{Timeout: tt.timeout}, lockWait: tt.lockWait}
+			if got := s.lockTimeout(); got != tt.want {
+				t.Errorf("lockTimeout() = %s, want %s", got, tt.want)
+			}
+		})
 	}
 }
 

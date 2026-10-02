@@ -77,6 +77,7 @@ const (
 
 type starter struct {
 	Options
+	lockWait time.Duration
 	apply    func(ctx context.Context) error
 	alive    func(pid int) bool
 	held     func(lock string) (bool, error)
@@ -369,7 +370,7 @@ func (s starter) judge(info cleanup.Info) (standing, error) {
 }
 
 func (s starter) lock(ctx context.Context) (*durable.Lock, error) {
-	ctx, cancel := context.WithTimeout(ctx, s.timeout())
+	ctx, cancel := context.WithTimeout(ctx, s.lockTimeout())
 	defer cancel()
 	lock, err := durable.AcquireLock(ctx, s.Layout.StartLockPath())
 	if err != nil {
@@ -465,4 +466,11 @@ func (s starter) timeout() time.Duration {
 		return defaultTimeout
 	}
 	return s.Timeout
+}
+
+func (s starter) lockTimeout() time.Duration {
+	if s.lockWait == 0 {
+		return s.timeout()
+	}
+	return s.lockWait
 }
