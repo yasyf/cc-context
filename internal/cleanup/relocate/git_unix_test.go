@@ -81,12 +81,23 @@ func (f *fixture) holdingGit(hold string, after bool) (git, marker, entered, ack
 
 func (f *fixture) acknowledge(acked, hold string) {
 	f.t.Helper()
-	ack := openFIFO(f.t, acked, os.O_WRONLY, "the held "+hold+" never awaited its acknowledgement")
-	if _, err := ack.Write([]byte("x\n")); err != nil {
-		f.t.Fatalf("acknowledge the held %s: %v", hold, err)
-	}
-	if err := ack.Close(); err != nil {
-		f.t.Fatalf("close the acknowledgement fifo: %v", err)
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		ack, err := os.OpenFile(acked, os.O_WRONLY|syscall.O_NONBLOCK, 0) //nolint:gosec // the fifo is the test's own
+		if errors.Is(err, syscall.ENXIO) && time.Now().Before(deadline) {
+			time.Sleep(10 * time.Millisecond)
+			continue
+		}
+		if err != nil {
+			f.t.Fatalf("the held %s never awaited its acknowledgement: %v", hold, err)
+		}
+		if _, err := ack.Write([]byte("x\n")); err != nil {
+			f.t.Fatalf("acknowledge the held %s: %v", hold, err)
+		}
+		if err := ack.Close(); err != nil {
+			f.t.Fatalf("close the acknowledgement fifo: %v", err)
+		}
+		return
 	}
 }
 
