@@ -271,6 +271,32 @@ func fixture(t *testing.T, d *fakeDaemon) starter {
 	}
 }
 
+func observeContention(t *testing.T, contention error, round func(t *testing.T) error, check func(t *testing.T, err error)) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for n := 1; ; n++ {
+		var (
+			err     error
+			ran     bool
+			settled bool
+		)
+		passed := t.Run(fmt.Sprintf("round %d", n), func(t *testing.T) {
+			ran = true
+			err = round(t)
+			if errors.Is(err, contention) || !errors.Is(err, context.DeadlineExceeded) {
+				settled = true
+				check(t, err)
+			}
+		})
+		switch {
+		case settled || !passed || !ran:
+			return
+		case time.Now().After(deadline):
+			t.Fatalf("no round observed the held lock within 30s: %v", err)
+		}
+	}
+}
+
 func TestOutdated(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -724,69 +750,78 @@ func TestConnectLeavesADaemonThatTakesTheServeLockFirst(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			d := &fakeDaemon{serving: tt.serving, starts: &current}
-			s := fixture(t, d)
-			s.Timeout = 100 * time.Millisecond
-			admit := func() {
-				ctx, cancel := context.WithTimeout(t.Context(), time.Second)
-				defer cancel()
-				lock, err := durable.AcquireLock(ctx, s.Layout.ServeLockPath())
-				if err != nil {
-					t.Fatalf("the starting daemon's AcquireLock() = %v", err)
+			var (
+				d   *fakeDaemon
+				s   starter
+				ctl cleanup.Control
+			)
+			observeContention(t, errStartedElsewhere, func(t *testing.T) error {
+				d = &fakeDaemon{serving: tt.serving, starts: &current}
+				s = fixture(t, d)
+				s.Timeout = 100 * time.Millisecond
+				admit := func() {
+					ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+					defer cancel()
+					lock, err := durable.AcquireLock(ctx, s.Layout.ServeLockPath())
+					if err != nil {
+						t.Fatalf("the starting daemon's AcquireLock() = %v", err)
+					}
+					t.Cleanup(func() { _ = lock.Close() })
+					d.mu.Lock()
+					defer d.mu.Unlock()
+					d.serving = tt.answers
 				}
-				t.Cleanup(func() { _ = lock.Close() })
-				d.mu.Lock()
-				defer d.mu.Unlock()
-				d.serving = tt.answers
-			}
-			held, alive := s.held, s.alive
-			s.held = func(lock string) (bool, error) {
-				observed, err := held(lock)
-				if tt.barrier == "held" && d.count("held serve.lock") == 2 {
-					admit()
+				held, alive := s.held, s.alive
+				s.held = func(lock string) (bool, error) {
+					observed, err := held(lock)
+					if tt.barrier == "held" && d.count("held serve.lock") == 2 {
+						admit()
+					}
+					return observed, err
 				}
-				return observed, err
-			}
-			s.alive = func(pid int) bool {
-				running := alive(pid)
-				if tt.barrier == "alive" && !running {
-					admit()
+				s.alive = func(pid int) bool {
+					running := alive(pid)
+					if tt.barrier == "alive" && !running {
+						admit()
+					}
+					return running
 				}
-				return running
-			}
-
-			ctl, err := s.connect(t.Context())
-			if !errors.Is(err, tt.wantErr) {
-				t.Fatalf("connect() error = %v, want %v", err, tt.wantErr)
-			}
-			if tt.wantErr != nil {
-				if ctl != nil {
-					t.Errorf("connect() control = %v, want nil beside an error", ctl)
+				var err error
+				ctl, err = s.connect(t.Context())
+				return err
+			}, func(t *testing.T, err error) {
+				if !errors.Is(err, tt.wantErr) {
+					t.Fatalf("connect() error = %v, want %v", err, tt.wantErr)
 				}
-				if want := "; it is left running: cleanup agent: the daemon was not ready within 100ms"; !strings.Contains(err.Error(), want) {
-					t.Errorf("connect() error = %q, want it to contain %q", err, want)
+				if tt.wantErr != nil {
+					if ctl != nil {
+						t.Errorf("connect() control = %v, want nil beside an error", ctl)
+					}
+					if want := "; it is left running: cleanup agent: the daemon was not ready within 100ms"; !strings.Contains(err.Error(), want) {
+						t.Errorf("connect() error = %q, want it to contain %q", err, want)
+					}
+				} else if info, err := ctl.Hello(context.Background()); err != nil || info != current {
+					t.Errorf("returned control answers %+v, %v; want the daemon that started first, %+v", info, err, current)
 				}
-			} else if info, err := ctl.Hello(context.Background()); err != nil || info != current {
-				t.Errorf("returned control answers %+v, %v; want the daemon that started first, %+v", info, err, current)
-			}
-			events, _ := d.recorded()
-			if len(events) <= len(tt.wantProbes) || !slices.Equal(events[:len(tt.wantProbes)], tt.wantProbes) {
-				t.Fatalf("events = %q, want %q and then readiness hellos", events, tt.wantProbes)
-			}
-			for _, e := range events[len(tt.wantProbes):] {
-				if e != "hello" {
-					t.Errorf("event %q after the daemon took the serve lock, want only readiness hellos", e)
+				events, _ := d.recorded()
+				if len(events) <= len(tt.wantProbes) || !slices.Equal(events[:len(tt.wantProbes)], tt.wantProbes) {
+					t.Fatalf("events = %q, want %q and then readiness hellos", events, tt.wantProbes)
 				}
-			}
-			if got := d.count("apply"); got != 0 {
-				t.Errorf("apply ran %d times, want 0: the LaunchAgent must not be applied over the daemon that started first", got)
-			}
-			if got := d.count("shutdown"); got != tt.wantShutdowns {
-				t.Errorf("shutdown ran %d times, want %d", got, tt.wantShutdowns)
-			}
-			if _, err := os.Lstat(s.Layout.ProgramPath()); !errors.Is(err, fs.ErrNotExist) {
-				t.Errorf("program copy stat error = %v, want nothing installed under the daemon that started first", err)
-			}
+				for _, e := range events[len(tt.wantProbes):] {
+					if e != "hello" {
+						t.Errorf("event %q after the daemon took the serve lock, want only readiness hellos", e)
+					}
+				}
+				if got := d.count("apply"); got != 0 {
+					t.Errorf("apply ran %d times, want 0: the LaunchAgent must not be applied over the daemon that started first", got)
+				}
+				if got := d.count("shutdown"); got != tt.wantShutdowns {
+					t.Errorf("shutdown ran %d times, want %d", got, tt.wantShutdowns)
+				}
+				if _, err := os.Lstat(s.Layout.ProgramPath()); !errors.Is(err, fs.ErrNotExist) {
+					t.Errorf("program copy stat error = %v, want nothing installed under the daemon that started first", err)
+				}
+			})
 		})
 	}
 }
@@ -961,30 +996,37 @@ func TestConnectStopsOnlyTheOutdatedDaemonItObserved(t *testing.T) {
 }
 
 func TestConnectStartLockBusy(t *testing.T) {
-	d := &fakeDaemon{starts: &cleanup.Info{Version: "v1.2.3", Protocol: cleanup.Protocol}}
-	s := fixture(t, d)
-	s.lockWait = 50 * time.Millisecond
-	if err := s.Layout.Ensure(); err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	held, err := durable.AcquireLock(ctx, s.Layout.StartLockPath())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = held.Close() }()
-
-	_, err = s.connect(context.Background())
-	if !errors.Is(err, durable.ErrLockBusy) {
-		t.Fatalf("connect() error = %v, want %v", err, durable.ErrLockBusy)
-	}
-	if events, _ := d.recorded(); !reflect.DeepEqual(events, []string{"hello", "held serve.lock"}) {
-		t.Errorf("events = %q, want only the first probe", events)
-	}
-	if _, err := os.Lstat(s.Layout.ProgramPath()); !errors.Is(err, fs.ErrNotExist) {
-		t.Errorf("program copy stat error = %v, want nothing installed without the lock", err)
-	}
+	var (
+		d *fakeDaemon
+		s starter
+	)
+	observeContention(t, durable.ErrLockBusy, func(t *testing.T) error {
+		d = &fakeDaemon{starts: &cleanup.Info{Version: "v1.2.3", Protocol: cleanup.Protocol}}
+		s = fixture(t, d)
+		s.lockWait = 50 * time.Millisecond
+		if err := s.Layout.Ensure(); err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		held, err := durable.AcquireLock(ctx, s.Layout.StartLockPath())
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = held.Close() })
+		_, err = s.connect(context.Background())
+		return err
+	}, func(t *testing.T, err error) {
+		if !errors.Is(err, durable.ErrLockBusy) {
+			t.Fatalf("connect() error = %v, want %v", err, durable.ErrLockBusy)
+		}
+		if events, _ := d.recorded(); !reflect.DeepEqual(events, []string{"hello", "held serve.lock"}) {
+			t.Errorf("events = %q, want only the first probe", events)
+		}
+		if _, err := os.Lstat(s.Layout.ProgramPath()); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("program copy stat error = %v, want nothing installed without the lock", err)
+		}
+	})
 }
 
 func TestLockTimeout(t *testing.T) {
