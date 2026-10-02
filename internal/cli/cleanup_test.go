@@ -1253,3 +1253,31 @@ func TestCleanupEntryPointsUndecorated(t *testing.T) {
 		})
 	}
 }
+
+func TestCleanupHandoffReportsABusyDaemon(t *testing.T) {
+	saved := cleanupHandoffTimeout
+	cleanupHandoffTimeout = 10 * time.Millisecond
+	t.Cleanup(func() { cleanupHandoffTimeout = saved })
+	queued := func(ctx context.Context) (cleanup.Receipt, error) {
+		<-ctx.Done()
+		return cleanup.Receipt{}, ctx.Err()
+	}
+
+	_, err := cleanupHandoff(context.Background(), queued)
+	if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "run the command again to rejoin the job") {
+		t.Errorf("handoff past the bound = %v, want a busy-daemon report wrapping the deadline", err)
+	}
+
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = cleanupHandoff(cancelled, queued)
+	if !errors.Is(err, context.Canceled) || strings.Contains(err.Error(), "did not answer") {
+		t.Errorf("handoff under a cancelled caller = %v, want the bare cancellation", err)
+	}
+
+	want := cleanup.Receipt{JobID: "job"}
+	got, err := cleanupHandoff(context.Background(), func(context.Context) (cleanup.Receipt, error) { return want, nil })
+	if err != nil || got != want {
+		t.Errorf("prompt handoff = %+v, %v; want %+v", got, err, want)
+	}
+}

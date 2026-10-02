@@ -729,7 +729,9 @@ func queueGitWorktreeRemoval(ctx context.Context, path string, opts worktreeRmOp
 	if err != nil {
 		return nil, fmt.Errorf("worktree rm: %w", err)
 	}
-	receipt, err := svc.Remove(ctx, cleanup.Request{Worktree: path, Force: opts.force, Git: git})
+	receipt, err := cleanupHandoff(ctx, func(ctx context.Context) (cleanup.Receipt, error) {
+		return svc.Remove(ctx, cleanup.Request{Worktree: path, Force: opts.force, Git: git})
+	})
 	if err != nil {
 		return nil, fmt.Errorf("worktree rm: %w", err)
 	}

@@ -331,7 +331,7 @@ func (r *Relocator) vouch(ctx context.Context, job *cleanup.Job) (reason, detail
 	}
 	detail, err = r.unpinned(ctx, job.Git, job.Repo, job.RecoveryRef, job.Head)
 	if err != nil {
-		return "git", err.Error()
+		return gitReason(err), err.Error()
 	}
 	if detail != "" {
 		return "identity", detail

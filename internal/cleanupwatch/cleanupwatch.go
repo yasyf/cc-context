@@ -132,6 +132,7 @@ func (ExecRunner) Run(ctx context.Context, dir render.Dir, name string, args ...
 	cmd := exec.CommandContext(ctx, lookpath.For(os.Environ()).Bin(name), args...) //nolint:gosec // name is one of watchman, git, ps, lsof and args are built by this package
 	cmd.Dir = string(dir)
 	cmd.Env = append(os.Environ(), "LC_ALL=C")
+	render.BoundProbe(cmd)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -17,6 +18,8 @@ import (
 )
 
 const legacyQuarantineOwner = "legacy quarantine import"
+
+var cleanupHandoffTimeout = 2 * time.Minute
 
 type cleanupKey struct{}
 
@@ -72,11 +75,23 @@ func cleanupDeferWorkspace(ctx context.Context, commonDir, ws, owner string, exp
 	if err != nil {
 		return cleanup.Receipt{}, fmt.Errorf("cleanup defer %s: %w", ws, err)
 	}
-	receipt, err := svc.Defer(ctx, cleanup.DeferRequest{Worktree: ws, CommonDir: commonDir, Owner: owner, Expected: expected, Force: force, Git: git})
+	receipt, err := cleanupHandoff(ctx, func(ctx context.Context) (cleanup.Receipt, error) {
+		return svc.Defer(ctx, cleanup.DeferRequest{Worktree: ws, CommonDir: commonDir, Owner: owner, Expected: expected, Force: force, Git: git})
+	})
 	if err != nil {
 		return cleanup.Receipt{}, fmt.Errorf("cleanup defer %s: %w", ws, err)
 	}
 	return receipt, nil
+}
+
+func cleanupHandoff(ctx context.Context, handoff func(context.Context) (cleanup.Receipt, error)) (cleanup.Receipt, error) {
+	bounded, cancel := context.WithTimeout(ctx, cleanupHandoffTimeout)
+	defer cancel()
+	receipt, err := handoff(bounded)
+	if err != nil && ctx.Err() == nil && errors.Is(bounded.Err(), context.DeadlineExceeded) {
+		return cleanup.Receipt{}, fmt.Errorf("the cleanup daemon did not answer within %s: it runs one removal at a time, and another tree's still holds it; run the command again to rejoin the job: %w", cleanupHandoffTimeout, err)
+	}
+	return receipt, err
 }
 
 func cleanupGit(ctx context.Context, prefix string) (string, error) {

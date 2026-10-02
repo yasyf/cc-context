@@ -185,3 +185,39 @@ func TestExactPushedWitnessDoesNotBypassActivity(t *testing.T) {
 		})
 	}
 }
+
+func TestUnprobedMarksOnlyAReadThatOutlivedItsBound(t *testing.T) {
+	expired, cancelExpired := context.WithTimeout(context.Background(), 0)
+	defer cancelExpired()
+	<-expired.Done()
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	live := context.Background()
+	failed := errors.New("git status: signal: killed")
+
+	tests := []struct {
+		name       string
+		ctx        context.Context
+		bounded    context.Context
+		err        error
+		wantReason string
+	}{
+		{"a read past its bound while the step is live", live, expired, failed, "timeout"},
+		{"a read the step's own cancellation stopped", cancelled, expired, failed, "git"},
+		{"a read that failed inside its bound", live, live, failed, "git"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := unprobed(tt.ctx, tt.bounded, tt.err)
+			if !errors.Is(err, failed) {
+				t.Errorf("unprobed = %v, want it to wrap %v", err, failed)
+			}
+			if got := gitReason(err); got != tt.wantReason {
+				t.Errorf("gitReason(%v) = %q, want %q", err, got, tt.wantReason)
+			}
+		})
+	}
+	if err := unprobed(live, expired, nil); err != nil {
+		t.Errorf("unprobed of a read that succeeded = %v, want nil", err)
+	}
+}
