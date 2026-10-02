@@ -81,9 +81,10 @@ def cat_to(evt: BaseHookEvent, occ: Occurrence) -> str | None:
     return None
 
 
-def is_git_toplevel(cwd: Path | None) -> bool:
+def maybe_git_toplevel(cwd: Path | None) -> bool:
+    """Whether ``cwd`` may be a git toplevel: it is one, or it is unknown."""
     if cwd is None:
-        return False
+        return True
     top = subprocess.run(["git", "-C", str(cwd), "rev-parse", "--show-toplevel"], capture_output=True, text=True)
     return top.returncode == 0 and Path(top.stdout.strip()).resolve() == cwd.resolve()
 
@@ -91,7 +92,7 @@ def is_git_toplevel(cwd: Path | None) -> bool:
 class ManifestCat(CustomCommandLineCondition):
     def check_command_line(self, evt: BaseHookEvent, cl: CommandLine) -> bool:
         return not line_has_heredoc(evt) and any(
-            is_manifest_cat(call.occurrence) and is_git_toplevel(call.cwd) for call in evt.cmd.calls()
+            is_manifest_cat(call.occurrence) and maybe_git_toplevel(call.cwd or evt.cwd) for call in evt.cmd.calls()
         )
 
 
@@ -117,8 +118,12 @@ hook(
         Input(command="cd lib && cat pyproject.toml", cwd="/usr", commands=AT_ROOT): Allow(),
         Input(command="cd bin && cat package.json", cwd="/usr", commands=AT_ROOT): Allow(),
         Input(command="cat go.mod", cwd="/usr/lib", commands={"git -C /usr/lib rev-parse": "/usr"}): Allow(),
+        Input(command='cd "$PWD" && cat package.json', cwd="/usr", commands=AT_ROOT): Block(
+            pattern="ccx repo overview"
+        ),
+        Input(command="cat go.mod"): Block(pattern="ccx repo overview"),
         Input(command="cat go.mod", cwd="/"): Allow(),
-        Input(command="cat go.mod"): Allow(),
+        Input(command='cd "$PWD" && cat package.json', cwd="/usr/lib", commands={"git -C /usr/lib rev-parse": "/usr"}): Allow(),
         Input(command="sudo cat go.mod", cwd="/usr", commands=AT_ROOT): Allow(),
         Input(command="cat internal/go.mod", cwd="/usr", commands=AT_ROOT): Allow(),
         Input(command="cat main.go", cwd="/usr", commands=AT_ROOT): Allow(),

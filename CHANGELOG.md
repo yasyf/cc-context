@@ -213,6 +213,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the effective cwd, including any preceding `cd`, is the git toplevel.
   Subdirectory and non-repository calls run, while the justified transcript and
   dependency blocks from the session remain covered by regression tests.
+  Recursive `grep` and `rg` searches now run raw when every searched directory is
+  scratch under a system temp root or a `tmp`, `temp`, `scratch`, or `scratchpad`
+  ancestor and lies outside any git or jj repository. Scratch directories inside
+  repositories retain their guards. Glob operands that reach transcripts and
+  positive `--glob` selectors targeting dependency source still block.
 
 - **`ccx vcs ship` finishes a pull request restate over GraphQL when REST is
   rate limited.** GitHub can refuse the REST `PATCH` with a secondary rate

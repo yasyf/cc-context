@@ -41,6 +41,7 @@ from .search_common import (
     glued_value,
     grep_glob,
     resolved_is_dir,
+    scratch_tree,
     search_note,
     targets_dependency,
     targets_transcript,
@@ -174,7 +175,7 @@ def rg_visit(evt: PreToolUseEvent, occ: Occurrence, ctx: WalkContext) -> str | R
     call = Call(evt.cmd, occ, ctx.cwd)
     if call.name != "rg" or occ.prev_op == "|" or occ.next_op == "|":
         return None
-    if not rg_tree_shaped(call) or forfeits_substitution(call):
+    if not rg_tree_shaped(call) or forfeits_substitution(call) or scratch_tree(rg_operands(call) or [], call.cwd):
         return None
     if (ops := rg_operands(call)) and any(forfeits_operand(p) for p in ops):
         return None
@@ -203,6 +204,7 @@ hook(
             pattern="cc-transcript"
         ),
         Input(command=f"rg foo {TRANSCRIPTS}/proj/*/subagents/*{TRANSCRIPT_SUFFIX}"): Block(pattern="cc-transcript"),
+        Input(command=f"rg needle {EXAMPLE_SESSION}/*/agent-a1{TRANSCRIPT_SUFFIX}"): Block(pattern="cc-transcript"),
         Input(command="rg -l x ~/.claude/plugins/"): Allow(),
         Input(command=f"cat x | rg foo {EXAMPLE_SESSION}{TRANSCRIPT_SUFFIX}"): Allow(),
         Input(command=f"rg -o '\"slug\": \"[^\"]*\"' {EXAMPLE_SESSION}/tool-results/bo61h71tu.txt"): Allow(),
@@ -227,6 +229,7 @@ hook(
             command='rg -n "class ToolUse" .venv/lib/python3.13/site-packages/cc_transcript/ -A 20 | head -40'
         ): Block(pattern="dep-reader"),
         Input(command="rg --hidden -g '*.py' needle node_modules/express | head"): Block(pattern="dep-reader"),
+        Input(command="rg --hidden --glob 'node_modules/**' needle ."): Block(pattern="dep-reader"),
         Input(command="rg -n foo . | rg -v node_modules"): Allow(),
         Input(command="rg -n foo . | rg -P node_modules"): Allow(),
         Input(command="rg -n -l \"gpt-5.6-sol\" --hidden -g '!**/node_modules/**' . | head -20"): Allow(),

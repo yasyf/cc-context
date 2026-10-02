@@ -238,8 +238,17 @@ class TestDependencyDirTargets:
             ("grep -r foo node_modules/express | head", "grep"),
             ("grep -rn foo generated/", "grep"),
             ("grep -rv foo generated/", "grep"),
+            ("rg --hidden --glob 'node_modules/**' needle .", "rg"),
         ],
-        ids=["rg-dep-segment", "rg-unparsed-flag", "grep-dep-segment", "grep-undotted", "ignored-dir", "invert-ignored-dir"],
+        ids=[
+            "rg-dep-segment",
+            "rg-unparsed-flag",
+            "grep-dep-segment",
+            "grep-undotted",
+            "ignored-dir",
+            "invert-ignored-dir",
+            "rg-positive-glob",
+        ],
     )
     def test_dependency_target_steers(self, command: str, program: str) -> None:
         assert dep_steer(command, program)
@@ -332,3 +341,24 @@ class TestRgBigContextCount:
         command = "rg -A " + "9" * 5000 + " -B 1 needle"
         assert rg_rewrite(command) is None  # emitter forfeits, never raises ValueError
         assert rg_verdict(command) is None  # verdict runs raw
+
+
+class TestScratchTree:
+    """A tree-shaped rg over a scratch directory outside any repository runs raw; inside a repository it still
+    rewrites or blocks."""
+
+    @pytest.fixture
+    def notes(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        monkeypatch.setattr(search_common, "ccx_bin", lambda: "/fake/ccx")
+        (notes := tmp_path / "scratch" / "release-v3").mkdir(parents=True)
+        for sub in ("briefs", "specs"):
+            (notes / sub).mkdir()
+        return notes
+
+    def test_scratch_notes_run_raw(self, notes: Path) -> None:
+        assert rg_verdict(f"cd {notes}; rg -l 'ledger.py' briefs specs") is None
+
+    def test_scratch_inside_a_repo_blocks(self, notes: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+        subprocess.run(["git", "init", "-q"], cwd=notes.parent.parent, check=True)
+        assert isinstance(rg_verdict(f"cd {notes}; rg -c 'ledger.py' briefs specs"), HookResult)

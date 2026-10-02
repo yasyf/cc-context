@@ -42,6 +42,7 @@ from .search_common import (
     loose_operands,
     resolve_operand,
     resolved_is_dir,
+    scratch_tree,
     search_note,
     targets_dependency,
     targets_transcript,
@@ -380,6 +381,9 @@ def grep_visit(evt: PreToolUseEvent, occ: Occurrence, ctx: WalkContext) -> str |
     flood = grep_tree_shaped(call)
     if not flood and not grep_source_shaped(call):
         return None
+    searched = grep_operands(call)
+    if flood and scratch_tree(loose_operands(call, GREP) if searched is None else searched, call.cwd):
+        return None
     if forfeits_substitution(call):
         return None
     if (ops := grep_operands(call)) and any(forfeits_operand(p) for p in ops):
@@ -407,6 +411,7 @@ hook(
             pattern="cc-transcript"
         ),
         Input(command=f"grep -r foo {EXAMPLE_SESSION}/"): Block(pattern="cc-transcript"),
+        Input(command=f"grep -r needle {EXAMPLE_SESSION}/*/"): Block(pattern="cc-transcript"),
         Input(command="grep -r foo ~/.claude/plugins/"): Allow(),
         Input(command=f"cat x | grep foo {EXAMPLE_SESSION}{TRANSCRIPT_SUFFIX}"): Allow(),
         Input(command=f"grep -E 'landing-desk' {EXAMPLE_SESSION}/tool-results/toolu_01H.txt"): Allow(),
@@ -451,6 +456,7 @@ rewrite_command_occurrences(
         Input(command="grep -rnC3 foo ."): Block(pattern="ccx code grep"),
         Input(command="grep -v foo ."): Block(pattern="ccx code grep"),
         Input(command="grep -rv foo ."): Block(),
+        Input(command="grep -rhoE 'log (append|show)' /tmp"): Allow(),
         Input(command="grep --recursive=oops foo ."): Block(),
         Input(command="grep -P 'x(?=y)' ."): Block(),
         Input(command="grep 'a^b' ."): Block(),

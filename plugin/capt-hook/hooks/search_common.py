@@ -23,6 +23,9 @@ from captain_hook import (
     nudge,
 )
 
+from captain_hook.util.scratch import is_scratch_path
+from captain_hook.util.vcs import in_vcs_repo
+
 from .common import IDENT_ALT, ccx_bin, ccx_supports, rewrote_note
 
 if TYPE_CHECKING:
@@ -52,6 +55,8 @@ SEARCH_EXECUTABLES = ("rg", "grep")
 NL_PHRASE = re.compile(r"^[a-z]+(?: [a-z]+)+$")
 
 INCLUDE_SAFE = re.compile(r"^[\w*?./\[\]-]+$")
+
+NO_TRANSCRIPTS = frozenset({"tool-results", "memory"})
 
 SESSION_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
@@ -178,31 +183,35 @@ def glued_value(call: Call, flags: frozenset[str]) -> bool:
 def loose_operands(call: Call, schema: CommandSchema) -> list[str]:
     """Every non-option word plus everything after a bare ``--``, skipping a declared value option's value.
 
-    Over-includes the pattern and an undeclared option's value.
+    A positive ``glob`` value stays, since it selects paths; a negated one is dropped. Over-includes the
+    pattern and an undeclared option's value.
     """
     out: list[str] = []
     after_separator = False
-    value_pending = False
+    pending: Option | None = None
     for word in call.command.words[1:]:
         text = word_text(word)
-        if value_pending:
-            value_pending = False
+        if pending is not None:
+            if pending.name == "glob" and not text.startswith("!"):
+                out.append(text)
+            pending = None
         elif after_separator or text == "-" or not text.startswith("-"):
             out.append(text)
         elif text == "--":
             after_separator = True
         else:
-            value_pending = awaits_value(text, schema)
+            pending = awaited_option(text, schema)
     return out
 
 
-def awaits_value(flag: str, schema: CommandSchema) -> bool:
-    """Whether an option word leaves a declared value to the next word: a long value flag, or a cluster ending in one."""
-    takes_value = {alias for option in schema.options if option.type is not bool for alias in option.flags}
+def awaited_option(flag: str, schema: CommandSchema) -> Option | None:
+    """The declared value option an option word leaves its value to: a long flag, or a cluster ending in one."""
+    takes_value = {alias: option for option in schema.options if option.type is not bool for alias in option.flags}
     if flag.startswith("--"):
-        return flag in takes_value
+        return takes_value.get(flag)
     shorts = [f"-{letter}" for letter in flag[1:]]
-    return next((i for i, short in enumerate(shorts) if short in takes_value), None) == len(shorts) - 1
+    index = next((i for i, short in enumerate(shorts) if short in takes_value), None)
+    return takes_value[shorts[-1]] if index == len(shorts) - 1 else None
 
 
 def context_flags(arguments: Arguments) -> list[tuple[str, str]]:
@@ -249,7 +258,7 @@ class SearchTargets(CustomCommandLineCondition):
 
 
 def is_transcript_path(p: str) -> bool:
-    """Whether a path is a session transcript under the projects store, or a directory holding one.
+    """Whether a path is a session transcript under the projects store, or a directory or glob reaching one.
 
     The store, a project, a session, and its ``subagents`` dir hold transcripts; a ``jsonl`` file sits
     at the session or agent level. A session's ``tool-results`` and a project's ``memory`` hold none.
@@ -261,22 +270,30 @@ def is_transcript_path(p: str) -> bool:
     match segs[start:]:
         case [] | [_]:
             return True
+        case [_, *under] if any(map(has_glob, under)):
+            return globs_transcript(under)
         case [_, leaf]:
-            return names_transcript(leaf) or names_session(leaf)
+            return leaf.endswith(TRANSCRIPT_SUFFIX) or names_session(leaf)
         case [_, session, "subagents"]:
             return names_session(session)
         case [_, session, "subagents", leaf]:
-            return names_session(session) and names_transcript(leaf)
+            return names_session(session) and leaf.endswith(TRANSCRIPT_SUFFIX)
         case _:
             return False
 
 
+def has_glob(seg: str) -> bool:
+    return any(c in seg for c in "*?[")
+
+
 def names_session(seg: str) -> bool:
-    return SESSION_ID.fullmatch(seg) is not None or any(c in seg for c in "*?[")
+    return SESSION_ID.fullmatch(seg) is not None
 
 
-def names_transcript(seg: str) -> bool:
-    return seg.endswith(TRANSCRIPT_SUFFIX) or any(c in seg for c in "*?[")
+def globs_transcript(under: list[str]) -> bool:
+    """Whether a glob below a project can reach a transcript, never through ``tool-results`` or ``memory``."""
+    leaf = under[-1]
+    return NO_TRANSCRIPTS.isdisjoint(under) and (leaf.endswith(TRANSCRIPT_SUFFIX) or leaf[-1] in "*?]")
 
 
 def has_dependency_segment(p: str) -> bool:
@@ -339,6 +356,15 @@ def resolved_is_dir(p: str, cwd: Path | None) -> bool:
     if p.rstrip("/") in (".", ".."):
         return True
     return (path := resolve_operand(p, cwd)) is not None and path.is_dir()
+
+
+def scratch_tree(ops: list[str], cwd: Path | None) -> bool:
+    """Whether every directory a search walks is a scratch directory outside any git or jj repository."""
+    roots = [p for p in ops if resolved_is_dir(p, cwd)] or ["."]
+    paths = [resolve_operand(p, cwd) for p in roots]
+    return all(
+        path is not None and is_scratch_path(resolved := path.resolve()) and not in_vcs_repo(resolved) for path in paths
+    )
 
 
 def brace(dirs: list[str]) -> str:

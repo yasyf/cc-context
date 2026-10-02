@@ -32,6 +32,12 @@ SESSION = search_common.EXAMPLE_SESSION
         (f"{SESSION}/tool-results", False),
         ("~/.claude/projects/p/memory/flake-triage.md", False),
         ("~/.claude/projects/p/memory", False),
+        (f"{SESSION}/*/", True),
+        (f"{SESSION}/*/agent-a1.jsonl", True),
+        ("~/.claude/projects/p/*/subagents/*", True),
+        ("~/.claude/projects/p/*/tool-results/*.txt", False),
+        ("~/.claude/projects/p/memory/*.md", False),
+        (f"{SESSION}/*/agent-a1.meta.json", False),
     ],
     ids=[
         "home-jsonl",
@@ -49,6 +55,12 @@ SESSION = search_common.EXAMPLE_SESSION
         "tool-results-dir",
         "memory-file",
         "memory-dir",
+        "session-child-glob-dir",
+        "session-child-glob-transcript",
+        "subagents-glob",
+        "tool-results-glob",
+        "memory-glob",
+        "session-child-glob-meta",
     ],
 )
 def test_is_transcript_path(path: str, expected: bool) -> None:
@@ -205,6 +217,7 @@ def test_forfeits_count(args: tuple[str, ...], expected: bool) -> None:
         ("grep -A 3 foo .", ["foo", "."]),
         ("rg --hidden -g '!**/node_modules/**' -ng '!**/target/**' foo .", ["foo", "."]),
         ("rg --hidden --weird value foo .", ["value", "foo", "."]),
+        ("rg --hidden --glob 'node_modules/**' needle .", ["node_modules/**", "needle", "."]),
         ("grep foo -- -weird.py", ["foo", "-weird.py"]),  # post `--` positionals kept
         ("grep - foo", ["-", "foo"]),  # a lone `-` (stdin) is a positional
         ("grep --recursive foo", ["foo"]),  # long flags dropped
@@ -215,6 +228,7 @@ def test_forfeits_count(args: tuple[str, ...], expected: bool) -> None:
         "value-flag",
         "glob-values",
         "undeclared-value",
+        "positive-glob",
         "double-dash",
         "stdin-dash",
         "long-flag",

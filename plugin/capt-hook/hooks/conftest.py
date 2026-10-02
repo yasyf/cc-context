@@ -16,7 +16,7 @@ from captain_hook import Cmd, CommandLine, Rewritten, WalkContext
 from captain_hook.types import Action, HookResult
 from captain_hook.util.shell import normalize_executable, plain_words, resolve_cd
 
-from hooks import common
+from hooks import common, search_common
 from hooks.common import ccx_supports
 
 if TYPE_CHECKING:
@@ -119,3 +119,10 @@ def clear_ccx_supports_cache():
     ccx_supports.cache_clear()
     yield
     ccx_supports.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def tmp_trees_are_not_scratch(monkeypatch: pytest.MonkeyPatch):
+    """``tmp_path`` sits under a system temp root (``/tmp`` on Linux), which capt-hook reads as scratch, yet the
+    tests model checkouts there; only a ``scratch`` ancestor marks a test tree as scratch."""
+    monkeypatch.setattr(search_common, "is_scratch_path", lambda path: "scratch" in path.parts[:-1])
