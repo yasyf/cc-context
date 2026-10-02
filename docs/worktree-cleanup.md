@@ -43,6 +43,66 @@ their publication rules. The public command group is `ccx vcs cleanup`.
 | `ccx vcs cleanup retry <job-id>` | Retry a blocked job from its recorded phase after its cause is addressed |
 | `ccx vcs cleanup watchers --json` | Inspect watcher roots and consumers without retiring them |
 
+`ccx vcs cleanup status` and `ccx vcs cleanup wait` are read-only: they query
+only the running daemon with one 5s hello and bounded requests, including
+older versions that speak the same protocol. They never install a program
+copy, stop or replace the daemon, apply the `LaunchAgent`, or take the start
+lock, and both fail if no daemon is running.
+
+`cleanup wait` polls status with a 10s limit per request and backs off up to
+1s between polls. It succeeds only when a poll shows the job `done`.
+
+If a job it has seen disappears, it exits 1. If the daemon lists the record
+as damaged, the error names the job, its last seen phase, and the damage.
+Otherwise, the error names the job and its last seen phase and says its
+completion cannot be proven: it may have finished and been pruned, or its
+record was lost. A job never seen is still "not found" (exit 3).
+`cleanup status`, `cleanup wait`, and `cleanup retry` reject an empty job ID.
+
+`launchd` starts the daemon at login; queue-changing commands that reach the
+daemon (`ccx vcs worktree rm`, `ccx vcs cleanup pause`/`resume`/`retry`/`adopt`,
+and deferred removals) install and start or replace it. Under the start
+lock, they read and keep the kernel peer process and user IDs and the
+process's kernel unique ID on the hello connection, before sending hello.
+On macOS, this is `p_uniqueid`, read through the existing `proc_pidinfo`
+helper. The reply proves the saved identity belongs to the process that
+answered.
+
+They re-check the identity on the shutdown connection before sending the
+stop. The kernel peer must match the saved process ID and the client's user
+ID, with the same kernel unique ID.
+
+The kernel never reuses that unique ID within a boot. Neither a reused process
+ID nor a clock step, even one that repeats the old start time, can make a
+different process match. No start time or clock is compared. They send
+nothing on other connections and never retry the stop on a new one. This
+works with older daemons without a wire protocol change.
+
+After a verified stop, the socket wait also ends if a different process
+answers; they still confirm the outdated daemon's exit before replacing
+its program copy. They take the serve lock, which every daemon version
+holds for its whole life, before installing the program or applying the
+`LaunchAgent`, and hold it until apply returns. Apply has a 15s agent
+timeout; a starting daemon waits up to 30s for the serve lock, so its wait
+outlasts the apply that launches it.
+
+If another daemon takes over the socket before the stop or takes the serve
+lock first, the command installs and applies nothing and stops nothing.
+It waits up to the agent timeout for that daemon to answer, uses it if it
+is current, and otherwise reports an error saying it was left running. When
+the unique ID or peer credentials cannot be read, including on hosts other
+than macOS, or the hello's process ID differs from the kernel's, the command
+reports that the daemon could not be verified. It leaves the daemon running
+and stops, installs, and applies nothing. If a daemon accepts and closes
+without replying, never sends its hello, or holds its serve lock behind a
+refusing or missing socket, the command probes again under the start lock.
+If it still does not answer, the command reports an error before any install
+or apply.
+
+During the v0.67.3 upgrade incident, the draining daemon accepted each new
+connection and closed it at once without a reply, so status saw an empty
+reply and the shutdown wait never saw a refusal.
+
 Inspect queue progress as JSON:
 
 ```sh

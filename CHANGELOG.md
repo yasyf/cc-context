@@ -250,6 +250,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stop waiting on pipes a descendant still holds, so the 10 s and 30 s
   limits hold.
 
+- **Cleanup status and wait no longer replace the daemon.** Both use bounded,
+  read-only requests to the running daemon, including older versions with the
+  same protocol. `cleanup wait` polls status with a 10s limit per request and
+  backoff up to 1s between polls. It succeeds only when a poll shows the job
+  `done`. If a job it has seen disappears, it exits 1 and names the job and
+  its last seen phase. If the daemon lists the record as damaged, the error
+  includes the damage; otherwise, it says completion cannot be proven because
+  the job may have finished and been pruned, or its record was lost. A job
+  never seen stays "not found" (exit 3). `cleanup status`, `cleanup wait`, and
+  `cleanup retry` reject an empty job ID, so `cleanup status ""` no longer
+  prints the whole queue.
+
+  Queue-changing commands that reach the daemon (`ccx vcs worktree rm`,
+  `ccx vcs cleanup pause`/`resume`/`retry`/`adopt`, and deferred removals)
+  now hold the daemon's serve lock under the start lock while installing the
+  program copy and applying the `LaunchAgent`, until apply returns. Every
+  daemon version holds the serve lock for its whole life. A vacancy check
+  alone left a race: a daemon could start before install and have its program
+  replaced and its `LaunchAgent` reloaded underneath it. If another daemon
+  takes over the socket before the stop or takes the serve lock first, the
+  command installs and applies nothing and stops nothing. It waits up to the
+  agent timeout for that daemon to answer, then uses a current daemon or
+  reports an error saying it was left running.
+
+  Before sending hello under the start lock, the command reads and keeps the
+  kernel peer process and user IDs and the process's kernel unique ID on
+  that connection. On macOS, this is `p_uniqueid`, read through the existing
+  `proc_pidinfo` helper. The reply proves the saved identity belongs to the
+  process that answered. Before sending the stop, the command checks that
+  the shutdown connection's kernel peer matches the saved process ID and
+  the client's user ID, with the same kernel unique ID. The kernel never
+  reuses that unique ID within a boot, so neither a reused process ID nor a
+  clock step, even one that repeats the old start time, can make a different
+  process match. No start time or clock is compared.
+
+  It sends nothing on other connections and never retries the stop on a new
+  one. This works with older daemons without a wire protocol change. If the
+  unique ID or peer credentials cannot be read, including on hosts other
+  than macOS, or the hello's process ID differs from the kernel's, the command
+  reports that the daemon could not be verified. It leaves the daemon
+  running and stops, installs, and applies nothing.
+
+  After a verified stop, the socket wait also ends if a different process
+  answers; the command still confirms the outdated daemon's exit before
+  replacing its program copy, so a stop timeout leaves the old copy intact.
+  Apply has a 15s timeout; a starting daemon now waits up to 30s for the serve
+  lock, up from 2s, so it can wait out the apply that launches it. A daemon
+  that closes without replying, never sends its hello, or holds the serve lock
+  behind a refusing or missing socket is still probed again under the start
+  lock. If it still does not answer, the command reports an error before any
+  install or apply.
+
+  After the v0.67.3 upgrade, status replaced the v0.67.2 program and requested
+  shutdown; while draining a roughly 15-minute relocation, the daemon accepted
+  each new connection and closed it at once without a reply. Status saw an
+  empty reply, and the shutdown wait never saw a refusal, causing status to
+  time out.
+
 - **Transcript, dependency, and root-manifest guards stop blocking unrelated
   searches and subproject manifest reads.** Transcript matching now covers
   session and subagent transcripts and their containing directories, including

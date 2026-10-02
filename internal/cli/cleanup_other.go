@@ -14,6 +14,10 @@ func connectCleanup(context.Context) (cleanup.Service, error) {
 	return nil, cleanup.ErrUnsupported
 }
 
+func reachCleanup(context.Context) (cleanup.Service, error) {
+	return nil, cleanup.ErrUnsupported
+}
+
 func previewCleanup(context.Context, cleanup.Request) (cleanup.Job, error) {
 	return cleanup.Job{}, cleanup.ErrUnsupported
 }

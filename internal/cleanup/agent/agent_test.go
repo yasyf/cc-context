@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -21,25 +24,42 @@ import (
 )
 
 var (
-	errRefused   = errors.New("connection refused")
+	errRefused   = fmt.Errorf("cleanup daemon: connect to sock: %w", syscall.ECONNREFUSED)
+	errMissing   = fmt.Errorf("cleanup daemon: connect to sock: %w", syscall.ENOENT)
+	errClosing   = fmt.Errorf("cleanup daemon: hello: %w", io.EOF)
+	errDeparted  = fmt.Errorf("%w: sock: read LOCAL_PEERPID: %w", cleanup.ErrUnidentifiedPeer, syscall.ENOTCONN)
+	errNameless  = fmt.Errorf("%w: sock: read LOCAL_PEERCRED: %w", cleanup.ErrUnidentifiedPeer, syscall.EINVAL)
+	errDenied    = fmt.Errorf("cleanup daemon: connect to sock: %w", syscall.EACCES)
+	errLockQuery = fmt.Errorf("cleanup agent: open the serve lock: %w", syscall.EACCES)
 	errBootstrap = errors.New("bootstrap failed")
 
 	sourceBytes = []byte("#!/bin/sh\nexec true\n")
 )
 
 type fakeDaemon struct {
-	mu       sync.Mutex
-	serving  *cleanup.Info
-	starts   *cleanup.Info
-	applyErr error
-	lingers  int
-	exiting  int
-	events   []string
-	sockets  []string
-	entered  chan struct{}
-	enter    sync.Once
-	gate     chan struct{}
-	hellos   chan struct{}
+	mu         sync.Mutex
+	serving    *cleanup.Info
+	starts     *cleanup.Info
+	transient  []error
+	helloErr   error
+	hangs      bool
+	lockHeld   bool
+	lockErr    error
+	applyErr   error
+	applyHangs bool
+	lingers    int
+	exiting    int
+	foreignUID bool
+	kernelPID  int
+	unique     uint64
+	uniqueErr  error
+	greeted    func()
+	events     []string
+	sockets    []string
+	entered    chan struct{}
+	enter      sync.Once
+	gate       chan struct{}
+	hellos     chan struct{}
 }
 
 type fakeControl struct {
@@ -47,27 +67,101 @@ type fakeControl struct {
 	d *fakeDaemon
 }
 
-func (c fakeControl) Hello(context.Context) (cleanup.Info, error) {
+func (c fakeControl) Hello(ctx context.Context) (cleanup.Info, error) {
+	return c.hello(ctx, func(cleanup.Peer) {})
+}
+
+func (c fakeControl) Greet(ctx context.Context, observe func(cleanup.Peer)) (cleanup.Info, error) {
+	info, err := c.hello(ctx, observe)
+	if c.d.greeted != nil {
+		c.d.greeted()
+	}
+	return info, err
+}
+
+func (c fakeControl) hello(ctx context.Context, observe func(cleanup.Peer)) (cleanup.Info, error) {
 	c.d.mu.Lock()
 	c.d.events = append(c.d.events, "hello")
-	serving := c.d.serving
+	serving, helloErr, hangs := c.d.serving, c.d.helloErr, c.d.hangs
+	var peer cleanup.Peer
+	if serving != nil {
+		peer = c.d.peer(serving)
+	}
+	var transient error
+	if len(c.d.transient) > 0 {
+		transient, c.d.transient = c.d.transient[0], c.d.transient[1:]
+	}
 	c.d.mu.Unlock()
 	if c.d.hellos != nil {
 		c.d.hellos <- struct{}{}
 	}
-	if serving == nil {
-		return cleanup.Info{}, errRefused
+	switch {
+	case transient != nil:
+		return cleanup.Info{}, transient
+	case hangs:
+		if serving != nil {
+			observe(peer)
+		}
+		<-ctx.Done()
+		return cleanup.Info{}, ctx.Err()
+	case serving != nil:
+		observe(peer)
+		return *serving, nil
+	case helloErr != nil:
+		return cleanup.Info{}, helloErr
 	}
-	return *serving, nil
+	return cleanup.Info{}, errRefused
 }
 
-func (c fakeControl) Shutdown(context.Context) error {
+func (c fakeControl) Shutdown(_ context.Context, verify func(cleanup.Peer) error) error {
+	c.d.mu.Lock()
+	serving := c.d.serving
+	var peer cleanup.Peer
+	if serving != nil {
+		peer = c.d.peer(serving)
+	}
+	c.d.mu.Unlock()
+	if serving == nil {
+		return errRefused
+	}
+	err := verify(peer)
 	c.d.mu.Lock()
 	defer c.d.mu.Unlock()
+	if err != nil {
+		c.d.events = append(c.d.events, "refused "+strconv.Itoa(serving.PID))
+		return err
+	}
 	c.d.events = append(c.d.events, "shutdown")
 	c.d.serving = nil
 	c.d.exiting = c.d.lingers
 	return nil
+}
+
+func identity(pid int) uint64 {
+	return 1<<32 | uint64(pid) //nolint:gosec // a pid is non-negative
+}
+
+func (d *fakeDaemon) peer(serving *cleanup.Info) cleanup.Peer {
+	pid, uid := serving.PID, os.Getuid()
+	if d.kernelPID != 0 {
+		pid = d.kernelPID
+	}
+	if d.foreignUID {
+		uid++
+	}
+	return cleanup.Peer{PID: pid, UID: uid}
+}
+
+func (d *fakeDaemon) identify(pid int) (uint64, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	switch {
+	case d.uniqueErr != nil:
+		return 0, d.uniqueErr
+	case d.serving != nil && pid == d.serving.PID && d.unique != 0:
+		return d.unique, nil
+	}
+	return identity(pid), nil
 }
 
 func (d *fakeDaemon) dial(socket string) cleanup.Control {
@@ -88,10 +182,22 @@ func (d *fakeDaemon) alive(pid int) bool {
 	return true
 }
 
-func (d *fakeDaemon) apply(context.Context) error {
+func (d *fakeDaemon) held(lock string) (bool, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.events = append(d.events, "held "+filepath.Base(lock))
+	return d.lockHeld, d.lockErr
+}
+
+func (d *fakeDaemon) apply(ctx context.Context) error {
 	d.mu.Lock()
 	d.events = append(d.events, "apply")
+	hangs := d.applyHangs
 	d.mu.Unlock()
+	if hangs {
+		<-ctx.Done()
+		return ctx.Err()
+	}
 	if d.entered != nil {
 		d.enter.Do(func() { close(d.entered) })
 	}
@@ -157,8 +263,10 @@ func fixture(t *testing.T, d *fakeDaemon) starter {
 			Dial:    d.dial,
 			Timeout: 5 * time.Second,
 		},
-		apply: d.apply,
-		alive: d.alive,
+		apply:    d.apply,
+		alive:    d.alive,
+		held:     d.held,
+		identify: d.identify,
 	}
 }
 
@@ -317,11 +425,17 @@ func TestConnect(t *testing.T) {
 		name          string
 		serving       *cleanup.Info
 		starts        *cleanup.Info
+		transient     []error
+		helloErr      error
+		lockHeld      bool
 		applyErr      error
+		applyHangs    bool
+		timeout       time.Duration
 		lingers       int
 		wantEvents    []string
 		wantInfo      cleanup.Info
 		wantErr       error
+		wantText      string
 		wantInstalled bool
 	}{
 		{
@@ -339,9 +453,46 @@ func TestConnect(t *testing.T) {
 		{
 			name:          "unreachable daemon is applied then ready",
 			starts:        &current,
-			wantEvents:    []string{"hello", "hello", "apply", "hello"},
+			wantEvents:    []string{"hello", "held serve.lock", "hello", "held serve.lock", "apply", "hello"},
 			wantInfo:      current,
 			wantInstalled: true,
+		},
+		{
+			name:          "missing socket is applied then ready",
+			starts:        &current,
+			helloErr:      errMissing,
+			wantEvents:    []string{"hello", "held serve.lock", "hello", "held serve.lock", "apply", "hello"},
+			wantInfo:      current,
+			wantInstalled: true,
+		},
+		{
+			name:       "closing daemon replaced meanwhile is found by the probe under the start lock",
+			serving:    &current,
+			transient:  []error{errClosing},
+			wantEvents: []string{"hello", "hello"},
+			wantInfo:   current,
+		},
+		{
+			name:       "refusing daemon still holding the serve lock is replaced meanwhile",
+			serving:    &current,
+			transient:  []error{errRefused},
+			lockHeld:   true,
+			wantEvents: []string{"hello", "held serve.lock", "hello"},
+			wantInfo:   current,
+		},
+		{
+			name:       "closing daemon that disconnects before its peer is read under the start lock did not answer",
+			transient:  []error{errClosing},
+			helloErr:   errDeparted,
+			wantEvents: []string{"hello", "hello"},
+			wantErr:    errUnresponsive,
+		},
+		{
+			name:       "daemon whose peer the hello connection cannot identify under the start lock is left running",
+			transient:  []error{errClosing},
+			helloErr:   errNameless,
+			wantEvents: []string{"hello", "hello"},
+			wantErr:    errUnverified,
 		},
 		{
 			name:          "outdated daemon is shut down before apply",
@@ -377,26 +528,52 @@ func TestConnect(t *testing.T) {
 		{
 			name:          "outdated daemon answering after the start is refused",
 			starts:        &older,
-			wantEvents:    []string{"hello", "hello", "apply", "hello"},
+			wantEvents:    []string{"hello", "held serve.lock", "hello", "held serve.lock", "apply", "hello"},
 			wantErr:       errOutdatedAfterStart,
 			wantInstalled: true,
 		},
 		{
 			name:          "apply failure is returned",
 			applyErr:      errBootstrap,
-			wantEvents:    []string{"hello", "hello", "apply"},
+			wantEvents:    []string{"hello", "held serve.lock", "hello", "held serve.lock", "apply"},
 			wantErr:       errBootstrap,
+			wantInstalled: true,
+		},
+		{
+			name:          "apply that never returns is bounded by the timeout",
+			applyHangs:    true,
+			timeout:       50 * time.Millisecond,
+			wantEvents:    []string{"hello", "held serve.lock", "hello", "held serve.lock", "apply"},
+			wantErr:       context.DeadlineExceeded,
+			wantText:      "cleanup agent: start the daemon: launchd did not finish within 50ms: context deadline exceeded",
 			wantInstalled: true,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			d := &fakeDaemon{serving: tt.serving, starts: tt.starts, applyErr: tt.applyErr, lingers: tt.lingers}
+			d := &fakeDaemon{
+				serving:    tt.serving,
+				starts:     tt.starts,
+				transient:  tt.transient,
+				helloErr:   tt.helloErr,
+				lockHeld:   tt.lockHeld,
+				applyErr:   tt.applyErr,
+				applyHangs: tt.applyHangs,
+				lingers:    tt.lingers,
+			}
 			s := fixture(t, d)
+			if tt.timeout != 0 {
+				s.Timeout = tt.timeout
+			}
 
-			ctl, err := s.connect(context.Background())
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			ctl, err := s.connect(ctx)
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("connect() error = %v, want %v", err, tt.wantErr)
+			}
+			if tt.wantText != "" && err.Error() != tt.wantText {
+				t.Errorf("connect() error = %q, want %q", err, tt.wantText)
 			}
 			events, sockets := d.recorded()
 			if !reflect.DeepEqual(events, tt.wantEvents) {
@@ -423,12 +600,36 @@ func TestConnect(t *testing.T) {
 			switch {
 			case tt.wantInstalled && (err != nil || !bytes.Equal(got, sourceBytes)):
 				t.Errorf("program copy = %q, %v; want the source bytes", got, err)
-			case !tt.wantInstalled:
+			case !tt.wantInstalled && !errors.Is(err, fs.ErrNotExist):
+				t.Errorf("program copy read error = %v, want nothing installed", err)
+			}
+			if slices.Equal(tt.wantEvents, []string{"hello"}) {
 				if _, err := os.Stat(s.Layout.Root); !errors.Is(err, fs.ErrNotExist) {
-					t.Errorf("layout root stat error = %v, want it never created", err)
+					t.Errorf("layout root stat error = %v, want a first probe that decides alone to create nothing", err)
 				}
 			}
 		})
+	}
+}
+
+func TestConnectReportsACancelledCallerDuringStart(t *testing.T) {
+	d := &fakeDaemon{applyHangs: true}
+	s := fixture(t, d)
+	s.Timeout = 5 * time.Second
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	stop := time.AfterFunc(100*time.Millisecond, cancel)
+	defer stop.Stop()
+
+	ctl, err := s.connect(ctx)
+	if !errors.Is(err, context.Canceled) || ctl != nil {
+		t.Fatalf("connect() = %v, %v; want nil and the caller's cancellation", ctl, err)
+	}
+	if want := "cleanup agent: start the daemon: context canceled"; err.Error() != want {
+		t.Errorf("connect() error = %q, want %q", err, want)
+	}
+	if got := d.count("apply"); got != 1 {
+		t.Errorf("apply calls = %d, want 1", got)
 	}
 }
 
@@ -477,6 +678,281 @@ func TestConnectOutdatedNeverExits(t *testing.T) {
 	if got := d.count("alive 41"); got < 2 {
 		t.Errorf("the outdated daemon's process was checked %d times, want repeated checks", got)
 	}
+	if _, err := os.Lstat(s.Layout.ProgramPath()); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("program copy stat error = %v, want nothing installed while the outdated daemon still runs", err)
+	}
+}
+
+func TestConnectLeavesADaemonThatTakesTheServeLockFirst(t *testing.T) {
+	current := cleanup.Info{Version: "v1.2.3", Protocol: cleanup.Protocol, PID: 42}
+	older := cleanup.Info{Version: "v1.2.2", Protocol: cleanup.Protocol, PID: 41}
+	tests := []struct {
+		name          string
+		serving       *cleanup.Info
+		barrier       string
+		answers       *cleanup.Info
+		wantProbes    []string
+		wantShutdowns int
+		wantErr       error
+	}{
+		{
+			name:       "no daemon, then one that never answers starts after the probe under the start lock",
+			barrier:    "held",
+			wantProbes: []string{"hello", "held serve.lock", "hello", "held serve.lock"},
+			wantErr:    errStartedElsewhere,
+		},
+		{
+			name:       "no daemon, then a current one starts after the probe under the start lock",
+			barrier:    "held",
+			answers:    &current,
+			wantProbes: []string{"hello", "held serve.lock", "hello", "held serve.lock"},
+		},
+		{
+			name:          "outdated daemon exits, then one that never answers starts before this client",
+			serving:       &older,
+			barrier:       "alive",
+			wantProbes:    []string{"hello", "hello", "shutdown", "alive 41"},
+			wantShutdowns: 1,
+			wantErr:       errStartedElsewhere,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := &fakeDaemon{serving: tt.serving, starts: &current}
+			s := fixture(t, d)
+			s.Timeout = 100 * time.Millisecond
+			admit := func() {
+				ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+				defer cancel()
+				lock, err := durable.AcquireLock(ctx, s.Layout.ServeLockPath())
+				if err != nil {
+					t.Fatalf("the starting daemon's AcquireLock() = %v", err)
+				}
+				t.Cleanup(func() { _ = lock.Close() })
+				d.mu.Lock()
+				defer d.mu.Unlock()
+				d.serving = tt.answers
+			}
+			held, alive := s.held, s.alive
+			s.held = func(lock string) (bool, error) {
+				observed, err := held(lock)
+				if tt.barrier == "held" && d.count("held serve.lock") == 2 {
+					admit()
+				}
+				return observed, err
+			}
+			s.alive = func(pid int) bool {
+				running := alive(pid)
+				if tt.barrier == "alive" && !running {
+					admit()
+				}
+				return running
+			}
+
+			ctl, err := s.connect(t.Context())
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("connect() error = %v, want %v", err, tt.wantErr)
+			}
+			if tt.wantErr != nil {
+				if ctl != nil {
+					t.Errorf("connect() control = %v, want nil beside an error", ctl)
+				}
+				if want := "; it is left running: cleanup agent: the daemon was not ready within 100ms"; !strings.Contains(err.Error(), want) {
+					t.Errorf("connect() error = %q, want it to contain %q", err, want)
+				}
+			} else if info, err := ctl.Hello(context.Background()); err != nil || info != current {
+				t.Errorf("returned control answers %+v, %v; want the daemon that started first, %+v", info, err, current)
+			}
+			events, _ := d.recorded()
+			if len(events) <= len(tt.wantProbes) || !slices.Equal(events[:len(tt.wantProbes)], tt.wantProbes) {
+				t.Fatalf("events = %q, want %q and then readiness hellos", events, tt.wantProbes)
+			}
+			for _, e := range events[len(tt.wantProbes):] {
+				if e != "hello" {
+					t.Errorf("event %q after the daemon took the serve lock, want only readiness hellos", e)
+				}
+			}
+			if got := d.count("apply"); got != 0 {
+				t.Errorf("apply ran %d times, want 0: the LaunchAgent must not be applied over the daemon that started first", got)
+			}
+			if got := d.count("shutdown"); got != tt.wantShutdowns {
+				t.Errorf("shutdown ran %d times, want %d", got, tt.wantShutdowns)
+			}
+			if _, err := os.Lstat(s.Layout.ProgramPath()); !errors.Is(err, fs.ErrNotExist) {
+				t.Errorf("program copy stat error = %v, want nothing installed under the daemon that started first", err)
+			}
+		})
+	}
+}
+
+func TestConnectStopsOnlyTheOutdatedDaemonItObserved(t *testing.T) {
+	current := cleanup.Info{Version: "v1.2.3", Protocol: cleanup.Protocol, PID: 42}
+	older := cleanup.Info{Version: "v1.2.2", Protocol: cleanup.Protocol, PID: 41}
+	oldest := cleanup.Info{Version: "v1.2.1", Protocol: cleanup.Protocol, PID: 39}
+	reused := cleanup.Info{Version: "v1.2.3", Protocol: cleanup.Protocol, PID: 41}
+	twin := cleanup.Info{Version: "v1.2.2", Protocol: cleanup.Protocol, PID: 41}
+	errIdentity := errors.New("native: identify pid 41: input/output error")
+	olderUnique := identity(older.PID)
+	tests := []struct {
+		name        string
+		kernelPID   int
+		foreignUID  bool
+		recordErr   error
+		successor   *cleanup.Info
+		reborn      uint64
+		verifyErr   error
+		wantEvents  []string
+		wantReady   bool
+		wantStopped bool
+		wantInfo    cleanup.Info
+		wantErrs    []error
+		wantText    string
+	}{
+		{
+			name:       "a current daemon that replaces the outdated one after its hello is kept",
+			successor:  &current,
+			wantEvents: []string{"hello", "hello", "refused 42"},
+			wantReady:  true,
+			wantInfo:   current,
+		},
+		{
+			name:       "an outdated daemon that replaces the outdated one after its hello is left running",
+			successor:  &oldest,
+			wantEvents: []string{"hello", "hello", "refused 39"},
+			wantReady:  true,
+			wantErrs:   []error{errStartedElsewhere, errOutdatedAfterStart},
+		},
+		{
+			name:       "a current daemon that reuses the pid after the hello is refused by its unique id and kept",
+			successor:  &reused,
+			reborn:     olderUnique + 1,
+			wantEvents: []string{"hello", "hello", "refused 41"},
+			wantReady:  true,
+			wantInfo:   reused,
+		},
+		{
+			name:       "a twin of the outdated daemon after the hello, the same pid, uid, and version, is refused by its unique id",
+			successor:  &twin,
+			reborn:     olderUnique + 1,
+			wantEvents: []string{"hello", "hello", "refused 41"},
+			wantReady:  true,
+			wantErrs:   []error{errStartedElsewhere, errOutdatedAfterStart},
+			wantText:   fmt.Sprintf("pid 41 (unique id %d) serves the socket, not the outdated daemon (pid 41, unique id %d)", olderUnique+1, olderUnique),
+		},
+		{
+			name:       "a socket served under another uid is left running",
+			foreignUID: true,
+			wantEvents: []string{"hello", "hello", "refused 41"},
+			wantReady:  true,
+			wantErrs:   []error{errStartedElsewhere, errOutdatedAfterStart},
+		},
+		{
+			name:       "an outdated daemon whose identity cannot be read on its hello connection is never asked to stop",
+			recordErr:  errIdentity,
+			wantEvents: []string{"hello", "hello"},
+			wantErrs:   []error{errUnverified, errIdentity},
+		},
+		{
+			name:       "a host that identifies no process leaves the outdated daemon running",
+			recordErr:  cleanup.ErrUnsupported,
+			wantEvents: []string{"hello", "hello"},
+			wantErrs:   []error{errUnverified, cleanup.ErrUnsupported},
+		},
+		{
+			name:       "a peer whose identity cannot be read is sent nothing",
+			verifyErr:  errIdentity,
+			wantEvents: []string{"hello", "hello", "refused 41"},
+			wantErrs:   []error{errUnverified, errIdentity},
+		},
+		{
+			name:       "a hello naming a pid other than the kernel's peer is never asked to stop",
+			kernelPID:  77,
+			wantEvents: []string{"hello", "hello"},
+			wantErrs:   []error{errUnverified},
+			wantText:   "the hello names pid 41 but the kernel names pid 77",
+		},
+		{
+			name:        "an outdated daemon still the process its hello identified is stopped and replaced",
+			wantEvents:  []string{"hello", "hello", "shutdown", "alive 41", "apply"},
+			wantReady:   true,
+			wantStopped: true,
+			wantInfo:    current,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := &fakeDaemon{
+				serving:    &older,
+				starts:     &current,
+				kernelPID:  tt.kernelPID,
+				foreignUID: tt.foreignUID,
+				uniqueErr:  tt.recordErr,
+			}
+			d.greeted = func() {
+				d.mu.Lock()
+				defer d.mu.Unlock()
+				if tt.successor != nil {
+					d.serving, d.unique = tt.successor, tt.reborn
+				}
+				if tt.verifyErr != nil {
+					d.uniqueErr = tt.verifyErr
+				}
+			}
+			s := fixture(t, d)
+			s.Timeout = 100 * time.Millisecond
+
+			ctl, err := s.connect(t.Context())
+			for _, want := range tt.wantErrs {
+				if !errors.Is(err, want) {
+					t.Errorf("connect() error = %v, want it to wrap %v", err, want)
+				}
+			}
+			switch {
+			case len(tt.wantErrs) == 0 && err != nil:
+				t.Fatalf("connect() error = %v, want the daemon serving the socket", err)
+			case len(tt.wantErrs) == 0:
+				if info, err := ctl.Hello(context.Background()); err != nil || info != tt.wantInfo {
+					t.Errorf("returned control answers %+v, %v; want the daemon serving the socket, %+v", info, err, tt.wantInfo)
+				}
+			case ctl != nil:
+				t.Errorf("connect() control = %v, want nil beside an error", ctl)
+			case !strings.Contains(err.Error(), "it is left running"):
+				t.Errorf("connect() error = %q, want it to say the daemon is left running", err)
+			case !strings.Contains(err.Error(), tt.wantText):
+				t.Errorf("connect() error = %q, want it to contain %q", err, tt.wantText)
+			}
+			events, _ := d.recorded()
+			if len(events) < len(tt.wantEvents) || !slices.Equal(events[:len(tt.wantEvents)], tt.wantEvents) {
+				t.Fatalf("events = %q, want %q first", events, tt.wantEvents)
+			}
+			readiness := events[len(tt.wantEvents):]
+			if got := len(readiness) > 0; got != tt.wantReady {
+				t.Errorf("events after %q = %q, want readiness polled: %v", tt.wantEvents, readiness, tt.wantReady)
+			}
+			for _, e := range readiness {
+				if e != "hello" {
+					t.Errorf("event %q after %q, want only readiness hellos", e, tt.wantEvents)
+				}
+			}
+			stops := 0
+			if tt.wantStopped {
+				stops = 1
+			}
+			if got := d.count("shutdown"); got != stops {
+				t.Errorf("shutdown reached a daemon %d times, want %d: only the observed outdated daemon may be stopped", got, stops)
+			}
+			if got := d.count("apply"); got != stops {
+				t.Errorf("apply ran %d times, want %d: the LaunchAgent is applied only over a daemon this client stopped", got, stops)
+			}
+			got, err := os.ReadFile(s.Layout.ProgramPath())
+			switch {
+			case tt.wantStopped && (err != nil || !bytes.Equal(got, sourceBytes)):
+				t.Errorf("program copy = %q, %v; want the source bytes installed over the daemon this client stopped", got, err)
+			case !tt.wantStopped && !errors.Is(err, fs.ErrNotExist):
+				t.Errorf("program copy read error = %v, want nothing installed over a daemon this client did not stop", err)
+			}
+		})
+	}
 }
 
 func TestConnectStartLockBusy(t *testing.T) {
@@ -498,7 +974,7 @@ func TestConnectStartLockBusy(t *testing.T) {
 	if !errors.Is(err, durable.ErrLockBusy) {
 		t.Fatalf("connect() error = %v, want %v", err, durable.ErrLockBusy)
 	}
-	if events, _ := d.recorded(); !reflect.DeepEqual(events, []string{"hello"}) {
+	if events, _ := d.recorded(); !reflect.DeepEqual(events, []string{"hello", "held serve.lock"}) {
 		t.Errorf("events = %q, want only the first probe", events)
 	}
 	if _, err := os.Lstat(s.Layout.ProgramPath()); !errors.Is(err, fs.ErrNotExist) {
@@ -549,5 +1025,194 @@ func TestConnectSerializesOnStartLock(t *testing.T) {
 	}
 	if got := d.count("shutdown"); got != 0 {
 		t.Errorf("shutdown ran %d times, want 0", got)
+	}
+}
+
+func TestConnectRefusesAnUnresponsiveDaemon(t *testing.T) {
+	tests := []struct {
+		name       string
+		helloErr   error
+		hangs      bool
+		lockHeld   bool
+		wantEvents []string
+		wantText   string
+	}{
+		{name: "silent daemon", hangs: true, wantEvents: []string{"hello", "hello"}, wantText: "sent no hello within 50ms"},
+		{name: "closing daemon", helloErr: errClosing, wantEvents: []string{"hello", "hello"}, wantText: "closed the connection without a hello"},
+		{name: "denied socket", helloErr: errDenied, wantEvents: []string{"hello", "hello"}, wantText: "permission denied"},
+		{
+			name:       "refused socket while a daemon holds the serve lock",
+			lockHeld:   true,
+			wantEvents: []string{"hello", "held serve.lock", "hello", "held serve.lock"},
+			wantText:   "but is not accepting connections on",
+		},
+		{
+			name:       "missing socket while a daemon holds the serve lock",
+			helloErr:   errMissing,
+			lockHeld:   true,
+			wantEvents: []string{"hello", "held serve.lock", "hello", "held serve.lock"},
+			wantText:   "but is not accepting connections on",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := &fakeDaemon{
+				starts:   &cleanup.Info{Version: "v1.2.3", Protocol: cleanup.Protocol, PID: 42},
+				helloErr: tt.helloErr,
+				hangs:    tt.hangs,
+				lockHeld: tt.lockHeld,
+			}
+			s := fixture(t, d)
+			s.Timeout = 50 * time.Millisecond
+
+			ctl, err := s.connect(context.Background())
+			if !errors.Is(err, errUnresponsive) || ctl != nil {
+				t.Fatalf("connect() = %v, %v; want nil and an error wrapping %v", ctl, err, errUnresponsive)
+			}
+			if !strings.Contains(err.Error(), tt.wantText) {
+				t.Errorf("connect() error = %q, want it to contain %q", err, tt.wantText)
+			}
+			if events, _ := d.recorded(); !reflect.DeepEqual(events, tt.wantEvents) {
+				t.Errorf("events = %q, want %q: a second probe under the start lock, then no shutdown and no apply", events, tt.wantEvents)
+			}
+			if _, err := os.Lstat(s.Layout.ProgramPath()); !errors.Is(err, fs.ErrNotExist) {
+				t.Errorf("program copy stat error = %v, want nothing installed", err)
+			}
+		})
+	}
+}
+
+func TestReach(t *testing.T) {
+	current := cleanup.Info{Version: "v1.2.3", Protocol: cleanup.Protocol, PID: 42}
+	older := cleanup.Info{Version: "v1.2.2", Protocol: cleanup.Protocol, PID: 41}
+	newer := cleanup.Info{Version: "v1.3.0", Protocol: cleanup.Protocol, PID: 43}
+	olderProtocol := cleanup.Info{Version: "v1.2.3", Protocol: cleanup.Protocol - 1, PID: 40}
+	newerProtocol := cleanup.Info{Version: "v1.2.3", Protocol: cleanup.Protocol + 1, PID: 44}
+	sentinels := []error{errNoDaemon, errUnresponsive, errOlderProtocol, errNewerProtocol}
+	greeted := []string{"hello"}
+	tests := []struct {
+		name       string
+		serving    *cleanup.Info
+		helloErr   error
+		hangs      bool
+		lockHeld   bool
+		lockErr    error
+		cancel     bool
+		wantInfo   cleanup.Info
+		wantErr    error
+		wantText   string
+		wantEvents []string
+	}{
+		{name: "current daemon is returned", serving: &current, wantInfo: current, wantEvents: greeted},
+		{name: "older release on this protocol is returned as found", serving: &older, wantInfo: older, wantEvents: greeted},
+		{name: "newer release on this protocol is returned as found", serving: &newer, wantInfo: newer, wantEvents: greeted},
+		{
+			name:       "older protocol is refused naming both",
+			serving:    &olderProtocol,
+			wantErr:    errOlderProtocol,
+			wantText:   fmt.Sprintf("daemon v1.2.3 (pid 40) speaks protocol %d, this ccx %d", cleanup.Protocol-1, cleanup.Protocol),
+			wantEvents: greeted,
+		},
+		{
+			name:       "newer protocol is refused naming both",
+			serving:    &newerProtocol,
+			wantErr:    errNewerProtocol,
+			wantText:   fmt.Sprintf("daemon v1.2.3 (pid 44) speaks protocol %d, this ccx %d", cleanup.Protocol+1, cleanup.Protocol),
+			wantEvents: greeted,
+		},
+		{
+			name:       "missing socket names what starts the daemon",
+			helloErr:   errMissing,
+			wantErr:    errNoDaemon,
+			wantText:   "such as worktree rm or cleanup pause, installs and starts it",
+			wantEvents: []string{"hello", "held serve.lock"},
+		},
+		{
+			name:       "refused socket names what starts the daemon",
+			wantErr:    errNoDaemon,
+			wantText:   "launchd starts one at login",
+			wantEvents: []string{"hello", "held serve.lock"},
+		},
+		{
+			name:       "refused socket while a daemon holds the serve lock is reported",
+			lockHeld:   true,
+			wantErr:    errUnresponsive,
+			wantText:   "but is not accepting connections on",
+			wantEvents: []string{"hello", "held serve.lock"},
+		},
+		{
+			name:       "missing socket while a daemon holds the serve lock is reported",
+			helloErr:   errMissing,
+			lockHeld:   true,
+			wantErr:    errUnresponsive,
+			wantText:   "but is not accepting connections on",
+			wantEvents: []string{"hello", "held serve.lock"},
+		},
+		{
+			name:       "unreadable serve lock is no verdict on the daemon",
+			lockErr:    errLockQuery,
+			wantErr:    errLockQuery,
+			wantText:   "connect to sock: connection refused; cleanup agent: open the serve lock: permission denied",
+			wantEvents: []string{"hello", "held serve.lock"},
+		},
+		{name: "silent daemon is reported with the bound", hangs: true, wantErr: errUnresponsive, wantText: "sent no hello within 50ms", wantEvents: greeted},
+		{name: "closing daemon is reported", helloErr: errClosing, wantErr: errUnresponsive, wantText: "closed the connection without a hello", wantEvents: greeted},
+		{name: "denied socket is reported", helloErr: errDenied, wantErr: errUnresponsive, wantText: "permission denied", wantEvents: greeted},
+		{name: "caller cancellation is no verdict on the daemon", hangs: true, cancel: true, wantErr: context.Canceled, wantText: "context canceled", wantEvents: greeted},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := &fakeDaemon{serving: tt.serving, helloErr: tt.helloErr, hangs: tt.hangs, lockHeld: tt.lockHeld, lockErr: tt.lockErr}
+			s := fixture(t, d)
+			s.Timeout = 50 * time.Millisecond
+			socket, err := s.Layout.Socket()
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if tt.cancel {
+				cancel()
+			}
+
+			ctl, err := s.reach(ctx)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("reach() error = %v, want %v", err, tt.wantErr)
+			}
+			for _, sentinel := range sentinels {
+				if got, want := errors.Is(err, sentinel), errors.Is(tt.wantErr, sentinel); got != want {
+					t.Errorf("errors.Is(%v, %v) = %v, want %v", err, sentinel, got, want)
+				}
+			}
+			events, sockets := d.recorded()
+			if !reflect.DeepEqual(events, tt.wantEvents) {
+				t.Errorf("events = %q, want %q and nothing else", events, tt.wantEvents)
+			}
+			if !reflect.DeepEqual(sockets, []string{socket}) {
+				t.Errorf("dialed %q, want %q once", sockets, socket)
+			}
+			if tt.wantErr == nil {
+				info, err := ctl.Hello(context.Background())
+				if err != nil || info != tt.wantInfo {
+					t.Errorf("returned control answers %+v, %v; want %+v", info, err, tt.wantInfo)
+				}
+			} else {
+				if ctl != nil {
+					t.Errorf("reach() control = %v, want nil beside an error", ctl)
+				}
+				if !strings.Contains(err.Error(), tt.wantText) {
+					t.Errorf("reach() error = %q, want it to contain %q", err, tt.wantText)
+				}
+			}
+			if (errors.Is(err, errNoDaemon) || errors.Is(err, errUnresponsive)) && !strings.Contains(err.Error(), socket) {
+				t.Errorf("reach() error = %q, want it to name the socket %s", err, socket)
+			}
+			if lock := s.Layout.ServeLockPath(); tt.lockHeld && !strings.Contains(err.Error(), "a daemon holds the serve lock "+lock) {
+				t.Errorf("reach() error = %q, want it to name the held serve lock %s", err, lock)
+			}
+			if _, err := os.Stat(s.Layout.Root); !errors.Is(err, fs.ErrNotExist) {
+				t.Errorf("layout root stat error = %v, want it never created", err)
+			}
+		})
 	}
 }

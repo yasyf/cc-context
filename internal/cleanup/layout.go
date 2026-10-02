@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/yasyf/daemonkit/paths"
 )
@@ -19,6 +20,10 @@ const (
 	// PayloadName is the entry of a job folder holding the relocated tree once
 	// git no longer finds it at the registered path.
 	PayloadName = "payload"
+	// ServeLockWait bounds how long a starting daemon waits for the serve lock.
+	// A client starting the daemon holds that lock while it applies the
+	// LaunchAgent, which launches the daemon, so the wait outlasts that hold.
+	ServeLockWait = 30 * time.Second
 
 	sunPathBytes = 104
 )
@@ -62,7 +67,9 @@ func (l Layout) Socket() (string, error) {
 	return socket, nil
 }
 
-// ServeLockPath is the lock one serving daemon holds for its whole life.
+// ServeLockPath is the lock one serving daemon holds for its whole life, and a
+// client starting one holds while it installs the program and applies the
+// LaunchAgent, so neither runs while the other does.
 func (l Layout) ServeLockPath() string { return filepath.Join(l.Root, "locks", "serve.lock") }
 
 // StartLockPath serializes the clients installing or restarting the daemon.

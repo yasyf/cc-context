@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"slices"
 	"strconv"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -454,10 +456,12 @@ func TestShutdownFinishesTheSliceInFlight(t *testing.T) {
 	}
 }
 
+func anyPeer(cleanup.Peer) error { return nil }
+
 func TestClientShutdownReturnsOnceTheSocketRefuses(t *testing.T) {
 	ctx := context.Background()
 	f := serveFixture(t, nil)
-	if err := f.client.Shutdown(ctx); err != nil {
+	if err := f.client.Shutdown(ctx, anyPeer); err != nil {
 		t.Fatalf("Shutdown() = %v", err)
 	}
 	if conn, err := net.Dial("unix", f.socket); err == nil {
@@ -472,6 +476,173 @@ func TestClientShutdownReturnsOnceTheSocketRefuses(t *testing.T) {
 	}
 	if err := f.h.engine.Pause(ctx); !errors.Is(err, ErrStopped) {
 		t.Errorf("Pause() after shutdown = %v, want ErrStopped", err)
+	}
+}
+
+func TestClientShutdownStopsOnlyAPeerItsVerifierAccepts(t *testing.T) {
+	ctx := context.Background()
+	f := serveFixture(t, nil)
+	self := cleanup.Peer{PID: os.Getpid(), UID: os.Getuid()}
+	errForeign := errors.New("not the observed daemon")
+
+	var refused []cleanup.Peer
+	err := f.client.Shutdown(ctx, func(peer cleanup.Peer) error {
+		refused = append(refused, peer)
+		return errForeign
+	})
+	if !errors.Is(err, errForeign) {
+		t.Fatalf("Shutdown() refused by its verifier = %v, want %v", err, errForeign)
+	}
+	if !slices.Equal(refused, []cleanup.Peer{self}) {
+		t.Errorf("verifier saw %+v, want the serving process %+v once", refused, self)
+	}
+	if _, err := f.client.Hello(ctx); err != nil {
+		t.Fatalf("Hello() after a refused Shutdown = %v, want the daemon still serving", err)
+	}
+
+	var accepted []cleanup.Peer
+	if err := f.client.Shutdown(ctx, func(peer cleanup.Peer) error {
+		accepted = append(accepted, peer)
+		return nil
+	}); err != nil {
+		t.Fatalf("Shutdown() accepted by its verifier = %v", err)
+	}
+	if !slices.Equal(accepted, []cleanup.Peer{self}) {
+		t.Errorf("verifier saw %+v, want the serving process %+v once", accepted, self)
+	}
+	if err := f.wait(); err != nil {
+		t.Errorf("Serve() = %v, want nil after shutdown", err)
+	}
+}
+
+func TestClientShutdownSendsNothingToARefusedPeer(t *testing.T) {
+	root, err := os.MkdirTemp("/tmp", "ccxc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(root); err != nil {
+			t.Errorf("remove %s: %v", root, err)
+		}
+	})
+	socket := filepath.Join(root, "s")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = listener.Close() }()
+	type delivery struct {
+		data []byte
+		err  error
+	}
+	received := make(chan delivery, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			received <- delivery{err: err}
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		data, err := io.ReadAll(conn)
+		received <- delivery{data: data, err: err}
+	}()
+	errForeign := errors.New("not the observed daemon")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := Dial(socket).Shutdown(ctx, func(cleanup.Peer) error { return errForeign }); !errors.Is(err, errForeign) {
+		t.Errorf("Shutdown() refused by its verifier = %v, want %v", err, errForeign)
+	}
+	if got := <-received; got.err != nil || len(got.data) != 0 {
+		t.Errorf("the refused peer received %q, %v; want nothing before the connection closed", got.data, got.err)
+	}
+}
+
+func TestClientGreetObservesTheServingPeer(t *testing.T) {
+	ctx := context.Background()
+	f := serveFixture(t, nil)
+	var observed []cleanup.Peer
+	info, err := f.client.Greet(ctx, func(peer cleanup.Peer) { observed = append(observed, peer) })
+	if err != nil {
+		t.Fatalf("Greet() = %v", err)
+	}
+	if want := []cleanup.Peer{{PID: os.Getpid(), UID: os.Getuid()}}; !slices.Equal(observed, want) {
+		t.Errorf("observe saw %+v, want the serving process %+v once", observed, want)
+	}
+	hello, err := f.client.Hello(ctx)
+	if err != nil || hello != info {
+		t.Errorf("Hello() = %+v, %v; want Greet's %+v", hello, err, info)
+	}
+}
+
+func TestClientGreetSendsNothingBeforeObserve(t *testing.T) {
+	root, err := os.MkdirTemp("/tmp", "ccxc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(root); err != nil {
+			t.Errorf("remove %s: %v", root, err)
+		}
+	})
+	socket := filepath.Join(root, "s")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = listener.Close() }()
+	type accepted struct {
+		conn net.Conn
+		err  error
+	}
+	conns := make(chan accepted, 1)
+	go func() {
+		conn, err := listener.Accept()
+		conns <- accepted{conn: conn, err: err}
+	}()
+	hello := fmt.Sprintf(`{"info":{"version":"v0.0.1","protocol":%d,"pid":7}}`, cleanup.Protocol)
+	served := make(chan error, 1)
+	var (
+		early    int
+		earlyErr error
+	)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	info, err := Dial(socket).Greet(ctx, func(cleanup.Peer) {
+		got := <-conns
+		if got.err != nil {
+			t.Fatalf("Accept() = %v", got.err)
+		}
+		raw, err := got.conn.(*net.UnixConn).SyscallConn()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := raw.Read(func(fd uintptr) bool {
+			early, earlyErr = syscall.Read(int(fd), make([]byte, 1))
+			return true
+		}); err != nil {
+			t.Fatal(err)
+		}
+		go func() {
+			defer func() { _ = got.conn.Close() }()
+			if _, err := bufio.NewReader(got.conn).ReadBytes('\n'); err != nil {
+				served <- err
+				return
+			}
+			_, err := got.conn.Write([]byte(hello + "\n"))
+			served <- err
+		}()
+	})
+	if err != nil {
+		t.Fatalf("Greet() = %v", err)
+	}
+	if want := (cleanup.Info{Version: "v0.0.1", Protocol: cleanup.Protocol, PID: 7}); info != want {
+		t.Errorf("Greet() = %+v, want %+v", info, want)
+	}
+	if early > 0 || !errors.Is(earlyErr, syscall.EAGAIN) {
+		t.Errorf("the daemon had %d bytes, %v buffered when observe ran; want none and %v: nothing is sent before observe", early, earlyErr, syscall.EAGAIN)
+	}
+	if err := <-served; err != nil {
+		t.Errorf("the stand-in daemon = %v", err)
 	}
 }
 
@@ -648,7 +819,7 @@ func TestShutdownReportsADaemonItCannotReach(t *testing.T) {
 	}()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := Dial(socket).Shutdown(ctx); !errors.Is(err, fs.ErrPermission) {
+	if err := Dial(socket).Shutdown(ctx, anyPeer); !errors.Is(err, fs.ErrPermission) {
 		t.Errorf("Shutdown() of a daemon still listening behind an unreachable socket = %v, want the connect failure", err)
 	}
 	if err := <-acknowledged; err != nil {

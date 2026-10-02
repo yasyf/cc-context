@@ -5,6 +5,7 @@ package native
 import (
 	"context"
 	"errors"
+	"os"
 	"testing"
 
 	"github.com/yasyf/cc-context/internal/cleanup"
@@ -21,6 +22,10 @@ func TestUnsupported(t *testing.T) {
 			return err
 		}},
 		{"Background", Background},
+		{"ProcessUniqueID", func() error {
+			_, err := ProcessUniqueID(os.Getpid())
+			return err
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
