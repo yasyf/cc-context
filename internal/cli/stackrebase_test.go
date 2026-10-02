@@ -24,6 +24,7 @@ import (
 	"github.com/yasyf/cc-context/internal/ghapi"
 	"github.com/yasyf/cc-context/internal/gtmeta"
 	"github.com/yasyf/cc-context/internal/render"
+	"github.com/yasyf/cc-context/internal/vcs"
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
@@ -2437,7 +2438,7 @@ func TestStackVerdictRereadsAPullRequestGitHubStillShowsAtTheOldHead(t *testing.
 	t.Parallel()
 	run := &stackRebaseRun{Trunk: "main", Branches: []stackRebaseBranch{{Name: "feature", Parent: "main", NewHead: "bbbbbbbbbbbbbbbb"}}}
 	var reads int
-	ctx := withStackPRs(t.Context(), func(context.Context, render.Dir, string, []string) (map[string]*stackPR, error) {
+	ctx := withStackPRs(newGTAPIStub(t).ctx(t.Context()), func(context.Context, render.Dir, string, []string) (map[string]*stackPR, error) {
 		reads++
 		head := "aaaaaaaaaaaaaaaa"
 		if reads > 1 {
@@ -2449,7 +2450,7 @@ func TestStackVerdictRereadsAPullRequestGitHubStillShowsAtTheOldHead(t *testing.
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 
-	if err := stackVerdict(ctx, cmd, "", run, []string{"feature"}); err != nil {
+	if err := stackVerdict(ctx, cmd, lane{repo: &vcs.Repo{NameWithOwner: "Forge-AI/monorepo"}}, run, []string{"feature"}); err != nil {
 		t.Fatal(err)
 	}
 	if reads != 2 {

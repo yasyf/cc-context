@@ -158,6 +158,35 @@ func (c *Client) PullRequestInfo(ctx context.Context, req PullRequestInfoRequest
 	return result.Prs, nil
 }
 
+// MergeabilityStatuses fetches the merge status Graphite keeps per pull
+// request. A PR Graphite tracks no stack for has no entry, so it is absent
+// from the returned map.
+func (c *Client) MergeabilityStatuses(ctx context.Context, repoOwner, repoName string, prNumbers []int) (map[int]string, error) {
+	params := struct {
+		RepoOwner string `json:"repoOwner"`
+		RepoName  string `json:"repoName"`
+		PRNumbers []int  `json:"prNumbers"`
+	}{repoOwner, repoName, prNumbers}
+	payload, err := c.post(ctx, "/graphite/mergeability-status", params)
+	if err != nil {
+		return nil, err
+	}
+	var resp struct {
+		Statuses []struct {
+			PRNumber int    `json:"prNumber"`
+			Status   string `json:"mergeabilityStatus"`
+		} `json:"mergeabilityStatuses"`
+	}
+	if err := json.Unmarshal(payload, &resp); err != nil {
+		return nil, fmt.Errorf("gtapi: decode mergeability-status: %w", err)
+	}
+	statuses := make(map[int]string, len(resp.Statuses))
+	for _, s := range resp.Statuses {
+		statuses[s.PRNumber] = s.Status
+	}
+	return statuses, nil
+}
+
 // PreSubmitBranch names one branch of an upcoming submit; PRNumber is zero for
 // a branch with no PR yet.
 type PreSubmitBranch struct {

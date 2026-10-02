@@ -225,6 +225,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`stack submit` no longer calls a pull request Graphite does not track
+  `mergeable`.** After a parent landed, `stack submit` exited 0 and printed
+  `parent dev · mergeable` for a green, approved pull request that Graphite's
+  server-side stack graph still hung off the landed parent: its
+  `mergeability-status` carried no row for it, `stack-enqueue` read it as
+  untracked, and the submit skipped it as "unchanged since its last submit" so
+  nothing it did could reach Graphite's record. The verdict now asks Graphite
+  for the mergeability of every open pull request it pushed, giving Graphite
+  20 seconds to take a fresh push in. A pull request that stays absent prints
+  `untracked by graphite` in place of `mergeable`, naming the parent
+  Graphite last recorded for it. `stack submit` then republishes it with a new
+  head, the same tree, parents, author, and message under a later committer
+  date, restacks what sits above it, re-checks, and prints what it repaired.
+  When Graphite still does not track it, `stack submit` exits non-zero naming
+  the pull request and that parent. `stack rebase` and `stack continue` exit
+  non-zero for an untracked pull request without repairing it.
+
 - **`worktree rm --wait` bounds its wait requests.** After removal, it uses
   the same read-only polling as `cleanup wait`: one bounded hello and a 10s
   limit per status request, replacing the server-side wait with no deadline.

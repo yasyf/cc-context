@@ -106,6 +106,7 @@ type stackRebaseBranch struct {
 	Resolved    bool              `json:"resolved,omitempty"`
 	LocalOnly   bool              `json:"local_only,omitempty"`
 	Moved       bool              `json:"moved,omitempty"`
+	Bump        bool              `json:"bump,omitempty"`
 	PR          *stackPR          `json:"pr,omitempty"`
 	NewBase     string            `json:"new_base,omitempty"`
 	NewHead     string            `json:"new_head,omitempty"`
@@ -207,6 +208,7 @@ type stackRebaseOpts struct {
 	otherLanes  bool
 	include     []string
 	to          string
+	bump        []string
 }
 
 const stackDropCommitsUsage = "publish a branch whose local head drops commits its published head carries"
@@ -298,7 +300,7 @@ onto its parent's published head and not pushed, while the rest publish; one a
 branch with a pull request sits on is refused before anything moves.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runStackRebase(cmd, o)
+			return stackSettleTracking(cmd, func() error { return runStackRebase(cmd, o) })
 		},
 	}
 	cmd.Flags().StringArrayVar(&o.parents, "parent", nil, "restack <branch>=<parent> onto a new parent (repeatable)")
@@ -327,7 +329,7 @@ already filled from a recorded resolution is named first as a warning, since a
 stale recording silently drops a branch's own changes.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runStackContinue(cmd, stack)
+			return stackSettleTracking(cmd, func() error { return runStackContinue(cmd, stack) })
 		},
 	}
 	cmd.Flags().StringVar(&stack, "stack", "", "the run to resume, named by its stack's bottom branch")
@@ -977,7 +979,8 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 			if err := stackOwnWork(ctx, l.dir(), tr, pin, b); err != nil {
 				return nil, err
 			}
-			if o.stayClean && b.Parent == trunk && b.WasParent == trunk && b.Remote != "" && b.OldBase != pin && (b.PR == nil || b.PR.Mergeable != "CONFLICTING") {
+			b.Bump = slices.Contains(o.bump, name)
+			if o.stayClean && !b.Bump && b.Parent == trunk && b.WasParent == trunk && b.Remote != "" && b.OldBase != pin && (b.PR == nil || b.PR.Mergeable != "CONFLICTING") {
 				if b.Stays, err = stackMergesClean(ctx, l.dir(), pin, b.Head); err != nil {
 					return nil, err
 				}
@@ -2103,16 +2106,22 @@ func stackDrive(ctx context.Context, cmd *cobra.Command, l lane, commonDir strin
 			continue
 		}
 		b.NewBase = run.headOf(b.Parent)
-		if b.NewBase == b.OldBase {
-			b.NewHead = b.Head
-			continue
+		head := b.Head
+		if b.NewBase != b.OldBase {
+			var err error
+			head, err = stackReplay(ctx, l.dir(), run, b)
+			if errors.Is(err, errReplayConflict) {
+				return stackOpenConflict(ctx, cmd, l, commonDir, run, b)
+			}
+			if err != nil {
+				return err
+			}
 		}
-		head, err := stackReplay(ctx, l.dir(), run, b)
-		if errors.Is(err, errReplayConflict) {
-			return stackOpenConflict(ctx, cmd, l, commonDir, run, b)
-		}
-		if err != nil {
-			return err
+		if b.Bump && head == b.Head {
+			var err error
+			if head, err = stackBumpHead(ctx, l.dir(), run, b); err != nil {
+				return err
+			}
 		}
 		b.NewHead = head
 	}
@@ -3309,7 +3318,8 @@ func stackWriteRefs(ctx context.Context, dir render.Dir, run *stackRebaseRun) er
 	return nil
 }
 
-func stackVerdict(ctx context.Context, cmd *cobra.Command, dir render.Dir, run *stackRebaseRun, live []string) error {
+func stackVerdict(ctx context.Context, cmd *cobra.Command, l lane, run *stackRebaseRun, live []string) error {
+	dir := l.dir()
 	var prs map[string]*stackPR
 	var err error
 	lagUntil := time.Now().Add(stackHeadLagWait)
@@ -3334,6 +3344,8 @@ func stackVerdict(ctx context.Context, cmd *cobra.Command, dir render.Dir, run *
 		case <-time.After(wait):
 		}
 	}
+	untracked, trackingErr := stackReadTracking(ctx, l, run, live, prs)
+	recordStackTracking(ctx, untracked, trackingErr)
 	for _, name := range live {
 		b := run.branch(name)
 		fields := []string{name}
@@ -3343,7 +3355,14 @@ func stackVerdict(ctx context.Context, cmd *cobra.Command, dir render.Dir, run *
 			cmd.Println(strings.Join(fields, shipSep))
 			continue
 		}
-		fields = append(fields, fmt.Sprintf("#%d", pr.Number), fmt.Sprintf("head %.12s", pr.Head), "parent "+b.Parent, strings.ToLower(pr.Mergeable))
+		mergeable := strings.ToLower(pr.Mergeable)
+		switch {
+		case trackingErr != nil:
+			mergeable = "graphite tracking unread"
+		case slices.ContainsFunc(untracked, func(u stackUntracked) bool { return u.Branch == name }):
+			mergeable = "untracked by graphite"
+		}
+		fields = append(fields, fmt.Sprintf("#%d", pr.Number), fmt.Sprintf("head %.12s", pr.Head), "parent "+b.Parent, mergeable)
 		if stackHeadLags(pr, b) {
 			fields = append(fields, fmt.Sprintf("stale read: GitHub still shows %.12s %s after the push of %.12s — re-run ccx vcs stack submit if it stays", pr.Head, stackHeadLagWait, b.NewHead))
 		}
