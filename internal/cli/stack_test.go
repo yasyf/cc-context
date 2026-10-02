@@ -332,7 +332,7 @@ func TestStackSubmitKeepsAnotherLanesBranchAtItsPublishedHead(t *testing.T) {
 func TestStackSubmitAllLanesPushesAnotherLanesBranch(t *testing.T) {
 	f, api, published := stackOtherLaneRepo(t)
 
-	if _, _, err := runStackCmd(t, f, "submit", "--all-lanes"); err != nil {
+	if _, _, err := runStackCmd(t, f, "submit", "--all-lanes", "--restack"); err != nil {
 		t.Fatalf("stack submit --all-lanes: %v", err)
 	}
 	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "l30/base"); got == published || !stackOnto(t, f, "origin/main", got) {
@@ -862,7 +862,7 @@ func TestShipAmendPushesOverTheHeadItLastSubmitted(t *testing.T) {
 	writeShipFile(t, f.Dir, "base.txt", "base amended\n")
 	shipResetLog(t, f)
 
-	if _, _, err := runShipCmdFull(f.Context(), t, "--amend", "--no-watch", "base.txt"); err != nil {
+	if _, _, err := runShipCmdFull(f.Context(), t, "--amend", "--no-watch", "--restack", "base.txt"); err != nil {
 		t.Fatalf("ship --amend = %v, want the amend pushed over the head this repository submitted", err)
 	}
 	source := stackRebaseSourceSnapshot(t, f, "base")["base"]
@@ -924,7 +924,7 @@ func TestStackSubmitAdoptsARemoteReplayAfterPublication(t *testing.T) {
 	stackAdvanceTrunk(t, f, "later.txt", "later\n")
 	shipResetLog(t, f)
 
-	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+	if _, _, err := runStackCmd(t, f, "submit", "--restack"); err != nil {
 		t.Fatalf("stack submit over a replay of its own publication = %v, want the replay adopted", err)
 	}
 	remote := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")

@@ -360,7 +360,7 @@ func TestVcsPushRepublishesAFixOnThePublishedHead(t *testing.T) {
 		t.Fatalf("rebase dry run after push: %v", err)
 	}
 	shipResetLog(t, f)
-	if _, _, err := runShipCmdFull(f.Context(), t, "--no-commit", "--no-watch"); err != nil {
+	if _, _, err := runShipCmdFull(f.Context(), t, "--no-commit", "--no-watch", "--restack"); err != nil {
 		t.Fatalf("ship after push: %v", err)
 	}
 	if count := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", "origin/main..origin/b"); count != "2" {
@@ -379,7 +379,7 @@ func TestStackPublicationSurvivesGraphiteForgettingItsSubmit(t *testing.T) {
 		t.Fatal(err)
 	}
 	stackAdvanceTrunk(t, f, "later.txt", "later\n")
-	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+	if _, _, err := runStackCmd(t, f, "submit", "--restack"); err != nil {
 		t.Fatalf("submit after graphite forgot the last submit: %v", err)
 	}
 	if remote := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature"); remote == published || !stackOnto(t, f, "origin/main", remote) {
@@ -399,7 +399,7 @@ func TestStackPublicationYieldsToTheLanesOwnPush(t *testing.T) {
 	if _, _, err := runStackCmd(t, f, "rebase", "--dry-run"); err != nil {
 		t.Fatalf("rebase dry run after the lane pushed its own source: %v", err)
 	}
-	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+	if _, _, err := runStackCmd(t, f, "submit", "--restack"); err != nil {
 		t.Fatalf("submit after the lane pushed its own source: %v", err)
 	}
 	remote := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature")
@@ -448,7 +448,7 @@ func TestStackSubmitAdoptsAForeignIdenticalRestack(t *testing.T) {
 	mustRun(t, f.Env(), clone, "git", "-c", "user.name=other", "-c", "user.email=o@o.o", "rebase", "-q", "--onto", gitAt(t, f.Env(), f.Dir, "rev-parse", "origin/main"), gitAt(t, f.Env(), f.Dir, "rev-parse", "main"))
 	mustRun(t, f.Env(), clone, "git", "push", "-qf", f.RemoteDir, "feature")
 	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
-	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+	if _, _, err := runStackCmd(t, f, "submit", "--restack"); err != nil {
 		t.Fatalf("submit after a foreign identical restack: %v", err)
 	}
 	foreign := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature")
