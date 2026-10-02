@@ -16,7 +16,10 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import pytest
 from captain_hook import Action
+from captain_hook.app import _state
+from captain_hook.conditions import matches_conditions
 from captain_hook.context import HookContext
 from captain_hook.events import PostToolUseEvent, PreCompactEvent, PreToolUseEvent
 from captain_hook.session import SessionStore
@@ -269,6 +272,25 @@ class TestContextIsolation:
         result = gate_reread(read_pre(f, sd, agent_id=AGENT_A))  # same context re-read
         assert result is not None
         assert result.action is Action.block
+
+
+class TestRawEscape:
+    def reread_event(self, tmp_path: Path) -> PreToolUseEvent:
+        sd = tmp_path / "s"
+        f = make_file(tmp_path / "a.txt")
+        record_file_access(post("Read", f, sd))
+        return read_pre(f, sd)
+
+    def gate_spec(self):
+        return next(h.spec for h in _state.hooks if h.name == "gate_reread")
+
+    def test_reread_matches_the_gate_by_default(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("CAPT_HOOK_CCX_RAW", raising=False)
+        assert matches_conditions(self.gate_spec(), self.reread_event(tmp_path))
+
+    def test_raw_env_skips_the_gate(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("CAPT_HOOK_CCX_RAW", "1")
+        assert not matches_conditions(self.gate_spec(), self.reread_event(tmp_path))
 
 
 class TestPathNormalization:

@@ -8,6 +8,7 @@ from typing import Literal
 
 from captain_hook import (
     Allow,
+    Annotated,
     BaseHookEvent,
     Deque,
     Event,
@@ -129,6 +130,7 @@ def record_file_access(evt: BaseHookEvent) -> None:
 @on(
     Event.PreToolUse,
     only_if=[Tool("Read")],
+    skip_if=[Annotated("raw")],
     tests={
         Input(tool="Read", file=FileFixture(size=64)): Allow(),
         Input(tool="Read", file=FileFixture(size=64), offset=1, limit=50): Allow(),
