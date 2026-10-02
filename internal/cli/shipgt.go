@@ -1719,6 +1719,9 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 	if err := gtRefuseInherited(ctx, s.prefix, l.dir(), tr, s.trunkHead, plan); err != nil {
 		return nil, nil, err
 	}
+	if err := gtRefuseMergingPush(ctx, l.dir(), s, tr, plan, known); err != nil {
+		return nil, nil, err
+	}
 	for _, branch := range branches {
 		if s.publication != nil && s.publication.branch(branch) != nil && (s.publication.branch(branch).Kept || s.publication.branch(branch).Stays) {
 			continue

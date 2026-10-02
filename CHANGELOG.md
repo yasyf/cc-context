@@ -242,6 +242,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the pull request and that parent. `stack rebase` and `stack continue` exit
   non-zero for an untracked pull request without repairing it.
 
+- **Stack publication refuses a push that makes GitHub merge an open PR.**
+  Reordering a stack with `stack rebase --linearize` could push a branch onto
+  a head that already held its child's head while the child's PR still
+  targeted it, and GitHub reads that PR as merged. On 2026-10-02 this merged
+  Forge-AI/monorepo #29429-#29431 into #29428's branch within 3 seconds and
+  deleted their head branches. `stack rebase`, `stack submit`, and `ship` on
+  the gt lane now check every open PR in the push plan whose planned parent
+  differs from its current base, and refuse when that base is also pushed and
+  its new head holds the PR's new head. The refusal comes before pre-submit
+  and the push, so no ref moves and no base changes, and it names each PR as
+  `#<n> (<branch>) into <base>` with the `gh pr edit <number> --base <trunk>`
+  to run first. Reorders that never put a branch below the base its PR
+  targets, such as linearizing two sibling PRs, still push.
+
 - **`worktree rm --wait` bounds its wait requests.** After removal, it uses
   the same read-only polling as `cleanup wait`: one bounded hello and a 10s
   limit per status request, replacing the server-side wait with no deadline.

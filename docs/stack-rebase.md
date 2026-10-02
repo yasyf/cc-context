@@ -22,6 +22,14 @@ Use `--no-push` to keep the rewrite local. `--parent branch=parent` changes a
 branch's parent; `--linearize a,b,c` chains named branches in that order. The
 branch-order flag is separate from replay's handling of merge commits.
 
+A reorder that puts a branch below the base its pull request targets is
+refused before anything is pushed. The push leaves that base holding the
+pull request's head, which GitHub reads as merged. GitHub closes the pull request
+and deletes its branch, and no push order avoids that. The refusal names each
+`#<n> (<branch>) into <base>`. Retarget those pull requests onto trunk with
+`gh pr edit <n> --base <trunk>`, then run `ccx vcs stack continue`; the submit
+sets every real base afterward.
+
 `ccx vcs stack restack` selects the repository's backend: stack replay for
 Graphite, branch replay for plain Git, and fetch plus rebase for jj.
 `ccx vcs stack submit` restacks and submits the whole stack.

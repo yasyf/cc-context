@@ -47,6 +47,7 @@ type gtAPIStub struct {
 	// pull request onto; remote reads and writes that branch on origin.
 	parked map[string]string
 	remote func(args ...string) string
+	bases  map[string]string
 
 	routes    []string
 	infoHeads [][]string
@@ -138,6 +139,7 @@ func newGTAPIStub(t *testing.T) *gtAPIStub {
 		queued:       map[string]bool{},
 		untracked:    map[int]gtStubUntracked{},
 		parked:       map[string]string{},
+		bases:        map[string]string{},
 		nextPR:       100,
 	}
 	srv := httptest.NewServer(http.HandlerFunc(s.serve))
@@ -204,6 +206,9 @@ func (s *gtAPIStub) serve(w http.ResponseWriter, r *http.Request) {
 				if entry, ok := s.lastEntry(branch); ok {
 					pr["baseRefName"] = entry.Base
 					pr["versions"] = []map[string]any{{"headSha": entry.HeadSha, "baseSha": entry.BaseSha, "baseName": entry.Base, "createdAt": "2026-09-02T00:00:00.000Z"}}
+				}
+				if base := s.bases[branch]; base != "" {
+					pr["baseRefName"] = base
 				}
 				if base := s.parked[branch]; base != "" {
 					pr["baseRefName"], pr["isBaseRefGraphiteBase"] = base, true
