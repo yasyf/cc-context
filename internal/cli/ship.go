@@ -16,6 +16,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/yasyf/cc-context/internal/ghapi"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcs"
 )
@@ -2312,18 +2313,30 @@ func reportCIRuns(ctx context.Context, errW io.Writer, dir render.Dir, sha strin
 // watchCIRun blocks until run id concludes, streaming gh's progress to errW on a
 // real terminal and otherwise buffering it away. The wait is bounded by
 // shipCIWatchTimeout, an explicit deadline render's generic guard defers to.
+//
+// The app token a watch carries cannot be swapped mid-watch, so a watch that
+// fails once its token has expired is started again on a fresh one.
 func watchCIRun(ctx context.Context, errW io.Writer, dir render.Dir, id string) error {
 	watchCtx, cancel := context.WithTimeout(ctx, shipCIWatchTimeout)
 	defer cancel()
-	if shipStreamCI(errW) {
-		return render.RunCLIStream(watchCtx, dir, "gh", []string{"run", "watch", id, "--exit-status", "--compact"}, errW)
+	for {
+		env, expires, err := ghReadEnv(watchCtx, dir, ghapi.AppWatchMargin)
+		if err != nil {
+			return err
+		}
+		if shipStreamCI(errW) {
+			err = render.RunCLIStreamEnv(watchCtx, dir, "gh", []string{"run", "watch", id, "--exit-status", "--compact"}, errW, env)
+		} else {
+			_, err = render.RunCLIEnv(watchCtx, dir, "gh", []string{"run", "watch", id, "--exit-status"}, env)
+		}
+		if err == nil || expires.IsZero() || time.Now().Before(expires) || watchCtx.Err() != nil {
+			return err
+		}
 	}
-	_, err := render.RunCLI(watchCtx, dir, "gh", []string{"run", "watch", id, "--exit-status"})
-	return err
 }
 
 func viewCIRun(ctx context.Context, dir render.Dir, id string) (ciView, error) {
-	out, err := render.RunCLI(ctx, dir, "gh", []string{"run", "view", id, "--json", "workflowName,conclusion,startedAt,updatedAt,url,jobs"})
+	out, err := ghRead(ctx, dir, []string{"run", "view", id, "--json", "workflowName,conclusion,startedAt,updatedAt,url,jobs"})
 	if err != nil {
 		return ciView{}, fmt.Errorf("ship: gh run view %s: %w", id, err)
 	}
@@ -2364,7 +2377,7 @@ func ciFailureDetail(ctx context.Context, dir render.Dir, id string, view ciView
 		}
 		lines = append(lines, line)
 	}
-	if log, err := render.RunCLI(ctx, dir, "gh", []string{"run", "view", id, "--log-failed"}); err != nil {
+	if log, err := ghRead(ctx, dir, []string{"run", "view", id, "--log-failed"}); err != nil {
 		lines = append(lines, fmt.Sprintf("log unavailable: %v", err))
 	} else if excerpt := strings.TrimRight(render.Cap(ansiRE.ReplaceAllString(log, ""), budget), "\n"); excerpt != "" {
 		lines = append(lines, excerpt)
@@ -2439,7 +2452,7 @@ func shipHeadSHA(ctx context.Context, dir render.Dir, kind vcs.Kind) (string, er
 func findCIRuns(ctx context.Context, dir render.Dir, sha string) ([]ciRun, error) {
 	var lastErr error
 	for i := 0; i < shipCIPollTries; i++ {
-		out, err := render.RunCLI(ctx, dir, "gh", []string{"run", "list", "--commit", sha, "--limit", "50", "--json", "databaseId,workflowName,status,url"})
+		out, err := ghRead(ctx, dir, []string{"run", "list", "--commit", sha, "--limit", "50", "--json", "databaseId,workflowName,status,url"})
 		switch {
 		case err != nil:
 			lastErr = fmt.Errorf("ship: gh run list: %w", err)

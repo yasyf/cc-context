@@ -91,7 +91,7 @@ func stackReadPRsGraphQL(ctx context.Context, dir render.Dir, branches []string)
 		for i, branch := range chunk {
 			vars[reviewsAlias(i)] = branch
 		}
-		batch, err := ghapi.GraphQL[stackPRBatch](ctx, reviewsAPI().Unwaiting(), stackPRGraphQL(len(chunk)), vars)
+		batch, err := ghapi.GraphQL[stackPRBatch](ctx, reviewsAPI().ForRepo(repo.NameWithOwner).Unwaiting(), stackPRGraphQL(len(chunk)), vars)
 		if err != nil {
 			return nil, err
 		}

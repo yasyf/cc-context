@@ -170,7 +170,7 @@ func statusFillAlerts(ctx context.Context, st *vcsStatus, nodes []*statusPRNode)
 			continue
 		}
 		if api == nil {
-			api = reviewsAPI()
+			api = reviewsAPI().ForRepo(st.Repo)
 		}
 		alerts, refused := statusReadAlerts(ctx, api, owner, repo, node.Number)
 		if refused != "" {

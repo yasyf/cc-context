@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/yasyf/cc-context/internal/prstate"
-	"github.com/yasyf/cc-context/internal/render"
 )
 
 // statusPRFields is the selection one branch's pull request is read through: it
@@ -275,7 +274,7 @@ func statusQueryPRs(ctx context.Context, l lane, branches []string) (statusPRRes
 		argv = append(argv, "-f", downstackPRAlias(i)+"="+branch)
 	}
 	argv = append(argv, "-f", "query="+statusPRQuery(len(branches)))
-	out, err := render.RunCLI(ctx, l.dir(), "gh", argv)
+	out, err := ghRead(ctx, l.dir(), argv)
 	if err != nil {
 		return statusPRResponse{}, fmt.Errorf("status: gh api graphql: %w", err)
 	}
@@ -329,7 +328,7 @@ func statusActivity(ctx context.Context, l lane, nodes []*statusPRNode) map[int]
 		argv = append(argv, "-f", statusCommentAlias(i)+"="+id)
 	}
 	argv = append(argv, "-f", "query="+statusCommentQuery(len(order)))
-	out, err := render.RunCLI(ctx, l.dir(), "gh", argv)
+	out, err := ghRead(ctx, l.dir(), argv)
 	if err != nil {
 		return nil
 	}
@@ -391,7 +390,7 @@ func statusDrafts(ctx context.Context, l lane, activity map[int]string) map[int]
 		argv = append(argv, "-F", fmt.Sprintf("%s=%d", statusDraftAlias(i), n))
 	}
 	argv = append(argv, "-f", "query="+statusDraftQuery(len(order)))
-	out, err := render.RunCLI(ctx, l.dir(), "gh", argv)
+	out, err := ghRead(ctx, l.dir(), argv)
 	if err != nil {
 		return nil
 	}
@@ -635,7 +634,7 @@ func statusPeers(ctx context.Context, l lane, bases []string) map[string][]strin
 		argv = append(argv, "-f", statusPeerAlias(i)+"="+base)
 	}
 	argv = append(argv, "-f", "query="+statusPeerQuery(len(bases)))
-	out, err := render.RunCLI(ctx, l.dir(), "gh", argv)
+	out, err := ghRead(ctx, l.dir(), argv)
 	if err != nil {
 		return nil
 	}
@@ -785,7 +784,7 @@ func statusFillByCommit(ctx context.Context, l lane, branches []string, nodes []
 		return
 	}
 	argv = append(argv, "-f", "query="+statusCommitQuery(len(heads)))
-	out, err := render.RunCLI(ctx, l.dir(), "gh", argv)
+	out, err := ghRead(ctx, l.dir(), argv)
 	if err != nil {
 		return
 	}

@@ -10,10 +10,12 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/version"
 )
 
@@ -32,10 +34,16 @@ type Client struct {
 	base    string
 	http    *http.Client
 	tokens  *tokenSource
+	apps    *appLoader
+	repo    string
 	retries int
 }
 
-var defaultClient = sync.OnceValue(func() *Client { return New(baseURLProd) })
+var defaultClient = sync.OnceValue(func() *Client {
+	c := New(baseURLProd)
+	c.apps = defaultAppLoader(baseURLProd)
+	return c
+})
 
 // Default is the process-wide client against api.github.com. Its token resolves
 // once, on the first request any caller makes.
@@ -48,8 +56,24 @@ func New(baseURL string) *Client {
 		base:    strings.TrimSuffix(baseURL, "/"),
 		http:    &http.Client{},
 		tokens:  &tokenSource{resolve: resolveToken},
+		apps:    &appLoader{load: func(context.Context) (*appSource, error) { return nil, nil }},
 		retries: maxRateLimitRetries,
 	}
+}
+
+// ForRepo returns a copy of c whose reads authenticate as the GitHub App named
+// in AppConfigPath when the app is installed on nameWithOwner, so they draw on
+// the installation's quota instead of the user's. Writes keep the user's token.
+func (c *Client) ForRepo(nameWithOwner string) *Client {
+	bound := *c
+	bound.repo = strings.ToLower(nameWithOwner)
+	return &bound
+}
+
+func (c *Client) asUser() *Client {
+	user := *c
+	user.repo = ""
+	return &user
 }
 
 // Unwaiting returns a copy of c that hands a rate-limited response straight
@@ -74,7 +98,7 @@ func Paginate[T any](ctx context.Context, c *Client, ref string) ([]T, error) {
 			return nil, fmt.Errorf("ghapi: paginate %s: %w", target, ErrPaginationCycle)
 		}
 		seen[target] = true
-		payload, header, err := c.do(ctx, http.MethodGet, ref, nil)
+		payload, header, _, err := c.do(ctx, http.MethodGet, ref, nil, true)
 		if err != nil {
 			return nil, err
 		}
@@ -97,7 +121,7 @@ func GraphQL[T any](ctx context.Context, c *Client, query string, variables map[
 	if err != nil {
 		return out, fmt.Errorf("ghapi: encode graphql request: %w", err)
 	}
-	payload, header, err := c.do(ctx, http.MethodPost, "/graphql", body)
+	payload, header, asApp, err := c.do(ctx, http.MethodPost, "/graphql", body, !isMutation(query))
 	if err != nil {
 		return out, err
 	}
@@ -107,6 +131,9 @@ func GraphQL[T any](ctx context.Context, c *Client, query string, variables map[
 	}
 	if err := json.Unmarshal(payload, &resp); err != nil {
 		return out, fmt.Errorf("ghapi: decode graphql response: %w", err)
+	}
+	if asApp && slices.ContainsFunc(resp.Errors, func(m GraphQLMessage) bool { return m.Type == "FORBIDDEN" }) {
+		return GraphQL[T](ctx, c.asUser(), query, variables)
 	}
 	if len(resp.Errors) > 0 {
 		wait, exhausted := quotaReset(header, time.Now())
@@ -121,39 +148,116 @@ type graphQLRequest struct {
 }
 
 // do re-resolves the token once on a 401, since a watch can outlive the token
-// it started with.
-func (c *Client) do(ctx context.Context, method, ref string, body []byte) ([]byte, http.Header, error) {
+// it started with. It reports whether the response came back to the app's token.
+func (c *Client) do(ctx context.Context, method, ref string, body []byte, read bool) ([]byte, http.Header, bool, error) {
 	target := c.resolveRef(ref)
+	var cred credential = c.tokens
+	if read {
+		var err error
+		if cred, err = c.readCredential(ctx); err != nil {
+			return nil, nil, false, err
+		}
+	}
 	reresolved := false
 	waits := 0
 	for {
-		token, err := c.tokens.get(ctx)
+		asApp := cred != credential(c.tokens)
+		token, err := cred.get(ctx)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, false, err
 		}
 		status, header, payload, err := c.send(ctx, method, target, body, token)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, false, err
 		}
 		if status == http.StatusUnauthorized && !reresolved {
 			reresolved = true
-			if err := c.tokens.refresh(ctx, token); err != nil {
-				return nil, nil, err
+			if err := cred.refresh(ctx, token); err != nil {
+				return nil, nil, false, err
 			}
+			continue
+		}
+		if asApp && status == http.StatusForbidden && integrationDenied(payload) {
+			cred = c.tokens
 			continue
 		}
 		if wait, ok := retryDelay(status, header, time.Now()); ok && waits < c.retries {
 			waits++
 			if err := sleep(ctx, wait); err != nil {
-				return nil, nil, err
+				return nil, nil, false, err
 			}
 			continue
 		}
 		if status < 200 || status > 299 {
-			return nil, nil, statusError(method, target, status, header, payload, time.Now())
+			return nil, nil, false, statusError(method, target, status, header, payload, time.Now())
 		}
-		return payload, header, nil
+		return payload, header, asApp, nil
 	}
+}
+
+type credential interface {
+	get(ctx context.Context) (string, error)
+	refresh(ctx context.Context, stale string) error
+}
+
+func (c *Client) readCredential(ctx context.Context) (credential, error) {
+	src, err := c.readApp(ctx)
+	if err != nil || src == nil {
+		return c.tokens, err
+	}
+	if _, _, err := src.token(ctx, c.repo, AppRefreshMargin, ""); err != nil {
+		src.unavailable(err)
+		return c.tokens, nil
+	}
+	return &appCredential{src: src, repo: c.repo}, nil
+}
+
+func (c *Client) readApp(ctx context.Context) (*appSource, error) {
+	if c.repo == "" || userTokenPinned(ctx) {
+		return nil, nil
+	}
+	return c.apps.get(ctx)
+}
+
+// AppConfigured reports whether reads may go through a GitHub App at all: one
+// is named in AppConfigPath and no GH_TOKEN or GITHUB_TOKEN pins the user's.
+func (c *Client) AppConfigured(ctx context.Context) (bool, error) {
+	if userTokenPinned(ctx) {
+		return false, nil
+	}
+	src, err := c.apps.get(ctx)
+	return src != nil, err
+}
+
+// AppToken returns the installation token a gh subprocess reading c's
+// repository should carry as GH_TOKEN, with at least margin left, and its
+// expiry. It returns "" when reads stay on the user's token.
+func (c *Client) AppToken(ctx context.Context, margin time.Duration) (string, time.Time, error) {
+	src, err := c.readApp(ctx)
+	if err != nil || src == nil {
+		return "", time.Time{}, err
+	}
+	tok, _, err := src.token(ctx, c.repo, margin, "")
+	if err != nil {
+		src.unavailable(err)
+		return "", time.Time{}, nil
+	}
+	return tok.Token, tok.ExpiresAt, nil
+}
+
+func userTokenPinned(ctx context.Context) bool {
+	return slices.ContainsFunc(envTokens, func(name string) bool { return strings.TrimSpace(render.Getenv(ctx, name)) != "" })
+}
+
+func isMutation(query string) bool {
+	return strings.HasPrefix(strings.TrimSpace(query), "mutation")
+}
+
+func integrationDenied(payload []byte) bool {
+	var body struct {
+		Message string `json:"message"`
+	}
+	return json.Unmarshal(payload, &body) == nil && body.Message == "Resource not accessible by integration"
 }
 
 func (c *Client) send(ctx context.Context, method, target string, body []byte, token string) (int, http.Header, []byte, error) {
