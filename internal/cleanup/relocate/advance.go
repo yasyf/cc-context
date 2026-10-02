@@ -342,7 +342,7 @@ func (r *Relocator) move(ctx context.Context, job *cleanup.Job, vetted *bool) (r
 
 	if job.Head != "" {
 		if _, err := r.rewrite(ctx, job.Git, "--git-dir="+job.Repo, "update-ref", job.RecoveryRef, job.Head); err != nil {
-			return "git", err.Error()
+			return gitReason(err), err.Error()
 		}
 	}
 	tree, err := sight(job.Original)
@@ -355,6 +355,9 @@ func (r *Relocator) move(ctx context.Context, job *cleanup.Job, vetted *bool) (r
 	_, err = r.rewrite(ctx, job.Git, "--git-dir="+job.Repo, "-c", "worktree.useRelativePaths=false", "worktree", "move", job.Original, job.Registered)
 	if err == nil {
 		return "", ""
+	}
+	if errors.Is(err, cleanup.ErrUnprobed) {
+		return gitReason(err), err.Error()
 	}
 	seen, seeErr := observe(job, false)
 	if seeErr == nil && seen.untouched(job) && linkDrift(job.Original, job.AdminDir, job.Links) == "" {
@@ -534,7 +537,7 @@ func (r *Relocator) unregister(ctx context.Context, job *cleanup.Job, _ *bool) (
 	}
 	if len(entries) > 0 {
 		if _, err := r.rewrite(ctx, job.Git, "--git-dir="+job.Repo, "worktree", "remove", job.Registered); err != nil {
-			return r.block(ctx, job, "git", err.Error())
+			return r.block(ctx, job, gitReason(err), err.Error())
 		}
 	}
 	return r.publish(ctx, job)

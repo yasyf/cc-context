@@ -430,6 +430,13 @@ func BoundProbe(cmd *exec.Cmd) {
 	cmd.WaitDelay = waitDelay
 }
 
+// BoundChild bounds cmd without a process group: cancellation kills the direct
+// child alone, never a descendant, and Wait gives up on pipes a descendant
+// still holds waitDelay after the child is gone.
+func BoundChild(cmd *exec.Cmd) {
+	cmd.WaitDelay = waitDelay
+}
+
 // RunCLIProbe is RunCLIExitCode for a probe under a tight deadline: the child
 // leads its own process group and cancellation SIGKILLs the group, so a
 // grandchild cannot outlive the deadline holding the output pipes open. Only a

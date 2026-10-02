@@ -22,7 +22,10 @@ type Config struct {
 	Watchers cleanup.Watchers
 	// GitEnv is the environment of every git child; nil inherits the process's.
 	GitEnv []string
-	Now    func() time.Time
+	// GitBudget bounds each git child, read or mutation alike, and expiry
+	// blocks the job as a timeout; zero means one minute.
+	GitBudget time.Duration
+	Now       func() time.Time
 }
 
 // Relocator implements cleanup.Relocator over the git binary each job names.
