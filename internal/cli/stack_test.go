@@ -332,7 +332,7 @@ func TestStackSubmitKeepsAnotherLanesBranchAtItsPublishedHead(t *testing.T) {
 func TestStackSubmitAllLanesPushesAnotherLanesBranch(t *testing.T) {
 	f, api, published := stackOtherLaneRepo(t)
 
-	if _, _, err := runStackCmd(t, f, "submit", "--all-lanes"); err != nil {
+	if _, _, err := runStackCmd(t, f, "submit", "--all-lanes", "--restack"); err != nil {
 		t.Fatalf("stack submit --all-lanes: %v", err)
 	}
 	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "l30/base"); got == published || !stackOnto(t, f, "origin/main", got) {
