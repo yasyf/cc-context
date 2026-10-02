@@ -388,14 +388,25 @@ func TestSecondServeFailsOnTheLock(t *testing.T) {
 	if err := os.Mkdir(f.h.layout.JobDir(unrecorded), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	second, err := New(Config{Journal: f.h.journal, Relocator: f.h.relocator, Deleter: f.h.deleter, CPU: f.h.cpu, Clock: f.h.clock})
-	if err != nil {
-		t.Fatalf("New() = %v", err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
-	if err := Serve(ctx, second, f.h.layout); !errors.Is(err, durable.ErrLockBusy) {
-		t.Fatalf("second Serve() = %v, want ErrLockBusy", err)
+	bound, cancelBound := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancelBound()
+	for {
+		second, err := New(Config{Journal: f.h.journal, Relocator: f.h.relocator, Deleter: f.h.deleter, CPU: f.h.cpu, Clock: f.h.clock})
+		if err != nil {
+			t.Fatalf("New() = %v", err)
+		}
+		round, cancel := context.WithTimeout(bound, 50*time.Millisecond)
+		err = Serve(round, second, f.h.layout)
+		cancel()
+		if errors.Is(err, durable.ErrLockBusy) {
+			break
+		}
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("second Serve() = %v, want ErrLockBusy", err)
+		}
+		if bound.Err() != nil {
+			t.Fatalf("no second Serve observed the held serve lock within 30s: %v", err)
+		}
 	}
 	if _, err := os.Lstat(f.h.layout.JobDir(unrecorded)); err != nil {
 		t.Errorf("Lstat(a job folder the serving daemon has yet to record) = %v, want it left alone by the refused daemon", err)

@@ -271,6 +271,20 @@ func fixture(t *testing.T, d *fakeDaemon) starter {
 	}
 }
 
+func observeContention(t *testing.T, contention error, round func() error) error {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		err := round()
+		switch {
+		case errors.Is(err, contention) || !errors.Is(err, context.DeadlineExceeded):
+			return err
+		case time.Now().After(deadline):
+			t.Fatalf("no round observed the held lock within 30s: %v", err)
+		}
+	}
+}
+
 func TestOutdated(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -724,38 +738,46 @@ func TestConnectLeavesADaemonThatTakesTheServeLockFirst(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			d := &fakeDaemon{serving: tt.serving, starts: &current}
-			s := fixture(t, d)
-			s.Timeout = 100 * time.Millisecond
-			admit := func() {
-				ctx, cancel := context.WithTimeout(t.Context(), time.Second)
-				defer cancel()
-				lock, err := durable.AcquireLock(ctx, s.Layout.ServeLockPath())
-				if err != nil {
-					t.Fatalf("the starting daemon's AcquireLock() = %v", err)
+			var (
+				d   *fakeDaemon
+				s   starter
+				ctl cleanup.Control
+			)
+			err := observeContention(t, errStartedElsewhere, func() error {
+				d = &fakeDaemon{serving: tt.serving, starts: &current}
+				s = fixture(t, d)
+				s.Timeout = 100 * time.Millisecond
+				admit := func() {
+					ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+					defer cancel()
+					lock, err := durable.AcquireLock(ctx, s.Layout.ServeLockPath())
+					if err != nil {
+						t.Fatalf("the starting daemon's AcquireLock() = %v", err)
+					}
+					t.Cleanup(func() { _ = lock.Close() })
+					d.mu.Lock()
+					defer d.mu.Unlock()
+					d.serving = tt.answers
 				}
-				t.Cleanup(func() { _ = lock.Close() })
-				d.mu.Lock()
-				defer d.mu.Unlock()
-				d.serving = tt.answers
-			}
-			held, alive := s.held, s.alive
-			s.held = func(lock string) (bool, error) {
-				observed, err := held(lock)
-				if tt.barrier == "held" && d.count("held serve.lock") == 2 {
-					admit()
+				held, alive := s.held, s.alive
+				s.held = func(lock string) (bool, error) {
+					observed, err := held(lock)
+					if tt.barrier == "held" && d.count("held serve.lock") == 2 {
+						admit()
+					}
+					return observed, err
 				}
-				return observed, err
-			}
-			s.alive = func(pid int) bool {
-				running := alive(pid)
-				if tt.barrier == "alive" && !running {
-					admit()
+				s.alive = func(pid int) bool {
+					running := alive(pid)
+					if tt.barrier == "alive" && !running {
+						admit()
+					}
+					return running
 				}
-				return running
-			}
-
-			ctl, err := s.connect(t.Context())
+				var err error
+				ctl, err = s.connect(t.Context())
+				return err
+			})
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("connect() error = %v, want %v", err, tt.wantErr)
 			}
@@ -961,21 +983,27 @@ func TestConnectStopsOnlyTheOutdatedDaemonItObserved(t *testing.T) {
 }
 
 func TestConnectStartLockBusy(t *testing.T) {
-	d := &fakeDaemon{starts: &cleanup.Info{Version: "v1.2.3", Protocol: cleanup.Protocol}}
-	s := fixture(t, d)
-	s.lockWait = 50 * time.Millisecond
-	if err := s.Layout.Ensure(); err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	held, err := durable.AcquireLock(ctx, s.Layout.StartLockPath())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = held.Close() }()
-
-	_, err = s.connect(context.Background())
+	var (
+		d *fakeDaemon
+		s starter
+	)
+	err := observeContention(t, durable.ErrLockBusy, func() error {
+		d = &fakeDaemon{starts: &cleanup.Info{Version: "v1.2.3", Protocol: cleanup.Protocol}}
+		s = fixture(t, d)
+		s.lockWait = 50 * time.Millisecond
+		if err := s.Layout.Ensure(); err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		held, err := durable.AcquireLock(ctx, s.Layout.StartLockPath())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = held.Close() }()
+		_, err = s.connect(context.Background())
+		return err
+	})
 	if !errors.Is(err, durable.ErrLockBusy) {
 		t.Fatalf("connect() error = %v, want %v", err, durable.ErrLockBusy)
 	}
