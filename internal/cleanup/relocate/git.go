@@ -81,6 +81,9 @@ func (r *Relocator) git(ctx context.Context, git string, args ...string) (string
 }
 
 func (r *Relocator) rewrite(ctx context.Context, git string, args ...string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	bounded, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.budget())
 	defer cancel()
 	out, err := r.run(bounded, git, args...)
@@ -118,7 +121,7 @@ func gitReason(err error) string {
 }
 
 func (r *Relocator) stream(ctx context.Context, git string, delim byte, visit func(head []byte), args ...string) error {
-	bounded, cancel := context.WithTimeout(ctx, readTimeout)
+	bounded, cancel := context.WithTimeout(ctx, r.budget())
 	defer cancel()
 	return unprobed(ctx, bounded, r.scan(bounded, git, delim, visit, args...))
 }

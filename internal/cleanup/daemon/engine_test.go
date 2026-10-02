@@ -843,14 +843,18 @@ func TestDeferRejoinsOnlyTheJobItsRegistrationBinds(t *testing.T) {
 }
 
 func TestCancelledAdvanceStopsTheWorkerAndLeavesTheJobRunnable(t *testing.T) {
+	seedMoved := func(h *harness) { h.seed("a", 1, cleanup.PhaseMoved) }
 	tests := []struct {
 		name   string
 		seed   func(h *harness)
 		remove bool
+		stop   bool
 		phase  cleanup.Phase
 	}{
-		{"on the worker's own pass", func(h *harness) { h.seed("a", 1, cleanup.PhaseMoved) }, false, cleanup.PhaseMoved},
-		{"inside a remove command", func(*harness) {}, true, cleanup.PhasePrepared},
+		{"on the worker's own pass", seedMoved, false, false, cleanup.PhaseMoved},
+		{"inside a remove command", func(*harness) {}, true, false, cleanup.PhasePrepared},
+		{"on the worker's own pass, by Stop", seedMoved, false, true, cleanup.PhaseMoved},
+		{"inside a remove command, by Stop", func(*harness) {}, true, true, cleanup.PhasePrepared},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -873,10 +877,29 @@ func TestCancelledAdvanceStopsTheWorkerAndLeavesTheJobRunnable(t *testing.T) {
 				if got := <-h.relocator.entered; got != "a" {
 					t.Fatalf("the relocator entered %q, want a", got)
 				}
-				cancel()
+				stopped := make(chan error, 1)
+				if tt.stop {
+					go func() { stopped <- engine.Stop(context.Background()) }()
+					synctest.Wait()
+					select {
+					case err := <-stopped:
+						t.Fatalf("Stop() = %v while the advance was still in flight", err)
+					default:
+					}
+				} else {
+					cancel()
+				}
 				gate <- struct{}{}
 				if err := <-running; err != nil {
 					t.Fatalf("Run() = %v, want nil: a cancelled advance is a stop, not a journal failure", err)
+				}
+				if tt.stop {
+					if err := <-stopped; err != nil {
+						t.Errorf("Stop() = %v", err)
+					}
+					if err := engine.Stop(context.Background()); err != nil {
+						t.Errorf("a second Stop() = %v, want nil", err)
+					}
 				}
 				if tt.remove {
 					err := <-removed
@@ -908,43 +931,6 @@ func TestCancelledAdvanceStopsTheWorkerAndLeavesTheJobRunnable(t *testing.T) {
 			})
 		})
 	}
-}
-
-func TestStopLetsTheAdvanceInFlightFinishUncancelled(t *testing.T) {
-	bubble(t, DefaultTuning(), func(t *testing.T, h *harness) {
-		job := h.seed("a", 1, cleanup.PhasePrepared)
-		h.deleter.put("a", &payload{entries: 100})
-		gate := make(chan struct{})
-		h.relocator.gates["a"] = gate
-		h.start()
-		if got := <-h.relocator.entered; got != "a" {
-			t.Fatalf("the relocator entered %q, want a", got)
-		}
-		engine, running := h.engine, h.running
-		h.engine = nil
-		stopped := make(chan error, 1)
-		go func() { stopped <- engine.Stop(context.Background()) }()
-		synctest.Wait()
-		select {
-		case err := <-stopped:
-			t.Fatalf("Stop() = %v while the advance was still in flight", err)
-		default:
-		}
-		gate <- struct{}{}
-		if err := <-stopped; err != nil {
-			t.Errorf("Stop() = %v", err)
-		}
-		if err := <-running; err != nil {
-			t.Errorf("Run() = %v", err)
-		}
-		h.expectEvents("advance:a@prepared")
-		if got := h.journaled(job.ID); got.Phase != cleanup.PhaseUnregistered || got.Blocked != nil {
-			t.Errorf("journal after the stop = phase %s, blockage %+v; want the step finished at unregistered", got.Phase, got.Blocked)
-		}
-		if err := engine.Stop(context.Background()); err != nil {
-			t.Errorf("a second Stop() = %v, want nil", err)
-		}
-	})
 }
 
 func TestRequesterRidesOnlyTheCommandThatNamedIt(t *testing.T) {

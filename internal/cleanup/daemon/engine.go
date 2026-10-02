@@ -219,10 +219,10 @@ func New(cfg Config) (*Engine, error) {
 }
 
 // Run is the single worker. It loads the journal, resumes every unfinished job
-// from the phase its record holds, and returns nil once ctx is done or Stop is
-// called, after journaling the active deletion's progress. It returns an error
-// only when the journal could not be read or written: it never keeps mutating
-// what it cannot record.
+// from its recorded phase, and returns nil once ctx is done or Stop is called,
+// after journaling the active deletion's progress. Stop cancels the running
+// step's context too, so a stop is seen at that step's next check. It returns
+// an error only when the journal could not be read or written.
 func (e *Engine) Run(ctx context.Context) error {
 	if !e.started.CompareAndSwap(false, true) {
 		return errors.New("cleanup daemon: the engine is already running")
@@ -234,15 +234,23 @@ func (e *Engine) Run(ctx context.Context) error {
 	if err := e.load(); err != nil {
 		return err
 	}
-	return errors.Join(e.work(ctx), e.park())
+	steps, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go func() {
+		select {
+		case <-e.quit:
+			cancel()
+		case <-steps.Done():
+		}
+	}()
+	return errors.Join(e.work(steps), e.park())
 }
 
-// Stop lets the worker finish the one slice or ladder step it is in, flush,
-// and return. A command the worker has not started by then is answered with
-// ErrStopped. It never cancels the context that step runs under; only Run's
-// own context does. It is idempotent, and stops an engine whose Run has not
-// started yet: every call on that engine is answered with ErrStopped whether
-// or not Run ever starts.
+// Stop cancels the worker's current step and waits for it to flush and return:
+// a git read is killed and its job rests unblocked at the phase on record, a
+// git mutation already running finishes or expires at its budget before the
+// step yields, and a slice in flight completes. A command not started by then
+// is answered with ErrStopped. It is idempotent, and works before Run.
 func (e *Engine) Stop(ctx context.Context) error {
 	e.quitOnce.Do(func() { close(e.quit) })
 	if !e.started.Load() {
