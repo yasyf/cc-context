@@ -412,6 +412,13 @@ func shipPreflightGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, c 
 	if branch == "" || branch == trunk {
 		return plan, "", nil
 	}
+	switch cut, err := gtCutFromTrunk(ctx, l.dir(), o, plan, state, branch, trunk); {
+	case err != nil:
+		return branchPlan{}, "", err
+	case cut:
+		plan.moveOntoParent, plan.commitBeforeMove = true, true
+		return plan, "", nil
+	}
 
 	var seg string
 	moves := false
@@ -437,6 +444,14 @@ func shipPreflightGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, c 
 	}
 	plan.needsRestack, err = gtNeedsRestack(state, branch, trunk)
 	return plan, seg, err
+}
+
+func gtCutFromTrunk(ctx context.Context, dir render.Dir, o shipOpts, plan branchPlan, state gtState, branch, trunk string) (bool, error) {
+	if _, tracked := state[branch]; tracked || o.parent != "" || !gtCreates(o, plan) {
+		return false, nil
+	}
+	head, base, root, err := gtRootBase(ctx, dir, branch, trunk)
+	return root && base == head, err
 }
 
 // gtNeedsRestack reports whether any branch of branch's downstack is off its
@@ -1335,6 +1350,15 @@ func gtModifyArgv(o shipOpts) []string {
 }
 
 func gtCommit(ctx context.Context, l lane, errW io.Writer, o shipOpts, plan branchPlan, env []string) error {
+	if gtCreates(o, plan) && plan.commitBeforeMove {
+		if _, err := render.RunCLI(ctx, l.dir(), "git", []string{"switch", "-c", plan.name}); err != nil {
+			return fmt.Errorf("ship: git switch -c %s: %w", plan.name, err)
+		}
+		if _, err := render.RunCLIEnv(ctx, l.dir(), "git", gtModifyArgv(o), env); err != nil {
+			return errors.Join(fmt.Errorf("ship: git commit: %w", err), shipRestoreBranch(ctx, l.dir(), plan.from, plan.name))
+		}
+		return nil
+	}
 	if gtCreates(o, plan) {
 		r, runErr := gtRun(ctx, l.dir(), gtCommitArgv(o, plan), errW, env...)
 		if err := gtReport(ctx, errW, r); err != nil {

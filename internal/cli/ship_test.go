@@ -4762,6 +4762,45 @@ func TestShipGTAdoptsABranchCutFromANewerRemoteTrunkPastAnEmptyLane(t *testing.T
 	}
 }
 
+func TestShipGTNewBranchFromAnUntrackedBaseLevelWithTrunk(t *testing.T) {
+	f := shipGTRepo(t)
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	writeShipGH(t, f)
+	api.prs["lane-fix"] = 7
+	seedPRViews(t, map[string]string{"lane-fix": `{"number":7,"url":"https://github.com/x/pull/7","body":""}`})
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "v3-lane-base", "origin/main")
+	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	shipGTReady(t, f)
+
+	got, _, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--new-branch=lane-fix", "--pr-title", "Lane fix", "--no-watch")
+	if err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	if !strings.Contains(got, "tracked lane-fix onto main · ") || !strings.Contains(got, "submitted lane-fix") {
+		t.Errorf("summary = %q, want lane-fix tracked onto main and submitted", got)
+	}
+	var edits []string
+	for _, inv := range shipGTInvocations(t, f) {
+		if isPREdit(inv) {
+			edits = append(edits, strings.Join(inv[4:], " "))
+		}
+	}
+	if want := "repos/" + fakePRRepo + "/pulls/7 --silent -f title=Lane fix"; !slices.Equal(edits, []string{want}) {
+		t.Errorf("restates = %q, want %q", edits, want)
+	}
+	var state gtState
+	if err := json.Unmarshal([]byte(mustRun(t, f.Env(), f.Dir, "gt", "state")), &state); err != nil {
+		t.Fatalf("parse gt state: %v", err)
+	}
+	if parents := state["lane-fix"].Parents; len(parents) != 1 || parents[0].Ref != "main" {
+		t.Errorf("gt state lane-fix parents = %v, want main", parents)
+	}
+	if _, tracked := state["v3-lane-base"]; tracked {
+		t.Error("gt tracks v3-lane-base, the base lane-fix was cut from")
+	}
+}
+
 func TestShipGTAdoptsABranchCutFromTrunkThatGTRecordsAChildOf(t *testing.T) {
 	f := shipGTRepo(t)
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "adopt")

@@ -156,8 +156,15 @@ func dryRunPositionGT(ctx context.Context, l lane, o shipOpts, c *gtCache, r *sh
 	if branch == "" || branch == trunk {
 		return nil
 	}
+	cut, err := gtCutFromTrunk(ctx, l.dir(), o, r.plan, state, branch, trunk)
+	if err != nil {
+		return err
+	}
 	s, tracked := state[branch]
 	switch {
+	case cut:
+		r.parent, r.because = trunk, "untracked and already in the remote trunk, so ship cuts "+r.plan.name+" with git and records it on "+trunk
+		return nil
 	case !tracked:
 		return dryRunTrack(ctx, l, o, state, r)
 	case r.plan.action != branchCreate && o.parent != "" && s.Parents[0].Ref != o.parent:
