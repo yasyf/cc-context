@@ -164,8 +164,7 @@ func pathSafe(r rune) rune {
 // copyTree copies src's contents into dst, which must already exist. It
 // carries regular files, directories and symlinks with their permission bits,
 // which is everything a git, jj or gt repository is made of.
-func copyTree(t *testing.T, src, dst string) {
-	t.Helper()
+func copyTree(src, dst string, skip func(rel string) bool) error {
 	err := filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -175,6 +174,12 @@ func copyTree(t *testing.T, src, dst string) {
 			return err
 		}
 		if rel == "." {
+			return nil
+		}
+		if skip(rel) {
+			if d.IsDir() {
+				return fs.SkipDir
+			}
 			return nil
 		}
 		target := filepath.Join(dst, rel)
@@ -196,8 +201,24 @@ func copyTree(t *testing.T, src, dst string) {
 		}
 	})
 	if err != nil {
-		t.Fatalf("copy %s -> %s: %v", src, dst, err)
+		return fmt.Errorf("copy %s -> %s: %w", src, dst, err)
 	}
+	return nil
+}
+
+const xdgDataHome = ".local/share"
+
+func copyEverything(string) bool { return false }
+
+// gtFeatureFlags matches gt's refetchable feature-flag cache and the numbered
+// temps its detached refresher renames over it mid-copy.
+func gtFeatureFlags(rel string) bool {
+	tail, ok := strings.CutPrefix(rel, filepath.Join(xdgDataHome, "graphite", "feature_flags"))
+	if !ok {
+		return false
+	}
+	digits, numbered := strings.CutPrefix(tail, ".")
+	return tail == "" || numbered && digits != "" && strings.Trim(digits, "0123456789") == ""
 }
 
 func copyFile(src, dst string, perm fs.FileMode) error {
