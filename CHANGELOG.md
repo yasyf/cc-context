@@ -225,6 +225,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`worktree rm --wait` bounds its wait requests.** After removal, it uses
+  the same read-only polling as `cleanup wait`: one bounded hello and a 10s
+  limit per status request, replacing the server-side wait with no deadline.
+  It reports `deleted` only once the payload is gone and still reports
+  blockages. A job that disappears after the removal receipt is missing or
+  damaged (exit 1), never `done` or `not found`.
+
 - **Concurrent `ccx vcs pr status` and `pr state` readers no longer queue 30
   seconds apiece.** A reader asking for a pull request the last poll did not
   read slept out the 30-second poll interval while holding the cache's lock, so

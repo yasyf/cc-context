@@ -49,14 +49,19 @@ older versions that speak the same protocol. They never install a program
 copy, stop or replace the daemon, apply the `LaunchAgent`, or take the start
 lock, and both fail if no daemon is running.
 
-`cleanup wait` polls status with a 10s limit per request and backs off up to
-1s between polls. It succeeds only when a poll shows the job `done`.
+`worktree rm --wait` uses the same read-only wait after removal, with a 5s
+hello. Both wait commands poll status with a 10s limit per request and back
+off up to 1s between polls. They succeed only when a poll shows the job
+`done`, after its payload is gone; `worktree rm --wait` then reports
+`deleted`. A blockage fails the wait with its reason.
 
-If a job it has seen disappears, it exits 1. If the daemon lists the record
-as damaged, the error names the job, its last seen phase, and the damage.
+If a job disappears after either command has seen it, the wait exits 1. If
+the daemon lists the record as damaged, the error names the job, its last
+seen phase, and the damage.
 Otherwise, the error names the job and its last seen phase and says its
 completion cannot be proven: it may have finished and been pruned, or its
-record was lost. A job never seen is still "not found" (exit 3).
+record was lost. `worktree rm --wait` counts its removal receipt as seeing
+the job. Only a job `cleanup wait` has never seen is "not found" (exit 3).
 `cleanup status`, `cleanup wait`, and `cleanup retry` reject an empty job ID.
 
 `launchd` starts the daemon at login; queue-changing commands that reach the
