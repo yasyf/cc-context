@@ -145,9 +145,10 @@ On macOS a git worktree is handed to the per-user cleanup daemon: rm returns
 once the tree has left its path and git's registry, with its committed head
 pinned under refs/ccx/cleanup/, and the daemon deletes the files afterward.
 A tree a live process is working in, holding open, or was started on is
-refused. --wait waits for that job's deletion too; "ccx vcs cleanup status"
-reports the queue. --dry-run runs the daemon's whole preflight in process, so
-it refuses whatever rm would.
+refused. --wait then polls that job until its tree is deleted, as
+"ccx vcs cleanup wait" does; "ccx vcs cleanup status" reports the queue.
+--dry-run runs the daemon's whole preflight in process, so it refuses whatever
+rm would.
 
 Linux removes a git worktree inline with git worktree remove. There --dry-run
 checks only the trunk and main-working-copy refusals: git's own dirty and
@@ -739,8 +740,8 @@ func queueGitWorktreeRemoval(ctx context.Context, path string, opts worktreeRmOp
 	if !opts.wait {
 		return []string{queued}, nil
 	}
-	if _, err := svc.Wait(ctx, receipt.JobID); err != nil {
-		return nil, cleanupJobErr(fmt.Sprintf("worktree rm: removed %s, deletion queued %s; wait", path, receipt.JobID), receipt.JobID, err)
+	if err := waitCleanupReceipt(ctx, receipt); err != nil {
+		return nil, fmt.Errorf("worktree rm: removed %s, deletion queued %s; wait: %w", path, receipt.JobID, err)
 	}
 	return []string{queued, "deleted"}, nil
 }
