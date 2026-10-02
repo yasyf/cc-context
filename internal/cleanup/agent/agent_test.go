@@ -899,7 +899,6 @@ func TestConnectStopsOnlyTheOutdatedDaemonItObserved(t *testing.T) {
 				}
 			}
 			s := fixture(t, d)
-			s.Timeout = 100 * time.Millisecond
 
 			ctl, err := s.connect(t.Context())
 			for _, want := range tt.wantErrs {
