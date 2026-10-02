@@ -23,6 +23,7 @@ const (
 	kindActive       = "active"
 	kindBlocked      = "blocked"
 	kindUnknownJob   = "unknown_job"
+	kindPaused       = "paused"
 	kindIncompatible = "incompatible"
 	kindInternal     = "internal"
 
@@ -114,7 +115,7 @@ type wireError struct {
 
 func (w *wireError) validate() error {
 	switch w.Kind {
-	case kindUnknownJob, kindIncompatible, kindInternal:
+	case kindUnknownJob, kindPaused, kindIncompatible, kindInternal:
 		return nil
 	case kindRefused:
 		if w.Refused == nil {
@@ -145,6 +146,8 @@ func (w *wireError) rebuild() error {
 		return w.Blocked
 	case kindUnknownJob:
 		return cleanup.ErrUnknownJob
+	case kindPaused:
+		return cleanup.ErrPaused
 	case kindIncompatible:
 		return fmt.Errorf("%w: %s", ErrIncompatible, w.Message)
 	}
@@ -166,6 +169,8 @@ func wireErrorOf(err error) *wireError {
 		return &wireError{Kind: kindBlocked, Message: err.Error(), Blocked: blocked}
 	case errors.Is(err, cleanup.ErrUnknownJob):
 		return &wireError{Kind: kindUnknownJob, Message: err.Error()}
+	case errors.Is(err, cleanup.ErrPaused):
+		return &wireError{Kind: kindPaused, Message: err.Error()}
 	}
 	return &wireError{Kind: kindInternal, Message: err.Error()}
 }

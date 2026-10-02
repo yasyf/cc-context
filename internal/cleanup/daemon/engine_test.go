@@ -246,13 +246,18 @@ func TestProgressIsJournaledAtMostOnceAMinute(t *testing.T) {
 	})
 }
 
-func TestQueuePauseStopsSlicesNotRemovals(t *testing.T) {
+func TestQueuePauseRestsEveryJobAndRefusesNewWork(t *testing.T) {
 	bubble(t, DefaultTuning(), func(t *testing.T, h *harness) {
 		ctx := context.Background()
 		job := h.seed("a", 1, cleanup.PhaseUnregistered)
 		h.deleter.put("a", &payload{entries: 300})
+		waiting := h.seed("w", 2, cleanup.PhaseWaiting)
+		h.relocator.script("w", stayWaiting)
+		retrying := h.seed("r", 3, cleanup.PhasePrepared, func(job *cleanup.Job) {
+			job.Block(job.Created, "activity", "zsh (pid 7) in the tree")
+		})
 		h.start()
-		h.expectEvents("sample", "admit:a", "open:a", "step:a")
+		h.expectEvents("advance:w@waiting", "sample", "admit:a", "open:a", "step:a")
 		h.expectTimers(400 * time.Millisecond)
 
 		if err := h.engine.Pause(ctx); err != nil {
@@ -267,18 +272,33 @@ func TestQueuePauseStopsSlicesNotRemovals(t *testing.T) {
 		if got := h.journaled(job.ID).Removed; got != 100 {
 			t.Errorf("journaled removed = %d, want 100", got)
 		}
-		h.clock.Advance(10 * time.Second)
+		h.clock.Advance(time.Hour)
 		h.expectEvents()
-
-		receipt, err := h.engine.Remove(ctx, h.request("b"))
-		if err != nil {
-			t.Fatalf("Remove(b) under a queue pause = %v", err)
-		}
-		if receipt.State != cleanup.State(cleanup.PhaseUnregistered) {
-			t.Errorf("Remove(b) state = %s, want unregistered", receipt.State)
-		}
-		h.expectEvents("accept:b", "advance:b@prepared")
 		h.expectTimers()
+
+		for _, tt := range []struct {
+			name string
+			ask  func() error
+		}{
+			{"remove", func() error { _, err := h.engine.Remove(ctx, h.request("b")); return err }},
+			{"defer", func() error { _, err := h.engine.Defer(ctx, h.deferral("d")); return err }},
+			{"adopt", func() error { _, err := h.engine.Adopt(ctx, h.adoption("q")); return err }},
+		} {
+			if err := tt.ask(); !errors.Is(err, cleanup.ErrPaused) {
+				t.Errorf("%s under a queue pause = %v, want ErrPaused", tt.name, err)
+			}
+		}
+		h.expectEvents()
+		h.expectTimers()
+		jobs, damaged, err := h.journal.Load()
+		if err != nil || len(damaged) != 0 || len(jobs) != 3 {
+			t.Fatalf("Load() = %d jobs, damaged %v, %v; want the three seeded and nothing new", len(jobs), damaged, err)
+		}
+		for _, seeded := range []cleanup.Job{waiting, retrying} {
+			if got := h.journaled(seeded.ID); got.Phase != seeded.Phase || (got.Blocked == nil) != (seeded.Blocked == nil) {
+				t.Errorf("%s rests at %s, blocked %t; want %s, blocked %t", h.rec.name(seeded.ID), got.Phase, got.Blocked != nil, seeded.Phase, seeded.Blocked != nil)
+			}
+		}
 		report, err := h.engine.Status(ctx, cleanup.Query{})
 		if err != nil || !report.Paused {
 			t.Fatalf("Status() paused = %t, %v; want true", report.Paused, err)
@@ -287,7 +307,7 @@ func TestQueuePauseStopsSlicesNotRemovals(t *testing.T) {
 		if err := h.engine.Resume(ctx); err != nil {
 			t.Fatalf("Resume() = %v", err)
 		}
-		h.expectEvents("sample", "admit:a", "open:a", "step:a")
+		h.expectEvents("advance:w@waiting", "advance:r@prepared", "sample", "admit:a", "open:a", "step:a")
 		h.expectTimers(400 * time.Millisecond)
 		if sw, err := h.journal.LoadSwitch(); err != nil || sw.Paused {
 			t.Errorf("LoadSwitch() after resume = %+v, %v; want unpaused", sw, err)
@@ -298,6 +318,14 @@ func TestQueuePauseStopsSlicesNotRemovals(t *testing.T) {
 		if got := h.status(job.ID); got.State() != cleanup.State(cleanup.PhaseDeleting) || got.Removed != 200 {
 			t.Errorf("resumed job = state %s, removed %d; want deleting, 200", got.State(), got.Removed)
 		}
+		if got := h.status(retrying.ID); got.Phase != cleanup.PhaseUnregistered || got.Blocked != nil {
+			t.Errorf("retried job = phase %s, blockage %+v; want unregistered and unblocked once the queue resumed", got.Phase, got.Blocked)
+		}
+		receipt, err := h.engine.Remove(ctx, h.request("b"))
+		if err != nil || receipt.State != cleanup.State(cleanup.PhaseUnregistered) {
+			t.Fatalf("Remove(b) after the resume = %+v, %v; want it unregistered", receipt, err)
+		}
+		h.expectEvents("accept:b", "advance:b@prepared")
 	})
 }
 

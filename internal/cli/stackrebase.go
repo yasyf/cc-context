@@ -2843,7 +2843,7 @@ func stackReleaseWorkspace(ctx context.Context, l lane, commonDir string, c *sta
 		switch {
 		case errors.As(err, &refused) && refused.Reason == "replaced":
 			return stackMismatchLine(ws), nil
-		case errors.As(err, &refused):
+		case errors.As(err, &refused), errors.Is(err, cleanup.ErrPaused):
 			return "", fmt.Errorf("stack rebase: %w — nothing was removed, and %s is left where it is", err, ws)
 		}
 		return "", fmt.Errorf("stack rebase: %w — the cleanup daemon may already hold %s", err, ws)

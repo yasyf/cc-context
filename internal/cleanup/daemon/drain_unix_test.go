@@ -53,6 +53,7 @@ type gitFixture struct {
 	entered  string
 	release  string
 	journal  *cleanup.Journal
+	clock    Clock
 }
 
 func newGitFixture(t *testing.T) *gitFixture {
@@ -161,13 +162,18 @@ func (f *gitFixture) pass() {
 	}
 }
 
-func (f *gitFixture) ran(subcommand string) bool {
+func (f *gitFixture) gitCalls() string {
 	f.t.Helper()
 	calls, err := os.ReadFile(f.log)
-	if err != nil {
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		f.t.Fatalf("read the git call log: %v", err)
 	}
-	return strings.Contains(string(calls), " "+subcommand+" ")
+	return string(calls)
+}
+
+func (f *gitFixture) ran(subcommand string) bool {
+	f.t.Helper()
+	return strings.Contains(f.gitCalls(), " "+subcommand+" ")
 }
 
 func (f *gitFixture) relocator() *relocate.Relocator {
@@ -185,7 +191,7 @@ func (f *gitFixture) engine() *Engine {
 	f.t.Helper()
 	tuning := DefaultTuning()
 	tuning.Rate, tuning.SampleEvery, tuning.Recheck = 1_000_000, 5*time.Millisecond, 20*time.Millisecond
-	engine, err := New(Config{Journal: f.journal, Relocator: f.relocator(), Deleter: rmtree.Deleter{}, CPU: idleCPU{}, Version: "test", Tuning: tuning})
+	engine, err := New(Config{Journal: f.journal, Relocator: f.relocator(), Deleter: rmtree.Deleter{}, CPU: idleCPU{}, Version: "test", Clock: f.clock, Tuning: tuning})
 	if err != nil {
 		f.t.Fatalf("New() = %v", err)
 	}
@@ -313,15 +319,33 @@ func (f *gitFixture) accept() cleanup.Job {
 	return job
 }
 
-func (f *gitFixture) intend() cleanup.Job {
+func (f *gitFixture) deferral() cleanup.DeferRequest {
 	f.t.Helper()
 	expected, err := relocate.Observe(f.worktree)
 	if err != nil {
 		f.t.Fatalf("Observe() = %v", err)
 	}
-	job, err := f.relocator().Intend(context.Background(), 1, cleanup.DeferRequest{
-		Worktree: f.worktree, CommonDir: f.common, Owner: "stack", Expected: expected, Git: f.wrapper,
-	})
+	return cleanup.DeferRequest{Worktree: f.worktree, CommonDir: f.common, Owner: "stack", Expected: expected, Git: f.wrapper}
+}
+
+func (f *gitFixture) adoption() cleanup.AdoptRequest {
+	f.t.Helper()
+	const date, id = "20260928", "0123456789abcdef0123"
+	return cleanup.AdoptRequest{
+		Source:      filepath.Join(filepath.Dir(f.repo), cleanup.LegacyQuarantinePrefix+date, id+"-wt"),
+		Tree:        cleanup.FileID{Dev: 1, Ino: 1},
+		CommonDir:   f.common,
+		Head:        f.run(f.repo, "rev-parse", "refs/heads/feature"),
+		RecoveryRef: cleanup.LegacyRecoveryPrefix + date + "/" + id,
+		Original:    f.worktree,
+		Owner:       "legacy quarantine import",
+		Git:         f.wrapper,
+	}
+}
+
+func (f *gitFixture) intend() cleanup.Job {
+	f.t.Helper()
+	job, err := f.relocator().Intend(context.Background(), 1, f.deferral())
 	if err != nil {
 		f.t.Fatalf("Intend() = %v", err)
 	}

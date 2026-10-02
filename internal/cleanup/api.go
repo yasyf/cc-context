@@ -20,6 +20,9 @@ var (
 	ErrUnsupported = errors.New("cleanup: the deletion daemon runs on macOS only")
 	// ErrUnknownJob reports a job id the journal does not hold.
 	ErrUnknownJob = errors.New("cleanup: no such job")
+	// ErrPaused reports a paused queue, which refuses every new removal before
+	// any preflight, journal record, git call, or filesystem change.
+	ErrPaused = errors.New("cleanup: the queue is paused and takes no new removal until ccx vcs cleanup resume")
 	// ErrIdentity reports a file that is not the one a job captured.
 	ErrIdentity = errors.New("cleanup: identity mismatch")
 	// ErrUnprobed reports a process, watcher, or git probe that timed out or
