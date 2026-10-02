@@ -379,7 +379,7 @@ func TestStackPublicationSurvivesGraphiteForgettingItsSubmit(t *testing.T) {
 		t.Fatal(err)
 	}
 	stackAdvanceTrunk(t, f, "later.txt", "later\n")
-	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+	if _, _, err := runStackCmd(t, f, "submit", "--restack"); err != nil {
 		t.Fatalf("submit after graphite forgot the last submit: %v", err)
 	}
 	if remote := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature"); remote == published || !stackOnto(t, f, "origin/main", remote) {

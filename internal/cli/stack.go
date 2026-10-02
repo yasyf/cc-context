@@ -148,12 +148,15 @@ func newStackSubmitCmd() *cobra.Command {
 	var to string
 	cmd := &cobra.Command{
 		Use:   "submit",
-		Short: "Restack every lane, then submit the whole stack",
-		Long: `Rebase this lane's branches, then push and submit them.
+		Short: "Submit the stack, retaining published branches that merge cleanly",
+		Long: `Submit this lane's branches, retaining clean published heads.
 
-Submit runs ccx vcs stack rebase over this lane's branches: it fetches the remote
-trunk and replays each branch from its recorded base onto that trunk. The local
-trunk branch and other working copies are left untouched. A branch whose pull
+Submit fetches the remote trunk and keeps a published branch on its recorded
+trunk base when its head still merges cleanly. New commits above that base are
+pushed as they stand. A conflicting branch, an unpublished branch, or a child
+whose parent landed is replayed onto its current parent; --restack also replays
+clean published branches. The local trunk branch and other working copies are
+left untouched. A branch whose pull
 request landed through a merge queue squash is dropped, and its children move
 onto what it sat on, leaving its squashed commits behind.
 A branch whose pull request was closed without landing is dropped the same way,
@@ -212,6 +215,7 @@ the run leaves out, is refused before anything moves.`,
 	cmd.Flags().BoolVar(&o.allLanes, "all-lanes", false, "submit the branches of other lanes too, a lane being the branch name before its last slash")
 	cmd.Flags().StringArrayVar(&o.landed, "landed", nil, "treat <branch> as landed and drop it (repeatable)")
 	cmd.Flags().BoolVar(&o.dropCommits, "drop-commits", false, stackDropCommitsUsage)
+	cmd.Flags().BoolVar(&o.restack, "restack", false, "rebase published branches onto the fetched trunk even when they merge cleanly")
 	cmd.Flags().StringVar(&to, "to", "", stackToUsage)
 	return cmd
 }
@@ -428,7 +432,7 @@ func runStackSubmit(cmd *cobra.Command, o shipOpts, include []string, to string)
 	if err := stackAnnounceSkipped(errW, pinned, skipped); err != nil {
 		return err
 	}
-	return runStackRebase(cmd, stackRebaseOpts{members: chain, pinned: stackSkipNames(pinned), landed: o.landed, draft: o.draft, ship: intent, submit: true, dropCommits: o.dropCommits, to: to, include: include, otherLanes: o.allLanes})
+	return runStackRebase(cmd, stackRebaseOpts{members: chain, pinned: stackSkipNames(pinned), landed: o.landed, draft: o.draft, ship: intent, submit: true, dropCommits: o.dropCommits, stayClean: !o.restack, restack: o.restack, to: to, include: include, otherLanes: o.allLanes})
 }
 
 // stackSubmitIntent carries --pr-title and --pr-body-file into the run as a ship

@@ -263,7 +263,7 @@ func TestStackSubmitAdoptsAPublicationTheBranchWasResetTo(t *testing.T) {
 	}
 	stackAdvanceTrunk(t, f, "later.txt", "later\n")
 
-	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+	if _, _, err := runStackCmd(t, f, "submit", "--restack"); err != nil {
 		t.Fatalf("submit after adopting the published head = %v, want it published", err)
 	}
 	remote := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature")
