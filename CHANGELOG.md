@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ship --parent <base>` skips the hooks when the clone names no trunk.** A
+  checkout without `refs/remotes/origin/HEAD`, such as a partial clone that
+  fetches one branch, used to run the full prek suite for a branch bound for a
+  pull request. That suite can take minutes on a cold Go lint pass. The default
+  now reuses the publication preflight: once it accepts the GitHub repository
+  and the explicit base, the commit and push skip the hooks, as they do for any
+  other pull request branch. A ship from a detached HEAD with `--new-branch`
+  gets the same default. With no pull request requested, `--no-pr`, or
+  `--no-push`, a clone without a trunk still runs the hooks. A commit straight
+  onto a known trunk still runs them, and `--verify`, `--no-verify`, and
+  `--yolo` still decide when given.
+
 - **`ccx vcs stack submit` keeps a published branch on its old trunk base only
   when trunk's own merge rules agree.** The clean-merge check and every
   `git replay` now read `.gitattributes` from the tree they merge onto, not from
