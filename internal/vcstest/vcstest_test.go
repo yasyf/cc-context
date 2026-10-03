@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io/fs"
 	"maps"
 	"os"
 	"os/exec"
@@ -12,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -797,5 +799,110 @@ func TestGTStackTemplate(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestCopyTreeLeavesOutOnlyTheFeatureFlagCache(t *testing.T) {
+	t.Parallel()
+	flags := filepath.Join(xdgDataHome, "graphite", "feature_flags")
+	for _, tt := range []struct {
+		name     string
+		rel      string
+		vanishes bool
+		excluded bool
+	}{
+		{"cache renamed away", flags, true, true},
+		{"numbered temp renamed away", flags + ".48213", true, true},
+		{"cache left in place", flags, false, true},
+		{"unrelated sibling vanishes", filepath.Join(xdgDataHome, "graphite", "user_config"), true, false},
+		{"lettered temp vanishes", flags + ".tmp", true, false},
+		{"bare dot vanishes", flags + ".", true, false},
+		{"longer name vanishes", flags + "x", true, false},
+		{"cache name outside the data home vanishes", filepath.Join("graphite", "feature_flags"), true, false},
+		{"unrelated sibling left in place", filepath.Join(xdgDataHome, "graphite", "user_config"), false, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			src, dst := realTempDir(t), realTempDir(t)
+			mkdir(t, filepath.Join(src, filepath.Dir(tt.rel)))
+			writeFile(t, filepath.Join(src, tt.rel), "{}\n")
+			mkdir(t, filepath.Join(src, "xdg-config"))
+			writeFile(t, filepath.Join(src, "xdg-config", "keep"), "kept\n")
+
+			err := copyTree(src, dst, func(rel string) bool {
+				if tt.vanishes && rel == tt.rel {
+					if err := os.Remove(filepath.Join(src, rel)); err != nil {
+						t.Fatalf("remove %s between its listing and its lstat: %v", rel, err)
+					}
+				}
+				return gtFeatureFlags(rel)
+			})
+
+			if tt.vanishes && !tt.excluded {
+				if !errors.Is(err, fs.ErrNotExist) {
+					t.Fatalf("copyTree() = %v, want the vanished %s to fail the copy", err, tt.rel)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("copyTree() = %v, want nil", err)
+			}
+			if got, err := os.ReadFile(filepath.Join(dst, "xdg-config", "keep")); err != nil || string(got) != "kept\n" {
+				t.Errorf("copied keep = %q, %v; want %q", got, err, "kept\n")
+			}
+			_, err = os.Lstat(filepath.Join(dst, tt.rel))
+			if copied := err == nil; copied == tt.excluded {
+				t.Errorf("%s copied = %v (lstat %v), want %v", tt.rel, copied, err, !tt.excluded)
+			}
+		})
+	}
+}
+
+const fakeGT = `#!/bin/sh
+printf '%s\n' "$*" >> "$CCX_FAKE_GT_LOG"
+[ "$1" = init ] || exit 0
+[ "$XDG_DATA_HOME" = "$HOME/.local/share" ] || { echo "XDG_DATA_HOME=$XDG_DATA_HOME outside HOME=$HOME" >&2; exit 1; }
+mkdir -p "$XDG_DATA_HOME/graphite"
+echo '{}' > "$XDG_DATA_HOME/graphite/feature_flags"
+echo '{}' > "$XDG_DATA_HOME/graphite/feature_flags.48213"
+echo kept > "$XDG_DATA_HOME/graphite/keep"
+`
+
+var fakeGTBuilds atomic.Int32
+
+func TestGTTemplateBuildsOnceAndKeepsItsFeatureFlagCache(t *testing.T) {
+	bin := realTempDir(t)
+	writeExec(t, filepath.Join(bin, "gt"), fakeGT)
+	log := filepath.Join(realTempDir(t), "gt.log")
+	t.Setenv("CCX_FAKE_GT_LOG", log)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	trunk := fmt.Sprintf("fakegt%d", fakeGTBuilds.Add(1))
+	for i := range 2 {
+		f := Repo(t, Trunk(trunk), GT(), Remote(), GTStack("base", "feature"))
+		var home string
+		for _, kv := range f.Env() {
+			if v, ok := strings.CutPrefix(kv, "HOME="); ok {
+				home = v
+			}
+		}
+		data := filepath.Join(home, xdgDataHome, "graphite")
+		if got, err := os.ReadFile(filepath.Join(data, "keep")); err != nil || string(got) != "kept\n" {
+			t.Errorf("fixture %d keep = %q, %v; want the rest of gt's data copied", i, got, err)
+		}
+		for _, name := range []string{"feature_flags", "feature_flags.48213"} {
+			if _, err := os.Lstat(filepath.Join(data, name)); !errors.Is(err, fs.ErrNotExist) {
+				t.Errorf("fixture %d %s: lstat = %v, want it left in the template", i, name, err)
+			}
+		}
+	}
+
+	raw, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatalf("read gt log: %v", err)
+	}
+	want := "init --trunk " + trunk + " --no-interactive\ntrack -f --no-interactive\ntrack -f --no-interactive\n"
+	if string(raw) != want {
+		t.Errorf("gt calls across two fixtures = %q, want one template build %q", raw, want)
 	}
 }

@@ -308,8 +308,12 @@ func Repo(t *testing.T, opts ...Opt) *Fixture {
 
 	tmpl := templateFor(t, cfg.base(), resolved)
 	home := detachedDir(t, "ccx-home")
-	copyTree(t, tmpl.base, base)
-	copyTree(t, tmpl.home, home)
+	if err := copyTree(tmpl.base, base, copyEverything); err != nil {
+		t.Fatal(err)
+	}
+	if err := copyTree(tmpl.home, home, gtFeatureFlags); err != nil {
+		t.Fatal(err)
+	}
 	f.env = fixtureEnv(t, base, home, resolved)
 	if cfg.remote {
 		f.RemoteDir = filepath.Join(base, "remote.git")
@@ -394,6 +398,7 @@ func fixtureEnv(t *testing.T, base, home string, tools []resolvedTool) []string 
 	return []string{
 		"HOME=" + home,
 		"XDG_CONFIG_HOME=" + filepath.Join(home, "xdg-config"),
+		"XDG_DATA_HOME=" + filepath.Join(home, xdgDataHome),
 		"GIT_CONFIG_GLOBAL=/dev/null",
 		"GIT_CONFIG_SYSTEM=/dev/null",
 		"GIT_CONFIG_NOSYSTEM=1",
