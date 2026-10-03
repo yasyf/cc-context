@@ -20,14 +20,54 @@ import (
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
-const thinTestDepth = 4
+const (
+	thinTestDepth   = 4
+	thinNotesLogEnv = "CCX_FAKE_CC_NOTES_LOG"
+	thinFakeCCNotes = `#!/bin/sh
+printf '%s %s\n' "$(pwd -P)" "$*" >> "$CCX_FAKE_CC_NOTES_LOG"
+if [ -n "$CCX_FAKE_CC_NOTES_UNKNOWN" ]; then
+	echo 'Error: unknown command "storage" for "cc-notes"' >&2
+	exit 1
+fi
+[ $# -eq 4 ] && [ "$1 $2 $3" = "storage bind --source" ] || { echo "unexpected cc-notes $*" >&2; exit 2; }
+backend=$(git -C "$4" rev-parse --path-format=absolute --git-common-dir) || exit 1
+bound=$(git config --local --get cc-notes.storage)
+case "$bound" in
+"") git config --local cc-notes.storage "$backend" && echo "bound $(pwd -P) to records at $backend" ;;
+"$backend") echo "already bound $(pwd -P) to records at $backend" ;;
+*) echo "error: context bound to a different backend: bound to $bound, asked to bind $backend" >&2; exit 1 ;;
+esac
+`
+)
 
 func thinRepo(t *testing.T, names ...string) *vcstest.Fixture {
 	t.Helper()
 	f := shipGTRepo(t, vcstest.GTStack(names...))
 	stubOpenPRs(t, f, nil, names...)
 	mustRun(t, f.Env(), f.RemoteDir, "git", "config", "uploadpack.allowFilter", "true")
+	bin := t.TempDir()
+	writeExecutable(t, filepath.Join(bin, "cc-notes"), thinFakeCCNotes)
+	f.PrependPATH(bin)
+	f.Setenv(thinNotesLogEnv, filepath.Join(bin, "calls.log"))
 	return f
+}
+
+func thinNotesCalls(t *testing.T, f *vcstest.Fixture) []string {
+	t.Helper()
+	var log string
+	for _, kv := range f.Env() {
+		if v, ok := strings.CutPrefix(kv, thinNotesLogEnv+"="); ok {
+			log = v
+		}
+	}
+	data, err := os.ReadFile(log)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
 }
 
 func thinGrowTrunk(t *testing.T, f *vcstest.Fixture, commits int) {
@@ -359,6 +399,101 @@ func TestStackNewThinReusesTheStore(t *testing.T) {
 	}
 	if got := thinRefs(t, f, store); got != refs {
 		t.Errorf("refusals moved store refs:\n%s\n→\n%s", refs, got)
+	}
+	thinRequireSource(t, f, before)
+}
+
+func TestStackNewThinSharesTheSourceNotes(t *testing.T) {
+	t.Parallel()
+	f := thinRepo(t)
+	thinGrowTrunk(t, f, 6)
+	store := thinTestStore(t, f)
+	backend := gitAt(t, f.Env(), f.Dir, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	bindsSource := func(call string) (string, bool) {
+		dir, args, _ := strings.Cut(call, " ")
+		src, ok := strings.CutPrefix(args, "storage bind --source ")
+		return dir, ok && gitAt(t, f.Env(), src, "rev-parse", "--path-format=absolute", "--git-common-dir") == backend
+	}
+
+	thinNew(t, f, f.Dir, "a", "--thin", "--depth", strconv.Itoa(thinTestDepth))
+	calls := thinNotesCalls(t, f)
+	if len(calls) != 1 {
+		t.Fatalf("cc-notes calls creating the store = %q, want one bind", calls)
+	}
+	dir, ok := bindsSource(calls[0])
+	if !ok {
+		t.Errorf("cc-notes %q, want storage bind --source the source checkout", calls[0])
+	}
+	stage := filepath.Dir(dir)
+	if dir == store || filepath.Base(dir) != filepath.Base(store) || filepath.Dir(stage) != filepath.Dir(store) || !strings.HasPrefix(filepath.Base(stage), "."+filepath.Base(store)+"-") {
+		t.Errorf("bind ran in %s, want the staged clone beside %s before it was installed", dir, store)
+	}
+	if got := gitAt(t, f.Env(), store, "config", "--local", "--get", thinNotesKey); got != backend {
+		t.Errorf("store %s = %q, want the source's records %q", thinNotesKey, got, backend)
+	}
+
+	thinNew(t, f, f.Dir, "b", "--thin")
+	calls = thinNotesCalls(t, f)
+	if len(calls) != 2 {
+		t.Fatalf("cc-notes calls reusing the store = %q, want a second bind", calls)
+	}
+	if dir, ok := bindsSource(calls[1]); !ok || dir != store {
+		t.Errorf("reuse ran cc-notes %q, want storage bind --source the source checkout in %s", calls[1], store)
+	}
+
+	other := filepath.Join(t.TempDir(), "other", filepath.Base(f.Dir))
+	if err := os.MkdirAll(filepath.Dir(other), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	mustRun(t, f.Env(), filepath.Dir(other), "git", "clone", "-q", "--branch", "main", f.RemoteDir, other)
+	refs := thinRefs(t, f, store)
+	if _, _, err := runStackCmdIn(t, f, other, "new", "c", "--thin"); err == nil || !strings.Contains(err.Error(), "bound to a different backend") {
+		t.Errorf("stack new --thin from another checkout of the same origin = %v, want the binding mismatch", err)
+	}
+	if got := gitAt(t, f.Env(), store, "config", "--local", "--get", thinNotesKey); got != backend {
+		t.Errorf("mismatch retargeted the store to %q, want %q", got, backend)
+	}
+	if got := thinRefs(t, f, store); got != refs {
+		t.Errorf("mismatch moved store refs:\n%s\n→\n%s", refs, got)
+	}
+	if _, err := os.Stat(thinTestLane(t, f, "c")); !os.IsNotExist(err) {
+		t.Errorf("mismatch left a lane: %v", err)
+	}
+
+	mustRun(t, f.Env(), store, "git", "config", "--local", "--unset", thinNotesKey)
+	calls = thinNotesCalls(t, f)
+	bind := "cc-notes -R " + store + " storage bind --source "
+	if _, _, err := runStackCmd(t, f, "new", "d", "--thin"); err == nil || !strings.Contains(err.Error(), bind) {
+		t.Errorf("stack new --thin on an unbound store = %v, want a refusal naming %q", err, bind)
+	}
+	if got := thinNotesCalls(t, f); len(got) != len(calls) {
+		t.Errorf("an unbound store ran cc-notes %q, want it left unbound", got[len(calls):])
+	}
+	if _, err := os.Stat(thinTestLane(t, f, "d")); !os.IsNotExist(err) {
+		t.Errorf("unbound refusal left a lane: %v", err)
+	}
+}
+
+func TestStackNewThinRefusesWithoutNotesBinding(t *testing.T) {
+	t.Parallel()
+	f := thinRepo(t)
+	before := thinSnap(t, f)
+	f.Setenv("CCX_FAKE_CC_NOTES_UNKNOWN", "1")
+
+	_, _, err := runStackCmd(t, f, "new", "lane1", "--thin", "--depth", strconv.Itoa(thinTestDepth))
+	if err == nil || !strings.Contains(err.Error(), `unknown command "storage"`) {
+		t.Fatalf("stack new --thin with a cc-notes lacking storage bind = %v, want its refusal", err)
+	}
+	store := thinTestStore(t, f)
+	entries, err := os.ReadDir(filepath.Dir(store))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("refused creation left %v beside %s, want neither a store nor its staging", entries, store)
+	}
+	if _, err := os.Stat(thinTestLane(t, f, "lane1")); !os.IsNotExist(err) {
+		t.Errorf("refused creation left a lane: %v", err)
 	}
 	thinRequireSource(t, f, before)
 }

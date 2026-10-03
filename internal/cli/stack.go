@@ -79,7 +79,11 @@ a Git checkout.
 under $HOME/.claude/stores, with --depth commits of trunk history (256 unless
 the store already exists), no blobs until a checkout needs them, no tags, a
 fetch of trunk alone, and a sparse checkout of root files, the tracked .claude
-and .agents directories, and this checkout's sparse set. The first thin lane
+and .agents directories, and this checkout's sparse set. The store shares this
+checkout's cc-notes records: creation binds it with "cc-notes storage bind"
+before installing it, so cc-notes must provide that command, and every later
+--thin lane has cc-notes confirm the store is bound to this checkout's records,
+refusing a store bound elsewhere or not at all. The first thin lane
 creates the store; a lane cut from a checkout of the store is a linked worktree
 of it whatever the flags say, sparse like its caller unless --no-checkout is
 given. A parent the store does not hold needs --published-parent: its

@@ -392,8 +392,11 @@ ccx vcs guidelines                               # PR templates + contribution r
 
 `ccx vcs stack new <name> --thin` creates a sparse lane in a ccx-owned shallow
 store; tracked `.claude` and `.agents` are checked out without running hooks
-or setup scripts. Keep thin mode opt-in: set `CCX_STACK_NEW=thin` per agent
-only where source-local cc-notes are not needed; do not set it globally.
+or setup scripts. A new store is bound to the source checkout's cc-notes
+records with `cc-notes storage bind`, so cc-notes must provide that command;
+an existing store with no binding, or one bound to another checkout, is
+refused. Keep thin mode opt-in: set `CCX_STACK_NEW=thin` per agent; do not
+set it globally.
 Unset or `full` keeps a linked worktree of the current checkout. Explicit
 `--thin` or `--full-history` selects the mode; `--full-history` is refused
 inside the store, where the `full` environment default still uses the store.
