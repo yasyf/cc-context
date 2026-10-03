@@ -13,6 +13,7 @@ import (
 
 	"github.com/yasyf/cc-context/internal/gtmeta"
 	"github.com/yasyf/cc-context/internal/render"
+	"github.com/yasyf/cc-context/internal/vcs"
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
@@ -739,9 +740,14 @@ func TestStackSubmitRestacksARejectedParentRevision(t *testing.T) {
 	}
 }
 
+// stackLane has another lane cut name onto the branch checked out here, from a
+// working copy of its own.
 func stackLane(t *testing.T, f *vcstest.Fixture, name string) string {
 	t.Helper()
-	out, _, err := runStackCmd(t, f, "new", name)
+	parent := gitAt(t, f.Env(), f.Dir, "branch", "--show-current")
+	other := restackSiblingPath(t, "other")
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", "--detach", other)
+	out, _, err := runStackCmdIn(t, f, other, "new", name, "--parent", parent)
 	if err != nil {
 		t.Fatalf("stack new %s: %v", name, err)
 	}
@@ -1489,6 +1495,188 @@ func TestStackSubmitKeepsAnotherLanesParentAtItsPublishedHead(t *testing.T) {
 	}
 	if want := "stack submit: keeping base (checked out in " + lane + ") at their published heads"; !strings.Contains(errOut, want) {
 		t.Errorf("stderr = %q, want %q", errOut, want)
+	}
+}
+
+// stackLaneOfTwo publishes base, checks it out in a working copy of its own, and
+// cuts feature onto it through cut; it returns both working copies.
+func stackLaneOfTwo(t *testing.T, f *vcstest.Fixture, api *gtAPIStub, cut func(holder string) (string, error)) (string, string) {
+	t.Helper()
+	shipGTStack(t, f, "base")
+	api.prs["base"] = 7
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("publish base: %v", err)
+	}
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
+	holder := restackSiblingPath(t, "pr-comment-parity")
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", holder, "base")
+	out, err := cut(holder)
+	if err != nil {
+		t.Fatalf("stack new: %v", err)
+	}
+	child := out[strings.LastIndex(out, shipSep)+len(shipSep):]
+	writeShipFile(t, child, "feature.txt", "feature\n")
+	mustRun(t, f.Env(), child, "git", "add", "feature.txt")
+	mustRun(t, f.Env(), child, "git", "commit", "-qm", "feature")
+	restackAdvanceRemote(t, f, "main", "upstream.txt", "upstream\n")
+	return holder, child
+}
+
+// TestStackSubmitTakesTheParentAnotherWorkingCopyOfThisLaneHolds is the
+// 2026-10-02 shape: a child cut from inside its parent's working copy submits
+// both branches without --include.
+func TestStackSubmitTakesTheParentAnotherWorkingCopyOfThisLaneHolds(t *testing.T) {
+	f := shipGTRepo(t)
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	_, child := stackLaneOfTwo(t, f, api, func(holder string) (string, error) {
+		out, _, err := runStackCmdIn(t, f, holder, "new", "feature")
+		return out, err
+	})
+	posted := len(api.submitHeads())
+
+	_, errOut, err := runStackCmdIn(t, f, child, "submit")
+	if err != nil {
+		t.Fatalf("stack submit: %v", err)
+	}
+	if heads := api.submitHeads()[posted:]; !slices.Equal(heads, []string{"base", "feature"}) {
+		t.Errorf("submit posts = %v, want base then feature — both are this lane's", heads)
+	}
+	if strings.Contains(errOut, "another lane owns") {
+		t.Errorf("stderr = %q, want no branch of this lane named as another's", errOut)
+	}
+	base := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
+	if feature := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature"); !stackOnto(t, f, base, feature) {
+		t.Errorf("published feature %s is not stacked on published base %s", feature, base)
+	}
+}
+
+// TestStackSubmitKeepsTheParentAWorkingCopyOfAnotherLaneHolds cuts the child
+// from a working copy not holding its parent, so the parent stays another lane's.
+func TestStackSubmitKeepsTheParentAWorkingCopyOfAnotherLaneHolds(t *testing.T) {
+	f := shipGTRepo(t)
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	holder, child := stackLaneOfTwo(t, f, api, func(string) (string, error) {
+		out, _, err := runStackCmd(t, f, "new", "feature", "--parent", "base")
+		return out, err
+	})
+	published := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
+	posted := len(api.submitHeads())
+
+	_, errOut, err := runStackCmdIn(t, f, child, "submit")
+	if err != nil {
+		t.Fatalf("stack submit: %v", err)
+	}
+	if heads := api.submitHeads()[posted:]; !slices.Equal(heads, []string{"feature"}) {
+		t.Errorf("submit posts = %v, want feature alone — base is another lane's", heads)
+	}
+	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base"); got != published {
+		t.Errorf("origin base = %s, want its published head %s left alone", got, published)
+	}
+	if want := "stack submit: keeping base (checked out in " + holder + ") at their published heads"; !strings.Contains(errOut, want) {
+		t.Errorf("stderr = %q, want %q", errOut, want)
+	}
+}
+
+// TestStackSubmitKeepsTheParentOfAWorkingCopyRecreatedAtTheFoundersPath pins
+// that a lane is no path: a working copy recreated where the founder stood is
+// another lane's.
+func TestStackSubmitKeepsTheParentOfAWorkingCopyRecreatedAtTheFoundersPath(t *testing.T) {
+	f := shipGTRepo(t)
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	holder, child := stackLaneOfTwo(t, f, api, func(holder string) (string, error) {
+		out, _, err := runStackCmdIn(t, f, holder, "new", "feature")
+		return out, err
+	})
+	published := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "remove", holder)
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", holder, "base")
+	writeShipFile(t, holder, "other.txt", "other\n")
+	mustRun(t, f.Env(), holder, "git", "add", "other.txt")
+	mustRun(t, f.Env(), holder, "git", "commit", "-qm", "other")
+	posted := len(api.submitHeads())
+
+	if _, _, err := runStackCmdIn(t, f, child, "submit"); err != nil {
+		t.Fatalf("stack submit: %v", err)
+	}
+	if heads := api.submitHeads()[posted:]; !slices.Equal(heads, []string{"feature"}) {
+		t.Errorf("submit posts = %v, want feature alone — the recreated base is another lane's", heads)
+	}
+	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base"); got != published {
+		t.Errorf("origin base = %s, want its published head %s left alone", got, published)
+	}
+}
+
+// TestStackSubmitTakesAPublishedParentAnotherWorkingCopyOfThisLaneHolds covers
+// the parent a publication receipt brings back after gt lost it: one this
+// lane holds goes up with its new commits.
+func TestStackSubmitTakesAPublishedParentAnotherWorkingCopyOfThisLaneHolds(t *testing.T) {
+	f := shipGTRepo(t)
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	stubOpenPRs(t, f, nil, "p", "a", "z")
+	shipGTStack(t, f, "p")
+	a := stackLaneHere(t, f, "a")
+	z := stackLaneHere(t, f, "z")
+	writeShipFile(t, z, "scratch.txt", "scratch\n")
+	if _, _, err := runStackCmdIn(t, f, z, "rebase", "--parent", "z=a"); err != nil {
+		t.Fatalf("publish z onto a: %v", err)
+	}
+	if err := os.Remove(filepath.Join(z, "scratch.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if got := dropGTParent(t, f, "z"); got != "p" {
+		t.Fatalf("gt parent of z = %s, want the stale p", got)
+	}
+	published := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "a")
+	writeShipFile(t, a, "fix.txt", "fix\n")
+	mustRun(t, f.Env(), a, "git", "add", "fix.txt")
+	mustRun(t, f.Env(), a, "git", "commit", "-qm", "fix")
+	restackAdvanceRemote(t, f, "main", "upstream.txt", "upstream\n")
+	posted := len(api.submitHeads())
+
+	if _, _, err := runStackCmdIn(t, f, z, "submit"); err != nil {
+		t.Fatalf("stack submit: %v", err)
+	}
+	if heads := api.submitHeads()[posted:]; !slices.Contains(heads, "a") {
+		t.Errorf("submit posts = %v, want a among them — it is this lane's", heads)
+	}
+	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "a"); got == published {
+		t.Errorf("origin a = %s, still its old published head", got)
+	}
+}
+
+// stackLaneHere cuts name onto the branch checked out here, from here, with a
+// commit of its own.
+func stackLaneHere(t *testing.T, f *vcstest.Fixture, name string) string {
+	t.Helper()
+	out, _, err := runStackCmd(t, f, "new", name)
+	if err != nil {
+		t.Fatalf("stack new %s: %v", name, err)
+	}
+	path := out[strings.LastIndex(out, shipSep)+len(shipSep):]
+	writeShipFile(t, path, name+".txt", name+"\n")
+	mustRun(t, f.Env(), path, "git", "add", name+".txt")
+	mustRun(t, f.Env(), path, "git", "commit", "-qm", name)
+	return path
+}
+
+// TestStackNewOntoTrunkFoundsALane pins that a child cut onto trunk founds a lane
+// rather than joining the one it was cut from.
+func TestStackNewOntoTrunkFoundsALane(t *testing.T) {
+	f := shipGTRepo(t)
+	out, _, err := runStackCmd(t, f, "new", "feature")
+	if err != nil {
+		t.Fatalf("stack new: %v", err)
+	}
+	c, err := vcs.ResolveCheckout(out[strings.LastIndex(out, shipSep)+len(shipSep):])
+	if err != nil {
+		t.Fatalf("resolve the new working copy: %v", err)
+	}
+	if lane, err := vcs.Lane(c); err != nil || lane != c.Root {
+		t.Errorf("lane = %q, %v, want the new working copy's own root %q", lane, err, c.Root)
 	}
 }
 

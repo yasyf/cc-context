@@ -172,9 +172,12 @@ and submits; ccx vcs stack abort drops the run. A moved branch held by another
 working copy, or uncommitted work in the invoking checkout, stops publication
 before any branch moves.
 
-A branch another working copy has checked out is that lane's, so it is skipped
-and named with the working copy holding it, along with every branch stacked
-above it; --include submits it anyway. One whose pull request landed is no
+A working copy stack new cut onto the branch checked out where it ran joins
+that working copy's lane, and a branch any working copy of this lane has checked
+out is submitted as if it were checked out here. A branch a working copy of
+another lane has checked out is that lane's, so it is skipped and named with the
+working copy holding it, along with every branch stacked above it; --include
+submits it anyway. One whose pull request landed is no
 lane's any more: it is dropped like any landed branch, and the branches on it
 move onto trunk.
 
@@ -211,7 +214,7 @@ the run leaves out, is refused before anything moves.`,
 	cmd.Flags().BoolVar(&o.draft, "draft", false, "open new PRs as drafts")
 	cmd.Flags().StringArrayVar(&o.prTitle, "pr-title", nil, "title for a pull request: <branch>=<title>, or a bare title for the branch checked out here (repeatable)")
 	cmd.Flags().StringArrayVar(&o.prBodyFile, "pr-body-file", nil, "body file for a pull request: <branch>=<path>, or a bare path for the branch checked out here; - reads stdin (repeatable)")
-	cmd.Flags().StringArrayVar(&include, "include", nil, "submit this branch even though another working copy has it checked out or it is another lane's (repeatable)")
+	cmd.Flags().StringArrayVar(&include, "include", nil, "submit this branch even though another lane's working copy has it checked out or it is another lane's (repeatable)")
 	cmd.Flags().BoolVar(&o.allLanes, "all-lanes", false, "submit the branches of other lanes too, a lane being the branch name before its last slash")
 	cmd.Flags().StringArrayVar(&o.landed, "landed", nil, "treat <branch> as landed and drop it (repeatable)")
 	cmd.Flags().BoolVar(&o.dropCommits, "drop-commits", false, stackDropCommitsUsage)
@@ -417,7 +420,7 @@ func runStackSubmit(cmd *cobra.Command, o shipOpts, include []string, to string)
 	if err != nil {
 		return err
 	}
-	holders, err := vcs.BranchHolders(ctx, l.checkout)
+	holders, err := vcs.ForeignBranchHolders(ctx, l.checkout)
 	if err != nil {
 		return fmt.Errorf("stack submit: %w", err)
 	}

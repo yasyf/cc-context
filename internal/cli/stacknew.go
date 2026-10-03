@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/spf13/cobra"
 	"github.com/yasyf/cc-context/internal/gtmeta"
@@ -74,13 +76,11 @@ func runStackNew(cmd *cobra.Command, name string, options stackNewOpts) error {
 	if options.depth < 1 || options.maxDepth < 1 {
 		return fmt.Errorf("stack new: --depth %d and --max-depth %d must both be positive", options.depth, options.maxDepth)
 	}
-	parent := options.parent
-	if parent == "" {
-		parent, err = gitCurrentBranch(ctx, src.dir(), "stack new")
-		if err != nil {
-			return err
-		}
+	current, err := gitCurrentBranch(ctx, src.dir(), "stack new")
+	if err != nil {
+		return err
 	}
+	parent := cmp.Or(options.parent, current)
 	if parent == "" {
 		return errors.New("stack new: HEAD is detached here, so there is no branch to stack on — check one out, or name it with --parent")
 	}
@@ -132,6 +132,7 @@ func runStackNew(cmd *cobra.Command, name string, options stackNewOpts) error {
 			}
 		}
 	}
+	trunk := sync.OnceValues(func() (string, error) { return stackNewTrunk(ctx, l) })
 	path, err := stackNewPath(ctx, l.checkout, name, options.path, src.checkout)
 	if err != nil {
 		return err
@@ -162,7 +163,11 @@ func runStackNew(cmd *cobra.Command, name string, options stackNewOpts) error {
 		}
 		start = receipt.Head
 	default:
-		start, err = stackNewStart(ctx, l, parent)
+		t, err := trunk()
+		if err != nil {
+			return err
+		}
+		start, err = stackNewStart(ctx, l, parent, t)
 		if err != nil {
 			return err
 		}
@@ -231,6 +236,17 @@ func runStackNew(cmd *cobra.Command, name string, options stackNewOpts) error {
 			return err
 		}
 		return fmt.Errorf("stack new: child %s at %s is incomplete; its worktree, ref, and metadata were retained for inspection: %w", name, path, err)
+	}
+	if parent == current {
+		t, err := trunk()
+		if err != nil {
+			return err
+		}
+		if parent != t {
+			if err := stackJoinLane(src, path); err != nil {
+				return err
+			}
+		}
 	}
 	cmd.Println(strings.Join(append(segs, "cut "+name+" onto "+parent, path), shipSep))
 	return nil
@@ -383,11 +399,20 @@ func stackNewPath(ctx context.Context, checkout vcs.Checkout, name, requested st
 	return path, nil
 }
 
-func stackNewStart(ctx context.Context, l lane, parent string) (string, error) {
-	trunk, err := stackNewTrunk(ctx, l)
+// stackJoinLane puts the working copy cut at path into src's lane: stacked on
+// the branch src has checked out, it carries on src's work.
+func stackJoinLane(src lane, path string) error {
+	created, err := vcs.ResolveCheckout(path)
 	if err != nil {
-		return "", err
+		return fmt.Errorf("stack new: %w", err)
 	}
+	if err := vcs.JoinLane(src.checkout, created); err != nil {
+		return fmt.Errorf("stack new: %w", err)
+	}
+	return nil
+}
+
+func stackNewStart(ctx context.Context, l lane, parent, trunk string) (string, error) {
 	if parent != trunk {
 		return parent, nil
 	}
