@@ -734,6 +734,9 @@ func queueGitWorktreeRemoval(ctx context.Context, path string, opts worktreeRmOp
 		return svc.Remove(ctx, cleanup.Request{Worktree: path, Force: opts.force, Git: git})
 	})
 	if err != nil {
+		receipt, err = followCleanupRetry(ctx, svc, err)
+	}
+	if err != nil {
 		return nil, fmt.Errorf("worktree rm: %w", err)
 	}
 	queued := "deletion queued " + receipt.JobID

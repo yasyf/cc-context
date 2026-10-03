@@ -1902,3 +1902,56 @@ func TestCleanupHandoffReportsABusyDaemon(t *testing.T) {
 		t.Errorf("prompt handoff = %+v, %v; want %+v", got, err, want)
 	}
 }
+
+func TestFollowCleanupRetry(t *testing.T) {
+	soon := time.Now().Add(20 * time.Millisecond)
+	late := time.Now().Add(cleanupHandoffTimeout + time.Minute)
+	retrying := func(at time.Time) cleanup.Job {
+		return cleanup.Job{ID: "18dadf83aaa58308-ddfdd0", Phase: cleanup.PhasePrepared, Original: "/wt", Blocked: &cleanup.Blockage{Reason: "activity", Detail: "read its arguments: input/output error", RetryAt: &at}}
+	}
+	operator := cleanup.Job{ID: "18dadf83aaa58308-ddfdd0", Phase: cleanup.PhasePrepared, Original: "/wt", Blocked: &cleanup.Blockage{Reason: "activity", Detail: "read its arguments: input/output error"}}
+	tests := []struct {
+		name     string
+		first    cleanup.Job
+		replies  []statusReply
+		relocate bool
+	}{
+		{
+			name:     "the retry relocates the tree",
+			first:    retrying(soon),
+			replies:  []statusReply{{job: retrying(soon)}, {job: cleanup.Job{ID: "18dadf83aaa58308-ddfdd0", Phase: cleanup.PhaseUnregistered, Original: "/wt"}}},
+			relocate: true,
+		},
+		{name: "the retry lands past the handoff", first: retrying(late)},
+		{name: "the job waits for an operator", first: operator},
+		{
+			name:    "the retry blocks again for an operator",
+			first:   retrying(soon),
+			replies: []statusReply{{job: operator}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := &scriptedStatus{t: t, replies: tt.replies}
+			receipt, err := followCleanupRetry(context.Background(), svc, &cleanup.BlockedError{Job: tt.first})
+			if len(svc.queries) != len(tt.replies) {
+				t.Errorf("status polls = %d, want %d", len(svc.queries), len(tt.replies))
+			}
+			if tt.relocate {
+				want := cleanup.Receipt{JobID: "18dadf83aaa58308-ddfdd0", State: cleanup.State(cleanup.PhaseUnregistered), Original: "/wt"}
+				if err != nil || receipt != want {
+					t.Errorf("followCleanupRetry() = %+v, %v; want %+v", receipt, err, want)
+				}
+				return
+			}
+			var blocked *cleanup.BlockedError
+			if !errors.As(err, &blocked) {
+				t.Fatalf("followCleanupRetry() = %+v, %v; want a *BlockedError", receipt, err)
+			}
+		})
+	}
+	refused := &cleanup.RefusedError{Worktree: "/wt", Reason: "dirty"}
+	if _, err := followCleanupRetry(context.Background(), &scriptedStatus{t: t}, refused); !errors.Is(err, refused) {
+		t.Errorf("followCleanupRetry(refused) = %v, want the refusal as is", err)
+	}
+}

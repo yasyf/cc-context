@@ -236,6 +236,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`worktree rm` follows the daemon's own retry of a transient blockage.**
+  A removal whose activity check failed on a process that was mid-exec, such as
+  `inspect pid 11025 (bash): read its arguments: input/output error`, used to
+  fail the command even though the daemon re-probes such a job itself 30
+  seconds later. `worktree rm` now polls the job through that retry while it
+  is due within the two-minute handoff, and succeeds once the tree leaves its
+  path. `cleanup wait`, `worktree rm --wait`, and the daemon's `Wait` keep
+  waiting through a self-retrying blockage instead of returning it. A
+  blockage's `retry_at` names the next re-probe in `cleanup status` and in the
+  error text. The daemon now stops re-probing after six transient blocks in a
+  row (`RetryLimit`), and then the job waits for `cleanup retry`. The wire
+  protocol moves to 3.
+
 - **`stack submit` no longer calls a pull request Graphite does not track
   `mergeable`.** After a parent landed, `stack submit` exited 0 and printed
   `parent dev · mergeable` for a green, approved pull request that Graphite's

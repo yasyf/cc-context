@@ -7,12 +7,13 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // Protocol is the version of the daemon's wire protocol. A client and a daemon
 // that disagree on it refuse each other rather than guess. Both sides decode
 // strictly, so any change to a request or reply shape bumps it.
-const Protocol = 2
+const Protocol = 3
 
 var (
 	// ErrUnsupported reports a platform the daemon does not run on; removal
@@ -417,5 +418,9 @@ type BlockedError struct {
 
 func (e *BlockedError) Error() string {
 	b := e.Job.Blocked
-	return fmt.Sprintf("cleanup job %s is blocked at %s (%s): %s", e.Job.ID, e.Job.Phase, b.Reason, b.Detail)
+	msg := fmt.Sprintf("cleanup job %s is blocked at %s (%s): %s", e.Job.ID, e.Job.Phase, b.Reason, b.Detail)
+	if b.RetryAt != nil {
+		msg += "; the daemon retries it at " + b.RetryAt.Local().Format(time.TimeOnly)
+	}
+	return msg
 }

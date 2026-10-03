@@ -265,7 +265,7 @@ func waitCleanupJob(ctx context.Context, svc cleanup.Service, id string, seen cl
 		switch {
 		case job.Phase == cleanup.PhaseDone:
 			return job, nil
-		case job.Blocked != nil:
+		case job.Blocked != nil && job.Blocked.RetryAt == nil:
 			return job, &cleanup.BlockedError{Job: job}
 		}
 		select {
@@ -273,6 +273,37 @@ func waitCleanupJob(ctx context.Context, svc cleanup.Service, id string, seen cl
 			return cleanup.Job{}, ctx.Err()
 		case <-time.After(delay):
 		}
+	}
+}
+
+// followCleanupRetry follows a removal the daemon blocked on a transient
+// inspection through the retries it runs on its own, while the next one is due
+// within cleanupHandoffTimeout: the receipt once the tree has left its path, or
+// the *cleanup.BlockedError once the job needs an operator or its next retry is
+// further out.
+func followCleanupRetry(ctx context.Context, svc cleanup.Service, err error) (cleanup.Receipt, error) {
+	for delay := cleanupWaitPollFloor; ; delay = min(2*delay, cleanupWaitPollCeiling) {
+		var blocked *cleanup.BlockedError
+		if !errors.As(err, &blocked) {
+			return cleanup.Receipt{}, err
+		}
+		job := blocked.Job
+		switch {
+		case !job.Phase.Logical():
+			return cleanup.ReceiptOf(job), nil
+		case job.Blocked != nil && (job.Blocked.RetryAt == nil || time.Until(*job.Blocked.RetryAt) > cleanupHandoffTimeout):
+			return cleanup.Receipt{}, err
+		}
+		select {
+		case <-ctx.Done():
+			return cleanup.Receipt{}, ctx.Err()
+		case <-time.After(delay):
+		}
+		report, readErr := readCleanupStatus(ctx, svc, cleanup.Query{JobID: job.ID})
+		if readErr != nil {
+			return cleanup.Receipt{}, readErr
+		}
+		err = &cleanup.BlockedError{Job: report.Jobs[0]}
 	}
 }
 
