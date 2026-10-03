@@ -1951,7 +1951,7 @@ func TestFollowCleanupRetry(t *testing.T) {
 		})
 	}
 	refused := &cleanup.RefusedError{Worktree: "/wt", Reason: "dirty"}
-	if _, err := followCleanupRetry(context.Background(), &scriptedStatus{t: t}, refused); err != refused {
+	if _, err := followCleanupRetry(context.Background(), &scriptedStatus{t: t}, refused); !errors.Is(err, refused) {
 		t.Errorf("followCleanupRetry(refused) = %v, want the refusal as is", err)
 	}
 }
