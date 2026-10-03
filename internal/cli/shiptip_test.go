@@ -349,6 +349,8 @@ func TestShipTipOnlyShipsOverADivergedGrandparent(t *testing.T) {
 			}
 			elsewhere := filepath.Join(t.TempDir(), "elsewhere")
 			mustRun(t, f.Env(), f.Dir, "git", "clone", "-q", "--branch", tc.grandparent, f.RemoteDir, elsewhere)
+			mustRun(t, f.Env(), elsewhere, "git", "config", "user.name", "elsewhere")
+			mustRun(t, f.Env(), elsewhere, "git", "config", "user.email", "elsewhere@example.com")
 			writeShipFile(t, elsewhere, "pushed.txt", "pushed by someone else\n")
 			mustRun(t, f.Env(), elsewhere, "git", "add", "pushed.txt")
 			mustRun(t, f.Env(), elsewhere, "git", "commit", "-q", "--amend", "-m", "rewritten elsewhere")
