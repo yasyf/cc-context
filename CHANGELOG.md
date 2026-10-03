@@ -236,6 +236,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`stack submit` submits parents held by worktrees of the same lane.**
+  After `ccx vcs worktree add pr-comment-parity`, running
+  `ccx vcs stack new dry-run-plan-picture` inside that worktree made the
+  child's first submit skip its parent with `stack submit: keeping
+  pr-comment-parity (checked out in …/pr-comment-parity) at their published
+  heads — another lane owns them; pass --include <branch> to submit one
+  anyway`. Rerunning with `--include pr-comment-parity` pushed both.
+  `stack new` now records the source's lane when the child is cut onto the
+  non-trunk branch checked out there, as an id that dies with the worktree
+  and so never passes to a worktree recreated at the same path. The child can submit its parent without
+  `--include`; branches held by other lanes are still skipped or pinned at
+  their published heads.
+
 - **`ship --tip-only` reads ancestors at their published heads.**
   A tip-only ship could refuse on another lane's ancestor with
   `ccx: stack rebase: yasyf/rth-since-app-reads has diverged from

@@ -1278,15 +1278,15 @@ func stackPinOtherLanes(state gtState, current string, members, include []string
 }
 
 // stackPinHeldParents pins a published parent stackWithPublishedParents
-// brought back when another working copy holds it, so a submit keeps it at
-// its published head like any held ancestor gt still records.
+// brought back when a working copy of another lane holds it, so a submit keeps
+// it at its published head like any held ancestor gt still records.
 func stackPinHeldParents(ctx context.Context, l lane, planned, members, pinned []string) ([]string, error) {
-	holders, err := vcs.BranchHolders(ctx, l.checkout)
+	holders, err := vcs.ForeignBranchHolders(ctx, l.checkout)
 	if err != nil {
 		return nil, fmt.Errorf("stack submit: %w", err)
 	}
 	for _, name := range members {
-		if holder := holders[name]; holder != "" && holder != l.checkout.Root && !slices.Contains(planned, name) && !slices.Contains(pinned, name) {
+		if holders[name] != "" && !slices.Contains(planned, name) && !slices.Contains(pinned, name) {
 			pinned = append(pinned, name)
 		}
 	}
