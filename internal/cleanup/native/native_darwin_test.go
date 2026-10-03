@@ -324,7 +324,7 @@ func TestArgumentNeverReadsTheEnvironment(t *testing.T) {
 		t.Errorf("arguments = %q, %v; want %q", args, err, want)
 	}
 	s := &scan{root: f.real, given: f.tree}
-	if path, err := s.argument(unnamed.Process.Pid); path != "" || err != nil {
+	if path, err := s.argument(unnamed.Process.Pid, false); path != "" || err != nil {
 		t.Errorf("argument = %q, %v; want no evidence from the environment", path, err)
 	}
 }
@@ -1189,6 +1189,8 @@ func TestGuardDiscountsTheRequestersLaunchers(t *testing.T) {
 	wrapped := childOf(t, wrapper, "/bin/bash")
 	parent, _ := grandchild(t, f.outside, `/bin/bash -c "/bin/sleep 60 & wait" arg0 "$0"`, f.real+"/sub")
 	sleeper := childOf(t, parent, "/bin/sleep")
+	naming, _ := grandchild(t, f.outside, `/bin/bash -c '/bin/bash "$@" <&3 & wait' "$0" -c "read line" arg0 "$0"`, f.real+"/sub")
+	named := childOf(t, naming, "/bin/bash")
 
 	argues := func(pid int, name string) cleanup.Holder {
 		return cleanup.Holder{PID: pid, Name: name, Evidence: cleanup.EvidenceArgv, Path: f.real + "/sub"}
@@ -1198,9 +1200,10 @@ func TestGuardDiscountsTheRequestersLaunchers(t *testing.T) {
 		requester int
 		want      []cleanup.Holder
 	}{
-		{"nothing named", 0, []cleanup.Holder{argues(wrapper, "time"), argues(wrapped, "bash"), argues(parent, "bash")}},
-		{"a requester run under timeout", wrapped, []cleanup.Holder{argues(parent, "bash")}},
-		{"not a parent started with other arguments", sleeper, []cleanup.Holder{argues(wrapper, "time"), argues(wrapped, "bash"), argues(parent, "bash")}},
+		{"nothing named", 0, []cleanup.Holder{argues(wrapper, "time"), argues(wrapped, "bash"), argues(parent, "bash"), argues(naming, "bash"), argues(named, "bash")}},
+		{"a requester run under timeout", wrapped, []cleanup.Holder{argues(parent, "bash"), argues(naming, "bash"), argues(named, "bash")}},
+		{"not a parent started with other arguments", sleeper, []cleanup.Holder{argues(wrapper, "time"), argues(wrapped, "bash"), argues(parent, "bash"), argues(naming, "bash"), argues(named, "bash")}},
+		{"not a launcher naming the tree before the requester's arguments", named, []cleanup.Holder{argues(wrapper, "time"), argues(wrapped, "bash"), argues(parent, "bash"), argues(naming, "bash")}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

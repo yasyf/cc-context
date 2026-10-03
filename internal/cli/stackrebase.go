@@ -860,7 +860,8 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 			}
 			effective.Head = prepared.NewHead
 		}
-		b, err := stackSnapshot(ctx, l.dir(), tr, effective, name, remotes[name], ours, prs[name], slices.Contains(o.landed, name), pin, o.dropCommits, stackReadsPublished(o, name))
+		published := stackReadsPublished(o, name)
+		b, err := stackSnapshot(ctx, l.dir(), tr, effective, name, remotes[name], ours, prs[name], slices.Contains(o.landed, name), pin, o.dropCommits, published)
 		if err != nil && len(own) > 0 && !own[name] {
 			outside[name] = true
 			run.left = append(run.left, stackLeft{branch: name, why: strings.TrimPrefix(err.Error(), stackRebasePrefix+": ")})
@@ -876,7 +877,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 				b.WasParent = cmp.Or(publishedOn, b.WasParent)
 			} else if retracked {
 				b.Publication = receipt
-			} else if err := stackUsePublication(ctx, l.dir(), &b, receipt); err != nil {
+			} else if err := stackUsePublication(ctx, l.dir(), &b, receipt, published); err != nil {
 				return nil, err
 			} else if receipt != nil && b.OldBase == receipt.Base && b.Head == receipt.Head {
 				stale, err := stackBaseInTrunk(ctx, l.dir(), receipt.Base, receipt.Head, pin)
