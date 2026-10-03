@@ -38,6 +38,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Thin stores share the source checkout's cc-notes records.** Before ccx
+  installs a new store, it runs `cc-notes storage bind --source <checkout>`
+  inside it. Lanes then read and write the source repository's notes and
+  tasks while keeping their own HEAD, branches, and files. Creation needs a
+  cc-notes release with `storage bind` and installs no store when binding
+  fails. Each later `--thin` lane runs the same bind against the existing
+  store, which cc-notes accepts only when the store already uses that
+  checkout's records, so a store bound to another checkout of the same
+  remote is refused, never rebound. A store created before this change
+  is refused until `cc-notes -R <store> storage bind --source <checkout>`
+  binds it once; ccx never binds an existing store itself.
+
 - **`# ccx:raw` runs any guarded Bash command as written.** Every blocking
   guard and rewrite in the pack now skips on captain-hook's `Annotated("raw")`:
   the `grep` and `rg` searches and their transcript and dependency steers, the

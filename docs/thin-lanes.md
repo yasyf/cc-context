@@ -52,6 +52,15 @@ checks out tracked files: it runs no Git hooks, project hooks, or setup
 scripts and installs no dependencies. Set up dependencies manually inside
 the lane.
 
+The store shares the source checkout's cc-notes records. Before ccx installs
+a new store, it runs `cc-notes storage bind --source <checkout>` inside it,
+so the notes, tasks, and other records a lane reads and writes live in the
+source repository, while each lane keeps its own HEAD, branches, and files.
+Creation needs a cc-notes release with `storage bind`; when binding fails,
+ccx installs no store. Every later `--thin` lane runs the same command
+against the existing store, and cc-notes accepts it only when the store
+already uses that checkout's records.
+
 Output segments are joined by ` · `: `created thin store <path>` on first
 use, an optional deepening report, `cut <name> onto <parent>`, then the new
 lane's path last. Enter that path to work in the lane.
@@ -67,11 +76,8 @@ The flag is refused inside the ccx thin store.
 
 ## Make thin lanes the default for agents
 
-Thin lanes cannot see the source checkout's local cc-notes data, and notes
-written in a thin lane stay in the store. ccx does not copy or sync notes.
-Keep thin mode opt-in: use `--thin`, or set `CCX_STACK_NEW=thin` per agent
-only where that separation is acceptable. Do not set it globally. In an
-agent shell:
+Keep thin mode opt-in: use `--thin`, or set `CCX_STACK_NEW=thin` per agent.
+Do not set it globally. In an agent shell:
 
 ```sh
 export CCX_STACK_NEW=thin
@@ -176,6 +182,9 @@ segment. A refused deepen can leave the store deeper; history only grows.
 | A source-only parent lacks a verified publication onto trunk | Use `--published-parent` after publishing onto trunk, or `--full-history` from the full checkout |
 | A store push targets a branch with ccx's adoption mark, even without a frozen Graphite record | Publish from the source checkout that owns it; retry the adopting `stack new` to repair an interrupted adoption |
 | The published base is outside the store's history | Retry with `--deepen` and an explicit `--max-depth` cap if needed |
+| cc-notes is missing or has no `storage bind` command | Install a cc-notes release with `storage bind`; until binding succeeds, ccx installs no store |
+| An existing store has no cc-notes binding | Bind it once with the command the refusal names, `cc-notes -R <store> storage bind --source <checkout>`, then retry |
+| The store is bound to another checkout's records, as when two checkouts of one remote share a directory name | Cut the lane from the checkout the store is bound to, or use `--full-history`; ccx never rebinds a store |
 
 In a shallow repository, `ccx vcs stack rebase`, `submit`, `restack`, and
 `ship` refuse before anything moves when the shallow boundary cuts a
@@ -220,11 +229,11 @@ call Orca.
 
 ## Account for the limits
 
-- cc-notes keeps its records (`refs/cc-notes/*` objects and caches) in each
-  checkout's Git common directory. The thin store is an independent clone
-  that fetches trunk only, so source-local notes are absent and lane notes
-  stay in the store. ccx does not copy or sync notes; the source checkout's
-  notes are untouched. Keep thin mode opt-in per agent; do not set it globally.
+- cc-notes records stay in the source checkout's repository, the one the
+  store is bound to. ccx copies no notes and binding writes nothing into the
+  source. The binding names that repository on disk, so moving or replacing
+  the source checkout breaks cc-notes in every lane of the store. Keep thin
+  mode opt-in per agent; do not set it globally.
 - ccx downloads a remote branch head someone else based below the shallow
   boundary before refusing for incomplete ancestry.
 - Reflog fork-point evidence in the store is thinner than in a long-lived

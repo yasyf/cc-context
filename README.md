@@ -198,7 +198,7 @@ tuned through environment variables:
 | Variable | Effect |
 | --- | --- |
 | `LOG_LEVEL` / `LOG_FORMAT` | `debug`, `info` (default), `warn`, or `error`, to stderr; set `LOG_FORMAT=json` for structured logs |
-| `CCX_STACK_NEW` | `thin` or `full` selects the `stack new` default unless `--thin` or `--full-history` is passed; unset keeps the existing behavior, other values error; inside the thin store, `full` still uses that store; thin mode is opt-in per agent because lanes cannot see the source checkout's local cc-notes data |
+| `CCX_STACK_NEW` | `thin` or `full` selects the `stack new` default unless `--thin` or `--full-history` is passed; unset keeps the existing behavior, other values error; inside the thin store, `full` still uses that store; thin mode stays opt-in per agent, and a thin store shares the source checkout's cc-notes records through `cc-notes storage bind` |
 | `CCX_EXEC_MCP` | `off` disables MCP auto-reflection in `ccx exec`; `refresh` forces a fresh `claude mcp list` probe, bypassing the 15-minute per-project inventory cache |
 | `CCX_EXEC_MCP_DENY` | comma-separated MCP server names to exclude from reflection; reflected servers run as fresh instances, so list any that need live session state |
 | `CCX_EXEC_MCP_ALLOW` | comma-separated MCP server names to reflect even when classified stateful |

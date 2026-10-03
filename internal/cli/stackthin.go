@@ -30,6 +30,7 @@ const (
 	thinDefaultMaxDepth = 4096
 	thinRemote          = "origin"
 	thinAdoptedPrefix   = "refs/ccx/thin-adopted/"
+	thinNotesKey        = "cc-notes.storage"
 )
 
 var (
@@ -264,6 +265,11 @@ func thinEnsureStore(ctx context.Context, errW io.Writer, src lane, s thinSource
 	if err := thinVerifyStore(ctx, root, s); err != nil {
 		return lane{}, false, err
 	}
+	if !created {
+		if err := thinVerifyNotes(ctx, src, root); err != nil {
+			return lane{}, false, err
+		}
+	}
 	ck, err := vcs.ResolveCheckout(root)
 	if err != nil {
 		return lane{}, false, fmt.Errorf("stack new: %w", err)
@@ -348,7 +354,31 @@ func thinPrepareStore(ctx context.Context, src lane, s thinSource, dir render.Di
 			return fmt.Errorf("stack new: set %s in the thin store: %w", key, err)
 		}
 	}
+	return thinBindNotes(ctx, src, dir)
+}
+
+func thinBindNotes(ctx context.Context, src lane, dir render.Dir) error {
+	if _, err := render.RunCLI(ctx, dir, "cc-notes", []string{"storage", "bind", "--source", src.root}); err != nil {
+		return fmt.Errorf("stack new: share %s's cc-notes records with the thin store: %w", src.root, err)
+	}
 	return nil
+}
+
+func thinVerifyNotes(ctx context.Context, src lane, root string) error {
+	_, code, stderr, err := render.RunCLIExitCode(ctx, render.Dir(root), "git", []string{"config", "--local", "--get", thinNotesKey})
+	switch {
+	case err != nil:
+		return err
+	case code == 1:
+		source := src.root
+		if src.checkout.MainRoot == root {
+			source = "<original-full-checkout>"
+		}
+		return fmt.Errorf("stack new: thin store %s shares no cc-notes records — bind it once with `cc-notes -R %s storage bind --source %s`, then retry", root, root, source)
+	case code != 0:
+		return fmt.Errorf("stack new: read %s in %s: %s", thinNotesKey, root, strings.TrimSpace(stderr))
+	}
+	return thinBindNotes(ctx, src, render.Dir(root))
 }
 
 func thinVerifyStore(ctx context.Context, root string, s thinSource) error {
