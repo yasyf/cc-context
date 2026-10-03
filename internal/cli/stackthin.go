@@ -370,7 +370,11 @@ func thinVerifyNotes(ctx context.Context, src lane, root string) error {
 	case err != nil:
 		return err
 	case code == 1:
-		return fmt.Errorf("stack new: thin store %s shares no cc-notes records — bind it once with `cc-notes -R %s storage bind --source %s`, then retry", root, root, src.root)
+		source := src.root
+		if src.checkout.MainRoot == root {
+			source = "<original-full-checkout>"
+		}
+		return fmt.Errorf("stack new: thin store %s shares no cc-notes records — bind it once with `cc-notes -R %s storage bind --source %s`, then retry", root, root, source)
 	case code != 0:
 		return fmt.Errorf("stack new: read %s in %s: %s", thinNotesKey, root, strings.TrimSpace(stderr))
 	}

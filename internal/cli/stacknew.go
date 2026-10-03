@@ -103,6 +103,11 @@ func runStackNew(cmd *cobra.Command, name string, options stackNewOpts) error {
 		hydrated := stackWithMetadata(*sparse)
 		sparse = &hydrated
 	}
+	if inStore {
+		if err := thinVerifyNotes(ctx, src, src.checkout.MainRoot); err != nil {
+			return err
+		}
+	}
 	l := src
 	var segs []string
 	var adopted *stackPublication

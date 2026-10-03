@@ -30,7 +30,12 @@ if [ -n "$CCX_FAKE_CC_NOTES_UNKNOWN" ]; then
 	exit 1
 fi
 [ $# -eq 4 ] && [ "$1 $2 $3" = "storage bind --source" ] || { echo "unexpected cc-notes $*" >&2; exit 2; }
-backend=$(git -C "$4" rev-parse --path-format=absolute --git-common-dir) || exit 1
+backend=$(git -C "$4" config --local --get cc-notes.storage)
+case $? in
+0) ;;
+1) backend=$(git -C "$4" rev-parse --path-format=absolute --git-common-dir) || exit 1 ;;
+*) exit 1 ;;
+esac
 bound=$(git config --local --get cc-notes.storage)
 case "$bound" in
 "") git config --local cc-notes.storage "$backend" && echo "bound $(pwd -P) to records at $backend" ;;
@@ -472,6 +477,61 @@ func TestStackNewThinSharesTheSourceNotes(t *testing.T) {
 	if _, err := os.Stat(thinTestLane(t, f, "d")); !os.IsNotExist(err) {
 		t.Errorf("unbound refusal left a lane: %v", err)
 	}
+}
+
+func TestStackNewThinValidatesNotesInsideStore(t *testing.T) {
+	t.Parallel()
+	f := thinRepo(t)
+	thinGrowTrunk(t, f, 6)
+	before := thinSnap(t, f)
+	store := thinTestStore(t, f)
+	_, a := thinNew(t, f, f.Dir, "a", "--thin", "--depth", strconv.Itoa(thinTestDepth))
+	binding := gitAt(t, f.Env(), store, "config", "--local", "--get", thinNotesKey)
+	for i, dir := range []string{store, a} {
+		name := "nested-" + strconv.Itoa(i)
+		thinNew(t, f, dir, name, "--thin")
+		calls := thinNotesCalls(t, f)
+		if len(calls) != i+2 || calls[len(calls)-1] != store+" storage bind --source "+dir {
+			t.Fatalf("nested bind calls = %q, want validation in %s from %s", calls, store, dir)
+		}
+		if got := gitAt(t, f.Env(), store, "config", "--local", "--get", thinNotesKey); got != binding {
+			t.Errorf("nested creation changed binding to %q, want %q", got, binding)
+		}
+	}
+
+	refs := thinRefs(t, f, store)
+	f.Setenv("CCX_FAKE_CC_NOTES_UNKNOWN", "1")
+	if _, _, err := runStackCmdIn(t, f, a, "new", "unvalidated", "--thin"); err == nil || !strings.Contains(err.Error(), `unknown command "storage"`) {
+		t.Errorf("nested creation with a refusing cc-notes = %v, want its refusal", err)
+	}
+	if _, err := os.Stat(thinTestLane(t, f, "unvalidated")); !os.IsNotExist(err) {
+		t.Errorf("cc-notes refusal left a lane: %v", err)
+	}
+	if got := thinRefs(t, f, store); got != refs {
+		t.Errorf("cc-notes refusal moved store refs:\n%s\n→\n%s", refs, got)
+	}
+	if got := gitAt(t, f.Env(), store, "config", "--local", "--get", thinNotesKey); got != binding {
+		t.Errorf("cc-notes refusal changed binding to %q, want %q", got, binding)
+	}
+	f.Setenv("CCX_FAKE_CC_NOTES_UNKNOWN", "")
+	mustRun(t, f.Env(), store, "git", "config", "--local", "--unset", thinNotesKey)
+	calls := thinNotesCalls(t, f)
+	for i, dir := range []string{store, a} {
+		name := "legacy-" + strconv.Itoa(i)
+		if _, _, err := runStackCmdIn(t, f, dir, "new", name, "--thin"); err == nil || !strings.Contains(err.Error(), "storage bind --source <original-full-checkout>") {
+			t.Errorf("unbound nested creation = %v, want an original-source binding hint", err)
+		}
+		if _, err := os.Stat(thinTestLane(t, f, name)); !os.IsNotExist(err) {
+			t.Errorf("unbound refusal left a lane: %v", err)
+		}
+	}
+	if got := thinNotesCalls(t, f); len(got) != len(calls) {
+		t.Errorf("unbound store ran cc-notes %q, want a refusal before bind", got)
+	}
+	if got := thinRefs(t, f, store); got != refs {
+		t.Errorf("unbound refusals moved store refs:\n%s\n→\n%s", refs, got)
+	}
+	thinRequireSource(t, f, before)
 }
 
 func TestStackNewThinRefusesWithoutNotesBinding(t *testing.T) {
