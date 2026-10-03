@@ -84,10 +84,11 @@ func stackReadPublication(ctx context.Context, dir render.Dir, branch string) (*
 	return &receipt, nil
 }
 
-func stackUsePublication(ctx context.Context, dir render.Dir, b *stackRebaseBranch, receipt *stackPublication) error {
+func stackUsePublication(ctx context.Context, dir render.Dir, b *stackRebaseBranch, receipt *stackPublication, published bool) error {
 	if receipt == nil {
 		return nil
 	}
+	was := b.WasParent
 	b.Publication = receipt
 	b.WasParent = receipt.Parent
 	if b.Landed != "" {
@@ -106,6 +107,10 @@ func stackUsePublication(ctx context.Context, dir render.Dir, b *stackRebaseBran
 		replayed, err := stackReplayedOnto(ctx, dir, b.Remote, base, receipt.Head)
 		if err != nil {
 			return err
+		}
+		if replayed == "" && published {
+			b.Publication, b.WasParent = nil, was
+			return nil
 		}
 		if replayed == "" {
 			return fmt.Errorf("stack rebase: %s's remote head %.12s holds commits this lane has never held; fetch and reconcile it before publishing again", b.Name, b.Remote)

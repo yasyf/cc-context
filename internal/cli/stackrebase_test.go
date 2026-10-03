@@ -1549,7 +1549,7 @@ func TestStackSnapshotTakesAServerRestackOfItsOwnCommitsPastAStalePin(t *testing
 	remote := gitAt(t, f.Env(), f.Dir, "rev-parse", "origin/feature")
 	s := gtBranchState{Head: local, Parents: []gtRef{{Ref: "base", SHA: gitAt(t, f.Env(), f.Dir, "rev-parse", "base")}}}
 
-	if _, err := stackSnapshot(f.Context(), dir, tr, s, "feature", remote, local, nil, false, pin, false); err != nil {
+	if _, err := stackSnapshot(f.Context(), dir, tr, s, "feature", remote, local, nil, false, pin, false, false); err != nil {
 		t.Fatalf("stackSnapshot = %v, want the server restack of feature's own commits taken as a rewrite", err)
 	}
 }

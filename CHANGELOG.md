@@ -236,6 +236,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ship --tip-only` reads ancestors at their published heads.**
+  A tip-only ship could refuse on another lane's ancestor with
+  `ccx: stack rebase: yasyf/rth-since-app-reads has diverged from
+  origin/yasyf/rth-since-app-reads (local cba9ff579569, remote 51764c443962)
+  — someone pushed to it; reconcile the two by hand, then re-run`, despite
+  its dry run promising to push no ancestor. The snapshot now takes every
+  tip-only ancestor, and every branch pinned as another lane's, at its
+  published head without comparing its local head. For these branches, the
+  planner drops a publication receipt the rewritten remote no longer replays
+  and restores the parent from Graphite's record instead of refusing. The
+  dry run and real run share the ancestor rule. The ship pushes only the tip
+  onto its parent's published head.
+
+- **`worktree rm` discounts copied requester arguments in its launchers.**
+  On macOS, a removal wrapped in `timeout` or `gtimeout` could refuse with
+  "in use" because the wrapper's arguments named the worktree. The guard
+  already discounted the requester's own arguments; it now also skips only
+  their trailing copy, excluding `argv[0]`, in each launcher along the
+  unbroken parent chain, matched by pid and start time. Arguments before
+  that tail still count when they name the tree. Without a named requester,
+  the chain starts from the calling process. Working directories and open
+  files still count, as does a parent started with other arguments.
+
 - **`worktree rm` follows the daemon's own retry of a transient blockage.**
   A removal whose activity check failed on a process that was mid-exec, such as
   `inspect pid 11025 (bash): read its arguments: input/output error`, used to

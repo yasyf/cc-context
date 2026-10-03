@@ -331,3 +331,63 @@ func TestShipTipOnlyLeavesTheUpstackWhereItIs(t *testing.T) {
 		t.Errorf("origin core = %s, want the shipped head %s", got, want)
 	}
 }
+
+// TestShipTipOnlyShipsOverADivergedGrandparent is platy-smarter's refusal: a
+// --tip-only ship refused because a grandparent another lane owns had local
+// and published heads that diverged, though the dry run promised to push no
+// ancestor.
+func TestShipTipOnlyShipsOverADivergedGrandparent(t *testing.T) {
+	for _, tc := range []struct{ name, grandparent, parent, tip string }{
+		{"one lane", "since", "target", "refusals"},
+		{"ancestors of another lane", "yasyf/rth-since", "yasyf/rth-target", "platy-refusals"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := shipGTRepo(t)
+			shipGTStack(t, f, tc.grandparent, tc.parent, tc.tip)
+			if _, _, err := runStackCmd(t, f, "submit", "--all-lanes"); err != nil {
+				t.Fatalf("stack submit: %v", err)
+			}
+			elsewhere := filepath.Join(t.TempDir(), "elsewhere")
+			mustRun(t, f.Env(), f.Dir, "git", "clone", "-q", "--branch", tc.grandparent, f.RemoteDir, elsewhere)
+			mustRun(t, f.Env(), elsewhere, "git", "config", "user.name", "elsewhere")
+			mustRun(t, f.Env(), elsewhere, "git", "config", "user.email", "elsewhere@example.com")
+			writeShipFile(t, elsewhere, "pushed.txt", "pushed by someone else\n")
+			mustRun(t, f.Env(), elsewhere, "git", "add", "pushed.txt")
+			mustRun(t, f.Env(), elsewhere, "git", "commit", "-q", "--amend", "-m", "rewritten elsewhere")
+			mustRun(t, f.Env(), elsewhere, "git", "push", "-qf", "origin", tc.grandparent)
+			held := f.WorktreePath("held-grandparent")
+			mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", held, tc.grandparent)
+			writeShipFile(t, held, "local.txt", "kept locally\n")
+			mustRun(t, f.Env(), held, "git", "add", "local.txt")
+			mustRun(t, f.Env(), held, "git", "commit", "-qm", "local only")
+			grandparent := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", tc.grandparent)
+			local := gitAt(t, f.Env(), f.Dir, "rev-parse", tc.grandparent)
+			parent := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", tc.parent)
+			stackCommit(t, f, "tip.txt")
+
+			args := []string{"--no-commit", "--no-watch", "--tip-only"}
+			if refs := dryRunBranches(dryRunReport(t, f, args...), "push ref"); !slices.Equal(refs, []string{tc.tip}) {
+				t.Errorf("preview push refs = %v, want only %s", refs, tc.tip)
+			}
+			shipResetLog(t, f)
+			if _, errStr, err := runShipCmdFull(f.Context(), t, args...); err != nil {
+				t.Fatalf("ship --tip-only = %v (stderr=%q)", err, errStr)
+			}
+			if refs := gtPushedRefs(shipGTInvocations(t, f)); !slices.Equal(refs, []string{tc.tip}) {
+				t.Errorf("pushed refs = %v, want only %s", refs, tc.tip)
+			}
+			if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", tc.grandparent); got != grandparent {
+				t.Errorf("origin %s moved from %s to %s", tc.grandparent, grandparent, got)
+			}
+			if got := gitAt(t, f.Env(), f.Dir, "rev-parse", tc.grandparent); got != local {
+				t.Errorf("local %s moved from %s to %s", tc.grandparent, local, got)
+			}
+			if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", tc.parent); got != parent {
+				t.Errorf("origin %s moved from %s to %s", tc.parent, parent, got)
+			}
+			if !stackOnto(t, f, parent, gitAt(t, f.Env(), f.RemoteDir, "rev-parse", tc.tip)) {
+				t.Errorf("origin %s does not sit on %s's published head", tc.tip, tc.parent)
+			}
+		})
+	}
+}

@@ -324,7 +324,7 @@ func TestArgumentNeverReadsTheEnvironment(t *testing.T) {
 		t.Errorf("arguments = %q, %v; want %q", args, err, want)
 	}
 	s := &scan{root: f.real, given: f.tree}
-	if path, err := s.argument(unnamed.Process.Pid); path != "" || err != nil {
+	if path, err := s.argument(unnamed.Process.Pid, false); path != "" || err != nil {
 		t.Errorf("argument = %q, %v; want no evidence from the environment", path, err)
 	}
 }
@@ -1180,6 +1180,63 @@ func TestGuardDiscounts(t *testing.T) {
 				t.Errorf("Holders = %+v, want %+v", got, want)
 			}
 		})
+	}
+}
+
+func TestGuardDiscountsTheRequestersLaunchers(t *testing.T) {
+	f := plant(t)
+	wrapper, _ := grandchild(t, f.outside, `/usr/bin/time /bin/bash -c "read line" arg0 "$0" <&3`, f.real+"/sub")
+	wrapped := childOf(t, wrapper, "/bin/bash")
+	parent, _ := grandchild(t, f.outside, `/bin/bash -c "/bin/sleep 60 & wait" arg0 "$0"`, f.real+"/sub")
+	sleeper := childOf(t, parent, "/bin/sleep")
+	naming, _ := grandchild(t, f.outside, `/bin/bash -c '/bin/bash "$@" <&3 & wait' "$0" -c "read line" arg0 "$0"`, f.real+"/sub")
+	named := childOf(t, naming, "/bin/bash")
+
+	argues := func(pid int, name string) cleanup.Holder {
+		return cleanup.Holder{PID: pid, Name: name, Evidence: cleanup.EvidenceArgv, Path: f.real + "/sub"}
+	}
+	tests := []struct {
+		name      string
+		requester int
+		want      []cleanup.Holder
+	}{
+		{"nothing named", 0, []cleanup.Holder{argues(wrapper, "time"), argues(wrapped, "bash"), argues(parent, "bash"), argues(naming, "bash"), argues(named, "bash")}},
+		{"a requester run under timeout", wrapped, []cleanup.Holder{argues(parent, "bash"), argues(naming, "bash"), argues(named, "bash")}},
+		{"not a parent started with other arguments", sleeper, []cleanup.Holder{argues(wrapper, "time"), argues(wrapped, "bash"), argues(parent, "bash"), argues(naming, "bash"), argues(named, "bash")}},
+		{"not a launcher naming the tree before the requester's arguments", named, []cleanup.Holder{argues(wrapper, "time"), argues(wrapped, "bash"), argues(parent, "bash"), argues(naming, "bash")}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := t.Context()
+			if tt.requester != 0 {
+				ctx = cleanup.WithRequester(ctx, tt.requester)
+			}
+			if got, want := holders(ctx, t, f.tree), byPID(tt.want...); !reflect.DeepEqual(got, want) {
+				t.Errorf("Holders = %+v, want %+v", got, want)
+			}
+		})
+	}
+}
+
+func childOf(t *testing.T, parent int, program string) int {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		procs, err := unix.SysctlKinfoProcSlice("kern.proc.all")
+		if err != nil {
+			t.Fatalf("list processes: %v", err)
+		}
+		for _, p := range procs {
+			if int(p.Eproc.Ppid) == parent {
+				pid := int(p.Proc.P_pid)
+				awaitProgram(t, pid, program)
+				return pid
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("pid %d never started %s", parent, program)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 
