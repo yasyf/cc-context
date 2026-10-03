@@ -79,7 +79,7 @@ func TestGTReplayMatchesRebasePolicy(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if want := "replay --ref-action=print --linearize --ref=refs/heads/branch --onto=" + onto + " " + from + ".." + head + "\n"; string(ran) != want {
+			if want := "--attr-source=" + onto + " replay --ref-action=print --linearize --ref=refs/heads/branch --onto=" + onto + " " + from + ".." + head + "\n"; string(ran) != want {
 				t.Errorf("git ran %q, want exactly %q", ran, want)
 			}
 			if after := stackReplayRefs(t, f); after != refs {
@@ -136,7 +136,7 @@ func TestGTReplayRefusesAnyOtherUpdate(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := f.Context()
 			if tt.awk != "" {
-				bin := stackReplayGitWrapper(t, "if [ \"$1\" = replay ]; then\n"+
+				bin := stackReplayGitWrapper(t, "if [ \"$2\" = replay ]; then\n"+
 					"  out=$(PATH=${PATH#${0%/git}:} git \"$@\") || exit $?\n"+
 					"  printf '%s\\n' \"$out\" | awk "+shQuote(tt.awk)+"\n"+
 					"  exit 0\n"+
@@ -183,7 +183,7 @@ func TestGTReplayConflictIsExitOneAlone(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			bin := stackReplayGitWrapper(t, "if [ \"$1\" = replay ]; then "+tt.script+"; fi\n")
+			bin := stackReplayGitWrapper(t, "if [ \"$2\" = replay ]; then "+tt.script+"; fi\n")
 			ctx := render.WithEnv(f.Context(), "PATH="+bin+string(os.PathListSeparator)+f.PATH())
 
 			_, err := gtReplay(ctx, "test", render.Dir(f.Dir), onto, from, "branch", gtBranchState{Head: head})
@@ -259,7 +259,7 @@ func TestShipGTRestackReportsANonConflictReplayError(t *testing.T) {
 	f := shipGTUnrestacked(t, "base2.txt", "base2\n")
 	base := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
 	feature := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")
-	f.PrependPATH(stackReplayGitWrapper(t, "if [ \"$1\" = replay ]; then echo 'fatal: boom' >&2; exit 128; fi\n"))
+	f.PrependPATH(stackReplayGitWrapper(t, "if [ \"$2\" = replay ]; then echo 'fatal: boom' >&2; exit 128; fi\n"))
 
 	_, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push")
 	if err == nil {

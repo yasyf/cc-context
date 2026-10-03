@@ -6,6 +6,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`ccx vcs stack submit` keeps a published branch on its old trunk base only
+  when trunk's own merge rules agree.** The clean-merge check and every
+  `git replay` now read `.gitattributes` from the tree they merge onto, not from
+  the working copy. The check also covers each branch stacked on the one it
+  keeps. Forge-AI/monorepo's #22400 printed `merges cleanly onto dev` while two
+  `merge=binary` schema files conflicted with dev and its child #22402 had a
+  modify/delete conflict, leaving the stack 225 commits behind.
+
+- **`ccx vcs stack rebase` moves a cleanly replayed branch's local ref onto
+  its published head.** The same-commits check behind the move compares patch
+  ids without diff context, so upstream edits next to a branch's hunks no
+  longer read as other changes. #29481's checkout stayed on its old head after
+  its replay published `2a7f4bde`. A branch that still keeps its source is
+  reported as `kept local <branch> at <sha> instead of its published head
+  <sha> (<reason>)`.
+
 ### Changed
 
 - **`# ccx:raw` runs any guarded Bash command as written.** Every blocking

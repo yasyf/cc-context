@@ -386,6 +386,43 @@ func TestStackRebaseMovesASourceAnotherCleanWorktreeHolds(t *testing.T) {
 	}
 }
 
+func TestStackRebaseMovesASourceWhoseReplayShiftedItsContext(t *testing.T) {
+	t.Parallel()
+	f := shipGTRepo(t)
+	lines := []string{"1", "2", "3", "4", "5", "6", "7", "8", "9", "10"}
+	shared := func(at int, line string) string {
+		edited := slices.Clone(lines)
+		edited[at] = line
+		return strings.Join(edited, "\n") + "\n"
+	}
+	writeShipFile(t, f.Dir, "shared.txt", shared(0, "1"))
+	mustRun(t, f.Env(), f.Dir, "git", "add", "shared.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "shared")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "main")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "base")
+	writeShipFile(t, f.Dir, "shared.txt", shared(4, "five"))
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qam", "base")
+	mustRun(t, f.Env(), f.Dir, "gt", "track", "-f", "--no-interactive")
+	stubOpenPRs(t, f, nil, "base")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base")
+	stackAdvanceTrunk(t, f, "shared.txt", shared(6, "seven"))
+
+	out, _, err := runStackCmd(t, f, "rebase")
+	if err != nil {
+		t.Fatalf("stack rebase: %v", err)
+	}
+	if !strings.Contains(out, "moved base onto the published heads") || strings.Contains(out, "kept local") {
+		t.Errorf("output = %q, want base moved onto its published head", out)
+	}
+	published := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
+	if !stackOnto(t, f, "origin/main", published) {
+		t.Errorf("published base %.12s is not on the new trunk", published)
+	}
+	if local := gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); local != published {
+		t.Errorf("local base = %.12s, want its published head %.12s", local, published)
+	}
+}
+
 func TestStackRebaseLeavesASourceADirtyWorktreeHolds(t *testing.T) {
 	t.Parallel()
 	f := stackRebaseRepo(t, "base", "feature")
@@ -407,8 +444,10 @@ func TestStackRebaseLeavesASourceADirtyWorktreeHolds(t *testing.T) {
 			t.Errorf("local %s = %s, want its source %s left alone", branch, local, source)
 		}
 	}
-	if want := "left base (uncommitted work in "; !strings.Contains(out, want) || !strings.Contains(out, filepath.Base(held)+"), feature (stacked on base) on their sources") {
-		t.Errorf("output = %q, want base and the feature above it left on their sources", out)
+	base := fmt.Sprintf("kept local base at %.12s instead of its published head ", sources["base"])
+	feature := fmt.Sprintf("; feature at %.12s instead of its published head ", sources["feature"])
+	if !strings.Contains(out, base) || !strings.Contains(out, " (uncommitted work in ") || !strings.Contains(out, filepath.Base(held)+")"+feature) || !strings.Contains(out, " (stacked on base)") {
+		t.Errorf("output = %q, want base and the feature above it named with their kept local and published heads", out)
 	}
 }
 

@@ -2,6 +2,8 @@ package cli
 
 import (
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -212,5 +214,78 @@ func TestStackSubmitRefusesThinHistoryBeforeTheMergeProbe(t *testing.T) {
 	}
 	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "lane1"); got != cut {
 		t.Errorf("refused submit changed the remote to %s, want %s", got, cut)
+	}
+}
+
+func TestStackSubmitRebasesABranchThatConflictsUnderTrunksMergeAttributes(t *testing.T) {
+	f := shipGTRepo(t)
+	lines := make([]string, 50)
+	for i := range lines {
+		lines[i] = strconv.Itoa(i + 1)
+	}
+	generated := func(at int, line string) string {
+		edited := slices.Clone(lines)
+		edited[at] = line
+		return strings.Join(edited, "\n") + "\n"
+	}
+	commit := func(content string) {
+		writeShipFile(t, f.Dir, "gen.txt", content)
+		mustRun(t, f.Env(), f.Dir, "git", "add", "gen.txt")
+		mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "gen")
+	}
+	commit(generated(0, "1"))
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "main")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "base")
+	commit(generated(4, "five"))
+	mustRun(t, f.Env(), f.Dir, "gt", "track", "-f", "--no-interactive")
+	shipGTStack(t, f, "feature")
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("stack submit: %v", err)
+	}
+	published := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
+	restackAdvanceRemote(t, f, "main", ".gitattributes", "gen.txt merge=binary\n")
+	stackAdvanceTrunk(t, f, "gen.txt", generated(44, "forty-five"))
+	shipResetLog(t, f)
+
+	out, _, err := runStackCmd(t, f, "submit")
+	if err == nil {
+		t.Fatal("stack submit onto a trunk whose merge=binary file conflicts succeeded, want a conflict stop")
+	}
+	if want := "base" + shipSep + "onto main" + shipSep + "from "; !strings.Contains(out, want) || strings.Contains(out, "merges cleanly") {
+		t.Errorf("plan = %q, want %q and no clean-merge verdict", out, want)
+	}
+	run, err := stackOnlyTestRun(filepath.Join(f.Dir, ".git"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Conflict == nil || run.Conflict.Branch != "base" {
+		t.Errorf("run conflict = %+v, want a stop on base", run.Conflict)
+	}
+	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base"); got != published {
+		t.Errorf("origin base moved to %.12s before the conflict was resolved", got)
+	}
+}
+
+func TestStackSubmitRebasesABranchWhoseChildConflictsWithTrunk(t *testing.T) {
+	f, published := stackPublishedBehindTrunk(t, "feature.txt")
+
+	out, _, err := runStackCmd(t, f, "submit")
+	if err == nil {
+		t.Fatal("stack submit under a child that conflicts with trunk succeeded, want a conflict stop")
+	}
+	if want := "base" + shipSep + "onto main" + shipSep + "from "; !strings.Contains(out, want) || strings.Contains(out, "merges cleanly") {
+		t.Errorf("plan = %q, want %q and no clean-merge verdict", out, want)
+	}
+	run, err := stackOnlyTestRun(filepath.Join(f.Dir, ".git"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Conflict == nil || run.Conflict.Branch != "feature" {
+		t.Errorf("run conflict = %+v, want a stop on feature", run.Conflict)
+	}
+	for branch, head := range published {
+		if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", branch); got != head {
+			t.Errorf("origin %s moved to %.12s before the conflict was resolved", branch, got)
+		}
 	}
 }
