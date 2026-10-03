@@ -17,7 +17,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
@@ -728,20 +727,15 @@ func TestStackAbortSucceedsWhenRemovingTheWorkspaceIsKilled(t *testing.T) {
 func stackStallRm(t *testing.T, f *vcstest.Fixture) string {
 	t.Helper()
 	bin := t.TempDir()
-	marker, fifo := filepath.Join(bin, "rm-args"), filepath.Join(bin, "rm-gate")
+	marker, gate := filepath.Join(bin, "rm-args"), filepath.Join(bin, "rm-gate")
 	parentNice := mustRun(t, f.Env(), f.Dir, "ps", "-o", "nice=", "-p", strconv.Itoa(os.Getpid()))
 	if err := os.WriteFile(marker+"-parent-nice", []byte(parentNice), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	writeExecutable(t, filepath.Join(bin, "rm"), "#!/bin/sh\nps -o nice= -p $$ > "+marker+"-nice\necho \"$@\" > "+marker+"\ncat "+fifo+"\n")
+	writeExecutable(t, filepath.Join(bin, "rm"), "#!/bin/sh\nps -o nice= -p $$ > "+marker+"-nice\necho \"$@\" > "+marker+"\nwhile [ -d "+bin+" ] && [ ! -e "+gate+" ]; do sleep 0.05; done\n")
 	t.Cleanup(func() {
-		if gate, err := os.OpenFile(fifo, os.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
-			if err := gate.Close(); err != nil {
-				t.Errorf("close rm gate: %v", err)
-			}
+		if err := os.WriteFile(gate, nil, 0o600); err != nil {
+			t.Errorf("open rm gate: %v", err)
 		}
 	})
 	f.PrependPATH(bin)
