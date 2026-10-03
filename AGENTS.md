@@ -35,8 +35,10 @@ caches can remain shared.
 
 Use `ccx vcs stack new <name> --thin` or set `CCX_STACK_NEW=thin` for agent
 lanes backed by `~/.claude/stores/<key>/<repo>`; tracked `.claude` and `.agents`
-are checked out without running hooks or setup scripts. Keep thin mode opt-in
-per agent: source-local cc-notes are unavailable, so do not set it globally.
+are checked out without running hooks or setup scripts. Thin stores share the
+source checkout's cc-notes records through `cc-notes storage bind`, which
+cc-notes must provide; existing unbound or differently bound stores are
+refused. Keep thin mode opt-in per agent; do not set it globally.
 ccx never deletes the store; unpushed branches survive lane removal. Deepening
 requires explicit `--deepen`, bounded by `--max-depth`. Follow [the thin-lane guide](docs/thin-lanes.md)
 for sparse expansion, published parents, and ancestry refusals.
