@@ -218,7 +218,8 @@ type requesterKey struct{}
 
 // WithRequester returns ctx naming pid as the transient client whose request
 // the work under ctx serves. A guard may discount that one process naming the
-// tree in its own arguments, and nothing else about it.
+// tree in its own arguments, and the same arguments carried by the wrappers
+// that launched it, and nothing else about them.
 func WithRequester(ctx context.Context, pid int) context.Context {
 	return context.WithValue(ctx, requesterKey{}, pid)
 }

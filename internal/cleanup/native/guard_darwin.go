@@ -27,9 +27,12 @@ import (
 // hide a holder. Arguments are compared as written, against both the kernel's
 // spelling of the tree and the one the caller passed.
 //
-// Five things are discounted and nothing else, ancestry included: the calling
-// process's own descriptors and arguments, though not its working directory;
-// its direct children; the arguments, alone, of the requester ctx names; the
+// Six things are discounted and nothing else, ancestry otherwise included: the
+// calling process's own descriptors and arguments, though not its working
+// directory; its direct children; the arguments, alone, of the requester ctx
+// names; the arguments, alone, of each launcher above the invoker, the
+// requester or else the calling process: the unbroken chain of parents, such
+// as timeout, whose arguments end with the invoker's own past its program; the
 // descriptors, alone, of each retiring watcher ctx names, matched on both its
 // pid and the second the kernel started it, and only while that pid still
 // names that process once the rest of it has been read; and each descriptor of
@@ -107,10 +110,45 @@ func newScan(ctx context.Context, lib *libSystem, worktree string) (*scan, error
 		return nil, err
 	}
 	requester, named := cleanup.RequesterFrom(ctx)
+	invoker := os.Getpid()
+	if named {
+		invoker = requester
+	}
 	return &scan{
 		lib: lib, root: root, given: filepath.Clean(worktree), self: os.Getpid(),
 		requester: requester, named: named, retiring: cleanup.RetiringFrom(ctx),
+		launchers: launchers(lib, invoker),
 	}, nil
+}
+
+// launchers is the unbroken chain of parents above pid each started with
+// pid's own arguments, past its program, as its trailing ones: a wrapper such
+// as timeout that runs the invoker and waits on it. The chain ends at the first
+// parent whose arguments cannot be read or do not end that way.
+func launchers(lib *libSystem, pid int) []cleanup.ProcessID {
+	own, err := processArguments(pid)
+	if err != nil || len(own) < 2 {
+		return nil
+	}
+	tail := own[1:]
+	var chain []cleanup.ProcessID
+	for {
+		bsd, err := pidInfo[procBSDInfo](lib, pid, flavorBSDInfo)
+		if err != nil || bsd.ppid <= 1 {
+			return chain
+		}
+		parent := int(bsd.ppid)
+		above, err := pidInfo[procBSDInfo](lib, parent, flavorBSDInfo)
+		if err != nil {
+			return chain
+		}
+		args, err := processArguments(parent)
+		if err != nil || len(args) <= len(tail) || !slices.Equal(args[len(args)-len(tail):], tail) {
+			return chain
+		}
+		chain = append(chain, cleanup.ProcessID{PID: parent, Start: int64(above.start)}) //nolint:gosec // seconds since the epoch fit int64
+		pid = parent
+	}
 }
 
 func active(worktree string, holders []cleanup.Holder) error {
@@ -170,6 +208,7 @@ type scan struct {
 	requester int
 	named     bool
 	retiring  []cleanup.ProcessID
+	launchers []cleanup.ProcessID
 }
 
 func (s *scan) inspect(pid int) (cleanup.Holder, bool, error) {
@@ -222,7 +261,7 @@ func (s *scan) evidence(process cleanup.ProcessID, threaded bool) (kind, path st
 			return cleanup.EvidenceFD, path, err
 		}
 	}
-	if !s.named || pid != s.requester {
+	if (!s.named || pid != s.requester) && !slices.Contains(s.launchers, process) {
 		if path, err = s.argument(pid); err != nil || path != "" {
 			return cleanup.EvidenceArgv, path, err
 		}
@@ -337,11 +376,7 @@ func (p *descriptorPass) place(fd int32) (string, error) {
 }
 
 func (s *scan) argument(pid int) (string, error) {
-	raw, err := unix.SysctlRaw("kern.procargs2", pid)
-	if err != nil {
-		return "", fmt.Errorf("%w: %w", errUnreadArguments, err)
-	}
-	args, err := arguments(raw)
+	args, err := processArguments(pid)
 	if err != nil {
 		return "", fmt.Errorf("%w: %w", errUnreadArguments, err)
 	}
@@ -351,6 +386,14 @@ func (s *scan) argument(pid int) (string, error) {
 		}
 	}
 	return "", nil
+}
+
+func processArguments(pid int) ([]string, error) {
+	raw, err := unix.SysctlRaw("kern.procargs2", pid)
+	if err != nil {
+		return nil, err
+	}
+	return arguments(raw)
 }
 
 func arguments(raw []byte) ([]string, error) {

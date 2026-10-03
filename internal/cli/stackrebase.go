@@ -860,7 +860,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 			}
 			effective.Head = prepared.NewHead
 		}
-		b, err := stackSnapshot(ctx, l.dir(), tr, effective, name, remotes[name], ours, prs[name], slices.Contains(o.landed, name), pin, o.dropCommits)
+		b, err := stackSnapshot(ctx, l.dir(), tr, effective, name, remotes[name], ours, prs[name], slices.Contains(o.landed, name), pin, o.dropCommits, stackReadsPublished(o, name))
 		if err != nil && len(own) > 0 && !own[name] {
 			outside[name] = true
 			run.left = append(run.left, stackLeft{branch: name, why: strings.TrimPrefix(err.Error(), stackRebasePrefix+": ")})
@@ -1497,13 +1497,16 @@ func stackRemoteHeads(ctx context.Context, dir render.Dir, prefix, remote string
 
 // stackSnapshot takes a remote that equals the branch's last submitted head
 // as ours even when local no longer contains it: every rewrite a rebase or
-// restack makes diverges from the head it last pushed.
-func stackSnapshot(ctx context.Context, dir render.Dir, tr vcs.Trunk, s gtBranchState, name, remote, submitted string, pr *stackPR, declared bool, pin string, dropCommits bool) (stackRebaseBranch, error) {
+// restack makes diverges from the head it last pushed. A branch the run reads
+// at its published head is taken at that head, its local one never compared.
+func stackSnapshot(ctx context.Context, dir render.Dir, tr vcs.Trunk, s gtBranchState, name, remote, submitted string, pr *stackPR, declared bool, pin string, dropCommits, published bool) (stackRebaseBranch, error) {
 	b := stackRebaseBranch{
 		Name: name, WasParent: s.Parents[0].Ref, Local: s.Head, Remote: remote,
 		Head: s.Head, PR: pr, Held: s.State,
 	}
-	if b.Held == "" && remote != "" && remote != s.Head && (pr == nil || !pr.abandoned()) {
+	if published && remote != "" {
+		b.Head = remote
+	} else if b.Held == "" && remote != "" && remote != s.Head && (pr == nil || !pr.abandoned()) {
 		ahead, err := gitIsAncestor(ctx, dir, stackRebasePrefix, remote, s.Head)
 		if err != nil {
 			return b, err
@@ -1626,6 +1629,19 @@ func stackRefuseDroppedCommits(ctx context.Context, dir render.Dir, tr vcs.Trunk
 	}
 	return fmt.Errorf("stack rebase: %s's local head %.12s drops %d commit(s) its published head %s/%s (%.12s) carries: %s — restore them, or pass --drop-commits to publish the local head anyway",
 		name, local, len(dropped), tr.Remote(), name, remote, strings.Join(dropped, ", "))
+}
+
+// stackReadsPublished is whether the run takes name at its published head
+// without reading its local one: every ancestor of a --tip-only ship, and every
+// branch pinned as another lane's.
+func stackReadsPublished(o stackRebaseOpts, name string) bool {
+	return tipOnlyAncestor(o.tipOnly, o.tip, name) || slices.Contains(o.pinned, name)
+}
+
+// tipOnlyAncestor is a branch a --tip-only ship of tip neither moves nor
+// pushes, the one rule its dry run and its run both read.
+func tipOnlyAncestor(tipOnly bool, tip, name string) bool {
+	return tipOnly && name != tip
 }
 
 // stackKeepsAncestor leaves a ship's ancestor at the head its pull request

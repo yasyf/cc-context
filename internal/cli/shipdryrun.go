@@ -482,7 +482,7 @@ func dryRunMoves(state gtState, chain []string, holders map[string]string, o shi
 		if o.noPush {
 			return
 		}
-		movers = slices.DeleteFunc(movers, func(branch string) bool { return branch != r.branch })
+		movers = slices.DeleteFunc(movers, func(branch string) bool { return tipOnlyAncestor(o.tipOnly, r.branch, branch) })
 	}
 	for _, branch := range movers {
 		why := "its parent moves under it"
@@ -602,7 +602,7 @@ func dryRunHeads(ctx context.Context, l lane, o shipOpts, state gtState, chain [
 			continue
 		}
 		open[pr.HeadRefName] = true
-		if o.tipOnly && pr.HeadRefName != r.branch {
+		if tipOnlyAncestor(o.tipOnly, r.branch, pr.HeadRefName) {
 			continue
 		}
 		r.prs = append(r.prs, dryRunPR{
@@ -632,7 +632,7 @@ func dryRunCreates(ctx context.Context, l lane, o shipOpts, state gtState, chain
 		stacked[branch] = true
 	}
 	for _, branch := range gtBottomUp(chain) {
-		if open[branch] || len(state[branch].Parents) == 0 || (o.tipOnly && branch != r.branch) {
+		if open[branch] || len(state[branch].Parents) == 0 || tipOnlyAncestor(o.tipOnly, r.branch, branch) {
 			continue
 		}
 		base := state[branch].Parents[0].Ref
