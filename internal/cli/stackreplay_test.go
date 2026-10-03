@@ -198,23 +198,26 @@ func TestStackRebaseReplaysCleanSpansInPlace(t *testing.T) {
 			}
 			pins := map[string]bool{}
 			for i, argv := range replays {
-				if len(argv) != 7 || argv[1] != "replay" || argv[2] != "--ref-action=print" || argv[3] != "--linearize" ||
-					!stackReplayPinArg.MatchString(argv[4]) || !stackReplayOntoArg.MatchString(argv[5]) || !stackReplayRangeArg.MatchString(argv[6]) {
-					t.Errorf("replay argv = %q, want git replay --ref-action=print --linearize --ref=refs/ccx/publication-runs/<sha256> --onto=<sha> <sha>..<sha>", argv)
+				if len(argv) != 8 || argv[2] != "replay" || argv[3] != "--ref-action=print" || argv[4] != "--linearize" ||
+					!stackReplayPinArg.MatchString(argv[5]) || !stackReplayOntoArg.MatchString(argv[6]) || !stackReplayRangeArg.MatchString(argv[7]) {
+					t.Errorf("replay argv = %q, want git --attr-source=<sha> replay --ref-action=print --linearize --ref=refs/ccx/publication-runs/<sha256> --onto=<sha> <sha>..<sha>", argv)
 					continue
 				}
-				pins[argv[4]] = true
+				pins[argv[5]] = true
 				b := tt.branches[i]
 				oldBase, onto := oldMain, newMain
 				if i > 0 {
 					oldBase = heads[tt.branches[i-1]]
 					onto = gitAt(t, f.Env(), f.Dir, "rev-parse", tt.branches[i-1])
 				}
-				if want := oldBase + ".." + heads[b]; argv[6] != want {
-					t.Errorf("replay of %s ranged %s, want %s", b, argv[6], want)
+				if want := oldBase + ".." + heads[b]; argv[7] != want {
+					t.Errorf("replay of %s ranged %s, want %s", b, argv[7], want)
 				}
-				if want := "--onto=" + onto; argv[5] != want {
-					t.Errorf("replay of %s ran %s, want %s", b, argv[5], want)
+				if want := "--onto=" + onto; argv[6] != want {
+					t.Errorf("replay of %s ran %s, want %s", b, argv[6], want)
+				}
+				if want := "--attr-source=" + onto; argv[1] != want {
+					t.Errorf("replay of %s read attributes with %s, want %s", b, argv[1], want)
 				}
 			}
 			if len(pins) != len(tt.branches) {
@@ -451,7 +454,7 @@ func TestStackReplayReadsTheOutputPin(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			bin := t.TempDir()
 			writeExecutable(t, filepath.Join(bin, "git"), "#!/bin/sh\n"+
-				"if [ \"$1\" = replay ]; then\n"+
+				"if [ \"$2\" = replay ]; then\n"+
 				"  out=$(PATH=${PATH#"+bin+":} git \"$@\") || exit $?\n"+
 				"  printf '%s\\n' \"$out\" | awk "+shQuote(tt.awk)+"\n"+
 				"  exit 0\n"+
@@ -478,7 +481,7 @@ func TestStackRebaseOpensNoWorkspaceOnAReplayError(t *testing.T) {
 		stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
 		heads := stackReplayRefs(t, f, "refs/heads")
 		worktrees := gitAt(t, f.Env(), f.Dir, "worktree", "list", "--porcelain")
-		f.PrependPATH(stackReplayGitWrapper(t, "if [ \"$1\" = replay ]; then echo 'fatal: boom' >&2; exit 128; fi\n"))
+		f.PrependPATH(stackReplayGitWrapper(t, "if [ \"$2\" = replay ]; then echo 'fatal: boom' >&2; exit 128; fi\n"))
 
 		_, _, err := runStackCmd(t, f, "rebase", "--no-push")
 		if err == nil {

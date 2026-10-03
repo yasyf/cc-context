@@ -270,9 +270,11 @@ or uncommitted work in the invoking checkout, stops publication before any branc
 moves. Empty lanes and another lane's branches above the one checked out here are
 left where they are and named rather than rebased. Once published, the local
 ref of a branch no working copy holds moves onto its published head; a held
-branch moves only when that head carries the same commits as the source and
-its working copy is clean and is moved with it; any other branch keeps its
-source, with the branches above it, and is named.
+branch moves only when that head carries the same commits as the source,
+compared without diff context so a clean replay beside upstream edits still
+matches, and its working copy is clean and is moved with it; any other branch
+keeps its source, with the branches above it, and is named with its kept local
+head and its published head.
 
 A conflict stops the run before any ref moves: the conflicted branch alone is
 rebased again in a sparse workspace of its own, holding the root files and the
@@ -982,7 +984,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 			}
 			b.Bump = slices.Contains(o.bump, name)
 			if o.stayClean && !b.Bump && b.Parent == trunk && b.WasParent == trunk && b.Remote != "" && b.OldBase != pin && (b.PR == nil || b.PR.Mergeable != "CONFLICTING") {
-				if b.Stays, err = stackMergesClean(ctx, l.dir(), pin, b.Head); err != nil {
+				if b.Stays, err = stackMergesClean(ctx, l.dir(), pin, stackUpstackHeads(order, byName, name)); err != nil {
 					return nil, err
 				}
 			}
@@ -1777,7 +1779,7 @@ func stackPatchSeries(ctx context.Context, dir render.Dir, pin, head string) ([]
 	if strings.TrimSpace(merges) != "" {
 		return nil, nil
 	}
-	patches, err := render.RunCLI(ctx, dir, "git", []string{"log", "--reverse", "--no-merges", "--format=commit %H", "-p", span})
+	patches, err := render.RunCLI(ctx, dir, "git", []string{"log", "--reverse", "--no-merges", "--format=commit %H", "-p", "-U0", span})
 	if err != nil {
 		return nil, fmt.Errorf("%s: git log -p %s: %w", stackRebasePrefix, span, err)
 	}
@@ -2009,19 +2011,36 @@ func stackPastFork(ctx context.Context, dir render.Dir, recorded, fork, head str
 	return recorded, nil
 }
 
-func stackMergesClean(ctx context.Context, dir render.Dir, pin, head string) (bool, error) {
-	_, code, stderr, err := render.RunCLIExitCode(ctx, dir, "git", []string{"merge-tree", "--write-tree", "--quiet", pin, head})
-	if err != nil {
-		return false, fmt.Errorf("stack rebase: git merge-tree %.12s %.12s: %w", pin, head, err)
+// Merge attributes come from pin's tree: a working copy's .gitattributes can
+// predate trunk's merge=binary rules and pass a conflicting text merge.
+func stackMergesClean(ctx context.Context, dir render.Dir, pin string, heads []string) (bool, error) {
+	for _, head := range heads {
+		_, code, stderr, err := render.RunCLIExitCode(ctx, dir, "git", []string{"--attr-source=" + pin, "merge-tree", "--write-tree", "--quiet", pin, head})
+		if err != nil {
+			return false, fmt.Errorf("stack rebase: git merge-tree %.12s %.12s: %w", pin, head, err)
+		}
+		switch code {
+		case 0:
+		case 1:
+			return false, nil
+		default:
+			return false, fmt.Errorf("stack rebase: git merge-tree %.12s %.12s: exit %d: %s", pin, head, code, strings.TrimSpace(stderr))
+		}
 	}
-	switch code {
-	case 0:
-		return true, nil
-	case 1:
-		return false, nil
-	default:
-		return false, fmt.Errorf("stack rebase: git merge-tree %.12s %.12s: exit %d: %s", pin, head, code, strings.TrimSpace(stderr))
+	return true, nil
+}
+
+func stackUpstackHeads(order []string, byName map[string]*stackRebaseBranch, name string) []string {
+	above := map[string]bool{name: true}
+	heads := []string{byName[name].Head}
+	for _, n := range order {
+		b := byName[n]
+		if above[b.Parent] && b.Landed == "" && b.Held == "" {
+			above[n] = true
+			heads = append(heads, b.Head)
+		}
 	}
+	return heads
 }
 
 func stackMergeBase(ctx context.Context, dir render.Dir, a, b string) (string, error) {
@@ -2158,7 +2177,7 @@ func stackReplay(ctx context.Context, dir render.Dir, run *stackRebaseRun, b *st
 		return "", err
 	}
 	span := b.OldBase + ".." + b.Head
-	out, code, stderr, err := render.RunCLIExitCode(ctx, dir, "git", []string{"replay", "--ref-action=print", "--linearize", "--ref=" + pin, "--onto=" + b.NewBase, span})
+	out, code, stderr, err := render.RunCLIExitCode(ctx, dir, "git", []string{"--attr-source=" + b.NewBase, "replay", "--ref-action=print", "--linearize", "--ref=" + pin, "--onto=" + b.NewBase, span})
 	if err != nil {
 		return "", fmt.Errorf("stack rebase: git replay: %w", err)
 	}

@@ -469,7 +469,7 @@ func stackMovePublishedSources(ctx context.Context, l lane, commonDir string, ru
 		}
 		if at != b.Local && at != b.NewHead {
 			b.Moved = false
-			left = append(left, b.Name+" (moved since the run started)")
+			left = append(left, stackLeftSource(*b, "moved since the run started"))
 			continue
 		}
 		receipt, err := stackReadPublication(ctx, l.dir(), b.Name)
@@ -515,7 +515,7 @@ func stackMovePublishedSources(ctx context.Context, l lane, commonDir string, ru
 		segments = append(segments, "moved "+strings.Join(moved, ", ")+" onto the published heads")
 	}
 	if len(left) > 0 {
-		segments = append(segments, "left "+strings.Join(left, ", ")+" on their sources")
+		segments = append(segments, "kept local "+strings.Join(left, "; "))
 	}
 	if len(segments) == 0 {
 		return "source checkouts unchanged", nil
@@ -564,12 +564,16 @@ func stackChooseSourceMoves(ctx context.Context, l lane, run *stackRebaseRun, ho
 		}
 		if why != "" {
 			stays[b.Name] = true
-			left = append(left, b.Name+" ("+why+")")
+			left = append(left, stackLeftSource(*b, why))
 			continue
 		}
 		b.Moved = true
 	}
 	return left, nil
+}
+
+func stackLeftSource(b stackRebaseBranch, why string) string {
+	return fmt.Sprintf("%s at %.12s instead of its published head %.12s (%s)", b.Name, b.Local, b.NewHead, why)
 }
 
 func stackSourceStays(ctx context.Context, l lane, b stackRebaseBranch, at string, holders map[string]string, stays map[string]bool) (string, error) {

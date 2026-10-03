@@ -152,8 +152,9 @@ func newStackSubmitCmd() *cobra.Command {
 		Long: `Submit this lane's branches, retaining clean published heads.
 
 Submit fetches the remote trunk and keeps a published branch on its recorded
-trunk base when its head still merges cleanly. New commits above that base are
-pushed as they stand. A conflicting branch, an unpublished branch, or a child
+trunk base when its head, and every head stacked on it, still merges cleanly
+with that trunk under the trunk's own .gitattributes. New commits above that
+base are pushed as they stand. A conflicting branch, an unpublished branch, or a child
 whose parent landed is replayed onto its current parent; --restack also replays
 clean published branches. The local trunk branch and other working copies are
 left untouched. A branch whose pull
