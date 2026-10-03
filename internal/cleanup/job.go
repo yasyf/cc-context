@@ -120,6 +120,10 @@ type Blockage struct {
 	Reason string    `json:"reason"`
 	Detail string    `json:"detail"`
 	At     time.Time `json:"at"`
+	// RetryAt is when the daemon re-probes a transient blockage on its own; nil
+	// when only Retry moves the job. The daemon sets it on the jobs it reports,
+	// never in the journal.
+	RetryAt *time.Time `json:"retry_at,omitempty"`
 }
 
 // JobError is one entry of a job's bounded failure history.

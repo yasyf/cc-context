@@ -536,6 +536,9 @@ func TestRepeatRemoveJoinsTheJobStillAtItsPath(t *testing.T) {
 		if blocked.Job.Phase != cleanup.PhasePrepared || blocked.Job.Blocked.Reason != "watchers" {
 			t.Fatalf("blocked job = phase %s, reason %s; want prepared, watchers", blocked.Job.Phase, blocked.Job.Blocked.Reason)
 		}
+		if at := blocked.Job.Blocked.RetryAt; at == nil || !at.Equal(h.clock.Now().Add(30*time.Second)) {
+			t.Errorf("blocked job retries at %v, want %s", at, h.clock.Now().Add(30*time.Second))
+		}
 		first := blocked.Job.ID
 		h.expectEvents("accept:a", "advance:a@prepared")
 
@@ -1511,6 +1514,66 @@ func TestTransientBlockageOnAPhysicalPhaseRetriesThroughAdmission(t *testing.T) 
 		h.expectEvents("sample", "admit:a", "open:a", "step:a")
 		if got := h.status(job.ID); got.Phase != cleanup.PhaseDone || got.Removed != 100 {
 			t.Errorf("job = phase %s, removed %d; want done, 100 once admission passed again", got.Phase, got.Removed)
+		}
+	})
+}
+
+func TestTransientBlockageWaitsForAnOperatorPastTheRetryLimit(t *testing.T) {
+	tuning := DefaultTuning()
+	tuning.RetryLimit = 2
+	bubble(t, tuning, func(t *testing.T, h *harness) {
+		job := h.seed("a", 1, cleanup.PhasePrepared)
+		h.relocator.script("a", blockWith(h.clock, "activity", "could not verify that the tree is idle: read its arguments: input/output error"))
+		h.start()
+		h.expectEvents("advance:a@prepared")
+		h.expectTimers(30 * time.Second)
+		if at := h.status(job.ID).Blocked.RetryAt; at == nil || !at.Equal(h.clock.Now().Add(30*time.Second)) {
+			t.Fatalf("reported retry = %v, want %s", at, h.clock.Now().Add(30*time.Second))
+		}
+
+		h.clock.Advance(30 * time.Second)
+		h.expectEvents("advance:a@prepared")
+		h.expectTimers(time.Minute)
+
+		h.clock.Advance(time.Minute)
+		h.expectEvents("advance:a@prepared")
+		h.expectTimers()
+		blocked := h.status(job.ID)
+		if blocked.State() != cleanup.StateBlocked || blocked.Blocked.RetryAt != nil {
+			t.Fatalf("after %d transient blocks = state %s, retry %v; want blocked for an operator", len(blocked.Errors), blocked.State(), blocked.Blocked.RetryAt)
+		}
+	})
+}
+
+func TestWaitFollowsATransientBlockageThroughItsRetry(t *testing.T) {
+	bubble(t, DefaultTuning(), func(t *testing.T, h *harness) {
+		job := h.seed("a", 1, cleanup.PhasePrepared)
+		h.relocator.script("a", blockWith(h.clock, "activity", "could not verify that the tree is idle: read its arguments: input/output error"))
+		h.start()
+		h.expectEvents("advance:a@prepared")
+
+		type outcome struct {
+			job cleanup.Job
+			err error
+		}
+		waited := make(chan outcome, 1)
+		go func() {
+			job, err := h.engine.Wait(context.Background(), job.ID)
+			waited <- outcome{job, err}
+		}()
+		synctest.Wait()
+		select {
+		case got := <-waited:
+			t.Fatalf("Wait() returned %v during a self-retrying blockage, want it to keep waiting", got.err)
+		default:
+		}
+
+		h.relocator.script("a", nil)
+		h.clock.Advance(30 * time.Second)
+		h.expectEvents("advance:a@prepared", "sample", "admit:a", "open:a")
+		got := <-waited
+		if got.err != nil || got.job.Phase != cleanup.PhaseDone {
+			t.Errorf("Wait() = phase %s, err %v; want done once the retry cleared the blockage", got.job.Phase, got.err)
 		}
 	})
 }

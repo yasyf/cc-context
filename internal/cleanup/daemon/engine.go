@@ -62,9 +62,11 @@ type Tuning struct {
 	Recheck time.Duration
 	// RetryAfter is the first retry of a job blocked on a transient
 	// inspection; each consecutive transient block doubles it up to
-	// RetryCeiling.
+	// RetryCeiling. After RetryLimit consecutive transient blocks the job waits
+	// for Retry.
 	RetryAfter   time.Duration
 	RetryCeiling time.Duration
+	RetryLimit   int
 	// KeepDone is how many finished records the journal retains.
 	KeepDone int
 	// StatusLimit is the default cap on the jobs one report carries.
@@ -85,6 +87,7 @@ func DefaultTuning() Tuning {
 		Recheck:       30 * time.Second,
 		RetryAfter:    30 * time.Second,
 		RetryCeiling:  10 * time.Minute,
+		RetryLimit:    6,
 		KeepDone:      100,
 		StatusLimit:   50,
 	}
@@ -94,8 +97,8 @@ func (t Tuning) validate() error {
 	switch {
 	case t.Rate <= 0, t.SliceEntries <= 0, t.SliceBudget <= 0:
 		return fmt.Errorf("rate %d, slice of %d entries or %s: all must be positive", t.Rate, t.SliceEntries, t.SliceBudget)
-	case t.SampleEvery <= 0, t.Recheck <= 0, t.RetryAfter <= 0, t.RetryCeiling < t.RetryAfter:
-		return fmt.Errorf("sample interval %s, recheck interval %s and first retry %s must be positive, and the retry ceiling %s at least the first retry", t.SampleEvery, t.Recheck, t.RetryAfter, t.RetryCeiling)
+	case t.SampleEvery <= 0, t.Recheck <= 0, t.RetryAfter <= 0, t.RetryCeiling < t.RetryAfter, t.RetryLimit <= 0:
+		return fmt.Errorf("sample interval %s, recheck interval %s, first retry %s and retry limit %d must be positive, and the retry ceiling %s at least the first retry", t.SampleEvery, t.Recheck, t.RetryAfter, t.RetryLimit, t.RetryCeiling)
 	case t.ResumeBelow <= 0, t.PauseAbove < t.ResumeBelow, t.ResumeSamples <= 0:
 		return fmt.Errorf("throttle pauses above %v and resumes after %d samples below %v", t.PauseAbove, t.ResumeSamples, t.ResumeBelow)
 	case t.KeepDone < 0, t.StatusLimit <= 0:
@@ -324,7 +327,7 @@ func (e *Engine) Status(ctx context.Context, q cleanup.Query) (cleanup.Report, e
 		if !ok {
 			return cleanup.Report{}, cleanup.ErrUnknownJob
 		}
-		report.Jobs = append(report.Jobs, clone(job))
+		report.Jobs = append(report.Jobs, e.reported(job))
 		return report, nil
 	}
 	var unfinished, finished []cleanup.Job
@@ -333,7 +336,7 @@ func (e *Engine) Status(ctx context.Context, q cleanup.Query) (cleanup.Report, e
 			finished = append(finished, clone(job))
 			continue
 		}
-		unfinished = append(unfinished, clone(job))
+		unfinished = append(unfinished, e.reported(job))
 	}
 	slices.SortFunc(unfinished, bySeq)
 	slices.SortFunc(finished, func(a, b cleanup.Job) int { return byFinish(b, a) })
@@ -349,7 +352,8 @@ func (e *Engine) Status(ctx context.Context, q cleanup.Query) (cleanup.Report, e
 }
 
 // Wait returns the job once it is done, and the job with a *BlockedError once
-// it blocks. A queue-wide pause keeps the caller waiting. A caller already
+// it blocks for an operator; a transient blockage the daemon retries on its own
+// keeps the caller waiting, as does a queue-wide pause. A caller already
 // waiting when the job finishes gets the finished job even when its record is
 // pruned in the same breath.
 func (e *Engine) Wait(ctx context.Context, jobID string) (cleanup.Job, error) {
@@ -373,12 +377,12 @@ func (e *Engine) Wait(ctx context.Context, jobID string) (cleanup.Job, error) {
 		if !live {
 			job = e.kept[jobID]
 		}
-		job, changed := clone(job), e.changed
+		job, changed := e.reported(job), e.changed
 		e.mu.Unlock()
 		switch {
 		case job.Phase == cleanup.PhaseDone:
 			return job, nil
-		case job.Blocked != nil:
+		case job.Blocked != nil && job.Blocked.RetryAt == nil:
 			return job, &cleanup.BlockedError{Job: job}
 		case stopped:
 			return cleanup.Job{}, ErrStopped
@@ -672,8 +676,8 @@ func (e *Engine) logicalDue(now time.Time) (cleanup.Job, bool) {
 // retryAt is when a job blocked on a transient inspection — a process census
 // or watcher read that failed, a git read that timed out, or a holder that may
 // leave — retries on its own: RetryAfter past the first block, doubling per
-// consecutive transient block up to RetryCeiling. Any other blockage waits for
-// Retry.
+// consecutive transient block up to RetryCeiling, for RetryLimit blocks in a
+// row. Any other blockage, and the one after the limit, waits for Retry.
 func (e *Engine) retryAt(job cleanup.Job) (time.Time, bool) {
 	if job.Blocked == nil || !transient(job.Blocked.Reason) {
 		return time.Time{}, false
@@ -686,6 +690,9 @@ func (e *Engine) retryAt(job cleanup.Job) (time.Time, bool) {
 		}
 		streak++
 	}
+	if streak > e.tuning.RetryLimit {
+		return time.Time{}, false
+	}
 	delay := e.tuning.RetryAfter
 	for range max(streak-1, 0) {
 		if delay >= e.tuning.RetryCeiling {
@@ -694,6 +701,16 @@ func (e *Engine) retryAt(job cleanup.Job) (time.Time, bool) {
 		delay *= 2
 	}
 	return job.Blocked.At.Add(min(delay, e.tuning.RetryCeiling)), true
+}
+
+// reported is the copy of a job the daemon hands out, its blockage carrying
+// when the daemon retries it on its own.
+func (e *Engine) reported(job cleanup.Job) cleanup.Job {
+	job = clone(job)
+	if at, ok := e.retryAt(job); ok {
+		job.Blocked.RetryAt = &at
+	}
+	return job
 }
 
 func transient(reason string) bool {
@@ -883,7 +900,7 @@ func (e *Engine) relocate(ctx context.Context, job cleanup.Job) (cleanup.Receipt
 	case err != nil:
 		return cleanup.Receipt{}, err
 	case job.Blocked != nil:
-		return cleanup.Receipt{}, &cleanup.BlockedError{Job: job}
+		return cleanup.Receipt{}, &cleanup.BlockedError{Job: e.reported(job)}
 	case job.Phase == cleanup.PhaseWaiting:
 		return cleanup.Receipt{}, &cleanup.RefusedError{
 			Worktree: job.Original,
