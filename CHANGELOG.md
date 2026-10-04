@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Graphite `ship` accepts an earlier raw push without a tracking reflog.**
+  Clones that fetch only trunk could refuse a branch already pushed from the
+  same checkout with `fatal: bad revision` or a remote-changed error. The retry
+  now leases on the remote head when this repository pushed it, the branch
+  descends from it or the branch's own reflog holds it after a rewrite. Ship
+  still refuses a remote head meeting none of those checks.
+
 - **`ship --parent <base>` skips the hooks when the clone names no trunk.** A
   checkout without `refs/remotes/origin/HEAD`, such as a partial clone that
   fetches one branch, used to run the full prek suite for a branch bound for a

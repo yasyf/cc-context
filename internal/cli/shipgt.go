@@ -2249,8 +2249,8 @@ func gtPushArgv(s gtSubmit, plan []gtSubmitBranch) []string {
 // lease, so a remote someone else advanced is refused rather than overwritten
 // and no ref moves unless all of them do. A lease is behind the remote when this
 // repository pushed the branch outside a submit, which records no lease; the
-// push is retried once on the head that push left, and refused for any branch
-// whose remote moved by other hands.
+// push is retried once on the remote's head where this repository vouches for
+// it, and refused for any branch whose remote moved by other hands.
 func gtPushStack(ctx context.Context, dir render.Dir, s gtSubmit, plan []gtSubmitBranch) error {
 	if err := thinRefuseAdoptedPush(ctx, dir, s.prefix, slices.Collect(maps.Keys(gtPushedHeads(plan)))); err != nil {
 		return err
@@ -2272,15 +2272,15 @@ func gtPushStack(ctx context.Context, dir render.Dir, s gtSubmit, plan []gtSubmi
 			moved = append(moved, name)
 			continue
 		}
-		pushed, err := gtPushedHere(ctx, dir, s.prefix, name)
+		remote, held, err := gtHeldRemote(ctx, dir, s.prefix, plan[i])
 		if err != nil {
 			return err
 		}
-		if pushed == "" || pushed == plan[i].lease {
+		if !held {
 			moved = append(moved, name)
 			continue
 		}
-		plan[i].lease = pushed
+		plan[i].lease, plan[i].leaseSet = remote, true
 	}
 	if len(moved) == 0 {
 		_, err = render.RunCLI(ctx, dir, "git", gtPushArgv(s, plan))
@@ -2326,11 +2326,36 @@ func gtStaleRefs(err error) []string {
 	return refs
 }
 
+func gtHeldRemote(ctx context.Context, dir render.Dir, prefix string, b gtSubmitBranch) (string, bool, error) {
+	pushed, err := gtPushedHere(ctx, dir, prefix, b.name)
+	if err != nil {
+		return "", false, err
+	}
+	heads, err := stackRemoteHeads(ctx, dir, prefix, "origin", []string{b.name}, b.head)
+	if err != nil {
+		return "", false, err
+	}
+	remote := heads[b.name]
+	if remote == "" || remote == pushed {
+		return remote, remote != "", nil
+	}
+	ancestor, err := gitIsAncestor(ctx, dir, prefix, remote, b.head)
+	if err != nil || ancestor {
+		return remote, ancestor, err
+	}
+	held, err := gitReflogHolds(ctx, dir, prefix, b.name, remote)
+	return remote, held, err
+}
+
 // gtPushedHere is the head this repository last pushed branch to, read off the
 // remote-tracking ref's reflog, or empty when a fetch moved that ref last — a
 // fetch can carry in a push from anywhere.
 func gtPushedHere(ctx context.Context, dir render.Dir, prefix, branch string) (string, error) {
 	ref := "refs/remotes/origin/" + branch
+	exists, err := gitRefExists(ctx, dir, prefix, ref)
+	if err != nil || !exists {
+		return "", err
+	}
 	out, err := render.RunCLI(ctx, dir, "git", []string{"reflog", "show", "-n", "1", "--format=%H %gs", ref, "--"})
 	if err != nil {
 		return "", fmt.Errorf("%s: git reflog %s: %w", prefix, ref, err)
