@@ -218,6 +218,93 @@ func TestWorktreeAddRmRoundTrip(t *testing.T) {
 	}
 }
 
+func TestWorktreeAddCutsFromFetchedTrunk(t *testing.T) {
+	f := vcstest.Repo(t, vcstest.Remote())
+	f.Isolate(t)
+	stale := gitAt(t, f.Env(), f.Dir, "rev-parse", "refs/remotes/origin/main")
+	restackAdvanceRemote(t, f, "main", "upstream.txt", "upstream\n")
+	tip := gitAt(t, f.Env(), f.Dir, "--git-dir", f.RemoteDir, "rev-parse", "main")
+
+	out, err := runWorktreeCmd(t, f, "add", "feat")
+	if err != nil {
+		t.Fatalf("add error = %v", err)
+	}
+	path := worktreeSummaryPath(t, out)
+	want := strings.Join([]string{"added feat", "git worktree", "from origin/main " + shortOID(tip), path}, shipSep) + "\n"
+	if out != want {
+		t.Errorf("summary = %q, want %q", out, want)
+	}
+	if got := gitAt(t, f.Env(), path, "rev-parse", "HEAD"); got != tip {
+		t.Errorf("feat HEAD = %s, want the fetched remote trunk %s", got, tip)
+	}
+	if got := gitAt(t, f.Env(), path, "symbolic-ref", "--short", "HEAD"); got != "feat" {
+		t.Errorf("checked out %q, want feat", got)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "main"); got != stale {
+		t.Errorf("local main = %s, want it left at %s", got, stale)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "config", "--default", "", "--get", "branch.feat.merge"); got != "" {
+		t.Errorf("branch.feat.merge = %q, want no upstream", got)
+	}
+}
+
+func TestWorktreeAddChecksOutExistingBranch(t *testing.T) {
+	f := vcstest.Repo(t, vcstest.Remote())
+	f.Isolate(t)
+	head := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD")
+	mustRun(t, f.Env(), f.Dir, "git", "branch", "feat")
+	restackAdvanceRemote(t, f, "main", "upstream.txt", "upstream\n")
+
+	out, err := runWorktreeCmd(t, f, "add", "feat")
+	if err != nil {
+		t.Fatalf("add error = %v", err)
+	}
+	path := worktreeSummaryPath(t, out)
+	want := strings.Join([]string{"added feat", "git worktree", "existing feat at " + shortOID(head), path}, shipSep) + "\n"
+	if out != want {
+		t.Errorf("summary = %q, want %q", out, want)
+	}
+	if got := gitAt(t, f.Env(), path, "rev-parse", "HEAD"); got != head {
+		t.Errorf("feat HEAD = %s, want the existing branch's %s", got, head)
+	}
+}
+
+func TestWorktreeAddWithoutRemoteCutsFromHead(t *testing.T) {
+	f := vcstest.Repo(t)
+	f.Isolate(t)
+	head := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD")
+
+	out, err := runWorktreeCmd(t, f, "add", "feat")
+	if err != nil {
+		t.Fatalf("add error = %v", err)
+	}
+	path := worktreeSummaryPath(t, out)
+	want := strings.Join([]string{"added feat", "git worktree", "from HEAD " + shortOID(head), path}, shipSep) + "\n"
+	if out != want {
+		t.Errorf("summary = %q, want %q", out, want)
+	}
+}
+
+func TestWorktreeAddJJWorkspaceStartsOnFetchedTrunk(t *testing.T) {
+	f := vcstest.Repo(t, vcstest.JJ(), vcstest.Remote())
+	f.Isolate(t)
+	restackAdvanceRemote(t, f, "main", "upstream.txt", "upstream\n")
+	tip := gitAt(t, f.Env(), f.Dir, "--git-dir", f.RemoteDir, "rev-parse", "main")
+
+	out, err := runWorktreeCmd(t, f, "add", "feat", "--jj", "workspace")
+	if err != nil {
+		t.Fatalf("add error = %v", err)
+	}
+	path := worktreeSummaryPath(t, out)
+	want := strings.Join([]string{"added feat", "jj workspace", "from main " + shortOID(tip), path}, shipSep) + "\n"
+	if out != want {
+		t.Errorf("summary = %q, want %q", out, want)
+	}
+	if got := strings.TrimSpace(mustRun(t, f.Env(), path, "jj", "log", "--no-graph", "-r", "@-", "-T", "commit_id")); got != tip {
+		t.Errorf("workspace parent = %s, want the fetched trunk %s", got, tip)
+	}
+}
+
 // TestWorktreeRmRefusesTrunkHolder proves the one removal that is never safe:
 // the checkout holding trunk pins the branch every restack rebases onto, and the
 // refusal names it rather than reporting a bare failure.
@@ -763,10 +850,10 @@ func TestWorktreeMintPathRejectsName(t *testing.T) {
 func worktreeSummaryPath(t *testing.T, summary string) string {
 	t.Helper()
 	segs := strings.Split(strings.TrimSpace(summary), shipSep)
-	if len(segs) != 3 {
-		t.Fatalf("summary = %q, want three %q-separated segments", summary, shipSep)
+	if len(segs) < 3 {
+		t.Fatalf("summary = %q, want at least three %q-separated segments", summary, shipSep)
 	}
-	return segs[2]
+	return segs[len(segs)-1]
 }
 
 // parkRepo builds the shape park exists for: a main checkout holding trunk, a

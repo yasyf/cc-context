@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -108,7 +109,13 @@ outside every repository tree so a worktree is never mistaken for repo content.
 --jj picks how the new copy attaches: "none" is a git worktree, "workspace" is a
 jj workspace, and "colocate" is impossible — jj refuses to create a colocated
 repo inside a git worktree. Without --jj, a jj workspace mints another workspace
-and everything else mints a git worktree.`,
+and everything else mints a git worktree.
+
+A git worktree cuts branch <name> from the remote trunk, fetched first, so a
+local trunk or HEAD left behind the remote never becomes the base; an existing
+branch <name> is checked out as it stands, and a repository with no remote cuts
+from HEAD. A jj workspace starts on trunk() after jj git fetch, or on the
+caller's parents with no remote. The summary names the base commit.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runWorktreeAdd(cmd, args[0], mode)
@@ -448,18 +455,127 @@ func runWorktreeAdd(cmd *cobra.Command, name, requested string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return fmt.Errorf("worktree add: mint pool for %q: %w", name, err)
 	}
+	var base worktreeBase
 	switch mode {
 	case jjModeWorkspace:
-		if _, err := render.RunCLI(ctx, l.dir(), "jj", []string{"workspace", "add", "--name", name, path}); err != nil {
+		if base, err = worktreeJJBase(ctx, l.dir()); err != nil {
+			return err
+		}
+		if _, err := render.RunCLI(ctx, l.dir(), "jj", []string{"workspace", "add", "--name", name, "-r", base.rev, path}); err != nil {
 			return fmt.Errorf("worktree add: jj workspace add %s: %w", name, err)
 		}
 	default:
-		if _, err := render.RunCLI(ctx, l.dir(), "git", []string{"worktree", "add", path}); err != nil {
+		if base, err = worktreeGitBase(ctx, l.dir(), name); err != nil {
+			return err
+		}
+		args := []string{"worktree", "add", path, name}
+		if base.rev != "" {
+			args = []string{"worktree", "add", "-b", name, path, base.rev}
+		}
+		if _, err := render.RunCLI(ctx, l.dir(), "git", args); err != nil {
 			return fmt.Errorf("worktree add: git worktree add %s: %w", path, err)
 		}
 	}
-	cmd.Println(strings.Join([]string{"added " + name, worktreeShapeOf(mode), path}, shipSep))
+	cmd.Println(strings.Join([]string{"added " + name, worktreeShapeOf(mode), base.segment(), path}, shipSep))
 	return nil
+}
+
+type worktreeBase struct {
+	rev   string
+	label string
+	shas  []string
+}
+
+func (b worktreeBase) segment() string {
+	short := make([]string, len(b.shas))
+	for i, sha := range b.shas {
+		short[i] = shortOID(sha)
+	}
+	if b.rev == "" {
+		return "existing " + b.label + " at " + strings.Join(short, "+")
+	}
+	return "from " + b.label + " " + strings.Join(short, "+")
+}
+
+func worktreeGitBase(ctx context.Context, dir render.Dir, name string) (worktreeBase, error) {
+	existing, err := gitRefExists(ctx, dir, "worktree add", "refs/heads/"+name)
+	if err != nil {
+		return worktreeBase{}, err
+	}
+	if existing {
+		sha, err := worktreeRevParse(ctx, dir, "refs/heads/"+name)
+		return worktreeBase{label: name, shas: []string{sha}}, err
+	}
+	branch, err := gitCurrentBranch(ctx, dir, "worktree add")
+	if err != nil {
+		return worktreeBase{}, err
+	}
+	remote, err := vcs.GitRemoteFor(ctx, dir, cmp.Or(branch, "HEAD"))
+	if err != nil {
+		return worktreeBase{}, fmt.Errorf("worktree add: %w", err)
+	}
+	key := "remote." + remote + ".url"
+	_, code, stderr, err := render.RunCLIExitCode(ctx, dir, "git", []string{"config", "--get", key})
+	switch {
+	case err != nil:
+		return worktreeBase{}, fmt.Errorf("worktree add: git config %s: %w", key, err)
+	case code == 1:
+		sha, err := worktreeRevParse(ctx, dir, "HEAD")
+		return worktreeBase{rev: sha, label: "HEAD", shas: []string{sha}}, err
+	case code != 0:
+		return worktreeBase{}, fmt.Errorf("worktree add: git config %s: exit %d: %s", key, code, strings.TrimSpace(stderr))
+	}
+	trunk, _, err := gitRemoteHead(ctx, dir, "worktree add", remote)
+	if err != nil {
+		return worktreeBase{}, err
+	}
+	if trunk == "" {
+		return worktreeBase{}, fmt.Errorf("worktree add: %s names no default branch to cut %s from — run git remote set-head %s -a", remote, name, remote)
+	}
+	tracking := string(vcs.RemoteBranchRef(remote, trunk))
+	if err := gitFetch(ctx, dir, "--no-tags", "--no-write-fetch-head", remote, "+refs/heads/"+trunk+":"+tracking); err != nil {
+		return worktreeBase{}, fmt.Errorf("worktree add: git fetch %s %s: %w", remote, trunk, err)
+	}
+	sha, err := worktreeRevParse(ctx, dir, tracking)
+	if err != nil {
+		return worktreeBase{}, err
+	}
+	return worktreeBase{rev: sha, label: remote + "/" + trunk, shas: []string{sha}}, nil
+}
+
+func worktreeJJBase(ctx context.Context, dir render.Dir) (worktreeBase, error) {
+	remotes, err := render.RunCLI(ctx, dir, "jj", []string{"git", "remote", "list"})
+	if err != nil {
+		return worktreeBase{}, fmt.Errorf("worktree add: jj git remote list: %w", err)
+	}
+	base := worktreeBase{rev: "@-", label: "@-"}
+	if strings.TrimSpace(remotes) != "" {
+		if _, err := render.RunCLI(ctx, dir, "jj", []string{"git", "fetch"}); err != nil {
+			return worktreeBase{}, fmt.Errorf("worktree add: jj git fetch: %w", err)
+		}
+		names, err := jjTrunkBookmarkNames(ctx, dir, "worktree add")
+		if err != nil {
+			return worktreeBase{}, err
+		}
+		if len(names) != 1 {
+			return worktreeBase{}, fmt.Errorf("worktree add: cannot resolve the trunk bookmark from %q — configure trunk() to resolve one tracked bookmark", names)
+		}
+		base = worktreeBase{rev: "trunk()", label: names[0]}
+	}
+	out, err := render.RunCLI(ctx, dir, "jj", []string{"--ignore-working-copy", "log", "--no-graph", "-r", base.rev, "-T", `commit_id ++ "\n"`})
+	if err != nil {
+		return worktreeBase{}, fmt.Errorf("worktree add: jj log %s: %w", base.rev, err)
+	}
+	base.shas = strings.Fields(out)
+	return base, nil
+}
+
+func worktreeRevParse(ctx context.Context, dir render.Dir, rev string) (string, error) {
+	out, err := render.RunCLI(ctx, dir, "git", []string{"rev-parse", "--verify", rev})
+	if err != nil {
+		return "", fmt.Errorf("worktree add: git rev-parse %s: %w", rev, err)
+	}
+	return strings.TrimSpace(out), nil
 }
 
 // worktreeMode resolves --jj against the shape of the checkout it was asked

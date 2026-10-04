@@ -294,7 +294,7 @@ func TestStackNewThinCreatesAThinStore(t *testing.T) {
 
 	out, lane := thinNew(t, f, f.Dir, "lane1", "--depth", strconv.Itoa(thinTestDepth))
 	store := thinTestStore(t, f)
-	if want := "created thin store " + store + shipSep + "cut lane1 onto main" + shipSep + thinTestLane(t, f, "lane1"); out != want {
+	if want := "created thin store " + store + shipSep + "cut lane1 onto main at " + shortOID(gitAt(t, f.Env(), lane, "rev-parse", "HEAD")) + shipSep + thinTestLane(t, f, "lane1"); out != want {
 		t.Fatalf("stack new = %q, want %q", out, want)
 	}
 	for key, want := range map[string]string{
@@ -373,7 +373,7 @@ func TestStackNewThinReusesTheStore(t *testing.T) {
 	}
 	thinCommit(t, f, a, "a.txt", "a\n")
 	out, c := thinNew(t, f, a, "c", "--include", "keep")
-	if want := "cut c onto a" + shipSep + thinTestLane(t, f, "c"); out != want {
+	if want := "cut c onto a at " + shortOID(gitAt(t, f.Env(), a, "rev-parse", "HEAD")) + shipSep + thinTestLane(t, f, "c"); out != want {
 		t.Errorf("nested lane = %q, want %q", out, want)
 	}
 	for _, lane := range []string{a, b, c} {
