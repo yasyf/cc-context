@@ -171,15 +171,15 @@ Every command that narrows by path takes one selector: `-g/--glob`, repeatable a
 Stack replay requires Git 2.56 or newer. It writes Git objects without a
 checkout, index changes, or hooks, including spans with merge commits, which
 it linearizes. See [Rebase a stack and resolve conflicts](docs/stack-rebase.md)
-for sparse workspace expansion and explicit `ccx vcs stack regenerate`. Ordinary user
-worktrees stay full unless sparse creation is requested. Generated conflicts
+for sparse workspace expansion and explicit `ccx vcs stack regenerate`.
+Git `ccx vcs worktree add` links a checkout to the caller's repository. Generated conflicts
 stop for manual dependency setup and regeneration; `--include` and `--full`
 materialize files and run generators without installing dependencies.
 
 [Create and work in thin lanes](docs/thin-lanes.md) covers sparse agent lanes
 in a ccx-owned shallow store, published parents, and explicit deepening.
-Thin mode is opt-in per agent: lanes cannot see the source checkout's local
-cc-notes data.
+Git `stack new` uses thin lanes by default and shares the source checkout's
+cc-notes records. Use `--full-history` from a full checkout to share its history.
 
 [Worktree removal and cleanup](docs/worktree-cleanup.md) covers removal by name
 or absolute `--path`, `--dry-run`, `--wait`, queue controls, and watcher inspection.
@@ -198,7 +198,7 @@ tuned through environment variables:
 | Variable | Effect |
 | --- | --- |
 | `LOG_LEVEL` / `LOG_FORMAT` | `debug`, `info` (default), `warn`, or `error`, to stderr; set `LOG_FORMAT=json` for structured logs |
-| `CCX_STACK_NEW` | `thin` or `full` selects the `stack new` default unless `--thin` or `--full-history` is passed; unset keeps the existing behavior, other values error; inside the thin store, `full` still uses that store; thin mode stays opt-in per agent, and a thin store shares the source checkout's cc-notes records through `cc-notes storage bind` |
+| `CCX_STACK_NEW` | `thin` or `full` selects the `stack new` default unless `--thin` or `--full-history` is passed; unset selects thin for Git and keeps jj behavior, other values error; inside the thin store, `full` still uses that store; thin stores share the source checkout's cc-notes records through `cc-notes storage bind`, and a refusal never falls back to full history |
 | `CCX_EXEC_MCP` | `off` disables MCP auto-reflection in `ccx exec`; `refresh` forces a fresh `claude mcp list` probe, bypassing the 15-minute per-project inventory cache |
 | `CCX_EXEC_MCP_DENY` | comma-separated MCP server names to exclude from reflection; reflected servers run as fresh instances, so list any that need live session state |
 | `CCX_EXEC_MCP_ALLOW` | comma-separated MCP server names to reflect even when classified stateful |

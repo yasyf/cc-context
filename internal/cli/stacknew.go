@@ -45,7 +45,7 @@ func runStackNew(cmd *cobra.Command, name string, options stackNewOpts) error {
 	if err != nil {
 		return err
 	}
-	storage, err := stackStorageOf(ctx, options)
+	storage, err := stackStorageOf(ctx, options, src.checkout.Kind)
 	if err != nil {
 		return err
 	}
@@ -65,7 +65,7 @@ func runStackNew(cmd *cobra.Command, name string, options stackNewOpts) error {
 		return errors.New("stack new: sparse, no-checkout, and thin creation require a Git checkout")
 	}
 	if options.noCheckout && thin {
-		return fmt.Errorf("stack new: a thin lane is a sparse checkout, so --no-checkout conflicts with %s=thin", stackNewEnv)
+		return errors.New("stack new: a thin lane is a sparse checkout, so --no-checkout conflicts with thin storage; pass --full-history from a full checkout")
 	}
 	if len(options.includes) > 0 && !sparseLane {
 		return errors.New("stack new: --include checks out directories in a sparse lane — pass it with --thin or --sparse")

@@ -288,10 +288,11 @@ func TestThinCanonicalRemote(t *testing.T) {
 func TestStackNewThinCreatesAThinStore(t *testing.T) {
 	t.Parallel()
 	f := thinRepo(t)
+	f.Setenv(stackNewEnv, "")
 	thinGrowTrunk(t, f, 12)
 	before := thinSnap(t, f)
 
-	out, lane := thinNew(t, f, f.Dir, "lane1", "--thin", "--depth", strconv.Itoa(thinTestDepth))
+	out, lane := thinNew(t, f, f.Dir, "lane1", "--depth", strconv.Itoa(thinTestDepth))
 	store := thinTestStore(t, f)
 	if want := "created thin store " + store + shipSep + "cut lane1 onto main" + shipSep + thinTestLane(t, f, "lane1"); out != want {
 		t.Fatalf("stack new = %q, want %q", out, want)
@@ -537,12 +538,13 @@ func TestStackNewThinValidatesNotesInsideStore(t *testing.T) {
 func TestStackNewThinRefusesWithoutNotesBinding(t *testing.T) {
 	t.Parallel()
 	f := thinRepo(t)
+	f.Setenv(stackNewEnv, "")
 	before := thinSnap(t, f)
 	f.Setenv("CCX_FAKE_CC_NOTES_UNKNOWN", "1")
 
-	_, _, err := runStackCmd(t, f, "new", "lane1", "--thin", "--depth", strconv.Itoa(thinTestDepth))
+	_, _, err := runStackCmd(t, f, "new", "lane1", "--depth", strconv.Itoa(thinTestDepth))
 	if err == nil || !strings.Contains(err.Error(), `unknown command "storage"`) {
-		t.Fatalf("stack new --thin with a cc-notes lacking storage bind = %v, want its refusal", err)
+		t.Fatalf("stack new default thin with a cc-notes lacking storage bind = %v, want its refusal", err)
 	}
 	store := thinTestStore(t, f)
 	entries, err := os.ReadDir(filepath.Dir(store))
@@ -1011,24 +1013,30 @@ func TestStackNewStorageModes(t *testing.T) {
 	tests := []struct {
 		name    string
 		env     string
+		noGT    bool
 		inStore bool
 		args    []string
 		refusal string
 		store   bool
 		sparse  bool
 	}{
+		{name: "unset Git default", args: []string{"--parent", "main"}, store: true, sparse: true},
+		{name: "unset plain Git default", noGT: true, args: []string{"--parent", "main"}, store: true, sparse: true},
+		{name: "explicit full history with unset env", args: []string{"--parent", "main", "--full-history"}},
 		{name: "env thin", env: "thin", args: []string{"--parent", "main"}, store: true, sparse: true},
 		{name: "env full", env: "full", args: []string{"--parent", "main"}},
 		{name: "full history overrides env thin", env: "thin", args: []string{"--parent", "main", "--full-history"}},
 		{name: "env bogus", env: "shallow", args: []string{"--parent", "main"}, refusal: `CCX_STACK_NEW="shallow" is neither thin nor full`},
 		{name: "thin and full history", args: []string{"--thin", "--full-history"}, refusal: "none of the others can be"},
 		{name: "thin and no checkout", args: []string{"--thin", "--no-checkout"}, refusal: "none of the others can be"},
-		{name: "env thin and no checkout", env: "thin", args: []string{"--parent", "main", "--no-checkout"}, refusal: "--no-checkout conflicts with CCX_STACK_NEW=thin"},
-		{name: "include without sparse", args: []string{"--parent", "main", "--include", "keep"}, refusal: "--include checks out directories in a sparse lane"},
+		{name: "unset default and no checkout", args: []string{"--parent", "main", "--no-checkout"}, refusal: "--no-checkout conflicts with thin storage"},
+		{name: "env thin and no checkout", env: "thin", args: []string{"--parent", "main", "--no-checkout"}, refusal: "--no-checkout conflicts with thin storage"},
+		{name: "include without sparse", env: "full", args: []string{"--parent", "main", "--include", "keep"}, refusal: "--include checks out directories in a sparse lane"},
+		{name: "unset default source-only parent", args: []string{"--parent", "parent"}, refusal: "pass --published-parent"},
 		{name: "unpublished source-only parent", args: []string{"--thin", "--parent", "parent"}, refusal: "pass --published-parent"},
 		{name: "full history in the store", inStore: true, args: []string{"--full-history"}, refusal: "is a thin store"},
 		{name: "depth in the store", inStore: true, args: []string{"--depth", "8"}, refusal: "--depth and --deepen apply only"},
-		{name: "deepen without thin", args: []string{"--parent", "main", "--deepen"}, refusal: "--depth and --deepen apply only"},
+		{name: "deepen without thin", env: "full", args: []string{"--parent", "main", "--deepen"}, refusal: "--depth and --deepen apply only"},
 		{name: "env full in the store", env: "full", inStore: true, store: true, sparse: true},
 		{name: "env thin and no checkout in the store", env: "thin", inStore: true, args: []string{"--no-checkout"}, store: true, sparse: true},
 	}
@@ -1042,8 +1050,9 @@ func TestStackNewStorageModes(t *testing.T) {
 			if tt.inStore {
 				_, dir = thinNew(t, f, f.Dir, "base", "--thin", "--depth", strconv.Itoa(thinTestDepth))
 			}
-			if tt.env != "" {
-				f.Setenv(stackNewEnv, tt.env)
+			f.Setenv(stackNewEnv, tt.env)
+			if tt.noGT {
+				mustRun(t, f.Env(), f.Dir, "git", "config", nogtKey, "true")
 			}
 			refs := thinRefs(t, f, f.Dir)
 			out, _, err := runStackCmdIn(t, f, dir, append([]string{"new", "child"}, tt.args...)...)

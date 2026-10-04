@@ -13,7 +13,7 @@ func TestStackNewRemovesALaneGTWillNotAdopt(t *testing.T) {
 	shipGTUntracked(t, f, "loose")
 
 	for range 2 {
-		_, _, err := runStackCmd(t, f, "new", "child", "--parent", "loose")
+		_, _, err := runStackCmd(t, f, "new", "--full-history", "child", "--parent", "loose")
 		if err == nil || !strings.Contains(err.Error(), "track loose first with gt track --parent <its parent> loose") {
 			t.Fatalf("stack new onto untracked loose = %v, want the lane removed and the parent named", err)
 		}

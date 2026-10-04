@@ -183,7 +183,7 @@ func TestStackNewPublishedParentInheritsSparseBeforeCheckout(t *testing.T) {
 	}
 	child := filepath.Join(t.TempDir(), "child")
 	shipResetLog(t, f)
-	if _, _, err := runStackCmd(t, f, "new", "child", "--parent", "parent", "--published-parent", "--sparse", "--path", child); err != nil {
+	if _, _, err := runStackCmd(t, f, "new", "--full-history", "child", "--parent", "parent", "--published-parent", "--sparse", "--path", child); err != nil {
 		t.Fatal(err)
 	}
 	if got := gitAt(t, f.Env(), child, "rev-parse", "HEAD"); got != receipt.Head {
@@ -269,7 +269,7 @@ func TestStackNewPublishedParentInheritsSparseBeforeCheckout(t *testing.T) {
 func TestStackNewPublishedParentNoCheckout(t *testing.T) {
 	f, receipt := publishedSparseParent(t)
 	child := filepath.Join(t.TempDir(), "child")
-	if _, _, err := runStackCmd(t, f, "new", "child", "--published-parent", "--no-checkout", "--path", child); err != nil {
+	if _, _, err := runStackCmd(t, f, "new", "--full-history", "child", "--published-parent", "--no-checkout", "--path", child); err != nil {
 		t.Fatal(err)
 	}
 	entries, err := os.ReadDir(child)
@@ -297,7 +297,7 @@ func TestStackNewPublishedParentRefusesChangedIdentities(t *testing.T) {
 				writeShipExecutable(t, f.ShimBin, "git", "#!/bin/sh\nif [ -z \"$CCX_SHIM_DEPTH\" ] && [ \"$1\" = worktree ] && [ \"$2\" = add ]; then\n  '"+gitBin+"' \"$@\" || exit $?\n  CCX_SHIM_DEPTH=1 git update-ref '"+stackPublicationRef("parent", "receipt")+"' '"+receipt.Source+"' '"+receipt.OID+"' || exit $?\n  exit 0\nfi\nexec '"+gitBin+"' \"$@\"\n")
 			}
 			source := shipHead(t, f)
-			_, _, err := runStackCmd(t, f, "new", "child", "--published-parent", "--no-checkout", "--path", child)
+			_, _, err := runStackCmd(t, f, "new", "--full-history", "child", "--published-parent", "--no-checkout", "--path", child)
 			if err == nil {
 				t.Fatal("changed parent identity accepted")
 			}
@@ -326,7 +326,7 @@ func TestStackNewCreationModesRefuseBeforeMutation(t *testing.T) {
 		{"--path", f.Dir},
 		{"--path", filepath.Join(f.Dir, "nested")},
 	} {
-		if _, _, err := runStackCmd(t, f, append([]string{"new", "child"}, args...)...); err == nil {
+		if _, _, err := runStackCmd(t, f, append([]string{"new", "--full-history", "child"}, args...)...); err == nil {
 			t.Fatalf("invalid mode accepted: %v", args)
 		}
 		if present, err := gitRefExists(f.Context(), render.Dir(f.Dir), "test", "refs/heads/child"); err != nil || present {
@@ -341,7 +341,7 @@ func TestStackNewPublishedParentPreservesConcurrentSourceMove(t *testing.T) {
 	child := filepath.Join(t.TempDir(), "child")
 	gitBin := shipDisplaceShim(t, f, "git")
 	writeShipExecutable(t, f.ShimBin, "git", "#!/bin/sh\nif [ -z \"$CCX_SHIM_DEPTH\" ] && [ \"$1\" = worktree ] && [ \"$2\" = add ]; then\n  '"+gitBin+"' \"$@\" || exit $?\n  CCX_SHIM_DEPTH=1 git update-ref refs/heads/parent '"+changed+"' '"+receipt.Source+"' || exit $?\n  exit 0\nfi\nexec '"+gitBin+"' \"$@\"\n")
-	_, _, err := runStackCmd(t, f, "new", "child", "--published-parent", "--no-checkout", "--path", child)
+	_, _, err := runStackCmd(t, f, "new", "--full-history", "child", "--published-parent", "--no-checkout", "--path", child)
 	if err == nil || !strings.Contains(err.Error(), "source changed") {
 		t.Fatalf("source race accepted: %v", err)
 	}
@@ -370,7 +370,7 @@ func TestStackNewFailurePreservesConcurrentChildWork(t *testing.T) {
 			}
 			gtShim := shipDisplaceShim(t, f, "gt")
 			writeShipExecutable(t, f.ShimBin, "gt", "#!/bin/sh\nif [ -z \"$CCX_SHIM_DEPTH\" ] && [ \"$1\" = track ]; then\n  '"+gtShim+"' \"$@\" || exit $?\n"+mutation+"  CCX_SHIM_DEPTH=1 git update-ref refs/heads/parent '"+parentHead+"' '"+receipt.Source+"' || exit $?\n  exit 0\nfi\nexec '"+gtShim+"' \"$@\"\n")
-			_, _, err := runStackCmd(t, f, "new", "child", "--published-parent", "--no-checkout", "--path", child)
+			_, _, err := runStackCmd(t, f, "new", "--full-history", "child", "--published-parent", "--no-checkout", "--path", child)
 			if err == nil || !strings.Contains(err.Error(), "incomplete") || !strings.Contains(err.Error(), child) {
 				t.Fatalf("missing incomplete-child error: %v", err)
 			}
@@ -398,7 +398,7 @@ func TestStackNewSparseNeverOverwritesConcurrentChildFile(t *testing.T) {
 	child := filepath.Join(t.TempDir(), "child")
 	gitShim := shipDisplaceShim(t, f, "git")
 	writeShipExecutable(t, f.ShimBin, "git", "#!/bin/sh\nif [ -z \"$CCX_SHIM_DEPTH\" ] && [ \"$1\" = worktree ] && [ \"$2\" = add ]; then\n  '"+gitShim+"' \"$@\" || exit $?\n  mkdir -p '"+filepath.Join(child, "keep")+"'\n  printf 'concurrent child\\n' > '"+filepath.Join(child, "keep", "parent.txt")+"'\n  exit 0\nfi\nexec '"+gitShim+"' \"$@\"\n")
-	_, _, err := runStackCmd(t, f, "new", "child", "--published-parent", "--sparse", "--path", child)
+	_, _, err := runStackCmd(t, f, "new", "--full-history", "child", "--published-parent", "--sparse", "--path", child)
 	if err == nil || !strings.Contains(err.Error(), "incomplete") {
 		t.Fatalf("concurrent child file accepted: %v", err)
 	}
@@ -420,7 +420,7 @@ func TestStackNewSparsePreservesConcurrentChildIndex(t *testing.T) {
 			child := filepath.Join(t.TempDir(), "child")
 			gitShim := shipDisplaceShim(t, f, "git")
 			writeShipExecutable(t, f.ShimBin, "git", "#!/bin/sh\nif [ -z \"$CCX_SHIM_DEPTH\" ] && [ \"$1\" = worktree ] && [ \"$2\" = add ]; then\n  '"+gitShim+"' \"$@\" || exit $?\n  child_index=$(CCX_SHIM_DEPTH=1 git -C '"+child+"' rev-parse --path-format=absolute --git-path index)\n  printf 'concurrent index' > \"$child_index"+suffix+"\"\n  exit 0\nfi\nexec '"+gitShim+"' \"$@\"\n")
-			_, _, err := runStackCmd(t, f, "new", "child", "--published-parent", "--sparse", "--path", child)
+			_, _, err := runStackCmd(t, f, "new", "--full-history", "child", "--published-parent", "--sparse", "--path", child)
 			if err == nil || !strings.Contains(err.Error(), "incomplete") {
 				t.Fatalf("concurrent index accepted: %v", err)
 			}

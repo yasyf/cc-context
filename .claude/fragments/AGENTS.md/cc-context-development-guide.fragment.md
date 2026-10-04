@@ -25,19 +25,23 @@ cc-context/
 ## Stack workspaces and cleanup
 
 Stack replay requires Git 2.56 or newer. Internal conflict and rehearsal
-workspaces are sparse; ordinary user worktrees stay full unless explicitly
-requested otherwise. Follow [the stack conflict guide](docs/stack-rebase.md)
+workspaces are sparse. Git `ccx vcs worktree add` links a checkout to the
+caller's repository. Follow [the stack conflict guide](docs/stack-rebase.md)
 for sparse expansion, manual dependency setup, and explicit
 `ccx vcs stack regenerate --include <dir>` or `--full`. Keep mutable install
 state and build outputs private to each workspace; download and compiler
 caches can remain shared.
 
-Use `ccx vcs stack new <name> --thin` or set `CCX_STACK_NEW=thin` for agent
-lanes backed by `~/.claude/stores/<key>/<repo>`; tracked `.claude` and `.agents`
+Git `ccx vcs stack new <name>` defaults to thin lanes backed by
+`~/.claude/stores/<key>/<repo>`; tracked `.claude` and `.agents`
 are checked out without running hooks or setup scripts. Thin stores share the
 source checkout's cc-notes records through `cc-notes storage bind`, which
 cc-notes must provide; existing unbound or differently bound stores are
-refused. Keep thin mode opt-in per agent; do not set it globally.
+refused.
+
+Use `--full-history` from a full checkout or `CCX_STACK_NEW=full`
+to retain that checkout's history; unset keeps jj behavior. A thin refusal
+never falls back to full history.
 ccx never deletes the store; unpushed branches survive lane removal. Deepening
 requires explicit `--deepen`, bounded by `--max-depth`. Follow [the thin-lane guide](docs/thin-lanes.md)
 for sparse expansion, published parents, and ancestry refusals.
