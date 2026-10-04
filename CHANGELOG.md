@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Stack submission tolerates deleted Graphite base branches.**
+  When Graphite moves a pull request off `graphite-base/<n>`,
+  `ccx vcs stack submit` no longer aborts if the branch disappears between
+  listing and fetching remote heads. If Graphite still reports an already
+  deleted base, the push leaves it deleted and submits the pull request on
+  its current base, or trunk when its parent has landed.
+
 - **`ccx vcs stack rebase --parent` accepts untracked branches.** A branch
   Graphite did not track, or tracked without a parent, previously failed with
   `gt state has no parent for <branch>`. The command now plans it from its

@@ -293,10 +293,13 @@ func (s *gtAPIStub) submit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if base := s.parked[entry.Head]; base != "" {
-		if s.remote("rev-parse", "refs/heads/"+base) == entry.BaseSha {
+		switch s.remote("for-each-ref", "--format=%(objectname)", "refs/heads/"+base) {
+		case "":
+			delete(s.parked, entry.Head)
+		case entry.BaseSha:
 			delete(s.parked, entry.Head)
 			s.remote("update-ref", "-d", "refs/heads/"+base)
-		} else {
+		default:
 			s.remote("update-ref", "refs/heads/"+base, entry.BaseSha)
 		}
 	}
