@@ -292,7 +292,7 @@ func restackGit(ctx context.Context, cmd *cobra.Command, l lane, parent string) 
 	if err != nil {
 		return "", err
 	}
-	if len(finished) > 0 {
+	if finished {
 		return restackGit(ctx, cmd, l, parent)
 	}
 	if err := stackClaim(commonDir, run); err != nil {

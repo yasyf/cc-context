@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -343,6 +345,45 @@ func TestStackSubmitBesideADeadPublicationRun(t *testing.T) {
 				t.Errorf("remote feature = %s, want the dead run's push %s", got, plan[0].head)
 			}
 			stackAssertNoRun(t, f)
+		})
+	}
+}
+
+func TestStackAdoptRefusesAHeldOrResavedRun(t *testing.T) {
+	for _, held := range []bool{true, false} {
+		t.Run(map[bool]string{true: "another adopter holds it", false: "saved since it was read"}[held], func(t *testing.T) {
+			run := &stackRebaseRun{Roots: []string{"feature"}, Pid: 1}
+			common := t.TempDir()
+			if err := stackClaim(common, run); err != nil {
+				t.Fatal(err)
+			}
+			if err := stackSaveRun(run); err != nil {
+				t.Fatal(err)
+			}
+			info, err := os.Stat(stackStatePath(run.dir))
+			if err != nil {
+				t.Fatal(err)
+			}
+			run.saved = info.ModTime()
+			want := "saved again while it was being adopted"
+			if held {
+				if err := os.WriteFile(filepath.Join(run.dir, stackAdoptLock), nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				want = "another caller may be adopting it"
+			} else {
+				run.saved = run.saved.Add(-time.Second)
+			}
+			if err := stackAdopt(run); err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("adopt = %v, want %q", err, want)
+			}
+			saved, err := stackOnlyTestRun(common)
+			if err != nil || saved.Pid != 1 {
+				t.Fatalf("run = %+v, %v, want it left with pid 1", saved, err)
+			}
+			if _, err := os.Stat(filepath.Join(run.dir, stackAdoptLock)); held == errors.Is(err, fs.ErrNotExist) {
+				t.Fatalf("lock after a refused adopt: %v, want it present only when another adopter holds it", err)
+			}
 		})
 	}
 }

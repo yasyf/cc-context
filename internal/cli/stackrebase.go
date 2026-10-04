@@ -33,6 +33,7 @@ const (
 	stackRebasePrefix   = "stack rebase"
 	stackRebaseStateDir = "ccx-stack-rebase"
 	stackRebaseState    = "state.json"
+	stackAdoptLock      = "adopt.lock"
 	stackBriefLines     = 25
 	stackCulprits       = 10
 	stackVerdictTries   = 4
@@ -412,8 +413,12 @@ func stackBegin(ctx context.Context, cmd *cobra.Command, l lane, commonDir strin
 	if err != nil {
 		return err
 	}
-	if len(finished) > 0 {
-		return stackBegin(ctx, cmd, l, commonDir, slices.DeleteFunc(others, func(other *stackRebaseRun) bool { return slices.Contains(finished, other) }), o)
+	if finished {
+		runs, err := stackRuns(commonDir)
+		if err != nil {
+			return err
+		}
+		return stackBegin(ctx, cmd, l, commonDir, runs, o)
 	}
 	if err := stackShipCovers(run, o.ship); err != nil {
 		return err
@@ -566,29 +571,24 @@ func stackFinishDead(ctx context.Context, cmd *cobra.Command, l lane, commonDir 
 	return nil
 }
 
-func stackAdopt(run *stackRebaseRun) error {
+func stackAdopt(run *stackRebaseRun) (err error) {
 	roots := strings.Join(run.Roots, ", ")
-	dir := run.dir
-	tomb := fmt.Sprintf("%s.reclaim-%d", dir, os.Getpid())
-	if err := os.Rename(dir, tomb); err != nil {
-		return fmt.Errorf("stack rebase: adopt the run of %s (another caller may have taken it — re-run): %w", roots, err)
+	lock := filepath.Join(run.dir, stackAdoptLock)
+	f, err := os.OpenFile(lock, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("stack rebase: adopt the run of %s (another caller may be adopting it — re-run): %w", roots, err)
 	}
-	info, err := os.Stat(stackStatePath(tomb))
+	defer func() { err = errors.Join(err, f.Close(), os.Remove(lock)) }()
+	info, err := os.Stat(stackStatePath(run.dir))
 	if err != nil || !info.ModTime().Equal(run.saved) {
-		if err := os.Rename(tomb, dir); err != nil {
-			return fmt.Errorf("stack rebase: restore the run of %s from %s: %w", roots, tomb, err)
-		}
 		return fmt.Errorf("stack rebase: the run of %s saved again while it was being adopted — re-run", roots)
 	}
 	host, err := os.Hostname()
 	if err != nil {
-		return errors.Join(fmt.Errorf("stack rebase: %w", err), os.Rename(tomb, dir))
+		return fmt.Errorf("stack rebase: %w", err)
 	}
 	run.Pid, run.Started, run.Host = os.Getpid(), stackProcStart(os.Getpid()), host
-	run.dir = tomb
-	err = stackSaveRun(run)
-	run.dir = dir
-	return errors.Join(err, os.Rename(tomb, dir))
+	return stackSaveRun(run)
 }
 
 func stackAbandoned(ctx context.Context, dir render.Dir, run *stackRebaseRun) (string, error) {
@@ -669,19 +669,17 @@ func stackAge(d time.Duration) string {
 	return fmt.Sprintf("%dh%dm", h, m)
 }
 
-func stackAdmit(ctx context.Context, cmd *cobra.Command, l lane, commonDir string, runs []*stackRebaseRun, run *stackRebaseRun, dryRun bool) ([]*stackRebaseRun, error) {
-	var finished []*stackRebaseRun
+func stackAdmit(ctx context.Context, cmd *cobra.Command, l lane, commonDir string, runs []*stackRebaseRun, run *stackRebaseRun, dryRun bool) (bool, error) {
+	finished := false
 	for _, other := range runs {
 		if !stackOverlaps(run, other) {
 			continue
 		}
 		done, err := stackGate(ctx, cmd, l, commonDir, other, dryRun)
 		if err != nil {
-			return nil, err
+			return false, err
 		}
-		if done {
-			finished = append(finished, other)
-		}
+		finished = finished || done
 	}
 	return finished, nil
 }
