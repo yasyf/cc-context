@@ -2640,3 +2640,33 @@ func TestStackRebaseCarriesABranchGraphiteParkedOnItsBase(t *testing.T) {
 		})
 	}
 }
+
+func TestStackRebaseParentTracksAnUntrackedBranch(t *testing.T) {
+	for _, from := range []string{"main", "a"} {
+		t.Run("cut from "+from, func(t *testing.T) {
+			f := stackRebaseRepo(t, "a")
+			mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "lane", from)
+			stackCommit(t, f, "lane.txt")
+
+			if _, _, err := runStackCmd(t, f, "rebase", "--dry-run", "--no-push", "--parent", "lane=a"); err != nil {
+				t.Fatalf("stack rebase --dry-run --parent lane=a: %v", err)
+			}
+			state, err := gtStateQuery(f.Context(), render.Dir(f.Dir), "test")
+			if err != nil {
+				t.Fatalf("gt state: %v", err)
+			}
+			if _, tracked := state["lane"]; tracked {
+				t.Error("a dry run tracked lane")
+			}
+			if _, _, err := runStackCmd(t, f, "rebase", "--no-push", "--parent", "lane=a"); err != nil {
+				t.Fatalf("stack rebase --parent lane=a: %v", err)
+			}
+			if got := stackParent(t, f, "lane"); got != "a" {
+				t.Errorf("gt parent of lane = %s, want a", got)
+			}
+			if n := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", "a..lane"); n != "1" {
+				t.Errorf("lane holds %s commits over a, want its own one", n)
+			}
+		})
+	}
+}
