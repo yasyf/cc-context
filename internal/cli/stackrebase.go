@@ -574,11 +574,10 @@ func stackFinishDead(ctx context.Context, cmd *cobra.Command, l lane, commonDir 
 func stackAdopt(run *stackRebaseRun) (err error) {
 	roots := strings.Join(run.Roots, ", ")
 	lock := filepath.Join(run.dir, stackAdoptLock)
-	f, err := os.OpenFile(lock, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	if err != nil {
+	if err := os.Mkdir(lock, 0o700); err != nil {
 		return fmt.Errorf("stack rebase: adopt the run of %s (another caller may be adopting it — re-run): %w", roots, err)
 	}
-	defer func() { err = errors.Join(err, f.Close(), os.Remove(lock)) }()
+	defer func() { err = errors.Join(err, os.Remove(lock)) }()
 	info, err := os.Stat(stackStatePath(run.dir))
 	if err != nil || !info.ModTime().Equal(run.saved) {
 		return fmt.Errorf("stack rebase: the run of %s saved again while it was being adopted — re-run", roots)

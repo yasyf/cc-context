@@ -367,7 +367,7 @@ func TestStackAdoptRefusesAHeldOrResavedRun(t *testing.T) {
 			run.saved = info.ModTime()
 			want := "saved again while it was being adopted"
 			if held {
-				if err := os.WriteFile(filepath.Join(run.dir, stackAdoptLock), nil, 0o600); err != nil {
+				if err := os.Mkdir(filepath.Join(run.dir, stackAdoptLock), 0o700); err != nil {
 					t.Fatal(err)
 				}
 				want = "another caller may be adopting it"
