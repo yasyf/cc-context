@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Git `stack new` creates thin lanes by default.** With `CCX_STACK_NEW`
+  unset, new Git lanes use the shallow, partial, sparse store and share
+  source cc-notes records. `--full-history` and `CCX_STACK_NEW=full` retain
+  explicit full-checkout choices. jj defaults remain unchanged. Binding,
+  ancestry, publication, and bounded-deepening refusals still apply; a
+  refusal never retries with full history.
+
 ### Fixed
 
 - **Stack commands finish abandoned publication runs after a successful push.**

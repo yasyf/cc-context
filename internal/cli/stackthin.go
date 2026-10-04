@@ -48,7 +48,7 @@ const (
 	storageFullHistory
 )
 
-func stackStorageOf(ctx context.Context, o stackNewOpts) (stackStorage, error) {
+func stackStorageOf(ctx context.Context, o stackNewOpts, kind vcs.Kind) (stackStorage, error) {
 	switch {
 	case o.thin:
 		return storageThin, nil
@@ -56,7 +56,12 @@ func stackStorageOf(ctx context.Context, o stackNewOpts) (stackStorage, error) {
 		return storageFullHistory, nil
 	}
 	switch v := render.Getenv(ctx, stackNewEnv); v {
-	case "", "full":
+	case "":
+		if kind == vcs.Git {
+			return storageThin, nil
+		}
+		return storageCaller, nil
+	case "full":
 		return storageCaller, nil
 	case "thin":
 		return storageThin, nil

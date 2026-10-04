@@ -38,7 +38,7 @@ func runStackCmd(t *testing.T, f *vcstest.Fixture, args ...string) (string, stri
 func TestStackNewCutsTheBranchInItsOwnWorkingCopy(t *testing.T) {
 	f := shipGTRepo(t, vcstest.GTStack("base"))
 
-	out, _, err := runStackCmd(t, f, "new", "feature")
+	out, _, err := runStackCmd(t, f, "new", "--full-history", "feature")
 	if err != nil {
 		t.Fatalf("stack new: %v", err)
 	}
@@ -62,7 +62,7 @@ func TestStackNewCutsTheBranchInItsOwnWorkingCopy(t *testing.T) {
 func TestStackNewTracksTheParent(t *testing.T) {
 	f := shipGTRepo(t, vcstest.GTStack("base"))
 
-	if _, _, err := runStackCmd(t, f, "new", "feature"); err != nil {
+	if _, _, err := runStackCmd(t, f, "new", "--full-history", "feature"); err != nil {
 		t.Fatalf("stack new: %v", err)
 	}
 	state, err := gtStateQuery(t.Context(), render.Dir(f.Dir), "test")
@@ -85,7 +85,7 @@ func TestStackNewTracksTheParent(t *testing.T) {
 // the downstack would show a stack of one and hide every lane above it.
 func TestStackListNamesTheWorkingCopyHoldingEachBranch(t *testing.T) {
 	f := shipGTRepo(t, vcstest.GTStack("base"))
-	out, _, err := runStackCmd(t, f, "new", "feature")
+	out, _, err := runStackCmd(t, f, "new", "--full-history", "feature")
 	if err != nil {
 		t.Fatalf("stack new: %v", err)
 	}
@@ -169,6 +169,7 @@ func TestStackListJSON(t *testing.T) {
 // leave gt with no branch to read, so the lane re-attaches by name.
 func TestStackNewColocatesJJInTheLane(t *testing.T) {
 	f := shipGTRepo(t, vcstest.JJ(), vcstest.GTStack("base"))
+	f.Setenv(stackNewEnv, "")
 
 	out, _, err := runStackCmd(t, f, "new", "feature")
 	if err != nil {
@@ -747,7 +748,7 @@ func stackLane(t *testing.T, f *vcstest.Fixture, name string) string {
 	parent := gitAt(t, f.Env(), f.Dir, "branch", "--show-current")
 	other := restackSiblingPath(t, "other")
 	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", "--detach", other)
-	out, _, err := runStackCmdIn(t, f, other, "new", name, "--parent", parent)
+	out, _, err := runStackCmdIn(t, f, other, "new", "--full-history", name, "--parent", parent)
 	if err != nil {
 		t.Fatalf("stack new %s: %v", name, err)
 	}
@@ -1314,7 +1315,7 @@ func TestStackNewTakesASlashedBranchName(t *testing.T) {
 	f := shipGTRepo(t)
 	shipGTStack(t, f, "base")
 
-	out, _, err := runStackCmd(t, f, "new", "yasyf/feature")
+	out, _, err := runStackCmd(t, f, "new", "--full-history", "yasyf/feature")
 	if err != nil {
 		t.Fatalf("stack new: %v", err)
 	}
@@ -1341,7 +1342,7 @@ func TestStackNewOnTrunkCutsFromTheFetchedTrunk(t *testing.T) {
 	restackAdvanceRemote(t, f, "main", "upstream.txt", "upstream\n")
 	remote := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "main")
 
-	out, _, err := runStackCmd(t, f, "new", "lane", "--parent", "main")
+	out, _, err := runStackCmd(t, f, "new", "--full-history", "lane", "--parent", "main")
 	if err != nil {
 		t.Fatalf("stack new: %v", err)
 	}
@@ -1371,7 +1372,7 @@ func TestStackNewCutsALaneOffTheGraphiteLane(t *testing.T) {
 	restackAdvanceRemote(t, f, "main", "upstream.txt", "upstream\n")
 	remote := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "main")
 
-	out, _, err := runStackCmd(t, f, "new", "feature")
+	out, _, err := runStackCmd(t, f, "new", "--full-history", "feature")
 	if err != nil {
 		t.Fatalf("stack new: %v", err)
 	}
@@ -1386,7 +1387,7 @@ func TestStackNewCutsALaneOffTheGraphiteLane(t *testing.T) {
 		t.Errorf("the calling working copy is on %q, want base", here)
 	}
 
-	out, _, err = runStackCmd(t, f, "new", "lane", "--parent", "main")
+	out, _, err = runStackCmd(t, f, "new", "--full-history", "lane", "--parent", "main")
 	if err != nil {
 		t.Fatalf("stack new --parent main: %v", err)
 	}
@@ -1530,7 +1531,7 @@ func TestStackSubmitTakesTheParentAnotherWorkingCopyOfThisLaneHolds(t *testing.T
 	api := stubGTAPI(t)
 	f.Decorate(api.ctx)
 	_, child := stackLaneOfTwo(t, f, api, func(holder string) (string, error) {
-		out, _, err := runStackCmdIn(t, f, holder, "new", "feature")
+		out, _, err := runStackCmdIn(t, f, holder, "new", "--full-history", "feature")
 		return out, err
 	})
 	posted := len(api.submitHeads())
@@ -1558,7 +1559,7 @@ func TestStackSubmitKeepsTheParentAWorkingCopyOfAnotherLaneHolds(t *testing.T) {
 	api := stubGTAPI(t)
 	f.Decorate(api.ctx)
 	holder, child := stackLaneOfTwo(t, f, api, func(string) (string, error) {
-		out, _, err := runStackCmd(t, f, "new", "feature", "--parent", "base")
+		out, _, err := runStackCmd(t, f, "new", "--full-history", "feature", "--parent", "base")
 		return out, err
 	})
 	published := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
@@ -1587,7 +1588,7 @@ func TestStackSubmitKeepsTheParentOfAWorkingCopyRecreatedAtTheFoundersPath(t *te
 	api := stubGTAPI(t)
 	f.Decorate(api.ctx)
 	holder, child := stackLaneOfTwo(t, f, api, func(holder string) (string, error) {
-		out, _, err := runStackCmdIn(t, f, holder, "new", "feature")
+		out, _, err := runStackCmdIn(t, f, holder, "new", "--full-history", "feature")
 		return out, err
 	})
 	published := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
@@ -1652,7 +1653,7 @@ func TestStackSubmitTakesAPublishedParentAnotherWorkingCopyOfThisLaneHolds(t *te
 // commit of its own.
 func stackLaneHere(t *testing.T, f *vcstest.Fixture, name string) string {
 	t.Helper()
-	out, _, err := runStackCmd(t, f, "new", name)
+	out, _, err := runStackCmd(t, f, "new", "--full-history", name)
 	if err != nil {
 		t.Fatalf("stack new %s: %v", name, err)
 	}
@@ -1667,7 +1668,7 @@ func stackLaneHere(t *testing.T, f *vcstest.Fixture, name string) string {
 // rather than joining the one it was cut from.
 func TestStackNewOntoTrunkFoundsALane(t *testing.T) {
 	f := shipGTRepo(t)
-	out, _, err := runStackCmd(t, f, "new", "feature")
+	out, _, err := runStackCmd(t, f, "new", "--full-history", "feature")
 	if err != nil {
 		t.Fatalf("stack new: %v", err)
 	}

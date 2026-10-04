@@ -75,8 +75,8 @@ lane. --path names a new location outside the checkout you run this from, its
 main checkout, and the thin store. Sparse, no-checkout, and thin creation require
 a Git checkout.
 
---thin cuts the lane into the repository's thin store: one clone per repository
-under $HOME/.claude/stores, with --depth commits of trunk history (256 unless
+Git checkouts cut the lane into the repository's thin store by default: one
+clone per repository under $HOME/.claude/stores, with --depth commits of trunk history (256 unless
 the store already exists), no blobs until a checkout needs them, no tags, a
 fetch of trunk alone, and a sparse checkout of root files, the tracked .claude
 and .agents directories, and this checkout's sparse set. The store shares this
@@ -93,7 +93,11 @@ When its published base lies past the store's history, --deepen fetches trunk
 history down to it, never more than --max-depth commits; without it the lane is
 refused. --full-history cuts the lane from this checkout's own full history
 instead, and is refused in a thin store.
-CCX_STACK_NEW=thin or full picks the default when neither flag is given.
+CCX_STACK_NEW=full keeps lanes in the calling checkout's repository;
+CCX_STACK_NEW=thin explicitly selects thin storage. Either environment choice
+yields to --thin or --full-history.
+An unset environment keeps the existing jj behavior. A thin refusal never retries
+with full history; choose --full-history explicitly from a full checkout.
 
 Outside the graphite lane the branch is cut the same way and nothing records
 its parent: ship opens its pull request against trunk, and a restack replays it
@@ -112,7 +116,7 @@ A jj workspace would not — it has no .git for gt to read.`,
 	cmd.Flags().BoolVar(&options.sparse, "sparse", false, "inherit this checkout's sparse patterns before materializing files")
 	cmd.Flags().BoolVar(&options.noCheckout, "no-checkout", false, "create the tracked child without materializing files")
 	cmd.Flags().StringVar(&options.path, "path", "", "new destination outside the source checkout, its main checkout, and the thin store")
-	cmd.Flags().BoolVar(&options.thin, "thin", false, "cut the lane into the repository's shallow, partial, sparse thin store")
+	cmd.Flags().BoolVar(&options.thin, "thin", false, "cut the lane into the repository's shallow, partial, sparse thin store (the Git default)")
 	cmd.Flags().BoolVar(&options.fullHistory, "full-history", false, "cut the lane from this checkout's full history, overriding "+stackNewEnv)
 	cmd.Flags().BoolVar(&options.deepen, "deepen", false, "fetch trunk history down to a published parent's base the thin store lacks")
 	cmd.Flags().IntVar(&options.depth, "depth", thinDefaultDepth, "commits of trunk history a new thin store starts with")

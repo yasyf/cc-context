@@ -1,14 +1,15 @@
 # Create and work in thin lanes
 
-Use thin lanes for agent work that needs a sparse working copy and bounded
-history in a separate ccx-owned store.
+Git `ccx vcs stack new` creates thin lanes by default: sparse working copies
+with bounded history in a separate ccx-owned store. An unset `CCX_STACK_NEW`
+keeps the existing jj behavior.
 
 ## Create a thin lane
 
 From a full checkout with trunk checked out, create a lane:
 
 ```sh
-ccx vcs stack new agent-work --thin
+ccx vcs stack new agent-work
 ```
 
 ccx creates the thin store on first use, then cuts the lane as a linked
@@ -74,24 +75,25 @@ ccx vcs stack new full-work --full-history
 `--full-history` creates a linked worktree of the checkout you run it from.
 The flag is refused inside the ccx thin store.
 
-## Make thin lanes the default for agents
+## Choose full history
 
-Keep thin mode opt-in: use `--thin`, or set `CCX_STACK_NEW=thin` per agent.
-Do not set it globally. In an agent shell:
+Git checkouts use thin storage when `CCX_STACK_NEW` is unset. To keep new
+lanes in the calling checkout's repository, set `CCX_STACK_NEW=full`, or
+pass `--full-history` for one lane:
 
 ```sh
-export CCX_STACK_NEW=thin
-ccx vcs stack new agent-default
+ccx vcs stack new full-work --full-history
 ```
 
-Keep it unset in human terminals to retain the existing behavior: a linked
-worktree sharing the checkout's history. `CCX_STACK_NEW=full` selects that
-same behavior. Inside the store, the `full` environment default still cuts
-a linked worktree of the store, sparse like its caller; it does not supply
-full history.
+Inside the store, the `full` environment choice still cuts a linked
+worktree of that store; it does not supply full history. Run `--full-history`
+from a full checkout. The flag is refused inside a thin store.
 
-Explicit `--thin` and `--full-history` flags override the environment
-default. Any value other than `thin` or `full` is an error.
+Explicit `--thin` and `--full-history` flags override the environment.
+`CCX_STACK_NEW=thin` selects thin storage explicitly; any other nonempty
+value besides `thin` or `full` is an error. A thin creation refusal never
+retries with full history. Binding, published-parent, and bounded-deepening
+requirements apply to the default too.
 
 ## Check out more directories
 
@@ -232,8 +234,7 @@ call Orca.
 - cc-notes records stay in the source checkout's repository, the one the
   store is bound to. ccx copies no notes and binding writes nothing into the
   source. The binding names that repository on disk, so moving or replacing
-  the source checkout breaks cc-notes in every lane of the store. Keep thin
-  mode opt-in per agent; do not set it globally.
+  the source checkout breaks cc-notes in every lane of the store.
 - ccx downloads a remote branch head someone else based below the shallow
   boundary before refusing for incomplete ancestry.
 - Reflog fork-point evidence in the store is thinner than in a long-lived
