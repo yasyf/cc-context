@@ -40,11 +40,15 @@ const (
 	notInstalledTTL = time.Hour
 	appJWTLifetime  = 9 * time.Minute
 	appJWTBackdate  = time.Minute
+	appDownFor      = 5 * time.Minute
 )
 
 var writeOnlyPermissions = map[string]bool{"workflows": true}
 
-var errNotInstalled = errors.New("github app is not installed on the repository")
+var (
+	errNotInstalled = errors.New("github app is not installed on the repository")
+	errAppDown      = errors.New("github app failed recently")
+)
 
 type appConfig struct {
 	Name              string   `toml:"name"`
@@ -137,6 +141,11 @@ type installation struct {
 	CheckedAt time.Time `json:"checked_at"`
 }
 
+type appOutage struct {
+	Until  time.Time `json:"until"`
+	Reason string    `json:"reason"`
+}
+
 type appToken struct {
 	Token       string            `json:"token"`
 	ExpiresAt   time.Time         `json:"expires_at"`
@@ -158,38 +167,49 @@ func (a *appSource) token(ctx context.Context, repo string, margin time.Duration
 	var tok appToken
 	var id int64
 	err := cache.WithLock(ctx, a.dir, "mint", func() error {
-		bearer := sync.OnceValues(func() (string, error) { return a.jwt(ctx) })
-		known := false
-		id, known = a.cachedInstallation(repo)
-		if !known {
-			jwt, err := bearer()
-			if err != nil {
-				return err
-			}
-			if id, err = a.lookupInstallation(ctx, jwt, repo); err != nil {
-				return err
-			}
-			if err := a.storeInstallation(repo, id); err != nil {
-				return err
-			}
-		}
-		if id == 0 {
-			return errNotInstalled
-		}
-		if cached, ok := a.cachedToken(id, margin); ok && cached.Token != stale {
-			tok = cached
-			return nil
-		}
-		jwt, err := bearer()
-		if err != nil {
+		if err := a.outage(); err != nil {
 			return err
 		}
-		if tok, err = a.mint(ctx, jwt, id); err != nil {
-			return err
+		var err error
+		tok, id, err = a.mintLocked(ctx, repo, margin, stale)
+		if err != nil && !errors.Is(err, errNotInstalled) && ctx.Err() == nil {
+			a.storeOutage(err)
 		}
-		return a.storeToken(id, tok)
+		return err
 	})
 	return tok, id, err
+}
+
+func (a *appSource) mintLocked(ctx context.Context, repo string, margin time.Duration, stale string) (appToken, int64, error) {
+	bearer := sync.OnceValues(func() (string, error) { return a.jwt(ctx) })
+	id, known := a.cachedInstallation(repo)
+	if !known {
+		jwt, err := bearer()
+		if err != nil {
+			return appToken{}, 0, err
+		}
+		if id, err = a.lookupInstallation(ctx, jwt, repo); err != nil {
+			return appToken{}, 0, err
+		}
+		if err := a.storeInstallation(repo, id); err != nil {
+			return appToken{}, 0, err
+		}
+	}
+	if id == 0 {
+		return appToken{}, 0, errNotInstalled
+	}
+	if cached, ok := a.cachedToken(id, margin); ok && cached.Token != stale {
+		return cached, id, nil
+	}
+	jwt, err := bearer()
+	if err != nil {
+		return appToken{}, 0, err
+	}
+	tok, err := a.mint(ctx, jwt, id)
+	if err != nil {
+		return appToken{}, 0, err
+	}
+	return tok, id, a.storeToken(id, tok)
 }
 
 func (a *appSource) unavailable(err error) {
@@ -199,6 +219,32 @@ func (a *appSource) unavailable(err error) {
 	a.warn.Do(func() {
 		slog.Warn("ghapi: github app unavailable, reading as the gh user", "app", a.cfg.Name, "err", err)
 	})
+}
+
+func (a *appSource) outagePath() string {
+	return filepath.Join(a.dir, "outage.json")
+}
+
+func (a *appSource) outage() error {
+	raw, err := os.ReadFile(a.outagePath())
+	if err != nil {
+		return nil
+	}
+	var down appOutage
+	if json.Unmarshal(raw, &down) != nil || !a.now().Before(down.Until) {
+		return nil
+	}
+	return fmt.Errorf("%w, reading as the gh user until %s: %s", errAppDown, down.Until.Local().Format(time.Kitchen), down.Reason)
+}
+
+func (a *appSource) storeOutage(cause error) {
+	raw, err := json.Marshal(appOutage{Until: a.now().Add(appDownFor), Reason: cause.Error()})
+	if err == nil {
+		err = cache.Store(a.outagePath(), raw, 0o600)
+	}
+	if err != nil {
+		slog.Warn("ghapi: record github app outage", "app", a.cfg.Name, "err", err)
+	}
 }
 
 func (a *appSource) cachedInstallation(repo string) (int64, bool) {

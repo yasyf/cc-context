@@ -447,3 +447,61 @@ func TestParseRSAKeyAcceptsPKCS8(t *testing.T) {
 		t.Error("parseRSAKey accepted text with no PEM block")
 	}
 }
+
+func TestAFailedMintKeepsEveryProcessOnTheUserTokenForAWhile(t *testing.T) {
+	t.Parallel()
+	f, ts := newFakeGitHub(t)
+	dir := t.TempDir()
+	start := time.Now()
+	var keyRuns atomic.Int32
+	read := func(at time.Time) {
+		t.Helper()
+		src := testAppSource(ts.URL, dir)
+		src.now = func() time.Time { return at }
+		src.key = func(context.Context) ([]byte, error) {
+			keyRuns.Add(1)
+			return nil, errors.New("aws sso session expired")
+		}
+		if _, err := Paginate[item](context.Background(), appClient(ts.URL, src).ForRepo("o/r"), "/repos/o/r/pulls"); err != nil {
+			t.Fatalf("Paginate: %v", err)
+		}
+	}
+
+	read(start)
+	read(start.Add(appDownFor - time.Second))
+	if n := keyRuns.Load(); n != 1 {
+		t.Errorf("key runs inside the outage = %d, want 1: a second process must skip a key command that just failed", n)
+	}
+	read(start.Add(appDownFor))
+	if n := keyRuns.Load(); n != 2 {
+		t.Errorf("key runs after the outage = %d, want 2", n)
+	}
+	if got := f.tokensSeen(); strings.Join(got, ",") != "user-token,user-token,user-token" {
+		t.Errorf("tokens = %v, want every read on the user token", got)
+	}
+}
+
+func TestProcessesWaitingOnAFailingMintSkipTheKeyCommand(t *testing.T) {
+	t.Parallel()
+	_, ts := newFakeGitHub(t)
+	dir := t.TempDir()
+	var keyRuns atomic.Int32
+	var wg sync.WaitGroup
+	for range 4 {
+		wg.Go(func() {
+			src := testAppSource(ts.URL, dir)
+			src.key = func(context.Context) ([]byte, error) {
+				keyRuns.Add(1)
+				time.Sleep(100 * time.Millisecond)
+				return nil, errors.New("aws sso session expired")
+			}
+			if _, err := Paginate[item](context.Background(), appClient(ts.URL, src).ForRepo("o/r"), "/repos/o/r/pulls"); err != nil {
+				t.Errorf("Paginate: %v", err)
+			}
+		})
+	}
+	wg.Wait()
+	if n := keyRuns.Load(); n != 1 {
+		t.Errorf("key runs = %d, want 1: readers queued on the mint lock must see the outage it recorded", n)
+	}
+}
