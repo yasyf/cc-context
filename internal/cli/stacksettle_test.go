@@ -1,8 +1,12 @@
 package cli
 
 import (
+	"errors"
+	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -278,4 +282,108 @@ func TestStackSubmitAdoptsAPublicationTheBranchWasResetTo(t *testing.T) {
 		t.Fatalf("receipt = %+v, %v, want source and head %s", receipt, err, remote)
 	}
 	stackAssertNoRun(t, f)
+}
+
+func TestStackSubmitBesideADeadPublicationRun(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		pushed  bool
+		alive   bool
+		refusal string
+	}{
+		{name: "pushed, holder exited", pushed: true},
+		{name: "pushed, holder running", pushed: true, alive: true, refusal: " running, last saved "},
+		{name: "unpushed, holder exited", refusal: " exited, last saved "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, run, plan := prepareStackPublication(t)
+			if tc.pushed {
+				if err := stackPushPublication(f.Context(), render.Dir(f.Dir), gtSubmit{prefix: "test", publication: run}, plan); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				run.Publishing = true
+				run.PushTargets = stackPublicationTargets(plan)
+			}
+			stackOwnRun(t, run)
+			if tc.alive {
+				run.Started = stackProcStart(run.Pid)
+			} else {
+				exited := exec.Command("true")
+				if err := exited.Run(); err != nil {
+					t.Fatal(err)
+				}
+				run.Pid = exited.Process.Pid
+			}
+			if err := stackSaveRun(run); err != nil {
+				t.Fatal(err)
+			}
+			remote := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature")
+
+			out, _, err := runStackCmd(t, f, "submit")
+			if tc.refusal != "" {
+				want := "a stack rebase of feature is already in progress (pid " + strconv.Itoa(run.Pid) + " on "
+				if err == nil || !strings.Contains(err.Error(), want) || !strings.Contains(err.Error(), tc.refusal) {
+					t.Fatalf("submit beside the run = %q, %v, want the refusal naming its holder", out, err)
+				}
+				if _, err := stackOnlyTestRun(filepath.Join(f.Dir, ".git")); err != nil {
+					t.Fatalf("refused run was not kept: %v", err)
+				}
+				if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature"); got != remote {
+					t.Errorf("remote feature = %s, want it untouched at %s", got, remote)
+				}
+				return
+			}
+			if want := "finishing the stack rebase of feature (pid " + strconv.Itoa(run.Pid) + " on "; err != nil || !strings.Contains(out, want) {
+				t.Fatalf("submit beside the dead run = %q, %v, want it finished first", out, err)
+			}
+			receipt, err := stackReadPublication(f.Context(), render.Dir(f.Dir), "feature")
+			if err != nil || receipt == nil || receipt.Head != plan[0].head {
+				t.Fatalf("receipt = %+v, %v, want the dead run's publication %s", receipt, err, plan[0].head)
+			}
+			if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature"); got != plan[0].head {
+				t.Errorf("remote feature = %s, want the dead run's push %s", got, plan[0].head)
+			}
+			stackAssertNoRun(t, f)
+		})
+	}
+}
+
+func TestStackAdoptRefusesAHeldOrResavedRun(t *testing.T) {
+	for _, held := range []bool{true, false} {
+		t.Run(map[bool]string{true: "another adopter holds it", false: "saved since it was read"}[held], func(t *testing.T) {
+			run := &stackRebaseRun{Roots: []string{"feature"}, Pid: 1}
+			common := t.TempDir()
+			if err := stackClaim(common, run); err != nil {
+				t.Fatal(err)
+			}
+			if err := stackSaveRun(run); err != nil {
+				t.Fatal(err)
+			}
+			info, err := os.Stat(stackStatePath(run.dir))
+			if err != nil {
+				t.Fatal(err)
+			}
+			run.saved = info.ModTime()
+			want := "saved again while it was being adopted"
+			if held {
+				if err := os.Mkdir(filepath.Join(run.dir, stackAdoptLock), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				want = "another caller may be adopting it"
+			} else {
+				run.saved = run.saved.Add(-time.Second)
+			}
+			if err := stackAdopt(run); err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("adopt = %v, want %q", err, want)
+			}
+			saved, err := stackOnlyTestRun(common)
+			if err != nil || saved.Pid != 1 {
+				t.Fatalf("run = %+v, %v, want it left with pid 1", saved, err)
+			}
+			if _, err := os.Stat(filepath.Join(run.dir, stackAdoptLock)); held == errors.Is(err, fs.ErrNotExist) {
+				t.Fatalf("lock after a refused adopt: %v, want it present only when another adopter holds it", err)
+			}
+		})
+	}
 }

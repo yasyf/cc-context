@@ -288,8 +288,12 @@ func restackGit(ctx context.Context, cmd *cobra.Command, l lane, parent string) 
 	if err != nil {
 		return "", err
 	}
-	if err := stackAdmit(ctx, cmd, l, commonDir, runs, run, false); err != nil {
+	finished, err := stackAdmit(ctx, cmd, l, commonDir, runs, run, false)
+	if err != nil {
 		return "", err
+	}
+	if finished {
+		return restackGit(ctx, cmd, l, parent)
 	}
 	if err := stackClaim(commonDir, run); err != nil {
 		return "", err
