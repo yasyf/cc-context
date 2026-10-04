@@ -143,24 +143,52 @@ func TestReadBatchesEveryLeasedPRIntoOneQuery(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := &clock{now: epoch}
-	store, gh := newStore(t, dir, c, nil, ok(t, "poll-190.json"), ok(t, "poll-189-190.json"))
+	store, gh := newStore(t, dir, c, nil, ok(t, "poll-189-190.json"), ok(t, "poll-189-190.json"))
 
-	if _, err := store.Read(testCtx(t), Want{PRs: []int{190}}); err != nil {
+	if _, err := store.Read(testCtx(t), Want{PRs: []int{189, 190}}); err != nil {
 		t.Fatal(err)
 	}
 	c.now = c.now.Add(MinInterval)
-	if _, err := store.Read(testCtx(t), Want{PRs: []int{189}}); err != nil {
+	if _, err := store.Read(testCtx(t), Want{PRs: []int{190}}); err != nil {
 		t.Fatal(err)
 	}
 	if gh.requests() != 2 {
 		t.Fatalf("requests = %d, want 2", gh.requests())
 	}
 	if got := gh.vars[1]; got["p0"] != float64(189) || got["p1"] != float64(190) {
-		t.Errorf("second poll vars = %v, want #190's lease carried beside #189", got)
+		t.Errorf("second poll vars = %v, want #189's lease carried beside #190", got)
 	}
 }
 
-func TestReadWaitsOutTheMinimumIntervalForANewPR(t *testing.T) {
+func TestReadPollsAnUnreadPRAtOnceWithoutMovingTheSharedPoll(t *testing.T) {
+	t.Parallel()
+	c := &clock{now: epoch}
+	store, gh := newStore(t, t.TempDir(), c, nil, ok(t, "poll-190.json"), ok(t, "poll-189-190.json"), ok(t, "poll-189-190.json"))
+
+	if _, err := store.Read(testCtx(t), Want{PRs: []int{190}}); err != nil {
+		t.Fatal(err)
+	}
+	c.now = c.now.Add(10 * time.Second)
+	st, err := store.Read(testCtx(t), Want{PRs: []int{189}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.slept) != 0 || gh.requests() != 2 || st.PRs[189].State != "OPEN" {
+		t.Fatalf("slept %v with %d requests, #189 = %+v; want #189 read at once", c.slept, gh.requests(), st.PRs[189])
+	}
+	if _, also := gh.vars[1]["p1"]; also || gh.vars[1]["p0"] != float64(189) || !st.AttemptedAt.Equal(epoch) {
+		t.Errorf("vars %v, attempted %s; want #189 alone with the shared poll still due at %s", gh.vars[1], st.AttemptedAt, epoch.Add(MinInterval))
+	}
+	c.now = epoch.Add(MinInterval)
+	if _, err := store.Read(testCtx(t), Want{PRs: []int{190}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := gh.vars[2]; gh.requests() != 3 || got["p0"] != float64(189) || got["p1"] != float64(190) {
+		t.Errorf("shared poll vars = %v, want both leases read on the original schedule", got)
+	}
+}
+
+func TestReadPollsAnUnreadPRAloneWhenTheSharedPollIsDue(t *testing.T) {
 	t.Parallel()
 	c := &clock{now: epoch}
 	store, gh := newStore(t, t.TempDir(), c, nil, ok(t, "poll-190.json"), ok(t, "poll-189-190.json"))
@@ -168,8 +196,47 @@ func TestReadWaitsOutTheMinimumIntervalForANewPR(t *testing.T) {
 	if _, err := store.Read(testCtx(t), Want{PRs: []int{190}}); err != nil {
 		t.Fatal(err)
 	}
+	c.now = c.now.Add(MinInterval + 5*time.Second)
+	st, err := store.Read(testCtx(t), Want{PRs: []int{189}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, also := gh.vars[1]["p1"]; also || gh.requests() != 2 || gh.vars[1]["p0"] != float64(189) || !st.AttemptedAt.Equal(epoch) {
+		t.Errorf("vars %v over %d requests, attempted %s; want #189 alone, leaving #190 to the next reader that needs it", gh.vars[1], gh.requests(), st.AttemptedAt)
+	}
+}
+
+func TestReadPollsAPushedPRAtOnce(t *testing.T) {
+	t.Parallel()
+	c := &clock{now: epoch}
+	store, gh := newStore(t, t.TempDir(), c, nil, ok(t, "poll-190.json"), ok(t, "poll-190.json"))
+
+	if _, err := store.Read(testCtx(t), Want{PRs: []int{190}}); err != nil {
+		t.Fatal(err)
+	}
+	c.now = c.now.Add(5 * time.Second)
+	if err := store.Pushed(testCtx(t), map[int]string{190: "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"}); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Read(testCtx(t), Want{PRs: []int{190}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.slept) != 0 || gh.requests() != 2 || !st.PRs[190].PolledAt.Equal(c.now) {
+		t.Errorf("slept %v with %d requests, polled %s; want the pushed PR read at once", c.slept, gh.requests(), st.PRs[190].PolledAt)
+	}
+}
+
+func TestReadWaitsOutTheMinimumIntervalForANewLane(t *testing.T) {
+	t.Parallel()
+	c := &clock{now: epoch}
+	store, gh := newStore(t, t.TempDir(), c, nil, ok(t, "poll-190.json"), ok(t, "poll-lane.json"))
+
+	if _, err := store.Read(testCtx(t), Want{PRs: []int{190}}); err != nil {
+		t.Fatal(err)
+	}
 	c.now = c.now.Add(10 * time.Second)
-	if _, err := store.Read(testCtx(t), Want{PRs: []int{189}}); err != nil {
+	if _, err := store.Read(testCtx(t), Want{Prefixes: []string{"yasyf/gh-budget/"}}); err != nil {
 		t.Fatal(err)
 	}
 	if len(c.slept) != 1 || c.slept[0] != 20*time.Second || gh.requests() != 2 {
@@ -181,7 +248,7 @@ func TestReadersWaitingOutTheIntervalShareTheNextPoll(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := &clock{now: epoch}
-	first, firstGH := newStore(t, dir, c, nil, ok(t, "poll-190.json"), ok(t, "poll-189-190.json"))
+	first, firstGH := newStore(t, dir, c, nil, ok(t, "poll-190.json"), ok(t, "poll-lane.json"))
 	second, secondGH := newStore(t, dir, c, nil)
 	ctx, cancel := context.WithTimeout(testCtx(t), 10*time.Second)
 	defer cancel()
@@ -195,15 +262,15 @@ func TestReadersWaitingOutTheIntervalShareTheNextPoll(t *testing.T) {
 		_, err := first.Read(ctx, Want{PRs: []int{190}})
 		return err
 	}
-	st, err := second.Read(ctx, Want{PRs: []int{189}})
+	st, err := second.Read(ctx, Want{Prefixes: []string{"yasyf/gh-budget/"}})
 	if err != nil {
 		t.Fatalf("second read: %v", err)
 	}
-	if firstGH.requests() != 2 || secondGH.requests() != 0 || st.PRs[189].HeadRefOid == "" {
-		t.Fatalf("requests = %d, %d; #189 = %+v; want the sleeping reader's lease read by the other store's poll", firstGH.requests(), secondGH.requests(), st.PRs[189])
+	if firstGH.requests() != 2 || secondGH.requests() != 0 || fmt.Sprint(st.Lanes["yasyf/gh-budget/"].PRs) != "[190]" {
+		t.Fatalf("requests = %d, %d; lanes = %v; want the sleeping reader's lease read by the other store's poll", firstGH.requests(), secondGH.requests(), st.Lanes)
 	}
-	if got := firstGH.vars[1]; got["p0"] != float64(189) || got["p1"] != float64(190) {
-		t.Errorf("second poll vars = %v, want #189's lease beside #190", got)
+	if got := firstGH.vars[1]; got["l0"] != "yasyf/gh-budget/" || got["p0"] != float64(190) {
+		t.Errorf("second poll vars = %v, want the lane's lease beside #190", got)
 	}
 }
 
@@ -227,7 +294,7 @@ func TestAReaderThatWaitedReturnsTheFailureOfThePollItWaitedFor(t *testing.T) {
 		}
 		return nil
 	}
-	_, err := second.Read(ctx, Want{PRs: []int{189}})
+	_, err := second.Read(ctx, Want{Prefixes: []string{"yasyf/gh-budget/"}})
 	if err == nil || !strings.Contains(err.Error(), "the poll at 2026-09-30T07:00:30Z failed") || !strings.Contains(err.Error(), "502") {
 		t.Errorf("read = %v, want the failure of the poll it waited for", err)
 	}
@@ -492,7 +559,7 @@ func TestAnotherReadersPollReadsWhatALeasedLaneDiscovers(t *testing.T) {
 	}
 	c.now = epoch.Add(MinInterval)
 	other, gh := newStore(t, dir, c, nil, ok(t, "poll-lane-189.json"), ok(t, "poll-191.json"))
-	st, err := other.Read(testCtx(t), Want{PRs: []int{189}})
+	st, err := other.Read(testCtx(t), Want{PRs: []int{189, 190}})
 	if err != nil {
 		t.Fatal(err)
 	}
