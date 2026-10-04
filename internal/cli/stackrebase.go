@@ -156,6 +156,7 @@ type stackRebaseRun struct {
 	saved         time.Time
 	left          []stackLeft
 	lanePins      []string
+	adopted       gtState
 }
 
 // stackLeft is a branch of the stack a run leaves exactly where it is: an
@@ -431,6 +432,9 @@ func stackBegin(ctx context.Context, cmd *cobra.Command, l lane, commonDir strin
 	}
 	if o.dryRun {
 		return nil
+	}
+	if err := stackTrackAdopted(ctx, commonDir, run); err != nil {
+		return err
 	}
 	if err := stackClaim(commonDir, run); err != nil {
 		return err
@@ -718,6 +722,14 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 			return nil, fmt.Errorf("stack rebase: --parent %s=%s names a parent gt does not track", child, parent)
 		}
 	}
+	tr, err := gtTrunkRef(ctx, l.dir(), prefix, trunk)
+	if err != nil {
+		return nil, err
+	}
+	adopted, err := stackAdoptUntracked(ctx, l.dir(), tr, state, overrides)
+	if err != nil {
+		return nil, err
+	}
 	retargeted := stackRetargeted(state, overrides)
 	seeds := append(slices.Sorted(maps.Keys(overrides)), o.landed...)
 	if current != "" && current != trunk {
@@ -770,10 +782,6 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	if err != nil {
 		return nil, fmt.Errorf("stack rebase: read the stack's pull requests: %w", err)
 	}
-	tr, err := gtTrunkRef(ctx, l.dir(), prefix, trunk)
-	if err != nil {
-		return nil, err
-	}
 	locals := make(map[string]string, len(members))
 	for _, name := range members {
 		locals[name] = retargeted[name].Head
@@ -806,7 +814,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	if err != nil {
 		return nil, fmt.Errorf("stack rebase: %w", err)
 	}
-	run := &stackRebaseRun{Trunk: trunk, Pin: pin, NoPush: o.noPush, Origin: l.checkout.Root, Draft: o.draft, NoVerify: o.noVerify, Tip: o.tip, TipOnly: o.tipOnly, DropCommits: o.dropCommits, StayClean: o.stayClean, Restack: o.restack, AllLanes: o.allLanes, To: o.to, deferPush: o.deferPush, Ship: o.ship, Roots: roots, Pid: os.Getpid(), Started: stackProcStart(os.Getpid()), Host: host, left: left, lanePins: lanePins}
+	run := &stackRebaseRun{Trunk: trunk, Pin: pin, NoPush: o.noPush, Origin: l.checkout.Root, Draft: o.draft, NoVerify: o.noVerify, Tip: o.tip, TipOnly: o.tipOnly, DropCommits: o.dropCommits, StayClean: o.stayClean, Restack: o.restack, AllLanes: o.allLanes, To: o.to, deferPush: o.deferPush, Ship: o.ship, Roots: roots, Pid: os.Getpid(), Started: stackProcStart(os.Getpid()), Host: host, left: left, lanePins: lanePins, adopted: adopted}
 	own := map[string]bool{}
 	if current != "" && current != trunk {
 		down, err := gtDownstack(stackRebasePrefix, retargeted, current, trunk)
@@ -1230,6 +1238,43 @@ func stackOverrides(o stackRebaseOpts) (map[string]string, error) {
 		}
 	}
 	return overrides, nil
+}
+
+func stackAdoptUntracked(ctx context.Context, dir render.Dir, tr vcs.Trunk, state gtState, overrides map[string]string) (gtState, error) {
+	adopted := gtState{}
+	for _, child := range slices.Sorted(maps.Keys(overrides)) {
+		if s, tracked := state[child]; s.Trunk || (tracked && len(s.Parents) > 0) {
+			continue
+		}
+		head, err := gtRestackHead(ctx, stackRebasePrefix, dir, child)
+		if err != nil {
+			return nil, err
+		}
+		base, err := stackMergeBase(ctx, dir, head, string(tr.Ref()))
+		if err != nil {
+			return nil, err
+		}
+		adopted[child] = gtBranchState{Head: head, Parents: []gtRef{{Ref: overrides[child], SHA: base}}}
+		state[child] = adopted[child]
+	}
+	return adopted, nil
+}
+
+func stackTrackAdopted(ctx context.Context, commonDir string, run *stackRebaseRun) error {
+	moves := map[string]string{}
+	for _, child := range slices.Sorted(maps.Keys(run.adopted)) {
+		s := run.adopted[child]
+		if err := gtmeta.AdoptRoot(ctx, commonDir, child, run.Trunk, s.Parents[0].SHA, s.Head); err != nil {
+			return fmt.Errorf("stack rebase: %w", err)
+		}
+		if parent := s.Parents[0].Ref; parent != run.Trunk {
+			moves[child] = parent
+		}
+	}
+	if err := gtmeta.Reparent(ctx, commonDir, moves); err != nil {
+		return fmt.Errorf("stack rebase: %w", err)
+	}
+	return nil
 }
 
 func stackRetargeted(state gtState, overrides map[string]string) gtState {

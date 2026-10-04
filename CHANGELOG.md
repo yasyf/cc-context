@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs stack rebase --parent` accepts untracked branches.** A branch
+  Graphite did not track, or tracked without a parent, previously failed with
+  `gt state has no parent for <branch>`. The command now plans it from its
+  fork point on the remote trunk and replays it onto the named parent.
+  Graphite records are written only after planning succeeds; `--dry-run`
+  leaves them unchanged.
+
 - **Graphite `ship` accepts an earlier raw push without a tracking reflog.**
   Clones that fetch only trunk could refuse a branch already pushed from the
   same checkout with `fatal: bad revision` or a remote-changed error. The retry
