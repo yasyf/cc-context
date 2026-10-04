@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -505,7 +506,11 @@ func worktreeGitBase(ctx context.Context, dir render.Dir, name string) (worktree
 		sha, err := worktreeRevParse(ctx, dir, "refs/heads/"+name)
 		return worktreeBase{label: name, shas: []string{sha}}, err
 	}
-	remote, err := vcs.GitRemoteFor(ctx, dir, "HEAD")
+	branch, err := gitCurrentBranch(ctx, dir, "worktree add")
+	if err != nil {
+		return worktreeBase{}, err
+	}
+	remote, err := vcs.GitRemoteFor(ctx, dir, cmp.Or(branch, "HEAD"))
 	if err != nil {
 		return worktreeBase{}, fmt.Errorf("worktree add: %w", err)
 	}
@@ -527,11 +532,11 @@ func worktreeGitBase(ctx context.Context, dir render.Dir, name string) (worktree
 	if trunk == "" {
 		return worktreeBase{}, fmt.Errorf("worktree add: %s names no default branch to cut %s from — run git remote set-head %s -a", remote, name, remote)
 	}
-	tr, err := gtTrunkRef(ctx, dir, "worktree add", trunk)
-	if err != nil {
-		return worktreeBase{}, err
+	tracking := string(vcs.RemoteBranchRef(remote, trunk))
+	if err := gitFetch(ctx, dir, "--no-tags", "--no-write-fetch-head", remote, "+refs/heads/"+trunk+":"+tracking); err != nil {
+		return worktreeBase{}, fmt.Errorf("worktree add: git fetch %s %s: %w", remote, trunk, err)
 	}
-	sha, err := gtTrunkHead(ctx, dir, "worktree add", tr)
+	sha, err := worktreeRevParse(ctx, dir, tracking)
 	if err != nil {
 		return worktreeBase{}, err
 	}
