@@ -2941,12 +2941,14 @@ func stackReleaseWorkspace(ctx context.Context, l lane, commonDir string, c *sta
 	switch {
 	case errors.Is(err, cleanup.ErrUnsupported):
 		return stackReleaseInline(ctx, l, c)
+	case errors.Is(err, cleanup.ErrPaused):
+		return stackPausedLine(ws), nil
 	case err != nil:
 		var refused *cleanup.RefusedError
 		switch {
 		case errors.As(err, &refused) && refused.Reason == "replaced":
 			return stackMismatchLine(ws), nil
-		case errors.As(err, &refused), errors.Is(err, cleanup.ErrPaused):
+		case errors.As(err, &refused):
 			return "", fmt.Errorf("stack rebase: %w — nothing was removed, and %s is left where it is", err, ws)
 		}
 		return "", fmt.Errorf("stack rebase: %w — the cleanup daemon may already hold %s", err, ws)
@@ -2996,6 +2998,10 @@ func stackOccupied(ctx context.Context, ws string) (bool, error) {
 		return false, fmt.Errorf("stack rebase: %w", err)
 	}
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)), nil
+}
+
+func stackPausedLine(ws string) string {
+	return "left " + ws + " in place, since the cleanup queue is paused — remove it with ccx vcs worktree rm --path " + ws + " after ccx vcs cleanup resume"
 }
 
 func stackKeptLine(ws string) string {
