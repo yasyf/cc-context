@@ -17,6 +17,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs worktree add` cuts from the fetched remote trunk.** A bare
+  `git worktree add` branched from the caller's HEAD, so a lane cut from a
+  checkout whose local trunk sat behind origin started on a stale base. Git
+  worktrees now fetch the remote's default branch and cut `<name>` from its tip
+  without moving the local trunk or setting an upstream; an existing branch
+  `<name>` is checked out as it stands, and a repository with no remote cuts
+  from HEAD. jj workspaces start on `trunk()` after `jj git fetch`. The summary
+  names the base commit, and `ccx vcs stack new` now names its base commit too.
+
 - **Stack commands finish abandoned publication runs after a successful push.**
   When a stack rebase process exits after pushing, peer `ccx vcs ship` and
   `ccx vcs stack submit` now finish its publication before proceeding.

@@ -177,6 +177,10 @@ func runStackNew(cmd *cobra.Command, name string, options stackNewOpts) error {
 			return err
 		}
 	}
+	base, err := stackRevParse(ctx, l.dir(), start)
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return err
 	}
@@ -184,7 +188,7 @@ func runStackNew(cmd *cobra.Command, name string, options stackNewOpts) error {
 	if sparse != nil || options.noCheckout {
 		args = append(args, "--no-checkout")
 	}
-	args = append(args, "-b", name, path, start)
+	args = append(args, "-b", name, path, base)
 	if _, err := render.RunCLI(ctx, l.dir(), "git", args); err != nil {
 		return fmt.Errorf("stack new: create %s: %w", path, err)
 	}
@@ -253,7 +257,7 @@ func runStackNew(cmd *cobra.Command, name string, options stackNewOpts) error {
 			}
 		}
 	}
-	cmd.Println(strings.Join(append(segs, "cut "+name+" onto "+parent, path), shipSep))
+	cmd.Println(strings.Join(append(segs, "cut "+name+" onto "+parent+" at "+shortOID(base), path), shipSep))
 	return nil
 }
 
