@@ -380,7 +380,7 @@ func runStackRebase(cmd *cobra.Command, o stackRebaseOpts) error {
 	var gated []*stackRebaseRun
 	for _, other := range runs {
 		if (other.Conflict != nil && other.Conflict.Workspace == l.root) || (current != "" && other.branch(current) != nil) {
-			if err := stackGate(ctx, cmd, l, commonDir, other, o.dryRun); err != nil {
+			if _, err := stackGate(ctx, cmd, l, commonDir, other, o.dryRun); err != nil {
 				return err
 			}
 			gated = append(gated, other)
@@ -408,8 +408,12 @@ func stackBegin(ctx context.Context, cmd *cobra.Command, l lane, commonDir strin
 	if o.result != nil {
 		*o.result = run
 	}
-	if err := stackAdmit(ctx, cmd, l, commonDir, others, run, o.dryRun); err != nil {
+	finished, err := stackAdmit(ctx, cmd, l, commonDir, others, run, o.dryRun)
+	if err != nil {
 		return err
+	}
+	if len(finished) > 0 {
+		return stackBegin(ctx, cmd, l, commonDir, slices.DeleteFunc(others, func(other *stackRebaseRun) bool { return slices.Contains(finished, other) }), o)
 	}
 	if err := stackShipCovers(run, o.ship); err != nil {
 		return err
@@ -503,28 +507,88 @@ func stackBareBelow(run *stackRebaseRun, live, bare []string) []string {
 	return below
 }
 
-// stackGate refuses a rebase over a run in progress, or reclaims the run when
-// it is stale.
-func stackGate(ctx context.Context, cmd *cobra.Command, l lane, commonDir string, other *stackRebaseRun, dryRun bool) error {
+// stackGate refuses a rebase over a run in progress, finishes a dead run whose
+// push already matches origin, or reclaims the run when it is stale.
+func stackGate(ctx context.Context, cmd *cobra.Command, l lane, commonDir string, other *stackRebaseRun, dryRun bool) (bool, error) {
+	pushed, err := stackDeadPushed(ctx, l.dir(), other)
+	if err != nil {
+		return false, err
+	}
+	if pushed {
+		return !dryRun, stackFinishDead(ctx, cmd, l, commonDir, other, dryRun)
+	}
 	if !stackStale(other) {
 		why, err := stackAbandoned(ctx, l.dir(), other)
 		if err != nil {
-			return err
+			return false, err
 		}
 		if why == "" || other.Conflict.Workspace == l.root {
-			return stackInProgress(other)
+			return false, stackInProgress(other)
 		}
-		return stackReclaimConflict(ctx, cmd, l, commonDir, other, why, dryRun)
+		return false, stackReclaimConflict(ctx, cmd, l, commonDir, other, why, dryRun)
 	}
 	if dryRun {
 		cmd.Println(fmt.Sprintf("would reclaim the stale stack rebase of %s (%s)", strings.Join(other.Roots, ", "), stackHolder(other)))
-		return nil
+		return false, nil
 	}
 	if err := stackReclaim(ctx, l, commonDir, other); err != nil {
-		return err
+		return false, err
 	}
 	cmd.Println(fmt.Sprintf("reclaimed the stale stack rebase of %s (%s)", strings.Join(other.Roots, ", "), stackHolder(other)))
+	return false, nil
+}
+
+func stackDeadPushed(ctx context.Context, dir render.Dir, run *stackRebaseRun) (bool, error) {
+	host, _ := os.Hostname()
+	if run.Host != host || run.Conflict != nil || !run.Publishing || len(run.PushTargets) == 0 || stackPidAlive(run) {
+		return false, nil
+	}
+	return stackRemoteMatchesPublication(ctx, dir, "origin", run.PushTargets)
+}
+
+func stackFinishDead(ctx context.Context, cmd *cobra.Command, l lane, commonDir string, run *stackRebaseRun, dryRun bool) error {
+	line := fmt.Sprintf("the stack rebase of %s (%s), whose push already matches origin", strings.Join(run.Roots, ", "), stackHolder(run))
+	if dryRun {
+		cmd.Println("would finish " + line)
+		return nil
+	}
+	cmd.Println("finishing " + line)
+	if err := stackAdopt(run); err != nil {
+		return err
+	}
+	owner, err := stackTakeOver(ctx, l, run)
+	if err != nil {
+		return err
+	}
+	if err := stackDrive(ctx, cmd, owner, commonDir, run); err != nil {
+		return fmt.Errorf("stack rebase: finish the stack rebase of %s: %w", strings.Join(run.Roots, ", "), err)
+	}
 	return nil
+}
+
+func stackAdopt(run *stackRebaseRun) error {
+	roots := strings.Join(run.Roots, ", ")
+	dir := run.dir
+	tomb := fmt.Sprintf("%s.reclaim-%d", dir, os.Getpid())
+	if err := os.Rename(dir, tomb); err != nil {
+		return fmt.Errorf("stack rebase: adopt the run of %s (another caller may have taken it — re-run): %w", roots, err)
+	}
+	info, err := os.Stat(stackStatePath(tomb))
+	if err != nil || !info.ModTime().Equal(run.saved) {
+		if err := os.Rename(tomb, dir); err != nil {
+			return fmt.Errorf("stack rebase: restore the run of %s from %s: %w", roots, tomb, err)
+		}
+		return fmt.Errorf("stack rebase: the run of %s saved again while it was being adopted — re-run", roots)
+	}
+	host, err := os.Hostname()
+	if err != nil {
+		return errors.Join(fmt.Errorf("stack rebase: %w", err), os.Rename(tomb, dir))
+	}
+	run.Pid, run.Started, run.Host = os.Getpid(), stackProcStart(os.Getpid()), host
+	run.dir = tomb
+	err = stackSaveRun(run)
+	run.dir = dir
+	return errors.Join(err, os.Rename(tomb, dir))
 }
 
 func stackAbandoned(ctx context.Context, dir render.Dir, run *stackRebaseRun) (string, error) {
@@ -605,16 +669,21 @@ func stackAge(d time.Duration) string {
 	return fmt.Sprintf("%dh%dm", h, m)
 }
 
-func stackAdmit(ctx context.Context, cmd *cobra.Command, l lane, commonDir string, runs []*stackRebaseRun, run *stackRebaseRun, dryRun bool) error {
+func stackAdmit(ctx context.Context, cmd *cobra.Command, l lane, commonDir string, runs []*stackRebaseRun, run *stackRebaseRun, dryRun bool) ([]*stackRebaseRun, error) {
+	var finished []*stackRebaseRun
 	for _, other := range runs {
 		if !stackOverlaps(run, other) {
 			continue
 		}
-		if err := stackGate(ctx, cmd, l, commonDir, other, dryRun); err != nil {
-			return err
+		done, err := stackGate(ctx, cmd, l, commonDir, other, dryRun)
+		if err != nil {
+			return nil, err
+		}
+		if done {
+			finished = append(finished, other)
 		}
 	}
-	return nil
+	return finished, nil
 }
 
 func stackInProgress(run *stackRebaseRun) error {
@@ -3147,18 +3216,23 @@ func stackResolveRun(ctx context.Context, stack string) (lane, string, *stackReb
 		return lane{}, "", nil, fmt.Errorf("stack rebase: pid %d on %s is still driving the stack rebase of %s — wait for it to finish", run.Pid, run.Host, strings.Join(run.Roots, ", "))
 	}
 	run.Pid, run.Started, run.Host = os.Getpid(), stackProcStart(os.Getpid()), host
+	if l, err = stackTakeOver(ctx, l, run); err != nil {
+		return lane{}, "", nil, err
+	}
+	return l, commonDir, run, nil
+}
+
+func stackTakeOver(ctx context.Context, l lane, run *stackRebaseRun) (lane, error) {
 	if _, err := os.Stat(run.Origin); run.Origin != "" && errors.Is(err, fs.ErrNotExist) {
 		run.Origin = l.root
 	}
 	if err := stackSaveRun(run); err != nil {
-		return lane{}, "", nil, err
+		return lane{}, err
 	}
-	if run.Origin != "" && l.root != run.Origin {
-		if l, err = resolveLane(ctx, stackRebasePrefix, run.Origin, false); err != nil {
-			return lane{}, "", nil, err
-		}
+	if run.Origin == "" || l.root == run.Origin {
+		return l, nil
 	}
-	return l, commonDir, run, nil
+	return resolveLane(ctx, stackRebasePrefix, run.Origin, false)
 }
 
 func stackFinish(ctx context.Context, cmd *cobra.Command, l lane, commonDir string, run *stackRebaseRun) error {
