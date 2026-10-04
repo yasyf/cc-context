@@ -1777,6 +1777,8 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 		if err := stackCheckSources(ctx, l.dir(), s.publication); err != nil {
 			return nil, nil, err
 		}
+	} else if err := gtRecordPushedPublication(ctx, l.dir(), plan); err != nil {
+		return nil, nil, err
 	}
 
 	var landed []gtapi.SubmittedPR
@@ -2299,6 +2301,33 @@ func gtPushStack(ctx context.Context, dir render.Dir, s gtSubmit, plan []gtSubmi
 	}
 	problem := "remote " + strings.Join(moved, ", ") + " changed since last submit, by a push this repository did not make — fetch it and fold in what it added, then submit again"
 	return &gtAdvice{advice: gtStuck(s.prefix, problem, s.suffix), cause: err}
+}
+
+// gtRecordPushedPublication writes the publication receipt of each branch a
+// push without a replay run published: its pushed head on the parent head it
+// was submitted onto, which stack new --published-parent reads.
+func gtRecordPushedPublication(ctx context.Context, dir render.Dir, plan []gtSubmitBranch) error {
+	var tx strings.Builder
+	tx.WriteString("start\n")
+	for _, b := range plan {
+		prior, err := stackReadPublication(ctx, dir, b.name)
+		if err != nil {
+			return err
+		}
+		expected := ""
+		if prior != nil {
+			expected = prior.OID
+		}
+		receipt := stackPublication{Branch: b.name, Source: b.head, SourceBase: b.baseSha, Head: b.head, Base: b.baseSha, Parent: b.base}
+		if err := stackReceiptTx(ctx, dir, &tx, receipt, expected); err != nil {
+			return err
+		}
+	}
+	tx.WriteString("commit\n")
+	if _, err := render.RunCLIStdin(ctx, dir, "git", []string{"update-ref", "--stdin"}, []byte(tx.String())); err != nil {
+		return fmt.Errorf("stack publication: record pushed receipts: %w", err)
+	}
+	return nil
 }
 
 func gtPushedHeads(plan []gtSubmitBranch) map[string]string {

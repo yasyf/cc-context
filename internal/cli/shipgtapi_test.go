@@ -514,6 +514,18 @@ func gtPushInv(refs ...gtPushRef) []string {
 	return append(argv, "--no-verify", "--atomic")
 }
 
+// gtReceiptInv is the publication receipt a plain submit records after its
+// push: per branch, the prior read, the receipt blob, and the read
+// stackReceiptTx makes, then one update-ref transaction.
+func gtReceiptInv(branches ...string) [][]string {
+	var inv [][]string
+	for _, branch := range branches {
+		read := []string{"git", "rev-parse", "--verify", "--quiet", stackPublicationRef(branch, "receipt")}
+		inv = append(inv, read, []string{"git", "hash-object", "-w", "--stdin"}, read)
+	}
+	return append(inv, []string{"git", "update-ref", "--stdin"})
+}
+
 // gtCreateLogInv is the commit read that derives a created PR's title and
 // body.
 func gtCreateLogInv(base, branch string) []string {
