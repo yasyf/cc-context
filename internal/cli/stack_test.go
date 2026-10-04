@@ -767,7 +767,7 @@ func TestStackSubmitSkipsABranchAnotherWorkingCopyHolds(t *testing.T) {
 	lane := stackLane(t, f, "feature")
 	shipResetLog(t, f)
 
-	_, errOut, err := runStackCmd(t, f, "submit")
+	out, _, err := runStackCmd(t, f, "submit")
 	if err != nil {
 		t.Fatalf("stack submit: %v", err)
 	}
@@ -777,8 +777,8 @@ func TestStackSubmitSkipsABranchAnotherWorkingCopyHolds(t *testing.T) {
 	if gitBranchExists(t, f.Env(), f.RemoteDir, "feature") {
 		t.Error("origin carries feature — the submit pushed another lane's branch")
 	}
-	if want := "skipping feature (checked out in " + lane + ")"; !strings.Contains(errOut, want) {
-		t.Errorf("stderr = %q, want %q", errOut, want)
+	if want := "stack submit: skipping feature (checked out in " + lane + ") — another lane owns it; never pushed to origin; pass --include feature to submit it\n"; !strings.Contains(out, want) {
+		t.Errorf("stdout = %q, want %q", out, want)
 	}
 }
 
@@ -1286,7 +1286,7 @@ func TestStackSubmitShipsTheParentPastAConflictingChildLane(t *testing.T) {
 	feature := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")
 	shipResetLog(t, f)
 
-	_, errOut, err := runStackCmd(t, f, "submit")
+	out, _, err := runStackCmd(t, f, "submit")
 	if err != nil {
 		t.Fatalf("stack submit: %v", err)
 	}
@@ -1303,8 +1303,8 @@ func TestStackSubmitShipsTheParentPastAConflictingChildLane(t *testing.T) {
 	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature"); got != feature {
 		t.Errorf("feature moved to %s, want it left at %s", got, feature)
 	}
-	if !strings.Contains(errOut, "feature (checked out in "+child+")") {
-		t.Errorf("stderr = %q, want it to name the child lane it skipped", errOut)
+	if !strings.Contains(out, "skipping feature (checked out in "+child+")") {
+		t.Errorf("stdout = %q, want it to name the child lane it skipped", out)
 	}
 }
 
@@ -1477,7 +1477,7 @@ func TestStackSubmitKeepsAnotherLanesParentAtItsPublishedHead(t *testing.T) {
 	posted := len(api.submitHeads())
 	shipResetLog(t, f)
 
-	_, errOut, err := runStackCmd(t, f, "submit")
+	out, _, err := runStackCmd(t, f, "submit")
 	if err != nil {
 		t.Fatalf("stack submit: %v", err)
 	}
@@ -1494,8 +1494,8 @@ func TestStackSubmitKeepsAnotherLanesParentAtItsPublishedHead(t *testing.T) {
 	if !stackOnto(t, f, published, feature) || stackOnto(t, f, "origin/main", feature) {
 		t.Errorf("published feature %s is not stacked on base's published head %s", feature, published)
 	}
-	if want := "stack submit: keeping base (checked out in " + lane + ") at their published heads"; !strings.Contains(errOut, want) {
-		t.Errorf("stderr = %q, want %q", errOut, want)
+	if want := "stack submit: keeping base (checked out in " + lane + ") at its published head — another lane owns it; 0 commit(s) not on origin; pass --include base to submit it\n"; !strings.Contains(out, want) {
+		t.Errorf("stdout = %q, want %q", out, want)
 	}
 }
 
@@ -1565,7 +1565,7 @@ func TestStackSubmitKeepsTheParentAWorkingCopyOfAnotherLaneHolds(t *testing.T) {
 	published := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
 	posted := len(api.submitHeads())
 
-	_, errOut, err := runStackCmdIn(t, f, child, "submit")
+	out, _, err := runStackCmdIn(t, f, child, "submit")
 	if err != nil {
 		t.Fatalf("stack submit: %v", err)
 	}
@@ -1575,8 +1575,8 @@ func TestStackSubmitKeepsTheParentAWorkingCopyOfAnotherLaneHolds(t *testing.T) {
 	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base"); got != published {
 		t.Errorf("origin base = %s, want its published head %s left alone", got, published)
 	}
-	if want := "stack submit: keeping base (checked out in " + holder + ") at their published heads"; !strings.Contains(errOut, want) {
-		t.Errorf("stderr = %q, want %q", errOut, want)
+	if want := "stack submit: keeping base (checked out in " + holder + ") at its published head — another lane owns it; 0 commit(s) not on origin; pass --include base to submit it\n"; !strings.Contains(out, want) {
+		t.Errorf("stdout = %q, want %q", out, want)
 	}
 }
 
