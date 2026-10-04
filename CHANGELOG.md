@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Stack commands finish abandoned publication runs after a successful push.**
+  When a stack rebase process exits after pushing, peer `ccx vcs ship` and
+  `ccx vcs stack submit` now finish its publication before proceeding.
+  The run must belong to the same host and have no conflict. Its saved push
+  targets must still match `origin`. A live process or missing push targets
+  still cause a refusal. `--dry-run` reports the pending recovery.
+
 - **Stack submission tolerates deleted Graphite base branches.**
   When Graphite moves a pull request off `graphite-base/<n>`,
   `ccx vcs stack submit` no longer aborts if the branch disappears between
