@@ -181,8 +181,9 @@ and submits; ccx vcs stack abort drops the run. A moved branch held by another
 working copy, or uncommitted work in the invoking checkout, stops publication
 before any branch moves.
 
-A working copy stack new cut onto the branch checked out where it ran joins
-that working copy's lane, and a branch any working copy of this lane has checked
+A working copy stack new cut onto a branch of the stack checked out where it
+ran, or one worktree add checked out on such a branch, joins that working
+copy's lane, and a branch any working copy of this lane has checked
 out is submitted as if it were checked out here. A branch a working copy of
 another lane has checked out is that lane's, so it is skipped and named with the
 working copy holding it, along with every branch stacked above it; --include
@@ -407,7 +408,6 @@ func stackListLine(branch, holder, root string, state gtBranchState) string {
 
 func runStackSubmit(cmd *cobra.Command, o shipOpts, include []string, to string) error {
 	ctx := cmd.Context()
-	errW := cmd.ErrOrStderr()
 	l, err := resolveLane(ctx, "stack submit", workingDir(ctx), false)
 	if err != nil {
 		return err
@@ -441,7 +441,7 @@ func runStackSubmit(cmd *cobra.Command, o shipOpts, include []string, to string)
 	if err != nil {
 		return err
 	}
-	if err := stackAnnounceSkipped(errW, pinned, skipped); err != nil {
+	if err := stackAnnounceSkipped(ctx, cmd.OutOrStdout(), l.dir(), pinned, skipped); err != nil {
 		return err
 	}
 	tracking := &stackTracking{}
@@ -602,24 +602,47 @@ func stackOwnBranches(stack []string, state gtState, holders map[string]string, 
 	return members, pinned, skipped, nil
 }
 
-func stackAnnounceSkipped(errW io.Writer, pinned, skipped []stackSkip) error {
+// stackAnnounceSkipped names on stdout every branch the run leaves to another
+// lane, with what that lane holds unpublished and the flag that takes it in.
+func stackAnnounceSkipped(ctx context.Context, w io.Writer, dir render.Dir, pinned, skipped []stackSkip) error {
 	for _, group := range []struct {
 		skips []stackSkip
 		verb  string
 	}{
-		{pinned, "keeping %s at their published heads"},
-		{skipped, "skipping %s"},
+		{pinned, "keeping %s (checked out in %s) at its published head"},
+		{skipped, "skipping %s (checked out in %s)"},
 	} {
-		if len(group.skips) == 0 {
-			continue
-		}
-		named := make([]string, 0, len(group.skips))
 		for _, s := range group.skips {
-			named = append(named, fmt.Sprintf("%s (checked out in %s)", s.branch, s.holder))
-		}
-		if _, err := fmt.Fprintf(errW, "stack submit: "+group.verb+" — another lane owns them; pass --include <branch> to submit one anyway\n", strings.Join(named, ", ")); err != nil {
-			return fmt.Errorf("stack submit: name the skipped branches: %w", err)
+			unpublished, err := stackUnpublished(ctx, dir, s.branch)
+			if err != nil {
+				return err
+			}
+			if _, err := fmt.Fprintf(w, "stack submit: "+group.verb+" — another lane owns it; %s; pass --include %s to submit it\n", s.branch, s.holder, unpublished, s.branch); err != nil {
+				return fmt.Errorf("stack submit: name the skipped branches: %w", err)
+			}
 		}
 	}
 	return nil
+}
+
+// stackUnpublished describes the commits branch holds that its remote does not.
+func stackUnpublished(ctx context.Context, dir render.Dir, branch string) (string, error) {
+	remote, err := vcs.GitRemoteFor(ctx, dir, branch)
+	if err != nil {
+		return "", fmt.Errorf("stack submit: %w", err)
+	}
+	ref := "refs/remotes/" + remote + "/" + branch
+	if _, code, stderr, err := render.RunCLIExitCode(ctx, dir, "git", []string{"rev-parse", "--verify", "--quiet", ref}); err != nil {
+		return "", fmt.Errorf("stack submit: git rev-parse %s: %w", ref, err)
+	} else if code != 0 {
+		if strings.TrimSpace(stderr) != "" {
+			return "", fmt.Errorf("stack submit: git rev-parse %s: exit %d: %s", ref, code, strings.TrimSpace(stderr))
+		}
+		return "never pushed to " + remote, nil
+	}
+	ahead, err := gitCommitsAhead(ctx, dir, "stack submit", ref, branch)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%d commit(s) not on %s", ahead, remote), nil
 }

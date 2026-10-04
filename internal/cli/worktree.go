@@ -114,7 +114,8 @@ and everything else mints a git worktree.
 A git worktree cuts branch <name> from the remote trunk, fetched first, so a
 local trunk or HEAD left behind the remote never becomes the base; an existing
 branch <name> is checked out as it stands, and a repository with no remote cuts
-from HEAD. A jj workspace starts on trunk() after jj git fetch, or on the
+from HEAD. An existing branch on the gt stack of the branch checked out here
+joins this working copy's lane, so stack submit from either submits it. A jj workspace starts on trunk() after jj git fetch, or on the
 caller's parents with no remote. The summary names the base commit.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -475,9 +476,42 @@ func runWorktreeAdd(cmd *cobra.Command, name, requested string) error {
 		if _, err := render.RunCLI(ctx, l.dir(), "git", args); err != nil {
 			return fmt.Errorf("worktree add: git worktree add %s: %w", path, err)
 		}
+		if base.rev == "" {
+			if err := worktreeJoinLane(ctx, l, name, path); err != nil {
+				return err
+			}
+		}
 	}
 	cmd.Println(strings.Join([]string{"added " + name, worktreeShapeOf(mode), base.segment(), path}, shipSep))
 	return nil
+}
+
+// worktreeJoinLane puts the working copy checked out on branch at path into
+// l's lane when branch shares the gt stack of the branch l has checked out.
+func worktreeJoinLane(ctx context.Context, l lane, branch, path string) error {
+	graphite, err := vcs.GraphiteRepo(l.checkout)
+	if err != nil {
+		return fmt.Errorf("worktree add: %w", err)
+	}
+	if !graphite {
+		return nil
+	}
+	current, err := gitCurrentBranch(ctx, l.dir(), "worktree add")
+	if err != nil || current == "" {
+		return err
+	}
+	state, err := gtStateQuery(ctx, l.dir(), "worktree add")
+	if err != nil {
+		return err
+	}
+	trunk, err := gtTrunkBranch("worktree add", state)
+	if err != nil {
+		return err
+	}
+	if current == trunk || branch == trunk || !gtSameStack(state, trunk, branch, current) {
+		return nil
+	}
+	return laneJoin("worktree add", l, path)
 }
 
 type worktreeBase struct {
