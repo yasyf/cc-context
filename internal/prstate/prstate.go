@@ -224,8 +224,10 @@ func Open(root string, src *GitHub) (*Store, error) {
 // next poll by any process reads them too. A read the budget refuses returns
 // the stale view with a *LimitedError.
 //
-// Inside MinInterval of the last poll a read sleeps without the lock, so
-// concurrent readers share the next poll instead of queueing behind each other.
+// A read whose only stale records are pull requests no poll has read since
+// their last push fetches just those at once, leaving the shared poll's
+// schedule alone. Otherwise, inside MinInterval of the last poll a read sleeps
+// without the lock, so concurrent readers share the next poll.
 func (s *Store) Read(ctx context.Context, want Want) (State, error) {
 	st, wait, err := s.locked(ctx, want, true)
 	if err != nil || wait <= 0 {
@@ -299,6 +301,15 @@ func (s *Store) read(ctx context.Context, want Want, mayWait bool) (State, time.
 			return st, 0, s.refuse(st)
 		}
 	}
+	if prs, ok := st.unpolled(want, now); ok && st.Failure == nil {
+		if err := s.fetchInto(ctx, &st, Want{PRs: prs}, now); err != nil {
+			return st, 0, errors.Join(err, s.save(st))
+		}
+		if err := s.save(st); err != nil {
+			return st, 0, err
+		}
+		return st, 0, s.verdict(st, want, now)
+	}
 	if next := st.AttemptedAt.Add(MinInterval); now.Before(next) {
 		if mayWait {
 			return st, next.Sub(now), s.save(st)
@@ -317,29 +328,39 @@ func (s *Store) read(ctx context.Context, want Want, mayWait bool) (State, time.
 			return st, 0, err
 		}
 	}
+	return st, 0, s.verdict(st, want, now)
+}
+
+func (s *Store) verdict(st State, want Want, now time.Time) error {
 	if missing := slices.DeleteFunc(slices.Clone(want.PRs), func(n int) bool { _, ok := st.PRs[n]; return ok }); len(missing) > 0 {
-		return st, 0, &MissingError{Repo: s.src.owner + "/" + s.src.name, PRs: missing}
+		return &MissingError{Repo: s.src.owner + "/" + s.src.name, PRs: missing}
 	}
 	if st.Backoff != nil && !st.fresh(want, now) {
-		return st, 0, &LimitedError{Backoff: *st.Backoff}
+		return &LimitedError{Backoff: *st.Backoff}
 	}
-	return st, 0, nil
+	return nil
 }
 
 func (s *Store) pollInto(ctx context.Context, st *State, req Want, now time.Time) error {
 	st.AttemptedAt, st.Failure = now, nil
-	poll, err := s.src.poll(ctx, req, st.PRs)
-	if wait, limited := ghapi.RateLimited(err); limited {
-		st.Backoff = limitedAt(now, wait)
-		return s.refuse(*st)
-	}
-	switch {
-	case err == nil:
-		st.absorb(poll, now)
-	case ctx.Err() == nil:
+	err := s.fetchInto(ctx, st, req, now)
+	var limited *LimitedError
+	if err != nil && ctx.Err() == nil && !errors.As(err, &limited) {
 		st.Failure = &Failure{At: now, Reason: err.Error()}
 	}
 	return errors.Join(err, s.save(*st))
+}
+
+func (s *Store) fetchInto(ctx context.Context, st *State, req Want, now time.Time) error {
+	poll, err := s.src.poll(ctx, req, st.PRs)
+	if wait, limited := ghapi.RateLimited(err); limited {
+		st.Backoff = limitedAt(now, wait)
+		return &LimitedError{Backoff: *st.Backoff}
+	}
+	if err == nil {
+		st.absorb(poll, now)
+	}
+	return err
 }
 
 func (s *Store) refuse(st State) error {
@@ -422,6 +443,23 @@ func (st State) fresh(want Want, now time.Time) bool {
 		}
 	}
 	return true
+}
+
+func (st State) unpolled(want Want, now time.Time) ([]int, bool) {
+	if st.AttemptedAt.IsZero() || !st.fresh(Want{Prefixes: want.Prefixes}, now) {
+		return nil, false
+	}
+	var prs []int
+	for _, n := range want.PRs {
+		pr, ok := st.PRs[n]
+		switch {
+		case !ok || pr.PushedAt.After(pr.PolledAt):
+			prs = append(prs, n)
+		case !st.fresh(Want{PRs: []int{n}}, now):
+			return nil, false
+		}
+	}
+	return prs, len(prs) > 0
 }
 
 func (st State) unread(prefixes []string, now time.Time) []int {
