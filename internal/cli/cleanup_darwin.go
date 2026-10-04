@@ -102,6 +102,7 @@ func runCleanupServe(ctx context.Context) error {
 		}),
 		Deleter: rmtree.Deleter{},
 		CPU:     native.NewFSEventsSampler(),
+		Parent:  native.ParentCommand,
 		Version: version.String(),
 	})
 	if err != nil {

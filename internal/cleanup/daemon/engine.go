@@ -115,6 +115,9 @@ type Config struct {
 	Deleter   cleanup.Deleter
 	CPU       cleanup.CPUSampler
 	Version   string
+	// Parent names a client's parent process and its arguments, logged with
+	// every pause and resume.
+	Parent func(pid int) (int, []string, error)
 	// Clock is the real clock when nil.
 	Clock Clock
 	// Tuning is DefaultTuning when zero.
@@ -147,6 +150,7 @@ type Engine struct {
 	relocator cleanup.Relocator
 	deleter   cleanup.Deleter
 	cpu       cleanup.CPUSampler
+	parent    func(pid int) (int, []string, error)
 	version   string
 	clock     Clock
 	tuning    Tuning
@@ -183,8 +187,8 @@ var (
 // the records, so a daemon holds its serve lock before anything reads or
 // repairs them.
 func New(cfg Config) (*Engine, error) {
-	if cfg.Journal == nil || cfg.Relocator == nil || cfg.Deleter == nil || cfg.CPU == nil {
-		return nil, errors.New("cleanup daemon: config needs a journal, a relocator, a deleter, and a cpu sampler")
+	if cfg.Journal == nil || cfg.Relocator == nil || cfg.Deleter == nil || cfg.CPU == nil || cfg.Parent == nil {
+		return nil, errors.New("cleanup daemon: config needs a journal, a relocator, a deleter, a cpu sampler, and a parent lookup")
 	}
 	tuning := cfg.Tuning
 	if tuning == (Tuning{}) {
@@ -204,6 +208,7 @@ func New(cfg Config) (*Engine, error) {
 		relocator: cfg.Relocator,
 		deleter:   cfg.Deleter,
 		cpu:       cfg.CPU,
+		parent:    cfg.Parent,
 		version:   cfg.Version,
 		clock:     clock,
 		tuning:    tuning,
@@ -1029,6 +1034,17 @@ func (e *Engine) retry(jobID string) (cleanup.Job, error) {
 		return clone(job), nil
 	}
 	return e.unblock(clone(job))
+}
+
+func (e *Engine) announce(op string, pid int, version string) {
+	attrs := []any{"client_pid", pid, "client_version", version}
+	parent, command, err := e.parent(pid)
+	if err != nil {
+		attrs = append(attrs, "client_parent_error", err)
+	} else {
+		attrs = append(attrs, "client_parent_pid", parent, "client_parent", strings.Join(command, " "))
+	}
+	slog.Info("cleanup daemon: "+op, attrs...)
 }
 
 func (e *Engine) pause(paused bool) error {

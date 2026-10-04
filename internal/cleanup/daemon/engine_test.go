@@ -1428,7 +1428,7 @@ func TestJournalFailureStopsTheWorker(t *testing.T) {
 
 func TestNewRejectsAnIncompleteConfig(t *testing.T) {
 	h := newHarness(t, DefaultTuning())
-	complete := Config{Journal: h.journal, Relocator: h.relocator, Deleter: h.deleter, CPU: h.cpu}
+	complete := Config{Journal: h.journal, Relocator: h.relocator, Deleter: h.deleter, CPU: h.cpu, Parent: h.parent.lookup}
 	tests := []struct {
 		name   string
 		adjust func(cfg *Config)
@@ -1437,6 +1437,7 @@ func TestNewRejectsAnIncompleteConfig(t *testing.T) {
 		{"no relocator", func(cfg *Config) { cfg.Relocator = nil }},
 		{"no deleter", func(cfg *Config) { cfg.Deleter = nil }},
 		{"no sampler", func(cfg *Config) { cfg.CPU = nil }},
+		{"no parent lookup", func(cfg *Config) { cfg.Parent = nil }},
 		{"a partial tuning", func(cfg *Config) { cfg.Tuning = Tuning{Rate: 250} }},
 		{"a throttle that resumes above where it pauses", func(cfg *Config) {
 			cfg.Tuning = DefaultTuning()

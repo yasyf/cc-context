@@ -21,6 +21,7 @@ import (
 
 	"github.com/yasyf/cc-context/internal/cleanup"
 	"github.com/yasyf/cc-context/internal/cleanup/daemon"
+	"github.com/yasyf/cc-context/internal/cleanup/native"
 	"github.com/yasyf/cc-context/internal/cleanup/relocate"
 	"github.com/yasyf/cc-context/internal/cleanup/rmtree"
 	"github.com/yasyf/cc-context/internal/render"
@@ -159,6 +160,7 @@ func startCleanupEngine(t *testing.T, config relocate.Config, tuning daemon.Tuni
 		Relocator: relocate.New(config),
 		Deleter:   rmtree.Deleter{},
 		CPU:       idleCPU{},
+		Parent:    native.ParentCommand,
 		Version:   "test",
 		Tuning:    tuning,
 	})

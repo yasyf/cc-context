@@ -191,7 +191,7 @@ func (f *gitFixture) engine() *Engine {
 	f.t.Helper()
 	tuning := DefaultTuning()
 	tuning.Rate, tuning.SampleEvery, tuning.Recheck = 1_000_000, 5*time.Millisecond, 20*time.Millisecond
-	engine, err := New(Config{Journal: f.journal, Relocator: f.relocator(), Deleter: rmtree.Deleter{}, CPU: idleCPU{}, Version: "test", Clock: f.clock, Tuning: tuning})
+	engine, err := New(Config{Journal: f.journal, Relocator: f.relocator(), Deleter: rmtree.Deleter{}, CPU: idleCPU{}, Parent: (&fakeParent{}).lookup, Version: "test", Clock: f.clock, Tuning: tuning})
 	if err != nil {
 		f.t.Fatalf("New() = %v", err)
 	}

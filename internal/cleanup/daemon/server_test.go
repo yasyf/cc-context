@@ -2,17 +2,21 @@ package daemon
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -21,6 +25,7 @@ import (
 	"github.com/yasyf/daemonkit/durable"
 
 	"github.com/yasyf/cc-context/internal/cleanup"
+	"github.com/yasyf/cc-context/internal/version"
 )
 
 const (
@@ -214,6 +219,50 @@ func TestServeRoundTrip(t *testing.T) {
 	}
 }
 
+func TestServeLogsWhoPausedAndResumed(t *testing.T) {
+	var logged bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logged, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	ctx := context.Background()
+	f := serveFixture(t, nil)
+
+	if err := f.client.Pause(ctx); err != nil {
+		t.Fatalf("Pause() = %v", err)
+	}
+	if err := f.client.Resume(ctx); err != nil {
+		t.Fatalf("Resume() = %v", err)
+	}
+
+	if asked := f.h.parent.takeAsked(); !slices.Equal(asked, []int{os.Getpid(), os.Getpid()}) {
+		t.Errorf("parent lookups = %v, want this process once per switch", asked)
+	}
+	var ops []string
+	for line := range strings.Lines(logged.String()) {
+		var record struct {
+			Msg           string `json:"msg"`
+			ClientPID     int    `json:"client_pid"`
+			ClientVersion string `json:"client_version"`
+			ParentPID     int    `json:"client_parent_pid"`
+			Parent        string `json:"client_parent"`
+		}
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("log line %q: %v", line, err)
+		}
+		op, found := strings.CutPrefix(record.Msg, "cleanup daemon: ")
+		if !found || (op != opPause && op != opResume) {
+			continue
+		}
+		ops = append(ops, op)
+		if record.ClientPID != os.Getpid() || record.ClientVersion != version.String() || record.ParentPID != 1 || record.Parent != "zsh -c ccx vcs cleanup pause" {
+			t.Errorf("%s record = %+v, want this process, its version, and its parent's command", op, record)
+		}
+	}
+	if !slices.Equal(ops, []string{opPause, opResume}) {
+		t.Errorf("logged switches = %v, want pause then resume", ops)
+	}
+}
+
 func TestServePreservesTypedErrors(t *testing.T) {
 	ctx := context.Background()
 	f := serveFixture(t, nil)
@@ -391,7 +440,7 @@ func TestSecondServeFailsOnTheLock(t *testing.T) {
 	bound, cancelBound := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancelBound()
 	for {
-		second, err := New(Config{Journal: f.h.journal, Relocator: f.h.relocator, Deleter: f.h.deleter, CPU: f.h.cpu, Clock: f.h.clock})
+		second, err := New(Config{Journal: f.h.journal, Relocator: f.h.relocator, Deleter: f.h.deleter, CPU: f.h.cpu, Parent: f.h.parent.lookup, Clock: f.h.clock})
 		if err != nil {
 			t.Fatalf("New() = %v", err)
 		}

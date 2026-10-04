@@ -1747,3 +1747,10 @@ func TestVerdictReportsUnreadArgumentsOnlyWithoutHolders(t *testing.T) {
 		t.Errorf("verdict with nothing = %v, want nil", err)
 	}
 }
+
+func TestParentCommand(t *testing.T) {
+	parent, command, err := ParentCommand(os.Getpid())
+	if err != nil || parent != os.Getppid() || len(command) == 0 {
+		t.Errorf("ParentCommand(self) = %d, %q, %v; want pid %d and its arguments", parent, command, err, os.Getppid())
+	}
+}

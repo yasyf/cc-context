@@ -398,6 +398,20 @@ func (s *scan) argument(pid int, launcher bool) (string, error) {
 	return "", nil
 }
 
+// ParentCommand returns the parent of pid and the arguments that parent runs.
+func ParentCommand(pid int) (int, []string, error) {
+	process, err := unix.SysctlKinfoProc("kern.proc.pid", pid)
+	if err != nil {
+		return 0, nil, fmt.Errorf("native: read pid %d: %w", pid, err)
+	}
+	parent := int(process.Eproc.Ppid)
+	args, err := processArguments(parent)
+	if err != nil {
+		return parent, nil, fmt.Errorf("native: read the arguments of pid %d: %w", parent, err)
+	}
+	return parent, args, nil
+}
+
 func processArguments(pid int) ([]string, error) {
 	raw, err := unix.SysctlRaw("kern.procargs2", pid)
 	if err != nil {
