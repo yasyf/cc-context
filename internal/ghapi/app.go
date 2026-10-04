@@ -40,11 +40,15 @@ const (
 	notInstalledTTL = time.Hour
 	appJWTLifetime  = 9 * time.Minute
 	appJWTBackdate  = time.Minute
+	appDownFor      = 5 * time.Minute
 )
 
 var writeOnlyPermissions = map[string]bool{"workflows": true}
 
-var errNotInstalled = errors.New("github app is not installed on the repository")
+var (
+	errNotInstalled = errors.New("github app is not installed on the repository")
+	errAppDown      = errors.New("github app failed recently")
+)
 
 type appConfig struct {
 	Name              string   `toml:"name"`
@@ -137,6 +141,11 @@ type installation struct {
 	CheckedAt time.Time `json:"checked_at"`
 }
 
+type appOutage struct {
+	Until  time.Time `json:"until"`
+	Reason string    `json:"reason"`
+}
+
 type appToken struct {
 	Token       string            `json:"token"`
 	ExpiresAt   time.Time         `json:"expires_at"`
@@ -158,6 +167,9 @@ func (a *appSource) token(ctx context.Context, repo string, margin time.Duration
 	var tok appToken
 	var id int64
 	err := cache.WithLock(ctx, a.dir, "mint", func() error {
+		if err := a.outage(); err != nil {
+			return err
+		}
 		bearer := sync.OnceValues(func() (string, error) { return a.jwt(ctx) })
 		known := false
 		id, known = a.cachedInstallation(repo)
@@ -192,13 +204,42 @@ func (a *appSource) token(ctx context.Context, repo string, margin time.Duration
 	return tok, id, err
 }
 
-func (a *appSource) unavailable(err error) {
+func (a *appSource) unavailable(ctx context.Context, err error) {
 	if errors.Is(err, errNotInstalled) {
 		return
+	}
+	if !errors.Is(err, errAppDown) && ctx.Err() == nil {
+		a.storeOutage(err)
 	}
 	a.warn.Do(func() {
 		slog.Warn("ghapi: github app unavailable, reading as the gh user", "app", a.cfg.Name, "err", err)
 	})
+}
+
+func (a *appSource) outagePath() string {
+	return filepath.Join(a.dir, "outage.json")
+}
+
+func (a *appSource) outage() error {
+	raw, err := os.ReadFile(a.outagePath())
+	if err != nil {
+		return nil
+	}
+	var down appOutage
+	if json.Unmarshal(raw, &down) != nil || !a.now().Before(down.Until) {
+		return nil
+	}
+	return fmt.Errorf("%w, reading as the gh user until %s: %s", errAppDown, down.Until.Local().Format(time.Kitchen), down.Reason)
+}
+
+func (a *appSource) storeOutage(cause error) {
+	raw, err := json.Marshal(appOutage{Until: a.now().Add(appDownFor), Reason: cause.Error()})
+	if err == nil {
+		err = cache.Store(a.outagePath(), raw, 0o600)
+	}
+	if err != nil {
+		slog.Warn("ghapi: record github app outage", "app", a.cfg.Name, "err", err)
+	}
 }
 
 func (a *appSource) cachedInstallation(repo string) (int64, bool) {
