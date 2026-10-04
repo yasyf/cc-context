@@ -55,6 +55,12 @@ const (
 	gtProbeUnreadable = "Could not connect to the Graphite server"
 )
 
+// gtProbeLauncherRefused opens every line mise prints when its gt shim refuses
+// to start, as it does in a checkout whose mise.toml is untrusted. gt never ran,
+// so the refusal belongs to that checkout, not to the repository the verdict is
+// cached for.
+const gtProbeLauncherRefused = "mise ERROR"
+
 // gtProbeNoteBudget caps an unrecognized failure's note, so a verbose gt error
 // cannot flood the report's one-line lane segment.
 const gtProbeNoteBudget = 200
@@ -305,7 +311,7 @@ func gtReachable(ctx context.Context, root string) (gtVerdict, string, bool) {
 		return gtVerdictUnknown, gtProbeAbortNote(output), true
 	}
 	verdict, note := classifyGTProbe(output, code)
-	return verdict, note, strings.Contains(output, gtProbeUnreadable)
+	return verdict, note, strings.Contains(output, gtProbeUnreadable) || gtProbeLaunchRefused(output)
 }
 
 // gtProbeAbortNote reads a reason off a probe that never returned an exit code.
@@ -320,14 +326,16 @@ func gtProbeAbortNote(output string) string {
 
 // classifyGTProbe maps the probe's combined output and exit code to a verdict.
 // Only gt's own ready line is a yes: an exit 0 that never confirms
-// submittability is unknown, not consent. Any nonzero exit is a no, recognized
-// or not — gt was asked and declined.
+// submittability is unknown, not consent. Any nonzero exit gt itself produced is
+// a no, recognized or not — gt was asked and declined.
 func classifyGTProbe(output string, code int) (gtVerdict, string) {
 	switch {
 	case code == 0 && strings.Contains(output, gtProbeReady):
 		return gtVerdictOK, ""
 	case strings.Contains(output, gtProbeUnreadable):
 		return gtVerdictUnknown, "graphite server unreachable"
+	case gtProbeLaunchRefused(output):
+		return gtVerdictUnknown, "gt could not start here: " + gtProbeFallbackNote(output)
 	case code == 0:
 		return gtVerdictUnknown, "gt auth exited 0 without confirming this repo is submittable"
 	case strings.Contains(output, gtProbeNoPerms):
@@ -337,6 +345,12 @@ func classifyGTProbe(output string, code int) (gtVerdict, string) {
 	default:
 		return gtVerdictDenied, gtProbeFallbackNote(output)
 	}
+}
+
+// gtProbeLaunchRefused reports whether the probe's output is a launcher's
+// refusal to start gt rather than anything gt said.
+func gtProbeLaunchRefused(output string) bool {
+	return strings.HasPrefix(strings.TrimSpace(output), gtProbeLauncherRefused)
 }
 
 // gtProbeFallbackNote summarizes an unrecognized failure as gt's first non-empty
