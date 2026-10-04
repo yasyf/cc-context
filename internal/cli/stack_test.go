@@ -1681,6 +1681,59 @@ func TestStackNewOntoTrunkFoundsALane(t *testing.T) {
 	}
 }
 
+func TestStackNewOntoALowerBranchOfThisStackJoinsTheLane(t *testing.T) {
+	f := shipGTRepo(t)
+	shipGTStack(t, f, "base", "feature")
+	out, _, err := runStackCmd(t, f, "new", "--full-history", "--parent", "base", "sibling")
+	if err != nil {
+		t.Fatalf("stack new: %v", err)
+	}
+	if got, want := laneAt(t, out[strings.LastIndex(out, shipSep)+len(shipSep):]), laneAt(t, f.Dir); got != want {
+		t.Errorf("lane = %q, want the lane %q it was cut from", got, want)
+	}
+}
+
+func TestWorktreeAddJoinsTheLaneOnlyForABranchOfThisStack(t *testing.T) {
+	f := shipGTRepo(t)
+	f.Isolate(t)
+	shipGTStack(t, f, "base", "feature")
+	mustRun(t, f.Env(), f.Dir, "git", "branch", "other", "main")
+	for _, tc := range []struct {
+		branch string
+		joins  bool
+	}{{"base", true}, {"other", false}} {
+		out, err := runWorktreeCmd(t, f, "add", tc.branch)
+		if err != nil {
+			t.Fatalf("worktree add %s: %v", tc.branch, err)
+		}
+		path := worktreeSummaryPath(t, out)
+		c, err := vcs.ResolveCheckout(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := c.Root
+		if tc.joins {
+			want = laneAt(t, f.Dir)
+		}
+		if got := laneAt(t, path); got != want {
+			t.Errorf("worktree add %s: lane = %q, want %q", tc.branch, got, want)
+		}
+	}
+}
+
+func laneAt(t *testing.T, dir string) string {
+	t.Helper()
+	c, err := vcs.ResolveCheckout(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lane, err := vcs.Lane(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return lane
+}
+
 func TestStackSubmitRefusesToStackOnAnUnpublishedBranchAnotherLaneHolds(t *testing.T) {
 	f := shipGTRepo(t)
 	api := stubGTAPI(t)

@@ -181,8 +181,9 @@ and submits; ccx vcs stack abort drops the run. A moved branch held by another
 working copy, or uncommitted work in the invoking checkout, stops publication
 before any branch moves.
 
-A working copy stack new cut onto the branch checked out where it ran joins
-that working copy's lane, and a branch any working copy of this lane has checked
+A working copy stack new cut onto a branch of the stack checked out where it
+ran, or one worktree add checked out on such a branch, joins that working
+copy's lane, and a branch any working copy of this lane has checked
 out is submitted as if it were checked out here. A branch a working copy of
 another lane has checked out is that lane's, so it is skipped and named with the
 working copy holding it, along with every branch stacked above it; --include

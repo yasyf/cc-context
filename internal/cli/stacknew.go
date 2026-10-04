@@ -246,15 +246,13 @@ func runStackNew(cmd *cobra.Command, name string, options stackNewOpts) error {
 		}
 		return fmt.Errorf("stack new: child %s at %s is incomplete; its worktree, ref, and metadata were retained for inspection: %w", name, path, err)
 	}
-	if parent == current {
-		t, err := trunk()
-		if err != nil {
+	joins, err := stackNewJoinsLane(ctx, l, current, parent, trunk)
+	if err != nil {
+		return err
+	}
+	if joins {
+		if err := laneJoin("stack new", src, path); err != nil {
 			return err
-		}
-		if parent != t {
-			if err := stackJoinLane(src, path); err != nil {
-				return err
-			}
 		}
 	}
 	cmd.Println(strings.Join(append(segs, "cut "+name+" onto "+parent+" at "+shortOID(base), path), shipSep))
@@ -408,17 +406,61 @@ func stackNewPath(ctx context.Context, checkout vcs.Checkout, name, requested st
 	return path, nil
 }
 
-// stackJoinLane puts the working copy cut at path into src's lane: stacked on
-// the branch src has checked out, it carries on src's work.
-func stackJoinLane(src lane, path string) error {
+// stackNewJoinsLane reports whether a child cut onto parent carries on the
+// lane checked out at current: parent is current, or shares its gt stack.
+func stackNewJoinsLane(ctx context.Context, l lane, current, parent string, trunk func() (string, error)) (bool, error) {
+	if current == "" {
+		return false, nil
+	}
+	t, err := trunk()
+	if err != nil {
+		return false, err
+	}
+	if parent == t || current == t {
+		return false, nil
+	}
+	if parent == current || !l.gt {
+		return parent == current, nil
+	}
+	state, err := gtStateQuery(ctx, l.dir(), "stack new")
+	if err != nil {
+		return false, err
+	}
+	return gtSameStack(state, t, parent, current), nil
+}
+
+// laneJoin puts the working copy at path into src's lane, so stack submit from
+// either one treats the branches the other holds as its own.
+func laneJoin(prefix string, src lane, path string) error {
 	created, err := vcs.ResolveCheckout(path)
 	if err != nil {
-		return fmt.Errorf("stack new: %w", err)
+		return fmt.Errorf("%s: %w", prefix, err)
 	}
 	if err := vcs.JoinLane(src.checkout, created); err != nil {
-		return fmt.Errorf("stack new: %w", err)
+		return fmt.Errorf("%s: %w", prefix, err)
 	}
 	return nil
+}
+
+func gtSameStack(state gtState, trunk, a, b string) bool {
+	return gtDescends(state, trunk, a, b) || gtDescends(state, trunk, b, a)
+}
+
+func gtDescends(state gtState, trunk, branch, ancestor string) bool {
+	for range len(state) + 1 {
+		switch branch {
+		case ancestor:
+			return true
+		case trunk:
+			return false
+		}
+		s, ok := state[branch]
+		if !ok || len(s.Parents) == 0 {
+			return false
+		}
+		branch = s.Parents[0].Ref
+	}
+	return false
 }
 
 func stackNewStart(ctx context.Context, l lane, parent, trunk string) (string, error) {
