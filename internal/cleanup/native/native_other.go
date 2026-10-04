@@ -31,3 +31,7 @@ func Background() error { return cleanup.ErrUnsupported }
 // ProcessUniqueID reports cleanup.ErrUnsupported: no process is identified
 // off darwin.
 func ProcessUniqueID(int) (uint64, error) { return 0, cleanup.ErrUnsupported }
+
+// ParentCommand reports cleanup.ErrUnsupported: no process is inspected off
+// darwin.
+func ParentCommand(int) (int, []string, error) { return 0, nil, cleanup.ErrUnsupported }

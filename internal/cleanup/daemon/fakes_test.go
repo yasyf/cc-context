@@ -411,6 +411,7 @@ type harness struct {
 	relocator *fakeRelocator
 	deleter   *fakeDeleter
 	cpu       *fakeCPU
+	parent    *fakeParent
 	engine    *Engine
 	running   chan error
 }
@@ -446,7 +447,28 @@ func newHarnessAt(t *testing.T, root string, tuning Tuning) *harness {
 	}
 	h.deleter = &fakeDeleter{h: h, payloads: make(map[string]*payload)}
 	h.cpu = &fakeCPU{h: h, err: errUnsampled, entered: make(chan struct{}, 16)}
+	h.parent = &fakeParent{}
 	return h
+}
+
+type fakeParent struct {
+	mu    sync.Mutex
+	asked []int
+}
+
+func (p *fakeParent) lookup(pid int) (int, []string, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.asked = append(p.asked, pid)
+	return 1, []string{"zsh", "-c", "ccx vcs cleanup pause"}, nil
+}
+
+func (p *fakeParent) takeAsked() []int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	asked := p.asked
+	p.asked = nil
+	return asked
 }
 
 func (h *harness) tree(name string) string {
@@ -586,6 +608,7 @@ func (h *harness) build() *Engine {
 		Relocator: h.relocator,
 		Deleter:   h.deleter,
 		CPU:       h.cpu,
+		Parent:    h.parent.lookup,
 		Version:   "v1.2.3",
 		Clock:     h.clock,
 		Tuning:    h.tuning,

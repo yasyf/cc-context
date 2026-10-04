@@ -204,10 +204,17 @@ func (s *server) dispatch(ctx context.Context, conn *net.UnixConn, line []byte) 
 		return incompatible(req.Protocol), false
 	}
 	switch req.Op {
-	case opRemove, opDefer, opAdopt:
+	case opRemove, opDefer, opAdopt, opPause, opResume:
 		pid, err := peerPID(conn)
 		if err != nil {
 			return failure(fmt.Errorf("cleanup daemon: identify the client behind the %s request: %w", req.Op, err)), false
+		}
+		if req.Op == opPause || req.Op == opResume {
+			reply := s.execute(ctx, req)
+			if reply.Error == nil {
+				s.engine.announce(req.Op, pid, req.Version)
+			}
+			return reply, false
 		}
 		return s.relocate(cleanup.WithRequester(ctx, pid), req), false
 	}

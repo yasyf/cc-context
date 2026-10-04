@@ -47,8 +47,13 @@ their publication rules. The public command group is `ccx vcs cleanup`.
 retries or inactivity checks. The pause survives daemon restarts. While
 paused, the daemon rejects `worktree rm`, `cleanup adopt`, and deferred
 workspace releases before any preparation or Git work. The error names
-`ccx vcs cleanup resume`. If `stack continue` reaches a refused release, it
-keeps its run state; retrying after resume reuses completed work.
+`ccx vcs cleanup resume`. A stack rebase, `stack continue`, or `stack abort`
+that meets a paused queue still finishes and leaves its conflict workspace in
+place, naming the `ccx vcs worktree rm` that removes it after resume.
+
+The daemon logs every `pause` and `resume` to `daemon.log` with the
+requesting process ID, its ccx version, and its parent's process ID and
+command line.
 
 `ccx vcs cleanup status` and `ccx vcs cleanup wait` are read-only: they query
 only the running daemon with one 5s hello and bounded requests, including
