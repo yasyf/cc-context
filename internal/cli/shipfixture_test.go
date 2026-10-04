@@ -842,6 +842,7 @@ exit 0
   "show --end-of-options") printf '%s' "$GIT_FILE_SHOW_BASE" ;;
   "ls-tree --full-tree") printf '100644 blob 1111111111111111111111111111111111111111\t%s\n' "$5" ;;
   "hash-object -w") printf '%s' '2222222222222222222222222222222222222222' ;;
+  "update-ref --stdin") cat > /dev/null ;;
   "diff --cached")
     if [ "$3" = "--quiet" ]; then
       if [ -n "$GIT_STAGED_EMPTY" ]; then exit 0; else exit 1; fi

@@ -4085,6 +4085,7 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 		stateJSON  string
 		prBranches []string
 		submitInv  [][]string
+		receiptInv [][]string
 		wantSeg    string
 	}{
 		{
@@ -4099,7 +4100,8 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 				[]string{"git", "merge-base", "--is-ancestor", fakeTrunkSHA, vcstest.GraphiteLeafSHA},
 				gtPushInv(gtHead("feature", vcstest.GraphiteLeafSHA)),
 			),
-			wantSeg: "submitted feature → PR #100 " + gtStubPRURL(100),
+			receiptInv: gtReceiptInv("feature"),
+			wantSeg:    "submitted feature → PR #100 " + gtStubPRURL(100),
 		},
 		{
 			name:   "depth 2",
@@ -4117,7 +4119,8 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 				[]string{"git", "merge-base", "--is-ancestor", "beadfeed", vcstest.GraphiteLeafSHA},
 				gtPushInv(gtHead("feature", "beadfeed"), gtHead("feature2", vcstest.GraphiteLeafSHA)),
 			),
-			wantSeg: "submitted feature2 → PR #101 " + gtStubPRURL(101) + " (stack of 2: feature, feature2)",
+			receiptInv: gtReceiptInv("feature", "feature2"),
+			wantSeg:    "submitted feature2 → PR #101 " + gtStubPRURL(101) + " (stack of 2: feature, feature2)",
 		},
 	}
 	for _, tt := range tests {
@@ -4154,6 +4157,7 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 				{"git", "log", "-1", "--format=%h%x00%s"},
 			}
 			want = append(want, tt.submitInv...)
+			want = append(want, tt.receiptInv...)
 			want = append(want,
 				[]string{"git", "rev-parse", "HEAD"},
 				ghRunListArgv, ghRunWatchArgv, ghRunViewArgv, ghRunListArgv, ghRunListArgv,
@@ -4202,6 +4206,7 @@ func TestShipGTTrunkStacksBranch(t *testing.T) {
 		gtCherryInv("main", vcstest.GraphiteLeafSHA, fakeTrunkSHA),
 		{"git", "merge-base", "--is-ancestor", fakeTrunkSHA, vcstest.GraphiteLeafSHA},
 		gtPushInv(gtHead("fix-frobnicate", vcstest.GraphiteLeafSHA)),
+	}, gtReceiptInv("fix-frobnicate"), [][]string{
 		{"git", "rev-parse", "HEAD"},
 		ghRunListArgv, ghRunWatchArgv, ghRunViewArgv, ghRunListArgv, ghRunListArgv,
 	})
@@ -6270,12 +6275,12 @@ func TestShipGTTipOnlyRootUsesDirectSubmit(t *testing.T) {
 	if !gitBranchExists(t, f.Env(), f.RemoteDir, "feature") {
 		t.Error("feature was not pushed")
 	}
-	present, err := gitRefExists(f.Context(), render.Dir(f.Dir), "test", stackPublicationRef("feature", "receipt"))
+	receipt, err := stackReadPublication(f.Context(), render.Dir(f.Dir), "feature")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if present {
-		t.Error("tip-only root created a stack publication receipt")
+	if head := shipHead(t, f); receipt == nil || receipt.Source != head || receipt.Head != head {
+		t.Errorf("receipt = %#v, want the direct submit's pushed head %s as both source and head", receipt, head)
 	}
 }
 

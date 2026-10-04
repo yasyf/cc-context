@@ -434,3 +434,24 @@ func TestStackNewSparsePreservesConcurrentChildIndex(t *testing.T) {
 		})
 	}
 }
+
+func TestStackNewPublishedParentAcceptsAPlainSubmitsReceipt(t *testing.T) {
+	f := stackRebaseRepo(t, "parent")
+	head := shipHead(t, f)
+	base := gitAt(t, f.Env(), f.Dir, "rev-parse", "refs/remotes/origin/main")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "--force", "origin", head+":refs/heads/parent")
+	plan := []gtSubmitBranch{{name: "parent", head: head, base: "main", baseSha: base}}
+	if err := gtRecordPushedPublication(f.Context(), render.Dir(f.Dir), plan); err != nil {
+		t.Fatal(err)
+	}
+	if err := gtRecordPushedPublication(f.Context(), render.Dir(f.Dir), plan); err != nil {
+		t.Fatalf("re-recording an unchanged publication: %v", err)
+	}
+	child := filepath.Join(t.TempDir(), "child")
+	if _, _, err := runStackCmd(t, f, "new", "--full-history", "child", "--published-parent", "--no-checkout", "--path", child); err != nil {
+		t.Fatal(err)
+	}
+	if got := gitAt(t, f.Env(), child, "rev-parse", "HEAD"); got != head {
+		t.Fatalf("child head = %s, want the published parent %s", got, head)
+	}
+}
