@@ -1486,6 +1486,24 @@ func stackPublishedParent(receipt *stackPublication, remote string, submitted gt
 }
 
 func stackRemoteHeads(ctx context.Context, dir render.Dir, prefix, remote string, branches []string, negotiationTip string) (map[string]string, error) {
+	heads, err := stackListRemoteHeads(ctx, dir, prefix, remote, branches)
+	if err != nil {
+		return nil, err
+	}
+	err = stackFetchRemoteHeads(ctx, dir, prefix, remote, heads, negotiationTip)
+	if err != nil && strings.Contains(err.Error(), "couldn't find remote ref") {
+		if heads, err = stackListRemoteHeads(ctx, dir, prefix, remote, branches); err != nil {
+			return nil, err
+		}
+		err = stackFetchRemoteHeads(ctx, dir, prefix, remote, heads, negotiationTip)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return heads, nil
+}
+
+func stackListRemoteHeads(ctx context.Context, dir render.Dir, prefix, remote string, branches []string) (map[string]string, error) {
 	argv := make([]string, 0, 2+len(branches))
 	argv = append(argv, "ls-remote", remote)
 	wanted := make(map[string]string, len(branches))
@@ -1504,8 +1522,12 @@ func stackRemoteHeads(ctx context.Context, dir render.Dir, prefix, remote string
 			heads[name] = sha
 		}
 	}
+	return heads, nil
+}
+
+func stackFetchRemoteHeads(ctx context.Context, dir render.Dir, prefix, remote string, heads map[string]string, negotiationTip string) error {
 	if len(heads) == 0 {
-		return heads, nil
+		return nil
 	}
 	names := slices.Sorted(maps.Keys(heads))
 	refs := make([]string, 0, len(names))
@@ -1514,7 +1536,7 @@ func stackRemoteHeads(ctx context.Context, dir render.Dir, prefix, remote string
 	}
 	localOut, err := render.RunCLIStdin(ctx, dir, "git", []string{"for-each-ref", "--format=%(refname) %(objectname)", "--stdin"}, []byte(strings.Join(refs, "\n")+"\n"))
 	if err != nil {
-		return nil, fmt.Errorf("%s: git for-each-ref: %w", prefix, err)
+		return fmt.Errorf("%s: git for-each-ref: %w", prefix, err)
 	}
 	local := map[string]string{}
 	for line := range strings.Lines(localOut) {
@@ -1537,10 +1559,10 @@ func stackRemoteHeads(ctx context.Context, dir render.Dir, prefix, remote string
 	}
 	if len(fetch) > baseLen {
 		if err := gitFetch(ctx, dir, fetch...); err != nil {
-			return nil, fmt.Errorf("%s: git fetch %s: %w", prefix, remote, err)
+			return fmt.Errorf("%s: git fetch %s: %w", prefix, remote, err)
 		}
 	}
-	return heads, nil
+	return nil
 }
 
 // stackSnapshot takes a remote that equals the branch's last submitted head

@@ -1884,9 +1884,14 @@ func gtParkedBases(ctx context.Context, dir render.Dir, plan []gtSubmitBranch, k
 		return err
 	}
 	for i, b := range plan {
-		if b.parkedOn != "" {
-			plan[i].parkedLease = heads[b.parkedOn]
+		if b.parkedOn == "" {
+			continue
 		}
+		if heads[b.parkedOn] == "" {
+			plan[i].parkedOn = ""
+			continue
+		}
+		plan[i].parkedLease = heads[b.parkedOn]
 	}
 	return nil
 }

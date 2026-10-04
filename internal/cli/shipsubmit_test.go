@@ -229,6 +229,37 @@ func TestStackSubmitRetargetsAParkedPullRequest(t *testing.T) {
 	}
 }
 
+func TestStackSubmitLeavesAGraphiteBaseTheRemoteDeleted(t *testing.T) {
+	f := shipGTRepo(t)
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	api.parkOn(f)
+	shipGTStack(t, f, "p", "c")
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("stack submit: %v", err)
+	}
+	api.prs["p"], api.prs["c"] = 100, 101
+	api.mu.Lock()
+	api.parkChildren([]gtapi.PreSubmitBranch{{HeadRefName: "p", PRNumber: 100}})
+	api.mu.Unlock()
+	mustRun(t, f.Env(), f.Dir, "git", "--git-dir="+f.RemoteDir, "update-ref", "-d", "refs/heads/graphite-base/101")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "p")
+	writeShipFile(t, f.Dir, "p.txt", "amended\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "p.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-q", "--amend", "--no-edit")
+	shipResetLog(t, f)
+
+	if _, errOut, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("stack submit: %v (stderr=%q)", err, errOut)
+	}
+	if refs := gtPushedRefs(shipGTInvocations(t, f)); slices.Contains(refs, "graphite-base/101") {
+		t.Errorf("pushed %v, want the deleted graphite-base/101 left deleted", refs)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "--git-dir="+f.RemoteDir, "for-each-ref", "refs/heads/graphite-base/"); got != "" {
+		t.Errorf("origin graphite-base refs = %q, want none", got)
+	}
+}
+
 func TestStackSubmitReplaysAChildGitHubShowsParked(t *testing.T) {
 	f := shipGTRepo(t)
 	api := stubGTAPI(t)
