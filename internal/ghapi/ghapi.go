@@ -206,7 +206,7 @@ func (c *Client) readCredential(ctx context.Context) (credential, error) {
 		return c.tokens, err
 	}
 	if _, _, err := src.token(ctx, c.repo, AppRefreshMargin, ""); err != nil {
-		src.unavailable(ctx, err)
+		src.unavailable(err)
 		return c.tokens, nil
 	}
 	return &appCredential{src: src, repo: c.repo}, nil
@@ -239,7 +239,7 @@ func (c *Client) AppToken(ctx context.Context, margin time.Duration) (string, ti
 	}
 	tok, _, err := src.token(ctx, c.repo, margin, "")
 	if err != nil {
-		src.unavailable(ctx, err)
+		src.unavailable(err)
 		return "", time.Time{}, nil
 	}
 	return tok.Token, tok.ExpiresAt, nil

@@ -170,46 +170,51 @@ func (a *appSource) token(ctx context.Context, repo string, margin time.Duration
 		if err := a.outage(); err != nil {
 			return err
 		}
-		bearer := sync.OnceValues(func() (string, error) { return a.jwt(ctx) })
-		known := false
-		id, known = a.cachedInstallation(repo)
-		if !known {
-			jwt, err := bearer()
-			if err != nil {
-				return err
-			}
-			if id, err = a.lookupInstallation(ctx, jwt, repo); err != nil {
-				return err
-			}
-			if err := a.storeInstallation(repo, id); err != nil {
-				return err
-			}
+		var err error
+		tok, id, err = a.mintLocked(ctx, repo, margin, stale)
+		if err != nil && !errors.Is(err, errNotInstalled) && ctx.Err() == nil {
+			a.storeOutage(err)
 		}
-		if id == 0 {
-			return errNotInstalled
-		}
-		if cached, ok := a.cachedToken(id, margin); ok && cached.Token != stale {
-			tok = cached
-			return nil
-		}
-		jwt, err := bearer()
-		if err != nil {
-			return err
-		}
-		if tok, err = a.mint(ctx, jwt, id); err != nil {
-			return err
-		}
-		return a.storeToken(id, tok)
+		return err
 	})
 	return tok, id, err
 }
 
-func (a *appSource) unavailable(ctx context.Context, err error) {
+func (a *appSource) mintLocked(ctx context.Context, repo string, margin time.Duration, stale string) (appToken, int64, error) {
+	bearer := sync.OnceValues(func() (string, error) { return a.jwt(ctx) })
+	id, known := a.cachedInstallation(repo)
+	if !known {
+		jwt, err := bearer()
+		if err != nil {
+			return appToken{}, 0, err
+		}
+		if id, err = a.lookupInstallation(ctx, jwt, repo); err != nil {
+			return appToken{}, 0, err
+		}
+		if err := a.storeInstallation(repo, id); err != nil {
+			return appToken{}, 0, err
+		}
+	}
+	if id == 0 {
+		return appToken{}, 0, errNotInstalled
+	}
+	if cached, ok := a.cachedToken(id, margin); ok && cached.Token != stale {
+		return cached, id, nil
+	}
+	jwt, err := bearer()
+	if err != nil {
+		return appToken{}, 0, err
+	}
+	tok, err := a.mint(ctx, jwt, id)
+	if err != nil {
+		return appToken{}, 0, err
+	}
+	return tok, id, a.storeToken(id, tok)
+}
+
+func (a *appSource) unavailable(err error) {
 	if errors.Is(err, errNotInstalled) {
 		return
-	}
-	if !errors.Is(err, errAppDown) && ctx.Err() == nil {
-		a.storeOutage(err)
 	}
 	a.warn.Do(func() {
 		slog.Warn("ghapi: github app unavailable, reading as the gh user", "app", a.cfg.Name, "err", err)

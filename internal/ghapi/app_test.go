@@ -480,3 +480,28 @@ func TestAFailedMintKeepsEveryProcessOnTheUserTokenForAWhile(t *testing.T) {
 		t.Errorf("tokens = %v, want every read on the user token", got)
 	}
 }
+
+func TestProcessesWaitingOnAFailingMintSkipTheKeyCommand(t *testing.T) {
+	t.Parallel()
+	_, ts := newFakeGitHub(t)
+	dir := t.TempDir()
+	var keyRuns atomic.Int32
+	var wg sync.WaitGroup
+	for range 4 {
+		wg.Go(func() {
+			src := testAppSource(ts.URL, dir)
+			src.key = func(context.Context) ([]byte, error) {
+				keyRuns.Add(1)
+				time.Sleep(100 * time.Millisecond)
+				return nil, errors.New("aws sso session expired")
+			}
+			if _, err := Paginate[item](context.Background(), appClient(ts.URL, src).ForRepo("o/r"), "/repos/o/r/pulls"); err != nil {
+				t.Errorf("Paginate: %v", err)
+			}
+		})
+	}
+	wg.Wait()
+	if n := keyRuns.Load(); n != 1 {
+		t.Errorf("key runs = %d, want 1: readers queued on the mint lock must see the outage it recorded", n)
+	}
+}
