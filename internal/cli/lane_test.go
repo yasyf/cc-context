@@ -305,6 +305,13 @@ func TestClassifyGTProbe(t *testing.T) {
 			note:    "gt auth failed without output",
 		},
 		{
+			name:    "a launcher that will not start gt is no answer",
+			output:  miseRefusal,
+			code:    1,
+			verdict: gtVerdictUnknown,
+			note:    miseRefusalNote,
+		},
+		{
 			name:    "a reworded ready line is not a success",
 			output:  "✅ All set to open PRs against github.com/yasyf/cc-context\n",
 			code:    0,
@@ -400,6 +407,11 @@ func TestShipGateUnansweredProbeKeepsTheLane(t *testing.T) {
 			note: func() string { return "graphite server unreachable" },
 		},
 		{
+			name: "a launcher that will not start gt",
+			stub: func(t *testing.T, f *vcstest.Fixture) { shipGTIntercept(t, f, "auth", miseRefusalScript(t)) },
+			note: func() string { return miseRefusalNote },
+		},
+		{
 			name:  "a hung probe under stack rebase",
 			stub:  func(t *testing.T, f *vcstest.Fixture) { shipGTAuthHang(t, f); shortenGTProbe(t) },
 			note:  func() string { return "gt auth did not answer within " + gtProbeTimeout.String() },
@@ -436,6 +448,42 @@ func TestShipGateUnansweredProbeKeepsTheLane(t *testing.T) {
 				t.Errorf("HEAD moved to %s, want nothing committed on an unanswered lane", got)
 			}
 		})
+	}
+}
+
+// miseRefusal is what mise's gt shim printed, exit 1, when asked to run gt auth
+// in a thin store whose mise.toml it did not trust.
+const miseRefusal = "mise ERROR error parsing config file: ~/.claude/stores/3c2012728a12/monorepo/mise.toml\n" +
+	"mise ERROR Config files in ~/.claude/stores/3c2012728a12/monorepo/mise.toml are not trusted.\n" +
+	"Trust them with `mise trust`. See https://mise.jdx.dev/cli/trust.html for more information.\n" +
+	"mise ERROR Version: 2026.9.15 macos-arm64 (2026-09-27)\n" +
+	"mise ERROR Run with --verbose or MISE_VERBOSE=1 for more information\n"
+
+const miseRefusalNote = "gt could not start here: mise ERROR error parsing config file: ~/.claude/stores/3c2012728a12/monorepo/mise.toml"
+
+func miseRefusalScript(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	writeShipFile(t, dir, "stderr", miseRefusal)
+	return "  /bin/cat '" + filepath.Join(dir, "stderr") + "' >&2\n  exit 1\n"
+}
+
+// TestGTReachabilityLauncherRefusalIsTransient proves a checkout whose launcher
+// will not start gt caches no verdict the repository's other checkouts would
+// ride: the record is a transient unknown, which every reader re-probes from its
+// own checkout instead of demoting for the hour a decline would hold.
+func TestGTReachabilityLauncherRefusalIsTransient(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake shell scripts are POSIX-only")
+	}
+	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	bin := t.TempDir()
+	execstub.Write(t, filepath.Join(bin, "gt"), "#!/bin/sh\n"+miseRefusalScript(t))
+	t.Setenv("PATH", bin)
+
+	verdict, note, transient, err := gtReachability(context.Background(), t.TempDir(), false)
+	if err != nil || verdict != gtVerdictUnknown || note != miseRefusalNote || !transient {
+		t.Fatalf("gtReachability() = (%q, %q, %v, %v), want (%q, %q, true, nil)", verdict, note, transient, err, gtVerdictUnknown, miseRefusalNote)
 	}
 }
 
