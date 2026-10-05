@@ -1806,7 +1806,7 @@ func tipOnlyAncestor(tipOnly bool, tip, name string) bool {
 func stackKeepsAncestor(ctx context.Context, dir render.Dir, pin string, b *stackRebaseBranch, parentKept, tipOnly bool) (bool, error) {
 	if b.Remote == "" {
 		if tipOnly {
-			return false, fmt.Errorf("stack rebase: --tip-only ships onto %s's published head, and it has none — push it first", b.Name)
+			return false, fmt.Errorf("stack rebase: --tip-only ships onto %s's published head, and the remote has none — push it first, or pass --landed %s if it just landed", b.Name, b.Name)
 		}
 		return false, nil
 	}
