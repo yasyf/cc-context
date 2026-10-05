@@ -671,7 +671,7 @@ func gtTrack(ctx context.Context, errW io.Writer, l lane, o shipOpts, branch str
 		o.parent = parent
 	}
 	argv := []string{"track", branch, "-f", "--no-interactive"}
-	replayed := ""
+	replayed, adopted := "", ""
 	untracked := fmt.Errorf("ship: gt track could not adopt %s — name the branch it was cut from with --parent <branch>, or pass --no-gt", branch)
 	if o.parent != "" {
 		argv = []string{"track", branch, "--parent", o.parent, "--no-interactive"}
@@ -679,6 +679,14 @@ func gtTrack(ctx context.Context, errW io.Writer, l lane, o shipOpts, branch str
 		state, err := c.at(ctx)
 		if err != nil {
 			return nil, "", err
+		}
+		if adopted, err = gtAdoptRecordedParent(ctx, errW, l, c, state, o.parent); err != nil {
+			return nil, "", err
+		}
+		if adopted != "" {
+			if state, err = c.at(ctx); err != nil {
+				return nil, "", err
+			}
 		}
 		if err := gtAdoptRefusal(ctx, l, o, state, branch, o.parent, c); err != nil {
 			return nil, "", err
@@ -733,11 +741,78 @@ func gtTrack(ctx context.Context, errW io.Writer, l lane, o shipOpts, branch str
 	if !tracked {
 		return nil, "", untracked
 	}
-	seg := "tracked " + branch
+	seg := adopted + "tracked " + branch
 	if len(s.Parents) > 0 {
 		seg += " onto " + s.Parents[0].Ref
 	}
 	return state, seg + picked + replayed, nil
+}
+
+type gtRecordedParent struct {
+	name, base string
+	pr         int
+}
+
+func gtAdoptRecordedParent(ctx context.Context, errW io.Writer, l lane, c *gtCache, state gtState, parent string) (string, error) {
+	trunk, err := gtTrunkBranch("ship", state)
+	if err != nil {
+		return "", err
+	}
+	var chain []gtRecordedParent
+	for name := parent; name != trunk; {
+		if _, tracked := state[name]; tracked {
+			break
+		}
+		local, err := gitRefExists(ctx, c.dir, "ship", gtRestackRef(name))
+		if err != nil {
+			return "", err
+		}
+		if !local && name == parent {
+			return "", nil
+		}
+		if !local {
+			return "", refuse("ship: %s, the parent Graphite records for %s, is no local branch — fetch it, or pass --no-gt", name, chain[len(chain)-1].name)
+		}
+		recorded, err := gtRecordedBase(ctx, l, name)
+		if err != nil {
+			return "", err
+		}
+		if recorded.base == "" {
+			return "", refuse("ship: %s is a branch graphite does not track here, and Graphite records no open pull request for it — track it with gt track %s --parent <its parent>, or pass --no-gt", name, name)
+		}
+		chain = append(chain, recorded)
+		name = recorded.base
+	}
+	var segs []string
+	for _, b := range slices.Backward(chain) {
+		r, runErr := gtRun(ctx, c.dir, []string{"track", b.name, "--parent", b.base, "--no-interactive"}, errW)
+		c.forget()
+		if err := gtReport(ctx, errW, r); err != nil {
+			return "", err
+		}
+		if runErr != nil {
+			return "", &gtAdvice{advice: fmt.Sprintf("ship: gt track could not adopt %s onto %s, its parent in Graphite's record of #%d — pass --no-gt to ship without graphite", b.name, b.base, b.pr), cause: runErr}
+		}
+		segs = append(segs, fmt.Sprintf("tracked %s onto %s from Graphite's record of #%d", b.name, b.base, b.pr)+shipSep)
+	}
+	return strings.Join(segs, ""), nil
+}
+
+func gtRecordedBase(ctx context.Context, l lane, branch string) (gtRecordedParent, error) {
+	owner, repo, err := gtRepoOwnerName(ctx, l, "ship")
+	if err != nil {
+		return gtRecordedParent{}, err
+	}
+	infos, err := gtAPI(ctx).PullRequestInfo(ctx, gtapi.PullRequestInfoRequest{RepoOwner: owner, RepoName: repo, PRHeadRefNames: []string{branch}, Callsite: "ccx"})
+	if err != nil {
+		return gtRecordedParent{}, fmt.Errorf("ship: read Graphite's record of %s: %w", branch, err)
+	}
+	for _, info := range infos {
+		if info.State == gtapi.PROpen && info.HeadRefName == branch {
+			return gtRecordedParent{name: branch, base: info.Newest().BaseName, pr: info.PRNumber}, nil
+		}
+	}
+	return gtRecordedParent{name: branch}, nil
 }
 
 func gtRootBase(ctx context.Context, dir render.Dir, branch, trunk string) (head, base string, root bool, err error) {
@@ -2325,7 +2400,7 @@ func gtPushStack(ctx context.Context, dir render.Dir, s gtSubmit, plan []gtSubmi
 	if err := thinRefuseAdoptedPush(ctx, dir, s.prefix, slices.Collect(maps.Keys(gtPushedHeads(plan)))); err != nil {
 		return err
 	}
-	_, err := render.RunCLI(ctx, dir, "git", gtPushArgv(s, plan))
+	err := gtRunPush(ctx, dir, s, plan)
 	if err == nil {
 		return thinRecordPush(ctx, dir, "origin", gtPushedHeads(plan))
 	}
@@ -2353,7 +2428,7 @@ func gtPushStack(ctx context.Context, dir render.Dir, s gtSubmit, plan []gtSubmi
 		plan[i].lease, plan[i].leaseSet = remote, true
 	}
 	if len(moved) == 0 {
-		_, err = render.RunCLI(ctx, dir, "git", gtPushArgv(s, plan))
+		err = gtRunPush(ctx, dir, s, plan)
 		if err == nil {
 			return thinRecordPush(ctx, dir, "origin", gtPushedHeads(plan))
 		}
@@ -2364,6 +2439,15 @@ func gtPushStack(ctx context.Context, dir render.Dir, s gtSubmit, plan []gtSubmi
 	}
 	problem := "remote " + strings.Join(moved, ", ") + " changed since last submit, by a push this repository did not make — fetch it and fold in what it added, then submit again"
 	return &gtAdvice{advice: gtStuck(s.prefix, problem, s.suffix), cause: err}
+}
+
+func gtRunPush(ctx context.Context, dir render.Dir, s gtSubmit, plan []gtSubmitBranch) error {
+	argv := gtPushArgv(s, plan)
+	_, err := render.RunCLI(ctx, dir, "git", argv)
+	if err != nil && gitPushRemoteFailed(err) {
+		_, err = render.RunCLI(ctx, dir, "git", argv)
+	}
+	return err
 }
 
 // gtRecordPushedPublication writes the publication receipt of each branch a

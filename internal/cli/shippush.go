@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/yasyf/cc-context/internal/render"
@@ -51,15 +52,31 @@ func gitPushStaleLease(err error) bool {
 	return strings.Contains(err.Error(), "(stale info)")
 }
 
+var (
+	gitRemoteProgressPattern = regexp.MustCompile(`^remote: ((Enumerating|Counting|Compressing) objects|Resolving deltas|Total \d)`)
+	gitRemoteRejectedPattern = regexp.MustCompile(`^! \[remote rejected\] +\S+ -> (\S+) \((.+)\)$`)
+)
+
+func gitPushLines(err error) []string {
+	lines := strings.FieldsFunc(err.Error(), func(r rune) bool { return r == '\n' || r == '\r' })
+	for i, line := range lines {
+		lines[i] = strings.TrimSpace(line)
+	}
+	return lines
+}
+
 // gitPushVerdict is what a failed push's stderr says about the refusal: the
 // remote's own lines and each ref's verdict, without the transfer progress
 // that buries them.
 func gitPushVerdict(err error) string {
 	var kept []string
-	for _, line := range strings.FieldsFunc(err.Error(), func(r rune) bool { return r == '\n' || r == '\r' }) {
-		line = strings.TrimSpace(line)
+	for _, line := range gitPushLines(err) {
+		if m := gitRemoteRejectedPattern.FindStringSubmatch(line); m != nil {
+			kept = append(kept, "the remote rejected "+m[1]+" ("+m[2]+")")
+			continue
+		}
 		switch {
-		case line == "remote:":
+		case line == "remote:", gitRemoteProgressPattern.MatchString(line):
 		case strings.HasPrefix(line, "remote:"), strings.HasPrefix(line, "! ["), strings.HasPrefix(line, "fatal:"):
 			kept = append(kept, line)
 		}
@@ -68,6 +85,21 @@ func gitPushVerdict(err error) string {
 		return err.Error()
 	}
 	return strings.Join(kept, "; ")
+}
+
+func gitPushRemoteFailed(err error) bool {
+	failed := false
+	for _, line := range gitPushLines(err) {
+		if !strings.HasPrefix(line, "! [") {
+			continue
+		}
+		m := gitRemoteRejectedPattern.FindStringSubmatch(line)
+		if m == nil || strings.HasSuffix(m[2], "declined") {
+			return false
+		}
+		failed = true
+	}
+	return failed
 }
 
 // jjPushRejected reports whether err carries jj's rejection for a bookmark the
