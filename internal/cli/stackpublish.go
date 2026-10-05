@@ -316,8 +316,13 @@ func stackPushPublication(ctx context.Context, dir render.Dir, s gtSubmit, plan 
 				return gtPushFailure(s, plan, err)
 			}
 			matched, readErr := stackRemoteMatchesPublication(ctx, dir, "origin", targets)
-			if readErr != nil || !matched {
+			if readErr != nil {
 				return errors.Join(gtPushFailure(s, plan, err), readErr)
+			}
+			if !matched {
+				if err := stackRepushOverEquivalent(ctx, dir, s, run.Pin, plan, err); err != nil {
+					return err
+				}
 			}
 		}
 		if err := thinRecordPush(ctx, dir, "origin", gtPushedHeads(plan)); err != nil {
@@ -332,6 +337,49 @@ func stackPushPublication(ctx context.Context, dir render.Dir, s gtSubmit, plan 
 	}
 	if !matched {
 		return errors.New("stack publication: remote heads changed after publication; retained the original receipts and source checkouts — ccx vcs stack abort drops the run")
+	}
+	return nil
+}
+
+// stackRepushOverEquivalent retries a push refused on a stale lease when every
+// branch the remote moved now holds the same patches this run publishes, as
+// the merge queue's own restack of a landed parent's children leaves them.
+func stackRepushOverEquivalent(ctx context.Context, dir render.Dir, s gtSubmit, pin string, plan []gtSubmitBranch, pushErr error) error {
+	names := make([]string, len(plan))
+	for i, b := range plan {
+		names[i] = b.name
+	}
+	heads, err := stackRemoteHeads(ctx, dir, stackRebasePrefix, "origin", names, pin)
+	if err != nil {
+		return errors.Join(gtPushFailure(s, plan, pushErr), err)
+	}
+	for i, b := range plan {
+		remote := heads[b.name]
+		if remote == b.lease {
+			continue
+		}
+		if remote == "" {
+			return gtPushFailure(s, plan, pushErr)
+		}
+		if remote == b.head {
+			plan[i].lease, plan[i].leaseSet = remote, true
+			continue
+		}
+		theirs, err := stackPatchSeries(ctx, dir, pin, remote)
+		if err != nil {
+			return err
+		}
+		ours, err := stackPatchSeries(ctx, dir, pin, b.head)
+		if err != nil {
+			return err
+		}
+		if theirs == nil || ours == nil || !slices.Equal(theirs, ours) {
+			return gtPushFailure(s, plan, pushErr)
+		}
+		plan[i].lease, plan[i].leaseSet = remote, true
+	}
+	if err := gtRunPush(ctx, dir, s, plan); err != nil {
+		return gtPushFailure(s, plan, err)
 	}
 	return nil
 }
