@@ -77,10 +77,10 @@ func stackRacedByRestack(t *testing.T, amended bool) (*vcstest.Fixture, string) 
 	if !filepath.IsAbs(hooks) {
 		hooks = filepath.Join(f.Dir, hooks)
 	}
-	if err := os.MkdirAll(hooks, 0o755); err != nil {
+	if err := os.MkdirAll(hooks, 0o750); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(hooks, "reference-transaction"), []byte(hook), 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(hooks, "reference-transaction"), []byte(hook), 0o700); err != nil { //nolint:gosec // a git hook must be executable
 		t.Fatal(err)
 	}
 	stubStackPRs(t, f, map[string]*stackPR{
