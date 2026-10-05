@@ -111,12 +111,14 @@ jj workspace, and "colocate" is impossible — jj refuses to create a colocated
 repo inside a git worktree. Without --jj, a jj workspace mints another workspace
 and everything else mints a git worktree.
 
-A git worktree cuts branch <name> from the remote trunk, fetched first, so a
-local trunk or HEAD left behind the remote never becomes the base; an existing
-branch <name> is checked out as it stands, and a repository with no remote cuts
-from HEAD. An existing branch on the gt stack of the branch checked out here
-joins this working copy's lane, so stack submit from either submits it. A jj workspace starts on trunk() after jj git fetch, or on the
-caller's parents with no remote. The summary names the base commit.`,
+A git worktree checks out an existing local branch <name> as it stands. If only
+the remote holds <name>, ccx fetches it and checks it out at the remote head
+without setting an upstream. This lets a removed lane resume at its published
+head. Otherwise, ccx cuts <name> from the freshly fetched remote trunk, or from
+HEAD when the repository has no remote. An existing branch on the gt stack of
+the branch checked out here joins this working copy's lane, so stack submit
+from either submits it. A jj workspace starts on trunk() after jj git fetch, or
+on the caller's parents with no remote. The summary names the base commit.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runWorktreeAdd(cmd, args[0], mode)
@@ -476,7 +478,7 @@ func runWorktreeAdd(cmd *cobra.Command, name, requested string) error {
 		if _, err := render.RunCLI(ctx, l.dir(), "git", args); err != nil {
 			return fmt.Errorf("worktree add: git worktree add %s: %w", path, err)
 		}
-		if base.rev == "" {
+		if base.rev == "" || base.existing {
 			if err := worktreeJoinLane(ctx, l, name, path); err != nil {
 				return err
 			}
@@ -515,9 +517,10 @@ func worktreeJoinLane(ctx context.Context, l lane, branch, path string) error {
 }
 
 type worktreeBase struct {
-	rev   string
-	label string
-	shas  []string
+	rev      string
+	label    string
+	shas     []string
+	existing bool
 }
 
 func (b worktreeBase) segment() string {
@@ -525,7 +528,7 @@ func (b worktreeBase) segment() string {
 	for i, sha := range b.shas {
 		short[i] = shortOID(sha)
 	}
-	if b.rev == "" {
+	if b.rev == "" || b.existing {
 		return "existing " + b.label + " at " + strings.Join(short, "+")
 	}
 	return "from " + b.label + " " + strings.Join(short, "+")
@@ -566,15 +569,37 @@ func worktreeGitBase(ctx context.Context, dir render.Dir, name string) (worktree
 	if trunk == "" {
 		return worktreeBase{}, fmt.Errorf("worktree add: %s names no default branch to cut %s from — run git remote set-head %s -a", remote, name, remote)
 	}
-	tracking := string(vcs.RemoteBranchRef(remote, trunk))
-	if err := gitFetch(ctx, dir, "--no-tags", "--no-write-fetch-head", remote, "+refs/heads/"+trunk+":"+tracking); err != nil {
-		return worktreeBase{}, fmt.Errorf("worktree add: git fetch %s %s: %w", remote, trunk, err)
+	published, err := worktreeRemoteHas(ctx, dir, remote, name)
+	if err != nil {
+		return worktreeBase{}, err
+	}
+	from := cmp.Or(published, trunk)
+	tracking := string(vcs.RemoteBranchRef(remote, from))
+	if err := gitFetch(ctx, dir, "--no-tags", "--no-write-fetch-head", remote, "+refs/heads/"+from+":"+tracking); err != nil {
+		return worktreeBase{}, fmt.Errorf("worktree add: git fetch %s %s: %w", remote, from, err)
 	}
 	sha, err := worktreeRevParse(ctx, dir, tracking)
 	if err != nil {
 		return worktreeBase{}, err
 	}
-	return worktreeBase{rev: sha, label: remote + "/" + trunk, shas: []string{sha}}, nil
+	return worktreeBase{rev: sha, label: remote + "/" + from, shas: []string{sha}, existing: published != ""}, nil
+}
+
+// worktreeRemoteHas returns name when remote holds branch name, asking the
+// remote itself: a clone whose fetch refspec maps only trunk has no
+// remote-tracking ref to consult.
+func worktreeRemoteHas(ctx context.Context, dir render.Dir, remote, name string) (string, error) {
+	ref := "refs/heads/" + name
+	out, err := render.RunCLI(ctx, dir, "git", []string{"ls-remote", "--heads", remote, ref})
+	if err != nil {
+		return "", fmt.Errorf("worktree add: git ls-remote %s %s: %w", remote, ref, err)
+	}
+	for line := range strings.Lines(out) {
+		if _, got, _ := strings.Cut(strings.TrimSpace(line), "\t"); got == ref {
+			return name, nil
+		}
+	}
+	return "", nil
 }
 
 func worktreeJJBase(ctx context.Context, dir render.Dir) (worktreeBase, error) {

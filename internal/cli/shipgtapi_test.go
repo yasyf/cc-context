@@ -48,6 +48,9 @@ type gtAPIStub struct {
 	parked map[string]string
 	remote func(args ...string) string
 	bases  map[string]string
+	// unrecorded counts, per branch, the coming submits Graphite answers for
+	// without adding a version, as it did for #30280 after a restack push.
+	unrecorded map[string]int
 
 	routes    []string
 	infoHeads [][]string
@@ -71,8 +74,9 @@ type gtStubUntracked struct {
 // gtStubSubmit is one submit post: the raw body ccx sent, and the lone entry
 // the recovered contract requires it to carry.
 type gtStubSubmit struct {
-	body  []byte
-	entry gtStubSubmitEntry
+	body       []byte
+	entry      gtStubSubmitEntry
+	unrecorded bool
 }
 
 // gtStubSubmitRequest is a submit post typed to the zod schema recovered from
@@ -140,6 +144,7 @@ func newGTAPIStub(t *testing.T) *gtAPIStub {
 		untracked:    map[int]gtStubUntracked{},
 		parked:       map[string]string{},
 		bases:        map[string]string{},
+		unrecorded:   map[string]int{},
 		nextPR:       100,
 	}
 	srv := httptest.NewServer(http.HandlerFunc(s.serve))
@@ -285,7 +290,11 @@ func (s *gtAPIStub) submit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	entry := req.PRs[0]
-	s.submits = append(s.submits, gtStubSubmit{body: body, entry: entry})
+	unrecorded := s.unrecorded[entry.Head] > 0
+	if unrecorded {
+		s.unrecorded[entry.Head]--
+	}
+	s.submits = append(s.submits, gtStubSubmit{body: body, entry: entry, unrecorded: unrecorded})
 	s.requireSubmitFields(entry)
 
 	if message := s.submitErrors[entry.Head]; message != "" {
@@ -449,7 +458,7 @@ func (s *gtAPIStub) submitHeads() []string {
 // reports as its pull request's newest. The caller holds s.mu.
 func (s *gtAPIStub) lastEntry(branch string) (gtStubSubmitEntry, bool) {
 	for _, submit := range slices.Backward(s.submits) {
-		if submit.entry.Head == branch {
+		if submit.entry.Head == branch && !submit.unrecorded {
 			return submit.entry, true
 		}
 	}

@@ -1800,8 +1800,71 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 			entries[created.Head] = stackEntry{Branch: created.Head, PR: created.PRNumber, URL: created.PRURL, HasBody: strings.TrimSpace(submit[i].body) != "", State: string(gtapi.PROpen), metaApplied: s.publication != nil && s.publication.TipOnly}
 		}
 	}
+	if err := gtConfirmVersions(ctx, client, owner, name, tr.Name(), submit, s.draft); err != nil {
+		return nil, nil, gtSubmitFailure(err, s)
+	}
 	gtRecordPushed(ctx, errW, owner+"/"+name, submit, entries)
 	return gtPlanNames(submit), entries, nil
+}
+
+const (
+	gtVersionAttempts = 3
+	gtVersionSettle   = time.Second
+)
+
+// gtConfirmVersions reads back each updated pull request and re-posts the ones
+// whose newest Graphite version still names another head. A submit can land
+// before Graphite records the push it describes, leaving the merge queue to
+// read the pull request's head as moved until something submits it again.
+func gtConfirmVersions(ctx context.Context, client *gtapi.Client, owner, name, trunk string, submit []gtSubmitBranch, draft bool) error {
+	stale := slices.DeleteFunc(slices.Clone(submit), func(b gtSubmitBranch) bool { return b.pr == 0 })
+	for attempt := 1; len(stale) > 0; attempt++ {
+		infos, err := client.PullRequestInfo(ctx, gtapi.PullRequestInfoRequest{
+			RepoOwner:        owner,
+			RepoName:         name,
+			PRHeadRefNames:   gtPlanNames(stale),
+			TrunkBranchNames: []string{trunk},
+			Callsite:         "ccx",
+		})
+		if err != nil {
+			return err
+		}
+		recorded := map[string]string{}
+		for _, pr := range infos {
+			if pr.State == gtapi.PROpen {
+				recorded[pr.HeadRefName] = pr.Newest().HeadSha
+			}
+		}
+		stale = slices.DeleteFunc(stale, func(b gtSubmitBranch) bool {
+			head, open := recorded[b.name]
+			return !open || head == b.head
+		})
+		if len(stale) == 0 {
+			return nil
+		}
+		if attempt == gtVersionAttempts {
+			behind := make([]string, len(stale))
+			for i, b := range stale {
+				at := "no version"
+				if head := recorded[b.name]; head != "" {
+					at = shortOID(head)
+				}
+				behind[i] = fmt.Sprintf("#%d at %s, pushed %s", b.pr, at, shortOID(b.head))
+			}
+			return fmt.Errorf("graphite still records %s after %d submits — rerun ccx vcs stack submit so the merge queue reads the pushed head", strings.Join(behind, "; "), attempt)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Duration(attempt) * gtVersionSettle):
+		}
+		for _, pr := range gtSubmitPRs(stale, draft) {
+			if _, err := client.SubmitPullRequests(ctx, gtapi.SubmitRequest{RepoOwner: owner, RepoName: name, TrunkBranchName: trunk, PRs: []gtapi.SubmitPR{pr}}); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // gtRecordPushed writes each pushed head into the shared pull request cache so

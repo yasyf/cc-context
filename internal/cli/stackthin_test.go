@@ -770,6 +770,46 @@ func TestStackNewThinAdoptsAPublishedParent(t *testing.T) {
 	thinRequireSource(t, f, before)
 }
 
+func TestStackNewFromAFullCheckoutAdoptsThePublishedParentByDefault(t *testing.T) {
+	t.Parallel()
+	f, receipt := thinPublishedParent(t)
+	before := thinSnap(t, f)
+	store := thinTestStore(t, f)
+
+	_, lane := thinNew(t, f, f.Dir, "child", "--parent", "parent", "--deepen", "--max-depth", "64")
+	if lane != thinTestLane(t, f, "child") {
+		t.Fatalf("lane = %s, want the store's child lane", lane)
+	}
+	thinRequireAdopted(t, f, store, receipt)
+	if got := gitAt(t, f.Env(), lane, "rev-parse", "HEAD"); got != receipt.Head {
+		t.Errorf("child head = %s, want the parent's publication %s", got, receipt.Head)
+	}
+	if got := thinGTParent(t, f, lane, "child"); got != "parent" {
+		t.Errorf("child's gt parent = %s, want parent", got)
+	}
+	thinRequireSource(t, f, before)
+}
+
+func TestStackNewRefusalForAnUnpublishedParentNamesBothFixes(t *testing.T) {
+	t.Parallel()
+	f := thinRepo(t, "parent")
+	thinCommit(t, f, f.Dir, "parent.txt", "parent work\n")
+	refs := thinRefs(t, f, f.Dir)
+
+	_, _, err := runStackCmd(t, f, "new", "child", "--parent", "parent")
+	for _, want := range []string{"parent has no publication", "ccx vcs stack submit", "ccx vcs stack new child --parent parent --full-history"} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("stack new = %v, want a refusal naming %q", err, want)
+		}
+	}
+	if got := thinRefs(t, f, f.Dir); got != refs {
+		t.Errorf("refusal moved source refs")
+	}
+	if _, err := os.Stat(thinTestLane(t, f, "child")); !os.IsNotExist(err) {
+		t.Errorf("refusal left a lane: %v", err)
+	}
+}
+
 var thinAdoptArgs = []string{"--parent", "parent", "--published-parent", "--thin", "--deepen", "--max-depth", "64"}
 
 func thinRequireAdopted(t *testing.T, f *vcstest.Fixture, store string, receipt *stackPublication) {
@@ -1032,8 +1072,8 @@ func TestStackNewStorageModes(t *testing.T) {
 		{name: "unset default and no checkout", args: []string{"--parent", "main", "--no-checkout"}, refusal: "--no-checkout conflicts with thin storage"},
 		{name: "env thin and no checkout", env: "thin", args: []string{"--parent", "main", "--no-checkout"}, refusal: "--no-checkout conflicts with thin storage"},
 		{name: "include without sparse", env: "full", args: []string{"--parent", "main", "--include", "keep"}, refusal: "--include checks out directories in a sparse lane"},
-		{name: "unset default source-only parent", args: []string{"--parent", "parent"}, refusal: "pass --published-parent"},
-		{name: "unpublished source-only parent", args: []string{"--thin", "--parent", "parent"}, refusal: "pass --published-parent"},
+		{name: "unset default source-only parent", args: []string{"--parent", "parent"}, refusal: "parent has no publication"},
+		{name: "unpublished source-only parent", args: []string{"--thin", "--parent", "parent"}, refusal: "parent has no publication"},
 		{name: "full history in the store", inStore: true, args: []string{"--full-history"}, refusal: "is a thin store"},
 		{name: "depth in the store", inStore: true, args: []string{"--depth", "8"}, refusal: "--depth and --deepen apply only"},
 		{name: "deepen without thin", env: "full", args: []string{"--parent", "main", "--deepen"}, refusal: "--depth and --deepen apply only"},

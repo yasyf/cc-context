@@ -17,6 +17,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs worktree add` restores branches the remote still holds.**
+  After a lane's local branch was removed, recreating it could cut from trunk
+  even while its pull request remained open. ccx now asks the remote for
+  `<name>`, fetches that branch, and checks out its head without setting an
+  upstream. The restored branch follows the same gt lane rules as an existing
+  local branch. The summary reports `existing origin/<name> at <sha>` when
+  using `origin`.
+
+- **Graphite submits confirm the recorded pull request head.**
+  After a restack push, Graphite could accept the submit while its newest
+  version still named the old head, causing merge preflight to refuse the PR.
+  Both `ship` and `stack submit` now read back updated PRs and resubmit those
+  whose recorded head differs from the pushed head. ccx makes at most three
+  reads, waiting one second and then two seconds before resubmitting. If the
+  heads still differ, the error names each PR, its recorded and pushed heads,
+  and `ccx vcs stack submit` as the command to rerun. Newly created PRs are not
+  read back.
+
+- **`ccx vcs stack new` adopts published parents automatically.**
+  On the Graphite lane, creating a thin lane from a full checkout now adopts
+  a parent held only in that checkout without requiring `--published-parent`.
+  Publication checks and bounded deepening still apply, and the adopted
+  parent stays frozen. If the parent has no publication, the refusal names
+  `ccx vcs stack submit` from its working copy and
+  `ccx vcs stack new <child> --parent <parent> --full-history` from a full
+  checkout. Outside the Graphite lane, it names the full-history command.
+
 - **`ccx vcs worktree add` cuts from the fetched remote trunk.** A bare
   `git worktree add` branched from the caller's HEAD, so a lane cut from a
   checkout whose local trunk sat behind origin started on a stale base. Git
