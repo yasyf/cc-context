@@ -1992,7 +1992,8 @@ func gtTipOnlyPlan(plan []gtSubmitBranch, run *stackRebaseRun) ([]gtSubmitBranch
 }
 
 // gtDropUnchanged leaves out a branch whose open pull request already carries
-// this head and base, unless its parent is resubmitted: Graphite's pre-submit
+// this head and base, and whose newest Graphite version records the same
+// parent, unless its parent is resubmitted: Graphite's pre-submit
 // moves every open child of a submitted branch that the submit leaves out onto
 // a graphite-base branch.
 func gtDropUnchanged(plan []gtSubmitBranch, last map[string]gtmeta.Version, known map[string]gtapi.PullRequestInfo, tip string, draft bool) (submit []gtSubmitBranch, unchanged []string) {
@@ -2001,7 +2002,7 @@ func gtDropUnchanged(plan []gtSubmitBranch, last map[string]gtmeta.Version, know
 		now := gtmeta.Version{HeadSha: b.head, BaseSha: b.baseSha, BaseName: b.base}
 		pr, open := known[b.name]
 		newest := pr.Newest()
-		if b.name != tip && !resubmitted[b.base] && b.pr != 0 && open && pr.IsDraft == draft && last[b.name] == now && pr.BaseRefName == b.base && newest.HeadSha == b.head && newest.BaseSha == b.baseSha {
+		if b.name != tip && !resubmitted[b.base] && b.pr != 0 && open && pr.IsDraft == draft && last[b.name] == now && pr.BaseRefName == b.base && newest.BaseName == b.base && newest.HeadSha == b.head && newest.BaseSha == b.baseSha {
 			unchanged = append(unchanged, b.name)
 			continue
 		}
