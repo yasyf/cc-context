@@ -570,7 +570,19 @@ func stackReopenBaseGone(ctx context.Context, l lane, nwo, remote string, run *s
 				}
 			}
 		case b.PR.Base:
-			jobs = append(jobs, repairJob{branch: b.Name, pr: got, base: b.Parent})
+			if !b.PR.BaseBack {
+				jobs = append(jobs, repairJob{branch: b.Name, pr: got, base: b.Parent})
+				break
+			}
+			if err := dropReopen(ctx, nwo, got.Number); err != nil {
+				return nil, err
+			}
+			if err := dropRetarget(ctx, nwo, got.Number, b.Parent); err != nil {
+				return nil, err
+			}
+			if err := dropVerifyRepair(ctx, nwo, []repairJob{{branch: b.Name, pr: got, base: b.Parent}}); err != nil {
+				return nil, err
+			}
 		default:
 			return nil, fmt.Errorf("stack rebase: %s's PR #%d now targets %s, neither the deleted %s nor %s — retarget it by hand, then re-run", b.Name, got.Number, got.BaseRefName, b.PR.Base, b.Parent)
 		}

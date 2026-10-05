@@ -63,6 +63,7 @@ type stackPR struct {
 	Labels     []string `json:"labels,omitempty"`
 	Landed     bool     `json:"landed"`
 	BaseGone   bool     `json:"base_gone,omitempty"`
+	BaseBack   bool     `json:"base_back,omitempty"`
 	ParkedFrom string   `json:"parked_from,omitempty"`
 }
 
@@ -966,7 +967,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 				b.WasParent = cmp.Or(publishedOn, b.WasParent)
 			} else if retracked {
 				b.Publication = receipt
-			} else if err := stackUsePublication(ctx, l.dir(), &b, receipt, published); err != nil {
+			} else if err := stackUsePublication(ctx, l.dir(), &b, receipt, pin, published); err != nil {
 				return nil, err
 			} else if receipt != nil && b.OldBase == receipt.Base && b.Head == receipt.Head {
 				stale, err := stackBaseInTrunk(ctx, l.dir(), receipt.Base, receipt.Head, pin)
@@ -1672,6 +1673,16 @@ func stackSnapshot(ctx context.Context, dir render.Dir, tr vcs.Trunk, s gtBranch
 		case behind:
 			b.Head = remote
 		case !ahead && remote != submitted:
+			if s.Head == submitted {
+				restacked, err := stackQueueRestackBase(ctx, dir, pin, remote, submitted)
+				if err != nil {
+					return b, err
+				}
+				if restacked != "" {
+					b.Head = remote
+					break
+				}
+			}
 			replay, err := stackRemoteReplays(ctx, dir, remote, submitted, pin)
 			if err != nil {
 				return b, err
@@ -1910,6 +1921,46 @@ func stackRemoteReplays(ctx context.Context, dir render.Dir, remote, submitted, 
 		return false, err
 	}
 	return theirs != nil && ours != nil && slices.Equal(theirs, ours), nil
+}
+
+// stackQueueRestackBase returns the trunk commit remote sits on when remote is
+// ours restacked onto another trunk commit with every commit keeping its
+// author, author date and message, as the merge queue restacks a pull request
+// even where resolving a conflict changed a patch; it returns "" otherwise.
+func stackQueueRestackBase(ctx context.Context, dir render.Dir, pin, remote, ours string) (string, error) {
+	commits := func(head string) (string, int, error) {
+		span := pin + ".." + head
+		merges, err := render.RunCLI(ctx, dir, "git", []string{"rev-list", "--merges", span})
+		if err != nil || strings.TrimSpace(merges) != "" {
+			return "", 0, err
+		}
+		out, err := render.RunCLI(ctx, dir, "git", []string{"log", "--reverse", "-z", "--format=%an <%ae> %at%n%B", span})
+		if err != nil {
+			return "", 0, fmt.Errorf("%s: git log %s: %w", stackRebasePrefix, span, err)
+		}
+		return out, strings.Count(out, "\x00"), nil
+	}
+	theirs, n, err := commits(remote)
+	if err != nil {
+		return "", err
+	}
+	mine, _, err := commits(ours)
+	if err != nil || mine == "" || theirs != mine {
+		return "", err
+	}
+	base, err := stackRevParse(ctx, dir, fmt.Sprintf("%s~%d", remote, n))
+	if err != nil {
+		return "", err
+	}
+	was, err := stackRevParse(ctx, dir, fmt.Sprintf("%s~%d", ours, n))
+	if err != nil || base == was {
+		return "", err
+	}
+	onTrunk, err := gitIsAncestor(ctx, dir, stackRebasePrefix, base, pin)
+	if err != nil || !onTrunk {
+		return "", err
+	}
+	return base, nil
 }
 
 func stackRestackedOntoTrunk(ctx context.Context, dir render.Dir, remote, base, head, pin string) (bool, error) {
@@ -3844,7 +3895,14 @@ func stackMarkBaseGone(ctx context.Context, dir render.Dir, tr vcs.Trunk, prs ma
 		}
 	}
 	for _, pr := range closed {
-		pr.BaseGone = !live[pr.Base]
+		if pr.BaseGone = !live[pr.Base]; pr.BaseGone {
+			continue
+		}
+		back, err := ghClosedByBaseDeletion(ctx, dir, pr.Number)
+		if err != nil {
+			return fmt.Errorf("stack rebase: %w", err)
+		}
+		pr.BaseGone, pr.BaseBack = back, back
 	}
 	return nil
 }

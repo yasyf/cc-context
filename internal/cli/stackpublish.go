@@ -84,7 +84,7 @@ func stackReadPublication(ctx context.Context, dir render.Dir, branch string) (*
 	return &receipt, nil
 }
 
-func stackUsePublication(ctx context.Context, dir render.Dir, b *stackRebaseBranch, receipt *stackPublication, published bool) error {
+func stackUsePublication(ctx context.Context, dir render.Dir, b *stackRebaseBranch, receipt *stackPublication, pin string, published bool) error {
 	if receipt == nil {
 		return nil
 	}
@@ -111,6 +111,11 @@ func stackUsePublication(ctx context.Context, dir render.Dir, b *stackRebaseBran
 		replayed, err := stackReplayedOnto(ctx, dir, b.Remote, base, receipt.Head)
 		if err != nil {
 			return err
+		}
+		if replayed == "" && b.Local == receipt.Source {
+			if replayed, err = stackQueueRestackBase(ctx, dir, pin, b.Remote, receipt.Head); err != nil {
+				return err
+			}
 		}
 		if replayed == "" && published {
 			b.Publication, b.WasParent = nil, was
