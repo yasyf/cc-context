@@ -1990,8 +1990,7 @@ func TestStackRebaseNamesTheRemotesRefusal(t *testing.T) {
 	}
 	msg := err.Error()
 	for _, want := range []string{
-		"stack rebase: the atomic push of base, feature moved nothing: remote: ref update refused by policy; ! [remote rejected] ",
-		"-> feature (pre-receive hook declined) — source checkouts are untouched; run ccx vcs stack continue to resume publication",
+		"stack rebase: the atomic push of base, feature moved nothing: remote: ref update refused by policy; the remote rejected base (pre-receive hook declined); the remote rejected feature (pre-receive hook declined) — source checkouts are untouched; run ccx vcs stack continue to resume publication",
 	} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("err = %q, want it to carry %q", msg, want)

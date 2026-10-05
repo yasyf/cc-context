@@ -51,8 +51,7 @@ func TestShipAmendNamesTheRemotesRefusalAndTheResume(t *testing.T) {
 		t.Fatal("ship --amend pushed past a declining remote")
 	}
 	for _, want := range []string{
-		"ship: the atomic push of feature moved nothing: ! [remote rejected] ",
-		"-> feature (pre-receive hook declined). The commit already landed",
+		"ship: the atomic push of feature moved nothing: the remote rejected feature (pre-receive hook declined). The commit already landed",
 		"ccx vcs ship --no-commit",
 	} {
 		if !strings.Contains(err.Error(), want) {

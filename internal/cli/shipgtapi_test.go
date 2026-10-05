@@ -45,9 +45,10 @@ type gtAPIStub struct {
 	nextPR         int
 	// parked maps a branch to the graphite-base branch pre-submit moved its
 	// pull request onto; remote reads and writes that branch on origin.
-	parked map[string]string
-	remote func(args ...string) string
-	bases  map[string]string
+	parked   map[string]string
+	remote   func(args ...string) string
+	bases    map[string]string
+	recorded map[string]string
 	// unrecorded counts, per branch, the coming submits Graphite answers for
 	// without adding a version, as it did for #30280 after a restack push.
 	unrecorded map[string]int
@@ -144,6 +145,7 @@ func newGTAPIStub(t *testing.T) *gtAPIStub {
 		untracked:    map[int]gtStubUntracked{},
 		parked:       map[string]string{},
 		bases:        map[string]string{},
+		recorded:     map[string]string{},
 		unrecorded:   map[string]int{},
 		nextPR:       100,
 	}
@@ -211,6 +213,9 @@ func (s *gtAPIStub) serve(w http.ResponseWriter, r *http.Request) {
 				if entry, ok := s.lastEntry(branch); ok {
 					pr["baseRefName"] = entry.Base
 					pr["versions"] = []map[string]any{{"headSha": entry.HeadSha, "baseSha": entry.BaseSha, "baseName": entry.Base, "createdAt": "2026-09-02T00:00:00.000Z"}}
+				}
+				if base := s.recorded[branch]; base != "" {
+					pr["versions"] = []map[string]any{{"baseName": base, "createdAt": "2026-09-02T00:00:00.000Z"}}
 				}
 				if base := s.bases[branch]; base != "" {
 					pr["baseRefName"] = base

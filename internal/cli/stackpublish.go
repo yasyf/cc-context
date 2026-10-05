@@ -307,7 +307,7 @@ func stackPushPublication(ctx context.Context, dir render.Dir, s gtSubmit, plan 
 		if err := stackSaveRun(run); err != nil {
 			return err
 		}
-		if _, err := render.RunCLI(ctx, dir, "git", gtPushArgv(s, plan)); err != nil {
+		if err := gtRunPush(ctx, dir, s, plan); err != nil {
 			if !gitPushStaleLease(err) {
 				return gtPushFailure(s, plan, err)
 			}

@@ -17,6 +17,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ship --parent` tracks local parents from Graphite's open PR records.**
+  A parent published from another clone could exist locally without gt
+  tracking it, causing ship to refuse. ccx now follows the newest PR
+  version's recorded parent until reaching a tracked branch or trunk, then
+  tracks the chain before the shipped branch. The report names each
+  adoption and PR. A local parent with no open PR record still needs manual
+  tracking or `--no-gt`; a recorded parent missing locally is named for
+  fetching. A missing requested parent still gets gt's own refusal.
+
+- **Graphite pushes retry remote failures once and name rejected refs.**
+  GitHub could reject a new ref with only `failed`, buried under transfer
+  progress, even though a later push succeeded. Ship and stack publication
+  now repeat the same atomic push once when every ref rejection comes from
+  the remote and no reason ends in `declined`. Each ref keeps its lease, so
+  a concurrent move is refused as stale. Policy declines are not retried.
+  The push verdict drops transfer progress and reports
+  `the remote rejected <ref> (<reason>)` alongside the remote's diagnostics.
+
 - **`ccx vcs worktree add` restores branches the remote still holds.**
   After a lane's local branch was removed, recreating it could cut from trunk
   even while its pull request remained open. ccx now asks the remote for
