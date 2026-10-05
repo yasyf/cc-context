@@ -17,6 +17,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Stack commands replay branches carrying landed commits.** After a bottom
+  PR squash-landed, `stack rebase --parent` or `stack submit` could keep its
+  child on the original parent commit and then refuse because the PR
+  included work already on trunk. The plan now checks local and published
+  heads for matching patches on fetched trunk, then replays the affected
+  branch and its descendants in the run. This also applies to
+  `stack rebase --linearize` and `ship` ancestors. Replay starts at the
+  landed parent's head, dropping the landed commit. `ship --tip-only` still
+  keeps every published ancestor; queued branches and another lane's pinned
+  branches follow the same rules as before.
+
 - **`ship --parent` tracks local parents from Graphite's open PR records.**
   A parent published from another clone could exist locally without gt
   tracking it, causing ship to refuse. ccx now follows the newest PR
