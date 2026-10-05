@@ -269,6 +269,36 @@ func TestWorktreeAddChecksOutExistingBranch(t *testing.T) {
 	}
 }
 
+func TestWorktreeAddChecksOutTheRemoteBranch(t *testing.T) {
+	f := vcstest.Repo(t, vcstest.Remote())
+	f.Isolate(t)
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-q", "--allow-empty", "-m", "published")
+	published := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "HEAD:refs/heads/feat")
+	mustRun(t, f.Env(), f.Dir, "git", "reset", "-q", "--hard", "HEAD~1")
+	mustRun(t, f.Env(), f.Dir, "git", "update-ref", "-d", "refs/remotes/origin/feat")
+	restackAdvanceRemote(t, f, "main", "upstream.txt", "upstream\n")
+
+	out, err := runWorktreeCmd(t, f, "add", "feat")
+	if err != nil {
+		t.Fatalf("add error = %v", err)
+	}
+	path := worktreeSummaryPath(t, out)
+	want := strings.Join([]string{"added feat", "git worktree", "existing origin/feat at " + shortOID(published), path}, shipSep) + "\n"
+	if out != want {
+		t.Errorf("summary = %q, want %q", out, want)
+	}
+	if got := gitAt(t, f.Env(), path, "rev-parse", "HEAD"); got != published {
+		t.Errorf("feat HEAD = %s, want origin's feat %s", got, published)
+	}
+	if got := gitAt(t, f.Env(), path, "symbolic-ref", "--short", "HEAD"); got != "feat" {
+		t.Errorf("checked out %q, want feat", got)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "config", "--default", "", "--get", "branch.feat.merge"); got != "" {
+		t.Errorf("branch.feat.merge = %q, want no upstream", got)
+	}
+}
+
 func TestWorktreeAddWithoutRemoteCutsFromHead(t *testing.T) {
 	f := vcstest.Repo(t)
 	f.Isolate(t)

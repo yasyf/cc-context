@@ -64,3 +64,54 @@ func TestShipGTLeasesARemoteHeadNoTrackingRefRecords(t *testing.T) {
 		})
 	}
 }
+
+func TestShipGTResubmitsUntilGraphiteRecordsThePushedHead(t *testing.T) {
+	for _, scenario := range []struct {
+		name       string
+		unrecorded int
+		posts      int
+		refused    bool
+	}{
+		{name: "recorded on the resubmit", unrecorded: 1, posts: 2},
+		{name: "never recorded", unrecorded: 10, posts: gtVersionAttempts, refused: true},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			f := shipGTRepo(t)
+			api := stubGTAPI(t)
+			f.Decorate(api.ctx)
+			writeShipGH(t, f)
+			api.prs["feature"] = 7
+			seedPRViews(t, map[string]string{"feature": `{"number":7,"url":"https://github.com/x/pull/7","body":""}`})
+			shipGTStack(t, f, "feature")
+			mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "feature")
+			shipGTReady(t, f)
+			api.unrecorded["feature"] = scenario.unrecorded
+
+			out, _, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--no-watch")
+			head := shipHead(t, f)
+			if got := gitAt(t, f.Env(), f.Dir, "--git-dir="+f.RemoteDir, "rev-parse", "feature"); got != head {
+				t.Errorf("remote feature = %s, want the pushed %s", got, head)
+			}
+			heads := api.submitHeads()
+			if len(heads) != scenario.posts {
+				t.Errorf("submit posts = %v, want %d for feature", heads, scenario.posts)
+			}
+			for _, b := range api.submitBodies() {
+				if !strings.Contains(string(b), head) {
+					t.Errorf("submit %s does not carry the pushed head %s", b, head)
+				}
+			}
+			if scenario.refused {
+				for _, want := range []string{"#7", shortOID(head), "ccx vcs stack submit"} {
+					if err == nil || !strings.Contains(err.Error(), want) {
+						t.Errorf("ship error = %v, want it to name %q; output = %s", err, want, out)
+					}
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ship error = %v; output = %s", err, out)
+			}
+		})
+	}
+}

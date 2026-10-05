@@ -124,7 +124,7 @@ func runStackNew(cmd *cobra.Command, name string, options stackNewOpts) error {
 			segs = append(segs, "created thin store "+store.root)
 		}
 		l = store
-		if adopted, err = stackThinParent(ctx, src, store, parent, s.trunk, options); err != nil {
+		if adopted, err = stackThinParent(ctx, src, store, name, parent, s.trunk); err != nil {
 			return err
 		}
 		if adopted != nil {
@@ -268,7 +268,7 @@ func stackNewPinned(receipts ...*stackPublication) string {
 	return ""
 }
 
-func stackThinParent(ctx context.Context, src, store lane, parent, trunk string, options stackNewOpts) (*stackPublication, error) {
+func stackThinParent(ctx context.Context, src, store lane, name, parent, trunk string) (*stackPublication, error) {
 	if parent == trunk {
 		return nil, nil
 	}
@@ -283,15 +283,16 @@ func stackThinParent(ctx context.Context, src, store lane, parent, trunk string,
 	if present && !adopted {
 		return nil, stackThinSameParent(ctx, src, store, parent)
 	}
-	if !options.published {
-		return nil, fmt.Errorf("stack new: %s lives outside thin store %s; pass --published-parent to bring its publication in, or create the lane with --full-history", parent, store.root)
+	fullHistory := fmt.Sprintf("ccx vcs stack new %s --parent %s --full-history", name, parent)
+	if !src.gt {
+		return nil, fmt.Errorf("stack new: %s lives outside thin store %s, and only the graphite lane brings a parent's publication in; cut the lane from this checkout's full history with %s", parent, store.root, fullHistory)
 	}
 	receipt, err := stackReadPublication(ctx, src.dir(), parent)
 	if err != nil {
 		return nil, err
 	}
 	if receipt == nil {
-		return nil, fmt.Errorf("stack new: %s has no publication receipt; publish it first", parent)
+		return nil, fmt.Errorf("stack new: %s lives outside thin store %s and %s has no publication to bring in; publish it with ccx vcs stack submit from its working copy and rerun, or cut the lane from this checkout's full history with %s", parent, store.root, parent, fullHistory)
 	}
 	if err := stackVerifyNewParent(ctx, src.dir(), receipt); err != nil {
 		return nil, err

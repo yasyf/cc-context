@@ -126,20 +126,28 @@ the [stack conflict guide](stack-rebase.md).
 
 ## Stack on a published parent
 
-When a parent exists only in the source checkout, use `--published-parent`.
-From the source checkout of a Graphite stack, create a child of a parent
-already published onto trunk:
+On the Graphite lane, ccx automatically adopts a parent that exists only in
+the source checkout. From that checkout, create a child of a parent already
+published onto trunk:
 
 ```sh
-ccx vcs stack new agent-child --thin --parent parent-work --published-parent
+ccx vcs stack new agent-child --parent parent-work
 ```
 
 ccx verifies the parent's publication receipt against the source checkout
 and the remote, brings the parent into the store at its published head, and
 copies the receipt. The store's Graphite metadata records that parent as
 frozen: no submit from the store pushes or rewrites it. Only parents
-published onto trunk can be adopted. An unpublished parent is refused,
-naming `--published-parent` or `--full-history`.
+published onto trunk can be adopted.
+
+If the parent has no publication, ccx refuses and names both recovery commands.
+Run `ccx vcs stack submit` from the parent's working copy and retry, or run
+`ccx vcs stack new agent-child --parent parent-work --full-history` from the
+full checkout. Outside the Graphite lane, the refusal names only the
+`--full-history` command.
+
+`--published-parent` is still accepted. With `--full-history`, it starts
+the child at the parent's verified publication.
 
 Every store push path (`stack submit`, stack publication, `ship` on the git
 and gt lanes, and `ccx vcs push`) refuses before pushing a branch with ccx's
@@ -148,12 +156,11 @@ Graphite record. The refusal directs you to publish from the source
 checkout that owns the branch. Retry the adopting `stack new` to repair an
 interrupted adoption.
 
-When the source republishes an adopted parent, the next
-`stack new ... --published-parent` from the source refreshes the store's
-branch, adoption mark, frozen record, and receipt to the new published
-head. Existing children keep their recorded fork, so their next rebase or
-submit replays only their own commits onto that head; the parent itself is
-never pushed.
+When the source republishes an adopted parent, creating another child from
+the source refreshes the store's branch, adoption mark, frozen record, and
+receipt to the new published head. Existing children keep their recorded
+fork, so their next rebase or submit replays only their own commits onto
+that head; the parent itself is never pushed.
 
 ### Deepen to reach the parent's published base
 
@@ -161,8 +168,7 @@ If the published base lies beyond the store's history, creation refuses.
 Retry with `--deepen` to permit bounded deepening:
 
 ```sh
-ccx vcs stack new agent-child --thin --parent parent-work --published-parent \
-  --deepen --max-depth 4096
+ccx vcs stack new agent-child --parent parent-work --deepen --max-depth 4096
 ```
 
 `--max-depth N` caps deepening and defaults to 4096. ccx fetches trunk with
@@ -181,7 +187,7 @@ segment. A refused deepen can leave the store deeper; history only grows.
 | `--include` outside the store without `--thin` or `--sparse` | Select `--thin` or `--sparse`, or run from inside the store |
 | Invalid `CCX_STACK_NEW` value | Set `thin` or `full`, or unset it |
 | The store's own same-named parent differs from the source parent | Creation refuses before changes and names both commits; cut from the store's checkout of that branch, or use `--full-history` |
-| A source-only parent lacks a verified publication onto trunk | Use `--published-parent` after publishing onto trunk, or `--full-history` from the full checkout |
+| A source-only parent lacks a verified publication onto trunk | On the Graphite lane, run `ccx vcs stack submit` from the parent's working copy and retry, or run `ccx vcs stack new <child> --parent <parent> --full-history` from a full checkout; outside the Graphite lane, use the full-history command |
 | A store push targets a branch with ccx's adoption mark, even without a frozen Graphite record | Publish from the source checkout that owns it; retry the adopting `stack new` to repair an interrupted adoption |
 | The published base is outside the store's history | Retry with `--deepen` and an explicit `--max-depth` cap if needed |
 | cc-notes is missing or has no `storage bind` command | Install a cc-notes release with `storage bind`; until binding succeeds, ccx installs no store |

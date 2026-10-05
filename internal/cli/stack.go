@@ -86,9 +86,15 @@ before installing it, so cc-notes must provide that command, and every later
 refusing a store bound elsewhere or not at all. The first thin lane
 creates the store; a lane cut from a checkout of the store is a linked worktree
 of it whatever the flags say, sparse like its caller unless --no-checkout is
-given. A parent the store does not hold needs --published-parent: its
-publication is verified against this checkout and the remote, and the store
-takes it frozen at its published head, so no submit from the store rewrites it.
+given. On the graphite lane, a parent the store does not hold is adopted
+automatically from its publication. ccx verifies that publication against this
+checkout and the remote, then freezes the parent at its published head so no
+submit from the store rewrites it. If the parent has no publication, the refusal
+names both fixes: run ccx vcs stack submit from its working copy, or run
+ccx vcs stack new <name> --parent <parent> --full-history from a full checkout.
+Outside the graphite lane, the refusal names the --full-history command.
+--published-parent is still accepted; with --full-history, it starts the child
+at the parent's verified publication.
 When its published base lies past the store's history, --deepen fetches trunk
 history down to it, never more than --max-depth commits; without it the lane is
 refused. --full-history cuts the lane from this checkout's own full history
