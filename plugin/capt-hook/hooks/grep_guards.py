@@ -22,7 +22,7 @@ from captain_hook import (
     rewrite_command_occurrences,
 )
 
-from .common import LITERAL_SAFE, ccx_supports
+from .common import LITERAL_SAFE, ccx_supports, first_sight
 from .search_common import (
     CONTEXT_OPTIONS,
     DEP_STEER,
@@ -394,7 +394,7 @@ def grep_visit(evt: PreToolUseEvent, occ: Occurrence, ctx: WalkContext) -> str |
     if (text := build_ccx_grep(parsed)) is None:
         return None
     if ctx.spliceable:
-        return Rewritten(text, note=search_note(parsed))
+        return Rewritten(text, note=first_sight(evt, search_note(parsed)))
     return evt.block(GREP_FLOOD) if flood else None
 
 

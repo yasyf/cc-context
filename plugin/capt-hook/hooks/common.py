@@ -12,6 +12,8 @@ from typing import TYPE_CHECKING
 from captain_hook import BaseHookEvent, CommandLine, Deque, DurableState, resolve_binary
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from captain_hook import Call, Command
     from cc_transcript.command import Occurrence
 
@@ -38,9 +40,29 @@ SHELL_WORD_EXECUTABLES = frozenset({"time", "command", "builtin", "exec", "eval"
 
 SUBCOMMAND_TOKEN = re.compile(r"^[a-z][a-z0-9-]*$")
 
+MAIN_CONTEXT = "main"
 
-def rewrote_note(dst: str, gain: str = "same output, token-bounded") -> str:
+NOTE_SCOPE = "ccx-note"
+
+
+def context_key(evt: BaseHookEvent) -> str:
+    return f"agent:{evt.agent_id}" if evt.is_subagent else MAIN_CONTEXT
+
+
+def first_sight(evt: BaseHookEvent, note: str) -> str | None:
+    return note if evt.ctx.s.once(note, scope=f"{NOTE_SCOPE}:{context_key(evt)}") else None
+
+
+def once_note(note: str) -> Callable[..., str | None]:
+    return lambda evt, *_: first_sight(evt, note)
+
+
+def rewrote_text(dst: str, gain: str = "same output, token-bounded") -> str:
     return f"Rewrote the command to `{dst}`: {gain}."
+
+
+def rewrote_note(dst: str, gain: str = "same output, token-bounded") -> Callable[..., str | None]:
+    return once_note(rewrote_text(dst, gain))
 
 
 def call_of(evt: BaseHookEvent, occ: Occurrence) -> Call:

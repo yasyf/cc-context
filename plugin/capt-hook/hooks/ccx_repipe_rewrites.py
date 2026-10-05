@@ -17,7 +17,7 @@ from captain_hook import (
     rewrite_command,
 )
 
-from .common import ccx_bin, command_expands, rewrote_note
+from .common import ccx_bin, command_expands, once_note, rewrote_note
 from .headtail_rewrites import headtail_parse
 
 if TYPE_CHECKING:
@@ -124,7 +124,7 @@ rewrite_command(
     only_if=[CcxPipedToSink(REPO_FIND)],
     skip_if=[Annotated("raw")],
     to=repo_find_to,
-    note="Dropped the `| head` pipe: `ccx repo find` output is already token-budget-capped.",
+    note=once_note("Dropped the `| head` pipe: `ccx repo find` output is already token-budget-capped."),
     tests={
         Input(command='ccx repo find "**/*.go" | head -20'): Rewrite(pattern="repo find '**/*.go'"),
         Input(command="ccx repo find $(printf '**/*.go') | head -20"): Allow(),
@@ -139,7 +139,7 @@ rewrite_command(
     only_if=[CcxPipedToSink(VCS_SHIP)],
     skip_if=[Annotated("raw")],
     to=vcs_ship_to,
-    note="Dropped the pipe after `ccx vcs ship`, which would mask its exit status.",
+    note=once_note("Dropped the pipe after `ccx vcs ship`, which would mask its exit status."),
     tests={
         Input(command="ccx vcs ship -m fix | tail -20"): Rewrite(pattern="vcs ship -m fix"),
         Input(command="ccx vcs ship -m fix | head -5"): Rewrite(pattern="vcs ship -m fix"),

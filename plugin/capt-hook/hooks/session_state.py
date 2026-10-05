@@ -22,13 +22,13 @@ from captain_hook import (
 )
 from pydantic import BaseModel
 
+from .common import context_key
+
 LOG_CAP = 512
 
 MEDIA_SUFFIXES = frozenset(
     {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".ico", ".tif", ".tiff", ".pdf"}
 )
-
-MAIN_CONTEXT = "main"
 
 READ_MESSAGE = (
     "You already read this file this session. "
@@ -51,10 +51,6 @@ class FileAccess(BaseModel):
 @session_state
 class FileAccessLog(BaseModel):
     accesses: Deque[FileAccess, LOG_CAP]
-
-
-def context_key(evt: BaseHookEvent) -> str:
-    return f"agent:{evt.agent_id}" if evt.is_subagent else MAIN_CONTEXT
 
 
 def resolved_path(evt: BaseHookEvent) -> Path | None:
