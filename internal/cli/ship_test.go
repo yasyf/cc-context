@@ -5111,6 +5111,22 @@ func TestShipGTPathScoped(t *testing.T) {
 	}
 }
 
+func TestShipGTPathScopedTakesAStagedDeletion(t *testing.T) {
+	f := shipGTFeature(t)
+	writeShipFile(t, f.Dir, "src/a.go", "a\n")
+	gitAt(t, f.Env(), f.Dir, "rm", "-qf", "f.txt")
+
+	if _, err := runShipCmd(f.Context(), t, "-m", "fix: drop f", "--no-push", "f.txt", "src/a.go"); err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	if names := gitAt(t, f.Env(), f.Dir, "show", "--name-status", "--format=", "HEAD"); names != "D\tf.txt\nA\tsrc/a.go" {
+		t.Errorf("committed %q, want the staged deletion and the added path", names)
+	}
+	if status := gitAt(t, f.Env(), f.Dir, "status", "--porcelain"); status != "" {
+		t.Errorf("working copy = %q, want everything shipped", status)
+	}
+}
+
 // TestShipGTHunkScoped drives the throwaway-index technique the gt lane borrows
 // from the git lane: only the named hunk reaches the commit, the working copy
 // file is never rewritten, and the real index is restored afterwards — which is

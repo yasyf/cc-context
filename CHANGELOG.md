@@ -109,6 +109,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reported as `kept local <branch> at <sha> instead of its published head
   <sha> (<reason>)`.
 
+- **`stack rebase` and `stack submit` retarget pull requests onto their parents.**
+  An open pull request could remain based on another branch after a rewrite,
+  with only `base X ≠ parent` in its verdict. ccx now retargets it onto the
+  recorded parent and reports `retargeted onto <parent> from <old base>`.
+  If GitHub refuses, the verdict names the exact `gh api` command to finish
+  the move and includes the error.
+
+- **`stack rebase` and `stack submit` follow republished parents in thin stores.**
+  After a source checkout amended and republished an adopted parent, a child's
+  rebase or submit in the thin store could refuse with
+  `holds commits this lane has never held`. ccx now follows the pushed head
+  when the store's branch still matches its adoption mark, updates the mark
+  and frozen Graphite record, and replays the child onto it. `--dry-run`
+  reports the move without changing refs. The parent is never pushed from
+  the store; a branch moved away from its adoption mark still gets the refusal.
+
+- **`ship` accepts paths whose deletion is already staged.**
+  Naming a path already removed from the working copy and index caused
+  `git add -A -- <path>` to fail with `pathspec ... did not match any files`.
+  ccx now leaves these paths out of the add when HEAD still holds them, and
+  the commit takes the staged deletions. A path in neither the working copy,
+  the index, nor HEAD still fails in Git as a typo.
+
 ### Changed
 
 - **Thin stores share the source checkout's cc-notes records.** Before ccx
