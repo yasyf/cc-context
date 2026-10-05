@@ -1031,10 +1031,14 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 		return nil, err
 	}
 	kept := map[string]bool{trunk: true}
+	inherits := map[string]bool{}
 	for _, name := range order {
 		b := byName[name]
 		if b.Landed != "" || b.Held != "" {
 			continue
+		}
+		if inherits[name], err = stackInheritsTrunk(ctx, l.dir(), trunk, pin, b, inherits); err != nil {
+			return nil, err
 		}
 		_, named := overrides[name]
 		switch {
@@ -1045,9 +1049,9 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 				return nil, fmt.Errorf("stack submit: %s is another lane's and has never been pushed, so there is no published head to stack on — submit it from its own working copy first, or take it into this run with --include %s or --all-lanes", name, name)
 			}
 			b.Kept, b.Pinned = true, true
-		case queued[name] || (moving != nil && !moving[name]):
+		case queued[name] || (moving != nil && !moving[name] && !inherits[name]):
 			b.Kept = stackPinPublished(b)
-		case o.tip != "" && name != o.tip && !o.restack:
+		case o.tip != "" && name != o.tip && !o.restack && (o.tipOnly || !inherits[name]):
 			if b.Kept, err = stackKeepsAncestor(ctx, l.dir(), pin, b, kept[b.Parent], o.tipOnly); err != nil {
 				return nil, err
 			}
@@ -1070,7 +1074,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 				return nil, err
 			}
 			b.Bump = slices.Contains(o.bump, name)
-			if o.stayClean && !b.Bump && b.Parent == trunk && b.WasParent == trunk && b.Remote != "" && b.OldBase != pin && (b.PR == nil || b.PR.Mergeable != "CONFLICTING") {
+			if o.stayClean && !b.Bump && !inherits[name] && b.Parent == trunk && b.WasParent == trunk && b.Remote != "" && b.OldBase != pin && (b.PR == nil || b.PR.Mergeable != "CONFLICTING") {
 				if b.Stays, err = stackMergesClean(ctx, l.dir(), pin, stackUpstackHeads(order, byName, name)); err != nil {
 					return nil, err
 				}
@@ -2227,6 +2231,26 @@ func stackOwnWork(ctx context.Context, dir render.Dir, tr vcs.Trunk, pin string,
 	}
 	return fmt.Errorf("stack rebase: %s would replay %d commits but owns %d — the rest are already in %s; name its real parent with ccx vcs stack rebase --parent %s=<branch>",
 		b.Name, replayed, own, tr.Name(), b.Name)
+}
+
+func stackInheritsTrunk(ctx context.Context, dir render.Dir, trunk, pin string, b *stackRebaseBranch, inherits map[string]bool) (bool, error) {
+	if b.Parent != trunk {
+		return inherits[b.Parent], nil
+	}
+	for _, head := range slices.Compact([]string{b.Head, b.Remote}) {
+		if head == "" {
+			continue
+		}
+		base, err := stackMergeBase(ctx, dir, head, pin)
+		if err != nil {
+			return false, err
+		}
+		copies, err := gtCherryCopies(ctx, stackRebasePrefix, dir, pin, head, base)
+		if err != nil || len(copies) > 0 {
+			return len(copies) > 0, err
+		}
+	}
+	return false, nil
 }
 
 func stackPlanLines(run *stackRebaseRun) []string {
