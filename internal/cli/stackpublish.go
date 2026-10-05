@@ -103,6 +103,10 @@ func stackUsePublication(ctx context.Context, dir render.Dir, b *stackRebaseBran
 		b.SourceBase = base
 		return nil
 	}
+	if b.Remote == "" {
+		b.Publication, b.WasParent = nil, was
+		return nil
+	}
 	if b.Remote != receipt.Head {
 		replayed, err := stackReplayedOnto(ctx, dir, b.Remote, base, receipt.Head)
 		if err != nil {

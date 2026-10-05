@@ -215,7 +215,8 @@ func (s *gtAPIStub) serve(w http.ResponseWriter, r *http.Request) {
 					pr["versions"] = []map[string]any{{"headSha": entry.HeadSha, "baseSha": entry.BaseSha, "baseName": entry.Base, "createdAt": "2026-09-02T00:00:00.000Z"}}
 				}
 				if base := s.recorded[branch]; base != "" {
-					pr["versions"] = []map[string]any{{"baseName": base, "createdAt": "2026-09-02T00:00:00.000Z"}}
+					entry, _ := s.lastEntry(branch)
+					pr["versions"] = []map[string]any{{"headSha": entry.HeadSha, "baseSha": entry.BaseSha, "baseName": base, "createdAt": "2026-09-02T00:00:00.000Z"}}
 				}
 				if base := s.bases[branch]; base != "" {
 					pr["baseRefName"] = base
