@@ -912,6 +912,63 @@ func TestStackThinAdoptedParentAdvancesUnderAChild(t *testing.T) {
 	thinRequireSource(t, f, before)
 }
 
+func TestStackThinChildFollowsAParentAmendedInItsSourceCheckout(t *testing.T) {
+	t.Parallel()
+	f, first := thinPublishedParent(t)
+	stubOpenPRs(t, f, nil, "parent", "child1")
+	store := thinTestStore(t, f)
+	_, child1 := thinNew(t, f, f.Dir, append([]string{"child1"}, thinAdoptArgs...)...)
+	own := thinCommit(t, f, child1, "child1.txt", "child1 work\n")
+	thinRequireAdopted(t, f, store, first)
+
+	writeShipFile(t, f.Dir, "parent.txt", "parent work, amended\n")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qa", "--amend", "-m", "parent amended")
+	if _, errOut, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("source submit of the amend: %v\n%s", err, errOut)
+	}
+	amended := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "parent")
+	if amended == first.Head {
+		t.Fatalf("remote parent still at %s, want the amend published", shortOID(first.Head))
+	}
+	before := thinSnap(t, f)
+
+	out, errOut, err := runStackCmdIn(t, f, child1, "rebase", "--dry-run")
+	if err != nil {
+		t.Fatalf("child1 dry run = %v, want the amended parent followed\n%s", err, errOut)
+	}
+	if !strings.Contains(out, "child1"+shipSep+"onto parent") {
+		t.Errorf("dry run plan = %q, want child1 onto parent", out)
+	}
+	if got := gitAt(t, f.Env(), store, "rev-parse", "parent"); got != first.Head {
+		t.Errorf("dry run moved the store's parent to %s", shortOID(got))
+	}
+
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	if _, errOut, err := runStackCmdIn(t, f, child1, "submit"); err != nil {
+		t.Fatalf("child1 submit = %v, want the amended parent followed\n%s", err, errOut)
+	}
+	head := gitAt(t, f.Env(), child1, "rev-parse", "HEAD")
+	if head == own || !thinOnto(t, f, store, amended, "child1") {
+		t.Errorf("child1 = %s, want it replayed onto the amended parent %s", shortOID(head), shortOID(amended))
+	}
+	if got := gitAt(t, f.Env(), store, "diff", "--name-only", "parent", "child1"); got != "child1.txt" {
+		t.Errorf("child1 changes %q above parent, want child1.txt alone", got)
+	}
+	for ref, want := range map[string]string{"refs/heads/parent": amended, thinAdoptedRef("parent"): amended} {
+		if got := gitAt(t, f.Env(), store, "rev-parse", ref); got != want {
+			t.Errorf("store %s = %s, want the followed head %s", ref, shortOID(got), shortOID(want))
+		}
+	}
+	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "parent"); got != amended {
+		t.Errorf("remote parent = %s, want the source's amend %s untouched", got, amended)
+	}
+	if heads := api.submitHeads(); slices.Contains(heads, "parent") || !slices.Contains(heads, "child1") {
+		t.Errorf("submitted %v, want child1 alone", heads)
+	}
+	thinRequireSource(t, f, before)
+}
+
 func TestStackThinPartialAdoptionNeverPushesTheParent(t *testing.T) {
 	t.Parallel()
 	f, receipt := thinPublishedParent(t)

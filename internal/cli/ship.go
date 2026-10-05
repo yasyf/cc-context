@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -795,8 +796,15 @@ func shipCommit(ctx context.Context, errW io.Writer, dir render.Dir, kind vcs.Ki
 func shipGitAdd(ctx context.Context, dir render.Dir, o shipOpts) (string, error) {
 	addArgv := []string{"add", "-A"}
 	if len(o.rootPaths) > 0 {
+		paths, err := gitUnstagedPaths(ctx, dir, o.rootPaths)
+		if err != nil {
+			return "", err
+		}
+		if len(paths) == 0 {
+			return "", nil
+		}
 		addArgv = append(addArgv, "--")
-		addArgv = append(addArgv, o.rootPaths...)
+		addArgv = append(addArgv, paths...)
 	} else {
 		addArgv = append(addArgv, "--verbose")
 	}
@@ -808,6 +816,41 @@ func shipGitAdd(ctx context.Context, dir render.Dir, o shipOpts) (string, error)
 		return "", nil
 	}
 	return sweptSegment(parseAddVerbose(out)), nil
+}
+
+// gitUnstagedPaths drops the paths whose deletion the index already holds: gone
+// from the working copy and the index but still in HEAD, they match nothing git
+// add can see and would fail its pathspec, while the commit takes them as staged.
+func gitUnstagedPaths(ctx context.Context, dir render.Dir, paths []string) ([]string, error) {
+	kept := make([]string, 0, len(paths))
+	for _, p := range paths {
+		removed, err := gitStagedRemoval(ctx, dir, p)
+		if err != nil {
+			return nil, err
+		}
+		if !removed {
+			kept = append(kept, p)
+		}
+	}
+	return kept, nil
+}
+
+func gitStagedRemoval(ctx context.Context, dir render.Dir, path string) (bool, error) {
+	if _, err := os.Lstat(filepath.Join(string(dir), path)); !errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	indexed, err := render.RunCLI(ctx, dir, "git", []string{"ls-files", "--cached", "--", path})
+	if err != nil {
+		return false, fmt.Errorf("ship: git ls-files %s: %w", path, err)
+	}
+	if strings.TrimSpace(indexed) != "" {
+		return false, nil
+	}
+	inHead, err := render.RunCLI(ctx, dir, "git", []string{"ls-tree", "--full-tree", "--name-only", "HEAD", "--", path})
+	if err != nil {
+		return false, fmt.Errorf("ship: git ls-tree %s: %w", path, err)
+	}
+	return strings.TrimSpace(inHead) != "", nil
 }
 
 // parseAddVerbose reads the paths out of `git add --verbose`, whose every line is

@@ -513,6 +513,31 @@ func thinAdopt(ctx context.Context, src, store lane, receipt *stackPublication, 
 	return deepened, thinCopyReceipt(ctx, src, store, receipt)
 }
 
+// thinFollowAdopted moves a branch the thin store adopted onto the head its own
+// lane has since pushed, when the store still holds it where it was adopted:
+// the branch belongs to that lane, so the head it pushed is the one to build
+// on. record false reports the move without making it.
+func thinFollowAdopted(ctx context.Context, store lane, branch, local, remote, trunk, pin string, record bool) (bool, string, error) {
+	adopted, err := thinAdopted(ctx, store, branch)
+	if err != nil || !adopted {
+		return false, "", err
+	}
+	mark := thinAdoptedRef(branch)
+	marked, err := stackRevParse(ctx, store.dir(), mark)
+	if err != nil || marked != local {
+		return false, "", err
+	}
+	base, err := stackMergeBase(ctx, store.dir(), remote, pin)
+	if err != nil || !record {
+		return err == nil, base, err
+	}
+	tx := "start\nupdate " + gtRestackRef(branch) + " " + remote + " " + local + "\nupdate " + mark + " " + remote + " " + local + "\ncommit\n"
+	if _, err := render.RunCLIStdin(ctx, store.dir(), "git", []string{"update-ref", "--stdin"}, []byte(tx)); err != nil {
+		return false, "", fmt.Errorf("stack rebase: follow %s to its pushed head %s in the thin store: %w", branch, shortOID(remote), err)
+	}
+	return true, base, gtmeta.AdoptFrozen(ctx, store.checkout.CommonDir, branch, trunk, base, remote)
+}
+
 func thinDeepen(ctx context.Context, store lane, trunk, base string, o stackNewOpts) (int, error) {
 	total := 0
 	for step := o.depth; ; step *= 2 {

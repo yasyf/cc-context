@@ -158,9 +158,16 @@ interrupted adoption.
 
 When the source republishes an adopted parent, creating another child from
 the source refreshes the store's branch, adoption mark, frozen record, and
-receipt to the new published head. Existing children keep their recorded
-fork, so their next rebase or submit replays only their own commits onto
-that head; the parent itself is never pushed.
+receipt to the new published head. An existing child's `stack rebase` or
+`stack submit` in the store also follows the parent's pushed head, including
+an amend, without creating another child, while the store's branch still
+matches its adoption mark. ccx moves the branch and mark and refreshes the
+frozen Graphite record, using the new head's merge-base with trunk as its
+base. A branch moved away from its adoption mark still gets the remote-head
+refusal. `stack rebase --dry-run` reports the move without changing refs or
+metadata. Existing children keep their recorded fork, so their next rebase
+or submit replays only their own commits onto that head; the parent itself
+is never pushed from the store.
 
 ### Deepen to reach the parent's published base
 

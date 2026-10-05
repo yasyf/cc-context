@@ -294,8 +294,10 @@ ccx vcs stack regenerate reruns its generator in the workspace.
 After the rewrite, gt's parents are recorded, the stack is force-pushed under
 the remote heads recorded at the start, and one verdict line per pull request
 names its pushed head, parent, and mergeability; when GitHub cannot be read
-for it, the run says so and still moves the local refs and finishes. Labels are
-never touched.
+for it, the run says so and still moves the local refs and finishes. An open
+pull request GitHub bases elsewhere than its recorded parent is retargeted
+onto that parent; a refused retarget names the command that finishes it.
+Labels are never touched.
 
 stack rebase never opens a pull request. A stack none of whose branches has one
 is rebased locally as if --no-push were given. In a stack mixing the two, a
@@ -920,6 +922,17 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 				case source.Head:
 					superseded, publishedOn = true, receipt.Parent
 				default:
+					followed, base, err := thinFollowAdopted(ctx, l, name, source.Head, remotes[name], trunk, pin, !o.dryRun)
+					if err != nil {
+						return nil, err
+					}
+					if followed {
+						source.Head = remotes[name]
+						source.Parents = []gtRef{{Ref: source.Parents[0].Ref, SHA: base}}
+						state[name], effective = source, source
+						superseded, publishedOn = true, receipt.Parent
+						break
+					}
 					if superseded, err = stackOwnRemote(ctx, l.dir(), name, source.Head, remotes[name], pin); err != nil {
 						return nil, err
 					}
@@ -3546,8 +3559,8 @@ func stackVerdict(ctx context.Context, cmd *cobra.Command, l lane, run *stackReb
 		if stackHeadLags(pr, b) {
 			fields = append(fields, fmt.Sprintf("stale read: GitHub still shows %.12s %s after the push of %.12s — re-run ccx vcs stack submit if it stays", pr.Head, stackHeadLagWait, b.NewHead))
 		}
-		if pr.Base != b.Parent {
-			fields = append(fields, "base "+pr.Base+" ≠ parent")
+		if stackBaseStrays(pr, b) {
+			fields = append(fields, stackRetargetToParent(ctx, dir, pr, b.Parent))
 		}
 		if len(pr.Labels) > 0 {
 			fields = append(fields, "labels "+strings.Join(pr.Labels, ","))
@@ -3555,6 +3568,29 @@ func stackVerdict(ctx context.Context, cmd *cobra.Command, l lane, run *stackReb
 		cmd.Println(strings.Join(fields, shipSep))
 	}
 	return nil
+}
+
+// stackBaseStrays is an open pull request GitHub bases somewhere other than the
+// parent the stack records for its branch. A pull request Graphite parked on its
+// graphite-base branch is Graphite's to move back, so it never strays.
+func stackBaseStrays(pr *stackPR, b *stackRebaseBranch) bool {
+	return pr.State == "OPEN" && pr.Base != "" && pr.Base != fmt.Sprintf("graphite-base/%d", pr.Number) && pr.Base != b.Parent
+}
+
+// stackRetargetToParent moves a pull request GitHub still bases on another
+// branch onto the parent the stack records, the base Graphite submitted, and
+// names the command that finishes the move when GitHub refuses it.
+func stackRetargetToParent(ctx context.Context, dir render.Dir, pr *stackPR, parent string) string {
+	repo, err := vcs.LookupRepo(ctx, dir, false)
+	if err != nil {
+		return fmt.Sprintf("base %s ≠ parent %s — the repository could not be read to retarget it: %v", pr.Base, parent, err)
+	}
+	retarget := ghPatchPullArgv(repo.NameWithOwner, pr.Number, "-f", "base="+parent)
+	if _, err := render.RunCLI(ctx, render.Ambient, "gh", retarget); err != nil {
+		return fmt.Sprintf("base %s ≠ parent %s — retargeting failed, finish it with %s: %v", pr.Base, parent, ghCommand(retarget), err)
+	}
+	pr.Mergeable = statusUnknown
+	return fmt.Sprintf("retargeted onto %s from %s", parent, pr.Base)
 }
 
 // stackHeadLags is a pull request GitHub still reads at another head than the

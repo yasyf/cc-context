@@ -1365,6 +1365,54 @@ func TestStackRebaseFinishesWhenTheVerdictCannotReadThePullRequests(t *testing.T
 	}
 }
 
+func TestStackRebaseRetargetsAPullRequestOffItsRecordedParent(t *testing.T) {
+	t.Parallel()
+	f := stackRebaseRepo(t, "base", "feature")
+	stubStackPRs(t, f, map[string]*stackPR{
+		"base":    {Number: 9000, Title: "base", State: "OPEN", Base: "main"},
+		"feature": {Number: 9001, Title: "feature", State: "OPEN", Base: "main", Mergeable: "CONFLICTING"},
+	})
+	writeShipGH(t, f)
+	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	shipResetLog(t, f)
+
+	out, _, err := runStackCmd(t, f, "rebase")
+	if err != nil {
+		t.Fatalf("stack rebase: %v", err)
+	}
+	dropStep(t, shipGTInvocations(t, f), "gh", "PATCH", "repos/yasyf/cc-context/pulls/9001", "base=base")
+	if want := "#9001" + shipSep; !strings.Contains(out, want) || !strings.Contains(out, "retargeted onto base from main") {
+		t.Errorf("output = %q, want feature's pull request retargeted onto base", out)
+	}
+	if strings.Contains(out, "≠ parent") {
+		t.Errorf("output = %q, want no unresolved base mismatch", out)
+	}
+	for _, inv := range shipGTInvocations(t, f) {
+		if slices.Contains(inv, "repos/yasyf/cc-context/pulls/9000") {
+			t.Errorf("retargeted base's pull request, which already sits on its parent: %v", inv)
+		}
+	}
+}
+
+func TestStackRebaseNamesTheRetargetGitHubRefused(t *testing.T) {
+	t.Parallel()
+	f := stackRebaseRepo(t, "base", "feature")
+	stubStackPRs(t, f, map[string]*stackPR{
+		"base":    {Number: 9000, Title: "base", State: "OPEN", Base: "main"},
+		"feature": {Number: 9001, Title: "feature", State: "OPEN", Base: "main"},
+	})
+	writeShipExecutable(t, f.ShimBin, "gh", "#!/bin/sh\nprintf 'gh: Validation Failed (HTTP 422)\\n' >&2\nexit 1\n")
+	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+
+	out, _, err := runStackCmd(t, f, "rebase")
+	if err != nil {
+		t.Fatalf("stack rebase: %v", err)
+	}
+	if want := "base main ≠ parent base — retargeting failed, finish it with gh api -X PATCH repos/yasyf/cc-context/pulls/9001 --silent -f base=base"; !strings.Contains(out, want) {
+		t.Errorf("output = %q, want %q", out, want)
+	}
+}
+
 func TestStackRebaseDryRunMovesNothing(t *testing.T) {
 	t.Parallel()
 	f := stackRebaseRepo(t, "base", "feature")
