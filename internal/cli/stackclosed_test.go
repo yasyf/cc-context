@@ -20,6 +20,7 @@ func TestStackSubmitDropsAClosedPullRequestMidStack(t *testing.T) {
 		"b": {Number: 2, Title: "b", State: "CLOSED", Base: "a"},
 		"c": {Number: 3, Title: "c", State: "OPEN", Base: "b"},
 	})
+	installDropGH(t, f, map[string]dropSeed{"b": {number: 2, state: "CLOSED", base: "a"}})
 	closed := gitAt(t, f.Env(), f.Dir, "rev-parse", "b")
 	shipResetLog(t, f)
 
@@ -160,6 +161,57 @@ func stackReopensOnto(t *testing.T, verb string) {
 	}
 	if heads := api.submitHeads(); !slices.Equal(heads, []string{"b"}) {
 		t.Errorf("submit posts = %v, want b alone", heads)
+	}
+	if entry := api.submitEntry("b"); entry.Action != gtapi.SubmitUpdate || entry.PRNumber != 2 || entry.Base != "main" {
+		t.Errorf("b submitted as %s #%d onto %s, want an update of #2 onto main", entry.Action, entry.PRNumber, entry.Base)
+	}
+}
+
+// TestStackSubmitReopensAPullRequestClosedWhileGraphiteRecreatedItsBase is
+// #30441: the merge queue deleted and recreated the child's graphite-base
+// branch as the parent landed, GitHub closed the child for the deletion, and
+// submit dropped it as abandoned because its base was back by the time it
+// looked. Submit reopens it onto trunk and leaves Graphite's branch alone.
+func TestStackSubmitReopensAPullRequestClosedWhileGraphiteRecreatedItsBase(t *testing.T) {
+	f := shipGTRepo(t)
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	shipGTStack(t, f, "a", "b")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "a", "b")
+	landed := gitAt(t, f.Env(), f.Dir, "rev-parse", "a")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "a:refs/heads/graphite-base/2")
+	restackSquashRemote(t, f, "main", "a (#1)", "a")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "--delete", "a")
+	stubStackPRs(t, f, map[string]*stackPR{
+		"a": {Number: 1, Title: "a", State: "MERGED", Base: "main", Head: landed, Landed: true},
+		"b": {Number: 2, Title: "b", State: "CLOSED", Base: "graphite-base/2"},
+	})
+	gh := installDropGH(t, f, map[string]dropSeed{"b": {number: 2, state: "CLOSED", base: "graphite-base/2"}})
+	gh.closedByBaseDeletion(2)
+	shipResetLog(t, f)
+
+	out, _, err := runStackCmd(t, f, "submit")
+	if err != nil {
+		t.Fatalf("stack submit: %v", err)
+	}
+	if !strings.Contains(out, "reopen (base graphite-base/2 deleted)") {
+		t.Errorf("report = %q, want it to name the reopen", out)
+	}
+	if got := gh.pr(2); got != "OPEN main" {
+		t.Errorf("b's PR = %q, want %q", got, "OPEN main")
+	}
+	invocations := shipGTInvocations(t, f)
+	reopened := dropStep(t, invocations, "gh", "api", "PATCH", "repos/yasyf/cc-context/pulls/2", "state=open")
+	retargeted := dropStep(t, invocations, "gh", "api", "PATCH", "repos/yasyf/cc-context/pulls/2", "base=main")
+	pushed := dropStep(t, invocations, "git", "push", "--atomic")
+	if reopened >= retargeted || retargeted >= pushed {
+		t.Errorf("steps ran at reopen=%d retarget=%d push=%d, want that order", reopened, retargeted, pushed)
+	}
+	if !gitBranchExists(t, f.Env(), f.RemoteDir, "graphite-base/2") {
+		t.Error("origin lost Graphite's graphite-base/2")
+	}
+	if n := gitAt(t, f.Env(), f.RemoteDir, "rev-list", "--count", "main..b"); n != "1" {
+		t.Errorf("origin b holds %s commits over trunk, want its own 1", n)
 	}
 	if entry := api.submitEntry("b"); entry.Action != gtapi.SubmitUpdate || entry.PRNumber != 2 || entry.Base != "main" {
 		t.Errorf("b submitted as %s #%d onto %s, want an update of #2 onto main", entry.Action, entry.PRNumber, entry.Base)

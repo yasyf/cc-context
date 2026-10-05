@@ -34,7 +34,7 @@ type dropGH struct {
 func installDropGH(t *testing.T, f *vcstest.Fixture, seeds map[string]dropSeed) *dropGH {
 	t.Helper()
 	gh := &dropGH{t: t, dir: t.TempDir()}
-	for _, sub := range []string{"pr", "branch", "deleted"} {
+	for _, sub := range []string{"pr", "branch", "deleted", "events"} {
 		if err := os.MkdirAll(filepath.Join(gh.dir, sub), 0o750); err != nil {
 			t.Fatalf("mkdir %s: %v", sub, err)
 		}
@@ -69,12 +69,19 @@ func (g *dropGH) pr(number int) string {
 	return strings.TrimSpace(string(data))
 }
 
+// closedByBaseDeletion records the events GitHub logs when it closes number
+// because its base branch was deleted: both land in the same second.
+func (g *dropGH) closedByBaseDeletion(number int) {
+	g.t.Helper()
+	g.write(filepath.Join("events", fmt.Sprint(number)), "base_ref_deleted 2026-10-05T06:34:19Z\nclosed 2026-10-05T06:34:19Z")
+}
+
 func (g *dropGH) markDeleted(ref string) {
 	g.t.Helper()
 	g.write(filepath.Join("deleted", ref), "")
 }
 
-// dropGHBody answers the four REST calls a drop issues out of the state
+// dropGHBody answers the five REST calls a drop issues out of the state
 // directory, and refuses the two things GitHub itself refuses: changing a
 // closed pull request's base, and reopening one whose base ref is gone.
 const dropGHBody = `S=$DROP_GH
@@ -103,6 +110,9 @@ case "$method $path" in
     if [ "$want" = open ] && [ "$st" != OPEN ]; then printf '[]'; exit 0; fi
     printf '['; render "$n"; printf ']' ;;
   "GET "*/pulls/*) render "${path##*/}" ;;
+  "GET "*/events)
+    n=${path%/events}; n=${n##*/}
+    if [ -r "$S/events/$n" ]; then cat "$S/events/$n"; fi ;;
   "PATCH "*/pulls/*)
     n=${path##*/}
     read -r st bs < "$S/pr/$n"

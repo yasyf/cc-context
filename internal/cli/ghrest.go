@@ -233,6 +233,28 @@ func ghLanding(ctx context.Context, dir render.Dir, p ghPull, gt bool) (prLandin
 	return landing, nil
 }
 
+// ghClosedByBaseDeletion reports a pull request GitHub closed because its base
+// branch was deleted, read from its events: the close and the deletion share a
+// second. Graphite's merge queue deletes and recreates a graphite-base branch
+// as a parent lands, so the base can be back by the time anyone looks.
+func ghClosedByBaseDeletion(ctx context.Context, dir render.Dir, number int) (bool, error) {
+	out, err := ghAPI(ctx, dir, fmt.Sprintf("%s/issues/%d/events", ghRepoPath, number), "--paginate",
+		"--jq", `.[] | select(.event == "closed" or .event == "base_ref_deleted") | .event + " " + .created_at`)
+	if err != nil {
+		return false, fmt.Errorf("gh api: read the events of PR #%d: %w", number, err)
+	}
+	closedAt, deleted := "", map[string]bool{}
+	for line := range strings.Lines(out) {
+		switch event, at, _ := strings.Cut(strings.TrimSpace(line), " "); event {
+		case "closed":
+			closedAt = at
+		case "base_ref_deleted":
+			deleted[at] = true
+		}
+	}
+	return closedAt != "" && deleted[closedAt], nil
+}
+
 func ghPullPath(nwo string, number int) string {
 	return fmt.Sprintf("repos/%s/pulls/%d", nwo, number)
 }
