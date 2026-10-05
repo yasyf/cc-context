@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 from captain_hook import Cmd, CommandLine, Rewritten, WalkContext
+from captain_hook.session import SessionStore
 from captain_hook.types import Action, HookResult
 from captain_hook.util.shell import normalize_executable, plain_words, resolve_cd
 
@@ -67,6 +68,9 @@ def make_evt(command: str, cwd: str | Path | None = None) -> SimpleNamespace:
         cmd=Cmd(CommandLine.parse(command), raw=command, cwd=effective),
         cwd=effective,
         block=lambda message: HookResult.of(Action.block, message),
+        ctx=SimpleNamespace(s=SessionStore(None)),
+        is_subagent=False,
+        agent_id=None,
     )
 
 

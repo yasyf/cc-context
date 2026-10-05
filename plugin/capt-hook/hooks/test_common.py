@@ -18,7 +18,7 @@ import pytest
 from conftest import fake_run
 
 from hooks import common
-from hooks.common import LITERAL_SAFE, ccx_supports, rewrote_note
+from hooks.common import LITERAL_SAFE, ccx_supports, rewrote_text
 
 
 class TestLiteralSafe:
@@ -100,5 +100,5 @@ class TestCcxSupports:
         assert not ccx_supports("code", "grep", flag="--ignore-case")
 
 
-def test_rewrote_note_names_the_replacement_without_the_original() -> None:
-    assert rewrote_note("ccx code read --full", "same content") == "Rewrote the command to `ccx code read --full`: same content."
+def test_rewrote_text_names_the_replacement_without_the_original() -> None:
+    assert rewrote_text("ccx code read --full", "same content") == "Rewrote the command to `ccx code read --full`: same content."

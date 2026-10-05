@@ -26,7 +26,7 @@ from captain_hook import (
 from captain_hook.util.scratch import is_scratch_path
 from captain_hook.util.vcs import in_vcs_repo
 
-from .common import IDENT_ALT, ccx_bin, ccx_supports, rewrote_note
+from .common import IDENT_ALT, ccx_bin, ccx_supports, rewrote_text
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -441,4 +441,4 @@ def search_note(parsed: GrepCall) -> str:
         gains.append(
             "3 context lines, not your `-A/-B/-C` count" if parsed.count_dropped else "context folded into one `--expand`"
         )
-    return rewrote_note("ccx code grep", "; ".join(gains))
+    return rewrote_text("ccx code grep", "; ".join(gains))
