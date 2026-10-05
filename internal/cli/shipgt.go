@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -958,9 +959,13 @@ func gtNearestTracked(ctx context.Context, dir render.Dir, state gtState, trunk,
 	for _, head := range strings.Fields(out) {
 		contained[head] = true
 	}
-	nearest := trunk
+	nearest := ""
 	for _, name := range candidates {
 		if !contained[heads[name]] {
+			continue
+		}
+		if nearest == "" {
+			nearest = name
 			continue
 		}
 		ahead, err := gitIsAncestor(ctx, dir, "ship", gtRestackRef(nearest), gtRestackRef(name))
@@ -974,7 +979,7 @@ func gtNearestTracked(ctx context.Context, dir render.Dir, state gtState, trunk,
 			nearest = name
 		}
 	}
-	return nearest, nil
+	return cmp.Or(nearest, trunk), nil
 }
 
 // gtRefuseUntrackedBelow refuses to adopt branch onto an inferred parent when
