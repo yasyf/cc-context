@@ -1458,6 +1458,29 @@ func gtCommit(ctx context.Context, l lane, errW io.Writer, o shipOpts, plan bran
 	return gtModifyRestack(ctx, l, o, plan.from)
 }
 
+func gtPublishedUpstack(ctx context.Context, dir render.Dir, state gtState, branch string) ([]string, error) {
+	up, err := gtUpstack("ship", state, branch)
+	if err != nil {
+		return nil, err
+	}
+	carried := map[string]bool{branch: true}
+	var published []string
+	for _, name := range up {
+		if !carried[state[name].Parents[0].Ref] {
+			continue
+		}
+		present, err := stackHasPublication(ctx, dir, []string{name})
+		if err != nil {
+			return nil, err
+		}
+		if present {
+			carried[name] = true
+			published = append(published, name)
+		}
+	}
+	return published, nil
+}
+
 // gtModifyRestack replays the branches above the one just committed onto its new
 // head, the other half of what gt modify does. State is re-read after the commit:
 // each child's recorded parent revision now names a head its parent has left,
@@ -1631,11 +1654,28 @@ func shipPushGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, meta ma
 	if err != nil {
 		return "", nil, nil, err
 	}
-	_, entries, err := gtSubmitStack(ctx, l, errW, sub, commonDir, state, tr, gtBottomUp(chain), branch)
+	members := gtBottomUp(chain)
+	if c.restack != nil {
+		for _, b := range c.restack.Branches {
+			if b.Landed == "" && !slices.Contains(members, b.Name) {
+				members = append(members, b.Name)
+			}
+		}
+	}
+	_, entries, err := gtSubmitStack(ctx, l, errW, sub, commonDir, state, tr, members, branch)
 	if err != nil {
 		return "", nil, nil, err
 	}
 	submitted, bodyless, stack = gtPRSegment(branch, chain, meta, entries)
+	var above []string
+	for _, name := range members[len(chain):] {
+		if _, ok := entries[name]; ok {
+			above = append(above, name)
+		}
+	}
+	if len(above) > 0 {
+		submitted += shipSep + "resubmitted " + strings.Join(above, ", ") + " above " + branch
+	}
 	return submitted, bodyless, stack, nil
 }
 
