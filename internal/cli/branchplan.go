@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/spf13/pflag"
+
 	"github.com/yasyf/cc-context/internal/vcs"
 )
 
@@ -12,6 +14,25 @@ import (
 // --create alias): "-" is not a legal git branch name, so it never collides
 // with an explicit --new-branch=name.
 const branchNoOptDefVal = "-"
+
+// newBranchValue backs --new-branch and its --create alias, recording how many
+// positionals preceded the flag so a bare --new-branch can take the one after
+// it as the name.
+type newBranchValue struct {
+	name  *string
+	at    *int
+	flags *pflag.FlagSet
+}
+
+func (v newBranchValue) Set(s string) error {
+	*v.name = s
+	*v.at = v.flags.NArg()
+	return nil
+}
+
+func (v newBranchValue) String() string { return *v.name }
+
+func (v newBranchValue) Type() string { return "string" }
 
 // branchNameMax caps a derived branch name, which is truncated to it on a word
 // boundary.

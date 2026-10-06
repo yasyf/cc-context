@@ -17,6 +17,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ship --new-branch name` names the branch.** A bare `--new-branch` never
+  consumed the next token, so `--new-branch name` filed the name as a path and
+  ship refused it as `not a path`; only `--new-branch=name` worked. The
+  positional after a bare `--new-branch` (or `--create`) is now its name, `--`
+  keeps the positionals after it as paths, and a name that is also a path on
+  disk is refused as ambiguous instead of guessed at.
+
 - **`worktree rm` and the cleanup waits outlast a daemon replacement.** The
   first ccx after an upgrade stops the outdated cleanup daemon and starts its
   own, and the socket is missing until the new daemon listens. A `worktree rm`

@@ -4484,6 +4484,8 @@ func TestShipGTCreateNamesExplicitly(t *testing.T) {
 		{"explicit name", []string{"--new-branch=newbranch"}, []string{"gt", "create", "newbranch", "-m", "fix: frobnicate", "--no-ai", "--no-interactive", "--no-verify"}},
 		{"bare new-branch derives from the subject", []string{"--new-branch"}, []string{"gt", "create", "fix-frobnicate", "-m", "fix: frobnicate", "--no-ai", "--no-interactive", "--no-verify"}},
 		{"the deprecated --create alias still works", []string{"--create=newbranch"}, []string{"gt", "create", "newbranch", "-m", "fix: frobnicate", "--no-ai", "--no-interactive", "--no-verify"}},
+		{"space-separated name", []string{"--new-branch", "newbranch"}, []string{"gt", "create", "newbranch", "-m", "fix: frobnicate", "--no-ai", "--no-interactive", "--no-verify"}},
+		{"space-separated name before another flag", []string{"--new-branch", "newbranch", "--parent", "base"}, []string{"gt", "create", "newbranch", "--onto", "base", "-m", "fix: frobnicate", "--no-ai", "--no-interactive", "--no-verify"}},
 		{"--parent stacks the branch onto it", []string{"--new-branch=newbranch", "--parent", "base"}, []string{"gt", "create", "newbranch", "--onto", "base", "-m", "fix: frobnicate", "--no-ai", "--no-interactive", "--no-verify"}},
 	}
 	for _, tt := range tests {
@@ -4530,51 +4532,73 @@ func TestShipCreateExplicitEmpty(t *testing.T) {
 	}
 }
 
-// TestShipCreateSwallowsPathOperand covers the flag shape that silently
-// committed a subset: cobra's NoOptDefVal never consumes the next token, so
-// "--new-branch docs" filed docs as the only path to commit.
-func TestShipCreateSwallowsPathOperand(t *testing.T) {
+// TestShipNewBranchPositionalName covers the space-separated spelling: cobra's
+// NoOptDefVal never consumes the next token, so ship takes the positional after
+// a bare --new-branch as its name, and refuses one that is also a path.
+func TestShipNewBranchPositionalName(t *testing.T) {
 	for _, flag := range []string{"--new-branch", "--create"} {
-		t.Run(flag, func(t *testing.T) {
+		t.Run(flag+" name takes the next positional, leaving the rest as paths", func(t *testing.T) {
+			f := shipGTFeature(t)
+			writeShipFile(t, f.Dir, "g.txt", "g\n")
+
+			if _, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push", flag, "docs", "f.txt"); err != nil {
+				t.Fatalf("ship error = %v", err)
+			}
+			if branch := gitAt(t, f.Env(), f.Dir, "branch", "--show-current"); branch != "docs" {
+				t.Errorf("branch = %q, want the created docs", branch)
+			}
+			if names := gitAt(t, f.Env(), f.Dir, "show", "--name-only", "--format=", "HEAD"); names != "f.txt" {
+				t.Errorf("committed %q, want the path after the name alone", names)
+			}
+		})
+
+		t.Run(flag+" path is ambiguous", func(t *testing.T) {
 			f := shipGTFeature(t)
 			head := shipHead(t, f)
 			shipResetLog(t, f)
 
-			_, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push", flag, "docs")
-			wantErr := `ship: "docs" is not a path — did you mean --new-branch=docs?`
+			_, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push", flag, "f.txt")
+			wantErr := `ship: --new-branch f.txt is ambiguous: "f.txt" is a path — spell --new-branch=f.txt for the name, or --new-branch -- f.txt for the path`
 			if err == nil || err.Error() != wantErr {
 				t.Fatalf("error = %v, want %q", err, wantErr)
 			}
-			invocations := shipGTInvocations(t, f)
-			assertNoCommit(t, invocations)
-			if invocations != nil {
-				t.Errorf("no VCS command may run before the path-operand refusal, got %v", invocations)
+			if invocations := shipGTInvocations(t, f); invocations != nil {
+				t.Errorf("no VCS command may run before the ambiguity refusal, got %v", invocations)
 			}
 			assertShipRefusedClean(t, f, head)
 		})
 	}
 
-	t.Run("a real path is still a path", func(t *testing.T) {
+	t.Run("-- keeps a path a path", func(t *testing.T) {
 		f := shipGTFeature(t)
 		writeShipFile(t, f.Dir, "docs/d.md", "d\n")
 
-		if _, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push", "--new-branch", "docs"); err != nil {
+		if _, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push", "--new-branch", "--", "docs"); err != nil {
 			t.Fatalf("ship error = %v", err)
 		}
-		var add []string
-		for _, inv := range shipGTInvocations(t, f) {
-			if inv[0] == "git" && inv[1] == "add" {
-				add = inv
-			}
-		}
-		if want := []string{"git", "add", "-A", "--", "docs"}; !reflect.DeepEqual(add, want) {
-			t.Errorf("add argv = %v, want %v", add, want)
+		if branch := gitAt(t, f.Env(), f.Dir, "branch", "--show-current"); branch != "fix-frobnicate" {
+			t.Errorf("branch = %q, want the name derived from the subject", branch)
 		}
 		if names := gitAt(t, f.Env(), f.Dir, "show", "--name-only", "--format=", "HEAD"); names != "docs/d.md" {
 			t.Errorf("committed %q, want the path operand alone", names)
 		}
 		if status := gitAt(t, f.Env(), f.Dir, "status", "--porcelain"); status != "M f.txt" {
 			t.Errorf("working copy = %q, want the unscoped edit left behind", status)
+		}
+	})
+
+	t.Run("a path before the flag stays a path", func(t *testing.T) {
+		f := shipGTFeature(t)
+		writeShipFile(t, f.Dir, "docs/d.md", "d\n")
+
+		if _, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push", "docs", "--new-branch"); err != nil {
+			t.Fatalf("ship error = %v", err)
+		}
+		if branch := gitAt(t, f.Env(), f.Dir, "branch", "--show-current"); branch != "fix-frobnicate" {
+			t.Errorf("branch = %q, want the name derived from the subject", branch)
+		}
+		if names := gitAt(t, f.Env(), f.Dir, "show", "--name-only", "--format=", "HEAD"); names != "docs/d.md" {
+			t.Errorf("committed %q, want the path operand alone", names)
 		}
 	})
 }
