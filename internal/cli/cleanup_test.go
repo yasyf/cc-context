@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -1959,4 +1961,54 @@ func TestFollowCleanupRetry(t *testing.T) {
 	if _, err := followCleanupRetry(context.Background(), &scriptedStatus{t: t}, refused); !errors.Is(err, refused) {
 		t.Errorf("followCleanupRetry(refused) = %v, want the refusal as is", err)
 	}
+}
+
+func TestCleanupPollsOutlastADaemonReplacement(t *testing.T) {
+	const id = "18dc07a327e05238-708635"
+	_, missing := daemon.Dial("/nonexistent/ccx-cleanup/daemon.sock").Status(context.Background(), cleanup.Query{JobID: id})
+	if !errors.Is(missing, fs.ErrNotExist) {
+		t.Fatalf("status over a missing socket = %v, want fs.ErrNotExist", missing)
+	}
+	refused := fmt.Errorf("cleanup daemon: connect to daemon.sock: %w", syscall.ECONNREFUSED)
+	soon := time.Now().Add(20 * time.Millisecond)
+	retrying := cleanup.Job{ID: id, Phase: cleanup.PhaseMoved, Original: "/wt", Blocked: &cleanup.Blockage{Reason: "activity", Detail: "read its arguments: input/output error", RetryAt: &soon}}
+	unregistered := cleanup.Job{ID: id, Phase: cleanup.PhaseUnregistered, Original: "/wt"}
+	done := cleanup.Job{ID: id, Phase: cleanup.PhaseDone, Original: "/wt"}
+
+	t.Run("worktree rm follows a retry across the replacement", func(t *testing.T) {
+		svc := &scriptedStatus{t: t, replies: []statusReply{{err: missing}, {err: refused}, {job: unregistered}}}
+		receipt, err := followCleanupRetry(context.Background(), svc, &cleanup.BlockedError{Job: retrying})
+		want := cleanup.ReceiptOf(unregistered)
+		if err != nil || receipt != want || len(svc.queries) != 3 {
+			t.Errorf("followCleanupRetry() = %+v, %v after %d polls; want %+v after 3", receipt, err, len(svc.queries), want)
+		}
+	})
+
+	t.Run("a wait rides out the replacement", func(t *testing.T) {
+		svc := &scriptedStatus{t: t, replies: []statusReply{{job: unregistered}, {err: missing}, {job: done}}}
+		job, err := waitCleanupJob(context.Background(), svc, id, cleanup.PhaseUnregistered)
+		if err != nil || job.Phase != cleanup.PhaseDone {
+			t.Errorf("waitCleanupJob() = %+v, %v; want the done job", job, err)
+		}
+	})
+
+	t.Run("an answered failure ends the poll", func(t *testing.T) {
+		broken := errors.New("cleanup daemon: status: EOF")
+		svc := &scriptedStatus{t: t, replies: []statusReply{{err: broken}}}
+		if _, err := waitCleanupJob(context.Background(), svc, id, cleanup.PhaseUnregistered); !errors.Is(err, broken) {
+			t.Errorf("waitCleanupJob() = %v, want %v as is", err, broken)
+		}
+	})
+
+	t.Run("a vacancy past the handover fails", func(t *testing.T) {
+		saved := cleanupHandoverTimeout
+		cleanupHandoverTimeout = 30 * time.Millisecond
+		t.Cleanup(func() { cleanupHandoverTimeout = saved })
+		vacant := slices.Repeat([]statusReply{{err: missing}}, 8)
+		svc := &scriptedStatus{t: t, replies: vacant}
+		_, err := waitCleanupJob(context.Background(), svc, id, cleanup.PhaseUnregistered)
+		if !errors.Is(err, fs.ErrNotExist) || !strings.Contains(err.Error(), "longer than a daemon replacement takes") {
+			t.Errorf("waitCleanupJob() = %v, want the vacancy reported past %s", err, cleanupHandoverTimeout)
+		}
+	})
 }
