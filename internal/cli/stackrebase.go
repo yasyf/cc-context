@@ -3886,7 +3886,7 @@ func stackReclaimAbandoned(commonDir, dir string) error {
 	if _, err := os.Stat(stackStatePath(dir)); !errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
-	if owner, err := os.ReadFile(filepath.Join(dir, stackClaimOwner)); err == nil {
+	if owner, err := os.ReadFile(filepath.Join(dir, stackClaimOwner)); err == nil { //nolint:gosec // a claim directory ccx created under the git common dir
 		if _, err := os.Stat(stackStatePath(stackRunDir(commonDir, string(owner)))); !errors.Is(err, fs.ErrNotExist) {
 			return nil
 		}

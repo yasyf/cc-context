@@ -214,8 +214,10 @@ func TestStackSettledKeepsAReplayTheLandingLacks(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			run := &stackRebaseRun{Trunk: "main", Roots: []string{"shipped"}, Claims: []string{"shipped"}, Pid: stackExitedPid(t), Host: host, Publishing: true,
-				Branches: []stackRebaseBranch{{Name: "shipped", Local: "published", Head: "published", NewHead: "replayed"}}}
+			run := &stackRebaseRun{
+				Trunk: "main", Roots: []string{"shipped"}, Claims: []string{"shipped"}, Pid: stackExitedPid(t), Host: host, Publishing: true,
+				Branches: []stackRebaseBranch{{Name: "shipped", Local: "published", Head: "published", NewHead: "replayed"}},
+			}
 			ctx := withStackPRs(t.Context(), func(context.Context, render.Dir, string, []string) (map[string]*stackPR, error) {
 				return map[string]*stackPR{"shipped": {Number: 7, Head: tc.landed, Landed: true}}, nil
 			})
