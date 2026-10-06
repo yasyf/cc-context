@@ -416,3 +416,27 @@ func TestShipTipOnlyTakesNoLockOnAParentAnotherLaneIsWriting(t *testing.T) {
 	}
 	stackAssertBaseKept(t, f, base)
 }
+
+func TestShipNamesTipOnlyWhenAHeldParentDiverged(t *testing.T) {
+	f := shipGTRepo(t)
+	shipGTStack(t, f, "base", "feature")
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("stack submit: %v", err)
+	}
+	held := f.WorktreePath("held-base")
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", held, "base")
+	mustRun(t, f.Env(), held, "git", "reset", "-q", "--hard", "main")
+	writeShipFile(t, held, "other.txt", "other\n")
+	mustRun(t, f.Env(), held, "git", "add", "other.txt")
+	mustRun(t, f.Env(), held, "git", "commit", "-qm", "other")
+	shipGTReady(t, f)
+
+	_, _, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--no-watch")
+	want := "to ship feature alone onto base's published head, run ccx vcs ship --tip-only"
+	if err == nil || !strings.Contains(err.Error(), "drops 1 commit(s)") || !strings.Contains(err.Error(), want) {
+		t.Fatalf("ship over a diverged held parent = %v, want the refusal to name %q", err, want)
+	}
+	if _, errStr, err := runShipCmdFull(f.Context(), t, "--no-commit", "--no-watch", "--tip-only"); err != nil {
+		t.Fatalf("ship --tip-only after the refusal = %v (stderr=%q)", err, errStr)
+	}
+}
