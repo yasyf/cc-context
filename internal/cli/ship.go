@@ -138,11 +138,12 @@ type shipOpts struct {
 	// branch, newBranch, appendOnly, parent, and allowTrunk are the caller's
 	// stated intent for resolveBranchPlan; --bookmark and --create are aliases
 	// bound to the same fields as --branch and --new-branch.
-	branch     string
-	newBranch  string
-	appendOnly bool
-	parent     string
-	allowTrunk bool
+	branch      string
+	newBranch   string
+	newBranchAt int
+	appendOnly  bool
+	parent      string
+	allowTrunk  bool
 
 	draft   bool
 	publish bool
@@ -197,7 +198,7 @@ func newShipCmd() *cobra.Command {
 
 Ship refuses an empty working copy only when the branch carries nothing above trunk either. Where it does carry commits trunk does not — work a delegate's worktree, a hand-made commit, or a codex lane already landed — there is nothing to cut and everything to submit, so ship skips the commit and goes on to push and the pull request, reporting "nothing to commit — shipping as --no-commit". A path-scoped ship whose scoped paths are clean takes that same path, naming them: scoping already declared everything else out, so finding them clean over a branch ahead of trunk means the work landed. --no-commit states the path outright and refuses a working copy holding changes to tracked files, which would otherwise be left out of the branch and the pull request this same run updates; git's untracked paths do not refuse it, since a run that cuts no commit was never going to carry a worktree's scratch into one, and the report names them as "left untracked: <paths>" instead. Under jj there is nothing to exempt: a new file is already part of the working-copy commit --no-commit pushes. --no-commit is refused alongside paths, where the two spellings contradict each other. Where the branch carries nothing above trunk there is nothing to submit either, and the refusal says so. Ship resolves the push target before committing, so a refusal leaves the working copy untouched. After committing, ship fetches from the remote first and, when the target is no longer an ancestor of the local stack, rebases the stack onto it (jj: the target bookmark; git: origin/<branch>); a rebase that would conflict is rolled back and reported instead of pushed. Uncommitted work the rebase has to move — every hunk a scoped ship deliberately left in the tree — is kept as a commit of its own rather than on refs/stash, which every working copy of a repository shares, and put back afterwards; work that will not go back leaves the commit holding it and the files in it named in the refusal. A push the remote rejects because it advanced again mid-ship re-fetches, re-rebases, and retries up to 3 attempts before failing with the manual recovery steps. --amend never retries a rejected push: the force-with-lease refusal is reported for manual reconciliation instead of overwriting the concurrent push.
 
-Where the commit goes is one decision, resolved before any mutation and reported as a branch <name> or created <name> segment. On a non-trunk branch or bookmark, ship appends to it. On trunk it appends in your own repositories — direct-to-main is deliberate there — and starts a branch named from the commit subject when GitHub says the repository is someone else's, since an org trunk rejects the commit through its protect-<trunk> hook and leaves it dangling; the graphite lane always starts a branch on trunk, because gt has no verb that commits onto it. A detached HEAD is refused rather than guessed at, unless --new-branch names a branch to cut there, and so are several trunk candidates unless --branch names one of them. --branch <name> commits onto that branch, creating it here when it does not exist and refusing when it exists somewhere else, since ship does not check branches out; --new-branch[=<name>] always starts one, deriving the name from the commit subject when bare (an explicit name must be spelled --new-branch=name, because cobra parses "--new-branch name" as a path operand to commit); --append refuses on trunk; --allow-trunk lets --branch advance a trunk you do not own. --bookmark is a jj-only alias of --branch, --create a deprecated alias of --new-branch. A new branch is cut with gt create (graphite), git switch -c (git), or jj bookmark create -r @- (jj).
+Where the commit goes is one decision, resolved before any mutation and reported as a branch <name> or created <name> segment. On a non-trunk branch or bookmark, ship appends to it. On trunk it appends in your own repositories — direct-to-main is deliberate there — and starts a branch named from the commit subject when GitHub says the repository is someone else's, since an org trunk rejects the commit through its protect-<trunk> hook and leaves it dangling; the graphite lane always starts a branch on trunk, because gt has no verb that commits onto it. A detached HEAD is refused rather than guessed at, unless --new-branch names a branch to cut there, and so are several trunk candidates unless --branch names one of them. --branch <name> commits onto that branch, creating it here when it does not exist and refusing when it exists somewhere else, since ship does not check branches out; --new-branch [<name>] always starts one, deriving the name from the commit subject when bare; --new-branch name and --new-branch=name both name it, the positional after a bare --new-branch being its name unless -- separates the two, and a name that is also a path on disk is refused as ambiguous; --append refuses on trunk; --allow-trunk lets --branch advance a trunk you do not own. --bookmark is a jj-only alias of --branch, --create a deprecated alias of --new-branch. A new branch is cut with gt create (graphite), git switch -c (git), or jj bookmark create -r @- (jj).
 
 Hooks follow that same decision. Ship runs the repository's prek suite only where the commit lands straight on trunk — the one position no pull request and no CI ever grades — and on a repository that names no trunk at all, where nothing downstream grades a commit either, unless the preflight already accepted the GitHub repository and --parent base of the pull request this ship opens or updates. Every other position is bound for a pull request whose CI is the check, so the suite is skipped there rather than paid twice, and git's own hooks go with it: the commit verb and every push ship makes carry --no-verify, since a push would otherwise run the pre-push half of the suite the commit just skipped. --verify runs them wherever the commit lands, --no-verify skips them on trunk too, and either flag passed explicitly beats the default.
 
@@ -231,9 +232,10 @@ Ship owns the pull request in every lane. --pr-title and --pr-body-file are repe
 	cmd.Flags().StringArrayVar(&o.onlyHunks, "only-hunk", nil, "commit only this hunk ref in its file (repeatable; refs from ccx vcs hunks)")
 	cmd.Flags().StringVar(&o.branch, "branch", "", "commit onto this branch, creating it here when it does not exist")
 	cmd.Flags().StringVar(&o.branch, "bookmark", "", "jj-only alias of --branch")
-	cmd.Flags().StringVar(&o.newBranch, "new-branch", "", "start a new branch for this commit; bare --new-branch derives the name from the message, an explicit name must be spelled --new-branch=name")
+	newBranch := newBranchValue{name: &o.newBranch, at: &o.newBranchAt, flags: cmd.Flags()}
+	cmd.Flags().Var(newBranch, "new-branch", "start a new branch for this commit, named --new-branch name or --new-branch=name; bare --new-branch derives the name from the message")
 	cmd.Flags().Lookup("new-branch").NoOptDefVal = branchNoOptDefVal
-	cmd.Flags().StringVar(&o.newBranch, "create", "", "deprecated alias of --new-branch")
+	cmd.Flags().Var(newBranch, "create", "deprecated alias of --new-branch")
 	cmd.Flags().Lookup("create").NoOptDefVal = branchNoOptDefVal
 	cmd.Flags().BoolVar(&o.appendOnly, "append", false, "append the commit to the branch already checked out, refusing on trunk")
 	cmd.Flags().StringVar(&o.parent, "parent", "", "parent of the stacked branch: recorded for a new or untracked branch, and a tracked one moves onto it; outside the graphite lane, the base of the branch's pull request")
@@ -282,7 +284,7 @@ Ship owns the pull request in every lane. --pr-title and --pr-body-file are repe
 func runShip(cmd *cobra.Command, o shipOpts) (err error) {
 	ctx := cmd.Context()
 	o.message = strings.Join(o.messages, "\n\n")
-	if err := checkBranchFlags(cmd, o); err != nil {
+	if err := resolveBranchFlags(cmd, &o); err != nil {
 		return err
 	}
 	l, err := resolveLane(ctx, "ship", workingDir(ctx), o.noGT)
@@ -1206,32 +1208,32 @@ func shipAlreadyCommitted(ctx context.Context, dir render.Dir, kind vcs.Kind, pl
 	}
 }
 
-// checkBranchFlags validates the branch-intent flags before any repository read.
-// A bare --new-branch never consumes the next token (cobra's NoOptDefVal), and
-// ship's ArbitraryArgs then files it as a path to commit, so "--new-branch docs"
-// would silently commit only docs/; a positional that is not on disk is refused
-// instead.
+// resolveBranchFlags validates the branch-intent flags before any repository
+// read. A bare --new-branch never consumes the next token (cobra's NoOptDefVal),
+// so the positional after it is taken as its name here, unless a -- separates
+// the two; a positional that is also a path on disk is refused as ambiguous
+// rather than guessed at.
 //
 // An explicit name skips deriveBranchName's legality check, so it runs here.
-func checkBranchFlags(cmd *cobra.Command, o shipOpts) error {
+func resolveBranchFlags(cmd *cobra.Command, o *shipOpts) error {
 	for _, name := range []string{"new-branch", "create"} {
 		if cmd.Flags().Changed(name) && o.newBranch == "" {
 			return fmt.Errorf("ship: --%s requires a branch name or no value", name)
 		}
+	}
+	if o.newBranch == branchNoOptDefVal && o.newBranchAt < len(o.paths) && cmd.ArgsLenAtDash() != o.newBranchAt {
+		name := o.paths[o.newBranchAt]
+		if _, err := os.Stat(filepath.Join(workingDir(cmd.Context()), name)); err == nil {
+			return fmt.Errorf("ship: --new-branch %s is ambiguous: %q is a path — spell --new-branch=%s for the name, or --new-branch -- %s for the path", name, name, name, name)
+		}
+		o.newBranch = name
+		o.paths = slices.Delete(slices.Clone(o.paths), o.newBranchAt, o.newBranchAt+1)
 	}
 	if o.branch != "" && !legalBranchName(o.branch) {
 		return fmt.Errorf("ship: --branch %q is not a legal branch name", o.branch)
 	}
 	if o.newBranch != "" && o.newBranch != branchNoOptDefVal && !legalBranchName(o.newBranch) {
 		return fmt.Errorf("ship: --new-branch %q is not a legal branch name", o.newBranch)
-	}
-	if o.newBranch != branchNoOptDefVal {
-		return nil
-	}
-	for _, path := range o.paths {
-		if _, err := os.Stat(filepath.Join(workingDir(cmd.Context()), path)); err != nil {
-			return fmt.Errorf("ship: %q is not a path — did you mean --new-branch=%s?", path, path)
-		}
 	}
 	return nil
 }
