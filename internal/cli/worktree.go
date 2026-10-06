@@ -687,7 +687,7 @@ func worktreeShapeOf(mode string) string {
 func mintWorktreePath(ctx context.Context, prefix string, c vcs.Checkout, name string) (string, error) {
 	elements := strings.Split(name, "/")
 	if slices.ContainsFunc(elements, func(e string) bool { return e == "" || e == "." || e == ".." }) {
-		return "", fmt.Errorf("%s: %q is not a worktree name — every /-separated element must be a name other than . or ..", prefix, name)
+		return "", fmt.Errorf("%s: %q is not a worktree name — a name has no empty, \".\", or \"..\" /-separated element", prefix, name)
 	}
 	home, err := render.Home(ctx)
 	if err != nil {

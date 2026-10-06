@@ -905,7 +905,7 @@ func TestWorktreeMintPathRejectsName(t *testing.T) {
 			if err == nil {
 				t.Fatalf("mintWorktreePath(%q) = %q, want a refusal", tt.given, got)
 			}
-			if !strings.Contains(err.Error(), "every /-separated element") {
+			if !strings.Contains(err.Error(), "has no empty") {
 				t.Errorf("mintWorktreePath(%q) error = %v, want the name rule", tt.given, err)
 			}
 		})
