@@ -157,10 +157,16 @@ it; run `ccx vcs stack submit` to repair.
 
 ## Check publication before retrying
 
-Separate stacks can run concurrently. The existing run records select the run
-for continue and abort; cleanup does not add a shared stack lock or a fetch
-retry loop. Saved source heads, replay output pins, publication receipts,
-atomic publication, and remote leases still protect the rewrite.
+A run locks the branches it writes, not the whole stack, so two lanes of one
+stack can each ship their own branch at the same time. A run refuses only when
+another run writes one of its branches. The refusal names that run's process,
+the branches it writes, and the `ccx vcs stack continue --stack <branch>` and
+`ccx vcs stack abort --stack <branch>` commands that finish or drop it. When a
+run's process has exited and every branch it writes has landed or been
+deleted, the next stack write discards it and prints a
+`discarded the stack rebase of ...` line. Saved source heads, replay output
+pins, publication receipts, atomic publication, and remote leases still
+protect the rewrite.
 
 A lease or publication refusal requires inspecting the reported state before
 retrying. A cleanup receipt describes workspace removal; it does not prove

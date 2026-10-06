@@ -33,6 +33,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   them in every run; the rest stay at their local heads, as a pushing run
   already kept them at their published heads.
 
+- **Stack runs on disjoint branches of one stack no longer block each other.**
+  A run locked its stack's bottom branch, even one that had already landed.
+  A `ship --tip-only` in one lane then refused while another lane shipped a
+  different branch, and kept refusing after that ship exited mid-run. A run
+  now locks the branches it writes and refuses only beside a run writing one of them,
+  naming that run's branches and the `continue --stack` and `abort --stack`
+  commands. The next stack write discards an exited run once every branch it
+  writes has landed or been deleted.
+
 - **Stack runs refuse to publish onto a kept branch whose parent moved.**
   `stack submit` keeps another lane's branch at its published head. When
   the run also moved that branch's own parent, as after an amend below it,

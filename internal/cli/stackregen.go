@@ -388,7 +388,7 @@ dependencies: set those up in the workspace first.`,
 			return runStackRegenerate(cmd, o)
 		},
 	}
-	cmd.Flags().StringVar(&o.stack, "stack", "", "the run to regenerate in, named by its stack's bottom branch")
+	cmd.Flags().StringVar(&o.stack, "stack", "", "the run to regenerate in, named by its stack's bottom branch or a branch it writes")
 	cmd.Flags().StringArrayVar(&o.includes, "include", nil, "check out this directory in the workspace before regenerating (repeatable)")
 	cmd.Flags().BoolVar(&o.full, "full", false, "check out the whole tree in the workspace before regenerating")
 	cmd.MarkFlagsMutuallyExclusive("include", "full")
