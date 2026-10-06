@@ -45,6 +45,7 @@ func TestStackSubmitNeverPushesAQueuedBranch(t *testing.T) {
 	}
 	api.prs["base"], api.prs["feature"] = 100, 101
 	api.queued["base"] = true
+	stubPRState(t, prPoll(`"p0":`+prNode(100, "OPEN", prComments())))
 	stubStackPRs(t, f, map[string]*stackPR{
 		"base":    {Number: 100, Title: "base", State: "OPEN", Base: "main"},
 		"feature": {Number: 101, Title: "feature", State: "OPEN", Base: "base"},
@@ -66,6 +67,46 @@ func TestStackSubmitNeverPushesAQueuedBranch(t *testing.T) {
 	_, _, err = runStackCmd(t, f, "rebase", "--parent", "base=main")
 	if err == nil || !strings.Contains(err.Error(), "base is in the merge queue") {
 		t.Fatalf("stack rebase --parent base=main of a queued base = %v, want a refusal", err)
+	}
+}
+
+// TestStackSubmitMovesAPullRequestTheQueueEvicted is run-retry-fixes' #31086:
+// Graphite still flagged it in the queue after the queue ejected it for failed
+// CI, so stack submit kept it at its ejected head and --parent refused to move
+// it, though ccx vcs pr status read it out of the queue.
+func TestStackSubmitMovesAPullRequestTheQueueEvicted(t *testing.T) {
+	f := stackRebaseRepo(t, "base", "feature")
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("stack submit: %v", err)
+	}
+	api.prs["base"], api.prs["feature"] = 100, 101
+	api.queued["base"] = true
+	stubPRState(t, prPoll(`"p0":`+prNode(100, "OPEN", prComments(prActivityEvicted))))
+	stubStackPRs(t, f, map[string]*stackPR{
+		"base":    {Number: 100, Title: "base", State: "OPEN", Base: "main"},
+		"feature": {Number: 101, Title: "feature", State: "OPEN", Base: "base"},
+	})
+	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	ejected := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
+
+	if _, _, err := runStackCmd(t, f, "rebase", "--dry-run", "--parent", "base=main"); err != nil {
+		t.Fatalf("stack rebase --dry-run --parent base=main of an evicted base = %v, want no refusal", err)
+	}
+	out, _, err := runStackCmd(t, f, "submit")
+	if err != nil {
+		t.Fatalf("stack submit: %v", err)
+	}
+	if strings.Contains(out, "base · kept") || strings.Contains(out, "base · stays") {
+		t.Errorf("report = %q, want the evicted base moved onto main", out)
+	}
+	moved := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
+	if moved == ejected {
+		t.Fatalf("origin base still at its ejected head %s", ejected)
+	}
+	if !stackOnto(t, f, gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "main"), moved) {
+		t.Error("origin base does not sit on the advanced main")
 	}
 }
 

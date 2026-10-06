@@ -17,6 +17,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`stack submit` and `stack rebase` move a pull request the queue ejected.**
+  Graphite keeps a pull request flagged in its merge queue after the queue
+  ejects it, and the stack read that flag alone. An ejected pull request was
+  kept at its ejected head as `unchanged since its last submit`, and
+  `--parent` refused to move it with `is in the merge queue ... moving it
+  would evict it`, while `ccx vcs pr status` read it out of the queue. The
+  stack now settles a flagged or queue-labeled pull request from its merge
+  activity, through the same reader `pr status` uses. An evicted pull request
+  on trunk is also rebased onto the moved trunk instead of staying on its old
+  base, so the queue gets a new head to admit.
+
 - **A stack write proceeds when the run it was taking over has just ended.**
   Two callers could both find the same exited run whose push already matched
   origin. When one finished it and removed its state, the other failed with
