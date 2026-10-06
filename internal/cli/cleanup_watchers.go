@@ -43,7 +43,7 @@ func (w cleanupWatchers) Retiring(ctx context.Context, worktree string) ([]clean
 		return nil, fmt.Errorf("name the watchers of %s: %w: %s", worktree, cleanupwatch.ErrRefused, strings.Join(plan.Blockers, "; "))
 	}
 	var watchers []cleanupwatch.Process
-	if len(plan.Roots) > 0 {
+	if plan.Watchman {
 		server, err := w.watchmanServer(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("name the watchers of %s: %w", worktree, err)

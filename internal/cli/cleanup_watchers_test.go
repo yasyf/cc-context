@@ -50,6 +50,7 @@ type watcherWorld struct {
 	ownerNow   string
 	server     cleanupwatch.Process
 	serverGone bool
+	stopped    bool
 	answer     int
 	socket     string
 	lsofErr    error
@@ -193,6 +194,9 @@ func (w *watcherWorld) watchman(args []string) (cleanupwatch.Output, error) {
 	case "get-sockname":
 		resp = map[string]string{"sockname": watcherSockname, "version": "2026.09.28.00"}
 	case "get-pid":
+		if w.stopped {
+			return cleanupwatch.Output{}, &cleanupwatch.ExitError{Command: "watchman get-pid", Code: 1}
+		}
 		resp = map[string]int{"pid": w.answer}
 	case "debug-status":
 		roots := make([]map[string]any, 0, len(w.roots))
@@ -297,6 +301,7 @@ func TestCleanupWatchersRetiring(t *testing.T) {
 		owner      bool
 		subscribed string
 		serverGone bool
+		stopped    bool
 		ownerNow   string
 		setup      func(w *watcherWorld)
 		want       []cleanup.ProcessID
@@ -315,14 +320,29 @@ func TestCleanupWatchersRetiring(t *testing.T) {
 			want:  []cleanup.ProcessID{watcherServer},
 		},
 		{
-			name:  "the fsmonitor owner alone",
+			name:  "the fsmonitor owner and a server watching elsewhere",
 			roots: []string{"other"},
 			owner: true,
-			want:  []cleanup.ProcessID{watcherOwner},
+			want:  []cleanup.ProcessID{watcherServer, watcherOwner},
 		},
 		{
-			name:  "roots elsewhere on the host name nothing",
+			name:  "a server with roots elsewhere on the host",
 			roots: []string{"other", "wt-sibling"},
+			want:  []cleanup.ProcessID{watcherServer},
+		},
+		{
+			name: "a server whose roots in the tree are gone",
+			want: []cleanup.ProcessID{watcherServer},
+		},
+		{
+			name:    "the fsmonitor owner alone with no server running",
+			owner:   true,
+			stopped: true,
+			want:    []cleanup.ProcessID{watcherOwner},
+		},
+		{
+			name:    "no server running names nothing",
+			stopped: true,
 		},
 		{
 			name:       "a subscribed root refuses",
@@ -461,7 +481,7 @@ func TestCleanupWatchersRetiring(t *testing.T) {
 			if tt.subscribed != "" {
 				world.subscribed[world.path(tt.subscribed)] = true
 			}
-			world.serverGone, world.ownerNow = tt.serverGone, tt.ownerNow
+			world.serverGone, world.stopped, world.ownerNow = tt.serverGone, tt.stopped, tt.ownerNow
 			if tt.setup != nil {
 				tt.setup(world)
 			}
