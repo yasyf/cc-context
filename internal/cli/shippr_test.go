@@ -87,7 +87,7 @@ func shipPRPushed(branch string) [][]string {
 		{"git", "config", "--get", "branch." + branch + ".remote"},
 		{"git", "ls-remote", "origin", "refs/heads/" + branch, "refs/heads/main"},
 		gitForEachRefStdinArgv,
-		{"git", "push", "--no-follow-tags", "--quiet", "--no-verify", "origin", branch},
+		{"git", "push", "--no-follow-tags", "--quiet", "--no-thin", "--no-verify", "origin", branch},
 	}
 }
 
