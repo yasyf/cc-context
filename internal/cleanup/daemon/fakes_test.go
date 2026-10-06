@@ -123,9 +123,15 @@ type fakeRelocator struct {
 	admitted []string
 }
 
+const clientStart = 1790000000
+
+func identify(pid int) (cleanup.ProcessID, error) {
+	return cleanup.ProcessID{PID: pid, Start: clientStart}, nil
+}
+
 func requesterOf(ctx context.Context) string {
-	if pid, named := cleanup.RequesterFrom(ctx); named {
-		return strconv.Itoa(pid)
+	if requester, named := cleanup.RequesterFrom(ctx); named {
+		return strconv.Itoa(requester.PID)
 	}
 	return "none"
 }
@@ -609,6 +615,7 @@ func (h *harness) build() *Engine {
 		Deleter:   h.deleter,
 		CPU:       h.cpu,
 		Parent:    h.parent.lookup,
+		Identify:  identify,
 		Version:   "v1.2.3",
 		Clock:     h.clock,
 		Tuning:    h.tuning,

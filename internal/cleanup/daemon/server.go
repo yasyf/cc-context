@@ -216,7 +216,11 @@ func (s *server) dispatch(ctx context.Context, conn *net.UnixConn, line []byte) 
 			}
 			return reply, false
 		}
-		return s.relocate(cleanup.WithRequester(ctx, pid), req), false
+		requester, err := s.engine.identify(pid)
+		if err != nil {
+			return failure(fmt.Errorf("cleanup daemon: identify the client behind the %s request: %w", req.Op, err)), false
+		}
+		return s.relocate(cleanup.WithRequester(ctx, requester), req), false
 	}
 	return s.execute(ctx, req), false
 }

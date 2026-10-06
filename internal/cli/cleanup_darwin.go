@@ -100,10 +100,11 @@ func runCleanupServe(ctx context.Context) error {
 			GitEnv:   os.Environ(),
 			Now:      time.Now,
 		}),
-		Deleter: rmtree.Deleter{},
-		CPU:     native.NewFSEventsSampler(),
-		Parent:  native.ParentCommand,
-		Version: version.String(),
+		Deleter:  rmtree.Deleter{},
+		CPU:      native.NewFSEventsSampler(),
+		Parent:   native.ParentCommand,
+		Identify: native.Identify,
+		Version:  version.String(),
 	})
 	if err != nil {
 		return fmt.Errorf("cleanup serve: %w", err)

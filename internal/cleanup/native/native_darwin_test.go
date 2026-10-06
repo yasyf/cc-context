@@ -596,11 +596,12 @@ func TestInspectSelectsEvidence(t *testing.T) {
 		{"nothing in the tree", sleeper, staged{}, scan{}, nil, false},
 		{"a pid gone once the kernel refused to identify it", arguer, staged{identities: []unix.Errno{unix.EPERM, unix.ESRCH}, cwd: works}, scan{}, nil, false},
 		{"a live pid the kernel refuses to identify", arguer, staged{identities: []unix.Errno{unix.EPERM}, cwd: works}, scan{}, nil, true},
-		{"the requester's arguments", arguer, staged{}, scan{requester: arguer, named: true}, nil, false},
-		{"not the arguments of a pid no requester named", arguer, staged{}, scan{requester: arguer}, &cleanup.Holder{Evidence: cleanup.EvidenceArgv, Path: f.real + "/sub"}, false},
-		{"not another requester's arguments", arguer, staged{}, scan{requester: sleeper, named: true}, &cleanup.Holder{Evidence: cleanup.EvidenceArgv, Path: f.real + "/sub"}, false},
-		{"not the requester's descriptor", arguer, staged{open: opens}, scan{requester: arguer, named: true}, &cleanup.Holder{Evidence: cleanup.EvidenceFD, Path: f.real + "/file"}, false},
-		{"not the requester's working directory", arguer, staged{cwd: works}, scan{requester: arguer, named: true}, &cleanup.Holder{Evidence: cleanup.EvidenceCwd, Path: f.real + "/sub"}, false},
+		{"the requester's arguments", arguer, staged{}, scan{requester: cleanup.ProcessID{PID: arguer, Start: started}, named: true}, nil, false},
+		{"not the arguments of a pid no requester named", arguer, staged{}, scan{requester: cleanup.ProcessID{PID: arguer, Start: started}}, &cleanup.Holder{Evidence: cleanup.EvidenceArgv, Path: f.real + "/sub"}, false},
+		{"not another requester's arguments", arguer, staged{}, scan{requester: cleanup.ProcessID{PID: sleeper, Start: started}, named: true}, &cleanup.Holder{Evidence: cleanup.EvidenceArgv, Path: f.real + "/sub"}, false},
+		{"not the arguments of a requester started a second later", arguer, staged{}, scan{requester: cleanup.ProcessID{PID: arguer, Start: started + 1}, named: true}, &cleanup.Holder{Evidence: cleanup.EvidenceArgv, Path: f.real + "/sub"}, false},
+		{"not the requester's descriptor", arguer, staged{open: opens}, scan{requester: cleanup.ProcessID{PID: arguer, Start: started}, named: true}, &cleanup.Holder{Evidence: cleanup.EvidenceFD, Path: f.real + "/file"}, false},
+		{"not the requester's working directory", arguer, staged{cwd: works}, scan{requester: cleanup.ProcessID{PID: arguer, Start: started}, named: true}, &cleanup.Holder{Evidence: cleanup.EvidenceCwd, Path: f.real + "/sub"}, false},
 		{"a retiring watcher's descriptor", sleeper, staged{open: opens}, scan{retiring: exactly(sleeper, started)}, nil, false},
 		{"a retiring watcher's descriptor the kernel refuses to describe", sleeper, staged{denied: unix.EPERM}, scan{retiring: exactly(sleeper, started)}, nil, false},
 		{"not a retiring watcher's arguments", arguer, staged{open: opens}, scan{retiring: exactly(arguer, started)}, &cleanup.Holder{Evidence: cleanup.EvidenceArgv, Path: f.real + "/sub"}, false},
@@ -1147,30 +1148,31 @@ func TestGuardDiscounts(t *testing.T) {
 
 	tests := []struct {
 		name      string
-		requester int
+		requester cleanup.ProcessID
 		retiring  []cleanup.ProcessID
 		want      []cleanup.Holder
 	}{
-		{"nothing named", 0, nil, all},
-		{"the requester's arguments", arguer, nil, []cleanup.Holder{bothOpens, opens, works}},
-		{"not the requester's descriptor", both, nil, all},
-		{"not the requester's only descriptor", opener, nil, all},
-		{"not the requester's working directory", worker, nil, all},
-		{"no arguments but the requester's", os.Getpid(), nil, all},
-		{"a retiring watcher's descriptor", 0, []cleanup.ProcessID{exactly(opener)}, []cleanup.Holder{argues, bothOpens, works}},
-		{"not a watcher started a second later", 0, []cleanup.ProcessID{{PID: opener, Start: startOf(t, opener) + 1}}, all},
-		{"not a watcher started a second earlier", 0, []cleanup.ProcessID{{PID: opener, Start: startOf(t, opener) - 1}}, all},
-		{"not another pid with the watcher's start time", 0, []cleanup.ProcessID{{PID: os.Getpid(), Start: startOf(t, opener)}}, all},
-		{"not a retiring watcher's arguments", 0, []cleanup.ProcessID{exactly(both)}, []cleanup.Holder{argues, bothArgues, opens, works}},
-		{"not a retiring watcher's working directory", 0, []cleanup.ProcessID{exactly(worker)}, all},
-		{"not a retiring watcher's only arguments", 0, []cleanup.ProcessID{exactly(arguer)}, all},
-		{"every retiring watcher named", 0, []cleanup.ProcessID{exactly(opener), exactly(both)}, []cleanup.Holder{argues, bothArgues, works}},
-		{"a requester that is also a retiring watcher", both, []cleanup.ProcessID{exactly(both)}, []cleanup.Holder{argues, opens, works}},
+		{"nothing named", cleanup.ProcessID{}, nil, all},
+		{"the requester's arguments", exactly(arguer), nil, []cleanup.Holder{bothOpens, opens, works}},
+		{"not a requester started a second later", cleanup.ProcessID{PID: arguer, Start: startOf(t, arguer) + 1}, nil, all},
+		{"not the requester's descriptor", exactly(both), nil, all},
+		{"not the requester's only descriptor", exactly(opener), nil, all},
+		{"not the requester's working directory", exactly(worker), nil, all},
+		{"no arguments but the requester's", exactly(os.Getpid()), nil, all},
+		{"a retiring watcher's descriptor", cleanup.ProcessID{}, []cleanup.ProcessID{exactly(opener)}, []cleanup.Holder{argues, bothOpens, works}},
+		{"not a watcher started a second later", cleanup.ProcessID{}, []cleanup.ProcessID{{PID: opener, Start: startOf(t, opener) + 1}}, all},
+		{"not a watcher started a second earlier", cleanup.ProcessID{}, []cleanup.ProcessID{{PID: opener, Start: startOf(t, opener) - 1}}, all},
+		{"not another pid with the watcher's start time", cleanup.ProcessID{}, []cleanup.ProcessID{{PID: os.Getpid(), Start: startOf(t, opener)}}, all},
+		{"not a retiring watcher's arguments", cleanup.ProcessID{}, []cleanup.ProcessID{exactly(both)}, []cleanup.Holder{argues, bothArgues, opens, works}},
+		{"not a retiring watcher's working directory", cleanup.ProcessID{}, []cleanup.ProcessID{exactly(worker)}, all},
+		{"not a retiring watcher's only arguments", cleanup.ProcessID{}, []cleanup.ProcessID{exactly(arguer)}, all},
+		{"every retiring watcher named", cleanup.ProcessID{}, []cleanup.ProcessID{exactly(opener), exactly(both)}, []cleanup.Holder{argues, bothArgues, works}},
+		{"a requester that is also a retiring watcher", exactly(both), []cleanup.ProcessID{exactly(both)}, []cleanup.Holder{argues, opens, works}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := t.Context()
-			if tt.requester != 0 {
+			if tt.requester != (cleanup.ProcessID{}) {
 				ctx = cleanup.WithRequester(ctx, tt.requester)
 			}
 			if tt.retiring != nil {
@@ -1195,20 +1197,21 @@ func TestGuardDiscountsTheRequestersLaunchers(t *testing.T) {
 	argues := func(pid int, name string) cleanup.Holder {
 		return cleanup.Holder{PID: pid, Name: name, Evidence: cleanup.EvidenceArgv, Path: f.real + "/sub"}
 	}
+	exactly := func(pid int) cleanup.ProcessID { return cleanup.ProcessID{PID: pid, Start: startOf(t, pid)} }
 	tests := []struct {
 		name      string
-		requester int
+		requester cleanup.ProcessID
 		want      []cleanup.Holder
 	}{
-		{"nothing named", 0, []cleanup.Holder{argues(wrapper, "time"), argues(wrapped, "bash"), argues(parent, "bash"), argues(naming, "bash"), argues(named, "bash")}},
-		{"a requester run under timeout", wrapped, []cleanup.Holder{argues(parent, "bash"), argues(naming, "bash"), argues(named, "bash")}},
-		{"not a parent started with other arguments", sleeper, []cleanup.Holder{argues(wrapper, "time"), argues(wrapped, "bash"), argues(parent, "bash"), argues(naming, "bash"), argues(named, "bash")}},
-		{"not a launcher naming the tree before the requester's arguments", named, []cleanup.Holder{argues(wrapper, "time"), argues(wrapped, "bash"), argues(parent, "bash"), argues(naming, "bash")}},
+		{"nothing named", cleanup.ProcessID{}, []cleanup.Holder{argues(wrapper, "time"), argues(wrapped, "bash"), argues(parent, "bash"), argues(naming, "bash"), argues(named, "bash")}},
+		{"a requester run under timeout", exactly(wrapped), []cleanup.Holder{argues(parent, "bash"), argues(naming, "bash"), argues(named, "bash")}},
+		{"not a parent started with other arguments", exactly(sleeper), []cleanup.Holder{argues(wrapper, "time"), argues(wrapped, "bash"), argues(parent, "bash"), argues(naming, "bash"), argues(named, "bash")}},
+		{"not a launcher naming the tree before the requester's arguments", exactly(named), []cleanup.Holder{argues(wrapper, "time"), argues(wrapped, "bash"), argues(parent, "bash"), argues(naming, "bash")}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := t.Context()
-			if tt.requester != 0 {
+			if tt.requester != (cleanup.ProcessID{}) {
 				ctx = cleanup.WithRequester(ctx, tt.requester)
 			}
 			if got, want := holders(ctx, t, f.tree), byPID(tt.want...); !reflect.DeepEqual(got, want) {
@@ -1565,6 +1568,15 @@ func TestListFDs(t *testing.T) {
 	none, err := empty.listFDs(4242)
 	if err != nil || len(none) != 0 {
 		t.Errorf("listFDs(a process holding no descriptor) = %+v, %v; want none and no error", none, err)
+	}
+}
+
+func TestIdentify(t *testing.T) {
+	if got, err := Identify(os.Getpid()); err != nil || got != (cleanup.ProcessID{PID: os.Getpid(), Start: startOf(t, os.Getpid())}) {
+		t.Errorf("Identify(this process) = %+v, %v; want its pid and kernel start", got, err)
+	}
+	if _, err := Identify(exitedPID(t)); !errors.Is(err, unix.ESRCH) {
+		t.Errorf("Identify(an exited process) = %v, want ESRCH", err)
 	}
 }
 

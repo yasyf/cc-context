@@ -967,7 +967,7 @@ func TestCancelledAdvanceStopsTheWorkerAndLeavesTheJobRunnable(t *testing.T) {
 func TestRequesterRidesOnlyTheCommandThatNamedIt(t *testing.T) {
 	bubble(t, DefaultTuning(), func(t *testing.T, h *harness) {
 		ctx := context.Background()
-		client := cleanup.WithRequester(ctx, 4242)
+		client := cleanup.WithRequester(ctx, cleanup.ProcessID{PID: 4242, Start: clientStart})
 		h.seed("bg", 1, cleanup.PhasePrepared)
 		h.relocator.held["d"] = "zsh (pid 7) in the tree"
 		h.relocator.script("d", stayWaiting)
@@ -1002,6 +1002,38 @@ func TestRequesterRidesOnlyTheCommandThatNamedIt(t *testing.T) {
 		slices.Sort(admitted)
 		if wantAdmitted := []string{"a=none", "b=none", "bg=none", "q=none"}; !slices.Equal(admitted, wantAdmitted) {
 			t.Errorf("admissions = %q, want each payload admitted once on nobody's behalf: %q", admitted, wantAdmitted)
+		}
+	})
+}
+
+func TestRemovalKeepsItsRequesterForEveryRetry(t *testing.T) {
+	bubble(t, DefaultTuning(), func(t *testing.T, h *harness) {
+		requester := cleanup.ProcessID{PID: 4242, Start: clientStart}
+		h.relocator.script("a", blockWith(h.clock, "activity", "ccx (pid 4242) started with the tree"))
+		h.relocator.script("b", blockWith(h.clock, "activity", "zsh (pid 7) in the tree"))
+		h.start()
+		synctest.Wait()
+		var blocked *cleanup.BlockedError
+		if _, err := h.engine.Remove(cleanup.WithRequester(context.Background(), requester), h.request("a")); !errors.As(err, &blocked) {
+			t.Fatalf("Remove(a) = %v, want blocked", err)
+		}
+		if got := h.status(blocked.Job.ID).Requester; got != requester {
+			t.Errorf("job a keeps requester %+v, want %+v", got, requester)
+		}
+		if _, err := h.engine.Remove(context.Background(), h.request("b")); !errors.As(err, &blocked) {
+			t.Fatalf("Remove(b) = %v, want blocked", err)
+		}
+		h.relocator.script("a", nil)
+		h.relocator.script("b", nil)
+		h.clock.Advance(30 * time.Second)
+		synctest.Wait()
+		want := []string{
+			"accept:a=4242", "advance:a=4242",
+			"accept:b=none", "advance:b=none",
+			"advance:a=4242", "advance:b=none",
+		}
+		if got := h.relocator.takeServed(); !slices.Equal(got, want) {
+			t.Errorf("requesters = %q, want %q", got, want)
 		}
 	})
 }
@@ -1428,7 +1460,7 @@ func TestJournalFailureStopsTheWorker(t *testing.T) {
 
 func TestNewRejectsAnIncompleteConfig(t *testing.T) {
 	h := newHarness(t, DefaultTuning())
-	complete := Config{Journal: h.journal, Relocator: h.relocator, Deleter: h.deleter, CPU: h.cpu, Parent: h.parent.lookup}
+	complete := Config{Journal: h.journal, Relocator: h.relocator, Deleter: h.deleter, CPU: h.cpu, Parent: h.parent.lookup, Identify: identify}
 	tests := []struct {
 		name   string
 		adjust func(cfg *Config)
@@ -1438,6 +1470,7 @@ func TestNewRejectsAnIncompleteConfig(t *testing.T) {
 		{"no deleter", func(cfg *Config) { cfg.Deleter = nil }},
 		{"no sampler", func(cfg *Config) { cfg.CPU = nil }},
 		{"no parent lookup", func(cfg *Config) { cfg.Parent = nil }},
+		{"no identity lookup", func(cfg *Config) { cfg.Identify = nil }},
 		{"a partial tuning", func(cfg *Config) { cfg.Tuning = Tuning{Rate: 250} }},
 		{"a throttle that resumes above where it pauses", func(cfg *Config) {
 			cfg.Tuning = DefaultTuning()
