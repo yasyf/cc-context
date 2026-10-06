@@ -140,3 +140,51 @@ func stackCarriesOwnWork(ctx context.Context, dir render.Dir, pin string, b *sta
 	replays, err := stackRemoteReplays(ctx, dir, b.Head, b.Remote, pin)
 	return !replays, err
 }
+
+// stackRefuseStalePins refuses a run that would publish branches onto one kept
+// at its published head while the run moves that branch's own parent: the kept
+// head no longer holds its parent, so everything stacked on it lands on a
+// stale base.
+func stackRefuseStalePins(ctx context.Context, dir render.Dir, run *stackRebaseRun) error {
+	if run.NoPush {
+		return nil
+	}
+	heads := map[string]string{run.Trunk: run.Pin}
+	moved := map[string]bool{}
+	byName := map[string]*stackRebaseBranch{}
+	for i := range run.Branches {
+		b := &run.Branches[i]
+		byName[b.Name] = b
+		heads[b.Name] = b.Head
+		if b.Landed == "" && b.Held == "" && !b.Kept && !b.Stays {
+			moved[b.Name] = moved[b.Parent] || heads[b.Parent] != b.OldBase
+		}
+	}
+	for _, b := range run.Branches {
+		parent := byName[b.Parent]
+		if !b.Pinned || parent == nil || parent.Landed != "" || parent.Held != "" || parent.Kept || parent.Stays {
+			continue
+		}
+		holds := !moved[parent.Name]
+		if holds {
+			var err error
+			if holds, err = gitIsAncestor(ctx, dir, stackRebasePrefix, parent.Head, b.Head); err != nil {
+				return err
+			}
+		}
+		if holds {
+			continue
+		}
+		above := map[string]bool{b.Name: true}
+		var names []string
+		for _, up := range run.Branches {
+			if above[up.Parent] {
+				above[up.Name] = true
+				names = append(names, up.Name)
+			}
+		}
+		return refuse("%s: %s is another lane's, kept at its published head, and that head does not hold the head this run publishes for %s — publishing %s would stack them on a stale %s, so nothing was pushed; pass --include %s to restack it with the run, or --to %s to stop below it",
+			stackRebasePrefix, b.Name, parent.Name, strings.Join(names, ", "), b.Name, b.Name, parent.Name)
+	}
+	return nil
+}

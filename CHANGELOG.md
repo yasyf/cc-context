@@ -17,6 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Stack runs refuse to publish onto a kept branch whose parent moved.**
+  `stack submit` keeps another lane's branch at its published head. When
+  the run also moved that branch's own parent, as after an amend below it,
+  the run still pushed every branch above the kept one onto it, leaving the
+  chain on the parent's replaced commit. The run now refuses before anything
+  moves and names the kept branch, the branches it would have stranded,
+  `--include <kept>`, and `--to <parent>`.
+
 - **A mid-stack ship carries the published branches above it.** On the gt
   lane, `ship --amend` (or a new commit) on a branch with submitted children
   restacked the children locally but pushed and submitted only the downstack,

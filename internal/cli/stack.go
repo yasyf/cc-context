@@ -200,7 +200,10 @@ move onto trunk.
 A branch whose name differs from the checked-out branch's before the last slash
 is another lane's too: one this lane sits on is kept at its published head,
 neither pushed nor submitted, and named on stderr; the rest are left out.
---all-lanes, or --include for one branch, submits them anyway.
+--all-lanes, or --include for one branch, submits them anyway. A kept branch
+whose parent this run moves no longer sits on that parent's new head, so the
+run refuses before anything moves rather than publish the branches above it
+onto a stale base; --include takes it into the run, --to stops below it.
 
 Above the branch checked out here, a branch belongs to another lane when the
 rest of the record contradicts its gt parent: its open pull request is based on
