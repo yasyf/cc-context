@@ -18,9 +18,10 @@ type Guard func(ctx context.Context, worktree string) error
 // relocated, and vouches that a job folder is unwatched. Any error blocks the
 // job; nothing is retried.
 type Watchers interface {
-	// Retiring names the watcher processes Retire would release from worktree,
-	// changing nothing. They hold descriptors on the roots they watch, so a
-	// guard asked before retirement discounts exactly these.
+	// Retiring names, changing nothing, the running Watchman server and the
+	// fsmonitor daemon Retire would stop. Both hold descriptors in worktree,
+	// the server even after its roots there are gone, so a guard discounts
+	// exactly these.
 	Retiring(ctx context.Context, worktree string) ([]ProcessID, error)
 	// Retire stops the watchers rooted in worktree.
 	Retire(ctx context.Context, worktree string) error
