@@ -140,7 +140,7 @@ exit 0
 // every pull request based on it, and a re-pushed one is reachable again. It
 // runs only at depth 0, so the git calls the fixture's own tools make are left
 // alone.
-const dropGitBody = `if [ -z "$CCX_SHIM_DEPTH" ] && [ -n "$DROP_GH" ] && [ "$1 $2 $3 $4" = "push --no-follow-tags --quiet origin" ]; then
+const dropGitBody = `if [ -z "$CCX_SHIM_DEPTH" ] && [ -n "$DROP_GH" ] && [ "$1 $2 $3 $4 $5" = "push --no-follow-tags --quiet --no-thin origin" ]; then
   gone= back= take=
   for a in "$@"; do
     if [ -n "$take" ]; then gone=$a; take=; continue; fi

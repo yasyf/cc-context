@@ -464,6 +464,15 @@ func shipDeclineRemote(t *testing.T, f *vcstest.Fixture) {
 	writeShipExecutable(t, filepath.Join(f.RemoteDir, "hooks"), "pre-receive", "#!/bin/sh\nexit 1\n")
 }
 
+// shipThinRejectingRemote makes the bare origin refuse any pack whose deltas
+// name a base outside it, the way a remote that lacks the objects a thin pack
+// assumes refuses one.
+func shipThinRejectingRemote(t *testing.T, f *vcstest.Fixture) {
+	t.Helper()
+	mustRun(t, f.Env(), f.Dir, "git", "--git-dir="+f.RemoteDir, "config", "receive.unpackLimit", "1")
+	mustRun(t, f.Env(), f.Dir, "git", "config", "remote.origin.receivepack", "git receive-pack --reject-thin-pack-for-testing")
+}
+
 // combinedRun runs name in dir under f's environment and returns its output on
 // both streams together with the exit error, for a command whose failure
 // output is the subject.

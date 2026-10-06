@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -261,6 +262,44 @@ func TestVcsPushRewriteLeasesTheHeadItGraded(t *testing.T) {
 	}
 	if !leased {
 		t.Errorf("no push carried %q; invocations: %v", lease, vcstest.Invocations(t, f.ArgvLog))
+	}
+}
+
+// TestVcsPushRestackSendsASelfContainedPack restacks a branch whose file the
+// new base also edited, so the rebased blob deltas against blobs the remote
+// holds. A thin pack sends that delta without its base, and a remote missing
+// the base refuses the push.
+func TestVcsPushRestackSendsASelfContainedPack(t *testing.T) {
+	f := shipRepo(t, vcstest.Remote())
+	var lines strings.Builder
+	for i := range 2000 {
+		fmt.Fprintf(&lines, "line %d\n", i)
+	}
+	pushCommit(t, f, "big.txt", lines.String(), "test: 🧪 big")
+	base := shipHead(t, f)
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "main")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "feat")
+	tip := pushCommit(t, f, "big.txt", lines.String()+"feat\n", "test: 🧪 feat")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "feat")
+
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
+	newBase := pushCommit(t, f, "big.txt", "trunk\n"+lines.String(), "test: 🧪 trunk")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "main")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "feat")
+	mustRun(t, f.Env(), f.Dir, "git", "rebase", "-q", "--onto", newBase, base, "feat")
+	head := shipHead(t, f)
+	shipThinRejectingRemote(t, f)
+	shipResetLog(t, f)
+
+	got, err := runVcsPushCmd(f.Context(), t)
+	if err != nil {
+		t.Fatalf("push error = %v", err)
+	}
+	if want := "force-pushed feat → origin · replaced " + shortOID(tip) + " with " + shortOID(head); got != want {
+		t.Errorf("summary = %q, want %q", got, want)
+	}
+	if remote := shipRemoteTip(t, f, "origin", "feat"); remote != head {
+		t.Errorf("origin feat = %s, want %s", remote, head)
 	}
 }
 

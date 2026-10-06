@@ -17,6 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Pushes after a restack send self-contained packs.** Every push ccx runs
+  (`vcs push`, `ship`, `stack submit`, `stack rebase`, `stack drop`) now
+  passes `--no-thin`. A thin pack deltas new blobs against bases it assumes
+  the remote holds, and after a restack onto a newer trunk from a partial
+  clone GitHub refused one with `(missing necessary objects)`. A
+  self-contained pack can be larger, since its deltas only reach objects
+  inside it. jj's `git push` takes no such flag and is unchanged.
+
 - **Stack commands replay branches carrying landed commits.** After a bottom
   PR squash-landed, `stack rebase --parent` or `stack submit` could keep its
   child on the original parent commit and then refuse because the PR

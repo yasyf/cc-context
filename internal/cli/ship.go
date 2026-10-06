@@ -1797,9 +1797,11 @@ func shipPushGit(ctx context.Context, dir render.Dir, o shipOpts, branch, trunk,
 // remote branch tip, and in a partial clone each tip it lacks is a lazy fetch
 // of that tip's whole commit and tree history. Quiet skips the status table,
 // whose column width abbreviates both oids of every advertised ref against
-// every pack; git still prints it when the push fails.
+// every pack; git still prints it when the push fails. A thin pack deltas
+// against bases it assumes the remote holds, and after a restack GitHub can
+// refuse one with "missing necessary objects", so every pack is self-contained.
 func pushArgv(args ...string) []string {
-	return append([]string{"push", "--no-follow-tags", "--quiet"}, args...)
+	return append([]string{"push", "--no-follow-tags", "--quiet", "--no-thin"}, args...)
 }
 
 // gitPushArgv builds a push argv, carrying the run's hook decision to the
