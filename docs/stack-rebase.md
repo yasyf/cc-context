@@ -22,6 +22,16 @@ Use `--no-push` to keep the rewrite local. `--parent branch=parent` changes a
 branch's parent; `--linearize a,b,c` chains named branches in that order. The
 branch-order flag is separate from replay's handling of merge commits.
 
+Either flag moves only the branches it names a parent for and the branches
+stacked above them. The new parent and every branch below it stay where they
+are: at their published heads when the run pushes, at their local heads when
+it does not. To put your branch on another lane's pushed branch without
+rebasing that lane, run this from your branch's worktree:
+
+```sh
+ccx vcs stack rebase --parent mine=theirs
+```
+
 A reorder that puts a branch below the base its pull request targets is
 refused before anything is pushed. The push leaves that base holding the
 pull request's head, which GitHub reads as merged. GitHub closes the pull request
