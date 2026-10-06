@@ -979,6 +979,19 @@ func TestStackThinChildFollowsAParentAmendedInItsSourceCheckout(t *testing.T) {
 	if heads := api.submitHeads(); slices.Contains(heads, "parent") || !slices.Contains(heads, "child1") {
 		t.Errorf("submitted %v, want child1 alone", heads)
 	}
+	if entry := api.submitEntry("child1"); entry.Base != "parent" || entry.BaseSha != amended {
+		t.Errorf("child1 submitted onto %s@%s, want the frozen parent at its amend %s", entry.Base, shortOID(entry.BaseSha), shortOID(amended))
+	}
+	if receipt, err := stackReadPublication(f.ContextIn(store), render.Dir(store), "child1"); err != nil || receipt == nil || receipt.Parent != "parent" {
+		t.Errorf("child1's publication receipt = %+v, %v, want it published onto parent", receipt, err)
+	}
+	out, errOut, err = runStackCmdIn(t, f, child1, "rebase", "--dry-run")
+	if err != nil {
+		t.Fatalf("child1 dry run after submit: %v\n%s", err, errOut)
+	}
+	if strings.Contains(out, "(was main)") || strings.Contains(out, "onto main") {
+		t.Errorf("dry run after submit = %q, want child1 left on parent", out)
+	}
 	thinRequireSource(t, f, before)
 }
 
