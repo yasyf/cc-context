@@ -169,6 +169,9 @@ type Job struct {
 	// tree keeps the legacy ref the retired janitor wrote.
 	RecoveryRef string `json:"recovery_ref,omitempty"`
 	Force       bool   `json:"force,omitempty"`
+	// Requester is the client whose removal or adoption request last ran the
+	// job, discounted as that request's requester on every later pass.
+	Requester ProcessID `json:"requester,omitzero"`
 	// Git is the absolute git binary every step of this job runs.
 	Git     string     `json:"git"`
 	Links   Links      `json:"links"`

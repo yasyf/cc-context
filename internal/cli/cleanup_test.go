@@ -163,6 +163,7 @@ func startCleanupEngine(t *testing.T, config relocate.Config, tuning daemon.Tuni
 		Deleter:   rmtree.Deleter{},
 		CPU:       idleCPU{},
 		Parent:    native.ParentCommand,
+		Identify:  native.Identify,
 		Version:   "test",
 		Tuning:    tuning,
 	})

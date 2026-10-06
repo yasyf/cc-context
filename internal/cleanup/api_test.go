@@ -314,32 +314,33 @@ func TestLegacyBinding(t *testing.T) {
 
 func TestRequester(t *testing.T) {
 	base := context.Background()
-	if pid, ok := RequesterFrom(base); ok || pid != 0 {
-		t.Errorf("RequesterFrom(background) = %d, %v; want 0, false", pid, ok)
+	client := ProcessID{PID: 4242, Start: 1790000000}
+	if got, ok := RequesterFrom(base); ok || got != (ProcessID{}) {
+		t.Errorf("RequesterFrom(background) = %+v, %v; want zero, false", got, ok)
 	}
-	tagged := WithRequester(base, 4242)
+	tagged := WithRequester(base, client)
 	cancelled, cancel := context.WithCancel(tagged)
 	cancel()
 	tests := []struct {
 		name string
 		ctx  context.Context
-		pid  int
+		want ProcessID
 	}{
-		{"tagged", tagged, 4242},
-		{"derived", cancelled, 4242},
-		{"detached", context.WithoutCancel(tagged), 4242},
-		{"retagged", WithRequester(tagged, 7), 7},
-		{"pid zero is still a requester", WithRequester(base, 0), 0},
+		{"tagged", tagged, client},
+		{"derived", cancelled, client},
+		{"detached", context.WithoutCancel(tagged), client},
+		{"retagged", WithRequester(tagged, ProcessID{PID: 7, Start: 1790000007}), ProcessID{PID: 7, Start: 1790000007}},
+		{"pid zero is still a requester", WithRequester(base, ProcessID{}), ProcessID{}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if pid, ok := RequesterFrom(tt.ctx); !ok || pid != tt.pid {
-				t.Errorf("RequesterFrom() = %d, %v; want %d, true", pid, ok, tt.pid)
+			if got, ok := RequesterFrom(tt.ctx); !ok || got != tt.want {
+				t.Errorf("RequesterFrom() = %+v, %v; want %+v, true", got, ok, tt.want)
 			}
 		})
 	}
-	if pid, ok := RequesterFrom(base); ok || pid != 0 {
-		t.Errorf("RequesterFrom(background) after tagging = %d, %v; want 0, false", pid, ok)
+	if got, ok := RequesterFrom(base); ok || got != (ProcessID{}) {
+		t.Errorf("RequesterFrom(background) after tagging = %+v, %v; want zero, false", got, ok)
 	}
 }
 
@@ -399,9 +400,9 @@ func TestRetiring(t *testing.T) {
 		{"tagged", tagged, []ProcessID{watchman, fsmonitor}},
 		{"derived", cancelled, []ProcessID{watchman, fsmonitor}},
 		{"detached", context.WithoutCancel(tagged), []ProcessID{watchman, fsmonitor}},
-		{"beside a requester", WithRequester(tagged, 7), []ProcessID{watchman, fsmonitor}},
+		{"beside a requester", WithRequester(tagged, ProcessID{PID: 7}), []ProcessID{watchman, fsmonitor}},
 		{"retagged", WithRetiring(tagged, []ProcessID{fsmonitor}), []ProcessID{fsmonitor}},
-		{"requester alone", WithRequester(base, 7), nil},
+		{"requester alone", WithRequester(base, ProcessID{PID: 7}), nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -416,8 +417,8 @@ func TestRetiring(t *testing.T) {
 	if got := RetiringFrom(WithRetiring(base, []ProcessID{})); got == nil || len(got) != 0 {
 		t.Errorf("RetiringFrom(empty) = %#v, want an empty non-nil slice", got)
 	}
-	if pid, ok := RequesterFrom(tagged); ok || pid != 0 {
-		t.Errorf("RequesterFrom(retiring only) = %d, %v; want 0, false", pid, ok)
+	if got, ok := RequesterFrom(tagged); ok || got != (ProcessID{}) {
+		t.Errorf("RequesterFrom(retiring only) = %+v, %v; want zero, false", got, ok)
 	}
 	if got := RetiringFrom(base); got != nil {
 		t.Errorf("RetiringFrom(background) after tagging = %v, want nil", got)

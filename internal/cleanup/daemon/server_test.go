@@ -440,7 +440,7 @@ func TestSecondServeFailsOnTheLock(t *testing.T) {
 	bound, cancelBound := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancelBound()
 	for {
-		second, err := New(Config{Journal: f.h.journal, Relocator: f.h.relocator, Deleter: f.h.deleter, CPU: f.h.cpu, Parent: f.h.parent.lookup, Clock: f.h.clock})
+		second, err := New(Config{Journal: f.h.journal, Relocator: f.h.relocator, Deleter: f.h.deleter, CPU: f.h.cpu, Parent: f.h.parent.lookup, Identify: identify, Clock: f.h.clock})
 		if err != nil {
 			t.Fatalf("New() = %v", err)
 		}

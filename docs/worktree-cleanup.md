@@ -66,6 +66,9 @@ hello. Both wait commands poll status with a 10s limit per request and back
 off up to 1s between polls. They succeed only when a poll shows the job
 `done`, after its payload is gone; `worktree rm --wait` then reports
 `deleted`. A blockage fails the wait with its reason.
+The job keeps the requesting command as its requester, so the daemon's later
+retries do not count that command's own arguments naming the tree as activity
+while that exact process still runs.
 
 If a job disappears after either command has seen it, the wait exits 1. If
 the daemon lists the record as damaged, the error names the job, its last

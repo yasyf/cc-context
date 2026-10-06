@@ -26,6 +26,10 @@ func TestUnsupported(t *testing.T) {
 			_, err := ProcessUniqueID(os.Getpid())
 			return err
 		}},
+		{"Identify", func() error {
+			_, err := Identify(os.Getpid())
+			return err
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

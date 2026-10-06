@@ -30,7 +30,8 @@ import (
 // Six things are discounted and nothing else, ancestry otherwise included: the
 // calling process's own descriptors and arguments, though not its working
 // directory; its direct children; the arguments, alone, of the requester ctx
-// names; the trailing arguments, alone, of each launcher above the invoker,
+// names, while its pid still names the process started when ctx says; the
+// trailing arguments, alone, of each launcher above the invoker,
 // the requester or else the calling process, where they repeat the invoker's
 // own past its program: the unbroken chain of parents, such as timeout, whose
 // arguments end that way, though not the arguments before that tail; the
@@ -111,9 +112,12 @@ func newScan(ctx context.Context, lib *libSystem, worktree string) (*scan, error
 		return nil, err
 	}
 	requester, named := cleanup.RequesterFrom(ctx)
+	if named {
+		named = alive(lib, requester)
+	}
 	invoker := os.Getpid()
 	if named {
-		invoker = requester
+		invoker = requester.PID
 	}
 	tail, chain := launchers(lib, invoker)
 	return &scan{
@@ -211,7 +215,7 @@ type scan struct {
 	root      string
 	given     string
 	self      int
-	requester int
+	requester cleanup.ProcessID
 	named     bool
 	retiring  []cleanup.ProcessID
 	tail      []string
@@ -268,7 +272,7 @@ func (s *scan) evidence(process cleanup.ProcessID, threaded bool) (kind, path st
 			return cleanup.EvidenceFD, path, err
 		}
 	}
-	if !s.named || pid != s.requester {
+	if !s.named || process != s.requester {
 		if path, err = s.argument(pid, slices.Contains(s.launchers, process)); err != nil || path != "" {
 			return cleanup.EvidenceArgv, path, err
 		}
@@ -277,6 +281,11 @@ func (s *scan) evidence(process cleanup.ProcessID, threaded bool) (kind, path st
 		return "", "", s.unchanged(process)
 	}
 	return "", "", nil
+}
+
+func alive(lib *libSystem, process cleanup.ProcessID) bool {
+	bsd, err := pidInfo[procBSDInfo](lib, process.PID, flavorBSDInfo)
+	return err == nil && int64(bsd.start) == process.Start //nolint:gosec // seconds since the epoch fit int64
 }
 
 func (s *scan) unchanged(process cleanup.ProcessID) error {

@@ -216,18 +216,18 @@ func RetiringFrom(ctx context.Context) []ProcessID {
 
 type requesterKey struct{}
 
-// WithRequester returns ctx naming pid as the transient client whose request
-// the work under ctx serves. A guard may discount that one process naming the
-// tree in its own arguments, and the same arguments carried by the wrappers
-// that launched it, and nothing else about them.
-func WithRequester(ctx context.Context, pid int) context.Context {
-	return context.WithValue(ctx, requesterKey{}, pid)
+// WithRequester returns ctx naming the transient client whose request the work
+// under ctx serves. While that exact process lives, a guard may discount it
+// naming the tree in its own arguments, and the same arguments carried by the
+// wrappers that launched it, and nothing else about them.
+func WithRequester(ctx context.Context, requester ProcessID) context.Context {
+	return context.WithValue(ctx, requesterKey{}, requester)
 }
 
 // RequesterFrom returns the transient client ctx names, if any.
-func RequesterFrom(ctx context.Context) (int, bool) {
-	pid, ok := ctx.Value(requesterKey{}).(int)
-	return pid, ok
+func RequesterFrom(ctx context.Context) (ProcessID, bool) {
+	requester, ok := ctx.Value(requesterKey{}).(ProcessID)
+	return requester, ok
 }
 
 // Receipt is what a caller holds once the daemon has accepted a removal.

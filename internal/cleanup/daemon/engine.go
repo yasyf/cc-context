@@ -118,6 +118,10 @@ type Config struct {
 	// Parent names a client's parent process and its arguments, logged with
 	// every pause and resume.
 	Parent func(pid int) (int, []string, error)
+	// Identify names the client process at pid with the second the kernel
+	// started it, so a request's requester outlives the request only as that
+	// exact process.
+	Identify func(pid int) (cleanup.ProcessID, error)
 	// Clock is the real clock when nil.
 	Clock Clock
 	// Tuning is DefaultTuning when zero.
@@ -151,6 +155,7 @@ type Engine struct {
 	deleter   cleanup.Deleter
 	cpu       cleanup.CPUSampler
 	parent    func(pid int) (int, []string, error)
+	identify  func(pid int) (cleanup.ProcessID, error)
 	version   string
 	clock     Clock
 	tuning    Tuning
@@ -187,8 +192,8 @@ var (
 // the records, so a daemon holds its serve lock before anything reads or
 // repairs them.
 func New(cfg Config) (*Engine, error) {
-	if cfg.Journal == nil || cfg.Relocator == nil || cfg.Deleter == nil || cfg.CPU == nil || cfg.Parent == nil {
-		return nil, errors.New("cleanup daemon: config needs a journal, a relocator, a deleter, a cpu sampler, and a parent lookup")
+	if cfg.Journal == nil || cfg.Relocator == nil || cfg.Deleter == nil || cfg.CPU == nil || cfg.Parent == nil || cfg.Identify == nil {
+		return nil, errors.New("cleanup daemon: config needs a journal, a relocator, a deleter, a cpu sampler, a parent lookup, and a process identity lookup")
 	}
 	tuning := cfg.Tuning
 	if tuning == (Tuning{}) {
@@ -209,6 +214,7 @@ func New(cfg Config) (*Engine, error) {
 		deleter:   cfg.Deleter,
 		cpu:       cfg.CPU,
 		parent:    cfg.Parent,
+		identify:  cfg.Identify,
 		version:   cfg.Version,
 		clock:     clock,
 		tuning:    tuning,
@@ -275,10 +281,10 @@ func (e *Engine) Stop(ctx context.Context) error {
 // Remove relocates and unregisters a worktree on the worker. Once the worker
 // has taken the request it runs to the end of its ladder step even when ctx is
 // cancelled; ctx bounds only the caller's wait, and lends the worker nothing
-// but the requester it names. A request for a tree whose deferred removal
-// still waits on its holders is a *cleanup.RefusedError naming that job, and
-// a request without Force never rejoins a job journaled with it: it is
-// preflighted afresh.
+// but the requester it names, which the job keeps for its later passes. A
+// request for a tree whose deferred removal still waits on its holders is a
+// *cleanup.RefusedError naming that job, and a request without Force never
+// rejoins a job journaled with it: it is preflighted afresh.
 func (e *Engine) Remove(ctx context.Context, r cleanup.Request) (cleanup.Receipt, error) {
 	if err := r.Validate(); err != nil {
 		return cleanup.Receipt{}, fmt.Errorf("cleanup daemon: remove request: %w", err)
@@ -745,6 +751,9 @@ func cancelled(ctx context.Context, err error) bool {
 }
 
 func (e *Engine) advance(ctx context.Context, job cleanup.Job) (cleanup.Job, error) {
+	if _, named := cleanup.RequesterFrom(ctx); !named && job.Requester != (cleanup.ProcessID{}) {
+		ctx = cleanup.WithRequester(ctx, job.Requester)
+	}
 	err := e.relocator.Advance(ctx, &job)
 	if err != nil && !cancelled(ctx, err) {
 		return job, &fatalError{fmt.Errorf("cleanup daemon: advance job %s: %w", job.ID, err)}
@@ -879,7 +888,7 @@ func (e *Engine) remove(ctx context.Context, r cleanup.Request) (cleanup.Receipt
 			return cleanup.Receipt{}, err
 		}
 	}
-	return e.relocate(ctx, job)
+	return e.relocate(ctx, requested(ctx, job))
 }
 
 func (e *Engine) adopt(ctx context.Context, r cleanup.AdoptRequest) (cleanup.Receipt, error) {
@@ -896,7 +905,14 @@ func (e *Engine) adopt(ctx context.Context, r cleanup.AdoptRequest) (cleanup.Rec
 			return cleanup.Receipt{}, err
 		}
 	}
-	return e.relocate(ctx, job)
+	return e.relocate(ctx, requested(ctx, job))
+}
+
+func requested(ctx context.Context, job cleanup.Job) cleanup.Job {
+	if requester, named := cleanup.RequesterFrom(ctx); named {
+		job.Requester = requester
+	}
+	return job
 }
 
 func (e *Engine) relocate(ctx context.Context, job cleanup.Job) (cleanup.Receipt, error) {
