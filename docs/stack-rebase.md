@@ -32,6 +32,15 @@ rebasing that lane, run this from your branch's worktree:
 ccx vcs stack rebase --parent mine=theirs
 ```
 
+gt does not need to track the other lane's branch already. The run tracks it
+on its nearest tracked ancestor, or on trunk, the way `ship` adopts a branch.
+A parent that exists only on the remote is refused with the fetch that brings
+it local:
+
+```sh
+git fetch origin refs/heads/theirs:refs/heads/theirs
+```
+
 A reorder that puts a branch below the base its pull request targets is
 refused before anything is pushed. The push leaves that base holding the
 pull request's head, which GitHub reads as merged. GitHub closes the pull request
@@ -39,6 +48,14 @@ and deletes its branch, and no push order avoids that. The refusal names each
 `#<n> (<branch>) into <base>`. Retarget those pull requests onto trunk with
 `gh pr edit <n> --base <trunk>`, then run `ccx vcs stack continue`; the submit
 sets every real base afterward.
+
+A submit also refuses while the Graphite merge queue is restacking a pull
+request. When a parent lands, the queue parks each child on
+`graphite-base/<n>` and replays `graphite-base/<n>..head` onto trunk. A
+submit that moves the child onto a new parent during that window moves
+`graphite-base/<n>` too, and the replay then drops the new parent's commits.
+The refusal names the pull request and the landed parent. Wait until the pull
+request's base leaves `graphite-base/<n>`, then run the same command again.
 
 `ccx vcs stack restack` selects the repository's backend: stack replay for
 Graphite, branch replay for plain Git, and fetch plus rebase for jj.

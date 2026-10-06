@@ -2653,3 +2653,49 @@ func TestStackRebaseParentTracksAnUntrackedBranch(t *testing.T) {
 		})
 	}
 }
+
+func TestStackRebaseParentAdoptsAnUntrackedParent(t *testing.T) {
+	for _, from := range []string{"main", "a"} {
+		t.Run("cut from "+from, func(t *testing.T) {
+			f := stackRebaseRepo(t, "a")
+			mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "lane", "main")
+			stackCommit(t, f, "lane.txt")
+			mustRun(t, f.Env(), f.Dir, "gt", "track", "--parent", "main", "--no-interactive")
+			mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "theirs", from)
+			stackCommit(t, f, "theirs.txt")
+			mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "theirs")
+			mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "lane")
+
+			out, errOut, err := runStackCmd(t, f, "rebase", "--no-push", "--parent", "lane=theirs")
+			if err != nil {
+				t.Fatalf("stack rebase --parent lane=theirs: %v\n%s%s", err, out, errOut)
+			}
+			if got := stackParent(t, f, "theirs"); got != from {
+				t.Errorf("gt parent of theirs = %s, want %s", got, from)
+			}
+			if got := stackParent(t, f, "lane"); got != "theirs" {
+				t.Errorf("gt parent of lane = %s, want theirs", got)
+			}
+			if n := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", "theirs..lane"); n != "1" {
+				t.Errorf("lane holds %s commits over theirs, want its own one", n)
+			}
+		})
+	}
+}
+
+func TestStackRebaseParentNamesTheFetchForAParentOnlyTheRemoteHolds(t *testing.T) {
+	f := stackRebaseRepo(t, "a")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "theirs", "main")
+	stackCommit(t, f, "theirs.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "theirs")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "a")
+	mustRun(t, f.Env(), f.Dir, "git", "branch", "-qD", "theirs")
+
+	_, errOut, err := runStackCmd(t, f, "rebase", "--no-push", "--parent", "a=theirs")
+	if err == nil {
+		t.Fatal("stack rebase --parent a=theirs succeeded with no local theirs")
+	}
+	if want := "git fetch origin refs/heads/theirs:refs/heads/theirs"; !strings.Contains(errOut+err.Error(), want) {
+		t.Errorf("refusal = %q, want it to name %q", errOut+err.Error(), want)
+	}
+}
