@@ -267,7 +267,11 @@ title becomes the commit subject and an unscoped `--pr-body-file` its body, with
 `<details>` wrapper dropped and each `## Heading` folded into a `Heading:` paragraph.
 On the gt lane a pushing ship whose branch needs a restack or whose base is off
 the fetched trunk runs the stack rebase machinery over its downstack after the
-commit, reported as `restacked in isolation`. The working copy holding a moved
+commit, reported as `restacked in isolation`. Published branches stacked above
+it join that run: an amend or a new commit mid-stack replays them onto the new
+head and resubmits them under their leases, reported as
+`resubmitted <branches> above <branch>`, and `--tip-only` leaves them where they
+are. The working copy holding a moved
 branch must be clean and is moved onto its new head; another working copy
 holding a moved branch stops the run. A branch `gt freeze` is holding is left
 where it is. A conflict stops in a conflict workspace with rerere off;

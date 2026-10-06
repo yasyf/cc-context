@@ -17,6 +17,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A mid-stack ship carries the published branches above it.** On the gt
+  lane, `ship --amend` (or a new commit) on a branch with submitted children
+  restacked the children locally but pushed and submitted only the downstack,
+  so every child's pull request kept the parent's replaced commit. The
+  isolated restack now takes each published branch above the shipped one,
+  replays it onto the new head, and resubmits it under its lease; the report
+  adds `resubmitted <branches> above <branch>`. `--tip-only` still leaves
+  them where they are, and another lane's branches stay out unless
+  `--all-lanes` is given.
+
 - **Pushes after a restack send self-contained packs.** Every push ccx runs
   (`vcs push`, `ship`, `stack submit`, `stack rebase`, `stack drop`) now
   passes `--no-thin`. A thin pack deltas new blobs against bases it assumes
