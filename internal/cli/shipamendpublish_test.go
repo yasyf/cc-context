@@ -18,6 +18,7 @@ func TestShipAmendOfAQueuedBranchRefusesInsteadOfClaimingItPublished(t *testing.
 	}
 	api.prs["feature"] = 100
 	api.queued["feature"] = true
+	stubPRState(t, prPoll(`"p0":`+prNode(100, "OPEN", prComments())))
 	stubStackPRs(t, f, map[string]*stackPR{"feature": {Number: 100, Title: "feature", State: "OPEN", Base: "main"}})
 	queued := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature")
 	writeShipFile(t, f.Dir, "feature.txt", "amended\n")

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"maps"
 	"os"
@@ -25,6 +26,7 @@ import (
 	"github.com/yasyf/cc-context/internal/cleanup"
 	"github.com/yasyf/cc-context/internal/gtapi"
 	"github.com/yasyf/cc-context/internal/gtmeta"
+	"github.com/yasyf/cc-context/internal/prstate"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcs"
 )
@@ -1185,7 +1187,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	if err != nil {
 		return nil, err
 	}
-	queued, err := stackQueuedBranches(ctx, l, o.noPush, byName)
+	queue, err := stackQueueStates(ctx, l, o.noPush, byName)
 	if err != nil {
 		return nil, err
 	}
@@ -1205,14 +1207,14 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 		}
 		_, named := overrides[name]
 		switch {
-		case queued[name] && (named || (name == o.tip && b.Local != b.Remote)):
+		case queue[name] == prQueueQueued && (named || (name == o.tip && b.Local != b.Remote)):
 			return nil, fmt.Errorf("stack rebase: %s is in the merge queue as %s, and moving it would evict it — take it out of the queue first", name, b.PR)
 		case slices.Contains(o.pinned, name):
 			if !stackPinPublished(b) {
 				return nil, fmt.Errorf("stack submit: %s is another lane's and has never been pushed, so there is no published head to stack on — submit it from its own working copy first, or take it into this run with --include %s or --all-lanes", name, name)
 			}
 			b.Kept, b.Pinned = true, true
-		case queued[name] || (moving != nil && !moving[name] && !inherits[name]):
+		case queue[name] == prQueueQueued || (moving != nil && !moving[name] && !inherits[name]):
 			b.Kept = o.noPush || stackPinPublished(b)
 		case o.tip != "" && name != o.tip && !o.restack && (o.tipOnly || !inherits[name]):
 			if b.Kept, err = stackKeepsAncestor(ctx, l.dir(), pin, b, kept[b.Parent], o.tipOnly); err != nil {
@@ -1237,7 +1239,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 				return nil, err
 			}
 			b.Bump = slices.Contains(o.bump, name)
-			if o.stayClean && !b.Bump && !inherits[name] && b.Parent == trunk && b.WasParent == trunk && b.Remote != "" && b.OldBase != pin && (b.PR == nil || b.PR.Mergeable != "CONFLICTING") {
+			if o.stayClean && !b.Bump && !inherits[name] && b.Parent == trunk && b.WasParent == trunk && b.Remote != "" && b.OldBase != pin && queue[name] != prQueueEvicted && (b.PR == nil || b.PR.Mergeable != "CONFLICTING") {
 				if b.Stays, err = stackMergesClean(ctx, l.dir(), pin, stackUpstackHeads(order, byName, name)); err != nil {
 					return nil, err
 				}
@@ -2069,10 +2071,12 @@ func stackMovingBranches(state gtState, o stackRebaseOpts, overrides map[string]
 	return moving, nil
 }
 
-// stackQueuedBranches reads Graphite's merge queue for every branch with an
-// open pull request a pushing run could move: a push to a queued pull request
-// evicts it.
-func stackQueuedBranches(ctx context.Context, l lane, noPush bool, byName map[string]*stackRebaseBranch) (map[string]bool, error) {
+// stackQueueStates reads where every branch with an open pull request a
+// pushing run could move stands against Graphite's merge queue: a push to a
+// queued pull request evicts it. Graphite keeps a pull request flagged after
+// the queue lets it go, so each one flagged or carrying a queue label is
+// settled by its merge activity, read the way ccx vcs pr status reads it.
+func stackQueueStates(ctx context.Context, l lane, noPush bool, byName map[string]*stackRebaseBranch) (map[string]prQueueState, error) {
 	var heads []string
 	for _, name := range slices.Sorted(maps.Keys(byName)) {
 		if b := byName[name]; b.Landed == "" && b.PR != nil && b.PR.State == "OPEN" {
@@ -2090,13 +2094,24 @@ func stackQueuedBranches(ctx context.Context, l lane, noPush bool, byName map[st
 	if err != nil {
 		return nil, fmt.Errorf("stack rebase: read the merge queue before pushing: %w", err)
 	}
-	queued := map[string]bool{}
+	infos = slices.DeleteFunc(infos, func(info gtapi.PullRequestInfo) bool { return info.State != gtapi.PROpen })
+	var watched []int
 	for _, info := range infos {
-		if info.State == gtapi.PROpen && info.MergeQueueStatus != nil && info.MergeQueueStatus.IsInGraphiteMq {
-			queued[info.HeadRefName] = true
+		if prInGraphiteMq(info) || (prstate.PR{Labels: byName[info.HeadRefName].PR.Labels}).QueueLabelled() {
+			watched = append(watched, info.PRNumber)
 		}
 	}
-	return queued, nil
+	var st prstate.State
+	if len(watched) > 0 {
+		if st, _, err = readPRQueue(ctx, owner+"/"+name, watched, io.Discard, ghRateLimitWait); err != nil {
+			return nil, fmt.Errorf("stack rebase: read the merge activity before pushing: %w", err)
+		}
+	}
+	states := map[string]prQueueState{}
+	for _, info := range infos {
+		states[info.HeadRefName] = prQueueOf(info, st.PRs[info.PRNumber], "").Queue
+	}
+	return states, nil
 }
 
 func stackOwnRemote(ctx context.Context, dir render.Dir, name, local, remote, pin string) (bool, error) {

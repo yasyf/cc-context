@@ -308,11 +308,7 @@ func runVcsPRStatus(cmd *cobra.Command, args []string, o vcsPRStatusOpts) error 
 }
 
 func collectPRQueue(ctx context.Context, repo string, numbers []int, warn io.Writer) ([]prStatusReport, error) {
-	store, err := openPRState(ctx, repo, warn)
-	if err != nil {
-		return nil, fmt.Errorf("pr status: %w", err)
-	}
-	st, limited, err := readPRStateWaiting(ctx, store, prstate.Want{PRs: numbers}, prStatusRateLimitWait)
+	st, limited, err := readPRQueue(ctx, repo, numbers, warn, prStatusRateLimitWait)
 	if err != nil {
 		return nil, fmt.Errorf("pr status: %w", err)
 	}
@@ -333,11 +329,7 @@ func collectPRQueue(ctx context.Context, repo string, numbers []int, warn io.Wri
 		case len(pr.SquashOn) > 0:
 			landedOn = pr.SquashOn[0]
 		}
-		var activity string
-		if landedOn == "" && info.State == gtapi.PROpen && (prInGraphiteMq(info) || pr.QueueLabelled()) {
-			activity = pr.Activity
-		}
-		r := classifyPRQueue(info, landedOn, activity)
+		r := prQueueOf(info, pr, landedOn)
 		r.Conflicting = r.Queue == prQueueEvicted && pr.MergeStateStatus == "DIRTY"
 		r.Stale = staleAt(limited, pr.PolledAt)
 		report := prStatusReport{prQueueReport: r, CI: prCIOf(pr.Rollup), Approval: prApprovalOf(pr)}
@@ -345,6 +337,22 @@ func collectPRQueue(ctx context.Context, repo string, numbers []int, warn io.Wri
 		reports = append(reports, report)
 	}
 	return reports, nil
+}
+
+func readPRQueue(ctx context.Context, repo string, numbers []int, warn io.Writer, wait time.Duration) (prstate.State, *prstate.Backoff, error) {
+	store, err := openPRState(ctx, repo, warn)
+	if err != nil {
+		return prstate.State{}, nil, err
+	}
+	return readPRStateWaiting(ctx, store, prstate.Want{PRs: numbers}, wait)
+}
+
+func prQueueOf(info gtapi.PullRequestInfo, pr prstate.PR, landedOn string) prQueueReport {
+	var activity string
+	if landedOn == "" && info.State == gtapi.PROpen && (prInGraphiteMq(info) || pr.QueueLabelled()) {
+		activity = pr.Activity
+	}
+	return classifyPRQueue(info, landedOn, activity)
 }
 
 func prCIOf(rollup *prstate.Rollup) prCIReport {
