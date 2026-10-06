@@ -944,12 +944,11 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	if err != nil {
 		return nil, err
 	}
-	for child, parent := range overrides {
-		if _, tracked := state[parent]; parent != trunk && !tracked {
-			return nil, fmt.Errorf("stack rebase: --parent %s=%s names a parent gt does not track", child, parent)
-		}
-	}
 	tr, err := gtTrunkRef(ctx, l.dir(), prefix, trunk)
+	if err != nil {
+		return nil, err
+	}
+	parents, err := stackAdoptUntrackedParents(ctx, l.dir(), commonDir, tr, state, overrides)
 	if err != nil {
 		return nil, err
 	}
@@ -957,6 +956,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	if err != nil {
 		return nil, err
 	}
+	maps.Copy(adopted, parents)
 	retargeted := stackRetargeted(state, overrides)
 	seeds := append(slices.Sorted(maps.Keys(overrides)), o.landed...)
 	if current != "" && current != trunk {
@@ -1498,6 +1498,42 @@ func stackAdoptUntracked(ctx context.Context, dir render.Dir, tr vcs.Trunk, stat
 		}
 		adopted[child] = gtBranchState{Head: head, Parents: []gtRef{{Ref: overrides[child], SHA: base}}}
 		state[child] = adopted[child]
+	}
+	return adopted, nil
+}
+
+func stackAdoptUntrackedParents(ctx context.Context, dir render.Dir, commonDir string, tr vcs.Trunk, state gtState, overrides map[string]string) (gtState, error) {
+	adopted := gtState{}
+	for _, child := range slices.Sorted(maps.Keys(overrides)) {
+		parent := overrides[child]
+		if _, tracked := state[parent]; tracked || parent == tr.Name() || overrides[parent] != "" {
+			continue
+		}
+		present, err := gitRefExists(ctx, dir, stackRebasePrefix, gtRestackRef(parent))
+		if err != nil {
+			return nil, err
+		}
+		if !present {
+			return nil, fmt.Errorf("stack rebase: --parent %s=%s names a branch with no local copy: git fetch %s refs/heads/%s:refs/heads/%s, then re-run", child, parent, tr.Remote(), parent, parent)
+		}
+		below, _, err := gtInferParent(ctx, &gtCache{dir: dir, prefix: stackRebasePrefix, commonDir: commonDir, state: state}, parent)
+		if err != nil {
+			return nil, err
+		}
+		head, err := gtRestackHead(ctx, stackRebasePrefix, dir, parent)
+		if err != nil {
+			return nil, err
+		}
+		floor := string(tr.Ref())
+		if below != tr.Name() {
+			floor = gtRestackRef(below)
+		}
+		base, err := stackMergeBase(ctx, dir, head, floor)
+		if err != nil {
+			return nil, err
+		}
+		adopted[parent] = gtBranchState{Head: head, Parents: []gtRef{{Ref: below, SHA: base}}}
+		state[parent] = adopted[parent]
 	}
 	return adopted, nil
 }
