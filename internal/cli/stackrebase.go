@@ -526,6 +526,15 @@ func stackBareBelow(run *stackRebaseRun, live, bare []string) []string {
 // stackGate refuses a rebase over a run in progress, finishes a dead run whose
 // push already matches origin, or reclaims the run when it is stale.
 func stackGate(ctx context.Context, cmd *cobra.Command, l lane, commonDir string, other *stackRebaseRun, dryRun bool) (bool, error) {
+	done, err := stackGateRun(ctx, cmd, l, commonDir, other, dryRun)
+	if errors.Is(err, errStackRunGone) {
+		cmd.Println(fmt.Sprintf("the stack rebase of %s ended meanwhile", strings.Join(other.Roots, ", ")))
+		return true, nil
+	}
+	return done, err
+}
+
+func stackGateRun(ctx context.Context, cmd *cobra.Command, l lane, commonDir string, other *stackRebaseRun, dryRun bool) (bool, error) {
 	pushed, err := stackDeadPushed(ctx, l.dir(), other)
 	if err != nil {
 		return false, err
@@ -594,11 +603,16 @@ func stackFinishDead(ctx context.Context, cmd *cobra.Command, l lane, commonDir 
 func stackAdopt(run *stackRebaseRun) (err error) {
 	roots := strings.Join(run.Roots, ", ")
 	lock := filepath.Join(run.dir, stackAdoptLock)
-	if err := os.Mkdir(lock, 0o700); err != nil {
+	if err := os.Mkdir(lock, 0o700); errors.Is(err, fs.ErrNotExist) {
+		return errStackRunGone
+	} else if err != nil {
 		return fmt.Errorf("stack rebase: adopt the run of %s (another caller may be adopting it — re-run): %w", roots, err)
 	}
 	defer func() { err = errors.Join(err, os.Remove(lock)) }()
 	info, err := os.Stat(stackStatePath(run.dir))
+	if errors.Is(err, fs.ErrNotExist) {
+		return errStackRunGone
+	}
 	if err != nil || !info.ModTime().Equal(run.saved) {
 		return fmt.Errorf("stack rebase: the run of %s saved again while it was being adopted — re-run", roots)
 	}
@@ -705,7 +719,7 @@ func stackAdmit(ctx context.Context, cmd *cobra.Command, l lane, commonDir strin
 	}
 	for _, other := range apart {
 		if why := settled[other]; why != "" {
-			if err := stackDiscard(ctx, cmd, l, commonDir, other, why, dryRun); err != nil {
+			if err := stackDiscard(ctx, cmd, l, commonDir, other, why, dryRun); err != nil && !errors.Is(err, errStackRunGone) {
 				return false, err
 			}
 		}
@@ -846,7 +860,9 @@ func stackDiscard(ctx context.Context, cmd *cobra.Command, l lane, commonDir str
 func stackReclaim(ctx context.Context, l lane, commonDir string, run *stackRebaseRun) error {
 	roots := strings.Join(run.Roots, ", ")
 	tomb := fmt.Sprintf("%s.reclaim-%d", run.dir, os.Getpid())
-	if err := os.Rename(run.dir, tomb); err != nil {
+	if err := os.Rename(run.dir, tomb); errors.Is(err, fs.ErrNotExist) {
+		return errStackRunGone
+	} else if err != nil {
 		return fmt.Errorf("stack rebase: reclaim the stale run of %s (another caller may have taken it — re-run): %w", roots, err)
 	}
 	info, err := os.Stat(stackStatePath(tomb))
@@ -2880,7 +2896,10 @@ func runStackContinue(cmd *cobra.Command, stack string) error {
 	return stackResume(ctx, cmd, l, commonDir, run)
 }
 
-var errNoStackRebase = errors.New("stack rebase: no stack rebase is in progress in this repository")
+var (
+	errNoStackRebase = errors.New("stack rebase: no stack rebase is in progress in this repository")
+	errStackRunGone  = errors.New("stack rebase: the run ended while this caller was taking it over")
+)
 
 // stackContinueStranded finishes a rebase ccx did not start, stopped in this
 // working copy — one a gt restack left behind after losing its own operation,

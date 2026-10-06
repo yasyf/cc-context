@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -229,5 +231,45 @@ func TestStackSettledKeepsAReplayTheLandingLacks(t *testing.T) {
 				t.Fatalf("settled = %q, want settled %v", settled[run], tc.settled)
 			}
 		})
+	}
+}
+
+func TestStackAdoptReportsARunThatEndedMeanwhile(t *testing.T) {
+	t.Parallel()
+	run := &stackRebaseRun{Roots: []string{"feature"}, Pid: 1}
+	if err := stackClaim(t.TempDir(), run); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(run.dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := stackAdopt(run); !errors.Is(err, errStackRunGone) {
+		t.Fatalf("stackAdopt of a removed run = %v, want errStackRunGone", err)
+	}
+}
+
+func TestStackGateTreatsARunThatEndedMeanwhileAsFinished(t *testing.T) {
+	t.Parallel()
+	f := stackRebaseRepo(t, "base", "feature")
+	stackPlantRun(t, f, stackStaleAfter+time.Minute, "base")
+	common := filepath.Join(f.Dir, ".git")
+	runs, err := stackRuns(common)
+	if err != nil || len(runs) != 1 {
+		t.Fatalf("runs = %v, %v, want the planted run", runs, err)
+	}
+	if err := os.RemoveAll(runs[0].dir); err != nil {
+		t.Fatal(err)
+	}
+	l, err := resolveLane(f.Context(), stackRebasePrefix, workingDir(f.Context()), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := newStackCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+
+	done, err := stackGate(f.Context(), cmd, l, common, runs[0], false)
+	if err != nil || !done || !strings.Contains(out.String(), "the stack rebase of base ended meanwhile") {
+		t.Fatalf("stackGate over a removed run = %v, %v, %q, want it finished", done, err, out.String())
 	}
 }
