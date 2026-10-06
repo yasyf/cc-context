@@ -34,6 +34,7 @@ const (
 	stackRebaseStateDir = "ccx-stack-rebase"
 	stackRebaseState    = "state.json"
 	stackAdoptLock      = "adopt.lock"
+	stackClaimOwner     = "owner"
 	stackBriefLines     = 25
 	stackCulprits       = 10
 	stackVerdictTries   = 4
@@ -737,7 +738,7 @@ func stackOverlaps(run, other *stackRebaseRun) bool {
 func stackWrites(run *stackRebaseRun) []string {
 	var names []string
 	for _, b := range run.Branches {
-		if b.Landed == "" && b.Held == "" && (!b.Kept || run.NoPush) {
+		if b.Landed == "" && b.Held == "" && (!b.Kept || run.NoPush || b.Head != b.Local) {
 			names = append(names, b.Name)
 		}
 	}
@@ -792,11 +793,17 @@ func stackSettled(ctx context.Context, dir render.Dir, runs []*stackRebaseRun) (
 	for _, run := range dead {
 		var gone []string
 		for _, name := range stackOwned(run) {
-			if b := run.branch(name); b != nil && b.Landed != "" {
+			b := run.branch(name)
+			if b != nil && b.Landed != "" {
 				gone = append(gone, name+" landed")
 				continue
 			}
-			if pr := landed[name]; pr != nil {
+			pr := landed[name]
+			if b != nil && !run.Pushed && b.NewHead != "" && b.NewHead != b.Head && (pr == nil || pr.Head != b.NewHead) {
+				gone = nil
+				break
+			}
+			if pr != nil {
 				gone = append(gone, fmt.Sprintf("%s landed as #%d", name, pr.Number))
 				continue
 			}
@@ -3849,7 +3856,7 @@ func stackClaim(commonDir string, run *stackRebaseRun) error {
 	locks := run.locks()
 	for i, name := range locks {
 		dir := stackRunDir(commonDir, name)
-		if err := stackReclaimAbandoned(dir); err != nil {
+		if err := stackReclaimAbandoned(commonDir, dir); err != nil {
 			return err
 		}
 		if err := os.Mkdir(dir, 0o750); err != nil {
@@ -3861,18 +3868,28 @@ func stackClaim(commonDir string, run *stackRebaseRun) error {
 			}
 			return fmt.Errorf("stack rebase: %w", err)
 		}
+		if i > 0 {
+			if err := os.WriteFile(filepath.Join(dir, stackClaimOwner), []byte(locks[0]), 0o600); err != nil {
+				return fmt.Errorf("stack rebase: %w", err)
+			}
+		}
 	}
 	run.dir = stackRunDir(commonDir, locks[0])
 	return nil
 }
 
-func stackReclaimAbandoned(dir string) error {
+func stackReclaimAbandoned(commonDir, dir string) error {
 	info, err := os.Stat(dir)
 	if err != nil || time.Since(info.ModTime()) < stackStaleAfter {
 		return nil
 	}
 	if _, err := os.Stat(stackStatePath(dir)); !errors.Is(err, fs.ErrNotExist) {
 		return nil
+	}
+	if owner, err := os.ReadFile(filepath.Join(dir, stackClaimOwner)); err == nil {
+		if _, err := os.Stat(stackStatePath(stackRunDir(commonDir, string(owner)))); !errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
 	}
 	tomb := fmt.Sprintf("%s.reclaim-%d", dir, os.Getpid())
 	if err := os.Rename(dir, tomb); err != nil {

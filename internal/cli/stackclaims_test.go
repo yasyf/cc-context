@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
@@ -140,5 +142,90 @@ func TestStackRunForPicksTheRunThatClaimsTheNamedBranch(t *testing.T) {
 	_, err := stackRunFor(runs, "bottom", "", "")
 	if want := "2 stack rebases of bottom are in progress — name one: --stack left, --stack right"; err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("stackRunFor(bottom) = %v, want %q", err, want)
+	}
+}
+
+func TestStackReclaimAbandonedKeepsAClaimWhoseOwnerIsRecorded(t *testing.T) {
+	t.Parallel()
+	common := t.TempDir()
+	run := &stackRebaseRun{Roots: []string{"bottom"}, Claims: []string{"left", "right"}, Pid: 1}
+	if err := stackClaim(common, run); err != nil {
+		t.Fatal(err)
+	}
+	if err := stackSaveRun(run); err != nil {
+		t.Fatal(err)
+	}
+	secondary := stackRunDir(common, "right")
+	then := time.Now().Add(-stackStaleAfter - time.Minute)
+	if err := os.Chtimes(secondary, then, then); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := stackReclaimAbandoned(common, secondary); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(secondary); err != nil {
+		t.Fatalf("claim of a recorded run was reclaimed: %v", err)
+	}
+	if err := os.Remove(stackStatePath(run.dir)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(secondary, then, then); err != nil {
+		t.Fatal(err)
+	}
+	if err := stackReclaimAbandoned(common, secondary); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(secondary); !os.IsNotExist(err) {
+		t.Fatalf("claim whose owner left no state = %v, want it reclaimed", err)
+	}
+}
+
+func TestStackWritesClaimsAKeptBranchItAligns(t *testing.T) {
+	t.Parallel()
+	run := &stackRebaseRun{Branches: []stackRebaseBranch{
+		{Name: "landed", Landed: "#1 landed"},
+		{Name: "aligned", Kept: true, Local: "a", Head: "a"},
+		{Name: "behind", Kept: true, Local: "a", Head: "b"},
+		{Name: "moved", Local: "a", Head: "a"},
+	}}
+	if got, want := stackWrites(run), []string{"behind", "moved"}; !slices.Equal(got, want) {
+		t.Fatalf("stackWrites = %v, want %v", got, want)
+	}
+	run.NoPush = true
+	if got, want := stackWrites(run), []string{"aligned", "behind", "moved"}; !slices.Equal(got, want) {
+		t.Fatalf("stackWrites(--no-push) = %v, want %v", got, want)
+	}
+}
+
+func TestStackSettledKeepsAReplayTheLandingLacks(t *testing.T) {
+	t.Parallel()
+	host, err := os.Hostname()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name    string
+		landed  string
+		settled bool
+	}{
+		{name: "landed an older head", landed: "published"},
+		{name: "landed the replay", landed: "replayed", settled: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			run := &stackRebaseRun{Trunk: "main", Roots: []string{"shipped"}, Claims: []string{"shipped"}, Pid: stackExitedPid(t), Host: host, Publishing: true,
+				Branches: []stackRebaseBranch{{Name: "shipped", Local: "published", Head: "published", NewHead: "replayed"}}}
+			ctx := withStackPRs(t.Context(), func(context.Context, render.Dir, string, []string) (map[string]*stackPR, error) {
+				return map[string]*stackPR{"shipped": {Number: 7, Head: tc.landed, Landed: true}}, nil
+			})
+			settled, err := stackSettled(ctx, render.Dir(t.TempDir()), []*stackRebaseRun{run})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := settled[run] != ""; got != tc.settled {
+				t.Fatalf("settled = %q, want settled %v", settled[run], tc.settled)
+			}
+		})
 	}
 }
