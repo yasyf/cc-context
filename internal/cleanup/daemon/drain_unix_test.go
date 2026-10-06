@@ -37,6 +37,8 @@ func (idleWatchers) Retiring(context.Context, string) ([]cleanup.ProcessID, erro
 
 func (idleWatchers) Retire(context.Context, string) error { return nil }
 
+func (idleWatchers) Server(context.Context) ([]cleanup.ProcessID, error) { return nil, nil }
+
 func (idleWatchers) CheckQuarantine(context.Context, string) error { return nil }
 
 type gitFixture struct {

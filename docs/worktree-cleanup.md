@@ -186,9 +186,10 @@ Watcher retirement belongs to removal of an authorized unused tree. It checks
 current consumers, processes, and terminal activity, removes only roots inside
 that tree, and verifies removal. Git fsmonitor ownership comes from its socket
 and metadata; a process working directory alone is insufficient evidence.
-The running Watchman server's descriptors are never activity: it can keep a
-directory open after its root is deleted, so the activity guard discounts them
-whether or not the tree still has a root.
+The running Watchman server's descriptors are never activity. It can keep a
+directory open after its root is deleted, and that descriptor follows the tree
+when it is moved, so every activity check discounts the server's descriptors,
+before and after retirement and at every location the tree passes through.
 When a process or Watchman probe times out, or the activity guard cannot read
 a process's arguments, the failure is a warning: the tree is removed only if it
 has no uncommitted changes and a remote-tracking ref holds its head, and the

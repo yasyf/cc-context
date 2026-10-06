@@ -289,6 +289,17 @@ func (r *Relocator) unretired(ctx context.Context, job *cleanup.Job) error {
 	return err
 }
 
+func (r *Relocator) unserved(ctx context.Context, tree string) error {
+	server, err := r.cfg.Watchers.Server(ctx)
+	switch {
+	case errors.Is(err, cleanup.ErrUnprobed):
+		slog.Warn("cleanup: guarding a tree whose watchman server could not be named", "tree", tree, "error", err)
+	case err != nil:
+		return fmt.Errorf("name the watchman server: %w", err)
+	}
+	return r.cfg.Guard(cleanup.WithRetiring(ctx, server), tree)
+}
+
 func idle(tree string, err error) error {
 	if err == nil {
 		return nil

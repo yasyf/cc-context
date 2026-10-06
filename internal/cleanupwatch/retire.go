@@ -22,9 +22,6 @@ type Retirement struct {
 	// GitDir is the Git directory Git resolved for Worktree; the fsmonitor
 	// stop is bound to it rather than rediscovered through Worktree.
 	GitDir string `json:"git_dir,omitempty"`
-	// Watchman reports a running Watchman server, which can hold descriptors
-	// in a tree after its roots there are gone.
-	Watchman bool `json:"watchman"`
 	// Roots lists the roots to retire, deepest first.
 	Roots []WatchedRoot `json:"roots"`
 	// Ancestors lists the roots above the worktree, which are never retired.
@@ -66,7 +63,6 @@ type Outcome struct {
 }
 
 type gateResult struct {
-	Watchman  bool
 	Roots     []string
 	Ancestors []Coverage
 	Blockers  []string
@@ -101,7 +97,6 @@ func Plan(ctx context.Context, d Deps, worktree string) (Retirement, error) {
 		Dev:       id.Dev,
 		Ino:       id.Ino,
 		GitDir:    own.GitDir,
-		Watchman:  g.Watchman,
 		Roots:     roots,
 		Ancestors: g.Ancestors,
 		FSMonitor: own.Owner,
@@ -465,7 +460,7 @@ func (d Deps) gate(ctx context.Context, target string, exact bool) (gateResult, 
 		return gateResult{}, err
 	}
 	status.ServerPID = srv.PID
-	g := gateResult{Watchman: true}
+	var g gateResult
 	for _, raw := range status.Roots {
 		switch {
 		case raw.Path == target || (!exact && under(raw.Path, target)):

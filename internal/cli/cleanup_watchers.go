@@ -42,13 +42,9 @@ func (w cleanupWatchers) Retiring(ctx context.Context, worktree string) ([]clean
 	if plan.Refused() {
 		return nil, fmt.Errorf("name the watchers of %s: %w: %s", worktree, cleanupwatch.ErrRefused, strings.Join(plan.Blockers, "; "))
 	}
-	var watchers []cleanupwatch.Process
-	if plan.Watchman {
-		server, err := w.watchmanServer(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("name the watchers of %s: %w", worktree, err)
-		}
-		watchers = append(watchers, server)
+	ids, err := w.Server(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("name the watchers of %s: %w", worktree, err)
 	}
 	if plan.FSMonitor != nil {
 		owner, err := w.process(ctx, plan.FSMonitor.PID)
@@ -58,18 +54,38 @@ func (w cleanupWatchers) Retiring(ctx context.Context, worktree string) ([]clean
 		if owner.Start != plan.FSMonitor.Start {
 			return nil, fmt.Errorf("name the watchers of %s: %w: fsmonitor owner pid %d restarted since planning", worktree, cleanupwatch.ErrRefused, owner.PID)
 		}
-		watchers = append(watchers, owner)
-	}
-	ids := make([]cleanup.ProcessID, 0, len(watchers))
-	for _, proc := range watchers {
-		start, err := time.ParseInLocation(psStartLayout, proc.Start, time.Local)
+		id, err := processID(owner)
 		if err != nil {
-			return nil, fmt.Errorf("name the watchers of %s: start of pid %d: %w", worktree, proc.PID, err)
+			return nil, fmt.Errorf("name the watchers of %s: %w", worktree, err)
 		}
-		ids = append(ids, cleanup.ProcessID{PID: proc.PID, Start: start.Unix()})
+		ids = append(ids, id)
 	}
 	slices.SortFunc(ids, func(a, b cleanup.ProcessID) int { return a.PID - b.PID })
 	return ids, nil
+}
+
+func (w cleanupWatchers) Server(ctx context.Context) ([]cleanup.ProcessID, error) {
+	running, err := cleanupwatch.Running(ctx, w.deps)
+	if err != nil || !running {
+		return nil, err
+	}
+	server, err := w.watchmanServer(ctx)
+	if err != nil {
+		return nil, err
+	}
+	id, err := processID(server)
+	if err != nil {
+		return nil, err
+	}
+	return []cleanup.ProcessID{id}, nil
+}
+
+func processID(proc cleanupwatch.Process) (cleanup.ProcessID, error) {
+	start, err := time.ParseInLocation(psStartLayout, proc.Start, time.Local)
+	if err != nil {
+		return cleanup.ProcessID{}, fmt.Errorf("start of pid %d: %w", proc.PID, err)
+	}
+	return cleanup.ProcessID{PID: proc.PID, Start: start.Unix()}, nil
 }
 
 func (w cleanupWatchers) watchmanServer(ctx context.Context) (cleanupwatch.Process, error) {

@@ -20,6 +20,7 @@ import (
 type fakeWatchers struct {
 	retiring   func(ctx context.Context, worktree string) ([]cleanup.ProcessID, error)
 	retire     func(ctx context.Context, worktree string) error
+	server     func(ctx context.Context) ([]cleanup.ProcessID, error)
 	quarantine func(ctx context.Context, jobDir string) error
 	named      []string
 	retired    []string
@@ -36,6 +37,10 @@ func (w *fakeWatchers) Retire(ctx context.Context, worktree string) error {
 	w.retired = append(w.retired, worktree)
 	w.released = append(w.released, cleanup.RetiringFrom(ctx))
 	return w.retire(ctx, worktree)
+}
+
+func (w *fakeWatchers) Server(ctx context.Context) ([]cleanup.ProcessID, error) {
+	return w.server(ctx)
 }
 
 func (w *fakeWatchers) CheckQuarantine(ctx context.Context, jobDir string) error {
@@ -103,6 +108,7 @@ func newFixture(t *testing.T) *fixture {
 		watchers: &fakeWatchers{
 			retiring:   func(context.Context, string) ([]cleanup.ProcessID, error) { return nil, nil },
 			retire:     func(context.Context, string) error { return nil },
+			server:     func(context.Context) ([]cleanup.ProcessID, error) { return nil, nil },
 			quarantine: func(context.Context, string) error { return nil },
 		},
 		clock: time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC),

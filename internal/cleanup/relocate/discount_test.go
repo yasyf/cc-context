@@ -4,12 +4,31 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"slices"
 	"testing"
 
 	"github.com/yasyf/cc-context/internal/cleanup"
 )
 
 var retiring = []cleanup.ProcessID{{PID: 501, Start: 1790000000}, {PID: 733, Start: 1790000450}}
+
+var server = []cleanup.ProcessID{{PID: 1417, Start: 1789000000}}
+
+func (f *fixture) served() {
+	f.watchers.server = func(context.Context) ([]cleanup.ProcessID, error) { return server, nil }
+}
+
+func (f *fixture) keptOpen() {
+	f.guard = func(ctx context.Context, tree string) error {
+		if slices.Contains(cleanup.RetiringFrom(ctx), server[0]) {
+			return nil
+		}
+		return &cleanup.ActiveError{
+			Worktree: tree,
+			Holders:  []cleanup.Holder{{PID: server[0].PID, Name: "watchman", Evidence: cleanup.EvidenceFD, Path: tree}},
+		}
+	}
+}
 
 func (f *fixture) watched() {
 	f.watchers.retiring = func(context.Context, string) ([]cleanup.ProcessID, error) { return retiring, nil }
@@ -211,5 +230,51 @@ func TestUnnamedWatchersAuthorizeNothing(t *testing.T) {
 			t.Errorf("watchers retired %v, want none", f.watchers.retired)
 		}
 		f.consulted([]string{f.worktree}, [][]cleanup.ProcessID{nil}, []string{f.worktree, f.worktree})
+	})
+}
+
+func TestGuardDiscountsTheWatchmanServerThatKeptTheTreeOpen(t *testing.T) {
+	t.Run("a removal", func(t *testing.T) {
+		f := newFixture(t)
+		f.served()
+		f.watchers.retiring = func(context.Context, string) ([]cleanup.ProcessID, error) { return server, nil }
+		f.keptOpen()
+		job := f.accept()
+		f.advance(&job)
+		f.finished(&job)
+
+		f.admit(&job)
+
+		f.consulted(
+			[]string{f.worktree, f.worktree, job.Registered, job.Payload},
+			[][]cleanup.ProcessID{server, server, server, server},
+			[]string{f.worktree, f.worktree},
+		)
+		f.retiredUnder([][]cleanup.ProcessID{server})
+	})
+
+	t.Run("an adoption", func(t *testing.T) {
+		q := newQuarantine(t)
+		q.served()
+		q.keptOpen()
+		job := q.adopt()
+		q.advance(&job)
+		q.finished(&job)
+
+		q.admit(&job)
+
+		q.consulted([]string{q.source, q.source, job.Payload}, [][]cleanup.ProcessID{server, server, server}, nil)
+	})
+
+	t.Run("an unnamed server authorizes nothing", func(t *testing.T) {
+		f := newFixture(t)
+		refused := errors.New("watchman server pid 1417 does not hold its socket")
+		f.watchers.server = func(context.Context) ([]cleanup.ProcessID, error) { return nil, refused }
+		job := f.accept()
+
+		f.advance(&job)
+
+		f.blocked(&job, cleanup.PhasePrepared, "activity", "could not verify that "+f.worktree+" is idle: name the watchman server: "+refused.Error())
+		f.absent(job.Registered)
 	})
 }
