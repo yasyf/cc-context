@@ -391,3 +391,28 @@ func TestShipTipOnlyShipsOverADivergedGrandparent(t *testing.T) {
 		})
 	}
 }
+
+func TestShipTipOnlyTakesNoLockOnAParentAnotherLaneIsWriting(t *testing.T) {
+	f, _, base := stackMergeableBase(t, "CONFLICTING")
+	held := f.WorktreePath("held-base")
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", held, "base")
+	local := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
+	lock := filepath.Join(f.Dir, ".git", "refs", "heads", "base.lock")
+	if err := os.WriteFile(lock, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, errStr, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--tip-only"); err != nil {
+		t.Fatalf("ship --tip-only beside a lane writing its parent = %v (stderr=%q)", err, errStr)
+	}
+	if refs := gtPushedRefs(shipGTInvocations(t, f)); !slices.Equal(refs, []string{"feature"}) {
+		t.Errorf("pushed refs = %v, want only feature", refs)
+	}
+	if _, err := os.Stat(lock); err != nil {
+		t.Errorf("the parent lane's ref lock: %v, want it left in place", err)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); got != local {
+		t.Errorf("local base moved from %s to %s", local, got)
+	}
+	stackAssertBaseKept(t, f, base)
+}

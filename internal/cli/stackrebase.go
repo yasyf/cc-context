@@ -181,6 +181,10 @@ func (r *stackRebaseRun) branch(name string) *stackRebaseBranch {
 	return nil
 }
 
+func (r *stackRebaseRun) leavesLocalRef(b stackRebaseBranch) bool {
+	return b.Kept && (b.Pinned || tipOnlyAncestor(r.TipOnly, r.Tip, b.Name))
+}
+
 func (r *stackRebaseRun) headOf(name string) string {
 	if name == r.Trunk {
 		return r.Pin
@@ -752,7 +756,7 @@ func stackOverlaps(run, other *stackRebaseRun) bool {
 func stackWrites(run *stackRebaseRun) []string {
 	var names []string
 	for _, b := range run.Branches {
-		if b.Landed == "" && b.Held == "" && (!b.Kept || run.NoPush || b.Head != b.Local) {
+		if b.Landed == "" && b.Held == "" && !run.leavesLocalRef(b) && (!b.Kept || run.NoPush || b.Head != b.Local) {
 			names = append(names, b.Name)
 		}
 	}
