@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -106,6 +107,8 @@ func newWorktreeAddCmd() *cobra.Command {
 
 The path is minted at "$HOME/.claude/worktrees/<main-basename>/<name>",
 outside every repository tree so a worktree is never mistaken for repo content.
+A branch-shaped name such as user/slug keeps its full branch name and mints the
+directory user-slug.
 --jj picks how the new copy attaches: "none" is a git worktree, "workspace" is a
 jj workspace, and "colocate" is impossible — jj refuses to create a colocated
 repo inside a git worktree. Without --jj, a jj workspace mints another workspace
@@ -682,8 +685,9 @@ func worktreeShapeOf(mode string) string {
 // symlink-free — the spelling git canonicalizes every registered path to — so a
 // minted path equals its registry entry byte for byte.
 func mintWorktreePath(ctx context.Context, prefix string, c vcs.Checkout, name string) (string, error) {
-	if name == "" || name == "." || name == ".." || name != filepath.Base(name) {
-		return "", fmt.Errorf("%s: %q is not a worktree name — a name is one path element", prefix, name)
+	elements := strings.Split(name, "/")
+	if slices.ContainsFunc(elements, func(e string) bool { return e == "" || e == "." || e == ".." }) {
+		return "", fmt.Errorf("%s: %q is not a worktree name — a name has no empty, \".\", or \"..\" /-separated element", prefix, name)
 	}
 	home, err := render.Home(ctx)
 	if err != nil {
@@ -692,7 +696,7 @@ func mintWorktreePath(ctx context.Context, prefix string, c vcs.Checkout, name s
 	if home, err = filepath.EvalSymlinks(home); err != nil {
 		return "", fmt.Errorf("%s: canonicalize home directory: %w", prefix, err)
 	}
-	return filepath.Join(home, ".claude", "worktrees", filepath.Base(c.MainRoot), name), nil
+	return filepath.Join(home, ".claude", "worktrees", filepath.Base(c.MainRoot), strings.Join(elements, "-")), nil
 }
 
 func runWorktreeRm(cmd *cobra.Command, name string, opts worktreeRmOptions) error {
@@ -837,7 +841,7 @@ func matchPoolWorktree(list []vcs.Worktree, name, minted string) (*vcs.Worktree,
 		if wt.Path == minted {
 			return &list[i], nil
 		}
-		if filepath.Base(wt.Path) == name {
+		if filepath.Base(wt.Path) == filepath.Base(minted) {
 			foreign = append(foreign, wt.Path)
 		}
 	}
