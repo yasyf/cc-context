@@ -218,6 +218,41 @@ func TestWorktreeAddRmRoundTrip(t *testing.T) {
 	}
 }
 
+func TestWorktreeAddBranchShapedName(t *testing.T) {
+	f := vcstest.Repo(t, vcstest.Remote())
+	f.Isolate(t)
+	dir := f.Dir
+
+	path := addPoolWorktree(t, f, "user/feat")
+	if got := filepath.Base(path); got != "user-feat" {
+		t.Errorf("minted %q, want the directory user-feat", path)
+	}
+	if got := gitAt(t, f.Env(), path, "symbolic-ref", "--short", "HEAD"); got != "user/feat" {
+		t.Errorf("checked out %q, want user/feat", got)
+	}
+	listed, err := runWorktreeCmd(t, f, "list")
+	if err != nil {
+		t.Fatalf("list error = %v", err)
+	}
+	if !strings.Contains(listed, path+" · git worktree · user/feat") {
+		t.Errorf("listing = %q, want it to carry the added worktree", listed)
+	}
+	if _, err := runWorktreeCmd(t, f, "rm", "user/feat"); err != nil {
+		t.Fatalf("rm error = %v", err)
+	}
+	if worktreeRegistered(t, f.Env(), dir, path) {
+		t.Errorf("git still registers %s after rm by name, want it deregistered", path)
+	}
+
+	path = addPoolWorktree(t, f, "user/other")
+	if _, err := runWorktreeCmd(t, f, "rm", "--path", path); err != nil {
+		t.Fatalf("rm --path error = %v", err)
+	}
+	if worktreeRegistered(t, f.Env(), dir, path) {
+		t.Errorf("git still registers %s after rm --path, want it deregistered", path)
+	}
+}
+
 func TestWorktreeAddCutsFromFetchedTrunk(t *testing.T) {
 	f := vcstest.Repo(t, vcstest.Remote())
 	f.Isolate(t)
@@ -858,9 +893,11 @@ func TestWorktreeMintPathRejectsName(t *testing.T) {
 		{"empty", ""},
 		{"self", "."},
 		{"parent", ".."},
-		{"nested", "a/b"},
 		{"escaping", "../x"},
 		{"absolute", "/tmp/x"},
+		{"trailing slash", "a/"},
+		{"empty element", "a//b"},
+		{"inner parent", "a/../b"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -868,7 +905,7 @@ func TestWorktreeMintPathRejectsName(t *testing.T) {
 			if err == nil {
 				t.Fatalf("mintWorktreePath(%q) = %q, want a refusal", tt.given, got)
 			}
-			if !strings.Contains(err.Error(), "is one path element") {
+			if !strings.Contains(err.Error(), "every /-separated element") {
 				t.Errorf("mintWorktreePath(%q) error = %v, want the name rule", tt.given, err)
 			}
 		})

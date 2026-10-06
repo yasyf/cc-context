@@ -17,6 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`worktree add` accepts branch-shaped names.** `ccx vcs worktree add
+  user/slug` refused any name containing `/`, so a lane could not name its
+  worktree after its branch. The branch keeps its full name, and the
+  directory under `~/.claude/worktrees/<repo>/` becomes `user-slug`, the
+  form `stack new` and conflict workspaces already mint. `worktree rm
+  user/slug` and `rm --path` remove it. Names with an empty, `.`, or `..`
+  element are still refused.
+
 - **Stack runs refuse to publish onto a kept branch whose parent moved.**
   `stack submit` keeps another lane's branch at its published head. When
   the run also moved that branch's own parent, as after an amend below it,
