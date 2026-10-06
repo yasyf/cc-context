@@ -1122,7 +1122,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 			continue
 		}
 		if err != nil {
-			return nil, err
+			return nil, stackTipOnlyHint(o, name, err)
 		}
 		b.Local = source.Head
 		if !o.noPush {
@@ -1905,11 +1905,11 @@ func stackSnapshot(ctx context.Context, dir render.Dir, tr vcs.Trunk, s gtBranch
 			if replay {
 				break
 			}
-			return b, fmt.Errorf("stack rebase: %s has diverged from %s/%s (local %.12s, remote %.12s) — someone pushed to it; reconcile the two by hand, then re-run", name, tr.Remote(), name, s.Head, remote)
+			return b, stackDivergedError{fmt.Errorf("stack rebase: %s has diverged from %s/%s (local %.12s, remote %.12s) — someone pushed to it; reconcile the two by hand, then re-run", name, tr.Remote(), name, s.Head, remote)}
 		}
 		if !ahead && !behind && !dropCommits {
 			if err := stackRefuseDroppedCommits(ctx, dir, tr, name, s.Head, remote, pin); err != nil {
-				return b, err
+				return b, stackDivergedError{err}
 			}
 		}
 	}
@@ -1993,6 +1993,16 @@ func stackRefuseDroppedCommits(ctx context.Context, dir render.Dir, tr vcs.Trunk
 	}
 	return fmt.Errorf("stack rebase: %s's local head %.12s drops %d commit(s) its published head %s/%s (%.12s) carries: %s — restore them, or pass --drop-commits to publish the local head anyway",
 		name, local, len(dropped), tr.Remote(), name, remote, strings.Join(dropped, ", "))
+}
+
+type stackDivergedError struct{ error }
+
+func stackTipOnlyHint(o stackRebaseOpts, name string, err error) error {
+	var diverged stackDivergedError
+	if o.tip == "" || o.tipOnly || name == o.tip || !errors.As(err, &diverged) {
+		return err
+	}
+	return fmt.Errorf("%w; to ship %s alone onto %s's published head, run ccx vcs ship --tip-only", err, o.tip, name)
 }
 
 // stackReadsPublished is whether the run takes name at its published head

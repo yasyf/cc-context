@@ -17,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A ship refused over a diverged parent names `ccx vcs ship --tip-only`.**
+  A plain ship takes its downstack into the run. When another lane resets
+  or rewrites a parent so its local head diverges from its published head,
+  the ship stops. The refusal now ends with the command that ships the tip
+  alone onto the parent's published head.
+
 - **`stack submit` and `stack rebase` move a pull request the queue ejected.**
   Graphite keeps a pull request flagged in its merge queue after the queue
   ejects it, and the stack read that flag alone. An ejected pull request was
