@@ -25,6 +25,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   user/slug` and `rm --path` remove it. Names with an empty, `.`, or `..`
   element are still refused.
 
+- **`stack rebase --parent` leaves the new parent's lane where it is.** A
+  run that does not push, whether `--no-push` or a stack with no pull
+  requests, also rebased the new parent and every branch below it onto
+  trunk, rewriting branches checked out in other worktrees. `--parent` and
+  `--linearize` now move only the branches they name and those stacked above
+  them in every run; the rest stay at their local heads, as a pushing run
+  already kept them at their published heads.
+
 - **Stack runs refuse to publish onto a kept branch whose parent moved.**
   `stack submit` keeps another lane's branch at its published head. When
   the run also moved that branch's own parent, as after an amend below it,

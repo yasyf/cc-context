@@ -249,7 +249,10 @@ func newStackRebaseCmd() *cobra.Command {
 The stack is this lane: the branch checked out here, the branches below it down
 to trunk, and those stacked above it, with the same for each branch --parent,
 --linearize, or --landed names. Another lane cut from a shared ancestor is left
-out, even when its branches sit on one this run moves. --to <branch> stops the
+out, even when its branches sit on one this run moves. --parent and
+--linearize move only the branches they name a parent for and those stacked
+above them: each new parent and the branches below it stay at their published
+heads, or at their local heads in a run that does not push. --to <branch> stops the
 run at <branch>: of the branches stacked above a seed, only those <branch> sits
 on, and <branch> itself, join it. Every seed must be <branch> or sit below it;
 any other <branch> is refused, as is one a member was last published onto. --all-lanes widens the run to every branch gt
@@ -310,7 +313,7 @@ branch with a pull request sits on is refused before anything moves.`,
 			return stackSettleTracking(cmd, func() error { return runStackRebase(cmd, o) })
 		},
 	}
-	cmd.Flags().StringArrayVar(&o.parents, "parent", nil, "restack <branch>=<parent> onto a new parent (repeatable)")
+	cmd.Flags().StringArrayVar(&o.parents, "parent", nil, "restack <branch>=<parent> onto a new parent, moving only <branch> and the branches above it (repeatable)")
 	cmd.Flags().StringSliceVar(&o.linearize, "linearize", nil, "chain these branches in this order, each onto the one before it")
 	cmd.Flags().StringArrayVar(&o.landed, "landed", nil, "treat <branch> as landed and drop it (repeatable)")
 	cmd.Flags().BoolVar(&o.dryRun, "dry-run", false, "print the plan and move nothing")
@@ -1054,7 +1057,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 			}
 			b.Kept, b.Pinned = true, true
 		case queued[name] || (moving != nil && !moving[name] && !inherits[name]):
-			b.Kept = stackPinPublished(b)
+			b.Kept = o.noPush || stackPinPublished(b)
 		case o.tip != "" && name != o.tip && !o.restack && (o.tipOnly || !inherits[name]):
 			if b.Kept, err = stackKeepsAncestor(ctx, l.dir(), pin, b, kept[b.Parent], o.tipOnly); err != nil {
 				return nil, err
@@ -1850,13 +1853,14 @@ func stackPinPublished(b *stackRebaseBranch) bool {
 	return true
 }
 
-// stackMovingBranches is what a pushing --parent or --linearize run may move:
-// the branches it names a parent for and everything stacked on them. The
-// parents it names stay at their published heads, since a force-push to
-// another lane's pull request is not what the run asked for. nil lets every
-// branch move.
+// stackMovingBranches is what a --parent or --linearize run may move: the
+// branches it names a parent for and everything stacked on them. The parents
+// it names, and the branches below them, stay where they are: at their
+// published heads when the run pushes, at their local heads when it does not,
+// since rewriting another lane's branch is not what the run asked for. nil
+// lets every branch move.
 func stackMovingBranches(state gtState, o stackRebaseOpts, overrides map[string]string) (map[string]bool, error) {
-	if o.noPush || o.tip != "" || len(overrides) == 0 {
+	if o.tip != "" || len(overrides) == 0 {
 		return nil, nil
 	}
 	moving := map[string]bool{}
@@ -2317,6 +2321,8 @@ func stackPlanLines(run *stackRebaseRun) []string {
 			fields = append(fields, "drop ("+b.Landed+")")
 		case b.Held != "":
 			fields = append(fields, "left alone ("+b.Held+")")
+		case b.Kept && run.NoPush:
+			fields = append(fields, fmt.Sprintf("kept at its local head %.12s", b.Head))
 		case b.Kept:
 			fields = append(fields, fmt.Sprintf("kept at its published head %.12s", b.Head))
 		case b.Stays:
