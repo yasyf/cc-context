@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -28,7 +30,10 @@ const (
 const cleanupReadNote = `It reads the running daemon and never installs, starts, or replaces one; an
 older daemon on this ccx's protocol still answers.`
 
-var cleanupHandoffTimeout = 2 * time.Minute
+var (
+	cleanupHandoffTimeout  = 2 * time.Minute
+	cleanupHandoverTimeout = time.Minute
+)
 
 type cleanupKey struct{}
 
@@ -242,6 +247,31 @@ func readCleanupStatus(ctx context.Context, svc cleanup.Service, q cleanup.Query
 	return report, err
 }
 
+// pollCleanupStatus is one status read of a poll that outlives a daemon
+// replacement: while another ccx swaps an outdated daemon for its own, the
+// socket is missing or refuses until the new daemon listens, so a vacant
+// socket is read again until a daemon answers or cleanupHandoverTimeout passes.
+func pollCleanupStatus(ctx context.Context, svc cleanup.Service, q cleanup.Query) (cleanup.Report, error) {
+	var vacant time.Time
+	for delay := cleanupWaitPollFloor; ; delay = min(2*delay, cleanupWaitPollCeiling) {
+		report, err := readCleanupStatus(ctx, svc, q)
+		if !errors.Is(err, fs.ErrNotExist) && !errors.Is(err, syscall.ECONNREFUSED) {
+			return report, err
+		}
+		if vacant.IsZero() {
+			vacant = time.Now()
+		}
+		if time.Since(vacant) >= cleanupHandoverTimeout {
+			return cleanup.Report{}, fmt.Errorf("no cleanup daemon accepted connections for %s, longer than a daemon replacement takes: %w", cleanupHandoverTimeout, err)
+		}
+		select {
+		case <-ctx.Done():
+			return cleanup.Report{}, ctx.Err()
+		case <-time.After(delay):
+		}
+	}
+}
+
 func waitCleanupReceipt(ctx context.Context, receipt cleanup.Receipt) error {
 	svc, err := cleanupReadService(ctx)
 	if err != nil {
@@ -253,7 +283,7 @@ func waitCleanupReceipt(ctx context.Context, receipt cleanup.Receipt) error {
 
 func waitCleanupJob(ctx context.Context, svc cleanup.Service, id string, seen cleanup.Phase) (cleanup.Job, error) {
 	for delay := cleanupWaitPollFloor; ; delay = min(2*delay, cleanupWaitPollCeiling) {
-		report, err := readCleanupStatus(ctx, svc, cleanup.Query{JobID: id})
+		report, err := pollCleanupStatus(ctx, svc, cleanup.Query{JobID: id})
 		if seen != "" && errors.Is(err, cleanup.ErrUnknownJob) {
 			return cleanup.Job{}, vanishedCleanupJob(ctx, svc, id, seen)
 		}
@@ -299,7 +329,7 @@ func followCleanupRetry(ctx context.Context, svc cleanup.Service, err error) (cl
 			return cleanup.Receipt{}, ctx.Err()
 		case <-time.After(delay):
 		}
-		report, readErr := readCleanupStatus(ctx, svc, cleanup.Query{JobID: job.ID})
+		report, readErr := pollCleanupStatus(ctx, svc, cleanup.Query{JobID: job.ID})
 		if readErr != nil {
 			return cleanup.Receipt{}, readErr
 		}
@@ -381,7 +411,9 @@ func newCleanupWaitCmd() *cobra.Command {
 
 It returns once the job is done, and fails with the blockage when the job stops
 for an operator instead. It polls the job's status until then, and fails when
-the daemon leaves any one poll unanswered for ` + cleanupStatusTimeout.String() + `.
+the daemon leaves any one poll unanswered for ` + cleanupStatusTimeout.String() + `. A socket that is
+missing or refuses, as it does while another ccx replaces the daemon, is polled
+again for up to ` + cleanupHandoverTimeout.String() + `.
 
 ` + cleanupReadNote,
 		Args: cobra.MatchAll(cobra.ExactArgs(1), cleanupJobIDArg),

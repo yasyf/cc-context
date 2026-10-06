@@ -17,6 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`worktree rm` and the cleanup waits outlast a daemon replacement.** The
+  first ccx after an upgrade stops the outdated cleanup daemon and starts its
+  own, and the socket is missing until the new daemon listens. A `worktree rm`
+  following a blocked job's retry, and the status polls of `worktree rm --wait`
+  and `cleanup wait`, failed in that gap with `connect: no such file or
+  directory`, though the job went on to finish. A missing or refusing socket during a poll
+  is now read again for up to a minute.
+
 - **A ship refused over a diverged parent names `ccx vcs ship --tip-only`.**
   A plain ship takes its downstack into the run. When another lane resets
   or rewrites a parent so its local head diverges from its published head,

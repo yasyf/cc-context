@@ -63,7 +63,10 @@ lock, and both fail if no daemon is running.
 
 `worktree rm --wait` uses the same read-only wait after removal, with a 5s
 hello. Both wait commands poll status with a 10s limit per request and back
-off up to 1s between polls. They succeed only when a poll shows the job
+off up to 1s between polls. A poll that finds the socket missing or refusing,
+as it is while another ccx replaces an outdated daemon, polls again for up to
+a minute before it fails; `worktree rm` following a blocked job's automatic
+retry does the same. They succeed only when a poll shows the job
 `done`, after its payload is gone; `worktree rm --wait` then reports
 `deleted`. A blockage fails the wait with its reason.
 The job keeps the requesting command as its requester, so the daemon's later
