@@ -504,6 +504,31 @@ func TestCleanupWatchersRetiring(t *testing.T) {
 	}
 }
 
+func TestCleanupWatchersServer(t *testing.T) {
+	tests := []struct {
+		name    string
+		setup   func(w *watcherWorld)
+		want    []cleanup.ProcessID
+		wantErr error
+	}{
+		{name: "a running server", want: []cleanup.ProcessID{watcherServer}},
+		{name: "a stopped server names nothing", setup: func(w *watcherWorld) { w.stopped = true }},
+		{name: "a server holding another socket refuses", setup: func(w *watcherWorld) { w.socket = watcherSockname + ".old" }, wantErr: cleanupwatch.ErrRefused},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			world := newWatcherWorld(t, "other")
+			if tt.setup != nil {
+				tt.setup(world)
+			}
+			got, err := cleanupWatchers{deps: world.deps(world.guard)}.Server(t.Context())
+			if !errors.Is(err, tt.wantErr) || !slices.Equal(got, tt.want) {
+				t.Errorf("Server = %+v, %v; want %+v, %v", got, err, tt.want, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestCleanupWatchersRetireUnderTheDiscount(t *testing.T) {
 	tests := []struct {
 		name        string

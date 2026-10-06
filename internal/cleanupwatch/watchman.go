@@ -127,6 +127,16 @@ type server struct {
 	Absent  string
 }
 
+// Running reports whether a Watchman server answers; one that is not installed
+// or not running is absent, never an error.
+func Running(ctx context.Context, d Deps) (bool, error) {
+	srv, err := d.probe(ctx)
+	if err != nil {
+		return false, err
+	}
+	return srv.Absent == "", nil
+}
+
 func (d Deps) probe(ctx context.Context) (server, error) {
 	var sock struct {
 		Sockname string `json:"sockname"`

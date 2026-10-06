@@ -78,7 +78,7 @@ func (r *Relocator) Adopt(ctx context.Context, seq uint64, req cleanup.AdoptRequ
 	if err := r.cfg.Watchers.CheckQuarantine(ctx, source); err != nil {
 		return cleanup.Job{}, refuse(source, "watched", "%v", err)
 	}
-	if err := idle(source, r.cfg.Guard(ctx, source)); err != nil {
+	if err := idle(source, r.unserved(ctx, source)); err != nil {
 		return cleanup.Job{}, err
 	}
 

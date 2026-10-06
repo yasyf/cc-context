@@ -141,7 +141,7 @@ func parked(job *cleanup.Job, detail string) string {
 }
 
 func (r *Relocator) held(ctx context.Context, job *cleanup.Job, tree string) string {
-	err := r.cfg.Guard(ctx, tree)
+	err := r.unserved(ctx, tree)
 	if err == nil || r.excused(ctx, job, tree, err) {
 		return ""
 	}

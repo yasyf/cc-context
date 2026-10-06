@@ -61,6 +61,8 @@ func (h *cleanupHarness) Retire(context.Context, string) error {
 	return h.retireErr
 }
 
+func (h *cleanupHarness) Server(context.Context) ([]cleanup.ProcessID, error) { return nil, nil }
+
 func (h *cleanupHarness) CheckQuarantine(context.Context, string) error { return nil }
 
 func (h *cleanupHarness) refuseRetire(err error) {

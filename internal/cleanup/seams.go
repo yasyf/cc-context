@@ -11,7 +11,7 @@ import (
 // nothing. Holding is a working directory, an open file, or an argument at or
 // below the tree. The only discounts are the ones ctx names: the requester,
 // for naming the tree in its own arguments, and the watchers about to be
-// retired, for the descriptors they hold.
+// retired or that never let go, for the descriptors they hold.
 type Guard func(ctx context.Context, worktree string) error
 
 // Watchers retires the filesystem watchers of an exact worktree before it is
@@ -20,9 +20,13 @@ type Guard func(ctx context.Context, worktree string) error
 type Watchers interface {
 	// Retiring names, changing nothing, the running Watchman server and the
 	// fsmonitor daemon Retire would stop. Both hold descriptors in worktree,
-	// the server even after its roots there are gone, so a guard discounts
-	// exactly these.
+	// so a guard asked before retirement discounts exactly these.
 	Retiring(ctx context.Context, worktree string) ([]ProcessID, error)
+	// Server names, changing nothing, the running Watchman server, or nothing
+	// when none runs. It keeps a tree's directories open after their roots are
+	// deleted, and the open directory follows the tree wherever it is moved,
+	// so every guard discounts it.
+	Server(ctx context.Context) ([]ProcessID, error)
 	// Retire stops the watchers rooted in worktree.
 	Retire(ctx context.Context, worktree string) error
 	// CheckQuarantine reports whether jobDir sits outside every watched tree.
