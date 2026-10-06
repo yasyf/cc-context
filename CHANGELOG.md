@@ -17,6 +17,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A stack write proceeds when the run it was taking over has just ended.**
+  Two callers could both find the same exited run whose push already matched
+  origin. When one finished it and removed its state, the other failed with
+  `adopt the run of ... mkdir .../adopt.lock: no such file or directory`.
+  Taking over or reclaiming a run whose state is gone now prints
+  `the stack rebase of ... ended meanwhile` and replans without it.
+
 - **`worktree add` accepts branch-shaped names.** `ccx vcs worktree add
   user/slug` refused any name containing `/`, so a lane could not name its
   worktree after its branch. The branch keeps its full name, and the
