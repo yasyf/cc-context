@@ -24,6 +24,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Taking over or reclaiming a run whose state is gone now prints
   `the stack rebase of ... ended meanwhile` and replans without it.
 
+- **`stack rebase --parent` adopts an untracked parent.** Naming another
+  lane's pushed branch as the parent was refused with `names a parent gt
+  does not track` whenever gt had never tracked that branch in this clone.
+  The run now tracks the parent on its nearest tracked ancestor, or on
+  trunk, and stacks the child on it. A parent with no local branch is
+  refused with the `git fetch` that brings it local.
+
+- **Submits wait out the merge queue's restack.** After a parent landed,
+  the queue parked its child on `graphite-base/<n>` to replay it onto trunk.
+  A `ship` or `stack submit` that moved the child onto a new parent in that
+  window pushed `graphite-base/<n>` to the new parent's head, and the
+  queue's replay then dropped the new parent's commits from the child, as
+  happened to #31036 and #31041 in Forge-AI/monorepo. The submit now refuses
+  while a parked pull request's parent has landed, unless it goes to trunk,
+  and names the base to wait on.
+
 - **`worktree add` accepts branch-shaped names.** `ccx vcs worktree add
   user/slug` refused any name containing `/`, so a lane could not name its
   worktree after its branch. The branch keeps its full name, and the

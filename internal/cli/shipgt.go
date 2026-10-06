@@ -1826,6 +1826,9 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 			plan[i].lease, plan[i].leaseSet = lease, true
 		}
 	}
+	if err := gtRefuseQueueRestack(ctx, l.dir(), client, owner, name, s.prefix, tr, plan, known); err != nil {
+		return nil, nil, err
+	}
 	if err := gtParkedBases(ctx, l.dir(), plan, known, s.trunkHead); err != nil {
 		return nil, nil, err
 	}
@@ -2050,6 +2053,56 @@ func gtDropUnchanged(plan []gtSubmitBranch, last map[string]gtmeta.Version, know
 		submit = append(submit, b)
 	}
 	return submit, unchanged
+}
+
+// gtRefuseQueueRestack refuses a submit over a pull request the merge queue
+// parked on graphite-base/N after its parent landed: the queue replays
+// graphite-base/N..head onto trunk, so moving that branch to a new parent's
+// head drops the new parent's commits from the pull request.
+func gtRefuseQueueRestack(ctx context.Context, dir render.Dir, client *gtapi.Client, owner, name, prefix string, tr vcs.Trunk, plan []gtSubmitBranch, known map[string]gtapi.PullRequestInfo) error {
+	from := map[string]string{}
+	var parents []string
+	for _, b := range plan {
+		pr := known[b.name]
+		parent := pr.Newest().BaseName
+		if !pr.IsBaseRefGraphiteBase || b.base == tr.Name() || parent == "" || parent == tr.Name() {
+			continue
+		}
+		from[b.name] = parent
+		if !slices.Contains(parents, parent) {
+			parents = append(parents, parent)
+		}
+	}
+	if len(parents) == 0 {
+		return nil
+	}
+	infos, err := client.PullRequestInfo(ctx, gtapi.PullRequestInfoRequest{
+		RepoOwner:        owner,
+		RepoName:         name,
+		PRHeadRefNames:   parents,
+		TrunkBranchNames: []string{tr.Name()},
+		Callsite:         "ccx",
+	})
+	if err != nil {
+		return fmt.Errorf("%s: read the parents Graphite parked pull requests off: %w", prefix, err)
+	}
+	landed := map[string]int{}
+	for _, info := range infos {
+		if pruneLanded(ctx, dir, tr.Name(), info) {
+			landed[info.HeadRefName] = info.PRNumber
+		}
+	}
+	for _, b := range plan {
+		parent := from[b.name]
+		number, ok := landed[parent]
+		if parent == "" || !ok {
+			continue
+		}
+		pr := known[b.name]
+		return fmt.Errorf("%s: #%d sits on %s while Graphite's merge queue restacks it onto %s after its parent %s landed as #%d; submitting %s onto %s now races that restack and drops commits from #%d — wait until #%d's base leaves %s, then re-run",
+			prefix, pr.PRNumber, pr.BaseRefName, tr.Name(), parent, number, b.name, b.base, pr.PRNumber, pr.PRNumber, pr.BaseRefName)
+	}
+	return nil
 }
 
 // gtParkedBases marks each branch whose pull request Graphite parked on a
