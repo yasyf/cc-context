@@ -184,6 +184,9 @@ func stackCheckSources(ctx context.Context, dir render.Dir, run *stackRebaseRun)
 	var tx strings.Builder
 	tx.WriteString("start\n")
 	for _, b := range run.Branches {
+		if run.leavesLocalRef(b) {
+			continue
+		}
 		source := b.Local
 		if b.LocalOnly && run.LocalApplied {
 			source = b.NewHead
@@ -599,7 +602,7 @@ func stackChooseSourceMoves(ctx context.Context, l lane, run *stackRebaseRun, ho
 	var left []string
 	for i := range run.Branches {
 		b := &run.Branches[i]
-		if b.Landed != "" || b.Held != "" || b.LocalOnly || b.NewHead == b.Local {
+		if b.Landed != "" || b.Held != "" || b.LocalOnly || b.NewHead == b.Local || run.leavesLocalRef(*b) {
 			continue
 		}
 		at, err := stackRevParse(ctx, l.dir(), gtRestackRef(b.Name))

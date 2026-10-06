@@ -40,6 +40,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   while a parked pull request's parent has landed, unless it goes to trunk,
   and names the base to wait on.
 
+- **`ship --tip-only` ships while another worktree writes its parent.** A
+  tip-only ship verified each ancestor's local ref in a `git update-ref`
+  transaction, which locks that ref. When the parent's lane was amending or
+  pushing its branch in another worktree, every attempt failed with `cannot
+  lock ref` on the parent. A tip-only ship builds on its parent's published
+  head, so it no longer locks, verifies, claims, or moves an ancestor's local
+  ref. The same holds for another lane's branch that `stack submit` keeps at
+  its published head.
+
 - **`worktree add` accepts branch-shaped names.** `ccx vcs worktree add
   user/slug` refused any name containing `/`, so a lane could not name its
   worktree after its branch. The branch keeps its full name, and the

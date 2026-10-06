@@ -271,7 +271,9 @@ commit, reported as `restacked in isolation`. Published branches stacked above
 it join that run: an amend or a new commit mid-stack replays them onto the new
 head and resubmits them under their leases, reported as
 `resubmitted <branches> above <branch>`, and `--tip-only` leaves them where they
-are. The working copy holding a moved
+are. `--tip-only` reads every ancestor at its published head and never locks or
+writes an ancestor's local ref, so it ships while another worktree amends the
+parent. The working copy holding a moved
 branch must be clean and is moved onto its new head; another working copy
 holding a moved branch stops the run. A branch `gt freeze` is holding is left
 where it is. A conflict stops in a conflict workspace with rerere off;
