@@ -2296,8 +2296,9 @@ func gtRepoOwnerName(ctx context.Context, l lane, prefix string) (string, string
 
 // gtSubmitPlan resolves each branch of the submit from gt's own state: its
 // head, its open PR, and the lease of its last submitted version. A branch with
-// no PR gets the title and body a create requires. One not stacked on another
-// branch of this submit is anchored on the remote trunk, not on gt's local sha.
+// no PR gets the title and body a create requires. One stacked on a branch gt
+// holds stays on it; one stacked on neither that nor another branch of this
+// submit is anchored on the remote trunk, not on gt's local sha.
 func gtSubmitPlan(ctx context.Context, dir render.Dir, prefix string, state gtState, tr vcs.Trunk, branches, held []string, open map[string]int, last map[string]gtmeta.Version) ([]gtSubmitBranch, error) {
 	trunkHead := state[tr.Name()].Head
 	stacked := make(map[string]bool, len(branches))
@@ -2317,7 +2318,7 @@ func gtSubmitPlan(ctx context.Context, dir render.Dir, prefix string, state gtSt
 		}
 		switch {
 		case stacked[b.base]:
-		case slices.Contains(held, b.base):
+		case slices.Contains(held, b.base) || state[b.base].State != "":
 			b.baseSha = state[b.base].Head
 		default:
 			b.base, b.baseSha = tr.Name(), trunkHead
