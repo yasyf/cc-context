@@ -617,3 +617,38 @@ exec %[2]q "$@"
 		t.Errorf("held status = %q, want unrelated left as it was", status)
 	}
 }
+
+func TestStackContinueOpensNoPullRequestWithoutAPreparedBody(t *testing.T) {
+	f := shipGTRepo(t)
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	shipGTStack(t, f, "base")
+	api.prs["base"] = 7
+	stubOpenPRs(t, f, nil, "base")
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("publish base: %v", err)
+	}
+	stackConflicting(t, f)
+	_, _, err := runStackCmd(t, f, "submit")
+	if err == nil {
+		t.Fatal("stack submit succeeded, want the conflict on feature")
+	}
+	ws := stackWorkspaceOf(t, err)
+	writeShipFile(t, ws, "c.txt", "trunk\nfeature\n")
+	mustRun(t, f.Env(), ws, "git", "add", "c.txt")
+	posted := len(api.submitHeads())
+
+	_, errOut, err := runStackCmdIn(t, f, ws, "continue")
+	if err != nil {
+		t.Fatalf("continue: %v (stderr=%q)", err, errOut)
+	}
+	if heads := api.submitHeads()[posted:]; !slices.Equal(heads, []string{"base"}) {
+		t.Errorf("submit posts = %v, want base alone: feature has no pull request and no prepared body", heads)
+	}
+	if want := "pushed, not submitted: feature has no pull request"; !strings.Contains(errOut, want) {
+		t.Errorf("stderr = %q, want %q", errOut, want)
+	}
+	if got, local := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature"), gitAt(t, f.Env(), f.Dir, "rev-parse", "feature"); got != local {
+		t.Errorf("origin feature = %.12s, want the resolved head %.12s pushed", got, local)
+	}
+}

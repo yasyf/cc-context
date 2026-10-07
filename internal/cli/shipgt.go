@@ -558,6 +558,7 @@ type gtSubmit struct {
 	trunkHead   string
 	publication *stackRebaseRun
 	otherLanes  []string
+	unopened    func(branch string) bool
 }
 
 func gtStuck(prefix, problem, suffix string) string {
@@ -1833,10 +1834,14 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 		return nil, nil, err
 	}
 	submit, unchanged := gtDropUnchanged(plan, last, known, tip, s.draft)
+	posted, unopened := gtHoldUnopened(submit, s.unopened)
 	if err := gtAnnounceUnchanged(errW, s.prefix, unchanged); err != nil {
 		return nil, nil, err
 	}
-	if err := gtAnnounceStack(errW, s.prefix, gtPlanNames(submit)); err != nil {
+	if err := gtAnnounceStack(errW, s.prefix, gtPlanNames(posted)); err != nil {
+		return nil, nil, err
+	}
+	if err := gtAnnounceUnopened(errW, s.prefix, unopened); err != nil {
 		return nil, nil, err
 	}
 	if err := gtRefuseInherited(ctx, s.prefix, l.dir(), tr, s.trunkHead, plan); err != nil {
@@ -1871,12 +1876,14 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 		return nil, entries, nil
 	}
 
-	pre := make([]gtapi.PreSubmitBranch, 0, len(submit))
-	for _, b := range submit {
+	pre := make([]gtapi.PreSubmitBranch, 0, len(posted))
+	for _, b := range posted {
 		pre = append(pre, gtapi.PreSubmitBranch{HeadRefName: b.name, PRNumber: b.pr})
 	}
-	if _, err := client.PreSubmitPullRequests(ctx, owner, name, pre); err != nil {
-		return nil, nil, gtSubmitFailure(err, s)
+	if len(pre) > 0 {
+		if _, err := client.PreSubmitPullRequests(ctx, owner, name, pre); err != nil {
+			return nil, nil, gtSubmitFailure(err, s)
+		}
 	}
 
 	if s.publication != nil {
@@ -1886,8 +1893,8 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 	} else if err := gtPushStack(ctx, l.dir(), s, plan); err != nil {
 		return nil, nil, err
 	}
-	versions := make(map[string]gtmeta.Version, len(submit))
-	for _, b := range submit {
+	versions := make(map[string]gtmeta.Version, len(posted))
+	for _, b := range posted {
 		versions[b.name] = gtmeta.Version{HeadSha: b.head, BaseSha: b.baseSha, BaseName: b.base}
 	}
 	if err := gtmeta.RecordSubmitted(ctx, commonDir, versions); err != nil {
@@ -1905,7 +1912,7 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 	}
 
 	var landed []gtapi.SubmittedPR
-	for i, pr := range gtSubmitPRs(submit, s.draft) {
+	for i, pr := range gtSubmitPRs(posted, s.draft) {
 		out, err := client.SubmitPullRequests(ctx, gtapi.SubmitRequest{
 			RepoOwner:       owner,
 			RepoName:        name,
@@ -1916,18 +1923,38 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 			return nil, nil, gtSubmitFailure(gtSubmitPartial(err, pr.Head, landed), s)
 		}
 		landed = append(landed, out...)
-		if submit[i].pr != 0 {
+		if posted[i].pr != 0 {
 			continue
 		}
 		for _, created := range out {
-			entries[created.Head] = stackEntry{Branch: created.Head, PR: created.PRNumber, URL: created.PRURL, HasBody: strings.TrimSpace(submit[i].body) != "", State: string(gtapi.PROpen), metaApplied: s.publication != nil && s.publication.TipOnly}
+			entries[created.Head] = stackEntry{Branch: created.Head, PR: created.PRNumber, URL: created.PRURL, HasBody: strings.TrimSpace(posted[i].body) != "", State: string(gtapi.PROpen), metaApplied: s.publication != nil && s.publication.TipOnly}
 		}
 	}
-	if err := gtConfirmVersions(ctx, client, owner, name, tr.Name(), submit, s.draft); err != nil {
+	if err := gtConfirmVersions(ctx, client, owner, name, tr.Name(), posted, s.draft); err != nil {
 		return nil, nil, gtSubmitFailure(err, s)
 	}
-	gtRecordPushed(ctx, errW, owner+"/"+name, submit, entries)
-	return gtPlanNames(submit), entries, nil
+	gtRecordPushed(ctx, errW, owner+"/"+name, posted, entries)
+	return gtPlanNames(posted), entries, nil
+}
+
+func gtHoldUnopened(submit []gtSubmitBranch, unopened func(branch string) bool) (posted []gtSubmitBranch, held []string) {
+	for _, b := range submit {
+		if b.pr == 0 && unopened != nil && unopened(b.name) {
+			held = append(held, b.name)
+			continue
+		}
+		posted = append(posted, b)
+	}
+	return posted, held
+}
+
+func gtAnnounceUnopened(errW io.Writer, prefix string, held []string) error {
+	for _, branch := range held {
+		if _, err := fmt.Fprintf(errW, "%s: pushed, not submitted: %s has no pull request, and a resumed run opens none without a prepared title and body — open it from its checkout with ccx vcs ship --no-commit --tip-only --pr-title <title> --pr-body-file <body.md>\n", prefix, branch); err != nil {
+			return fmt.Errorf("%s: name the branches left without a pull request: %w", prefix, err)
+		}
+	}
+	return nil
 }
 
 const (

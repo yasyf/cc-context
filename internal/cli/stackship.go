@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -22,6 +23,14 @@ type stackShipIntent struct {
 	NoWatch bool                     `json:"no_watch"`
 	Reviews bool                     `json:"reviews"`
 	Budget  int                      `json:"budget"`
+}
+
+func (i *stackShipIntent) prepares(branch string) bool {
+	if i == nil {
+		return false
+	}
+	m := i.Meta[branch]
+	return m.Title != "" && m.Body != nil && strings.TrimSpace(*m.Body) != ""
 }
 
 func stackShipOptions(o shipOpts, meta map[string]prMeta, repo, branch string) (*stackShipIntent, error) {
