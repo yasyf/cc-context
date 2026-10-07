@@ -1,11 +1,46 @@
 package cli
 
 import (
+	"maps"
 	"strings"
 	"testing"
 
 	"github.com/yasyf/cc-context/internal/gtapi"
+	"github.com/yasyf/cc-context/internal/vcs"
 )
+
+// TestStackQueueStatesSkipsPullRequestsNotAskedAbout is pulumi-cli-3268's
+// stack on 2026-10-07: asked about three heads, Graphite also answered #31935,
+// whose branch sits between two of them on GitHub but not in the local stack,
+// and ship panicked looking that branch up.
+func TestStackQueueStatesSkipsPullRequestsNotAskedAbout(t *testing.T) {
+	_, client := stubPRInfo(t,
+		`{"prNumber":31928,"state":"OPEN","headRefName":"pulumi-policy-delete","baseRefName":"dev","mergeQueueStatus":null}`,
+		`{"prNumber":31932,"state":"OPEN","headRefName":"pulumi-replace-no-delete","baseRefName":"pulumi-rebake-leftover-hold","mergeQueueStatus":null}`,
+		`{"prNumber":31935,"state":"OPEN","headRefName":"pulumi-rebake-leftover-hold","baseRefName":"pulumi-policy-delete","mergeQueueStatus":null}`,
+		`{"prNumber":31937,"state":"OPEN","headRefName":"pulumi-pending-creates-skill","baseRefName":"pulumi-replace-no-delete","mergeQueueStatus":null}`,
+	)
+	byName := map[string]*stackRebaseBranch{
+		"pulumi-policy-delete":         {Name: "pulumi-policy-delete", PR: &stackPR{Number: 31928, State: "OPEN"}},
+		"pulumi-replace-no-delete":     {Name: "pulumi-replace-no-delete", PR: &stackPR{Number: 31932, State: "OPEN"}},
+		"pulumi-pending-creates-skill": {Name: "pulumi-pending-creates-skill", PR: &stackPR{Number: 31937, State: "OPEN"}},
+		"pulumi-cli-3268":              {Name: "pulumi-cli-3268"},
+	}
+	l := lane{repo: &vcs.Repo{NameWithOwner: "Forge-AI/monorepo"}}
+
+	states, err := stackQueueStates(withGTAPI(t.Context(), client), l, false, byName)
+	if err != nil {
+		t.Fatalf("stackQueueStates: %v", err)
+	}
+	want := map[string]prQueueState{
+		"pulumi-policy-delete":         prQueueNotQueued,
+		"pulumi-replace-no-delete":     prQueueNotQueued,
+		"pulumi-pending-creates-skill": prQueueNotQueued,
+	}
+	if !maps.Equal(states, want) {
+		t.Errorf("states = %v, want %v", states, want)
+	}
+}
 
 // TestStackRebaseParentPushesOnlyTheBranchItMoves is release-picture's #25937:
 // stacking #25907 onto it with --parent also restacked and pushed #25937 onto
