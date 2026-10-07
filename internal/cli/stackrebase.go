@@ -1973,6 +1973,9 @@ func stackRefuseDroppedCommits(ctx context.Context, dir render.Dir, tr vcs.Trunk
 		var shas, subjects []string
 		for line := range strings.Lines(out) {
 			sha, subject, _ := strings.Cut(strings.TrimSuffix(line, "\n"), " ")
+			if subject == "" {
+				continue
+			}
 			shas = append(shas, sha)
 			subjects = append(subjects, subject)
 		}

@@ -403,41 +403,56 @@ func gitOnlyCopies(ctx context.Context, dir render.Dir, prefix, from, to, trunk 
 	return len(landed) == len(extra), err
 }
 
-// gitLandedReplays reads trunk only from the earliest author date among
-// commits: a replay keeps its author date, so the squash that landed it
+// gitLandedReplays keeps each commit a squash landed on trunk after the commit
+// was authored: a replay keeps its author date, so the squash that landed it
 // always follows.
 func gitLandedReplays(ctx context.Context, dir render.Dir, prefix, trunk string, commits []string) ([]string, error) {
-	out, err := render.RunCLI(ctx, dir, "git", append([]string{"log", "--no-walk=unsorted", "--format=%H%x00%at%x00%s"}, commits...))
-	if err != nil {
-		return nil, fmt.Errorf("%s: git log --no-walk: %w", prefix, err)
+	type authored struct {
+		subject string
+		at      int64
 	}
-	subjects := map[string]string{}
-	var since int64
-	for line := range strings.Lines(out) {
-		fields := strings.SplitN(strings.TrimSuffix(line, "\n"), "\x00", 3)
-		if len(fields) != 3 {
-			return nil, fmt.Errorf("%s: read a commit from %q", prefix, line)
-		}
-		at, err := strconv.ParseInt(fields[1], 10, 64)
-		if err != nil {
-			return nil, fmt.Errorf("%s: read %s's author date: %w", prefix, fields[0], err)
-		}
-		subjects[fields[0]] = fields[2]
+	byCommit := map[string]authored{}
+	since := int64(0)
+	if err := gitEachLogLine(ctx, dir, prefix, append([]string{"log", "--no-walk=unsorted", "--format=%H%x00%at%x00%s"}, commits...), func(sha string, at int64, subject string) {
+		byCommit[sha] = authored{subject, at}
 		if since == 0 || at < since {
 			since = at
 		}
+	}); err != nil {
+		return nil, err
 	}
-	out, err = render.RunCLI(ctx, dir, "git", []string{"log", "--no-merges", "--format=%s", fmt.Sprintf("--since=@%d", since), trunk})
-	if err != nil {
-		return nil, fmt.Errorf("%s: git log %s: %w", prefix, trunk, err)
-	}
-	squashed := map[string]bool{}
-	for subject := range strings.Lines(out) {
-		if title, ok := squashTitle(strings.TrimSuffix(subject, "\n")); ok {
-			squashed[title] = true
+	squashed := map[string]int64{}
+	if err := gitEachLogLine(ctx, dir, prefix, []string{"log", "--no-merges", "--format=%H%x00%ct%x00%s", fmt.Sprintf("--since-as-filter=@%d", since), trunk}, func(_ string, at int64, subject string) {
+		if title, ok := squashTitle(subject); ok && at > squashed[title] {
+			squashed[title] = at
 		}
+	}); err != nil {
+		return nil, err
 	}
-	return slices.DeleteFunc(slices.Clone(commits), func(sha string) bool { return !squashed[subjects[sha]] }), nil
+	return slices.DeleteFunc(slices.Clone(commits), func(sha string) bool {
+		c := byCommit[sha]
+		landed, ok := squashed[c.subject]
+		return !ok || landed < c.at
+	}), nil
+}
+
+func gitEachLogLine(ctx context.Context, dir render.Dir, prefix string, argv []string, each func(sha string, at int64, subject string)) error {
+	out, err := render.RunCLI(ctx, dir, "git", argv)
+	if err != nil {
+		return fmt.Errorf("%s: git %s: %w", prefix, strings.Join(argv[:2], " "), err)
+	}
+	for line := range strings.Lines(out) {
+		fields := strings.SplitN(strings.TrimSuffix(line, "\n"), "\x00", 3)
+		if len(fields) != 3 {
+			return fmt.Errorf("%s: read a commit from %q", prefix, line)
+		}
+		at, err := strconv.ParseInt(fields[1], 10, 64)
+		if err != nil {
+			return fmt.Errorf("%s: read %s's date: %w", prefix, fields[0], err)
+		}
+		each(fields[0], at, fields[2])
+	}
+	return nil
 }
 
 func squashTitle(subject string) (string, bool) {
