@@ -39,6 +39,13 @@ type CPUSampler interface {
 	Sample(ctx context.Context) (time.Duration, error)
 }
 
+// Band moves the daemon into the default band while a client waits on it and
+// back to the background band; the processes it starts inherit the band.
+type Band interface {
+	Foreground() error
+	Background() error
+}
+
 // Relocator performs the logical half of a removal against the journal. The
 // daemon calls it from one goroutine, so no two of its methods ever run
 // together.

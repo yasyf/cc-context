@@ -17,6 +17,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`worktree rm` no longer waits on a starved daemon under load.** The
+  cleanup daemon ran every removal in the darwin background band: launchd
+  started it as a `Background` process, and it demoted itself with nice 20.
+  Each removal spawns about 45 short git, watchman, ps, and lsof probes, and
+  each one inherited that band. At a load average near 50, every spawn cost
+  three times what it costs in the default band. One removal took 30 to 45
+  seconds, and a lane behind another lane's removal waited for both. Lanes
+  wrap the call in `timeout 50`, so the SIGTERM surfaced as
+  `ccx: worktree rm: context canceled`.
+
+  launchd now starts the daemon as a `Standard` process. The daemon enters the background band itself, without
+  the nice it could never undo, and leaves it for each command a client waits
+  on. Its own passes and physical deletion stay in the background band.
+
 - **Submits onto trunk wait out the merge queue's restack.** A pull request
   the queue parked on `graphite-base/<n>` after its parent landed was exempt
   from that refusal when the submit moved it onto trunk. On #31266 in

@@ -114,7 +114,10 @@ type Config struct {
 	Relocator cleanup.Relocator
 	Deleter   cleanup.Deleter
 	CPU       cleanup.CPUSampler
-	Version   string
+	// Band runs each command in the default band and the worker's own passes
+	// in the background band.
+	Band    cleanup.Band
+	Version string
 	// Parent names a client's parent process and its arguments, logged with
 	// every pause and resume.
 	Parent func(pid int) (int, []string, error)
@@ -154,6 +157,7 @@ type Engine struct {
 	relocator cleanup.Relocator
 	deleter   cleanup.Deleter
 	cpu       cleanup.CPUSampler
+	band      cleanup.Band
 	parent    func(pid int) (int, []string, error)
 	identify  func(pid int) (cleanup.ProcessID, error)
 	version   string
@@ -192,8 +196,8 @@ var (
 // the records, so a daemon holds its serve lock before anything reads or
 // repairs them.
 func New(cfg Config) (*Engine, error) {
-	if cfg.Journal == nil || cfg.Relocator == nil || cfg.Deleter == nil || cfg.CPU == nil || cfg.Parent == nil || cfg.Identify == nil {
-		return nil, errors.New("cleanup daemon: config needs a journal, a relocator, a deleter, a cpu sampler, a parent lookup, and a process identity lookup")
+	if cfg.Journal == nil || cfg.Relocator == nil || cfg.Deleter == nil || cfg.CPU == nil || cfg.Band == nil || cfg.Parent == nil || cfg.Identify == nil {
+		return nil, errors.New("cleanup daemon: config needs a journal, a relocator, a deleter, a cpu sampler, a band, a parent lookup, and a process identity lookup")
 	}
 	tuning := cfg.Tuning
 	if tuning == (Tuning{}) {
@@ -213,6 +217,7 @@ func New(cfg Config) (*Engine, error) {
 		relocator: cfg.Relocator,
 		deleter:   cfg.Deleter,
 		cpu:       cfg.CPU,
+		band:      cfg.Band,
 		parent:    cfg.Parent,
 		identify:  cfg.Identify,
 		version:   cfg.Version,
@@ -549,7 +554,15 @@ func (e *Engine) execute(ctx context.Context, cmd command) error {
 		cmd.refuse()
 		return nil
 	}
-	return cmd.run(ctx)
+	if err := e.band.Foreground(); err != nil {
+		cmd.refuse()
+		return fmt.Errorf("cleanup daemon: leave the background band: %w", err)
+	}
+	err := cmd.run(ctx)
+	if bandErr := e.band.Background(); bandErr != nil {
+		return errors.Join(err, fmt.Errorf("cleanup daemon: return to the background band: %w", bandErr))
+	}
+	return err
 }
 
 func (e *Engine) work(ctx context.Context) error {

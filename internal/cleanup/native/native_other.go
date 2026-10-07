@@ -24,9 +24,18 @@ func (*FSEventsSampler) Sample(_ context.Context) (time.Duration, error) {
 // Guard reports cleanup.ErrUnsupported, which authorizes nothing.
 func Guard(_ context.Context, _ string) error { return cleanup.ErrUnsupported }
 
+// Band has no darwin band to switch off darwin.
+type Band struct{}
+
+var _ cleanup.Band = Band{}
+
 // Background reports cleanup.ErrUnsupported and leaves the process's
 // scheduling as it was.
-func Background() error { return cleanup.ErrUnsupported }
+func (Band) Background() error { return cleanup.ErrUnsupported }
+
+// Foreground reports cleanup.ErrUnsupported and leaves the process's
+// scheduling as it was.
+func (Band) Foreground() error { return cleanup.ErrUnsupported }
 
 // ProcessUniqueID reports cleanup.ErrUnsupported: no process is identified
 // off darwin.

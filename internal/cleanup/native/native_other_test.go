@@ -21,7 +21,8 @@ func TestUnsupported(t *testing.T) {
 			_, err := NewFSEventsSampler().Sample(context.Background())
 			return err
 		}},
-		{"Background", Background},
+		{"Background", Band{}.Background},
+		{"Foreground", Band{}.Foreground},
 		{"ProcessUniqueID", func() error {
 			_, err := ProcessUniqueID(os.Getpid())
 			return err

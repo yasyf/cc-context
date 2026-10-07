@@ -77,6 +77,12 @@ type idleCPU struct{}
 
 func (idleCPU) Sample(context.Context) (time.Duration, error) { return 0, nil }
 
+type steadyBand struct{}
+
+func (steadyBand) Foreground() error { return nil }
+
+func (steadyBand) Background() error { return nil }
+
 var testCleanups sync.Map
 
 func fixtureCleanup(t *testing.T, f *vcstest.Fixture) *cleanupHarness {
@@ -164,6 +170,7 @@ func startCleanupEngine(t *testing.T, config relocate.Config, tuning daemon.Tuni
 		Relocator: relocate.New(config),
 		Deleter:   rmtree.Deleter{},
 		CPU:       idleCPU{},
+		Band:      steadyBand{},
 		Parent:    native.ParentCommand,
 		Identify:  native.Identify,
 		Version:   "test",
