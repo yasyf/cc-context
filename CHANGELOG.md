@@ -17,6 +17,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Submits onto trunk wait out the merge queue's restack.** A pull request
+  the queue parked on `graphite-base/<n>` after its parent landed was exempt
+  from that refusal when the submit moved it onto trunk. On #31266 in
+  Forge-AI/monorepo, graphite-app force-pushed its restack six seconds after
+  `stack rebase` pushed the child onto `dev`, and the restack carried a replay
+  of the landed parent. That submit now refuses too, and names the base to
+  wait on.
+
+- **The verdict names who overwrote a push.** When GitHub showed a head other
+  than the one just pushed, the verdict waited 30 seconds and called it a
+  `stale read`. It now reads the pull request's force-push events. A head
+  someone else pushed reads `overwritten: <login> force-pushed <head> over
+  the push of <ours>`, with no wait.
+
 - **A merge queue replay of a landed parent no longer blocks the fix.** After
   a parent squash-landed, Graphite's merge queue restacked its child and
   replayed the parent's own commit beneath the child's, overwriting the head

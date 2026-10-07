@@ -2560,11 +2560,20 @@ func TestStackContinuePublishesAndLeavesItsWorkspaceWhileCleanupIsPaused(t *test
 	}
 }
 
+func stackVerdictEvents(t *testing.T, events string) context.Context {
+	t.Helper()
+	f := vcstest.Repo(t)
+	installGHRoutes(t, f.ShimBin, ghRoute{
+		argv:   []string{"api", "repos/{owner}/{repo}/issues/7/events", "--paginate", "--jq", `.[] | select(.event == "head_ref_force_pushed") | .commit_id + " " + .actor.login`},
+		stdout: events,
+	})
+	return newGTAPIStub(t).ctx(f.Context())
+}
+
 func TestStackVerdictRereadsAPullRequestGitHubStillShowsAtTheOldHead(t *testing.T) {
-	t.Parallel()
 	run := &stackRebaseRun{Trunk: "main", Branches: []stackRebaseBranch{{Name: "feature", Parent: "main", NewHead: "bbbbbbbbbbbbbbbb"}}}
 	var reads int
-	ctx := withStackPRs(newGTAPIStub(t).ctx(t.Context()), func(context.Context, render.Dir, string, []string) (map[string]*stackPR, error) {
+	ctx := withStackPRs(stackVerdictEvents(t, ""), func(context.Context, render.Dir, string, []string) (map[string]*stackPR, error) {
 		reads++
 		head := "aaaaaaaaaaaaaaaa"
 		if reads > 1 {
@@ -2584,6 +2593,32 @@ func TestStackVerdictRereadsAPullRequestGitHubStillShowsAtTheOldHead(t *testing.
 	}
 	if got := out.String(); strings.Contains(got, "stale read") || !strings.Contains(got, "head bbbbbbbbbbbb") {
 		t.Errorf("verdict = %q, want the pushed head and no stale label once GitHub caught up", got)
+	}
+}
+
+// TestStackVerdictNamesTheBotThatOverwroteThePush is #31266: graphite-app
+// force-pushed its restack over the head the run had just pushed, which is no
+// stale read to wait out.
+func TestStackVerdictNamesTheBotThatOverwroteThePush(t *testing.T) {
+	run := &stackRebaseRun{Trunk: "main", Branches: []stackRebaseBranch{{Name: "feature", Parent: "main", NewHead: "bbbbbbbbbbbbbbbb"}}}
+	var reads int
+	ctx := withStackPRs(stackVerdictEvents(t, "aaaaaaaaaaaaaaaa yasyf\nbbbbbbbbbbbbbbbb yasyf\naaaaaaaaaaaaaaaa graphite-app[bot]\n"), func(context.Context, render.Dir, string, []string) (map[string]*stackPR, error) {
+		reads++
+		return map[string]*stackPR{"feature": {Number: 7, State: "OPEN", Head: "aaaaaaaaaaaaaaaa", Base: "main", Mergeable: "MERGEABLE"}}, nil
+	})
+	cmd := newStackCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+
+	if err := stackVerdict(ctx, cmd, lane{repo: &vcs.Repo{NameWithOwner: "Forge-AI/monorepo"}}, run, []string{"feature"}); err != nil {
+		t.Fatal(err)
+	}
+	if reads != 1 {
+		t.Errorf("reads = %d, want no wait for a head someone pushed over the run's", reads)
+	}
+	want := "overwritten: graphite-app[bot] force-pushed aaaaaaaaaaaa over the push of bbbbbbbbbbbb — re-run ccx vcs stack submit to publish it again"
+	if got := out.String(); !strings.Contains(got, want) || strings.Contains(got, "stale read") {
+		t.Errorf("verdict = %q, want %q", got, want)
 	}
 }
 
