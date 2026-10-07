@@ -2219,7 +2219,7 @@ const gitFetchAttempts = 6
 func gitFetch(ctx context.Context, dir render.Dir, args ...string) error {
 	delay := 100 * time.Millisecond
 	for attempt := 1; ; attempt++ {
-		_, err := render.RunCLI(ctx, dir, "git", append([]string{"fetch"}, args...))
+		_, err := render.RunCLIEnv(ctx, dir, "git", append([]string{"fetch"}, args...), noCommitGraphEnv(ctx))
 		if err == nil || attempt == gitFetchAttempts || !strings.Contains(err.Error(), "cannot lock ref") {
 			return err
 		}
@@ -2230,6 +2230,20 @@ func gitFetch(ctx context.Context, dir render.Dir, args ...string) error {
 		}
 		delay *= 2
 	}
+}
+
+// noCommitGraphEnv turns off fetch.writeCommitGraph for one fetch: every
+// worktree of a shared clone writes the same commit-graph-chain.lock, so two
+// concurrent fetches that both write it refuse each other.
+func noCommitGraphEnv(ctx context.Context) []string {
+	n, _ := strconv.Atoi(render.Getenv(ctx, "GIT_CONFIG_COUNT"))
+	i := strconv.Itoa(n)
+	return []string{"GIT_CONFIG_COUNT=" + strconv.Itoa(n+1), "GIT_CONFIG_KEY_" + i + "=fetch.writeCommitGraph", "GIT_CONFIG_VALUE_" + i + "=false"}
+}
+
+func jjGitFetch(ctx context.Context, dir render.Dir) error {
+	_, err := render.RunCLIEnv(ctx, dir, "jj", []string{"git", "fetch"}, noCommitGraphEnv(ctx))
+	return err
 }
 
 // gtTrunkFetch is one gtTrunkRef in flight, so the round trip runs under the

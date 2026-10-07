@@ -27,6 +27,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Concurrent fetches no longer refuse each other on the commit-graph lock.**
+  A clone that sets `fetch.writeCommitGraph` makes every fetch rewrite
+  `objects/info/commit-graphs/commit-graph-chain.lock`, and every worktree of
+  the clone shares that one file. When two lanes ran `stack submit` at once,
+  the second fetch failed with `Unable to create '.../commit-graph-chain.lock':
+  File exists`. Every fetch ccx runs, through git or `jj git fetch`, now sets
+  `fetch.writeCommitGraph=false` through `GIT_CONFIG_COUNT`, after any entries
+  the environment already carries.
 - **`worktree rm --path` removes an orphaned worktree.** A pool worktree whose
   repository was re-cloned keeps a `.git` file naming an admin dir that no
   longer exists. rm refused it as a broken checkout, and `git worktree repair`
@@ -55,6 +63,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `API rate limit already exceeded` exactly when it was needed. It now reads
   the login over REST and reports the quota from the refusal's headers as
   `0/5000 GraphQL left` with its reset time.
+||||||| parent of a6eafad (vcs: 🐛 Keep concurrent fetches off the shared commit-graph lock)
 
 - **`worktree rm` no longer waits on a starved daemon under load.** The
   cleanup daemon ran every removal in the darwin background band: launchd

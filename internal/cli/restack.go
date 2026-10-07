@@ -118,7 +118,7 @@ func restackJJ(ctx context.Context, dir render.Dir) (string, error) {
 	}
 	trunk := trunkNames[0]
 
-	if _, err := render.RunCLI(ctx, dir, "jj", []string{"git", "fetch"}); err != nil {
+	if err := jjGitFetch(ctx, dir); err != nil {
 		return "", fmt.Errorf("restack: jj git fetch: %w", err)
 	}
 	ancestors, err := jjLogLines(ctx, dir, "restack", jjRestackAncestorRevset)
