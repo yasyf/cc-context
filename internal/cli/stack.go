@@ -259,7 +259,7 @@ func stackFormLane(ctx context.Context, errW io.Writer, l lane, path render.Dir,
 	if !l.gt {
 		return nil
 	}
-	return gtTrackAt(ctx, path, errW, parent)
+	return gtTrackAt(ctx, path, errW, "stack new", parent)
 }
 
 // stackColocateJJ gives a lane its own colocated jj. --colocate is refused
@@ -284,13 +284,13 @@ func stackColocateJJ(ctx context.Context, path render.Dir, name string) error {
 
 // gtTrackAt adopts the branch a lane holds onto its parent, from inside that
 // lane: gt reads the branch to track from the working copy it runs in.
-func gtTrackAt(ctx context.Context, dir render.Dir, errW io.Writer, parent string) error {
+func gtTrackAt(ctx context.Context, dir render.Dir, errW io.Writer, verb, parent string) error {
 	r, runErr := gtRun(ctx, dir, []string{"track", "--parent", parent, "--no-interactive"}, errW)
 	if err := gtReport(ctx, errW, r); err != nil {
 		return err
 	}
 	if runErr != nil {
-		return fmt.Errorf("stack new: gt track --parent %s: %w", parent, runErr)
+		return fmt.Errorf("%s: gt track --parent %s: %w", verb, parent, runErr)
 	}
 	return nil
 }

@@ -51,6 +51,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `view`, `list`, `status`, `checks`, `diff`, or `watch`. Anything else fails
   before a token is minted, naming the plain `gh …` command to run on the
   user's token. The rewrite note now says the verb runs reads only.
+
+- **`ccx vcs worktree add` tracks a newly cut branch in Graphite.** A branch it
+  cut from trunk had no gt parent, so `ccx vcs ship --dry-run` refused with
+  "gt state has no parent for <branch>" and lanes ran `gt track --parent dev`
+  by hand. In a Graphite repository, `worktree add` now runs `gt track
+  --parent` in the new working copy, naming the branch it cut from: trunk, or
+  the branch checked out here when the repository has no remote.
+
 - **`ccx vcs pr status` reads a conflicting PR as `blocked:conflict`.** It
   read #31511 as `blocked:ci-pending` while GitHub reported it conflicting.
   The shared poll's GraphQL record holds mergeability `UNKNOWN` until GitHub
