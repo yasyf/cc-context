@@ -55,7 +55,7 @@ func serveFixture(t *testing.T, seed func(h *harness)) *daemonFixture {
 			t.Errorf("remove %s: %v", root, err)
 		}
 	})
-	h := newHarnessAt(t, root, DefaultTuning())
+	h := newHarnessAt(t, root, paced())
 	if seed != nil {
 		seed(h)
 	}
@@ -735,7 +735,7 @@ func TestServeReplacesAStaleSocket(t *testing.T) {
 			t.Errorf("remove %s: %v", root, err)
 		}
 	})
-	h := newHarnessAt(t, root, DefaultTuning())
+	h := newHarnessAt(t, root, paced())
 	socket, err := h.layout.Socket()
 	if err != nil {
 		t.Fatal(err)

@@ -43,6 +43,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The cleanup queue drains on a machine with a busy `fseventsd`.** The
+  governor paused deletion while `fseventsd` ran above half a core and resumed
+  only after three samples under a quarter core. On a machine where other work
+  keeps `fseventsd` above a full core, deletion never resumed: no job finished
+  for more than 30 hours while 1,713 waited. The throttle now measures
+  `fseventsd` against its own ambient load, learned from samples taken while
+  deletion ran no faster than its floor. It slows deletion to a floor of 100
+  entries a second instead of stopping it. The full rate rises from 250 to
+  1,000 entries a second. In a 10s test on a loaded machine, deleting 2,000
+  entries a second moved `fseventsd` by less than its sample-to-sample noise.
+
 - **`worktree rm --wait` and `cleanup wait` no longer wait behind the whole
   deletion queue.** A wait returned only once the daemon reached its job in
   queue order. The queue had stalled at 1,713 jobs because `fseventsd` ran

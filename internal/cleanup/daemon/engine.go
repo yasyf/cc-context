@@ -44,15 +44,19 @@ func (systemClock) After(d time.Duration) <-chan time.Time { return time.After(d
 // Tuning is the pace of physical deletion and the bounds of what the engine
 // retains and reports.
 type Tuning struct {
-	// Rate is the payload entries deleted per second.
-	Rate int
+	// Rate is the payload entries deleted per second while fseventsd keeps
+	// near its ambient load, and FloorRate the pace held while it does not.
+	Rate      int
+	FloorRate int
 	// SliceEntries and SliceBudget bound one uninterruptible step.
 	SliceEntries int
 	SliceBudget  time.Duration
 	// SampleEvery is the interval between fseventsd CPU samples while deletion
 	// is pending.
 	SampleEvery time.Duration
-	// PauseAbove and ResumeBelow are percentages of one core.
+	// PauseAbove and ResumeBelow are percentages of one core over fseventsd's
+	// ambient load, the average of its samples while deletion ran at most at
+	// FloorRate.
 	PauseAbove  float64
 	ResumeBelow float64
 	// ResumeSamples is how many consecutive samples under ResumeBelow lift a
@@ -76,11 +80,13 @@ type Tuning struct {
 	StatusLimit int
 }
 
-// DefaultTuning is the production pace: 250 entries a second in slices of at
-// most 100 entries or 50ms, throttled while fseventsd runs above half a core.
+// DefaultTuning is the production pace: 1000 entries a second in slices of at
+// most 100 entries or 50ms, slowed to 100 a second while deletion pushes
+// fseventsd half a core over its ambient load.
 func DefaultTuning() Tuning {
 	return Tuning{
-		Rate:          250,
+		Rate:          1000,
+		FloorRate:     100,
 		SliceEntries:  100,
 		SliceBudget:   50 * time.Millisecond,
 		SampleEvery:   5 * time.Second,
@@ -101,6 +107,8 @@ func (t Tuning) validate() error {
 	switch {
 	case t.Rate <= 0, t.SliceEntries <= 0, t.SliceBudget <= 0:
 		return fmt.Errorf("rate %d, slice of %d entries or %s: all must be positive", t.Rate, t.SliceEntries, t.SliceBudget)
+	case t.FloorRate <= 0, t.FloorRate > t.Rate:
+		return fmt.Errorf("floor rate %d must be positive and at most the rate %d", t.FloorRate, t.Rate)
 	case t.SampleEvery <= 0, t.Recheck <= 0, t.RetryAfter <= 0, t.RetryCeiling < t.RetryAfter, t.RetryLimit <= 0:
 		return fmt.Errorf("sample interval %s, recheck interval %s, first retry %s and retry limit %d must be positive, and the retry ceiling %s at least the first retry", t.SampleEvery, t.Recheck, t.RetryAfter, t.RetryLimit, t.RetryCeiling)
 	case t.ResumeBelow <= 0, t.PauseAbove < t.ResumeBelow, t.ResumeSamples <= 0:
@@ -192,6 +200,7 @@ type Engine struct {
 	checked   map[string]time.Time
 	active    *activeDeletion
 	paceUntil time.Time
+	loud      bool
 }
 
 var (
@@ -625,20 +634,23 @@ func (e *Engine) work(ctx context.Context) error {
 				if e.stopping(ctx) {
 					return nil
 				}
-				e.gov.observe(now, cpu, err)
+				e.gov.observe(now, cpu, err, !e.loud)
+				e.loud = false
 				e.publishGovernor()
 			}
 			switch {
 			case e.awaited(job.ID, now):
+				e.loud = true
 				if err := e.slice(ctx, job, false); err != nil {
 					return err
 				}
 				continue
-			case !e.gov.allows():
+			case e.gov.rate() == 0:
 				if err := e.park(); err != nil {
 					return err
 				}
 			case !now.Before(e.paceUntil):
+				e.loud = e.loud || e.gov.rate() > e.tuning.FloorRate
 				if err := e.slice(ctx, job, true); err != nil {
 					return err
 				}
@@ -686,7 +698,7 @@ func (e *Engine) wake(physical bool) (time.Time, bool) {
 	}
 	if physical {
 		consider(e.gov.next())
-		if e.gov.allows() {
+		if e.gov.rate() > 0 {
 			consider(e.paceUntil)
 		}
 	}
@@ -832,7 +844,7 @@ func (e *Engine) slice(ctx context.Context, job cleanup.Job, paced bool) error {
 	end := e.clock.Now()
 	job.Removed += uint64(removed) //nolint:gosec // a step never removes a negative count
 	if paced {
-		e.paceUntil = start.Add(time.Duration(removed) * time.Second / time.Duration(e.tuning.Rate))
+		e.paceUntil = start.Add(time.Duration(removed) * time.Second / time.Duration(e.gov.rate()))
 	}
 	switch {
 	case err != nil:

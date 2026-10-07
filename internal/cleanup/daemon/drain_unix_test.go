@@ -191,7 +191,7 @@ func (f *gitFixture) relocator() *relocate.Relocator {
 
 func (f *gitFixture) engine() *Engine {
 	f.t.Helper()
-	tuning := DefaultTuning()
+	tuning := paced()
 	tuning.Rate, tuning.SampleEvery, tuning.Recheck = 1_000_000, 5*time.Millisecond, 20*time.Millisecond
 	engine, err := New(Config{Journal: f.journal, Relocator: f.relocator(), Deleter: rmtree.Deleter{}, CPU: idleCPU{}, Band: &fakeBand{}, Parent: (&fakeParent{}).lookup, Identify: identify, Version: "test", Clock: f.clock, Tuning: tuning})
 	if err != nil {
