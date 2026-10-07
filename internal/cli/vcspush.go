@@ -310,21 +310,9 @@ func vcsPushGit(ctx context.Context, dir render.Dir, remote, branch, head string
 		}
 		return fmt.Sprintf("pushed %s → %s · %s..%s", branch, remote, shortOID(tip), shortOID(head)), nil
 	}
-	rewrite, err := gitReflogHolds(ctx, dir, "push", branch, tip)
+	rewrite, err := gitRemoteRewritten(ctx, dir, "push", branch, tip, head, trunk)
 	if err != nil {
 		return "", err
-	}
-	if !rewrite {
-		receipt, err := stackReadPublication(ctx, dir, branch)
-		if err != nil {
-			return "", err
-		}
-		rewrite = receipt != nil && receipt.Head == tip
-	}
-	if !rewrite {
-		if rewrite, err = gitOnlyCopies(ctx, dir, "push", tip, head, trunk); err != nil {
-			return "", err
-		}
 	}
 	if !rewrite {
 		unheld, err := gitCommitsNotIn(ctx, dir, "push", tip, head)
@@ -345,6 +333,24 @@ func vcsPushGit(ctx context.Context, dir render.Dir, remote, branch, head string
 		return "", fmt.Errorf("push: %w", err)
 	}
 	return fmt.Sprintf("force-pushed %s → %s · replaced %s with %s", branch, remote, shortOID(tip), shortOID(head)), nil
+}
+
+// gitRemoteRewritten reports whether remote head tip is branch's own history
+// that head rewrote: reachable from its reflog, its last publication, or
+// carried patch for patch by head.
+func gitRemoteRewritten(ctx context.Context, dir render.Dir, prefix, branch, tip, head, trunk string) (bool, error) {
+	held, err := gitReflogHolds(ctx, dir, prefix, branch, tip)
+	if err != nil || held {
+		return held, err
+	}
+	receipt, err := stackReadPublication(ctx, dir, branch)
+	if err != nil {
+		return false, err
+	}
+	if receipt != nil && receipt.Head == tip {
+		return true, nil
+	}
+	return gitOnlyCopies(ctx, dir, prefix, tip, head, trunk)
 }
 
 // gitReflogHolds reports whether branch's reflog reaches sha, as an entry or an

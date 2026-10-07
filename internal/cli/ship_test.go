@@ -1724,6 +1724,7 @@ func TestShipGitRebase(t *testing.T) {
 				gitForEachRefStdinArgv,
 				shipFetchArgv("origin", "main"),
 				[]string{"git", "merge-base", "--is-ancestor", remoteRef, "HEAD"},
+				rewriteProbe("main"),
 				[]string{"git", "rev-parse", "--path-format=absolute", "--git-path", "rebase-merge"},
 				[]string{"git", "rev-parse", "--path-format=absolute", "--git-path", "rebase-apply"},
 				[]string{"git", "rev-list", "--count", remoteRef + "..HEAD"},
@@ -1743,6 +1744,7 @@ func TestShipGitRebase(t *testing.T) {
 				gitForEachRefStdinArgv,
 				shipFetchArgv("origin", "main"),
 				[]string{"git", "merge-base", "--is-ancestor", remoteRef, "HEAD"},
+				rewriteProbe("main"),
 				[]string{"git", "rev-parse", "--path-format=absolute", "--git-path", "rebase-merge"},
 				[]string{"git", "rev-parse", "--path-format=absolute", "--git-path", "rebase-apply"},
 				[]string{"git", "rev-list", "--count", remoteRef + "..HEAD"},
@@ -1805,6 +1807,7 @@ func TestShipGitRebase(t *testing.T) {
 				gitForEachRefStdinArgv,
 				shipFetchArgv("origin", "main"),
 				[]string{"git", "merge-base", "--is-ancestor", remoteRef, "HEAD"},
+				rewriteProbe("main"),
 				[]string{"git", "rev-parse", "--path-format=absolute", "--git-path", "rebase-merge"}),
 			wantErr: []string{"ship: a rebase is already in progress here", "ccx never aborts a rebase it did not start"},
 		},
@@ -1822,7 +1825,7 @@ func TestShipGitRebase(t *testing.T) {
 
 			got, err := runShipCmd(f.Context(), t, append([]string{"-m", "fix: frobnicate", "--no-watch"}, tt.args...)...)
 			invocations := vcstest.Invocations(t, f.ArgvLog)
-			assertInvocations(t, invocations, tt.want)
+			assertInvocations(t, collapseRewriteProbes(invocations), tt.want)
 			if strings.Contains(buf.String(), "git stash pop") {
 				t.Errorf("log advises git stash pop (%q), which takes the top of a stack every working copy shares", buf.String())
 			}
@@ -7295,7 +7298,7 @@ func dirExists(path string) bool {
 // longer an ancestor. Replaying onto that head moves the branch back off trunk
 // and re-applies the squash as the branch's own commit.
 func TestShipRefusesToReplayALandedTrunkCommitOntoItsBranch(t *testing.T) {
-	f := shipStackedOnALandedTrunk(t)
+	f := shipStackedOnALandedTrunk(t, true)
 	pushedBefore := gitAt(t, f.Env(), f.Dir, "rev-parse", "refs/remotes/origin/feature")
 	landed := gitAt(t, f.Env(), f.Dir, "rev-parse", "refs/remotes/origin/main")
 
@@ -7323,6 +7326,84 @@ func TestShipRefusesToReplayALandedTrunkCommitOntoItsBranch(t *testing.T) {
 	}
 }
 
+// TestShipLeasesOverItsOwnRewrittenHistory pins the ship that put a parent's
+// commit into its child's pull request: viewed is pushed, rebased locally onto
+// its updated parent, and shipped. Replaying onto the stale origin/viewed drops
+// the copy of its own commit and re-proposes the parent's as viewed's work.
+func TestShipLeasesOverItsOwnRewrittenHistory(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		build  func(t *testing.T) (f *vcstest.Fixture, args []string, want []string)
+		branch string
+	}{
+		{name: "rebased onto its updated parent", branch: "viewed", build: func(t *testing.T) (*vcstest.Fixture, []string, []string) {
+			return shipViewedRebasedOntoItsParent(t, false)
+		}},
+		{name: "patch copies with no reflog", branch: "viewed", build: func(t *testing.T) (*vcstest.Fixture, []string, []string) {
+			return shipViewedRebasedOntoItsParent(t, true)
+		}},
+		{name: "rebased onto a landed trunk", branch: "feature", build: func(t *testing.T) (*vcstest.Fixture, []string, []string) {
+			f := shipStackedOnALandedTrunk(t, false)
+			return f, []string{"-m", "fix: frobnicate"}, []string{"fix: frobnicate", "branch work"}
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f, args, want := tt.build(t)
+			pushed := gitAt(t, f.Env(), f.Dir, "rev-parse", "refs/remotes/origin/"+tt.branch)
+			shipResetLog(t, f)
+
+			out, err := runShipCmd(f.Context(), t, append(args, "--no-watch", "--no-pr")...)
+			if err != nil {
+				t.Fatalf("ship error = %v, want the rewrite published over origin/%s", err, tt.branch)
+			}
+			head := shipHead(t, f)
+			if got := gitAt(t, f.Env(), f.Dir, "--git-dir="+f.RemoteDir, "rev-parse", "refs/heads/"+tt.branch); got != head {
+				t.Errorf("remote %s = %s, want the local head %s", tt.branch, got, head)
+			}
+			if got := gitLogSubjects(t, f, "refs/remotes/origin/main.."+head); !slices.Equal(got, want) {
+				t.Errorf("shipped history = %v, want %v", got, want)
+			}
+			lease := "--force-with-lease=" + tt.branch + ":" + pushed
+			if !slices.ContainsFunc(vcstest.Invocations(t, f.ArgvLog), func(inv []string) bool {
+				return len(inv) > 1 && inv[1] == "push" && slices.Contains(inv, lease)
+			}) {
+				t.Errorf("invocations lack a push carrying %s", lease)
+			}
+			if slices.ContainsFunc(vcstest.Invocations(t, f.ArgvLog), func(inv []string) bool { return len(inv) > 1 && inv[1] == "rebase" }) {
+				t.Error("ship rebased onto its own rewritten history")
+			}
+			if wantSeg := "force-pushed " + tt.branch + " → origin · replaced " + shortOID(pushed) + " under a lease"; !strings.Contains(out, wantSeg) {
+				t.Errorf("summary = %q, want it to contain %q", out, wantSeg)
+			}
+		})
+	}
+}
+
+// shipViewedRebasedOntoItsParent builds viewed on code-src, pushes it, then
+// rebases it onto code-src's next commit and adds one more, ready for a
+// --no-commit ship. Without a reflog only patch identity marks origin/viewed
+// as viewed's own.
+func shipViewedRebasedOntoItsParent(t *testing.T, dropReflog bool) (*vcstest.Fixture, []string, []string) {
+	t.Helper()
+	f := shipRepo(t, vcstest.Remote())
+	mustRun(t, f.Env(), f.Dir, "git", "checkout", "-qb", "code-src")
+	shipCommitOwnWork(t, f, "src.txt", "code-src base")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "code-src")
+	mustRun(t, f.Env(), f.Dir, "git", "checkout", "-qb", "viewed")
+	shipCommitOwnWork(t, f, "viewed.txt", "viewed work")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-qu", "origin", "viewed")
+	mustRun(t, f.Env(), f.Dir, "git", "checkout", "-q", "code-src")
+	shipCommitOwnWork(t, f, "src2.txt", "code-src update")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "code-src")
+	mustRun(t, f.Env(), f.Dir, "git", "checkout", "-q", "viewed")
+	mustRun(t, f.Env(), f.Dir, "git", "rebase", "-q", "code-src")
+	shipCommitOwnWork(t, f, "viewed2.txt", "viewed follow-up")
+	if dropReflog {
+		mustRun(t, f.Env(), f.Dir, "git", "reflog", "expire", "--expire=now", "--all")
+	}
+	return f, []string{"--no-commit", "--parent", "code-src"}, []string{"viewed follow-up", "viewed work", "code-src update", "code-src base"}
+}
+
 // TestShipStillReplaysWhenTheRemoteBranchCarriesRealWork keeps the other case
 // honest: a pushed head the local branch lacks is somebody's work, and ship
 // must still rebase onto it rather than refuse.
@@ -7347,12 +7428,16 @@ const landedTrunkSubject = "upstream"
 
 // shipStackedOnALandedTrunk leaves feature pushed at a head that predates a
 // commit trunk has since landed, with the branch already rebased onto it and
-// an edit waiting for ship to commit.
-func shipStackedOnALandedTrunk(t *testing.T) *vcstest.Fixture {
+// an edit waiting for ship to commit. With collaborated, the pushed head also
+// carries a collaborator's commit the branch never held.
+func shipStackedOnALandedTrunk(t *testing.T, collaborated bool) *vcstest.Fixture {
 	t.Helper()
 	f := shipRepo(t, vcstest.Remote(), vcstest.Branch("feature"))
 	shipCommitOwnWork(t, f, "own.txt", "branch work")
 	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "feature")
+	if collaborated {
+		shipPushFromAnotherClone(t, f, "feature", "theirs.txt", "theirs")
+	}
 	shipDivergeRemote(t, f, "main", "landed.txt", "landed\n")
 	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
 	mustRun(t, f.Env(), f.Dir, "git", "rebase", "-q", "refs/remotes/origin/main")
