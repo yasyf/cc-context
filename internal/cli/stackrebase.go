@@ -2135,7 +2135,9 @@ func stackQueueStates(ctx context.Context, l lane, noPush bool, byName map[strin
 	if err != nil {
 		return nil, fmt.Errorf("stack rebase: read the merge queue before pushing: %w", err)
 	}
-	infos = slices.DeleteFunc(infos, func(info gtapi.PullRequestInfo) bool { return info.State != gtapi.PROpen })
+	infos = slices.DeleteFunc(infos, func(info gtapi.PullRequestInfo) bool {
+		return info.State != gtapi.PROpen || !slices.Contains(heads, info.HeadRefName)
+	})
 	numbers := make([]int, 0, len(infos))
 	for _, info := range infos {
 		numbers = append(numbers, info.PRNumber)
