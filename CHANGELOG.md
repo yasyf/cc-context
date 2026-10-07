@@ -14,7 +14,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `gh run watch` stop spending the gh user's GraphQL quota. The repository
   is `--repo`'s or `GH_REPO`'s when named, else the checkout's. With no app
   installed, or `GH_TOKEN` or `GITHUB_TOKEN` set, gh runs on the user's
-  token. Streams pass through and ccx exits with gh's code.
+  token. Streams pass through and ccx exits with gh's code. A command that
+  fails once its token has expired, such as a long watch, runs again on a
+  fresh one.
+- **The guard pack routes read-only gh calls through `ccx vcs gh`.** A
+  `gh pr view|checks|list|diff|status`, `gh run view|list|watch`,
+  `gh issue view|list|status`, or `gh api` call that names no method and
+  sends no field is rewritten to `ccx vcs gh -- …`, and a JSON-flagged one to
+  `ccx format -- ccx vcs gh -- …`, once the resolved ccx carries the verb.
+  Writes, `gh api graphql`, and calls inside a substitution stay as written;
+  `# ccx:raw` opts out.
 
 ### Changed
 

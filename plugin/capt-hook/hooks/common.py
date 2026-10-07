@@ -5,6 +5,7 @@ from __future__ import annotations
 import functools
 import json
 import re
+import shlex
 import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -35,6 +36,23 @@ JSON_FLAG_GLUED = re.compile(r"^(--json(=.*)?|-o=?json|--(output|format)=json)$"
 JSON_VALUE_FLAGS = ("-o", "--output", "--format")
 
 STREAMING_FLAGS = frozenset({"-w", "-f", "--watch", "--watch-only", "--follow"})
+
+GH_READS = frozenset(
+    {
+        ("pr", "view"),
+        ("pr", "checks"),
+        ("pr", "list"),
+        ("pr", "diff"),
+        ("pr", "status"),
+        ("run", "view"),
+        ("run", "list"),
+        ("run", "watch"),
+        ("issue", "view"),
+        ("issue", "list"),
+        ("issue", "status"),
+    }
+)
+GH_API_WRITE_FLAGS = ("-X", "--method", "-f", "--raw-field", "-F", "--field", "--input")
 
 SHELL_WORD_EXECUTABLES = frozenset({"time", "command", "builtin", "exec", "eval", "source", "."})
 
@@ -105,6 +123,29 @@ def ccx_supports(*subcmd: str, flag: str | None = None) -> bool:
     if proc.returncode != 0:
         return False
     return flag is None or flag in proc.stdout + proc.stderr
+
+
+def gh_read(command: Command) -> bool:
+    """Whether ``command`` is a ``gh`` read the GitHub App's read-only token serves.
+
+    The listed verbs only read. ``gh api`` reads unless it names a method or sends a field, either
+    of which makes it a write; ``gh api graphql`` always sends its query as a field, so it never
+    qualifies, which keeps a mutation off a token that would refuse it.
+    """
+    match Path(command.executable).name, command.args:
+        case "gh", ("api", *rest):
+            return not any(arg.startswith(GH_API_WRITE_FLAGS) for arg in rest)
+        case "gh", (group, verb, *_):
+            return (group, verb) in GH_READS
+        case _:
+            return False
+
+
+def app_read(command: Command, ccx: str) -> str | None:
+    """``ccx vcs gh -- <args>`` for a ``gh`` read, which then draws on the GitHub App's quota."""
+    if not gh_read(command) or not ccx_supports("vcs", "gh"):
+        return None
+    return f"{shlex.quote(ccx)} vcs gh --{command.raw[len(command.words[0].raw) :]}"
 
 
 def json_flagged(args: tuple[str, ...]) -> bool:
