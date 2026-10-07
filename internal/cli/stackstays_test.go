@@ -50,6 +50,9 @@ func TestStackSubmitLeavesACleanPublishedBranchOnItsTrunk(t *testing.T) {
 			if clean := "merges cleanly onto main@" + pin[:12]; strings.Contains(out, clean) == tc.restack {
 				t.Errorf("plan = %q, want %q named only when base stays", out, clean)
 			}
+			if kept := "old base kept" + shipSep + "base" + shipSep + "lacks main@" + pin[:12] + shipSep + "--restack replays the stack onto it"; strings.Contains(out, kept) == tc.restack {
+				t.Errorf("plan = %q, want %q named only when base stays", out, kept)
+			}
 			base := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
 			feature := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature")
 			if moved := base != published["base"]; moved != tc.restack {

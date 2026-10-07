@@ -173,7 +173,8 @@ with that trunk under the trunk's own .gitattributes; otherwise the plan names
 the files each branch's head conflicts in. New commits above that
 base are pushed as they stand. A conflicting branch, an unpublished branch, or a child
 whose parent landed is replayed onto its current parent; --restack also replays
-clean published branches. The local trunk branch and other working copies are
+clean published branches. The plan closes with an "old base kept" line naming
+every branch left on an older trunk and --restack. The local trunk branch and other working copies are
 left untouched. A branch whose pull
 request landed through a merge queue squash is dropped, and its children move
 onto what it sat on, leaving its squashed commits behind.
