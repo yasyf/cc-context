@@ -38,6 +38,9 @@ func Prune(ctx context.Context, maxAge time.Duration) error {
 }
 
 func pruneRepo(ctx context.Context, repoDir string, cutoff time.Time) {
+	if unversioned := func() bool { return hasManifest(repoDir) }; unversioned() {
+		removeLocked(ctx, repoDir, unversioned)
+	}
 	variants, err := os.ReadDir(repoDir)
 	if err != nil {
 		return

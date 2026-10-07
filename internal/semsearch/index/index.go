@@ -87,7 +87,7 @@ func Load(ctx context.Context, emb Embedder, root string, content []ContentType,
 		prev := loadPersisted(dir, modelID, contentK, chunkerID, emb.Dims())
 		base, trustMtime := prev, true
 		if prev == nil && famDir != "" {
-			seedDir, err := bestSeed(ctx, root, exts, siblingIndexes(famDir))
+			seedDir, err := bestSeed(ctx, root, exts, siblingIndexes(famDir, dir))
 			if err != nil {
 				return err
 			}

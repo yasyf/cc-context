@@ -110,8 +110,9 @@ func familyDir(ctx context.Context, root, vKey string) (string, error) {
 	return cache.Dir(ctx, "semsearch", seedsDir, hex.EncodeToString(sum[:]), vKey)
 }
 
-// siblingIndexes lists the most recently stored indexes a family's pointers name.
-func siblingIndexes(famDir string) []string {
+// siblingIndexes lists the most recently stored indexes a family's pointers name,
+// other than self.
+func siblingIndexes(famDir, self string) []string {
 	entries, err := os.ReadDir(famDir)
 	if err != nil {
 		return nil
@@ -127,7 +128,7 @@ func siblingIndexes(famDir string) []string {
 		}
 		dir := readPointer(filepath.Join(famDir, e.Name()))
 		fi, err := os.Stat(filepath.Join(dir, manifestFile))
-		if dir == "" || err != nil {
+		if dir == "" || dir == self || err != nil {
 			continue
 		}
 		found = append(found, candidate{dir, fi.ModTime()})
