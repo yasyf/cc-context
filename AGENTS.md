@@ -34,8 +34,7 @@ state and build outputs private to each workspace; download and compiler
 caches can remain shared.
 
 Git `ccx vcs stack new <name>` defaults to thin lanes backed by
-`~/.claude/stores/<key>/<repo>`, except a child of a non-trunk branch the
-calling checkout holds, which is cut in that checkout's clone; tracked `.claude` and `.agents`
+`~/.claude/stores/<key>/<repo>`; tracked `.claude` and `.agents`
 are checked out without running hooks or setup scripts. Thin stores share the
 source checkout's cc-notes records through `cc-notes storage bind`, which
 cc-notes must provide; existing unbound or differently bound stores are
