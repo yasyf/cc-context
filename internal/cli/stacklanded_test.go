@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -70,6 +71,48 @@ func TestStackRebaseTakesTrunkAsTheParentOfABranchOffALandedParent(t *testing.T)
 
 	if _, _, err := runStackCmd(t, f, "rebase", "--parent", "b=main"); err != nil {
 		t.Fatalf("stack rebase --parent b=main: %v", err)
+	}
+	stackAssertOnTrunk(t, f, api, "b")
+}
+
+// stackQueueReplaysLandedParent is #31266: after a squash-landed, the merge
+// queue restacked b by replaying a's own commit onto the new trunk beneath b's,
+// over the push that had already moved b onto that trunk without it.
+func stackQueueReplaysLandedParent(t *testing.T, f *vcstest.Fixture) {
+	t.Helper()
+	stackOffLandedParent(t, f)
+	server := filepath.Join(t.TempDir(), "queue")
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", "--detach", server, "origin/main")
+	writeShipFile(t, server, "a.txt", "a\na\n")
+	mustRun(t, f.Env(), server, "git", "add", "a.txt")
+	mustRun(t, f.Env(), server, "git", "commit", "-q", "-C", "a")
+	mustRun(t, f.Env(), server, "git", "cherry-pick", "b")
+	mustRun(t, f.Env(), server, "git", "push", "-qf", "origin", "HEAD:b")
+	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
+}
+
+func TestStackSubmitDropsTheQueuesReplayOfALandedParent(t *testing.T) {
+	f := shipGTRepo(t)
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	stackQueueReplaysLandedParent(t, f)
+	shipResetLog(t, f)
+
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("stack submit over the queue's replay of the landed a: %v", err)
+	}
+	stackAssertOnTrunk(t, f, api, "b")
+}
+
+func TestStackRebaseParentDropsTheQueuesReplayOfALandedParent(t *testing.T) {
+	f := shipGTRepo(t)
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	stackQueueReplaysLandedParent(t, f)
+	shipResetLog(t, f)
+
+	if _, _, err := runStackCmd(t, f, "rebase", "--parent", "b=main"); err != nil {
+		t.Fatalf("stack rebase --parent b=main over the queue's replay of the landed a: %v", err)
 	}
 	stackAssertOnTrunk(t, f, api, "b")
 }

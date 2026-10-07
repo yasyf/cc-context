@@ -17,6 +17,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A merge queue replay of a landed parent no longer blocks the fix.** After
+  a parent squash-landed, Graphite's merge queue restacked its child and
+  replayed the parent's own commit beneath the child's, overwriting the head
+  `stack rebase` had just pushed onto trunk. That is how #31266 in
+  Forge-AI/monorepo came to carry a second copy of #31254. The next
+  `stack rebase` refused the correct local head as `diverged`, and
+  `ccx vcs push` refused it as `a divergence, not a rewrite`. Both now read a
+  remote commit whose subject trunk carries with a ` (#N)` suffix, landed
+  after the commit was authored, as work trunk already holds, and force the
+  local head over it under a lease on the head they read.
+
 - **`ship --new-branch name` names the branch.** A bare `--new-branch` never
   consumed the next token, so `--new-branch name` filed the name as a path and
   ship refused it as `not a path`; only `--new-branch=name` worked. The

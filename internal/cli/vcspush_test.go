@@ -177,6 +177,70 @@ func TestVcsPushServerRestackWithNoRemoteHead(t *testing.T) {
 	}
 }
 
+// vcsPushQueueReplay is #31266: parent squash-landed as "test: 🧪 parent
+// (#7)", the merge queue then replayed parent's own commit onto the new trunk
+// beneath feat's, and feat itself already sits on that trunk without it. It
+// returns the queue's head and feat's.
+func vcsPushQueueReplay(t *testing.T, f *vcstest.Fixture, landed string) (string, string) {
+	t.Helper()
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "main")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "parent")
+	pushCommit(t, f, "q.txt", "queue\n", "test: 🧪 parent")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "feat")
+	pushCommit(t, f, "b.txt", "b\n", "test: 🧪 feat")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "parent", "feat")
+	clone := filepath.Join(filepath.Dir(f.Dir), "upstream")
+	mustRun(t, f.Env(), filepath.Dir(f.Dir), "git", "clone", "-q", f.RemoteDir, clone)
+	mustRun(t, f.Env(), clone, "git", "config", "user.email", "t@t.t")
+	mustRun(t, f.Env(), clone, "git", "config", "user.name", "t")
+	writeShipFile(t, clone, "q.txt", "landed\nqueue\n")
+	mustRun(t, f.Env(), clone, "git", "add", "-A")
+	mustRun(t, f.Env(), clone, "git", "commit", "-qm", landed)
+	mustRun(t, f.Env(), clone, "git", "push", "-q", "origin", "main")
+	writeShipFile(t, clone, "q.txt", "landed\nqueue\nqueue\n")
+	mustRun(t, f.Env(), clone, "git", "add", "-A")
+	mustRun(t, f.Env(), clone, "git", "commit", "-q", "-C", "origin/parent")
+	mustRun(t, f.Env(), clone, "git", "cherry-pick", "origin/feat")
+	mustRun(t, f.Env(), clone, "git", "push", "-q", "--force", "origin", "HEAD:feat")
+	tip := gitAt(t, f.Env(), clone, "rev-parse", "HEAD")
+	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin", "main")
+	mustRun(t, f.Env(), f.Dir, "git", "rebase", "-q", "--onto", "origin/main", "parent", "feat")
+	return tip, shipHead(t, f)
+}
+
+func TestVcsPushDropsTheQueuesReplayOfALandedParent(t *testing.T) {
+	f := shipRepo(t, vcstest.Remote())
+	tip, head := vcsPushQueueReplay(t, f, "test: 🧪 parent (#7)")
+	shipResetLog(t, f)
+
+	got, err := runVcsPushCmd(f.Context(), t)
+	if err != nil {
+		t.Fatalf("push error = %v", err)
+	}
+	if want := "force-pushed feat → origin · replaced " + shortOID(tip) + " with " + shortOID(head); got != want {
+		t.Errorf("summary = %q, want %q", got, want)
+	}
+	if remote := shipRemoteTip(t, f, "origin", "feat"); remote != head {
+		t.Errorf("origin feat = %s, want %s", remote, head)
+	}
+}
+
+// TestVcsPushRefusesAReplayOfWorkTrunkNeverLanded keeps the refusal when no
+// squash on trunk names the replayed commit: trunk landed other work.
+func TestVcsPushRefusesAReplayOfWorkTrunkNeverLanded(t *testing.T) {
+	f := shipRepo(t, vcstest.Remote())
+	tip, _ := vcsPushQueueReplay(t, f, "test: 🧪 other (#7)")
+	shipResetLog(t, f)
+
+	got, err := runVcsPushCmd(f.Context(), t)
+	if err == nil || !strings.Contains(err.Error(), "divergence, not a rewrite") {
+		t.Fatalf("push = %q, %v, want the divergence refused", got, err)
+	}
+	if remote := shipRemoteTip(t, f, "origin", "feat"); remote != tip {
+		t.Errorf("origin feat = %s, want the queue's %s left in place", remote, tip)
+	}
+}
+
 // TestVcsPushRecreatesABranchTheRemoteDeleted leaves origin/feat behind after
 // origin deletes feat: the stale ref is no lease to force against, so push
 // creates the branch again.
