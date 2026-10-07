@@ -778,7 +778,8 @@ func runWorktreeRmPath(cmd *cobra.Command, opts worktreeRmOptions) error {
 		return fmt.Errorf("worktree rm: --path: %w", err)
 	}
 	target, err := vcs.ResolveCheckout(path)
-	if broken := (*vcs.BrokenCheckout)(nil); errors.As(err, &broken) && broken.Orphaned && broken.Root == path {
+	var broken *vcs.BrokenCheckout
+	if errors.As(err, &broken) && broken.Orphaned && broken.Root == path {
 		return removeOrphanWorktree(ctx, cmd, path, opts)
 	}
 	if err != nil {

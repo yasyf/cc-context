@@ -440,10 +440,15 @@ func TestCleanupWorktreeRmPathTargets(t *testing.T) {
 		t.Fatalf("resolve %s: %v", other.Dir, err)
 	}
 	mainRefusal := `worktree rm: "` + f.Dir + `" is the repository's own working copy, not a linked worktree`
+	pool := filepath.Join(fixtureHome(t, f), ".claude", "worktrees")
+	outsidePool := func(tree string) string {
+		return "worktree rm: " + tree + " is an orphaned checkout outside the worktree pool " + pool + " — rm moves only <pool>/<repo>/<name> orphans to the Trash"
+	}
 
 	tests := []struct {
 		name     string
 		tree     string
+		orphan   bool
 		args     func(tree string) []string
 		want     func(tree string) string
 		notFound bool
@@ -532,6 +537,20 @@ func TestCleanupWorktreeRmPathTargets(t *testing.T) {
 			args: func(string) []string { return []string{"rm", "--force"} },
 			want: func(string) string { return "worktree rm: name a working copy, or pass --path <absolute-path>" },
 		},
+		{
+			name:   "orphan outside the pool",
+			tree:   "orphan",
+			orphan: true,
+			args:   func(tree string) []string { return []string{"rm", "--path", tree} },
+			want:   outsidePool,
+		},
+		{
+			name:   "orphan outside the pool forced",
+			tree:   "orphan-forced",
+			orphan: true,
+			args:   func(tree string) []string { return []string{"rm", "--path", tree, "--force"} },
+			want:   outsidePool,
+		},
 	}
 	removed := 0
 	for _, tt := range tests {
@@ -542,6 +561,9 @@ func TestCleanupWorktreeRmPathTargets(t *testing.T) {
 				addLinkedWorktree(t, f.Env(), f.Dir, tree, "")
 				if err := os.Mkdir(filepath.Join(tree, "sub"), 0o750); err != nil {
 					t.Fatalf("mkdir sub: %v", err)
+				}
+				if tt.orphan {
+					orphanWorktree(t, f.Env(), tree)
 				}
 			}
 
@@ -556,7 +578,12 @@ func TestCleanupWorktreeRmPathTargets(t *testing.T) {
 				if out != "" {
 					t.Errorf("%v output = %q, want none", tt.args(tree), out)
 				}
-				if tree != "" {
+				switch {
+				case tt.orphan:
+					if got := readFileStr(t, filepath.Join(tree, "f.txt")); got == "" {
+						t.Errorf("%s/f.txt is empty, want the refused orphan untouched", tree)
+					}
+				case tree != "":
 					assertIntact(t, f, tree)
 				}
 				return
