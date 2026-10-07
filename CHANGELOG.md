@@ -44,6 +44,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   File exists`. Every fetch ccx runs, through git or `jj git fetch`, now sets
   `fetch.writeCommitGraph=false` through `GIT_CONFIG_COUNT`, after any entries
   the environment already carries.
+
 - **`worktree rm --path` removes an orphaned worktree.** A pool worktree whose
   repository was re-cloned keeps a `.git` file naming an admin dir that no
   longer exists. rm refused it as a broken checkout, and `git worktree repair`
