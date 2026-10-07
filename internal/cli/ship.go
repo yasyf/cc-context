@@ -196,7 +196,7 @@ func newShipCmd() *cobra.Command {
 		Short: "Commit, push, and watch CI in one step",
 		Long: `Commit, push, and watch CI in one step.
 
-Ship refuses an empty working copy only when the branch carries nothing above trunk either. Where it does carry commits trunk does not — work a delegate's worktree, a hand-made commit, or a codex lane already landed — there is nothing to cut and everything to submit, so ship skips the commit and goes on to push and the pull request, reporting "nothing to commit — shipping as --no-commit". A path-scoped ship whose scoped paths are clean takes that same path, naming them: scoping already declared everything else out, so finding them clean over a branch ahead of trunk means the work landed. --no-commit states the path outright and refuses a working copy holding changes to tracked files, which would otherwise be left out of the branch and the pull request this same run updates; git's untracked paths do not refuse it, since a run that cuts no commit was never going to carry a worktree's scratch into one, and the report names them as "left untracked: <paths>" instead. Under jj there is nothing to exempt: a new file is already part of the working-copy commit --no-commit pushes. --no-commit is refused alongside paths, where the two spellings contradict each other. Where the branch carries nothing above trunk there is nothing to submit either, and the refusal says so. Ship resolves the push target before committing, so a refusal leaves the working copy untouched. After committing, ship fetches from the remote first and, when the target is no longer an ancestor of the local stack, rebases the stack onto it (jj: the target bookmark; git: origin/<branch>); a rebase that would conflict is rolled back and reported instead of pushed. Uncommitted work the rebase has to move — every hunk a scoped ship deliberately left in the tree — is kept as a commit of its own rather than on refs/stash, which every working copy of a repository shares, and put back afterwards; work that will not go back leaves the commit holding it and the files in it named in the refusal. A push the remote rejects because it advanced again mid-ship re-fetches, re-rebases, and retries up to 3 attempts before failing with the manual recovery steps. --amend never retries a rejected push: the force-with-lease refusal is reported for manual reconciliation instead of overwriting the concurrent push.
+Ship refuses an empty working copy only when the branch carries nothing above trunk either. Where it does carry commits trunk does not — work a delegate's worktree, a hand-made commit, or a codex lane already landed — there is nothing to cut and everything to submit, so ship skips the commit and goes on to push and the pull request, reporting "nothing to commit — shipping as --no-commit". A path-scoped ship whose scoped paths are clean takes that same path, naming them: scoping already declared everything else out, so finding them clean over a branch ahead of trunk means the work landed. --no-commit states the path outright and refuses a working copy holding changes to tracked files, which would otherwise be left out of the branch and the pull request this same run updates; git's untracked paths do not refuse it, since a run that cuts no commit was never going to carry a worktree's scratch into one, and the report names them as "left untracked: <paths>" instead. Under jj there is nothing to exempt: a new file is already part of the working-copy commit --no-commit pushes. --no-commit is refused alongside paths, where the two spellings contradict each other. Where the branch carries nothing above trunk there is nothing to submit either, and the refusal says so. Ship resolves the push target before committing, so a refusal leaves the working copy untouched. After committing, ship fetches from the remote first and, when the target is no longer an ancestor of the local stack, rebases the stack onto it (jj: the target bookmark; git: origin/<branch>). On git, an origin/<branch> that is the branch's own history rewritten locally — a head its reflog reaches, its last publication, or commits the stack carries patch for patch — is not rebased onto: ship force-pushes over it with a lease on that exact head and reports "force-pushed … replaced <sha> under a lease". A rebase that would conflict is rolled back and reported instead of pushed. Uncommitted work the rebase has to move — every hunk a scoped ship deliberately left in the tree — is kept as a commit of its own rather than on refs/stash, which every working copy of a repository shares, and put back afterwards; work that will not go back leaves the commit holding it and the files in it named in the refusal. A push the remote rejects because it advanced again mid-ship re-fetches, re-rebases, and retries up to 3 attempts before failing with the manual recovery steps. --amend never retries a rejected push: the force-with-lease refusal is reported for manual reconciliation instead of overwriting the concurrent push.
 
 Where the commit goes is one decision, resolved before any mutation and reported as a branch <name> or created <name> segment. On a non-trunk branch or bookmark, ship appends to it. On trunk it appends in your own repositories — direct-to-main is deliberate there — and starts a branch named from the commit subject when GitHub says the repository is someone else's, since an org trunk rejects the commit through its protect-<trunk> hook and leaves it dangling; the graphite lane always starts a branch on trunk, because gt has no verb that commits onto it. A detached HEAD is refused rather than guessed at, unless --new-branch names a branch to cut there, and so are several trunk candidates unless --branch names one of them. --branch <name> commits onto that branch, creating it here when it does not exist and refusing when it exists somewhere else, since ship does not check branches out; --new-branch [<name>] always starts one, deriving the name from the commit subject when bare; --new-branch name and --new-branch=name both name it, the positional after a bare --new-branch being its name unless -- separates the two, and a name that is also a path on disk is refused as ambiguous; --append refuses on trunk; --allow-trunk lets --branch advance a trunk you do not own. --bookmark is a jj-only alias of --branch, --create a deprecated alias of --new-branch. A new branch is cut with gt create (graphite), git switch -c (git), or jj bookmark create -r @- (jj).
 
@@ -557,6 +557,7 @@ func runShip(cmd *cobra.Command, o shipOpts) (err error) {
 
 	var remote string
 	var rebased int
+	var replaced string
 	var prSeg string
 	var bodylessSegs []string
 	var gtStack []stackEntry
@@ -564,7 +565,7 @@ func runShip(cmd *cobra.Command, o shipOpts) (err error) {
 	if gtLane {
 		prSeg, bodylessSegs, gtStack, err = shipPushGT(ctx, cmd.ErrOrStderr(), l, o, meta, trunkFetch, branch, stuck, gtc)
 	} else {
-		remote, rebased, err = shipPush(ctx, dir, kind, o, branch, plan.trunk, preAmendSHA)
+		remote, rebased, replaced, err = shipPush(ctx, dir, kind, o, branch, plan.trunk, preAmendSHA)
 	}
 	if err != nil {
 		return shipSettleRestack(ctx, l, gtc, err)
@@ -594,6 +595,8 @@ func runShip(cmd *cobra.Command, o shipOpts) (err error) {
 			segments = append(segments, fmt.Sprintf("published %.12s", gtc.restack.branch(branch).NewHead), movedSeg)
 		}
 		segments = append(segments, prSeg)
+	} else if replaced != "" {
+		segments = append(segments, fmt.Sprintf("force-pushed %s → %s · replaced %s under a lease", branch, remote, shortOID(replaced)))
 	} else {
 		segments = append(segments, fmt.Sprintf("pushed %s → %s", branch, remote))
 	}
@@ -1574,15 +1577,15 @@ func branchSegment(plan branchPlan, branch string, noPush bool) string {
 	}
 }
 
-func shipPush(ctx context.Context, dir render.Dir, kind vcs.Kind, o shipOpts, target, trunk, preAmendSHA string) (remote string, rebased int, err error) {
+func shipPush(ctx context.Context, dir render.Dir, kind vcs.Kind, o shipOpts, target, trunk, preAmendSHA string) (remote string, rebased int, replaced string, err error) {
 	switch kind {
 	case vcs.JJ:
 		rebased, err = shipPushJJ(ctx, dir, target, o.amend)
-		return "origin", rebased, err
+		return "origin", rebased, "", err
 	case vcs.Git:
 		return shipPushGit(ctx, dir, o, target, trunk, preAmendSHA)
 	default:
-		return "", 0, errors.New("ship: push: unsupported vcs")
+		return "", 0, "", errors.New("ship: push: unsupported vcs")
 	}
 }
 
@@ -1780,25 +1783,28 @@ func shipPushJJReject(ctx context.Context, dir render.Dir, target, moveOp string
 	return &pushRejectedError{err: raw}
 }
 
-func shipPushGit(ctx context.Context, dir render.Dir, o shipOpts, branch, trunk, preAmendSHA string) (string, int, error) {
+func shipPushGit(ctx context.Context, dir render.Dir, o shipOpts, branch, trunk, preAmendSHA string) (string, int, string, error) {
 	remote, err := vcs.GitRemoteFor(ctx, dir, branch)
 	if err != nil {
-		return "", 0, fmt.Errorf("ship: %w", err)
+		return "", 0, "", fmt.Errorf("ship: %w", err)
 	}
 	if err := thinRefuseAdoptedPush(ctx, dir, "ship", []string{branch}); err != nil {
-		return "", 0, err
+		return "", 0, "", err
 	}
 	if o.expectRemote != "" {
-		return remote, 0, shipPushGitExpected(ctx, dir, remote, branch, o.expectRemote, o.noVerify)
+		return remote, 0, "", shipPushGitExpected(ctx, dir, remote, branch, o.expectRemote, o.noVerify)
 	}
 	if o.amend {
-		return remote, 0, shipPushGitAmend(ctx, dir, remote, branch, preAmendSHA, o.noVerify)
+		return remote, 0, "", shipPushGitAmend(ctx, dir, remote, branch, preAmendSHA, o.noVerify)
 	}
 	hint := fmt.Sprintf("git fetch %s && git rebase --autostash %s/%s && git push %s %s", remote, remote, branch, remote, branch)
+	var replaced string
 	rebased, err := shipPushRetry(ctx, branch, hint, func(ctx context.Context) (int, error) {
-		return shipPushGitOnce(ctx, dir, remote, branch, trunk, o.noVerify)
+		n, tip, err := shipPushGitOnce(ctx, dir, remote, branch, trunk, o.noVerify)
+		replaced = tip
+		return n, err
 	})
-	return remote, rebased, err
+	return remote, rebased, replaced, err
 }
 
 // pushArgv opens every push ccx runs. Following tags makes git resolve every
@@ -1889,49 +1895,60 @@ func shipAmendLease(ctx context.Context, dir render.Dir, remote, branch, preAmen
 	return tip, nil
 }
 
-// shipPushGitOnce is one non-amend push attempt: fetch the branch and trunk,
-// rebase onto <remote>/<branch> when it advanced past HEAD, then push. A
-// rejected push moves no local ref, so it re-enters as a *pushRejectedError
-// with no rollback.
-func shipPushGitOnce(ctx context.Context, dir render.Dir, remote, branch, trunk string, noVerify bool) (int, error) {
+// shipPushGitOnce fetches, rebases onto an advanced <remote>/<branch> or
+// leases over one HEAD rewrote, and pushes. A rejected push moves no local
+// ref, so it re-enters as a *pushRejectedError.
+func shipPushGitOnce(ctx context.Context, dir render.Dir, remote, branch, trunk string, noVerify bool) (rebased int, replaced string, err error) {
 	fetch := []string{branch}
 	if trunk != "" && trunk != branch {
 		fetch = append(fetch, trunk)
 	}
 	heads, err := stackRemoteHeads(ctx, dir, "ship", remote, fetch, "HEAD")
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
+	trunkRef := ""
 	if trunk != "" && trunk != branch {
 		if err := stackRequireHistory(ctx, dir, "ship", remote, trunk, map[string]string{branch: "HEAD", remote + "/" + branch: heads[branch]}); err != nil {
-			return 0, err
+			return 0, "", err
+		}
+		if heads[trunk] != "" {
+			trunkRef = "refs/remotes/" + remote + "/" + trunk
 		}
 	}
-	remoteRef := "refs/remotes/" + remote + "/" + branch
-	rebased := 0
-	if heads[branch] != "" {
-		ancestor, err := gitIsAncestor(ctx, dir, "ship", remoteRef, "HEAD")
+	argv := gitPushArgv(noVerify, remote, branch)
+	if tip := heads[branch]; tip != "" {
+		ancestor, err := gitIsAncestor(ctx, dir, "ship", "refs/remotes/"+remote+"/"+branch, "HEAD")
 		if err != nil {
-			return 0, err
+			return 0, "", err
 		}
+		rewritten := false
 		if !ancestor {
+			if rewritten, err = gitRemoteRewritten(ctx, dir, "ship", branch, tip, "HEAD", trunkRef); err != nil {
+				return 0, "", err
+			}
+		}
+		switch {
+		case rewritten:
+			replaced = tip
+			argv = gitPushArgv(noVerify, remote, fmt.Sprintf("--force-with-lease=%s:%s", branch, tip), branch)
+		case !ancestor:
 			if err := gitRefuseTrunkReplay(ctx, dir, remote, branch, trunk); err != nil {
-				return 0, err
+				return 0, "", err
 			}
-			rebased, err = gitRebaseOnto(ctx, dir, "ship", remote, branch)
-			if err != nil {
-				return 0, err
+			if rebased, err = gitRebaseOnto(ctx, dir, "ship", remote, branch); err != nil {
+				return 0, "", err
 			}
 		}
 	}
-	if _, err := render.RunCLI(ctx, dir, "git", gitPushArgv(noVerify, remote, branch)); err != nil {
+	if _, err := render.RunCLI(ctx, dir, "git", argv); err != nil {
 		raw := fmt.Errorf("ship: git push: %w", err)
-		if gitPushRejected(raw) {
-			return rebased, &pushRejectedError{err: raw}
+		if gitPushRejected(raw) || gitPushStaleLease(raw) {
+			return rebased, "", &pushRejectedError{err: raw}
 		}
-		return rebased, raw
+		return rebased, "", raw
 	}
-	return rebased, thinRecordBranchPush(ctx, dir, remote, branch)
+	return rebased, replaced, thinRecordBranchPush(ctx, dir, remote, branch)
 }
 
 // gitRefuseTrunkReplay refuses a rebase onto the remote branch that would

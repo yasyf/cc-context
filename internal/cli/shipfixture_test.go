@@ -1375,6 +1375,54 @@ func assertInvocations(t *testing.T, got, want [][]string) {
 	}
 }
 
+// rewriteProbe stands for the run of reads gitRemoteRewritten makes over
+// branch, whose operands are commits and receipt refs a fixture cannot name.
+func rewriteProbe(branch string) []string {
+	return []string{"<rewrite probe>", branch}
+}
+
+// collapseRewriteProbes folds each run of gitRemoteRewritten's reads into one
+// rewriteProbe, so an exact sequence can still pin where the probe runs.
+func collapseRewriteProbes(invocations [][]string) [][]string {
+	var out [][]string
+	branch := ""
+	for _, inv := range invocations {
+		if b, ok := rewriteProbeStart(inv); ok {
+			branch = b
+			out = append(out, rewriteProbe(b))
+			continue
+		}
+		if branch != "" && rewriteProbeRead(inv) {
+			continue
+		}
+		branch = ""
+		out = append(out, inv)
+	}
+	return out
+}
+
+func rewriteProbeStart(inv []string) (string, bool) {
+	if len(inv) != 5 || inv[0] != "git" || inv[1] != "reflog" || inv[2] != "show" || inv[3] != "--format=%H" {
+		return "", false
+	}
+	return strings.CutPrefix(inv[4], "refs/heads/")
+}
+
+func rewriteProbeRead(inv []string) bool {
+	if len(inv) < 4 || inv[0] != "git" {
+		return false
+	}
+	switch inv[1] {
+	case "merge-base":
+		return inv[2] == "--is-ancestor" && !strings.HasPrefix(inv[3], "refs/")
+	case "rev-parse":
+		return len(inv) == 5 && inv[2] == "--verify" && strings.HasPrefix(inv[4], "refs/ccx/published/")
+	case "rev-list":
+		return slices.Contains(inv, "--cherry-pick") && slices.Contains(inv, "--left-only")
+	}
+	return false
+}
+
 // shipMutates reports whether inv moved the repository: a commit, or a branch
 // cut, moved, or checked out. The reads spelled with a mutating verb — git
 // branch --show-current, jj bookmark list — are not among them.

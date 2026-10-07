@@ -28,6 +28,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   after the commit was authored, as work trunk already holds, and force the
   local head over it under a lease on the head they read.
 
+- **Git `ccx vcs ship` leases over a branch's own rewritten history instead
+  of replaying onto it.** In yasyf/cc-present on 2026-10-06, `viewed` was
+  pushed, rebased locally onto its updated parent `code-src`, and shipped with
+  `--no-commit --parent code-src`. Ship found `origin/viewed` off HEAD and
+  reported `rebased 3 commit(s) onto viewed`: it replayed the stack onto the
+  stale remote head, dropped the copy of viewed's own commit, and pushed the
+  parent's commit above it as viewed's work. Ship now asks whether
+  `origin/<branch>` is the branch's own history first, with the test
+  `ccx vcs push` already uses: a head the branch's reflog reaches, its last
+  publication receipt, or commits the stack carries patch for patch outside
+  trunk. Such a head is force-pushed over with `--force-with-lease` on that
+  exact commit, reported as `force-pushed <branch> → origin · replaced <sha>
+  under a lease`, and a lease the remote has since moved past re-enters the
+  retry, which fetches and classifies again. A remote head carrying a commit
+  the branch never held still rebases as before. A branch rebased onto a
+  trunk its pushed head predates is now published this way rather than
+  refused; the refusal remains for a pushed head that also carries foreign
+  work.
+
 - **`ship --new-branch name` names the branch.** A bare `--new-branch` never
   consumed the next token, so `--new-branch name` filed the name as a path and
   ship refused it as `not a path`; only `--new-branch=name` worked. The
