@@ -30,7 +30,10 @@ def gh_app_to(evt: BaseHookEvent, occ: Occurrence) -> str | None:
 rewrite_command_occurrences(
     skip_if=[Annotated("raw")],
     to=gh_app_to,
-    note=rewrote_note("ccx vcs gh -- <gh args>", "same output, read on the GitHub App's quota"),
+    note=rewrote_note(
+        "ccx vcs gh -- <gh args>",
+        "same output on the GitHub App's quota; vcs gh runs reads only, so run writes as plain `gh`",
+    ),
     tests={
         Input(command="gh pr checks 12"): Rewrite(pattern="vcs gh -- pr checks 12"),
         Input(command="gh run watch 34 --exit-status"): Rewrite(pattern="vcs gh -- run watch 34 --exit-status"),
@@ -49,6 +52,17 @@ rewrite_command_occurrences(
         Input(command="gh api -X POST repos/o/r/issues/12/comments -f body=hi"): Allow(),
         Input(command="gh api repos/o/r/issues/12/comments -f body=hi"): Allow(),
         Input(command="gh api graphql -f query='{ viewer { login } }'"): Allow(),
+        Input(command="gh api -X PUT repos/o/r/pulls/1/merge -f merge_method=merge"): Allow(),
+        Input(command="gh api repos/o/r/pulls/1/merge -f merge_method=merge"): Allow(),
+        Input(command="gh api --method PUT repos/o/r/pulls/1/merge"): Allow(),
+        Input(command="gh api --method=PUT repos/o/r/pulls/1/merge"): Allow(),
+        Input(command="gh api -XPUT repos/o/r/pulls/1/merge"): Allow(),
+        Input(command="gh api repos/o/r/pulls/1/merge -X PUT"): Allow(),
+        Input(command="gh api -X DELETE repos/o/r/git/refs/heads/b"): Allow(),
+        Input(command="gh api repos/o/r/pulls/1/merge --input body.json"): Allow(),
+        Input(command="gh pr checks 1 --watch && gh api -X PUT repos/o/r/pulls/1/merge"): Rewrite(
+            pattern="vcs gh -- pr checks 1 --watch && gh api -X PUT repos/o/r/pulls/1/merge"
+        ),
         Input(command="GH_TOKEN=x gh pr checks 12"): Allow(),
         Input(command="gh pr checks 12 # ccx:raw"): Allow(),
         Input(command="echo $(gh pr checks 12)"): Allow(),

@@ -398,8 +398,11 @@ waiting.
 `ccx vcs gh -- <gh args>` runs a read-only `gh` command, such as
 `gh pr checks`, `gh pr view`, or `gh run watch`, on the read-only GitHub App
 token these reads use. A poll then draws on the installation's quota and
-leaves the gh user's GraphQL quota for writes. A write through it fails, so
-run writes through `gh` itself. `ccx vcs auth status` names both identities
+leaves the gh user's GraphQL quota for writes. It runs reads only: a
+`gh api` `GET` outside `graphql`, a `gh search`, or a `view`, `list`,
+`status`, `checks`, `diff`, or `watch` verb. Anything else, such as
+`gh pr merge` or `gh api -X PUT …`, is refused before it runs, with the
+plain `gh` command to run instead. `ccx vcs auth status` names both identities
 and their remaining quota, and still answers when the user's quota is spent.
 The guard pack rewrites a read-only `gh pr`, `gh run`, `gh issue`, or
 `gh api` GET call to `ccx vcs gh -- …` on its own; end the command with
