@@ -171,7 +171,7 @@ func prWatchSnapshotOf(number int, pr prstate.PR, trunk prstate.Trunk, prev prWa
 		Approved:  pr.ReviewDecision == "APPROVED",
 	}
 	if rollup := pr.Rollup; rollup != nil {
-		snap.Green = rollup.State == "SUCCESS"
+		snap.Green = rollup.State == "SUCCESS" || prCIOf(rollup).State == prCIGreen
 		for _, check := range statusChecks(rollup) {
 			if statusClassify(check.State) == statusFailed {
 				snap.Failing = append(snap.Failing, check.Name)

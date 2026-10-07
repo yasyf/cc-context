@@ -26,6 +26,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not a regular file, and a tree a live process holds. On macOS `--force`
   waives none of these.
 
+- **`pr status` and `status` stop reading Graphite's held check as pending CI.**
+  Graphite keeps `Graphite / mergeability_check` in progress on purpose while a
+  pull request needs a restack or waits on its downstack. Both commands counted
+  it as a running check, so a stack whose bottom needed a restack read
+  `ci pending: 1 running` and `blocked:ci-pending` on every PR above it. They
+  now leave that check out of CI and out of the checks a base normally grades,
+  and read Graphite's mergeability status instead. `pr status` names
+  `needs-restack (parent landed)`, `needs-restack`, or
+  `waiting-on-downstack #N` in its verdict. `status` shows the state on the
+  `merge` line, with a `blocked` line naming the fix or the pull request below.
+  The mergeability request is batched in forties, because Graphite answers 413
+  to fifty pull requests. `pr watch` reports green once only Graphite's check
+  is outstanding.
+
 - **`worktree rm` no longer waits on a starved daemon under load.** The
   cleanup daemon ran every removal in the darwin background band: launchd
   started it as a `Background` process, and it demoted itself with nice 20.

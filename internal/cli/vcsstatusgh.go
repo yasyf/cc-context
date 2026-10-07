@@ -221,6 +221,34 @@ func statusResolvePRs(ctx context.Context, l lane, st *vcsStatus) {
 	statusFillAlerts(ctx, st, nodes)
 }
 
+func statusFillMergeability(ctx context.Context, st *vcsStatus) {
+	owner, name, _ := strings.Cut(st.Repo, "/")
+	byHead := map[string]int{}
+	var numbers []int
+	for _, b := range st.Branches {
+		if b.PR == nil {
+			continue
+		}
+		byHead[b.Name] = b.PR.Number
+		if b.PR.State == "OPEN" {
+			numbers = append(numbers, b.PR.Number)
+		}
+	}
+	if len(numbers) == 0 {
+		return
+	}
+	statuses, err := gtAPI(ctx).MergeabilityStatuses(ctx, owner, name, numbers)
+	if err != nil {
+		st.GTError = err.Error()
+		return
+	}
+	for _, b := range st.Branches {
+		if b.PR != nil && b.PR.State == "OPEN" {
+			b.PR.Mergeability, b.PR.Downstack = statuses[b.PR.Number], byHead[b.PR.Base]
+		}
+	}
+}
+
 // statusPRResponse is the batched query's payload: one aliased pull-request
 // connection per branch, plus the base branch's protection rules.
 type statusPRResponse struct {
@@ -512,6 +540,8 @@ func statusLabels(node statusPRNode) []string {
 // off its conclusion and an unfinished one off its status. A re-run is a fresh
 // check run under the same name, so the newest entry of each name wins — the
 // rollup carries every attempt and only the last one is the verdict.
+// Graphite's mergeability check is left out: Graphite holds it in progress
+// while the pull request waits on its stack, so it grades nothing on the head.
 func statusChecks(rollup *statusRollup) []statusCheck {
 	if rollup == nil {
 		return nil
@@ -525,6 +555,9 @@ func statusChecks(rollup *statusRollup) []statusCheck {
 			if c.Conclusion == "" {
 				check.State = c.Status
 			}
+		}
+		if check.Name == gtMergeabilityCheck {
+			continue
 		}
 		if i, seen := at[check.Name]; seen {
 			checks[i] = check
@@ -668,12 +701,8 @@ func statusPeers(ctx context.Context, l lane, bases []string) map[string][]strin
 				continue
 			}
 			var names []string
-			for _, c := range rollup.Contexts.Nodes {
-				if c.Name != "" {
-					names = append(names, c.Name)
-					continue
-				}
-				names = append(names, c.Context)
+			for _, c := range statusChecks(rollup) {
+				names = append(names, c.Name)
 			}
 			peers = append(peers, names)
 		}

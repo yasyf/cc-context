@@ -292,6 +292,41 @@ func TestMergeabilityStatusesOmitsAnUntrackedPullRequest(t *testing.T) {
 	}
 }
 
+func TestMergeabilityStatusesBatchesUnderGraphitesLimit(t *testing.T) {
+	var sizes []int
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var sent struct {
+			PRNumbers []int `json:"prNumbers"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&sent); err != nil {
+			t.Errorf("decode: %v", err)
+		}
+		sizes = append(sizes, len(sent.PRNumbers))
+		if len(sent.PRNumbers) >= 50 {
+			w.WriteHeader(http.StatusRequestEntityTooLarge)
+			return
+		}
+		rows := make([]string, 0, len(sent.PRNumbers))
+		for _, n := range sent.PRNumbers {
+			rows = append(rows, fmt.Sprintf(`{"prNumber":%d,"mergeabilityStatus":"WAITING_ON_DOWNSTACK"}`, n))
+		}
+		_, _ = fmt.Fprintf(w, `{"mergeabilityStatuses":[%s]}`, strings.Join(rows, ","))
+	}))
+	t.Cleanup(ts.Close)
+
+	numbers := make([]int, 90)
+	for i := range numbers {
+		numbers[i] = 31000 + i
+	}
+	got, err := testClient(ts.URL).MergeabilityStatuses(context.Background(), "Forge-AI", "monorepo", numbers)
+	if err != nil {
+		t.Fatalf("MergeabilityStatuses: %v", err)
+	}
+	if len(got) != 90 || got[31089] != "WAITING_ON_DOWNSTACK" || fmt.Sprint(sizes) != "[40 40 10]" {
+		t.Errorf("got %d statuses over requests of %v, want all 90 over [40 40 10]", len(got), sizes)
+	}
+}
+
 func TestPreSubmitErrorResultIsTyped(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = fmt.Fprint(w, `{"result":{"error":"repo not synced"}}`)

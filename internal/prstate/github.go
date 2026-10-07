@@ -153,7 +153,8 @@ func (g *GitHub) probe(ctx context.Context) (Rate, error) {
 }
 
 func (g *GitHub) poll(ctx context.Context, req Want, prev map[int]PR) (poll, error) {
-	p := pass{GitHub: g, prev: prev, infos: g.queueRecords(ctx, req.PRs), out: poll{prs: make(map[int]PR, len(req.PRs)), lanes: map[string][]int{}}}
+	infos, mergeability := g.queueRecords(ctx, req.PRs)
+	p := pass{GitHub: g, prev: prev, infos: infos, mergeability: mergeability, out: poll{prs: make(map[int]PR, len(req.PRs)), lanes: map[string][]int{}}}
 	targets := make([]target, 0, len(req.PRs))
 	for _, n := range req.PRs {
 		targets = append(targets, p.target(n))
@@ -176,9 +177,10 @@ func (g *GitHub) poll(ctx context.Context, req Want, prev map[int]PR) (poll, err
 
 type pass struct {
 	*GitHub
-	prev  map[int]PR
-	infos map[int]*gtapi.PullRequestInfo
-	out   poll
+	prev         map[int]PR
+	infos        map[int]*gtapi.PullRequestInfo
+	mergeability map[int]string
+	out          poll
 }
 
 func (p *pass) target(n int) target {
@@ -323,6 +325,7 @@ func (p *pass) record(node prNode, t target, i int, resp response) (PR, error) {
 		ChangedFiles:     node.ChangedFiles,
 		Activity:         last.Activity,
 		Graphite:         p.infos[t.number],
+		Mergeability:     p.mergeability[t.number],
 	}
 	if node.Author != nil {
 		pr.Author = node.Author.Login
@@ -373,9 +376,9 @@ func (p *pass) record(node prNode, t target, i int, resp response) (PR, error) {
 	return pr, nil
 }
 
-func (g *GitHub) queueRecords(ctx context.Context, numbers []int) map[int]*gtapi.PullRequestInfo {
+func (g *GitHub) queueRecords(ctx context.Context, numbers []int) (map[int]*gtapi.PullRequestInfo, map[int]string) {
 	if len(numbers) == 0 || g.gt == nil {
-		return nil
+		return nil, nil
 	}
 	infos, err := g.gt.PullRequestInfo(ctx, gtapi.PullRequestInfoRequest{
 		RepoOwner:  g.owner,
@@ -386,14 +389,18 @@ func (g *GitHub) queueRecords(ctx context.Context, numbers []int) map[int]*gtapi
 	})
 	if err != nil {
 		_, _ = fmt.Fprintf(g.warn, "prstate: graphite: %v; this poll carries no queue state\n", err)
-		return nil
+		return nil, nil
 	}
 	byNumber := make(map[int]*gtapi.PullRequestInfo, len(infos))
 	for _, info := range infos {
 		info.Body, info.Versions = "", nil
 		byNumber[info.PRNumber] = &info
 	}
-	return byNumber
+	mergeability, err := g.gt.MergeabilityStatuses(ctx, g.owner, g.name, numbers)
+	if err != nil {
+		_, _ = fmt.Fprintf(g.warn, "prstate: graphite: %v; this poll carries no mergeability\n", err)
+	}
+	return byNumber, mergeability
 }
 
 func inQueue(info *gtapi.PullRequestInfo) bool {

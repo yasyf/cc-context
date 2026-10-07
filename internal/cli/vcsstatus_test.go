@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -306,6 +307,7 @@ func TestStatusChecksKeepsTheLatestRun(t *testing.T) {
 		{Typename: "CheckRun", Name: "label", Conclusion: "SUCCESS", Status: "COMPLETED"},
 		{Typename: "CheckRun", Name: "build", Status: "IN_PROGRESS"},
 		{Typename: "StatusContext", Context: "buildkite/tests", State: "PENDING"},
+		{Typename: "CheckRun", Name: "Graphite / mergeability_check", Status: "IN_PROGRESS"},
 	}
 	want := []statusCheck{
 		{Name: "label", State: "SUCCESS"},
@@ -317,6 +319,53 @@ func TestStatusChecksKeepsTheLatestRun(t *testing.T) {
 	}
 	if got := statusChecks(nil); got != nil {
 		t.Errorf("statusChecks(nil) = %+v, want nil", got)
+	}
+}
+
+func TestStatusMergeabilityBlockers(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		pr   statusPR
+		want []string
+	}{
+		{"parent landed", statusPR{Mergeability: "NEEDS_RESTACK__BASE_BRANCH_MERGED"}, []string{"graphite needs a restack: the parent landed — run ccx vcs stack submit"}},
+		{"needs a restack", statusPR{Mergeability: "NEEDS_RESTACK"}, []string{"graphite needs a restack — run ccx vcs stack submit"}},
+		{"waiting on a reported pull request", statusPR{Mergeability: "WAITING_ON_DOWNSTACK", Downstack: 31124}, []string{"graphite is waiting on downstack #31124"}},
+		{"waiting on an unreported branch", statusPR{Mergeability: "WAITING_ON_DOWNSTACK", Base: "yasyf/s4"}, []string{"graphite is waiting on the downstack below yasyf/s4"}},
+		{"ready as a stack", statusPR{Mergeability: "READY_TO_MERGE_AS_STACK"}, nil},
+		{"untracked", statusPR{}, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := statusMergeabilityBlockers(&tt.pr); !slices.Equal(got, tt.want) {
+				t.Errorf("statusMergeabilityBlockers = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestStatusFillMergeabilityNamesTheDownstackPullRequest(t *testing.T) {
+	t.Parallel()
+	_, client := stubGraphiteMergeability(t, map[int]string{31124: "NEEDS_RESTACK__BASE_BRANCH_MERGED", 31126: "WAITING_ON_DOWNSTACK"})
+	st := vcsStatus{Repo: "Forge-AI/monorepo", Branches: []statusBranch{
+		{Name: "s3", PR: &statusPR{Number: 31100, State: "MERGED", Base: "dev"}},
+		{Name: "s4", PR: &statusPR{Number: 31124, State: "OPEN", Base: "dev"}},
+		{Name: "s5", PR: &statusPR{Number: 31126, State: "OPEN", Base: "s4"}},
+	}}
+	statusFillMergeability(withGTAPI(t.Context(), client), &st)
+	got := make([]statusPR, 0, len(st.Branches))
+	for _, b := range st.Branches {
+		got = append(got, *b.PR)
+	}
+	want := []statusPR{
+		{Number: 31100, State: "MERGED", Base: "dev"},
+		{Number: 31124, State: "OPEN", Base: "dev", Mergeability: "NEEDS_RESTACK__BASE_BRANCH_MERGED"},
+		{Number: 31126, State: "OPEN", Base: "s4", Mergeability: "WAITING_ON_DOWNSTACK", Downstack: 31124},
+	}
+	if !reflect.DeepEqual(got, want) || st.GTError != "" {
+		t.Errorf("pull requests = %+v (graphite error %q), want %+v", got, st.GTError, want)
 	}
 }
 

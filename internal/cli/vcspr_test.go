@@ -103,10 +103,31 @@ func TestClassifyPRQueue(t *testing.T) {
 
 func stubPRInfo(t *testing.T, payloads ...string) (*[]gtapi.PullRequestInfoRequest, *gtapi.Client) {
 	t.Helper()
+	return stubGraphiteMergeability(t, nil, payloads...)
+}
+
+func stubGraphiteMergeability(t *testing.T, statuses map[int]string, payloads ...string) (*[]gtapi.PullRequestInfoRequest, *gtapi.Client) {
+	t.Helper()
 	var asked []gtapi.PullRequestInfoRequest
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/graphite/mergeability-status" {
+			var req struct {
+				PRNumbers []int `json:"prNumbers"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Errorf("decode request: %v", err)
+			}
+			rows := []string{}
+			for _, number := range req.PRNumbers {
+				if status, ok := statuses[number]; ok {
+					rows = append(rows, fmt.Sprintf(`{"prNumber":%d,"forgeSource":"github","mergeabilityStatus":%q}`, number, status))
+				}
+			}
+			_, _ = fmt.Fprintf(w, `{"mergeabilityStatuses":[%s]}`, strings.Join(rows, ","))
+			return
+		}
 		if r.URL.Path != "/graphite/cli/pull-request-info" {
-			t.Errorf("route = %s, want pull-request-info", r.URL.Path)
+			t.Errorf("route = %s, want pull-request-info or mergeability-status", r.URL.Path)
 		}
 		var req gtapi.PullRequestInfoRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -445,6 +466,36 @@ func TestPRStatusReadsCIAndApprovalFromARealPoll(t *testing.T) {
 	}
 }
 
+// Forge-AI/monorepo on 2026-10-07: #31124's parent landed, and Graphite held its
+// mergeability check open over otherwise green heads up the stack.
+func TestPRStatusReadsGraphitesStackStateOverItsHeldCheck(t *testing.T) {
+	_, client := stubGraphiteMergeability(t,
+		map[int]string{31124: "NEEDS_RESTACK__BASE_BRANCH_MERGED", 31126: "WAITING_ON_DOWNSTACK", 31129: "READY_TO_MERGE_AS_STACK"},
+		`{"prNumber":31124,"state":"OPEN","baseRefName":"dev","mergeQueueStatus":null,"mergeCommitSha":null}`,
+		`{"prNumber":31126,"state":"OPEN","baseRefName":"yasyf/iris-memory-v2-s4-store","mergeQueueStatus":null,"mergeCommitSha":null,"dependentPrNumber":31124}`,
+		`{"prNumber":31129,"state":"OPEN","baseRefName":"yasyf/iris-memory-v2-s5-flags","mergeQueueStatus":null,"mergeCommitSha":null,"dependentPrNumber":31126}`,
+	)
+	held := `"checks":{"nodes":[{"commit":{"statusCheckRollup":{"state":"PENDING","contexts":{"nodes":[` +
+		`{"__typename":"CheckRun","name":"emergency-approve","conclusion":"SUCCESS","status":"COMPLETED"},` +
+		`{"__typename":"CheckRun","name":"Graphite / mergeability_check","conclusion":null,"status":"IN_PROGRESS"},` +
+		`{"__typename":"StatusContext","context":"buildkite/test","state":"SUCCESS"}]}}}}]}`
+	node := func(number int) string {
+		return strings.Replace(prNode(number, "OPEN", prComments()), `"checks":{"nodes":[]}`, held, 1)
+	}
+	stubPRState(t, prPoll(`"p0":`+node(31124), `"p1":`+node(31126), `"p2":`+node(31129)))
+
+	out, err := runPRStatusCmd(t, client, "--repo", "Forge-AI/monorepo", "31124", "31126", "31129")
+	if err != nil {
+		t.Fatalf("pr status: %v", err)
+	}
+	want := "#31124  not queued · open · ci green · approved · blocked:needs-restack (parent landed)\n" +
+		"#31126  not queued · open · ci green · approved · blocked:waiting-on-downstack #31124\n" +
+		"#31129  not queued · open · ci green · approved · landable\n"
+	if out != want {
+		t.Errorf("report =\n%s\nwant\n%s", out, want)
+	}
+}
+
 func rollupOf(state string, contexts ...prstate.Context) *prstate.Rollup {
 	r := &prstate.Rollup{State: state}
 	r.Contexts.Nodes = contexts
@@ -467,9 +518,15 @@ func TestPRCIOf(t *testing.T) {
 		{"only skipped", rollupOf("SUCCESS", checkRun("request", "SKIPPED", "COMPLETED")), prCIReport{State: prCINone}, "ci none"},
 		{
 			"running with nothing failed",
-			rollupOf("PENDING", checkRun("lint", "SUCCESS", "COMPLETED"), checkRun("Graphite / mergeability_check", "", "IN_PROGRESS")),
+			rollupOf("PENDING", checkRun("lint", "SUCCESS", "COMPLETED"), checkRun("test", "", "IN_PROGRESS")),
 			prCIReport{State: prCIPending, Running: 1},
 			"ci pending: 1 running",
+		},
+		{
+			"only Graphite's mergeability check held open",
+			rollupOf("PENDING", checkRun("lint", "SUCCESS", "COMPLETED"), checkRun("Graphite / mergeability_check", "", "IN_PROGRESS")),
+			prCIReport{State: prCIGreen},
+			"ci green",
 		},
 		{
 			"a re-run's newest attempt wins",
@@ -560,6 +617,20 @@ func TestPRVerdict(t *testing.T) {
 			"blocked:draft,conflict,ci-pending,unapproved",
 		},
 		{"changes requested", prStatusReport{prQueueReport: open, CI: green, Approval: prApprovalReport{State: prChangesRequested}}, prstate.PR{}, "blocked:changes-requested"},
+		{
+			"parent landed",
+			prStatusReport{prQueueReport: open, CI: green, Approval: approved, Mergeability: "NEEDS_RESTACK__BASE_BRANCH_MERGED"},
+			prstate.PR{},
+			"blocked:needs-restack (parent landed)",
+		},
+		{"needs a restack", prStatusReport{prQueueReport: open, CI: green, Approval: approved, Mergeability: "NEEDS_RESTACK"}, prstate.PR{}, "blocked:needs-restack"},
+		{
+			"waiting on the downstack",
+			prStatusReport{prQueueReport: open, CI: green, Approval: prApprovalReport{State: prReviewRequired}, Mergeability: "WAITING_ON_DOWNSTACK", Downstack: 31124},
+			prstate.PR{},
+			"blocked:waiting-on-downstack #31124,unapproved",
+		},
+		{"ready as a stack", prStatusReport{prQueueReport: open, CI: green, Approval: approved, Mergeability: "READY_TO_MERGE_AS_STACK", Downstack: 31124}, prstate.PR{}, "landable"},
 		{"closed", prStatusReport{prQueueReport: prQueueReport{Queue: prQueueNotQueued, State: "CLOSED"}, CI: green, Approval: approved}, prstate.PR{}, "blocked:closed"},
 		{"queued", prStatusReport{prQueueReport: prQueueReport{Queue: prQueueQueued, State: "OPEN"}, CI: prCIReport{State: prCIPending}}, prstate.PR{}, "queued"},
 		{"landed", prStatusReport{prQueueReport: prQueueReport{Queue: prQueueLanded, State: "MERGED"}}, prstate.PR{}, "landed"},
