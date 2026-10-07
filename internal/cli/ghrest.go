@@ -255,6 +255,23 @@ func ghClosedByBaseDeletion(ctx context.Context, dir render.Dir, number int) (bo
 	return closedAt != "" && deleted[closedAt], nil
 }
 
+// ghHeadPusher names who force-pushed head onto a pull request's branch, read
+// from its events, or "" when no force-push left it there.
+func ghHeadPusher(ctx context.Context, dir render.Dir, number int, head string) (string, error) {
+	out, err := ghAPI(ctx, dir, fmt.Sprintf("%s/issues/%d/events", ghRepoPath, number), "--paginate",
+		"--jq", `.[] | select(.event == "head_ref_force_pushed") | .commit_id + " " + .actor.login`)
+	if err != nil {
+		return "", fmt.Errorf("gh api: read the events of PR #%d: %w", number, err)
+	}
+	pusher := ""
+	for line := range strings.Lines(out) {
+		if sha, login, _ := strings.Cut(strings.TrimSpace(line), " "); sha == head {
+			pusher = login
+		}
+	}
+	return pusher, nil
+}
+
 func ghPullPath(nwo string, number int) string {
 	return fmt.Sprintf("repos/%s/pulls/%d", nwo, number)
 }

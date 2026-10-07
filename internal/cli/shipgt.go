@@ -2058,14 +2058,16 @@ func gtDropUnchanged(plan []gtSubmitBranch, last map[string]gtmeta.Version, know
 // gtRefuseQueueRestack refuses a submit over a pull request the merge queue
 // parked on graphite-base/N after its parent landed: the queue replays
 // graphite-base/N..head onto trunk, so moving that branch to a new parent's
-// head drops the new parent's commits from the pull request.
+// head drops the new parent's commits from the pull request, and a push onto
+// trunk races the queue's own force-push, which overwrote #31266 in
+// Forge-AI/monorepo with a replay of its landed parent.
 func gtRefuseQueueRestack(ctx context.Context, dir render.Dir, client *gtapi.Client, owner, name, prefix string, tr vcs.Trunk, plan []gtSubmitBranch, known map[string]gtapi.PullRequestInfo) error {
 	from := map[string]string{}
 	var parents []string
 	for _, b := range plan {
 		pr := known[b.name]
 		parent := pr.Newest().BaseName
-		if !pr.IsBaseRefGraphiteBase || b.base == tr.Name() || parent == "" || parent == tr.Name() {
+		if !pr.IsBaseRefGraphiteBase || parent == "" || parent == tr.Name() {
 			continue
 		}
 		from[b.name] = parent
@@ -2099,8 +2101,12 @@ func gtRefuseQueueRestack(ctx context.Context, dir render.Dir, client *gtapi.Cli
 			continue
 		}
 		pr := known[b.name]
-		return fmt.Errorf("%s: #%d sits on %s while Graphite's merge queue restacks it onto %s after its parent %s landed as #%d; submitting %s onto %s now races that restack and drops commits from #%d — wait until #%d's base leaves %s, then re-run",
-			prefix, pr.PRNumber, pr.BaseRefName, tr.Name(), parent, number, b.name, b.base, pr.PRNumber, pr.PRNumber, pr.BaseRefName)
+		race := fmt.Sprintf("drops commits from #%d", pr.PRNumber)
+		if b.base == tr.Name() {
+			race = "graphite-app force-pushes its own restack over this push"
+		}
+		return fmt.Errorf("%s: #%d sits on %s while Graphite's merge queue restacks it onto %s after its parent %s landed as #%d; submitting %s onto %s now races that restack and %s — wait until #%d's base leaves %s, then re-run",
+			prefix, pr.PRNumber, pr.BaseRefName, tr.Name(), parent, number, b.name, b.base, race, pr.PRNumber, pr.BaseRefName)
 	}
 	return nil
 }

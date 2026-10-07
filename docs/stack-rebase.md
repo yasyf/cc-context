@@ -54,7 +54,9 @@ request. When a parent lands, the queue parks each child on
 `graphite-base/<n>` and replays `graphite-base/<n>..head` onto trunk. A
 submit that moves the child onto a new parent during that window moves
 `graphite-base/<n>` too, and the replay then drops the new parent's commits.
-The refusal names the pull request and the landed parent. Wait until the pull
+A submit that moves the child onto trunk races the queue's own force-push,
+which can land a replay of the landed parent over it. The refusal names the
+pull request and the landed parent. Wait until the pull
 request's base leaves `graphite-base/<n>`, then run the same command again.
 
 `ccx vcs stack restack` selects the repository's backend: stack replay for
