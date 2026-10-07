@@ -93,6 +93,19 @@ func (p *stackPR) abandoned() bool {
 	return p.State == "CLOSED" && !p.Landed && !p.BaseGone
 }
 
+func (p *stackPR) closedLanding() string {
+	return fmt.Sprintf("#%d closed", p.Number)
+}
+
+type stackTipClosedError struct {
+	branch string
+	number int
+}
+
+func (e stackTipClosedError) Error() string {
+	return fmt.Sprintf("ship: %s's pull request #%d was closed without merging, and ship will not drop the branch it ships — reopen it with gh pr reopen %d", e.branch, e.number, e.number)
+}
+
 type stackRebaseBranch struct {
 	Name        string            `json:"name"`
 	Parent      string            `json:"parent"`
@@ -1132,6 +1145,9 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 		if err != nil {
 			return nil, stackTipOnlyHint(o, name, err)
 		}
+		if name == o.tip && b.PR != nil && b.Landed == b.PR.closedLanding() {
+			return nil, stackTipClosedError{branch: name, number: b.PR.Number}
+		}
 		b.Local = source.Head
 		if !o.noPush {
 			if superseded {
@@ -1954,7 +1970,7 @@ func stackSnapshot(ctx context.Context, dir render.Dir, tr vcs.Trunk, s gtBranch
 	case contained:
 		b.Landed = "already in " + tr.Name()
 	case pr != nil && pr.abandoned():
-		b.Landed = fmt.Sprintf("#%d closed", pr.Number)
+		b.Landed = pr.closedLanding()
 	}
 	return b, nil
 }

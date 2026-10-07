@@ -43,6 +43,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ship` refuses to drop the branch it ships when someone closed its pull
+  request.** A closed, unmerged pull request marks its branch abandoned, and
+  the stack rebase drops abandoned branches. That is right for a branch below
+  the one being shipped. When the closed pull request was the shipped
+  branch's own, a `--tip-only` ship with `--pr-title` refused with
+  `named <branch>, which this run leaves out`. Without PR flags it dropped the
+  branch from gt's state and then failed with `gt state has no parent`. Ship
+  now refuses before anything moves. The refusal names the pull request and
+  `gh pr reopen <n>`.
+
 - **The cleanup queue drains on a machine with a busy `fseventsd`.** The
   governor paused deletion while `fseventsd` ran above half a core and resumed
   only after three samples under a quarter core. On a machine where other work
