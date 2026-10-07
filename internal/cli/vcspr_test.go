@@ -620,13 +620,15 @@ func TestPRVerdict(t *testing.T) {
 		{
 			"parent landed",
 			prStatusReport{prQueueReport: open, CI: green, Approval: approved, Mergeability: "NEEDS_RESTACK__BASE_BRANCH_MERGED"},
-			prstate.PR{}, "blocked:needs-restack (parent landed)",
+			prstate.PR{},
+			"blocked:needs-restack (parent landed)",
 		},
 		{"needs a restack", prStatusReport{prQueueReport: open, CI: green, Approval: approved, Mergeability: "NEEDS_RESTACK"}, prstate.PR{}, "blocked:needs-restack"},
 		{
 			"waiting on the downstack",
 			prStatusReport{prQueueReport: open, CI: green, Approval: prApprovalReport{State: prReviewRequired}, Mergeability: "WAITING_ON_DOWNSTACK", Downstack: 31124},
-			prstate.PR{}, "blocked:waiting-on-downstack #31124,unapproved",
+			prstate.PR{},
+			"blocked:waiting-on-downstack #31124,unapproved",
 		},
 		{"ready as a stack", prStatusReport{prQueueReport: open, CI: green, Approval: approved, Mergeability: "READY_TO_MERGE_AS_STACK", Downstack: 31124}, prstate.PR{}, "landable"},
 		{"closed", prStatusReport{prQueueReport: prQueueReport{Queue: prQueueNotQueued, State: "CLOSED"}, CI: green, Approval: approved}, prstate.PR{}, "blocked:closed"},
