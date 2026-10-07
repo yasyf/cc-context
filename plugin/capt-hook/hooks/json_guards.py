@@ -26,6 +26,7 @@ from captain_hook import (
 )
 
 from .common import (
+    app_read,
     ccx_bin,
     command_shape,
     has_json_output_flag,
@@ -61,7 +62,7 @@ def wraps(occ: Occurrence) -> bool:
 def wrap_json(evt: BaseHookEvent, occ: Occurrence) -> str | None:
     if not wraps(occ) or not (ccx := ccx_bin()):
         return None
-    return shlex.quote(ccx) + " format -- " + occ.command.raw
+    return shlex.quote(ccx) + " format -- " + (app_read(occ.command, ccx) or occ.command.raw)
 
 
 rewrite_command_occurrences(
@@ -69,21 +70,22 @@ rewrite_command_occurrences(
     to=wrap_json,
     note=rewrote_note("ccx format -- <cmd>", "same data, re-encoded to its leanest shape"),
     tests={
-        Input(command="gh pr list --json number"): Rewrite(pattern="format -- gh pr list --json number"),
+        Input(command="gh pr list --json number"): Rewrite(pattern="vcs gh -- pr list --json number"),
         Input(command="kubectl get pods -o json"): Rewrite(pattern="format -- kubectl get pods -o json"),
+        Input(command="gh repo view --json name"): Rewrite(pattern="format -- gh repo view --json name"),
         Input(command="terraform output --format=json"): Rewrite(pattern="format --"),
         Input(command="gh pr list --json x | jq .[]"): Allow(),
         Input(command="kubectl get pods -o json > pods.json"): Allow(),
         Input(command="ls -la"): Allow(),
         Input(command="gh pr list --json number # ccx:raw"): Allow(),
-        Input(command="gh pr list --json number --search '# ccx:raw'"): Rewrite(pattern="format -- gh pr list"),
+        Input(command="gh pr list --json number --search '# ccx:raw'"): Rewrite(pattern="vcs gh -- pr list"),
         Input(command="curl --json '{}' https://api.example.com/v1"): Rewrite(pattern="format -- curl --json"),
         Input(command='gh pr list --json number --search "is:open draft:false"'): Rewrite(
-            pattern="format -- gh pr list --json number --search"
+            pattern="vcs gh -- pr list --json number --search"
         ),
         Input(command="GH_HOST=x.example.com gh pr list --json number"): Allow(),
-        Input(command="time gh pr list --json number"): Rewrite(pattern="format -- gh pr list --json number"),
-        Input(command="(gh pr list --json number)"): Rewrite(pattern="format -- gh pr list --json number)"),
+        Input(command="time gh pr list --json number"): Rewrite(pattern="vcs gh -- pr list --json number"),
+        Input(command="(gh pr list --json number)"): Rewrite(pattern="vcs gh -- pr list --json number)"),
         Input(command="exec gh pr list --json number"): Allow(),
         Input(command="eval gh pr list --json number"): Allow(),
         Input(command="source render.sh --json"): Allow(),
@@ -93,10 +95,10 @@ rewrite_command_occurrences(
         Input(command="ccx format -- gh pr list --json x"): Allow(),
         Input(command="sudo ccx format -- gh pr list --json x"): Allow(),
         Input(command="gh pr list --json number; printf 'keep  two spaces'"): Rewrite(
-            pattern="format -- gh pr list --json number; printf 'keep  two spaces'"
+            pattern="vcs gh -- pr list --json number; printf 'keep  two spaces'"
         ),
         Input(command="ccx format -- gh pr list --json x; printf done"): Allow(),
-        Input(command="gh issue list --json number,title"): Rewrite(pattern="format -- gh issue list --json number,title"),
+        Input(command="gh issue list --json number,title"): Rewrite(pattern="vcs gh -- issue list --json number,title"),
         Input(
             command="ccx exec 'import json\n"
             'async def main(): return json.loads(await sh("gh pr list --json number"))\n'

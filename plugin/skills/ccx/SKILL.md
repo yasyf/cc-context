@@ -394,6 +394,9 @@ token these reads use. A poll then draws on the installation's quota and
 leaves the gh user's GraphQL quota for writes. A write through it fails, so
 run writes through `gh` itself. `ccx vcs auth status` names both identities
 and their remaining quota, and still answers when the user's quota is spent.
+The guard pack rewrites a read-only `gh pr`, `gh run`, `gh issue`, or
+`gh api` GET call to `ccx vcs gh -- …` on its own; end the command with
+`# ccx:raw` to keep it on the user's token.
 
 `ccx vcs guidelines` (alias
 `contributing`) fetches and caches the repo's PR templates, `CONTRIBUTING.md`, code

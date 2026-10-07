@@ -14,11 +14,12 @@ its boundary (``ccx_bin`` resolution and ``subprocess.run``) is monkeypatched â€
 from __future__ import annotations
 
 import pytest
+from captain_hook import CommandLine
 
 from conftest import fake_run
 
 from hooks import common
-from hooks.common import LITERAL_SAFE, ccx_supports, rewrote_text
+from hooks.common import LITERAL_SAFE, ccx_supports, gh_read, rewrote_text
 
 
 class TestLiteralSafe:
@@ -98,6 +99,24 @@ class TestCcxSupports:
 
         monkeypatch.setattr(common.subprocess, "run", boom)
         assert not ccx_supports("code", "grep", flag="--ignore-case")
+
+
+@pytest.mark.parametrize(
+    ("command", "reads"),
+    [
+        pytest.param("gh pr checks 12 --watch", True, id="pr-checks"),
+        pytest.param("/opt/homebrew/bin/gh run view 34 --log-failed", True, id="absolute-gh"),
+        pytest.param("gh api repos/o/r/pulls/12 --jq .state", True, id="api-get"),
+        pytest.param("gh pr merge 12 --squash", False, id="pr-merge"),
+        pytest.param("gh api -X GET repos/o/r/pulls", False, id="api-named-method"),
+        pytest.param("gh api repos/o/r/issues/1/comments -fbody=hi", False, id="api-glued-field"),
+        pytest.param("gh api graphql -f query=q", False, id="api-graphql"),
+        pytest.param("gh pr", False, id="bare-group"),
+        pytest.param("hub pr view 12", False, id="other-binary"),
+    ],
+)
+def test_gh_read(command: str, reads: bool) -> None:
+    assert gh_read(CommandLine.parse(command).primary) is reads
 
 
 def test_rewrote_text_names_the_replacement_without_the_original() -> None:

@@ -25,6 +25,8 @@ from captain_hook.session import SessionStore
 from cc_transcript.command import Occurrence
 
 import hooks.json_guards as json_guards
+from conftest import fake_run
+from hooks import common
 from hooks.common import (
     already_wrapped,
     command_shape,
@@ -95,9 +97,20 @@ class TestWraps:
 
     def test_wrap_json_uses_occurrence_raw(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(json_guards, "ccx_bin", lambda: "/tmp/ccx binary")
+        monkeypatch.setattr(common.subprocess, "run", fake_run(1, stderr='unknown command "gh"'))
         occ = occurrence('printf done; gh pr list --json number --search "is:open draft:false"', index=1)
         assert json_guards.wrap_json(SimpleNamespace(), occ) == (
             "'/tmp/ccx binary' format -- gh pr list --json number --search \"is:open draft:false\""
+        )
+
+    def test_wrap_json_reads_gh_on_the_app_quota(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(json_guards, "ccx_bin", lambda: "/tmp/ccx binary")
+        monkeypatch.setattr(common, "ccx_bin", lambda: "/tmp/ccx binary")
+        monkeypatch.setattr(common.subprocess, "run", fake_run(0, stdout="usage: ccx vcs gh -- <gh args>..."))
+        occ = occurrence('printf done; gh pr list --json number --search "is:open draft:false"', index=1)
+        assert json_guards.wrap_json(SimpleNamespace(), occ) == (
+            "'/tmp/ccx binary' format -- '/tmp/ccx binary' vcs gh -- pr list --json number "
+            '--search "is:open draft:false"'
         )
 
 
