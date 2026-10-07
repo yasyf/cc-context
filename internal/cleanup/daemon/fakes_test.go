@@ -741,3 +741,9 @@ func (h *harness) names(jobs []cleanup.Job) []string {
 	}
 	return names
 }
+
+func paced() Tuning {
+	t := DefaultTuning()
+	t.Rate = 250
+	return t
+}

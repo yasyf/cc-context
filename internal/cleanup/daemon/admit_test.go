@@ -10,7 +10,7 @@ import (
 )
 
 func TestBlockedAdmissionSkipsTheJobAndTheNextProceeds(t *testing.T) {
-	bubble(t, DefaultTuning(), func(t *testing.T, h *harness) {
+	bubble(t, paced(), func(t *testing.T, h *harness) {
 		held := h.seed("a", 1, cleanup.PhaseUnregistered)
 		next := h.seed("b", 2, cleanup.PhaseUnregistered)
 		h.deleter.put("a", &payload{entries: 100})
@@ -48,7 +48,7 @@ func TestBlockedAdmissionSkipsTheJobAndTheNextProceeds(t *testing.T) {
 }
 
 func TestResumeAdmitsThePayloadAfreshAndHonorsABlock(t *testing.T) {
-	bubble(t, DefaultTuning(), func(t *testing.T, h *harness) {
+	bubble(t, paced(), func(t *testing.T, h *harness) {
 		ctx := context.Background()
 		job := h.seed("a", 1, cleanup.PhaseUnregistered)
 		h.deleter.put("a", &payload{entries: 300})
@@ -80,7 +80,7 @@ func TestResumeAdmitsThePayloadAfreshAndHonorsABlock(t *testing.T) {
 }
 
 func TestCancelledAdmitStopsTheWorkerAndLeavesTheJobRunnable(t *testing.T) {
-	bubble(t, DefaultTuning(), func(t *testing.T, h *harness) {
+	bubble(t, paced(), func(t *testing.T, h *harness) {
 		job := h.seed("a", 1, cleanup.PhaseUnregistered)
 		h.deleter.put("a", &payload{entries: 100})
 		gate := make(chan struct{})

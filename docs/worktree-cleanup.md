@@ -202,10 +202,16 @@ reason at its recorded phase; it retries with the existing backoff. Captured
 Git error output has a byte limit. Cancellation signals only the direct
 child, never a process group.
 
-The daemon limits physical deletion to bounded slices and a capped rate,
-yields to new logical removals, and pauses deletion while `fseventsd` is busy.
-A job a wait command is polling skips the queue, the rate cap, and the pause.
+The daemon deletes in bounded slices at up to 1,000 entries a second and
+yields to new logical removals. It samples `fseventsd` every 5s and learns its
+ambient load from samples taken while deletion ran no faster than its floor.
 It does not run idle repository or process scans.
+
+When deletion pushes `fseventsd` more than half a core over that load, the
+daemon slows to 100 entries a second. It returns to the full rate after three
+samples within a quarter core of it. The floor keeps the queue draining on a
+machine whose `fseventsd` never goes quiet. A job a wait command is polling
+skips the queue, the rate cap, and the floor.
 
 A completed internal conflict workspace can wait for inactivity while other
 cleanup jobs proceed and stack completion succeeds. Interactive Claude,

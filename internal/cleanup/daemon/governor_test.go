@@ -13,11 +13,14 @@ func TestGovernor(t *testing.T) {
 	type step struct {
 		cpu   time.Duration
 		err   error
+		quiet bool
 		reset bool
 		want  cleanup.Governor
-		allow bool
+		rate  int
 	}
+	const full, floor = 1000, 100
 	sampling := cleanup.Governor{State: "sampling"}
+	unavailable := cleanup.Governor{State: "unavailable", Detail: "fseventsd not found"}
 	cleared := func(percent float64) cleanup.Governor { return cleanup.Governor{State: "clear", CPUPercent: percent} }
 	throttled := func(percent float64) cleanup.Governor {
 		return cleanup.Governor{State: "throttled", CPUPercent: percent}
@@ -28,74 +31,90 @@ func TestGovernor(t *testing.T) {
 	}{
 		{"the first slice waits for the first delta", []step{
 			{want: sampling},
-			{cpu: time.Second, want: cleared(25), allow: true},
+			{cpu: time.Second, quiet: true, want: cleared(25), rate: full},
 		}},
-		{"exactly the pause threshold stays clear", []step{
+		{"the sampling window sets the ambient load, so a busy fseventsd stays clear", []step{
 			{want: sampling},
-			{cpu: 2 * time.Second, want: cleared(50), allow: true},
+			{cpu: 4 * time.Second, quiet: true, want: cleared(100), rate: full},
+			{cpu: 6 * time.Second, want: cleared(150), rate: full},
 		}},
-		{"pauses above the threshold", []step{
+		{"pauses past the margin over the ambient load", []step{
 			{want: sampling},
-			{cpu: 2500 * time.Millisecond, want: throttled(62.5)},
+			{cpu: 4 * time.Second, quiet: true, want: cleared(100), rate: full},
+			{cpu: 7 * time.Second, want: throttled(175), rate: floor},
 		}},
-		{"the first delta can throttle", []step{
+		{"a loud first delta measures against no ambient load", []step{
 			{want: sampling},
-			{cpu: 3 * time.Second, want: throttled(75)},
-			{cpu: 3 * time.Second, want: throttled(75)},
+			{cpu: 3 * time.Second, want: throttled(75), rate: floor},
 		}},
-		{"resumes only after three consecutive samples below the floor", []step{
+		{"resumes after three samples near the ambient load, skipping the one that settles", []step{
 			{want: sampling},
-			{cpu: 3 * time.Second, want: throttled(75)},
-			{cpu: 500 * time.Millisecond, want: throttled(12.5)},
-			{cpu: 500 * time.Millisecond, want: throttled(12.5)},
-			{cpu: 500 * time.Millisecond, want: cleared(12.5), allow: true},
+			{cpu: 4 * time.Second, quiet: true, want: cleared(100), rate: full},
+			{cpu: 7 * time.Second, want: throttled(175), rate: floor},
+			{cpu: 4500 * time.Millisecond, quiet: true, want: throttled(112.5), rate: floor},
+			{cpu: 4500 * time.Millisecond, quiet: true, want: throttled(112.5), rate: floor},
+			{cpu: 4500 * time.Millisecond, quiet: true, want: cleared(112.5), rate: full},
 		}},
-		{"a sample at the floor resets the streak", []step{
+		{"the ambient load follows a rise while throttled, so the floor never starves", []step{
 			{want: sampling},
-			{cpu: 3 * time.Second, want: throttled(75)},
-			{cpu: 500 * time.Millisecond, want: throttled(12.5)},
-			{cpu: 500 * time.Millisecond, want: throttled(12.5)},
-			{cpu: time.Second, want: throttled(25)},
-			{cpu: 500 * time.Millisecond, want: throttled(12.5)},
-			{cpu: 500 * time.Millisecond, want: throttled(12.5)},
-			{cpu: 500 * time.Millisecond, want: cleared(12.5), allow: true},
+			{cpu: time.Second, quiet: true, want: cleared(25), rate: full},
+			{cpu: 4 * time.Second, want: throttled(100), rate: floor},
+			{cpu: 4 * time.Second, quiet: true, want: throttled(100), rate: floor},
+			{cpu: 4 * time.Second, quiet: true, want: throttled(100), rate: floor},
+			{cpu: 4 * time.Second, quiet: true, want: throttled(100), rate: floor},
+			{cpu: 4 * time.Second, quiet: true, want: throttled(100), rate: floor},
+			{cpu: 4 * time.Second, quiet: true, want: throttled(100), rate: floor},
+			{cpu: 4 * time.Second, quiet: true, want: throttled(100), rate: floor},
+			{cpu: 4 * time.Second, quiet: true, want: cleared(100), rate: full},
 		}},
-		{"between the floor and the ceiling a clear governor stays clear", []step{
+		{"a loud window never moves the ambient load", []step{
 			{want: sampling},
-			{cpu: 1500 * time.Millisecond, want: cleared(37.5), allow: true},
-			{cpu: 1500 * time.Millisecond, want: cleared(37.5), allow: true},
+			{cpu: time.Second, quiet: true, want: cleared(25), rate: full},
+			{cpu: 2500 * time.Millisecond, want: cleared(62.5), rate: full},
+			{cpu: 2500 * time.Millisecond, want: cleared(62.5), rate: full},
+			{cpu: 3250 * time.Millisecond, want: throttled(81.25), rate: floor},
 		}},
-		{"a sampler error proceeds unthrottled and discards the baseline", []step{
-			{err: errSampler, want: cleanup.Governor{State: "unavailable", Detail: "fseventsd not found"}, allow: true},
+		{"a sample at the resume margin resets the streak", []step{
+			{want: sampling},
+			{cpu: time.Second, quiet: true, want: cleared(25), rate: full},
+			{cpu: 4 * time.Second, want: throttled(100), rate: floor},
+			{cpu: time.Second, quiet: true, want: throttled(25), rate: floor},
+			{cpu: 2500 * time.Millisecond, quiet: true, want: throttled(62.5), rate: floor},
+			{cpu: time.Second, quiet: true, want: throttled(25), rate: floor},
+			{cpu: time.Second, quiet: true, want: throttled(25), rate: floor},
+			{cpu: time.Second, quiet: true, want: cleared(25), rate: full},
+		}},
+		{"a sampler error proceeds at the full rate and discards the counter", []step{
+			{err: errSampler, want: unavailable, rate: full},
 			{cpu: 3 * time.Second, want: sampling},
-			{cpu: 3 * time.Second, want: throttled(75)},
-			{err: errSampler, want: cleanup.Governor{State: "unavailable", Detail: "fseventsd not found"}, allow: true},
+			{cpu: 3 * time.Second, quiet: true, want: cleared(75), rate: full},
+			{err: errSampler, want: unavailable, rate: full},
 		}},
 		{"a counter that falls is a fresh baseline, not a low reading", []step{
 			{want: sampling},
-			{cpu: 3 * time.Second, want: throttled(75)},
-			{cpu: 500 * time.Millisecond, want: throttled(12.5)},
-			{cpu: -3 * time.Second, want: throttled(0)},
-			{cpu: 500 * time.Millisecond, want: throttled(12.5)},
-			{cpu: 500 * time.Millisecond, want: cleared(12.5), allow: true},
+			{cpu: 3 * time.Second, want: throttled(75), rate: floor},
+			{cpu: 500 * time.Millisecond, quiet: true, want: throttled(12.5), rate: floor},
+			{cpu: -3 * time.Second, quiet: true, want: throttled(0), rate: floor},
+			{cpu: 500 * time.Millisecond, quiet: true, want: throttled(12.5), rate: floor},
+			{cpu: 500 * time.Millisecond, quiet: true, want: cleared(12.5), rate: full},
 		}},
 		{"a counter that falls leaves a clear governor clear", []step{
 			{want: sampling},
-			{cpu: time.Second, want: cleared(25), allow: true},
-			{cpu: -time.Second, want: cleared(0), allow: true},
-			{cpu: 3 * time.Second, want: throttled(75)},
+			{cpu: time.Second, quiet: true, want: cleared(25), rate: full},
+			{cpu: -time.Second, want: cleared(0), rate: full},
+			{cpu: 4 * time.Second, want: throttled(100), rate: floor},
 		}},
 		{"a counter that falls before the first delta keeps deletion waiting", []step{
 			{cpu: 3 * time.Second, want: sampling},
 			{cpu: -time.Second, want: sampling},
-			{cpu: time.Second, want: cleared(25), allow: true},
+			{cpu: time.Second, quiet: true, want: cleared(25), rate: full},
 		}},
 		{"an idle queue resets the governor", []step{
 			{want: sampling},
-			{cpu: 3 * time.Second, want: throttled(75)},
+			{cpu: 3 * time.Second, want: throttled(75), rate: floor},
 			{reset: true, want: cleanup.Governor{State: "idle"}},
 			{cpu: 3 * time.Second, want: sampling},
-			{cpu: time.Second, want: cleared(25), allow: true},
+			{cpu: time.Second, quiet: true, want: cleared(25), rate: full},
 		}},
 	}
 	for _, tt := range tests {
@@ -109,13 +128,13 @@ func TestGovernor(t *testing.T) {
 				} else {
 					now = now.Add(4 * time.Second)
 					cpu += s.cpu
-					g.observe(now, cpu, s.err)
+					g.observe(now, cpu, s.err, s.quiet)
 				}
 				if got := g.report(); got != s.want {
 					t.Fatalf("step %d: report() = %+v, want %+v", i, got, s.want)
 				}
-				if got := g.allows(); got != s.allow {
-					t.Fatalf("step %d: allows() = %t, want %t", i, got, s.allow)
+				if got := g.rate(); got != s.rate {
+					t.Fatalf("step %d: rate() = %d, want %d", i, got, s.rate)
 				}
 			}
 		})
@@ -128,7 +147,7 @@ func TestGovernorSampleSchedule(t *testing.T) {
 	if !g.due(now) {
 		t.Fatal("an idle governor is not due for its first sample")
 	}
-	g.observe(now, 0, nil)
+	g.observe(now, 0, nil, true)
 	tests := []struct {
 		name string
 		at   time.Time

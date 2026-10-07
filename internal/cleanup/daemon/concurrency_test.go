@@ -14,7 +14,7 @@ import (
 )
 
 func TestPauseParksTheDeletionBeforeItAnswers(t *testing.T) {
-	bubble(t, DefaultTuning(), func(t *testing.T, h *harness) {
+	bubble(t, paced(), func(t *testing.T, h *harness) {
 		ctx := context.Background()
 		job := h.seed("a", 1, cleanup.PhaseUnregistered)
 		gated := &payload{entries: 300, entered: make(chan struct{}, 16)}
@@ -87,7 +87,7 @@ func TestAdmissionThatCannotJournalStopsTheWorker(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			bubble(t, DefaultTuning(), func(t *testing.T, h *harness) {
+			bubble(t, paced(), func(t *testing.T, h *harness) {
 				ctx := context.Background()
 				job := h.seed("a", 1, cleanup.PhaseUnregistered)
 				h.deleter.put("a", &payload{entries: 300})
@@ -125,7 +125,7 @@ func TestAdmissionThatCannotJournalStopsTheWorker(t *testing.T) {
 }
 
 func TestStopOutranksACommandStillQueued(t *testing.T) {
-	bubble(t, DefaultTuning(), func(t *testing.T, h *harness) {
+	bubble(t, paced(), func(t *testing.T, h *harness) {
 		ctx := context.Background()
 		job := h.seed("a", 1, cleanup.PhaseUnregistered)
 		gated := &payload{entries: 300, gate: make(chan struct{}), entered: make(chan struct{}, 16)}
@@ -165,7 +165,7 @@ func TestStopOutranksACommandStillQueued(t *testing.T) {
 
 func TestCommandTakenWhileStoppingIsRefused(t *testing.T) {
 	ctx := context.Background()
-	engine := newHarness(t, DefaultTuning()).build()
+	engine := newHarness(t, paced()).build()
 	if err := engine.Stop(ctx); err != nil {
 		t.Fatalf("Stop() = %v", err)
 	}
@@ -183,7 +183,7 @@ func TestCommandTakenWhileStoppingIsRefused(t *testing.T) {
 }
 
 func TestWaiterOutlivesThePruningOfItsJob(t *testing.T) {
-	tuning := DefaultTuning()
+	tuning := paced()
 	tuning.KeepDone = 0
 	bubble(t, tuning, func(t *testing.T, h *harness) {
 		ctx := context.Background()
@@ -264,7 +264,7 @@ func TestStopBeforeRunRefusesEveryCall(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			bubble(t, DefaultTuning(), func(t *testing.T, h *harness) {
+			bubble(t, paced(), func(t *testing.T, h *harness) {
 				engine := h.build()
 				if err := engine.Stop(context.Background()); err != nil {
 					t.Fatalf("Stop() before Run = %v", err)
@@ -294,7 +294,7 @@ func TestStopDuringASampleRunsNoFurtherSlice(t *testing.T) {
 			}()
 		}},
 	}
-	tuning := DefaultTuning()
+	tuning := paced()
 	tuning.SampleEvery = 400 * time.Millisecond
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
