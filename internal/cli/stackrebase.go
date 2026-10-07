@@ -2585,6 +2585,7 @@ func stackInheritsTrunk(ctx context.Context, dir render.Dir, trunk, pin string, 
 func stackPlanLines(run *stackRebaseRun) []string {
 	lines := make([]string, 0, 1+len(run.Branches))
 	lines = append(lines, fmt.Sprintf("plan · trunk %s@%.12s", run.Trunk, run.Pin))
+	var stayed []string
 	for _, b := range run.Branches {
 		fields := []string{b.Name}
 		switch {
@@ -2597,6 +2598,7 @@ func stackPlanLines(run *stackRebaseRun) []string {
 		case b.Kept:
 			fields = append(fields, fmt.Sprintf("kept at its published head %.12s", b.Head))
 		case b.Stays:
+			stayed = append(stayed, b.Name)
 			fields = append(fields, fmt.Sprintf("stays on %.12s", b.OldBase), fmt.Sprintf("merges cleanly onto %s@%.12s", run.Trunk, run.Pin))
 		default:
 			parent := "onto " + b.Parent
@@ -2618,6 +2620,9 @@ func stackPlanLines(run *stackRebaseRun) []string {
 			fields = append(fields, b.PR.String())
 		}
 		lines = append(lines, strings.Join(fields, shipSep))
+	}
+	if len(stayed) > 0 {
+		lines = append(lines, fmt.Sprintf("old base kept%s%s%slacks %s@%.12s%s--restack replays the stack onto it", shipSep, strings.Join(stayed, ", "), shipSep, run.Trunk, run.Pin, shipSep))
 	}
 	if !run.NoPush {
 		var pushes []string

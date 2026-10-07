@@ -33,6 +33,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   explicit full-checkout choices. jj defaults remain unchanged. Binding,
   ancestry, publication, and bounded-deepening refusals still apply; a
   refusal never retries with full history.
+- **A submit that keeps a clean branch on its old base says so.** `stack
+  submit` and a pushing `ship` leave a published branch on its recorded trunk
+  base while it still merges cleanly, so trunk fixes since that base never
+  reach its pull request. The plan's per-branch `stays on` field was the only
+  trace, and an 8-PR stack whose checks needed a trunk fix read the run as a
+  no-op. The plan now closes with `old base kept · <branches> · lacks
+  <trunk>@<pin> · --restack replays the stack onto it`.
 
 ### Fixed
 
