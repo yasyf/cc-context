@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -26,7 +27,8 @@ The token is read-only, so a write fails; run writes through gh itself. The
 repository is --repo's (or GH_REPO's) when named, else the current checkout's.
 With no app installed on it, or GH_TOKEN or GITHUB_TOKEN set, gh runs on the
 user's token as it would alone. Standard streams pass through, and ccx exits
-with gh's code.`,
+with gh's code. A command that fails once its token has expired, such as a
+watch that outlived it, runs again on a fresh one.`,
 		Example: "  ccx vcs gh -- pr checks 123\n  ccx vcs gh -- run watch 456 --exit-status",
 		Args: func(cmd *cobra.Command, args []string) error {
 			if cmd.ArgsLenAtDash() != 0 || len(args) == 0 {
@@ -45,20 +47,24 @@ func runVcsGh(cmd *cobra.Command, argv []string) error {
 	if repo == "" {
 		repo = ghRepoName(render.Getenv(ctx, "GH_REPO"))
 	}
-	env, _, err := ghRepoReadEnv(ctx, render.Dir(dir), repo, ghapi.AppWatchMargin)
-	if err != nil {
-		return err
+	for {
+		env, expires, err := ghRepoReadEnv(ctx, render.Dir(dir), repo, ghapi.AppWatchMargin)
+		if err != nil {
+			return err
+		}
+		gh := exec.CommandContext(ctx, "gh", argv...) //nolint:gosec // argv is the caller's own gh command
+		gh.Dir = dir
+		gh.Env = slices.Concat(os.Environ(), render.EnvFrom(ctx), env)
+		gh.Stdin, gh.Stdout, gh.Stderr = cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr()
+		err = gh.Run()
+		if err == nil || expires.IsZero() || time.Now().Before(expires) || ctx.Err() != nil {
+			var exitErr *exec.ExitError
+			if errors.As(err, &exitErr) {
+				return &ExitError{Code: exitErr.ExitCode()}
+			}
+			return err
+		}
 	}
-	gh := exec.CommandContext(ctx, "gh", argv...) //nolint:gosec // argv is the caller's own gh command
-	gh.Dir = dir
-	gh.Env = slices.Concat(os.Environ(), render.EnvFrom(ctx), env)
-	gh.Stdin, gh.Stdout, gh.Stderr = cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr()
-	err = gh.Run()
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
-		return &ExitError{Code: exitErr.ExitCode()}
-	}
-	return err
 }
 
 // ghRepoFlag returns the repository gh's --repo or -R names in argv, "" when
