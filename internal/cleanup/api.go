@@ -13,7 +13,7 @@ import (
 // Protocol is the version of the daemon's wire protocol. A client and a daemon
 // that disagree on it refuse each other rather than guess. Both sides decode
 // strictly, so any change to a request or reply shape bumps it.
-const Protocol = 3
+const Protocol = 4
 
 var (
 	// ErrUnsupported reports a platform the daemon does not run on; removal
@@ -251,6 +251,10 @@ type Query struct {
 	JobID string `json:"job_id,omitempty"`
 	// Limit caps the jobs reported; zero takes the daemon's default.
 	Limit int `json:"limit,omitempty"`
+	// Await marks JobID as awaited: while such reads keep arriving, the daemon
+	// deletes that job ahead of every job nobody awaits, past the throttle and
+	// the pace.
+	Await bool `json:"await,omitempty"`
 }
 
 // Governor is the deletion throttle as an observer reads it.

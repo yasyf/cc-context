@@ -404,7 +404,7 @@ func TestCleanupWorktreeRmWait(t *testing.T) {
 	if want := "removed feat · git worktree · " + path + " · deletion queued " + id + " · deleted\n"; out != want {
 		t.Errorf("rm --wait output = %q, want %q", out, want)
 	}
-	if len(svc.queries) == 0 || slices.ContainsFunc(svc.queries, func(q cleanup.Query) bool { return q != cleanup.Query{JobID: id} }) {
+	if len(svc.queries) == 0 || slices.ContainsFunc(svc.queries, func(q cleanup.Query) bool { return q != cleanup.Query{JobID: id, Await: true} }) {
 		t.Errorf("status requests = %+v, want polls of %s alone", svc.queries, id)
 	}
 	job := cleanupJob(t, f, h, id)
@@ -872,7 +872,7 @@ func TestCleanupWorktreeRmWaitFailure(t *testing.T) {
 			if errors.Is(err, ErrNotFound) || ExitCode(err) != 1 {
 				t.Errorf("rm --wait error %v exits %d, want a failure at exit 1 that is not a not-found", err, ExitCode(err))
 			}
-			if want := []cleanup.Query{{JobID: id}}; !slices.Equal(svc.queries, want) {
+			if want := []cleanup.Query{{JobID: id, Await: true}}; !slices.Equal(svc.queries, want) {
 				t.Errorf("status requests = %+v, want %+v", svc.queries, want)
 			}
 			if out != "" {
@@ -940,7 +940,7 @@ func TestCleanupWorktreeRmWaitNeedsTheJobSeenDone(t *testing.T) {
 				t.Fatalf("rm --wait succeeded, want the vanished job reported")
 			}
 			id := queuedJobID(t, err.Error())
-			if want := []cleanup.Query{{JobID: id}, {}}; !slices.Equal(svc.queries, want) {
+			if want := []cleanup.Query{{JobID: id, Await: true}, {}}; !slices.Equal(svc.queries, want) {
 				t.Fatalf("status requests = %+v, want %+v", svc.queries, want)
 			}
 			prefix := "worktree rm: removed " + path + ", deletion queued " + id + "; wait: job " + id + " was last seen unregistered, and the daemon "
@@ -1515,7 +1515,7 @@ func TestCleanupReadVerbsBoundEachRequest(t *testing.T) {
 	other := cleanup.Job{ID: "0000000000000001-000000", Phase: cleanup.PhaseQueued, Original: "/w/other"}
 	torn := cleanup.Damaged{ID: id, Error: "record truncated"}
 	stalled := statusReply{err: context.DeadlineExceeded}
-	one := cleanup.Query{JobID: id}
+	one, awaiting := cleanup.Query{JobID: id}, cleanup.Query{JobID: id, Await: true}
 	tests := []struct {
 		name         string
 		args         []string
@@ -1549,7 +1549,7 @@ func TestCleanupReadVerbsBoundEachRequest(t *testing.T) {
 			name:         "wait stalled after the hello",
 			args:         []string{"wait", id},
 			replies:      []statusReply{stalled},
-			wantQueries:  []cleanup.Query{one},
+			wantQueries:  []cleanup.Query{awaiting},
 			wantErr:      waitErr,
 			wantDeadline: true,
 		},
@@ -1557,7 +1557,7 @@ func TestCleanupReadVerbsBoundEachRequest(t *testing.T) {
 			name:         "wait stalled on a later poll",
 			args:         []string{"wait", id},
 			replies:      []statusReply{{job: running}, {job: running}, stalled},
-			wantQueries:  []cleanup.Query{one, one, one},
+			wantQueries:  []cleanup.Query{awaiting, awaiting, awaiting},
 			wantErr:      waitErr,
 			wantDeadline: true,
 		},
@@ -1565,14 +1565,14 @@ func TestCleanupReadVerbsBoundEachRequest(t *testing.T) {
 			name:        "wait polls until the job is done",
 			args:        []string{"wait", id},
 			replies:     []statusReply{{job: running}, {job: running}, {job: done}},
-			wantQueries: []cleanup.Query{one, one, one},
+			wantQueries: []cleanup.Query{awaiting, awaiting, awaiting},
 			wantOut:     id + " · done · /w/feat · 7 entries\n",
 		},
 		{
 			name:        "wait fails with the blockage",
 			args:        []string{"wait", id},
 			replies:     []statusReply{{job: running}, {job: blocked}},
-			wantQueries: []cleanup.Query{one, one},
+			wantQueries: []cleanup.Query{awaiting, awaiting},
 			wantErr:     "cleanup wait: cleanup job " + id + " is blocked at deleting (delete): operation not permitted",
 			wantBlocked: true,
 		},
@@ -1580,7 +1580,7 @@ func TestCleanupReadVerbsBoundEachRequest(t *testing.T) {
 			name:        "wait never reports done a job that vanished after it was seen deleting",
 			args:        []string{"wait", id},
 			replies:     []statusReply{{job: running}, {err: cleanup.ErrUnknownJob}, {job: other}},
-			wantQueries: []cleanup.Query{one, one, {}},
+			wantQueries: []cleanup.Query{awaiting, awaiting, {}},
 			wantErr:     vanished + "no longer holds it: its completion cannot be proven, since it may have finished and been pruned or its record was lost",
 			wantMissing: true,
 		},
@@ -1588,7 +1588,7 @@ func TestCleanupReadVerbsBoundEachRequest(t *testing.T) {
 			name:        "wait names the damaged record of a job that vanished",
 			args:        []string{"wait", id},
 			replies:     []statusReply{{job: running}, {err: cleanup.ErrUnknownJob}, {job: other, damaged: []cleanup.Damaged{{ID: "0000000000000002-000000", Error: "record names job 0000000000000003-000000"}, torn}}},
-			wantQueries: []cleanup.Query{one, one, {}},
+			wantQueries: []cleanup.Query{awaiting, awaiting, {}},
 			wantErr:     vanished + "now reports its record damaged: record truncated",
 			wantDamaged: true,
 		},
@@ -1596,7 +1596,7 @@ func TestCleanupReadVerbsBoundEachRequest(t *testing.T) {
 			name:         "wait fails when the queue read after a vanished job stalls",
 			args:         []string{"wait", id},
 			replies:      []statusReply{{job: running}, {err: cleanup.ErrUnknownJob}, stalled},
-			wantQueries:  []cleanup.Query{one, one, {}},
+			wantQueries:  []cleanup.Query{awaiting, awaiting, {}},
 			wantErr:      vanished + "no longer holds it; reading the queue for a damaged record: the daemon answered its hello but sent no report within 10s: context deadline exceeded",
 			wantDeadline: true,
 		},
@@ -1604,7 +1604,7 @@ func TestCleanupReadVerbsBoundEachRequest(t *testing.T) {
 			name:         "wait on a job never seen is not found",
 			args:         []string{"wait", id},
 			replies:      []statusReply{{err: cleanup.ErrUnknownJob}},
-			wantQueries:  []cleanup.Query{one},
+			wantQueries:  []cleanup.Query{awaiting},
 			wantErr:      "cleanup wait: job " + id + " not found: cleanup: no such job",
 			wantNotFound: true,
 		},
@@ -1713,7 +1713,7 @@ func TestCleanupWaitNeedsTheJobSeenDone(t *testing.T) {
 
 			assertGone(t, h.layout.Payload(first))
 			if !tt.pruned {
-				if want := []cleanup.Query{{JobID: first}, {JobID: first}}; !slices.Equal(svc.queries, want) {
+				if want := []cleanup.Query{{JobID: first, Await: true}, {JobID: first, Await: true}}; !slices.Equal(svc.queries, want) {
 					t.Errorf("status requests = %+v, want %+v", svc.queries, want)
 				}
 				if err != nil {
@@ -1725,7 +1725,7 @@ func TestCleanupWaitNeedsTheJobSeenDone(t *testing.T) {
 				}
 				return
 			}
-			if want := []cleanup.Query{{JobID: first}, {JobID: first}, {}}; !slices.Equal(svc.queries, want) {
+			if want := []cleanup.Query{{JobID: first, Await: true}, {JobID: first, Await: true}, {}}; !slices.Equal(svc.queries, want) {
 				t.Errorf("status requests = %+v, want %+v", svc.queries, want)
 			}
 			want := "cleanup wait: job " + first + " was last seen unregistered, and the daemon no longer holds it: its completion cannot be proven, since it may have finished and been pruned or its record was lost"
@@ -1765,7 +1765,7 @@ func TestCleanupWaitReportsARecordDamagedAcrossARestart(t *testing.T) {
 
 	out, err := runCleanupWith(t, svc, "wait", id)
 
-	if want := []cleanup.Query{{JobID: id}, {JobID: id}, {}}; !slices.Equal(svc.queries, want) {
+	if want := []cleanup.Query{{JobID: id, Await: true}, {JobID: id, Await: true}, {}}; !slices.Equal(svc.queries, want) {
 		t.Fatalf("status requests = %+v, want %+v", svc.queries, want)
 	}
 	report, statusErr := restarted.Status(f.Context(), cleanup.Query{})

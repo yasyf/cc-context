@@ -22,7 +22,7 @@ func bubble(t *testing.T, tuning Tuning, fn func(t *testing.T, h *harness)) {
 }
 
 func TestEngineRunsJobsFirstInFirstOut(t *testing.T) {
-	bubble(t, DefaultTuning(), func(t *testing.T, h *harness) {
+	bubble(t, paced(), func(t *testing.T, h *harness) {
 		h.seed("a", 1, cleanup.PhasePrepared)
 		h.seed("b", 2, cleanup.PhasePrepared)
 		h.seed("c", 3, cleanup.PhasePrepared)
@@ -55,7 +55,7 @@ func TestEngineRunsJobsFirstInFirstOut(t *testing.T) {
 }
 
 func TestRemoveDuringDeletionWaitsAtMostOneSlice(t *testing.T) {
-	bubble(t, DefaultTuning(), func(t *testing.T, h *harness) {
+	bubble(t, paced(), func(t *testing.T, h *harness) {
 		h.seed("a", 1, cleanup.PhaseUnregistered)
 		gated := &payload{entries: 300, entered: make(chan struct{}, 16)}
 		h.deleter.put("a", gated)
@@ -119,7 +119,7 @@ func TestDeletionPace(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			bubble(t, DefaultTuning(), func(_ *testing.T, h *harness) {
+			bubble(t, paced(), func(_ *testing.T, h *harness) {
 				h.seed("a", 1, cleanup.PhaseUnregistered)
 				h.deleter.put("a", &tt.payload)
 				h.start()
@@ -130,9 +130,9 @@ func TestDeletionPace(t *testing.T) {
 	}
 }
 
-func TestGovernorGatesDeletion(t *testing.T) {
-	tuning := DefaultTuning()
-	tuning.Rate, tuning.SampleEvery = 100, 2*time.Second
+func TestGovernorSlowsDeletionToTheFloorOverTheAmbientLoad(t *testing.T) {
+	tuning := paced()
+	tuning.Rate, tuning.FloorRate, tuning.SampleEvery = 100, 25, 2*time.Second
 	bubble(t, tuning, func(t *testing.T, h *harness) {
 		governor := func() cleanup.Governor {
 			t.Helper()
@@ -157,36 +157,42 @@ func TestGovernorGatesDeletion(t *testing.T) {
 		h.expectTimers(2 * time.Second)
 		expectGovernor(cleanup.Governor{State: "sampling"})
 
+		h.cpu.burn(2 * time.Second)
 		h.clock.Advance(2 * time.Second)
 		h.expectEvents("sample", "admit:a", "open:a", "step:a")
 		h.expectTimers(time.Second)
-		expectGovernor(cleanup.Governor{State: "clear"})
+		expectGovernor(cleanup.Governor{State: "clear", CPUPercent: 100})
 
 		h.clock.Advance(time.Second)
 		h.expectEvents("step:a")
 		h.expectTimers(time.Second)
 
-		h.cpu.burn(1500 * time.Millisecond)
+		h.cpu.burn(3500 * time.Millisecond)
 		h.clock.Advance(time.Second)
-		h.expectEvents("sample", "close:a")
+		h.expectEvents("sample", "step:a")
 		h.expectTimers(2 * time.Second)
-		expectGovernor(cleanup.Governor{State: "throttled", CPUPercent: 75})
-		if got := h.journaled(job.ID); got.Removed != 200 || got.Phase != cleanup.PhaseDeleting {
-			t.Errorf("journal after the throttle = phase %s, removed %d; want deleting, 200", got.Phase, got.Removed)
+		expectGovernor(cleanup.Governor{State: "throttled", CPUPercent: 175})
+
+		h.cpu.burn(2 * time.Second)
+		h.clock.Advance(2 * time.Second)
+		h.expectEvents("sample")
+		h.expectTimers(2 * time.Second)
+		expectGovernor(cleanup.Governor{State: "throttled", CPUPercent: 100})
+
+		h.cpu.burn(2 * time.Second)
+		h.clock.Advance(2 * time.Second)
+		h.expectEvents("sample", "step:a")
+		h.expectTimers(2 * time.Second)
+		expectGovernor(cleanup.Governor{State: "throttled", CPUPercent: 100})
+		if got := h.status(job.ID); got.Removed != 400 || got.Phase != cleanup.PhaseDeleting {
+			t.Errorf("job under the throttle = phase %s, removed %d; want deleting, 400", got.Phase, got.Removed)
 		}
 
-		for range 2 {
-			h.cpu.burn(250 * time.Millisecond)
-			h.clock.Advance(2 * time.Second)
-			h.expectEvents("sample")
-			h.expectTimers(2 * time.Second)
-			expectGovernor(cleanup.Governor{State: "throttled", CPUPercent: 12.5})
-		}
-		h.cpu.burn(250 * time.Millisecond)
+		h.cpu.burn(2 * time.Second)
 		h.clock.Advance(2 * time.Second)
-		h.expectEvents("sample", "admit:a", "open:a", "step:a")
-		h.expectTimers(time.Second)
-		expectGovernor(cleanup.Governor{State: "clear", CPUPercent: 12.5})
+		h.expectEvents("sample")
+		h.expectTimers(2 * time.Second)
+		expectGovernor(cleanup.Governor{State: "clear", CPUPercent: 100})
 
 		if err := h.engine.Pause(context.Background()); err != nil {
 			t.Fatalf("Pause() = %v", err)
@@ -197,8 +203,80 @@ func TestGovernorGatesDeletion(t *testing.T) {
 	})
 }
 
+func TestAwaitedJobJumpsTheQueuePastTheThrottleAndThePace(t *testing.T) {
+	bubble(t, paced(), func(t *testing.T, h *harness) {
+		h.cpu.set(0, nil)
+		queued := h.seed("a", 1, cleanup.PhaseUnregistered)
+		awaited := h.seed("b", 2, cleanup.PhaseUnregistered)
+		h.deleter.put("a", &payload{entries: 300})
+		h.deleter.put("b", &payload{entries: 300})
+		h.start()
+		h.expectEvents("sample")
+		h.expectTimers(5 * time.Second)
+
+		h.clock.Advance(5 * time.Second)
+		h.expectEvents("sample", "admit:a", "open:a", "step:a")
+		h.expectTimers(400 * time.Millisecond)
+
+		await := cleanup.Query{JobID: awaited.ID, Await: true}
+		if _, err := h.engine.Status(context.Background(), await); err != nil {
+			t.Fatalf("Status(%+v) = %v", await, err)
+		}
+		if _, err := h.engine.Status(context.Background(), cleanup.Query{JobID: "0000000000000000-000000", Await: true}); !errors.Is(err, cleanup.ErrUnknownJob) {
+			t.Errorf("Status(await unknown) = %v, want ErrUnknownJob", err)
+		}
+		h.cpu.burn(5 * time.Second)
+		h.clock.Advance(5 * time.Second)
+		h.expectEvents("close:a", "sample", "admit:b", "open:b", "step:b", "step:b", "step:b", "admit:a", "open:a", "step:a")
+		h.expectTimers(time.Second)
+
+		if got := h.status(awaited.ID); got.Phase != cleanup.PhaseDone || got.Removed != 300 {
+			t.Errorf("awaited job = phase %s, removed %d; want done, 300", got.Phase, got.Removed)
+		}
+		if _, err := h.engine.Status(context.Background(), await); err != nil {
+			t.Fatalf("Status(%+v) after the finish = %v", await, err)
+		}
+		h.engine.mu.Lock()
+		leases := len(h.engine.awaits)
+		h.engine.mu.Unlock()
+		if leases != 0 {
+			t.Errorf("leases after awaiting a finished job = %d, want none", leases)
+		}
+		if got := h.status(queued.ID); got.Phase != cleanup.PhaseDeleting || got.Removed != 200 {
+			t.Errorf("queued job = phase %s, removed %d; want deleting, 200 at the floor", got.Phase, got.Removed)
+		}
+		report, err := h.engine.Status(context.Background(), cleanup.Query{})
+		if err != nil {
+			t.Fatalf("Status() = %v", err)
+		}
+		if want := (cleanup.Governor{State: "throttled", CPUPercent: 100}); report.Governor != want {
+			t.Errorf("governor = %+v, want %+v", report.Governor, want)
+		}
+	})
+}
+
+func TestAwaitLapsesWithoutAnotherAwaitingRead(t *testing.T) {
+	bubble(t, paced(), func(t *testing.T, h *harness) {
+		h.cpu.set(0, nil)
+		h.seed("a", 1, cleanup.PhaseUnregistered)
+		lapsed := h.seed("b", 2, cleanup.PhaseUnregistered)
+		h.deleter.put("a", &payload{entries: 200})
+		h.deleter.put("b", &payload{entries: 200})
+		h.start()
+		h.expectEvents("sample")
+		h.expectTimers(5 * time.Second)
+
+		if _, err := h.engine.Status(context.Background(), cleanup.Query{JobID: lapsed.ID, Await: true}); err != nil {
+			t.Fatalf("Status(await) = %v", err)
+		}
+		h.clock.Advance(11 * time.Second)
+		h.expectEvents("sample", "admit:a", "open:a", "step:a")
+		h.expectTimers(400 * time.Millisecond)
+	})
+}
+
 func TestUnavailableSamplerProceedsAndIsReported(t *testing.T) {
-	bubble(t, DefaultTuning(), func(t *testing.T, h *harness) {
+	bubble(t, paced(), func(t *testing.T, h *harness) {
 		h.seed("a", 1, cleanup.PhaseUnregistered)
 		h.deleter.put("a", &payload{entries: 300})
 		h.start()
@@ -215,7 +293,7 @@ func TestUnavailableSamplerProceedsAndIsReported(t *testing.T) {
 }
 
 func TestProgressIsJournaledAtMostOnceAMinute(t *testing.T) {
-	tuning := DefaultTuning()
+	tuning := paced()
 	tuning.Rate = 100
 	bubble(t, tuning, func(t *testing.T, h *harness) {
 		job := h.seed("a", 1, cleanup.PhaseUnregistered)
@@ -247,7 +325,7 @@ func TestProgressIsJournaledAtMostOnceAMinute(t *testing.T) {
 }
 
 func TestQueuePauseRestsEveryJobAndRefusesNewWork(t *testing.T) {
-	bubble(t, DefaultTuning(), func(t *testing.T, h *harness) {
+	bubble(t, paced(), func(t *testing.T, h *harness) {
 		ctx := context.Background()
 		job := h.seed("a", 1, cleanup.PhaseUnregistered)
 		h.deleter.put("a", &payload{entries: 300})
@@ -330,7 +408,7 @@ func TestQueuePauseRestsEveryJobAndRefusesNewWork(t *testing.T) {
 }
 
 func TestWaitingJobIsRecheckedWhileLaterJobsProceed(t *testing.T) {
-	bubble(t, DefaultTuning(), func(t *testing.T, h *harness) {
+	bubble(t, paced(), func(t *testing.T, h *harness) {
 		waiting := h.seed("w", 1, cleanup.PhaseWaiting)
 		later := h.seed("b", 2, cleanup.PhasePrepared)
 		h.relocator.script("w", stayWaiting)
@@ -362,7 +440,7 @@ func TestWaitingJobIsRecheckedWhileLaterJobsProceed(t *testing.T) {
 }
 
 func TestBlockedJobWaitsForRetryAndResumesFromItsPhase(t *testing.T) {
-	bubble(t, DefaultTuning(), func(t *testing.T, h *harness) {
+	bubble(t, paced(), func(t *testing.T, h *harness) {
 		ctx := context.Background()
 		job := h.seed("a", 1, cleanup.PhaseMoved)
 		h.relocator.script("a", blockWith(h.clock, "git", "worktree move failed"))
@@ -398,7 +476,7 @@ func TestBlockedJobWaitsForRetryAndResumesFromItsPhase(t *testing.T) {
 }
 
 func TestWaitReturnsOnDoneAndOnBlock(t *testing.T) {
-	bubble(t, DefaultTuning(), func(t *testing.T, h *harness) {
+	bubble(t, paced(), func(t *testing.T, h *harness) {
 		ctx := context.Background()
 		done := h.seed("a", 1, cleanup.PhaseUnregistered)
 		stuck := h.seed("b", 2, cleanup.PhaseUnregistered)
@@ -455,7 +533,7 @@ func TestWaitReturnsOnDoneAndOnBlock(t *testing.T) {
 }
 
 func TestRestartResumesEveryPhaseAndReverifiesThePayload(t *testing.T) {
-	bubble(t, DefaultTuning(), func(t *testing.T, h *harness) {
+	bubble(t, paced(), func(t *testing.T, h *harness) {
 		deleting := h.seed("x", 1, cleanup.PhaseUnregistered)
 		h.deleter.put("x", &payload{entries: 300})
 		h.start()
@@ -487,7 +565,7 @@ func TestRestartResumesEveryPhaseAndReverifiesThePayload(t *testing.T) {
 }
 
 func TestStalledDeletionBlocksOnlyItsJob(t *testing.T) {
-	bubble(t, DefaultTuning(), func(t *testing.T, h *harness) {
+	bubble(t, paced(), func(t *testing.T, h *harness) {
 		stalled := h.seed("a", 1, cleanup.PhaseUnregistered)
 		healthy := h.seed("b", 2, cleanup.PhaseUnregistered)
 		swapped := h.seed("c", 3, cleanup.PhaseUnregistered)
@@ -524,7 +602,7 @@ func TestStalledDeletionBlocksOnlyItsJob(t *testing.T) {
 }
 
 func TestRepeatRemoveJoinsTheJobStillAtItsPath(t *testing.T) {
-	bubble(t, DefaultTuning(), func(t *testing.T, h *harness) {
+	bubble(t, paced(), func(t *testing.T, h *harness) {
 		ctx := context.Background()
 		h.start()
 		h.relocator.script("a", blockWith(h.clock, "watchers", "fsmonitor is still running"))
@@ -587,7 +665,7 @@ func TestRepeatRemoveJoinsTheJobStillAtItsPath(t *testing.T) {
 }
 
 func TestRemoveOfAWorkspaceStillWaitingIsRefused(t *testing.T) {
-	bubble(t, DefaultTuning(), func(t *testing.T, h *harness) {
+	bubble(t, paced(), func(t *testing.T, h *harness) {
 		ctx := context.Background()
 		h.start()
 		h.relocator.held["d"] = "zsh (pid 7) in the tree"
@@ -640,7 +718,7 @@ func TestUnforcedRequestNeverJoinsAForcedJob(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			bubble(t, DefaultTuning(), func(t *testing.T, h *harness) {
+			bubble(t, paced(), func(t *testing.T, h *harness) {
 				ctx := context.Background()
 				h.start()
 				forced := h.request("a")
@@ -678,7 +756,7 @@ func TestUnforcedRequestNeverJoinsAForcedJob(t *testing.T) {
 
 func TestCommandsRunOutsideTheBackgroundBand(t *testing.T) {
 	t.Run("a remove relocates in the foreground", func(t *testing.T) {
-		bubble(t, DefaultTuning(), func(t *testing.T, h *harness) {
+		bubble(t, paced(), func(t *testing.T, h *harness) {
 			gate := make(chan struct{})
 			h.relocator.gates["a"] = gate
 			h.start()
@@ -703,7 +781,7 @@ func TestCommandsRunOutsideTheBackgroundBand(t *testing.T) {
 		})
 	})
 	t.Run("the worker's own pass stays in the background", func(t *testing.T) {
-		bubble(t, DefaultTuning(), func(t *testing.T, h *harness) {
+		bubble(t, paced(), func(t *testing.T, h *harness) {
 			h.seed("a", 1, cleanup.PhaseMoved)
 			gate := make(chan struct{})
 			h.relocator.gates["a"] = gate
@@ -722,7 +800,7 @@ func TestCommandsRunOutsideTheBackgroundBand(t *testing.T) {
 		})
 	})
 	t.Run("a band the daemon cannot leave stops the worker", func(t *testing.T) {
-		bubble(t, DefaultTuning(), func(t *testing.T, h *harness) {
+		bubble(t, paced(), func(t *testing.T, h *harness) {
 			h.band.refuseLeave = errors.New("operation not permitted")
 			engine := h.build()
 			running := make(chan error, 1)
@@ -739,7 +817,7 @@ func TestCommandsRunOutsideTheBackgroundBand(t *testing.T) {
 }
 
 func TestRemovePassesRefusalsThrough(t *testing.T) {
-	bubble(t, DefaultTuning(), func(t *testing.T, h *harness) {
+	bubble(t, paced(), func(t *testing.T, h *harness) {
 		ctx := context.Background()
 		h.start()
 		refusal := &cleanup.RefusedError{Worktree: h.tree("a"), Reason: "dirty", Detail: "2 uncommitted paths"}
@@ -761,7 +839,7 @@ func TestRemovePassesRefusalsThrough(t *testing.T) {
 }
 
 func TestDeferWaitsWithTheHoldersAsDetail(t *testing.T) {
-	bubble(t, DefaultTuning(), func(t *testing.T, h *harness) {
+	bubble(t, paced(), func(t *testing.T, h *harness) {
 		ctx := context.Background()
 		h.start()
 		h.relocator.held["d"] = "zsh (pid 7) in the tree"
@@ -816,7 +894,7 @@ func TestDeferWaitsWithTheHoldersAsDetail(t *testing.T) {
 }
 
 func TestDeferWithoutARegistrationNeverReachesTheRelocator(t *testing.T) {
-	bubble(t, DefaultTuning(), func(t *testing.T, h *harness) {
+	bubble(t, paced(), func(t *testing.T, h *harness) {
 		ctx := context.Background()
 		h.start()
 		request := h.deferral("d")
@@ -834,7 +912,7 @@ func TestDeferWithoutARegistrationNeverReachesTheRelocator(t *testing.T) {
 }
 
 func TestDeferAfterALostReceiptRejoinsTheJobOfTheReplacedTree(t *testing.T) {
-	bubble(t, DefaultTuning(), func(t *testing.T, h *harness) {
+	bubble(t, paced(), func(t *testing.T, h *harness) {
 		ctx := context.Background()
 		h.start()
 		h.relocator.held["d"] = "zsh (pid 7) in the tree"
@@ -902,7 +980,7 @@ func TestDeferRejoinsOnlyTheJobItsRegistrationBinds(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			bubble(t, DefaultTuning(), func(t *testing.T, h *harness) {
+			bubble(t, paced(), func(t *testing.T, h *harness) {
 				ctx := context.Background()
 				h.start()
 				h.relocator.held["d"] = "zsh (pid 7) in the tree"
@@ -951,7 +1029,7 @@ func TestCancelledAdvanceStopsTheWorkerAndLeavesTheJobRunnable(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			bubble(t, DefaultTuning(), func(t *testing.T, h *harness) {
+			bubble(t, paced(), func(t *testing.T, h *harness) {
 				tt.seed(h)
 				gate := make(chan struct{})
 				h.relocator.gates["a"] = gate
@@ -1027,7 +1105,7 @@ func TestCancelledAdvanceStopsTheWorkerAndLeavesTheJobRunnable(t *testing.T) {
 }
 
 func TestRequesterRidesOnlyTheCommandThatNamedIt(t *testing.T) {
-	bubble(t, DefaultTuning(), func(t *testing.T, h *harness) {
+	bubble(t, paced(), func(t *testing.T, h *harness) {
 		ctx := context.Background()
 		client := cleanup.WithRequester(ctx, cleanup.ProcessID{PID: 4242, Start: clientStart})
 		h.seed("bg", 1, cleanup.PhasePrepared)
@@ -1069,7 +1147,7 @@ func TestRequesterRidesOnlyTheCommandThatNamedIt(t *testing.T) {
 }
 
 func TestRemovalKeepsItsRequesterForEveryRetry(t *testing.T) {
-	bubble(t, DefaultTuning(), func(t *testing.T, h *harness) {
+	bubble(t, paced(), func(t *testing.T, h *harness) {
 		requester := cleanup.ProcessID{PID: 4242, Start: clientStart}
 		h.relocator.script("a", blockWith(h.clock, "activity", "ccx (pid 4242) started with the tree"))
 		h.relocator.script("b", blockWith(h.clock, "activity", "zsh (pid 7) in the tree"))
@@ -1101,7 +1179,7 @@ func TestRemovalKeepsItsRequesterForEveryRetry(t *testing.T) {
 }
 
 func TestAdoptRelocatesAParkedTree(t *testing.T) {
-	bubble(t, DefaultTuning(), func(t *testing.T, h *harness) {
+	bubble(t, paced(), func(t *testing.T, h *harness) {
 		ctx := context.Background()
 		h.start()
 		request := h.adoption("q")
@@ -1133,7 +1211,7 @@ func TestAdoptRelocatesAParkedTree(t *testing.T) {
 }
 
 func TestRepeatAdoptJoinsTheJobStillAtItsSource(t *testing.T) {
-	bubble(t, DefaultTuning(), func(t *testing.T, h *harness) {
+	bubble(t, paced(), func(t *testing.T, h *harness) {
 		ctx := context.Background()
 		h.start()
 		request := h.adoption("q")
@@ -1199,7 +1277,7 @@ func TestRepeatAdoptJoinsTheJobStillAtItsSource(t *testing.T) {
 }
 
 func TestAdoptOfAReplacedSourceStartsOver(t *testing.T) {
-	bubble(t, DefaultTuning(), func(t *testing.T, h *harness) {
+	bubble(t, paced(), func(t *testing.T, h *harness) {
 		ctx := context.Background()
 		h.start()
 		request := h.adoption("q")
@@ -1232,7 +1310,7 @@ func TestAdoptOfAReplacedSourceStartsOver(t *testing.T) {
 }
 
 func TestAdoptPassesRefusalsThrough(t *testing.T) {
-	bubble(t, DefaultTuning(), func(t *testing.T, h *harness) {
+	bubble(t, paced(), func(t *testing.T, h *harness) {
 		ctx := context.Background()
 		h.start()
 		refusal := &cleanup.RefusedError{Worktree: h.parked("r"), Reason: "registered", Detail: "the tree is still a worktree"}
@@ -1264,7 +1342,7 @@ func TestAdoptPassesRefusalsThrough(t *testing.T) {
 }
 
 func TestRestartResumesAnAdoption(t *testing.T) {
-	bubble(t, DefaultTuning(), func(t *testing.T, h *harness) {
+	bubble(t, paced(), func(t *testing.T, h *harness) {
 		h.start()
 		h.relocator.script("q", blockWith(h.clock, "activity", "zsh (pid 7) in the tree"))
 		_, err := h.engine.Adopt(context.Background(), h.adoption("q"))
@@ -1290,7 +1368,7 @@ func TestRestartResumesAnAdoption(t *testing.T) {
 }
 
 func TestFinishedRecordsArePrunedPastKeepDone(t *testing.T) {
-	tuning := DefaultTuning()
+	tuning := paced()
 	tuning.KeepDone = 2
 	bubble(t, tuning, func(t *testing.T, h *harness) {
 		ids := []string{
@@ -1327,7 +1405,7 @@ func TestFinishedRecordsArePrunedPastKeepDone(t *testing.T) {
 }
 
 func TestPruneThatCannotDiscardStopsTheWorker(t *testing.T) {
-	tuning := DefaultTuning()
+	tuning := paced()
 	tuning.KeepDone = 0
 	bubble(t, tuning, func(t *testing.T, h *harness) {
 		old := h.seed("f", 1, cleanup.PhaseDone)
@@ -1369,7 +1447,7 @@ func TestPruneThatCannotDiscardStopsTheWorker(t *testing.T) {
 }
 
 func TestStatusIsBoundedAndOrdered(t *testing.T) {
-	tuning := DefaultTuning()
+	tuning := paced()
 	tuning.StatusLimit = 2
 	h := newHarness(t, tuning)
 	finishedAt := func(after time.Duration) func(job *cleanup.Job) {
@@ -1445,7 +1523,7 @@ func TestIdleEngineArmsNoTimer(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			bubble(t, DefaultTuning(), func(t *testing.T, h *harness) {
+			bubble(t, paced(), func(t *testing.T, h *harness) {
 				ctx := context.Background()
 				tt.seed(h)
 				h.start()
@@ -1497,7 +1575,7 @@ func TestJournalFailureStopsTheWorker(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			bubble(t, DefaultTuning(), func(t *testing.T, h *harness) {
+			bubble(t, paced(), func(t *testing.T, h *harness) {
 				job := h.seed("a", 1, cleanup.PhaseUnregistered)
 				h.deleter.put("a", &payload{entries: 100})
 				tt.arrange(h)
@@ -1521,7 +1599,7 @@ func TestJournalFailureStopsTheWorker(t *testing.T) {
 }
 
 func TestNewRejectsAnIncompleteConfig(t *testing.T) {
-	h := newHarness(t, DefaultTuning())
+	h := newHarness(t, paced())
 	complete := Config{Journal: h.journal, Relocator: h.relocator, Deleter: h.deleter, CPU: h.cpu, Band: h.band, Parent: h.parent.lookup, Identify: identify}
 	tests := []struct {
 		name   string
@@ -1536,7 +1614,7 @@ func TestNewRejectsAnIncompleteConfig(t *testing.T) {
 		{"no identity lookup", func(cfg *Config) { cfg.Identify = nil }},
 		{"a partial tuning", func(cfg *Config) { cfg.Tuning = Tuning{Rate: 250} }},
 		{"a throttle that resumes above where it pauses", func(cfg *Config) {
-			cfg.Tuning = DefaultTuning()
+			cfg.Tuning = paced()
 			cfg.Tuning.ResumeBelow = 80
 		}},
 	}
@@ -1565,7 +1643,7 @@ func TestNewRejectsAnIncompleteConfig(t *testing.T) {
 }
 
 func TestTransientBlockageRetriesWithBackoffUpToTheCeiling(t *testing.T) {
-	tuning := DefaultTuning()
+	tuning := paced()
 	tuning.RetryCeiling = time.Minute
 	bubble(t, tuning, func(t *testing.T, h *harness) {
 		job := h.seed("a", 1, cleanup.PhasePrepared)
@@ -1598,7 +1676,7 @@ func TestTransientBlockageRetriesWithBackoffUpToTheCeiling(t *testing.T) {
 }
 
 func TestTransientBlockageOnAPhysicalPhaseRetriesThroughAdmission(t *testing.T) {
-	bubble(t, DefaultTuning(), func(t *testing.T, h *harness) {
+	bubble(t, paced(), func(t *testing.T, h *harness) {
 		job := h.seed("a", 1, cleanup.PhaseDeleting, func(job *cleanup.Job) {
 			job.Block(h.clock.Now(), "activity", "could not verify that the payload is idle: native: inspect pid 81401 (bash): read its arguments: input/output error")
 		})
@@ -1616,7 +1694,7 @@ func TestTransientBlockageOnAPhysicalPhaseRetriesThroughAdmission(t *testing.T) 
 }
 
 func TestTransientBlockageWaitsForAnOperatorPastTheRetryLimit(t *testing.T) {
-	tuning := DefaultTuning()
+	tuning := paced()
 	tuning.RetryLimit = 2
 	bubble(t, tuning, func(t *testing.T, h *harness) {
 		job := h.seed("a", 1, cleanup.PhasePrepared)
@@ -1643,7 +1721,7 @@ func TestTransientBlockageWaitsForAnOperatorPastTheRetryLimit(t *testing.T) {
 }
 
 func TestWaitFollowsATransientBlockageThroughItsRetry(t *testing.T) {
-	bubble(t, DefaultTuning(), func(t *testing.T, h *harness) {
+	bubble(t, paced(), func(t *testing.T, h *harness) {
 		job := h.seed("a", 1, cleanup.PhasePrepared)
 		h.relocator.script("a", blockWith(h.clock, "activity", "could not verify that the tree is idle: read its arguments: input/output error"))
 		h.start()

@@ -12,6 +12,8 @@ const (
 	governorClear       = "clear"
 	governorThrottled   = "throttled"
 	governorUnavailable = "unavailable"
+
+	ambientWeight = 0.25
 )
 
 type governor struct {
@@ -19,14 +21,18 @@ type governor struct {
 	pauseAbove    float64
 	resumeBelow   float64
 	resumeSamples int
+	rates         map[string]int
 
-	state    string
-	percent  float64
-	detail   string
-	baseline bool
-	cpu      time.Duration
-	at       time.Time
-	streak   int
+	state   string
+	percent float64
+	detail  string
+	counted bool
+	cpu     time.Duration
+	at      time.Time
+	streak  int
+	ambient float64
+	learned bool
+	settled bool
 }
 
 func newGovernor(t Tuning) *governor {
@@ -35,7 +41,12 @@ func newGovernor(t Tuning) *governor {
 		pauseAbove:    t.PauseAbove,
 		resumeBelow:   t.ResumeBelow,
 		resumeSamples: t.ResumeSamples,
-		state:         governorIdle,
+		rates: map[string]int{
+			governorClear:       t.Rate,
+			governorUnavailable: t.Rate,
+			governorThrottled:   t.FloorRate,
+		},
+		state: governorIdle,
 	}
 }
 
@@ -45,18 +56,16 @@ func (g *governor) due(now time.Time) bool {
 
 func (g *governor) next() time.Time { return g.at.Add(g.sampleEvery) }
 
-func (g *governor) allows() bool {
-	return g.state == governorClear || g.state == governorUnavailable
-}
+func (g *governor) rate() int { return g.rates[g.state] }
 
-func (g *governor) observe(now time.Time, cpu time.Duration, err error) {
-	previous, since, had := g.cpu, now.Sub(g.at), g.baseline
-	g.at = now
+func (g *governor) observe(now time.Time, cpu time.Duration, err error, quiet bool) {
+	previous, since, had, was, settled := g.cpu, now.Sub(g.at), g.counted, g.state, g.settled
+	g.at, g.settled = now, quiet
 	if err != nil {
-		g.state, g.detail, g.percent, g.baseline, g.streak = governorUnavailable, err.Error(), 0, false, 0
+		g.state, g.detail, g.percent, g.counted, g.streak = governorUnavailable, err.Error(), 0, false, 0
 		return
 	}
-	g.cpu, g.baseline, g.detail = cpu, true, ""
+	g.cpu, g.counted, g.detail = cpu, true, ""
 	if !had {
 		g.state, g.percent, g.streak = governorSampling, 0, 0
 		return
@@ -66,15 +75,22 @@ func (g *governor) observe(now time.Time, cpu time.Duration, err error) {
 		return
 	}
 	g.percent = float64(cpu-previous) / float64(since) * 100
-	if g.state != governorThrottled {
+	switch {
+	case quiet && (was == governorSampling || !g.learned):
+		g.ambient, g.learned = g.percent, true
+	case quiet && settled:
+		g.ambient += ambientWeight * (g.percent - g.ambient)
+	}
+	over := g.percent - g.ambient
+	if was != governorThrottled {
 		g.state = governorClear
-		if g.percent > g.pauseAbove {
+		if over > g.pauseAbove {
 			g.state = governorThrottled
 		}
 		g.streak = 0
 		return
 	}
-	if g.percent >= g.resumeBelow {
+	if over >= g.resumeBelow {
 		g.streak = 0
 		return
 	}
@@ -85,7 +101,7 @@ func (g *governor) observe(now time.Time, cpu time.Duration, err error) {
 }
 
 func (g *governor) reset() {
-	g.state, g.percent, g.detail, g.baseline, g.streak = governorIdle, 0, "", false, 0
+	g.state, g.percent, g.detail, g.counted, g.streak = governorIdle, 0, "", false, 0
 }
 
 func (g *governor) report() cleanup.Governor {

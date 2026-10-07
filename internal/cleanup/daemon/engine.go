@@ -44,15 +44,19 @@ func (systemClock) After(d time.Duration) <-chan time.Time { return time.After(d
 // Tuning is the pace of physical deletion and the bounds of what the engine
 // retains and reports.
 type Tuning struct {
-	// Rate is the payload entries deleted per second.
-	Rate int
+	// Rate is the payload entries deleted per second while fseventsd keeps
+	// near its ambient load, and FloorRate the pace held while it does not.
+	Rate      int
+	FloorRate int
 	// SliceEntries and SliceBudget bound one uninterruptible step.
 	SliceEntries int
 	SliceBudget  time.Duration
 	// SampleEvery is the interval between fseventsd CPU samples while deletion
 	// is pending.
 	SampleEvery time.Duration
-	// PauseAbove and ResumeBelow are percentages of one core.
+	// PauseAbove and ResumeBelow are percentages of one core over fseventsd's
+	// ambient load, the average of its samples while deletion ran at most at
+	// FloorRate.
 	PauseAbove  float64
 	ResumeBelow float64
 	// ResumeSamples is how many consecutive samples under ResumeBelow lift a
@@ -67,17 +71,22 @@ type Tuning struct {
 	RetryAfter   time.Duration
 	RetryCeiling time.Duration
 	RetryLimit   int
+	// AwaitLease is how long one awaiting status read keeps its job ahead of
+	// the queue.
+	AwaitLease time.Duration
 	// KeepDone is how many finished records the journal retains.
 	KeepDone int
 	// StatusLimit is the default cap on the jobs one report carries.
 	StatusLimit int
 }
 
-// DefaultTuning is the production pace: 250 entries a second in slices of at
-// most 100 entries or 50ms, throttled while fseventsd runs above half a core.
+// DefaultTuning is the production pace: 1000 entries a second in slices of at
+// most 100 entries or 50ms, slowed to 100 a second while deletion pushes
+// fseventsd half a core over its ambient load.
 func DefaultTuning() Tuning {
 	return Tuning{
-		Rate:          250,
+		Rate:          1000,
+		FloorRate:     100,
 		SliceEntries:  100,
 		SliceBudget:   50 * time.Millisecond,
 		SampleEvery:   5 * time.Second,
@@ -88,6 +97,7 @@ func DefaultTuning() Tuning {
 		RetryAfter:    30 * time.Second,
 		RetryCeiling:  10 * time.Minute,
 		RetryLimit:    6,
+		AwaitLease:    10 * time.Second,
 		KeepDone:      100,
 		StatusLimit:   50,
 	}
@@ -97,10 +107,14 @@ func (t Tuning) validate() error {
 	switch {
 	case t.Rate <= 0, t.SliceEntries <= 0, t.SliceBudget <= 0:
 		return fmt.Errorf("rate %d, slice of %d entries or %s: all must be positive", t.Rate, t.SliceEntries, t.SliceBudget)
+	case t.FloorRate <= 0, t.FloorRate > t.Rate:
+		return fmt.Errorf("floor rate %d must be positive and at most the rate %d", t.FloorRate, t.Rate)
 	case t.SampleEvery <= 0, t.Recheck <= 0, t.RetryAfter <= 0, t.RetryCeiling < t.RetryAfter, t.RetryLimit <= 0:
 		return fmt.Errorf("sample interval %s, recheck interval %s, first retry %s and retry limit %d must be positive, and the retry ceiling %s at least the first retry", t.SampleEvery, t.Recheck, t.RetryAfter, t.RetryLimit, t.RetryCeiling)
 	case t.ResumeBelow <= 0, t.PauseAbove < t.ResumeBelow, t.ResumeSamples <= 0:
 		return fmt.Errorf("throttle pauses above %v and resumes after %d samples below %v", t.PauseAbove, t.ResumeSamples, t.ResumeBelow)
+	case t.AwaitLease <= 0:
+		return fmt.Errorf("await lease %s must be positive", t.AwaitLease)
 	case t.KeepDone < 0, t.StatusLimit <= 0:
 		return fmt.Errorf("keeps %d finished records and reports %d jobs", t.KeepDone, t.StatusLimit)
 	}
@@ -174,6 +188,7 @@ type Engine struct {
 	mu       sync.Mutex
 	jobs     map[string]cleanup.Job
 	waiters  map[string]int
+	awaits   map[string]time.Time
 	kept     map[string]cleanup.Job
 	damaged  []cleanup.Damaged
 	paused   bool
@@ -185,6 +200,7 @@ type Engine struct {
 	checked   map[string]time.Time
 	active    *activeDeletion
 	paceUntil time.Time
+	loud      bool
 }
 
 var (
@@ -229,6 +245,7 @@ func New(cfg Config) (*Engine, error) {
 		done:      make(chan struct{}),
 		jobs:      make(map[string]cleanup.Job),
 		waiters:   make(map[string]int),
+		awaits:    make(map[string]time.Time),
 		kept:      make(map[string]cleanup.Job),
 		governed:  gov.report(),
 		changed:   make(chan struct{}),
@@ -323,7 +340,8 @@ func (e *Engine) Adopt(ctx context.Context, r cleanup.AdoptRequest) (cleanup.Rec
 
 // Status reads a snapshot and never waits behind the worker once Run has
 // loaded the journal: unfinished jobs in queue order, then finished jobs
-// newest first, capped at the limit.
+// newest first, capped at the limit. A query that awaits an unfinished job
+// renews that job's lease ahead of the queue.
 func (e *Engine) Status(ctx context.Context, q cleanup.Query) (cleanup.Report, error) {
 	if err := e.ready(ctx); err != nil {
 		return cleanup.Report{}, err
@@ -342,6 +360,9 @@ func (e *Engine) Status(ctx context.Context, q cleanup.Query) (cleanup.Report, e
 		job, ok := e.jobs[q.JobID]
 		if !ok {
 			return cleanup.Report{}, cleanup.ErrUnknownJob
+		}
+		if q.Await && job.Phase != cleanup.PhaseDone {
+			e.awaits[q.JobID] = e.clock.Now()
 		}
 		report.Jobs = append(report.Jobs, e.reported(job))
 		return report, nil
@@ -613,15 +634,24 @@ func (e *Engine) work(ctx context.Context) error {
 				if e.stopping(ctx) {
 					return nil
 				}
-				e.gov.observe(now, cpu, err)
+				e.gov.observe(now, cpu, err, !e.loud)
+				e.loud = false
 				e.publishGovernor()
 			}
-			if !e.gov.allows() {
+			switch {
+			case e.awaited(job.ID, now):
+				e.loud = true
+				if err := e.slice(ctx, job, false); err != nil {
+					return err
+				}
+				continue
+			case e.gov.rate() == 0:
 				if err := e.park(); err != nil {
 					return err
 				}
-			} else if !now.Before(e.paceUntil) {
-				if err := e.slice(ctx, job); err != nil {
+			case !now.Before(e.paceUntil):
+				e.loud = e.loud || e.gov.rate() > e.tuning.FloorRate
+				if err := e.slice(ctx, job, true); err != nil {
 					return err
 				}
 				continue
@@ -668,7 +698,7 @@ func (e *Engine) wake(physical bool) (time.Time, bool) {
 	}
 	if physical {
 		consider(e.gov.next())
-		if e.gov.allows() {
+		if e.gov.rate() > 0 {
 			consider(e.paceUntil)
 		}
 	}
@@ -745,18 +775,33 @@ func (e *Engine) physicalDue(now time.Time) (cleanup.Job, bool) {
 	if e.paused {
 		return cleanup.Job{}, false
 	}
+	var (
+		next  cleanup.Job
+		found bool
+	)
 	for _, job := range e.ordered() {
 		if !job.Phase.Physical() {
 			continue
 		}
-		if job.Blocked == nil {
+		if job.Blocked != nil {
+			if at, ok := e.retryAt(job); !ok || now.Before(at) {
+				continue
+			}
+		}
+		if e.awaited(job.ID, now) {
 			return job, true
 		}
-		if at, ok := e.retryAt(job); ok && !now.Before(at) {
-			return job, true
+		if !found {
+			next, found = job, true
 		}
 	}
-	return cleanup.Job{}, false
+	return next, found
+}
+
+func (e *Engine) awaited(jobID string, now time.Time) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return now.Before(e.awaits[jobID].Add(e.tuning.AwaitLease))
 }
 
 func cancelled(ctx context.Context, err error) bool {
@@ -788,7 +833,7 @@ func (e *Engine) advance(ctx context.Context, job cleanup.Job) (cleanup.Job, err
 	return job, nil
 }
 
-func (e *Engine) slice(ctx context.Context, job cleanup.Job) error {
+func (e *Engine) slice(ctx context.Context, job cleanup.Job, paced bool) error {
 	if e.active == nil {
 		if err := e.open(ctx, &job); err != nil || e.active == nil {
 			return err
@@ -798,7 +843,9 @@ func (e *Engine) slice(ctx context.Context, job cleanup.Job) error {
 	removed, done, err := e.active.deletion.Step(e.tuning.SliceEntries, e.tuning.SliceBudget)
 	end := e.clock.Now()
 	job.Removed += uint64(removed) //nolint:gosec // a step never removes a negative count
-	e.paceUntil = start.Add(time.Duration(removed) * time.Second / time.Duration(e.tuning.Rate))
+	if paced {
+		e.paceUntil = start.Add(time.Duration(removed) * time.Second / time.Duration(e.gov.rate()))
+	}
 	switch {
 	case err != nil:
 		e.active = nil
@@ -853,6 +900,9 @@ func (e *Engine) finish(job cleanup.Job) error {
 	if err := e.save(job); err != nil {
 		return err
 	}
+	e.mu.Lock()
+	delete(e.awaits, job.ID)
+	e.mu.Unlock()
 	finished := slices.DeleteFunc(e.ordered(), func(job cleanup.Job) bool { return job.Phase != cleanup.PhaseDone })
 	slices.SortFunc(finished, byFinish)
 	for _, old := range finished[:max(len(finished)-e.tuning.KeepDone, 0)] {

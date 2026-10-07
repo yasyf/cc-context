@@ -55,7 +55,7 @@ func serveFixture(t *testing.T, seed func(h *harness)) *daemonFixture {
 			t.Errorf("remove %s: %v", root, err)
 		}
 	})
-	h := newHarnessAt(t, root, DefaultTuning())
+	h := newHarnessAt(t, root, paced())
 	if seed != nil {
 		seed(h)
 	}
@@ -378,27 +378,27 @@ func TestServeGatesRequestsOnTheProtocol(t *testing.T) {
 		wantKind    string
 		wantMessage string
 	}{
-		{"another protocol", `{"protocol":4,"version":"v9",` + remove + `}`, kindIncompatible, "the daemon speaks protocol 3, the client sent 4"},
-		{"no protocol", `{"version":"v9",` + remove + `}`, kindIncompatible, "the daemon speaks protocol 3, the client sent 0"},
-		{"an unknown field", `{"protocol":3,"version":"v9","op":"status","query":{},"extra":1}`, kindInternal, ""},
-		{"an unknown op", `{"protocol":3,"version":"v9","op":"purge"}`, kindInternal, ""},
-		{"a remove with no request", `{"protocol":3,"version":"v9","op":"remove"}`, kindInternal, ""},
-		{"an adopt with no request", `{"protocol":3,"version":"v9","op":"adopt"}`, kindInternal, ""},
-		{"an adopt of a tree its ref does not pin", `{"protocol":3,"version":"v9",` + adopt + `}`, kindInternal, ""},
-		{"a pause naming a job", `{"protocol":3,"version":"v9","op":"pause","job_id":"` + unknownJob + `"}`, kindInternal, ""},
+		{"another protocol", `{"protocol":5,"version":"v9",` + remove + `}`, kindIncompatible, "the daemon speaks protocol 4, the client sent 5"},
+		{"no protocol", `{"version":"v9",` + remove + `}`, kindIncompatible, "the daemon speaks protocol 4, the client sent 0"},
+		{"an unknown field", `{"protocol":4,"version":"v9","op":"status","query":{},"extra":1}`, kindInternal, ""},
+		{"an unknown op", `{"protocol":4,"version":"v9","op":"purge"}`, kindInternal, ""},
+		{"a remove with no request", `{"protocol":4,"version":"v9","op":"remove"}`, kindInternal, ""},
+		{"an adopt with no request", `{"protocol":4,"version":"v9","op":"adopt"}`, kindInternal, ""},
+		{"an adopt of a tree its ref does not pin", `{"protocol":4,"version":"v9",` + adopt + `}`, kindInternal, ""},
+		{"a pause naming a job", `{"protocol":4,"version":"v9","op":"pause","job_id":"` + unknownJob + `"}`, kindInternal, ""},
 		{"not json", `remove everything`, kindInternal, ""},
-		{"a shutdown behind a duplicate op", `{"protocol":3,"version":"v9","op":"hello","op":"shutdown"}`, kindInternal, ""},
-		{"a shutdown with an unknown field", `{"protocol":3,"version":"v9","op":"shutdown","force":true}`, kindInternal, ""},
-		{"a shutdown naming a job", `{"protocol":3,"version":"v9","op":"shutdown","job_id":"` + unknownJob + `"}`, kindInternal, ""},
-		{"a hello carrying a query", `{"protocol":3,"version":"v9","op":"hello","query":{}}`, kindInternal, ""},
-		{"a hello with trailing data", `{"protocol":3,"version":"v9","op":"hello"} {"op":"shutdown"}`, kindInternal, ""},
-		{"a duplicate-op shutdown from another protocol", `{"protocol":4,"version":"v9","op":"hello","op":"shutdown"}`, kindIncompatible, "the daemon speaks protocol 3, the client sent 4"},
-		{"an unknown shape from another protocol", `{"protocol":4,"version":"v9","op":"purge","everything":true}`, kindIncompatible, "the daemon speaks protocol 3, the client sent 4"},
-		{"a hello with no version", `{"protocol":3,"op":"hello"}`, kindInternal, ""},
-		{"a remove with no version", `{"protocol":3,` + remove + `}`, kindInternal, ""},
-		{"a pause with an empty version", `{"protocol":3,"version":"","op":"pause"}`, kindInternal, ""},
-		{"a shutdown with no version", `{"protocol":3,"op":"shutdown"}`, kindInternal, ""},
-		{"a shutdown with no version from another protocol", `{"protocol":4,"op":"shutdown"}`, kindIncompatible, "the daemon speaks protocol 3, the client sent 4"},
+		{"a shutdown behind a duplicate op", `{"protocol":4,"version":"v9","op":"hello","op":"shutdown"}`, kindInternal, ""},
+		{"a shutdown with an unknown field", `{"protocol":4,"version":"v9","op":"shutdown","force":true}`, kindInternal, ""},
+		{"a shutdown naming a job", `{"protocol":4,"version":"v9","op":"shutdown","job_id":"` + unknownJob + `"}`, kindInternal, ""},
+		{"a hello carrying a query", `{"protocol":4,"version":"v9","op":"hello","query":{}}`, kindInternal, ""},
+		{"a hello with trailing data", `{"protocol":4,"version":"v9","op":"hello"} {"op":"shutdown"}`, kindInternal, ""},
+		{"a duplicate-op shutdown from another protocol", `{"protocol":5,"version":"v9","op":"hello","op":"shutdown"}`, kindIncompatible, "the daemon speaks protocol 4, the client sent 5"},
+		{"an unknown shape from another protocol", `{"protocol":5,"version":"v9","op":"purge","everything":true}`, kindIncompatible, "the daemon speaks protocol 4, the client sent 5"},
+		{"a hello with no version", `{"protocol":4,"op":"hello"}`, kindInternal, ""},
+		{"a remove with no version", `{"protocol":4,` + remove + `}`, kindInternal, ""},
+		{"a pause with an empty version", `{"protocol":4,"version":"","op":"pause"}`, kindInternal, ""},
+		{"a shutdown with no version", `{"protocol":4,"op":"shutdown"}`, kindInternal, ""},
+		{"a shutdown with no version from another protocol", `{"protocol":5,"op":"shutdown"}`, kindIncompatible, "the daemon speaks protocol 4, the client sent 5"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -417,11 +417,11 @@ func TestServeGatesRequestsOnTheProtocol(t *testing.T) {
 	if events := f.h.rec.take(); len(events) != 0 {
 		t.Errorf("refused requests executed %q, want nothing", events)
 	}
-	hello := f.raw(`{"protocol":4,"version":"v9","op":"hello"}`)
+	hello := f.raw(`{"protocol":5,"version":"v9","op":"hello"}`)
 	if want := (cleanup.Info{Version: "v1.2.3", Protocol: cleanup.Protocol, PID: os.Getpid()}); hello.Error != nil || hello.Info == nil || *hello.Info != want {
 		t.Errorf("hello from another protocol = %+v, want info %+v", hello, want)
 	}
-	if reply := f.raw(`{"protocol":4,"version":"v9","op":"shutdown"}`); reply != (response{}) {
+	if reply := f.raw(`{"protocol":5,"version":"v9","op":"shutdown"}`); reply != (response{}) {
 		t.Errorf("a well-formed shutdown from another protocol = %+v, want it acknowledged", reply)
 	}
 	if err := f.wait(); err != nil {
@@ -735,7 +735,7 @@ func TestServeReplacesAStaleSocket(t *testing.T) {
 			t.Errorf("remove %s: %v", root, err)
 		}
 	})
-	h := newHarnessAt(t, root, DefaultTuning())
+	h := newHarnessAt(t, root, paced())
 	socket, err := h.layout.Socket()
 	if err != nil {
 		t.Fatal(err)
@@ -822,7 +822,7 @@ func TestServeRefusesNewRemovalsWhilePaused(t *testing.T) {
 			}
 		})
 	}
-	raw := f.raw(fmt.Sprintf(`{"protocol":3,"version":"v9","op":"remove","remove":{"worktree":%q,"git":"/usr/bin/git"}}`, f.h.tree("a")))
+	raw := f.raw(fmt.Sprintf(`{"protocol":4,"version":"v9","op":"remove","remove":{"worktree":%q,"git":"/usr/bin/git"}}`, f.h.tree("a")))
 	if raw.Error == nil || raw.Error.Kind != kindPaused || raw.Error.Message != cleanup.ErrPaused.Error() {
 		t.Errorf("raw remove reply = %+v, want a %s error carrying ErrPaused's message", raw, kindPaused)
 	}

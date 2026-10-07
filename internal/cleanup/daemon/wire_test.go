@@ -49,3 +49,22 @@ func TestWireErrorsSurviveStrictDecoding(t *testing.T) {
 		})
 	}
 }
+
+func TestStatusAwaitNamesItsJob(t *testing.T) {
+	tests := []struct {
+		name    string
+		query   cleanup.Query
+		wantErr string
+	}{
+		{"an awaiting read of one job", cleanup.Query{JobID: "0000000000000000-000000", Await: true}, ""},
+		{"an awaiting read of the queue", cleanup.Query{Await: true}, "status awaits no job"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := request{Version: "v1.2.3", Op: opStatus, Query: &tt.query}.Validate()
+			if got := fmt.Sprint(err); (err == nil) != (tt.wantErr == "") || (err != nil && got != tt.wantErr) {
+				t.Errorf("Validate() = %v, want %q", err, tt.wantErr)
+			}
+		})
+	}
+}

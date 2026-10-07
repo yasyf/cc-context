@@ -92,6 +92,13 @@ a minute before it fails; `worktree rm` following a blocked job's automatic
 retry does the same. They succeed only when a poll shows the job
 `done`, after its payload is gone; `worktree rm --wait` then reports
 `deleted`. A blockage fails the wait with its reason.
+
+Each wait poll marks its job as awaited for the next 10s. The daemon deletes
+awaited jobs, in queue order, ahead of every job nobody awaits, without the rate
+cap or the `fseventsd` throttle. A wait then lasts about as long as its own
+tree's deletion, plus any awaited trees queued ahead of it. Logical removals
+still go first, and a paused queue or a blocked job still holds.
+
 The job keeps the requesting command as its requester, so the daemon's later
 retries do not count that command's own arguments naming the tree as activity
 while that exact process still runs.
@@ -195,9 +202,16 @@ reason at its recorded phase; it retries with the existing backoff. Captured
 Git error output has a byte limit. Cancellation signals only the direct
 child, never a process group.
 
-The daemon limits physical deletion to bounded slices and a capped rate,
-yields to new logical removals, and pauses deletion while `fseventsd` is busy.
+The daemon deletes in bounded slices at up to 1,000 entries a second and
+yields to new logical removals. It samples `fseventsd` every 5s and learns its
+ambient load from samples taken while deletion ran no faster than its floor.
 It does not run idle repository or process scans.
+
+When deletion pushes `fseventsd` more than half a core over that load, the
+daemon slows to 100 entries a second. It returns to the full rate after three
+samples within a quarter core of it. The floor keeps the queue draining on a
+machine whose `fseventsd` never goes quiet. A job a wait command is polling
+skips the queue, the rate cap, and the floor.
 
 A completed internal conflict workspace can wait for inactivity while other
 cleanup jobs proceed and stack completion succeeds. Interactive Claude,
