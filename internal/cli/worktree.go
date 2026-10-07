@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -125,7 +126,9 @@ without setting an upstream. This lets a removed lane resume at its published
 head. Otherwise, ccx cuts <name> from the freshly fetched remote trunk, or from
 HEAD when the repository has no remote. An existing branch on the gt stack of
 the branch checked out here joins this working copy's lane, so stack submit
-from either submits it. A jj workspace starts on trunk() after jj git fetch, or
+from either submits it. In a Graphite repository a newly cut branch is tracked
+on the branch it was cut from, trunk or the branch checked out here, so ship
+and stack submit reach it without a gt track. A jj workspace starts on trunk() after jj git fetch, or
 on the caller's parents with no remote. The summary names the base commit.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -499,6 +502,8 @@ func runWorktreeAdd(cmd *cobra.Command, name, requested string) error {
 			if err := worktreeJoinLane(ctx, l, name, path); err != nil {
 				return err
 			}
+		} else if err := worktreeTrack(ctx, cmd.ErrOrStderr(), l, base.parent, path); err != nil {
+			return err
 		}
 	}
 	cmd.Println(strings.Join([]string{"added " + name, worktreeShapeOf(mode), base.segment(), path}, shipSep))
@@ -533,9 +538,23 @@ func worktreeJoinLane(ctx context.Context, l lane, branch, path string) error {
 	return laneJoin("worktree add", l, path)
 }
 
+// worktreeTrack adopts a newly cut branch onto parent in a Graphite
+// repository, so ship and stack submit reach it without a hand-run gt track.
+func worktreeTrack(ctx context.Context, errW io.Writer, l lane, parent, path string) error {
+	graphite, err := vcs.GraphiteRepo(l.checkout)
+	if err != nil {
+		return fmt.Errorf("worktree add: %w", err)
+	}
+	if !graphite || parent == "" {
+		return nil
+	}
+	return gtTrackAt(ctx, render.Dir(path), errW, "worktree add", parent)
+}
+
 type worktreeBase struct {
 	rev      string
 	label    string
+	parent   string
 	shas     []string
 	existing bool
 }
@@ -575,7 +594,7 @@ func worktreeGitBase(ctx context.Context, dir render.Dir, name string) (worktree
 		return worktreeBase{}, fmt.Errorf("worktree add: git config %s: %w", key, err)
 	case code == 1:
 		sha, err := worktreeRevParse(ctx, dir, "HEAD")
-		return worktreeBase{rev: sha, label: "HEAD", shas: []string{sha}}, err
+		return worktreeBase{rev: sha, label: "HEAD", parent: branch, shas: []string{sha}}, err
 	case code != 0:
 		return worktreeBase{}, fmt.Errorf("worktree add: git config %s: exit %d: %s", key, code, strings.TrimSpace(stderr))
 	}
@@ -599,7 +618,7 @@ func worktreeGitBase(ctx context.Context, dir render.Dir, name string) (worktree
 	if err != nil {
 		return worktreeBase{}, err
 	}
-	return worktreeBase{rev: sha, label: remote + "/" + from, shas: []string{sha}, existing: published != ""}, nil
+	return worktreeBase{rev: sha, label: remote + "/" + from, parent: from, shas: []string{sha}, existing: published != ""}, nil
 }
 
 // worktreeRemoteHas returns name when remote holds branch name, asking the

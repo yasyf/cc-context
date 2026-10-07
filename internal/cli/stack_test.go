@@ -1721,6 +1721,25 @@ func TestWorktreeAddJoinsTheLaneOnlyForABranchOfThisStack(t *testing.T) {
 	}
 }
 
+// TestWorktreeAddTracksANewBranchOnTrunk pins the Graphite adoption a cut
+// branch needs: an untracked one is refused by ship with "gt state has no
+// parent".
+func TestWorktreeAddTracksANewBranchOnTrunk(t *testing.T) {
+	f := shipGTRepo(t)
+	f.Isolate(t)
+
+	out, err := runWorktreeCmd(t, f, "add", "feat")
+	if err != nil {
+		t.Fatalf("worktree add feat: %v", err)
+	}
+	if path := worktreeSummaryPath(t, out); gitAt(t, f.Env(), path, "branch", "--show-current") != "feat" {
+		t.Errorf("the new working copy is not on feat: %s", out)
+	}
+	if got := dropGTParent(t, f, "feat"); got != "main" {
+		t.Errorf("feat's gt parent = %q, want main", got)
+	}
+}
+
 func laneAt(t *testing.T, dir string) string {
 	t.Helper()
 	c, err := vcs.ResolveCheckout(dir)
