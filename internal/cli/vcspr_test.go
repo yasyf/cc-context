@@ -94,7 +94,55 @@ func TestClassifyPRQueue(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			if got := classifyPRQueue(decodePRInfo(t, tt.body), tt.landedOn, tt.activity); got != tt.want {
+			if got := classifyPRQueue(decodePRInfo(t, tt.body), "", tt.landedOn, tt.activity); got != tt.want {
+				t.Errorf("classifyPRQueue = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+// #31667 in Forge-AI/monorepo on 2026-10-07: its batch failed CI and Graphite
+// retested it alone on draft #31686. pull-request-info dropped isInGraphiteMq
+// while mergeability-status read FAILURE_HANDLING.
+const prInfoFailureHandling = `{"prNumber":31667,"state":"OPEN","baseRefName":"dev","mergeQueueStatus":{"isInGraphiteMq":false,"enqueuedCommit":""},"mergeCommitSha":null}`
+
+func TestClassifyPRQueueByMergeability(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name         string
+		body         string
+		mergeability string
+		landedOn     string
+		activity     string
+		want         prQueueReport
+	}{
+		{
+			"failure handling with the queue flag dropped",
+			prInfoFailureHandling, gtapi.MergeabilityFailureHandling, "", "",
+			prQueueReport{Number: 31667, Queue: prQueueQueued, State: "OPEN", Base: "dev"},
+		},
+		{
+			"failure handling after the activity reads an eviction",
+			prInfoFailureHandling, gtapi.MergeabilityFailureHandling, "", prActivityEvicted,
+			prQueueReport{Number: 31667, Queue: prQueueQueued, State: "OPEN", Base: "dev"},
+		},
+		{"waiting to merge", prInfoOpen, gtapi.MergeabilityWaiting, "", "", prQueueReport{Number: 25131, Queue: prQueueQueued, State: "OPEN", Base: "dev"}},
+		{
+			"queued to merge keeps the admitted commit",
+			prInfoQueued, gtapi.MergeabilityQueued, "", "",
+			prQueueReport{Number: 25121, Queue: prQueueQueued, State: "OPEN", Base: "dev", Enqueued: "b103a57671412a4e260ecd9763ba764e66053d15"},
+		},
+		{"ready to merge", prInfoOpen, "READY_TO_MERGE", "", "", prQueueReport{Number: 25131, Queue: prQueueNotQueued, State: "OPEN", Base: "dev"}},
+		{
+			"landed outranks a queued status",
+			prInfoLanded, gtapi.MergeabilityQueued, "dev", "",
+			prQueueReport{Number: 25116, Queue: prQueueLanded, State: "MERGED", Base: "dev", Squash: "9cc33f055dc4db19da6eb13a210a810297ccdc05"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := classifyPRQueue(decodePRInfo(t, tt.body), tt.mergeability, tt.landedOn, tt.activity); got != tt.want {
 				t.Errorf("classifyPRQueue = %+v, want %+v", got, tt.want)
 			}
 		})
@@ -463,6 +511,31 @@ func TestPRStatusReadsCIAndApprovalFromARealPoll(t *testing.T) {
 	}
 	if len(github.queries) != 1 || !strings.Contains(github.queries[0], "latestOpinionatedReviews") || !strings.Contains(github.queries[0], "isDraft") {
 		t.Errorf("graphql = %d queries, want one batch asking for reviews and draft state", len(github.queries))
+	}
+}
+
+func TestPRStatusReadsFailureHandlingAsQueued(t *testing.T) {
+	_, client := stubGraphiteMergeability(t, map[int]string{31667: gtapi.MergeabilityFailureHandling}, prInfoFailureHandling)
+	stubPRState(t, prPoll(`"p0":`+prNode(31667, "OPEN", prComments())))
+
+	out, err := runPRStatusCmd(t, client, "--repo", "Forge-AI/monorepo", "31667")
+	if err != nil {
+		t.Fatalf("pr status: %v", err)
+	}
+	if want := "#31667  queued (failure handling) · into dev · ci none · approved · queued\n"; out != want {
+		t.Errorf("report = %q, want %q", out, want)
+	}
+
+	jsonOut, err := runPRStatusCmd(t, client, "--repo", "Forge-AI/monorepo", "--json", "31667")
+	if err != nil {
+		t.Fatalf("pr status --json: %v", err)
+	}
+	var got []prStatusReport
+	if err := json.Unmarshal([]byte(jsonOut), &got); err != nil {
+		t.Fatalf("unmarshal %q: %v", jsonOut, err)
+	}
+	if len(got) != 1 || got[0].Queue != prQueueQueued || got[0].Mergeability != gtapi.MergeabilityFailureHandling || got[0].Verdict != "queued" {
+		t.Errorf("json report = %+v, want queued with the raw FAILURE_HANDLING status", got)
 	}
 }
 

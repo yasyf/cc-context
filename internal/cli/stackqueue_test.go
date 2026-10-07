@@ -3,6 +3,8 @@ package cli
 import (
 	"strings"
 	"testing"
+
+	"github.com/yasyf/cc-context/internal/gtapi"
 )
 
 // TestStackRebaseParentPushesOnlyTheBranchItMoves is release-picture's #25937:
@@ -67,6 +69,38 @@ func TestStackSubmitNeverPushesAQueuedBranch(t *testing.T) {
 	_, _, err = runStackCmd(t, f, "rebase", "--parent", "base=main")
 	if err == nil || !strings.Contains(err.Error(), "base is in the merge queue") {
 		t.Fatalf("stack rebase --parent base=main of a queued base = %v, want a refusal", err)
+	}
+}
+
+// TestStackSubmitNeverPushesAPullRequestInFailureHandling is #31667 in
+// Forge-AI/monorepo: Graphite dropped its queue flag while it retested the
+// pull request alone after its batch failed CI.
+func TestStackSubmitNeverPushesAPullRequestInFailureHandling(t *testing.T) {
+	f := stackRebaseRepo(t, "base", "feature")
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("stack submit: %v", err)
+	}
+	api.prs["base"], api.prs["feature"] = 100, 101
+	api.mergeability[100] = gtapi.MergeabilityFailureHandling
+	stubPRState(t, prPoll(`"p0":`+prNode(100, "OPEN", prComments())))
+	stubStackPRs(t, f, map[string]*stackPR{
+		"base":    {Number: 100, Title: "base", State: "OPEN", Base: "main"},
+		"feature": {Number: 101, Title: "feature", State: "OPEN", Base: "base"},
+	})
+	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	queued := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
+
+	out, _, err := runStackCmd(t, f, "submit")
+	if err != nil {
+		t.Fatalf("stack submit: %v", err)
+	}
+	if !strings.Contains(out, "base · kept at its published head") {
+		t.Errorf("report = %q, want the base in failure handling kept", out)
+	}
+	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base"); got != queued {
+		t.Errorf("origin base moved to %s while in failure handling at %s", got, queued)
 	}
 }
 

@@ -41,6 +41,7 @@ type gtAPIStub struct {
 	presubmitError string
 	submitErrors   map[string]string
 	queued         map[string]bool
+	mergeability   map[int]string
 	untracked      map[int]gtStubUntracked
 	nextPR         int
 	// parked maps a branch to the graphite-base branch pre-submit moved its
@@ -142,6 +143,7 @@ func newGTAPIStub(t *testing.T) *gtAPIStub {
 		bodies:       map[string]string{},
 		submitErrors: map[string]string{},
 		queued:       map[string]bool{},
+		mergeability: map[int]string{},
 		untracked:    map[int]gtStubUntracked{},
 		parked:       map[string]string{},
 		bases:        map[string]string{},
@@ -245,7 +247,7 @@ func (s *gtAPIStub) serve(w http.ResponseWriter, r *http.Request) {
 		rows := []map[string]any{}
 		for _, number := range req.PRNumbers {
 			if _, untracked := s.untracked[number]; !untracked {
-				rows = append(rows, map[string]any{"prNumber": number, "forgeSource": "github", "mergeabilityStatus": "READY_TO_MERGE"})
+				rows = append(rows, map[string]any{"prNumber": number, "forgeSource": "github", "mergeabilityStatus": cmp.Or(s.mergeability[number], "READY_TO_MERGE")})
 			}
 		}
 		s.write(w, map[string]any{"mergeabilityStatuses": rows})

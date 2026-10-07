@@ -15,6 +15,11 @@ import (
 
 func stubGraphite(t *testing.T, status int, prs ...string) *gtapi.Client {
 	t.Helper()
+	return stubGraphiteMergeability(t, status, nil, prs...)
+}
+
+func stubGraphiteMergeability(t *testing.T, status int, mergeability map[int]string, prs ...string) *gtapi.Client {
+	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req gtapi.PullRequestInfoRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -22,6 +27,16 @@ func stubGraphite(t *testing.T, status int, prs ...string) *gtapi.Client {
 		}
 		if status != http.StatusOK {
 			w.WriteHeader(status)
+			return
+		}
+		if r.URL.Path == "/graphite/mergeability-status" {
+			rows := []string{}
+			for _, n := range req.PRNumbers {
+				if m, ok := mergeability[n]; ok {
+					rows = append(rows, fmt.Sprintf(`{"prNumber":%d,"mergeabilityStatus":%q}`, n, m))
+				}
+			}
+			_, _ = fmt.Fprintf(w, `{"mergeabilityStatuses":[%s]}`, strings.Join(rows, ","))
 			return
 		}
 		_, _ = fmt.Fprintf(w, `{"result":{"status":"ok","prs":[%s]}}`, strings.Join(prs, ","))
@@ -43,7 +58,7 @@ func TestPollReadsQueueActivityAndWhereTheSquashLanded(t *testing.T) {
 		t.Fatal(err)
 	}
 	queued := st.PRs[189]
-	if !strings.HasPrefix(queued.Activity, ActivityHeading) || !queued.QueueLabelled() || !inQueue(queued.Graphite) {
+	if !strings.HasPrefix(queued.Activity, ActivityHeading) || !queued.QueueLabelled() || !gtapi.InMergeQueue(queued.Graphite, queued.Mergeability) {
 		t.Errorf("#189 = %+v, want its merge activity, label, and Graphite queue record", queued)
 	}
 	if queued.Graphite.Body != "" || queued.Graphite.Versions != nil {
@@ -78,6 +93,27 @@ func TestAGraphiteFailureLeavesTheQueueRecordOutButStillReadsActivity(t *testing
 	}
 	if st.PRs[190].Graphite != nil || !strings.Contains(gh.queries[0], "comments(last: 100)") {
 		t.Errorf("#190 = %+v, want no stale queue record, and its activity still read off the last one", st.PRs[190])
+	}
+}
+
+func TestPollReadsTheActivityOfAPRInFailureHandling(t *testing.T) {
+	t.Parallel()
+	c := &clock{now: epoch}
+	dir := t.TempDir()
+	first, _ := newStore(t, dir, c, stubGraphite(t, http.StatusOK, `{"prNumber":190,"state":"OPEN","baseRefName":"main"}`), ok(t, "poll-190.json"))
+	if _, err := first.Read(testCtx(t), Want{PRs: []int{190}}); err != nil {
+		t.Fatal(err)
+	}
+	c.now = c.now.Add(MinInterval)
+	gt := stubGraphiteMergeability(t, http.StatusOK, map[int]string{190: gtapi.MergeabilityFailureHandling},
+		`{"prNumber":190,"state":"OPEN","baseRefName":"main","mergeQueueStatus":{"isInGraphiteMq":false}}`)
+	second, gh := newStore(t, dir, c, gt, ok(t, "poll-190.json"))
+	st, err := second.Read(testCtx(t), Want{PRs: []int{190}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pr := st.PRs[190]; pr.Mergeability != gtapi.MergeabilityFailureHandling || !strings.Contains(gh.queries[0], "comments(last: 100)") {
+		t.Errorf("#190 = %+v, want FAILURE_HANDLING recorded and its activity read with the queue flag down", pr)
 	}
 }
 

@@ -56,6 +56,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the login over REST and reports the quota from the refusal's headers as
   `0/5000 GraphQL left` with its reset time.
 
+- **A pull request in merge-queue failure handling reads queued.** When a
+  queue batch fails CI, Graphite retests each pull request alone, and its
+  pull-request-info record drops `isInGraphiteMq` meanwhile. Queue state read
+  only that flag, so #31667 in Forge-AI/monorepo printed `not queued ·
+  landable` while it sat in the queue, which invites a duplicate enqueue.
+  `QUEUED_TO_MERGE`, `WAITING_TO_MERGE`, and `FAILURE_HANDLING` mergeability
+  statuses now read queued, and `pr status` prints `queued (failure
+  handling)`. `pr watch` and the queue check `ship`, `stack rebase`, and
+  `stack submit` run before pushing read the same status, so none of them
+  pushes over a pull request in failure handling.
+
 - **`worktree rm` no longer waits on a starved daemon under load.** The
   cleanup daemon ran every removal in the darwin background band: launchd
   started it as a `Background` process, and it demoted itself with nice 20.

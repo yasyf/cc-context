@@ -173,8 +173,12 @@ Graphite's own merge state adds needs-restack (parent landed), needs-restack,
 or waiting-on-downstack #N, naming the pull request below.
 
 The answer comes from Graphite's own record of the pull request, the one gt
-reads, so a pull request enqueued from the Graphite web UI reads queued even
-though it carries no merge label. A merge label is not the answer either way:
+reads, and its mergeability status, so a pull request enqueued from the
+Graphite web UI reads queued even though it carries no merge label. A status
+of QUEUED_TO_MERGE, WAITING_TO_MERGE, or FAILURE_HANDLING reads queued
+outright. During failure handling, while the queue retests a pull request whose
+batch failed CI, Graphite's record drops its queue flag; the line reads
+"queued (failure handling)". A merge label is not the answer either way:
 the queue consumes it on admission, and a label left on a pull request the
 queue dropped means nothing.
 
@@ -361,10 +365,10 @@ func readPRQueue(ctx context.Context, repo string, numbers []int, warn io.Writer
 
 func prQueueOf(info gtapi.PullRequestInfo, pr prstate.PR, landedOn string) prQueueReport {
 	var activity string
-	if landedOn == "" && info.State == gtapi.PROpen && (prInGraphiteMq(info) || pr.QueueLabelled()) {
+	if landedOn == "" && info.State == gtapi.PROpen && (gtapi.InMergeQueue(&info, pr.Mergeability) || pr.QueueLabelled()) {
 		activity = pr.Activity
 	}
-	return classifyPRQueue(info, landedOn, activity)
+	return classifyPRQueue(info, pr.Mergeability, landedOn, activity)
 }
 
 func prCIOf(rollup *prstate.Rollup) prCIReport {
@@ -494,17 +498,15 @@ func readPRStateWaiting(ctx context.Context, store *prstate.Store, want prstate.
 	}
 }
 
-func prInGraphiteMq(info gtapi.PullRequestInfo) bool {
-	return info.MergeQueueStatus != nil && info.MergeQueueStatus.IsInGraphiteMq
-}
-
-// classifyPRQueue settles one pull request's queue state, where landedOn is the
-// branch its squash is on and activity its merge activity comment. Landed is
-// checked first because Graphite keeps isInGraphiteMq set on a pull request it
-// has already merged; queued needs the pull request still open for the same
-// reason, and no exit in the activity since its last admission because the
-// flag also outlives an eviction.
-func classifyPRQueue(info gtapi.PullRequestInfo, landedOn, activity string) prQueueReport {
+// classifyPRQueue settles one pull request's queue state, where mergeability is
+// its Graphite mergeability status, landedOn the branch its squash is on, and
+// activity its merge activity comment. Landed is checked first because
+// Graphite keeps isInGraphiteMq set on a pull request it has already merged;
+// queued needs the pull request still open for the same reason. A queued
+// mergeability status settles queued outright; the flag alone also needs no
+// exit in the activity since its last admission, since it outlives an
+// eviction too.
+func classifyPRQueue(info gtapi.PullRequestInfo, mergeability, landedOn, activity string) prQueueReport {
 	r := prQueueReport{Number: info.PRNumber, Queue: prQueueNotQueued, State: string(info.State), Base: info.BaseRefName}
 	if landedOn != "" {
 		r.Queue = prQueueLanded
@@ -517,13 +519,15 @@ func classifyPRQueue(info gtapi.PullRequestInfo, landedOn, activity string) prQu
 	}
 	exit, out := mqLastExit(activity)
 	switch {
+	case gtapi.QueuedMergeability(mergeability), !out && gtapi.InMergeQueue(&info, ""):
+		r.Queue = prQueueQueued
+		if info.MergeQueueStatus != nil {
+			r.Enqueued = info.MergeQueueStatus.EnqueuedCommit
+		}
 	case out && exit.Reason != "":
 		r.Queue = prQueueEvicted
 		r.Evicted = exit.Reason
 		r.EvictedAt = exit.At
-	case !out && prInGraphiteMq(info):
-		r.Queue = prQueueQueued
-		r.Enqueued = info.MergeQueueStatus.EnqueuedCommit
 	}
 	return r
 }
@@ -536,7 +540,14 @@ func renderPRQueue(reports []prStatusReport) string {
 		case prQueueLanded:
 			fmt.Fprintf(&b, " · squash %s on %s", shortSHA(r.Squash), r.Base)
 		case prQueueQueued:
-			fmt.Fprintf(&b, " · enqueued %s into %s", shortSHA(r.Enqueued), r.Base)
+			if r.Mergeability == gtapi.MergeabilityFailureHandling {
+				b.WriteString(" (failure handling)")
+			}
+			if r.Enqueued == "" {
+				fmt.Fprintf(&b, " · into %s", r.Base)
+			} else {
+				fmt.Fprintf(&b, " · enqueued %s into %s", shortSHA(r.Enqueued), r.Base)
+			}
 		case prQueueEvicted:
 			fmt.Fprintf(&b, ": %s at %s", r.Evicted, r.EvictedAt)
 			if r.Conflicting {
