@@ -49,6 +49,13 @@ const (
 
 const prVerdictLandable = "landable"
 
+const (
+	gtMergeabilityCheck  = "Graphite / mergeability_check"
+	gtRestackPrefix      = "NEEDS_RESTACK"
+	gtParentLanded       = "NEEDS_RESTACK__BASE_BRANCH_MERGED"
+	gtWaitingOnDownstack = "WAITING_ON_DOWNSTACK"
+)
+
 const prNamedFailures = 3
 
 var prStatusRateLimitWait = 10 * time.Minute
@@ -71,9 +78,11 @@ type prQueueReport struct {
 
 type prStatusReport struct {
 	prQueueReport
-	CI       prCIReport       `json:"ci"`
-	Approval prApprovalReport `json:"approval"`
-	Verdict  string           `json:"verdict"`
+	CI           prCIReport       `json:"ci"`
+	Approval     prApprovalReport `json:"approval"`
+	Mergeability string           `json:"mergeability,omitempty"`
+	Downstack    int              `json:"downstack,omitempty"`
+	Verdict      string           `json:"verdict"`
 }
 
 type prCIReport struct {
@@ -153,12 +162,15 @@ statuses together and prints one line per pull request in input order.
 
 CI is red when any check on the head failed, naming the first few, pending
 while any has not finished, green once something passed and nothing failed or
-runs, and none when nothing graded the head. Approval is GitHub's
-reviewDecision, which counts the reviews the base branch's protection counts,
-bot approvals included, followed by who approved or requested changes. The
-verdict is landed, queued, landable for an open pull request that is green,
-approved, not a draft, and not conflicting, and otherwise blocked: followed by
-every cause, such as blocked:ci-red,unapproved.
+runs, and none when nothing graded the head. Graphite's mergeability check is
+not counted: Graphite holds it in progress while the pull request waits on its
+stack. Approval is GitHub's reviewDecision, which counts the reviews the base
+branch's protection counts, bot approvals included, followed by who approved or
+requested changes. The verdict is landed, queued, landable for an open pull
+request that is green, approved, not a draft, and not conflicting, and
+otherwise blocked: followed by every cause, such as blocked:ci-red,unapproved.
+Graphite's own merge state adds needs-restack (parent landed), needs-restack,
+or waiting-on-downstack #N, naming the pull request below.
 
 The answer comes from Graphite's own record of the pull request, the one gt
 reads, so a pull request enqueued from the Graphite web UI reads queued even
@@ -332,7 +344,7 @@ func collectPRQueue(ctx context.Context, repo string, numbers []int, warn io.Wri
 		r := prQueueOf(info, pr, landedOn)
 		r.Conflicting = r.Queue == prQueueEvicted && pr.MergeStateStatus == "DIRTY"
 		r.Stale = staleAt(limited, pr.PolledAt)
-		report := prStatusReport{prQueueReport: r, CI: prCIOf(pr.Rollup), Approval: prApprovalOf(pr)}
+		report := prStatusReport{prQueueReport: r, CI: prCIOf(pr.Rollup), Approval: prApprovalOf(pr), Mergeability: pr.Mergeability, Downstack: info.DependentPRNumber}
 		report.Verdict = prVerdict(report, pr)
 		reports = append(reports, report)
 	}
@@ -422,6 +434,9 @@ func prVerdict(r prStatusReport, pr prstate.PR) string {
 	if pr.Mergeable == "CONFLICTING" || r.Conflicting {
 		causes = append(causes, "conflict")
 	}
+	if cause := prGraphiteCause(r.Mergeability, r.Downstack); cause != "" {
+		causes = append(causes, cause)
+	}
 	switch r.CI.State {
 	case prCIRed:
 		causes = append(causes, "ci-red")
@@ -440,6 +455,20 @@ func prVerdict(r prStatusReport, pr prstate.PR) string {
 		return prVerdictLandable
 	}
 	return "blocked:" + strings.Join(causes, ",")
+}
+
+func prGraphiteCause(mergeability string, downstack int) string {
+	switch {
+	case mergeability == gtParentLanded:
+		return "needs-restack (parent landed)"
+	case strings.HasPrefix(mergeability, gtRestackPrefix):
+		return "needs-restack"
+	case mergeability == gtWaitingOnDownstack && downstack != 0:
+		return fmt.Sprintf("waiting-on-downstack #%d", downstack)
+	case mergeability == gtWaitingOnDownstack:
+		return "waiting-on-downstack"
+	}
+	return ""
 }
 
 // readPRStateWaiting reads through store, sitting out GitHub's rate limit to

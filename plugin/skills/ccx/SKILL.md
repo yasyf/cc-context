@@ -372,6 +372,13 @@ merge label; anything else reads `blocked:` with every cause, such as
 `blocked:ci-red,unapproved`. CI and approval ride the same batched poll, so
 they cost no extra request.
 
+Graphite holds its `Graphite / mergeability_check`
+in progress while a PR waits on its stack, so that check never counts as CI;
+Graphite's own merge state names the hold instead, as
+`blocked:needs-restack (parent landed)` or `blocked:waiting-on-downstack #N`.
+`ccx vcs status` puts the same state on each `merge` line as `graphite <state>`,
+with a `blocked` line for a restack or a downstack wait.
+
 `pr status`, `pr watch`, and `pr state` share cached reads across processes
 for 30 seconds per repository. Repeated reads within that interval do not
 poll again; an uncached PR waits out the interval. `pr status` waits through

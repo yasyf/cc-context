@@ -94,6 +94,7 @@ type PR struct {
 	Rollup           *Rollup                `json:"rollup,omitempty"`
 	Activity         string                 `json:"activity,omitempty"`
 	Graphite         *gtapi.PullRequestInfo `json:"graphite,omitempty"`
+	Mergeability     string                 `json:"mergeability,omitempty"`
 	SquashOn         []string               `json:"squashOn,omitempty"`
 	PolledAt         time.Time              `json:"polledAt"`
 	// PushedHead is the head this machine pushed at PushedAt, kept while

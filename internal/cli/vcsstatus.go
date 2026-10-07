@@ -44,6 +44,7 @@ type vcsStatus struct {
 	Required   []string        `json:"required_checks,omitempty"`
 	StackError string          `json:"stack_error,omitempty"`
 	PRError    string          `json:"pr_error,omitempty"`
+	GTError    string          `json:"graphite_error,omitempty"`
 	Probe      *statusProbe    `json:"queue_probe,omitempty"`
 	Branches   []statusBranch  `json:"branches,omitempty"`
 }
@@ -91,6 +92,8 @@ type statusPR struct {
 	Checks         []statusCheck  `json:"checks,omitempty"`
 	Reviews        []statusReview `json:"reviews,omitempty"`
 	Queue          *statusQueue   `json:"queue,omitempty"`
+	Mergeability   string         `json:"mergeability,omitempty"`
+	Downstack      int            `json:"downstack,omitempty"`
 }
 
 // statusCheck is one check on the head commit. Required is membership of the
@@ -237,6 +240,9 @@ func collectVcsStatus(ctx context.Context, l lane, o vcsStatusOpts) (vcsStatus, 
 		return vcsStatus{}, err
 	}
 	statusResolvePRs(ctx, l, &st)
+	if l.gt {
+		statusFillMergeability(ctx, &st)
+	}
 	if l.gt && !o.noProbe {
 		st.Probe = queueProbe(ctx, l)
 	}
@@ -453,6 +459,7 @@ func statusBlockers(b statusBranch) []string {
 		return append(out, "the pull request is "+strings.ToLower(pr.State))
 	}
 	out = append(out, statusMergeBlockers(pr)...)
+	out = append(out, statusMergeabilityBlockers(pr)...)
 	out = append(out, statusCheckBlockers(pr)...)
 	for _, r := range pr.Reviews {
 		if r.Stale && r.State == "APPROVED" {
@@ -484,6 +491,20 @@ func statusMergeBlockers(pr *statusPR) []string {
 		out = append(out, "the pull request is not approved")
 	}
 	return out
+}
+
+func statusMergeabilityBlockers(pr *statusPR) []string {
+	switch {
+	case pr.Mergeability == gtParentLanded:
+		return []string{"graphite needs a restack: the parent landed — run ccx vcs stack submit"}
+	case strings.HasPrefix(pr.Mergeability, gtRestackPrefix):
+		return []string{"graphite needs a restack — run ccx vcs stack submit"}
+	case pr.Mergeability == gtWaitingOnDownstack && pr.Downstack != 0:
+		return []string{fmt.Sprintf("graphite is waiting on downstack #%d", pr.Downstack)}
+	case pr.Mergeability == gtWaitingOnDownstack:
+		return []string{"graphite is waiting on the downstack below " + pr.Base}
+	}
+	return nil
 }
 
 // statusRequired collects the check contexts the rule covering base names. An
@@ -532,6 +553,9 @@ func renderVcsStatus(st vcsStatus) string {
 	}
 	if st.PRError != "" {
 		line("github", st.PRError)
+	}
+	if st.GTError != "" {
+		line("graphite", st.GTError)
 	}
 	if p := st.Probe; p != nil {
 		line("queue-gt", statusProbeValue(*p))
@@ -699,6 +723,9 @@ func statusMergeValue(pr statusPR) string {
 	}
 	if pr.ChecksState != "" {
 		segs = append(segs, "checks "+strings.ToLower(pr.ChecksState))
+	}
+	if pr.Mergeability != "" {
+		segs = append(segs, "graphite "+strings.ToLower(pr.Mergeability))
 	}
 	if len(pr.Labels) > 0 {
 		segs = append(segs, "labels "+strings.Join(pr.Labels, ", "))
