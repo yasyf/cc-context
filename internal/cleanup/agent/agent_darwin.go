@@ -61,7 +61,7 @@ func Spec(layout cleanup.Layout) launchd.Agent {
 		LogPath:       layout.LogPath(),
 		Env:           map[string]string{"PATH": servicePath},
 		RestartPolicy: launchd.RestartOnFailure,
-		ProcessType:   launchd.ProcessTypeBackground,
+		ProcessType:   launchd.ProcessTypeStandard,
 	}
 }
 

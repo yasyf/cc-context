@@ -1728,17 +1728,42 @@ func scheduling(t *testing.T) string {
 	return fmt.Sprintf("background=%d disk=%d nice=%d", band, policy, nice)
 }
 
-func TestBackground(t *testing.T) {
+func childPriority(t *testing.T) string {
+	t.Helper()
+	child := exec.Command("/bin/sleep", "60")
+	if err := child.Start(); err != nil {
+		t.Fatalf("start a child: %v", err)
+	}
+	defer func() {
+		_ = child.Process.Kill()
+		_ = child.Wait()
+	}()
+	out, err := exec.Command("/bin/ps", "-o", "pri=", "-p", strconv.Itoa(child.Process.Pid)).Output()
+	if err != nil {
+		t.Fatalf("ps the child: %v", err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func TestBand(t *testing.T) {
 	if os.Getenv(backgroundHelperEnv) != "" {
-		if err := Background(); err != nil {
-			t.Fatalf("Background: %v", err)
+		var states []string
+		for _, step := range []struct {
+			name  string
+			enter func() error
+		}{{"background", Band{}.Background}, {"foreground", Band{}.Foreground}, {"background", Band{}.Background}} {
+			if err := step.enter(); err != nil {
+				t.Fatalf("%s: %v", step.name, err)
+			}
+			states = append(states, fmt.Sprintf("%s child=%s", scheduling(t), childPriority(t)))
 		}
-		fmt.Printf("%s%s\n", helperPrefix, scheduling(t))
+		fmt.Printf("%s%s\n", helperPrefix, strings.Join(states, " | "))
 		return
 	}
-	before := scheduling(t)
-	if got, want := runHelper(t, "TestBackground", backgroundHelperEnv+"=1"), "background=1 disk=3 nice=20"; got != want {
-		t.Errorf("child after Background: %s, want %s", got, want)
+	before, baseline := scheduling(t), childPriority(t)
+	want := "background=1 disk=3 nice=0 child=4 | background=0 disk=0 nice=0 child=" + baseline + " | background=1 disk=3 nice=0 child=4"
+	if got := runHelper(t, "TestBand", backgroundHelperEnv+"=1"); got != want {
+		t.Errorf("child across Background, Foreground, Background: %s, want %s", got, want)
 	}
 	if after := scheduling(t); after != before {
 		t.Errorf("the test process itself changed: %s, was %s", after, before)

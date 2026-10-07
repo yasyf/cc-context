@@ -676,6 +676,68 @@ func TestUnforcedRequestNeverJoinsAForcedJob(t *testing.T) {
 	}
 }
 
+func TestCommandsRunOutsideTheBackgroundBand(t *testing.T) {
+	t.Run("a remove relocates in the foreground", func(t *testing.T) {
+		bubble(t, DefaultTuning(), func(t *testing.T, h *harness) {
+			gate := make(chan struct{})
+			h.relocator.gates["a"] = gate
+			h.start()
+			removed := make(chan error, 1)
+			go func() {
+				_, err := h.engine.Remove(context.Background(), h.request("a"))
+				removed <- err
+			}()
+			if got := <-h.relocator.entered; got != "a" {
+				t.Fatalf("the relocator entered %q, want a", got)
+			}
+			if !h.band.inForeground() {
+				t.Error("the remove advanced in the background band, want the foreground")
+			}
+			gate <- struct{}{}
+			if err := <-removed; err != nil {
+				t.Fatalf("Remove() = %v", err)
+			}
+			if got, want := h.band.takeSwitches(), []string{"foreground", "background"}; !slices.Equal(got, want) {
+				t.Errorf("band switches = %v, want %v", got, want)
+			}
+		})
+	})
+	t.Run("the worker's own pass stays in the background", func(t *testing.T) {
+		bubble(t, DefaultTuning(), func(t *testing.T, h *harness) {
+			h.seed("a", 1, cleanup.PhaseMoved)
+			gate := make(chan struct{})
+			h.relocator.gates["a"] = gate
+			h.start()
+			if got := <-h.relocator.entered; got != "a" {
+				t.Fatalf("the relocator entered %q, want a", got)
+			}
+			if h.band.inForeground() {
+				t.Error("the worker's own pass advanced in the foreground band, want the background")
+			}
+			gate <- struct{}{}
+			synctest.Wait()
+			if got := h.band.takeSwitches(); len(got) != 0 {
+				t.Errorf("band switches = %v, want none", got)
+			}
+		})
+	})
+	t.Run("a band the daemon cannot leave stops the worker", func(t *testing.T) {
+		bubble(t, DefaultTuning(), func(t *testing.T, h *harness) {
+			h.band.refuseLeave = errors.New("operation not permitted")
+			engine := h.build()
+			running := make(chan error, 1)
+			go func() { running <- engine.Run(context.Background()) }()
+			if _, err := engine.Remove(context.Background(), h.request("a")); !errors.Is(err, ErrStopped) {
+				t.Errorf("Remove() = %v, want ErrStopped", err)
+			}
+			if err := <-running; err == nil || !errors.Is(err, h.band.refuseLeave) {
+				t.Errorf("Run() = %v, want the band's refusal", err)
+			}
+			h.expectEvents()
+		})
+	})
+}
+
 func TestRemovePassesRefusalsThrough(t *testing.T) {
 	bubble(t, DefaultTuning(), func(t *testing.T, h *harness) {
 		ctx := context.Background()
@@ -1460,7 +1522,7 @@ func TestJournalFailureStopsTheWorker(t *testing.T) {
 
 func TestNewRejectsAnIncompleteConfig(t *testing.T) {
 	h := newHarness(t, DefaultTuning())
-	complete := Config{Journal: h.journal, Relocator: h.relocator, Deleter: h.deleter, CPU: h.cpu, Parent: h.parent.lookup, Identify: identify}
+	complete := Config{Journal: h.journal, Relocator: h.relocator, Deleter: h.deleter, CPU: h.cpu, Band: h.band, Parent: h.parent.lookup, Identify: identify}
 	tests := []struct {
 		name   string
 		adjust func(cfg *Config)
@@ -1469,6 +1531,7 @@ func TestNewRejectsAnIncompleteConfig(t *testing.T) {
 		{"no relocator", func(cfg *Config) { cfg.Relocator = nil }},
 		{"no deleter", func(cfg *Config) { cfg.Deleter = nil }},
 		{"no sampler", func(cfg *Config) { cfg.CPU = nil }},
+		{"no band", func(cfg *Config) { cfg.Band = nil }},
 		{"no parent lookup", func(cfg *Config) { cfg.Parent = nil }},
 		{"no identity lookup", func(cfg *Config) { cfg.Identify = nil }},
 		{"a partial tuning", func(cfg *Config) { cfg.Tuning = Tuning{Rate: 250} }},

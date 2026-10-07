@@ -417,6 +417,7 @@ type harness struct {
 	relocator *fakeRelocator
 	deleter   *fakeDeleter
 	cpu       *fakeCPU
+	band      *fakeBand
 	parent    *fakeParent
 	engine    *Engine
 	running   chan error
@@ -453,6 +454,7 @@ func newHarnessAt(t *testing.T, root string, tuning Tuning) *harness {
 	}
 	h.deleter = &fakeDeleter{h: h, payloads: make(map[string]*payload)}
 	h.cpu = &fakeCPU{h: h, err: errUnsampled, entered: make(chan struct{}, 16)}
+	h.band = &fakeBand{}
 	h.parent = &fakeParent{}
 	return h
 }
@@ -460,6 +462,46 @@ func newHarnessAt(t *testing.T, root string, tuning Tuning) *harness {
 type fakeParent struct {
 	mu    sync.Mutex
 	asked []int
+}
+
+type fakeBand struct {
+	mu          sync.Mutex
+	foreground  bool
+	switches    []string
+	refuseLeave error
+}
+
+func (b *fakeBand) Foreground() error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.refuseLeave != nil {
+		return b.refuseLeave
+	}
+	b.foreground = true
+	b.switches = append(b.switches, "foreground")
+	return nil
+}
+
+func (b *fakeBand) Background() error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.foreground = false
+	b.switches = append(b.switches, "background")
+	return nil
+}
+
+func (b *fakeBand) inForeground() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.foreground
+}
+
+func (b *fakeBand) takeSwitches() []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	switches := b.switches
+	b.switches = nil
+	return switches
 }
 
 func (p *fakeParent) lookup(pid int) (int, []string, error) {
@@ -614,6 +656,7 @@ func (h *harness) build() *Engine {
 		Relocator: h.relocator,
 		Deleter:   h.deleter,
 		CPU:       h.cpu,
+		Band:      h.band,
 		Parent:    h.parent.lookup,
 		Identify:  identify,
 		Version:   "v1.2.3",

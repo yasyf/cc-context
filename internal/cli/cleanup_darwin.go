@@ -80,7 +80,8 @@ func previewCleanup(ctx context.Context, r cleanup.Request) (cleanup.Job, error)
 }
 
 func runCleanupServe(ctx context.Context) error {
-	if err := native.Background(); err != nil {
+	band := native.Band{}
+	if err := band.Background(); err != nil {
 		return fmt.Errorf("cleanup serve: demote to background priority: %w", err)
 	}
 	if err := native.RaiseFileLimit(); err != nil {
@@ -102,6 +103,7 @@ func runCleanupServe(ctx context.Context) error {
 		}),
 		Deleter:  rmtree.Deleter{},
 		CPU:      native.NewFSEventsSampler(),
+		Band:     band,
 		Parent:   native.ParentCommand,
 		Identify: native.Identify,
 		Version:  version.String(),
