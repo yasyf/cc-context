@@ -61,12 +61,13 @@ type GraphQLMessage struct {
 	Path    []any  `json:"path"`
 }
 
-// GraphQLError is a 200 response whose body carried GraphQL errors. It unwraps
-// to ErrNotFound when any entry is typed NOT_FOUND.
+// GraphQLError is a 200 response carrying GraphQL errors, unwrapping to
+// ErrNotFound on a NOT_FOUND entry. Exhausted marks a spent quota of Limit.
 type GraphQLError struct {
 	Messages   []GraphQLMessage
 	Exhausted  bool
 	RetryAfter time.Duration
+	Limit      int
 }
 
 func (e *GraphQLError) Error() string {

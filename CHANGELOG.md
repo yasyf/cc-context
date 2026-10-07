@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`ccx vcs gh -- <gh args>` runs a gh read on the GitHub App's quota.** It
+  runs `gh` with `GH_TOKEN` set to the read-only installation token that
+  ccx's own reads use, so polls such as `gh pr checks`, `gh pr view`, and
+  `gh run watch` stop spending the gh user's GraphQL quota. The repository
+  is `--repo`'s or `GH_REPO`'s when named, else the checkout's. With no app
+  installed, or `GH_TOKEN` or `GITHUB_TOKEN` set, gh runs on the user's
+  token. Streams pass through and ccx exits with gh's code.
+
 ### Changed
 
 - **Git `stack new` creates thin lanes by default.** With `CCX_STACK_NEW`
@@ -39,6 +49,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The mergeability request is batched in forties, because Graphite answers 413
   to fifty pull requests. `pr watch` reports green once only Graphite's check
   is outstanding.
+
+- **`vcs auth status` answers when the user's GraphQL quota is spent.** It
+  asked the spent quota for its own size over GraphQL, so it failed with
+  `API rate limit already exceeded` exactly when it was needed. It now reads
+  the login over REST and reports the quota from the refusal's headers as
+  `0/5000 GraphQL left` with its reset time.
 
 - **`worktree rm` no longer waits on a starved daemon under load.** The
   cleanup daemon ran every removal in the darwin background band: launchd

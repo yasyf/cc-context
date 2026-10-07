@@ -18,15 +18,24 @@ func ghRead(ctx context.Context, dir render.Dir, argv []string) (string, error) 
 }
 
 func ghReadEnv(ctx context.Context, dir render.Dir, margin time.Duration) ([]string, time.Time, error) {
+	return ghRepoReadEnv(ctx, dir, "", margin)
+}
+
+// ghRepoReadEnv is ghReadEnv for the repository named nameWithOwner, or for
+// dir's checkout when it is "".
+func ghRepoReadEnv(ctx context.Context, dir render.Dir, nameWithOwner string, margin time.Duration) ([]string, time.Time, error) {
 	api := reviewsAPI()
 	if ok, err := api.AppConfigured(ctx); err != nil || !ok {
 		return nil, time.Time{}, err
 	}
-	repo, err := vcs.LookupRepo(ctx, dir, false)
-	if err != nil {
-		return nil, time.Time{}, err
+	if nameWithOwner == "" {
+		repo, err := vcs.LookupRepo(ctx, dir, false)
+		if err != nil {
+			return nil, time.Time{}, err
+		}
+		nameWithOwner = repo.NameWithOwner
 	}
-	token, expires, err := api.ForRepo(repo.NameWithOwner).AppToken(ctx, max(margin, ghapi.AppRefreshMargin))
+	token, expires, err := api.ForRepo(nameWithOwner).AppToken(ctx, max(margin, ghapi.AppRefreshMargin))
 	if err != nil || token == "" {
 		return nil, time.Time{}, err
 	}

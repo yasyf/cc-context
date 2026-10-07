@@ -17,6 +17,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -384,6 +385,39 @@ func TestAuthReportsBothIdentities(t *testing.T) {
 	}
 	if other.Reads.Kind != identityUser || other.Reason != "test-app is not installed on o/elsewhere" {
 		t.Errorf("auth = %+v, want reads on the user with the reason named", other)
+	}
+}
+
+func TestAuthReportsASpentUserQuota(t *testing.T) {
+	t.Parallel()
+	f, ts := newFakeGitHub(t)
+	reset := time.Now().Add(30 * time.Minute).Truncate(time.Second)
+	f.data = func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Header.Get("Authorization") != "Bearer user-token":
+			_, _ = fmt.Fprint(w, `{"data":{"rateLimit":{"limit":10000,"remaining":9999,"resetAt":"2026-10-01T20:30:00Z"}}}`)
+		case r.URL.Path == "/user":
+			_, _ = fmt.Fprint(w, `{"login":"octocat"}`)
+		default:
+			w.Header().Set("X-RateLimit-Limit", "5000")
+			w.Header().Set("X-RateLimit-Remaining", "0")
+			w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(reset.Unix(), 10))
+			_, _ = fmt.Fprint(w, `{"errors":[{"type":"RATE_LIMIT","message":"API rate limit already exceeded for user ID 1."}]}`)
+		}
+	}
+
+	auth, err := appClient(ts.URL, testAppSource(ts.URL, t.TempDir())).ForRepo("o/r").Auth(context.Background())
+	if err != nil {
+		t.Fatalf("Auth: %v", err)
+	}
+	if auth.Writes.Name != "octocat" || auth.Writes.Quota.Limit != 5000 || auth.Writes.Quota.Remaining != 0 {
+		t.Errorf("writes = %+v, want user octocat with 0 of 5000 left", auth.Writes)
+	}
+	if got := auth.Writes.Quota.ResetAt; got.Sub(reset).Abs() > 2*time.Second {
+		t.Errorf("resetAt = %v, want about %v", got, reset)
+	}
+	if auth.Reads.Kind != identityApp || auth.Reads.Quota.Remaining != 9999 {
+		t.Errorf("reads = %+v, want the app with 9999 left", auth.Reads)
 	}
 }
 
