@@ -97,6 +97,32 @@ type MergeQueueStatus struct {
 	EnqueuedCommit string `json:"enqueuedCommit"`
 }
 
+// The mergeability statuses of a pull request Graphite's merge queue holds.
+// MergeabilityFailureHandling is one whose batch failed CI while the queue
+// retests it alone; pull-request-info drops isInGraphiteMq meanwhile.
+const (
+	MergeabilityQueued          = "QUEUED_TO_MERGE"
+	MergeabilityWaiting         = "WAITING_TO_MERGE"
+	MergeabilityFailureHandling = "FAILURE_HANDLING"
+)
+
+// QueuedMergeability reports whether a mergeability status puts its pull
+// request in the merge queue.
+func QueuedMergeability(status string) bool {
+	switch status {
+	case MergeabilityQueued, MergeabilityWaiting, MergeabilityFailureHandling:
+		return true
+	}
+	return false
+}
+
+// InMergeQueue reports whether Graphite's merge queue holds a pull request,
+// by its record's flag or by its mergeability status. The flag outlives a
+// landing and an eviction, so callers settle those first.
+func InMergeQueue(info *PullRequestInfo, mergeability string) bool {
+	return QueuedMergeability(mergeability) || info != nil && info.MergeQueueStatus != nil && info.MergeQueueStatus.IsInGraphiteMq
+}
+
 // PRVersion is one submitted version of a pull request.
 type PRVersion struct {
 	HeadSha             string `json:"headSha"`

@@ -327,6 +327,34 @@ func TestMergeabilityStatusesBatchesUnderGraphitesLimit(t *testing.T) {
 	}
 }
 
+func TestInMergeQueue(t *testing.T) {
+	t.Parallel()
+	flagged := &PullRequestInfo{MergeQueueStatus: &MergeQueueStatus{IsInGraphiteMq: true}}
+	dropped := &PullRequestInfo{MergeQueueStatus: &MergeQueueStatus{}}
+	tests := []struct {
+		name         string
+		info         *PullRequestInfo
+		mergeability string
+		want         bool
+	}{
+		{"flagged", flagged, "", true},
+		{"failure handling with the flag dropped", dropped, MergeabilityFailureHandling, true},
+		{"waiting to merge", nil, MergeabilityWaiting, true},
+		{"queued to merge", dropped, MergeabilityQueued, true},
+		{"ready to merge", dropped, "READY_TO_MERGE", false},
+		{"running pre-queue CI", nil, "RUNNING", false},
+		{"no record", nil, "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := InMergeQueue(tt.info, tt.mergeability); got != tt.want {
+				t.Errorf("InMergeQueue = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestPreSubmitErrorResultIsTyped(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = fmt.Fprint(w, `{"result":{"error":"repo not synced"}}`)

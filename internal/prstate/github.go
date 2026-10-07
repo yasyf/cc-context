@@ -197,7 +197,7 @@ func (p *pass) target(n int) target {
 	} else {
 		open = !known || last.State == "OPEN"
 	}
-	t.activity = open && (inQueue(info) || !known || inQueue(last.Graphite) || last.QueueLabelled())
+	t.activity = open && (gtapi.InMergeQueue(info, p.mergeability[n]) || !known || gtapi.InMergeQueue(last.Graphite, last.Mergeability) || last.QueueLabelled())
 	return t
 }
 
@@ -401,10 +401,6 @@ func (g *GitHub) queueRecords(ctx context.Context, numbers []int) (map[int]*gtap
 		_, _ = fmt.Fprintf(g.warn, "prstate: graphite: %v; this poll carries no mergeability\n", err)
 	}
 	return byNumber, mergeability
-}
-
-func inQueue(info *gtapi.PullRequestInfo) bool {
-	return info != nil && info.MergeQueueStatus != nil && info.MergeQueueStatus.IsInGraphiteMq
 }
 
 func dropNotFound(chunk []target, gql *ghapi.GraphQLError) ([]target, []int, bool) {

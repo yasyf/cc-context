@@ -358,9 +358,11 @@ by number, from any checkout, and `-R owner/name` names another repo. Pass all
 numbers in one invocation, such as `ccx vcs pr status 25655 25665 25652`;
 the command reads their statuses together and prints one line per PR in input
 order. Do not run it in a shell loop or truncate its output with `head`. It prints
-`queued`, `not queued`, `evicted`, or `landed`. It reads Graphite's own record,
-so a PR enqueued from the Graphite web UI reads `queued` with no merge label
-on it, and a stale merge label the queue dropped reads `not queued`. `landed` means the
+`queued`, `not queued`, `evicted`, or `landed`. It reads Graphite's own record
+and its mergeability status, so a PR enqueued from the Graphite web UI reads
+`queued` with no merge label on it, and a stale merge label the queue dropped
+reads `not queued`. A PR whose batch failed CI while the queue retests it alone
+reads `queued (failure handling)`, never `landable`. `landed` means the
 squash Graphite recorded is reachable from the base branch on GitHub or from
 the default branch.
 

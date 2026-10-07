@@ -200,7 +200,7 @@ func prWatchSnapshotOf(number int, pr prstate.PR, trunk prstate.Trunk, prev prWa
 		snap.Queued, snap.Evicted = prev.Queued, prev.Evicted
 		return snap
 	}
-	report := classifyPRQueue(info, "", pr.Activity)
+	report := classifyPRQueue(info, pr.Mergeability, "", pr.Activity)
 	snap.Queued = report.Queue == prQueueQueued
 	snap.Evicted = mqPlain(report.Evicted)
 	return snap

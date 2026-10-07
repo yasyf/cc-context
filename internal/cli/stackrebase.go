@@ -2112,9 +2112,11 @@ func stackMovingBranches(state gtState, o stackRebaseOpts, overrides map[string]
 
 // stackQueueStates reads where every branch with an open pull request a
 // pushing run could move stands against Graphite's merge queue: a push to a
-// queued pull request evicts it. Graphite keeps a pull request flagged after
-// the queue lets it go, so each one flagged or carrying a queue label is
-// settled by its merge activity, read the way ccx vcs pr status reads it.
+// queued pull request evicts it. A queued mergeability status settles it, as
+// in failure handling, when Graphite drops the flag. Graphite keeps a pull
+// request flagged after the queue lets it go, so each one flagged or carrying a
+// queue label is settled by its merge activity, read the way ccx vcs pr status
+// reads it.
 func stackQueueStates(ctx context.Context, l lane, noPush bool, byName map[string]*stackRebaseBranch) (map[string]prQueueState, error) {
 	var heads []string
 	for _, name := range slices.Sorted(maps.Keys(byName)) {
@@ -2134,9 +2136,17 @@ func stackQueueStates(ctx context.Context, l lane, noPush bool, byName map[strin
 		return nil, fmt.Errorf("stack rebase: read the merge queue before pushing: %w", err)
 	}
 	infos = slices.DeleteFunc(infos, func(info gtapi.PullRequestInfo) bool { return info.State != gtapi.PROpen })
+	numbers := make([]int, 0, len(infos))
+	for _, info := range infos {
+		numbers = append(numbers, info.PRNumber)
+	}
+	mergeability, err := gtAPI(ctx).MergeabilityStatuses(ctx, owner, name, numbers)
+	if err != nil {
+		return nil, fmt.Errorf("stack rebase: read the merge queue before pushing: %w", err)
+	}
 	var watched []int
 	for _, info := range infos {
-		if prInGraphiteMq(info) || (prstate.PR{Labels: byName[info.HeadRefName].PR.Labels}).QueueLabelled() {
+		if gtapi.InMergeQueue(&info, mergeability[info.PRNumber]) || (prstate.PR{Labels: byName[info.HeadRefName].PR.Labels}).QueueLabelled() {
 			watched = append(watched, info.PRNumber)
 		}
 	}
@@ -2148,7 +2158,9 @@ func stackQueueStates(ctx context.Context, l lane, noPush bool, byName map[strin
 	}
 	states := map[string]prQueueState{}
 	for _, info := range infos {
-		states[info.HeadRefName] = prQueueOf(info, st.PRs[info.PRNumber], "").Queue
+		pr := st.PRs[info.PRNumber]
+		pr.Mergeability = mergeability[info.PRNumber]
+		states[info.HeadRefName] = prQueueOf(info, pr, "").Queue
 	}
 	return states, nil
 }
