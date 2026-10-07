@@ -1975,6 +1975,7 @@ func TestShipGitPushRetry(t *testing.T) {
 		gitForEachRefStdinArgv,
 		shipFetchArgv("origin", "main"),
 		{"git", "merge-base", "--is-ancestor", remoteRef, "HEAD"},
+		rewriteProbe("main"),
 		{"git", "rev-parse", "--path-format=absolute", "--git-path", "rebase-merge"},
 		{"git", "rev-parse", "--path-format=absolute", "--git-path", "rebase-apply"},
 		{"git", "rev-list", "--count", remoteRef + "..HEAD"},
@@ -2021,6 +2022,7 @@ func TestShipGitPushRetry(t *testing.T) {
 				gitForEachRefStdinArgv,
 				shipFetchArgv("origin", "main"),
 				{"git", "merge-base", "--is-ancestor", remoteRef, "HEAD"},
+				rewriteProbe("main"),
 				{"git", "rev-parse", "--path-format=absolute", "--git-path", "rebase-merge"},
 				{"git", "rev-parse", "--path-format=absolute", "--git-path", "rebase-apply"},
 				{"git", "rev-list", "--count", remoteRef + "..HEAD"},
@@ -2094,7 +2096,7 @@ func TestShipGitPushRetry(t *testing.T) {
 					want[i][j] = strings.ReplaceAll(arg, "@UPSTREAM", upstream)
 				}
 			}
-			assertInvocations(t, vcstest.Invocations(t, f.ArgvLog), want)
+			assertInvocations(t, collapseRewriteProbes(vcstest.Invocations(t, f.ArgvLog)), want)
 			if n := remoteCount(t, f, "main"); n != tt.remoteCount {
 				t.Errorf("origin main holds %d commits, want %d", n, tt.remoteCount)
 			}
