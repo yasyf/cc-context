@@ -43,6 +43,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs gh` refuses a write instead of sending it on the read-only
+  token.** A lane copied the `ccx vcs gh -- …` prefix from the guard pack's
+  rewrite note onto `gh api -X PUT …/pulls/27/merge`, and GitHub answered
+  `403 Resource not accessible by integration`. The verb now runs only a
+  `gh api` `GET` outside `graphql`, a `gh search`, or a command whose verb is
+  `view`, `list`, `status`, `checks`, `diff`, or `watch`. Anything else fails
+  before a token is minted, naming the plain `gh …` command to run on the
+  user's token. The rewrite note now says the verb runs reads only.
 - **`ccx vcs pr status` reads a conflicting PR as `blocked:conflict`.** It
   read #31511 as `blocked:ci-pending` while GitHub reported it conflicting.
   The shared poll's GraphQL record holds mergeability `UNKNOWN` until GitHub
