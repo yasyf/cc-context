@@ -43,6 +43,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ship` infers an untracked branch's parent against the remote trunk.**
+  The nearest tracked ancestor was read from the branch's commits above the
+  local trunk. In a worktree whose local `dev` sat 65 commits behind
+  `origin/dev`, a branch with no commits of its own above `origin/dev` took a
+  landed tracked branch for its parent, and `ship --dry-run` refused because
+  two landed untracked branches sat between them. The candidates now come
+  from the commits above the remote-tracking trunk, so that branch is
+  recorded on trunk. A landed branch can no longer be the inferred parent,
+  so the step that swapped one for trunk is gone.
+
 - **A process whose arguments the kernel cannot read no longer blocks
   `ccx vcs worktree rm`.** `kern.procargs2` fails with `input/output error`
   for some live processes, such as a `python3.14` the guard met while

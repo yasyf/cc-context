@@ -1546,7 +1546,7 @@ func stackAdoptUntrackedParents(ctx context.Context, dir render.Dir, commonDir s
 		if !present {
 			return nil, fmt.Errorf("stack rebase: --parent %s=%s names a branch with no local copy: git fetch %s refs/heads/%s:refs/heads/%s, then re-run", child, parent, tr.Remote(), parent, parent)
 		}
-		below, _, err := gtInferParent(ctx, &gtCache{dir: dir, prefix: stackRebasePrefix, commonDir: commonDir, state: state}, parent)
+		below, err := gtInferParent(ctx, &gtCache{dir: dir, prefix: stackRebasePrefix, commonDir: commonDir, state: state}, parent)
 		if err != nil {
 			return nil, err
 		}

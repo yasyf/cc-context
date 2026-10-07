@@ -650,14 +650,13 @@ func gtOffParent(branch, held string) string {
 // A --parent gt track would refuse, because the parent was rewritten after the
 // branch was cut from it, first has the branch's own commits replayed onto it.
 func gtTrack(ctx context.Context, errW io.Writer, l lane, o shipOpts, branch string, c *gtCache) (gtState, string, error) {
-	picked := ""
 	if o.parent == "" {
 		parent, stacked, err := gtTrunkParent(ctx, l, c, branch)
 		if err != nil {
 			return nil, "", err
 		}
 		if stacked {
-			if parent, picked, err = gtInferParent(ctx, c, branch); err != nil {
+			if parent, err = gtInferParent(ctx, c, branch); err != nil {
 				return nil, "", err
 			}
 		}
@@ -747,7 +746,7 @@ func gtTrack(ctx context.Context, errW io.Writer, l lane, o shipOpts, branch str
 	if len(s.Parents) > 0 {
 		seg += " onto " + s.Parents[0].Ref
 	}
-	return state, seg + picked + replayed, nil
+	return state, seg + replayed, nil
 }
 
 type gtRecordedParent struct {
@@ -894,29 +893,19 @@ func gtTrunkParent(ctx context.Context, l lane, c *gtCache, branch string) (pare
 }
 
 // gtInferParent names the parent gt track -f would pick for a branch stacked
-// on a tracked one: its nearest tracked ancestor, read from branches whose refs
-// exist, rather than gt's own walk over every tracked branch, which dies on one
-// another lane just deleted. One the remote trunk already contains gives way to
-// trunk, and picked then names it for the report.
-func gtInferParent(ctx context.Context, c *gtCache, branch string) (parent, picked string, err error) {
+// on a tracked one: its nearest tracked ancestor above the remote trunk, read
+// from branches whose refs exist, rather than gt's own walk over every tracked
+// branch, which dies on one another lane just deleted.
+func gtInferParent(ctx context.Context, c *gtCache, branch string) (string, error) {
 	state, err := c.at(ctx)
 	if err != nil {
-		return "", "", err
+		return "", err
 	}
 	trunk, err := gtTrunkBranch("ship", state)
 	if err != nil {
-		return "", "", err
+		return "", err
 	}
-	nearest, err := gtNearestTracked(ctx, c.dir, state, trunk, branch)
-	if err != nil {
-		return "", "", err
-	}
-	err = gtRefuseLandedParent(ctx, c.dir, state, branch, nearest)
-	var landed *errLandedParent
-	if errors.As(err, &landed) {
-		return trunk, fmt.Sprintf(" (its nearest tracked ancestor %s is already in %s/%s)", nearest, landed.Remote, landed.Trunk), nil
-	}
-	return nearest, "", err
+	return gtNearestTracked(ctx, c.dir, state, trunk, branch)
 }
 
 func gtNearestTracked(ctx context.Context, dir render.Dir, state gtState, trunk, branch string) (string, error) {
@@ -952,9 +941,17 @@ func gtNearestTracked(ctx context.Context, dir render.Dir, state gtState, trunk,
 			heads[candidates[i]] = fields[0]
 		}
 	}
-	out, err = render.RunCLI(ctx, dir, "git", []string{"rev-list", gtRestackRef(trunk) + ".." + gtRestackRef(branch)})
+	floor := gtRestackRef(trunk)
+	tr, err := gtTrunkRefOffline(ctx, dir, "ship", trunk)
+	switch {
+	case err == nil:
+		floor = string(tr.Ref())
+	case !errors.Is(err, vcs.ErrNoTrunk):
+		return "", err
+	}
+	out, err = render.RunCLI(ctx, dir, "git", []string{"rev-list", floor + ".." + gtRestackRef(branch)})
 	if err != nil {
-		return "", fmt.Errorf("ship: list %s's commits above %s: %w", branch, trunk, err)
+		return "", fmt.Errorf("ship: list %s's commits above %s: %w", branch, floor, err)
 	}
 	contained := make(map[string]bool)
 	for _, head := range strings.Fields(out) {
