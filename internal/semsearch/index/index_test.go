@@ -64,6 +64,12 @@ func (altChunker) ChunkFile(ctx context.Context, p, l, c string) []semsearch.Chu
 func writeIndexRepo(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
+	writeIndexFiles(t, dir)
+	return dir
+}
+
+func writeIndexFiles(t *testing.T, dir string) {
+	t.Helper()
 	files := map[string]string{
 		"a.go": "package a\n\nfunc Alpha() string { return \"alpha\" }\n",
 		"b.go": "package b\n\nfunc Beta() string { return \"beta\" }\n",
@@ -74,7 +80,6 @@ func writeIndexRepo(t *testing.T) string {
 			t.Fatalf("write %s: %v", name, err)
 		}
 	}
-	return dir
 }
 
 func TestLoadBuildAndWarmReload(t *testing.T) {
@@ -320,7 +325,7 @@ func TestWarmLoadDoesNotRewriteCache(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dir, err := variantCacheDir(ctx, resolved, "model-x", ContentKey([]ContentType{ContentCode}), DefaultChunker().ID(), emb.Dims())
+	dir, err := variantCacheDir(ctx, resolved, variantKey("model-x", ContentKey([]ContentType{ContentCode}), DefaultChunker().ID(), emb.Dims()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -367,7 +372,7 @@ func TestBuildCancelledBeforeTraversal(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := build(ctx, &countingEmbedder{}, filepath.Join(t.TempDir(), "missing"), []string{".go"}, DefaultChunker(), nil)
+	_, err := build(ctx, &countingEmbedder{}, filepath.Join(t.TempDir(), "missing"), []string{".go"}, DefaultChunker(), nil, true)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("build error = %v, want cancellation before filesystem access", err)
 	}
@@ -392,7 +397,7 @@ func TestChunkFileWarmHitDoesNotReadContent(t *testing.T) {
 		t.Skip("filesystem permits reading mode 000 files")
 	}
 	previous := fileManifest{Path: "cached.go", MtimeNs: info.ModTime().UnixNano(), Count: 1}
-	got := chunkFile(t.Context(), path, root, DefaultChunker(), map[string]fileManifest{"cached.go": previous})
+	got := chunkFile(t.Context(), path, root, DefaultChunker(), map[string]fileManifest{"cached.go": previous}, true)
 	if !got.valid || !got.reuse || got.prev != previous {
 		t.Fatalf("warm unreadable file = %+v, want cached contents without reading", got)
 	}

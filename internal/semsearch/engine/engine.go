@@ -8,6 +8,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"runtime/debug"
 	"sort"
@@ -198,6 +199,9 @@ const (
 	residentIdleTTL = 15 * time.Minute
 	// residentSweepInterval is how often StartIdleSweeper checks the TTL.
 	residentSweepInterval = 5 * time.Minute
+	// diskIdleTTL is how long an on-disk index outlives its last Load before
+	// StartIdleSweeper's startup prune deletes it.
+	diskIdleTTL = 14 * 24 * time.Hour
 )
 
 type residentEntry struct {
@@ -291,11 +295,14 @@ func sweepIdle(resident map[indexKey]*residentEntry, now time.Time) int {
 	return dropped
 }
 
-// StartIdleSweeper runs SweepIdle on a ticker until ctx is cancelled. The MCP
-// server starts it so a long-lived process releases an index it has stopped
-// querying; the one-shot CLI exits before the first tick and never calls it.
+// StartIdleSweeper prunes the on-disk index cache once, then runs SweepIdle on a
+// ticker until ctx is cancelled. The MCP server starts it so a long-lived process
+// releases an index it has stopped querying; the one-shot CLI never calls it.
 func StartIdleSweeper(ctx context.Context) {
 	go func() {
+		if err := index.Prune(ctx, diskIdleTTL); err != nil && ctx.Err() == nil {
+			slog.Warn("semsearch: prune index cache", "err", err)
+		}
 		t := time.NewTicker(residentSweepInterval)
 		defer t.Stop()
 		for {

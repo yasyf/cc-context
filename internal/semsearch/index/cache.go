@@ -12,27 +12,33 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/yasyf/cc-context/internal/cache"
+	"github.com/yasyf/cc-context/internal/gitdir"
 	"github.com/yasyf/cc-context/internal/semsearch"
 )
 
 // schemaVersion is the on-disk index-cache format version. A mismatch discards
 // the cache and rebuilds — bump it whenever the persisted layout changes.
-const schemaVersion = 2
+const schemaVersion = 3
 
 // Cache file names within a repo's cache dir.
 const (
 	manifestFile = "manifest.json"
 	chunksFile   = "chunks.json"
 	vectorsFile  = "vectors.bin"
+	lastUsedFile = "last_used"
+	rootFile     = "root"
+	familiesDir  = "families"
 )
 
-// fileManifest records one file's modification time and its chunk range within
-// the flat chunk/vector arrays — semble's FileManifestEntry.
+// fileManifest records one file's modification time, content hash, and chunk
+// range within the flat chunk/vector arrays — semble's FileManifestEntry.
 type fileManifest struct {
 	Path    string `json:"path"`
 	MtimeNs int64  `json:"mtime_ns"`
+	Hash    string `json:"sha256"`
 	Start   int    `json:"start"`
 	Count   int    `json:"count"`
 }
@@ -69,11 +75,77 @@ func cacheDir(ctx context.Context, root string) (string, error) {
 	return cache.Dir(ctx, "semsearch", hex.EncodeToString(sum[:]))
 }
 
-func variantCacheDir(ctx context.Context, root, model, content, chunker string, dims int) (string, error) {
+func variantKey(model, content, chunker string, dims int) string {
+	sum := sha256.Sum256(fmt.Appendf(nil, "%d %q %q %q %d", schemaVersion, model, content, chunker, dims))
+	return hex.EncodeToString(sum[:])
+}
+
+func variantCacheDir(ctx context.Context, root, vKey string) (string, error) {
 	repoKey := sha256.Sum256([]byte(root))
-	parameters := fmt.Sprintf("%d %q %q %q %d", schemaVersion, model, content, chunker, dims)
-	variantKey := sha256.Sum256([]byte(parameters))
-	return cache.Dir(ctx, "semsearch", hex.EncodeToString(repoKey[:]), hex.EncodeToString(variantKey[:]))
+	return cache.Dir(ctx, "semsearch", hex.EncodeToString(repoKey[:]), vKey)
+}
+
+// familyPointer resolves the file naming the latest vKey index among worktrees
+// sharing root's git common dir, or "" outside a git working tree.
+func familyPointer(ctx context.Context, root, vKey string) (string, error) {
+	gitRoot := gitdir.Root(root)
+	if gitRoot == "" {
+		return "", nil
+	}
+	common := gitdir.CommonDir(gitRoot)
+	if common == "" {
+		return "", nil
+	}
+	if resolved, err := filepath.EvalSymlinks(common); err == nil {
+		common = resolved
+	}
+	rel, err := filepath.Rel(gitRoot, root)
+	if err != nil {
+		return "", fmt.Errorf("relativize %q to %q: %w", root, gitRoot, err)
+	}
+	sum := sha256.Sum256([]byte(common + "\x00" + filepath.ToSlash(rel)))
+	dir, err := cache.Dir(ctx, "semsearch", familiesDir, hex.EncodeToString(sum[:]))
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, vKey), nil
+}
+
+func readPointer(pointer string) string {
+	if pointer == "" {
+		return ""
+	}
+	data, err := os.ReadFile(pointer) //nolint:gosec // pointer lives under the trusted cache dir
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+func hasManifest(dir string) bool {
+	if dir == "" {
+		return false
+	}
+	_, err := os.Stat(filepath.Join(dir, manifestFile))
+	return err == nil
+}
+
+func recordRoot(dir, root string) error {
+	return cache.Store(filepath.Join(filepath.Dir(dir), rootFile), []byte(root), 0o640)
+}
+
+func touchLastUsed(dir string) error {
+	path := filepath.Join(dir, lastUsedFile)
+	now := time.Now()
+	if err := os.Chtimes(path, now, now); !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return os.WriteFile(path, nil, 0o640) //nolint:gosec // path is under the trusted cache dir
+}
+
+func contentHash(text string) string {
+	sum := sha256.Sum256([]byte(text))
+	return hex.EncodeToString(sum[:])
 }
 
 // CacheDir resolves the persistent index-cache directory for root.
@@ -154,6 +226,9 @@ func (p *persisted) entryByPath() map[string]fileManifest {
 
 // store writes the manifest, chunks, and vector matrix into dir.
 func store(dir string, man manifest, chunks []semsearch.Chunk, vectors [][]float32) error {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return fmt.Errorf("create cache dir %q: %w", dir, err)
+	}
 	var nonce [16]byte
 	if _, err := rand.Read(nonce[:]); err != nil {
 		return fmt.Errorf("generate cache generation: %w", err)
