@@ -948,7 +948,7 @@ func moveOrphanToTrash(path string, parent os.FileInfo, trash, dest string) erro
 }
 
 func openDirNoFollow(dir string) (*os.File, error) {
-	file, err := os.OpenFile(dir, os.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	file, err := os.OpenFile(dir, os.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0) //nolint:gosec // O_NOFOLLOW|O_DIRECTORY open of a path the caller already resolved
 	if err != nil {
 		return nil, fmt.Errorf("worktree rm: %w", err)
 	}
