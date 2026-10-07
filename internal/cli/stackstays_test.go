@@ -106,6 +106,56 @@ func TestStackSubmitRebasesAPublishedBranchThatConflictsWithTrunk(t *testing.T) 
 	}
 }
 
+func TestStackSubmitRebasesWhenAChildConflictsBesideACleanMerge(t *testing.T) {
+	f := shipGTRepo(t)
+	writeShipFile(t, f.Dir, "a/x", "a\nb\nc\n")
+	writeShipFile(t, f.Dir, "b/y", "1\n2\n3\n4\n5\n6\n7\n8\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "a", "b")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "files")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "main")
+	shipGTStack(t, f, "base")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "feature")
+	writeShipFile(t, f.Dir, "a/x", "a\nfeature\nc\n")
+	writeShipFile(t, f.Dir, "b/y", "1\nfeature\n3\n4\n5\n6\n7\n8\n")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qam", "feature")
+	mustRun(t, f.Env(), f.Dir, "gt", "track", "-f", "--no-interactive")
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("stack submit: %v", err)
+	}
+	published := map[string]string{}
+	for _, branch := range []string{"base", "feature"} {
+		published[branch] = gitAt(t, f.Env(), f.RemoteDir, "rev-parse", branch)
+	}
+	restackAdvanceRemote(t, f, "main", "a/x", "a\nmain\nc\n")
+	stackAdvanceTrunk(t, f, "b/y", "1\n2\n3\n4\n5\n6\n7\nmain\n")
+	pin := gitAt(t, f.Env(), f.Dir, "rev-parse", "origin/main")
+
+	out, _, err := runStackCmd(t, f, "submit")
+	if err == nil {
+		t.Fatal("stack submit onto a trunk feature conflicts with succeeded, want a conflict stop")
+	}
+	for _, want := range []string{
+		"base" + shipSep + "onto main" + shipSep + "from ",
+		"feature" + shipSep + "onto base" + shipSep + "from " + published["base"][:12] + shipSep + "conflicts with main@" + pin[:12] + " in a/x",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("plan = %q, want %q", out, want)
+		}
+	}
+	run, err := stackOnlyTestRun(filepath.Join(f.Dir, ".git"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Conflict == nil || run.Conflict.Branch != "feature" {
+		t.Errorf("run conflict = %+v, want a stop on feature", run.Conflict)
+	}
+	for branch, head := range published {
+		if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", branch); got != head {
+			t.Errorf("origin %s moved to %.12s before the conflict was resolved", branch, got)
+		}
+	}
+}
+
 func TestStackSubmitMovesTheChildOfALandedParentOntoTrunk(t *testing.T) {
 	f, _ := stackPublishedBehindTrunk(t, "upstream.txt")
 	restackSquashRemote(t, f, "main", "base (#41)", "base")

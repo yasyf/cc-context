@@ -107,6 +107,7 @@ type stackRebaseBranch struct {
 	Held        string            `json:"held,omitempty"`
 	Kept        bool              `json:"kept,omitempty"`
 	Stays       bool              `json:"stays,omitempty"`
+	Conflicts   []string          `json:"conflicts,omitempty"`
 	Pinned      bool              `json:"pinned,omitempty"`
 	Resolved    bool              `json:"resolved,omitempty"`
 	LocalOnly   bool              `json:"local_only,omitempty"`
@@ -1240,7 +1241,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 			}
 			b.Bump = slices.Contains(o.bump, name)
 			if o.stayClean && !b.Bump && !inherits[name] && b.Parent == trunk && b.WasParent == trunk && b.Remote != "" && b.OldBase != pin && queue[name] != prQueueEvicted && (b.PR == nil || b.PR.Mergeable != "CONFLICTING") {
-				if b.Stays, err = stackMergesClean(ctx, l.dir(), pin, stackUpstackHeads(order, byName, name)); err != nil {
+				if b.Stays, err = stackMergesClean(ctx, l.dir(), pin, stackUpstack(order, byName, name)); err != nil {
 					return nil, err
 				}
 			}
@@ -2457,36 +2458,49 @@ func stackPastFork(ctx context.Context, dir render.Dir, recorded, fork, head str
 	return recorded, nil
 }
 
-// Merge attributes come from pin's tree: a working copy's .gitattributes can
-// predate trunk's merge=binary rules and pass a conflicting text merge.
-func stackMergesClean(ctx context.Context, dir render.Dir, pin string, heads []string) (bool, error) {
-	for _, head := range heads {
-		_, code, stderr, err := render.RunCLIExitCode(ctx, dir, "git", []string{"--attr-source=" + pin, "merge-tree", "--write-tree", "--quiet", pin, head})
+func stackMergesClean(ctx context.Context, dir render.Dir, pin string, branches []*stackRebaseBranch) (bool, error) {
+	clean := true
+	for _, b := range branches {
+		merges, conflicts, err := stackTrunkConflicts(ctx, dir, pin, b.Head)
 		if err != nil {
-			return false, fmt.Errorf("stack rebase: git merge-tree %.12s %.12s: %w", pin, head, err)
+			return false, err
 		}
-		switch code {
-		case 0:
-		case 1:
-			return false, nil
-		default:
-			return false, fmt.Errorf("stack rebase: git merge-tree %.12s %.12s: exit %d: %s", pin, head, code, strings.TrimSpace(stderr))
-		}
+		b.Conflicts = conflicts
+		clean = clean && merges
 	}
-	return true, nil
+	return clean, nil
 }
 
-func stackUpstackHeads(order []string, byName map[string]*stackRebaseBranch, name string) []string {
+// Merge attributes come from pin's tree: a working copy's .gitattributes can
+// predate trunk's merge=binary rules and pass a conflicting text merge.
+// Never --quiet: git 2.56 exits 0 under it when a conflicted path sorts before
+// a clean content merge in a sibling directory.
+func stackTrunkConflicts(ctx context.Context, dir render.Dir, pin, head string) (bool, []string, error) {
+	out, code, stderr, err := render.RunCLIExitCode(ctx, dir, "git", []string{"--attr-source=" + pin, "merge-tree", "--write-tree", "--name-only", "--no-messages", "-z", pin, head})
+	if err != nil {
+		return false, nil, fmt.Errorf("stack rebase: git merge-tree %.12s %.12s: %w", pin, head, err)
+	}
+	switch code {
+	case 0:
+		return true, nil, nil
+	case 1:
+		return false, strings.Split(strings.TrimRight(out, "\x00"), "\x00")[1:], nil
+	default:
+		return false, nil, fmt.Errorf("stack rebase: git merge-tree %.12s %.12s: exit %d: %s", pin, head, code, strings.TrimSpace(stderr))
+	}
+}
+
+func stackUpstack(order []string, byName map[string]*stackRebaseBranch, name string) []*stackRebaseBranch {
 	above := map[string]bool{name: true}
-	heads := []string{byName[name].Head}
+	branches := []*stackRebaseBranch{byName[name]}
 	for _, n := range order {
 		b := byName[n]
 		if above[b.Parent] && b.Landed == "" && b.Held == "" {
 			above[n] = true
-			heads = append(heads, b.Head)
+			branches = append(branches, b)
 		}
 	}
-	return heads
+	return branches
 }
 
 func stackMergeBase(ctx context.Context, dir render.Dir, a, b string) (string, error) {
@@ -2571,6 +2585,9 @@ func stackPlanLines(run *stackRebaseRun) []string {
 				parent += " (was " + b.WasParent + ")"
 			}
 			fields = append(fields, parent, fmt.Sprintf("from %.12s", b.OldBase))
+			if len(b.Conflicts) > 0 {
+				fields = append(fields, fmt.Sprintf("conflicts with %s@%.12s in %s", run.Trunk, run.Pin, strings.Join(b.Conflicts, ", ")))
+			}
 			if b.Head != b.Local {
 				fields = append(fields, fmt.Sprintf("taking the remote head %.12s", b.Head))
 			}
