@@ -569,6 +569,67 @@ func TestPRStatusReadsGraphitesStackStateOverItsHeldCheck(t *testing.T) {
 	}
 }
 
+// #31511 at head 7729a0ad on 2026-10-07: GitHub's GraphQL answered its
+// mergeability UNKNOWN while one check ran, and the REST pull endpoint read it
+// conflicting once GitHub computed the merge commit.
+const (
+	prInfoConflicting = `{"prNumber":31511,"state":"OPEN","baseRefName":"dev","mergeQueueStatus":null,"mergeCommitSha":null}`
+	prRunning         = `"checks":{"nodes":[{"commit":{"statusCheckRollup":{"state":"PENDING","contexts":{"nodes":[` +
+		`{"__typename":"CheckRun","name":"buildkite/test","conclusion":null,"status":"IN_PROGRESS"}]}}}}]}`
+	prPullPath        = "/repos/Forge-AI/monorepo/pulls/31511"
+	prPullComputing   = `{"number":31511,"state":"open","mergeable":null,"mergeable_state":"unknown"}`
+	prPullConflicting = `{"number":31511,"state":"open","mergeable":false,"mergeable_state":"dirty"}`
+)
+
+func prConflictingNode(mergeable, mergeState string) string {
+	node := strings.Replace(prNode(31511, "OPEN", prComments()), `"checks":{"nodes":[]}`, prRunning, 1)
+	return strings.Replace(node, `"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN"`, fmt.Sprintf(`"mergeable":%q,"mergeStateStatus":%q`, mergeable, mergeState), 1)
+}
+
+func TestPRStatusReadsAnUnknownMergeabilityFromREST(t *testing.T) {
+	_, client := stubPRInfo(t, prInfoConflicting)
+	github := stubPRState(t, prPoll(`"p0":`+prConflictingNode("UNKNOWN", "UNKNOWN")))
+	github.pull(prPullPath, prPullComputing, prPullConflicting)
+
+	out, err := runPRStatusCmd(t, client, "--repo", "Forge-AI/monorepo", "31511")
+	if err != nil {
+		t.Fatalf("pr status: %v", err)
+	}
+	if want := "#31511  not queued · open · ci pending: 1 running · approved · blocked:conflict,ci-pending\n"; out != want {
+		t.Errorf("report = %q, want %q", out, want)
+	}
+	if len(github.reads) != 2 {
+		t.Errorf("REST reads = %q, want the computing answer asked once more", github.reads)
+	}
+}
+
+func TestPRStatusReadsAStaleMergeabilityFromREST(t *testing.T) {
+	_, client := stubPRInfo(t, prInfoConflicting)
+	drained := strings.Replace(prPoll(`"p0":`+prConflictingNode("MERGEABLE", "BLOCKED")), `"remaining":4900,"resetAt":"2026-09-30T08:00:00Z"`, `"remaining":12,"resetAt":"2099-01-01T00:00:00Z"`, 1)
+	github := stubPRState(t, drained)
+	github.pull(prPullPath, prPullConflicting)
+
+	fresh, err := runPRStatusCmd(t, client, "--repo", "Forge-AI/monorepo", "31511")
+	if err != nil {
+		t.Fatalf("pr status: %v", err)
+	}
+	if want := "#31511  not queued · open · ci pending: 1 running · approved · blocked:ci-pending\n"; fresh != want || len(github.reads) != 0 {
+		t.Errorf("fresh report = %q after %d REST reads, want %q from the poll alone", fresh, len(github.reads), want)
+	}
+	prStateBackdate(t, time.Minute)
+
+	out, err := runPRStatusCmd(t, client, "--repo", "Forge-AI/monorepo", "31511")
+	if err != nil {
+		t.Fatalf("pr status under the quota backoff: %v", err)
+	}
+	if !strings.HasPrefix(out, "#31511  not queued · open · ci pending: 1 running · approved · blocked:conflict,ci-pending · stale, polled 20") {
+		t.Errorf("stale report = %q, want the REST conflict ahead of ci-pending", out)
+	}
+	if len(github.queries) != 1 || len(github.reads) != 1 {
+		t.Errorf("graphql queries = %d, REST reads = %d; want the one poll and one REST read", len(github.queries), len(github.reads))
+	}
+}
+
 func rollupOf(state string, contexts ...prstate.Context) *prstate.Rollup {
 	r := &prstate.Rollup{State: state}
 	r.Contexts.Nodes = contexts
@@ -689,6 +750,8 @@ func TestPRVerdict(t *testing.T) {
 			prstate.PR{Draft: true, Mergeable: "CONFLICTING"},
 			"blocked:draft,conflict,ci-pending,unapproved",
 		},
+		{"dirty merge state", prStatusReport{prQueueReport: open, CI: prCIReport{State: prCIPending}, Approval: approved}, prstate.PR{Mergeable: "MERGEABLE", MergeStateStatus: "DIRTY"}, "blocked:conflict,ci-pending"},
+		{"mergeability not computed", prStatusReport{prQueueReport: open, CI: green, Approval: approved}, prstate.PR{Mergeable: "UNKNOWN"}, "blocked:mergeable-unknown"},
 		{"changes requested", prStatusReport{prQueueReport: open, CI: green, Approval: prApprovalReport{State: prChangesRequested}}, prstate.PR{}, "blocked:changes-requested"},
 		{
 			"parent landed",

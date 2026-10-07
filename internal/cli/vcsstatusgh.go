@@ -170,7 +170,8 @@ type statusPRNode struct {
 // statusResolvePRs fills every branch's pull request from GitHub. It swallows
 // nothing silently: a repository nobody can ask about, a gh that is not there,
 // and a query GitHub refused each land in PRError, because the local half of
-// the report is still worth printing.
+// the report is still worth printing. A refused query falls back to the REST
+// pull endpoints, so a conflict still shows while GraphQL is rate-limited.
 func statusResolvePRs(ctx context.Context, l lane, st *vcsStatus) {
 	if st.Repo == "" || st.PRError != "" {
 		return
@@ -185,7 +186,8 @@ func statusResolvePRs(ctx context.Context, l lane, st *vcsStatus) {
 	}
 	resp, err := statusQueryPRs(ctx, l, branches)
 	if err != nil {
-		st.PRError = err.Error()
+		st.PRError = err.Error() + " — read each pull request from the REST API instead, without its checks or reviews"
+		statusRESTPRs(ctx, l, st)
 		return
 	}
 	if statusAnyUnknown(resp, branches) {
@@ -219,6 +221,58 @@ func statusResolvePRs(ctx context.Context, l lane, st *vcsStatus) {
 		st.Required = statusMerge(st.Required, required)
 	}
 	statusFillAlerts(ctx, st, nodes)
+}
+
+func statusRESTPRs(ctx context.Context, l lane, st *vcsStatus) {
+	for i, b := range st.Branches {
+		pr, err := statusRESTPR(ctx, l, b.Name)
+		if err != nil {
+			st.PRError += "; " + err.Error()
+			continue
+		}
+		st.Branches[i].PR = pr
+	}
+}
+
+// statusRESTPR reads branch's newest pull request the way the batched query
+// would, asking an open one's mergeability once more while GitHub computes it.
+func statusRESTPR(ctx context.Context, l lane, branch string) (*statusPR, error) {
+	newest, ok, err := ghNewestPull(ctx, l.dir(), branch)
+	if err != nil || !ok {
+		return nil, err
+	}
+	pull, err := ghPullAt(ctx, l.dir(), newest.Number)
+	if err == nil && pull.State == "open" && pull.Mergeable == nil {
+		if err := sleepCtx(ctx, statusMergeableRetry); err != nil {
+			return nil, err
+		}
+		pull, err = ghPullAt(ctx, l.dir(), newest.Number)
+	}
+	if err != nil {
+		return nil, err
+	}
+	landing, err := ghLanding(ctx, l.dir(), pull, l.gt)
+	if err != nil {
+		return nil, err
+	}
+	node := statusPRNode{
+		Number:           pull.Number,
+		URL:              pull.HTMLURL,
+		Body:             pull.Body,
+		IsDraft:          pull.Draft,
+		BaseRefName:      pull.Base.Ref,
+		HeadRefOid:       pull.Head.SHA,
+		Mergeable:        pull.mergeable(),
+		MergeStateStatus: strings.ToUpper(pull.MergeableState),
+		prLanding:        landing,
+	}
+	node.Files.TotalCount = pull.ChangedFiles
+	for _, name := range pull.labelNames() {
+		node.Labels.Nodes = append(node.Labels.Nodes, struct {
+			Name string `json:"name"`
+		}{name})
+	}
+	return statusBuildPR(node, statusLanded(ctx, l, node, ""), "", nil), nil
 }
 
 func statusFillMergeability(ctx context.Context, st *vcsStatus) {

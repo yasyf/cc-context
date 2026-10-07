@@ -348,11 +348,35 @@ type watchGitHub struct {
 	responses []string
 	vars      []map[string]any
 	queries   []string
+	pulls     map[string][]string
+	reads     []string
+}
+
+// pull makes the REST read of path answer the nth time with the nth body,
+// repeating the last.
+func (g *watchGitHub) pull(path string, bodies ...string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.pulls == nil {
+		g.pulls = map[string][]string{}
+	}
+	g.pulls[path] = bodies
 }
 
 func (g *watchGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if bodies, ok := g.pulls[r.URL.Path]; ok && r.Method == http.MethodGet {
+		g.reads = append(g.reads, r.URL.Path)
+		n := 0
+		for _, read := range g.reads {
+			if read == r.URL.Path {
+				n++
+			}
+		}
+		_, _ = io.WriteString(w, bodies[min(n, len(bodies))-1])
+		return
+	}
 	if r.URL.Path != "/graphql" {
 		g.t.Errorf("path = %s, want /graphql", r.URL.Path)
 	}

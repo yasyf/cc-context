@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/yasyf/cc-context/internal/ghapi"
 	"github.com/yasyf/cc-context/internal/gtapi"
 	"github.com/yasyf/cc-context/internal/prstate"
 	"github.com/yasyf/cc-context/internal/render"
@@ -168,7 +169,10 @@ stack. Approval is GitHub's reviewDecision, which counts the reviews the base
 branch's protection counts, bot approvals included, followed by who approved or
 requested changes. The verdict is landed, queued, landable for an open pull
 request that is green, approved, not a draft, and not conflicting, and
-otherwise blocked: followed by every cause, such as blocked:ci-red,unapproved.
+otherwise blocked: followed by every cause, such as blocked:conflict,ci-pending.
+Conflicting is GitHub's mergeable answer. While the cache holds it UNKNOWN, or
+serves it stale under a GraphQL rate limit, the command asks GitHub's REST pull
+endpoint instead, and one still uncomputed reads blocked:mergeable-unknown.
 Graphite's own merge state adds needs-restack (parent landed), needs-restack,
 or waiting-on-downstack #N, naming the pull request below.
 
@@ -346,6 +350,14 @@ func collectPRQueue(ctx context.Context, repo string, numbers []int, warn io.Wri
 			landedOn = pr.SquashOn[0]
 		}
 		r := prQueueOf(info, pr, landedOn)
+		if r.State == string(gtapi.PROpen) && (r.Queue == prQueueNotQueued || r.Queue == prQueueEvicted) && (limited != nil || pr.Mergeable == statusUnknown) {
+			mergeable, state, err := prReadMergeable(ctx, repo, number)
+			if err != nil {
+				_, _ = fmt.Fprintf(warn, "pr status: #%d: %v\n", number, err)
+			} else {
+				pr.Mergeable, pr.MergeStateStatus = mergeable, state
+			}
+		}
 		r.Conflicting = r.Queue == prQueueEvicted && pr.MergeStateStatus == "DIRTY"
 		r.Stale = staleAt(limited, pr.PolledAt)
 		report := prStatusReport{prQueueReport: r, CI: prCIOf(pr.Rollup), Approval: prApprovalOf(pr), Mergeability: pr.Mergeability, Downstack: info.DependentPRNumber}
@@ -353,6 +365,26 @@ func collectPRQueue(ctx context.Context, repo string, numbers []int, warn io.Wri
 		reports = append(reports, report)
 	}
 	return reports, nil
+}
+
+// prReadMergeable asks GitHub's REST pull endpoint for a pull request's
+// mergeability, on the REST quota a rate-limited GraphQL budget leaves alone.
+// GitHub answers null until it computes the merge commit the first ask
+// schedules, so an unknown answer is asked once more.
+func prReadMergeable(ctx context.Context, repo string, number int) (string, string, error) {
+	client := reviewsAPI().ForRepo(repo)
+	for asked := 1; ; asked++ {
+		pull, err := ghapi.Get[ghPull](ctx, client, ghPullPath(repo, number))
+		if err != nil {
+			return "", "", fmt.Errorf("read the mergeability from REST: %w", err)
+		}
+		if pull.Mergeable != nil || asked == 2 {
+			return pull.mergeable(), strings.ToUpper(pull.MergeableState), nil
+		}
+		if err := sleepCtx(ctx, statusMergeableRetry); err != nil {
+			return "", "", err
+		}
+	}
 }
 
 func readPRQueue(ctx context.Context, repo string, numbers []int, warn io.Writer, wait time.Duration) (prstate.State, *prstate.Backoff, error) {
@@ -435,8 +467,11 @@ func prVerdict(r prStatusReport, pr prstate.PR) string {
 	if pr.Draft {
 		causes = append(causes, "draft")
 	}
-	if pr.Mergeable == "CONFLICTING" || r.Conflicting {
+	switch {
+	case pr.Mergeable == "CONFLICTING" || pr.MergeStateStatus == "DIRTY" || r.Conflicting:
 		causes = append(causes, "conflict")
+	case pr.Mergeable == statusUnknown:
+		causes = append(causes, "mergeable-unknown")
 	}
 	if cause := prGraphiteCause(r.Mergeability, r.Downstack); cause != "" {
 		causes = append(causes, cause)

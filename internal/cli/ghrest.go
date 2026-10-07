@@ -30,6 +30,8 @@ type ghPull struct {
 	Title          string     `json:"title"`
 	Body           string     `json:"body"`
 	State          string     `json:"state"`
+	Draft          bool       `json:"draft"`
+	ChangedFiles   int        `json:"changed_files"`
 	MergedAt       *time.Time `json:"merged_at"`
 	Mergeable      *bool      `json:"mergeable"`
 	MergeableState string     `json:"mergeable_state"`
