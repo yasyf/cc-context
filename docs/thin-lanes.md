@@ -1,8 +1,10 @@
 # Create and work in thin lanes
 
 Git `ccx vcs stack new` creates thin lanes by default: sparse working copies
-with bounded history in a separate ccx-owned store. An unset `CCX_STACK_NEW`
-keeps the existing jj behavior.
+with bounded history in a separate ccx-owned store. A child of a non-trunk
+branch this checkout holds is the exception: it is cut in this checkout's
+clone, beside its parent. An unset `CCX_STACK_NEW` keeps the existing jj
+behavior.
 
 ## Create a thin lane
 
@@ -126,13 +128,16 @@ the [stack conflict guide](stack-rebase.md).
 
 ## Stack on a published parent
 
-On the Graphite lane, ccx automatically adopts a parent that exists only in
-the source checkout. From that checkout, create a child of a parent already
+On the Graphite lane, `--thin` adopts a parent that exists only in the
+source checkout. From that checkout, create a child of a parent already
 published onto trunk:
 
 ```sh
-ccx vcs stack new agent-child --parent parent-work
+ccx vcs stack new agent-child --parent parent-work --thin
 ```
+
+Without `--thin` or `CCX_STACK_NEW=thin`, the same command cuts the child in
+the source checkout's clone from the parent's local head.
 
 ccx verifies the parent's publication receipt against the source checkout
 and the remote, brings the parent into the store at its published head, and

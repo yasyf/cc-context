@@ -36,6 +36,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`stack new` cuts a child in the clone that holds its parent.** With
+  `CCX_STACK_NEW` unset, a child of a non-trunk branch in a full checkout went
+  into the thin store, which adopted the parent at its last publication. When
+  the parent's own clone had moved past that publication, the child started
+  without the parent's newer commits: `yasyf/test-serial-guard` was cut at
+  `dbf9832` while its parent sat at `94f2494`. The default now cuts such a
+  child in the calling checkout's clone from the parent's local head. `--thin`
+  and `CCX_STACK_NEW=thin` still adopt the published parent into the store.
+
+- **Concurrent fetches no longer refuse each other on the commit-graph lock.**
+  A clone that sets `fetch.writeCommitGraph` makes every fetch rewrite
+  `objects/info/commit-graphs/commit-graph-chain.lock`, and every worktree of
+  the clone shares that one file. When two lanes ran `stack submit` at once,
+  the second fetch failed with `Unable to create '.../commit-graph-chain.lock':
+  File exists`. Every fetch ccx runs, through git or `jj git fetch`, now sets
+  `fetch.writeCommitGraph=false` through `GIT_CONFIG_COUNT`, after any entries
+  the environment already carries.
+
 - **`worktree rm --path` removes an orphaned worktree.** A pool worktree whose
   repository was re-cloned keeps a `.git` file naming an admin dir that no
   longer exists. rm refused it as a broken checkout, and `git worktree repair`
@@ -64,6 +82,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `API rate limit already exceeded` exactly when it was needed. It now reads
   the login over REST and reports the quota from the refusal's headers as
   `0/5000 GraphQL left` with its reset time.
+||||||| parent of a6eafad (vcs: 🐛 Keep concurrent fetches off the shared commit-graph lock)
 
 - **A pull request in merge-queue failure handling reads queued.** When a
   queue batch fails CI, Graphite retests each pull request alone, and its

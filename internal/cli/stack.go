@@ -75,7 +75,9 @@ lane. --path names a new location outside the checkout you run this from, its
 main checkout, and the thin store. Sparse, no-checkout, and thin creation require
 a Git checkout.
 
-Git checkouts cut the lane into the repository's thin store by default: one
+Git checkouts cut the lane into the repository's thin store by default, except
+a child of a non-trunk branch this checkout holds, which is cut in this
+checkout's clone beside its parent. The store is one
 clone per repository under $HOME/.claude/stores, with --depth commits of trunk history (256 unless
 the store already exists), no blobs until a checkout needs them, no tags, a
 fetch of trunk alone, and a sparse checkout of root files, the tracked .claude
@@ -86,8 +88,8 @@ before installing it, so cc-notes must provide that command, and every later
 refusing a store bound elsewhere or not at all. The first thin lane
 creates the store; a lane cut from a checkout of the store is a linked worktree
 of it whatever the flags say, sparse like its caller unless --no-checkout is
-given. On the graphite lane, a parent the store does not hold is adopted
-automatically from its publication. ccx verifies that publication against this
+given. On the graphite lane, --thin adopts a parent the store does not hold
+from its publication. ccx verifies that publication against this
 checkout and the remote, then freezes the parent at its published head so no
 submit from the store rewrites it. If the parent has no publication, the refusal
 names both fixes: run ccx vcs stack submit from its working copy, or run

@@ -45,7 +45,15 @@ func runStackNew(cmd *cobra.Command, name string, options stackNewOpts) error {
 	if err != nil {
 		return err
 	}
-	storage, err := stackStorageOf(ctx, options, src.checkout.Kind)
+	current, err := gitCurrentBranch(ctx, src.dir(), "stack new")
+	if err != nil {
+		return err
+	}
+	parent := cmp.Or(options.parent, current)
+	if parent == "" {
+		return errors.New("stack new: HEAD is detached here, so there is no branch to stack on — check one out, or name it with --parent")
+	}
+	storage, err := stackStorageOf(ctx, options, src, parent)
 	if err != nil {
 		return err
 	}
@@ -75,14 +83,6 @@ func runStackNew(cmd *cobra.Command, name string, options stackNewOpts) error {
 	}
 	if options.depth < 1 || options.maxDepth < 1 {
 		return fmt.Errorf("stack new: --depth %d and --max-depth %d must both be positive", options.depth, options.maxDepth)
-	}
-	current, err := gitCurrentBranch(ctx, src.dir(), "stack new")
-	if err != nil {
-		return err
-	}
-	parent := cmp.Or(options.parent, current)
-	if parent == "" {
-		return errors.New("stack new: HEAD is detached here, so there is no branch to stack on — check one out, or name it with --parent")
 	}
 	var sparse *stackSparse
 	switch {
