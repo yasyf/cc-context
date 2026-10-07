@@ -73,7 +73,7 @@ func Load(ctx context.Context, emb Embedder, root string, content []ContentType,
 	if err != nil {
 		return nil, err
 	}
-	pointer, err := familyPointer(ctx, root, vKey)
+	famDir, err := familyDir(ctx, root, vKey)
 	if err != nil {
 		return nil, err
 	}
@@ -85,10 +85,15 @@ func Load(ctx context.Context, emb Embedder, root string, content []ContentType,
 			return err
 		}
 		prev := loadPersisted(dir, modelID, contentK, chunkerID, emb.Dims())
-		seedDir := readPointer(pointer)
 		base, trustMtime := prev, true
-		if prev == nil && seedDir != "" && seedDir != dir {
-			base, trustMtime = loadPersisted(seedDir, modelID, contentK, chunkerID, emb.Dims()), false
+		if prev == nil && famDir != "" {
+			seedDir, err := bestSeed(ctx, root, exts, siblingIndexes(famDir))
+			if err != nil {
+				return err
+			}
+			if seedDir != "" {
+				base, trustMtime = loadPersisted(seedDir, modelID, contentK, chunkerID, emb.Dims()), false
+			}
 		}
 		built, berr := build(ctx, emb, root, exts, chunker, base, trustMtime)
 		if berr != nil {
@@ -111,9 +116,12 @@ func Load(ctx context.Context, emb Embedder, root string, content []ContentType,
 				return err
 			}
 		}
-		if pointer != "" && (stored || !hasManifest(seedDir)) {
-			if err := cache.Store(pointer, []byte(dir), 0o640); err != nil {
-				return err
+		if famDir != "" {
+			pointer := filepath.Join(famDir, filepath.Base(filepath.Dir(dir)))
+			if stored || readPointer(pointer) != dir {
+				if err := cache.Store(pointer, []byte(dir), 0o640); err != nil {
+					return err
+				}
 			}
 		}
 		if err := touchLastUsed(dir); err != nil {
@@ -252,6 +260,78 @@ func build(ctx context.Context, emb Embedder, root string, exts []string, chunke
 		}
 	}
 	return res, nil
+}
+
+// bestSeed picks the candidate index whose manifest shares the most file hashes
+// with root's current tree, or "" when none shares any.
+func bestSeed(ctx context.Context, root string, exts []string, candidates []string) (string, error) {
+	if len(candidates) == 0 {
+		return "", nil
+	}
+	hashes, err := hashTree(ctx, root, exts)
+	if err != nil {
+		return "", err
+	}
+	best, bestShared := "", 0
+	for _, dir := range candidates {
+		man, err := readManifest(dir)
+		if err != nil {
+			continue
+		}
+		shared := 0
+		for _, f := range man.Files {
+			if hashes[f.Path] == f.Hash {
+				shared++
+			}
+		}
+		if shared > bestShared {
+			best, bestShared = dir, shared
+		}
+	}
+	return best, nil
+}
+
+// hashTree hashes every indexable file under root by its repo-relative path.
+func hashTree(ctx context.Context, root string, exts []string) (map[string]string, error) {
+	paths, err := WalkFiles(ctx, root, exts)
+	if err != nil {
+		return nil, err
+	}
+	rels := make([]string, len(paths))
+	hashes := make([]string, len(paths))
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(min(runtime.NumCPU(), maxChunkWorkers))
+	for i, abs := range paths {
+		g.Go(func() error {
+			if err := gctx.Err(); err != nil {
+				return err
+			}
+			fi, err := os.Stat(abs)
+			if err != nil || !fi.Mode().IsRegular() || fi.Size() > maxFileBytes {
+				return nil
+			}
+			text, err := readFileText(abs)
+			if err != nil {
+				return nil
+			}
+			rel, err := filepath.Rel(root, abs)
+			if err != nil {
+				return nil
+			}
+			rels[i], hashes[i] = filepath.ToSlash(rel), contentHash(text)
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return nil, err
+	}
+	out := make(map[string]string, len(paths))
+	for i, rel := range rels {
+		if rel != "" {
+			out[rel] = hashes[i]
+		}
+	}
+	return out, nil
 }
 
 // chunkFile classifies one file and, when it is not a warm cache hit, reads and
