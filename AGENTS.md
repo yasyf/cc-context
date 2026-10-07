@@ -50,7 +50,8 @@ for sparse expansion, published parents, and ancestry refusals.
 Use `ccx vcs worktree rm <name>` or `--path <absolute-path>` for authorized
 unused trees. On macOS, logical removal precedes queued physical deletion;
 `--wait` waits for deletion. `--force` discards dirty work only and never
-overrides active sessions, locked trees, or the main checkout. Inspect jobs
+overrides active sessions, locked trees, or the main checkout. `--path` moves
+an orphaned pool worktree, whose admin dir is gone, to `~/.Trash`. Inspect jobs
 with `ccx vcs cleanup status [job-id] --json` and watchers with
 `ccx vcs cleanup watchers --json`. Follow [the cleanup reference](docs/worktree-cleanup.md)
 for completion checks and queue controls. Preserve occupied completed

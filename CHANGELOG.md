@@ -17,6 +17,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`worktree rm --path` removes an orphaned worktree.** A pool worktree whose
+  repository was re-cloned keeps a `.git` file naming an admin dir that no
+  longer exists. rm refused it as a broken checkout, and `git worktree repair`
+  could not help, since the admin dir was gone. rm now moves such a tree from
+  `~/.claude/worktrees/<repo>/<name>` to `~/.Trash/<name>-<timestamp>`, from
+  any directory. It still refuses a tree outside the pool, a `.git` that is
+  not a regular file, and a tree a live process holds. On macOS `--force`
+  waives none of these.
+
 - **`worktree rm` no longer waits on a starved daemon under load.** The
   cleanup daemon ran every removal in the darwin background band: launchd
   started it as a `Background` process, and it demoted itself with nice 20.

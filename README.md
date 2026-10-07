@@ -157,6 +157,7 @@ Each command is a token-bounded stand-in for a primitive an agent would otherwis
 | `ccx vcs pr state [<n>...]` | Print shared PR records and `--lane-prefix` discoveries as one JSON object; `--wait` allows waiting out rate limits |
 | `ccx vcs worktree add <name>` | Create a worktree in the repository's pool; a branch name like `user/slug` keeps its branch and mints the directory `user-slug` |
 | `ccx vcs worktree rm <name>` | Remove an unused worktree; macOS queues physical deletion after logical removal |
+| `ccx vcs worktree rm --path <absolute-path>` | Remove the worktree at a path; an orphaned pool worktree whose admin dir is gone moves to the Trash |
 | `ccx vcs cleanup status [job-id] --json` | Inspect the macOS cleanup queue or one job |
 | `ccx vcs cleanup watchers --json` | Inspect watcher roots and consumers without changing them |
 | `ccx web outline <url>` | Heading tree of a web page with stable `§` section refs |

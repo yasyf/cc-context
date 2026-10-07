@@ -173,7 +173,15 @@ checks only the trunk and main-working-copy refusals: git's own dirty and
 locked refusals surface on the real removal alone.
 
 A jj workspace is forgotten and its directory deleted — "jj workspace forget"
-leaves the tree on disk with a live-looking pointer otherwise.`,
+leaves the tree on disk with a live-looking pointer otherwise.
+
+An orphaned worktree, one whose .git file names an admin dir that no longer
+exists, is out of git's reach. --path moves it to ~/.Trash/<name>-<timestamp>
+from any directory, since git can no longer tell whether it held unpushed
+work. It must sit at $HOME/.claude/worktrees/<repo>/<name>, its .git must be a
+regular file, and no live process may hold it. Off macOS, where that process
+check is missing, --force stands in for it. A tree on another volume than the
+Trash is refused.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			byPath := cmd.Flags().Changed("path")
