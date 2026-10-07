@@ -67,6 +67,9 @@ type Tuning struct {
 	RetryAfter   time.Duration
 	RetryCeiling time.Duration
 	RetryLimit   int
+	// AwaitLease is how long one awaiting status read keeps its job ahead of
+	// the queue.
+	AwaitLease time.Duration
 	// KeepDone is how many finished records the journal retains.
 	KeepDone int
 	// StatusLimit is the default cap on the jobs one report carries.
@@ -88,6 +91,7 @@ func DefaultTuning() Tuning {
 		RetryAfter:    30 * time.Second,
 		RetryCeiling:  10 * time.Minute,
 		RetryLimit:    6,
+		AwaitLease:    10 * time.Second,
 		KeepDone:      100,
 		StatusLimit:   50,
 	}
@@ -101,6 +105,8 @@ func (t Tuning) validate() error {
 		return fmt.Errorf("sample interval %s, recheck interval %s, first retry %s and retry limit %d must be positive, and the retry ceiling %s at least the first retry", t.SampleEvery, t.Recheck, t.RetryAfter, t.RetryLimit, t.RetryCeiling)
 	case t.ResumeBelow <= 0, t.PauseAbove < t.ResumeBelow, t.ResumeSamples <= 0:
 		return fmt.Errorf("throttle pauses above %v and resumes after %d samples below %v", t.PauseAbove, t.ResumeSamples, t.ResumeBelow)
+	case t.AwaitLease <= 0:
+		return fmt.Errorf("await lease %s must be positive", t.AwaitLease)
 	case t.KeepDone < 0, t.StatusLimit <= 0:
 		return fmt.Errorf("keeps %d finished records and reports %d jobs", t.KeepDone, t.StatusLimit)
 	}
@@ -174,6 +180,7 @@ type Engine struct {
 	mu       sync.Mutex
 	jobs     map[string]cleanup.Job
 	waiters  map[string]int
+	awaits   map[string]time.Time
 	kept     map[string]cleanup.Job
 	damaged  []cleanup.Damaged
 	paused   bool
@@ -229,6 +236,7 @@ func New(cfg Config) (*Engine, error) {
 		done:      make(chan struct{}),
 		jobs:      make(map[string]cleanup.Job),
 		waiters:   make(map[string]int),
+		awaits:    make(map[string]time.Time),
 		kept:      make(map[string]cleanup.Job),
 		governed:  gov.report(),
 		changed:   make(chan struct{}),
@@ -323,7 +331,8 @@ func (e *Engine) Adopt(ctx context.Context, r cleanup.AdoptRequest) (cleanup.Rec
 
 // Status reads a snapshot and never waits behind the worker once Run has
 // loaded the journal: unfinished jobs in queue order, then finished jobs
-// newest first, capped at the limit.
+// newest first, capped at the limit. A query that awaits its job renews that
+// job's lease ahead of the queue.
 func (e *Engine) Status(ctx context.Context, q cleanup.Query) (cleanup.Report, error) {
 	if err := e.ready(ctx); err != nil {
 		return cleanup.Report{}, err
@@ -342,6 +351,9 @@ func (e *Engine) Status(ctx context.Context, q cleanup.Query) (cleanup.Report, e
 		job, ok := e.jobs[q.JobID]
 		if !ok {
 			return cleanup.Report{}, cleanup.ErrUnknownJob
+		}
+		if q.Await {
+			e.awaits[q.JobID] = e.clock.Now()
 		}
 		report.Jobs = append(report.Jobs, e.reported(job))
 		return report, nil
@@ -616,12 +628,18 @@ func (e *Engine) work(ctx context.Context) error {
 				e.gov.observe(now, cpu, err)
 				e.publishGovernor()
 			}
-			if !e.gov.allows() {
+			switch {
+			case e.awaited(job.ID, now):
+				if err := e.slice(ctx, job, false); err != nil {
+					return err
+				}
+				continue
+			case !e.gov.allows():
 				if err := e.park(); err != nil {
 					return err
 				}
-			} else if !now.Before(e.paceUntil) {
-				if err := e.slice(ctx, job); err != nil {
+			case !now.Before(e.paceUntil):
+				if err := e.slice(ctx, job, true); err != nil {
 					return err
 				}
 				continue
@@ -745,18 +763,33 @@ func (e *Engine) physicalDue(now time.Time) (cleanup.Job, bool) {
 	if e.paused {
 		return cleanup.Job{}, false
 	}
+	var (
+		next  cleanup.Job
+		found bool
+	)
 	for _, job := range e.ordered() {
 		if !job.Phase.Physical() {
 			continue
 		}
-		if job.Blocked == nil {
+		if job.Blocked != nil {
+			if at, ok := e.retryAt(job); !ok || now.Before(at) {
+				continue
+			}
+		}
+		if e.awaited(job.ID, now) {
 			return job, true
 		}
-		if at, ok := e.retryAt(job); ok && !now.Before(at) {
-			return job, true
+		if !found {
+			next, found = job, true
 		}
 	}
-	return cleanup.Job{}, false
+	return next, found
+}
+
+func (e *Engine) awaited(jobID string, now time.Time) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return now.Before(e.awaits[jobID].Add(e.tuning.AwaitLease))
 }
 
 func cancelled(ctx context.Context, err error) bool {
@@ -788,7 +821,7 @@ func (e *Engine) advance(ctx context.Context, job cleanup.Job) (cleanup.Job, err
 	return job, nil
 }
 
-func (e *Engine) slice(ctx context.Context, job cleanup.Job) error {
+func (e *Engine) slice(ctx context.Context, job cleanup.Job, paced bool) error {
 	if e.active == nil {
 		if err := e.open(ctx, &job); err != nil || e.active == nil {
 			return err
@@ -798,7 +831,9 @@ func (e *Engine) slice(ctx context.Context, job cleanup.Job) error {
 	removed, done, err := e.active.deletion.Step(e.tuning.SliceEntries, e.tuning.SliceBudget)
 	end := e.clock.Now()
 	job.Removed += uint64(removed) //nolint:gosec // a step never removes a negative count
-	e.paceUntil = start.Add(time.Duration(removed) * time.Second / time.Duration(e.tuning.Rate))
+	if paced {
+		e.paceUntil = start.Add(time.Duration(removed) * time.Second / time.Duration(e.tuning.Rate))
+	}
 	switch {
 	case err != nil:
 		e.active = nil
@@ -853,6 +888,9 @@ func (e *Engine) finish(job cleanup.Job) error {
 	if err := e.save(job); err != nil {
 		return err
 	}
+	e.mu.Lock()
+	delete(e.awaits, job.ID)
+	e.mu.Unlock()
 	finished := slices.DeleteFunc(e.ordered(), func(job cleanup.Job) bool { return job.Phase != cleanup.PhaseDone })
 	slices.SortFunc(finished, byFinish)
 	for _, old := range finished[:max(len(finished)-e.tuning.KeepDone, 0)] {

@@ -80,6 +80,9 @@ func (r request) Validate() error {
 		if r.Query == nil {
 			return errors.New("status carries no query")
 		}
+		if r.Query.Await && r.Query.JobID == "" {
+			return errors.New("status awaits no job")
+		}
 		return nil
 	case opWait, opRetry:
 		if r.JobID == "" {

@@ -43,6 +43,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`worktree rm --wait` and `cleanup wait` no longer wait behind the whole
+  deletion queue.** A wait returned only once the daemon reached its job in
+  queue order. The queue had stalled at 1,713 jobs because `fseventsd` ran
+  above the throttle, so waits hung for hours. Each wait poll now marks its job
+  as awaited for 10s. The daemon deletes an awaited job before every other
+  job, without the rate cap or the `fseventsd` throttle, so a wait lasts as
+  long as its own tree takes to delete. The status query gains an `await`
+  field, which moves the daemon protocol to 4. The next queue-changing command
+  replaces a daemon on protocol 3.
+
 - **`ccx vcs gh` refuses a write instead of sending it on the read-only
   token.** A lane copied the `ccx vcs gh -- …` prefix from the guard pack's
   rewrite note onto `gh api -X PUT …/pulls/27/merge`, and GitHub answered
@@ -116,7 +126,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `API rate limit already exceeded` exactly when it was needed. It now reads
   the login over REST and reports the quota from the refusal's headers as
   `0/5000 GraphQL left` with its reset time.
-||||||| parent of a6eafad (vcs: 🐛 Keep concurrent fetches off the shared commit-graph lock)
 
 - **A pull request in merge-queue failure handling reads queued.** When a
   queue batch fails CI, Graphite retests each pull request alone, and its

@@ -197,6 +197,65 @@ func TestGovernorGatesDeletion(t *testing.T) {
 	})
 }
 
+func TestAwaitedJobJumpsTheQueuePastTheThrottleAndThePace(t *testing.T) {
+	bubble(t, DefaultTuning(), func(t *testing.T, h *harness) {
+		h.cpu.set(0, nil)
+		queued := h.seed("a", 1, cleanup.PhaseUnregistered)
+		awaited := h.seed("b", 2, cleanup.PhaseUnregistered)
+		h.deleter.put("a", &payload{entries: 300})
+		h.deleter.put("b", &payload{entries: 300})
+		h.start()
+		h.expectEvents("sample")
+		h.expectTimers(5 * time.Second)
+
+		await := cleanup.Query{JobID: awaited.ID, Await: true}
+		if _, err := h.engine.Status(context.Background(), await); err != nil {
+			t.Fatalf("Status(%+v) = %v", await, err)
+		}
+		if _, err := h.engine.Status(context.Background(), cleanup.Query{JobID: "0000000000000000-000000", Await: true}); !errors.Is(err, cleanup.ErrUnknownJob) {
+			t.Errorf("Status(await unknown) = %v, want ErrUnknownJob", err)
+		}
+		h.cpu.burn(5 * time.Second)
+		h.clock.Advance(5 * time.Second)
+		h.expectEvents("sample", "admit:b", "open:b", "step:b", "step:b", "step:b")
+		h.expectTimers(5 * time.Second)
+
+		if got := h.status(awaited.ID); got.Phase != cleanup.PhaseDone || got.Removed != 300 {
+			t.Errorf("awaited job = phase %s, removed %d; want done, 300", got.Phase, got.Removed)
+		}
+		if got := h.status(queued.ID); got.Phase != cleanup.PhaseUnregistered || got.Removed != 0 {
+			t.Errorf("queued job = phase %s, removed %d; want unregistered, 0 behind the throttle", got.Phase, got.Removed)
+		}
+		report, err := h.engine.Status(context.Background(), cleanup.Query{})
+		if err != nil {
+			t.Fatalf("Status() = %v", err)
+		}
+		if want := (cleanup.Governor{State: "throttled", CPUPercent: 100}); report.Governor != want {
+			t.Errorf("governor = %+v, want %+v", report.Governor, want)
+		}
+	})
+}
+
+func TestAwaitLapsesWithoutAnotherAwaitingRead(t *testing.T) {
+	bubble(t, DefaultTuning(), func(t *testing.T, h *harness) {
+		h.cpu.set(0, nil)
+		h.seed("a", 1, cleanup.PhaseUnregistered)
+		lapsed := h.seed("b", 2, cleanup.PhaseUnregistered)
+		h.deleter.put("a", &payload{entries: 200})
+		h.deleter.put("b", &payload{entries: 200})
+		h.start()
+		h.expectEvents("sample")
+		h.expectTimers(5 * time.Second)
+
+		if _, err := h.engine.Status(context.Background(), cleanup.Query{JobID: lapsed.ID, Await: true}); err != nil {
+			t.Fatalf("Status(await) = %v", err)
+		}
+		h.clock.Advance(11 * time.Second)
+		h.expectEvents("sample", "admit:a", "open:a", "step:a")
+		h.expectTimers(400 * time.Millisecond)
+	})
+}
+
 func TestUnavailableSamplerProceedsAndIsReported(t *testing.T) {
 	bubble(t, DefaultTuning(), func(t *testing.T, h *harness) {
 		h.seed("a", 1, cleanup.PhaseUnregistered)

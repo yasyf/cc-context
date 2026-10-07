@@ -92,6 +92,11 @@ a minute before it fails; `worktree rm` following a blocked job's automatic
 retry does the same. They succeed only when a poll shows the job
 `done`, after its payload is gone; `worktree rm --wait` then reports
 `deleted`. A blockage fails the wait with its reason.
+
+Each wait poll marks its job as awaited for the next 10s. The daemon deletes
+an awaited job first, without the rate cap or the `fseventsd` throttle, so the
+wait lasts only as long as its own tree's deletion.
+
 The job keeps the requesting command as its requester, so the daemon's later
 retries do not count that command's own arguments naming the tree as activity
 while that exact process still runs.
@@ -197,6 +202,7 @@ child, never a process group.
 
 The daemon limits physical deletion to bounded slices and a capped rate,
 yields to new logical removals, and pauses deletion while `fseventsd` is busy.
+A job a wait command is polling skips the queue, the rate cap, and the pause.
 It does not run idle repository or process scans.
 
 A completed internal conflict workspace can wait for inactivity while other

@@ -283,7 +283,7 @@ func waitCleanupReceipt(ctx context.Context, receipt cleanup.Receipt) error {
 
 func waitCleanupJob(ctx context.Context, svc cleanup.Service, id string, seen cleanup.Phase) (cleanup.Job, error) {
 	for delay := cleanupWaitPollFloor; ; delay = min(2*delay, cleanupWaitPollCeiling) {
-		report, err := pollCleanupStatus(ctx, svc, cleanup.Query{JobID: id})
+		report, err := pollCleanupStatus(ctx, svc, cleanup.Query{JobID: id, Await: true})
 		if seen != "" && errors.Is(err, cleanup.ErrUnknownJob) {
 			return cleanup.Job{}, vanishedCleanupJob(ctx, svc, id, seen)
 		}
@@ -410,7 +410,9 @@ func newCleanupWaitCmd() *cobra.Command {
 		Long: `Wait until one job's tree is deleted.
 
 It returns once the job is done, and fails with the blockage when the job stops
-for an operator instead. It polls the job's status until then, and fails when
+for an operator instead. While it waits, the daemon deletes the job ahead of
+the queue, at full speed and past the fseventsd throttle. It polls the job's
+status until then, and fails when
 the daemon leaves any one poll unanswered for ` + cleanupStatusTimeout.String() + `. A socket that is
 missing or refuses, as it does while another ccx replaces the daemon, is polled
 again for up to ` + cleanupHandoverTimeout.String() + `.
