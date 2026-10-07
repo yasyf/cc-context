@@ -2602,7 +2602,7 @@ func TestStackVerdictRereadsAPullRequestGitHubStillShowsAtTheOldHead(t *testing.
 func TestStackVerdictNamesTheBotThatOverwroteThePush(t *testing.T) {
 	run := &stackRebaseRun{Trunk: "main", Branches: []stackRebaseBranch{{Name: "feature", Parent: "main", NewHead: "bbbbbbbbbbbbbbbb"}}}
 	var reads int
-	ctx := withStackPRs(stackVerdictEvents(t, "bbbbbbbbbbbbbbbb yasyf\naaaaaaaaaaaaaaaa graphite-app[bot]\n"), func(context.Context, render.Dir, string, []string) (map[string]*stackPR, error) {
+	ctx := withStackPRs(stackVerdictEvents(t, "aaaaaaaaaaaaaaaa yasyf\nbbbbbbbbbbbbbbbb yasyf\naaaaaaaaaaaaaaaa graphite-app[bot]\n"), func(context.Context, render.Dir, string, []string) (map[string]*stackPR, error) {
 		reads++
 		return map[string]*stackPR{"feature": {Number: 7, State: "OPEN", Head: "aaaaaaaaaaaaaaaa", Base: "main", Mergeable: "MERGEABLE"}}, nil
 	})

@@ -2103,10 +2103,13 @@ func gtRefuseQueueRestack(ctx context.Context, dir render.Dir, client *gtapi.Cli
 		pr := known[b.name]
 		race := fmt.Sprintf("drops commits from #%d", pr.PRNumber)
 		if b.base == tr.Name() {
-			race = "graphite-app force-pushes its own restack over this push"
+			race = fmt.Sprintf("graphite-app force-pushes its own restack over this push — wait until #%d's base leaves %s, then re-run; if no restack comes, retarget it off with %s and re-run",
+				pr.PRNumber, pr.BaseRefName, ghCommand(ghPatchPullArgv(owner+"/"+name, pr.PRNumber, "-f", "base="+tr.Name())))
+		} else {
+			race += fmt.Sprintf(" — wait until #%d's base leaves %s, then re-run", pr.PRNumber, pr.BaseRefName)
 		}
-		return fmt.Errorf("%s: #%d sits on %s while Graphite's merge queue restacks it onto %s after its parent %s landed as #%d; submitting %s onto %s now races that restack and %s — wait until #%d's base leaves %s, then re-run",
-			prefix, pr.PRNumber, pr.BaseRefName, tr.Name(), parent, number, b.name, b.base, race, pr.PRNumber, pr.BaseRefName)
+		return fmt.Errorf("%s: #%d sits on %s while Graphite's merge queue restacks it onto %s after its parent %s landed as #%d; submitting %s onto %s now races that restack and %s",
+			prefix, pr.PRNumber, pr.BaseRefName, tr.Name(), parent, number, b.name, b.base, race)
 	}
 	return nil
 }

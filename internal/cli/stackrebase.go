@@ -3841,7 +3841,7 @@ func stackVerdict(ctx context.Context, cmd *cobra.Command, l lane, run *stackReb
 	var prs map[string]*stackPR
 	var err error
 	lagUntil := time.Now().Add(stackHeadLagWait)
-	overwritten := map[string]string{}
+	overwritten := map[string]stackOverwrite{}
 	for try := 0; ; try++ {
 		if prs, err = stackPRs(ctx, dir, run.Trunk, live); err != nil {
 			_, werr := fmt.Fprintf(cmd.ErrOrStderr(), "stack rebase: pushed, but the verdict could not read the pull requests: %v\n", err)
@@ -3886,7 +3886,7 @@ func stackVerdict(ctx context.Context, cmd *cobra.Command, l lane, run *stackReb
 			mergeable = "untracked by graphite"
 		}
 		fields = append(fields, fmt.Sprintf("#%d", pr.Number), fmt.Sprintf("head %.12s", pr.Head), "parent "+b.Parent, mergeable)
-		switch pusher := overwritten[name]; {
+		switch pusher := overwritten[name].by(pr); {
 		case stackHeadLags(pr, b) && pusher != "":
 			fields = append(fields, fmt.Sprintf("overwritten: %s force-pushed %.12s over the push of %.12s — re-run ccx vcs stack submit to publish it again", pusher, pr.Head, b.NewHead))
 		case stackHeadLags(pr, b):
@@ -3932,28 +3932,37 @@ func stackHeadLags(pr *stackPR, b *stackRebaseBranch) bool {
 	return pr.State == "OPEN" && pr.Head != "" && pr.Head != b.NewHead
 }
 
+// stackOverwrite is who force-pushed head over the run's push.
+type stackOverwrite struct{ head, pusher string }
+
+func (o stackOverwrite) by(pr *stackPR) string {
+	if o.head != pr.Head {
+		return ""
+	}
+	return o.pusher
+}
+
 // stackReadOverwrites records who force-pushed each lagging pull request's
-// head, once per head: a head someone pushed after the run is no lag to wait
-// out.
-func stackReadOverwrites(ctx context.Context, dir render.Dir, run *stackRebaseRun, prs map[string]*stackPR, overwritten map[string]string) error {
+// head after the run's push, once per head: a head someone pushed over the
+// run's is no lag to wait out.
+func stackReadOverwrites(ctx context.Context, dir render.Dir, run *stackRebaseRun, prs map[string]*stackPR, overwritten map[string]stackOverwrite) error {
 	for name, pr := range prs {
-		if pr == nil || !stackHeadLags(pr, run.branch(name)) || overwritten[name] != "" {
+		b := run.branch(name)
+		if pr == nil || !stackHeadLags(pr, b) || overwritten[name].head == pr.Head {
 			continue
 		}
-		pusher, err := ghHeadPusher(ctx, dir, pr.Number, pr.Head)
+		pusher, err := ghHeadPusher(ctx, dir, pr.Number, b.NewHead, pr.Head)
 		if err != nil {
 			return err
 		}
-		if pusher != "" {
-			overwritten[name] = pusher
-		}
+		overwritten[name] = stackOverwrite{head: pr.Head, pusher: pusher}
 	}
 	return nil
 }
 
-func stackAnyLagging(run *stackRebaseRun, prs map[string]*stackPR, overwritten map[string]string) bool {
+func stackAnyLagging(run *stackRebaseRun, prs map[string]*stackPR, overwritten map[string]stackOverwrite) bool {
 	for name, pr := range prs {
-		if pr != nil && overwritten[name] == "" && stackHeadLags(pr, run.branch(name)) {
+		if pr != nil && overwritten[name].by(pr) == "" && stackHeadLags(pr, run.branch(name)) {
 			return true
 		}
 	}

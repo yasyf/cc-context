@@ -83,7 +83,7 @@ func TestStackSubmitWaitsOutTheQueuesRestackOntoTrunk(t *testing.T) {
 	if err == nil {
 		t.Fatal("stack submit pushed feature onto trunk while the merge queue restacks it")
 	}
-	for _, want := range []string{"#101", "graphite-base/101", "onto main", "graphite-app force-pushes its own restack", "wait until #101's base leaves graphite-base/101"} {
+	for _, want := range []string{"#101", "graphite-base/101", "onto main", "graphite-app force-pushes its own restack", "wait until #101's base leaves graphite-base/101", "base=main"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("refusal = %q, want it to name %q", err, want)
 		}
