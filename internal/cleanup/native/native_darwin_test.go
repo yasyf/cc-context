@@ -1761,7 +1761,12 @@ func TestBand(t *testing.T) {
 		return
 	}
 	before, baseline := scheduling(t), childPriority(t)
-	want := "background=1 disk=3 nice=0 child=4 | background=0 disk=0 nice=0 child=" + baseline + " | background=1 disk=3 nice=0 child=4"
+	nice, err := unix.Getpriority(unix.PRIO_PROCESS, 0)
+	if err != nil {
+		t.Fatalf("Getpriority(PRIO_PROCESS): %v", err)
+	}
+	background := fmt.Sprintf("background=1 disk=3 nice=%d child=4", nice)
+	want := fmt.Sprintf("%s | background=0 disk=0 nice=%d child=%s | %s", background, nice, baseline, background)
 	if got := runHelper(t, "TestBand", backgroundHelperEnv+"=1"); got != want {
 		t.Errorf("child across Background, Foreground, Background: %s, want %s", got, want)
 	}
