@@ -2,7 +2,9 @@ package vcs
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -82,6 +84,9 @@ type BrokenCheckout struct {
 	Root   string
 	Target string
 	Reason string
+	// Orphaned reports a linked worktree whose admin dir does not exist: the
+	// repository it was cut from deleted it, or was itself re-cloned or removed.
+	Orphaned bool
 }
 
 func (e *BrokenCheckout) Error() string {
@@ -284,7 +289,7 @@ func gitPointer(gitFile string) (string, string, error) {
 	}
 	gitDir := resolveAgainst(base, pointer)
 	if _, err := os.Stat(gitDir); err != nil { //nolint:gosec // the admin dir the gitdir pointer just named, not untrusted input
-		return "", "", &BrokenCheckout{Root: base, Target: gitDir, Reason: "gitdir pointer resolves to nothing"}
+		return "", "", &BrokenCheckout{Root: base, Target: gitDir, Reason: "gitdir pointer resolves to nothing", Orphaned: errors.Is(err, fs.ErrNotExist)}
 	}
 	commonFile := filepath.Join(gitDir, "commondir")
 	raw, err = os.ReadFile(commonFile) //nolint:gosec // the admin dir the gitdir pointer just named, not untrusted input

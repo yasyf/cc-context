@@ -11,10 +11,13 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/yasyf/cc-context/internal/cleanup"
+	"github.com/yasyf/cc-context/internal/cleanup/native"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcs"
 )
@@ -23,6 +26,8 @@ import (
 // worktree.
 const jjColocateRefusal = "Error: Cannot create a colocated jj repo inside a Git worktree.\n" +
 	"Hint: Run `jj git init` in the main Git repository instead, or use `jj workspace add` to create additional jj workspaces."
+
+const orphanShape = "orphaned checkout"
 
 const (
 	jjModeNone      = "none"
@@ -689,6 +694,14 @@ func mintWorktreePath(ctx context.Context, prefix string, c vcs.Checkout, name s
 	if slices.ContainsFunc(elements, func(e string) bool { return e == "" || e == "." || e == ".." }) {
 		return "", fmt.Errorf("%s: %q is not a worktree name — a name has no empty, \".\", or \"..\" /-separated element", prefix, name)
 	}
+	home, err := canonicalHome(ctx, prefix)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(worktreePool(home), filepath.Base(c.MainRoot), strings.Join(elements, "-")), nil
+}
+
+func canonicalHome(ctx context.Context, prefix string) (string, error) {
 	home, err := render.Home(ctx)
 	if err != nil {
 		return "", fmt.Errorf("%s: resolve home directory: %w", prefix, err)
@@ -696,7 +709,11 @@ func mintWorktreePath(ctx context.Context, prefix string, c vcs.Checkout, name s
 	if home, err = filepath.EvalSymlinks(home); err != nil {
 		return "", fmt.Errorf("%s: canonicalize home directory: %w", prefix, err)
 	}
-	return filepath.Join(home, ".claude", "worktrees", filepath.Base(c.MainRoot), strings.Join(elements, "-")), nil
+	return home, nil
+}
+
+func worktreePool(home string) string {
+	return filepath.Join(home, ".claude", "worktrees")
 }
 
 func runWorktreeRm(cmd *cobra.Command, name string, opts worktreeRmOptions) error {
@@ -753,31 +770,23 @@ func runWorktreeRmPath(cmd *cobra.Command, opts worktreeRmOptions) error {
 	if !filepath.IsAbs(opts.path) {
 		return fmt.Errorf("worktree rm: --path %q is not an absolute path", opts.path)
 	}
-	l, err := resolveLane(ctx, "worktree rm", workingDir(ctx), true)
-	if err != nil {
-		return err
-	}
-	if l.checkout.CommonDir == "" {
-		return fmt.Errorf("worktree rm: %q has no git repository behind it — --path names a git linked worktree", l.checkout.Root)
-	}
 	path, err := filepath.EvalSymlinks(opts.path)
 	if errors.Is(err, fs.ErrNotExist) {
-		err := missingWorktreePath(ctx, l, filepath.Clean(opts.path))
-		if !errors.Is(err, ErrNotFound) {
-			return err
-		}
-		store, ok, storeErr := worktreeThinStore(ctx, l)
-		if storeErr != nil || !ok {
-			return errors.Join(err, storeErr)
-		}
-		return missingWorktreePath(ctx, store, filepath.Clean(opts.path))
+		return missingWorktreeRm(ctx, filepath.Clean(opts.path))
 	}
 	if err != nil {
 		return fmt.Errorf("worktree rm: --path: %w", err)
 	}
 	target, err := vcs.ResolveCheckout(path)
+	if broken := (*vcs.BrokenCheckout)(nil); errors.As(err, &broken) && broken.Orphaned && broken.Root == path {
+		return removeOrphanWorktree(ctx, cmd, path, opts)
+	}
 	if err != nil {
 		return fmt.Errorf("worktree rm: --path %s: %w", path, err)
+	}
+	l, err := resolveWorktreeRmLane(ctx)
+	if err != nil {
+		return err
 	}
 	switch {
 	case target.Kind == vcs.None:
@@ -804,6 +813,86 @@ func runWorktreeRmPath(cmd *cobra.Command, opts worktreeRmOptions) error {
 		}
 	}
 	return fmt.Errorf("worktree rm: this repository registers no worktree at %s: %w", path, ErrNotFound)
+}
+
+func resolveWorktreeRmLane(ctx context.Context) (lane, error) {
+	l, err := resolveLane(ctx, "worktree rm", workingDir(ctx), true)
+	if err != nil {
+		return lane{}, err
+	}
+	if l.checkout.CommonDir == "" {
+		return lane{}, fmt.Errorf("worktree rm: %q has no git repository behind it — --path names a git linked worktree", l.checkout.Root)
+	}
+	return l, nil
+}
+
+func missingWorktreeRm(ctx context.Context, path string) error {
+	l, err := resolveWorktreeRmLane(ctx)
+	if err != nil {
+		return err
+	}
+	err = missingWorktreePath(ctx, l, path)
+	if !errors.Is(err, ErrNotFound) {
+		return err
+	}
+	store, ok, storeErr := worktreeThinStore(ctx, l)
+	if storeErr != nil || !ok {
+		return errors.Join(err, storeErr)
+	}
+	return missingWorktreePath(ctx, store, path)
+}
+
+func removeOrphanWorktree(ctx context.Context, cmd *cobra.Command, path string, opts worktreeRmOptions) error {
+	home, err := canonicalHome(ctx, "worktree rm")
+	if err != nil {
+		return err
+	}
+	if pool := worktreePool(home); filepath.Dir(filepath.Dir(path)) != pool {
+		return fmt.Errorf("worktree rm: %s is an orphaned checkout outside the worktree pool %s — rm moves only <pool>/<repo>/<name> orphans to the Trash", path, pool)
+	}
+	pointer := filepath.Join(path, ".git")
+	info, err := os.Lstat(pointer)
+	if err != nil {
+		return fmt.Errorf("worktree rm: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("worktree rm: %s is not a regular gitdir file — rm moves only an orphaned linked worktree to the Trash", pointer)
+	}
+	if err := guardOrphanWorktree(ctx, path, opts.force); err != nil {
+		return err
+	}
+	name := filepath.Base(path)
+	if opts.dryRun {
+		cmd.Println(strings.Join([]string{"would remove " + name, orphanShape, path}, shipSep))
+		return nil
+	}
+	trash := filepath.Join(home, ".Trash")
+	if err := os.MkdirAll(trash, 0o700); err != nil {
+		return fmt.Errorf("worktree rm: %w", err)
+	}
+	dest := filepath.Join(trash, name+"-"+time.Now().Format("20060102-150405"))
+	err = os.Rename(path, dest)
+	if errors.Is(err, syscall.EXDEV) {
+		return fmt.Errorf("worktree rm: %s sits on another volume than the Trash %s, so rm cannot move it there and will not delete it outright — move or delete it by hand", path, trash)
+	}
+	if err != nil {
+		return fmt.Errorf("worktree rm: move %s to the Trash: %w", path, err)
+	}
+	cmd.Println(strings.Join([]string{"removed " + name, orphanShape, "moved to Trash " + dest}, shipSep))
+	return nil
+}
+
+func guardOrphanWorktree(ctx context.Context, path string, force bool) error {
+	err := native.Guard(ctx, path)
+	switch {
+	case errors.Is(err, cleanup.ErrUnsupported) && force:
+		return nil
+	case errors.Is(err, cleanup.ErrUnsupported):
+		return fmt.Errorf("worktree rm: this platform has no live-process check, so nothing proves %s is unused — --force moves it to the Trash unchecked", path)
+	case err != nil:
+		return fmt.Errorf("worktree rm: %w", err)
+	}
+	return nil
 }
 
 func worktreeThinStore(ctx context.Context, l lane) (lane, bool, error) {

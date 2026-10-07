@@ -124,12 +124,13 @@ func TestResolveCheckout(t *testing.T) {
 	gitCommon := filepath.Join(fx.gitMain, ".git")
 
 	tests := []struct {
-		name       string
-		dir        string
-		want       Checkout
-		wantKey    string
-		wantErr    bool
-		wantBroken bool
+		name         string
+		dir          string
+		want         Checkout
+		wantKey      string
+		wantErr      bool
+		wantBroken   bool
+		wantOrphaned bool
 	}{
 		{
 			// The shape every cli fixture builds: an empty .git directory.
@@ -230,7 +231,7 @@ func TestResolveCheckout(t *testing.T) {
 		},
 		{
 			name: "gitdir pointer resolving to nothing", dir: fx.danglingGit,
-			want: Checkout{Kind: Git, Root: fx.danglingGit}, wantErr: true, wantBroken: true,
+			want: Checkout{Kind: Git, Root: fx.danglingGit}, wantErr: true, wantBroken: true, wantOrphaned: true,
 		},
 		{
 			name: "jj workspace pointer resolving to nothing", dir: fx.danglingJJ,
@@ -265,6 +266,9 @@ func TestResolveCheckout(t *testing.T) {
 				var broken *BrokenCheckout
 				if errors.As(err, &broken) != tt.wantBroken {
 					t.Fatalf("ResolveCheckout(%q) error = %v, want a *BrokenCheckout: %v", tt.dir, err, tt.wantBroken)
+				}
+				if tt.wantBroken && broken.Orphaned != tt.wantOrphaned {
+					t.Errorf("ResolveCheckout(%q) Orphaned = %v, want %v", tt.dir, broken.Orphaned, tt.wantOrphaned)
 				}
 				if got.Kind != tt.want.Kind || got.Root != tt.want.Root {
 					t.Fatalf("ResolveCheckout(%q) = (%v, %q), want the partial (%v, %q)", tt.dir, got.Kind, got.Root, tt.want.Kind, tt.want.Root)
