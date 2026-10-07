@@ -2519,6 +2519,7 @@ func TestStackContinuePublishesAndLeavesItsWorkspaceWhileCleanupIsPaused(t *test
 	api := stubGTAPI(t)
 	f.Decorate(api.ctx)
 	stubOpenPRs(t, f, nil, "base", "feature")
+	api.prs["base"], api.prs["feature"] = 9000, 9001
 	stackConflicting(t, f)
 	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "feature")
 	sources := stackRebaseSourceSnapshot(t, f, "base", "feature")

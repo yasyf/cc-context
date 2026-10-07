@@ -96,6 +96,14 @@ Resolve and stage the conflicted files, then resume the stack:
 ccx vcs stack continue
 ```
 
+Continue opens a pull request only when the command that started the run gave
+the branch a `--pr-title` and a `--pr-body-file`. Any other branch with no pull
+request is pushed but not submitted. Open it from its checkout:
+
+```sh
+ccx vcs ship --no-commit --tip-only --pr-title "<title>" --pr-body-file <body.md>
+```
+
 To abandon the run, use `ccx vcs stack abort`. Run these commands from the
 branch's checkout or its conflict workspace; use `--stack` with the bottom
 branch's name when selecting a run explicitly. Native `git replay` has no

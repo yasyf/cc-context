@@ -161,6 +161,7 @@ type stackRebaseRun struct {
 	Host          string                   `json:"host"`
 	dir           string
 	saved         time.Time
+	resumed       bool
 	left          []stackLeft
 	lanePins      []string
 	adopted       gtState
@@ -345,7 +346,12 @@ With no stack rebase in progress, continue finishes a rebase stopped in this
 working copy — one a hand-run gt restack left behind after losing its own
 operation, which gt continue then refuses. rerere is off. Every file rerere had
 already filled from a recorded resolution is named first as a warning, since a
-stale recording silently drops a branch's own changes.`,
+stale recording silently drops a branch's own changes.
+
+Continue never opens a pull request the run carries no title and body for. A
+branch with no open pull request and no --pr-title and --pr-body-file from the
+command that started the run is pushed, not submitted, and named with the
+ccx vcs ship command that opens it.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return stackSettleTracking(cmd, func() error { return runStackContinue(cmd, stack) })
@@ -597,6 +603,7 @@ func stackFinishDead(ctx context.Context, cmd *cobra.Command, l lane, commonDir 
 	if err := stackAdopt(run); err != nil {
 		return err
 	}
+	run.resumed = true
 	owner, err := stackTakeOver(ctx, l, run)
 	if err != nil {
 		return err
@@ -2993,6 +3000,7 @@ func runStackContinue(cmd *cobra.Command, stack string) error {
 	if err != nil {
 		return err
 	}
+	run.resumed = true
 	if run.Conflict == nil {
 		return stackDrive(ctx, cmd, l, commonDir, run)
 	}
@@ -3751,7 +3759,7 @@ func stackReplanLanded(ctx context.Context, cmd *cobra.Command, l lane, commonDi
 			next.Branches[i].LocalOnly, next.Branches[i].Resolved = b.LocalOnly, b.Resolved
 		}
 	}
-	next.dir, next.Claims = run.dir, run.Claims
+	next.dir, next.Claims, next.resumed = run.dir, run.Claims, run.resumed
 	if err := stackSaveRun(next); err != nil {
 		return err
 	}
