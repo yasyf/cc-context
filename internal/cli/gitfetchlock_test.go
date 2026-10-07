@@ -41,7 +41,7 @@ func holdCommitGraphLock(t *testing.T, f *vcstest.Fixture) {
 	t.Helper()
 	mustRun(t, f.Env(), f.Dir, "git", "config", "fetch.writeCommitGraph", "true")
 	graphs := filepath.Join(f.Dir, ".git", "objects", "info", "commit-graphs")
-	if err := os.MkdirAll(graphs, 0o755); err != nil {
+	if err := os.MkdirAll(graphs, 0o750); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(graphs, "commit-graph-chain.lock"), nil, 0o600); err != nil {
