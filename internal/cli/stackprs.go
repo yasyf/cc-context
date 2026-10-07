@@ -153,8 +153,9 @@ func stackReadPRsREST(ctx context.Context, dir render.Dir, branches []string) ([
 }
 
 // stackLandPRs marks the pull requests that reached trunk. One GitHub still
-// reads as open landed when its queue squash is on trunk: the queue lands it
-// first and closes it after, and a GitHub outage between the two leaves it open.
+// reads as open landed when its queue squash is on trunk and postdates its head:
+// the queue lands it first and closes it after, and a GitHub outage between the
+// two leaves it open.
 func stackLandPRs(ctx context.Context, dir render.Dir, trunk string, reads []stackPRRead) map[string]*stackPR {
 	prs := make(map[string]*stackPR, len(reads))
 	var closes []prQueueClose
@@ -173,11 +174,39 @@ func stackLandPRs(ctx context.Context, dir render.Dir, trunk string, reads []sta
 		}
 		prs[read.branch] = read.pr
 	}
-	for number := range prSquashesOnBase(ctx, dir, trunk, open) {
+	for _, number := range stackSquashedAfterHead(ctx, dir, byNumber, prSquashesOnBase(ctx, dir, trunk, open)) {
 		byNumber[number].Landed = true
 	}
 	for number, landed := range resolveQueueLandings(ctx, dir, closes) {
 		byNumber[number].Landed = landed
 	}
 	return prs
+}
+
+// stackSquashedAfterHead keeps the open pull requests whose squash was committed
+// no earlier than their head. A head committed after its squash carries work
+// pushed since the landing, which the squash does not hold.
+func stackSquashedAfterHead(ctx context.Context, dir render.Dir, byNumber map[int]*stackPR, squashes map[int]string) []int {
+	var shas []string
+	for number, squash := range squashes {
+		if head := byNumber[number].Head; head != "" {
+			shas = append(shas, squash, head)
+		}
+	}
+	if len(shas) == 0 {
+		return nil
+	}
+	committed := map[string]int64{}
+	if err := gitEachLogLine(ctx, dir, stackRebasePrefix, append([]string{"log", "--no-walk=unsorted", "--format=%H%x00%ct%x00%s"}, shas...), func(sha string, at int64, _ string) {
+		committed[sha] = at
+	}); err != nil {
+		return nil
+	}
+	var landed []int
+	for number, squash := range squashes {
+		if head := byNumber[number].Head; head != "" && committed[head] <= committed[squash] {
+			landed = append(landed, number)
+		}
+	}
+	return landed
 }

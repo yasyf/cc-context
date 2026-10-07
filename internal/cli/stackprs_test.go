@@ -165,17 +165,28 @@ func TestStackQueryPRsReadsABranchCrowdedOutByForksOverREST(t *testing.T) {
 
 // TestStackQueryPRsLandsAnOpenPullRequestTheQueueSquashed is #31976 and #31979:
 // the queue squashed both onto dev while GitHub answered 500s, so neither was
-// ever closed, and a stack submit from their child replayed both onto dev.
+// ever closed, and a stack submit from their child replayed both onto dev. A
+// head committed after its squash is work pushed since, so it has not landed.
 func TestStackQueryPRsLandsAnOpenPullRequestTheQueueSquashed(t *testing.T) {
 	f := shipRepo(t, vcstest.Remote())
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "a")
+	writeShipFile(t, f.Dir, "a.txt", "a\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "a.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "a")
+	landed := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD")
+	writeShipFile(t, f.Dir, "c.txt", "c\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "c.txt")
+	mustRun(t, append(f.Env(), "GIT_COMMITTER_DATE=2100-01-01T00:00:00Z"), f.Dir, "git", "commit", "-qm", "c")
+	pushedSince := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD")
 	restackSquashRemote(t, f, "main", "a (#41)", "a")
+	restackSquashRemote(t, f, "main", "c (#43)", "c")
 	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
-	open := func(number int) string {
-		return fmt.Sprintf(`{"totalCount":1,"nodes":[{"number":%d,"state":"OPEN","isCrossRepository":false,"baseRefName":"main","timelineItems":{"nodes":[]}}]}`, number)
+	open := func(number int, head string) string {
+		return fmt.Sprintf(`{"totalCount":1,"nodes":[{"number":%d,"state":"OPEN","isCrossRepository":false,"baseRefName":"main","headRefOid":%q,"timelineItems":{"nodes":[]}}]}`, number, head)
 	}
-	serveGitHubStatus(t, http.StatusOK, `{"data":{"repository":{"p0":`+open(41)+`,"p1":`+open(42)+`}}}`)
+	serveGitHubStatus(t, http.StatusOK, `{"data":{"repository":{"p0":`+open(41, landed)+`,"p1":`+open(42, landed)+`,"p2":`+open(43, pushedSince)+`}}}`)
 
-	prs, err := stackQueryPRs(f.Context(), render.Dir(f.Dir), "main", []string{"a", "b"})
+	prs, err := stackQueryPRs(f.Context(), render.Dir(f.Dir), "main", []string{"a", "b", "c"})
 	if err != nil {
 		t.Fatalf("stackQueryPRs: %v", err)
 	}
@@ -184,5 +195,8 @@ func TestStackQueryPRsLandsAnOpenPullRequestTheQueueSquashed(t *testing.T) {
 	}
 	if pr := prs["b"]; pr == nil || pr.Number != 42 || pr.Landed {
 		t.Errorf("b = %+v, want #42 open and not landed", pr)
+	}
+	if pr := prs["c"]; pr == nil || pr.Number != 43 || pr.Landed {
+		t.Errorf("c = %+v, want #43 not landed: its head postdates its squash", pr)
 	}
 }
