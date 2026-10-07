@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/yasyf/cc-context/internal/backend"
+	"github.com/yasyf/cc-context/internal/gitdir"
 	"github.com/yasyf/cc-context/internal/sniff"
 	"github.com/yasyf/cc-context/internal/workspace"
 )
@@ -64,7 +65,7 @@ func Run(ctx context.Context, a backend.Args) (string, error) {
 	walkRoot, escaped, excludeVCS := resolveAnchor(absRoot, globs)
 	cfg := walkConfig{escaped: escaped, excludeVCS: excludeVCS}
 	if !escaped {
-		cfg.gitRoot = gitRootOf(walkRoot)
+		cfg.gitRoot = gitdir.Root(walkRoot)
 		cfg.matcher = ancestorMatcher(cfg.gitRoot, walkRoot)
 	}
 	matches, seenExts, err := collect(ctx, absRoot, walkRoot, globs, cfg)

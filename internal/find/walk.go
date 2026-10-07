@@ -12,6 +12,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/format/gitignore"
 
 	"github.com/yasyf/cc-context/internal/backend"
+	"github.com/yasyf/cc-context/internal/gitdir"
 )
 
 // match is one file the glob selected, carrying the slash-normalized path relative
@@ -260,56 +261,6 @@ func newWalker(root string, queue chan *gocodewalker.File) *gocodewalker.FileWal
 	return w
 }
 
-// gitRootOf walks up from start returning the nearest directory that holds a .git
-// entry — a directory (a normal repo) or a file (a worktree or submodule gitlink)
-// — or "" when none is found up to the filesystem root.
-func gitRootOf(start string) string {
-	dir := start
-	for {
-		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return ""
-		}
-		dir = parent
-	}
-}
-
-// gitCommonDir resolves the git directory holding the repo-wide info/, given a
-// git root: <gitRoot>/.git when that is a directory, and — when it is the gitdir
-// pointer file of a linked worktree — the common directory that worktree's
-// administrative dir names, which is where the shared info/exclude lives. It
-// returns "" when the pointer does not resolve, leaving the repo without an
-// ancestor matcher rather than failing the walk.
-func gitCommonDir(gitRoot string) string {
-	dot := filepath.Join(gitRoot, ".git")
-	info, err := os.Stat(dot)
-	if err != nil {
-		return ""
-	}
-	if info.IsDir() {
-		return dot
-	}
-	data, err := os.ReadFile(dot) //nolint:gosec // path is the caller's own repo gitdir pointer; reading it is intended
-	if err != nil {
-		return ""
-	}
-	gitDir, ok := strings.CutPrefix(strings.TrimSpace(string(data)), "gitdir: ")
-	if !ok {
-		return ""
-	}
-	if !filepath.IsAbs(gitDir) {
-		gitDir = filepath.Join(gitRoot, gitDir)
-	}
-	common, err := os.ReadFile(filepath.Join(gitDir, "commondir")) //nolint:gosec // path is the caller's own repo git dir; reading it is intended
-	if err != nil {
-		return gitDir
-	}
-	return filepath.Join(gitDir, strings.TrimSpace(string(common)))
-}
-
 // ancestorMatcher builds the enclosing repo's ignore matcher: the common dir's
 // info/exclude plus every .gitignore from the git root down to walkRoot
 // (inclusive), each pattern anchored at its own file's directory via its domain,
@@ -322,7 +273,7 @@ func ancestorMatcher(gitRoot, walkRoot string) gitignore.Matcher {
 		return nil
 	}
 	var ps []gitignore.Pattern
-	if common := gitCommonDir(gitRoot); common != "" {
+	if common := gitdir.CommonDir(gitRoot); common != "" {
 		ps = parsePatternFile(filepath.Join(common, "info", "exclude"), nil)
 	}
 	ps = append(ps, parsePatternFile(filepath.Join(gitRoot, ".gitignore"), nil)...)

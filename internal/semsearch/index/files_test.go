@@ -113,7 +113,7 @@ func TestChunkFileEligibility(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := chunkFile(t.Context(), tt.path, dir, DefaultChunker(), nil)
+			got := chunkFile(t.Context(), tt.path, dir, DefaultChunker(), nil, true)
 			if got.valid != tt.want {
 				t.Errorf("chunkFile(%s).valid = %t, want %t", tt.name, got.valid, tt.want)
 			}

@@ -68,7 +68,12 @@ func Load(ctx context.Context, emb Embedder, root string, content []ContentType,
 
 	contentK := ContentKey(content)
 	chunkerID := chunker.ID()
-	dir, err := variantCacheDir(ctx, root, modelID, contentK, chunkerID, emb.Dims())
+	vKey := variantKey(modelID, contentK, chunkerID, emb.Dims())
+	dir, err := variantCacheDir(ctx, root, vKey)
+	if err != nil {
+		return nil, err
+	}
+	pointer, err := familyPointer(ctx, root, vKey)
 	if err != nil {
 		return nil, err
 	}
@@ -80,7 +85,12 @@ func Load(ctx context.Context, emb Embedder, root string, content []ContentType,
 			return err
 		}
 		prev := loadPersisted(dir, modelID, contentK, chunkerID, emb.Dims())
-		built, berr := build(ctx, emb, root, exts, chunker, prev)
+		seedDir := readPointer(pointer)
+		base, trustMtime := prev, true
+		if prev == nil && seedDir != "" && seedDir != dir {
+			base, trustMtime = loadPersisted(seedDir, modelID, contentK, chunkerID, emb.Dims()), false
+		}
+		built, berr := build(ctx, emb, root, exts, chunker, base, trustMtime)
 		if berr != nil {
 			return berr
 		}
@@ -92,10 +102,22 @@ func Load(ctx context.Context, emb Embedder, root string, content []ContentType,
 			Dims:    emb.Dims(),
 			Files:   built.files,
 		}
-		if !unchanged(built, prev) {
+		stored := !unchanged(built, prev)
+		if stored {
 			if err := store(dir, man, built.chunks, built.vectors); err != nil {
 				return err
 			}
+			if err := recordRoot(dir, root); err != nil {
+				return err
+			}
+		}
+		if pointer != "" && (stored || !hasManifest(seedDir)) {
+			if err := cache.Store(pointer, []byte(dir), 0o640); err != nil {
+				return err
+			}
+		}
+		if err := touchLastUsed(dir); err != nil {
+			return err
 		}
 		idx = &Index{
 			Root:       root,
@@ -121,7 +143,7 @@ func Load(ctx context.Context, emb Embedder, root string, content []ContentType,
 // bytes. Every file reused prev's chunks at a matching mtime, so equal file counts
 // mean equal sets: a deletion shortens the list and an addition re-embeds.
 func unchanged(built *buildResult, prev *persisted) bool {
-	return prev != nil && built.reindexed == 0 && len(built.files) == len(prev.manifest.Files)
+	return prev != nil && built.reindexed == 0 && built.retimed == 0 && len(built.files) == len(prev.manifest.Files)
 }
 
 // buildResult is the assembled corpus plus its manifest.
@@ -130,6 +152,7 @@ type buildResult struct {
 	vectors   [][]float32
 	files     []fileManifest
 	reindexed int
+	retimed   int
 }
 
 // fileResult is one file's chunking outcome, filled concurrently and assembled
@@ -137,6 +160,7 @@ type buildResult struct {
 type fileResult struct {
 	rel    string
 	mtime  int64
+	hash   string
 	valid  bool
 	reuse  bool
 	prev   fileManifest
@@ -144,8 +168,10 @@ type fileResult struct {
 }
 
 // build walks the repo, chunks changed files in parallel (reusing unchanged
-// ones from prev), then embeds every new chunk in one serialized pass.
-func build(ctx context.Context, emb Embedder, root string, exts []string, chunker Chunker, prev *persisted) (*buildResult, error) {
+// ones from prev), then embeds every new chunk in one serialized pass. prev is
+// either this root's own index or a sibling worktree's; trustMtime is false for
+// a sibling, whose mtimes say nothing about this checkout's files.
+func build(ctx context.Context, emb Embedder, root string, exts []string, chunker Chunker, prev *persisted, trustMtime bool) (*buildResult, error) {
 	paths, err := WalkFiles(ctx, root, exts)
 	if err != nil {
 		return nil, err
@@ -167,7 +193,7 @@ func build(ctx context.Context, emb Embedder, root string, exts []string, chunke
 			if gctx.Err() != nil {
 				return gctx.Err()
 			}
-			results[i] = chunkFile(gctx, abs, root, chunker, prevEntries)
+			results[i] = chunkFile(gctx, abs, root, chunker, prevEntries, trustMtime)
 			return nil
 		})
 	}
@@ -192,7 +218,10 @@ func build(ctx context.Context, emb Embedder, root string, exts []string, chunke
 		if r.reuse {
 			res.chunks = append(res.chunks, prev.chunks[r.prev.Start:r.prev.Start+r.prev.Count]...)
 			res.vectors = append(res.vectors, prev.vectors[r.prev.Start:r.prev.Start+r.prev.Count]...)
-			res.files = append(res.files, fileManifest{Path: r.rel, MtimeNs: r.mtime, Start: start, Count: r.prev.Count})
+			res.files = append(res.files, fileManifest{Path: r.rel, MtimeNs: r.mtime, Hash: r.hash, Start: start, Count: r.prev.Count})
+			if r.mtime != r.prev.MtimeNs {
+				res.retimed++
+			}
 			continue
 		}
 		for _, c := range r.chunks {
@@ -201,7 +230,7 @@ func build(ctx context.Context, emb Embedder, root string, exts []string, chunke
 			res.chunks = append(res.chunks, c)
 			toEmbed = append(toEmbed, c.Content)
 		}
-		res.files = append(res.files, fileManifest{Path: r.rel, MtimeNs: r.mtime, Start: start, Count: len(r.chunks)})
+		res.files = append(res.files, fileManifest{Path: r.rel, MtimeNs: r.mtime, Hash: r.hash, Start: start, Count: len(r.chunks)})
 		res.reindexed++
 	}
 
@@ -226,9 +255,10 @@ func build(ctx context.Context, emb Embedder, root string, exts []string, chunke
 }
 
 // chunkFile classifies one file and, when it is not a warm cache hit, reads and
-// chunks it. A read/stat error or a non-valid status marks the file skipped,
+// chunks it. A warm hit is a matching mtime (when trustMtime) or else a matching
+// content hash. A read/stat error or a non-valid status marks the file skipped,
 // mirroring semble's suppress(OSError).
-func chunkFile(ctx context.Context, abs, root string, chunker Chunker, prevEntries map[string]fileManifest) fileResult {
+func chunkFile(ctx context.Context, abs, root string, chunker Chunker, prevEntries map[string]fileManifest, trustMtime bool) fileResult {
 	rel, err := filepath.Rel(root, abs)
 	if err != nil {
 		return fileResult{}
@@ -240,17 +270,23 @@ func chunkFile(ctx context.Context, abs, root string, chunker Chunker, prevEntri
 	}
 	mtime := fi.ModTime().UnixNano()
 
-	if e, ok := prevEntries[rel]; ok && e.MtimeNs == mtime {
-		return fileResult{rel: rel, mtime: mtime, valid: true, reuse: true, prev: e}
+	prev, known := prevEntries[rel]
+	if known && trustMtime && prev.MtimeNs == mtime {
+		return fileResult{rel: rel, mtime: mtime, hash: prev.Hash, valid: true, reuse: true, prev: prev}
 	}
 
 	text, err := readFileText(abs)
 	if err != nil || (fi.Size() < emptyFileBytes && strings.TrimSpace(text) == "") {
 		return fileResult{}
 	}
+	hash := contentHash(text)
+	if known && prev.Hash == hash {
+		return fileResult{rel: rel, mtime: mtime, hash: hash, valid: true, reuse: true, prev: prev}
+	}
 	return fileResult{
 		rel:    rel,
 		mtime:  mtime,
+		hash:   hash,
 		valid:  true,
 		chunks: chunker.ChunkFile(ctx, rel, DetectLanguage(rel), text),
 	}
