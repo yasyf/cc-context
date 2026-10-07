@@ -59,7 +59,7 @@ func worktreeGone(repoDir string) bool {
 	if err != nil {
 		return true
 	}
-	_, err = os.Stat(string(root))
+	_, err = os.Stat(string(root)) //nolint:gosec // root is the path Load recorded, read back from the trusted cache dir
 	return errors.Is(err, os.ErrNotExist)
 }
 
