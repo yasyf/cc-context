@@ -13,6 +13,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcs"
@@ -718,9 +719,11 @@ func TestWorktreeRmPathOrphanLiveHolder(t *testing.T) {
 		_ = syscall.Kill(-shell.Process.Pid, syscall.SIGKILL)
 		_ = shell.Wait()
 	})
-	if _, err := bufio.NewReader(stdout).ReadString('\n'); err != nil {
+	line, err := bufio.NewReader(stdout).ReadString('\n')
+	if err != nil {
 		t.Fatalf("read the holder's pid: %v", err)
 	}
+	awaitSleep(t, strings.TrimSpace(line))
 
 	for _, args := range [][]string{{"rm", "--path", path}, {"rm", "--path", path, "--force"}} {
 		out, err := runWorktreeCmd(t, f, args...)
@@ -735,6 +738,19 @@ func TestWorktreeRmPathOrphanLiveHolder(t *testing.T) {
 		t.Errorf("%s/f.txt is empty, want the held tree untouched", path)
 	}
 	assertGone(t, filepath.Join(fixtureHome(t, f), ".Trash"))
+}
+
+func awaitSleep(t *testing.T, pid string) {
+	t.Helper()
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+		out, err := exec.Command("/bin/ps", "-o", "comm=", "-p", pid).Output() //nolint:gosec // the fixed ps binary over the holder pid this test started
+		if err == nil && strings.TrimSpace(string(out)) == "/bin/sleep" {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("pid %s never ran /bin/sleep: %q, %v", pid, out, err)
+		}
+	}
 }
 
 func TestWorktreeRmPathOrphanUnguardedNeedsForce(t *testing.T) {

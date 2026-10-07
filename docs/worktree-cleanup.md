@@ -47,8 +47,10 @@ so there `--force` is required.
 
 Git cannot tell whether an orphan held uncommitted or unpushed work, so
 removal moves it to the Trash instead of deleting it. A tree on another
-volume than the Trash is refused. `--dry-run` runs every check and prints
-`would remove`. On macOS, `--force` waives none of these checks.
+volume than the Trash is refused. `--dry-run` runs the path, `.git`, and
+live-process checks and prints `would remove`. It does not attempt the move,
+so it cannot report a Trash on another volume. On macOS, `--force` waives none
+of these checks.
 
 ## Queue commands
 

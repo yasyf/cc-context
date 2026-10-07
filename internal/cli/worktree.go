@@ -11,10 +11,10 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/sys/unix"
 
 	"github.com/yasyf/cc-context/internal/cleanup"
 	"github.com/yasyf/cc-context/internal/cleanup/native"
@@ -181,7 +181,8 @@ from any directory, since git can no longer tell whether it held unpushed
 work. It must sit at $HOME/.claude/worktrees/<repo>/<name>, its .git must be a
 regular file, and no live process may hold it. Off macOS, where that process
 check is missing, --force stands in for it. A tree on another volume than the
-Trash is refused.`,
+Trash is refused on the move itself, so --dry-run, which runs every other
+check, does not report it.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			byPath := cmd.Flags().Changed("path")
@@ -856,16 +857,9 @@ func removeOrphanWorktree(ctx context.Context, cmd *cobra.Command, path string, 
 	if err != nil {
 		return err
 	}
-	if pool := worktreePool(home); filepath.Dir(filepath.Dir(path)) != pool {
-		return fmt.Errorf("worktree rm: %s is an orphaned checkout outside the worktree pool %s — rm moves only <pool>/<repo>/<name> orphans to the Trash", path, pool)
-	}
-	pointer := filepath.Join(path, ".git")
-	info, err := os.Lstat(pointer)
+	parent, err := checkOrphanWorktree(home, path)
 	if err != nil {
-		return fmt.Errorf("worktree rm: %w", err)
-	}
-	if !info.Mode().IsRegular() {
-		return fmt.Errorf("worktree rm: %s is not a regular gitdir file — rm moves only an orphaned linked worktree to the Trash", pointer)
+		return err
 	}
 	if err := guardOrphanWorktree(ctx, path, opts.force); err != nil {
 		return err
@@ -875,20 +869,90 @@ func removeOrphanWorktree(ctx context.Context, cmd *cobra.Command, path string, 
 		cmd.Println(strings.Join([]string{"would remove " + name, orphanShape, path}, shipSep))
 		return nil
 	}
+	rechecked, err := checkOrphanWorktree(home, path)
+	if err != nil {
+		return err
+	}
+	if !os.SameFile(parent, rechecked) {
+		return fmt.Errorf("worktree rm: %s changed while rm checked %s for live processes — run rm again", filepath.Dir(path), path)
+	}
 	trash := filepath.Join(home, ".Trash")
 	if err := os.MkdirAll(trash, 0o700); err != nil {
 		return fmt.Errorf("worktree rm: %w", err)
 	}
-	dest := filepath.Join(trash, name+"-"+time.Now().Format("20060102-150405"))
-	err = os.Rename(path, dest)
-	if errors.Is(err, syscall.EXDEV) {
+	dest := name + "-" + time.Now().Format("20060102-150405")
+	if err := moveOrphanToTrash(path, rechecked, trash, dest); err != nil {
+		return err
+	}
+	cmd.Println(strings.Join([]string{"removed " + name, orphanShape, "moved to Trash " + filepath.Join(trash, dest)}, shipSep))
+	return nil
+}
+
+func checkOrphanWorktree(home, path string) (os.FileInfo, error) {
+	if pool := worktreePool(home); filepath.Dir(filepath.Dir(path)) != pool {
+		return nil, fmt.Errorf("worktree rm: %s is an orphaned checkout outside the worktree pool %s — rm moves only <pool>/<repo>/<name> orphans to the Trash", path, pool)
+	}
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return nil, fmt.Errorf("worktree rm: %w", err)
+	}
+	if resolved != path {
+		return nil, fmt.Errorf("worktree rm: %s now resolves to %s — run rm again", path, resolved)
+	}
+	pointer := filepath.Join(path, ".git")
+	info, err := os.Lstat(pointer)
+	if err != nil {
+		return nil, fmt.Errorf("worktree rm: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("worktree rm: %s is not a regular gitdir file — rm moves only an orphaned linked worktree to the Trash", pointer)
+	}
+	_, err = vcs.ResolveCheckout(path)
+	var broken *vcs.BrokenCheckout
+	if !errors.As(err, &broken) || !broken.Orphaned || broken.Root != path {
+		return nil, fmt.Errorf("worktree rm: %s is no longer an orphaned checkout — run rm again", path)
+	}
+	parent, err := os.Lstat(filepath.Dir(path))
+	if err != nil {
+		return nil, fmt.Errorf("worktree rm: %w", err)
+	}
+	return parent, nil
+}
+
+func moveOrphanToTrash(path string, parent os.FileInfo, trash, dest string) error {
+	from, err := openDirNoFollow(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = from.Close() }()
+	held, err := from.Stat()
+	if err != nil {
+		return fmt.Errorf("worktree rm: %w", err)
+	}
+	if !os.SameFile(parent, held) {
+		return fmt.Errorf("worktree rm: %s changed between its check and the move — run rm again", filepath.Dir(path))
+	}
+	to, err := openDirNoFollow(trash)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = to.Close() }()
+	err = unix.Renameat(int(from.Fd()), filepath.Base(path), int(to.Fd()), dest)
+	if errors.Is(err, unix.EXDEV) {
 		return fmt.Errorf("worktree rm: %s sits on another volume than the Trash %s, so rm cannot move it there and will not delete it outright — move or delete it by hand", path, trash)
 	}
 	if err != nil {
 		return fmt.Errorf("worktree rm: move %s to the Trash: %w", path, err)
 	}
-	cmd.Println(strings.Join([]string{"removed " + name, orphanShape, "moved to Trash " + dest}, shipSep))
 	return nil
+}
+
+func openDirNoFollow(dir string) (*os.File, error) {
+	file, err := os.OpenFile(dir, os.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, fmt.Errorf("worktree rm: %w", err)
+	}
+	return file, nil
 }
 
 func guardOrphanWorktree(ctx context.Context, path string, force bool) error {
