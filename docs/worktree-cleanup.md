@@ -29,6 +29,29 @@ other protections or stops a process holding the tree.
 Recovery refs preserve committed heads before deletion. They do not preserve
 dirty files discarded with `--force`.
 
+## Orphaned worktrees
+
+A linked worktree is orphaned when its `.git` file names an admin dir that no
+longer exists, for example, after its repository was re-cloned. Git no longer
+registers it, so neither `git worktree remove` nor `git worktree repair` can
+reach it. `ccx vcs worktree rm --path <absolute-path>` moves an orphan to
+`~/.Trash/<name>-<timestamp>` and prints
+`removed <name> · orphaned checkout · moved to Trash <path>`. It runs from any
+directory, since no repository registers the tree.
+
+Removal refuses an orphan whose resolved path is not exactly
+`~/.claude/worktrees/<repo>/<name>`, or whose `.git` is not a regular file
+with a missing `gitdir:` target. It also refuses one that a live process works
+in, holds a file open in, or was started on. Linux has no such process check,
+so there `--force` is required.
+
+Git cannot tell whether an orphan held uncommitted or unpushed work, so
+removal moves it to the Trash instead of deleting it. A tree on another
+volume than the Trash is refused. `--dry-run` runs the path, `.git`, and
+live-process checks and prints `would remove`. It does not attempt the move,
+so it cannot report a Trash on another volume. On macOS, `--force` waives none
+of these checks.
+
 ## Queue commands
 
 The macOS daemon owns the deletion queue. It does not run stacks or change

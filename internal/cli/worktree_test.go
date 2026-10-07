@@ -1,15 +1,21 @@
 package cli
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
+	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcs"
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
@@ -567,6 +573,204 @@ func TestWorktreeRmRefusesForeignCheckout(t *testing.T) {
 	}
 	if got := mustRun(t, f.Env(), dir, "git", "worktree", "list", "--porcelain"); !strings.Contains(got, "worktree "+foreign) {
 		t.Errorf("worktree list = %q, want the foreign checkout still registered", got)
+	}
+}
+
+func orphanWorktree(t *testing.T, env []string, path string) {
+	t.Helper()
+	admin := strings.TrimSpace(mustRun(t, env, path, "git", "rev-parse", "--absolute-git-dir"))
+	if err := os.RemoveAll(admin); err != nil {
+		t.Fatalf("remove admin dir %s: %v", admin, err)
+	}
+}
+
+func fixtureHome(t *testing.T, f *vcstest.Fixture) string {
+	t.Helper()
+	home, err := filepath.EvalSymlinks(render.Getenv(f.Context(), "HOME"))
+	if err != nil {
+		t.Fatalf("resolve fixture HOME: %v", err)
+	}
+	return home
+}
+
+func orphanRmArgs(path string, extra ...string) []string {
+	args := append([]string{"rm", "--path", path}, extra...)
+	if runtime.GOOS != "darwin" {
+		args = append(args, "--force")
+	}
+	return args
+}
+
+func TestWorktreeRmPathOrphanMovesToTrash(t *testing.T) {
+	f := vcstest.Repo(t)
+	f.Isolate(t)
+	path := addPoolWorktree(t, f, "feat")
+	orphanWorktree(t, f.Env(), path)
+	unrelated := worktreeTempDir(t)
+	t.Chdir(unrelated)
+
+	out, err := runWorktreeCmdIn(f.ContextIn(unrelated), t, orphanRmArgs(path)...)
+	if err != nil {
+		t.Fatalf("rm --path error = %v", err)
+	}
+	prefix := "removed feat · orphaned checkout · moved to Trash "
+	dest, ok := strings.CutPrefix(strings.TrimSuffix(out, "\n"), prefix)
+	if !ok {
+		t.Fatalf("rm --path output = %q, want it to start %q", out, prefix)
+	}
+	if trash := filepath.Join(fixtureHome(t, f), ".Trash"); filepath.Dir(dest) != trash || !strings.HasPrefix(filepath.Base(dest), "feat-") {
+		t.Errorf("moved to %s, want feat-<timestamp> under %s", dest, trash)
+	}
+	assertGone(t, path)
+	if got := readFileStr(t, filepath.Join(dest, "f.txt")); got == "" {
+		t.Errorf("%s/f.txt is empty, want the tree moved whole", dest)
+	}
+}
+
+func TestWorktreeRmPathOrphanDryRun(t *testing.T) {
+	f := vcstest.Repo(t)
+	f.Isolate(t)
+	path := addPoolWorktree(t, f, "feat")
+	orphanWorktree(t, f.Env(), path)
+
+	out, err := runWorktreeCmd(t, f, orphanRmArgs(path, "--dry-run")...)
+	if err != nil {
+		t.Fatalf("rm --path --dry-run error = %v", err)
+	}
+	if want := "would remove feat · orphaned checkout · " + path + "\n"; out != want {
+		t.Errorf("rm --path --dry-run output = %q, want %q", out, want)
+	}
+	if got := readFileStr(t, filepath.Join(path, "f.txt")); got == "" {
+		t.Errorf("%s/f.txt is empty, want --dry-run to leave the tree", path)
+	}
+	assertGone(t, filepath.Join(fixtureHome(t, f), ".Trash"))
+}
+
+func TestWorktreeRmPathOrphanRefusals(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(t *testing.T, f *vcstest.Fixture, path string)
+		want  string
+	}{
+		{
+			name:  "pointer resolves",
+			setup: func(*testing.T, *vcstest.Fixture, string) {},
+			want:  "no git or jj repository in the working directory",
+		},
+		{
+			name: "symlinked gitdir file",
+			setup: func(t *testing.T, f *vcstest.Fixture, path string) {
+				orphanWorktree(t, f.Env(), path)
+				pointer := filepath.Join(path, ".git")
+				moved := filepath.Join(worktreeTempDir(t), "gitfile")
+				if err := os.Rename(pointer, moved); err != nil {
+					t.Fatalf("move %s: %v", pointer, err)
+				}
+				if err := os.Symlink(moved, pointer); err != nil {
+					t.Fatalf("symlink %s: %v", pointer, err)
+				}
+			},
+			want: "is not a regular gitdir file",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := vcstest.Repo(t)
+			f.Isolate(t)
+			path := addPoolWorktree(t, f, "feat")
+			tt.setup(t, f, path)
+			unrelated := worktreeTempDir(t)
+			t.Chdir(unrelated)
+
+			out, err := runWorktreeCmdIn(f.ContextIn(unrelated), t, "rm", "--path", path, "--force")
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("rm --path error = %v, want it to contain %q", err, tt.want)
+			}
+			if out != "" {
+				t.Errorf("rm --path output = %q, want none", out)
+			}
+			if got := readFileStr(t, filepath.Join(path, "f.txt")); got == "" {
+				t.Errorf("%s/f.txt is empty, want the refused tree untouched", path)
+			}
+			assertGone(t, filepath.Join(fixtureHome(t, f), ".Trash"))
+		})
+	}
+}
+
+func TestWorktreeRmPathOrphanLiveHolder(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("the live-process guard runs on macOS only")
+	}
+	f := vcstest.Repo(t)
+	f.Isolate(t)
+	path := addPoolWorktree(t, f, "feat")
+	orphanWorktree(t, f.Env(), path)
+	shell := exec.Command("/bin/sh", "-c", "/bin/sleep 60 & echo $!; wait")
+	shell.Dir = path
+	shell.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	stdout, err := shell.StdoutPipe()
+	if err != nil {
+		t.Fatalf("StdoutPipe: %v", err)
+	}
+	if err := shell.Start(); err != nil {
+		t.Fatalf("start the holder: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = syscall.Kill(-shell.Process.Pid, syscall.SIGKILL)
+		_ = shell.Wait()
+	})
+	line, err := bufio.NewReader(stdout).ReadString('\n')
+	if err != nil {
+		t.Fatalf("read the holder's pid: %v", err)
+	}
+	awaitSleep(t, strings.TrimSpace(line))
+
+	for _, args := range [][]string{{"rm", "--path", path}, {"rm", "--path", path, "--force"}} {
+		out, err := runWorktreeCmd(t, f, args...)
+		if err == nil || !strings.Contains(err.Error(), "is in use") || !strings.Contains(err.Error(), "sleep") {
+			t.Fatalf("%v error = %v, want the sleeping holder named", args, err)
+		}
+		if out != "" {
+			t.Errorf("%v output = %q, want none", args, out)
+		}
+	}
+	if got := readFileStr(t, filepath.Join(path, "f.txt")); got == "" {
+		t.Errorf("%s/f.txt is empty, want the held tree untouched", path)
+	}
+	assertGone(t, filepath.Join(fixtureHome(t, f), ".Trash"))
+}
+
+func awaitSleep(t *testing.T, pid string) {
+	t.Helper()
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+		out, err := exec.Command("/bin/ps", "-o", "comm=", "-p", pid).Output() //nolint:gosec // the fixed ps binary over the holder pid this test started
+		if err == nil && strings.TrimSpace(string(out)) == "/bin/sleep" {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("pid %s never ran /bin/sleep: %q, %v", pid, out, err)
+		}
+	}
+}
+
+func TestWorktreeRmPathOrphanUnguardedNeedsForce(t *testing.T) {
+	if runtime.GOOS == "darwin" {
+		t.Skip("macOS runs the live-process guard")
+	}
+	f := vcstest.Repo(t)
+	f.Isolate(t)
+	path := addPoolWorktree(t, f, "feat")
+	orphanWorktree(t, f.Env(), path)
+
+	out, err := runWorktreeCmd(t, f, "rm", "--path", path)
+	if err == nil || !strings.Contains(err.Error(), "--force moves it to the Trash unchecked") {
+		t.Fatalf("rm --path error = %v, want the missing guard to refuse", err)
+	}
+	if out != "" {
+		t.Errorf("rm --path output = %q, want none", out)
+	}
+	if got := readFileStr(t, filepath.Join(path, "f.txt")); got == "" {
+		t.Errorf("%s/f.txt is empty, want the refused tree untouched", path)
 	}
 }
 
