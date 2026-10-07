@@ -388,6 +388,13 @@ open PRs found by repeatable `--lane-prefix` flags as one JSON object. When a
 poll is rate-limited, it fails naming the next probe unless `--wait` allows
 waiting.
 
+`ccx vcs gh -- <gh args>` runs a read-only `gh` command, such as
+`gh pr checks`, `gh pr view`, or `gh run watch`, on the read-only GitHub App
+token these reads use. A poll then draws on the installation's quota and
+leaves the gh user's GraphQL quota for writes. A write through it fails, so
+run writes through `gh` itself. `ccx vcs auth status` names both identities
+and their remaining quota, and still answers when the user's quota is spent.
+
 `ccx vcs guidelines` (alias
 `contributing`) fetches and caches the repo's PR templates, `CONTRIBUTING.md`, code
 of conduct, and issue config, served verbatim so a PR body can reproduce the
@@ -399,6 +406,7 @@ ccx vcs status                                   # every branch, its PR, and wha
 ccx vcs status --json                            # the same report as a structure
 ccx vcs pr status 123 124                         # queue state, CI, approval, and verdict, per PR
 ccx vcs pr state 123 124 --lane-prefix yasyf/work/  # shared cache records and lane PRs, as JSON
+ccx vcs gh -- pr checks 123                      # a gh read on the app's quota
 ccx vcs guidelines                               # PR templates + contribution rules, verbatim
 ```
 

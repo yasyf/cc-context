@@ -2,8 +2,10 @@ package ghapi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"time"
 )
 
@@ -46,16 +48,10 @@ const appAuthQuery = `query { rateLimit { limit remaining resetAt } }`
 // to, with each identity's remaining GraphQL quota. It mints the app token a
 // read would, so it doubles as the check that minting works.
 func (c *Client) Auth(ctx context.Context) (Auth, error) {
-	user, err := GraphQL[struct {
-		Viewer struct {
-			Login string `json:"login"`
-		} `json:"viewer"`
-		RateLimit Quota `json:"rateLimit"`
-	}](ctx, c.asUser(), userAuthQuery, nil)
+	writes, err := c.asUser().userIdentity(ctx)
 	if err != nil {
 		return Auth{}, err
 	}
-	writes := Identity{Kind: identityUser, Name: user.Viewer.Login, Quota: &user.RateLimit}
 	auth := Auth{Repo: c.repo, Reads: writes, Writes: writes}
 	if userTokenPinned(ctx) {
 		auth.Reason = "GH_TOKEN or GITHUB_TOKEN pins the user's token"
@@ -85,9 +81,50 @@ func (c *Client) Auth(ctx context.Context) (Auth, error) {
 	app, err := GraphQL[struct {
 		RateLimit Quota `json:"rateLimit"`
 	}](ctx, c, appAuthQuery, nil)
-	if err != nil {
+	quota, spent := spentQuota(err, time.Now())
+	switch {
+	case spent:
+	case err != nil:
 		return Auth{}, err
+	default:
+		quota = &app.RateLimit
 	}
-	auth.Reads = Identity{Kind: identityApp, Name: src.cfg.Name, Installation: id, ExpiresAt: &tok.ExpiresAt, Quota: &app.RateLimit}
+	auth.Reads = Identity{Kind: identityApp, Name: src.cfg.Name, Installation: id, ExpiresAt: &tok.ExpiresAt, Quota: quota}
 	return auth, nil
+}
+
+// userIdentity reads the gh user's login and GraphQL quota. A spent quota
+// refuses the GraphQL query that would report it, so the login then comes
+// from REST and the quota from the refusal's headers.
+func (c *Client) userIdentity(ctx context.Context) (Identity, error) {
+	user, err := GraphQL[struct {
+		Viewer struct {
+			Login string `json:"login"`
+		} `json:"viewer"`
+		RateLimit Quota `json:"rateLimit"`
+	}](ctx, c, userAuthQuery, nil)
+	quota, spent := spentQuota(err, time.Now())
+	switch {
+	case spent:
+		payload, _, _, err := c.do(ctx, http.MethodGet, "/user", nil, false)
+		if err != nil {
+			return Identity{}, err
+		}
+		if err := json.Unmarshal(payload, &user.Viewer); err != nil {
+			return Identity{}, fmt.Errorf("ghapi: decode /user: %w", err)
+		}
+	case err != nil:
+		return Identity{}, err
+	default:
+		quota = &user.RateLimit
+	}
+	return Identity{Kind: identityUser, Name: user.Viewer.Login, Quota: quota}, nil
+}
+
+func spentQuota(err error, now time.Time) (*Quota, bool) {
+	var gql *GraphQLError
+	if !errors.As(err, &gql) || !gql.Exhausted {
+		return nil, false
+	}
+	return &Quota{Limit: gql.Limit, ResetAt: now.Add(gql.RetryAfter)}, true
 }

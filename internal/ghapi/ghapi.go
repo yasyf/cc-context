@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -137,7 +138,8 @@ func GraphQL[T any](ctx context.Context, c *Client, query string, variables map[
 	}
 	if len(resp.Errors) > 0 {
 		wait, exhausted := quotaReset(header, time.Now())
-		return out, &GraphQLError{Messages: resp.Errors, Exhausted: exhausted, RetryAfter: wait}
+		limit, _ := strconv.Atoi(header.Get("X-RateLimit-Limit"))
+		return out, &GraphQLError{Messages: resp.Errors, Exhausted: exhausted, RetryAfter: wait, Limit: limit}
 	}
 	return resp.Data, nil
 }

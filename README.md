@@ -155,6 +155,7 @@ Each command is a token-bounded stand-in for a primitive an agent would otherwis
 | `ccx vcs pr status <n>...` | Read several PR statuses from the shared 30-second cache, in input order; reports queued, not queued, evicted, or landed for each, with its CI, approval, and a `landable` or `blocked:<cause>` verdict |
 | `ccx vcs pr watch <n>...` | Stream one line per transition (queued, ejected, conflicting, red, green, approved, landed...) until PRs land; `--stack` / `--lane-prefix` |
 | `ccx vcs pr state [<n>...]` | Print shared PR records and `--lane-prefix` discoveries as one JSON object; `--wait` allows waiting out rate limits |
+| `ccx vcs gh -- <gh args>` | Run a read-only `gh` command such as `pr checks` or `run watch` on the GitHub App's quota instead of the gh user's; exits with gh's code |
 | `ccx vcs worktree add <name>` | Create a worktree in the repository's pool; a branch name like `user/slug` keeps its branch and mints the directory `user-slug` |
 | `ccx vcs worktree rm <name>` | Remove an unused worktree; macOS queues physical deletion after logical removal |
 | `ccx vcs worktree rm --path <absolute-path>` | Remove the worktree at a path; an orphaned pool worktree whose admin dir is gone moves to the Trash |
