@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -82,6 +84,51 @@ func TestStackRebaseDropsAClosedPullRequestThatConflictsWithTrunk(t *testing.T) 
 	}
 	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "x"); got != closed {
 		t.Errorf("local x = %s, want it kept at %s", got, closed)
+	}
+}
+
+// TestShipRefusesToDropItsOwnClosedPullRequest is #31933: a --tip-only ship
+// of a branch whose pull request the owner closed dropped that branch.
+func TestShipRefusesToDropItsOwnClosedPullRequest(t *testing.T) {
+	body := filepath.Join(t.TempDir(), "body.md")
+	if err := os.WriteFile(body, []byte("Body\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"bare", nil},
+		{"pr meta", []string{"--pr-title", "Title", "--pr-body-file", body}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := shipGTRepo(t)
+			api := stubGTAPI(t)
+			f.Decorate(api.ctx)
+			shipGTStack(t, f, "feature")
+			if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+				t.Fatalf("stack submit: %v", err)
+			}
+			priorSubmits := len(api.submitHeads())
+			stubStackPRs(t, f, map[string]*stackPR{"feature": {Number: 7, Title: "feature", State: "CLOSED", Base: "main"}})
+			shipResetLog(t, f)
+
+			args := append([]string{"--no-commit", "--no-watch", "--tip-only"}, tc.args...)
+			_, errStr, err := runShipCmdFull(f.Context(), t, args...)
+			want := "ship: feature's pull request #7 was closed without merging, and ship will not drop the branch it ships — reopen it with gh pr reopen 7. Nothing was committed"
+			if err == nil || !strings.HasPrefix(err.Error(), want) {
+				t.Fatalf("ship = %v (stderr=%q), want %q", err, errStr, want)
+			}
+			if refs := gtPushedRefs(shipGTInvocations(t, f)); len(refs) != 0 {
+				t.Errorf("pushed %v, want nothing", refs)
+			}
+			if heads := api.submitHeads()[priorSubmits:]; len(heads) != 0 {
+				t.Errorf("submit posts = %v, want none", heads)
+			}
+			if parent := dropGTParent(t, f, "feature"); parent != "main" {
+				t.Errorf("gt parent of feature = %q, want main", parent)
+			}
+		})
 	}
 }
 

@@ -501,6 +501,9 @@ func runShip(cmd *cobra.Command, o shipOpts) (err error) {
 				if preAmendSHA != "" && gtc.restack == nil {
 					return shipAmendKept(ctx, dir, preAmendSHA, err)
 				}
+				if errors.As(err, new(stackTipClosedError)) {
+					return fmt.Errorf("%w%s", err, stuck)
+				}
 				return err
 			}
 			gtc.forget()
