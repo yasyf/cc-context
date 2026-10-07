@@ -1394,6 +1394,42 @@ func TestStackRebaseRetargetsAPullRequestOffItsRecordedParent(t *testing.T) {
 	}
 }
 
+// TestStackRebaseLeavesAChildOnTrunkWhenTrunkHoldsItsParent is #31981: its
+// parent replayed onto a trunk already holding its change, so the submit left
+// the parent out and based the child on trunk, and the verdict then moved the
+// child's pull request back onto the parent with a REST base edit.
+func TestStackRebaseLeavesAChildOnTrunkWhenTrunkHoldsItsParent(t *testing.T) {
+	t.Parallel()
+	f := stackRebaseRepo(t, "base", "feature")
+	stubStackPRs(t, f, map[string]*stackPR{
+		"base":    {Number: 9000, Title: "base", State: "OPEN", Base: "main"},
+		"feature": {Number: 9001, Title: "feature", State: "OPEN", Base: "main"},
+	})
+	writeShipGH(t, f)
+	restackSquashRemote(t, f, "main", "base, copied upstream", "base")
+	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
+	shipResetLog(t, f)
+
+	out, _, err := runStackCmd(t, f, "rebase")
+	if err != nil {
+		t.Fatalf("stack rebase: %v", err)
+	}
+	line := ""
+	for l := range strings.Lines(out) {
+		if strings.HasPrefix(l, "feature"+shipSep+"#9001"+shipSep) {
+			line = l
+		}
+	}
+	if !strings.Contains(line, shipSep+"parent main") || strings.Contains(line, "retarget") {
+		t.Errorf("output = %q, want feature's pull request left on main", out)
+	}
+	for _, inv := range shipGTInvocations(t, f) {
+		if slices.Contains(inv, "repos/yasyf/cc-context/pulls/9001") {
+			t.Errorf("retargeted feature's pull request off the base the submit gave it: %v", inv)
+		}
+	}
+}
+
 func TestStackRebaseNamesTheRetargetGitHubRefused(t *testing.T) {
 	t.Parallel()
 	f := stackRebaseRepo(t, "base", "feature")

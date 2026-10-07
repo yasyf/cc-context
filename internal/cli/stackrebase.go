@@ -3931,10 +3931,14 @@ func stackVerdict(ctx context.Context, cmd *cobra.Command, l lane, run *stackReb
 	recordStackTracking(ctx, untracked, trackingErr)
 	for _, name := range live {
 		b := run.branch(name)
+		parent, err := stackSubmittedParent(ctx, dir, run, b)
+		if err != nil {
+			return err
+		}
 		fields := []string{name}
 		pr := prs[name]
 		if pr == nil {
-			fields = append(fields, "no pull request", fmt.Sprintf("head %.12s", b.NewHead), "parent "+b.Parent)
+			fields = append(fields, "no pull request", fmt.Sprintf("head %.12s", b.NewHead), "parent "+parent)
 			cmd.Println(strings.Join(fields, shipSep))
 			continue
 		}
@@ -3945,15 +3949,15 @@ func stackVerdict(ctx context.Context, cmd *cobra.Command, l lane, run *stackReb
 		case slices.ContainsFunc(untracked, func(u stackUntracked) bool { return u.Branch == name }):
 			mergeable = "untracked by graphite"
 		}
-		fields = append(fields, fmt.Sprintf("#%d", pr.Number), fmt.Sprintf("head %.12s", pr.Head), "parent "+b.Parent, mergeable)
+		fields = append(fields, fmt.Sprintf("#%d", pr.Number), fmt.Sprintf("head %.12s", pr.Head), "parent "+parent, mergeable)
 		switch pusher := overwritten[name].by(pr); {
 		case stackHeadLags(pr, b) && pusher != "":
 			fields = append(fields, fmt.Sprintf("overwritten: %s force-pushed %.12s over the push of %.12s — re-run ccx vcs stack submit to publish it again", pusher, pr.Head, b.NewHead))
 		case stackHeadLags(pr, b):
 			fields = append(fields, fmt.Sprintf("stale read: GitHub still shows %.12s %s after the push of %.12s — re-run ccx vcs stack submit if it stays", pr.Head, stackHeadLagWait, b.NewHead))
 		}
-		if stackBaseStrays(pr, b) {
-			fields = append(fields, stackRetargetToParent(ctx, dir, pr, b.Parent))
+		if stackBaseStrays(pr, parent) {
+			fields = append(fields, stackRetargetToParent(ctx, dir, pr, parent))
 		}
 		if len(pr.Labels) > 0 {
 			fields = append(fields, "labels "+strings.Join(pr.Labels, ","))
@@ -3963,11 +3967,26 @@ func stackVerdict(ctx context.Context, cmd *cobra.Command, l lane, run *stackReb
 	return nil
 }
 
+// stackSubmittedParent is the base the submit gave b's pull request: b's
+// parent, or trunk when the remote trunk already holds that parent's replayed
+// head, since the submit drops such a parent and anchors its child on trunk.
+func stackSubmittedParent(ctx context.Context, dir render.Dir, run *stackRebaseRun, b *stackRebaseBranch) (string, error) {
+	parent := run.branch(b.Parent)
+	if parent == nil || parent.Landed != "" || parent.Held != "" || parent.LocalOnly {
+		return b.Parent, nil
+	}
+	contained, err := gitIsAncestor(ctx, dir, stackRebasePrefix, parent.NewHead, run.Pin)
+	if err != nil || !contained {
+		return b.Parent, err
+	}
+	return run.Trunk, nil
+}
+
 // stackBaseStrays is an open pull request GitHub bases somewhere other than the
-// parent the stack records for its branch. A pull request Graphite parked on its
+// parent the submit gave it. A pull request Graphite parked on its
 // graphite-base branch is Graphite's to move back, so it never strays.
-func stackBaseStrays(pr *stackPR, b *stackRebaseBranch) bool {
-	return pr.State == "OPEN" && pr.Base != "" && pr.Base != fmt.Sprintf("graphite-base/%d", pr.Number) && pr.Base != b.Parent
+func stackBaseStrays(pr *stackPR, parent string) bool {
+	return pr.State == "OPEN" && pr.Base != "" && pr.Base != fmt.Sprintf("graphite-base/%d", pr.Number) && pr.Base != parent
 }
 
 // stackRetargetToParent moves a pull request GitHub still bases on another

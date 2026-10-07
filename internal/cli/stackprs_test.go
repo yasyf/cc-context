@@ -2,6 +2,7 @@ package cli
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"net/http"
@@ -159,5 +160,29 @@ func TestStackQueryPRsReadsABranchCrowdedOutByForksOverREST(t *testing.T) {
 	}
 	if pr, ok := prs["no-such-branch"]; ok {
 		t.Errorf("fork-only branch resolved to %+v", pr)
+	}
+}
+
+// TestStackQueryPRsLandsAnOpenPullRequestTheQueueSquashed is #31976 and #31979:
+// the queue squashed both onto dev while GitHub answered 500s, so neither was
+// ever closed, and a stack submit from their child replayed both onto dev.
+func TestStackQueryPRsLandsAnOpenPullRequestTheQueueSquashed(t *testing.T) {
+	f := shipRepo(t, vcstest.Remote())
+	restackSquashRemote(t, f, "main", "a (#41)", "a")
+	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
+	open := func(number int) string {
+		return fmt.Sprintf(`{"totalCount":1,"nodes":[{"number":%d,"state":"OPEN","isCrossRepository":false,"baseRefName":"main","timelineItems":{"nodes":[]}}]}`, number)
+	}
+	serveGitHubStatus(t, http.StatusOK, `{"data":{"repository":{"p0":`+open(41)+`,"p1":`+open(42)+`}}}`)
+
+	prs, err := stackQueryPRs(f.Context(), render.Dir(f.Dir), "main", []string{"a", "b"})
+	if err != nil {
+		t.Fatalf("stackQueryPRs: %v", err)
+	}
+	if pr := prs["a"]; pr == nil || pr.Number != 41 || !pr.Landed {
+		t.Errorf("a = %+v, want #41 landed by its squash on main", pr)
+	}
+	if pr := prs["b"]; pr == nil || pr.Number != 42 || pr.Landed {
+		t.Errorf("b = %+v, want #42 open and not landed", pr)
 	}
 }

@@ -152,19 +152,29 @@ func stackReadPRsREST(ctx context.Context, dir render.Dir, branches []string) ([
 	return reads, nil
 }
 
+// stackLandPRs marks the pull requests that reached trunk. One GitHub still
+// reads as open landed when its queue squash is on trunk: the queue lands it
+// first and closes it after, and a GitHub outage between the two leaves it open.
 func stackLandPRs(ctx context.Context, dir render.Dir, trunk string, reads []stackPRRead) map[string]*stackPR {
 	prs := make(map[string]*stackPR, len(reads))
 	var closes []prQueueClose
+	var open []int
 	byNumber := map[int]*stackPR{}
 	for _, read := range reads {
 		switch read.landing.verdict(true) {
 		case prLanded:
 			read.pr.Landed = true
+		case prStillOpen:
+			open = append(open, read.pr.Number)
+			byNumber[read.pr.Number] = read.pr
 		case prQueueClosed:
 			closes = append(closes, prQueueClose{Number: read.pr.Number, Base: trunk})
 			byNumber[read.pr.Number] = read.pr
 		}
 		prs[read.branch] = read.pr
+	}
+	for number := range prSquashesOnBase(ctx, dir, trunk, open) {
+		byNumber[number].Landed = true
 	}
 	for number, landed := range resolveQueueLandings(ctx, dir, closes) {
 		byNumber[number].Landed = landed
