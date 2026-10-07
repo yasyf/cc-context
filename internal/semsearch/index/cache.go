@@ -12,6 +12,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"github.com/yasyf/cc-context/internal/cache"
@@ -30,8 +31,10 @@ const (
 	vectorsFile  = "vectors.bin"
 	lastUsedFile = "last_used"
 	rootFile     = "root"
-	familiesDir  = "families"
+	seedsDir     = "seeds"
 )
+
+const maxSeedCandidates = 8
 
 // fileManifest records one file's modification time, content hash, and chunk
 // range within the flat chunk/vector arrays — semble's FileManifestEntry.
@@ -85,9 +88,9 @@ func variantCacheDir(ctx context.Context, root, vKey string) (string, error) {
 	return cache.Dir(ctx, "semsearch", hex.EncodeToString(repoKey[:]), vKey)
 }
 
-// familyPointer resolves the file naming the latest vKey index among worktrees
-// sharing root's git common dir, or "" outside a git working tree.
-func familyPointer(ctx context.Context, root, vKey string) (string, error) {
+// familyDir resolves the directory holding one pointer per worktree that shares
+// root's git common dir and path within it, or "" outside a git working tree.
+func familyDir(ctx context.Context, root, vKey string) (string, error) {
 	gitRoot := gitdir.Root(root)
 	if gitRoot == "" {
 		return "", nil
@@ -104,17 +107,41 @@ func familyPointer(ctx context.Context, root, vKey string) (string, error) {
 		return "", fmt.Errorf("relativize %q to %q: %w", root, gitRoot, err)
 	}
 	sum := sha256.Sum256([]byte(common + "\x00" + filepath.ToSlash(rel)))
-	dir, err := cache.Dir(ctx, "semsearch", familiesDir, hex.EncodeToString(sum[:]))
+	return cache.Dir(ctx, "semsearch", seedsDir, hex.EncodeToString(sum[:]), vKey)
+}
+
+// siblingIndexes lists the most recently stored indexes a family's pointers name,
+// other than self.
+func siblingIndexes(famDir, self string) []string {
+	entries, err := os.ReadDir(famDir)
 	if err != nil {
-		return "", err
+		return nil
 	}
-	return filepath.Join(dir, vKey), nil
+	type candidate struct {
+		dir    string
+		stored time.Time
+	}
+	var found []candidate
+	for _, e := range entries {
+		if !isKey(e.Name()) {
+			continue
+		}
+		dir := readPointer(filepath.Join(famDir, e.Name()))
+		fi, err := os.Stat(filepath.Join(dir, manifestFile))
+		if dir == "" || dir == self || err != nil {
+			continue
+		}
+		found = append(found, candidate{dir, fi.ModTime()})
+	}
+	slices.SortFunc(found, func(a, b candidate) int { return b.stored.Compare(a.stored) })
+	dirs := make([]string, 0, min(len(found), maxSeedCandidates))
+	for _, c := range found[:min(len(found), maxSeedCandidates)] {
+		dirs = append(dirs, c.dir)
+	}
+	return dirs
 }
 
 func readPointer(pointer string) string {
-	if pointer == "" {
-		return ""
-	}
 	data, err := os.ReadFile(pointer) //nolint:gosec // pointer lives under the trusted cache dir
 	if err != nil {
 		return ""
@@ -123,9 +150,6 @@ func readPointer(pointer string) string {
 }
 
 func hasManifest(dir string) bool {
-	if dir == "" {
-		return false
-	}
 	_, err := os.Stat(filepath.Join(dir, manifestFile))
 	return err == nil
 }

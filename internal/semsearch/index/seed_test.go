@@ -9,12 +9,10 @@ import (
 	"github.com/yasyf/cc-context/internal/render"
 )
 
-func writeLinkedWorktrees(t *testing.T) (string, string) {
+func addLinkedWorktree(t *testing.T, main, name string) string {
 	t.Helper()
-	base := t.TempDir()
-	main := filepath.Join(base, "main")
-	linked := filepath.Join(base, "linked")
-	admin := filepath.Join(main, ".git", "worktrees", "linked")
+	linked := filepath.Join(filepath.Dir(main), name)
+	admin := filepath.Join(main, ".git", "worktrees", name)
 	for _, dir := range []string{admin, linked} {
 		if err := os.MkdirAll(dir, 0o750); err != nil {
 			t.Fatal(err)
@@ -26,23 +24,35 @@ func writeLinkedWorktrees(t *testing.T) (string, string) {
 	if err := os.WriteFile(filepath.Join(linked, ".git"), []byte("gitdir: "+admin+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	writeIndexFiles(t, main)
 	writeIndexFiles(t, linked)
-	return main, linked
+	return linked
 }
 
-func TestLoadSeedsFromSiblingWorktree(t *testing.T) {
+func TestLoadSeedsFromClosestSiblingWorktree(t *testing.T) {
 	t.Parallel()
-	main, linked := writeLinkedWorktrees(t)
-	ctx := render.WithEnv(t.Context(), "CLAUDE_PLUGIN_DATA="+t.TempDir())
+	main := filepath.Join(t.TempDir(), "main")
+	if err := os.MkdirAll(filepath.Join(main, ".git"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	writeIndexFiles(t, main)
+	stale := addLinkedWorktree(t, main, "stale")
+	linked := addLinkedWorktree(t, main, "linked")
+	for name, body := range map[string]string{"a.go": "package a\n\nfunc Alpha() int { return 1 }\n", "b.go": "package b\n\nfunc Beta() int { return 2 }\n"} {
+		if err := os.WriteFile(filepath.Join(stale, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	newBody := "package a\n\nfunc Alpha() string { return \"linked alpha\" }\n"
 	if err := os.WriteFile(filepath.Join(linked, "a.go"), []byte(newBody), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	ctx := render.WithEnv(t.Context(), "CLAUDE_PLUGIN_DATA="+t.TempDir())
 
 	emb := &countingEmbedder{}
-	if _, err := Load(ctx, emb, main, []ContentType{ContentCode}, DefaultChunker(), "model-x"); err != nil {
-		t.Fatalf("main Load: %v", err)
+	for _, repo := range []string{main, stale} {
+		if _, err := Load(ctx, emb, repo, []ContentType{ContentCode}, DefaultChunker(), "model-x"); err != nil {
+			t.Fatalf("Load %s: %v", repo, err)
+		}
 	}
 	emb.encoded = 0
 	idx, err := Load(ctx, emb, linked, []ContentType{ContentCode}, DefaultChunker(), "model-x")
@@ -50,7 +60,7 @@ func TestLoadSeedsFromSiblingWorktree(t *testing.T) {
 		t.Fatalf("linked Load: %v", err)
 	}
 	if idx.Reindexed != 1 {
-		t.Errorf("linked Reindexed = %d, want 1 (only the edited a.go)", idx.Reindexed)
+		t.Errorf("linked Reindexed = %d, want 1 (only the edited a.go, seeded from main rather than the newer stale)", idx.Reindexed)
 	}
 	if want := len(DefaultChunker().ChunkFile(ctx, "a.go", "go", newBody)); emb.encoded != want {
 		t.Errorf("linked Load embedded %d texts, want %d (a.go's chunks only)", emb.encoded, want)

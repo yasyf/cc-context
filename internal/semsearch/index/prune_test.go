@@ -25,6 +25,10 @@ func TestPruneDeletesGoneAndIdleCaches(t *testing.T) {
 		}
 		cacheDirs[name] = dir
 	}
+	unversioned := filepath.Join(cacheDirs["live"], manifestFile)
+	if err := os.WriteFile(unversioned, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.RemoveAll(repos["gone"]); err != nil {
 		t.Fatal(err)
 	}
@@ -39,6 +43,9 @@ func TestPruneDeletesGoneAndIdleCaches(t *testing.T) {
 
 	if err := Prune(ctx, 24*time.Hour); err != nil {
 		t.Fatalf("Prune: %v", err)
+	}
+	if _, err := os.Stat(unversioned); !os.IsNotExist(err) {
+		t.Errorf("unversioned manifest beside the live variants survived Prune: %v", err)
 	}
 	for name, want := range map[string]bool{"gone": false, "idle": false, "live": true} {
 		manifests, err := filepath.Glob(filepath.Join(cacheDirs[name], "*", manifestFile))
