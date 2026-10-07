@@ -2461,12 +2461,12 @@ func stackPastFork(ctx context.Context, dir render.Dir, recorded, fork, head str
 func stackMergesClean(ctx context.Context, dir render.Dir, pin string, branches []*stackRebaseBranch) (bool, error) {
 	clean := true
 	for _, b := range branches {
-		conflicts, err := stackTrunkConflicts(ctx, dir, pin, b.Head)
+		merges, conflicts, err := stackTrunkConflicts(ctx, dir, pin, b.Head)
 		if err != nil {
 			return false, err
 		}
 		b.Conflicts = conflicts
-		clean = clean && len(conflicts) == 0
+		clean = clean && merges
 	}
 	return clean, nil
 }
@@ -2475,18 +2475,18 @@ func stackMergesClean(ctx context.Context, dir render.Dir, pin string, branches 
 // predate trunk's merge=binary rules and pass a conflicting text merge.
 // Never --quiet: git 2.56 exits 0 under it when a conflicted path sorts before
 // a clean content merge in a sibling directory.
-func stackTrunkConflicts(ctx context.Context, dir render.Dir, pin, head string) ([]string, error) {
+func stackTrunkConflicts(ctx context.Context, dir render.Dir, pin, head string) (bool, []string, error) {
 	out, code, stderr, err := render.RunCLIExitCode(ctx, dir, "git", []string{"--attr-source=" + pin, "merge-tree", "--write-tree", "--name-only", "--no-messages", "-z", pin, head})
 	if err != nil {
-		return nil, fmt.Errorf("stack rebase: git merge-tree %.12s %.12s: %w", pin, head, err)
+		return false, nil, fmt.Errorf("stack rebase: git merge-tree %.12s %.12s: %w", pin, head, err)
 	}
 	switch code {
 	case 0:
-		return nil, nil
+		return true, nil, nil
 	case 1:
-		return strings.Split(strings.TrimRight(out, "\x00"), "\x00")[1:], nil
+		return false, strings.Split(strings.TrimRight(out, "\x00"), "\x00")[1:], nil
 	default:
-		return nil, fmt.Errorf("stack rebase: git merge-tree %.12s %.12s: exit %d: %s", pin, head, code, strings.TrimSpace(stderr))
+		return false, nil, fmt.Errorf("stack rebase: git merge-tree %.12s %.12s: exit %d: %s", pin, head, code, strings.TrimSpace(stderr))
 	}
 }
 
