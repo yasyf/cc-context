@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -41,7 +43,10 @@ where the grading found it. A refused lease is reported rather than retried:
 something advanced the branch mid-run, and reconciling that is a person's
 call. A remote head no reflog entry of this branch reaches is work this branch
 has never held — a divergence, not a rewrite — and push refuses it, naming the
-commits the force would drop.
+commits the force would drop. Commits trunk already holds are not work to drop:
+a server-side restack of this branch's own commits, and a replay of a commit
+trunk landed as a squash titled with its subject and a pull request number, as
+the merge queue leaves beneath a child after its parent lands, are forced over.
 
 Push moves one branch and nothing else. A graphite stack's bases live in
 Graphite's own record, which only ccx vcs stack submit writes. A branch a stack
@@ -378,15 +383,85 @@ func gitReflogHolds(ctx context.Context, dir render.Dir, prefix, branch, sha str
 var gitRecordedHistoryEnv = []string{"GIT_NO_REPLACE_OBJECTS=1", "GIT_GRAFT_FILE=" + os.DevNull, "GIT_NO_LAZY_FETCH=1"}
 
 // gitOnlyCopies reports whether every commit from carries past to, outside
-// trunk, has a patch-for-patch copy in to: a server-side restack of to's own
-// commits rather than work to lacks.
+// trunk, has a patch-for-patch copy in to or replays a commit trunk landed: a
+// server-side restack of to's own commits, or of a squash-landed parent's,
+// rather than work to lacks.
 func gitOnlyCopies(ctx context.Context, dir render.Dir, prefix, from, to, trunk string) (bool, error) {
-	args := []string{"--left-only", "--cherry-pick"}
+	argv := []string{"rev-list", "--left-only", "--cherry-pick", from + "..." + to}
 	if trunk != "" {
-		args = append(args, "^"+trunk)
+		argv = append(argv, "^"+trunk)
 	}
-	n, err := gtRevCount(ctx, prefix, dir, from+"..."+to, args...)
-	return err == nil && n == 0, err
+	out, err := render.RunCLI(ctx, dir, "git", argv)
+	if err != nil {
+		return false, fmt.Errorf("%s: git rev-list --left-only --cherry-pick %s...%s: %w", prefix, from, to, err)
+	}
+	extra := strings.Fields(out)
+	if len(extra) == 0 || trunk == "" {
+		return len(extra) == 0, nil
+	}
+	landed, err := gitLandedReplays(ctx, dir, prefix, trunk, extra)
+	return len(landed) == len(extra), err
+}
+
+// gitLandedReplays keeps each commit a squash landed on trunk after the commit
+// was authored: a replay keeps its author date, so the squash that landed it
+// always follows.
+func gitLandedReplays(ctx context.Context, dir render.Dir, prefix, trunk string, commits []string) ([]string, error) {
+	type authored struct {
+		subject string
+		at      int64
+	}
+	byCommit := map[string]authored{}
+	since := int64(0)
+	if err := gitEachLogLine(ctx, dir, prefix, append([]string{"log", "--no-walk=unsorted", "--format=%H%x00%at%x00%s"}, commits...), func(sha string, at int64, subject string) {
+		byCommit[sha] = authored{subject, at}
+		if since == 0 || at < since {
+			since = at
+		}
+	}); err != nil {
+		return nil, err
+	}
+	squashed := map[string]int64{}
+	if err := gitEachLogLine(ctx, dir, prefix, []string{"log", "--no-merges", "--format=%H%x00%ct%x00%s", fmt.Sprintf("--since-as-filter=@%d", since), trunk}, func(_ string, at int64, subject string) {
+		if title, ok := squashTitle(subject); ok && at > squashed[title] {
+			squashed[title] = at
+		}
+	}); err != nil {
+		return nil, err
+	}
+	return slices.DeleteFunc(slices.Clone(commits), func(sha string) bool {
+		c := byCommit[sha]
+		landed, ok := squashed[c.subject]
+		return !ok || landed < c.at
+	}), nil
+}
+
+func gitEachLogLine(ctx context.Context, dir render.Dir, prefix string, argv []string, each func(sha string, at int64, subject string)) error {
+	out, err := render.RunCLI(ctx, dir, "git", argv)
+	if err != nil {
+		return fmt.Errorf("%s: git %s: %w", prefix, strings.Join(argv[:2], " "), err)
+	}
+	for line := range strings.Lines(out) {
+		fields := strings.SplitN(strings.TrimSuffix(line, "\n"), "\x00", 3)
+		if len(fields) != 3 {
+			return fmt.Errorf("%s: read a commit from %q", prefix, line)
+		}
+		at, err := strconv.ParseInt(fields[1], 10, 64)
+		if err != nil {
+			return fmt.Errorf("%s: read %s's date: %w", prefix, fields[0], err)
+		}
+		each(fields[0], at, fields[2])
+	}
+	return nil
+}
+
+func squashTitle(subject string) (string, bool) {
+	i := strings.LastIndex(subject, " (#")
+	if i < 0 {
+		return "", false
+	}
+	digits, closed := strings.CutSuffix(subject[i+len(" (#"):], ")")
+	return subject[:i], closed && digits != "" && strings.Trim(digits, "0123456789") == ""
 }
 
 // gitRemoteHead names the branch remote's HEAD points at, and whether

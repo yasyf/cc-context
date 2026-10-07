@@ -1961,31 +1961,52 @@ func (b *stackRebaseBranch) reopens() bool {
 // published head carries: one sharing none of its commits, or one holding a
 // strict subset of them, matched by subject so a rebase, an amend, or a rewrite
 // of a commit still passes. A hard reset onto the wrong commit would otherwise
-// force-push over the pull request's work.
+// force-push over the pull request's work. A published commit trunk already
+// landed as a squash, as the merge queue's replay of a landed parent leaves
+// one, is no work to lose.
 func stackRefuseDroppedCommits(ctx context.Context, dir render.Dir, tr vcs.Trunk, name, local, remote, pin string) error {
-	subjects := func(head string) ([]string, error) {
-		out, err := render.RunCLI(ctx, dir, "git", []string{"log", "--no-merges", "--format=%s", head, "^" + pin})
+	commits := func(head string) ([]string, []string, error) {
+		out, err := render.RunCLI(ctx, dir, "git", []string{"log", "--no-merges", "--format=%H %s", head, "^" + pin})
 		if err != nil {
-			return nil, fmt.Errorf("%s: git log %.12s: %w", stackRebasePrefix, head, err)
+			return nil, nil, fmt.Errorf("%s: git log %.12s: %w", stackRebasePrefix, head, err)
 		}
-		return slices.DeleteFunc(strings.Split(strings.TrimSpace(out), "\n"), func(s string) bool { return s == "" }), nil
+		var shas, subjects []string
+		for line := range strings.Lines(out) {
+			sha, subject, _ := strings.Cut(strings.TrimSuffix(line, "\n"), " ")
+			if subject == "" {
+				continue
+			}
+			shas = append(shas, sha)
+			subjects = append(subjects, subject)
+		}
+		return shas, subjects, nil
 	}
-	kept, err := subjects(local)
+	_, kept, err := commits(local)
 	if err != nil {
 		return err
 	}
-	published, err := subjects(remote)
+	shas, published, err := commits(remote)
 	if err != nil {
 		return err
+	}
+	var missing []string
+	for i, subject := range published {
+		if !slices.Contains(kept, subject) {
+			missing = append(missing, shas[i])
+		}
+	}
+	shared := len(published) - len(missing)
+	var landed []string
+	if len(missing) > 0 {
+		if landed, err = gitLandedReplays(ctx, dir, stackRebasePrefix, pin, missing); err != nil {
+			return err
+		}
 	}
 	var dropped []string
-	shared := 0
-	for _, subject := range published {
-		if slices.Contains(kept, subject) {
-			shared++
-			continue
+	for i, sha := range shas {
+		if slices.Contains(missing, sha) && !slices.Contains(landed, sha) {
+			dropped = append(dropped, fmt.Sprintf("%q", published[i]))
 		}
-		dropped = append(dropped, fmt.Sprintf("%q", subject))
 	}
 	added := slices.ContainsFunc(kept, func(subject string) bool { return !slices.Contains(published, subject) })
 	if len(dropped) == 0 || (shared > 0 && added) {
