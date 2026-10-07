@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -501,10 +502,8 @@ func runWorktreeAdd(cmd *cobra.Command, name, requested string) error {
 			if err := worktreeJoinLane(ctx, l, name, path); err != nil {
 				return err
 			}
-		} else if l.gt && base.parent != "" {
-			if err := gtTrackAt(ctx, render.Dir(path), cmd.ErrOrStderr(), "worktree add", base.parent); err != nil {
-				return err
-			}
+		} else if err := worktreeTrack(ctx, cmd.ErrOrStderr(), l, base.parent, path); err != nil {
+			return err
 		}
 	}
 	cmd.Println(strings.Join([]string{"added " + name, worktreeShapeOf(mode), base.segment(), path}, shipSep))
@@ -537,6 +536,19 @@ func worktreeJoinLane(ctx context.Context, l lane, branch, path string) error {
 		return nil
 	}
 	return laneJoin("worktree add", l, path)
+}
+
+// worktreeTrack adopts a newly cut branch onto parent in a Graphite
+// repository, so ship and stack submit reach it without a hand-run gt track.
+func worktreeTrack(ctx context.Context, errW io.Writer, l lane, parent, path string) error {
+	graphite, err := vcs.GraphiteRepo(l.checkout)
+	if err != nil {
+		return fmt.Errorf("worktree add: %w", err)
+	}
+	if !graphite || parent == "" {
+		return nil
+	}
+	return gtTrackAt(ctx, render.Dir(path), errW, "worktree add", parent)
 }
 
 type worktreeBase struct {
