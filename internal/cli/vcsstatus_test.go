@@ -189,6 +189,46 @@ func TestVcsStatusBranchWithoutPullRequest(t *testing.T) {
 	}
 }
 
+// TestVcsStatusReadsAConflictFromRESTWhileGraphQLIsRateLimited answers the
+// batched query with GitHub's rate-limit refusal and holds the report to the
+// conflict the REST pull endpoint still reads.
+func TestVcsStatusReadsAConflictFromRESTWhileGraphQLIsRateLimited(t *testing.T) {
+	f := infoGTRepo(t, downstackOne...)
+	writeExecutable(t, filepath.Join(f.ShimBin, "gh"), "#!/bin/sh\n"+vcstest.RecordArgv("gh")+`case "$*" in
+  "api graphql"*) printf 'GraphQL: API rate limit already exceeded for user ID 1.\n' >&2; exit 1 ;;
+  *"/pulls?head="*) printf '[{"number":31511,"state":"open"}]' ;;
+  *"/pulls/31511") printf '{"number":31511,"html_url":"https://github.com/yasyf/cc-context/pull/31511","state":"open","draft":false,"body":"Context","changed_files":3,"merged_at":null,"mergeable":false,"mergeable_state":"dirty","base":{"ref":"main"},"head":{"sha":"7729a0ad0000000000000000000000000000000"},"labels":[]}' ;;
+  *) printf 'fake gh: unmatched argv: %s\n' "$*" >&2; exit 2 ;;
+esac
+`)
+	_, client := stubGraphiteMergeability(t, nil)
+	cmd := newVcsStatusCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"--json", "--no-queue-probe"})
+	if err := cmd.ExecuteContext(withGTAPI(f.Context(), client)); err != nil {
+		t.Fatalf("status: %v\n%s", err, out.String())
+	}
+	var got vcsStatus
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal report: %v\n%s", err, out.String())
+	}
+	if !strings.Contains(got.PRError, "rate limit") || !strings.Contains(got.PRError, "REST API") {
+		t.Errorf("PRError = %q, want the refusal and the REST fallback named", got.PRError)
+	}
+	if len(got.Branches) != 1 || got.Branches[0].PR == nil {
+		t.Fatalf("branches = %+v, want the one branch carrying its pull request", got.Branches)
+	}
+	b := got.Branches[0]
+	if b.PR.Number != 31511 || b.PR.State != "OPEN" || b.PR.Mergeable != "CONFLICTING" || b.PR.MergeState != "DIRTY" || b.PR.Files != 3 {
+		t.Errorf("PR = %+v, want #31511 open, conflicting, dirty, 3 files", b.PR)
+	}
+	if want := []string{"the branch conflicts with its base"}; !slices.Equal(b.Blockers, want) {
+		t.Errorf("Blockers = %q, want %q", b.Blockers, want)
+	}
+}
+
 // TestVcsStatusHealthyTrunkIsSilent keeps the check off every report it has
 // nothing to say in: a trunk equal to the remote's adds no line at all.
 func TestVcsStatusHealthyTrunkIsSilent(t *testing.T) {

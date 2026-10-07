@@ -373,7 +373,12 @@ the approvers' logins. It ends in one verdict. `landable` is an open PR that is
 green, approved, not a draft, and not conflicting; `landed` and `queued` need no
 merge label; anything else reads `blocked:` with every cause, such as
 `blocked:ci-red,unapproved`. CI and approval ride the same batched poll, so
-they cost no extra request.
+they cost no extra request. A conflicting PR reads `blocked:conflict` first.
+When the poll holds mergeability `UNKNOWN`, or a GraphQL rate limit serves it
+stale, `pr status` asks GitHub's REST pull endpoint instead; a PR GitHub still
+has not computed reads `blocked:mergeable-unknown`. `ccx vcs status` falls back
+to the REST endpoint for each branch when its GraphQL query fails, so the
+conflict still shows, without checks or reviews.
 
 Graphite holds its `Graphite / mergeability_check`
 in progress while a PR waits on its stack, so that check never counts as CI;

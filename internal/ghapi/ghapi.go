@@ -113,6 +113,19 @@ func Paginate[T any](ctx context.Context, c *Client, ref string) ([]T, error) {
 	return items, nil
 }
 
+// Get reads ref, one REST resource, and decodes it into T.
+func Get[T any](ctx context.Context, c *Client, ref string) (T, error) {
+	var out T
+	payload, _, _, err := c.do(ctx, http.MethodGet, ref, nil, true)
+	if err != nil {
+		return out, err
+	}
+	if err := json.Unmarshal(payload, &out); err != nil {
+		return out, fmt.Errorf("ghapi: decode %s: %w", ref, err)
+	}
+	return out, nil
+}
+
 // GraphQL posts query with variables and decodes the response's data field into
 // T. A body carrying GraphQL errors returns *GraphQLError even though GitHub
 // answered 200.

@@ -71,6 +71,26 @@ func TestPaginateSendsHeadersAndDecodes(t *testing.T) {
 	}
 }
 
+func TestGetDecodesOneResource(t *testing.T) {
+	t.Parallel()
+	ctx := render.WithEnv(t.Context(), "GH_TOKEN=env-token", "GITHUB_TOKEN=", "PATH="+stubGH(t, ""))
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/repos/o/r/pulls/12" {
+			t.Errorf("request = %s %s, want GET /repos/o/r/pulls/12", r.Method, r.URL.Path)
+		}
+		_, _ = fmt.Fprint(w, `{"number":12,"body":"hi"}`)
+	}))
+	t.Cleanup(ts.Close)
+
+	got, err := Get[item](ctx, New(ts.URL), "repos/o/r/pulls/12")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got != (item{Number: 12, Body: "hi"}) {
+		t.Errorf("Get = %+v, want {12 hi}", got)
+	}
+}
+
 func TestPaginateFollowsLinkHeader(t *testing.T) {
 	t.Parallel()
 	var requests atomic.Int32

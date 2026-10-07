@@ -43,6 +43,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs pr status` reads a conflicting PR as `blocked:conflict`.** It
+  read #31511 as `blocked:ci-pending` while GitHub reported it conflicting.
+  The shared poll's GraphQL record holds mergeability `UNKNOWN` until GitHub
+  computes it, and a rate limit serves it stale. In either case the verdict
+  now reads mergeability from GitHub's REST pull endpoint, asking once
+  more while GitHub computes it. A PR still uncomputed reads
+  `blocked:mergeable-unknown` instead of `landable`, and a `DIRTY` merge state
+  counts as a conflict. `ccx vcs status` falls back to the REST endpoints for
+  each branch when its GraphQL query fails, so the `blocked` line still names
+  the conflict.
+
 - **`stack new` cuts a child in the clone that holds its parent.** With
   `CCX_STACK_NEW` unset, a child of a non-trunk branch in a full checkout went
   into the thin store, which adopted the parent at its last publication. When
