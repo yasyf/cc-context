@@ -182,7 +182,8 @@ materialize files and run generators without installing dependencies.
 [Create and work in thin lanes](docs/thin-lanes.md) covers sparse agent lanes
 in a ccx-owned shallow store, published parents, and explicit deepening.
 Git `stack new` uses thin lanes by default and shares the source checkout's
-cc-notes records. Use `--full-history` from a full checkout to share its history.
+cc-notes records. A child of a non-trunk branch the checkout holds is cut in
+that checkout's clone instead. Use `--full-history` from a full checkout to share its history.
 
 [Worktree removal and cleanup](docs/worktree-cleanup.md) covers removal by name
 or absolute `--path`, `--dry-run`, `--wait`, queue controls, and watcher inspection.
@@ -201,7 +202,7 @@ tuned through environment variables:
 | Variable | Effect |
 | --- | --- |
 | `LOG_LEVEL` / `LOG_FORMAT` | `debug`, `info` (default), `warn`, or `error`, to stderr; set `LOG_FORMAT=json` for structured logs |
-| `CCX_STACK_NEW` | `thin` or `full` selects the `stack new` default unless `--thin` or `--full-history` is passed; unset selects thin for Git and keeps jj behavior, other values error; inside the thin store, `full` still uses that store; thin stores share the source checkout's cc-notes records through `cc-notes storage bind`, and a refusal never falls back to full history |
+| `CCX_STACK_NEW` | `thin` or `full` selects the `stack new` default unless `--thin` or `--full-history` is passed; unset selects thin for Git, except a child of a non-trunk branch the calling checkout holds, which stays in that checkout's clone, and keeps jj behavior, other values error; inside the thin store, `full` still uses that store; thin stores share the source checkout's cc-notes records through `cc-notes storage bind`, and a refusal never falls back to full history |
 | `CCX_EXEC_MCP` | `off` disables MCP auto-reflection in `ccx exec`; `refresh` forces a fresh `claude mcp list` probe, bypassing the 15-minute per-project inventory cache |
 | `CCX_EXEC_MCP_DENY` | comma-separated MCP server names to exclude from reflection; reflected servers run as fresh instances, so list any that need live session state |
 | `CCX_EXEC_MCP_ALLOW` | comma-separated MCP server names to reflect even when classified stateful |

@@ -48,7 +48,7 @@ const (
 	storageFullHistory
 )
 
-func stackStorageOf(ctx context.Context, o stackNewOpts, kind vcs.Kind) (stackStorage, error) {
+func stackStorageOf(ctx context.Context, o stackNewOpts, src lane, parent string) (stackStorage, error) {
 	switch {
 	case o.thin:
 		return storageThin, nil
@@ -57,10 +57,14 @@ func stackStorageOf(ctx context.Context, o stackNewOpts, kind vcs.Kind) (stackSt
 	}
 	switch v := render.Getenv(ctx, stackNewEnv); v {
 	case "":
-		if kind == vcs.Git {
-			return storageThin, nil
+		if src.checkout.Kind != vcs.Git {
+			return storageCaller, nil
 		}
-		return storageCaller, nil
+		held, err := stackParentHeld(ctx, src, parent)
+		if err != nil || held {
+			return storageCaller, err
+		}
+		return storageThin, nil
 	case "full":
 		return storageCaller, nil
 	case "thin":
@@ -68,6 +72,14 @@ func stackStorageOf(ctx context.Context, o stackNewOpts, kind vcs.Kind) (stackSt
 	default:
 		return 0, fmt.Errorf("stack new: %s=%q is neither thin nor full", stackNewEnv, v)
 	}
+}
+
+func stackParentHeld(ctx context.Context, src lane, parent string) (bool, error) {
+	trunk, err := stackNewTrunk(ctx, src)
+	if err != nil || parent == trunk {
+		return false, err
+	}
+	return gitRefExists(ctx, src.dir(), "stack new", "refs/heads/"+parent)
 }
 
 type thinSource struct {

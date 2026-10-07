@@ -770,24 +770,29 @@ func TestStackNewThinAdoptsAPublishedParent(t *testing.T) {
 	thinRequireSource(t, f, before)
 }
 
-func TestStackNewFromAFullCheckoutAdoptsThePublishedParentByDefault(t *testing.T) {
+// TestStackNewCutsALocalParentsChildInItsClone is test-serial-guard: stack new
+// adopted a parent published at dbf9832 into the thin store while the parent's
+// own clone had moved past it, so the child started without the parent's
+// commits.
+func TestStackNewCutsALocalParentsChildInItsClone(t *testing.T) {
 	t.Parallel()
 	f, receipt := thinPublishedParent(t)
-	before := thinSnap(t, f)
-	store := thinTestStore(t, f)
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "parent")
+	head := thinCommit(t, f, f.Dir, "later.txt", "later parent work\n")
 
-	_, lane := thinNew(t, f, f.Dir, "child", "--parent", "parent", "--deepen", "--max-depth", "64")
-	if lane != thinTestLane(t, f, "child") {
-		t.Fatalf("lane = %s, want the store's child lane", lane)
+	_, lane := thinNew(t, f, f.Dir, "child", "--parent", "parent")
+	if got, want := gitAt(t, f.Env(), lane, "rev-parse", "--path-format=absolute", "--git-common-dir"), filepath.Join(f.Dir, ".git"); got != want {
+		t.Errorf("child's common dir = %s, want the parent's clone %s", got, want)
 	}
-	thinRequireAdopted(t, f, store, receipt)
-	if got := gitAt(t, f.Env(), lane, "rev-parse", "HEAD"); got != receipt.Head {
-		t.Errorf("child head = %s, want the parent's publication %s", got, receipt.Head)
+	if got := gitAt(t, f.Env(), lane, "rev-parse", "HEAD"); got != head {
+		t.Errorf("child head = %s, want the parent's local head %s, not its publication %s", got, head, receipt.Head)
 	}
 	if got := thinGTParent(t, f, lane, "child"); got != "parent" {
 		t.Errorf("child's gt parent = %s, want parent", got)
 	}
-	thinRequireSource(t, f, before)
+	if _, err := os.Stat(thinTestStore(t, f)); !os.IsNotExist(err) {
+		t.Errorf("stack new created a thin store for a parent its own clone holds: %v", err)
+	}
 }
 
 func TestStackNewRefusalForAnUnpublishedParentNamesBothFixes(t *testing.T) {
@@ -796,7 +801,7 @@ func TestStackNewRefusalForAnUnpublishedParentNamesBothFixes(t *testing.T) {
 	thinCommit(t, f, f.Dir, "parent.txt", "parent work\n")
 	refs := thinRefs(t, f, f.Dir)
 
-	_, _, err := runStackCmd(t, f, "new", "child", "--parent", "parent")
+	_, _, err := runStackCmd(t, f, "new", "child", "--parent", "parent", "--thin")
 	for _, want := range []string{"parent has no publication", "ccx vcs stack submit", "ccx vcs stack new child --parent parent --full-history"} {
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("stack new = %v, want a refusal naming %q", err, want)
@@ -1155,7 +1160,7 @@ func TestStackNewStorageModes(t *testing.T) {
 		{name: "unset default and no checkout", args: []string{"--parent", "main", "--no-checkout"}, refusal: "--no-checkout conflicts with thin storage"},
 		{name: "env thin and no checkout", env: "thin", args: []string{"--parent", "main", "--no-checkout"}, refusal: "--no-checkout conflicts with thin storage"},
 		{name: "include without sparse", env: "full", args: []string{"--parent", "main", "--include", "keep"}, refusal: "--include checks out directories in a sparse lane"},
-		{name: "unset default source-only parent", args: []string{"--parent", "parent"}, refusal: "parent has no publication"},
+		{name: "unset default source-only parent", args: []string{"--parent", "parent"}},
 		{name: "unpublished source-only parent", args: []string{"--thin", "--parent", "parent"}, refusal: "parent has no publication"},
 		{name: "full history in the store", inStore: true, args: []string{"--full-history"}, refusal: "is a thin store"},
 		{name: "depth in the store", inStore: true, args: []string{"--depth", "8"}, refusal: "--depth and --deepen apply only"},

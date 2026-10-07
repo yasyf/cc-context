@@ -27,6 +27,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`stack new` cuts a child in the clone that holds its parent.** With
+  `CCX_STACK_NEW` unset, a child of a non-trunk branch in a full checkout went
+  into the thin store, which adopted the parent at its last publication. When
+  the parent's own clone had moved past that publication, the child started
+  without the parent's newer commits: `yasyf/test-serial-guard` was cut at
+  `dbf9832` while its parent sat at `94f2494`. The default now cuts such a
+  child in the calling checkout's clone from the parent's local head. `--thin`
+  and `CCX_STACK_NEW=thin` still adopt the published parent into the store.
+
 - **Concurrent fetches no longer refuse each other on the commit-graph lock.**
   A clone that sets `fetch.writeCommitGraph` makes every fetch rewrite
   `objects/info/commit-graphs/commit-graph-chain.lock`, and every worktree of
