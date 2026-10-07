@@ -233,10 +233,11 @@ The running Watchman server's descriptors are never activity. It can keep a
 directory open after its root is deleted, and that descriptor follows the tree
 when it is moved, so every activity check discounts the server's descriptors,
 before and after retirement and at every location the tree passes through.
-When a process or Watchman probe times out, or the activity guard cannot read
-a process's arguments, the failure is a warning: the tree is removed only if it
-has no uncommitted changes and a remote-tracking ref holds its head, and the
-activity guard still refuses any holder it finds.
+When a process or Watchman probe times out, the failure is a warning: the tree
+is removed only if it has no uncommitted changes and a remote-tracking ref holds
+its head, and the activity guard still refuses any holder it finds. A process
+whose arguments the kernel cannot produce is judged by its working directories
+and open files alone.
 
 Scope watcher configuration changes to the authorized unused trees too.
 Applying settings to an existing root requires checking that it is idle before

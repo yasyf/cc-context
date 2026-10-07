@@ -43,6 +43,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A process whose arguments the kernel cannot read no longer blocks
+  `ccx vcs worktree rm`.** `kern.procargs2` fails with `input/output error`
+  for some live processes, such as a `python3.14` the guard met while
+  removing a merged `stack-enqueue` tree. The activity guard turned that into
+  a failed probe, which refused any tree that was unpushed or dirty, even
+  though the process's working directories and open files were already read
+  and none sat in the tree. Those now decide alone: the guard refuses only a
+  process whose working directory or open file is inside the tree, or whose
+  readable arguments name it.
+
 - **`ship` refuses to drop the branch it ships when someone closed its pull
   request.** A closed, unmerged pull request marks its branch abandoned, and
   the stack rebase drops abandoned branches. That is right for a branch below

@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -32,6 +33,8 @@ const (
 	insideHelperEnv     = "CCX_NATIVE_HELPER_INSIDE"
 	deepHelperEnv       = "CCX_NATIVE_HELPER_DEEP"
 	threadHelperEnv     = "CCX_NATIVE_HELPER_THREAD"
+	sealedHelperEnv     = "CCX_NATIVE_HELPER_SEALED"
+	paddingHelperEnv    = "CCX_NATIVE_HELPER_PADDING"
 	vnodeDirectory      = 2
 
 	stagedFD   = 7
@@ -324,8 +327,8 @@ func TestArgumentNeverReadsTheEnvironment(t *testing.T) {
 		t.Errorf("arguments = %q, %v; want %q", args, err, want)
 	}
 	s := &scan{root: f.real, given: f.tree}
-	if path, err := s.argument(unnamed.Process.Pid, false); path != "" || err != nil {
-		t.Errorf("argument = %q, %v; want no evidence from the environment", path, err)
+	if path := s.argument(unnamed.Process.Pid, false); path != "" {
+		t.Errorf("argument = %q, want no evidence from the environment", path)
 	}
 }
 
@@ -1327,6 +1330,106 @@ func TestGuardCountsAThreadsWorkingDirectory(t *testing.T) {
 	}
 }
 
+func sealArguments(t *testing.T) {
+	t.Helper()
+	top, err := unix.SysctlUint64("kern.usrstack64")
+	if err != nil {
+		t.Fatalf("sysctl kern.usrstack64: %v", err)
+	}
+	handle, err := purego.Dlopen(libSystemPath, purego.RTLD_NOW|purego.RTLD_GLOBAL)
+	if err != nil {
+		t.Fatalf("dlopen: %v", err)
+	}
+	mprotect, err := purego.Dlsym(handle, "mprotect")
+	if err != nil {
+		t.Fatalf("dlsym mprotect: %v", err)
+	}
+	page := uint64(unix.Getpagesize()) //nolint:gosec // a page size is positive
+	if failed, errno := call(mprotect, uintptr(top-page), uintptr(page), unix.PROT_NONE); failed != 0 {
+		t.Fatalf("mprotect the top page of the stack: %v", errno)
+	}
+}
+
+func TestGuardJudgesUnreadableArgumentsByWhatElseItHolds(t *testing.T) {
+	if trigger := os.Getenv(sealedHelperEnv); trigger != "" {
+		if trigger != "open" {
+			fifo, err := os.Open(trigger)
+			if err != nil {
+				t.Fatalf("open %s: %v", trigger, err)
+			}
+			_ = fifo.Close()
+			sealArguments(t)
+		}
+		_, _ = io.Copy(io.Discard, os.Stdin)
+		return
+	}
+	f := plant(t)
+	t.Setenv(paddingHelperEnv, strings.Repeat("p", 4*unix.Getpagesize()))
+	trigger := filepath.Join(t.TempDir(), "seal")
+	script := os.Args[0] + ` -test.run=^TestGuardJudgesUnreadableArgumentsByWhatElseItHolds$ "$0" <&3`
+	name := filepath.Base(os.Args[0])
+	tests := []struct {
+		name string
+		seal bool
+		dir  string
+		want *cleanup.Holder
+	}{
+		{"readable arguments naming the tree", false, f.outside, &cleanup.Holder{Name: name, Evidence: cleanup.EvidenceArgv, Path: f.real + "/sub"}},
+		{"unreadable arguments naming the tree", true, f.outside, nil},
+		{"unreadable arguments from inside the tree", true, f.sub, &cleanup.Holder{Name: name, Evidence: cleanup.EvidenceCwd, Path: f.real + "/sub"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(sealedHelperEnv, "open")
+			if tt.seal {
+				_ = os.Remove(trigger)
+				if err := unix.Mkfifo(trigger, 0o600); err != nil {
+					t.Fatalf("Mkfifo: %v", err)
+				}
+				t.Setenv(sealedHelperEnv, trigger)
+			}
+			pid, _ := grandchild(t, tt.dir, script, f.real+"/sub")
+			if tt.seal {
+				seal(t, trigger)
+				awaitSealed(t, pid)
+			}
+			var want []cleanup.Holder
+			if tt.want != nil {
+				held := *tt.want
+				held.PID = pid
+				want = []cleanup.Holder{held}
+			}
+			if got := holders(t.Context(), t, f.tree); !reflect.DeepEqual(got, want) {
+				t.Errorf("Holders = %+v, want %+v", got, want)
+			}
+		})
+	}
+}
+
+func seal(t *testing.T, trigger string) {
+	t.Helper()
+	fifo, err := os.OpenFile(trigger, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatalf("open %s: %v", trigger, err)
+	}
+	_ = fifo.Close()
+}
+
+func awaitSealed(t *testing.T, pid int) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		_, err := processArguments(pid)
+		if errors.Is(err, unix.EIO) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the arguments of pid %d stayed readable: %v", pid, err)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func descend(t *testing.T, depth int) string {
 	t.Helper()
 	segment := strings.Repeat("d", 200)
@@ -1772,21 +1875,6 @@ func TestBand(t *testing.T) {
 	}
 	if after := scheduling(t); after != before {
 		t.Errorf("the test process itself changed: %s, was %s", after, before)
-	}
-}
-
-func TestVerdictReportsUnreadArgumentsOnlyWithoutHolders(t *testing.T) {
-	holder := cleanup.Holder{PID: 7, Name: "vim", Evidence: cleanup.EvidenceCwd, Path: "/wt"}
-	unread := []string{"native: inspect pid 97627 (binrun): read its arguments: input/output error"}
-	var active *cleanup.ActiveError
-	if err := verdict("/wt", []cleanup.Holder{holder}, unread); !errors.As(err, &active) || errors.Is(err, cleanup.ErrUnprobed) {
-		t.Errorf("verdict with a holder = %v, want the holder alone", err)
-	}
-	if err := verdict("/wt", nil, unread); !errors.Is(err, cleanup.ErrUnprobed) || !strings.Contains(err.Error(), "pid 97627") {
-		t.Errorf("verdict with only unread arguments = %v, want cleanup.ErrUnprobed naming pid 97627", err)
-	}
-	if err := verdict("/wt", nil, nil); err != nil {
-		t.Errorf("verdict with nothing = %v, want nil", err)
 	}
 }
 
