@@ -110,24 +110,41 @@ func prSquashSubject(number int) *regexp.Regexp {
 // citing the pull request, so it only narrows the candidates: the subject of
 // each is what decides.
 func prSquashOnBase(ctx context.Context, dir render.Dir, base string, number int) string {
-	if base == "" {
-		return ""
+	return prSquashesOnBase(ctx, dir, base, []int{number})[number]
+}
+
+// prSquashesOnBase is prSquashOnBase for several pull requests in one walk of
+// the base branch, keyed by number and holding only the ones it found.
+func prSquashesOnBase(ctx context.Context, dir render.Dir, base string, numbers []int) map[int]string {
+	squashes := make(map[int]string, len(numbers))
+	if base == "" || len(numbers) == 0 {
+		return squashes
+	}
+	alternatives := make([]string, len(numbers))
+	subjects := make(map[int]*regexp.Regexp, len(numbers))
+	for i, number := range numbers {
+		alternatives[i] = strconv.Itoa(number)
+		subjects[number] = prSquashSubject(number)
 	}
 	out, err := render.RunCLI(ctx, dir, "git", []string{
 		"log", "--format=%H%x09%s", "--extended-regexp",
-		fmt.Sprintf("--grep=\\(#%d\\)", number), "-" + strconv.Itoa(prSquashCandidates), "origin/" + base,
+		fmt.Sprintf("--grep=\\(#(%s)\\)", strings.Join(alternatives, "|")), "-" + strconv.Itoa(prSquashCandidates*len(numbers)), "origin/" + base,
 	})
 	if err != nil {
-		return ""
+		return squashes
 	}
-	subject := prSquashSubject(number)
 	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
 		sha, message, found := strings.Cut(line, "\t")
-		if found && subject.MatchString(message) {
-			return sha
+		if !found {
+			continue
+		}
+		for number, subject := range subjects {
+			if _, seen := squashes[number]; !seen && subject.MatchString(message) {
+				squashes[number] = sha
+			}
 		}
 	}
-	return ""
+	return squashes
 }
 
 // prQueueClose is one pull request the Graphite merge queue closed, and the base
