@@ -176,7 +176,7 @@ func TestStackQueryPRsLandsAnOpenPullRequestTheQueueSquashed(t *testing.T) {
 	landed := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD")
 	writeShipFile(t, f.Dir, "c.txt", "c\n")
 	mustRun(t, f.Env(), f.Dir, "git", "add", "c.txt")
-	mustRun(t, append(f.Env(), "GIT_COMMITTER_DATE=2100-01-01T00:00:00Z"), f.Dir, "git", "commit", "-qm", "c")
+	mustRun(t, append(f.Env(), "GIT_COMMITTER_DATE=4000000000 +0000"), f.Dir, "git", "commit", "-qm", "c")
 	pushedSince := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD")
 	restackSquashRemote(t, f, "main", "a (#41)", "a")
 	restackSquashRemote(t, f, "main", "c (#43)", "c")
