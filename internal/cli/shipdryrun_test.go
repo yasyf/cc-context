@@ -125,6 +125,25 @@ func TestShipDryRunParentAtTrunkIsTrunk(t *testing.T) {
 	}
 }
 
+// TestShipDryRunMeasuresTheParentAgainstTheRemoteTrunk is a branch cut from
+// origin/main while local main sits behind landed branches, which the dry run
+// took for its parent and for untracked branches its pull request would carry.
+func TestShipDryRunMeasuresTheParentAgainstTheRemoteTrunk(t *testing.T) {
+	f := shipGTRepo(t)
+	shipGTStack(t, f, "release")
+	shipGTUntracked(t, f, "evidence")
+	shipGTUntracked(t, f, "evidence-fix")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "evidence-fix:main")
+	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "fix", "origin/main")
+	shipGTReady(t, f)
+
+	report := dryRunReport(t, f, "-m", "fix: frobnicate", "--no-push")
+	if parent := dryRunValues(report, "parent"); len(parent) != 1 || !strings.HasPrefix(parent[0], "main"+shipSep) {
+		t.Fatalf("parent = %v, want trunk for a branch level with origin/main", parent)
+	}
+}
+
 func TestShipDryRunNewBranchFromAnUntrackedBaseLevelWithTrunk(t *testing.T) {
 	f := shipGTRepo(t)
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "v3-lane-base", "origin/main")
