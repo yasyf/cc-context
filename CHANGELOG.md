@@ -47,9 +47,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deletion queue.** A wait returned only once the daemon reached its job in
   queue order. The queue had stalled at 1,713 jobs because `fseventsd` ran
   above the throttle, so waits hung for hours. Each wait poll now marks its job
-  as awaited for 10s. The daemon deletes an awaited job before every other
-  job, without the rate cap or the `fseventsd` throttle, so a wait lasts as
-  long as its own tree takes to delete. The status query gains an `await`
+  as awaited for 10s. The daemon deletes awaited jobs, in queue order, before
+  any job nobody awaits, without the rate cap or the `fseventsd` throttle. A
+  wait lasts about as long as its own tree takes to delete, plus any awaited
+  trees queued ahead of it. The status query gains an `await`
   field, which moves the daemon protocol to 4. The next queue-changing command
   replaces a daemon on protocol 3.
 

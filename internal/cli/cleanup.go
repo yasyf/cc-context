@@ -411,9 +411,8 @@ func newCleanupWaitCmd() *cobra.Command {
 
 It returns once the job is done, and fails with the blockage when the job stops
 for an operator instead. While it waits, the daemon deletes the job ahead of
-the queue, at full speed and past the fseventsd throttle. It polls the job's
-status until then, and fails when
-the daemon leaves any one poll unanswered for ` + cleanupStatusTimeout.String() + `. A socket that is
+every job nobody awaits, at full speed and past the fseventsd throttle. It
+polls the job's status until then, and fails when the daemon leaves any one poll unanswered for ` + cleanupStatusTimeout.String() + `. A socket that is
 missing or refuses, as it does while another ccx replaces the daemon, is polled
 again for up to ` + cleanupHandoverTimeout.String() + `.
 

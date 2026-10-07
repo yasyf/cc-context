@@ -94,8 +94,10 @@ retry does the same. They succeed only when a poll shows the job
 `deleted`. A blockage fails the wait with its reason.
 
 Each wait poll marks its job as awaited for the next 10s. The daemon deletes
-an awaited job first, without the rate cap or the `fseventsd` throttle, so the
-wait lasts only as long as its own tree's deletion.
+awaited jobs, in queue order, ahead of every job nobody awaits, without the rate
+cap or the `fseventsd` throttle. A wait then lasts about as long as its own
+tree's deletion, plus any awaited trees queued ahead of it. Logical removals
+still go first, and a paused queue or a blocked job still holds.
 
 The job keeps the requesting command as its requester, so the daemon's later
 retries do not count that command's own arguments naming the tree as activity

@@ -331,8 +331,8 @@ func (e *Engine) Adopt(ctx context.Context, r cleanup.AdoptRequest) (cleanup.Rec
 
 // Status reads a snapshot and never waits behind the worker once Run has
 // loaded the journal: unfinished jobs in queue order, then finished jobs
-// newest first, capped at the limit. A query that awaits its job renews that
-// job's lease ahead of the queue.
+// newest first, capped at the limit. A query that awaits an unfinished job
+// renews that job's lease ahead of the queue.
 func (e *Engine) Status(ctx context.Context, q cleanup.Query) (cleanup.Report, error) {
 	if err := e.ready(ctx); err != nil {
 		return cleanup.Report{}, err
@@ -352,7 +352,7 @@ func (e *Engine) Status(ctx context.Context, q cleanup.Query) (cleanup.Report, e
 		if !ok {
 			return cleanup.Report{}, cleanup.ErrUnknownJob
 		}
-		if q.Await {
+		if q.Await && job.Phase != cleanup.PhaseDone {
 			e.awaits[q.JobID] = e.clock.Now()
 		}
 		report.Jobs = append(report.Jobs, e.reported(job))

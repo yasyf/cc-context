@@ -223,6 +223,15 @@ func TestAwaitedJobJumpsTheQueuePastTheThrottleAndThePace(t *testing.T) {
 		if got := h.status(awaited.ID); got.Phase != cleanup.PhaseDone || got.Removed != 300 {
 			t.Errorf("awaited job = phase %s, removed %d; want done, 300", got.Phase, got.Removed)
 		}
+		if _, err := h.engine.Status(context.Background(), await); err != nil {
+			t.Fatalf("Status(%+v) after the finish = %v", await, err)
+		}
+		h.engine.mu.Lock()
+		leases := len(h.engine.awaits)
+		h.engine.mu.Unlock()
+		if leases != 0 {
+			t.Errorf("leases after awaiting a finished job = %d, want none", leases)
+		}
 		if got := h.status(queued.ID); got.Phase != cleanup.PhaseUnregistered || got.Removed != 0 {
 			t.Errorf("queued job = phase %s, removed %d; want unregistered, 0 behind the throttle", got.Phase, got.Removed)
 		}

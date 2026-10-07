@@ -252,7 +252,8 @@ type Query struct {
 	// Limit caps the jobs reported; zero takes the daemon's default.
 	Limit int `json:"limit,omitempty"`
 	// Await marks JobID as awaited: while such reads keep arriving, the daemon
-	// deletes that job ahead of the queue, past the throttle and the pace.
+	// deletes that job ahead of every job nobody awaits, past the throttle and
+	// the pace.
 	Await bool `json:"await,omitempty"`
 }
 
