@@ -296,9 +296,10 @@ replayed; one GitHub closed because its base branch was deleted is reopened
 onto its new parent before the push instead. Local trunk is left untouched.
 Uncommitted work in the invoking checkout, or in a working copy holding a moved
 branch, stops publication before any branch moves; a clean working copy holding
-a moved branch is moved onto its new head, still on that branch. Empty lanes
-and another lane's branches above the one checked out here are left where they
-are and named rather than rebased. Once published, the local
+a moved branch is moved onto its new head, still on that branch. With
+--no-push, a kept branch another working copy holds stays at its local head.
+Empty lanes and another lane's branches above the one checked out here are left
+where they are and named rather than rebased. Once published, the local
 ref of a branch no working copy holds moves onto its published head; a held
 branch moves only when that head carries the same commits as the source,
 compared without diff context so a clean replay beside upstream edits still
@@ -3636,6 +3637,11 @@ func stackFinish(ctx context.Context, cmd *cobra.Command, l lane, commonDir stri
 		return stackFinishPublication(ctx, cmd, l, commonDir, run)
 	}
 	prefix := stackRebasePrefix
+	holders, err := vcs.BranchHolders(ctx, l.checkout)
+	if err != nil {
+		return fmt.Errorf("%s: %w", prefix, err)
+	}
+	left := stackKeptElsewhere(run, holders)
 	var moves []restackMove
 	var movers, dropped, reasons []string
 	reparent := map[string]string{}
@@ -3653,7 +3659,7 @@ func stackFinish(ctx context.Context, cmd *cobra.Command, l lane, commonDir stri
 		if b.Parent != b.WasParent {
 			reparent[b.Name] = b.Parent
 		}
-		if b.NewHead != b.Local {
+		if b.NewHead != b.Local && left[b.Name] == "" {
 			movers = append(movers, b.Name)
 			moves = append(moves, restackMove{branch: b.Name, head: b.NewHead, parent: b.NewBase, previous: b.Local})
 		}
@@ -3661,10 +3667,6 @@ func stackFinish(ctx context.Context, cmd *cobra.Command, l lane, commonDir stri
 	var realigned []string
 	var alignErr error
 	if !run.Applied {
-		holders, err := vcs.BranchHolders(ctx, l.checkout)
-		if err != nil {
-			return fmt.Errorf("%s: %w", prefix, err)
-		}
 		if err := stackCheckClean(ctx, movers, holders, stackResumeAdvice); err != nil {
 			return err
 		}
@@ -3675,11 +3677,11 @@ func stackFinish(ctx context.Context, cmd *cobra.Command, l lane, commonDir stri
 		if err := stackSaveRun(run); err != nil {
 			return err
 		}
-		if err := stackWriteRefs(ctx, l.dir(), run); err != nil {
+		if err := stackWriteRefs(ctx, l.dir(), run, left); err != nil {
 			run.Applied = false
 			return errors.Join(err, stackSaveRun(run))
 		}
-	} else if err := stackWriteRefs(ctx, l.dir(), run); err != nil {
+	} else if err := stackWriteRefs(ctx, l.dir(), run, left); err != nil {
 		return err
 	}
 	if !run.Aligned {
@@ -3716,6 +3718,11 @@ func stackFinish(ctx context.Context, cmd *cobra.Command, l lane, commonDir stri
 	if len(realigned) > 0 {
 		summary = append(summary, "reset "+strings.Join(realigned, ", "))
 	}
+	for _, b := range run.Branches {
+		if holder := left[b.Name]; holder != "" {
+			summary = append(summary, fmt.Sprintf("left %s at %.12s, not %.12s — checked out in %s", b.Name, b.Local, b.NewHead, holder))
+		}
+	}
 	cmd.Println(strings.Join(summary, shipSep))
 	if alignErr != nil {
 		return alignErr
@@ -3725,6 +3732,19 @@ func stackFinish(ctx context.Context, cmd *cobra.Command, l lane, commonDir stri
 	}
 	cmd.Println("not pushed (--no-push)")
 	return nil
+}
+
+// stackKeptElsewhere is every branch the run keeps whose local ref is behind
+// the head it kept and another working copy holds, by holder: that lane owns
+// the ref and its checkout, so the run leaves both where they are.
+func stackKeptElsewhere(run *stackRebaseRun, holders map[string]string) map[string]string {
+	left := map[string]string{}
+	for _, b := range run.Branches {
+		if holder := holders[b.Name]; b.Kept && b.NewHead != b.Local && holder != "" && holder != run.Origin {
+			left[b.Name] = holder
+		}
+	}
+	return left
 }
 
 // stackForgettable is every dropped branch no branch outside the run still sits
@@ -3815,14 +3835,14 @@ func stackFinishGit(ctx context.Context, cmd *cobra.Command, l lane, commonDir s
 		if err := gtRestackRefuseClobbers(ctx, "restack", holders, []restackMove{move}); err != nil {
 			return err
 		}
-		if err := stackWriteRefs(ctx, l.dir(), run); err != nil {
+		if err := stackWriteRefs(ctx, l.dir(), run, nil); err != nil {
 			return err
 		}
 		run.Applied = true
 		if err := stackSaveRun(run); err != nil {
 			return err
 		}
-	} else if err := stackWriteRefs(ctx, l.dir(), run); err != nil {
+	} else if err := stackWriteRefs(ctx, l.dir(), run, nil); err != nil {
 		return err
 	}
 	if !run.Aligned {
@@ -3861,16 +3881,17 @@ func stackFinishGit(ctx context.Context, cmd *cobra.Command, l lane, commonDir s
 	return nil
 }
 
-// stackWriteRefs moves every rewritten branch in one transaction and verifies
-// every unmoved one, so a branch that changed locally while the run was stopped
-// fails the whole write rather than leaving a child on a parent it never saw.
-func stackWriteRefs(ctx context.Context, dir render.Dir, run *stackRebaseRun) error {
+// stackWriteRefs moves every rewritten branch but those left where they are in
+// one transaction and verifies every unmoved one, so a branch that changed
+// locally while the run was stopped fails the whole write rather than leaving a
+// child on a parent it never saw.
+func stackWriteRefs(ctx context.Context, dir render.Dir, run *stackRebaseRun, left map[string]string) error {
 	var tx strings.Builder
 	tx.WriteString("start\n")
 	for _, b := range run.Branches {
 		switch {
 		case b.Landed != "":
-		case b.NewHead != b.Local:
+		case b.NewHead != b.Local && left[b.Name] == "":
 			at, err := stackRevParse(ctx, dir, gtRestackRef(b.Name))
 			if err != nil {
 				return err
