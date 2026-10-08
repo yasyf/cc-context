@@ -182,7 +182,23 @@ repaired · #29427 republished with a fresh head and tracked by Graphite
 ```
 
 When Graphite still holds no row, the command exits non-zero naming each pull
-request and the parent Graphite last recorded for it. `stack rebase` and
+request and the parent Graphite last recorded for it.
+
+A fresh head does not help when Graphite's stack record for the pull request
+still holds pull requests that already landed or closed, which happens when
+its old parent merged through the queue. Graphite's `pull-request-info` lists
+them beside the pull request even after its newest version records the right
+base. `stack submit` does not republish such a pull request, since each
+republish only restarts CI, and exits non-zero naming the landed pull
+requests:
+
+```text
+#32336 yasyf/api-sandsql-team-storage · parent dev · Graphite tracks no stack for it · its server-side stack still holds #32379, #32405, which already landed or closed
+```
+
+Closing and reopening the pull request on GitHub does not clear the record
+either; on #32336, #32363 and #32334 the rows were still missing 17 minutes
+after a close and reopen. `stack rebase` and
 `stack continue` exit non-zero for an untracked pull request without repairing
 it; run `ccx vcs stack submit` to repair.
 

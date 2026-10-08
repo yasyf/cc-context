@@ -137,3 +137,60 @@ func TestStackTrackingWaitsForGraphiteToTakeInAFreshPush(t *testing.T) {
 		t.Errorf("stack submit output = %q, want Graphite given time to take the push in before any repair", out)
 	}
 }
+
+func TestStackSubmitDoesNotRepublishAPullRequestGraphiteStillStacksOnLandedOnes(t *testing.T) {
+	f, stub := stackUntrackedRepo(t)
+	published := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
+	stub.untracked[9000] = gtStubUntracked{base: "main", head: published, closed: []int{8999, 8998}}
+	submits := len(stub.submits)
+
+	out, _, err := runStackCmd(t, f, "submit")
+	if err == nil {
+		t.Fatalf("stack submit exited 0 over a pull request Graphite does not track: %q", out)
+	}
+	for _, want := range []string{
+		"#9000 base" + shipSep + "parent main" + shipSep + "Graphite tracks no stack for it" + shipSep + "its server-side stack still holds #8998, #8999, which already landed or closed",
+		stackStrandedRemedy,
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("stack submit = %v, want it to name %q", err, want)
+		}
+	}
+	if strings.Contains(err.Error(), "server-side parent is still") {
+		t.Errorf("stack submit = %v, names a stale parent where Graphite recorded the right one", err)
+	}
+	if strings.Contains(out, "repair") {
+		t.Errorf("stack submit output = %q, want no republish a fresh head cannot help", out)
+	}
+	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base"); got != published {
+		t.Errorf("origin base moved from %.12s to %.12s, want it left alone", published, got)
+	}
+	if got := len(stub.submits); got != submits {
+		t.Errorf("stack submit posted %d more submits, want none", got-submits)
+	}
+}
+
+func TestStackSubmitRepublishesOnlyThePullRequestsAFreshHeadCanRepair(t *testing.T) {
+	f, stub := stackUntrackedRepo(t)
+	base := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
+	feature := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature")
+	stub.untracked[9000] = gtStubUntracked{base: "main", head: base, closed: []int{8999}}
+	stub.untracked[9001] = gtStubUntracked{base: "landed-parent", head: feature}
+
+	out, _, err := runStackCmd(t, f, "submit")
+	if err == nil {
+		t.Fatalf("stack submit exited 0 over a pull request Graphite does not track: %q", out)
+	}
+	if want := "repaired" + shipSep + "#9001 republished"; !strings.Contains(out, want) {
+		t.Errorf("stack submit output = %q, want %q and #9000, which a fresh head cannot repair, left out", out, want)
+	}
+	if !strings.Contains(err.Error(), "#9000 base") || strings.Contains(err.Error(), "#9001") {
+		t.Errorf("stack submit = %v, want it to name only #9000", err)
+	}
+	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base"); got != base {
+		t.Errorf("origin base moved from %.12s to %.12s, want it left alone", base, got)
+	}
+	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature"); got == feature {
+		t.Errorf("origin feature is still %.12s, want a fresh head", feature)
+	}
+}

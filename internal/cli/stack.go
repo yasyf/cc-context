@@ -476,13 +476,13 @@ func stackRepairTracking(cmd *cobra.Command, opts stackRebaseOpts, tracking *sta
 	if tracking.err != nil {
 		return tracking.unread()
 	}
-	if len(tracking.untracked) == 0 {
-		return nil
+	repairing := tracking.repairable()
+	if len(repairing) == 0 {
+		return tracking.settled()
 	}
-	cmd.Println("repairing" + shipSep + "Graphite holds no mergeability record for:\n" + tracking.lines())
+	cmd.Println("repairing" + shipSep + "Graphite holds no mergeability record for:\n" + stackUntrackedLines(repairing))
 	opts.ship = nil
-	opts.bump = tracking.branches()
-	repaired := tracking.untracked
+	opts.bump = stackUntrackedBranches(repairing)
 	tracking.untracked = nil
 	if err := runStackRebase(cmd, opts); err != nil {
 		return err
@@ -490,15 +490,15 @@ func stackRepairTracking(cmd *cobra.Command, opts stackRebaseOpts, tracking *sta
 	if tracking.err != nil {
 		return tracking.unread()
 	}
-	if len(tracking.untracked) > 0 {
-		return tracking.stuck()
+	if stuck := tracking.repairable(); len(stuck) > 0 {
+		return stackTrackingStuck(stuck)
 	}
-	names := make([]string, len(repaired))
-	for i, u := range repaired {
+	names := make([]string, len(repairing))
+	for i, u := range repairing {
 		names[i] = fmt.Sprintf("#%d", u.PR)
 	}
 	cmd.Println("repaired" + shipSep + strings.Join(names, ", ") + " republished with a fresh head and tracked by Graphite")
-	return nil
+	return tracking.settled()
 }
 
 // stackSubmitIntent carries --pr-title and --pr-body-file into the run as a ship
