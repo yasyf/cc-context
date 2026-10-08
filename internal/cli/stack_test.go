@@ -1795,3 +1795,89 @@ func TestStackSubmitRefusesToStackOnAnUnpublishedBranchAnotherLaneHolds(t *testi
 		t.Error("origin carries a branch of the refused submit")
 	}
 }
+
+// stackHeldMidWithFix publishes base, mid and top, checks mid out in a working
+// copy of its own, and commits an unpublished fix to mid there; restack replays
+// top onto that fix. It returns the published heads of mid and top.
+func stackHeldMidWithFix(t *testing.T, f *vcstest.Fixture, api *gtAPIStub, restack bool) (mid, top string) {
+	t.Helper()
+	shipGTStack(t, f, "base", "mid", "top")
+	api.prs["base"], api.prs["mid"], api.prs["top"] = 7, 8, 9
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("publish the stack: %v", err)
+	}
+	lane := restackSiblingPath(t, "lane")
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", lane, "mid")
+	writeShipFile(t, lane, "fix.txt", "fix\n")
+	mustRun(t, f.Env(), lane, "git", "add", "fix.txt")
+	mustRun(t, f.Env(), lane, "git", "commit", "-qm", "mid fix")
+	if restack {
+		mustRun(t, f.Env(), f.Dir, "git", "rebase", "-q", "mid")
+	}
+	return gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "mid"), gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "top")
+}
+
+// TestStackSubmitRefusesToPublishAboveAHeldBranchWithAnUnpublishedRestack is
+// the 2026-10-08 shape: top carries a fix another lane committed to mid and
+// never pushed, and a submit that kept mid at its published head replayed top
+// onto it, publishing top without the fix and moving the local top off it.
+func TestStackSubmitRefusesToPublishAboveAHeldBranchWithAnUnpublishedRestack(t *testing.T) {
+	f := shipGTRepo(t)
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	mid, top := stackHeldMidWithFix(t, f, api, true)
+	local := gitAt(t, f.Env(), f.Dir, "rev-parse", "top")
+	posted := len(api.submitHeads())
+
+	_, _, err := runStackCmd(t, f, "submit")
+	want := "stack rebase: mid is another lane's, kept at its published head, but top carries 1 commit(s) of mid that origin does not — publishing top onto that head would drop them, so nothing was pushed; submit mid from the working copy holding it first, or pass --include mid to publish it with the run"
+	if err == nil || err.Error() != want {
+		t.Fatalf("stack submit = %v, want %q", err, want)
+	}
+	if heads := api.submitHeads()[posted:]; len(heads) != 0 {
+		t.Errorf("submit posts = %v, want none", heads)
+	}
+	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "mid"); got != mid {
+		t.Errorf("origin mid = %s, want %s", got, mid)
+	}
+	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "top"); got != top {
+		t.Errorf("origin top = %s, want %s", got, top)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "top"); got != local {
+		t.Errorf("local top = %s, want it untouched at %s", got, local)
+	}
+
+	if _, _, err := runStackCmd(t, f, "submit", "--include", "mid"); err != nil {
+		t.Fatalf("stack submit --include mid: %v", err)
+	}
+	if !gitBranchExists(t, f.Env(), f.RemoteDir, "top") || !strings.Contains(gitAt(t, f.Env(), f.RemoteDir, "ls-tree", "--name-only", "top"), "fix.txt") {
+		t.Error("origin top lacks mid's fix after --include mid")
+	}
+	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "mid"); got == mid {
+		t.Error("origin mid still at its old head after --include mid")
+	}
+}
+
+func TestStackSubmitPublishesAboveAHeldBranchWhoseUnpublishedWorkItDoesNotCarry(t *testing.T) {
+	f := shipGTRepo(t)
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	mid, _ := stackHeldMidWithFix(t, f, api, false)
+	writeShipFile(t, f.Dir, "more.txt", "more\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "more.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "more")
+	posted := len(api.submitHeads())
+
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("stack submit: %v", err)
+	}
+	if heads := api.submitHeads()[posted:]; !slices.Equal(heads, []string{"top"}) {
+		t.Errorf("submit posts = %v, want top alone", heads)
+	}
+	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "mid"); got != mid {
+		t.Errorf("origin mid = %s, want its published head %s left alone", got, mid)
+	}
+	if top := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "top"); !stackOnto(t, f, mid, top) {
+		t.Errorf("published top %s is not stacked on mid's published head %s", top, mid)
+	}
+}
