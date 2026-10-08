@@ -513,8 +513,7 @@ func gtLeasedHead(branch, sha, lease string) gtPushRef {
 }
 
 // gtPushInv is the one atomic force-push an API submit makes for a whole stack:
-// every branch's lease, then every branch's refspec, plus the gt lane's default
-// --no-verify.
+// every branch's lease, then every branch's refspec.
 func gtPushInv(refs ...gtPushRef) []string {
 	argv := []string{"git", "push", "--no-follow-tags", "--quiet", "--no-thin", "origin"}
 	for _, ref := range refs {
@@ -528,7 +527,7 @@ func gtPushInv(refs ...gtPushRef) []string {
 	for _, ref := range refs {
 		argv = append(argv, ref.sha+":refs/heads/"+ref.branch)
 	}
-	return append(argv, "--no-verify", "--atomic")
+	return append(argv, "--atomic")
 }
 
 // gtReceiptInv is the publication receipt a plain submit records after its
