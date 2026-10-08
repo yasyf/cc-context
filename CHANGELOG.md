@@ -9,12 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **Stack rebase, submit, and ship build on a downstack head another lane
-  pushed.** When another lane pushed over a branch this lane had published,
-  the run refused with "remote head holds commits this lane has never held",
-  so lanes fell back to `--tip-only` or a raw rebase. A remote head that still
-  sits on the published base and carries every published commit, as a
-  fast-forward does, is now taken as the branch's head. The run still refuses
-  a remote head that drops a published commit.
+  pushed.** When another lane pushed over a branch below the one checked out
+  that this lane had published, the run refused with "remote head holds
+  commits this lane has never held", so lanes fell back to `--tip-only` or a
+  raw rebase. A remote head that still sits on the published base and carries
+  every published commit, as a fast-forward does, is now taken as that
+  branch's head. The run still refuses a remote head that drops a published
+  commit, and any foreign push to the branch checked out.
 
 - **A `--no-push` stack rebase leaves a kept branch another lane has checked
   out where it is.** A branch the run keeps, such as one below a `--parent`

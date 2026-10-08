@@ -84,7 +84,7 @@ func stackReadPublication(ctx context.Context, dir render.Dir, branch string) (*
 	return &receipt, nil
 }
 
-func stackUsePublication(ctx context.Context, dir render.Dir, b *stackRebaseBranch, receipt *stackPublication, pin string, published bool) error {
+func stackUsePublication(ctx context.Context, dir render.Dir, b *stackRebaseBranch, receipt *stackPublication, pin string, published, below bool) error {
 	if receipt == nil {
 		return nil
 	}
@@ -121,15 +121,17 @@ func stackUsePublication(ctx context.Context, dir render.Dir, b *stackRebaseBran
 			b.Publication, b.WasParent = nil, was
 			return nil
 		}
-		if replayed == "" {
+		if replayed == "" && below {
 			adopts, err := stackRemoteAdopts(ctx, dir, base, receipt.Head, b.Remote, pin)
 			if err != nil {
 				return err
 			}
-			if !adopts {
-				return fmt.Errorf("stack rebase: %s's remote head %.12s drops commits this lane published at %.12s; fetch and reconcile it before publishing again", b.Name, b.Remote, receipt.Head)
+			if adopts {
+				replayed = base
 			}
-			replayed = base
+		}
+		if replayed == "" {
+			return fmt.Errorf("stack rebase: %s's remote head %.12s holds commits this lane has never held; fetch and reconcile it before publishing again", b.Name, b.Remote)
 		}
 		base = replayed
 	}
@@ -143,8 +145,9 @@ func stackUsePublication(ctx context.Context, dir render.Dir, b *stackRebaseBran
 }
 
 // stackRemoteAdopts reports a remote head another lane pushed over this lane's
-// publication that still sits on the publication's base and carries every
-// commit it published, as a fast-forward does: building on it loses nothing.
+// publication of a branch below the one checked out that still sits on the
+// publication's base and carries every commit it published, as a fast-forward
+// does: building on it loses nothing.
 func stackRemoteAdopts(ctx context.Context, dir render.Dir, base, published, remote, pin string) (bool, error) {
 	onBase, err := gitIsAncestor(ctx, dir, stackRebasePrefix, base, remote)
 	if err != nil || !onBase {
