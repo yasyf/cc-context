@@ -122,7 +122,14 @@ func stackUsePublication(ctx context.Context, dir render.Dir, b *stackRebaseBran
 			return nil
 		}
 		if replayed == "" {
-			return fmt.Errorf("stack rebase: %s's remote head %.12s holds commits this lane has never held; fetch and reconcile it before publishing again", b.Name, b.Remote)
+			adopts, err := stackRemoteAdopts(ctx, dir, base, receipt.Head, b.Remote, pin)
+			if err != nil {
+				return err
+			}
+			if !adopts {
+				return fmt.Errorf("stack rebase: %s's remote head %.12s drops commits this lane published at %.12s; fetch and reconcile it before publishing again", b.Name, b.Remote, receipt.Head)
+			}
+			replayed = base
 		}
 		base = replayed
 	}
@@ -133,6 +140,17 @@ func stackUsePublication(ctx context.Context, dir render.Dir, b *stackRebaseBran
 	b.OldBase = base
 	b.SourceBase = receipt.SourceBase
 	return nil
+}
+
+// stackRemoteAdopts reports a remote head another lane pushed over this lane's
+// publication that still sits on the publication's base and carries every
+// commit it published, as a fast-forward does: building on it loses nothing.
+func stackRemoteAdopts(ctx context.Context, dir render.Dir, base, published, remote, pin string) (bool, error) {
+	onBase, err := gitIsAncestor(ctx, dir, stackRebasePrefix, base, remote)
+	if err != nil || !onBase {
+		return false, err
+	}
+	return gitOnlyCopies(ctx, dir, stackRebasePrefix, published, remote, pin)
 }
 
 func stackReplayedOnto(ctx context.Context, dir render.Dir, remote, ownBase, ownHead string) (string, error) {

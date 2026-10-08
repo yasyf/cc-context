@@ -859,6 +859,27 @@ func TestStackSubmitRefusesADirectPushAfterPublication(t *testing.T) {
 	stackAssertSubmitRefusesChangedPublicationRemote(t, f, "base", "base has diverged from origin/base")
 }
 
+func TestStackSubmitAdoptsAParentHeadAnotherLanePushed(t *testing.T) {
+	f := shipGTRepo(t)
+	shipGTStack(t, f, "base", "feature")
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("first stack submit: %v", err)
+	}
+	stackForeignPush(t, f, "base", "pushed.txt", false)
+	pushed := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
+	shipResetLog(t, f)
+
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("stack submit = %v, want base's pushed head adopted", err)
+	}
+	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base"); got != pushed {
+		t.Errorf("remote base = %s, want the pushed head %s kept", got, pushed)
+	}
+	if feature := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature"); !stackOnto(t, f, pushed, feature) {
+		t.Errorf("published feature %s does not sit on base's pushed head %s", feature, pushed)
+	}
+}
+
 func TestShipAmendPushesOverTheHeadItLastSubmitted(t *testing.T) {
 	f := shipGTRepo(t)
 	shipGTStack(t, f, "base")
