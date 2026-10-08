@@ -157,6 +157,7 @@ type shipOpts struct {
 	noPR       bool
 
 	landed      []string
+	newPRs      []string
 	tipOnly     bool
 	restack     bool
 	dropCommits bool
@@ -248,6 +249,7 @@ Ship owns the pull request in every lane. --pr-title and --pr-body-file are repe
 	cmd.Flags().StringArrayVar(&o.prBodyFile, "pr-body-file", nil, `set the pull request body from a file; repeatable as <branch>=<path>, bare applies to the tip ("-" reads stdin)`)
 	cmd.Flags().BoolVar(&o.noPR, "no-pr", false, "push only; never create or update a pull request")
 	cmd.Flags().StringArrayVar(&o.landed, "landed", nil, "treat <branch> as landed and drop it from the downstack (repeatable; graphite lane only)")
+	cmd.Flags().StringArrayVar(&o.newPRs, "new-pr", nil, "open a new pull request for <branch>, whose last one closed without merging, instead of dropping it (repeatable; graphite lane only)")
 	cmd.Flags().BoolVar(&o.tipOnly, "tip-only", false, "ship only this branch, onto its parent's published head, pushing no ancestor and leaving the branches above it where they are (graphite lane only)")
 	cmd.Flags().BoolVar(&o.allLanes, "all-lanes", false, "push the downstack branches of other lanes too, a lane being the branch name before its last slash (graphite lane only)")
 	cmd.Flags().BoolVar(&o.restack, "restack", false, "rebase published branches onto the fetched trunk, including clean, green or approved pull requests (graphite lane only)")
@@ -492,12 +494,12 @@ func runShip(cmd *cobra.Command, o shipOpts) (err error) {
 				return err
 			}
 		}
-		if plan.needsRestack || !contains || published || len(upstack) > 0 || len(o.landed) > 0 || (o.tipOnly && len(chain) > 1) {
+		if plan.needsRestack || !contains || published || len(upstack) > 0 || len(o.landed) > 0 || len(o.newPRs) > 0 || (o.tipOnly && len(chain) > 1) {
 			intent, err := stackShipOptions(o, meta, prNWO, branch)
 			if err != nil {
 				return err
 			}
-			if err := runStackRebase(cmd, stackRebaseOpts{members: append(gtBottomUp(chain), upstack...), landed: o.landed, draft: &o.draft, noVerify: o.noVerify, deferPush: true, result: &gtc.restack, ship: intent, submit: true, tip: branch, tipOnly: o.tipOnly, restack: o.restack, stayClean: !o.restack, dropCommits: o.dropCommits || o.yolo, otherLanes: o.allLanes}); err != nil {
+			if err := runStackRebase(cmd, stackRebaseOpts{members: append(gtBottomUp(chain), upstack...), landed: o.landed, newPRs: o.newPRs, draft: &o.draft, draftAll: o.draft || o.publish, noVerify: o.noVerify, deferPush: true, result: &gtc.restack, ship: intent, submit: true, tip: branch, tipOnly: o.tipOnly, restack: o.restack, stayClean: !o.restack, dropCommits: o.dropCommits || o.yolo, otherLanes: o.allLanes}); err != nil {
 				if preAmendSHA != "" && gtc.restack == nil {
 					return shipAmendKept(ctx, dir, preAmendSHA, err)
 				}

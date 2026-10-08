@@ -3,6 +3,8 @@ package cli
 import (
 	"strings"
 	"testing"
+
+	"github.com/yasyf/cc-context/internal/gtapi"
 )
 
 func TestShipAmendOfAMidStackBranchCarriesItsChildren(t *testing.T) {
@@ -44,5 +46,42 @@ func TestShipAmendOfAMidStackBranchCarriesItsChildren(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestShipLeavesTheDraftStateOfResubmittedChildrenAlone pins that a ship
+// carrying its children converts only its own pull request: an explicit draft
+// false on a child's update published a held draft above it.
+func TestShipLeavesTheDraftStateOfResubmittedChildrenAlone(t *testing.T) {
+	f := shipGTRepo(t)
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	shipGTStack(t, f, "p", "c")
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("stack submit: %v", err)
+	}
+	api.mu.Lock()
+	api.prs["p"], api.prs["c"] = 100, 101
+	api.mu.Unlock()
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "p")
+	writeShipFile(t, f.Dir, "p.txt", "amended\n")
+	shipResetLog(t, f)
+
+	out, _, err := runShipCmdFull(f.Context(), t, "--amend", "--no-watch", "p.txt")
+	if err != nil {
+		t.Fatalf("ship --amend = %v", err)
+	}
+	if !strings.Contains(out, "resubmitted c above p") {
+		t.Fatalf("ship output = %q, want it to name the resubmitted child", out)
+	}
+	api.mu.Lock()
+	tip, _ := api.lastEntry("p")
+	child, _ := api.lastEntry("c")
+	api.mu.Unlock()
+	if tip.Action != gtapi.SubmitUpdate || tip.Draft == nil || *tip.Draft {
+		t.Errorf("p submitted as %s with draft %v, want an update publishing it", tip.Action, tip.Draft)
+	}
+	if child.Action != gtapi.SubmitUpdate || child.Draft != nil {
+		t.Errorf("c submitted as %s with draft %v, want an update omitting draft", child.Action, child.Draft)
 	}
 }

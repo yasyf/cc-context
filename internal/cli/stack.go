@@ -180,6 +180,8 @@ request landed through a merge queue squash is dropped, and its children move
 onto what it sat on, leaving its squashed commits behind.
 A branch whose pull request was closed without landing is dropped the same way,
 named in the plan with its pull request, and its own commits are never replayed.
+--new-pr <branch> keeps such a branch instead and opens a new pull request for
+it; it refuses a branch whose pull request is open or landed, or that has none.
 A pull request GitHub closed because its base branch was deleted still carries
 live work, so before the push the run puts that base back, reopens the pull
 request, retargets it onto the branch's new parent, and deletes the base again.
@@ -246,6 +248,7 @@ the run leaves out, is refused before anything moves.`,
 	cmd.Flags().StringArrayVar(&include, "include", nil, "submit this branch even though another lane's working copy has it checked out or it is another lane's (repeatable)")
 	cmd.Flags().BoolVar(&o.allLanes, "all-lanes", false, "submit the branches of other lanes too, a lane being the branch name before its last slash")
 	cmd.Flags().StringArrayVar(&o.landed, "landed", nil, "treat <branch> as landed and drop it (repeatable)")
+	cmd.Flags().StringArrayVar(&o.newPRs, "new-pr", nil, stackNewPRUsage)
 	cmd.Flags().BoolVar(&o.dropCommits, "drop-commits", false, stackDropCommitsUsage)
 	cmd.Flags().BoolVar(&o.restack, "restack", false, "rebase published branches onto the fetched trunk even when they merge cleanly")
 	cmd.Flags().StringVar(&to, "to", "", stackToUsage)
@@ -465,7 +468,7 @@ func runStackSubmit(cmd *cobra.Command, o shipOpts, include []string, to string)
 	}
 	tracking := &stackTracking{}
 	cmd.SetContext(withStackTracking(ctx, tracking))
-	opts := stackRebaseOpts{members: chain, pinned: stackSkipNames(pinned), landed: o.landed, draft: &o.draft, keepDrafts: true, ship: intent, submit: true, dropCommits: o.dropCommits, stayClean: !o.restack, restack: o.restack, to: to, include: include, otherLanes: o.allLanes}
+	opts := stackRebaseOpts{members: chain, pinned: stackSkipNames(pinned), landed: o.landed, newPRs: o.newPRs, draft: &o.draft, ship: intent, submit: true, dropCommits: o.dropCommits, stayClean: !o.restack, restack: o.restack, to: to, include: include, otherLanes: o.allLanes}
 	if err := runStackRebase(cmd, opts); err != nil {
 		return err
 	}
@@ -481,7 +484,7 @@ func stackRepairTracking(cmd *cobra.Command, opts stackRebaseOpts, tracking *sta
 		return tracking.settled()
 	}
 	cmd.Println("repairing" + shipSep + "Graphite holds no mergeability record for:\n" + stackUntrackedLines(repairing))
-	opts.ship = nil
+	opts.ship, opts.newPRs = nil, nil
 	opts.bump = stackUntrackedBranches(repairing)
 	tracking.untracked = nil
 	if err := runStackRebase(cmd, opts); err != nil {

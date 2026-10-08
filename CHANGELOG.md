@@ -64,6 +64,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`stack submit --new-pr <branch>` and `ship --new-pr <branch>` open a new
+  pull request in place of a closed one.** A branch whose pull request closed
+  without merging reads as abandoned, so the run dropped it and refused a
+  `--pr-title` or `--pr-body-file` naming it. When the closed pull request was
+  the wrong one to keep, such as a stack closed to clear a stale Graphite
+  stack record, no ccx verb could open its replacement, and `gt submit`
+  aborted on its cached pull request number. `--new-pr` keeps the branch in
+  the run and has the Graphite submit open a fresh pull request for it. It
+  refuses a branch whose pull request is open or landed, one with no pull
+  request, and one `--landed` also names.
 - **`ccx vcs gh -- <gh args>` runs a gh read on the GitHub App's quota.** It
   runs `gh` with `GH_TOKEN` set to the read-only installation token that
   ccx's own reads use, so polls such as `gh pr checks`, `gh pr view`, and
@@ -98,6 +108,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   <trunk>@<pin> · --restack replays the stack onto it`.
 
 ### Fixed
+
+- **A `ship` with neither `--draft` nor `--publish` publishes only its own
+  pull request.** Every update a gt-lane ship sent carried `draft: false`, so
+  a ship that resubmitted the branches above its own, or below it, published
+  each held draft among them. Without either flag the update now carries the
+  draft field for the shipped branch alone, and every other branch keeps its
+  draft state, as under `stack submit`. `--draft` and `--publish` still
+  convert every pull request the ship submits.
 
 - **`stack submit` refuses to publish a branch without another lane's
   unpublished work it carries.** A branch another lane holds is kept at its

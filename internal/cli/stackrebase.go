@@ -93,6 +93,29 @@ func (p *stackPR) abandoned() bool {
 	return p.State == "CLOSED" && !p.Landed && !p.BaseGone
 }
 
+// stackSupersedeClosed forgets the closed pull request of every branch newPRs
+// names, so the run keeps the branch and its submit opens a new one in place of
+// dropping it as abandoned.
+func stackSupersedeClosed(prs map[string]*stackPR, members, newPRs, landed []string) error {
+	for _, name := range newPRs {
+		pr := prs[name]
+		switch {
+		case !slices.Contains(members, name):
+			return fmt.Errorf("stack rebase: --new-pr named %s, which is not a branch of this run", name)
+		case slices.Contains(landed, name):
+			return fmt.Errorf("stack rebase: --new-pr and --landed both named %s", name)
+		case pr == nil:
+			return fmt.Errorf("stack rebase: --new-pr named %s, which has no pull request to replace — submit opens one without it", name)
+		case pr.Landed:
+			return fmt.Errorf("stack rebase: --new-pr named %s, whose pull request #%d landed", name, pr.Number)
+		case pr.State != "CLOSED":
+			return fmt.Errorf("stack rebase: --new-pr named %s, whose pull request #%d is still open", name, pr.Number)
+		}
+		delete(prs, name)
+	}
+	return nil
+}
+
 func (p *stackPR) closedLanding() string {
 	return fmt.Sprintf("#%d closed", p.Number)
 }
@@ -103,7 +126,7 @@ type stackTipClosedError struct {
 }
 
 func (e stackTipClosedError) Error() string {
-	return fmt.Sprintf("ship: %s's pull request #%d was closed without merging, and ship will not drop the branch it ships — reopen it with gh pr reopen %d", e.branch, e.number, e.number)
+	return fmt.Sprintf("ship: %s's pull request #%d was closed without merging, and ship will not drop the branch it ships — reopen it with gh pr reopen %d, or open a new one with --new-pr %s", e.branch, e.number, e.number, e.branch)
 }
 
 type stackRebaseBranch struct {
@@ -139,21 +162,22 @@ type stackConflict struct {
 }
 
 type stackRebaseRun struct {
-	Trunk         string `json:"trunk"`
-	Pin           string `json:"pin"`
-	NoPush        bool   `json:"no_push"`
-	Git           bool   `json:"git,omitempty"`
-	Origin        string `json:"origin"`
-	Draft         *bool  `json:"draft,omitempty"`
-	KeepDrafts    bool   `json:"keep_drafts,omitempty"`
-	NoVerify      bool   `json:"no_verify,omitempty"`
-	Tip           string `json:"tip,omitempty"`
-	TipOnly       bool   `json:"tip_only,omitempty"`
-	DropCommits   bool   `json:"drop_commits,omitempty"`
-	StayClean     bool   `json:"stay_clean,omitempty"`
-	Restack       bool   `json:"restack,omitempty"`
-	AllLanes      bool   `json:"all_lanes,omitempty"`
-	To            string `json:"to,omitempty"`
+	Trunk         string   `json:"trunk"`
+	Pin           string   `json:"pin"`
+	NoPush        bool     `json:"no_push"`
+	Git           bool     `json:"git,omitempty"`
+	Origin        string   `json:"origin"`
+	Draft         *bool    `json:"draft,omitempty"`
+	DraftAll      bool     `json:"draft_all,omitempty"`
+	NoVerify      bool     `json:"no_verify,omitempty"`
+	Tip           string   `json:"tip,omitempty"`
+	TipOnly       bool     `json:"tip_only,omitempty"`
+	DropCommits   bool     `json:"drop_commits,omitempty"`
+	StayClean     bool     `json:"stay_clean,omitempty"`
+	Restack       bool     `json:"restack,omitempty"`
+	AllLanes      bool     `json:"all_lanes,omitempty"`
+	To            string   `json:"to,omitempty"`
+	NewPRs        []string `json:"new_prs,omitempty"`
 	deferPush     bool
 	Ship          *stackShipIntent         `json:"ship,omitempty"`
 	Retarget      *restackRetarget         `json:"retarget,omitempty"`
@@ -214,12 +238,13 @@ type stackRebaseOpts struct {
 	parents     []string
 	linearize   []string
 	landed      []string
+	newPRs      []string
 	dryRun      bool
 	noPush      bool
 	members     []string
 	pinned      []string
 	draft       *bool
-	keepDrafts  bool
+	draftAll    bool
 	noVerify    bool
 	deferPush   bool
 	vetted      map[string]string
@@ -242,6 +267,8 @@ type stackRebaseOpts struct {
 const stackDropCommitsUsage = "publish a branch whose local head drops commits its published head carries"
 
 const stackToUsage = "stop at this branch: leave every branch stacked above it out of the run"
+
+const stackNewPRUsage = "open a new pull request for <branch>, whose last one closed without merging, instead of dropping it (repeatable)"
 
 // stackPRQuery reads the pull request of every branch of a stack.
 type stackPRQuery func(ctx context.Context, dir render.Dir, trunk string, branches []string) (map[string]*stackPR, error)
@@ -368,7 +395,7 @@ stale recording silently drops a branch's own changes.
 Continue never opens a pull request the run carries no title and body for. A
 branch with no open pull request and no --pr-title and --pr-body-file from the
 command that started the run is pushed, not submitted, and named with the
-ccx vcs ship command that opens it.`,
+ccx vcs ship command that opens it, unless that command named it with --new-pr.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return stackSettleTracking(cmd, func() error { return runStackContinue(cmd, stack) })
@@ -1043,6 +1070,9 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	if err != nil {
 		return nil, fmt.Errorf("stack rebase: read the stack's pull requests: %w", err)
 	}
+	if err := stackSupersedeClosed(prs, members, o.newPRs, o.landed); err != nil {
+		return nil, err
+	}
 	locals := make(map[string]string, len(members))
 	for _, name := range members {
 		locals[name] = retargeted[name].Head
@@ -1075,7 +1105,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	if err != nil {
 		return nil, fmt.Errorf("stack rebase: %w", err)
 	}
-	run := &stackRebaseRun{Trunk: trunk, Pin: pin, NoPush: o.noPush, Origin: l.checkout.Root, Draft: o.draft, KeepDrafts: o.keepDrafts, NoVerify: o.noVerify, Tip: o.tip, TipOnly: o.tipOnly, DropCommits: o.dropCommits, StayClean: o.stayClean, Restack: o.restack, AllLanes: o.allLanes, To: o.to, deferPush: o.deferPush, Ship: o.ship, Roots: roots, Pid: os.Getpid(), Started: stackProcStart(os.Getpid()), Host: host, left: left, lanePins: lanePins, adopted: adopted}
+	run := &stackRebaseRun{Trunk: trunk, Pin: pin, NoPush: o.noPush, Origin: l.checkout.Root, Draft: o.draft, DraftAll: o.draftAll, NoVerify: o.noVerify, Tip: o.tip, TipOnly: o.tipOnly, DropCommits: o.dropCommits, StayClean: o.stayClean, Restack: o.restack, AllLanes: o.allLanes, To: o.to, NewPRs: o.newPRs, deferPush: o.deferPush, Ship: o.ship, Roots: roots, Pid: os.Getpid(), Started: stackProcStart(os.Getpid()), Host: host, left: left, lanePins: lanePins, adopted: adopted}
 	own := map[string]bool{}
 	if current != "" && current != trunk {
 		down, err := gtDownstack(stackRebasePrefix, retargeted, current, trunk)
@@ -3859,7 +3889,7 @@ func stackLandedSince(ctx context.Context, dir render.Dir, run *stackRebaseRun, 
 		return nil, fmt.Errorf("stack rebase: reading the stack pull requests before the push failed — run ccx vcs stack continue: %w", err)
 	}
 	for _, name := range live {
-		if pr := prs[name]; pr != nil && pr.State == "CLOSED" && !pr.Landed && !run.branch(name).reopens() {
+		if pr := prs[name]; pr != nil && pr.State == "CLOSED" && !pr.Landed && !run.branch(name).reopens() && !slices.Contains(run.NewPRs, name) {
 			return nil, fmt.Errorf("stack rebase: %s's pull request #%d closed without landing while the run was stopped, and publishing would open a new one — reopen it and run ccx vcs stack continue, or drop the run with ccx vcs stack abort", name, pr.Number)
 		}
 	}
@@ -3884,8 +3914,8 @@ func stackReplanLanded(ctx context.Context, cmd *cobra.Command, l lane, commonDi
 		}
 	}
 	next, err := stackPlan(ctx, l, commonDir, stackRebaseOpts{
-		members: members, pinned: pinned, landed: landed, vetted: vetted, replayed: replayed, draft: run.Draft, keepDrafts: run.KeepDrafts, noVerify: run.NoVerify, ship: run.Ship,
-		tip: run.Tip, tipOnly: run.TipOnly, dropCommits: run.DropCommits, stayClean: run.StayClean, restack: run.Restack, allLanes: run.AllLanes, to: run.To,
+		members: members, pinned: pinned, landed: landed, vetted: vetted, replayed: replayed, draft: run.Draft, draftAll: run.DraftAll, noVerify: run.NoVerify, ship: run.Ship,
+		tip: run.Tip, tipOnly: run.TipOnly, dropCommits: run.DropCommits, stayClean: run.StayClean, restack: run.Restack, allLanes: run.AllLanes, to: run.To, newPRs: run.NewPRs,
 	})
 	if err != nil {
 		return err
