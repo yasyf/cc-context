@@ -21,6 +21,7 @@ import (
 
 	"github.com/yasyf/cc-context/internal/cleanup"
 	"github.com/yasyf/cc-context/internal/ghapi"
+	"github.com/yasyf/cc-context/internal/gtapi"
 	"github.com/yasyf/cc-context/internal/gtmeta"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcs"
@@ -351,6 +352,48 @@ func TestStackRebaseMovesEachSourceOntoItsPublishedHead(t *testing.T) {
 	}
 	if left, _ := os.ReadDir(filepath.Join(f.Dir, ".git", stackRebaseStateDir)); len(left) != 0 {
 		t.Errorf("run state left behind: %v", left)
+	}
+}
+
+// TestStackRebaseLeavesDraftStateAlone pins that a rebase only pushes: an
+// explicit draft false on an update publishes a held draft pull request, so
+// rebase omits the field, while submit still publishes by default.
+func TestStackRebaseLeavesDraftStateAlone(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		verb  string
+		draft string
+	}{
+		{verb: "rebase", draft: "omitted"},
+		{verb: "submit", draft: "false"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.verb, func(t *testing.T) {
+			t.Parallel()
+			f := stackRebaseRepo(t, "base", "feature")
+			api := stubGTAPI(t)
+			api.prs["base"], api.prs["feature"] = 9000, 9001
+			f.Decorate(api.ctx)
+			stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+			mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "feature")
+
+			if _, _, err := runStackCmd(t, f, tt.verb); err != nil {
+				t.Fatalf("stack %s: %v", tt.verb, err)
+			}
+			for _, branch := range []string{"base", "feature"} {
+				entry := api.submitEntry(branch)
+				if entry.Action != gtapi.SubmitUpdate {
+					t.Errorf("stack %s submitted %s as %s, want an update of its open pull request", tt.verb, branch, entry.Action)
+				}
+				got := "omitted"
+				if draft := entry.Draft; draft != nil {
+					got = strconv.FormatBool(*draft)
+				}
+				if got != tt.draft {
+					t.Errorf("stack %s submitted %s with draft %s, want %s", tt.verb, branch, got, tt.draft)
+				}
+			}
+		})
 	}
 }
 

@@ -43,6 +43,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`stack rebase` leaves a pull request's draft state alone.** Its
+  Graphite submit sent `draft: false` on every update, the same as `ship` and
+  `stack submit`, so a plain `ccx vcs stack rebase` marked a held draft pull
+  request ready for review. A rebase now omits the field, which Graphite
+  reads as no change, and a draft stays a draft. `ship` and `stack submit`
+  still publish by default, and `--draft` still opts out.
+
 - **`ship` infers an untracked branch's parent against the remote trunk.**
   The nearest tracked ancestor was read from the branch's commits above the
   local trunk. In a worktree whose local `dev` sat 65 commits behind
