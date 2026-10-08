@@ -2369,8 +2369,9 @@ func stackOrder(trunk string, byName map[string]*stackRebaseBranch) ([]string, e
 // remote-tracking reflogs. A branch staying on the parent is refused past that;
 // one leaving it takes its merge base, or trunk's when trunk holds the rest.
 // Either way it starts past the furthest head of a branch below it that it
-// holds, and past each leading commit copying one of theirs by patch or by
-// author, date and message, as a branch cut from a rewritten parent carries.
+// holds. Unless that is its parent's, it also starts past each leading commit
+// copying one of theirs by patch or by author, date and message, as a branch
+// cut from a rewritten parent carries.
 func stackOldBase(ctx context.Context, dir render.Dir, tr vcs.Trunk, pin string, state gtState, self *stackRebaseBranch, byName map[string]*stackRebaseBranch) (string, error) {
 	s := state[self.Name]
 	onTrunk, err := stackMergeBase(ctx, dir, self.Head, pin)
@@ -2444,22 +2445,33 @@ func stackOldBase(ctx context.Context, dir render.Dir, tr vcs.Trunk, pin string,
 }
 
 func stackPastChain(ctx context.Context, dir render.Dir, pin string, self *stackRebaseBranch, byName map[string]*stackRebaseBranch, base string) (string, error) {
-	var heads []string
+	var heads, parentHeads []string
 	for name := self.Parent; byName[name] != nil; name = byName[name].Parent {
 		below := byName[name]
-		heads = append(heads, below.Head, below.Local, below.Remote)
+		held := []string{below.Head, below.Local, below.Remote}
 		if below.Publication != nil {
-			heads = append(heads, below.Publication.Head)
+			held = append(held, below.Publication.Head)
 		}
+		if name == self.Parent {
+			parentHeads = held
+		}
+		heads = append(heads, held...)
 	}
 	heads = slices.DeleteFunc(slices.Compact(slices.Sorted(slices.Values(heads))), func(head string) bool { return head == "" })
 	if len(heads) == 0 {
 		return base, nil
 	}
-	base, err := stackFurthest(ctx, dir, self.Head, append([]string{base}, heads...))
-	if err != nil {
-		return "", err
+	furthest, err := stackFurthest(ctx, dir, self.Head, append([]string{base}, heads...))
+	if err != nil || slices.Contains(parentHeads, furthest) {
+		return furthest, err
 	}
+	if furthest == base {
+		inTrunk, err := gitIsAncestor(ctx, dir, stackRebasePrefix, base, pin)
+		if err != nil || !inTrunk {
+			return base, err
+		}
+	}
+	base = furthest
 	span := base + ".." + self.Head
 	merges, err := render.RunCLI(ctx, dir, "git", []string{"rev-list", "--merges", span})
 	if err != nil {

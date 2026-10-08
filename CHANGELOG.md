@@ -13,10 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   base with trunk, so a branch cut from a sibling or from an older head of its
   parent was replayed from a trunk commit and carried the commits below it a
   second time. Its old base now starts past the furthest head of any branch
-  below it in the new chain that it holds, and past each leading commit that
-  copies one of theirs by patch or by author, date and message, which drops
-  the stale copies a branch cut before its parent was amended or rebased
-  still carries.
+  below it in the new chain that it holds. When that is not its new parent's
+  head, it also starts past each leading commit that copies one of theirs by
+  patch or by author, date and message, which drops the stale copies a branch
+  cut before its parent was amended or rebased still carries.
 
 - **Stack rebase, submit, and ship build on a downstack head another lane
   pushed.** When another lane pushed over a branch below the one checked out
