@@ -644,6 +644,46 @@ func TestStackRebaseRefusesADirtyWorkingCopyHoldingAMover(t *testing.T) {
 	}
 }
 
+func TestStackRebaseLeavesAKeptBranchAnotherWorkingCopyHolds(t *testing.T) {
+	t.Parallel()
+	f := stackRebaseRepo(t, "base", "feature")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "base")
+	shipGTStack(t, f, "side")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base")
+	clone := filepath.Join(t.TempDir(), "other")
+	mustRun(t, f.Env(), filepath.Dir(clone), "git", "clone", "-q", "--branch", "base", f.RemoteDir, clone)
+	writeShipFile(t, clone, "more.txt", "more\n")
+	mustRun(t, f.Env(), clone, "git", "add", "more.txt")
+	mustRun(t, f.Env(), clone, "git", "-c", "user.email=t@t.t", "-c", "user.name=t", "commit", "-qm", "more")
+	mustRun(t, f.Env(), clone, "git", "push", "-q", "origin", "base")
+	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "feature")
+	held := restackSiblingPath(t, "held")
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", held, "base")
+	writeShipFile(t, held, "scratch.txt", "untracked\n")
+	before := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
+
+	out, _, err := runStackCmd(t, f, "rebase", "--no-push", "--parent", "feature=side")
+	if err != nil {
+		t.Fatalf("rebase with kept base checked out in %s: %v", held, err)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); got != before {
+		t.Errorf("base moved to %s, want it left at %s", got, before)
+	}
+	if got := gitAt(t, f.Env(), held, "rev-parse", "HEAD"); got != before {
+		t.Errorf("%s HEAD = %s, want it left at %s", held, got, before)
+	}
+	if _, err := os.Stat(filepath.Join(held, "scratch.txt")); err != nil {
+		t.Errorf("%s lost its untracked work: %v", held, err)
+	}
+	if !stackOnto(t, f, "side", "feature") {
+		t.Error("feature does not sit on side")
+	}
+	if !strings.Contains(out, "left base at") {
+		t.Errorf("out = %q, want base named as left where it is", out)
+	}
+}
+
 func requireRealigned(t *testing.T, f *vcstest.Fixture, held, branch, file string) {
 	t.Helper()
 	if got := gitAt(t, f.Env(), held, "symbolic-ref", "--short", "HEAD"); got != branch {
@@ -1218,7 +1258,7 @@ func TestStackWriteRefsTakesARefAlreadyWritten(t *testing.T) {
 	moved := gitAt(t, f.Env(), f.Dir, "rev-parse", "main")
 	run := &stackRebaseRun{Branches: []stackRebaseBranch{{Name: "base", Local: local, NewHead: moved}}}
 	for range 2 {
-		if err := stackWriteRefs(f.Context(), render.Dir(f.Dir), run); err != nil {
+		if err := stackWriteRefs(f.Context(), render.Dir(f.Dir), run, nil); err != nil {
 			t.Fatalf("stackWriteRefs: %v", err)
 		}
 	}

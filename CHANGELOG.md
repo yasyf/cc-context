@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A `--no-push` stack rebase leaves a kept branch another lane has checked
+  out where it is.** A branch the run keeps, such as one below a `--parent`
+  or `--to` scope, moved onto its remote head when its local ref lagged, and
+  the run reset, or refused over, the working copy that held it, so a
+  continue stopped on another lane's checkout it never meant to touch. The
+  run now leaves that ref and its working copy alone and names the branch in
+  its summary.
+
 - **Stack rebase, submit, and continue move a branch another lane has checked
   out instead of refusing it.** A moved branch held by another clean working
   copy used to stop the run with "finish or detach that checkout", so lanes
