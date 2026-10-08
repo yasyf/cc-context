@@ -273,9 +273,9 @@ head and resubmits them under their leases, reported as
 `resubmitted <branches> above <branch>`, and `--tip-only` leaves them where they
 are. `--tip-only` reads every ancestor at its published head and never locks or
 writes an ancestor's local ref, so it ships while another worktree amends the
-parent. The working copy holding a moved
-branch must be clean and is moved onto its new head; another working copy
-holding a moved branch stops the run. A branch `gt freeze` is holding is left
+parent. Every working copy holding a moved
+branch, this lane's or another's, must be clean and is moved onto its new head,
+still on its branch. A branch `gt freeze` is holding is left
 where it is. A conflict stops in a conflict workspace with rerere off;
 `ccx vcs stack continue` finishes the rebase, pushes, submits, and restates the PR
 flags the invocation carried; it opens no pull request those flags did not give

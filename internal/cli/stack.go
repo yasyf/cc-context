@@ -188,9 +188,10 @@ A new parent the remote does not carry yet is refused, naming it.
 A conflict stops the run before any ref moves, in a conflict workspace with
 rerere off. After resolution, ccx vcs stack continue finishes the rebase, pushes,
 and submits; a branch with no pull request and no --pr-title and --pr-body-file
-is pushed, not submitted. ccx vcs stack abort drops the run. A moved branch held by another
-working copy, or uncommitted work in the invoking checkout, stops publication
-before any branch moves.
+is pushed, not submitted. ccx vcs stack abort drops the run. Uncommitted work in the invoking
+checkout, or in any working copy holding a moved branch, stops publication
+before any branch moves; a clean working copy holding a moved branch is moved
+onto its new head, still on that branch.
 
 A working copy stack new cut onto a branch of the stack checked out where it
 ran, or one worktree add checked out on such a branch, joins that working

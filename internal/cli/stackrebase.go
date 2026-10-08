@@ -293,11 +293,12 @@ whose pull request landed is dropped and its children move onto what it sat
 on, leaving its squashed commits behind. A branch whose pull request was closed
 without landing is dropped the same way, and its own commits are never
 replayed; one GitHub closed because its base branch was deleted is reopened
-onto its new parent before the push instead. Local trunk is left untouched. A
-branch without a pull request held by another working copy,
-or uncommitted work in the invoking checkout, stops publication before any branch
-moves. Empty lanes and another lane's branches above the one checked out here are
-left where they are and named rather than rebased. Once published, the local
+onto its new parent before the push instead. Local trunk is left untouched.
+Uncommitted work in the invoking checkout, or in a working copy holding a moved
+branch, stops publication before any branch moves; a clean working copy holding
+a moved branch is moved onto its new head, still on that branch. Empty lanes
+and another lane's branches above the one checked out here are left where they
+are and named rather than rebased. Once published, the local
 ref of a branch no working copy holds moves onto its published head; a held
 branch moves only when that head carries the same commits as the source,
 compared without diff context so a clean replay beside upstream edits still
@@ -3664,7 +3665,7 @@ func stackFinish(ctx context.Context, cmd *cobra.Command, l lane, commonDir stri
 		if err != nil {
 			return fmt.Errorf("%s: %w", prefix, err)
 		}
-		if err := stackCheckHolders(ctx, run.Origin, movers, holders, stackResumeAdvice); err != nil {
+		if err := stackCheckClean(ctx, movers, holders, stackResumeAdvice); err != nil {
 			return err
 		}
 		if err := gtRestackRefuseClobbers(ctx, prefix, holders, moves); err != nil {
@@ -3685,11 +3686,6 @@ func stackFinish(ctx context.Context, cmd *cobra.Command, l lane, commonDir stri
 		holders, err := vcs.BranchHolders(ctx, l.checkout)
 		if err != nil {
 			return err
-		}
-		for _, m := range moves {
-			if holder := holders[m.branch]; holder != "" && holder != run.Origin {
-				return fmt.Errorf("stack rebase: %s is now held by %s; checkout untouched", m.branch, holder)
-			}
 		}
 		realigned, alignErr = gtRestackAlign(ctx, prefix, holders, moves)
 		if alignErr != nil {
@@ -3813,7 +3809,7 @@ func stackFinishGit(ctx context.Context, cmd *cobra.Command, l lane, commonDir s
 		if err != nil {
 			return fmt.Errorf("restack: %w", err)
 		}
-		if err := stackCheckHolders(ctx, run.Origin, []string{b.Name}, holders, stackResumeAdvice); err != nil {
+		if err := stackCheckClean(ctx, []string{b.Name}, holders, stackResumeAdvice); err != nil {
 			return err
 		}
 		if err := gtRestackRefuseClobbers(ctx, "restack", holders, []restackMove{move}); err != nil {
@@ -3826,14 +3822,13 @@ func stackFinishGit(ctx context.Context, cmd *cobra.Command, l lane, commonDir s
 		if err := stackSaveRun(run); err != nil {
 			return err
 		}
+	} else if err := stackWriteRefs(ctx, l.dir(), run); err != nil {
+		return err
 	}
 	if !run.Aligned {
 		holders, err := vcs.BranchHolders(ctx, l.checkout)
 		if err != nil {
 			return fmt.Errorf("restack: %w", err)
-		}
-		if holder := holders[b.Name]; holder != "" && holder != run.Origin {
-			return fmt.Errorf("restack: %s is now held by %s; checkout untouched", b.Name, holder)
 		}
 		if _, err := gtRestackAlign(ctx, "restack", holders, []restackMove{move}); err != nil {
 			return err
@@ -4294,15 +4289,6 @@ const (
 	stackRetryAdvice  = "retry with ccx"
 	stackResumeAdvice = "resume the run with ccx vcs stack continue, or drop it with ccx vcs stack abort"
 )
-
-func stackCheckHolders(ctx context.Context, origin string, movers []string, holders map[string]string, advice string) error {
-	for _, branch := range movers {
-		if holder := holders[branch]; holder != "" && holder != origin {
-			return fmt.Errorf("stack rebase: %s is checked out in %s; no branches moved — finish or detach that checkout, then %s", branch, holder, advice)
-		}
-	}
-	return stackCheckClean(ctx, movers, holders, advice)
-}
 
 // stackCheckClean refuses a move under a working copy with uncommitted work,
 // which realigning that copy onto the moved branch would overwrite.

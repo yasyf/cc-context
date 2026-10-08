@@ -703,7 +703,7 @@ func stackCheckLocalOnly(ctx context.Context, l lane, run *stackRebaseRun) error
 	if err != nil {
 		return fmt.Errorf("%s: %w", stackRebasePrefix, err)
 	}
-	if err := stackCheckHolders(ctx, run.Origin, movers, holders, stackResumeAdvice); err != nil {
+	if err := stackCheckClean(ctx, movers, holders, stackResumeAdvice); err != nil {
 		return err
 	}
 	return gtRestackRefuseClobbers(ctx, stackRebasePrefix, holders, moves)
