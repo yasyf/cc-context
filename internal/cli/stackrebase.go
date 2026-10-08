@@ -144,7 +144,7 @@ type stackRebaseRun struct {
 	NoPush        bool   `json:"no_push"`
 	Git           bool   `json:"git,omitempty"`
 	Origin        string `json:"origin"`
-	Draft         bool   `json:"draft,omitempty"`
+	Draft         *bool  `json:"draft,omitempty"`
 	NoVerify      bool   `json:"no_verify,omitempty"`
 	Tip           string `json:"tip,omitempty"`
 	TipOnly       bool   `json:"tip_only,omitempty"`
@@ -217,7 +217,7 @@ type stackRebaseOpts struct {
 	noPush      bool
 	members     []string
 	pinned      []string
-	draft       bool
+	draft       *bool
 	noVerify    bool
 	deferPush   bool
 	vetted      map[string]string
@@ -324,7 +324,7 @@ names its pushed head, parent, and mergeability; when GitHub cannot be read
 for it, the run says so and still moves the local refs and finishes. An open
 pull request GitHub bases elsewhere than its recorded parent is retargeted
 onto that parent; a refused retarget names the command that finishes it.
-Labels are never touched.
+Labels and draft state are never touched: a draft pull request stays a draft.
 
 stack rebase never opens a pull request. A stack none of whose branches has one
 is rebased locally as if --no-push were given. In a stack mixing the two, a
