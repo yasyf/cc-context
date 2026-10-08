@@ -89,6 +89,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`stack submit` leaves an open pull request's draft state alone.** Its
+  `--draft` flag reads "open new PRs as drafts", but every Graphite update it
+  sent carried `draft: false`, so each submit published a held draft at any
+  depth of the stack. One draft at a stack's tip went ready for review three
+  times in a day. Submit now sets the draft field only on the pull requests
+  it creates, published by default and drafts under `--draft`, and omits it
+  on updates. `ship` still converts an existing pull request with `--draft`
+  and `--publish`.
+
 - **A published rebase moves a held branch whose replay dropped what its new
   base already added.** After publishing, `stack rebase` keeps a branch
   another clean worktree holds at its old local head unless its published
