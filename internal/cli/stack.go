@@ -210,6 +210,10 @@ neither pushed nor submitted, and named on stderr; the rest are left out.
 whose parent this run moves no longer sits on that parent's new head, so the
 run refuses before anything moves rather than publish the branches above it
 onto a stale base; --include takes it into the run, --to stops below it.
+A kept branch whose local head carries commits its published head lacks, and
+that a branch the run publishes above it carries too, would be dropped from
+what that branch publishes, so the run refuses the same way unless those
+commits only replay the published ones onto newer trunk.
 
 Above the branch checked out here, a branch belongs to another lane when the
 rest of the record contradicts its gt parent: its open pull request is based on

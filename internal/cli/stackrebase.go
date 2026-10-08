@@ -437,6 +437,9 @@ func stackBegin(ctx context.Context, cmd *cobra.Command, l lane, commonDir strin
 	if err := stackRefuseStalePins(ctx, l.dir(), run); err != nil {
 		return err
 	}
+	if err := stackRefuseUnpublishedPins(ctx, l.dir(), run); err != nil {
+		return err
+	}
 	if o.tip != "" && !o.restack {
 		if err := stackRefuseGreenRestack(ctx, l, run); err != nil {
 			return err

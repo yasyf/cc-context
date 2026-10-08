@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/yasyf/cc-context/internal/render"
@@ -187,4 +188,74 @@ func stackRefuseStalePins(ctx context.Context, dir render.Dir, run *stackRebaseR
 			stackRebasePrefix, b.Name, parent.Name, strings.Join(names, ", "), b.Name, b.Name, parent.Name)
 	}
 	return nil
+}
+
+// stackRefuseUnpublishedPins refuses a run that would publish a branch stacked
+// on one kept at its published head while its own history carries work of that
+// branch origin lacks: the run replays it onto the published head and drops
+// that work from what it pushes. Work that only replays the published commits
+// onto newer trunk is no loss.
+func stackRefuseUnpublishedPins(ctx context.Context, dir render.Dir, run *stackRebaseRun) error {
+	if run.NoPush {
+		return nil
+	}
+	byName := map[string]*stackRebaseBranch{}
+	for i := range run.Branches {
+		byName[run.Branches[i].Name] = &run.Branches[i]
+	}
+	for _, b := range run.Branches {
+		pin := byName[b.Parent]
+		if b.Landed != "" || b.Held != "" || b.Kept || pin == nil || !pin.Pinned || pin.Local == pin.Remote {
+			continue
+		}
+		carried, err := stackCarriedUnpublished(ctx, dir, run.Pin, pin, b.Local)
+		if err != nil {
+			return err
+		}
+		if carried == 0 {
+			continue
+		}
+		if replays, err := stackRemoteReplays(ctx, dir, pin.Remote, pin.Local, run.Pin); err != nil {
+			return err
+		} else if replays {
+			continue
+		}
+		above := map[string]bool{b.Name: true}
+		names := []string{b.Name}
+		for _, up := range run.Branches {
+			if above[up.Parent] {
+				above[up.Name] = true
+				names = append(names, up.Name)
+			}
+		}
+		return refuse("%s: %s is another lane's, kept at its published head, but %s carries %d commit(s) of %s that origin does not — publishing %s onto that head would drop them, so nothing was pushed; submit %s from the working copy holding it first, or pass --include %s to publish it with the run",
+			stackRebasePrefix, pin.Name, b.Name, carried, pin.Name, strings.Join(names, ", "), pin.Name, pin.Name)
+	}
+	return nil
+}
+
+// stackCarriedUnpublished counts the commits of pin's local head that head
+// also holds and neither pin's published head nor trunk does.
+func stackCarriedUnpublished(ctx context.Context, dir render.Dir, trunk string, pin *stackRebaseBranch, head string) (int, error) {
+	out, code, stderr, err := render.RunCLIExitCode(ctx, dir, "git", []string{"merge-base", "--all", pin.Local, head})
+	if err != nil {
+		return 0, fmt.Errorf("%s: git merge-base --all %.12s %.12s: %w", stackRebasePrefix, pin.Local, head, err)
+	}
+	switch code {
+	case 0:
+	case 1:
+		return 0, nil
+	default:
+		return 0, fmt.Errorf("%s: git merge-base --all %.12s %.12s: exit %d: %s", stackRebasePrefix, pin.Local, head, code, strings.TrimSpace(stderr))
+	}
+	args := append([]string{"rev-list", "--count"}, strings.Fields(out)...)
+	args = append(args, "^"+trunk)
+	if pin.Remote != "" {
+		args = append(args, "^"+pin.Remote)
+	}
+	count, err := render.RunCLI(ctx, dir, "git", args)
+	if err != nil {
+		return 0, fmt.Errorf("%s: git rev-list --count: %w", stackRebasePrefix, err)
+	}
+	return strconv.Atoi(strings.TrimSpace(count))
 }

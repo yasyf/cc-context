@@ -89,6 +89,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`stack submit` refuses to publish a branch without another lane's
+  unpublished work it carries.** A branch another lane holds is kept at its
+  published head, and the branches above it were replayed onto that head. When
+  the holder had committed a fix it never pushed and the top branch was
+  restacked onto it, submit published the top without the fix and moved the
+  local top off it too, until a rerun with `--include`. Submit now refuses
+  before anything moves, naming the kept branch and the commits at stake;
+  `--include` publishes it with the run. A kept branch whose unpublished
+  commits the branches above it do not carry, or that only replays its
+  published commits onto newer trunk, still lets them publish.
+
 - **`stack submit` leaves an open pull request's draft state alone.** Its
   `--draft` flag reads "open new PRs as drafts", but every Graphite update it
   sent carried `draft: false`, so each submit published a held draft at any
