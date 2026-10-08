@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -115,7 +116,7 @@ func TestShipRefusesToDropItsOwnClosedPullRequest(t *testing.T) {
 
 			args := append([]string{"--no-commit", "--no-watch", "--tip-only"}, tc.args...)
 			_, errStr, err := runShipCmdFull(f.Context(), t, args...)
-			want := "ship: feature's pull request #7 was closed without merging, and ship will not drop the branch it ships — reopen it with gh pr reopen 7. Nothing was committed"
+			want := "ship: feature's pull request #7 was closed without merging, and ship will not drop the branch it ships — reopen it with gh pr reopen 7, or open a new one with --new-pr feature. Nothing was committed"
 			if err == nil || !strings.HasPrefix(err.Error(), want) {
 				t.Fatalf("ship = %v (stderr=%q), want %q", err, errStr, want)
 			}
@@ -129,6 +130,105 @@ func TestShipRefusesToDropItsOwnClosedPullRequest(t *testing.T) {
 				t.Errorf("gt parent of feature = %q, want main", parent)
 			}
 		})
+	}
+}
+
+// TestStackSubmitOpensNewPullRequestsForClosedOnes is the stack whose pull
+// requests were closed for a stale Graphite record: --new-pr keeps each branch
+// and opens a new pull request where submit would drop it as abandoned.
+func TestStackSubmitOpensNewPullRequestsForClosedOnes(t *testing.T) {
+	f := shipGTRepo(t)
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	shipGTStack(t, f, "a", "b")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "a", "b")
+	stubStackPRs(t, f, map[string]*stackPR{
+		"a": {Number: 1, Title: "a", State: "CLOSED", Base: "main"},
+		"b": {Number: 2, Title: "b", State: "CLOSED", Base: "a"},
+	})
+	installDropGH(t, f, map[string]dropSeed{"a": {number: 1, state: "CLOSED", base: "main"}, "b": {number: 2, state: "CLOSED", base: "a"}})
+	shipResetLog(t, f)
+
+	out, _, err := runStackCmd(t, f, "submit", "--new-pr", "a", "--new-pr", "b")
+	if err != nil {
+		t.Fatalf("stack submit: %v", err)
+	}
+	if strings.Contains(out, "closed)") {
+		t.Errorf("report = %q, want neither branch dropped", out)
+	}
+	if heads := api.submitHeads(); !slices.Equal(heads, []string{"a", "b"}) {
+		t.Errorf("submit posts = %v, want a then b", heads)
+	}
+	for branch, base := range map[string]string{"a": "main", "b": "a"} {
+		if entry := api.submitEntry(branch); entry.Action != gtapi.SubmitCreate || entry.PRNumber != 0 || entry.Base != base {
+			t.Errorf("%s submitted as %s #%d onto %s, want a new pull request onto %s", branch, entry.Action, entry.PRNumber, entry.Base, base)
+		}
+	}
+	if n := gitAt(t, f.Env(), f.RemoteDir, "rev-list", "--count", "a..b"); n != "1" {
+		t.Errorf("origin b holds %s commits over a, want its own 1", n)
+	}
+}
+
+func TestShipOpensANewPullRequestForItsClosedOne(t *testing.T) {
+	f := shipGTRepo(t)
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	shipGTStack(t, f, "feature")
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("stack submit: %v", err)
+	}
+	priorSubmits := len(api.submitHeads())
+	stubStackPRs(t, f, map[string]*stackPR{"feature": {Number: 7, Title: "feature", State: "CLOSED", Base: "main"}})
+	shipResetLog(t, f)
+
+	if _, errStr, err := runShipCmdFull(f.Context(), t, "--no-commit", "--no-watch", "--tip-only", "--new-pr", "feature"); err != nil {
+		t.Fatalf("ship = %v (stderr=%q)", err, errStr)
+	}
+	if heads := api.submitHeads()[priorSubmits:]; !slices.Equal(heads, []string{"feature"}) {
+		t.Fatalf("submit posts = %v, want feature alone", heads)
+	}
+	api.mu.Lock()
+	entry, _ := api.lastEntry("feature")
+	api.mu.Unlock()
+	if entry.Action != gtapi.SubmitCreate || entry.PRNumber != 0 {
+		t.Errorf("feature submitted as %s #%d, want a new pull request", entry.Action, entry.PRNumber)
+	}
+}
+
+func TestStackSupersedeClosedRefusesWhatItCannotReplace(t *testing.T) {
+	t.Parallel()
+	prs := map[string]*stackPR{
+		"open":   {Number: 1, State: "OPEN"},
+		"landed": {Number: 2, State: "CLOSED", Landed: true},
+		"closed": {Number: 3, State: "CLOSED"},
+	}
+	members := []string{"open", "landed", "closed", "bare"}
+	for _, tc := range []struct {
+		name   string
+		newPRs []string
+		landed []string
+		want   string
+	}{
+		{"outside the run", []string{"other"}, nil, "--new-pr named other, which is not a branch of this run"},
+		{"also landed", []string{"closed"}, []string{"closed"}, "--new-pr and --landed both named closed"},
+		{"no pull request", []string{"bare"}, nil, "--new-pr named bare, which has no pull request to replace"},
+		{"landed", []string{"landed"}, nil, "--new-pr named landed, whose pull request #2 landed"},
+		{"open", []string{"open"}, nil, "--new-pr named open, whose pull request #1 is still open"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := stackSupersedeClosed(maps.Clone(prs), members, tc.newPRs, tc.landed)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("stackSupersedeClosed = %v, want %q", err, tc.want)
+			}
+		})
+	}
+	got := maps.Clone(prs)
+	if err := stackSupersedeClosed(got, members, []string{"closed"}, nil); err != nil {
+		t.Fatalf("stackSupersedeClosed = %v", err)
+	}
+	if _, ok := got["closed"]; ok || len(got) != 2 {
+		t.Errorf("prs = %v, want closed's pull request forgotten and the rest kept", got)
 	}
 }
 

@@ -489,7 +489,7 @@ func stackFinishPublication(ctx context.Context, cmd *cobra.Command, l lane, com
 		return err
 	}
 	leases := stackPublicationLeases(run)
-	sub := gtSubmit{prefix: stackRebasePrefix, suffix: " — source checkouts are untouched; run ccx vcs stack continue to resume publication", leases: leases, trunkHead: run.Pin, draft: run.Draft, keepDrafts: run.KeepDrafts, noVerify: run.NoVerify, publication: run}
+	sub := gtSubmit{prefix: stackRebasePrefix, suffix: " — source checkouts are untouched; run ccx vcs stack continue to resume publication", leases: leases, trunkHead: run.Pin, draft: run.Draft, noVerify: run.NoVerify, publication: run}
 	if run.resumed {
 		sub.unopened = func(branch string) bool { return !run.Ship.prepares(branch) }
 	}
