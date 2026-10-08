@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Stack rebase, submit, and continue move a branch another lane has checked
+  out instead of refusing it.** A moved branch held by another clean working
+  copy used to stop the run with "finish or detach that checkout", so lanes
+  detached their worktrees to let a restack through and were left on a
+  detached HEAD afterwards. The run now moves the branch and resets that
+  working copy onto its new head, still on the branch, as `ccx vcs stack
+  restack` already did. Uncommitted work in the holding copy still stops the
+  run before any branch moves.
+
 - **`ccx vcs ship` runs the repository's hooks on every commit by default.**
   Ship used to skip the prek suite, and git's own hooks on the commit and the
   push, wherever the commit was bound for a pull request, leaving the check to

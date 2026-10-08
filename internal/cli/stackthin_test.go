@@ -572,10 +572,6 @@ func TestStackThinTwoBranchRebaseContinue(t *testing.T) {
 	_, laneB := thinNew(t, f, laneA, "b")
 	thinCommit(t, f, laneB, "d.txt", "b\n")
 	restackAdvanceRemote(t, f, "main", "c.txt", "trunk\n")
-	heads := map[string]string{}
-	for _, branch := range []string{"a", "b"} {
-		heads[branch] = gitAt(t, f.Env(), store, "rev-parse", branch)
-	}
 
 	_, _, err := runStackCmdIn(t, f, laneB, "rebase", "--no-push")
 	if err == nil || !strings.Contains(err.Error(), "a does not rebase onto main cleanly") {
@@ -588,21 +584,20 @@ func TestStackThinTwoBranchRebaseContinue(t *testing.T) {
 	writeShipFile(t, ws, "c.txt", "trunk\na\n")
 	mustRun(t, f.Env(), ws, "git", "add", "c.txt")
 
-	_, _, err = runStackCmdIn(t, f, ws, "continue")
-	if err == nil || !strings.Contains(err.Error(), "a is checked out in "+laneA) || !strings.Contains(err.Error(), stackResumeAdvice) {
-		t.Fatalf("continue = %v, want the held parent refused with the resume step", err)
-	}
-	for branch, head := range heads {
-		if got := gitAt(t, f.Env(), store, "rev-parse", branch); got != head {
-			t.Errorf("%s moved to %s before the refusal", branch, got)
-		}
-	}
-	mustRun(t, f.Env(), laneA, "git", "switch", "--detach", "-q")
-	out, _, err := runStackCmdIn(t, f, laneB, "continue")
+	out, _, err := runStackCmdIn(t, f, ws, "continue")
 	if err != nil {
-		t.Fatalf("continue after releasing the holder: %v", err)
+		t.Fatalf("continue with the parent checked out in its own lane: %v", err)
 	}
 	t.Logf("continue: %s", out)
+	if got := gitAt(t, f.Env(), laneA, "symbolic-ref", "--short", "HEAD"); got != "a" {
+		t.Errorf("lane a's HEAD = %q, want it still on a", got)
+	}
+	if got := gitAt(t, f.Env(), laneA, "status", "--porcelain"); got != "" {
+		t.Errorf("lane a after the realign = %q, want it clean on a's new head", got)
+	}
+	if got, err := os.ReadFile(filepath.Join(laneA, "c.txt")); err != nil || string(got) != "trunk\na\n" {
+		t.Errorf("lane a's c.txt = %q, %v; want the resolution checked out", got, err)
+	}
 	if !thinOnto(t, f, store, "origin/main", "a") || !thinOnto(t, f, store, "a", "b") {
 		t.Error("the stack did not land on the new trunk")
 	}

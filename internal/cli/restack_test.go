@@ -1115,24 +1115,18 @@ func restackGTParent(t *testing.T, f *vcstest.Fixture, branch string) string {
 	return ""
 }
 
-func TestRestackGTRefusesAnotherWorkingCopyMover(t *testing.T) {
+func TestRestackGTRealignsAnotherWorkingCopyMover(t *testing.T) {
 	f := restackGTRepo(t, "a", "b")
 	held := restackSiblingPath(t, "held")
 	restackRun(t, f, f.Dir, "git", "worktree", "add", "-q", held, "a")
 	restackAdvanceRemote(t, f, "main", "upstream.txt", "upstream\n")
-	before := map[string]string{"a": restackRev(t, f, f.Dir, "a"), "b": restackRev(t, f, f.Dir, "b")}
-	_, _, err := runRestackCmd(t, f)
-	if err == nil || !strings.Contains(err.Error(), "checked out in "+held) {
-		t.Fatalf("restack = %v, want holder refusal", err)
+	if _, _, err := runRestackCmd(t, f); err != nil {
+		t.Fatalf("restack with a checked out in %s: %v", held, err)
 	}
-	for branch, head := range before {
-		if got := restackRev(t, f, f.Dir, branch); got != head {
-			t.Errorf("%s moved to %s", branch, got)
-		}
+	if !stackOnto(t, f, "origin/main", "a") || !stackOnto(t, f, "a", "b") {
+		t.Error("the stack did not reach the new trunk")
 	}
-	if dirt := strings.TrimSpace(restackRun(t, f, held, "git", "status", "--porcelain")); dirt != "" {
-		t.Errorf("held dirty: %s", dirt)
-	}
+	requireRealigned(t, f, held, "a", "upstream.txt")
 }
 
 func TestRestackGTLeavesLocalTrunkUntouched(t *testing.T) {

@@ -605,35 +605,55 @@ func TestStackRebaseLinearizesSiblings(t *testing.T) {
 	}
 }
 
-func TestStackRebaseRefusesABranchAnotherWorkingCopyHolds(t *testing.T) {
+func TestStackRebaseRealignsABranchAnotherWorkingCopyHolds(t *testing.T) {
 	t.Parallel()
 	f := stackRebaseRepo(t, "base", "feature")
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "base")
 	held := restackSiblingPath(t, "held")
 	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", held, "feature")
 	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	if _, _, err := runStackCmd(t, f, "rebase", "--no-push"); err != nil {
+		t.Fatalf("rebase with feature checked out in %s: %v", held, err)
+	}
+	if !stackOnto(t, f, "origin/main", "feature") {
+		t.Error("feature did not reach pinned trunk")
+	}
+	requireRealigned(t, f, held, "feature", "upstream.txt")
+}
+
+func TestStackRebaseRefusesADirtyWorkingCopyHoldingAMover(t *testing.T) {
+	t.Parallel()
+	f := stackRebaseRepo(t, "base", "feature")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "base")
+	held := restackSiblingPath(t, "held")
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", held, "feature")
+	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	writeShipFile(t, held, "feature.txt", "uncommitted\n")
 	before := map[string]string{}
 	for _, branch := range []string{"base", "feature"} {
 		before[branch] = gitAt(t, f.Env(), f.Dir, "rev-parse", branch)
 	}
 	_, _, err := runStackCmd(t, f, "rebase", "--no-push")
-	if err == nil || !strings.Contains(err.Error(), "checked out in "+held) {
-		t.Fatalf("rebase = %v, want holder refusal", err)
+	if err == nil || !strings.Contains(err.Error(), held+" has uncommitted work") {
+		t.Fatalf("rebase = %v, want the dirty holder refused", err)
 	}
 	for branch, head := range before {
 		if got := gitAt(t, f.Env(), f.Dir, "rev-parse", branch); got != head {
 			t.Errorf("%s moved to %s before refusal", branch, got)
 		}
 	}
+}
+
+func requireRealigned(t *testing.T, f *vcstest.Fixture, held, branch, file string) {
+	t.Helper()
+	if got := gitAt(t, f.Env(), held, "symbolic-ref", "--short", "HEAD"); got != branch {
+		t.Errorf("%s HEAD = %q, want it still on %s", held, got, branch)
+	}
 	if dirt := gitAt(t, f.Env(), held, "status", "--porcelain"); dirt != "" {
-		t.Errorf("held reads dirty: %q", dirt)
+		t.Errorf("%s reads dirty after the realign: %q", held, dirt)
 	}
-	mustRun(t, f.Env(), held, "git", "switch", "--detach", "-q")
-	if _, _, err := runStackCmd(t, f, "continue"); err != nil {
-		t.Fatalf("continue after detaching holder: %v", err)
-	}
-	if !stackOnto(t, f, "origin/main", "feature") {
-		t.Error("feature did not reach pinned trunk")
+	if _, err := os.Stat(filepath.Join(held, file)); err != nil {
+		t.Errorf("%s lacks the new head's %s: %v", held, file, err)
 	}
 }
 
