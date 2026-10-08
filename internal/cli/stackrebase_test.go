@@ -605,6 +605,32 @@ func TestStackRebaseLinearizesSiblings(t *testing.T) {
 	}
 }
 
+func TestStackRebaseLinearizeReplaysOnlyEachBranchsOwnCommits(t *testing.T) {
+	t.Parallel()
+	f := stackRebaseRepo(t, "a", "b")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "sibling", "a")
+	stackCommit(t, f, "sibling.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "stale", "b")
+	stackCommit(t, f, "stale.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "b")
+	writeShipFile(t, f.Dir, "b.txt", "amended\n")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qa", "--amend", "--no-edit")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "a")
+
+	out, errOut, err := runStackCmd(t, f, "rebase", "--no-push", "--linearize", "a,b,sibling,stale")
+	if err != nil {
+		t.Fatalf("stack rebase --linearize a,b,sibling,stale: %v\n%s%s", err, out, errOut)
+	}
+	for _, link := range [][2]string{{"b", "sibling"}, {"sibling", "stale"}} {
+		if n := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", link[0]+".."+link[1]); n != "1" {
+			t.Errorf("%s holds %s commits over %s, want its own one", link[1], n, link[0])
+		}
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "show", "stale:b.txt"); got != "amended" {
+		t.Errorf("stale's b.txt = %q, want b's amended content", got)
+	}
+}
+
 func TestStackRebaseRealignsABranchAnotherWorkingCopyHolds(t *testing.T) {
 	t.Parallel()
 	f := stackRebaseRepo(t, "base", "feature")

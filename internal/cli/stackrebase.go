@@ -2265,7 +2265,25 @@ func stackPatchSeries(ctx context.Context, dir render.Dir, pin, head string) ([]
 	if strings.TrimSpace(merges) != "" {
 		return nil, nil
 	}
-	patches, err := render.RunCLI(ctx, dir, "git", []string{"log", "--reverse", "--no-merges", "--format=commit %H", "-p", "-U0", span})
+	commits, err := stackPatches(ctx, dir, span)
+	if err != nil {
+		return nil, err
+	}
+	series := []string{}
+	for _, c := range commits {
+		if c.patch == "" {
+			return nil, nil
+		}
+		series = append(series, c.patch+"\n"+c.authored)
+	}
+	return series, nil
+}
+
+type stackPatch struct{ sha, patch, authored string }
+
+func stackPatches(ctx context.Context, dir render.Dir, revs ...string) ([]stackPatch, error) {
+	span := strings.Join(revs, " ")
+	patches, err := render.RunCLI(ctx, dir, "git", append([]string{"log", "--no-merges", "--format=commit %H", "-p", "-U0"}, revs...))
 	if err != nil {
 		return nil, fmt.Errorf("%s: git log -p %s: %w", stackRebasePrefix, span, err)
 	}
@@ -2273,25 +2291,22 @@ func stackPatchSeries(ctx context.Context, dir render.Dir, pin, head string) ([]
 	if err != nil {
 		return nil, fmt.Errorf("%s: git patch-id %s: %w", stackRebasePrefix, span, err)
 	}
-	authored, err := render.RunCLI(ctx, dir, "git", []string{"log", "--no-merges", "-z", "--format=%H%n%an <%ae> %at%n%B", span})
+	patchOf := map[string]string{}
+	for line := range strings.Lines(ids) {
+		id, sha, _ := strings.Cut(strings.TrimSpace(line), " ")
+		patchOf[sha] = id
+	}
+	authored, err := render.RunCLI(ctx, dir, "git", append([]string{"log", "--topo-order", "--reverse", "--no-merges", "-z", "--format=%H%n%an <%ae> %at%n%B"}, revs...))
 	if err != nil {
 		return nil, fmt.Errorf("%s: git log %s: %w", stackRebasePrefix, span, err)
 	}
-	messages := map[string]string{}
+	var commits []stackPatch
 	for entry := range strings.SplitSeq(authored, "\x00") {
 		if sha, message, _ := strings.Cut(entry, "\n"); sha != "" {
-			messages[sha] = message
+			commits = append(commits, stackPatch{sha: sha, patch: patchOf[sha], authored: message})
 		}
 	}
-	series := []string{}
-	for line := range strings.Lines(ids) {
-		id, sha, _ := strings.Cut(strings.TrimSpace(line), " ")
-		series = append(series, id+"\n"+messages[sha])
-	}
-	if len(series) != len(messages) {
-		return nil, nil
-	}
-	return series, nil
+	return commits, nil
 }
 
 func stackCheckHeld(ctx context.Context, dir render.Dir, trunk string, byName map[string]*stackRebaseBranch) error {
@@ -2353,6 +2368,10 @@ func stackOrder(trunk string, byName map[string]*stackRebaseBranch) ([]string, e
 // head it contains, else the furthest fork point in the parent's local and
 // remote-tracking reflogs. A branch staying on the parent is refused past that;
 // one leaving it takes its merge base, or trunk's when trunk holds the rest.
+// Either way it starts past the furthest head of a branch below it that it
+// holds. Unless that is its parent's, it also starts past each leading commit
+// copying one of theirs by patch or by author, date and message, as a branch
+// cut from a rewritten parent carries.
 func stackOldBase(ctx context.Context, dir render.Dir, tr vcs.Trunk, pin string, state gtState, self *stackRebaseBranch, byName map[string]*stackRebaseBranch) (string, error) {
 	s := state[self.Name]
 	onTrunk, err := stackMergeBase(ctx, dir, self.Head, pin)
@@ -2361,7 +2380,11 @@ func stackOldBase(ctx context.Context, dir render.Dir, tr vcs.Trunk, pin string,
 	}
 	parent := s.Parents[0].Ref
 	if parent == tr.Name() {
-		return stackPastFork(ctx, dir, s.Parents[0].SHA, onTrunk, self.Head)
+		fork, err := stackPastFork(ctx, dir, s.Parents[0].SHA, onTrunk, self.Head)
+		if err != nil {
+			return "", err
+		}
+		return stackPastChain(ctx, dir, pin, self, byName, fork)
 	}
 	candidates := []string{state[parent].Head, s.Parents[0].SHA}
 	if head := byName[parent]; head != nil {
@@ -2409,14 +2432,74 @@ func stackOldBase(ctx context.Context, dir render.Dir, tr vcs.Trunk, pin string,
 			}
 		}
 	}
-	if self.Parent == parent {
-		return best, nil
+	if self.Parent != parent {
+		behind, err := gitIsAncestor(ctx, dir, stackRebasePrefix, best, onTrunk)
+		if err != nil {
+			return "", err
+		}
+		if behind {
+			best = onTrunk
+		}
 	}
-	behind, err := gitIsAncestor(ctx, dir, stackRebasePrefix, best, onTrunk)
-	if err != nil || behind {
-		return onTrunk, err
+	return stackPastChain(ctx, dir, pin, self, byName, best)
+}
+
+func stackPastChain(ctx context.Context, dir render.Dir, pin string, self *stackRebaseBranch, byName map[string]*stackRebaseBranch, base string) (string, error) {
+	var heads, parentHeads []string
+	for name := self.Parent; byName[name] != nil; name = byName[name].Parent {
+		below := byName[name]
+		held := []string{below.Head, below.Local, below.Remote}
+		if below.Publication != nil {
+			held = append(held, below.Publication.Head)
+		}
+		if name == self.Parent {
+			parentHeads = held
+		}
+		heads = append(heads, held...)
 	}
-	return best, nil
+	heads = slices.DeleteFunc(slices.Compact(slices.Sorted(slices.Values(heads))), func(head string) bool { return head == "" })
+	if len(heads) == 0 {
+		return base, nil
+	}
+	furthest, err := stackFurthest(ctx, dir, self.Head, append([]string{base}, heads...))
+	if err != nil || slices.Contains(parentHeads, furthest) {
+		return furthest, err
+	}
+	if furthest == base {
+		inTrunk, err := gitIsAncestor(ctx, dir, stackRebasePrefix, base, pin)
+		if err != nil || !inTrunk {
+			return base, err
+		}
+	}
+	base = furthest
+	span := base + ".." + self.Head
+	merges, err := render.RunCLI(ctx, dir, "git", []string{"rev-list", "--merges", span})
+	if err != nil {
+		return "", fmt.Errorf("%s: git rev-list --merges %s: %w", stackRebasePrefix, span, err)
+	}
+	if strings.TrimSpace(merges) != "" {
+		return base, nil
+	}
+	ours, err := stackPatches(ctx, dir, span)
+	if err != nil || len(ours) == 0 {
+		return base, err
+	}
+	theirs, err := stackPatches(ctx, dir, append(heads, "^"+pin)...)
+	if err != nil {
+		return "", err
+	}
+	patches, authored := map[string]bool{}, map[string]bool{}
+	for _, c := range theirs {
+		patches[c.patch], authored[c.authored] = true, true
+	}
+	delete(patches, "")
+	for _, c := range ours {
+		if !patches[c.patch] && !authored[c.authored] {
+			break
+		}
+		base = c.sha
+	}
+	return base, nil
 }
 
 // stackFurthest is the candidate head contains that every other contained
