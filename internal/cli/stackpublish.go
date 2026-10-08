@@ -523,6 +523,9 @@ func stackMovePublishedSources(ctx context.Context, l lane, commonDir string, ru
 	tx.WriteString("start\n")
 	for i := range run.Branches {
 		b := &run.Branches[i]
+		if b.Landed == "" && b.Held == "" {
+			reparent[b.Name] = b.Parent
+		}
 		if !b.Moved {
 			continue
 		}
@@ -553,7 +556,6 @@ func stackMovePublishedSources(ctx context.Context, l lane, commonDir string, ru
 		moved = append(moved, b.Name)
 		moves = append(moves, move)
 		revisions[b.Name] = b.NewBase
-		reparent[b.Name] = b.Parent
 	}
 	if len(moved) > 0 {
 		if err := stackCheckPendingHolders(ctx, holders, pending); err != nil {
@@ -569,9 +571,9 @@ func stackMovePublishedSources(ctx context.Context, l lane, commonDir string, ru
 		if _, err := gtRestackAlign(ctx, stackRebasePrefix, holders, moves); err != nil {
 			return "", err
 		}
-		if err := errors.Join(gtmeta.Reparent(ctx, commonDir, reparent), gtmeta.RecordRestacked(ctx, commonDir, revisions)); err != nil {
-			return "", fmt.Errorf("%s: the sources are on their published heads, but recording them in gt failed — fix the cause and run ccx vcs stack continue: %w", stackRebasePrefix, err)
-		}
+	}
+	if err := errors.Join(gtmeta.Reparent(ctx, commonDir, reparent), gtmeta.RecordRestacked(ctx, commonDir, revisions)); err != nil {
+		return "", fmt.Errorf("%s: the stack is published, but recording its parents in gt failed — fix the cause and run ccx vcs stack continue: %w", stackRebasePrefix, err)
 	}
 	var segments []string
 	if len(moved) > 0 {
@@ -651,15 +653,11 @@ func stackSourceStays(ctx context.Context, l lane, b stackRebaseBranch, at strin
 		return "", nil
 	}
 	if !b.Resolved {
-		source, err := stackPatchSeries(ctx, l.dir(), cmp.Or(b.SourceBase, b.OldBase), b.Local)
+		replays, err := stackPublishedReplaysSource(ctx, l.dir(), b)
 		if err != nil {
 			return "", err
 		}
-		published, err := stackPatchSeries(ctx, l.dir(), b.NewBase, b.NewHead)
-		if err != nil {
-			return "", err
-		}
-		if source == nil || published == nil || !slices.Equal(source, published) {
+		if !replays {
 			return "its published head carries other changes", nil
 		}
 	}
@@ -678,6 +676,52 @@ func stackSourceStays(ctx context.Context, l lane, b stackRebaseBranch, at strin
 		return "the published head tracks " + strings.Join(clobbered, ", ") + ", which " + holder + " ignores", nil
 	}
 	return "", nil
+}
+
+func stackPublishedReplaysSource(ctx context.Context, dir render.Dir, b stackRebaseBranch) (bool, error) {
+	sourceBase := cmp.Or(b.SourceBase, b.OldBase)
+	source, err := stackPatchSeries(ctx, dir, sourceBase, b.Local)
+	if err != nil {
+		return false, err
+	}
+	published, err := stackPatchSeries(ctx, dir, b.NewBase, b.NewHead)
+	if err != nil {
+		return false, err
+	}
+	if source == nil || published == nil {
+		return false, nil
+	}
+	if slices.Equal(source, published) {
+		return true, nil
+	}
+	unmatched := source
+	for _, commit := range published {
+		_, message, _ := strings.Cut(commit, "\n")
+		i := slices.IndexFunc(unmatched, func(c string) bool {
+			_, m, _ := strings.Cut(c, "\n")
+			return m == message
+		})
+		if i < 0 {
+			return false, nil
+		}
+		unmatched = unmatched[i+1:]
+	}
+	merged, code, stderr, err := render.RunCLIExitCode(ctx, dir, "git", []string{"--attr-source=" + b.NewBase, "merge-tree", "--write-tree", "--merge-base=" + sourceBase, b.NewBase, b.Local})
+	if err != nil {
+		return false, fmt.Errorf("%s: git merge-tree %.12s %.12s: %w", stackRebasePrefix, b.NewBase, b.Local, err)
+	}
+	switch code {
+	case 0:
+	case 1:
+		return false, nil
+	default:
+		return false, fmt.Errorf("%s: git merge-tree %.12s %.12s: exit %d: %s", stackRebasePrefix, b.NewBase, b.Local, code, strings.TrimSpace(stderr))
+	}
+	tree, err := render.RunCLI(ctx, dir, "git", []string{"rev-parse", b.NewHead + "^{tree}"})
+	if err != nil {
+		return false, fmt.Errorf("%s: git rev-parse %.12s^{tree}: %w", stackRebasePrefix, b.NewHead, err)
+	}
+	return strings.TrimSpace(strings.SplitN(merged, "\n", 2)[0]) == strings.TrimSpace(tree), nil
 }
 
 func stackLocalOnlyMoves(run *stackRebaseRun) []restackMove {

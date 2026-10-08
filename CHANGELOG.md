@@ -62,6 +62,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A published rebase moves a held branch whose replay dropped what its new
+  base already added.** After publishing, `stack rebase` keeps a branch
+  another clean worktree holds at its old local head unless its published
+  head carries the same patches. A replay that drops a hunk, or a whole
+  commit, because the new parent already adds the same lines changes those
+  patches, so a `--linearize` run left three clean worktrees behind with
+  "its published head carries other changes". The branch now also moves
+  when its published commits are its own, less any the replay emptied, and
+  its published tree is what merging its local commits onto the new base
+  makes.
+
+- **A published rebase records every branch's new parent in gt.** The gt
+  parent was rewritten only for branches whose local ref moved onto its
+  published head. A branch kept at its local head kept its old gt parent
+  while its pull request sat on the new one, and a `--linearize` run left
+  two branches recorded on `dev`. Every branch the run publishes now gets
+  its parent recorded; a kept branch reads as needing the restack it needs.
+
 - **`stack rebase` leaves a pull request's draft state alone.** Its
   Graphite submit sent `draft: false` on every update, the same as `ship` and
   `stack submit`, so a plain `ccx vcs stack rebase` marked a held draft pull

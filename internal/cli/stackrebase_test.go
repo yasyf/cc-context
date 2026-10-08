@@ -465,6 +465,65 @@ func TestStackRebaseMovesASourceWhoseReplayShiftedItsContext(t *testing.T) {
 	}
 }
 
+func TestStackRebaseMovesAHeldSourceWhoseReplayDroppedWhatTrunkAdded(t *testing.T) {
+	t.Parallel()
+	f := shipGTRepo(t)
+	shipGTStack(t, f, "base")
+	writeShipFile(t, f.Dir, "extra.txt", "extra\n")
+	writeShipFile(t, f.Dir, "partial.txt", "partial\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "extra.txt", "partial.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "extra and partial")
+	shipGTStack(t, f, "feature")
+	stubOpenPRs(t, f, nil, "base", "feature")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "feature")
+	held := f.WorktreePath("held")
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", held, "base")
+	stackAdvanceTrunk(t, f, "base.txt", "base\n")
+	stackAdvanceTrunk(t, f, "partial.txt", "partial\n")
+
+	out, _, err := runStackCmd(t, f, "rebase")
+	if err != nil {
+		t.Fatalf("stack rebase: %v", err)
+	}
+	if !strings.Contains(out, "moved base, feature onto the published heads") || strings.Contains(out, "kept local") {
+		t.Errorf("output = %q, want base and feature moved onto their published heads", out)
+	}
+	for _, branch := range []string{"base", "feature"} {
+		if local, remote := gitAt(t, f.Env(), f.Dir, "rev-parse", branch), gitAt(t, f.Env(), f.RemoteDir, "rev-parse", branch); local != remote {
+			t.Errorf("local %s = %.12s, want its published head %.12s", branch, local, remote)
+		}
+	}
+	if status := gitAt(t, f.Env(), held, "status", "--porcelain"); status != "" {
+		t.Errorf("held status = %q, want it aligned with base's published head", status)
+	}
+}
+
+func TestStackRebaseLinearizeRecordsTheParentOfASourceItKeeps(t *testing.T) {
+	t.Parallel()
+	f := stackRebaseRepo(t, "a")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
+	shipGTStack(t, f, "b")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
+	stubOpenPRs(t, f, nil, "a", "b")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "a", "b")
+	held := f.WorktreePath("held")
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", held, "b")
+	if err := os.WriteFile(filepath.Join(held, "wip.txt"), []byte("wip\n"), 0o600); err != nil {
+		t.Fatalf("write wip.txt: %v", err)
+	}
+
+	out, _, err := runStackCmd(t, f, "rebase", "--linearize", "a,b")
+	if err != nil {
+		t.Fatalf("stack rebase: %v", err)
+	}
+	if !strings.Contains(out, "kept local b at ") {
+		t.Errorf("output = %q, want b kept local", out)
+	}
+	if got := stackParent(t, f, "b"); got != "a" {
+		t.Errorf("b's gt parent = %s, want a", got)
+	}
+}
+
 func TestStackRebaseLeavesASourceADirtyWorktreeHolds(t *testing.T) {
 	t.Parallel()
 	f := stackRebaseRepo(t, "base", "feature")
