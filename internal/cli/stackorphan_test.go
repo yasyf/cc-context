@@ -69,6 +69,7 @@ func TestShipKeepsABranchOnTheSiblingItWasPublishedOnto(t *testing.T) {
 	if err := os.Remove(filepath.Join(f.Dir, "scratch.txt")); err != nil {
 		t.Fatal(err)
 	}
+	mustRun(t, f.Env(), f.Dir, "gt", "track", "z", "--parent", "p", "--no-interactive")
 	if parent := dropGTParent(t, f, "z"); parent != "p" {
 		t.Fatalf("fixture: gt parent of z = %s, want p, with the publication alone naming a", parent)
 	}

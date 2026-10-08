@@ -1649,6 +1649,7 @@ func TestStackSubmitTakesAPublishedParentAnotherWorkingCopyOfThisLaneHolds(t *te
 	if err := os.Remove(filepath.Join(z, "scratch.txt")); err != nil {
 		t.Fatal(err)
 	}
+	mustRun(t, f.Env(), f.Dir, "gt", "track", "z", "--parent", "p", "--no-interactive")
 	if got := dropGTParent(t, f, "z"); got != "p" {
 		t.Fatalf("gt parent of z = %s, want the stale p", got)
 	}

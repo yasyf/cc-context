@@ -23,7 +23,6 @@ func TestStackSubmitDropsCommitsTrunkAlreadyHolds(t *testing.T) {
 	if err := gtmeta.RecordRestacked(t.Context(), commonDir, map[string]string{"base": gitAt(t, f.Env(), f.Dir, "rev-parse", "refs/heads/main")}); err != nil {
 		t.Fatalf("record base as restacked: %v", err)
 	}
-	source := shipHead(t, f)
 	shipResetLog(t, f)
 
 	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
@@ -36,8 +35,8 @@ func TestStackSubmitDropsCommitsTrunkAlreadyHolds(t *testing.T) {
 	if got := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", "origin/main.."+published); got != "1" {
 		t.Fatalf("submitted %s commits, want only own work", got)
 	}
-	if local := gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); local != source {
-		t.Fatal("publication moved source branch")
+	if local := gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); local != published {
+		t.Fatalf("local base = %.12s, want its published head %.12s, which drops only the commit trunk holds", local, published)
 	}
 }
 
