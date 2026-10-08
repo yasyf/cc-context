@@ -5176,7 +5176,7 @@ func TestShipGTHunkScoped(t *testing.T) {
 	}
 	invocations := shipGTInvocations(t, f)
 	blob := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD:f.txt")
-	if want := shipCommitted(t, f, vcs.Git) + " · branch feature · not pushed"; got != want {
+	if want := "hooks hunk-skip · " + shipCommitted(t, f, vcs.Git) + " · branch feature · not pushed"; got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
 	assertInvocations(t, invocations, [][]string{
