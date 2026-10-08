@@ -75,19 +75,19 @@ func prFromListGolden(t *testing.T, scenario string) prState {
 // shipPRPushed is the git lane's plan, commit, and push, the argv every pull
 // request test shares before its own gh calls. The remote-tracking ref for a
 // branch never pushed does not resolve, so the ancestry check behind it never
-// runs, and a branch bound for a pull request runs no hooks.
+// runs.
 func shipPRPushed(branch string) [][]string {
 	return [][]string{
 		{"git", "branch", "--show-current"},
 		gitTrunkArgv,
 		{"git", "add", "-A", "--verbose"},
-		{"git", "commit", "-m", "fix: frobnicate", "--no-verify"},
+		{"git", "commit", "-m", "fix: frobnicate"},
 		{"git", "branch", "--show-current"},
 		{"git", "log", "-1", "--format=%h%x00%s"},
 		{"git", "config", "--get", "branch." + branch + ".remote"},
 		{"git", "ls-remote", "origin", "refs/heads/" + branch, "refs/heads/main"},
 		gitForEachRefStdinArgv,
-		{"git", "push", "--no-follow-tags", "--quiet", "--no-thin", "--no-verify", "origin", branch},
+		{"git", "push", "--no-follow-tags", "--quiet", "--no-thin", "origin", branch},
 	}
 }
 
@@ -663,7 +663,7 @@ func TestShipPRGTBothFlags(t *testing.T) {
 		gtRefsArgv(),
 		{"git", "add", "-A", "--verbose"},
 		{"git", "diff", "--cached", "--quiet"},
-		{"git", "commit", "-m", "fix: frobnicate", "--no-verify"},
+		{"git", "commit", "-m", "fix: frobnicate"},
 		gtCommonDirArgv,
 		gtRefsArgv(),
 		{"git", "branch", "--show-current"},

@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`ccx vcs ship` runs the repository's hooks on every commit by default.**
+  Ship used to skip the prek suite, and git's own hooks on the commit and the
+  push, wherever the commit was bound for a pull request, leaving the check to
+  CI. A formatter hook that never ran locally then failed the pull request's
+  CI after the push. Ship now runs the hooks wherever the commit lands, a pull
+  request's branch included. `--no-verify` and `--yolo` still skip them, and
+  `--verify` now states the default.
+
 ### Added
 
 - **`ccx vcs gh -- <gh args>` runs a gh read on the GitHub App's quota.** It

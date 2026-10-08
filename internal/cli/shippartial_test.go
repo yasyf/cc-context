@@ -47,7 +47,7 @@ func shipRequireNoRemoteDefault(t *testing.T, f *vcstest.Fixture, dir string) {
 	}
 }
 
-func TestShipPartialCloneHooksFollowThePRRoute(t *testing.T) {
+func TestShipPartialCloneRunsHooksOnEveryRoute(t *testing.T) {
 	const title = "fix: frobnicate"
 	pr := []string{"--parent", "main", "--pr-title", title}
 	for _, tt := range []struct {
@@ -57,8 +57,8 @@ func TestShipPartialCloneHooksFollowThePRRoute(t *testing.T) {
 		hooks    bool
 		prs      int
 	}{
-		{name: "existing branch onto an explicit base", args: pr, prs: 1},
-		{name: "detached cut onto an explicit base", detached: true, args: append([]string{"--new-branch=feature-pr"}, pr...), prs: 1},
+		{name: "existing branch onto an explicit base", args: pr, hooks: true, prs: 1},
+		{name: "detached cut onto an explicit base", detached: true, args: append([]string{"--new-branch=feature-pr"}, pr...), hooks: true, prs: 1},
 		{name: "detached cut under --verify", detached: true, args: append([]string{"--new-branch=feature-pr", "--verify"}, pr...), hooks: true, prs: 1},
 		{name: "existing branch under --verify", args: append([]string{"--verify"}, pr...), hooks: true, prs: 1},
 		{name: "existing branch under --no-verify=false", args: append([]string{"--no-verify=false"}, pr...), hooks: true, prs: 1},

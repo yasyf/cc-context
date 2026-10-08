@@ -516,11 +516,10 @@ func TestShipHooksNoVerify(t *testing.T) {
 	}
 }
 
-// TestShipVerifyDefault pins where the repository's hooks run: the commit that
-// lands straight on trunk, and nothing else, since every other position is bound
-// for a pull request whose CI is the check. Whether prek ran is the assertion —
-// telling the commit verb to skip its own run saves nothing when ship already
-// paid for the same suite.
+// TestShipVerifyDefault pins that the repository's hooks run wherever the commit
+// lands, unless --no-verify or --yolo opts out. Whether prek ran is the
+// assertion — telling the commit verb to skip its own run saves nothing when ship
+// already paid for the same suite.
 func TestShipVerifyDefault(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -531,9 +530,10 @@ func TestShipVerifyDefault(t *testing.T) {
 		want     bool
 	}{
 		{name: "trunk append", want: true},
-		{name: "feature append", branch: "feature"},
-		{name: "new branch off trunk", args: []string{"--new-branch=feature"}},
+		{name: "feature append", branch: "feature", want: true},
+		{name: "new branch off trunk", args: []string{"--new-branch=feature"}, want: true},
 		{name: "feature append under --verify", branch: "feature", args: []string{"--verify"}, want: true},
+		{name: "feature append under --no-verify", branch: "feature", args: []string{"--no-verify"}},
 		{name: "trunk append under --no-verify", args: []string{"--no-verify"}},
 		{name: "trunk append under --yolo", args: []string{"--yolo"}},
 		{name: "no trunk to name", noRemote: true, want: true},
@@ -1757,7 +1757,7 @@ func TestShipGitRebase(t *testing.T) {
 		},
 		{
 			// ls-remote reports no branch nobody has pushed, so the rebase is
-			// skipped; a non-trunk branch runs no hooks either.
+			// skipped.
 			name:   "missing remote branch skips rebase",
 			opts:   []vcstest.Opt{vcstest.Branch("feature")},
 			branch: "feature",
@@ -1766,13 +1766,13 @@ func TestShipGitRebase(t *testing.T) {
 				{"git", "branch", "--show-current"},
 				gitTrunkArgv,
 				{"git", "add", "-A", "--verbose"},
-				{"git", "commit", "-m", "fix: frobnicate", "--no-verify"},
+				{"git", "commit", "-m", "fix: frobnicate"},
 				{"git", "branch", "--show-current"},
 				{"git", "log", "-1", "--format=%h%x00%s"},
 				{"git", "config", "--get", "branch.feature.remote"},
 				{"git", "ls-remote", "origin", "refs/heads/feature", "refs/heads/main"},
 				gitForEachRefStdinArgv,
-				{"git", "push", "--no-follow-tags", "--quiet", "--no-thin", "--no-verify", "origin", "feature"},
+				{"git", "push", "--no-follow-tags", "--quiet", "--no-thin", "origin", "feature"},
 			},
 		},
 		{
@@ -4050,7 +4050,7 @@ func TestShipGTPrecedenceOverJJ(t *testing.T) {
 			gtRealRefsArgv(t, f),
 			{"git", "add", "-A", "--verbose"},
 			{"git", "diff", "--cached", "--quiet"},
-			{"git", "commit", "-m", "fix: frobnicate", "--no-verify"},
+			{"git", "commit", "-m", "fix: frobnicate"},
 			gtCommonDirArgv,
 			gtRealRefsArgv(t, f),
 			{"git", "branch", "--show-current"},
@@ -4153,7 +4153,7 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 				gtRefsArgv(),
 				{"git", "add", "-A", "--verbose"},
 				{"git", "diff", "--cached", "--quiet"},
-				{"git", "commit", "-m", "fix: frobnicate", "--no-verify"},
+				{"git", "commit", "-m", "fix: frobnicate"},
 				gtCommonDirArgv,
 				gtRefsArgv(),
 				{"git", "branch", "--show-current"},
@@ -4201,7 +4201,7 @@ func TestShipGTTrunkStacksBranch(t *testing.T) {
 		gtRefsArgv(),
 		{"git", "add", "-A", "--verbose"},
 		{"git", "diff", "--cached", "--quiet"},
-		{"gt", "create", "fix-frobnicate", "-m", "fix: frobnicate", "--no-ai", "--no-interactive", "--no-verify"},
+		{"gt", "create", "fix-frobnicate", "-m", "fix: frobnicate", "--no-ai", "--no-interactive"},
 		{"git", "branch", "--show-current"},
 		gtRefsArgv(),
 		{"git", "merge-base", "--is-ancestor", gtRemoteTrunk("main"), vcstest.GraphiteLeafSHA},
@@ -4486,12 +4486,12 @@ func TestShipGTCreateNamesExplicitly(t *testing.T) {
 		args []string
 		want []string
 	}{
-		{"explicit name", []string{"--new-branch=newbranch"}, []string{"gt", "create", "newbranch", "-m", "fix: frobnicate", "--no-ai", "--no-interactive", "--no-verify"}},
-		{"bare new-branch derives from the subject", []string{"--new-branch"}, []string{"gt", "create", "fix-frobnicate", "-m", "fix: frobnicate", "--no-ai", "--no-interactive", "--no-verify"}},
-		{"the deprecated --create alias still works", []string{"--create=newbranch"}, []string{"gt", "create", "newbranch", "-m", "fix: frobnicate", "--no-ai", "--no-interactive", "--no-verify"}},
-		{"space-separated name", []string{"--new-branch", "newbranch"}, []string{"gt", "create", "newbranch", "-m", "fix: frobnicate", "--no-ai", "--no-interactive", "--no-verify"}},
-		{"space-separated name before another flag", []string{"--new-branch", "newbranch", "--parent", "base"}, []string{"gt", "create", "newbranch", "--onto", "base", "-m", "fix: frobnicate", "--no-ai", "--no-interactive", "--no-verify"}},
-		{"--parent stacks the branch onto it", []string{"--new-branch=newbranch", "--parent", "base"}, []string{"gt", "create", "newbranch", "--onto", "base", "-m", "fix: frobnicate", "--no-ai", "--no-interactive", "--no-verify"}},
+		{"explicit name", []string{"--new-branch=newbranch"}, []string{"gt", "create", "newbranch", "-m", "fix: frobnicate", "--no-ai", "--no-interactive"}},
+		{"bare new-branch derives from the subject", []string{"--new-branch"}, []string{"gt", "create", "fix-frobnicate", "-m", "fix: frobnicate", "--no-ai", "--no-interactive"}},
+		{"the deprecated --create alias still works", []string{"--create=newbranch"}, []string{"gt", "create", "newbranch", "-m", "fix: frobnicate", "--no-ai", "--no-interactive"}},
+		{"space-separated name", []string{"--new-branch", "newbranch"}, []string{"gt", "create", "newbranch", "-m", "fix: frobnicate", "--no-ai", "--no-interactive"}},
+		{"space-separated name before another flag", []string{"--new-branch", "newbranch", "--parent", "base"}, []string{"gt", "create", "newbranch", "--onto", "base", "-m", "fix: frobnicate", "--no-ai", "--no-interactive"}},
+		{"--parent stacks the branch onto it", []string{"--new-branch=newbranch", "--parent", "base"}, []string{"gt", "create", "newbranch", "--onto", "base", "-m", "fix: frobnicate", "--no-ai", "--no-interactive"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -5060,8 +5060,8 @@ func TestShipGTAmend(t *testing.T) {
 		args []string
 		want []string
 	}{
-		{"with message", []string{"--amend", "-m", "fix: frobnicate"}, []string{"git", "commit", "--amend", "-m", "fix: frobnicate", "--no-verify"}},
-		{"without message", []string{"--amend"}, []string{"git", "commit", "--amend", "--no-edit", "--no-verify"}},
+		{"with message", []string{"--amend", "-m", "fix: frobnicate"}, []string{"git", "commit", "--amend", "-m", "fix: frobnicate"}},
+		{"without message", []string{"--amend"}, []string{"git", "commit", "--amend", "--no-edit"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -5126,7 +5126,7 @@ func TestShipGTPathScoped(t *testing.T) {
 		gtRealRefsArgv(t, f),
 		{"git", "add", "-A", "--", "src/a.go", "docs"},
 		{"git", "diff", "--cached", "--quiet", "--", "src/a.go", "docs"},
-		{"git", "commit", "-m", "fix: frobnicate", "--no-verify"},
+		{"git", "commit", "-m", "fix: frobnicate"},
 		gtCommonDirArgv,
 		gtRealRefsArgv(t, f),
 		{"git", "branch", "--show-current"},
@@ -5194,7 +5194,7 @@ func TestShipGTHunkScoped(t *testing.T) {
 		{"git", "ls-tree", "--full-tree", "-z", "--end-of-options", "HEAD", "--", "f.txt"},
 		{"git", "hash-object", "-w", "--stdin"},
 		{"git", "update-index", "--add", "--cacheinfo", "100644," + blob + ",f.txt"},
-		{"git", "commit", "-m", "fix: frobnicate", "--no-verify"},
+		{"git", "commit", "-m", "fix: frobnicate"},
 		gtCommonDirArgv,
 		gtRealRefsArgv(t, f),
 		{"git", "restore", "--staged", "--", "f.txt"},
@@ -5717,7 +5717,7 @@ func TestShipGTRefusals(t *testing.T) {
 			gtRealRefsArgv(t, f),
 			{"git", "add", "-A", "--verbose"},
 			{"git", "diff", "--cached", "--quiet"},
-			{"git", "commit", "-m", "fix: frobnicate", "--no-verify"},
+			{"git", "commit", "-m", "fix: frobnicate"},
 			gtCommonDirArgv,
 			gtRealRefsArgv(t, f),
 			{"git", "branch", "--show-current"},
@@ -6116,7 +6116,7 @@ func TestShipGTSubmitsOneEntryPerPost(t *testing.T) {
 		"--force-with-lease", "--force-with-lease", "--force-with-lease",
 		"--progress",
 		"beadfeed:refs/heads/base", "cafebabe:refs/heads/feature", vcstest.GraphiteLeafSHA + ":refs/heads/feature2",
-		"--no-verify", "--atomic",
+		"--atomic",
 	}}
 	if !reflect.DeepEqual(pushes, want) {
 		t.Errorf("pushes = %v, want the one atomic multi-ref push %v", pushes, want)
@@ -6182,8 +6182,8 @@ func TestShipGTSubmitCarriesTheHookDecision(t *testing.T) {
 		args []string
 		want bool
 	}{
-		{name: "a stacked branch skips them", want: true},
-		{name: "--verify keeps them", args: []string{"--verify"}},
+		{name: "a stacked branch runs them"},
+		{name: "--no-verify skips them", args: []string{"--no-verify"}, want: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -6403,7 +6403,7 @@ func TestShipGTSessionTrailer(t *testing.T) {
 			commit = inv
 		}
 	}
-	want := []string{"git", "commit", "-m", "fix: frobnicate\n\nClaude-Session-Id: some-uuid", "--no-verify"}
+	want := []string{"git", "commit", "-m", "fix: frobnicate\n\nClaude-Session-Id: some-uuid"}
 	if !reflect.DeepEqual(commit, want) {
 		t.Errorf("commit argv = %v, want %v", commit, want)
 	}
@@ -7528,7 +7528,7 @@ func TestShipGitAmendAfterALocalRebaseLeasesTheLastPush(t *testing.T) {
 	if got := gitAt(t, f.Env(), f.Dir, "--git-dir="+f.RemoteDir, "rev-parse", "refs/heads/feature"); got != head {
 		t.Errorf("remote feature = %s, want the amended head %s", got, head)
 	}
-	lease := []string{"git", "push", "--no-follow-tags", "--quiet", "--no-thin", "--no-verify", "origin", "--force-with-lease=feature:" + pushed, "feature"}
+	lease := []string{"git", "push", "--no-follow-tags", "--quiet", "--no-thin", "origin", "--force-with-lease=feature:" + pushed, "feature"}
 	if !slices.ContainsFunc(vcstest.Invocations(t, f.ArgvLog), func(inv []string) bool { return slices.Equal(inv, lease) }) {
 		t.Errorf("invocations lack %v, the lease on the last push", lease)
 	}
