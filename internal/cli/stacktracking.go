@@ -13,6 +13,8 @@ import (
 	"github.com/yasyf/cc-context/internal/render"
 )
 
+const stackStrandedRemedy = "close and reopen each pull request on GitHub so Graphite rebuilds its stack record, then rerun ccx vcs stack submit"
+
 var (
 	stackTrackingWait  = 20 * time.Second
 	stackTrackingRetry = 2 * time.Second
@@ -23,6 +25,7 @@ type stackUntracked struct {
 	PR     int
 	Parent string
 	Stale  string
+	Closed []int
 }
 
 func (u stackUntracked) String() string {
@@ -30,8 +33,17 @@ func (u stackUntracked) String() string {
 	if u.Stale != "" {
 		fields = append(fields, "its server-side parent is still "+u.Stale)
 	}
+	if len(u.Closed) > 0 {
+		closed := make([]string, len(u.Closed))
+		for i, n := range u.Closed {
+			closed[i] = fmt.Sprintf("#%d", n)
+		}
+		fields = append(fields, "its server-side stack still holds "+strings.Join(closed, ", ")+", which already landed or closed")
+	}
 	return strings.Join(fields, shipSep)
 }
+
+func (u stackUntracked) repairable() bool { return len(u.Closed) == 0 }
 
 type stackTracking struct {
 	untracked []stackUntracked
@@ -50,17 +62,25 @@ func recordStackTracking(ctx context.Context, untracked []stackUntracked, err er
 	}
 }
 
-func (t *stackTracking) branches() []string {
-	names := make([]string, len(t.untracked))
-	for i, u := range t.untracked {
+func (t *stackTracking) repairable() []stackUntracked {
+	return slices.DeleteFunc(slices.Clone(t.untracked), func(u stackUntracked) bool { return !u.repairable() })
+}
+
+func (t *stackTracking) stranded() []stackUntracked {
+	return slices.DeleteFunc(slices.Clone(t.untracked), stackUntracked.repairable)
+}
+
+func stackUntrackedBranches(untracked []stackUntracked) []string {
+	names := make([]string, len(untracked))
+	for i, u := range untracked {
 		names[i] = u.Branch
 	}
 	return names
 }
 
-func (t *stackTracking) lines() string {
-	lines := make([]string, len(t.untracked))
-	for i, u := range t.untracked {
+func stackUntrackedLines(untracked []stackUntracked) string {
+	lines := make([]string, len(untracked))
+	for i, u := range untracked {
 		lines[i] = u.String()
 	}
 	return strings.Join(lines, "\n")
@@ -70,16 +90,22 @@ func (t *stackTracking) unread() error {
 	return fmt.Errorf("%s: pushed, but Graphite's tracking could not be read, so no pull request is reported mergeable: %w", stackRebasePrefix, t.err)
 }
 
-func (t *stackTracking) stuck() error {
-	return fmt.Errorf("%s: Graphite still tracks no stack for these pull requests after republishing them with fresh heads, so the merge queue cannot enqueue them:\n%s", stackRebasePrefix, t.lines())
+func stackTrackingStuck(untracked []stackUntracked) error {
+	return fmt.Errorf("%s: Graphite still tracks no stack for these pull requests after republishing them with fresh heads, so the merge queue cannot enqueue them:\n%s", stackRebasePrefix, stackUntrackedLines(untracked))
+}
+
+func stackTrackingStranded(stranded []stackUntracked) error {
+	return fmt.Errorf("%s: pushed, but Graphite tracks no stack for these pull requests because its stack record still holds pull requests that already landed or closed, so the merge queue cannot enqueue them; a fresh head does not clear that record, so ccx does not republish them — %s:\n%s", stackRebasePrefix, stackStrandedRemedy, stackUntrackedLines(stranded))
 }
 
 func (t *stackTracking) settled() error {
-	switch {
+	switch stranded := t.stranded(); {
 	case t.err != nil:
 		return t.unread()
+	case len(stranded) > 0:
+		return stackTrackingStranded(stranded)
 	case len(t.untracked) > 0:
-		return fmt.Errorf("%s: pushed, but Graphite tracks no stack for these pull requests, so the merge queue cannot enqueue them — ccx vcs stack submit republishes them with fresh heads:\n%s", stackRebasePrefix, t.lines())
+		return fmt.Errorf("%s: pushed, but Graphite tracks no stack for these pull requests, so the merge queue cannot enqueue them — ccx vcs stack submit republishes them with fresh heads:\n%s", stackRebasePrefix, stackUntrackedLines(t.untracked))
 	}
 	return nil
 }
@@ -114,24 +140,37 @@ func stackReadTracking(ctx context.Context, l lane, run *stackRebaseRun, live []
 	if err != nil || len(missing) == 0 {
 		return nil, err
 	}
-	infos, err := client.PullRequestInfo(ctx, gtapi.PullRequestInfoRequest{RepoOwner: owner, RepoName: repo, PRNumbers: missing, Callsite: "ccx"})
-	if err != nil {
-		return nil, err
-	}
-	recorded := map[int]string{}
-	for _, info := range infos {
-		recorded[info.PRNumber] = info.Newest().BaseName
-	}
 	untracked := make([]stackUntracked, 0, len(missing))
 	for _, number := range missing {
-		u := stackUntracked{Branch: branchOf[number], PR: number}
-		u.Parent = run.branch(u.Branch).Parent
-		if base := recorded[number]; base != u.Parent {
-			u.Stale = base
+		u, err := stackReadUntracked(ctx, client, owner, repo, number, branchOf[number], run)
+		if err != nil {
+			return nil, err
 		}
 		untracked = append(untracked, u)
 	}
 	return untracked, nil
+}
+
+func stackReadUntracked(ctx context.Context, client *gtapi.Client, owner, repo string, number int, branch string, run *stackRebaseRun) (stackUntracked, error) {
+	infos, err := client.PullRequestInfo(ctx, gtapi.PullRequestInfoRequest{RepoOwner: owner, RepoName: repo, PRNumbers: []int{number}, Callsite: "ccx"})
+	if err != nil {
+		return stackUntracked{}, err
+	}
+	u := stackUntracked{Branch: branch, PR: number, Parent: run.branch(branch).Parent}
+	var recorded string
+	for _, info := range infos {
+		switch {
+		case info.PRNumber == number:
+			recorded = info.Newest().BaseName
+		case info.State != gtapi.PROpen:
+			u.Closed = append(u.Closed, info.PRNumber)
+		}
+	}
+	if recorded != u.Parent {
+		u.Stale = recorded
+	}
+	slices.Sort(u.Closed)
+	return u, nil
 }
 
 func stackAwaitTracking(ctx context.Context, client *gtapi.Client, owner, repo string, numbers []int) ([]int, error) {

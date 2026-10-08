@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`stack submit` stops republishing a pull request a fresh head cannot
+  repair.** When a pull request's old parent landed through the merge queue,
+  Graphite's stack record can keep the landed pull requests beside it after
+  its newest version records the right base, and `mergeability-status` then
+  holds no row for it. Each `stack submit` republished it with a fresh head,
+  restarting CI, and still refused naming only the parent. The
+  untracked line now names the landed or closed pull requests Graphite still
+  stacks it with, `stack submit` skips the republish for it, and the refusal
+  says how to clear the record by hand.
+
 - **`--linearize` and `--parent` replay only each branch's own commits.** A
   branch gt did not track, or tracked on trunk, was recorded from its merge
   base with trunk, so a branch cut from a sibling or from an older head of its
