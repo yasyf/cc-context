@@ -196,8 +196,9 @@ requests:
 #32336 yasyf/api-sandsql-team-storage · parent dev · Graphite tracks no stack for it · its server-side stack still holds #32379, #32405, which already landed or closed
 ```
 
-To clear the record, close and reopen each pull request on GitHub so
-Graphite rebuilds it, then rerun `ccx vcs stack submit`. `stack rebase` and
+Closing and reopening the pull request on GitHub does not clear the record
+either; on #32336, #32363 and #32334 the rows were still missing 17 minutes
+after a close and reopen. `stack rebase` and
 `stack continue` exit non-zero for an untracked pull request without repairing
 it; run `ccx vcs stack submit` to repair.
 

@@ -13,7 +13,7 @@ import (
 	"github.com/yasyf/cc-context/internal/render"
 )
 
-const stackStrandedRemedy = "close and reopen each pull request on GitHub so Graphite rebuilds its stack record, then rerun ccx vcs stack submit"
+const stackStrandedRemedy = "neither a fresh head nor closing and reopening the pull request clears that record, so ccx does not republish them"
 
 var (
 	stackTrackingWait  = 20 * time.Second
@@ -95,7 +95,7 @@ func stackTrackingStuck(untracked []stackUntracked) error {
 }
 
 func stackTrackingStranded(stranded []stackUntracked) error {
-	return fmt.Errorf("%s: pushed, but Graphite tracks no stack for these pull requests because its stack record still holds pull requests that already landed or closed, so the merge queue cannot enqueue them; a fresh head does not clear that record, so ccx does not republish them — %s:\n%s", stackRebasePrefix, stackStrandedRemedy, stackUntrackedLines(stranded))
+	return fmt.Errorf("%s: pushed, but Graphite tracks no stack for these pull requests because its stack record still holds pull requests that already landed or closed, so the merge queue cannot enqueue them; %s:\n%s", stackRebasePrefix, stackStrandedRemedy, stackUntrackedLines(stranded))
 }
 
 func (t *stackTracking) settled() error {

@@ -16,7 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   restarting CI, and still refused naming only the parent. The
   untracked line now names the landed or closed pull requests Graphite still
   stacks it with, `stack submit` skips the republish for it, and the refusal
-  says how to clear the record by hand.
+  says that neither a fresh head nor a close and reopen clears the record.
 
 - **`--linearize` and `--parent` replay only each branch's own commits.** A
   branch gt did not track, or tracked on trunk, was recorded from its merge
