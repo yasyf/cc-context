@@ -145,6 +145,7 @@ type stackRebaseRun struct {
 	Git           bool   `json:"git,omitempty"`
 	Origin        string `json:"origin"`
 	Draft         *bool  `json:"draft,omitempty"`
+	KeepDrafts    bool   `json:"keep_drafts,omitempty"`
 	NoVerify      bool   `json:"no_verify,omitempty"`
 	Tip           string `json:"tip,omitempty"`
 	TipOnly       bool   `json:"tip_only,omitempty"`
@@ -218,6 +219,7 @@ type stackRebaseOpts struct {
 	members     []string
 	pinned      []string
 	draft       *bool
+	keepDrafts  bool
 	noVerify    bool
 	deferPush   bool
 	vetted      map[string]string
@@ -1070,7 +1072,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	if err != nil {
 		return nil, fmt.Errorf("stack rebase: %w", err)
 	}
-	run := &stackRebaseRun{Trunk: trunk, Pin: pin, NoPush: o.noPush, Origin: l.checkout.Root, Draft: o.draft, NoVerify: o.noVerify, Tip: o.tip, TipOnly: o.tipOnly, DropCommits: o.dropCommits, StayClean: o.stayClean, Restack: o.restack, AllLanes: o.allLanes, To: o.to, deferPush: o.deferPush, Ship: o.ship, Roots: roots, Pid: os.Getpid(), Started: stackProcStart(os.Getpid()), Host: host, left: left, lanePins: lanePins, adopted: adopted}
+	run := &stackRebaseRun{Trunk: trunk, Pin: pin, NoPush: o.noPush, Origin: l.checkout.Root, Draft: o.draft, KeepDrafts: o.keepDrafts, NoVerify: o.noVerify, Tip: o.tip, TipOnly: o.tipOnly, DropCommits: o.dropCommits, StayClean: o.stayClean, Restack: o.restack, AllLanes: o.allLanes, To: o.to, deferPush: o.deferPush, Ship: o.ship, Roots: roots, Pid: os.Getpid(), Started: stackProcStart(os.Getpid()), Host: host, left: left, lanePins: lanePins, adopted: adopted}
 	own := map[string]bool{}
 	if current != "" && current != trunk {
 		down, err := gtDownstack(stackRebasePrefix, retargeted, current, trunk)
@@ -3879,7 +3881,7 @@ func stackReplanLanded(ctx context.Context, cmd *cobra.Command, l lane, commonDi
 		}
 	}
 	next, err := stackPlan(ctx, l, commonDir, stackRebaseOpts{
-		members: members, pinned: pinned, landed: landed, vetted: vetted, replayed: replayed, draft: run.Draft, noVerify: run.NoVerify, ship: run.Ship,
+		members: members, pinned: pinned, landed: landed, vetted: vetted, replayed: replayed, draft: run.Draft, keepDrafts: run.KeepDrafts, noVerify: run.NoVerify, ship: run.Ship,
 		tip: run.Tip, tipOnly: run.TipOnly, dropCommits: run.DropCommits, stayClean: run.StayClean, restack: run.Restack, allLanes: run.AllLanes, to: run.To,
 	})
 	if err != nil {

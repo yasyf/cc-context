@@ -549,17 +549,26 @@ func gtStuckSuffix(o shipOpts) string {
 // gtSubmit is one submit's parameters, shared by ship and stack submit: which
 // command is speaking, what its refusals append about the work already done,
 // and the two switches gt's own --draft and --no-verify flags map to. A nil
-// draft leaves every pull request's draft state as it stands.
+// draft leaves every pull request's draft state as it stands; keepDrafts
+// applies it to new pull requests alone.
 type gtSubmit struct {
 	prefix      string
 	suffix      string
 	draft       *bool
+	keepDrafts  bool
 	noVerify    bool
 	leases      map[string]string
 	trunkHead   string
 	publication *stackRebaseRun
 	otherLanes  []string
 	unopened    func(branch string) bool
+}
+
+func (s gtSubmit) updateDraft() *bool {
+	if s.keepDrafts {
+		return nil
+	}
+	return s.draft
 }
 
 func gtStuck(prefix, problem, suffix string) string {
@@ -1831,7 +1840,7 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 	if err := gtParkedBases(ctx, l.dir(), plan, known, s.trunkHead); err != nil {
 		return nil, nil, err
 	}
-	submit, unchanged := gtDropUnchanged(plan, last, known, tip, s.draft)
+	submit, unchanged := gtDropUnchanged(plan, last, known, tip, s.updateDraft())
 	posted, unopened := gtHoldUnopened(submit, s.unopened)
 	if err := gtAnnounceUnchanged(errW, s.prefix, unchanged); err != nil {
 		return nil, nil, err
@@ -1910,7 +1919,7 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 	}
 
 	var landed []gtapi.SubmittedPR
-	for i, pr := range gtSubmitPRs(posted, s.draft) {
+	for i, pr := range gtSubmitPRs(posted, s.draft, s.updateDraft()) {
 		out, err := client.SubmitPullRequests(ctx, gtapi.SubmitRequest{
 			RepoOwner:       owner,
 			RepoName:        name,
@@ -1928,7 +1937,7 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 			entries[created.Head] = stackEntry{Branch: created.Head, PR: created.PRNumber, URL: created.PRURL, HasBody: strings.TrimSpace(posted[i].body) != "", State: string(gtapi.PROpen), metaApplied: s.publication != nil && s.publication.TipOnly}
 		}
 	}
-	if err := gtConfirmVersions(ctx, client, owner, name, tr.Name(), posted, s.draft); err != nil {
+	if err := gtConfirmVersions(ctx, client, owner, name, tr.Name(), posted, s.updateDraft()); err != nil {
 		return nil, nil, gtSubmitFailure(err, s)
 	}
 	gtRecordPushed(ctx, errW, owner+"/"+name, posted, entries)
@@ -2006,7 +2015,7 @@ func gtConfirmVersions(ctx context.Context, client *gtapi.Client, owner, name, t
 			return ctx.Err()
 		case <-time.After(time.Duration(attempt) * gtVersionSettle):
 		}
-		for _, pr := range gtSubmitPRs(stale, draft) {
+		for _, pr := range gtSubmitPRs(stale, nil, draft) {
 			if _, err := client.SubmitPullRequests(ctx, gtapi.SubmitRequest{RepoOwner: owner, RepoName: name, TrunkBranchName: trunk, PRs: []gtapi.SubmitPR{pr}}); err != nil {
 				return err
 			}
@@ -2708,7 +2717,7 @@ func gtPlanNames(plan []gtSubmitBranch) []string {
 // omits title and body deliberately: they are optional there so a re-submit
 // need not restate them, and sending them would overwrite a description a
 // human edited.
-func gtSubmitPRs(plan []gtSubmitBranch, draft *bool) []gtapi.SubmitPR {
+func gtSubmitPRs(plan []gtSubmitBranch, create, update *bool) []gtapi.SubmitPR {
 	prs := make([]gtapi.SubmitPR, 0, len(plan))
 	for _, b := range plan {
 		pr := gtapi.SubmitPR{
@@ -2716,12 +2725,11 @@ func gtSubmitPRs(plan []gtSubmitBranch, draft *bool) []gtapi.SubmitPR {
 			HeadSha: b.head,
 			Base:    b.base,
 			BaseSha: b.baseSha,
-			Draft:   draft,
 		}
 		if b.pr != 0 {
-			pr.Action, pr.PRNumber = gtapi.SubmitUpdate, b.pr
+			pr.Action, pr.PRNumber, pr.Draft = gtapi.SubmitUpdate, b.pr, update
 		} else {
-			pr.Action, pr.Title, pr.Body = gtapi.SubmitCreate, b.title, b.body
+			pr.Action, pr.Title, pr.Body, pr.Draft = gtapi.SubmitCreate, b.title, b.body, create
 		}
 		prs = append(prs, pr)
 	}

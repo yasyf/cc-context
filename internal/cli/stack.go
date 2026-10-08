@@ -461,7 +461,7 @@ func runStackSubmit(cmd *cobra.Command, o shipOpts, include []string, to string)
 	}
 	tracking := &stackTracking{}
 	cmd.SetContext(withStackTracking(ctx, tracking))
-	opts := stackRebaseOpts{members: chain, pinned: stackSkipNames(pinned), landed: o.landed, draft: &o.draft, ship: intent, submit: true, dropCommits: o.dropCommits, stayClean: !o.restack, restack: o.restack, to: to, include: include, otherLanes: o.allLanes}
+	opts := stackRebaseOpts{members: chain, pinned: stackSkipNames(pinned), landed: o.landed, draft: &o.draft, keepDrafts: true, ship: intent, submit: true, dropCommits: o.dropCommits, stayClean: !o.restack, restack: o.restack, to: to, include: include, otherLanes: o.allLanes}
 	if err := runStackRebase(cmd, opts); err != nil {
 		return err
 	}

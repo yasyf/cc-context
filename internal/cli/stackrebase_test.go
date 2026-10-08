@@ -355,20 +355,13 @@ func TestStackRebaseMovesEachSourceOntoItsPublishedHead(t *testing.T) {
 	}
 }
 
-// TestStackRebaseLeavesDraftStateAlone pins that a rebase only pushes: an
-// explicit draft false on an update publishes a held draft pull request, so
-// rebase omits the field, while submit still publishes by default.
+// TestStackRebaseLeavesDraftStateAlone pins that neither rebase nor submit
+// touches an open pull request's draft state: an explicit draft false on an
+// update publishes a held draft, so both omit the field.
 func TestStackRebaseLeavesDraftStateAlone(t *testing.T) {
 	t.Parallel()
-	tests := []struct {
-		verb  string
-		draft string
-	}{
-		{verb: "rebase", draft: "omitted"},
-		{verb: "submit", draft: "false"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.verb, func(t *testing.T) {
+	for _, args := range [][]string{{"rebase"}, {"submit"}, {"submit", "--draft"}} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			t.Parallel()
 			f := stackRebaseRepo(t, "base", "feature")
 			api := stubGTAPI(t)
@@ -377,21 +370,50 @@ func TestStackRebaseLeavesDraftStateAlone(t *testing.T) {
 			stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
 			mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "feature")
 
-			if _, _, err := runStackCmd(t, f, tt.verb); err != nil {
-				t.Fatalf("stack %s: %v", tt.verb, err)
+			if _, _, err := runStackCmd(t, f, args...); err != nil {
+				t.Fatalf("stack %s: %v", args, err)
 			}
 			for _, branch := range []string{"base", "feature"} {
 				entry := api.submitEntry(branch)
 				if entry.Action != gtapi.SubmitUpdate {
-					t.Errorf("stack %s submitted %s as %s, want an update of its open pull request", tt.verb, branch, entry.Action)
+					t.Errorf("stack %s submitted %s as %s, want an update of its open pull request", args, branch, entry.Action)
 				}
-				got := "omitted"
-				if draft := entry.Draft; draft != nil {
-					got = strconv.FormatBool(*draft)
+				if entry.Draft != nil {
+					t.Errorf("stack %s submitted %s with draft %t, want the field omitted", args, branch, *entry.Draft)
 				}
-				if got != tt.draft {
-					t.Errorf("stack %s submitted %s with draft %s, want %s", tt.verb, branch, got, tt.draft)
-				}
+			}
+		})
+	}
+}
+
+func TestStackSubmitSetsDraftOnNewPullRequestsAlone(t *testing.T) {
+	t.Parallel()
+	for _, draft := range []bool{false, true} {
+		t.Run(strconv.FormatBool(draft), func(t *testing.T) {
+			t.Parallel()
+			f := stackRebaseRepo(t, "base")
+			shipGTStack(t, f, "feature")
+			api := stubGTAPI(t)
+			api.prs["base"] = 9000
+			f.Decorate(api.ctx)
+			mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base")
+			args := []string{"submit"}
+			if draft {
+				args = append(args, "--draft")
+			}
+
+			if _, _, err := runStackCmd(t, f, args...); err != nil {
+				t.Fatalf("stack %s: %v", args, err)
+			}
+			if entry := api.submitEntry("base"); entry.Action != gtapi.SubmitUpdate || entry.Draft != nil {
+				t.Errorf("base entry = %s with draft %v, want an update omitting draft", entry.Action, entry.Draft)
+			}
+			entry := api.submitEntry("feature")
+			if entry.Action != gtapi.SubmitCreate {
+				t.Errorf("feature submitted as %s, want a create", entry.Action)
+			}
+			if entry.Draft == nil || *entry.Draft != draft {
+				t.Errorf("feature created with draft %v, want %t", entry.Draft, draft)
 			}
 		})
 	}
