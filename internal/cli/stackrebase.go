@@ -393,7 +393,7 @@ stale recording silently drops a branch's own changes.
 Continue never opens a pull request the run carries no title and body for. A
 branch with no open pull request and no --pr-title and --pr-body-file from the
 command that started the run is pushed, not submitted, and named with the
-ccx vcs ship command that opens it.`,
+ccx vcs ship command that opens it, unless that command named it with --new-pr.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return stackSettleTracking(cmd, func() error { return runStackContinue(cmd, stack) })

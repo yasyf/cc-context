@@ -484,7 +484,7 @@ func stackRepairTracking(cmd *cobra.Command, opts stackRebaseOpts, tracking *sta
 		return tracking.settled()
 	}
 	cmd.Println("repairing" + shipSep + "Graphite holds no mergeability record for:\n" + stackUntrackedLines(repairing))
-	opts.ship = nil
+	opts.ship, opts.newPRs = nil, nil
 	opts.bump = stackUntrackedBranches(repairing)
 	tracking.untracked = nil
 	if err := runStackRebase(cmd, opts); err != nil {
