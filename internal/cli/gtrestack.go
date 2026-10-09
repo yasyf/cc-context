@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -81,6 +82,12 @@ func gtRestackChain(ctx context.Context, prefix string, c vcs.Checkout, dir rend
 			return gtRestackResult{held: held}, nil
 		}
 	}
+	if state, err = gtHoldEmptyUnderWork(ctx, state, movers, holders); err != nil {
+		return gtRestackResult{}, fmt.Errorf("%s: %w", prefix, err)
+	}
+	if movers, held = gtRestackPlan(state, chain); len(movers) == 0 {
+		return gtRestackResult{held: held}, nil
+	}
 	trunk, err := gtTrunkBranch(prefix, state)
 	if err != nil {
 		return gtRestackResult{}, err
@@ -123,6 +130,25 @@ func gtHoldElsewhere(state gtState, chain []string, holders map[string]string, o
 		held[name] = s
 	}
 	return held
+}
+
+func gtHoldEmptyUnderWork(ctx context.Context, state gtState, movers []string, holders map[string]string) (gtState, error) {
+	held := maps.Clone(state)
+	for _, name := range movers {
+		s, holder := held[name], holders[name]
+		if holder == "" || s.Parents[0].SHA != s.Head {
+			continue
+		}
+		dirty, err := gitUncommitted(ctx, holder)
+		if err != nil {
+			return nil, err
+		}
+		if dirty {
+			s.State = gtHeldElsewhere + holder + " with uncommitted work and no commit of its own"
+			held[name] = s
+		}
+	}
+	return held, nil
 }
 
 // gtRestackPlan names the branches to move: every branch gt reads as sitting off

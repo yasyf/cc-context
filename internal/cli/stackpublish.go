@@ -689,11 +689,11 @@ func stackSourceStays(ctx context.Context, l lane, b stackRebaseBranch, at strin
 			return "its published head carries other changes", nil
 		}
 	}
-	status, err := render.RunCLI(ctx, render.Dir(holder), "git", []string{"status", "--porcelain", "--untracked-files=normal"})
+	dirty, err := gitUncommitted(ctx, holder)
 	if err != nil {
 		return "", fmt.Errorf("%s: git status in %s: %w", stackRebasePrefix, holder, err)
 	}
-	if status != "" {
+	if dirty {
 		return "uncommitted work in " + holder, nil
 	}
 	clobbered, err := gtRestackClobbers(ctx, stackRebasePrefix, holder, restackMove{branch: b.Name, head: b.NewHead, previous: b.Local})

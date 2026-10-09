@@ -1053,7 +1053,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 		if members, roots, err = stackWithPublishedParents(ctx, l.dir(), retargeted, submitted, trunk, members, roots, overrides); err != nil {
 			return nil, err
 		}
-		if o.submit {
+		if o.submit && !o.otherLanes {
 			if o.pinned, err = stackPinHeldParents(ctx, l, planned, members, o.pinned); err != nil {
 				return nil, err
 			}
@@ -4507,13 +4507,18 @@ func stackCheckClean(ctx context.Context, movers []string, holders map[string]st
 		if holder == "" {
 			continue
 		}
-		status, err := render.RunCLI(ctx, render.Dir(holder), "git", []string{"status", "--porcelain", "--untracked-files=normal"})
+		dirty, err := gitUncommitted(ctx, holder)
 		if err != nil {
 			return err
 		}
-		if status != "" {
+		if dirty {
 			return fmt.Errorf("stack rebase: %s has uncommitted work; no branches moved — commit or move that work, then %s", holder, advice)
 		}
 	}
 	return nil
+}
+
+func gitUncommitted(ctx context.Context, worktree string) (bool, error) {
+	status, err := render.RunCLI(ctx, render.Dir(worktree), "git", []string{"status", "--porcelain", "--untracked-files=normal"})
+	return status != "", err
 }

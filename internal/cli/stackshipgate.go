@@ -214,11 +214,10 @@ func stackStalePins(ctx context.Context, dir render.Dir, run *stackRebaseRun) (s
 	return stale, reasons, nil
 }
 
-// stackUnpublishedPins names each branch kept at its published head while a
-// branch stacked on it carries work of it origin lacks: the run replays that
-// branch onto the published head and drops the work from what it pushes. Work
-// that only replays the published commits onto newer trunk is no loss. A pin
-// in taken is no pin, and a kept branch in taken publishes with the run.
+// stackUnpublishedPins names each pin a run branch sits on whose local head
+// holds work origin lacks that the branch carries, or that rewrote the
+// published head. A pure replay onto newer trunk is no loss; a pin in taken is
+// no pin, and a kept branch in taken publishes with the run.
 func stackUnpublishedPins(ctx context.Context, dir render.Dir, run *stackRebaseRun, taken []string) (pins, reasons []string, err error) {
 	byName := map[string]*stackRebaseBranch{}
 	for i := range run.Branches {
@@ -233,8 +232,14 @@ func stackUnpublishedPins(ctx context.Context, dir render.Dir, run *stackRebaseR
 		if err != nil {
 			return nil, nil, err
 		}
+		rewritten := false
 		if carried == 0 {
-			continue
+			if rewritten, err = stackRewrotePublished(ctx, dir, run.Pin, pin); err != nil {
+				return nil, nil, err
+			}
+			if !rewritten {
+				continue
+			}
 		}
 		if replays, err := stackRemoteReplays(ctx, dir, pin.Remote, pin.Local, run.Pin); err != nil {
 			return nil, nil, err
@@ -242,10 +247,25 @@ func stackUnpublishedPins(ctx context.Context, dir render.Dir, run *stackRebaseR
 			continue
 		}
 		pins = append(pins, pin.Name)
+		published := strings.Join(append([]string{b.Name}, stackAbove(run, b.Name)...), ", ")
+		if rewritten {
+			reasons = append(reasons, fmt.Sprintf("%s is another lane's, kept at its published head %.12s, but its local head %.12s rewrote that head — publishing %s onto it would stack them on commits %s no longer holds unless %s is submitted from the working copy holding it first",
+				pin.Name, pin.Remote, pin.Local, published, pin.Name, pin.Name))
+			continue
+		}
 		reasons = append(reasons, fmt.Sprintf("%s is another lane's, kept at its published head, but %s carries %d commit(s) of %s that origin does not — publishing %s onto that head would drop them unless %s is submitted from the working copy holding it first",
-			pin.Name, b.Name, carried, pin.Name, strings.Join(append([]string{b.Name}, stackAbove(run, b.Name)...), ", "), pin.Name))
+			pin.Name, b.Name, carried, pin.Name, published, pin.Name))
 	}
 	return pins, reasons, nil
+}
+
+func stackRewrotePublished(ctx context.Context, dir render.Dir, trunk string, pin *stackRebaseBranch) (bool, error) {
+	kept, err := gitIsAncestor(ctx, dir, stackRebasePrefix, pin.Remote, pin.Local)
+	if err != nil || kept {
+		return false, err
+	}
+	own, err := stackCarriedUnpublished(ctx, dir, trunk, pin, pin.Local)
+	return own > 0, err
 }
 
 // stackAbove names every branch of the run stacked above name, in run order.
