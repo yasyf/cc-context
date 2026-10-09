@@ -22,13 +22,13 @@ type gtChainLink struct {
 func (l gtChainLink) segment() string { return "tracked " + l.name + " onto " + l.parent }
 
 func gtUntrackedChain(ctx context.Context, dir render.Dir, prefix string, state gtState, trunk, base, branch, tip string) ([]gtChainLink, error) {
-	floor, remote := gtRestackRef(base), ""
+	floor, trunkFloor, remote := gtRestackRef(base), gtRestackRef(trunk), ""
 	tr, err := gtTrunkRefOffline(ctx, dir, prefix, trunk)
 	switch {
 	case err == nil:
-		remote = tr.Remote()
+		remote, trunkFloor = tr.Remote(), string(tr.Ref())
 		if base == trunk {
-			floor = string(tr.Ref())
+			floor = trunkFloor
 		}
 	case !errors.Is(err, vcs.ErrNoTrunk):
 		return nil, err
@@ -39,7 +39,7 @@ func gtUntrackedChain(ctx context.Context, dir render.Dir, prefix string, state 
 	}
 	tipHead := strings.TrimSpace(out)
 	if base != trunk {
-		if floor, err = gtHeadUnder(ctx, dir, prefix, base, tipHead); err != nil {
+		if floor, err = gtHeadUnder(ctx, dir, prefix, base, trunkFloor, tipHead); err != nil {
 			return nil, err
 		}
 	}
@@ -173,21 +173,41 @@ func gtAdoptBelow(ctx context.Context, dir render.Dir, prefix string, state gtSt
 	return tip.parent, chained, nil
 }
 
-func gtHeadUnder(ctx context.Context, dir render.Dir, prefix, branch, tip string) (string, error) {
+func gtHeadUnder(ctx context.Context, dir render.Dir, prefix, branch, floor, tip string) (string, error) {
 	former, err := gtReflogHeads(ctx, dir, prefix, []string{branch})
 	if err != nil {
 		return "", err
 	}
-	for _, head := range former[branch] {
-		under, err := gitIsAncestor(ctx, dir, prefix, head, tip)
-		if err != nil {
-			return "", err
-		}
-		if under {
-			return head, nil
-		}
+	held, err := gtNearestHeld(ctx, dir, prefix, former[branch], floor, tip)
+	return cmp.Or(held, gtRestackRef(branch)), err
+}
+
+func gtNearestHeld(ctx context.Context, dir render.Dir, prefix string, held []string, floor, tip string) (string, error) {
+	out, err := render.RunCLI(ctx, dir, "git", []string{"rev-list", floor + ".." + tip})
+	if err != nil {
+		return "", fmt.Errorf("%s: git rev-list %s..%s: %w", prefix, floor, tip, err)
 	}
-	return gtRestackRef(branch), nil
+	above := map[string]bool{}
+	for _, commit := range strings.Fields(out) {
+		above[commit] = true
+	}
+	nearest := ""
+	for _, at := range held {
+		if !above[at] || at == nearest {
+			continue
+		}
+		if nearest != "" {
+			ahead, err := gitIsAncestor(ctx, dir, prefix, nearest, at)
+			if err != nil {
+				return "", err
+			}
+			if !ahead {
+				continue
+			}
+		}
+		nearest = at
+	}
+	return nearest, nil
 }
 
 func gtMergeBase(ctx context.Context, dir render.Dir, prefix, a, b string) (string, error) {
