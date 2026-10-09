@@ -203,6 +203,14 @@ after a close and reopen. `stack rebase` and
 `stack continue` exit non-zero for an untracked pull request without repairing
 it; run `ccx vcs stack submit` to repair.
 
+The refusal names `ccx vcs pr recreate <number>` for each such pull request.
+That command closes the pull request, opens a fresh one on the same branch
+through Graphite's submit API with the same title, body, and draft state plus a
+`Replaces #<number>` line, copies the labels, and comments a link on the old
+one. Graphite tracks
+the new pull request, so the queue can enqueue it, but its approvals start
+over. Nothing runs it automatically.
+
 ## Check publication before retrying
 
 A run locks the branches it writes, not the whole stack, so two lanes of one

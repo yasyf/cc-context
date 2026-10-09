@@ -421,6 +421,7 @@ ccx vcs status                                   # every branch, its PR, and wha
 ccx vcs status --json                            # the same report as a structure
 ccx vcs pr status 123 124                         # queue state, CI, approval, and verdict, per PR
 ccx vcs pr state 123 124 --lane-prefix yasyf/work/  # shared cache records and lane PRs, as JSON
+ccx vcs pr recreate 123                          # replace a PR Graphite's stale stack record leaves untracked
 ccx vcs gh -- pr checks 123                      # a gh read on the app's quota
 ccx vcs guidelines                               # PR templates + contribution rules, verbatim
 ```

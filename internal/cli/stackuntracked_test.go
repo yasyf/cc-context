@@ -151,6 +151,7 @@ func TestStackSubmitDoesNotRepublishAPullRequestGraphiteStillStacksOnLandedOnes(
 	for _, want := range []string{
 		"#9000 base" + shipSep + "parent main" + shipSep + "Graphite tracks no stack for it" + shipSep + "its server-side stack still holds #8998, #8999, which already landed or closed",
 		stackStrandedRemedy,
+		"ccx vcs pr recreate 9000",
 	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("stack submit = %v, want it to name %q", err, want)
