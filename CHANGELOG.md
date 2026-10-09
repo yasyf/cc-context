@@ -25,7 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- **Go 1.26.9 and `golang.org/x/net` v0.60.0.** `govulncheck` flagged
+- **Go toolchain 1.26.9 and `golang.org/x/net` v0.60.0.** `govulncheck` flagged
   GO-2026-6608 through GO-2026-6617 in `crypto/tls`, `net/http`,
   `net/textproto`, and `golang.org/x/net` at the previous versions.
 

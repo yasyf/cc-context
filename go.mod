@@ -1,6 +1,8 @@
 module github.com/yasyf/cc-context
 
-go 1.26.9
+go 1.26.6
+
+toolchain go1.26.9
 
 require (
 	github.com/modelcontextprotocol/go-sdk v1.6.1
