@@ -263,6 +263,9 @@ func (s *Store) Pushed(ctx context.Context, heads map[int]string) error {
 		}
 		for n, head := range heads {
 			pr := st.PRs[n]
+			if pr.PushedAt.After(now) {
+				continue
+			}
 			pr.Number, pr.PushedHead, pr.PushedAt = n, head, now
 			st.PRs[n] = pr
 		}
@@ -654,10 +657,15 @@ func (st *State) absorb(p poll, now time.Time) {
 		}
 		st.Lanes[prefix] = Lane{PRs: prs, PolledAt: now}
 		for _, n := range prs {
-			st.Leases.PRs[n] = now
+			if st.Leases.PRs[n].Before(now) {
+				st.Leases.PRs[n] = now
+			}
 		}
 	}
 	for _, n := range p.missing {
+		if was := st.PRs[n]; was.PolledAt.After(now) || was.PushedAt.After(now) {
+			continue
+		}
 		delete(st.Leases.PRs, n)
 		delete(st.PRs, n)
 	}
@@ -677,7 +685,7 @@ func (st *State) absorb(p poll, now time.Time) {
 			delete(st.PRs, n)
 		}
 	}
-	if newest {
+	if newest && (st.Backoff == nil || !st.Backoff.Since.After(now)) {
 		st.Backoff = quotaBackoff(p.rate, now)
 	}
 }

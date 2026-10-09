@@ -664,9 +664,11 @@ func TestCoversNeedsEveryRecordAndLane(t *testing.T) {
 	}
 }
 
-func blockedPoller(t *testing.T, dir string, now time.Time) (*Store, <-chan struct{}, chan<- struct{}) {
+func blockedPoller(t *testing.T, dir string, now time.Time) (*Store, <-chan struct{}, func()) {
 	t.Helper()
 	inFlight, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
 	body := fixture(t, "poll-190.json")
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		close(inFlight)
@@ -674,6 +676,7 @@ func blockedPoller(t *testing.T, dir string, now time.Time) (*Store, <-chan stru
 		_, _ = io.WriteString(w, body)
 	}))
 	t.Cleanup(ts.Close)
+	t.Cleanup(unblock)
 	src, err := NewGitHub(ghapi.New(ts.URL), nil, "yasyf/cc-context", io.Discard)
 	if err != nil {
 		t.Fatal(err)
@@ -683,7 +686,16 @@ func blockedPoller(t *testing.T, dir string, now time.Time) (*Store, <-chan stru
 		t.Fatal(err)
 	}
 	store.now = func() time.Time { return now }
-	return store, inFlight, release
+	return store, inFlight, unblock
+}
+
+func awaitInFlight(ctx context.Context, t *testing.T, inFlight <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-inFlight:
+	case <-ctx.Done():
+		t.Fatal("the poll never reached GitHub")
+	}
 }
 
 func TestAReaderIsNotBlockedWhileAPollIsInFlight(t *testing.T) {
@@ -708,7 +720,7 @@ func TestAReaderIsNotBlockedWhileAPollIsInFlight(t *testing.T) {
 		}
 		polled <- st
 	}()
-	<-inFlight
+	awaitInFlight(ctx, t, inFlight)
 
 	reader, gh := newStore(t, dir, &clock{now: epoch.Add(time.Second)}, nil)
 	st, err := reader.Read(ctx, Want{PRs: []int{189}})
@@ -718,7 +730,7 @@ func TestAReaderIsNotBlockedWhileAPollIsInFlight(t *testing.T) {
 	if err := reader.Pushed(ctx, map[int]string{190: pushed}); err != nil {
 		t.Fatalf("push recorded during the poll: %v", err)
 	}
-	close(release)
+	release()
 	if pr := (<-polled).PRs[190]; pr.State != "OPEN" || pr.PushedHead != pushed {
 		t.Errorf("#190 after the poll = %+v, want the poll merged beside the push recorded while it ran", pr)
 	}
@@ -742,13 +754,13 @@ func TestAReaderSharesAPollAnotherStoreHasInFlight(t *testing.T) {
 		_, err := poller.Read(ctx, Want{PRs: []int{190}})
 		polled <- err
 	}()
-	<-inFlight
+	awaitInFlight(ctx, t, inFlight)
 
 	c := &clock{now: epoch.Add(MinInterval + time.Second)}
 	reader, gh := newStore(t, dir, c, nil)
 	reader.sleep = func(_ context.Context, d time.Duration) error {
 		c.slept = append(c.slept, d)
-		close(release)
+		release()
 		return <-polled
 	}
 	st, err := reader.Read(ctx, Want{PRs: []int{190}})
