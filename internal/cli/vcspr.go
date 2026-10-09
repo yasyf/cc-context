@@ -146,7 +146,7 @@ func newVcsPRCmd() *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE:  groupHelp,
 	}
-	cmd.AddCommand(newVcsPRStatusCmd(), newVcsPRWatchCmd(), newVcsPRStateCmd())
+	cmd.AddCommand(newVcsPRStatusCmd(), newVcsPRWatchCmd(), newVcsPRStateCmd(), newVcsPRRecreateCmd())
 	return cmd
 }
 

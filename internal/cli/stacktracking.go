@@ -95,7 +95,11 @@ func stackTrackingStuck(untracked []stackUntracked) error {
 }
 
 func stackTrackingStranded(stranded []stackUntracked) error {
-	return fmt.Errorf("%s: pushed, but Graphite tracks no stack for these pull requests because its stack record still holds pull requests that already landed or closed, so the merge queue cannot enqueue them; %s:\n%s", stackRebasePrefix, stackStrandedRemedy, stackUntrackedLines(stranded))
+	recreate := make([]string, len(stranded))
+	for i, u := range stranded {
+		recreate[i] = fmt.Sprintf("ccx vcs pr recreate %d", u.PR)
+	}
+	return fmt.Errorf("%s: pushed, but Graphite tracks no stack for these pull requests because its stack record still holds pull requests that already landed or closed, so the merge queue cannot enqueue them; %s — replace each with a fresh pull request on the same branch, resetting its approvals: %s:\n%s", stackRebasePrefix, stackStrandedRemedy, strings.Join(recreate, "; "), stackUntrackedLines(stranded))
 }
 
 func (t *stackTracking) settled() error {
