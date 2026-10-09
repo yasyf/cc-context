@@ -2517,9 +2517,22 @@ func stackOldBase(ctx context.Context, dir render.Dir, tr vcs.Trunk, pin string,
 	return stackPastChain(ctx, dir, pin, self, byName, best)
 }
 
+func stackWasAbove(byName map[string]*stackRebaseBranch, name, self string) bool {
+	for seen := map[string]bool{}; byName[name] != nil && !seen[name]; name = byName[name].WasParent {
+		if byName[name].WasParent == self {
+			return true
+		}
+		seen[name] = true
+	}
+	return false
+}
+
 func stackPastChain(ctx context.Context, dir render.Dir, pin string, self *stackRebaseBranch, byName map[string]*stackRebaseBranch, base string) (string, error) {
 	var heads, parentHeads []string
 	for name := self.Parent; byName[name] != nil; name = byName[name].Parent {
+		if stackWasAbove(byName, name, self.Name) {
+			continue
+		}
 		below := byName[name]
 		held := []string{below.Head, below.Local, below.Remote}
 		if below.Publication != nil {
