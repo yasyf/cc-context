@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yasyf/cc-context/internal/gtapi"
 	"github.com/yasyf/cc-context/internal/vcs"
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
@@ -777,6 +778,46 @@ func TestShipPRGTBackfill(t *testing.T) {
 		ghPREditArgv(7, "-F", "body=@"+tipBody),
 		ghPREditArgv(6, "-F", "body=@"+midBody),
 	})
+}
+
+// TestShipPRGTOpensWithThePreparedBody is monorepo #33230: a ship that opened
+// a pull request posted the commit message as its body and left the prepared
+// body to a restate after the submit, which a ship blocked past the submit
+// never reached. Each pull request the submit opens now carries the stated
+// title and body, and only the open one already there is restated.
+func TestShipPRGTOpensWithThePreparedBody(t *testing.T) {
+	log, gt := setupShipGT(t, true)
+	t.Setenv("GIT_BRANCH", "feature2")
+	setGTState(t, `{"main":{"trunk":true},`+
+		`"base":{"parents":[{"ref":"main","sha":"deadbeef"}]},`+
+		`"feature":{"parents":[{"ref":"base","sha":"beadfeed"}]},`+
+		`"feature2":{"parents":[{"ref":"feature","sha":"feedface"}]}}`)
+	gt.prs["base"] = 5
+	tipBody := writePRBody(t, "tip.md", "## Context\n\ntip body\n")
+	midBody := writePRBody(t, "mid.md", "mid body\n")
+	baseBody := writePRBody(t, "base.md", "base body\n")
+
+	got, err := runShipCmd(gt.ctx(context.Background()), t, "-m", "fix: frobnicate\n\nContext: the commit message", "--no-watch",
+		"--pr-title", "Tip title", "--pr-body-file", tipBody, "--pr-body-file", "feature="+midBody, "--pr-body-file", "base="+baseBody)
+	if err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	if tip := gt.submitEntry("feature2"); tip.Action != gtapi.SubmitCreate || tip.Title == nil || *tip.Title != "Tip title" || tip.Body == nil || *tip.Body != "## Context\n\ntip body\n" {
+		t.Errorf("feature2 create = %+v, want the prepared title and body", tip)
+	}
+	if mid := gt.submitEntry("feature"); mid.Action != gtapi.SubmitCreate || mid.Body == nil || *mid.Body != "mid body\n" {
+		t.Errorf("feature create = %+v, want the prepared body", mid)
+	}
+	if !strings.HasSuffix(got, "set PR #5 body") {
+		t.Errorf("summary = %q, want only the already-open PR #5 restated", got)
+	}
+	var edits [][]string
+	for _, inv := range readInvocations(t, log) {
+		if isPREdit(inv) {
+			edits = append(edits, inv)
+		}
+	}
+	assertInvocations(t, edits, [][]string{ghPREditArgv(5, "-F", "body=@"+baseBody)})
 }
 
 // TestShipPRRestateFailureNamesTheRetry pins a restate GitHub refuses after the
