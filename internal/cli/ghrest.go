@@ -39,6 +39,7 @@ type ghPull struct {
 		Ref string `json:"ref"`
 	} `json:"base"`
 	Head struct {
+		Ref string `json:"ref"`
 		SHA string `json:"sha"`
 	} `json:"head"`
 	Labels []struct {
@@ -296,6 +297,13 @@ func ghPullsByHeadArgv(nwo, branch, state string) []string {
 		"api", "-X", "GET", "repos/" + nwo + "/pulls",
 		"-f", "head=" + owner + ":" + branch, "-f", "state=" + state,
 		"-f", "sort=created", "-f", "direction=desc", "-f", "per_page=1",
+	}
+}
+
+func ghPullsByBaseArgv(nwo, branch string) []string {
+	return []string{
+		"api", "-X", "GET", "repos/" + nwo + "/pulls",
+		"-f", "base=" + branch, "-f", "state=open", "-f", "per_page=100",
 	}
 }
 
