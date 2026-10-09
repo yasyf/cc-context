@@ -1125,6 +1125,7 @@ func TestRequesterRidesOnlyTheCommandThatNamedIt(t *testing.T) {
 		if _, err := h.engine.Remove(ctx, h.request("b")); err != nil {
 			t.Fatalf("Remove(b) = %v", err)
 		}
+		synctest.Wait()
 		h.clock.Advance(30 * time.Second)
 		synctest.Wait()
 		want := []string{
@@ -1165,6 +1166,7 @@ func TestRemovalKeepsItsRequesterForEveryRetry(t *testing.T) {
 		}
 		h.relocator.script("a", nil)
 		h.relocator.script("b", nil)
+		synctest.Wait()
 		h.clock.Advance(30 * time.Second)
 		synctest.Wait()
 		want := []string{
@@ -1531,6 +1533,7 @@ func TestIdleEngineArmsNoTimer(t *testing.T) {
 				if _, err := h.engine.Retry(ctx, "0000000000000000-000000"); !errors.Is(err, cleanup.ErrUnknownJob) {
 					t.Errorf("Retry(unknown) = %v, want ErrUnknownJob", err)
 				}
+				synctest.Wait()
 				h.clock.Advance(24 * time.Hour)
 				h.expectEvents()
 				h.expectTimers()
