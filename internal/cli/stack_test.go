@@ -1830,7 +1830,7 @@ func TestStackSubmitRefusesToPublishAboveAHeldBranchWithAnUnpublishedRestack(t *
 	posted := len(api.submitHeads())
 
 	_, _, err := runStackCmd(t, f, "submit")
-	want := "stack rebase: mid is another lane's, kept at its published head, but top carries 1 commit(s) of mid that origin does not — publishing top onto that head would drop them, so nothing was pushed; submit mid from the working copy holding it first, or pass --include mid to publish it with the run"
+	want := "stack rebase: mid is another lane's, kept at its published head, but top carries 1 commit(s) of mid that origin does not — publishing top onto that head would drop them unless mid is submitted from the working copy holding it first, so nothing was pushed; pass --include mid to take it into the run"
 	if err == nil || err.Error() != want {
 		t.Fatalf("stack submit = %v, want %q", err, want)
 	}

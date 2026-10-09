@@ -1651,11 +1651,84 @@ func TestStackRebaseNamesTheRetargetGitHubRefused(t *testing.T) {
 	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
 
 	out, _, err := runStackCmd(t, f, "rebase")
-	if err != nil {
-		t.Fatalf("stack rebase: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "published, but #9001 still sit off the parents the submit gave them") {
+		t.Fatalf("stack rebase = %v, want the unmoved #9001 to fail the run", err)
 	}
 	if want := "base main ≠ parent base — retargeting failed, finish it with gh api -X PATCH repos/yasyf/cc-context/pulls/9001 --silent -f base=base"; !strings.Contains(out, want) {
 		t.Errorf("output = %q, want %q", out, want)
+	}
+}
+
+// TestStackRebaseMovesAPullRequestTheSubmitLeftParked is #32726 in
+// Forge-AI/monorepo: the submit gave feature its parent, yet its pull request
+// still sat on Graphite's graphite-base branch afterwards and the run reported
+// success; a second identical submit moved it.
+func TestStackRebaseMovesAPullRequestTheSubmitLeftParked(t *testing.T) {
+	t.Parallel()
+	f := stackRebaseRepo(t, "base", "feature")
+	head := strings.TrimSpace(mustRun(t, f.Env(), f.Dir, "git", "rev-parse", "feature"))
+	if err := gtmeta.RecordSubmitted(context.Background(), filepath.Join(f.Dir, ".git"), map[string]gtmeta.Version{"feature": {HeadSha: head, BaseName: "base"}}); err != nil {
+		t.Fatalf("record feature's submit: %v", err)
+	}
+	stubStackPRs(t, f, map[string]*stackPR{
+		"base":    {Number: 9000, Title: "base", State: "OPEN", Base: "main"},
+		"feature": {Number: 9001, Title: "feature", State: "OPEN", Base: "graphite-base/9001"},
+	})
+	writeShipGH(t, f)
+	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	shipResetLog(t, f)
+
+	out, _, err := runStackCmd(t, f, "rebase")
+	if err != nil {
+		t.Fatalf("stack rebase: %v", err)
+	}
+	dropStep(t, shipGTInvocations(t, f), "gh", "PATCH", "repos/yasyf/cc-context/pulls/9001", "base=base")
+	if !strings.Contains(out, "retargeted onto base from graphite-base/9001") {
+		t.Errorf("output = %q, want feature's pull request moved off graphite-base/9001 onto base", out)
+	}
+}
+
+func TestStackParentOpen(t *testing.T) {
+	t.Parallel()
+	run := &stackRebaseRun{Trunk: "main", Branches: []stackRebaseBranch{{Name: "landed", Landed: "#1 landed"}, {Name: "live"}}}
+	tests := []struct {
+		parent string
+		prs    map[string]*stackPR
+		want   bool
+	}{
+		{parent: "main", want: true},
+		{parent: "landed"},
+		{parent: "live", prs: map[string]*stackPR{"live": {Number: 2, State: "OPEN"}}, want: true},
+		{parent: "live", prs: map[string]*stackPR{"live": {Number: 2, State: "CLOSED", Landed: true}}},
+	}
+	for _, tt := range tests {
+		if got := stackParentOpen(run, tt.prs, tt.parent); got != tt.want {
+			t.Errorf("stackParentOpen(%s, %v) = %t, want %t", tt.parent, tt.prs, got, tt.want)
+		}
+	}
+}
+
+func TestStackBaseStrays(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		pr        stackPR
+		submitted bool
+		want      bool
+	}{
+		{name: "on its parent", pr: stackPR{Number: 7, State: "OPEN", Base: "base"}, submitted: true},
+		{name: "off its parent", pr: stackPR{Number: 7, State: "OPEN", Base: "main"}, want: true},
+		{name: "parked after this run submitted it", pr: stackPR{Number: 7, State: "OPEN", Base: "graphite-base/7"}, submitted: true, want: true},
+		{name: "parked and left out of this run", pr: stackPR{Number: 7, State: "OPEN", Base: "graphite-base/7"}},
+		{name: "closed", pr: stackPR{Number: 7, State: "CLOSED", Base: "main"}, submitted: true},
+		{name: "base unread", pr: stackPR{Number: 7, State: "OPEN"}, submitted: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := stackBaseStrays(&tt.pr, "base", tt.submitted); got != tt.want {
+				t.Errorf("stackBaseStrays(%+v, base, %t) = %t, want %t", tt.pr, tt.submitted, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -2832,7 +2905,7 @@ func TestStackVerdictRereadsAPullRequestGitHubStillShowsAtTheOldHead(t *testing.
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 
-	if err := stackVerdict(ctx, cmd, lane{repo: &vcs.Repo{NameWithOwner: "Forge-AI/monorepo"}}, run, []string{"feature"}); err != nil {
+	if _, err := stackVerdict(ctx, cmd, lane{repo: &vcs.Repo{NameWithOwner: "Forge-AI/monorepo"}}, run, []string{"feature"}, []string{"feature"}); err != nil {
 		t.Fatal(err)
 	}
 	if reads != 2 {
@@ -2857,7 +2930,7 @@ func TestStackVerdictNamesTheBotThatOverwroteThePush(t *testing.T) {
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 
-	if err := stackVerdict(ctx, cmd, lane{repo: &vcs.Repo{NameWithOwner: "Forge-AI/monorepo"}}, run, []string{"feature"}); err != nil {
+	if _, err := stackVerdict(ctx, cmd, lane{repo: &vcs.Repo{NameWithOwner: "Forge-AI/monorepo"}}, run, []string{"feature"}, []string{"feature"}); err != nil {
 		t.Fatal(err)
 	}
 	if reads != 1 {
