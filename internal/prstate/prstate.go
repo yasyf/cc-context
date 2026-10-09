@@ -224,22 +224,24 @@ func Open(root string, src *GitHub) (*Store, error) {
 	return &Store{dir: dir, src: src, now: func() time.Time { return time.Now().UTC() }, sleep: sleep}, nil
 }
 
-// Read returns the shared view with everything want names at most MinInterval
-// old, polling first when it is not. Every read renews want's leases, so the
-// next poll by any process reads them too. A read the budget refuses returns
+// Read returns the shared view with everything want names polled at most
+// MinInterval before the read began, polling first when it is not. Every read
+// renews want's leases, so the next poll by any process reads them too. A read the budget refuses returns
 // the stale view with a *LimitedError.
 //
 // A read whose only stale records are pull requests no poll has read since
 // their last push fetches just those at once, leaving the shared poll's
 // schedule alone. Otherwise, inside MinInterval of the last poll a read sleeps,
-// so concurrent readers share the next poll. No read holds a lock across a
+// so concurrent readers share the next poll, and a poll claimed after the read
+// began answers it however long that poll takes. No read holds a lock across a
 // request, and a read of fresh records takes none.
 func (s *Store) Read(ctx context.Context, want Want) (State, error) {
-	if err := s.renew(want, s.now()); err != nil {
+	asked := s.now()
+	if err := s.renew(want, asked); err != nil {
 		return State{}, err
 	}
 	for waited := false; ; waited = true {
-		st, wait, err := s.read(ctx, want, waited)
+		st, wait, err := s.read(ctx, want, asked, waited)
 		if err != nil || wait <= 0 {
 			return st, err
 		}
@@ -274,13 +276,13 @@ func (s *Store) Pushed(ctx context.Context, heads map[int]string) error {
 	return err
 }
 
-func (s *Store) read(ctx context.Context, want Want, waited bool) (State, time.Duration, error) {
+func (s *Store) read(ctx context.Context, want Want, asked time.Time, waited bool) (State, time.Duration, error) {
 	st, err := s.load()
 	if err != nil {
 		return State{}, 0, err
 	}
 	now := s.now()
-	if st.fresh(want, now) {
+	if st.fresh(want, asked) {
 		return st, 0, nil
 	}
 	if b := st.Backoff; b != nil {
@@ -291,12 +293,12 @@ func (s *Store) read(ctx context.Context, want Want, waited bool) (State, time.D
 			return st, 0, err
 		}
 	}
-	if prs, ok := st.unpolled(want, now); ok && st.Failure == nil {
+	if prs, ok := st.unpolled(want, asked); ok && st.Failure == nil {
 		st, err := s.fetch(ctx, Want{PRs: prs}, st.PRs, now, false)
 		if err != nil {
 			return st, 0, err
 		}
-		return st, 0, s.verdict(st, want, now)
+		return st, 0, s.verdict(st, want, asked)
 	}
 	if next := st.AttemptedAt.Add(MinInterval); now.Before(next) {
 		if f := st.Failure; f != nil && waited {
@@ -305,12 +307,12 @@ func (s *Store) read(ctx context.Context, want Want, waited bool) (State, time.D
 		}
 		return st, next.Sub(now), nil
 	}
-	st, claimed, err := s.claim(ctx, want, now)
+	st, claimed, err := s.claim(ctx, want, asked, now)
 	if err != nil {
 		return st, 0, err
 	}
 	if !claimed {
-		return s.read(ctx, want, waited)
+		return s.read(ctx, want, asked, waited)
 	}
 	req := st.request(now)
 	if st, err = s.fetch(ctx, req, st.PRs, now, true); err != nil {
@@ -321,14 +323,14 @@ func (s *Store) read(ctx context.Context, want Want, waited bool) (State, time.D
 			return st, 0, err
 		}
 	}
-	return st, 0, s.verdict(st, want, now)
+	return st, 0, s.verdict(st, want, asked)
 }
 
-func (s *Store) verdict(st State, want Want, now time.Time) error {
+func (s *Store) verdict(st State, want Want, asked time.Time) error {
 	if missing := slices.DeleteFunc(slices.Clone(want.PRs), func(n int) bool { _, ok := st.PRs[n]; return ok }); len(missing) > 0 {
 		return &MissingError{Repo: s.src.owner + "/" + s.src.name, PRs: missing}
 	}
-	if st.Backoff != nil && !st.fresh(want, now) {
+	if st.Backoff != nil && !st.fresh(want, asked) {
 		return &LimitedError{Backoff: *st.Backoff}
 	}
 	return nil
@@ -357,10 +359,10 @@ func (s *Store) probe(ctx context.Context, st State, now time.Time) (State, erro
 	return st, err
 }
 
-func (s *Store) claim(ctx context.Context, want Want, now time.Time) (State, bool, error) {
+func (s *Store) claim(ctx context.Context, want Want, asked, now time.Time) (State, bool, error) {
 	claimed := false
 	st, err := s.commit(ctx, func(st *State) bool {
-		if st.fresh(want, now) || st.Backoff != nil || now.Before(st.AttemptedAt.Add(MinInterval)) {
+		if st.fresh(want, asked) || st.Backoff != nil || now.Before(st.AttemptedAt.Add(MinInterval)) {
 			return false
 		}
 		st.AttemptedAt, st.Failure, claimed = now, nil, true

@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A pull request read no longer waits forever for a poll it can use.** Each
+  record a shared poll writes carries the poll's start time, and a read wanted
+  records polled less than 30 seconds before the current time. On monorepo a
+  poll over about 300 leased pull requests takes 60 to 250 seconds, so its
+  records were already stale when they landed. Only the process that claimed
+  the next poll got an answer, and `ccx vcs pr status` ran for 5 to 12 minutes
+  while about ten `pr watch` processes won the claims. A read now accepts
+  records polled up to 30 seconds before the read began, so the poll in flight
+  when it started answers it however long that poll takes.
+
 - **No stack submit opens a pull request without a prepared body.** A fresh
   `ccx vcs stack submit` opened a pull request for every branch that had none,
   titled and described from its commit, and opened monorepo #33429 with no
