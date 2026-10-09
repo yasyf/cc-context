@@ -1000,7 +1000,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	if err != nil {
 		return nil, err
 	}
-	overrides, err := stackOverrides(o)
+	overrides, err := stackOverrides(o, state)
 	if err != nil {
 		return nil, err
 	}
@@ -1536,7 +1536,7 @@ func stackShipCovers(run *stackRebaseRun, ship *stackShipIntent) error {
 	return nil
 }
 
-func stackOverrides(o stackRebaseOpts) (map[string]string, error) {
+func stackOverrides(o stackRebaseOpts, state gtState) (map[string]string, error) {
 	overrides := map[string]string{}
 	for _, pair := range o.parents {
 		child, parent, ok := strings.Cut(pair, "=")
@@ -1548,12 +1548,30 @@ func stackOverrides(o stackRebaseOpts) (map[string]string, error) {
 	for i := 1; i < len(o.linearize); i++ {
 		overrides[o.linearize[i]] = o.linearize[i-1]
 	}
+	if len(o.linearize) > 0 {
+		if _, named := overrides[o.linearize[0]]; !named {
+			if base := stackLinearizeBase(state, o.linearize); base != "" {
+				overrides[o.linearize[0]] = base
+			}
+		}
+	}
 	for _, name := range o.landed {
 		if _, ok := overrides[name]; ok {
 			return nil, fmt.Errorf("stack rebase: %s is both landed and given a parent", name)
 		}
 	}
 	return overrides, nil
+}
+
+func stackLinearizeBase(state gtState, chain []string) string {
+	base := ""
+	for cur, seen := chain[0], map[string]bool{}; len(state[cur].Parents) > 0 && !seen[cur]; cur = state[cur].Parents[0].Ref {
+		seen[cur] = true
+		if cur != chain[0] && slices.Contains(chain, cur) {
+			base = state[cur].Parents[0].Ref
+		}
+	}
+	return base
 }
 
 func stackAdoptUntracked(ctx context.Context, dir render.Dir, tr vcs.Trunk, state gtState, overrides map[string]string) (gtState, error) {
