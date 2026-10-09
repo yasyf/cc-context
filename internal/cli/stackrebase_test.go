@@ -2340,6 +2340,24 @@ func TestStackContinueFinishesARebaseGTLost(t *testing.T) {
 	}
 }
 
+func TestStackStagedMarkersReadsAFileWithDiffOff(t *testing.T) {
+	t.Parallel()
+	f := shipGTRepo(t)
+	stackConflicting(t, f)
+	writeShipFile(t, f.Dir, ".gitattributes", "c.txt -diff\n")
+	runAllowFail(t, f.Env(), f.Dir, "git", "-c", "rerere.enabled=false", "rebase", "main")
+	writeShipFile(t, f.Dir, "c.txt", "trunk\n<<<<<<< HEAD\n=======\n======== setext\n>>>>>>>\nfeature\n|||||||  base\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "c.txt")
+
+	got, err := stackStagedMarkers(f.Context(), f.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"c.txt:2", "c.txt:3", "c.txt:5", "c.txt:7"}; !slices.Equal(got, want) {
+		t.Errorf("markers = %q, want %q", got, want)
+	}
+}
+
 // TestStackContinueNamesAResolutionRerereReplayed pins the warning a stranded
 // rebase gets when rerere, on in the user's config, resolved a conflict from a
 // recording nobody rechecked: a stale one silently drops a branch's own hunks.

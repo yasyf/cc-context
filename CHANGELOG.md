@@ -13,8 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   file staged with `git add` while its `<<<<<<<`, `=======`, and `>>>>>>>`
   lines were still in it passed as resolved, and the run published the
   markers, as in `admin.rs` on monorepo #33648. Continue now reads the staged
-  resolution with `git diff --cached --check` and refuses while it adds any
-  marker, naming each one as `path:line`. The check covers both a ccx stack
+  resolution as a text diff against `HEAD` and refuses while it adds any
+  marker line, naming each one as `path:line`. The diff is forced to text so a
+  `-diff` file such as `yarn.lock`, which `git diff --check` skips, is read
+  too. The check covers both a ccx stack
   rebase's conflict workspace and a stranded rebase ccx did not start.
 
 - **A ship never leaves a checkout behind the branch it moved.** After

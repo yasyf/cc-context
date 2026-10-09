@@ -3212,20 +3212,52 @@ func stackUnmerged(ctx context.Context, ws string) ([]string, error) {
 	return slices.DeleteFunc(strings.Split(out, "\x00"), func(p string) bool { return p == "" }), nil
 }
 
-// stackStagedMarkers names, as path:line, each conflict marker the staged
-// resolution in ws adds over HEAD, by git's own marker rules.
+// stackStagedMarkers names, as path:line, each conflict marker line the staged
+// resolution in ws adds over HEAD. The diff is forced to text, since a -diff
+// attribute, as on yarn.lock, hides a file from git diff --check.
 func stackStagedMarkers(ctx context.Context, ws string) ([]string, error) {
-	out, err := render.RunCLIAllowExit(ctx, render.Dir(ws), "git", []string{"-c", "core.quotePath=false", "diff", "--cached", "--check", "--no-color", "--no-ext-diff"}, 2)
+	out, err := render.RunCLI(ctx, render.Dir(ws), "git", []string{"-c", "core.quotePath=false", "diff", "--cached", "--text", "--unified=0", "--no-color", "--no-ext-diff", "--no-relative", "--src-prefix=a/", "--dst-prefix=b/"})
 	if err != nil {
 		return nil, fmt.Errorf("stack rebase: check the staged files in %s for conflict markers: %w", ws, err)
 	}
 	var at []string
-	for line := range strings.Lines(out) {
-		if loc, ok := strings.CutSuffix(strings.TrimRight(line, "\n"), ": leftover conflict marker"); ok {
-			at = append(at, loc)
+	var path string
+	line, header := 0, false
+	for raw := range strings.Lines(out) {
+		text := strings.TrimRight(raw, "\r\n")
+		switch {
+		case strings.HasPrefix(text, "diff --git "):
+			path, header = "", true
+		case header && strings.HasPrefix(text, "+++ "):
+			if name, ok := strings.CutPrefix(text, "+++ b/"); ok {
+				path = strings.TrimSuffix(name, "\t")
+			}
+		case strings.HasPrefix(text, "@@ "):
+			header = false
+			_, added, _ := strings.Cut(text, " +")
+			start, _, _ := strings.Cut(strings.Fields(added)[0], ",")
+			if line, err = strconv.Atoi(start); err != nil {
+				return nil, fmt.Errorf("stack rebase: read the staged diff in %s: hunk header %q: %w", ws, text, err)
+			}
+		case !header && path != "" && strings.HasPrefix(text, "+"):
+			if stackConflictMarker(text[1:]) {
+				at = append(at, fmt.Sprintf("%s:%d", path, line))
+			}
+			line++
 		}
 	}
 	return at, nil
+}
+
+func stackConflictMarker(line string) bool {
+	if len(line) < 7 || !strings.ContainsRune("<|=>", rune(line[0])) || strings.Count(line[:7], line[:1]) != 7 {
+		return false
+	}
+	rest := line[7:]
+	if line[0] == '=' {
+		return rest == ""
+	}
+	return rest == "" || rest[0] == ' '
 }
 
 func stackBrief(ctx context.Context, run *stackRebaseRun, b *stackRebaseBranch, unmerged []string, sparse bool) string {
