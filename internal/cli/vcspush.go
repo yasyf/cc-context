@@ -224,28 +224,19 @@ func vcsPushParentHeld(ctx context.Context, dir render.Dir, remote string, state
 	if err != nil {
 		return "", err
 	}
-	nearest := ""
-	for _, at := range append(held, former[parent]...) {
-		if at == nearest {
-			continue
-		}
-		under, err := gitIsAncestor(ctx, dir, "push", at, head)
-		if err != nil {
-			return "", err
-		}
-		if !under {
-			continue
-		}
-		if nearest != "" {
-			if under, err = gitIsAncestor(ctx, dir, "push", nearest, at); err != nil {
-				return "", err
-			}
-		}
-		if under {
-			nearest = at
-		}
+	trunk, err := gtTrunkBranch("push", state)
+	if err != nil {
+		return "", err
 	}
-	return nearest, nil
+	floor := gtRestackRef(trunk)
+	tr, err := gtTrunkRefOffline(ctx, dir, "push", trunk)
+	switch {
+	case err == nil:
+		floor = string(tr.Ref())
+	case !errors.Is(err, vcs.ErrNoTrunk):
+		return "", err
+	}
+	return gtNearestHeld(ctx, dir, "push", append(held, former[parent]...), floor, head)
 }
 
 func vcsPushPublication(ctx context.Context, dir render.Dir, remote, branch, head string) (*stackPublication, string, error) {
