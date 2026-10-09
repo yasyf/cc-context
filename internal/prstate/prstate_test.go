@@ -440,7 +440,6 @@ func TestSettledPRsAreNotPolledAgain(t *testing.T) {
 	if err := seed.save(State{
 		PolledAt: epoch,
 		PRs:      map[int]PR{188: {Number: 188, State: "MERGED", SquashOn: []string{"main"}, Graphite: &gtapi.PullRequestInfo{PRNumber: 188}, PolledAt: epoch}},
-		Leases:   Leases{PRs: map[int]time.Time{188: epoch}},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -662,5 +661,111 @@ func TestCoversNeedsEveryRecordAndLane(t *testing.T) {
 		if got := st.Covers(tt.want); got != tt.ok {
 			t.Errorf("Covers(%+v) = %t, want %t", tt.want, got, tt.ok)
 		}
+	}
+}
+
+func blockedPoller(t *testing.T, dir string, now time.Time) (*Store, <-chan struct{}, func()) {
+	t.Helper()
+	inFlight, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	body := fixture(t, "poll-190.json")
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		close(inFlight)
+		<-release
+		_, _ = io.WriteString(w, body)
+	}))
+	t.Cleanup(ts.Close)
+	t.Cleanup(unblock)
+	src, err := NewGitHub(ghapi.New(ts.URL), nil, "yasyf/cc-context", io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := Open(dir, src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.now = func() time.Time { return now }
+	return store, inFlight, unblock
+}
+
+func awaitInFlight(ctx context.Context, t *testing.T, inFlight <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-inFlight:
+	case <-ctx.Done():
+		t.Fatal("the poll never reached GitHub")
+	}
+}
+
+func TestAReaderIsNotBlockedWhileAPollIsInFlight(t *testing.T) {
+	t.Parallel()
+	const pushed = "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+	dir := t.TempDir()
+	ctx, cancel := context.WithTimeout(testCtx(t), 10*time.Second)
+	defer cancel()
+	seed, err := Open(dir, &GitHub{owner: "yasyf", name: "cc-context"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.save(State{AttemptedAt: epoch, PolledAt: epoch, PRs: map[int]PR{189: {Number: 189, State: "OPEN", PolledAt: epoch}}}); err != nil {
+		t.Fatal(err)
+	}
+	poller, inFlight, release := blockedPoller(t, dir, epoch.Add(time.Second))
+	polled := make(chan State, 1)
+	go func() {
+		st, err := poller.Read(ctx, Want{PRs: []int{190}})
+		if err != nil {
+			t.Errorf("poll: %v", err)
+		}
+		polled <- st
+	}()
+	awaitInFlight(ctx, t, inFlight)
+
+	reader, gh := newStore(t, dir, &clock{now: epoch.Add(time.Second)}, nil)
+	st, err := reader.Read(ctx, Want{PRs: []int{189}})
+	if err != nil || st.PRs[189].State != "OPEN" || gh.requests() != 0 {
+		t.Fatalf("read during the poll = %v, %+v after %d requests; want the cached record at once", err, st.PRs[189], gh.requests())
+	}
+	if err := reader.Pushed(ctx, map[int]string{190: pushed}); err != nil {
+		t.Fatalf("push recorded during the poll: %v", err)
+	}
+	release()
+	if pr := (<-polled).PRs[190]; pr.State != "OPEN" || pr.PushedHead != pushed {
+		t.Errorf("#190 after the poll = %+v, want the poll merged beside the push recorded while it ran", pr)
+	}
+}
+
+func TestAReaderSharesAPollAnotherStoreHasInFlight(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ctx, cancel := context.WithTimeout(testCtx(t), 10*time.Second)
+	defer cancel()
+	seed, err := Open(dir, &GitHub{owner: "yasyf", name: "cc-context"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.save(State{AttemptedAt: epoch, PolledAt: epoch, PRs: map[int]PR{190: {Number: 190, State: "OPEN", PolledAt: epoch}}}); err != nil {
+		t.Fatal(err)
+	}
+	poller, inFlight, release := blockedPoller(t, dir, epoch.Add(MinInterval))
+	polled := make(chan error, 1)
+	go func() {
+		_, err := poller.Read(ctx, Want{PRs: []int{190}})
+		polled <- err
+	}()
+	awaitInFlight(ctx, t, inFlight)
+
+	c := &clock{now: epoch.Add(MinInterval + time.Second)}
+	reader, gh := newStore(t, dir, c, nil)
+	reader.sleep = func(_ context.Context, d time.Duration) error {
+		c.slept = append(c.slept, d)
+		release()
+		return <-polled
+	}
+	st, err := reader.Read(ctx, Want{PRs: []int{190}})
+	if err != nil || gh.requests() != 0 || len(c.slept) != 1 || !st.PRs[190].PolledAt.Equal(epoch.Add(MinInterval)) {
+		t.Errorf("read = %v after %d requests, slept %v, #190 polled %s; want the in-flight poll's result with no poll of its own",
+			err, gh.requests(), c.slept, st.PRs[190].PolledAt)
 	}
 }
