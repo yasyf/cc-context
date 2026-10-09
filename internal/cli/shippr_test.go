@@ -800,7 +800,7 @@ func TestShipPRGTOpensWithThePreparedBody(t *testing.T) {
 	baseBody := writePRBody(t, "base.md", "base body\n")
 
 	got, err := runShipCmd(gt.ctx(context.Background()), t, "-m", "fix: frobnicate\n\nContext: the commit message", "--no-watch",
-		"--pr-title", "Tip title", "--pr-body-file", tipBody, "--pr-body-file", "feature="+midBody, "--pr-body-file", "base="+baseBody)
+		"--pr-title", "Tip title", "--pr-body-file", tipBody, "--pr-title", "feature=Mid title", "--pr-body-file", "feature="+midBody, "--pr-body-file", "base="+baseBody)
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}

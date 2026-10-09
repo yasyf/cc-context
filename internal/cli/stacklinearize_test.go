@@ -22,10 +22,10 @@ func TestStackRebaseLinearizeRefusesAPushThatMergesAnOpenPullRequest(t *testing.
 	api := stubGTAPI(t)
 	f.Decorate(api.ctx)
 	shipGTStack(t, f, "s15b", "s14b", "s13b", "i11b")
+	api.prs["s15b"], api.prs["s14b"], api.prs["s13b"], api.prs["i11b"] = 28, 29, 30, 31
 	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
 		t.Fatalf("stack submit: %v", err)
 	}
-	api.prs["s15b"], api.prs["s14b"], api.prs["s13b"], api.prs["i11b"] = 28, 29, 30, 31
 	stubOpenPRs(t, f, nil, "s15b", "s14b", "s13b", "i11b")
 	before := linearizeRemoteHeads(t, f, "s15b", "s14b", "s13b", "i11b")
 	shipResetLog(t, f)

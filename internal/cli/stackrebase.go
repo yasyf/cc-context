@@ -527,12 +527,6 @@ func stackBegin(ctx context.Context, cmd *cobra.Command, l lane, commonDir strin
 	return stackDrive(ctx, cmd, l, commonDir, run)
 }
 
-// stackKeepLocal keeps stack rebase from pushing a branch with no pull
-// request: a stack none of whose branches has one is replanned to rebase
-// locally, a branch with none
-// stacked only under others without one is rebased locally while the rest
-// publish, and one a branch with a pull request sits on is refused before
-// anything moves.
 func stackKeepLocal(ctx context.Context, cmd *cobra.Command, l lane, commonDir string, o stackRebaseOpts, run *stackRebaseRun) (*stackRebaseRun, error) {
 	var live, bare []string
 	for _, b := range run.Branches {

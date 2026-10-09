@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"slices"
 	"strings"
 	"testing"
@@ -58,6 +59,7 @@ func TestStackSubmitDropsALandedParent(t *testing.T) {
 	api := stubGTAPI(t)
 	f.Decorate(api.ctx)
 	gtLandedStack(t, f)
+	api.prs["b"] = 42
 	shipResetLog(t, f)
 
 	out, _, err := runStackCmd(t, f, "submit")
@@ -99,10 +101,10 @@ func TestShipGTLeavesAnUnchangedDownstackBranchAlone(t *testing.T) {
 	api := stubGTAPI(t)
 	f.Decorate(api.ctx)
 	shipGTStack(t, f, "base", "feature")
+	api.prs["base"], api.prs["feature"] = 100, 101
 	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
 		t.Fatalf("stack submit: %v", err)
 	}
-	api.prs["base"], api.prs["feature"] = 100, 101
 	api.submitErrors["base"] = "GitHub returned an error: Pull request not found"
 	posted := len(api.submitHeads())
 	shipGTReady(t, f)
@@ -137,7 +139,7 @@ func TestShipGTReportsFromGraphiteAlone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ship error = %v (stderr=%q)", err, errStr)
 	}
-	if want := "submitted feature → PR #101 " + gtStubPRURL(101); !strings.Contains(got, want) {
+	if want := "submitted feature → PR #100 " + gtStubPRURL(100); !strings.Contains(got, want) {
 		t.Errorf("summary = %q, want it to carry %q", got, want)
 	}
 	for _, inv := range shipGTInvocations(t, f) {
@@ -202,10 +204,10 @@ func TestStackSubmitRetargetsAParkedPullRequest(t *testing.T) {
 	f.Decorate(api.ctx)
 	api.parkOn(f)
 	shipGTStack(t, f, "p", "c", "g")
+	api.prs["p"], api.prs["c"], api.prs["g"] = 100, 101, 102
 	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
 		t.Fatalf("stack submit: %v", err)
 	}
-	api.prs["p"], api.prs["c"], api.prs["g"] = 100, 101, 102
 	api.mu.Lock()
 	api.parkChildren([]gtapi.PreSubmitBranch{{HeadRefName: "p", PRNumber: 100}})
 	api.mu.Unlock()
@@ -266,10 +268,10 @@ func TestStackSubmitReplaysAChildGitHubShowsParked(t *testing.T) {
 	f.Decorate(api.ctx)
 	api.parkOn(f)
 	shipGTStack(t, f, "p", "c", "g")
+	api.prs["p"], api.prs["c"], api.prs["g"] = 100, 101, 102
 	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
 		t.Fatalf("stack submit: %v", err)
 	}
-	api.prs["p"], api.prs["c"], api.prs["g"] = 100, 101, 102
 	api.mu.Lock()
 	api.parkChildren([]gtapi.PreSubmitBranch{{HeadRefName: "p", PRNumber: 100}})
 	api.mu.Unlock()
@@ -338,6 +340,7 @@ func TestStackSubmitStopsAtTo(t *testing.T) {
 	f := stackStoppedFixture(t)
 	api := stubGTAPI(t)
 	f.Decorate(api.ctx)
+	api.openPRs("dns", "valkey")
 	stubStackPRs(t, f, nil)
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "dns")
 	shipResetLog(t, f)
@@ -352,5 +355,27 @@ func TestStackSubmitStopsAtTo(t *testing.T) {
 	}
 	if heads := api.submitHeads(); !slices.Equal(heads, []string{"dns", "valkey"}) {
 		t.Errorf("submit posts = %v, want dns then valkey", heads)
+	}
+}
+
+func TestShipGTHoldsADownstackBranchWithoutAPreparedBody(t *testing.T) {
+	setupShipGT(t, true)
+	api := stubGTAPI(t)
+	t.Setenv("GIT_BRANCH", "feature2")
+	setGTState(t, `{"main":{"trunk":true},"feature":{"parents":[{"ref":"main","sha":"deadbeef"}]},`+
+		`"feature2":{"parents":[{"ref":"feature","sha":"beadfeed"}]}}`)
+
+	got, errStr, err := runShipCmdFull(api.ctx(context.Background()), t, "-m", "fix: frobnicate", "--no-watch")
+	if err != nil {
+		t.Fatalf("ship error = %v (stderr=%q)", err, errStr)
+	}
+	if heads := api.submitHeads(); !slices.Equal(heads, []string{"feature2"}) {
+		t.Errorf("submit posts = %v, want feature2 alone: feature has no pull request and no prepared body", heads)
+	}
+	if want := "ship: pushed, not submitted: feature has no pull request"; !strings.Contains(errStr, want) {
+		t.Errorf("stderr = %q, want %q", errStr, want)
+	}
+	if want := "submitted feature2 → PR #100 " + gtStubPRURL(100); !strings.Contains(got, want) {
+		t.Errorf("summary = %q, want %q", got, want)
 	}
 }

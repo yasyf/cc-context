@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -133,39 +134,57 @@ func TestShipRefusesToDropItsOwnClosedPullRequest(t *testing.T) {
 	}
 }
 
-// TestStackSubmitOpensNewPullRequestsForClosedOnes is the stack whose pull
-// requests were closed for a stale Graphite record: --new-pr keeps each branch
-// and opens a new pull request where submit would drop it as abandoned.
 func TestStackSubmitOpensNewPullRequestsForClosedOnes(t *testing.T) {
-	f := shipGTRepo(t)
-	api := stubGTAPI(t)
-	f.Decorate(api.ctx)
-	shipGTStack(t, f, "a", "b")
-	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "a", "b")
-	stubStackPRs(t, f, map[string]*stackPR{
-		"a": {Number: 1, Title: "a", State: "CLOSED", Base: "main"},
-		"b": {Number: 2, Title: "b", State: "CLOSED", Base: "a"},
-	})
-	installDropGH(t, f, map[string]dropSeed{"a": {number: 1, state: "CLOSED", base: "main"}, "b": {number: 2, state: "CLOSED", base: "a"}})
-	shipResetLog(t, f)
+	for _, prepared := range []bool{true, false} {
+		t.Run(strconv.FormatBool(prepared), func(t *testing.T) {
+			f := shipGTRepo(t)
+			api := stubGTAPI(t)
+			f.Decorate(api.ctx)
+			shipGTStack(t, f, "a", "b")
+			mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "a", "b")
+			stubStackPRs(t, f, map[string]*stackPR{
+				"a": {Number: 1, Title: "a", State: "CLOSED", Base: "main"},
+				"b": {Number: 2, Title: "b", State: "CLOSED", Base: "a"},
+			})
+			installDropGH(t, f, map[string]dropSeed{"a": {number: 1, state: "CLOSED", base: "main"}, "b": {number: 2, state: "CLOSED", base: "a"}})
+			args := []string{"submit", "--new-pr", "a", "--new-pr", "b"}
+			if prepared {
+				for _, branch := range []string{"a", "b"} {
+					args = append(args, "--pr-title", branch+"="+branch, "--pr-body-file", branch+"="+writePRBody(t, branch+".md", branch+" body\n"))
+				}
+			}
+			shipResetLog(t, f)
 
-	out, _, err := runStackCmd(t, f, "submit", "--new-pr", "a", "--new-pr", "b")
-	if err != nil {
-		t.Fatalf("stack submit: %v", err)
-	}
-	if strings.Contains(out, "closed)") {
-		t.Errorf("report = %q, want neither branch dropped", out)
-	}
-	if heads := api.submitHeads(); !slices.Equal(heads, []string{"a", "b"}) {
-		t.Errorf("submit posts = %v, want a then b", heads)
-	}
-	for branch, base := range map[string]string{"a": "main", "b": "a"} {
-		if entry := api.submitEntry(branch); entry.Action != gtapi.SubmitCreate || entry.PRNumber != 0 || entry.Base != base {
-			t.Errorf("%s submitted as %s #%d onto %s, want a new pull request onto %s", branch, entry.Action, entry.PRNumber, entry.Base, base)
-		}
-	}
-	if n := gitAt(t, f.Env(), f.RemoteDir, "rev-list", "--count", "a..b"); n != "1" {
-		t.Errorf("origin b holds %s commits over a, want its own 1", n)
+			out, errOut, err := runStackCmd(t, f, args...)
+			if err != nil {
+				t.Fatalf("stack submit: %v (stderr=%q)", err, errOut)
+			}
+			if strings.Contains(out, "closed)") {
+				t.Errorf("report = %q, want neither branch dropped", out)
+			}
+			if n := gitAt(t, f.Env(), f.RemoteDir, "rev-list", "--count", "a..b"); n != "1" {
+				t.Errorf("origin b holds %s commits over a, want its own 1", n)
+			}
+			if !prepared {
+				if heads := api.submitHeads(); len(heads) != 0 {
+					t.Errorf("submit posts = %v, want none: neither branch has a prepared title and body", heads)
+				}
+				for _, branch := range []string{"a", "b"} {
+					if want := "pushed, not submitted: " + branch + " has no pull request, and none opens without a prepared title and body — open it from its checkout with ccx vcs ship --no-commit --tip-only --new-pr " + branch + " --pr-title <title> --pr-body-file <body.md>"; !strings.Contains(errOut, want) {
+						t.Errorf("stderr = %q, want %q", errOut, want)
+					}
+				}
+				return
+			}
+			if heads := api.submitHeads(); !slices.Equal(heads, []string{"a", "b"}) {
+				t.Errorf("submit posts = %v, want a then b", heads)
+			}
+			for branch, base := range map[string]string{"a": "main", "b": "a"} {
+				if entry := api.submitEntry(branch); entry.Action != gtapi.SubmitCreate || entry.PRNumber != 0 || entry.Base != base {
+					t.Errorf("%s submitted as %s #%d onto %s, want a new pull request onto %s", branch, entry.Action, entry.PRNumber, entry.Base, base)
+				}
+			}
+		})
 	}
 }
 

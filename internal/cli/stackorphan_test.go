@@ -59,6 +59,9 @@ func TestStackRebaseStopsAtAConflictBelowAPublishedParentOutsideTheRun(t *testin
 func TestShipKeepsABranchOnTheSiblingItWasPublishedOnto(t *testing.T) {
 	f := shipGTRepo(t)
 	stubOpenPRs(t, f, nil, "p", "a", "z")
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	api.openPRs("p", "a", "z")
 	shipGTStack(t, f, "p", "a")
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "p")
 	shipGTStack(t, f, "z")
