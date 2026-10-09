@@ -21,6 +21,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs stack drop` finishes in seconds and replays branches other
+  working copies hold.** On monorepo, with 2,742 branches tracked, each drop
+  ran about 20 minutes: it checked every tracked branch for the dropped commits
+  with its own `git merge-base` process, twice. It now asks git once with
+  `for-each-ref --contains`. The replay also held every branch above the
+  dropped one that another lane had checked out, so the strand check found
+  them still carrying the dropped commits and refused, as on fix-go-3's
+  `drop-go-catalog`. Those branches now move and their working copies follow;
+  a copy with uncommitted work refuses the drop before any pull request is
+  retargeted.
+
 - **`ccx vcs stack submit` waits on Graphite for a stack record that still
   holds a landed pull request instead of naming `pr recreate`.** Graphite drops
   a landed pull request from the record by itself, approvals intact: on monorepo
