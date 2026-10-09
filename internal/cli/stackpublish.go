@@ -158,7 +158,7 @@ func stackRemoteAdopts(ctx context.Context, dir render.Dir, base, published, rem
 
 func stackReplayedOnto(ctx context.Context, dir render.Dir, remote, ownBase, ownHead string) (string, error) {
 	own, err := gtRevCount(ctx, stackRebasePrefix, dir, ownBase+".."+ownHead)
-	if err != nil {
+	if err != nil || own == 0 {
 		return "", err
 	}
 	base, err := stackRevParse(ctx, dir, fmt.Sprintf("%s~%d", remote, own))

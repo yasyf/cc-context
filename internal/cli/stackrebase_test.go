@@ -1976,6 +1976,71 @@ func TestStackSnapshotTakesAServerRestackOfItsOwnCommitsPastAStalePin(t *testing
 	}
 }
 
+func TestStackSnapshotComparesAServerRestackOntoARestackedParentByPatch(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		restack  func(t *testing.T, f *vcstest.Fixture, server string)
+		diverged bool
+	}{
+		{
+			name: "identical patches",
+			restack: func(t *testing.T, f *vcstest.Fixture, server string) {
+				t.Helper()
+				mustRun(t, f.Env(), server, "git", "cherry-pick", "top")
+			},
+		},
+		{
+			name: "rewritten patch",
+			restack: func(t *testing.T, f *vcstest.Fixture, server string) {
+				t.Helper()
+				writeShipFile(t, server, "top.txt", "someone else's top\n")
+				mustRun(t, f.Env(), server, "git", "add", "top.txt")
+				mustRun(t, f.Env(), server, "git", "commit", "-qm", "top")
+			},
+			diverged: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f := stackRebaseRepo(t, "base", "mid", "top")
+			cut := gitAt(t, f.Env(), f.Dir, "rev-parse", "mid")
+			mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "mid")
+			writeShipFile(t, f.Dir, "mid.txt", "amended mid\n")
+			mustRun(t, f.Env(), f.Dir, "git", "commit", "-qa", "--amend", "--no-edit")
+			mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "mid", "top")
+			server := f.WorktreePath("server")
+			mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", "--detach", server, "main")
+			mustRun(t, f.Env(), server, "git", "cherry-pick", "--no-commit", "base")
+			mustRun(t, f.Env(), server, "git", "commit", "-qm", "base (#5)")
+			mustRun(t, f.Env(), server, "git", "push", "-q", "origin", "HEAD:main")
+			mustRun(t, f.Env(), server, "git", "cherry-pick", "mid")
+			mustRun(t, f.Env(), server, "git", "push", "-qf", "origin", "HEAD:mid")
+			tc.restack(t, f, server)
+			mustRun(t, f.Env(), server, "git", "push", "-qf", "origin", "HEAD:top")
+			mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
+			dir := render.Dir(f.Dir)
+			tr, err := gtTrunkRefOffline(f.Context(), dir, stackRebasePrefix, "main")
+			if err != nil {
+				t.Fatal(err)
+			}
+			pin := gitAt(t, f.Env(), f.Dir, "rev-parse", "origin/main")
+			local := gitAt(t, f.Env(), f.Dir, "rev-parse", "top")
+			remote := gitAt(t, f.Env(), f.Dir, "rev-parse", "origin/top")
+			s := gtBranchState{Head: local, Parents: []gtRef{{Ref: "mid", SHA: cut}}}
+
+			_, err = stackSnapshot(f.Context(), dir, tr, s, "top", remote, local, nil, false, pin, false, false)
+			var diverged stackDivergedError
+			if got := errors.As(err, &diverged); got != tc.diverged {
+				t.Fatalf("stackSnapshot = %v, want diverged %v", err, tc.diverged)
+			}
+			if !tc.diverged && err != nil {
+				t.Fatalf("stackSnapshot = %v, want the restack of top's own patches onto mid's restack taken as a rewrite", err)
+			}
+		})
+	}
+}
+
 func TestGTPushArgvPinsAnAbsentRemote(t *testing.T) {
 	t.Parallel()
 	argv := gtPushArgv(gtSubmit{}, []gtSubmitBranch{{name: "new", head: "abc", leaseSet: true}})

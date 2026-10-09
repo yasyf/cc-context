@@ -2002,9 +2002,11 @@ func stackSnapshot(ctx context.Context, dir render.Dir, tr vcs.Trunk, s gtBranch
 				}
 			}
 			if !replay {
-				if replay, err = stackRestackedOntoTrunk(ctx, dir, remote, s.Parents[0].SHA, s.Head, pin); err != nil {
+				replayed, err := stackReplayedOnto(ctx, dir, remote, s.Parents[0].SHA, s.Head)
+				if err != nil {
 					return b, err
 				}
+				replay = replayed != ""
 			}
 			if !replay {
 				if replay, err = gitOnlyCopies(ctx, dir, stackRebasePrefix, remote, s.Head, pin); err != nil {
@@ -2342,14 +2344,6 @@ func stackQueueRestackBase(ctx context.Context, dir render.Dir, pin, remote, our
 		return "", err
 	}
 	return base, nil
-}
-
-func stackRestackedOntoTrunk(ctx context.Context, dir render.Dir, remote, base, head, pin string) (bool, error) {
-	replayed, err := stackReplayedOnto(ctx, dir, remote, base, head)
-	if err != nil || replayed == "" {
-		return false, err
-	}
-	return gitIsAncestor(ctx, dir, stackRebasePrefix, replayed, pin)
 }
 
 func stackPatchSeries(ctx context.Context, dir render.Dir, pin, head string) ([]string, error) {
