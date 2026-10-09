@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A ship finishes a dead publication run its branch has moved past.** A
+  ship killed after its push left a publication run behind. The next ship
+  on that branch committed first, then finished the dead run and refused
+  with `cannot lock ref ... is at <new commit> but expected <old source>`.
+  Recovery took `ccx vcs stack abort`, a reset, and a cherry-pick, as on
+  monorepo #33287. Once the push is out, publication no longer re-verifies
+  the source refs. A branch that moved keeps its local head and is named.
+  The ship then publishes the new commit.
+
 - **A pull request read no longer waits forever for a poll it can use.** Each
   record a shared poll writes carries the poll's start time, and a read wanted
   records polled less than 30 seconds before the current time. On monorepo a

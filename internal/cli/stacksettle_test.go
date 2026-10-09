@@ -349,6 +349,37 @@ func TestStackSubmitBesideADeadPublicationRun(t *testing.T) {
 	}
 }
 
+func TestStackSubmitFinishesADeadPublicationRunItsSourceMovedPast(t *testing.T) {
+	f, run, plan := prepareStackPublication(t)
+	if err := stackPushPublication(f.Context(), render.Dir(f.Dir), gtSubmit{prefix: "test", publication: run}, plan); err != nil {
+		t.Fatal(err)
+	}
+	stackOwnRun(t, run)
+	run.Pid = stackExitedPid(t)
+	if err := stackSaveRun(run); err != nil {
+		t.Fatal(err)
+	}
+	writeShipFile(t, f.Dir, "followup.txt", "follow-up\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "followup.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "follow-up")
+
+	out, _, err := runStackCmd(t, f, "submit")
+	if err != nil || !strings.Contains(out, "finishing the stack rebase of feature") {
+		t.Fatalf("submit after the branch moved past the dead run = %q, %v, want the run finished and the branch published", out, err)
+	}
+	remote := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature")
+	if got := gitAt(t, f.Env(), f.Dir, "log", "--format=%s", "origin/main.."+remote); got != "follow-up\n"+gitAt(t, f.Env(), f.Dir, "log", "-1", "--format=%s", run.Branches[0].Local) {
+		t.Fatalf("published feature %s carries %q past the trunk, want the source and its follow-up\n%s", remote, got, out)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "show", remote+":followup.txt"); got != "follow-up" {
+		t.Errorf("published followup.txt = %q, want the follow-up commit", got)
+	}
+	if got := shipHead(t, f); got != remote {
+		t.Errorf("source = %s, want it moved onto its publication %s", got, remote)
+	}
+	stackAssertNoRun(t, f)
+}
+
 func TestStackAdoptRefusesAHeldOrResavedRun(t *testing.T) {
 	for _, held := range []bool{true, false} {
 		t.Run(map[bool]string{true: "another adopter holds it", false: "saved since it was read"}[held], func(t *testing.T) {
