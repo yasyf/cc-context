@@ -3,7 +3,7 @@
 # its own and runs the ambient one under GOTOOLCHAIN=local, so a global
 # `go = "latest"` that lags go.mod fails the hook with "go.mod requires go >=
 # X (running go Y)" and silently disables the local lint gate.
-go = "1.26.6"
+go = "1.26.9"
 # Single source for the lint gate's version: ci.yml reads this pin back, so
 # neither lane floats onto a release the other does not run.
 golangci-lint = "2.13.2"

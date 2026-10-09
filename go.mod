@@ -1,11 +1,11 @@
 module github.com/yasyf/cc-context
 
-go 1.26.6
+go 1.26.9
 
 require (
 	github.com/modelcontextprotocol/go-sdk v1.6.1
 	github.com/spf13/cobra v1.10.2
-	golang.org/x/sys v0.47.0
+	golang.org/x/sys v0.48.0
 )
 
 require (
@@ -21,8 +21,8 @@ require (
 	github.com/tetratelabs/wazero v1.12.0
 	github.com/yasyf/daemonkit v0.32.3
 	github.com/yuin/goldmark v1.8.2
-	golang.org/x/net v0.55.0
-	golang.org/x/sync v0.21.0
+	golang.org/x/net v0.60.0
+	golang.org/x/sync v0.23.0
 	modernc.org/sqlite v1.57.0
 )
 
@@ -47,7 +47,7 @@ require (
 	github.com/segmentio/encoding v0.5.4 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	golang.org/x/oauth2 v0.35.0 // indirect
-	golang.org/x/text v0.39.0 // indirect
+	golang.org/x/text v0.42.0 // indirect
 	gopkg.in/warnings.v0 v0.1.2 // indirect
 	modernc.org/libc v1.74.4 // indirect
 	modernc.org/mathutil v1.7.1 // indirect

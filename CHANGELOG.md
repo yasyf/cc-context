@@ -23,6 +23,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   moved, whose published head lacks work a branch above it carries, or that
   was never pushed, with the `--include` flags that take them all in.
 
+### Security
+
+- **Go 1.26.9 and `golang.org/x/net` v0.60.0.** `govulncheck` flagged
+  GO-2026-6608 through GO-2026-6617 in `crypto/tls`, `net/http`,
+  `net/textproto`, and `golang.org/x/net` at the previous versions.
+
 ### Changed
 
 - **`stack submit` stops republishing a pull request a fresh head cannot

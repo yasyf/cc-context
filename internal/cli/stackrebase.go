@@ -4110,7 +4110,7 @@ func stackVerdict(ctx context.Context, cmd *cobra.Command, l lane, run *stackReb
 		case stackHeadLags(pr, b):
 			fields = append(fields, fmt.Sprintf("stale read: GitHub still shows %.12s %s after the push of %.12s — re-run ccx vcs stack submit if it stays", pr.Head, stackHeadLagWait, b.NewHead))
 		}
-		if stackBaseStrays(pr, parent, slices.Contains(published, name)) {
+		if stackBaseStrays(pr, parent, slices.Contains(published, name) && stackParentOpen(run, prs, parent)) {
 			field, moved := stackRetargetToParent(ctx, dir, pr, parent)
 			fields = append(fields, field)
 			if !moved {
@@ -4146,6 +4146,16 @@ func stackSubmittedParent(ctx context.Context, dir render.Dir, run *stackRebaseR
 // left out is the merge queue's to move.
 func stackBaseStrays(pr *stackPR, parent string, submitted bool) bool {
 	return pr.State == "OPEN" && pr.Base != "" && pr.Base != parent && (submitted || pr.Base != fmt.Sprintf("graphite-base/%d", pr.Number))
+}
+
+// stackParentOpen is a parent whose pull request has not closed: once it lands,
+// the merge queue owns moving its children.
+func stackParentOpen(run *stackRebaseRun, prs map[string]*stackPR, parent string) bool {
+	if b := run.branch(parent); b != nil && b.Landed != "" {
+		return false
+	}
+	pr := prs[parent]
+	return pr == nil || pr.State == "OPEN"
 }
 
 // stackRetargetToParent moves a pull request GitHub still bases on another

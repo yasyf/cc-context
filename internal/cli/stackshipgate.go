@@ -153,11 +153,17 @@ func stackRefusePins(ctx context.Context, dir render.Dir, run *stackRebaseRun) e
 	if err != nil {
 		return err
 	}
-	unpublished, more, err := stackUnpublishedPins(ctx, dir, run, stale)
-	if err != nil {
-		return err
+	include := stale
+	for {
+		pins, more, err := stackUnpublishedPins(ctx, dir, run, include)
+		if err != nil {
+			return err
+		}
+		if len(pins) == 0 {
+			break
+		}
+		include, reasons = append(include, pins...), append(reasons, more...)
 	}
-	include := append(stale, unpublished...)
 	if len(include) == 0 {
 		return nil
 	}
@@ -170,7 +176,7 @@ func stackRefusePins(ctx context.Context, dir render.Dir, run *stackRebaseRun) e
 		them = "them"
 	}
 	return refuse("%s: %s, so nothing was pushed; pass %s to take %s into the run",
-		stackRebasePrefix, strings.Join(append(reasons, more...), "; "), strings.Join(flags, " "), them)
+		stackRebasePrefix, strings.Join(reasons, "; "), strings.Join(flags, " "), them)
 }
 
 // stackStalePins names each branch kept at its published head while the run
@@ -211,16 +217,16 @@ func stackStalePins(ctx context.Context, dir render.Dir, run *stackRebaseRun) (s
 // stackUnpublishedPins names each branch kept at its published head while a
 // branch stacked on it carries work of it origin lacks: the run replays that
 // branch onto the published head and drops the work from what it pushes. Work
-// that only replays the published commits onto newer trunk is no loss, and a
-// stale pin the run would take in is no pin.
-func stackUnpublishedPins(ctx context.Context, dir render.Dir, run *stackRebaseRun, stale []string) (pins, reasons []string, err error) {
+// that only replays the published commits onto newer trunk is no loss. A pin
+// in taken is no pin, and a kept branch in taken publishes with the run.
+func stackUnpublishedPins(ctx context.Context, dir render.Dir, run *stackRebaseRun, taken []string) (pins, reasons []string, err error) {
 	byName := map[string]*stackRebaseBranch{}
 	for i := range run.Branches {
 		byName[run.Branches[i].Name] = &run.Branches[i]
 	}
 	for _, b := range run.Branches {
 		pin := byName[b.Parent]
-		if b.Landed != "" || b.Held != "" || b.Kept || pin == nil || !pin.Pinned || pin.Local == pin.Remote || slices.Contains(stale, pin.Name) || slices.Contains(pins, pin.Name) {
+		if b.Landed != "" || b.Held != "" || (b.Kept && !slices.Contains(taken, b.Name)) || pin == nil || !pin.Pinned || pin.Local == pin.Remote || slices.Contains(taken, pin.Name) || slices.Contains(pins, pin.Name) {
 			continue
 		}
 		carried, err := stackCarriedUnpublished(ctx, dir, run.Pin, pin, b.Local)

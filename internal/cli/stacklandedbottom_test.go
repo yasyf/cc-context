@@ -25,6 +25,7 @@ func stackBottomLanded(t *testing.T) (*vcstest.Fixture, *gtAPIStub) {
 		"side": {Number: 43, Title: "side", State: "OPEN", Base: "mid"},
 		"top":  {Number: 44, Title: "top", State: "OPEN", Base: "side"},
 	})
+	writeShipGH(t, f)
 	shipResetLog(t, f)
 	return f, api
 }

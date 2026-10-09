@@ -1688,6 +1688,26 @@ func TestStackRebaseMovesAPullRequestTheSubmitLeftParked(t *testing.T) {
 	}
 }
 
+func TestStackParentOpen(t *testing.T) {
+	t.Parallel()
+	run := &stackRebaseRun{Trunk: "main", Branches: []stackRebaseBranch{{Name: "landed", Landed: "#1 landed"}, {Name: "live"}}}
+	tests := []struct {
+		parent string
+		prs    map[string]*stackPR
+		want   bool
+	}{
+		{parent: "main", want: true},
+		{parent: "landed"},
+		{parent: "live", prs: map[string]*stackPR{"live": {Number: 2, State: "OPEN"}}, want: true},
+		{parent: "live", prs: map[string]*stackPR{"live": {Number: 2, State: "CLOSED", Landed: true}}},
+	}
+	for _, tt := range tests {
+		if got := stackParentOpen(run, tt.prs, tt.parent); got != tt.want {
+			t.Errorf("stackParentOpen(%s, %v) = %t, want %t", tt.parent, tt.prs, got, tt.want)
+		}
+	}
+}
+
 func TestStackBaseStrays(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

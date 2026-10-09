@@ -274,6 +274,7 @@ func TestStackSubmitReplaysAChildGitHubShowsParked(t *testing.T) {
 	api.parkChildren([]gtapi.PreSubmitBranch{{HeadRefName: "p", PRNumber: 100}})
 	api.mu.Unlock()
 	stubOpenPRs(t, f, map[string]*stackPR{"c": {Number: 101, Title: "c", State: "OPEN", Base: "graphite-base/101"}}, "p", "g")
+	writeShipGH(t, f)
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "p")
 	writeShipFile(t, f.Dir, "p.txt", "amended\n")
 	mustRun(t, f.Env(), f.Dir, "git", "add", "p.txt")

@@ -295,6 +295,7 @@ func TestStackRebaseLeavesALandedParentsRewrittenCommitsBehind(t *testing.T) {
 		"a": {Number: 41, Title: "a", State: "MERGED", Landed: true, Head: rewritten},
 		"b": {Number: 42, Title: "b", State: "OPEN", Base: "a"},
 	})
+	writeShipGH(t, f)
 	shipResetLog(t, f)
 
 	if _, _, err := runStackCmd(t, f, "rebase"); err != nil {
@@ -321,6 +322,7 @@ func TestStackSubmitDropsALandedParentAnotherWorktreeHolds(t *testing.T) {
 		"a": {Number: 41, Title: "a", State: "MERGED", Landed: true, Head: gitAt(t, f.Env(), f.Dir, "rev-parse", "a")},
 		"b": {Number: 42, Title: "b", State: "OPEN", Base: "a"},
 	})
+	writeShipGH(t, f)
 	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "b")
 	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", f.WorktreePath("held"), "a")
 	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")

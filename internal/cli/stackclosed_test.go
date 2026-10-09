@@ -23,7 +23,7 @@ func TestStackSubmitDropsAClosedPullRequestMidStack(t *testing.T) {
 		"b": {Number: 2, Title: "b", State: "CLOSED", Base: "a"},
 		"c": {Number: 3, Title: "c", State: "OPEN", Base: "b"},
 	})
-	installDropGH(t, f, map[string]dropSeed{"b": {number: 2, state: "CLOSED", base: "a"}})
+	installDropGH(t, f, map[string]dropSeed{"b": {number: 2, state: "CLOSED", base: "a"}, "c": {number: 3, state: "OPEN", base: "b"}})
 	closed := gitAt(t, f.Env(), f.Dir, "rev-parse", "b")
 	shipResetLog(t, f)
 
