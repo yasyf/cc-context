@@ -62,7 +62,10 @@ head ref goes, and the report names the state it came back in rather than
 claiming one.
 
 The children are restacked but not pushed, so their pull requests keep showing
-the dropped commits until ccx vcs stack submit puts the new heads up.
+the dropped commits until ccx vcs stack submit puts the new heads up. A branch
+above the dropped one that another working copy has checked out is replayed
+too, and that copy follows it; one with uncommitted work refuses the drop
+before anything changes.
 
 --repair is the way back from a stack this already happened to. GitHub refuses
 both obvious remedies, each in the other's name: a closed pull request's base
@@ -204,6 +207,19 @@ func dropPlanFor(ctx context.Context, l lane, state gtState, branch string) (dro
 	if plan.chain, err = gtUpstack(dropPrefix, state, branch); err != nil {
 		return dropPlan{}, err
 	}
+	for _, name := range plan.chain {
+		holder := holders[name]
+		if holder == "" {
+			continue
+		}
+		dirty, err := gitUncommitted(ctx, holder)
+		if err != nil {
+			return dropPlan{}, fmt.Errorf("%s: %w", dropPrefix, err)
+		}
+		if dirty {
+			return dropPlan{}, fmt.Errorf("%s: %s is checked out in %s with uncommitted work, and the drop replays it; nothing was changed — commit or move that work, then re-run", dropPrefix, name, holder)
+		}
+	}
 	plan.children = dropChildren(state, branch)
 
 	repo, err := vcs.LookupRepo(ctx, l.dir(), false)
@@ -343,7 +359,7 @@ func dropLocal(ctx context.Context, l lane, commonDir string, plan dropPlan) (gt
 			}
 		}
 	}
-	result, err := gtRestackChain(ctx, dropPrefix, l.checkout, l.dir(), commonDir, state, chain, false)
+	result, err := gtRestackChain(ctx, dropPrefix, l.checkout, l.dir(), commonDir, state, chain, true)
 	if err != nil {
 		return result, fmt.Errorf("%s: %w", dropPrefix, err)
 	}
@@ -371,20 +387,13 @@ func dropCarriers(ctx context.Context, dir render.Dir, state gtState, branch str
 	if err != nil || empty {
 		return nil, err
 	}
+	carried, err := dropContaining(ctx, dir, state, branch, head)
+	if err != nil {
+		return nil, err
+	}
 	carriers := map[string]string{}
-	for _, name := range slices.Sorted(maps.Keys(state)) {
-		s := state[name]
-		if name == branch || len(s.Parents) == 0 {
-			continue
-		}
-		carried, err := gitIsAncestor(ctx, dir, dropPrefix, head, s.Head)
-		if err != nil {
-			return nil, err
-		}
-		if !carried {
-			continue
-		}
-		recorded, err := gitIsAncestor(ctx, dir, dropPrefix, head, s.Parents[0].SHA)
+	for _, name := range carried {
+		recorded, err := gitIsAncestor(ctx, dir, dropPrefix, head, state[name].Parents[0].SHA)
 		if err != nil {
 			return nil, err
 		}
@@ -409,21 +418,29 @@ func dropStrandCheck(ctx context.Context, dir render.Dir, state gtState, branch,
 	if err != nil || own {
 		return err
 	}
+	carried, err := dropContaining(ctx, dir, state, branch, head)
+	if err != nil || len(carried) == 0 {
+		return err
+	}
+	return fmt.Errorf("%s: %s's commits are still on %s after the replay, so deleting it would strand them; nothing was deleted",
+		dropPrefix, branch, strings.Join(carried, ", "))
+}
+
+// dropContaining names the tracked branches other than branch whose heads
+// carry commit, in one walk: an ancestry check per tracked branch costs a
+// process each, about twenty minutes across a monorepo's 2,700 rows.
+func dropContaining(ctx context.Context, dir render.Dir, state gtState, branch, commit string) ([]string, error) {
+	var refs strings.Builder
 	for _, name := range slices.Sorted(maps.Keys(state)) {
-		s := state[name]
-		if name == branch || len(s.Parents) == 0 {
-			continue
-		}
-		carried, err := gitIsAncestor(ctx, dir, dropPrefix, head, s.Head)
-		if err != nil {
-			return err
-		}
-		if carried {
-			return fmt.Errorf("%s: %s still carries %s's commits after the replay, so deleting it would strand them; nothing was deleted",
-				dropPrefix, name, branch)
+		if name != branch && len(state[name].Parents) > 0 {
+			refs.WriteString("refs/heads/" + name + "\n")
 		}
 	}
-	return nil
+	out, err := render.RunCLIStdin(ctx, dir, "git", []string{"for-each-ref", "--contains", commit, "--format=%(refname:strip=2)", "--stdin"}, []byte(refs.String()))
+	if err != nil {
+		return nil, fmt.Errorf("%s: git for-each-ref --contains %s: %w", dropPrefix, commit, err)
+	}
+	return strings.Fields(out), nil
 }
 
 func dropRemoteDelete(ctx context.Context, l lane, plan dropPlan) error {

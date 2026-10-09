@@ -545,3 +545,85 @@ func TestStackDropRefusesTrunk(t *testing.T) {
 		t.Errorf("error = %v, want it to name trunk", err)
 	}
 }
+
+// TestStackDropReplaysAChildAnotherWorkingCopyHolds is fix-go-3's drop: the
+// branches above the dropped one were checked out in other lanes, the replay
+// held them, and the strand check then refused to delete the branch.
+func TestStackDropReplaysAChildAnotherWorkingCopyHolds(t *testing.T) {
+	f := dropStack(t, "base", "mid", "top")
+	gh := installDropGH(t, f, map[string]dropSeed{
+		"mid": {number: 1, state: "OPEN", base: "base"},
+		"top": {number: 2, state: "OPEN", base: "mid"},
+	})
+	lane := filepath.Join(t.TempDir(), "top")
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", lane, "top")
+
+	if _, _, err := runStackCmd(t, f, "drop", "mid"); err != nil {
+		t.Fatalf("stack drop: %v", err)
+	}
+	if subjects := gitAt(t, f.Env(), f.Dir, "log", "--format=%s", "base..top"); subjects != "top" {
+		t.Errorf("base..top = %q, want top alone — mid's commit left the stack with mid", subjects)
+	}
+	if got, want := gitAt(t, f.Env(), lane, "rev-parse", "HEAD"), gitAt(t, f.Env(), f.Dir, "rev-parse", "top"); got != want {
+		t.Errorf("the lane holding top is at %.12s, want it on the replayed top %.12s", got, want)
+	}
+	if status := gitAt(t, f.Env(), lane, "status", "--porcelain"); status != "" {
+		t.Errorf("the lane holding top reads %q after the drop, want its files on the replayed top", status)
+	}
+	if got := gh.pr(2); got != "OPEN base" {
+		t.Errorf("top's PR = %q, want %q", got, "OPEN base")
+	}
+	if gitBranchExists(t, f.Env(), f.Dir, "mid") {
+		t.Error("mid is still a local branch")
+	}
+}
+
+func TestStackDropRefusesAChildCheckedOutWithUncommittedWork(t *testing.T) {
+	f := dropStack(t, "base", "mid", "top")
+	gh := installDropGH(t, f, map[string]dropSeed{
+		"mid": {number: 1, state: "OPEN", base: "base"},
+		"top": {number: 2, state: "OPEN", base: "mid"},
+	})
+	lane := filepath.Join(t.TempDir(), "top")
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", lane, "top")
+	writeShipFile(t, lane, "wip.txt", "unsaved\n")
+	top := gitAt(t, f.Env(), f.Dir, "rev-parse", "top")
+
+	_, _, err := runStackCmd(t, f, "drop", "mid")
+	if err == nil {
+		t.Fatal("stack drop replayed a branch whose working copy holds uncommitted work")
+	}
+	if !strings.Contains(err.Error(), "top is checked out in "+lane+" with uncommitted work") || !strings.Contains(err.Error(), "nothing was changed") {
+		t.Errorf("error = %v, want it to name the lane and say nothing changed", err)
+	}
+	if got := gh.pr(2); got != "OPEN mid" {
+		t.Errorf("top's PR = %q, want it untouched at %q", got, "OPEN mid")
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "top"); got != top {
+		t.Errorf("top moved from %.12s to %.12s", top, got)
+	}
+	if parent := dropGTParent(t, f, "top"); parent != "mid" {
+		t.Errorf("gt records top's parent as %q, want mid", parent)
+	}
+}
+
+func TestStackDropStrandCheckNamesEveryBranchStillCarryingTheDroppedCommits(t *testing.T) {
+	f := dropStack(t, "base", "mid", "top")
+	mustRun(t, f.Env(), f.Dir, "git", "branch", "-q", "side", "top")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "side")
+	mustRun(t, f.Env(), f.Dir, "gt", "track", "--parent", "top", "--no-interactive")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "base")
+	commonDir, err := gtCommonDir(t.Context(), render.Dir(f.Dir), "test")
+	if err != nil {
+		t.Fatalf("gt common dir: %v", err)
+	}
+	state, err := gtStateAt(t.Context(), commonDir, "test")
+	if err != nil {
+		t.Fatalf("gt state: %v", err)
+	}
+
+	err = dropStrandCheck(t.Context(), render.Dir(f.Dir), state, "mid", "base")
+	if err == nil || !strings.Contains(err.Error(), "mid's commits are still on side, top after the replay") {
+		t.Errorf("strand check = %v, want it to name side and top", err)
+	}
+}
