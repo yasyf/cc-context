@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -287,5 +288,68 @@ func TestShipHooksStreamingSeam(t *testing.T) {
 				t.Errorf("uvx runs = %d, want %d", got, tt.wantRuns)
 			}
 		})
+	}
+}
+
+func TestShipHookEntryPaths(t *testing.T) {
+	t.Parallel()
+	yaml := `repos:
+- repo: local
+  hooks:
+  - id: biome
+    entry: ./tools/hooks/hook-biome.sh
+  - entry: "bash scripts/lint/run.sh --fix"
+    id: lint
+  - id: gofmt
+    entry: gofmt -w
+  - id: env
+    entry: $HOME/bin/x.sh ../outside/y.sh /abs/z.sh https://example.com/a
+`
+	if got, want := shipHookEntryPaths([]byte(yaml)), []string{"tools/hooks/hook-biome.sh", "scripts/lint/run.sh"}; !slices.Equal(got, want) {
+		t.Errorf("yaml entries = %q, want %q", got, want)
+	}
+	toml := "[[repos.hooks]]\nid = \"protect\"\nentry = \"./tools/hooks/hook-protect-dev.sh\"\n"
+	if got, want := shipHookEntryPaths([]byte(toml)), []string{"tools/hooks/hook-protect-dev.sh"}; !slices.Equal(got, want) {
+		t.Errorf("toml entries = %q, want %q", got, want)
+	}
+}
+
+func TestShipMaterializeHookEntriesWidensASparseLane(t *testing.T) {
+	t.Parallel()
+	f := vcstest.Repo(t)
+	config := filepath.Join(f.Dir, ".pre-commit-config.yaml")
+	files := map[string]string{
+		".pre-commit-config.yaml":   "repos:\n- repo: local\n  hooks:\n  - id: biome\n    entry: ./tools/hooks/hook-biome.sh\n",
+		"tools/hooks/hook-biome.sh": "#!/bin/sh\n",
+		"other/x.txt":               "x\n",
+	}
+	for name, body := range files {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(f.Dir, name)), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(f.Dir, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustRun(t, f.Env(), f.Dir, "git", "add", "-A")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "hooks")
+	mustRun(t, f.Env(), f.Dir, "git", "sparse-checkout", "set", "--cone")
+	hook := filepath.Join(f.Dir, "tools", "hooks", "hook-biome.sh")
+	if _, err := os.Stat(hook); !os.IsNotExist(err) {
+		t.Fatalf("hook script present before the ship: %v", err)
+	}
+
+	if err := shipMaterializeHookEntries(f.Context(), render.Dir(f.Dir), config); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := os.Stat(hook); err != nil {
+		t.Errorf("hook script not checked out: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(f.Dir, "other")); !os.IsNotExist(err) {
+		t.Errorf("other/ checked out: %v", err)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "sparse-checkout", "list"); got != "tools/hooks" {
+		t.Errorf("sparse-checkout list = %q, want tools/hooks", got)
 	}
 }
