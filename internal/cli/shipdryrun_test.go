@@ -285,22 +285,19 @@ func TestShipDryRunNamesTheMovingPRHeads(t *testing.T) {
 	}
 }
 
-// TestShipDryRunNamesTheDerivedTitles proves the report answers what a submit
-// would open, not only what it would move. The title comes from the first
-// commit above the base, not the latest one: a carries two commits and the
-// title is the first, which is how a pull request has gone out under a title
-// nobody recognized.
 func TestShipDryRunNamesTheDerivedTitles(t *testing.T) {
 	f := dryRunFixture(t)
 	stub := stubGTAPI(t)
 	f.Decorate(stub.ctx)
 	stub.prs["b"] = 22285
+	writeShipFile(t, f.Dir, "c.txt", "moved on\n")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "c moves on", "c.txt")
 
 	report := dryRunReport(t, f, "-m", "fix: frobnicate")
 
 	creates := dryRunValues(report, "pr new")
 	want := []string{
-		"a" + shipSep + `opens a pull request titled "a"`,
+		"a" + shipSep + "pushed, not submitted: no pull request opens without a prepared title and body",
 		"c" + shipSep + `opens a pull request titled "c"`,
 	}
 	if len(creates) != len(want) {

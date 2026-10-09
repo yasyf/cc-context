@@ -649,9 +649,19 @@ func dryRunCreates(ctx context.Context, l lane, o shipOpts, state gtState, chain
 			from = r.fork
 		}
 		meta := r.meta[branch]
+		var body []byte
+		if meta.bodyPath != "" {
+			if body, err = os.ReadFile(meta.bodyPath); err != nil {
+				return fmt.Errorf("ship: --pr-body-file %s: %w", meta.bodyPath, err)
+			}
+		}
+		text := string(body)
+		if branch != r.branch && !(stackShipMeta{Title: meta.title, Body: &text}).complete() {
+			r.creates = append(r.creates, branch+shipSep+"pushed, not submitted: no pull request opens without a prepared title and body")
+			continue
+		}
 		title := meta.title
 		if title == "" {
-			var err error
 			title, _, err = gtCreateMeta(ctx, l.dir(), "ship", branch, branch, from, base)
 			if err != nil {
 				r.notes = append(r.notes, err.Error())
@@ -660,10 +670,6 @@ func dryRunCreates(ctx context.Context, l lane, o shipOpts, state gtState, chain
 		}
 		created := branch + shipSep + "opens a pull request titled " + strconv.Quote(title)
 		if meta.bodyPath != "" {
-			body, err := os.ReadFile(meta.bodyPath)
-			if err != nil {
-				return fmt.Errorf("ship: --pr-body-file %s: %w", meta.bodyPath, err)
-			}
 			created += shipSep + "body from " + strconv.Quote(meta.bodyPath) + fmt.Sprintf(" (sha256 %x)", sha256.Sum256(body))
 		}
 		r.creates = append(r.creates, created)
