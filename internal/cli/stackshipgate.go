@@ -142,14 +142,42 @@ func stackCarriesOwnWork(ctx context.Context, dir render.Dir, pin string, b *sta
 	return !replays, err
 }
 
-// stackRefuseStalePins refuses a run that would publish branches onto one kept
-// at its published head while the run moves that branch's own parent: the kept
-// head no longer holds its parent, so everything stacked on it lands on a
-// stale base.
-func stackRefuseStalePins(ctx context.Context, dir render.Dir, run *stackRebaseRun) error {
+// stackRefusePins refuses a run that would publish onto a branch kept at its
+// published head when that head no longer serves the branches above it, naming
+// every such branch and the --include set that takes them all into the run.
+func stackRefusePins(ctx context.Context, dir render.Dir, run *stackRebaseRun) error {
 	if run.NoPush {
 		return nil
 	}
+	stale, reasons, err := stackStalePins(ctx, dir, run)
+	if err != nil {
+		return err
+	}
+	unpublished, more, err := stackUnpublishedPins(ctx, dir, run, stale)
+	if err != nil {
+		return err
+	}
+	include := append(stale, unpublished...)
+	if len(include) == 0 {
+		return nil
+	}
+	flags := make([]string, len(include))
+	for i, name := range include {
+		flags[i] = "--include " + name
+	}
+	them := "it"
+	if len(include) > 1 {
+		them = "them"
+	}
+	return refuse("%s: %s, so nothing was pushed; pass %s to take %s into the run",
+		stackRebasePrefix, strings.Join(append(reasons, more...), "; "), strings.Join(flags, " "), them)
+}
+
+// stackStalePins names each branch kept at its published head while the run
+// moves its own parent: the kept head no longer holds that parent, so
+// everything stacked on it lands on a stale base. A pin the run would take in
+// moves with it, so a pin above it is stale too.
+func stackStalePins(ctx context.Context, dir render.Dir, run *stackRebaseRun) (stale, reasons []string, err error) {
 	heads := map[string]string{run.Trunk: run.Pin}
 	moved := map[string]bool{}
 	byName := map[string]*stackRebaseBranch{}
@@ -157,81 +185,74 @@ func stackRefuseStalePins(ctx context.Context, dir render.Dir, run *stackRebaseR
 		b := &run.Branches[i]
 		byName[b.Name] = b
 		heads[b.Name] = b.Head
+		parent := byName[b.Parent]
+		if b.Pinned && parent != nil && parent.Landed == "" && parent.Held == "" && (!parent.Kept || moved[parent.Name]) && !parent.Stays {
+			holds := !moved[parent.Name]
+			if holds {
+				if holds, err = gitIsAncestor(ctx, dir, stackRebasePrefix, parent.Head, b.Head); err != nil {
+					return nil, nil, err
+				}
+			}
+			if !holds {
+				stale = append(stale, b.Name)
+				moved[b.Name] = true
+				reasons = append(reasons, fmt.Sprintf("%s is another lane's, kept at its published head, and that head does not hold the head this run publishes for %s — publishing %s would stack them on a stale %s unless --to %s stops below it",
+					b.Name, parent.Name, strings.Join(stackAbove(run, b.Name), ", "), b.Name, parent.Name))
+				continue
+			}
+		}
 		if b.Landed == "" && b.Held == "" && !b.Kept && !b.Stays {
 			moved[b.Name] = moved[b.Parent] || heads[b.Parent] != b.OldBase
 		}
 	}
-	for _, b := range run.Branches {
-		parent := byName[b.Parent]
-		if !b.Pinned || parent == nil || parent.Landed != "" || parent.Held != "" || parent.Kept || parent.Stays {
-			continue
-		}
-		holds := !moved[parent.Name]
-		if holds {
-			var err error
-			if holds, err = gitIsAncestor(ctx, dir, stackRebasePrefix, parent.Head, b.Head); err != nil {
-				return err
-			}
-		}
-		if holds {
-			continue
-		}
-		above := map[string]bool{b.Name: true}
-		var names []string
-		for _, up := range run.Branches {
-			if above[up.Parent] {
-				above[up.Name] = true
-				names = append(names, up.Name)
-			}
-		}
-		return refuse("%s: %s is another lane's, kept at its published head, and that head does not hold the head this run publishes for %s — publishing %s would stack them on a stale %s, so nothing was pushed; pass --include %s to restack it with the run, or --to %s to stop below it",
-			stackRebasePrefix, b.Name, parent.Name, strings.Join(names, ", "), b.Name, b.Name, parent.Name)
-	}
-	return nil
+	return stale, reasons, nil
 }
 
-// stackRefuseUnpublishedPins refuses a run that would publish a branch stacked
-// on one kept at its published head while its own history carries work of that
-// branch origin lacks: the run replays it onto the published head and drops
-// that work from what it pushes. Work that only replays the published commits
-// onto newer trunk is no loss.
-func stackRefuseUnpublishedPins(ctx context.Context, dir render.Dir, run *stackRebaseRun) error {
-	if run.NoPush {
-		return nil
-	}
+// stackUnpublishedPins names each branch kept at its published head while a
+// branch stacked on it carries work of it origin lacks: the run replays that
+// branch onto the published head and drops the work from what it pushes. Work
+// that only replays the published commits onto newer trunk is no loss, and a
+// stale pin the run would take in is no pin.
+func stackUnpublishedPins(ctx context.Context, dir render.Dir, run *stackRebaseRun, stale []string) (pins, reasons []string, err error) {
 	byName := map[string]*stackRebaseBranch{}
 	for i := range run.Branches {
 		byName[run.Branches[i].Name] = &run.Branches[i]
 	}
 	for _, b := range run.Branches {
 		pin := byName[b.Parent]
-		if b.Landed != "" || b.Held != "" || b.Kept || pin == nil || !pin.Pinned || pin.Local == pin.Remote {
+		if b.Landed != "" || b.Held != "" || b.Kept || pin == nil || !pin.Pinned || pin.Local == pin.Remote || slices.Contains(stale, pin.Name) || slices.Contains(pins, pin.Name) {
 			continue
 		}
 		carried, err := stackCarriedUnpublished(ctx, dir, run.Pin, pin, b.Local)
 		if err != nil {
-			return err
+			return nil, nil, err
 		}
 		if carried == 0 {
 			continue
 		}
 		if replays, err := stackRemoteReplays(ctx, dir, pin.Remote, pin.Local, run.Pin); err != nil {
-			return err
+			return nil, nil, err
 		} else if replays {
 			continue
 		}
-		above := map[string]bool{b.Name: true}
-		names := []string{b.Name}
-		for _, up := range run.Branches {
-			if above[up.Parent] {
-				above[up.Name] = true
-				names = append(names, up.Name)
-			}
-		}
-		return refuse("%s: %s is another lane's, kept at its published head, but %s carries %d commit(s) of %s that origin does not — publishing %s onto that head would drop them, so nothing was pushed; submit %s from the working copy holding it first, or pass --include %s to publish it with the run",
-			stackRebasePrefix, pin.Name, b.Name, carried, pin.Name, strings.Join(names, ", "), pin.Name, pin.Name)
+		pins = append(pins, pin.Name)
+		reasons = append(reasons, fmt.Sprintf("%s is another lane's, kept at its published head, but %s carries %d commit(s) of %s that origin does not — publishing %s onto that head would drop them unless %s is submitted from the working copy holding it first",
+			pin.Name, b.Name, carried, pin.Name, strings.Join(append([]string{b.Name}, stackAbove(run, b.Name)...), ", "), pin.Name))
 	}
-	return nil
+	return pins, reasons, nil
+}
+
+// stackAbove names every branch of the run stacked above name, in run order.
+func stackAbove(run *stackRebaseRun, name string) []string {
+	above := map[string]bool{name: true}
+	var names []string
+	for _, up := range run.Branches {
+		if above[up.Parent] {
+			above[up.Name] = true
+			names = append(names, up.Name)
+		}
+	}
+	return names
 }
 
 // stackCarriedUnpublished counts the commits of pin's local head that head

@@ -503,13 +503,20 @@ func stackFinishPublication(ctx context.Context, cmd *cobra.Command, l lane, com
 			return err
 		}
 	}
-	if err := stackVerdict(ctx, cmd, l, run, live); err != nil {
+	strays, err := stackVerdict(ctx, cmd, l, run, live, published)
+	if err != nil {
 		return err
 	}
 	if err := stackMoveLocalOnly(ctx, cmd, l, commonDir, run); err != nil {
 		return err
 	}
-	return stackFinishSourceMoves(ctx, cmd, l, commonDir, run)
+	if err := stackFinishSourceMoves(ctx, cmd, l, commonDir, run); err != nil {
+		return err
+	}
+	if len(strays) > 0 {
+		return fmt.Errorf("%s: published, but %s still sit off the parents the submit gave them — finish each with the command its line names", stackRebasePrefix, strings.Join(strays, ", "))
+	}
+	return nil
 }
 
 func stackFinishSourceMoves(ctx context.Context, cmd *cobra.Command, l lane, commonDir string, run *stackRebaseRun) error {

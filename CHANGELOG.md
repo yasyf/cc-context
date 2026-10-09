@@ -6,6 +6,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`stack submit` moves a pull request Graphite left parked.** A submit
+  that gave a pull request its parent could leave it on Graphite's
+  `graphite-base/<n>` branch, and the verdict skipped it as Graphite's to
+  move, so the run reported success with the base still wrong. The verdict now
+  retargets a parked pull request the run submitted onto its parent, and a
+  retarget GitHub refuses fails the run after the local refs move instead of
+  only printing the command.
+
+- **`stack submit` names every held branch it needs `--include` for.** A
+  refusal over branches another lane holds named one branch at a time, and
+  taking that one in could strand the next, so finding the full set took a
+  rerun per branch. One refusal now names every kept branch whose parent
+  moved, whose published head lacks work a branch above it carries, or that
+  was never pushed, with the `--include` flags that take them all in.
+
 ### Changed
 
 - **`stack submit` stops republishing a pull request a fresh head cannot

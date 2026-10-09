@@ -354,7 +354,9 @@ the remote heads recorded at the start, and one verdict line per pull request
 names its pushed head, parent, and mergeability; when GitHub cannot be read
 for it, the run says so and still moves the local refs and finishes. An open
 pull request GitHub bases elsewhere than its recorded parent is retargeted
-onto that parent; a refused retarget names the command that finishes it.
+onto that parent, including one the run submitted that Graphite left on its
+graphite-base branch; a refused retarget names the command that finishes it
+and fails the run once the local refs have moved.
 Labels and draft state are never touched: a draft pull request stays a draft.
 
 stack rebase never opens a pull request. A stack none of whose branches has one
@@ -461,10 +463,7 @@ func stackBegin(ctx context.Context, cmd *cobra.Command, l lane, commonDir strin
 	if err != nil {
 		return err
 	}
-	if err := stackRefuseStalePins(ctx, l.dir(), run); err != nil {
-		return err
-	}
-	if err := stackRefuseUnpublishedPins(ctx, l.dir(), run); err != nil {
+	if err := stackRefusePins(ctx, l.dir(), run); err != nil {
 		return err
 	}
 	if o.tip != "" && !o.restack {
@@ -1258,6 +1257,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	}
 	kept := map[string]bool{trunk: true}
 	inherits := map[string]bool{}
+	var unpushed []string
 	for _, name := range order {
 		b := byName[name]
 		if b.Landed != "" || b.Held != "" {
@@ -1272,7 +1272,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 			return nil, fmt.Errorf("stack rebase: %s is in the merge queue as %s, and moving it would evict it — take it out of the queue first", name, b.PR)
 		case slices.Contains(o.pinned, name):
 			if !stackPinPublished(b) {
-				return nil, fmt.Errorf("stack submit: %s is another lane's and has never been pushed, so there is no published head to stack on — submit it from its own working copy first, or take it into this run with --include %s or --all-lanes", name, name)
+				unpushed = append(unpushed, name)
 			}
 			b.Kept, b.Pinned = true, true
 		case queue[name] == prQueueQueued || (moving != nil && !moving[name] && !inherits[name]):
@@ -1283,6 +1283,9 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 			}
 		}
 		kept[name] = b.Kept
+	}
+	if len(unpushed) > 0 {
+		return nil, stackRefuseUnpushedPins(unpushed)
 	}
 	for _, name := range order {
 		b := byName[name]
@@ -2131,6 +2134,19 @@ func stackKeepsAncestor(ctx context.Context, dir render.Dir, pin string, b *stac
 
 // stackPinPublished keeps a branch the run must not push at the head its
 // pull request already shows; one never pushed has nothing to keep.
+// stackRefuseUnpushedPins refuses a run kept at the published heads of branches
+// another lane holds and never pushed: there is nothing to stack on.
+func stackRefuseUnpushedPins(names []string) error {
+	flags := make([]string, len(names))
+	for i, name := range names {
+		flags[i] = "--include " + name
+	}
+	if len(names) == 1 {
+		return fmt.Errorf("stack submit: %s is another lane's and has never been pushed, so there is no published head to stack on — submit it from its own working copy first, or take it into this run with %s or --all-lanes", names[0], flags[0])
+	}
+	return fmt.Errorf("stack submit: %s are other lanes' and have never been pushed, so there are no published heads to stack on — submit each from its own working copy first, or take them into this run with %s or --all-lanes", strings.Join(names, ", "), strings.Join(flags, " "))
+}
+
 func stackPinPublished(b *stackRebaseBranch) bool {
 	if b.Remote == "" {
 		return false
@@ -4030,8 +4046,12 @@ func stackWriteRefs(ctx context.Context, dir render.Dir, run *stackRebaseRun, le
 	return nil
 }
 
-func stackVerdict(ctx context.Context, cmd *cobra.Command, l lane, run *stackRebaseRun, live []string) error {
+// stackVerdict reports each live branch's pull request after a publication and
+// moves one GitHub bases off its parent back onto it, returning those it could
+// not move.
+func stackVerdict(ctx context.Context, cmd *cobra.Command, l lane, run *stackRebaseRun, live, published []string) ([]string, error) {
 	dir := l.dir()
+	var strays []string
 	var prs map[string]*stackPR
 	var err error
 	lagUntil := time.Now().Add(stackHeadLagWait)
@@ -4039,11 +4059,11 @@ func stackVerdict(ctx context.Context, cmd *cobra.Command, l lane, run *stackReb
 	for try := 0; ; try++ {
 		if prs, err = stackPRs(ctx, dir, run.Trunk, live); err != nil {
 			_, werr := fmt.Fprintf(cmd.ErrOrStderr(), "stack rebase: pushed, but the verdict could not read the pull requests: %v\n", err)
-			return werr
+			return nil, werr
 		}
 		if err := stackReadOverwrites(ctx, dir, run, prs, overwritten); err != nil {
 			_, werr := fmt.Fprintf(cmd.ErrOrStderr(), "stack rebase: pushed, but the verdict could not read who moved a pull request's head: %v\n", err)
-			return werr
+			return nil, werr
 		}
 		var wait time.Duration
 		switch {
@@ -4057,7 +4077,7 @@ func stackVerdict(ctx context.Context, cmd *cobra.Command, l lane, run *stackReb
 		}
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return nil, ctx.Err()
 		case <-time.After(wait):
 		}
 	}
@@ -4067,7 +4087,7 @@ func stackVerdict(ctx context.Context, cmd *cobra.Command, l lane, run *stackReb
 		b := run.branch(name)
 		parent, err := stackSubmittedParent(ctx, dir, run, b)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		fields := []string{name}
 		pr := prs[name]
@@ -4090,15 +4110,19 @@ func stackVerdict(ctx context.Context, cmd *cobra.Command, l lane, run *stackReb
 		case stackHeadLags(pr, b):
 			fields = append(fields, fmt.Sprintf("stale read: GitHub still shows %.12s %s after the push of %.12s — re-run ccx vcs stack submit if it stays", pr.Head, stackHeadLagWait, b.NewHead))
 		}
-		if stackBaseStrays(pr, parent) {
-			fields = append(fields, stackRetargetToParent(ctx, dir, pr, parent))
+		if stackBaseStrays(pr, parent, slices.Contains(published, name)) {
+			field, moved := stackRetargetToParent(ctx, dir, pr, parent)
+			fields = append(fields, field)
+			if !moved {
+				strays = append(strays, fmt.Sprintf("#%d", pr.Number))
+			}
 		}
 		if len(pr.Labels) > 0 {
 			fields = append(fields, "labels "+strings.Join(pr.Labels, ","))
 		}
 		cmd.Println(strings.Join(fields, shipSep))
 	}
-	return nil
+	return strays, nil
 }
 
 // stackSubmittedParent is the base the submit gave b's pull request: b's
@@ -4117,26 +4141,27 @@ func stackSubmittedParent(ctx context.Context, dir render.Dir, run *stackRebaseR
 }
 
 // stackBaseStrays is an open pull request GitHub bases somewhere other than the
-// parent the submit gave it. A pull request Graphite parked on its
-// graphite-base branch is Graphite's to move back, so it never strays.
-func stackBaseStrays(pr *stackPR, parent string) bool {
-	return pr.State == "OPEN" && pr.Base != "" && pr.Base != fmt.Sprintf("graphite-base/%d", pr.Number) && pr.Base != parent
+// parent the submit gave it. One parked on its graphite-base branch strays only
+// once this run submitted it, since that submit moves it back; one the run
+// left out is the merge queue's to move.
+func stackBaseStrays(pr *stackPR, parent string, submitted bool) bool {
+	return pr.State == "OPEN" && pr.Base != "" && pr.Base != parent && (submitted || pr.Base != fmt.Sprintf("graphite-base/%d", pr.Number))
 }
 
 // stackRetargetToParent moves a pull request GitHub still bases on another
 // branch onto the parent the stack records, the base Graphite submitted, and
 // names the command that finishes the move when GitHub refuses it.
-func stackRetargetToParent(ctx context.Context, dir render.Dir, pr *stackPR, parent string) string {
+func stackRetargetToParent(ctx context.Context, dir render.Dir, pr *stackPR, parent string) (string, bool) {
 	repo, err := vcs.LookupRepo(ctx, dir, false)
 	if err != nil {
-		return fmt.Sprintf("base %s ≠ parent %s — the repository could not be read to retarget it: %v", pr.Base, parent, err)
+		return fmt.Sprintf("base %s ≠ parent %s — the repository could not be read to retarget it: %v", pr.Base, parent, err), false
 	}
 	retarget := ghPatchPullArgv(repo.NameWithOwner, pr.Number, "-f", "base="+parent)
 	if _, err := render.RunCLI(ctx, render.Ambient, "gh", retarget); err != nil {
-		return fmt.Sprintf("base %s ≠ parent %s — retargeting failed, finish it with %s: %v", pr.Base, parent, ghCommand(retarget), err)
+		return fmt.Sprintf("base %s ≠ parent %s — retargeting failed, finish it with %s: %v", pr.Base, parent, ghCommand(retarget), err), false
 	}
 	pr.Mergeable = statusUnknown
-	return fmt.Sprintf("retargeted onto %s from %s", parent, pr.Base)
+	return fmt.Sprintf("retargeted onto %s from %s", parent, pr.Base), true
 }
 
 // stackHeadLags is a pull request GitHub still reads at another head than the
