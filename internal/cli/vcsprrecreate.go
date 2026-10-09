@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -116,8 +117,11 @@ func runVcsPRRecreate(cmd *cobra.Command, arg, repo string) error {
 			Draft:   &draft,
 		}},
 	})
+	if err == nil && len(submitted) != 1 {
+		err = fmt.Errorf("graphite answered %d pull requests for one create", len(submitted))
+	}
 	if err != nil {
-		if _, reopenErr := ghAPI(ctx, dir, ghPatchPullArgv(repo, number, "-f", "state=open")[1:]...); reopenErr != nil {
+		if _, reopenErr := ghAPI(context.WithoutCancel(ctx), dir, ghPatchPullArgv(repo, number, "-f", "state=open")[1:]...); reopenErr != nil {
 			return fmt.Errorf("pr recreate: #%d is closed, Graphite opened no replacement, and reopening #%d failed too — reopen it by hand: %w", number, number, errors.Join(err, reopenErr))
 		}
 		return fmt.Errorf("pr recreate: Graphite opened no replacement for #%d, so it was reopened: %w", number, err)
