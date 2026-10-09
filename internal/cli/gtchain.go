@@ -38,6 +38,11 @@ func gtUntrackedChain(ctx context.Context, dir render.Dir, prefix string, state 
 		return nil, fmt.Errorf("%s: git rev-parse %s: %w", prefix, tip, err)
 	}
 	tipHead := strings.TrimSpace(out)
+	if base != trunk {
+		if floor, err = gtHeadUnder(ctx, dir, prefix, base, tipHead); err != nil {
+			return nil, err
+		}
+	}
 	out, err = render.RunCLI(ctx, dir, "git", []string{"rev-list", "--parents", floor + ".." + tipHead})
 	if err != nil {
 		return nil, fmt.Errorf("%s: git rev-list %s..%s: %w", prefix, floor, tip, err)
@@ -166,6 +171,23 @@ func gtAdoptBelow(ctx context.Context, dir render.Dir, prefix string, state gtSt
 		chained += seg + shipSep
 	}
 	return tip.parent, chained, nil
+}
+
+func gtHeadUnder(ctx context.Context, dir render.Dir, prefix, branch, tip string) (string, error) {
+	former, err := gtReflogHeads(ctx, dir, prefix, []string{branch})
+	if err != nil {
+		return "", err
+	}
+	for _, head := range former[branch] {
+		under, err := gitIsAncestor(ctx, dir, prefix, head, tip)
+		if err != nil {
+			return "", err
+		}
+		if under {
+			return head, nil
+		}
+	}
+	return gtRestackRef(branch), nil
 }
 
 func gtMergeBase(ctx context.Context, dir render.Dir, prefix, a, b string) (string, error) {

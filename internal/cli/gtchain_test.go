@@ -112,3 +112,34 @@ func TestStackSubmitRefusesTwoUntrackedBranchesAtOneCommit(t *testing.T) {
 		}
 	}
 }
+
+func TestStackSubmitAdoptsOntoAParentRewrittenSinceTheCut(t *testing.T) {
+	f := shipGTRepo(t, vcstest.GTStack("base", "feature"))
+	cut := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "-c", "child", "feature")
+	writeShipFile(t, f.Dir, "child.txt", "child\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "child.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "child")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "feature")
+	writeShipFile(t, f.Dir, "feature.txt", "amended feature\n")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qa", "--amend", "--no-edit")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "child")
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&out)
+	cmd.SetContext(f.Context())
+
+	if err := stackAdoptChain(cmd, render.Dir(f.Dir)); err != nil {
+		t.Fatalf("adopt: %v", err)
+	}
+	if want := "tracked child onto feature\n"; out.String() != want {
+		t.Errorf("report = %q, want %q", out.String(), want)
+	}
+	state, err := gtStateQuery(t.Context(), render.Dir(f.Dir), "test")
+	if err != nil {
+		t.Fatalf("gt state: %v", err)
+	}
+	if s := state["child"]; len(s.Parents) != 1 || s.Parents[0].Ref != "feature" || s.Parents[0].SHA != cut {
+		t.Errorf("gt state child parents = %v, want feature at the cut %s", s.Parents, shortOID(cut))
+	}
+}

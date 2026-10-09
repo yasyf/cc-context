@@ -982,27 +982,61 @@ func gtNearestTrackedAt(ctx context.Context, dir render.Dir, state gtState, trun
 	for _, head := range strings.Fields(out) {
 		contained[head] = true
 	}
-	nearest := ""
-	for _, name := range candidates {
-		if !contained[heads[name]] {
+	present := slices.DeleteFunc(slices.Clone(candidates), func(name string) bool { return heads[name] == "" })
+	former, err := gtReflogHeads(ctx, dir, "ship", present)
+	if err != nil {
+		return "", err
+	}
+	out, err = render.RunCLI(ctx, dir, "git", []string{"for-each-ref", "--format=%(refname:lstrip=2)", "refs/heads/"})
+	if err != nil {
+		return "", fmt.Errorf("ship: git for-each-ref refs/heads/: %w", err)
+	}
+	live := map[string]bool{}
+	for _, name := range strings.Fields(out) {
+		live[name] = true
+	}
+	present = slices.DeleteFunc(present, func(name string) bool { return !live[name] })
+	nearest, nearestAt := "", ""
+	for _, name := range present {
+		held := append([]string{heads[name]}, former[name]...)
+		at := slices.IndexFunc(held, func(head string) bool { return contained[head] })
+		if at < 0 {
 			continue
 		}
-		if nearest == "" {
-			nearest = name
-			continue
-		}
-		ahead, err := gitIsAncestor(ctx, dir, "ship", gtRestackRef(nearest), gtRestackRef(name))
-		if err != nil {
-			if present, refErr := gitRefExists(ctx, dir, "ship", gtRestackRef(name)); refErr != nil || present {
+		if nearest != "" {
+			ahead, err := gitIsAncestor(ctx, dir, "ship", nearestAt, held[at])
+			if err != nil {
 				return "", err
 			}
-			continue
+			if !ahead {
+				continue
+			}
 		}
-		if ahead {
-			nearest = name
-		}
+		nearest, nearestAt = name, held[at]
 	}
 	return cmp.Or(nearest, trunk), nil
+}
+
+func gtReflogHeads(ctx context.Context, dir render.Dir, prefix string, branches []string) (map[string][]string, error) {
+	former := map[string][]string{}
+	if len(branches) == 0 {
+		return former, nil
+	}
+	argv := []string{"log", "--walk-reflogs", "--ignore-missing", "--format=%gD %H"}
+	for _, branch := range branches {
+		argv = append(argv, gtRestackRef(branch))
+	}
+	out, err := render.RunCLI(ctx, dir, "git", append(argv, "--"))
+	if err != nil {
+		return nil, fmt.Errorf("%s: git log --walk-reflogs: %w", prefix, err)
+	}
+	for row := range strings.Lines(out) {
+		selector, head, _ := strings.Cut(strings.TrimSpace(row), " ")
+		ref, _, _ := strings.Cut(selector, "@{")
+		name := strings.TrimPrefix(ref, "refs/heads/")
+		former[name] = append(former[name], head)
+	}
+	return former, nil
 }
 
 // gtRecordedAbove reports whether gt records name as stacked, at any depth, on
