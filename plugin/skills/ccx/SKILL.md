@@ -367,7 +367,8 @@ squash Graphite recorded is reachable from the base branch on GitHub or from
 the default branch.
 
 Each line also reads the checks on the PR's head as `ci green`, `ci red:` with
-the failing check names, `ci pending: N running`, or `ci none`. It names the
+the failing check names, `ci pending: N running`, or `ci none`; a `landed` line
+carries no CI, since the queue graded it before landing. It names the
 approval as GitHub's `reviewDecision` counts it, bot approvals included, with
 the approvers' logins. It ends in one verdict. `landable` is an open PR that is
 green, approved, not a draft, and not conflicting; `landed` and `queued` need no

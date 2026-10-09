@@ -79,7 +79,7 @@ type prQueueReport struct {
 
 type prStatusReport struct {
 	prQueueReport
-	CI           prCIReport       `json:"ci"`
+	CI           *prCIReport      `json:"ci,omitempty"`
 	Approval     prApprovalReport `json:"approval"`
 	Mergeability string           `json:"mergeability,omitempty"`
 	Downstack    int              `json:"downstack,omitempty"`
@@ -165,7 +165,9 @@ CI is red when any check on the head failed, naming the first few, pending
 while any has not finished, green once something passed and nothing failed or
 runs, and none when nothing graded the head. Graphite's mergeability check is
 not counted: Graphite holds it in progress while the pull request waits on its
-stack. Approval is GitHub's reviewDecision, which counts the reviews the base
+stack. A landed pull request reports no CI: the queue graded it before landing,
+and checks that finish or cancel after the queue closes it grade nothing.
+Approval is GitHub's reviewDecision, which counts the reviews the base
 branch's protection counts, bot approvals included, followed by who approved or
 requested changes. The verdict is landed, queued, landable for an open pull
 request that is green, approved, not a draft, and not conflicting, and
@@ -360,7 +362,11 @@ func collectPRQueue(ctx context.Context, repo string, numbers []int, warn io.Wri
 		}
 		r.Conflicting = r.Queue == prQueueEvicted && pr.MergeStateStatus == "DIRTY"
 		r.Stale = staleAt(limited, pr.PolledAt)
-		report := prStatusReport{prQueueReport: r, CI: prCIOf(pr.Rollup), Approval: prApprovalOf(pr), Mergeability: pr.Mergeability, Downstack: info.DependentPRNumber}
+		report := prStatusReport{prQueueReport: r, Approval: prApprovalOf(pr), Mergeability: pr.Mergeability, Downstack: info.DependentPRNumber}
+		if r.Queue != prQueueLanded {
+			ci := prCIOf(pr.Rollup)
+			report.CI = &ci
+		}
 		report.Verdict = prVerdict(report, pr)
 		reports = append(reports, report)
 	}
@@ -591,7 +597,10 @@ func renderPRQueue(reports []prStatusReport) string {
 		case prQueueNotQueued:
 			fmt.Fprintf(&b, " · %s", strings.ToLower(r.State))
 		}
-		b.WriteString(shipSep + prCIValue(r.CI) + shipSep + prApprovalValue(r.Approval) + shipSep + r.Verdict)
+		if r.CI != nil {
+			b.WriteString(shipSep + prCIValue(*r.CI))
+		}
+		b.WriteString(shipSep + prApprovalValue(r.Approval) + shipSep + r.Verdict)
 		if r.Stale != nil {
 			b.WriteString(" · " + r.Stale.String())
 		}
