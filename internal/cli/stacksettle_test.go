@@ -368,8 +368,8 @@ func TestStackSubmitFinishesADeadPublicationRunItsSourceMovedPast(t *testing.T) 
 		t.Fatalf("submit after the branch moved past the dead run = %q, %v, want the run finished and the branch published", out, err)
 	}
 	remote := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature")
-	if !stackOnto(t, f, "origin/main", remote) || gitAt(t, f.Env(), f.Dir, "rev-list", "--count", "origin/main.."+remote) != "2" {
-		t.Fatalf("published feature %s is not both commits on the fresh trunk", remote)
+	if got := gitAt(t, f.Env(), f.Dir, "log", "--format=%s", "origin/main.."+remote); got != "follow-up\n"+gitAt(t, f.Env(), f.Dir, "log", "-1", "--format=%s", run.Branches[0].Local) {
+		t.Fatalf("published feature %s carries %q past the trunk, want the source and its follow-up\n%s", remote, got, out)
 	}
 	if got := gitAt(t, f.Env(), f.Dir, "show", remote+":followup.txt"); got != "follow-up" {
 		t.Errorf("published followup.txt = %q, want the follow-up commit", got)
