@@ -717,7 +717,7 @@ func claudeCommitAttributionOff(ctx context.Context, root string) (bool, error) 
 		filepath.Join(userDir, "settings.json"),
 	}
 	for _, path := range settingsByPrecedence {
-		data, err := os.ReadFile(path)
+		data, err := os.ReadFile(path) //nolint:gosec // the path is one of Claude Code's settings files under the repo root or its config dir, not untrusted input
 		if errors.Is(err, fs.ErrNotExist) {
 			continue
 		}

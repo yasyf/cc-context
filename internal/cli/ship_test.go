@@ -4011,7 +4011,7 @@ func TestWithSessionTrailer(t *testing.T) {
 				"user":    filepath.Join(userDir, "settings.json"),
 			}
 			for scope, body := range tt.settings {
-				if err := os.MkdirAll(filepath.Dir(paths[scope]), 0o755); err != nil {
+				if err := os.MkdirAll(filepath.Dir(paths[scope]), 0o750); err != nil {
 					t.Fatal(err)
 				}
 				if err := os.WriteFile(paths[scope], []byte(body), 0o600); err != nil {
@@ -4033,7 +4033,7 @@ func TestWithSessionTrailerRefusesMalformedSettings(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv(envClaudeSessionKey, "sess-abc")
 	t.Setenv(envClaudeConfigDir, t.TempDir())
-	if err := os.MkdirAll(filepath.Join(root, ".claude"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, ".claude"), 0o750); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(root, ".claude", "settings.json"), []byte("{"), 0o600); err != nil {
