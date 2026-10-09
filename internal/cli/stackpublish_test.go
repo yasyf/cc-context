@@ -619,6 +619,59 @@ exec %[2]q "$@"
 	}
 }
 
+// TestStackPublicationMovesABranchBackWhenItsCheckoutCannotFollow fails the
+// holding worktree's read-tree once, as a held index.lock does: feature and its
+// receipt go back to the source, so the worktree still matches its branch, and
+// the resumed move takes the branch and the worktree onto the published head.
+func TestStackPublicationMovesABranchBackWhenItsCheckoutCannotFollow(t *testing.T) {
+	f, run, l, common, held := stackPublishedElsewhere(t)
+	dir := render.Dir(f.Dir)
+	source := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")
+	published := run.Branches[0].NewHead
+	before, err := stackReadPublication(f.Context(), dir, "feature")
+	if err != nil {
+		t.Fatal(err)
+	}
+	realGit := shipDisplaceShim(t, f, "git")
+	marker := filepath.Join(t.TempDir(), "failed")
+	writeShipExecutable(t, f.ShimBin, "git", fmt.Sprintf(`#!/bin/sh
+if [ "$1" = read-tree ] && [ ! -e %[1]q ]; then
+  : > %[1]q
+  echo "fatal: Unable to create 'index.lock': File exists." >&2
+  exit 128
+fi
+exec %[2]q "$@"
+`, marker, realGit))
+
+	if _, err := stackMovePublishedSources(f.Context(), l, common, run); err == nil || !strings.Contains(err.Error(), "feature went back onto its source") {
+		t.Fatalf("move = %v, want feature moved back onto its source", err)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature"); got != source {
+		t.Fatalf("feature = %s, want its source %s", got, source)
+	}
+	if status := gitAt(t, f.Env(), held, "status", "--porcelain"); status != "" {
+		t.Fatalf("held status = %q, want the worktree matching feature", status)
+	}
+	if after, err := stackReadPublication(f.Context(), dir, "feature"); err != nil || after.OID != before.OID {
+		t.Fatalf("receipt = %+v, %v, want the source receipt %s back", after, err, before.OID)
+	}
+
+	saved, err := stackOnlyTestRun(common)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := stackMovePublishedSources(f.Context(), l, common, saved)
+	if err != nil || report != "moved feature onto the published heads" {
+		t.Fatalf("resumed move = %q, %v, want feature moved", report, err)
+	}
+	if got := gitAt(t, f.Env(), held, "rev-parse", "HEAD"); got != published {
+		t.Errorf("held HEAD = %s, want the published head %s", got, published)
+	}
+	if status := gitAt(t, f.Env(), held, "status", "--porcelain"); status != "" {
+		t.Errorf("held status = %q, want the worktree on the published head", status)
+	}
+}
+
 func TestStackContinueOpensNoPullRequestWithoutAPreparedBody(t *testing.T) {
 	for _, tc := range []struct {
 		name string

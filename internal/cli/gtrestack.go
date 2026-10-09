@@ -498,12 +498,17 @@ func gtRestackAlign(ctx context.Context, prefix string, holders map[string]strin
 		if holder == "" {
 			continue
 		}
-		if _, err := render.RunCLI(ctx, render.Dir(holder), "git", []string{"read-tree", "-m", "-u", m.previous, m.head}); err != nil {
+		if err := gtRestackAlignHolder(ctx, holder, m); err != nil {
 			return aligned, fmt.Errorf("%s: branches moved but %s could not be aligned without overwriting local changes; preserve those changes and run ccx vcs stack continue: %w", prefix, holder, err)
 		}
 		aligned = append(aligned, holder)
 	}
 	return aligned, nil
+}
+
+func gtRestackAlignHolder(ctx context.Context, holder string, m restackMove) error {
+	_, err := render.RunCLI(ctx, render.Dir(holder), "git", []string{"read-tree", "-m", "-u", m.previous, m.head})
+	return err
 }
 
 // gtRestackSegment reports a restack in the words of what it did: the branches

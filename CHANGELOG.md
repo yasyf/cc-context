@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A ship never leaves a checkout behind the branch it moved.** After
+  publishing, ship moves each source branch onto its published head and then
+  moves the working copy holding it. When that working copy could not
+  follow, the branch had already moved, so its index and files stayed on the
+  older trunk and `git status` showed every trunk change in between as a
+  staged reversal, 88 files of it on monorepo #33579. Ship now moves the branch and
+  its receipt back onto the source when the working copy cannot follow, and
+  names the cause; `ccx vcs stack continue` moves them again.
+
 - **Stack submit refuses a branch reset behind its own published amend.** A
   `ship --amend --tip-only` published an amended head, and another agent then
   ran `git reset --hard` in the same working copy, putting the branch back on

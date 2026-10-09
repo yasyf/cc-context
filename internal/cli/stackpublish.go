@@ -545,6 +545,7 @@ func stackMovePublishedSources(ctx context.Context, l lane, commonDir string, ru
 	}
 	var moved []string
 	var moves, pending []restackMove
+	sources := map[string]stackPublication{}
 	reparent := map[string]string{}
 	revisions := map[string]string{}
 	var tx strings.Builder
@@ -580,6 +581,7 @@ func stackMovePublishedSources(ctx context.Context, l lane, commonDir string, ru
 		} else {
 			fmt.Fprintf(&tx, "update %s %s %s\n", gtRestackRef(b.Name), b.NewHead, b.Local)
 			pending = append(pending, move)
+			sources[b.Name] = *receipt
 		}
 		moved = append(moved, b.Name)
 		moves = append(moves, move)
@@ -593,10 +595,7 @@ func stackMovePublishedSources(ctx context.Context, l lane, commonDir string, ru
 		if _, err := render.RunCLIStdin(ctx, l.dir(), "git", []string{"update-ref", "--stdin"}, []byte(tx.String())); err != nil {
 			return "", fmt.Errorf("%s: the stack is published, but a source branch moved while its local ref was being moved onto its published head, so none was moved — ccx vcs stack continue retries it: %w", stackRebasePrefix, err)
 		}
-		if holders, err = vcs.BranchHolders(ctx, l.checkout); err != nil {
-			return "", fmt.Errorf("%s: %w", stackRebasePrefix, err)
-		}
-		if _, err := gtRestackAlign(ctx, stackRebasePrefix, holders, moves); err != nil {
+		if err := stackAlignSources(ctx, l, moves, pending, sources); err != nil {
 			return "", err
 		}
 	}
@@ -614,6 +613,58 @@ func stackMovePublishedSources(ctx context.Context, l lane, commonDir string, ru
 		return "source checkouts unchanged", nil
 	}
 	return strings.Join(segments, shipSep), nil
+}
+
+// stackAlignSources moves each working copy holding a moved branch onto its
+// published head. A move whose working copy cannot follow is undone, receipt
+// included, with every move after it, so no checkout is left on a branch its
+// index and files trail.
+func stackAlignSources(ctx context.Context, l lane, moves, pending []restackMove, sources map[string]stackPublication) error {
+	holders, err := vcs.BranchHolders(ctx, l.checkout)
+	if err != nil {
+		return stackRestoreSources(ctx, l.dir(), pending, sources, fmt.Errorf("the working copies holding them could not be read: %w", err))
+	}
+	for i, m := range moves {
+		holder := holders[m.branch]
+		if holder == "" {
+			continue
+		}
+		if err := gtRestackAlignHolder(ctx, holder, m); err != nil {
+			rest := slices.DeleteFunc(slices.Clone(pending), func(p restackMove) bool {
+				return !slices.ContainsFunc(moves[i:], func(r restackMove) bool { return r.branch == p.branch })
+			})
+			return stackRestoreSources(ctx, l.dir(), rest, sources, fmt.Errorf("%s could not follow %s onto its published head: %w", holder, m.branch, err))
+		}
+	}
+	return nil
+}
+
+func stackRestoreSources(ctx context.Context, dir render.Dir, moves []restackMove, sources map[string]stackPublication, cause error) error {
+	ctx = context.WithoutCancel(ctx)
+	if len(moves) == 0 {
+		return fmt.Errorf("%s: the stack is published, but %w — ccx vcs stack continue aligns it again", stackRebasePrefix, cause)
+	}
+	names := make([]string, len(moves))
+	var tx strings.Builder
+	tx.WriteString("start\n")
+	for i, m := range moves {
+		names[i] = m.branch
+		current, err := stackReadPublication(ctx, dir, m.branch)
+		if err != nil {
+			return errors.Join(cause, err)
+		}
+		prior := sources[m.branch]
+		prior.OID = ""
+		if err := stackReceiptTx(ctx, dir, &tx, prior, current.OID); err != nil {
+			return errors.Join(cause, err)
+		}
+		fmt.Fprintf(&tx, "update %s %s %s\n", gtRestackRef(m.branch), m.previous, m.head)
+	}
+	tx.WriteString("commit\n")
+	if _, err := render.RunCLIStdin(ctx, dir, "git", []string{"update-ref", "--stdin"}, []byte(tx.String())); err != nil {
+		return fmt.Errorf("%s: the stack is published, but %w, and moving %s back onto its source failed too, so its checkout trails it — align the checkout, then run ccx vcs stack continue: %w", stackRebasePrefix, cause, strings.Join(names, ", "), err)
+	}
+	return fmt.Errorf("%s: the stack is published, but %w; %s went back onto its source, so every checkout still matches its branch — ccx vcs stack continue moves it again", stackRebasePrefix, cause, strings.Join(names, ", "))
 }
 
 // stackCheckPendingHolders re-checks, just before the refs move, each working
