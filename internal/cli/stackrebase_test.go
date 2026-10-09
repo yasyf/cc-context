@@ -916,6 +916,13 @@ func TestStackRebaseConflictOpensAWorkspaceAndContinues(t *testing.T) {
 	if _, _, err := runStackCmd(t, f, "continue"); err == nil || !strings.Contains(err.Error(), "still has unresolved files: c.txt") {
 		t.Fatalf("continue over an unresolved file = %v, want a refusal", err)
 	}
+	mustRun(t, f.Env(), ws, "git", "add", "c.txt")
+	if _, _, err := runStackCmd(t, f, "continue"); err == nil || !strings.Contains(err.Error(), ws+" stages conflict markers at c.txt:1, c.txt:3, c.txt:5") {
+		t.Fatalf("continue over a staged file still carrying markers = %v, want a refusal naming each marker", err)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature"); got != feature {
+		t.Errorf("feature moved to %s over a staged file still carrying markers", got)
+	}
 	writeShipFile(t, ws, "c.txt", "trunk\nfeature\n")
 	mustRun(t, f.Env(), ws, "git", "add", "c.txt")
 	out, _, err := runStackCmdIn(t, f, ws, "continue")
@@ -2295,6 +2302,13 @@ func TestStackContinueFinishesARebaseGTLost(t *testing.T) {
 	if !stackRebasing(f.Context(), render.Dir(f.Dir)) {
 		t.Fatal("fixture: the rebase did not stop on c.txt")
 	}
+	mustRun(t, f.Env(), f.Dir, "git", "add", "c.txt")
+	if _, _, err := runStackCmd(t, f, "continue"); err == nil || !strings.Contains(err.Error(), "stages conflict markers at c.txt:1, c.txt:3, c.txt:5") {
+		t.Fatalf("continue over a staged file still carrying markers = %v, want a refusal naming each marker", err)
+	}
+	if !stackRebasing(f.Context(), render.Dir(f.Dir)) {
+		t.Error("the rebase went on over a staged file still carrying markers")
+	}
 	writeShipFile(t, f.Dir, "c.txt", "trunk\nfeature\n")
 	mustRun(t, f.Env(), f.Dir, "git", "add", "c.txt")
 	shipResetLog(t, f)
@@ -2323,6 +2337,24 @@ func TestStackContinueFinishesARebaseGTLost(t *testing.T) {
 	}
 	if !rerereOff {
 		t.Error("the continue ran with rerere on")
+	}
+}
+
+func TestStackStagedMarkersReadsAFileWithDiffOff(t *testing.T) {
+	t.Parallel()
+	f := shipGTRepo(t)
+	stackConflicting(t, f)
+	writeShipFile(t, f.Dir, ".gitattributes", "c.txt -diff\n")
+	runAllowFail(t, f.Env(), f.Dir, "git", "-c", "rerere.enabled=false", "rebase", "main")
+	writeShipFile(t, f.Dir, "c.txt", "trunk\n<<<<<<< HEAD\n=======\n======== setext\n>>>>>>>\nfeature\n|||||||  base\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "c.txt")
+
+	got, err := stackStagedMarkers(f.Context(), f.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"c.txt:2", "c.txt:3", "c.txt:5", "c.txt:7"}; !slices.Equal(got, want) {
+		t.Errorf("markers = %q, want %q", got, want)
 	}
 }
 
