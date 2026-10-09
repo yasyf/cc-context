@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **No stack submit opens a pull request without a prepared body.** A fresh
+  `ccx vcs stack submit` opened a pull request for every branch that had none,
+  titled and described from its commit, and opened monorepo #33429 with no
+  body. Only a resumed run held such a branch back. Stack submit, continue,
+  and a ship's downstack now push a branch with no pull request and no
+  `--pr-title` and `--pr-body-file` for it without submitting it, `--new-pr`
+  included, and name the `ccx vcs ship` command that opens it. Ship's own tip
+  still opens its pull request.
+
 - **No `ccx vcs` command waits behind another's pull request poll.** The
   shared pull request cache held one repo-wide lock across every GitHub and
   Graphite request a poll made. On monorepo about twenty `pr watch`,

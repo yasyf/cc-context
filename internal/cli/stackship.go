@@ -25,11 +25,7 @@ type stackShipIntent struct {
 	Budget  int                      `json:"budget"`
 }
 
-func (i *stackShipIntent) prepares(branch string) bool {
-	if i == nil {
-		return false
-	}
-	m := i.Meta[branch]
+func (m stackShipMeta) complete() bool {
 	return m.Title != "" && m.Body != nil && strings.TrimSpace(*m.Body) != ""
 }
 
@@ -62,9 +58,6 @@ func stackFinishShip(ctx context.Context, cmd *cobra.Command, l lane, run *stack
 	intent := run.Ship
 	meta := map[string]prMeta{}
 	for name, saved := range intent.Meta {
-		if run.resumed && submitted[name].PR == 0 {
-			continue
-		}
 		m := prMeta{title: saved.Title, draft: saved.Draft}
 		if saved.Body != nil {
 			m.bodyPath = filepath.Join(run.dir, "body-"+strconv.Itoa(len(meta)))

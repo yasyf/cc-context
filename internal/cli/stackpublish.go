@@ -493,9 +493,6 @@ func stackFinishPublication(ctx context.Context, cmd *cobra.Command, l lane, com
 	if run.Ship != nil {
 		sub.prepared = run.Ship.Meta
 	}
-	if run.resumed {
-		sub.unopened = func(branch string) bool { return !run.Ship.prepares(branch) && !slices.Contains(run.NewPRs, branch) }
-	}
 	published, entries, err := gtSubmitStack(ctx, l, cmd.ErrOrStderr(), sub, commonDir, state, tr, live, run.Tip)
 	if err != nil {
 		return err

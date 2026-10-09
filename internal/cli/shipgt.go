@@ -565,7 +565,7 @@ type gtSubmit struct {
 	trunkHead   string
 	publication *stackRebaseRun
 	otherLanes  []string
-	unopened    func(branch string) bool
+	shipTip     string
 	prepared    map[string]stackShipMeta
 }
 
@@ -1634,7 +1634,7 @@ func shipPushGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, meta ma
 	if err != nil {
 		return "", nil, nil, err
 	}
-	sub := gtSubmit{prefix: "ship", suffix: suffix, draft: &o.draft, draftAll: o.draft || o.publish, noVerify: o.noVerify, prepared: prepared}
+	sub := gtSubmit{prefix: "ship", suffix: suffix, draft: &o.draft, draftAll: o.draft || o.publish, noVerify: o.noVerify, shipTip: branch, prepared: prepared}
 	if c.restack != nil {
 		sub.publication = c.restack
 		sub.trunkHead = c.restack.Pin
@@ -1827,14 +1827,14 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 		return nil, nil, err
 	}
 	submit, unchanged := gtDropUnchanged(plan, last, known, tip, s.updateDraft(tip))
-	posted, unopened := gtHoldUnopened(submit, s.unopened)
+	posted, unopened := gtHoldUnopened(submit, s)
 	if err := gtAnnounceUnchanged(errW, s.prefix, unchanged); err != nil {
 		return nil, nil, err
 	}
 	if err := gtAnnounceStack(errW, s.prefix, gtPlanNames(posted)); err != nil {
 		return nil, nil, err
 	}
-	if err := gtAnnounceUnopened(errW, s.prefix, unopened); err != nil {
+	if err := gtAnnounceUnopened(errW, s, unopened); err != nil {
 		return nil, nil, err
 	}
 	if err := gtRefuseInherited(ctx, s.prefix, l.dir(), tr, s.trunkHead, plan); err != nil {
@@ -1930,9 +1930,9 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 	return gtPlanNames(posted), entries, nil
 }
 
-func gtHoldUnopened(submit []gtSubmitBranch, unopened func(branch string) bool) (posted []gtSubmitBranch, held []string) {
+func gtHoldUnopened(submit []gtSubmitBranch, s gtSubmit) (posted []gtSubmitBranch, held []string) {
 	for _, b := range submit {
-		if b.pr == 0 && unopened != nil && unopened(b.name) {
+		if b.pr == 0 && b.name != s.shipTip && !s.prepared[b.name].complete() {
 			held = append(held, b.name)
 			continue
 		}
@@ -1941,10 +1941,14 @@ func gtHoldUnopened(submit []gtSubmitBranch, unopened func(branch string) bool) 
 	return posted, held
 }
 
-func gtAnnounceUnopened(errW io.Writer, prefix string, held []string) error {
+func gtAnnounceUnopened(errW io.Writer, s gtSubmit, held []string) error {
 	for _, branch := range held {
-		if _, err := fmt.Fprintf(errW, "%s: pushed, not submitted: %s has no pull request, and a resumed run opens none without a prepared title and body — open it from its checkout with ccx vcs ship --no-commit --tip-only --pr-title <title> --pr-body-file <body.md>\n", prefix, branch); err != nil {
-			return fmt.Errorf("%s: name the branches left without a pull request: %w", prefix, err)
+		open := "ccx vcs ship --no-commit --tip-only"
+		if s.publication != nil && slices.Contains(s.publication.NewPRs, branch) {
+			open += " --new-pr " + branch
+		}
+		if _, err := fmt.Fprintf(errW, "%s: pushed, not submitted: %s has no pull request, and none opens without a prepared title and body — open it from its checkout with %s --pr-title <title> --pr-body-file <body.md>\n", s.prefix, branch, open); err != nil {
+			return fmt.Errorf("%s: name the branches left without a pull request: %w", s.prefix, err)
 		}
 	}
 	return nil
