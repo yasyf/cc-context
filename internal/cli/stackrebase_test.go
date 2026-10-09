@@ -686,6 +686,23 @@ func TestStackRebaseLinearizesSiblings(t *testing.T) {
 	}
 }
 
+func TestStackRebaseLinearizeReversesAParentEdge(t *testing.T) {
+	t.Parallel()
+	f := stackRebaseRepo(t, "a", "b", "c")
+
+	if out, errOut, err := runStackCmd(t, f, "rebase", "--no-push", "--linearize", "b,a,c"); err != nil {
+		t.Fatalf("stack rebase --linearize b,a,c: %v\n%s%s", err, out, errOut)
+	}
+	for child, parent := range map[string]string{"b": "main", "a": "b", "c": "a"} {
+		if got := stackParent(t, f, child); got != parent {
+			t.Errorf("%s's gt parent = %s, want %s", child, got, parent)
+		}
+		if n := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", parent+".."+child); n != "1" {
+			t.Errorf("%s holds %s commits over %s, want its own one", child, n, parent)
+		}
+	}
+}
+
 func TestStackRebaseLinearizeReplaysOnlyEachBranchsOwnCommits(t *testing.T) {
 	t.Parallel()
 	f := stackRebaseRepo(t, "a", "b")
