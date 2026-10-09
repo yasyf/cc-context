@@ -47,8 +47,10 @@ push --delete that follows is what closes them. The local stack looks perfect
 either way, which is why the obvious three steps in the obvious order lose a
 pull request every time.
 
-So the order is fixed here and it is the only order: every child's base moves
-onto this branch's parent on GitHub first, that move is read back before
+So the order is fixed here and it is the only order: every open pull request
+GitHub bases on this branch moves off it first, gt's children onto this
+branch's parent and any other onto the parent gt records for its head, or this
+branch's parent when gt tracks none; that move is read back before
 anything is deleted, and only then does the branch go — gt's rows and the local
 ref, the children replayed onto the parent, and the remote ref last. Each child
 is read back a second time afterwards, and a child that came back closed or
@@ -100,7 +102,11 @@ func runStackDrop(cmd *cobra.Command, args []string, o dropOpts) error {
 	return runStackDropBranch(cmd, l, args[0], o.dryRun)
 }
 
-// dropPlan's own is the dropped branch's own pull request, which the drop only reads.
+type dropMove struct {
+	pr   dropPR
+	onto string
+}
+
 type dropPlan struct {
 	branch   string
 	parent   string
@@ -109,14 +115,18 @@ type dropPlan struct {
 	onRemote bool
 	children []string
 	chain    []string
-	prs      map[string]dropPR
+	moves    map[string]dropMove
 	own      dropPR
+}
+
+func (p dropPlan) heads() []string {
+	return slices.Sorted(maps.Keys(p.moves))
 }
 
 func (p dropPlan) orphans() []string {
 	var orphans []string
 	for _, child := range p.children {
-		if _, ok := p.prs[child]; !ok {
+		if _, ok := p.moves[child]; !ok {
 			orphans = append(orphans, child)
 		}
 	}
@@ -201,14 +211,23 @@ func dropPlanFor(ctx context.Context, l lane, state gtState, branch string) (dro
 		return dropPlan{}, fmt.Errorf("%s: retargeting a pull request needs GitHub metadata: %w", dropPrefix, err)
 	}
 	plan.nwo = repo.NameWithOwner
-	plan.prs = make(map[string]dropPR, len(plan.children))
+	plan.moves = make(map[string]dropMove, len(plan.children))
 	for _, child := range plan.children {
 		pr, found, err := dropPRForBranch(ctx, plan.nwo, child, "open")
 		if err != nil {
 			return dropPlan{}, err
 		}
 		if found {
-			plan.prs[child] = pr
+			plan.moves[child] = dropMove{pr: pr, onto: plan.parent}
+		}
+	}
+	based, err := dropPRsOnBase(ctx, plan.nwo, branch)
+	if err != nil {
+		return dropPlan{}, err
+	}
+	for head, pr := range based {
+		if _, known := plan.moves[head]; !known {
+			plan.moves[head] = dropMove{pr: pr, onto: dropOnto(state, head, branch, plan.parent)}
 		}
 	}
 	if plan.own, _, err = dropPRForBranch(ctx, plan.nwo, branch, "open"); err != nil {
@@ -239,16 +258,20 @@ func dropChildren(state gtState, branch string) []string {
 	return children
 }
 
-// dropRetargetChildren moves every child's base onto the parent, before any
-// deletion, which is the whole verb. A child already pointing there is left
-// alone.
+func dropOnto(state gtState, head, branch, parent string) string {
+	if s, ok := state[head]; ok && len(s.Parents) > 0 && s.Parents[0].Ref != branch {
+		return s.Parents[0].Ref
+	}
+	return parent
+}
+
 func dropRetargetChildren(ctx context.Context, plan dropPlan) error {
-	for _, child := range plan.children {
-		pr, ok := plan.prs[child]
-		if !ok || pr.BaseRefName == plan.parent {
+	for _, head := range plan.heads() {
+		m := plan.moves[head]
+		if m.pr.BaseRefName == m.onto {
 			continue
 		}
-		if err := dropRetarget(ctx, plan.nwo, pr.Number, plan.parent); err != nil {
+		if err := dropRetarget(ctx, plan.nwo, m.pr.Number, m.onto); err != nil {
 			return err
 		}
 	}
@@ -260,20 +283,17 @@ func dropRetargetChildren(ctx context.Context, plan dropPlan) error {
 // branch being deleted. A silent success here is the failure being fixed.
 func dropVerifyChildren(ctx context.Context, plan dropPlan, when string) error {
 	var failures []error
-	for _, child := range plan.children {
-		pr, ok := plan.prs[child]
-		if !ok {
-			continue
-		}
-		got, err := dropPRAt(ctx, plan.nwo, pr.Number)
+	for _, head := range plan.heads() {
+		m := plan.moves[head]
+		got, err := dropPRAt(ctx, plan.nwo, m.pr.Number)
 		if err != nil {
 			return err
 		}
 		switch {
 		case got.State != "OPEN":
-			failures = append(failures, fmt.Errorf("%s's PR #%d reads %s %s — reopen and retarget it with ccx vcs stack drop --repair", child, got.Number, strings.ToLower(got.State), when))
-		case got.BaseRefName != plan.parent:
-			failures = append(failures, fmt.Errorf("%s's PR #%d still targets %s rather than %s %s", child, got.Number, got.BaseRefName, plan.parent, when))
+			failures = append(failures, fmt.Errorf("%s's PR #%d reads %s %s — reopen and retarget it with ccx vcs stack drop --repair", head, got.Number, strings.ToLower(got.State), when))
+		case got.BaseRefName != m.onto:
+			failures = append(failures, fmt.Errorf("%s's PR #%d still targets %s rather than %s %s", head, got.Number, got.BaseRefName, m.onto, when))
 		}
 	}
 	if len(failures) == 0 {
@@ -429,8 +449,8 @@ func dropReport(plan dropPlan, result gtRestackResult, own dropPR, dryRun bool) 
 		dropped, retargeted = "would drop", "would retarget"
 	}
 	segs := []string{dropped + " " + plan.branch}
-	if len(plan.prs) > 0 {
-		segs = append(segs, fmt.Sprintf("%s %d onto %s: %s", retargeted, len(plan.prs), plan.parent, strings.Join(dropPRNames(plan), ", ")))
+	if len(plan.moves) > 0 {
+		segs = append(segs, fmt.Sprintf("%s %d onto %s: %s", retargeted, len(plan.moves), plan.parent, strings.Join(dropPRNames(plan), ", ")))
 	}
 	if orphans := plan.orphans(); len(orphans) > 0 {
 		segs = append(segs, "no open PR: "+strings.Join(orphans, ", "))
@@ -447,19 +467,21 @@ func dropReport(plan dropPlan, result gtRestackResult, own dropPR, dryRun bool) 
 	if len(result.held) > 0 {
 		segs = append(segs, fmt.Sprintf("%d branches gt is holding, left where they are", len(result.held)))
 	}
-	if len(plan.prs) > 0 {
+	if len(plan.moves) > 0 {
 		segs = append(segs, "push the restacked branches with ccx vcs stack submit")
 	}
 	return strings.Join(segs, shipSep)
 }
 
-// dropPRNames is sorted in child order, so one drop's report reads the same twice.
 func dropPRNames(plan dropPlan) []string {
-	names := make([]string, 0, len(plan.prs))
-	for _, child := range plan.children {
-		if pr, ok := plan.prs[child]; ok {
-			names = append(names, fmt.Sprintf("%s → #%d", child, pr.Number))
+	names := make([]string, 0, len(plan.moves))
+	for _, head := range plan.heads() {
+		m := plan.moves[head]
+		name := fmt.Sprintf("%s → #%d", head, m.pr.Number)
+		if m.onto != plan.parent {
+			name += " onto " + m.onto
 		}
+		names = append(names, name)
 	}
 	return names
 }
@@ -773,6 +795,22 @@ func dropPRForBranch(ctx context.Context, nwo, branch, state string) (dropPR, bo
 		return dropPR{}, false, nil
 	}
 	return dropPRFrom(prs[0]), true, nil
+}
+
+func dropPRsOnBase(ctx context.Context, nwo, branch string) (map[string]dropPR, error) {
+	out, err := render.RunCLI(ctx, render.Ambient, "gh", ghPullsByBaseArgv(nwo, branch))
+	if err != nil {
+		return nil, fmt.Errorf("%s: list pull requests based on %s: %w", dropPrefix, branch, err)
+	}
+	var prs []ghPull
+	if err := json.Unmarshal([]byte(out), &prs); err != nil {
+		return nil, fmt.Errorf("%s: parse pull requests based on %s: %w", dropPrefix, branch, err)
+	}
+	based := make(map[string]dropPR, len(prs))
+	for _, p := range prs {
+		based[p.Head.Ref] = dropPRFrom(p)
+	}
+	return based, nil
 }
 
 // dropPRAt reads one pull request by number, the address every verification

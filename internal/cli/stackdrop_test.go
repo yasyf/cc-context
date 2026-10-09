@@ -90,7 +90,8 @@ render() {
   read -r st bs < "$S/pr/$1"
   case "$st" in OPEN) rest=open ;; *) rest=closed ;; esac
   merged=null; if [ "$st" = MERGED ]; then merged='"2026-09-01T00:00:00Z"'; fi
-  printf '{"number":%s,"html_url":"https://github.com/yasyf/cc-context/pull/%s","state":"%s","merged_at":%s,"base":{"ref":"%s"}}' "$1" "$1" "$rest" "$merged" "$bs"
+  hd=; for b in "$S"/branch/*; do read -r m < "$b"; if [ "$m" = "$1" ]; then hd=${b##*/}; fi; done
+  printf '{"number":%s,"html_url":"https://github.com/yasyf/cc-context/pull/%s","state":"%s","merged_at":%s,"base":{"ref":"%s"},"head":{"ref":"%s"}}' "$1" "$1" "$rest" "$merged" "$bs" "$hd"
 }
 if [ "$1" != api ]; then printf 'fake gh: unmatched argv: %s\n' "$*" >&2; exit 2; fi
 method=GET path= prev=
@@ -101,6 +102,17 @@ for a in "$@"; do
 done
 case "$method $path" in
   "GET "*/pulls)
+    on=$(field base "$@")
+    if [ -n "$on" ]; then
+      printf '['; sep=
+      for b in "$S"/branch/*; do
+        [ -r "$b" ] || continue
+        read -r n < "$b"
+        read -r st bs < "$S/pr/$n"
+        if [ "$st" = OPEN ] && [ "$bs" = "$on" ]; then printf '%s' "$sep"; render "$n"; sep=,; fi
+      done
+      printf ']'; exit 0
+    fi
     head=$(field head "$@")
     branch=${head#*:}
     want=$(field state "$@")
@@ -247,6 +259,52 @@ func TestStackDropRetargetsEveryChildBeforeDeletingTheBranch(t *testing.T) {
 	}
 	if !strings.Contains(out, "retargeted 1 onto base") {
 		t.Errorf("report = %q, want it to name the retarget", out)
+	}
+}
+
+func TestStackDropRetargetsAPullRequestOnlyGitHubBasesOnTheBranch(t *testing.T) {
+	f := dropStack(t, "base", "mid", "top")
+	commonDir, err := gtCommonDir(t.Context(), render.Dir(f.Dir), "test")
+	if err != nil {
+		t.Fatalf("gt common dir: %v", err)
+	}
+	if err := gtmeta.Reparent(t.Context(), commonDir, map[string]string{"top": "base"}); err != nil {
+		t.Fatalf("reparent top onto base: %v", err)
+	}
+	mustRun(t, f.Env(), f.Dir, "git", "rebase", "-q", "--onto", "base", "mid", "top")
+	base := gitAt(t, f.Env(), f.Dir, "rev-parse", "refs/heads/base")
+	if err := gtmeta.RecordRestacked(t.Context(), commonDir, map[string]string{"top": base}); err != nil {
+		t.Fatalf("record top as restacked onto base: %v", err)
+	}
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "base")
+	gh := installDropGH(t, f, map[string]dropSeed{
+		"mid":   {number: 1, state: "OPEN", base: "base"},
+		"top":   {number: 2, state: "OPEN", base: "mid"},
+		"ghost": {number: 3, state: "OPEN", base: "mid"},
+	})
+	shipResetLog(t, f)
+
+	out, _, err := runStackCmd(t, f, "drop", "mid")
+	if err != nil {
+		t.Fatalf("stack drop: %v", err)
+	}
+
+	invocations := shipGTInvocations(t, f)
+	deleted := dropStep(t, invocations, "git", "push", "--delete", "mid")
+	for _, n := range []int{2, 3} {
+		retarget := dropStep(t, invocations, "gh", "api", "PATCH", fmt.Sprintf("repos/yasyf/cc-context/pulls/%d", n), "base=base")
+		if retarget > deleted {
+			t.Errorf("retargeted PR #%d at step %d, after the delete at step %d", n, retarget, deleted)
+		}
+		if got := gh.pr(n); got != "OPEN base" {
+			t.Errorf("PR #%d = %q, want %q", n, got, "OPEN base")
+		}
+	}
+	if gitBranchExists(t, f.Env(), f.RemoteDir, "mid") {
+		t.Error("origin still carries mid")
+	}
+	if !strings.Contains(out, "retargeted 2 onto base: ghost → #3, top → #2") {
+		t.Errorf("report = %q, want it to name both retargets", out)
 	}
 }
 
