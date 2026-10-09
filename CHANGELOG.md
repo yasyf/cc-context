@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Stack submit refuses a branch reset behind its own published amend.** A
+  `ship --amend --tip-only` published an amended head, and another agent then
+  ran `git reset --hard` in the same working copy, putting the branch back on
+  the head it held before the amend. A `stack submit` from a child lane
+  replayed that older head onto trunk and force-pushed it, dropping the
+  published amend without a word, as on monorepo #33534. The dropped-commit
+  check matches commits by subject, so an amend that keeps its subject passed.
+  When the branch's reflog shows the local head is one it held before the
+  published head, stack submit now refuses the branch and names the reset.
+  `--drop-commits` still publishes the local head.
+
 - **A ship finishes a dead publication run its branch has moved past.** A
   ship killed after its push left a publication run behind. The next ship
   on that branch committed first, then finished the dead run and refused

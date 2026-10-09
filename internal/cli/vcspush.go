@@ -416,6 +416,16 @@ func gitReflogHolds(ctx context.Context, dir render.Dir, prefix, branch, sha str
 	return false, nil
 }
 
+func gitReflogReturned(ctx context.Context, dir render.Dir, prefix, branch, local, remote string) (bool, error) {
+	out, err := render.RunCLI(ctx, dir, "git", []string{"reflog", "show", "--format=%H", "refs/heads/" + branch})
+	if err != nil {
+		return false, fmt.Errorf("%s: git reflog show %s: %w", prefix, branch, err)
+	}
+	entries := strings.Fields(out)
+	at := slices.Index(entries, remote)
+	return at >= 0 && slices.Contains(entries[at+1:], local), nil
+}
+
 // gitRecordedHistoryEnv reads the commit graph as recorded, without the
 // replace refs or grafts that can splice a foreign commit into a branch's
 // ancestry, and without a partial clone fetching a commit it lacks.

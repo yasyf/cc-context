@@ -2044,6 +2044,13 @@ func stackSnapshot(ctx context.Context, dir render.Dir, tr vcs.Trunk, s gtBranch
 			return b, stackDivergedError{fmt.Errorf("stack rebase: %s has diverged from %s/%s (local %.12s, remote %.12s) — someone pushed to it; reconcile the two by hand, then re-run", name, tr.Remote(), name, s.Head, remote)}
 		}
 		if !ahead && !behind && !dropCommits {
+			returned, err := gitReflogReturned(ctx, dir, stackRebasePrefix, name, s.Head, remote)
+			if err != nil {
+				return b, err
+			}
+			if returned {
+				return b, stackDivergedError{fmt.Errorf("stack rebase: %s's local head %.12s is one it held before its published head %s/%s (%.12s) — a reset onto an older head; git reset --keep %s/%s to take the published head, or pass --drop-commits to publish the local head anyway", name, s.Head, tr.Remote(), name, remote, tr.Remote(), name)}
+			}
 			if err := stackRefuseDroppedCommits(ctx, dir, tr, name, s.Head, remote, pin); err != nil {
 				return b, stackDivergedError{err}
 			}

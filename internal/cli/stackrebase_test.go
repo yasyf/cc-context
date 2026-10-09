@@ -1980,6 +1980,68 @@ func TestStackSnapshotTakesAServerRestackOfItsOwnCommitsPastAStalePin(t *testing
 	}
 }
 
+func TestStackSnapshotRefusesALocalHeadResetBehindItsPublishedAmend(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		after    func(t *testing.T, f *vcstest.Fixture, earlier string)
+		diverged bool
+	}{
+		{
+			name: "reset onto the earlier head",
+			after: func(t *testing.T, f *vcstest.Fixture, earlier string) {
+				t.Helper()
+				mustRun(t, f.Env(), f.Dir, "git", "reset", "-q", "--hard", earlier)
+			},
+			diverged: true,
+		},
+		{
+			name: "amended again",
+			after: func(t *testing.T, f *vcstest.Fixture, _ string) {
+				t.Helper()
+				writeShipFile(t, f.Dir, "feature.txt", "amended twice\n")
+				mustRun(t, f.Env(), f.Dir, "git", "add", "feature.txt")
+				mustRun(t, f.Env(), f.Dir, "git", "commit", "-q", "--amend", "--no-edit")
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f := stackRebaseRepo(t, "feature")
+			mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "feature")
+			earlier := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")
+			mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "feature")
+			writeShipFile(t, f.Dir, "feature.txt", "amended\n")
+			mustRun(t, f.Env(), f.Dir, "git", "add", "feature.txt")
+			mustRun(t, f.Env(), f.Dir, "git", "commit", "-q", "--amend", "--no-edit")
+			mustRun(t, f.Env(), f.Dir, "git", "push", "-qf", "origin", "feature")
+			mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
+			tc.after(t, f, earlier)
+			dir := render.Dir(f.Dir)
+			tr, err := gtTrunkRefOffline(f.Context(), dir, stackRebasePrefix, "main")
+			if err != nil {
+				t.Fatal(err)
+			}
+			pin := gitAt(t, f.Env(), f.Dir, "rev-parse", "origin/main")
+			local := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")
+			remote := gitAt(t, f.Env(), f.Dir, "rev-parse", "origin/feature")
+			s := gtBranchState{Head: local, Parents: []gtRef{{Ref: "main", SHA: pin}}}
+
+			_, err = stackSnapshot(f.Context(), dir, tr, s, "feature", remote, remote, nil, false, pin, false, false)
+			var diverged stackDivergedError
+			if got := errors.As(err, &diverged); got != tc.diverged {
+				t.Fatalf("stackSnapshot = %v, want diverged %v", err, tc.diverged)
+			}
+			if !tc.diverged && err != nil {
+				t.Fatalf("stackSnapshot = %v, want an amend past the published head taken as a rewrite", err)
+			}
+			if _, err := stackSnapshot(f.Context(), dir, tr, s, "feature", remote, remote, nil, false, pin, true, false); err != nil {
+				t.Fatalf("stackSnapshot with --drop-commits = %v, want the local head published", err)
+			}
+		})
+	}
+}
+
 func TestStackSnapshotComparesAServerRestackOntoARestackedParentByPatch(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
