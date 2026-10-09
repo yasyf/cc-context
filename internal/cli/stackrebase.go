@@ -1053,7 +1053,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 		if members, roots, err = stackWithPublishedParents(ctx, l.dir(), retargeted, submitted, trunk, members, roots, overrides); err != nil {
 			return nil, err
 		}
-		if o.submit {
+		if o.submit && !o.otherLanes {
 			if o.pinned, err = stackPinHeldParents(ctx, l, planned, members, o.pinned); err != nil {
 				return nil, err
 			}
@@ -1087,7 +1087,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 		return nil, err
 	}
 	stackMarkParked(prs, submitted)
-	members, left, err := stackKept(ctx, l.dir(), state, tr, current, members, prs, overrides, o.landed)
+	members, left, passed, err := stackKept(ctx, l.dir(), state, tr, current, members, prs, overrides, o.landed)
 	if err != nil {
 		return nil, err
 	}
@@ -1219,9 +1219,9 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 		byName[name] = &b
 	}
 	for name, b := range byName {
-		b.Parent = b.WasParent
+		b.Parent = stackPassThrough(passed, b.WasParent)
 		if _, member := byName[b.Parent]; b.Parent != trunk && !member {
-			b.Parent = state[name].Parents[0].Ref
+			b.Parent = stackPassThrough(passed, state[name].Parents[0].Ref)
 		}
 		if p, ok := overrides[name]; ok {
 			b.Parent = p
@@ -1321,29 +1321,38 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 // stackKept drops from members every branch the run must leave where it is,
 // in members' parents-first order. A branch with no commit past the parent
 // revision gt recorded is an empty lane, not a landed one: dropping it would
-// make gt forget a lane nobody has committed to yet. A branch above the one
+// make gt forget a lane nobody has committed to yet; one below the branch
+// checked out here is passed over, its children riding onto its parent. A branch above the one
 // checked out here whose gt parent the rest of the record contradicts belongs
 // to another lane: gt track adopts a branch cut at the same commit as another
 // onto it, and a run that trusted that record replayed another lane's work
 // onto this stack and pushed it. Everything stacked on either goes with it.
-func stackKept(ctx context.Context, dir render.Dir, state gtState, tr vcs.Trunk, current string, members []string, prs map[string]*stackPR, overrides map[string]string, landed []string) ([]string, []stackLeft, error) {
+func stackKept(ctx context.Context, dir render.Dir, state gtState, tr vcs.Trunk, current string, members []string, prs map[string]*stackPR, overrides map[string]string, landed []string) ([]string, []stackLeft, map[string]string, error) {
 	isLanded := func(name string) bool {
 		return slices.Contains(landed, name) || (prs[name] != nil && (prs[name].Landed || prs[name].abandoned()))
 	}
-	above := map[string]bool{}
+	above, below := map[string]bool{}, map[string]bool{}
 	if current != "" && current != tr.Name() {
 		if err := stackRefuseForeignBelow(ctx, dir, stackRetargeted(state, overrides), tr, current, overrides, prs, isLanded); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		up, err := gtUpstack(stackRebasePrefix, state, current)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		for _, name := range up {
 			above[name] = true
 		}
+		down, err := gtDownstack(stackRebasePrefix, state, current, tr.Name())
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		for _, name := range down[1:] {
+			below[name] = true
+		}
 	}
 	gone := map[string]bool{}
+	passed := map[string]string{}
 	var kept []string
 	var left []stackLeft
 	for _, name := range members {
@@ -1358,6 +1367,10 @@ func stackKept(ctx context.Context, dir render.Dir, state gtState, tr vcs.Trunk,
 			left = append(left, stackLeft{branch: name, why: "it sits on " + parent + ", which is left where it is"})
 		case !isLanded(name) && s.Parents[0].SHA == s.Head:
 			left = append(left, stackLeft{branch: name, empty: true})
+			if below[name] {
+				passed[name] = parent
+				continue
+			}
 		case above[name] && !overridden:
 			effective := parent
 			for effective != tr.Name() && isLanded(effective) {
@@ -1365,7 +1378,7 @@ func stackKept(ctx context.Context, dir render.Dir, state gtState, tr vcs.Trunk,
 			}
 			why, err := stackStrayReason(ctx, dir, state, tr, name, parent, effective, prs[name])
 			if err != nil {
-				return nil, nil, err
+				return nil, nil, nil, err
 			}
 			if why == "" {
 				kept = append(kept, name)
@@ -1381,11 +1394,21 @@ func stackKept(ctx context.Context, dir render.Dir, state gtState, tr vcs.Trunk,
 	for _, child := range slices.Sorted(maps.Keys(overrides)) {
 		for _, name := range []string{child, overrides[child]} {
 			if gone[name] {
-				return nil, nil, fmt.Errorf("stack rebase: --parent %s=%s names %s, which this run leaves where it is", child, overrides[child], name)
+				return nil, nil, nil, fmt.Errorf("stack rebase: --parent %s=%s names %s, which this run leaves where it is", child, overrides[child], name)
 			}
 		}
 	}
-	return kept, left, nil
+	return kept, left, passed, nil
+}
+
+func stackPassThrough(passed map[string]string, parent string) string {
+	for {
+		below, ok := passed[parent]
+		if !ok {
+			return parent
+		}
+		parent = below
+	}
 }
 
 // stackStrayReason names the evidence that branch belongs to another lane: an
@@ -4507,13 +4530,18 @@ func stackCheckClean(ctx context.Context, movers []string, holders map[string]st
 		if holder == "" {
 			continue
 		}
-		status, err := render.RunCLI(ctx, render.Dir(holder), "git", []string{"status", "--porcelain", "--untracked-files=normal"})
+		dirty, err := gitUncommitted(ctx, holder)
 		if err != nil {
 			return err
 		}
-		if status != "" {
+		if dirty {
 			return fmt.Errorf("stack rebase: %s has uncommitted work; no branches moved — commit or move that work, then %s", holder, advice)
 		}
 	}
 	return nil
+}
+
+func gitUncommitted(ctx context.Context, worktree string) (bool, error) {
+	status, err := render.RunCLI(ctx, render.Dir(worktree), "git", []string{"status", "--porcelain", "--untracked-files=normal"})
+	return status != "", err
 }

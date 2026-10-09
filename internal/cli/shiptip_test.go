@@ -440,3 +440,33 @@ func TestShipNamesTipOnlyWhenAHeldParentDiverged(t *testing.T) {
 		t.Fatalf("ship --tip-only after the refusal = %v (stderr=%q)", err, errStr)
 	}
 }
+
+func TestShipTipOnlyPublishesATipCutOnAnEmptyBase(t *testing.T) {
+	f := shipGTRepo(t)
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	shipGTLevel(t, f, "base")
+	shipGTStack(t, f, "feature")
+	stackForeignPush(t, f, "main", "trunk.txt", false)
+	body := filepath.Join(t.TempDir(), "body.md")
+	if err := os.WriteFile(body, []byte("Exact body\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	shipResetLog(t, f)
+
+	if _, errStr, err := runShipCmdFull(f.Context(), t, "--no-commit", "--no-watch", "--tip-only", "--pr-title", "feature=Exact title", "--pr-body-file", "feature="+body); err != nil {
+		t.Fatalf("ship --tip-only = %v (stderr=%q), want the tip published past its empty base", err, errStr)
+	}
+	if heads := api.submitHeads(); !slices.Equal(heads, []string{"feature"}) {
+		t.Errorf("Graphite submitted %v, want only feature", heads)
+	}
+	if entry := api.submitEntry("feature"); entry.Title == nil || *entry.Title != "Exact title" {
+		t.Errorf("Graphite create title = %v, want the explicit title", entry.Title)
+	}
+	if gitBranchExists(t, f.Env(), f.RemoteDir, "base") {
+		t.Error("origin carries the empty base")
+	}
+	if feature := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature"); !stackOnto(t, f, "origin/main", feature) {
+		t.Errorf("published feature %s does not sit on the fetched trunk", feature)
+	}
+}

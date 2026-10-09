@@ -189,6 +189,7 @@ func TestShipCommitPushWatch(t *testing.T) {
 				return [][]string{
 					{"git", "branch", "--show-current"},
 					gitTrunkArgv,
+					{"git", "diff", "--cached", "--name-status", "--no-renames", "-z"},
 					{"git", "add", "-A", "--verbose"},
 					{"git", "commit", "-m", "fix: frobnicate"},
 					{"git", "branch", "--show-current"},
@@ -258,6 +259,7 @@ func TestShipHooksPass(t *testing.T) {
 			want: [][]string{
 				{"git", "branch", "--show-current"},
 				gitTrunkArgv,
+				{"git", "diff", "--cached", "--name-status", "--no-renames", "-z"},
 				{"git", "add", "-A", "--verbose"},
 				{"git", "diff", "--cached", "--name-only", "--diff-filter=d", "-z"},
 				{"uvx", "prek", "run", "--cd", "ROOT", "--files", "f1.go"},
@@ -884,6 +886,7 @@ func TestShipCommitOnlyVariants(t *testing.T) {
 			want: [][]string{
 				{"git", "branch", "--show-current"},
 				gitTrunkArgv,
+				{"git", "diff", "--cached", "--name-status", "--no-renames", "-z"},
 				{"git", "add", "-A", "--verbose"},
 				{"git", "commit", "-m", "fix: frobnicate"},
 				{"git", "branch", "--show-current"},
@@ -920,6 +923,7 @@ func TestShipCommitOnlyVariants(t *testing.T) {
 			want: [][]string{
 				{"git", "branch", "--show-current"},
 				gitTrunkArgv,
+				{"git", "diff", "--cached", "--name-status", "--no-renames", "-z"},
 				{"git", "add", "-A", "--verbose"},
 				{"git", "commit", "--amend", "--no-edit"},
 				{"git", "branch", "--show-current"},
@@ -932,6 +936,7 @@ func TestShipCommitOnlyVariants(t *testing.T) {
 			want: [][]string{
 				{"git", "branch", "--show-current"},
 				gitTrunkArgv,
+				{"git", "diff", "--cached", "--name-status", "--no-renames", "-z"},
 				{"git", "add", "-A", "--verbose"},
 				{"git", "commit", "--amend", "--no-edit", "--no-verify"},
 				{"git", "branch", "--show-current"},
@@ -1503,6 +1508,7 @@ func TestShipGitUsesPostCommitBranch(t *testing.T) {
 	assertInvocations(t, invocations, [][]string{
 		{"git", "branch", "--show-current"},
 		gitTrunkArgv,
+		{"git", "diff", "--cached", "--name-status", "--no-renames", "-z"},
 		{"git", "add", "-A", "--verbose"},
 		{"git", "commit", "-m", "fix: frobnicate"},
 		{"git", "branch", "--show-current"},
@@ -1543,6 +1549,7 @@ func TestShipSessionTrailer(t *testing.T) {
 			want: [][]string{
 				{"git", "branch", "--show-current"},
 				gitTrunkArgv,
+				{"git", "diff", "--cached", "--name-status", "--no-renames", "-z"},
 				{"git", "add", "-A", "--verbose"},
 				{"git", "commit", "-m", "fix: frobnicate\n\nClaude-Session-Id: some-uuid"},
 				{"git", "branch", "--show-current"},
@@ -1569,6 +1576,7 @@ func TestShipSessionTrailer(t *testing.T) {
 			want: [][]string{
 				{"git", "branch", "--show-current"},
 				gitTrunkArgv,
+				{"git", "diff", "--cached", "--name-status", "--no-renames", "-z"},
 				{"git", "add", "-A", "--verbose"},
 				{"git", "commit", "--amend", "-m", "fix: frobnicate\n\nClaude-Session-Id: some-uuid"},
 				{"git", "branch", "--show-current"},
@@ -1595,6 +1603,7 @@ func TestShipSessionTrailer(t *testing.T) {
 			want: [][]string{
 				{"git", "branch", "--show-current"},
 				gitTrunkArgv,
+				{"git", "diff", "--cached", "--name-status", "--no-renames", "-z"},
 				{"git", "add", "-A", "--verbose"},
 				{"git", "commit", "--amend", "--no-edit"},
 				{"git", "branch", "--show-current"},
@@ -1652,6 +1661,7 @@ func TestShipGitAmendFastForwardPush(t *testing.T) {
 		{"git", "branch", "--show-current"},
 		gitTrunkArgv,
 		{"git", "rev-parse", "HEAD"},
+		{"git", "diff", "--cached", "--name-status", "--no-renames", "-z"},
 		{"git", "add", "-A", "--verbose"},
 		{"git", "commit", "--amend", "-m", "fix: frobnicate"},
 		{"git", "branch", "--show-current"},
@@ -1682,6 +1692,7 @@ func TestShipGitRebase(t *testing.T) {
 	plan := [][]string{
 		{"git", "branch", "--show-current"},
 		gitTrunkArgv,
+		{"git", "diff", "--cached", "--name-status", "--no-renames", "-z"},
 		{"git", "add", "-A", "--verbose"},
 		{"git", "commit", "-m", "fix: frobnicate"},
 		{"git", "branch", "--show-current"},
@@ -1765,6 +1776,7 @@ func TestShipGitRebase(t *testing.T) {
 			want: [][]string{
 				{"git", "branch", "--show-current"},
 				gitTrunkArgv,
+				{"git", "diff", "--cached", "--name-status", "--no-renames", "-z"},
 				{"git", "add", "-A", "--verbose"},
 				{"git", "commit", "-m", "fix: frobnicate"},
 				{"git", "branch", "--show-current"},
@@ -1957,6 +1969,7 @@ func TestShipGitPushRetry(t *testing.T) {
 	plan := [][]string{
 		{"git", "branch", "--show-current"},
 		gitTrunkArgv,
+		{"git", "diff", "--cached", "--name-status", "--no-renames", "-z"},
 		{"git", "add", "-A", "--verbose"},
 		{"git", "commit", "-m", "fix: frobnicate"},
 		{"git", "branch", "--show-current"},
@@ -2049,6 +2062,7 @@ func TestShipGitPushRetry(t *testing.T) {
 				{"git", "branch", "--show-current"},
 				gitTrunkArgv,
 				{"git", "rev-parse", "HEAD"},
+				{"git", "diff", "--cached", "--name-status", "--no-renames", "-z"},
 				{"git", "add", "-A", "--verbose"},
 				{"git", "commit", "--amend", "-m", "fix: frobnicate"},
 				{"git", "branch", "--show-current"},
@@ -4091,6 +4105,7 @@ func TestShipGTPrecedenceOverJJ(t *testing.T) {
 			{"git", "branch", "--show-current"},
 			gtCommonDirArgv,
 			gtRealRefsArgv(t, f),
+			{"git", "diff", "--cached", "--name-status", "--no-renames", "-z"},
 			{"git", "add", "-A", "--verbose"},
 			{"git", "diff", "--cached", "--quiet"},
 			{"git", "commit", "-m", "fix: frobnicate"},
@@ -4194,6 +4209,7 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 				{"git", "branch", "--show-current"},
 				gtCommonDirArgv,
 				gtRefsArgv(),
+				{"git", "diff", "--cached", "--name-status", "--no-renames", "-z"},
 				{"git", "add", "-A", "--verbose"},
 				{"git", "diff", "--cached", "--quiet"},
 				{"git", "commit", "-m", "fix: frobnicate"},
@@ -4242,6 +4258,7 @@ func TestShipGTTrunkStacksBranch(t *testing.T) {
 		{"git", "branch", "--show-current"},
 		gtCommonDirArgv,
 		gtRefsArgv(),
+		{"git", "diff", "--cached", "--name-status", "--no-renames", "-z"},
 		{"git", "add", "-A", "--verbose"},
 		{"git", "diff", "--cached", "--quiet"},
 		{"gt", "create", "fix-frobnicate", "-m", "fix: frobnicate", "--no-ai", "--no-interactive"},
@@ -5115,7 +5132,7 @@ func TestShipGTAmend(t *testing.T) {
 				if inv[0] == "git" && inv[1] == "commit" {
 					commit = inv
 				}
-				if inv[0] == "git" && inv[1] == "diff" {
+				if inv[0] == "git" && inv[1] == "diff" && slices.Contains(inv, "--quiet") {
 					t.Errorf("amend must not probe git diff --cached --quiet: %v", inv)
 				}
 			}
@@ -5758,6 +5775,7 @@ func TestShipGTRefusals(t *testing.T) {
 			{"git", "merge-base", "--is-ancestor", mainHead, "refs/remotes/origin/main"},
 			gtCommonDirArgv,
 			gtRealRefsArgv(t, f),
+			{"git", "diff", "--cached", "--name-status", "--no-renames", "-z"},
 			{"git", "add", "-A", "--verbose"},
 			{"git", "diff", "--cached", "--quiet"},
 			{"git", "commit", "-m", "fix: frobnicate"},

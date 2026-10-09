@@ -1506,6 +1506,9 @@ func shipCommitGT(ctx context.Context, l lane, errW io.Writer, o shipOpts, sel *
 		}
 		return seg, shipCommitGTSelect(ctx, l, errW, o, sel, plan)
 	}
+	if o, err = shipScopeToIndex(ctx, l.dir(), o); err != nil {
+		return "", err
+	}
 	sweptSeg, err := shipGitAdd(ctx, l.dir(), o)
 	if err != nil {
 		return "", err

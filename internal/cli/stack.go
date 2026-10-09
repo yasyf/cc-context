@@ -205,7 +205,7 @@ copy's lane, and a branch any working copy of this lane has checked
 out is submitted as if it were checked out here. A branch a working copy of
 another lane has checked out is that lane's, so it is skipped and named with the
 working copy holding it, along with every branch stacked above it; --include
-submits it anyway. One whose pull request landed is no
+submits it anyway, and --all-lanes submits every such branch. One whose pull request landed is no
 lane's any more: it is dropped like any landed branch, and the branches on it
 move onto trunk.
 
@@ -235,7 +235,9 @@ is refused.
 A tracked branch with no commit past the parent revision gt recorded is an
 empty lane nobody has committed to yet. It and everything stacked on it are
 left where they are, neither dropped nor forgotten by gt, and reported as
-"skipped empty <branch>".
+"skipped empty <branch>". One below the branch checked out here, such as a
+worktree's base branch, is skipped alone: the branches on it publish onto its
+parent.
 
 Every remaining branch is force-pushed in one atomic push under the lease of
 its last submitted version, then posted to Graphite's API one branch at a time,
@@ -252,7 +254,7 @@ the run leaves out, is refused before anything moves.`,
 	cmd.Flags().StringArrayVar(&o.prTitle, "pr-title", nil, "title for a pull request: <branch>=<title>, or a bare title for the branch checked out here (repeatable)")
 	cmd.Flags().StringArrayVar(&o.prBodyFile, "pr-body-file", nil, "body file for a pull request: <branch>=<path>, or a bare path for the branch checked out here; - reads stdin (repeatable)")
 	cmd.Flags().StringArrayVar(&include, "include", nil, "submit this branch even though another lane's working copy has it checked out or it is another lane's (repeatable)")
-	cmd.Flags().BoolVar(&o.allLanes, "all-lanes", false, "submit the branches of other lanes too, a lane being the branch name before its last slash")
+	cmd.Flags().BoolVar(&o.allLanes, "all-lanes", false, "submit the branches of other lanes too, a lane being the branch name before its last slash or the working copy holding the branch")
 	cmd.Flags().StringArrayVar(&o.landed, "landed", nil, "treat <branch> as landed and drop it (repeatable)")
 	cmd.Flags().StringArrayVar(&o.newPRs, "new-pr", nil, stackNewPRUsage)
 	cmd.Flags().BoolVar(&o.dropCommits, "drop-commits", false, stackDropCommitsUsage)
@@ -468,7 +470,11 @@ func runStackSubmit(cmd *cobra.Command, o shipOpts, include []string, to string)
 	if err != nil {
 		return err
 	}
-	chain, pinned, skipped, err := stackOwnBranches(stack, stackState, holders, l.checkout.Root, append(slices.Clone(include), landed...))
+	taken := append(slices.Clone(include), landed...)
+	if o.allLanes {
+		taken = stack
+	}
+	chain, pinned, skipped, err := stackOwnBranches(stack, stackState, holders, l.checkout.Root, taken)
 	if err != nil {
 		return err
 	}
