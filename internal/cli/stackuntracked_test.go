@@ -222,3 +222,19 @@ func TestStackSubmitRepublishesOnlyThePullRequestsAFreshHeadCanRepair(t *testing
 		t.Errorf("origin feature is still %.12s, want a fresh head", feature)
 	}
 }
+
+func TestStackSubmitClaimsNoRepairForAPullRequestAFreshHeadLeavesOnALandedOne(t *testing.T) {
+	f, stub := stackUntrackedRepo(t)
+	stub.untracked[9000] = gtStubUntracked{base: "landed-parent", head: gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base"), reveals: []int{8999}}
+
+	out, _, err := runStackCmd(t, f, "submit")
+	if err != nil {
+		t.Fatalf("stack submit = %v, want #9000 left to Graphite", err)
+	}
+	if strings.Contains(out, "repaired") {
+		t.Errorf("stack submit output = %q, claims a repair Graphite does not track", out)
+	}
+	if want := "its server-side stack still holds #8999, which already landed"; !strings.Contains(out, "waiting on Graphite") || !strings.Contains(out, want) {
+		t.Errorf("stack submit output = %q, want the wait to name %q", out, want)
+	}
+}

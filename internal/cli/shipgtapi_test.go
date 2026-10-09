@@ -73,6 +73,7 @@ type gtStubUntracked struct {
 	stuck     bool
 	closed    []int
 	abandoned []int
+	reveals   []int
 }
 
 // gtStubSubmit is one submit post: the raw body ccx sent, and the lone entry
@@ -341,7 +342,9 @@ func (s *gtAPIStub) submit(w http.ResponseWriter, r *http.Request) {
 			s.remote("update-ref", "refs/heads/"+base, entry.BaseSha)
 		}
 	}
-	if u, ok := s.untracked[entry.PRNumber]; ok && !u.stuck && entry.HeadSha != u.head {
+	if u, ok := s.untracked[entry.PRNumber]; ok && len(u.reveals) > 0 && entry.HeadSha != u.head {
+		s.untracked[entry.PRNumber] = gtStubUntracked{base: entry.Base, head: entry.HeadSha, closed: u.reveals}
+	} else if ok && !u.stuck && entry.HeadSha != u.head {
 		delete(s.untracked, entry.PRNumber)
 	}
 	number, status := s.nextPR, "created"
