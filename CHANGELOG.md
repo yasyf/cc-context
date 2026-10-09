@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ship` honours Claude Code's commit attribution setting.** Every commit
+  made from a Claude session got a `Claude-Session-Id` trailer, even where
+  `attribution.commit` is `""`, Claude Code's own switch for no commit
+  attribution. Repositories that forbid attribution trailers had to strip it
+  by hand. `ship` now reads `attribution.commit` from
+  `.claude/settings.local.json`, then `.claude/settings.json` at the
+  repository root, then the user's `settings.json` under `CLAUDE_CONFIG_DIR`
+  or `~/.claude`, and writes no trailer when the first file that sets it sets
+  it empty. A settings file that does not parse refuses the ship and names
+  the file.
+
 - **`stack submit`, `ship`, and `worktree add` adopt an untracked branch
   chain.** A stack cut in another clone reaches this one as branches Graphite
   never tracked here, often with no local branches below the tip, and submit

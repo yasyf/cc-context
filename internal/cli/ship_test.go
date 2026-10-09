@@ -3981,23 +3981,66 @@ func TestCIDuration(t *testing.T) {
 }
 
 func TestWithSessionTrailer(t *testing.T) {
+	const trailed = "fix: frobnicate\n\nClaude-Session-Id: sess-abc"
+	off := `{"attribution":{"commit":"","pr":""}}`
+	on := `{"attribution":{"commit":"Generated with Claude Code"}}`
 	tests := []struct {
-		name    string
-		id      string
-		message string
-		want    string
+		name     string
+		id       string
+		message  string
+		settings map[string]string
+		want     string
 	}{
-		{"env set appends trailer", "sess-abc", "fix: frobnicate", "fix: frobnicate\n\nClaude-Session-Id: sess-abc"},
-		{"env empty leaves message", "", "fix: frobnicate", "fix: frobnicate"},
-		{"empty message stays empty", "sess-abc", "", ""},
+		{"env set appends trailer", "sess-abc", "fix: frobnicate", nil, trailed},
+		{"env empty leaves message", "", "fix: frobnicate", nil, "fix: frobnicate"},
+		{"empty message stays empty", "sess-abc", "", nil, ""},
+		{"user attribution off drops trailer", "sess-abc", "fix: frobnicate", map[string]string{"user": off}, "fix: frobnicate"},
+		{"user attribution text keeps trailer", "sess-abc", "fix: frobnicate", map[string]string{"user": on}, trailed},
+		{"settings without commit key fall through", "sess-abc", "fix: frobnicate", map[string]string{"project": `{"attribution":{"pr":""}}`, "user": off}, "fix: frobnicate"},
+		{"project overrides user", "sess-abc", "fix: frobnicate", map[string]string{"project": on, "user": off}, trailed},
+		{"local overrides project", "sess-abc", "fix: frobnicate", map[string]string{"local": off, "project": on}, "fix: frobnicate"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			root, userDir := t.TempDir(), t.TempDir()
 			t.Setenv(envClaudeSessionKey, tt.id)
-			if got := withSessionTrailer(context.Background(), tt.message); got != tt.want {
+			t.Setenv(envClaudeConfigDir, userDir)
+			paths := map[string]string{
+				"local":   filepath.Join(root, ".claude", "settings.local.json"),
+				"project": filepath.Join(root, ".claude", "settings.json"),
+				"user":    filepath.Join(userDir, "settings.json"),
+			}
+			for scope, body := range tt.settings {
+				if err := os.MkdirAll(filepath.Dir(paths[scope]), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(paths[scope], []byte(body), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := withSessionTrailer(context.Background(), root, tt.message)
+			if err != nil {
+				t.Fatalf("withSessionTrailer(%q): %v", tt.message, err)
+			}
+			if got != tt.want {
 				t.Errorf("withSessionTrailer(%q) = %q, want %q", tt.message, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestWithSessionTrailerRefusesMalformedSettings(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv(envClaudeSessionKey, "sess-abc")
+	t.Setenv(envClaudeConfigDir, t.TempDir())
+	if err := os.MkdirAll(filepath.Join(root, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".claude", "settings.json"), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := withSessionTrailer(context.Background(), root, "fix: frobnicate"); err == nil {
+		t.Fatal("withSessionTrailer with malformed settings: want an error, got nil")
 	}
 }
 

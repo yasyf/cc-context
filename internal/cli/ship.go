@@ -685,14 +685,58 @@ func shipReviewsWatch(ctx context.Context, w io.Writer, branches []string) error
 	return nil
 }
 
-const envClaudeSessionKey = "CLAUDE_CODE_SESSION_ID"
+const (
+	envClaudeSessionKey = "CLAUDE_CODE_SESSION_ID"
+	envClaudeConfigDir  = "CLAUDE_CONFIG_DIR"
+)
 
-func withSessionTrailer(ctx context.Context, message string) string {
+func withSessionTrailer(ctx context.Context, root, message string) (string, error) {
 	id := render.Getenv(ctx, envClaudeSessionKey)
 	if id == "" || message == "" {
-		return message
+		return message, nil
 	}
-	return message + "\n\nClaude-Session-Id: " + id
+	off, err := claudeCommitAttributionOff(ctx, root)
+	if err != nil || off {
+		return message, err
+	}
+	return message + "\n\nClaude-Session-Id: " + id, nil
+}
+
+func claudeCommitAttributionOff(ctx context.Context, root string) (bool, error) {
+	userDir := render.Getenv(ctx, envClaudeConfigDir)
+	if userDir == "" {
+		home, err := render.Home(ctx)
+		if err != nil {
+			return false, fmt.Errorf("ship: resolve the Claude settings directory: %w", err)
+		}
+		userDir = filepath.Join(home, ".claude")
+	}
+	settingsByPrecedence := []string{
+		filepath.Join(root, ".claude", "settings.local.json"),
+		filepath.Join(root, ".claude", "settings.json"),
+		filepath.Join(userDir, "settings.json"),
+	}
+	for _, path := range settingsByPrecedence {
+		data, err := os.ReadFile(path)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return false, fmt.Errorf("ship: read %s: %w", path, err)
+		}
+		var settings struct {
+			Attribution struct {
+				Commit *string `json:"commit"`
+			} `json:"attribution"`
+		}
+		if err := json.Unmarshal(data, &settings); err != nil {
+			return false, fmt.Errorf("ship: parse %s: %w", path, err)
+		}
+		if commit := settings.Attribution.Commit; commit != nil {
+			return *commit == "", nil
+		}
+	}
+	return false, nil
 }
 
 // shipCommitLocal commits on the lanes ship drives itself — jj and plain git —
@@ -769,7 +813,11 @@ func shipRestoreBranch(ctx context.Context, dir render.Dir, from, created string
 // files, not the partial content being committed through a throwaway index.
 // It returns the hook summary segment to prepend to the ship summary.
 func shipCommit(ctx context.Context, errW io.Writer, dir render.Dir, kind vcs.Kind, o shipOpts, sel *shipSelection, plan branchPlan) (string, error) {
-	o.message = withSessionTrailer(ctx, o.message)
+	message, err := withSessionTrailer(ctx, string(dir), o.message)
+	if err != nil {
+		return "", err
+	}
+	o.message = message
 	segs := make([]string, 0, 2)
 	if kind == vcs.Git && sel == nil {
 		sweptSeg, err := shipGitAdd(ctx, dir, o)
