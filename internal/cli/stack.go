@@ -235,7 +235,9 @@ is refused.
 A tracked branch with no commit past the parent revision gt recorded is an
 empty lane nobody has committed to yet. It and everything stacked on it are
 left where they are, neither dropped nor forgotten by gt, and reported as
-"skipped empty <branch>".
+"skipped empty <branch>". One below the branch checked out here, such as a
+worktree's base branch, is skipped alone: the branches on it publish onto its
+parent.
 
 Every remaining branch is force-pushed in one atomic push under the lease of
 its last submitted version, then posted to Graphite's API one branch at a time,
