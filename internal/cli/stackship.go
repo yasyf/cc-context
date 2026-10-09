@@ -34,7 +34,15 @@ func (i *stackShipIntent) prepares(branch string) bool {
 }
 
 func stackShipOptions(o shipOpts, meta map[string]prMeta, repo, branch string) (*stackShipIntent, error) {
-	intent := &stackShipIntent{Repo: repo, Branch: branch, Meta: map[string]stackShipMeta{}, NoWatch: o.noWatch, Reviews: o.reviews, Budget: o.budget}
+	prepared, err := stackShipPrepared(meta)
+	if err != nil {
+		return nil, err
+	}
+	return &stackShipIntent{Repo: repo, Branch: branch, Meta: prepared, NoWatch: o.noWatch, Reviews: o.reviews, Budget: o.budget}, nil
+}
+
+func stackShipPrepared(meta map[string]prMeta) (map[string]stackShipMeta, error) {
+	prepared := make(map[string]stackShipMeta, len(meta))
 	for name, m := range meta {
 		saved := stackShipMeta{Title: m.title, Draft: m.draft}
 		if m.bodyPath != "" {
@@ -45,9 +53,9 @@ func stackShipOptions(o shipOpts, meta map[string]prMeta, repo, branch string) (
 			text := string(body)
 			saved.Body = &text
 		}
-		intent.Meta[name] = saved
+		prepared[name] = saved
 	}
-	return intent, nil
+	return prepared, nil
 }
 
 func stackFinishShip(ctx context.Context, cmd *cobra.Command, l lane, run *stackRebaseRun, submitted map[string]stackEntry) error {

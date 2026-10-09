@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The graphite lane opens a pull request with the prepared body.** A ship
+  or stack submit that opened a pull request created it with the commit
+  message as its body and wrote the `--pr-body-file` body in a restate after
+  the submit. Review bots graded the commit message first, and a ship that
+  stalled after the submit left it in place for good, as on monorepo #33230.
+  Each pull request the submit opens now carries the stated title and body in
+  its create entry; the restate runs only for a pull request that was already
+  open.
+
 - **`ship` honours Claude Code's commit attribution setting.** Every commit
   made from a Claude session got a `Claude-Session-Id` trailer, even where
   `attribution.commit` is `""`, Claude Code's own switch for no commit

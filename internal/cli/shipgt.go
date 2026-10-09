@@ -566,6 +566,7 @@ type gtSubmit struct {
 	publication *stackRebaseRun
 	otherLanes  []string
 	unopened    func(branch string) bool
+	prepared    map[string]stackShipMeta
 }
 
 func (s gtSubmit) updateDraft(tip string) func(branch string) *bool {
@@ -1626,7 +1627,11 @@ func shipPushGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, meta ma
 		problem := fmt.Sprintf("%s/%s already contains %s, so it has no commit left to submit — clear it out with ccx vcs prune, or ship a branch carrying commits of its own", tr.Remote(), tr.Name(), branch)
 		return "", nil, nil, errors.New(gtStuck("ship", problem, suffix))
 	}
-	sub := gtSubmit{prefix: "ship", suffix: suffix, draft: &o.draft, draftAll: o.draft || o.publish, noVerify: o.noVerify}
+	prepared, err := stackShipPrepared(meta)
+	if err != nil {
+		return "", nil, nil, err
+	}
+	sub := gtSubmit{prefix: "ship", suffix: suffix, draft: &o.draft, draftAll: o.draft || o.publish, noVerify: o.noVerify, prepared: prepared}
 	if c.restack != nil {
 		sub.publication = c.restack
 		sub.trunkHead = c.restack.Pin
@@ -1666,14 +1671,15 @@ func shipPushGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, meta ma
 // gtSubmitBranch is one branch of an API submit, fully resolved before any
 // network or push side effect.
 type gtSubmitBranch struct {
-	name    string
-	head    string
-	base    string
-	baseSha string
-	pr      int
-	title   string
-	body    string
-	lease   string
+	name     string
+	head     string
+	base     string
+	baseSha  string
+	pr       int
+	title    string
+	body     string
+	prepared bool
+	lease    string
 	// leaseSet pins lease even when empty, where an empty lease means the
 	// branch must not exist on the remote yet.
 	leaseSet bool
@@ -1796,6 +1802,7 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 	if err != nil {
 		return nil, nil, err
 	}
+	plan = gtPreparedPlan(plan, s.prepared)
 	if s.publication != nil && s.publication.TipOnly {
 		plan, err = gtTipOnlyPlan(plan, s.publication)
 		if err != nil {
@@ -1910,7 +1917,7 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 			continue
 		}
 		for _, created := range out {
-			entries[created.Head] = stackEntry{Branch: created.Head, PR: created.PRNumber, URL: created.PRURL, HasBody: strings.TrimSpace(posted[i].body) != "", State: string(gtapi.PROpen), metaApplied: s.publication != nil && s.publication.TipOnly}
+			entries[created.Head] = stackEntry{Branch: created.Head, PR: created.PRNumber, URL: created.PRURL, HasBody: strings.TrimSpace(posted[i].body) != "", State: string(gtapi.PROpen), metaApplied: posted[i].prepared}
 		}
 	}
 	if err := gtConfirmVersions(ctx, client, owner, name, tr.Name(), posted, s.updateDraft(tip)); err != nil {
@@ -2022,24 +2029,34 @@ func gtRecordPushed(ctx context.Context, errW io.Writer, repo string, submit []g
 	}
 }
 
+// gtPreparedPlan opens each new pull request with the title and body its
+// caller prepared, so a description never starts life as the commit message
+// and never depends on a restate after the submit.
+func gtPreparedPlan(plan []gtSubmitBranch, prepared map[string]stackShipMeta) []gtSubmitBranch {
+	for i, b := range plan {
+		meta, ok := prepared[b.name]
+		if !ok || b.pr != 0 {
+			continue
+		}
+		if meta.Title != "" {
+			plan[i].title = meta.Title
+		}
+		if meta.Body != nil {
+			plan[i].body = *meta.Body
+		}
+		plan[i].prepared = true
+	}
+	return plan
+}
+
 func gtTipOnlyPlan(plan []gtSubmitBranch, run *stackRebaseRun) ([]gtSubmitBranch, error) {
-	if run.Ship == nil || run.Tip == "" {
+	if run.Tip == "" {
 		return nil, errors.New("ship: --tip-only has no child publication")
 	}
 	for _, branch := range plan {
-		if branch.name != run.Tip {
-			continue
+		if branch.name == run.Tip {
+			return []gtSubmitBranch{branch}, nil
 		}
-		if branch.pr == 0 {
-			meta := run.Ship.Meta[run.Tip]
-			if meta.Title != "" {
-				branch.title = meta.Title
-			}
-			if meta.Body != nil {
-				branch.body = *meta.Body
-			}
-		}
-		return []gtSubmitBranch{branch}, nil
 	}
 	return nil, fmt.Errorf("ship: --tip-only child %s is absent from the publication plan", run.Tip)
 }
