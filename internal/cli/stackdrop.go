@@ -207,7 +207,11 @@ func dropPlanFor(ctx context.Context, l lane, state gtState, branch string) (dro
 	if plan.chain, err = gtUpstack(dropPrefix, state, branch); err != nil {
 		return dropPlan{}, err
 	}
-	for _, name := range plan.chain {
+	replayed, err := dropReplaySet(ctx, l.dir(), state, branch, plan.chain)
+	if err != nil {
+		return dropPlan{}, err
+	}
+	for _, name := range replayed {
 		holder := holders[name]
 		if holder == "" {
 			continue
@@ -339,7 +343,7 @@ func dropLocal(ctx context.Context, l lane, commonDir string, plan dropPlan) (gt
 	if err != nil {
 		return gtRestackResult{}, err
 	}
-	chain := slices.Clone(plan.chain)
+	chain := plan.chain
 	if len(carriers) > 0 {
 		if err := gtmeta.RecordRestacked(ctx, commonDir, carriers); err != nil {
 			return gtRestackResult{}, fmt.Errorf("%s: %w", dropPrefix, err)
@@ -347,16 +351,8 @@ func dropLocal(ctx context.Context, l lane, commonDir string, plan dropPlan) (gt
 		if state, err = gtStateAt(ctx, commonDir, dropPrefix); err != nil {
 			return gtRestackResult{}, err
 		}
-		for _, carrier := range slices.Sorted(maps.Keys(carriers)) {
-			up, err := gtUpstack(dropPrefix, state, carrier)
-			if err != nil {
-				return gtRestackResult{}, err
-			}
-			for _, name := range append([]string{carrier}, up...) {
-				if !slices.Contains(chain, name) {
-					chain = append(chain, name)
-				}
-			}
+		if chain, err = dropChainWith(state, plan.chain, carriers); err != nil {
+			return gtRestackResult{}, err
 		}
 	}
 	result, err := gtRestackChain(ctx, dropPrefix, l.checkout, l.dir(), commonDir, state, chain, true)
@@ -426,21 +422,55 @@ func dropStrandCheck(ctx context.Context, dir render.Dir, state gtState, branch,
 		dropPrefix, branch, strings.Join(carried, ", "))
 }
 
+// dropReplaySet names every branch the replay can move: the branches above
+// the dropped one, and each branch carrying its commits under a parent that
+// does not, with the branches above that.
+func dropReplaySet(ctx context.Context, dir render.Dir, state gtState, branch string, chain []string) ([]string, error) {
+	carriers, err := dropCarriers(ctx, dir, state, branch)
+	if err != nil {
+		return nil, err
+	}
+	return dropChainWith(state, chain, carriers)
+}
+
+func dropChainWith(state gtState, chain []string, carriers map[string]string) ([]string, error) {
+	replayed := slices.Clone(chain)
+	for _, carrier := range slices.Sorted(maps.Keys(carriers)) {
+		up, err := gtUpstack(dropPrefix, state, carrier)
+		if err != nil {
+			return nil, err
+		}
+		for _, name := range append([]string{carrier}, up...) {
+			if !slices.Contains(replayed, name) {
+				replayed = append(replayed, name)
+			}
+		}
+	}
+	return replayed, nil
+}
+
 // dropContaining names the tracked branches other than branch whose heads
 // carry commit, in one walk: an ancestry check per tracked branch costs a
 // process each, about twenty minutes across a monorepo's 2,700 rows.
 func dropContaining(ctx context.Context, dir render.Dir, state gtState, branch, commit string) ([]string, error) {
-	var refs strings.Builder
+	var candidates []string
 	for _, name := range slices.Sorted(maps.Keys(state)) {
 		if name != branch && len(state[name].Parents) > 0 {
-			refs.WriteString("refs/heads/" + name + "\n")
+			candidates = append(candidates, name)
 		}
+	}
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+	var refs strings.Builder
+	for _, name := range candidates {
+		refs.WriteString("refs/heads/" + name + "\n")
 	}
 	out, err := render.RunCLIStdin(ctx, dir, "git", []string{"for-each-ref", "--contains", commit, "--format=%(refname:strip=2)", "--stdin"}, []byte(refs.String()))
 	if err != nil {
 		return nil, fmt.Errorf("%s: git for-each-ref --contains %s: %w", dropPrefix, commit, err)
 	}
-	return strings.Fields(out), nil
+	return slices.DeleteFunc(strings.Fields(out), func(name string) bool { return !slices.Contains(candidates, name) }), nil
 }
 
 func dropRemoteDelete(ctx context.Context, l lane, plan dropPlan) error {

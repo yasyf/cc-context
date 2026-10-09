@@ -627,3 +627,19 @@ func TestStackDropStrandCheckNamesEveryBranchStillCarryingTheDroppedCommits(t *t
 		t.Errorf("strand check = %v, want it to name side and top", err)
 	}
 }
+
+func TestStackDropContainingNamesOnlyTrackedBranches(t *testing.T) {
+	f := dropStack(t, "base", "mid")
+	mid := gitAt(t, f.Env(), f.Dir, "rev-parse", "mid")
+	mustRun(t, f.Env(), f.Dir, "git", "branch", "-q", "side/topic", "mid")
+	parent := []gtRef{{Ref: "base", SHA: gitAt(t, f.Env(), f.Dir, "rev-parse", "base")}}
+
+	alone := gtState{"main": {Trunk: true}, "mid": {Head: mid, Parents: parent}}
+	if got, err := dropContaining(t.Context(), render.Dir(f.Dir), alone, "mid", mid); err != nil || len(got) != 0 {
+		t.Errorf("containing with no other tracked branch = %v, %v, want none", got, err)
+	}
+	deleted := gtState{"main": {Trunk: true}, "mid": {Head: mid, Parents: parent}, "side": {Head: mid, Parents: parent}}
+	if got, err := dropContaining(t.Context(), render.Dir(f.Dir), deleted, "mid", mid); err != nil || len(got) != 0 {
+		t.Errorf("containing with tracked side deleted and untracked side/topic present = %v, %v, want none", got, err)
+	}
+}
