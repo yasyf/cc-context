@@ -685,7 +685,9 @@ func gtTrack(ctx context.Context, errW io.Writer, l lane, o shipOpts, branch str
 			if parent, chained, err = gtAdoptBelow(ctx, c.dir, "ship", state, parent, branch); err != nil {
 				return nil, "", err
 			}
-			c.forget()
+			if chained != "" {
+				c.forget()
+			}
 		}
 		o.parent = parent
 	}

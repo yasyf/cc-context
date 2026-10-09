@@ -38,17 +38,18 @@ func gtUntrackedChain(ctx context.Context, dir render.Dir, prefix string, state 
 		return nil, fmt.Errorf("%s: git rev-parse %s: %w", prefix, tip, err)
 	}
 	tipHead := strings.TrimSpace(out)
-	line, err := gtRevList(ctx, dir, prefix, "--first-parent", floor+".."+tipHead)
+	out, err = render.RunCLI(ctx, dir, "git", []string{"rev-list", "--parents", floor + ".." + tipHead})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%s: git rev-list %s..%s: %w", prefix, floor, tip, err)
 	}
-	above, err := gtRevList(ctx, dir, prefix, floor+".."+tipHead)
-	if err != nil {
-		return nil, err
-	}
-	inRange := make(map[string]bool, len(above))
-	for _, sha := range above {
-		inRange[sha] = true
+	firstParent := map[string]string{}
+	inRange := map[string]bool{}
+	for row := range strings.Lines(out) {
+		shas := strings.Fields(row)
+		inRange[shas[0]] = true
+		if len(shas) > 1 {
+			firstParent[shas[0]] = shas[1]
+		}
 	}
 	at := map[string][]string{}
 	remoteOnly := map[string]bool{}
@@ -82,8 +83,8 @@ func gtUntrackedChain(ctx context.Context, dir render.Dir, prefix string, state 
 			candidate(name, head)
 		}
 	}
-	position := make(map[string]int, len(line))
-	for i, sha := range line {
+	position := map[string]int{}
+	for sha, i := tipHead, 0; inRange[sha]; sha, i = firstParent[sha], i+1 {
 		position[sha] = i
 	}
 	var named []string
@@ -165,14 +166,6 @@ func gtAdoptBelow(ctx context.Context, dir render.Dir, prefix string, state gtSt
 		chained += seg + shipSep
 	}
 	return tip.parent, chained, nil
-}
-
-func gtRevList(ctx context.Context, dir render.Dir, prefix string, args ...string) ([]string, error) {
-	out, err := render.RunCLI(ctx, dir, "git", append([]string{"rev-list"}, args...))
-	if err != nil {
-		return nil, fmt.Errorf("%s: git rev-list %s: %w", prefix, strings.Join(args, " "), err)
-	}
-	return strings.Fields(out), nil
 }
 
 func gtMergeBase(ctx context.Context, dir render.Dir, prefix, a, b string) (string, error) {
