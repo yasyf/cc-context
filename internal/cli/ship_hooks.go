@@ -7,7 +7,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -18,6 +21,8 @@ import (
 // shipHookConfigNames are the prek config filenames probed at root; ship skips
 // hooks silently when none is present.
 var shipHookConfigNames = []string{".pre-commit-config.yaml", ".pre-commit-config.yml", "prek.toml"}
+
+var shipHookEntryLine = regexp.MustCompile(`(?m)^[\s-]*entry\s*[:=]\s*(.+)$`)
 
 // shipHookIndexLock is the lock git holds over the index it is rewriting. It
 // sits beside the index, which sibling worktrees do not share: each linked
@@ -84,6 +89,11 @@ func shipRunHooks(ctx context.Context, errW io.Writer, dir render.Dir, kind vcs.
 		return "", false, err
 	}
 	covered = !msgStage
+	if kind == vcs.Git {
+		if err := shipMaterializeHookEntries(ctx, dir, config); err != nil {
+			return "", false, err
+		}
+	}
 
 	streamed := shipStreamCI(errW)
 	var buf bytes.Buffer
@@ -185,6 +195,47 @@ func shipHookConfigHasMsgStage(path string) (bool, error) {
 		return false, fmt.Errorf("ship: hooks: read %s: %w", filepath.Base(path), err)
 	}
 	return strings.Contains(string(data), "commit-msg"), nil
+}
+
+func shipMaterializeHookEntries(ctx context.Context, dir render.Dir, config string) error {
+	data, err := os.ReadFile(config) //nolint:gosec // the path is one of shipHookConfigNames under the repo root, not untrusted input
+	if err != nil {
+		return fmt.Errorf("ship: hooks: read %s: %w", filepath.Base(config), err)
+	}
+	var dirs []string
+	for _, entry := range shipHookEntryPaths(data) {
+		if _, err := os.Lstat(filepath.Join(string(dir), entry)); err == nil {
+			continue
+		}
+		if parent := path.Dir(entry); parent != "." {
+			dirs = append(dirs, parent)
+		}
+	}
+	if len(dirs) == 0 {
+		return nil
+	}
+	sparse, err := stackConfigBool(ctx, dir, "core.sparseCheckout", false)
+	if err != nil || !sparse {
+		return err
+	}
+	slices.Sort(dirs)
+	return stackAddCone(ctx, "ship: hooks", dir, slices.Compact(dirs))
+}
+
+func shipHookEntryPaths(config []byte) []string {
+	var paths []string
+	for _, match := range shipHookEntryLine.FindAllSubmatch(config, -1) {
+		for _, word := range strings.Fields(string(match[1])) {
+			word = strings.Trim(word, `"'`)
+			if !strings.Contains(word, "/") || path.IsAbs(word) || strings.ContainsAny(word, "$:") || strings.HasPrefix(word, "-") {
+				continue
+			}
+			if clean := path.Clean(word); !strings.HasPrefix(clean, "../") {
+				paths = append(paths, clean)
+			}
+		}
+	}
+	return paths
 }
 
 func shipChangedPaths(ctx context.Context, dir render.Dir, kind vcs.Kind, o shipOpts) ([]string, error) {
