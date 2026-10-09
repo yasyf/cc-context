@@ -97,7 +97,7 @@ func runVcsPush(cmd *cobra.Command, o vcsPushOpts) error {
 	if err != nil {
 		return err
 	}
-	retracked, err := vcsPushRetrack(ctx, ck, dir, branch, head)
+	retracked, err := vcsPushRetrack(ctx, ck, dir, remote, branch, head)
 	if err != nil {
 		return err
 	}
@@ -152,9 +152,9 @@ func vcsPushSubmitted(ctx context.Context, dir render.Dir, receipt stackPublicat
 
 // vcsPushRetrack re-records gt's parent for a branch pushed off the parent
 // revision gt holds for it, the state gt calls diverged and refuses to stack a
-// branch on: the same parent when its head is still in the branch's history,
-// otherwise the nearest tracked branch that is, at the branch's fork from it.
-func vcsPushRetrack(ctx context.Context, ck vcs.Checkout, dir render.Dir, branch, head string) (string, error) {
+// branch on: the same parent when a head it held here, on the remote, or in its
+// reflog is still in the branch's history, otherwise the nearest tracked branch.
+func vcsPushRetrack(ctx context.Context, ck vcs.Checkout, dir render.Dir, remote, branch, head string) (string, error) {
 	graphite, err := vcs.GraphiteRepo(ck)
 	if err != nil || !graphite {
 		return "", err
@@ -176,13 +176,11 @@ func vcsPushRetrack(ctx context.Context, ck vcs.Checkout, dir render.Dir, branch
 		return "", err
 	}
 	parent := s.Parents[0].Ref
-	onParent := false
-	if p, tracked := state[parent]; tracked {
-		if onParent, err = gitIsAncestor(ctx, dir, "push", p.Head, head); err != nil {
-			return "", err
-		}
+	fork, err := vcsPushParentHeld(ctx, dir, remote, state, parent, head)
+	if err != nil {
+		return "", err
 	}
-	if !onParent {
+	if fork == "" {
 		trunk, err := gtTrunkBranch("push", state)
 		if err != nil {
 			return "", err
@@ -190,10 +188,9 @@ func vcsPushRetrack(ctx context.Context, ck vcs.Checkout, dir render.Dir, branch
 		if parent, err = gtNearestTracked(ctx, dir, state, trunk, branch); err != nil {
 			return "", err
 		}
-	}
-	fork, err := stackMergeBase(ctx, dir, head, state[parent].Head)
-	if err != nil {
-		return "", err
+		if fork, err = stackMergeBase(ctx, dir, head, state[parent].Head); err != nil {
+			return "", err
+		}
 	}
 	if parent != s.Parents[0].Ref {
 		if err := gtmeta.Reparent(ctx, commonDir, map[string]string{branch: parent}); err != nil {
@@ -204,6 +201,51 @@ func vcsPushRetrack(ctx context.Context, ck vcs.Checkout, dir render.Dir, branch
 		return "", fmt.Errorf("push: re-record %s onto %s at %s: %w", branch, parent, shortOID(fork), err)
 	}
 	return fmt.Sprintf(" · re-tracked %s onto %s at %s", branch, parent, shortOID(fork)), nil
+}
+
+func vcsPushParentHeld(ctx context.Context, dir render.Dir, remote string, state gtState, parent, head string) (string, error) {
+	p, tracked := state[parent]
+	if !tracked {
+		return "", nil
+	}
+	held := []string{p.Head}
+	published := "refs/remotes/" + remote + "/" + parent
+	present, err := gitRefExists(ctx, dir, "push", published)
+	if err != nil {
+		return "", err
+	}
+	if present {
+		if published, err = gitRevParse(ctx, dir, "push", published); err != nil {
+			return "", err
+		}
+		held = append(held, published)
+	}
+	former, err := gtReflogHeads(ctx, dir, "push", []string{parent})
+	if err != nil {
+		return "", err
+	}
+	nearest := ""
+	for _, at := range append(held, former[parent]...) {
+		if at == nearest {
+			continue
+		}
+		under, err := gitIsAncestor(ctx, dir, "push", at, head)
+		if err != nil {
+			return "", err
+		}
+		if !under {
+			continue
+		}
+		if nearest != "" {
+			if under, err = gitIsAncestor(ctx, dir, "push", nearest, at); err != nil {
+				return "", err
+			}
+		}
+		if under {
+			nearest = at
+		}
+	}
+	return nearest, nil
 }
 
 func vcsPushPublication(ctx context.Context, dir render.Dir, remote, branch, head string) (*stackPublication, string, error) {
