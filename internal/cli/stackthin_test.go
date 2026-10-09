@@ -875,6 +875,7 @@ func TestStackThinAdoptedParentAdvancesUnderAChild(t *testing.T) {
 	}
 
 	api := stubGTAPI(t)
+	api.openPRs("parent", "child1")
 	f.Decorate(api.ctx)
 	out, errOut, err := runStackCmdIn(t, f, child1, "submit")
 	if err != nil {
@@ -957,6 +958,7 @@ func TestStackThinChildFollowsAParentAmendedInItsSourceCheckout(t *testing.T) {
 	}
 
 	api := stubGTAPI(t)
+	api.openPRs("parent", "child1")
 	f.Decorate(api.ctx)
 	if _, errOut, err := runStackCmdIn(t, f, child1, "submit"); err != nil {
 		t.Fatalf("child1 submit = %v, want the amended parent followed\n%s", err, errOut)

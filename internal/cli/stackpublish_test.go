@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yasyf/cc-context/internal/gtapi"
 	"github.com/yasyf/cc-context/internal/gtmeta"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcs"
@@ -658,6 +659,48 @@ func TestStackContinueOpensNoPullRequestWithoutAPreparedBody(t *testing.T) {
 			}
 			if got, local := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature"), gitAt(t, f.Env(), f.Dir, "rev-parse", "feature"); got != local {
 				t.Errorf("origin feature = %.12s, want the resolved head %.12s pushed", got, local)
+			}
+		})
+	}
+}
+
+func TestStackSubmitOpensNoPullRequestWithoutAPreparedBody(t *testing.T) {
+	body := writePRBody(t, "feature.md", "feature body\n")
+	for _, tc := range []struct {
+		name  string
+		args  []string
+		posts []string
+	}{
+		{"unnamed", nil, []string{"base"}},
+		{"title only", []string{"--pr-title", "feature=feature: a title without a body"}, []string{"base"}},
+		{"prepared", []string{"--pr-title", "feature=Feature", "--pr-body-file", "feature=" + body}, []string{"base", "feature"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := shipGTRepo(t)
+			api := stubGTAPI(t)
+			f.Decorate(api.ctx)
+			shipGTStack(t, f, "base", "feature")
+			api.prs["base"] = 7
+
+			_, errOut, err := runStackCmd(t, f, append([]string{"submit"}, tc.args...)...)
+			if err != nil {
+				t.Fatalf("stack submit: %v (stderr=%q)", err, errOut)
+			}
+			if heads := api.submitHeads(); !slices.Equal(heads, tc.posts) {
+				t.Errorf("submit posts = %v, want %v", heads, tc.posts)
+			}
+			held := len(tc.posts) == 1
+			if got := strings.Contains(errOut, "pushed, not submitted: feature has no pull request"); got != held {
+				t.Errorf("stderr = %q, want feature named pushed, not submitted: %t", errOut, held)
+			}
+			if got, local := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature"), gitAt(t, f.Env(), f.Dir, "rev-parse", "feature"); got != local {
+				t.Errorf("origin feature = %.12s, want the local head %.12s pushed", got, local)
+			}
+			if held {
+				return
+			}
+			if entry := api.submitEntry("feature"); entry.Action != gtapi.SubmitCreate || entry.Body == nil || *entry.Body != "feature body\n" {
+				t.Errorf("feature entry = %+v, want a create carrying the prepared body", entry)
 			}
 		})
 	}

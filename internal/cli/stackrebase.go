@@ -109,7 +109,7 @@ func stackSupersedeClosed(prs map[string]*stackPR, members, newPRs, landed []str
 		case slices.Contains(landed, name):
 			return fmt.Errorf("stack rebase: --new-pr and --landed both named %s", name)
 		case pr == nil:
-			return fmt.Errorf("stack rebase: --new-pr named %s, which has no pull request to replace — submit opens one without it", name)
+			return fmt.Errorf("stack rebase: --new-pr named %s, which has no pull request to replace — --pr-title and --pr-body-file open one without it", name)
 		case pr.Landed:
 			return fmt.Errorf("stack rebase: --new-pr named %s, whose pull request #%d landed", name, pr.Number)
 		case pr.State != "CLOSED":
@@ -203,7 +203,6 @@ type stackRebaseRun struct {
 	Host          string                   `json:"host"`
 	dir           string
 	saved         time.Time
-	resumed       bool
 	left          []stackLeft
 	lanePins      []string
 	adopted       gtState
@@ -272,7 +271,7 @@ const stackDropCommitsUsage = "publish a branch whose local head drops commits i
 
 const stackToUsage = "stop at this branch: leave every branch stacked above it out of the run"
 
-const stackNewPRUsage = "open a new pull request for <branch>, whose last one closed without merging, instead of dropping it (repeatable)"
+const stackNewPRUsage = "keep <branch>, whose last pull request closed without merging, instead of dropping it; --pr-title and --pr-body-file for it open a new one (repeatable)"
 
 // stackPRQuery reads the pull request of every branch of a stack.
 type stackPRQuery func(ctx context.Context, dir render.Dir, trunk string, branches []string) (map[string]*stackPR, error)
@@ -401,7 +400,7 @@ stale recording silently drops a branch's own changes.
 Continue never opens a pull request the run carries no title and body for. A
 branch with no open pull request and no --pr-title and --pr-body-file from the
 command that started the run is pushed, not submitted, and named with the
-ccx vcs ship command that opens it, unless that command named it with --new-pr.`,
+ccx vcs ship command that opens it.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return stackSettleTracking(cmd, func() error { return runStackContinue(cmd, stack) })
@@ -528,12 +527,6 @@ func stackBegin(ctx context.Context, cmd *cobra.Command, l lane, commonDir strin
 	return stackDrive(ctx, cmd, l, commonDir, run)
 }
 
-// stackKeepLocal keeps stack rebase from opening a pull request, which a
-// pushing run's submit does for every branch that has none: a stack none of
-// whose branches has one is replanned to rebase locally, a branch with none
-// stacked only under others without one is rebased locally while the rest
-// publish, and one a branch with a pull request sits on is refused before
-// anything moves.
 func stackKeepLocal(ctx context.Context, cmd *cobra.Command, l lane, commonDir string, o stackRebaseOpts, run *stackRebaseRun) (*stackRebaseRun, error) {
 	var live, bare []string
 	for _, b := range run.Branches {
@@ -653,7 +646,6 @@ func stackFinishDead(ctx context.Context, cmd *cobra.Command, l lane, commonDir 
 	if err := stackAdopt(run); err != nil {
 		return err
 	}
-	run.resumed = true
 	owner, err := stackTakeOver(ctx, l, run)
 	if err != nil {
 		return err
@@ -3223,7 +3215,6 @@ func runStackContinue(cmd *cobra.Command, stack string) error {
 	if err != nil {
 		return err
 	}
-	run.resumed = true
 	if run.Conflict == nil {
 		return stackDrive(ctx, cmd, l, commonDir, run)
 	}
@@ -3996,7 +3987,7 @@ func stackReplanLanded(ctx context.Context, cmd *cobra.Command, l lane, commonDi
 			next.Branches[i].LocalOnly, next.Branches[i].Resolved = b.LocalOnly, b.Resolved
 		}
 	}
-	next.dir, next.Claims, next.resumed = run.dir, run.Claims, run.resumed
+	next.dir, next.Claims = run.dir, run.Claims
 	if err := stackSaveRun(next); err != nil {
 		return err
 	}

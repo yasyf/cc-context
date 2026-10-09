@@ -12,6 +12,7 @@ func TestStackSubmitAllLanesTakesAnUnpublishedBranchASiblingWorktreeHolds(t *tes
 	f := shipGTRepo(t)
 	api := stubGTAPI(t)
 	f.Decorate(api.ctx)
+	api.openPRs("base", "feature")
 	shipGTStack(t, f, "base", "feature")
 	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", restackSiblingPath(t, "lane"), "base")
 	shipResetLog(t, f)

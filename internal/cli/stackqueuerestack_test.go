@@ -71,6 +71,9 @@ func TestStackRebaseRefusesTheQueuesRestackOverALocalAmend(t *testing.T) {
 func TestStackSubmitTakesTheQueuesRestackOfItsPublication(t *testing.T) {
 	f := shipGTRepo(t)
 	stubStackPRs(t, f, nil)
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	api.openPRs("base", "feature")
 	shipGTStack(t, f, "base", "feature")
 	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
 		t.Fatalf("first stack submit: %v", err)

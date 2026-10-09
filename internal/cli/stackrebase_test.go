@@ -73,6 +73,9 @@ func stackRebaseRepo(t *testing.T, names ...string) *vcstest.Fixture {
 	t.Helper()
 	f := shipGTRepo(t, vcstest.GTStack(names...))
 	stubOpenPRs(t, f, nil, names...)
+	api := newGTAPIStub(t)
+	api.openPRs(names...)
+	f.Decorate(api.ctx)
 	return f
 }
 
@@ -265,6 +268,7 @@ func TestStackRebaseRebasesAPullRequestLessTipLocally(t *testing.T) {
 	stubOpenPRs(t, f, nil, "base")
 	api := stubGTAPI(t)
 	f.Decorate(api.ctx)
+	api.prs["base"] = 9000
 	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
 	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base")
 
@@ -397,7 +401,7 @@ func TestStackSubmitSetsDraftOnNewPullRequestsAlone(t *testing.T) {
 			api.prs["base"] = 9000
 			f.Decorate(api.ctx)
 			mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base")
-			args := []string{"submit"}
+			args := []string{"submit", "--pr-title", "feature=Feature", "--pr-body-file", "feature=" + writePRBody(t, "feature.md", "feature body\n")}
 			if draft {
 				args = append(args, "--draft")
 			}

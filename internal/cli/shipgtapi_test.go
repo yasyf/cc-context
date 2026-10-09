@@ -129,6 +129,12 @@ func stubGTAPI(t *testing.T) *gtAPIStub {
 	return s
 }
 
+func (s *gtAPIStub) openPRs(names ...string) {
+	for i, name := range names {
+		s.prs[name] = 9000 + i
+	}
+}
+
 // newGTAPIStub serves a fresh stub for the test's duration, reached by the
 // contexts [gtAPIStub.ctx] returns. The last decorator wins, so a test needing
 // configuration stubs again over the default its fixture helper installed —

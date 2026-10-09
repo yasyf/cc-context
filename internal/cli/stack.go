@@ -184,7 +184,7 @@ request landed through a merge queue squash is dropped, and its children move
 onto what it sat on, leaving its squashed commits behind.
 A branch whose pull request was closed without landing is dropped the same way,
 named in the plan with its pull request, and its own commits are never replayed.
---new-pr <branch> keeps such a branch instead and opens a new pull request for
+--new-pr <branch> keeps such a branch instead, to open a new pull request for
 it; it refuses a branch whose pull request is open or landed, or that has none.
 A pull request GitHub closed because its base branch was deleted still carries
 live work, so before the push the run puts that base back, reopens the pull
@@ -193,8 +193,7 @@ A new parent the remote does not carry yet is refused, naming it.
 
 A conflict stops the run before any ref moves, in a conflict workspace with
 rerere off. After resolution, ccx vcs stack continue finishes the rebase, pushes,
-and submits; a branch with no pull request and no --pr-title and --pr-body-file
-is pushed, not submitted. ccx vcs stack abort drops the run. Uncommitted work in the invoking
+and submits. ccx vcs stack abort drops the run. Uncommitted work in the invoking
 checkout, or in any working copy holding a moved branch, stops publication
 before any branch moves; a clean working copy holding a moved branch is moved
 onto its new head, still on that branch.
@@ -241,7 +240,10 @@ parent.
 
 Every remaining branch is force-pushed in one atomic push under the lease of
 its last submitted version, then posted to Graphite's API one branch at a time,
-bottom-up. --pr-title and --pr-body-file take ship's <branch>=<value> form; a bare
+bottom-up. A branch with no open pull request is posted only when --pr-title
+and --pr-body-file give it a title and a body; any other is pushed, not
+submitted, and named with the ccx vcs ship command that opens it. No flag opens
+one without them. --pr-title and --pr-body-file take ship's <branch>=<value> form; a bare
 value names the branch checked out here. They restate those pull requests after
 the push and survive a conflict stop. Naming a branch outside the stack, or one
 the run leaves out, is refused before anything moves.`,

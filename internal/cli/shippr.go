@@ -584,7 +584,7 @@ func shipPRGT(ctx context.Context, nwo string, meta map[string]prMeta, stack []s
 			continue
 		}
 		if entry.PR == 0 {
-			return "", fmt.Errorf("ship: --pr-title/--pr-body-file named %s, which has no pull request", entry.Branch)
+			continue
 		}
 		if viaGraphQL, err := restatePR(ctx, nwo, entry.PR, m); err != nil {
 			retry, graphQL := prRestatesLeft(nwo, meta, stack[:i+1])

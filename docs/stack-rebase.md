@@ -100,9 +100,10 @@ Resolve and stage the conflicted files, then resume the stack:
 ccx vcs stack continue
 ```
 
-Continue opens a pull request only when the command that started the run gave
-the branch a `--pr-title` and a `--pr-body-file`. Any other branch with no pull
-request is pushed but not submitted. Open it from its checkout:
+Continue, like `ccx vcs stack submit`, opens a pull request only when the
+command that started the run gave the branch a `--pr-title` and a
+`--pr-body-file`. Any other branch with no pull request is pushed but not
+submitted. Open it from its checkout:
 
 ```sh
 ccx vcs ship --no-commit --tip-only --pr-title "<title>" --pr-body-file <body.md>

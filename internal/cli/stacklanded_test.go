@@ -49,6 +49,7 @@ func TestStackSubmitMovesABranchOffALandedParentItAlreadyLeft(t *testing.T) {
 	f := shipGTRepo(t)
 	api := stubGTAPI(t)
 	f.Decorate(api.ctx)
+	api.prs["b"] = 42
 	stackOffLandedParent(t, f)
 	shipResetLog(t, f)
 
@@ -66,6 +67,7 @@ func TestStackRebaseTakesTrunkAsTheParentOfABranchOffALandedParent(t *testing.T)
 	f := shipGTRepo(t)
 	api := stubGTAPI(t)
 	f.Decorate(api.ctx)
+	api.prs["b"] = 42
 	stackOffLandedParent(t, f)
 	shipResetLog(t, f)
 
@@ -95,6 +97,7 @@ func TestStackSubmitDropsTheQueuesReplayOfALandedParent(t *testing.T) {
 	f := shipGTRepo(t)
 	api := stubGTAPI(t)
 	f.Decorate(api.ctx)
+	api.prs["b"] = 42
 	stackQueueReplaysLandedParent(t, f)
 	shipResetLog(t, f)
 
@@ -108,6 +111,7 @@ func TestStackRebaseParentDropsTheQueuesReplayOfALandedParent(t *testing.T) {
 	f := shipGTRepo(t)
 	api := stubGTAPI(t)
 	f.Decorate(api.ctx)
+	api.prs["b"] = 42
 	stackQueueReplaysLandedParent(t, f)
 	shipResetLog(t, f)
 
@@ -180,6 +184,7 @@ func TestStackRebaseParentLeavesTheForeignLaneBehind(t *testing.T) {
 	f := shipGTRepo(t)
 	api := stubGTAPI(t)
 	f.Decorate(api.ctx)
+	api.prs["feature"] = 42
 	stackOnForeignLane(t, f)
 	shipResetLog(t, f)
 
@@ -267,6 +272,7 @@ func TestStackRebaseLeavesALandedParentsRewrittenCommitsBehind(t *testing.T) {
 	f := shipGTRepo(t)
 	api := stubGTAPI(t)
 	f.Decorate(api.ctx)
+	api.prs["b"] = 42
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "a")
 	writeShipFile(t, f.Dir, "a.txt", "draft\n")
 	mustRun(t, f.Env(), f.Dir, "git", "add", "a.txt")
@@ -317,6 +323,7 @@ func TestStackSubmitDropsALandedParentAnotherWorktreeHolds(t *testing.T) {
 	f := shipGTRepo(t)
 	api := stubGTAPI(t)
 	f.Decorate(api.ctx)
+	api.prs["b"] = 42
 	gtLandedStack(t, f)
 	stubStackPRs(t, f, map[string]*stackPR{
 		"a": {Number: 41, Title: "a", State: "MERGED", Landed: true, Head: gitAt(t, f.Env(), f.Dir, "rev-parse", "a")},

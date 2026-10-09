@@ -18,6 +18,7 @@ func TestShipAmendOfAMidStackBranchCarriesItsChildren(t *testing.T) {
 			api := stubGTAPI(t)
 			f.Decorate(api.ctx)
 			shipGTStack(t, f, "p", "c", "g")
+			api.openPRs("p", "c", "g")
 			if _, _, err := runStackCmd(t, f, "submit"); err != nil {
 				t.Fatalf("stack submit: %v", err)
 			}

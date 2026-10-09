@@ -4183,7 +4183,7 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 				gtPushInv(gtHead("feature", "beadfeed"), gtHead("feature2", vcstest.GraphiteLeafSHA)),
 			),
 			receiptInv: gtReceiptInv("feature", "feature2"),
-			wantSeg:    "submitted feature2 → PR #101 " + gtStubPRURL(101) + " (stack of 2: feature, feature2)",
+			wantSeg:    "submitted feature2 → PR #100 " + gtStubPRURL(100) + " (stack of 2: feature, feature2)",
 		},
 	}
 	for _, tt := range tests {
@@ -6032,9 +6032,10 @@ func TestShipGTSubmitFailures(t *testing.T) {
 		setGTState(t, `{"main":{"trunk":true},"feature":{"parents":[{"ref":"main","sha":"deadbeef"}]},`+
 			`"feature2":{"parents":[{"ref":"feature","sha":"beadfeed"}]}}`)
 		api.submitErrors["feature2"] = "base branch not found"
+		api.prs["feature"] = 41
 
 		_, err := runShipCmd(api.ctx(context.Background()), t, "-m", "fix: frobnicate")
-		want := submitAdvice("graphite refused feature2 (base branch not found); every branch is already pushed; landed feature → PR #100")
+		want := submitAdvice("graphite refused feature2 (base branch not found); every branch is already pushed; landed feature → PR #41")
 		if err == nil || err.Error() != want {
 			t.Fatalf("error = %v, want %q", err, want)
 		}
@@ -6148,6 +6149,7 @@ func TestShipGTSubmitsOneEntryPerPost(t *testing.T) {
 	setGTState(t, `{"main":{"trunk":true},"base":{"parents":[{"ref":"main","sha":"deadbeef"}]},`+
 		`"feature":{"parents":[{"ref":"base","sha":"beadfeed"}]},`+
 		`"feature2":{"parents":[{"ref":"feature","sha":"cafebabe"}]}}`)
+	api.openPRs("base", "feature")
 
 	if _, err := runShipCmd(api.ctx(context.Background()), t, "-m", "fix: frobnicate"); err != nil {
 		t.Fatalf("ship error = %v", err)
@@ -6195,6 +6197,7 @@ func TestShipGTSubmitBodyMatchesGT(t *testing.T) {
 	t.Setenv("GIT_LOG_BODY", "why this change")
 	setGTState(t, `{"main":{"trunk":true},"feature":{"parents":[{"ref":"main","sha":"deadbeef"}]},`+
 		`"feature2":{"parents":[{"ref":"feature","sha":"beadfeed"}]}}`)
+	api.prs["feature"] = 41
 
 	if _, err := runShipCmd(api.ctx(context.Background()), t, "-m", "fix: frobnicate"); err != nil {
 		t.Fatalf("ship error = %v", err)
@@ -6223,9 +6226,10 @@ func TestShipGTMidStackRefusalNamesWhatLanded(t *testing.T) {
 		`"feature":{"parents":[{"ref":"base","sha":"beadfeed"}]},`+
 		`"feature2":{"parents":[{"ref":"feature","sha":"cafebabe"}]}}`)
 	api.submitErrors["feature"] = "base branch not found"
+	api.openPRs("base", "feature")
 
 	_, err := runShipCmd(api.ctx(context.Background()), t, "-m", "fix: frobnicate")
-	want := submitAdvice("graphite refused feature (base branch not found); every branch is already pushed; landed base → PR #100")
+	want := submitAdvice("graphite refused feature (base branch not found); every branch is already pushed; landed base → PR #9000")
 	if err == nil || err.Error() != want {
 		t.Fatalf("error = %v, want %q", err, want)
 	}
@@ -6676,6 +6680,7 @@ func TestShipGTStackNamedBeforeSubmit(t *testing.T) {
 			api := stubGTAPI(t)
 			t.Setenv("GIT_BRANCH", tt.branch)
 			setGTState(t, tt.stateJSON)
+			api.openPRs(tt.wantHeads[:len(tt.wantHeads)-1]...)
 
 			_, errStr, err := runShipCmdFull(api.ctx(context.Background()), t, "-m", "fix: frobnicate", "--no-watch")
 			if err != nil {
@@ -6741,6 +6746,7 @@ func TestShipGTLeavesAnotherLanesBranchUnpushed(t *testing.T) {
 			t.Setenv("GIT_BRANCH", "l18/feature")
 			setGTState(t, `{"main":{"trunk":true},"l30/base":{"parents":[{"ref":"main","sha":"deadbeef"}]},`+
 				`"l18/feature":{"parents":[{"ref":"l30/base","sha":"beadfeed"}]}}`)
+			api.prs["l30/base"] = 41
 
 			_, errStr, err := runShipCmdFull(api.ctx(context.Background()), t, append([]string{"-m", "fix: frobnicate", "--no-watch"}, tt.args...)...)
 			if err != nil {

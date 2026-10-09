@@ -13,6 +13,7 @@ func TestShipLeavesAPullRequestTheQueueIsRestackingAlone(t *testing.T) {
 	f.Decorate(api.ctx)
 	api.parkOn(f)
 	shipGTStack(t, f, "base", "feature")
+	api.prs["base"], api.prs["feature"] = 100, 101
 	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
 		t.Fatalf("stack submit: %v", err)
 	}
@@ -64,6 +65,7 @@ func TestStackSubmitWaitsOutTheQueuesRestackOntoTrunk(t *testing.T) {
 	f.Decorate(api.ctx)
 	api.parkOn(f)
 	shipGTStack(t, f, "base", "feature")
+	api.prs["base"], api.prs["feature"] = 100, 101
 	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
 		t.Fatalf("stack submit: %v", err)
 	}

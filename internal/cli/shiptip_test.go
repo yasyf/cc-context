@@ -16,6 +16,7 @@ func TestStackSubmitTakesLanded(t *testing.T) {
 	api := stubGTAPI(t)
 	f.Decorate(api.ctx)
 	shipGTStack(t, f, "a", "b")
+	api.prs["b"] = 42
 	restackSquashRemote(t, f, "main", "a (#41)", "a")
 	shipResetLog(t, f)
 

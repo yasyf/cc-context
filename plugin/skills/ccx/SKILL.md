@@ -278,8 +278,9 @@ branch, this lane's or another's, must be clean and is moved onto its new head,
 still on its branch. A branch `gt freeze` is holding is left
 where it is. A conflict stops in a conflict workspace with rerere off;
 `ccx vcs stack continue` finishes the rebase, pushes, submits, and restates the PR
-flags the invocation carried; it opens no pull request those flags did not give
-a title and body, and pushes that branch without submitting it. A `--no-push` ship still restacks with the older
+flags the invocation carried. No ship, stack submit, or continue opens a pull
+request for a branch below the shipped tip that those flags did not give a
+title and a body; it pushes that branch without submitting it. A `--no-push` ship still restacks with the older
 in-place replay, and its conflict refusal names `ccx vcs stack rebase`.
 `--yolo` is the one switch for "skip the checks": it implies
 `--no-verify` and drops every guard ship adds of its own, of which there are none
