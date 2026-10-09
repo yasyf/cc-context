@@ -200,3 +200,24 @@ func TestStackQueryPRsLandsAnOpenPullRequestTheQueueSquashed(t *testing.T) {
 		t.Errorf("c = %+v, want #43 not landed: its head postdates its squash", pr)
 	}
 }
+
+func TestStackQueryPRsLandsAPullRequestTheQueueClosedAfterSquashingIt(t *testing.T) {
+	f := shipRepo(t, vcstest.Remote())
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "a")
+	writeShipFile(t, f.Dir, "a.txt", "a\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "a.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "a")
+	head := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD")
+	restackSquashRemote(t, f, "main", "a (#41)", "a")
+	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "--prune", "origin")
+	closed := fmt.Sprintf(`{"totalCount":1,"nodes":[{"number":41,"state":"CLOSED","mergedAt":null,"isCrossRepository":false,"baseRefName":"main","headRefOid":%q,"timelineItems":{"nodes":[{"actor":{"login":"graphite-app"}}]}}]}`, head)
+	serveGitHubStatus(t, http.StatusOK, `{"data":{"repository":{"p0":`+closed+`}}}`)
+
+	prs, err := stackQueryPRs(f.Context(), render.Dir(f.Dir), "main", []string{"a"})
+	if err != nil {
+		t.Fatalf("stackQueryPRs: %v", err)
+	}
+	if pr := prs["a"]; pr == nil || pr.Number != 41 || !pr.Landed {
+		t.Errorf("a = %+v, want #41 landed: the queue closed it after its squash reached main", pr)
+	}
+}
