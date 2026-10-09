@@ -198,10 +198,6 @@ func shipHookConfigHasMsgStage(path string) (bool, error) {
 }
 
 func shipMaterializeHookEntries(ctx context.Context, dir render.Dir, config string) error {
-	sparse, err := stackConfigBool(ctx, dir, "core.sparseCheckout", false)
-	if err != nil || !sparse {
-		return err
-	}
 	data, err := os.ReadFile(config) //nolint:gosec // the path is one of shipHookConfigNames under the repo root, not untrusted input
 	if err != nil {
 		return fmt.Errorf("ship: hooks: read %s: %w", filepath.Base(config), err)
@@ -217,6 +213,10 @@ func shipMaterializeHookEntries(ctx context.Context, dir render.Dir, config stri
 	}
 	if len(dirs) == 0 {
 		return nil
+	}
+	sparse, err := stackConfigBool(ctx, dir, "core.sparseCheckout", false)
+	if err != nil || !sparse {
+		return err
 	}
 	slices.Sort(dirs)
 	return stackAddCone(ctx, "ship: hooks", dir, slices.Compact(dirs))
