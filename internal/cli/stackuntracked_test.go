@@ -138,27 +138,27 @@ func TestStackTrackingWaitsForGraphiteToTakeInAFreshPush(t *testing.T) {
 	}
 }
 
-func TestStackSubmitDoesNotRepublishAPullRequestGraphiteStillStacksOnLandedOnes(t *testing.T) {
+func TestStackSubmitWaitsOnGraphiteForAPullRequestItStillStacksOnLandedOnes(t *testing.T) {
 	f, stub := stackUntrackedRepo(t)
 	published := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
 	stub.untracked[9000] = gtStubUntracked{base: "main", head: published, closed: []int{8999, 8998}}
 	submits := len(stub.submits)
 
 	out, _, err := runStackCmd(t, f, "submit")
-	if err == nil {
-		t.Fatalf("stack submit exited 0 over a pull request Graphite does not track: %q", out)
+	if err != nil {
+		t.Fatalf("stack submit = %v, want Graphite left to drop the landed pull requests itself", err)
 	}
 	for _, want := range []string{
-		"#9000 base" + shipSep + "parent main" + shipSep + "Graphite tracks no stack for it" + shipSep + "its server-side stack still holds #8998, #8999, which already landed or closed",
-		stackStrandedRemedy,
-		"ccx vcs pr recreate 9000",
+		"waiting on Graphite" + shipSep,
+		stackLandedRemedy,
+		"#9000 base" + shipSep + "parent main" + shipSep + "Graphite tracks no stack for it" + shipSep + "its server-side stack still holds #8998, #8999, which already landed",
 	} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("stack submit = %v, want it to name %q", err, want)
+		if !strings.Contains(out, want) {
+			t.Errorf("stack submit output = %q, want it to name %q", out, want)
 		}
 	}
-	if strings.Contains(err.Error(), "server-side parent is still") {
-		t.Errorf("stack submit = %v, names a stale parent where Graphite recorded the right one", err)
+	if strings.Contains(out, "server-side parent is still") {
+		t.Errorf("stack submit output = %q, names a stale parent where Graphite recorded the right one", out)
 	}
 	if strings.Contains(out, "repair") {
 		t.Errorf("stack submit output = %q, want no republish a fresh head cannot help", out)
@@ -171,6 +171,32 @@ func TestStackSubmitDoesNotRepublishAPullRequestGraphiteStillStacksOnLandedOnes(
 	}
 }
 
+func TestStackSubmitRefusesAPullRequestGraphiteStillStacksOnClosedOnes(t *testing.T) {
+	f, stub := stackUntrackedRepo(t)
+	published := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
+	stub.untracked[9000] = gtStubUntracked{base: "main", head: published, closed: []int{8999}, abandoned: []int{8997}}
+
+	out, _, err := runStackCmd(t, f, "submit")
+	if err == nil {
+		t.Fatalf("stack submit exited 0 over a pull request stacked on a closed one: %q", out)
+	}
+	for _, want := range []string{
+		"#9000 base" + shipSep + "parent main" + shipSep + "Graphite tracks no stack for it" + shipSep + "its server-side stack still holds #8999, which already landed" + shipSep + "its server-side stack still holds #8997, which closed without landing",
+		stackStrandedRemedy,
+		"ccx vcs pr recreate 9000",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("stack submit = %v, want it to name %q", err, want)
+		}
+	}
+	if strings.Contains(out, "waiting on Graphite") {
+		t.Errorf("stack submit output = %q, tells the caller to wait on a record a closed pull request keeps", out)
+	}
+	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base"); got != published {
+		t.Errorf("origin base moved from %.12s to %.12s, want it left alone", published, got)
+	}
+}
+
 func TestStackSubmitRepublishesOnlyThePullRequestsAFreshHeadCanRepair(t *testing.T) {
 	f, stub := stackUntrackedRepo(t)
 	base := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
@@ -179,19 +205,36 @@ func TestStackSubmitRepublishesOnlyThePullRequestsAFreshHeadCanRepair(t *testing
 	stub.untracked[9001] = gtStubUntracked{base: "landed-parent", head: feature}
 
 	out, _, err := runStackCmd(t, f, "submit")
-	if err == nil {
-		t.Fatalf("stack submit exited 0 over a pull request Graphite does not track: %q", out)
+	if err != nil {
+		t.Fatalf("stack submit = %v, want #9001 repaired and #9000 left to Graphite", err)
 	}
 	if want := "repaired" + shipSep + "#9001 republished"; !strings.Contains(out, want) {
 		t.Errorf("stack submit output = %q, want %q and #9000, which a fresh head cannot repair, left out", out, want)
 	}
-	if !strings.Contains(err.Error(), "#9000 base") || strings.Contains(err.Error(), "#9001") {
-		t.Errorf("stack submit = %v, want it to name only #9000", err)
+	_, waiting, found := strings.Cut(out, "waiting on Graphite")
+	if !found || !strings.Contains(waiting, "#9000 base") || strings.Contains(waiting, "#9001") {
+		t.Errorf("stack submit output = %q, want the wait to name only #9000", out)
 	}
 	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base"); got != base {
 		t.Errorf("origin base moved from %.12s to %.12s, want it left alone", base, got)
 	}
 	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature"); got == feature {
 		t.Errorf("origin feature is still %.12s, want a fresh head", feature)
+	}
+}
+
+func TestStackSubmitClaimsNoRepairForAPullRequestAFreshHeadLeavesOnALandedOne(t *testing.T) {
+	f, stub := stackUntrackedRepo(t)
+	stub.untracked[9000] = gtStubUntracked{base: "landed-parent", head: gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base"), reveals: []int{8999}}
+
+	out, _, err := runStackCmd(t, f, "submit")
+	if err != nil {
+		t.Fatalf("stack submit = %v, want #9000 left to Graphite", err)
+	}
+	if strings.Contains(out, "repaired") {
+		t.Errorf("stack submit output = %q, claims a repair Graphite does not track", out)
+	}
+	if want := "its server-side stack still holds #8999, which already landed"; !strings.Contains(out, "waiting on Graphite") || !strings.Contains(out, want) {
+		t.Errorf("stack submit output = %q, want the wait to name %q", out, want)
 	}
 }

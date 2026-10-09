@@ -186,30 +186,37 @@ When Graphite still holds no row, the command exits non-zero naming each pull
 request and the parent Graphite last recorded for it.
 
 A fresh head does not help when Graphite's stack record for the pull request
-still holds pull requests that already landed or closed, which happens when
-its old parent merged through the queue. Graphite's `pull-request-info` lists
-them beside the pull request even after its newest version records the right
-base. `stack submit` does not republish such a pull request, since each
-republish only restarts CI, and exits non-zero naming the landed pull
+still holds pull requests that already landed, which happens when its old
+parent merged through the queue. Graphite's `pull-request-info` lists them
+beside the pull request even after its newest version records the right base.
+
+Graphite drops them from the record by itself once it finishes processing the
+landing, with every approval intact. On monorepo #33116 the record held
+#33109 and #33110 from their 17:40Z landing until some time before 20:46Z. On
+#33129 it held #33122 from its 21:00Z landing until about 22:33Z. No client
+write preceded either clear. `stack submit` republishes nothing for such a pull
+request and exits 0 with a `waiting on Graphite` line naming the landed pull
 requests:
 
 ```text
-#32336 yasyf/api-sandsql-team-storage · parent dev · Graphite tracks no stack for it · its server-side stack still holds #32379, #32405, which already landed or closed
+#33129 yasyf/ssql-hack-bench-infra-workload-ids-1 · parent dev · Graphite tracks no stack for it · its server-side stack still holds #33122, which already landed
 ```
 
-Closing and reopening the pull request on GitHub does not clear the record
-either; on #32336, #32363 and #32334 the rows were still missing 17 minutes
-after a close and reopen. `stack rebase` and
-`stack continue` exit non-zero for an untracked pull request without repairing
-it; run `ccx vcs stack submit` to repair.
+A fresh head, a close and reopen on GitHub, and a republish with the right
+parent each leave the record in place. On #32336, #32363, and #32334 the rows
+were still missing 17 minutes after a close and reopen. `stack rebase` and
+`stack continue` exit non-zero for an untracked pull request that a fresh head
+can repair; run `ccx vcs stack submit` to repair it.
 
-The refusal names `ccx vcs pr recreate <number>` for each such pull request.
-That command closes the pull request, opens a fresh one on the same branch
-through Graphite's submit API with the same title, body, and draft state plus a
-`Replaces #<number>` line, copies the labels, and comments a link on the old
-one. Graphite tracks
-the new pull request, so the queue can enqueue it, but its approvals start
-over. Nothing runs it automatically.
+A record that holds a pull request that closed without landing does not wait
+out: `stack submit` exits non-zero naming `ccx vcs pr recreate <number>` for
+each such pull request. That command closes the pull request, opens a fresh one
+on the same branch through Graphite's submit API with the same title, body, and
+draft state plus a `Replaces #<number>` line, copies the labels, and comments a
+link on the old one. Graphite tracks the new pull request, so the queue can
+enqueue it, but its approvals start over. It is also the way out for a landed
+pull request the record still holds hours after the landing. Nothing runs it
+automatically.
 
 ## Check publication before retrying
 

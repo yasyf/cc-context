@@ -43,9 +43,11 @@ func newVcsPRRecreateCmd() *cobra.Command {
 		Use:   "recreate <number>",
 		Short: "Replace an open pull request Graphite no longer tracks with a fresh one on the same branch",
 		Long: `Replace an open pull request whose Graphite stack record still holds pull
-requests that already landed or closed. Graphite reads such a pull request as
+requests that closed without landing. Graphite reads such a pull request as
 untracked, so the merge queue cannot enqueue it, and neither a fresh head nor a
-close and reopen clears the record.
+close and reopen clears the record. Graphite drops a landed pull request from
+the record by itself within a few hours of the landing, so this is for one the
+record outlives.
 
 The command closes the pull request, since GitHub allows one open pull request
 per branch and base, then opens a new one through Graphite's submit API so

@@ -21,6 +21,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs stack submit` waits on Graphite for a stack record that still
+  holds a landed pull request instead of naming `pr recreate`.** Graphite drops
+  a landed pull request from the record by itself, approvals intact: on monorepo
+  #33116 within about three hours of the landing, and on #33129 about 93
+  minutes after #33122 landed. Submit, rebase, and continue now print a
+  `waiting on Graphite` line naming the landed pull requests and exit 0, so no
+  lane recreates approved pull requests for a record that clears on its own.
+  A record holding a pull request that closed without landing still refuses
+  and names `ccx vcs pr recreate`.
+
 - **`ccx vcs stack continue` refuses a staged file that still carries
   conflict markers.** Continue checked only for unmerged index entries, so a
   file staged with `git add` while its `<<<<<<<`, `=======`, and `>>>>>>>`
