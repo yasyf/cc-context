@@ -68,10 +68,11 @@ type gtStubMerged struct {
 }
 
 type gtStubUntracked struct {
-	base   string
-	head   string
-	stuck  bool
-	closed []int
+	base      string
+	head      string
+	stuck     bool
+	closed    []int
+	abandoned []int
 }
 
 // gtStubSubmit is one submit post: the raw body ccx sent, and the lone entry
@@ -214,6 +215,12 @@ func (s *gtAPIStub) serve(w http.ResponseWriter, r *http.Request) {
 						"prNumber": closed, "state": gtapi.PRMerged, "url": gtStubPRURL(closed),
 						"mergeQueueStatus": map[string]any{"isInGraphiteMq": true},
 						"versions":         []map[string]any{{"headSha": strings.Repeat("0", 40), "baseName": "dev", "createdAt": "2026-09-01T00:00:00.000Z"}},
+					})
+				}
+				for _, abandoned := range u.abandoned {
+					prs = append(prs, map[string]any{
+						"prNumber": abandoned, "state": gtapi.PRClosed, "url": gtStubPRURL(abandoned),
+						"versions": []map[string]any{{"headSha": strings.Repeat("0", 40), "baseName": "dev", "createdAt": "2026-09-01T00:00:00.000Z"}},
 					})
 				}
 			}

@@ -531,7 +531,7 @@ func stackRepairTracking(cmd *cobra.Command, opts stackRebaseOpts, tracking *sta
 	}
 	repairing := tracking.repairable()
 	if len(repairing) == 0 {
-		return tracking.settled()
+		return tracking.settled(cmd)
 	}
 	cmd.Println("repairing" + shipSep + "Graphite holds no mergeability record for:\n" + stackUntrackedLines(repairing))
 	opts.ship, opts.newPRs = nil, nil
@@ -551,7 +551,7 @@ func stackRepairTracking(cmd *cobra.Command, opts stackRebaseOpts, tracking *sta
 		names[i] = fmt.Sprintf("#%d", u.PR)
 	}
 	cmd.Println("repaired" + shipSep + strings.Join(names, ", ") + " republished with a fresh head and tracked by Graphite")
-	return tracking.settled()
+	return tracking.settled(cmd)
 }
 
 // stackSubmitIntent carries --pr-title and --pr-body-file into the run as a ship
