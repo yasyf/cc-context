@@ -77,9 +77,13 @@ func (p *stackPR) base() string {
 	return p.Base
 }
 
+func (p *stackPR) parked() bool {
+	return p.Base == fmt.Sprintf("graphite-base/%d", p.Number)
+}
+
 func stackMarkParked(prs map[string]*stackPR, submitted map[string]gtmeta.Version) {
 	for name, pr := range prs {
-		if pr.Base == fmt.Sprintf("graphite-base/%d", pr.Number) {
+		if pr.parked() {
 			pr.ParkedFrom = submitted[name].BaseName
 		}
 	}
@@ -1390,7 +1394,7 @@ func stackKept(ctx context.Context, dir render.Dir, state gtState, tr vcs.Trunk,
 // commits under any sha.
 func stackStrayReason(ctx context.Context, dir render.Dir, state gtState, tr vcs.Trunk, branch, parent, effective string, pr *stackPR) (string, error) {
 	if pr != nil && pr.State == "OPEN" && pr.Base != "" && pr.base() != parent && pr.base() != effective {
-		if pr.Base == fmt.Sprintf("graphite-base/%d", pr.Number) && pr.ParkedFrom == "" {
+		if pr.parked() && pr.ParkedFrom == "" {
 			return fmt.Sprintf("gt records its parent as %s, but its pull request #%d sits on Graphite's %s and this clone never submitted it — name its real parent with ccx vcs stack rebase --parent %s=<branch>", parent, pr.Number, pr.Base, branch), nil
 		}
 		return fmt.Sprintf("gt records its parent as %s, but its pull request #%d is based on %s — re-record it with gt track --parent %s %s", parent, pr.Number, pr.base(), pr.base(), branch), nil
@@ -2132,21 +2136,21 @@ func stackKeepsAncestor(ctx context.Context, dir render.Dir, pin string, b *stac
 	return true, nil
 }
 
-// stackPinPublished keeps a branch the run must not push at the head its
-// pull request already shows; one never pushed has nothing to keep.
 // stackRefuseUnpushedPins refuses a run kept at the published heads of branches
 // another lane holds and never pushed: there is nothing to stack on.
 func stackRefuseUnpushedPins(names []string) error {
+	reasons := make([]string, len(names))
 	flags := make([]string, len(names))
 	for i, name := range names {
+		reasons[i] = name + " is another lane's and has never been pushed"
 		flags[i] = "--include " + name
 	}
-	if len(names) == 1 {
-		return fmt.Errorf("stack submit: %s is another lane's and has never been pushed, so there is no published head to stack on — submit it from its own working copy first, or take it into this run with %s or --all-lanes", names[0], flags[0])
-	}
-	return fmt.Errorf("stack submit: %s are other lanes' and have never been pushed, so there are no published heads to stack on — submit each from its own working copy first, or take them into this run with %s or --all-lanes", strings.Join(names, ", "), strings.Join(flags, " "))
+	return fmt.Errorf("stack submit: %s, so there is no published head to stack on — submit from the working copy holding each first, or pass %s or --all-lanes",
+		strings.Join(reasons, "; "), strings.Join(flags, " "))
 }
 
+// stackPinPublished keeps a branch the run must not push at the head its
+// pull request already shows; one never pushed has nothing to keep.
 func stackPinPublished(b *stackRebaseBranch) bool {
 	if b.Remote == "" {
 		return false
@@ -4145,7 +4149,7 @@ func stackSubmittedParent(ctx context.Context, dir render.Dir, run *stackRebaseR
 // once this run submitted it, since that submit moves it back; one the run
 // left out is the merge queue's to move.
 func stackBaseStrays(pr *stackPR, parent string, submitted bool) bool {
-	return pr.State == "OPEN" && pr.Base != "" && pr.Base != parent && (submitted || pr.Base != fmt.Sprintf("graphite-base/%d", pr.Number))
+	return pr.State == "OPEN" && pr.Base != "" && pr.Base != parent && (submitted || !pr.parked())
 }
 
 // stackParentOpen is a parent whose pull request has not closed: once it lands,

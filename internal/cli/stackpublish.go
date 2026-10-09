@@ -514,7 +514,7 @@ func stackFinishPublication(ctx context.Context, cmd *cobra.Command, l lane, com
 		return err
 	}
 	if len(strays) > 0 {
-		return fmt.Errorf("%s: published, but %s still sit off the parents the submit gave them — finish each with the command its line names", stackRebasePrefix, strings.Join(strays, ", "))
+		return fmt.Errorf("%s: published, but GitHub still bases these pull requests off the parent the submit gave each: %s — finish each with the command its line names", stackRebasePrefix, strings.Join(strays, ", "))
 	}
 	return nil
 }

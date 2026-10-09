@@ -1651,7 +1651,7 @@ func TestStackRebaseNamesTheRetargetGitHubRefused(t *testing.T) {
 	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
 
 	out, _, err := runStackCmd(t, f, "rebase")
-	if err == nil || !strings.Contains(err.Error(), "published, but #9001 still sit off the parents the submit gave them") {
+	if err == nil || !strings.Contains(err.Error(), "published, but GitHub still bases these pull requests off the parent the submit gave each: #9001") {
 		t.Fatalf("stack rebase = %v, want the unmoved #9001 to fail the run", err)
 	}
 	if want := "base main ≠ parent base — retargeting failed, finish it with gh api -X PATCH repos/yasyf/cc-context/pulls/9001 --silent -f base=base"; !strings.Contains(out, want) {

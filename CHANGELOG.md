@@ -23,6 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   moved, whose published head lacks work a branch above it carries, or that
   was never pushed, with the `--include` flags that take them all in.
 
+- **`stack submit` words its never-pushed refusal and its unmoved-base failure
+  the same for one branch as for several.** The never-pushed refusal joins one
+  reason per branch, as the other held-branch refusals do, and the failure after
+  a refused retarget no longer reads "#9001 still sit off".
+
 ### Security
 
 - **Go toolchain 1.26.9 and `golang.org/x/net` v0.60.0.** `govulncheck` flagged
