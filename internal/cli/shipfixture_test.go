@@ -856,7 +856,7 @@ exit 0
     if [ "$3" = "--quiet" ]; then
       if [ -n "$GIT_STAGED_EMPTY" ]; then exit 0; else exit 1; fi
     fi
-    if [ "$3 $4" = "--name-only -z" ]; then exit 0; fi
+    if [ "$3 $4 $5" = "--name-status --no-renames -z" ]; then exit 0; fi
     names=$GIT_DIFF_NAMES
     if [ -n "$SHIP_DIFF_NAMES_MARKER" ]; then
       count=0

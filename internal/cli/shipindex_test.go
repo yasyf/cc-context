@@ -23,8 +23,13 @@ func TestShipWithAStagedIndexCommitsExactlyTheIndex(t *testing.T) {
 				f = shipRepo(t, vcstest.Remote())
 			}
 			writeShipFile(t, f.Dir, "partial.txt", "one\n")
-			mustRun(t, f.Env(), f.Dir, "git", "add", "partial.txt")
+			writeShipFile(t, f.Dir, "retired.txt", "retired\n")
+			mustRun(t, f.Env(), f.Dir, "git", "add", "partial.txt", "retired.txt")
 			mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "partial")
+			mustRun(t, f.Env(), f.Dir, "git", "rm", "-q", "--cached", "retired.txt")
+			writeShipFile(t, f.Dir, "pages/[id].txt", "page\n")
+			mustRun(t, f.Env(), f.Dir, "git", "add", "pages/[id].txt")
+			writeShipFile(t, f.Dir, "pages/i.txt", "unrelated\n")
 			writeShipFile(t, f.Dir, "partial.txt", "two\n")
 			mustRun(t, f.Env(), f.Dir, "git", "add", "partial.txt")
 			writeShipFile(t, f.Dir, "partial.txt", "three\n")
@@ -39,8 +44,8 @@ func TestShipWithAStagedIndexCommitsExactlyTheIndex(t *testing.T) {
 			if strings.Contains(got, "swept") {
 				t.Errorf("summary = %q, want no sweep over a staged index", got)
 			}
-			if files := gitAt(t, f.Env(), f.Dir, "show", "--name-only", "--format=", "HEAD"); files != "partial.txt\nstaged.txt" {
-				t.Errorf("committed files = %q, want partial.txt and staged.txt", files)
+			if files := gitAt(t, f.Env(), f.Dir, "show", "--name-only", "--format=", "HEAD"); files != "pages/[id].txt\npartial.txt\nretired.txt\nstaged.txt" {
+				t.Errorf("committed files = %q, want the page, partial.txt, the retired.txt removal, and staged.txt", files)
 			}
 			if body := gitAt(t, f.Env(), f.Dir, "show", "HEAD:partial.txt"); body != "two" {
 				t.Errorf("committed partial.txt = %q, want the staged two", body)
@@ -48,8 +53,10 @@ func TestShipWithAStagedIndexCommitsExactlyTheIndex(t *testing.T) {
 			if body, err := os.ReadFile(filepath.Join(f.Dir, "partial.txt")); err != nil || string(body) != "three\n" {
 				t.Errorf("working partial.txt = %q (%v), want the unstaged three kept", body, err)
 			}
-			if status := gitAt(t, f.Env(), f.Dir, "status", "--porcelain", "--", "untracked.txt"); status != "?? untracked.txt" {
-				t.Errorf("untracked.txt status = %q, want it left untracked", status)
+			for _, path := range []string{"untracked.txt", "retired.txt", "pages/i.txt"} {
+				if status := gitAt(t, f.Env(), f.Dir, "status", "--porcelain", "--untracked-files=all", "--", path); status != "?? "+path {
+					t.Errorf("%s status = %q, want it left untracked", path, status)
+				}
 			}
 		})
 	}

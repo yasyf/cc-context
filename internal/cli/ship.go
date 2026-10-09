@@ -864,16 +864,18 @@ func shipCommit(ctx context.Context, errW io.Writer, dir render.Dir, kind vcs.Ki
 // Only the sweep runs --verbose and returns the segment naming what it took: a
 // checkout several sessions share can hold another lane's work.
 func shipGitAdd(ctx context.Context, dir render.Dir, o shipOpts) (string, error) {
-	scope := o.rootPaths
-	if o.indexOnly {
-		scope = o.indexPaths
-	}
-	scoped := len(scope) > 0 || o.indexOnly
+	scoped := len(o.rootPaths) > 0 || o.indexOnly
 	addArgv := []string{"add", "-A"}
 	if scoped {
-		paths, err := gitUnstagedPaths(ctx, dir, scope)
+		paths, err := gitUnstagedPaths(ctx, dir, o.rootPaths)
 		if err != nil {
 			return "", err
+		}
+		if o.indexOnly {
+			paths = make([]string, len(o.indexPaths))
+			for i, p := range o.indexPaths {
+				paths[i] = ":(literal)" + p
+			}
 		}
 		if len(paths) == 0 {
 			return "", nil
@@ -897,7 +899,7 @@ func shipScopeToIndex(ctx context.Context, dir render.Dir, o shipOpts) (shipOpts
 	if len(o.rootPaths) > 0 {
 		return o, nil
 	}
-	staged, err := gitPathsZ(ctx, dir, "diff", "--cached", "--name-only", "-z")
+	staged, err := gitPathsZ(ctx, dir, "diff", "--cached", "--name-status", "--no-renames", "-z")
 	if err != nil || len(staged) == 0 {
 		return o, err
 	}
@@ -906,7 +908,11 @@ func shipScopeToIndex(ctx context.Context, dir render.Dir, o shipOpts) (shipOpts
 		return o, err
 	}
 	o.indexOnly = true
-	o.indexPaths = slices.DeleteFunc(staged, func(p string) bool { return slices.Contains(unstaged, p) })
+	for i := 0; i+1 < len(staged); i += 2 {
+		if status, path := staged[i], staged[i+1]; status != "D" && !slices.Contains(unstaged, path) {
+			o.indexPaths = append(o.indexPaths, path)
+		}
+	}
 	return o, nil
 }
 
