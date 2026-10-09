@@ -2,6 +2,7 @@ package cli
 
 import (
 	"maps"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -176,6 +177,52 @@ func TestStackSubmitMovesAPullRequestTheQueueEvicted(t *testing.T) {
 	}
 	if !stackOnto(t, f, gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "main"), moved) {
 		t.Error("origin base does not sit on the advanced main")
+	}
+}
+
+func TestStackSubmitReplaysAQueuedBranchThatConflictsWithTrunk(t *testing.T) {
+	for _, args := range [][]string{nil, {"--restack"}} {
+		t.Run(strings.Join(append([]string{"submit"}, args...), " "), func(t *testing.T) {
+			f := stackRebaseRepo(t, "base", "feature")
+			api := stubGTAPI(t)
+			f.Decorate(api.ctx)
+			if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+				t.Fatalf("stack submit: %v", err)
+			}
+			api.prs["base"], api.prs["feature"] = 100, 101
+			api.queued["base"] = true
+			stubPRState(t, prPoll(`"p0":`+prNode(100, "OPEN", prComments())))
+			stubStackPRs(t, f, map[string]*stackPR{
+				"base":    {Number: 100, Title: "base", State: "OPEN", Base: "main"},
+				"feature": {Number: 101, Title: "feature", State: "OPEN", Base: "base"},
+			})
+			stackAdvanceTrunk(t, f, "base.txt", "upstream\n")
+			pin := gitAt(t, f.Env(), f.Dir, "rev-parse", "origin/main")
+			queued := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
+
+			out, _, err := runStackCmd(t, f, append([]string{"submit"}, args...)...)
+			if err == nil {
+				t.Fatalf("stack submit %v of a queued base that conflicts with main succeeded, want a conflict stop", args)
+			}
+			if strings.Contains(out, "base · kept") {
+				t.Errorf("plan = %q, want the queued base replayed, not kept", out)
+			}
+			for _, want := range []string{"base · onto main · from ", "conflicts with main@" + pin[:12] + " in base.txt"} {
+				if !strings.Contains(out, want) {
+					t.Errorf("plan = %q, want %q", out, want)
+				}
+			}
+			run, err := stackOnlyTestRun(filepath.Join(f.Dir, ".git"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if run.Conflict == nil || run.Conflict.Branch != "base" {
+				t.Errorf("run conflict = %+v, want a stop on base", run.Conflict)
+			}
+			if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base"); got != queued {
+				t.Errorf("origin base moved to %s before the conflict was resolved", got)
+			}
+		})
 	}
 }
 

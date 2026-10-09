@@ -1262,16 +1262,22 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 		if inherits[name], err = stackInheritsTrunk(ctx, l.dir(), trunk, pin, b, inherits); err != nil {
 			return nil, err
 		}
+		queued := queue[name] == prQueueQueued
+		if queued {
+			if queued, err = stackQueueCanLand(ctx, l.dir(), pin, b); err != nil {
+				return nil, err
+			}
+		}
 		_, named := overrides[name]
 		switch {
-		case queue[name] == prQueueQueued && (named || (name == o.tip && b.Local != b.Remote)):
+		case queued && (named || (name == o.tip && b.Local != b.Remote)):
 			return nil, fmt.Errorf("stack rebase: %s is in the merge queue as %s, and moving it would evict it — take it out of the queue first", name, b.PR)
 		case slices.Contains(o.pinned, name):
 			if !stackPinPublished(b) {
 				unpushed = append(unpushed, name)
 			}
 			b.Kept, b.Pinned = true, true
-		case queue[name] == prQueueQueued || (moving != nil && !moving[name] && !inherits[name]):
+		case queued || (moving != nil && !moving[name] && !inherits[name]):
 			b.Kept = o.noPush || stackPinPublished(b)
 		case o.tip != "" && name != o.tip && !o.restack && (o.tipOnly || !inherits[name]):
 			if b.Kept, err = stackKeepsAncestor(ctx, l.dir(), pin, b, kept[b.Parent], o.tipOnly); err != nil {
@@ -2735,6 +2741,15 @@ func stackPastFork(ctx context.Context, dir render.Dir, recorded, fork, head str
 		return fork, err
 	}
 	return recorded, nil
+}
+
+func stackQueueCanLand(ctx context.Context, dir render.Dir, pin string, b *stackRebaseBranch) (bool, error) {
+	merges, conflicts, err := stackTrunkConflicts(ctx, dir, pin, b.Remote)
+	if err != nil {
+		return false, err
+	}
+	b.Conflicts = conflicts
+	return merges, nil
 }
 
 func stackMergesClean(ctx context.Context, dir render.Dir, pin string, branches []*stackRebaseBranch) (bool, error) {
