@@ -640,6 +640,7 @@ func stackAlignSources(ctx context.Context, l lane, moves, pending []restackMove
 }
 
 func stackRestoreSources(ctx context.Context, dir render.Dir, moves []restackMove, sources map[string]stackPublication, cause error) error {
+	ctx = context.WithoutCancel(ctx)
 	if len(moves) == 0 {
 		return fmt.Errorf("%s: the stack is published, but %w — ccx vcs stack continue aligns it again", stackRebasePrefix, cause)
 	}
