@@ -57,7 +57,16 @@ submit that moves the child onto a new parent during that window moves
 A submit that moves the child onto trunk races the queue's own force-push,
 which can land a replay of the landed parent over it. The refusal names the
 pull request and the landed parent. Wait until the pull
-request's base leaves `graphite-base/<n>`, then run the same command again.
+request's base leaves `graphite-base/<n>`, then run the same command again;
+after a stack rebase or continue, run `ccx vcs stack continue`, which publishes
+the saved run without redoing a resolution.
+
+The refusal holds only while Graphite's `mergeability-status` reads the parked
+pull request as `REBASING` or queued. The queue does not always restack a
+parked child: #33251 sat on `graphite-base/33251` for an hour after its parent
+landed, and Graphite read it as needing a restack. A parked pull request
+Graphite reads any other way has no restack coming, so the submit moves
+`graphite-base/<n>` and the pull request onto their new base itself.
 
 `ccx vcs stack restack` selects the repository's backend: stack replay for
 Graphite, branch replay for plain Git, and fetch plus rebase for jj.

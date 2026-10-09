@@ -2122,11 +2122,10 @@ func gtDropUnchanged(plan []gtSubmitBranch, last map[string]gtmeta.Version, know
 }
 
 // gtRefuseQueueRestack refuses a submit over a pull request the merge queue
-// parked on graphite-base/N after its parent landed: the queue replays
-// graphite-base/N..head onto trunk, so moving that branch to a new parent's
-// head drops the new parent's commits from the pull request, and a push onto
-// trunk races the queue's own force-push, which overwrote #31266 in
-// Forge-AI/monorepo with a replay of its landed parent.
+// parked on graphite-base/N after its parent landed while Graphite still
+// restacks it: moving that branch drops the new parent's commits, and a push
+// onto trunk races graphite-app's force-push, as on #31266. One Graphite reads
+// as anything else has no restack coming, as #33251 sat for an hour.
 func gtRefuseQueueRestack(ctx context.Context, dir render.Dir, client *gtapi.Client, owner, name, prefix string, tr vcs.Trunk, plan []gtSubmitBranch, known map[string]gtapi.PullRequestInfo) error {
 	from := map[string]string{}
 	var parents []string
@@ -2160,19 +2159,36 @@ func gtRefuseQueueRestack(ctx context.Context, dir render.Dir, client *gtapi.Cli
 			landed[info.HeadRefName] = info.PRNumber
 		}
 	}
+	var numbers []int
+	for _, b := range plan {
+		if _, ok := landed[from[b.name]]; ok && from[b.name] != "" {
+			numbers = append(numbers, known[b.name].PRNumber)
+		}
+	}
+	if len(numbers) == 0 {
+		return nil
+	}
+	statuses, err := client.MergeabilityStatuses(ctx, owner, name, numbers)
+	if err != nil {
+		return fmt.Errorf("%s: read whether Graphite still restacks the pull requests it parked: %w", prefix, err)
+	}
+	rerun := "re-run"
+	if prefix == stackRebasePrefix {
+		rerun = "run ccx vcs stack continue, which publishes the saved run without redoing a resolution"
+	}
 	for _, b := range plan {
 		parent := from[b.name]
 		number, ok := landed[parent]
-		if parent == "" || !ok {
+		pr := known[b.name]
+		if parent == "" || !ok || !gtapi.Restacking(statuses[pr.PRNumber]) {
 			continue
 		}
-		pr := known[b.name]
 		race := fmt.Sprintf("drops commits from #%d", pr.PRNumber)
 		if b.base == tr.Name() {
-			race = fmt.Sprintf("graphite-app force-pushes its own restack over this push — wait until #%d's base leaves %s, then re-run; if no restack comes, retarget it off with %s and re-run",
-				pr.PRNumber, pr.BaseRefName, ghCommand(ghPatchPullArgv(owner+"/"+name, pr.PRNumber, "-f", "base="+tr.Name())))
+			race = fmt.Sprintf("graphite-app force-pushes its own restack over this push — wait until #%d's base leaves %s, then %s; if no restack comes, retarget it off with %s and %s",
+				pr.PRNumber, pr.BaseRefName, rerun, ghCommand(ghPatchPullArgv(owner+"/"+name, pr.PRNumber, "-f", "base="+tr.Name())), rerun)
 		} else {
-			race += fmt.Sprintf(" — wait until #%d's base leaves %s, then re-run", pr.PRNumber, pr.BaseRefName)
+			race += fmt.Sprintf(" — wait until #%d's base leaves %s, then %s", pr.PRNumber, pr.BaseRefName, rerun)
 		}
 		return fmt.Errorf("%s: #%d sits on %s while Graphite's merge queue restacks it onto %s after its parent %s landed as #%d; submitting %s onto %s now races that restack and %s",
 			prefix, pr.PRNumber, pr.BaseRefName, tr.Name(), parent, number, b.name, b.base, race)
