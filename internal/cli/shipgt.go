@@ -1931,9 +1931,6 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 		if err := stackRecordPublication(ctx, l.dir(), s.publication, plan); err != nil {
 			return nil, nil, err
 		}
-		if err := stackCheckSources(ctx, l.dir(), s.publication); err != nil {
-			return nil, nil, err
-		}
 	} else if err := gtRecordPushedPublication(ctx, l.dir(), plan); err != nil {
 		return nil, nil, err
 	}
