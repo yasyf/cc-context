@@ -1414,6 +1414,10 @@ func stackPassThrough(passed map[string]string, parent string) string {
 // commits under any sha.
 func stackStrayReason(ctx context.Context, dir render.Dir, state gtState, tr vcs.Trunk, branch, parent, effective string, pr *stackPR) (string, error) {
 	if pr != nil && pr.State == "OPEN" && pr.Base != "" && pr.base() != parent && pr.base() != effective {
+		inserted, err := stackInsertedBelow(ctx, dir, state, tr, branch, parent, pr.base())
+		if err != nil || inserted {
+			return "", err
+		}
 		if pr.parked() && pr.ParkedFrom == "" {
 			return fmt.Sprintf("gt records its parent as %s, but its pull request #%d sits on Graphite's %s and this clone never submitted it — name its real parent with ccx vcs stack rebase --parent %s=<branch>", parent, pr.Number, pr.Base, branch), nil
 		}
@@ -1428,6 +1432,30 @@ func stackStrayReason(ctx context.Context, dir render.Dir, state gtState, tr vcs
 	}
 	below := state[parent].Parents[0].Ref
 	return fmt.Sprintf("gt records its parent as %s, but it carries none of %s's commits — re-record it with gt track --parent %s %s, or run ccx vcs stack submit from %s's working copy to put it on %s", parent, parent, below, branch, branch, parent), nil
+}
+
+func stackInsertedBelow(ctx context.Context, dir render.Dir, state gtState, tr vcs.Trunk, branch, parent, base string) (bool, error) {
+	down, err := gtDownstack(stackRebasePrefix, state, parent, tr.Name())
+	if err != nil || (base != tr.Name() && !slices.Contains(down, base)) {
+		return false, err
+	}
+	outside := []string{"^" + string(tr.Ref())}
+	if below := state[parent].Parents[0].Ref; below != tr.Name() {
+		outside = append(outside, "^"+gtRestackRef(below))
+	}
+	own, err := gtRevCount(ctx, stackRebasePrefix, dir, gtRestackRef(parent), outside...)
+	if err != nil || own == 0 {
+		return false, err
+	}
+	pushed := "refs/remotes/" + tr.Remote() + "/" + branch
+	published, err := gitRefExists(ctx, dir, stackRebasePrefix, pushed)
+	if err != nil || !published {
+		return false, err
+	}
+	if before, err := gitIsAncestor(ctx, dir, stackRebasePrefix, gtRestackRef(parent), pushed); err != nil || before {
+		return false, err
+	}
+	return gitIsAncestor(ctx, dir, stackRebasePrefix, gtRestackRef(parent), gtRestackRef(branch))
 }
 
 // stackCarriesNone reports whether branch, with work of its own, carries none

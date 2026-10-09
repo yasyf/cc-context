@@ -35,3 +35,28 @@ func TestStackRebaseLeavesARefusedBranchAboveItAlone(t *testing.T) {
 		t.Error("origin llm is not on the new trunk")
 	}
 }
+
+func TestStackRebaseCarriesAPullRequestOnTrunkOntoABranchInsertedBelowIt(t *testing.T) {
+	f := stackRebaseRepo(t, "pr")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-qf", "origin", "pr")
+	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "insert", "main")
+	stackCommit(t, f, "insert.txt")
+	mustRun(t, f.Env(), f.Dir, "gt", "track", "--parent", "main", "--no-interactive")
+	mustRun(t, f.Env(), f.Dir, "git", "rebase", "-q", "--onto", "insert", "main", "pr")
+	mustRun(t, f.Env(), f.Dir, "gt", "track", "--parent", "insert", "--no-interactive")
+	stubStackPRs(t, f, map[string]*stackPR{"pr": {Number: 42, Title: "pr", State: "OPEN", Base: "main"}})
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "insert")
+	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+
+	out, errOut, err := runStackCmd(t, f, "rebase", "--no-push")
+	if err != nil {
+		t.Fatalf("stack rebase from insert: %v", err)
+	}
+	if strings.Contains(errOut, "left pr alone") {
+		t.Errorf("stderr = %q, want pr carried onto insert, not left alone", errOut)
+	}
+	if !stackOnto(t, f, "insert", "pr") || !stackOnto(t, f, "origin/main", "insert") {
+		t.Errorf("pr is not on insert on the new trunk:\n%s%s", out, errOut)
+	}
+}
