@@ -769,3 +769,38 @@ func TestAReaderSharesAPollAnotherStoreHasInFlight(t *testing.T) {
 			err, gh.requests(), c.slept, st.PRs[190].PolledAt)
 	}
 }
+
+func TestAReaderTakesTheInFlightPollThoughItLandsPastTheInterval(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ctx, cancel := context.WithTimeout(testCtx(t), 10*time.Second)
+	defer cancel()
+	seed, err := Open(dir, &GitHub{owner: "yasyf", name: "cc-context"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.save(State{AttemptedAt: epoch, PolledAt: epoch, PRs: map[int]PR{190: {Number: 190, State: "OPEN", PolledAt: epoch}}}); err != nil {
+		t.Fatal(err)
+	}
+	poller, inFlight, release := blockedPoller(t, dir, epoch.Add(MinInterval))
+	polled := make(chan error, 1)
+	go func() {
+		_, err := poller.Read(ctx, Want{PRs: []int{190}})
+		polled <- err
+	}()
+	awaitInFlight(ctx, t, inFlight)
+
+	c := &clock{now: epoch.Add(MinInterval + time.Second)}
+	reader, gh := newStore(t, dir, c, nil)
+	reader.sleep = func(_ context.Context, d time.Duration) error {
+		c.slept = append(c.slept, d)
+		c.now = epoch.Add(3 * MinInterval)
+		release()
+		return <-polled
+	}
+	st, err := reader.Read(ctx, Want{PRs: []int{190}})
+	if err != nil || gh.requests() != 0 || len(c.slept) != 1 || !st.PRs[190].PolledAt.Equal(epoch.Add(MinInterval)) {
+		t.Errorf("read = %v after %d requests, slept %v, #190 polled %s; want the in-flight poll's result though it landed %s after its claim",
+			err, gh.requests(), c.slept, st.PRs[190].PolledAt, 2*MinInterval)
+	}
+}
