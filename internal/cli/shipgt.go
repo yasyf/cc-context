@@ -1493,7 +1493,11 @@ func gtModifyRestack(ctx context.Context, l lane, o shipOpts, branch string) err
 // Staging is shipGitAdd's job on both lanes, since gt add is a git-add
 // passthrough that costs a whole gt startup.
 func shipCommitGT(ctx context.Context, l lane, errW io.Writer, o shipOpts, sel *shipSelection, plan branchPlan) (string, error) {
-	o.message = withSessionTrailer(ctx, o.message)
+	message, err := withSessionTrailer(ctx, l.root, o.message)
+	if err != nil {
+		return "", err
+	}
+	o.message = message
 	if sel != nil {
 		seg := ""
 		if !o.noVerify && shipHasHookConfig(l.root) {
