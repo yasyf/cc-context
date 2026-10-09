@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`pr status` stops reporting CI red on a landed pull request.** The
+  queue closes what it lands, and runs it cancels on the way leave the head's
+  rollup at `FAILURE` with every check under it green, so a landed line read
+  `ci red: rollup failure`. A landed line now carries no CI segment, and
+  `--json` omits its `ci` key.
+
 - **`stack submit` moves a pull request Graphite left parked.** A submit
   that gave a pull request its parent could leave it on Graphite's
   `graphite-base/<n>` branch, and the verdict skipped it as Graphite's to

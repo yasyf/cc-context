@@ -235,10 +235,14 @@ func runPRStatusCmd(t *testing.T, client *gtapi.Client, args ...string) (string,
 	return out.String(), err
 }
 
+const prLandedThenCancelled = `"checks":{"nodes":[{"commit":{"statusCheckRollup":{"state":"FAILURE","contexts":{"nodes":[` +
+	`{"__typename":"CheckRun","name":"deploy","conclusion":"CANCELLED","status":"COMPLETED"},` +
+	`{"__typename":"StatusContext","context":"buildkite/test","state":"SUCCESS"}]}}}}]}`
+
 func TestPRStatusReportsEachQueueState(t *testing.T) {
 	asked, client := stubPRInfo(t, prInfoLanded, prInfoOpen, prInfoQueued)
 	github := stubPRState(t, prPoll(
-		`"p0":`+prNode(25116, "CLOSED", ""),
+		`"p0":`+strings.Replace(prNode(25116, "CLOSED", ""), `"checks":{"nodes":[]}`, prLandedThenCancelled, 1),
 		`"t0":{"compare":{"status":"BEHIND"}}`,
 		`"b0":{"compare":{"status":"BEHIND"}}`,
 		`"p1":`+prNode(25121, "OPEN", prComments()),
@@ -251,7 +255,7 @@ func TestPRStatusReportsEachQueueState(t *testing.T) {
 	}
 	want := "#25121  queued · enqueued b103a576 into dev · ci none · approved · queued\n" +
 		"#25131  not queued · open · ci none · approved · blocked:no-ci\n" +
-		"#25116  landed · squash 9cc33f05 on dev · ci none · approved · landed\n"
+		"#25116  landed · squash 9cc33f05 on dev · approved · landed\n"
 	if out != want {
 		t.Errorf("report =\n%s\nwant\n%s", out, want)
 	}
@@ -334,7 +338,7 @@ func TestPRStatusJSON(t *testing.T) {
 	}
 	want := []prStatusReport{{
 		prQueueReport: prQueueReport{Number: 25121, Queue: prQueueQueued, State: "OPEN", Base: "dev", Enqueued: "b103a57671412a4e260ecd9763ba764e66053d15"},
-		CI:            prCIReport{State: prCINone},
+		CI:            &prCIReport{State: prCINone},
 		Approval:      prApprovalReport{State: prApproved},
 		Verdict:       "queued",
 	}}
@@ -733,7 +737,7 @@ func TestPRApprovalOf(t *testing.T) {
 
 func TestPRVerdict(t *testing.T) {
 	t.Parallel()
-	green := prCIReport{State: prCIGreen}
+	green := &prCIReport{State: prCIGreen}
 	approved := prApprovalReport{State: prApproved}
 	open := prQueueReport{Queue: prQueueNotQueued, State: "OPEN"}
 	tests := []struct {
@@ -746,11 +750,11 @@ func TestPRVerdict(t *testing.T) {
 		{"evicted but clear", prStatusReport{prQueueReport: prQueueReport{Queue: prQueueEvicted, State: "OPEN"}, CI: green, Approval: approved}, prstate.PR{}, "landable"},
 		{
 			"every cause named",
-			prStatusReport{prQueueReport: open, CI: prCIReport{State: prCIPending}, Approval: prApprovalReport{State: prReviewRequired}},
+			prStatusReport{prQueueReport: open, CI: &prCIReport{State: prCIPending}, Approval: prApprovalReport{State: prReviewRequired}},
 			prstate.PR{Draft: true, Mergeable: "CONFLICTING"},
 			"blocked:draft,conflict,ci-pending,unapproved",
 		},
-		{"dirty merge state", prStatusReport{prQueueReport: open, CI: prCIReport{State: prCIPending}, Approval: approved}, prstate.PR{Mergeable: "MERGEABLE", MergeStateStatus: "DIRTY"}, "blocked:conflict,ci-pending"},
+		{"dirty merge state", prStatusReport{prQueueReport: open, CI: &prCIReport{State: prCIPending}, Approval: approved}, prstate.PR{Mergeable: "MERGEABLE", MergeStateStatus: "DIRTY"}, "blocked:conflict,ci-pending"},
 		{"mergeability not computed", prStatusReport{prQueueReport: open, CI: green, Approval: approved}, prstate.PR{Mergeable: "UNKNOWN"}, "blocked:mergeable-unknown"},
 		{"changes requested", prStatusReport{prQueueReport: open, CI: green, Approval: prApprovalReport{State: prChangesRequested}}, prstate.PR{}, "blocked:changes-requested"},
 		{
@@ -768,7 +772,7 @@ func TestPRVerdict(t *testing.T) {
 		},
 		{"ready as a stack", prStatusReport{prQueueReport: open, CI: green, Approval: approved, Mergeability: "READY_TO_MERGE_AS_STACK", Downstack: 31124}, prstate.PR{}, "landable"},
 		{"closed", prStatusReport{prQueueReport: prQueueReport{Queue: prQueueNotQueued, State: "CLOSED"}, CI: green, Approval: approved}, prstate.PR{}, "blocked:closed"},
-		{"queued", prStatusReport{prQueueReport: prQueueReport{Queue: prQueueQueued, State: "OPEN"}, CI: prCIReport{State: prCIPending}}, prstate.PR{}, "queued"},
+		{"queued", prStatusReport{prQueueReport: prQueueReport{Queue: prQueueQueued, State: "OPEN"}, CI: &prCIReport{State: prCIPending}}, prstate.PR{}, "queued"},
 		{"landed", prStatusReport{prQueueReport: prQueueReport{Queue: prQueueLanded, State: "MERGED"}}, prstate.PR{}, "landed"},
 	}
 	for _, tt := range tests {
