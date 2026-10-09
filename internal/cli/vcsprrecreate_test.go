@@ -19,9 +19,9 @@ const (
 // recreateGHBody fakes the REST calls pr recreate makes on acme/widgets #7,
 // keeping its state and comment in files a test reads back.
 const recreateGHBody = `S=$RECREATE_GH
-method=GET path= prev= body=
+method=GET path= prev= body= labels=
 for a in "$@"; do
-  case "$a" in repos/*) path=$a ;; body=*) body=${a#body=} ;; esac
+  case "$a" in repos/*) path=$a ;; body=*) body=${a#body=} ;; labels\[\]=*) labels="$labels${a#*=}," ;; esac
   if [ "$prev" = -X ]; then method=$a; fi
   if [ "$prev" = -f ]; then case "$a" in state=*) state=${a#state=} ;; esac; fi
   prev=$a
@@ -29,10 +29,11 @@ done
 case "$method $path" in
   "GET repos/acme/widgets/pulls/7")
     read -r st < "$S/state"
-    printf '{"number":7,"title":"widgets: a title","body":"The body.","state":"%s","draft":false,"base":{"ref":"main","repo":{"default_branch":"main"}},"head":{"ref":"feature","sha":"` + recreateHead + `"}}' "$st" ;;
+    printf '{"number":7,"title":"widgets: a title","body":"The body.","state":"%s","draft":false,"labels":[{"name":"bench"},{"name":"hold"}],"base":{"ref":"main","repo":{"default_branch":"main"}},"head":{"ref":"feature","sha":"` + recreateHead + `"}}' "$st" ;;
   "GET repos/acme/widgets/git/ref/heads/main") echo ` + recreateBase + ` ;;
   "PATCH repos/acme/widgets/pulls/7") printf '%s\n' "$state" > "$S/state" ;;
   "POST repos/acme/widgets/issues/7/comments") printf '%s' "$body" > "$S/comment" ;;
+  "POST repos/acme/widgets/issues/100/labels") printf '%s' "$labels" > "$S/labels" ;;
   *) printf 'fake gh: unmatched argv: %s\n' "$*" >&2; exit 2 ;;
 esac
 `
@@ -104,6 +105,9 @@ func TestPRRecreateOpensAFreshPullRequestThroughGraphiteAndLinksTheOldOne(t *tes
 	}
 	if got := readRecreateFile(t, state, "comment"); got != "Replaced by #100 (Graphite lost its stack record)." {
 		t.Errorf("#7 comment = %q, want a link to #100", got)
+	}
+	if got := readRecreateFile(t, state, "labels"); got != "bench,hold," {
+		t.Errorf("#100 labels = %q, want #7's labels copied", got)
 	}
 }
 

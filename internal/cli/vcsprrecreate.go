@@ -22,7 +22,10 @@ type prRecreateSource struct {
 	Body   string `json:"body"`
 	State  string `json:"state"`
 	Draft  bool   `json:"draft"`
-	Base   struct {
+	Labels []struct {
+		Name string `json:"name"`
+	} `json:"labels"`
+	Base struct {
 		Ref  string `json:"ref"`
 		Repo struct {
 			DefaultBranch string `json:"default_branch"`
@@ -48,7 +51,8 @@ The command closes the pull request, since GitHub allows one open pull request
 per branch and base, then opens a new one through Graphite's submit API so
 Graphite records it: same branch, head, base, title, draft state, and body,
 with a closing "Replaces #<number> (` + prRecreateReason + `)." line. It
-then comments on the old pull request with a link to the new one. When the
+then copies the old pull request's labels and comments on it with a link to
+the new one. When the
 submit fails, the old pull request is reopened.
 
 The new pull request starts without the old one's reviews, so its approvals
@@ -127,6 +131,15 @@ func runVcsPRRecreate(cmd *cobra.Command, arg, repo string) error {
 		return fmt.Errorf("pr recreate: Graphite opened no replacement for #%d, so it was reopened: %w", number, err)
 	}
 	fresh := submitted[0]
+	if len(old.Labels) > 0 {
+		argv := []string{"-X", "POST", fmt.Sprintf("repos/%s/issues/%d/labels", repo, fresh.PRNumber), "--silent"}
+		for _, label := range old.Labels {
+			argv = append(argv, "-f", "labels[]="+label.Name)
+		}
+		if _, err := ghAPI(ctx, dir, argv...); err != nil {
+			return fmt.Errorf("pr recreate: opened #%d %s, but copying #%d's labels failed: %w", fresh.PRNumber, fresh.PRURL, number, err)
+		}
+	}
 	note := fmt.Sprintf("body=Replaced by #%d (%s).", fresh.PRNumber, prRecreateReason)
 	if _, err := ghAPI(ctx, dir, "-X", "POST", fmt.Sprintf("repos/%s/issues/%d/comments", repo, number), "-f", note, "--silent"); err != nil {
 		return fmt.Errorf("pr recreate: opened #%d %s, but linking it from #%d failed: %w", fresh.PRNumber, fresh.PRURL, number, err)

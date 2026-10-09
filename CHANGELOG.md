@@ -14,7 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and neither a fresh head nor a close and reopen clears the record, as on
   monorepo #33428 and #33116. The command closes the pull request, opens a
   fresh one on the same branch through Graphite with the same title, body, and
-  draft state plus a `Replaces #<n>` line, and links the old one to it. When
+  draft state plus a `Replaces #<n>` line, copies its labels, and links the
+  old one to it. When
   Graphite opens nothing, the old pull request is reopened. The `stack submit`
   refusal for such a pull request now names the command for each one.
 
