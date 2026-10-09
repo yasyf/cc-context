@@ -106,6 +106,10 @@ const (
 	MergeabilityFailureHandling = "FAILURE_HANDLING"
 )
 
+// MergeabilityRebasing is a pull request Graphite is restacking onto trunk
+// after its parent landed.
+const MergeabilityRebasing = "REBASING"
+
 // QueuedMergeability reports whether a mergeability status puts its pull
 // request in the merge queue.
 func QueuedMergeability(status string) bool {
@@ -114,6 +118,12 @@ func QueuedMergeability(status string) bool {
 		return true
 	}
 	return false
+}
+
+// Restacking reports whether Graphite will force-push its own restack of a
+// pull request: one it is rebasing, or one its merge queue holds.
+func Restacking(status string) bool {
+	return status == MergeabilityRebasing || QueuedMergeability(status)
 }
 
 // InMergeQueue reports whether Graphite's merge queue holds a pull request,

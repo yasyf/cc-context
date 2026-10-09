@@ -31,6 +31,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A record holding a pull request that closed without landing still refuses
   and names `ccx vcs pr recreate`.
 
+- **A submit moves a pull request Graphite parked and stopped restacking.**
+  After a parent landed, the merge queue parked monorepo #33251 on
+  `graphite-base/33251` and never restacked it. An hour later
+  `ccx vcs stack continue` resolved every conflict and then refused to publish,
+  telling the caller to wait for a restack that was not coming, and the lane
+  moved refs by hand. The refusal now holds only while Graphite reads the
+  parked pull request as `REBASING` or queued; otherwise the submit moves it
+  onto its new base. A refusal inside a stack run names
+  `ccx vcs stack continue`, which publishes the saved run.
+
 - **`ccx vcs stack continue` refuses a staged file that still carries
   conflict markers.** Continue checked only for unmerged index entries, so a
   file staged with `git add` while its `<<<<<<<`, `=======`, and `>>>>>>>`
