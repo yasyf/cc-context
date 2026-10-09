@@ -916,6 +916,13 @@ func TestStackRebaseConflictOpensAWorkspaceAndContinues(t *testing.T) {
 	if _, _, err := runStackCmd(t, f, "continue"); err == nil || !strings.Contains(err.Error(), "still has unresolved files: c.txt") {
 		t.Fatalf("continue over an unresolved file = %v, want a refusal", err)
 	}
+	mustRun(t, f.Env(), ws, "git", "add", "c.txt")
+	if _, _, err := runStackCmd(t, f, "continue"); err == nil || !strings.Contains(err.Error(), ws+" stages conflict markers at c.txt:1, c.txt:3, c.txt:5") {
+		t.Fatalf("continue over a staged file still carrying markers = %v, want a refusal naming each marker", err)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature"); got != feature {
+		t.Errorf("feature moved to %s over a staged file still carrying markers", got)
+	}
 	writeShipFile(t, ws, "c.txt", "trunk\nfeature\n")
 	mustRun(t, f.Env(), ws, "git", "add", "c.txt")
 	out, _, err := runStackCmdIn(t, f, ws, "continue")
@@ -2294,6 +2301,13 @@ func TestStackContinueFinishesARebaseGTLost(t *testing.T) {
 	runAllowFail(t, f.Env(), f.Dir, "git", "-c", "rerere.enabled=false", "rebase", "main")
 	if !stackRebasing(f.Context(), render.Dir(f.Dir)) {
 		t.Fatal("fixture: the rebase did not stop on c.txt")
+	}
+	mustRun(t, f.Env(), f.Dir, "git", "add", "c.txt")
+	if _, _, err := runStackCmd(t, f, "continue"); err == nil || !strings.Contains(err.Error(), "stages conflict markers at c.txt:1, c.txt:3, c.txt:5") {
+		t.Fatalf("continue over a staged file still carrying markers = %v, want a refusal naming each marker", err)
+	}
+	if !stackRebasing(f.Context(), render.Dir(f.Dir)) {
+		t.Error("the rebase went on over a staged file still carrying markers")
 	}
 	writeShipFile(t, f.Dir, "c.txt", "trunk\nfeature\n")
 	mustRun(t, f.Env(), f.Dir, "git", "add", "c.txt")

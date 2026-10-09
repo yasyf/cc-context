@@ -3212,6 +3212,22 @@ func stackUnmerged(ctx context.Context, ws string) ([]string, error) {
 	return slices.DeleteFunc(strings.Split(out, "\x00"), func(p string) bool { return p == "" }), nil
 }
 
+// stackStagedMarkers names, as path:line, each conflict marker the staged
+// resolution in ws adds over HEAD, by git's own marker rules.
+func stackStagedMarkers(ctx context.Context, ws string) ([]string, error) {
+	out, err := render.RunCLIAllowExit(ctx, render.Dir(ws), "git", []string{"-c", "core.quotePath=false", "diff", "--cached", "--check", "--no-color", "--no-ext-diff"}, 2)
+	if err != nil {
+		return nil, fmt.Errorf("stack rebase: check the staged files in %s for conflict markers: %w", ws, err)
+	}
+	var at []string
+	for line := range strings.Lines(out) {
+		if loc, ok := strings.CutSuffix(strings.TrimRight(line, "\n"), ": leftover conflict marker"); ok {
+			at = append(at, loc)
+		}
+	}
+	return at, nil
+}
+
 func stackBrief(ctx context.Context, run *stackRebaseRun, b *stackRebaseBranch, unmerged []string, sparse bool) string {
 	ws := render.Dir(run.Conflict.Workspace)
 	state, checkedOut := "detached, rebase in progress, rerere off", "every file"
@@ -3317,6 +3333,13 @@ func stackContinueStranded(ctx context.Context, cmd *cobra.Command) error {
 	}
 	if len(unmerged) > 0 {
 		return fmt.Errorf("stack continue: %s still has unresolved files: %s — resolve them, git add them, then run ccx vcs stack continue again", ws, strings.Join(unmerged, ", "))
+	}
+	markers, err := stackStagedMarkers(ctx, string(ws))
+	if err != nil {
+		return err
+	}
+	if len(markers) > 0 {
+		return fmt.Errorf("stack continue: %s stages conflict markers at %s — remove them, git add the files, then run ccx vcs stack continue again", ws, strings.Join(markers, ", "))
 	}
 	argv := append(slices.Clone(stackGitRebaseArgs), "rebase", "--continue")
 	code, stderr, err := stackRunRebase(ctx, ws, argv, false)
@@ -3474,6 +3497,13 @@ func stackResume(ctx context.Context, cmd *cobra.Command, l lane, commonDir stri
 			return err
 		}
 		return errors.New(strings.TrimRight(fmt.Sprintf("stack rebase: %s still has unresolved files: %s — resolve them and git add them first\n%s", c.Workspace, strings.Join(unmerged, ", "), regenHint(ctx, ws, unmerged, sparse)), "\n"))
+	}
+	markers, err := stackStagedMarkers(ctx, c.Workspace)
+	if err != nil {
+		return err
+	}
+	if len(markers) > 0 {
+		return fmt.Errorf("stack rebase: %s stages conflict markers at %s — remove them, git add the files, then run ccx vcs stack continue again", c.Workspace, strings.Join(markers, ", "))
 	}
 	if err := stackAdvance(ctx, run, b); err != nil {
 		return err
