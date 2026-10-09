@@ -199,6 +199,30 @@ func TestStackRebaseParentLeavesTheForeignLaneBehind(t *testing.T) {
 	}
 }
 
+func TestStackRebaseParentMovesOffASiblingGTRecordsBesideIt(t *testing.T) {
+	f := stackRebaseRepo(t, "a", "b", "c")
+	commonDir, err := gtCommonDir(t.Context(), render.Dir(f.Dir), "test")
+	if err != nil {
+		t.Fatalf("gt common dir: %v", err)
+	}
+	if err := gtmeta.Reparent(t.Context(), commonDir, map[string]string{"c": "a"}); err != nil {
+		t.Fatalf("reparent c onto a: %v", err)
+	}
+	a := gitAt(t, f.Env(), f.Dir, "rev-parse", "refs/heads/a")
+	if err := gtmeta.RecordRestacked(t.Context(), commonDir, map[string]string{"c": a}); err != nil {
+		t.Fatalf("record c as restacked onto a: %v", err)
+	}
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "c")
+
+	out, _, err := runStackCmd(t, f, "rebase", "--no-push", "--parent", "c=a")
+	if err != nil {
+		t.Fatalf("stack rebase --parent c=a: %v", err)
+	}
+	if subjects := gitAt(t, f.Env(), f.Dir, "log", "--format=%s", "a..c"); subjects != "c" {
+		t.Errorf("a..c = %q, want c alone — the move left b's commit on c; plan:\n%s", subjects, out)
+	}
+}
+
 func TestStackRebaseParentKeepsAPublishedParentsCommitsBehind(t *testing.T) {
 	f := stackRebaseRepo(t, "a", "b")
 	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")

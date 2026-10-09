@@ -1290,6 +1290,11 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 				if b.OldBase, err = stackOldBase(ctx, l.dir(), tr, pin, state, b, byName); err != nil {
 					return nil, err
 				}
+				if _, named := overrides[name]; named {
+					if b.OldBase, err = stackPastCarried(ctx, l.dir(), state, b); err != nil {
+						return nil, err
+					}
+				}
 			}
 			if b.Kept {
 				run.Branches = append(run.Branches, *b)
@@ -2524,6 +2529,28 @@ func stackOldBase(ctx context.Context, dir render.Dir, tr vcs.Trunk, pin string,
 		}
 	}
 	return stackPastChain(ctx, dir, pin, self, byName, best)
+}
+
+func stackPastCarried(ctx context.Context, dir render.Dir, state gtState, self *stackRebaseBranch) (string, error) {
+	up, err := gtUpstack(stackRebasePrefix, state, self.Name)
+	if err != nil {
+		return "", err
+	}
+	carried := []string{self.OldBase}
+	for _, name := range slices.Sorted(maps.Keys(state)) {
+		s := state[name]
+		if name == self.Name || s.Trunk || s.Head == "" || s.Head == self.Head || slices.Contains(up, name) {
+			continue
+		}
+		in, err := gitIsAncestor(ctx, dir, stackRebasePrefix, s.Head, self.Head)
+		if err != nil {
+			return "", err
+		}
+		if in {
+			carried = append(carried, s.Head)
+		}
+	}
+	return stackFurthest(ctx, dir, self.Head, carried)
 }
 
 func stackWasAbove(byName map[string]*stackRebaseBranch, name, self string) bool {
