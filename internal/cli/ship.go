@@ -130,12 +130,12 @@ type shipOpts struct {
 	budget int
 	// paths is the caller's own spelling, cwd-relative; rootPaths is the same
 	// set rebased onto the repository root, which is where every child runs.
-	paths     []string
+	paths      []string
 	rootPaths  []string
 	indexOnly  bool
 	indexPaths []string
 	skipHunks  []string
-	onlyHunks []string
+	onlyHunks  []string
 
 	// branch, newBranch, appendOnly, parent, and allowTrunk are the caller's
 	// stated intent for resolveBranchPlan; --bookmark and --create are aliases
