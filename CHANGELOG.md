@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **No `ccx vcs` command waits behind another's pull request poll.** The
+  shared pull request cache held one repo-wide lock across every GitHub and
+  Graphite request a poll made. On monorepo about twenty `pr watch`,
+  `pr status`, `pr state`, and `ship` processes queued on it, and a ship sat
+  ten minutes after its push to record the pushed heads. A read of fresh
+  records now takes no lock, and a read renews its leases by touching one file
+  per pull request or lane. The lock covers only the load, merge, and save of
+  the cache file. A poller claims the shared poll by writing its attempt time.
+  A concurrent reader waits out the interval for that poll's result, never for
+  a lock. The result merges onto whatever landed while the poll ran, a
+  recorded push included.
+
 - **The graphite lane opens a pull request with the prepared body.** A ship
   or stack submit that opened a pull request created it with the commit
   message as its body and wrote the `--pr-body-file` body in a restate after

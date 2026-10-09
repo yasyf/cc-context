@@ -6,6 +6,7 @@ package prstate
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -43,6 +45,7 @@ const (
 	defaultLimitWait = time.Minute
 	rateFloor        = 100
 	stateFile        = "state.json"
+	leaseDir         = "leases"
 )
 
 // Want names what one reader needs fresh: pull requests by number, and the
@@ -62,7 +65,7 @@ type State struct {
 	Rate        Rate            `json:"rate"`
 	Backoff     *Backoff        `json:"backoff,omitempty"`
 	Failure     *Failure        `json:"failure,omitempty"`
-	Leases      Leases          `json:"leases"`
+	Leases      Leases          `json:"-"`
 }
 
 // Failure is the error the last poll ended in. A reader that slept out the
@@ -162,7 +165,8 @@ type Backoff struct {
 }
 
 // Leases is when a reader last asked for each pull request and prefix; a
-// poll reads everything asked for within leaseTTL.
+// poll reads everything asked for within leaseTTL. Each lease is a file whose
+// mtime a reader renews without the state lock.
 type Leases struct {
 	PRs      map[int]time.Time    `json:"prs,omitempty"`
 	Prefixes map[string]time.Time `json:"prefixes,omitempty"`
@@ -214,7 +218,7 @@ func DefaultRoot() (string, error) {
 // Open returns the Store for src's repository under root.
 func Open(root string, src *GitHub) (*Store, error) {
 	dir := filepath.Join(root, src.owner, src.name)
-	if err := os.MkdirAll(dir, 0o750); err != nil {
+	if err := os.MkdirAll(filepath.Join(dir, leaseDir), 0o750); err != nil {
 		return nil, fmt.Errorf("prstate: create %s: %w", dir, err)
 	}
 	return &Store{dir: dir, src: src, now: func() time.Time { return time.Now().UTC() }, sleep: sleep}, nil
@@ -227,105 +231,90 @@ func Open(root string, src *GitHub) (*Store, error) {
 //
 // A read whose only stale records are pull requests no poll has read since
 // their last push fetches just those at once, leaving the shared poll's
-// schedule alone. Otherwise, inside MinInterval of the last poll a read sleeps
-// without the lock, so concurrent readers share the next poll.
+// schedule alone. Otherwise, inside MinInterval of the last poll a read sleeps,
+// so concurrent readers share the next poll. No read holds a lock across a
+// request, and a read of fresh records takes none.
 func (s *Store) Read(ctx context.Context, want Want) (State, error) {
-	st, wait, err := s.locked(ctx, want, true)
-	if err != nil || wait <= 0 {
-		return st, err
+	if err := s.renew(want, s.now()); err != nil {
+		return State{}, err
 	}
-	if err := s.sleep(ctx, wait); err != nil {
-		return st, err
+	for waited := false; ; waited = true {
+		st, wait, err := s.read(ctx, want, waited)
+		if err != nil || wait <= 0 {
+			return st, err
+		}
+		if err := s.sleep(ctx, wait); err != nil {
+			return st, err
+		}
 	}
-	st, _, err = s.locked(ctx, want, false)
-	return st, err
-}
-
-func (s *Store) locked(ctx context.Context, want Want, mayWait bool) (State, time.Duration, error) {
-	var st State
-	var wait time.Duration
-	err := cache.WithLock(ctx, s.dir, "poll", func() error {
-		var err error
-		st, wait, err = s.read(ctx, want, mayWait)
-		return err
-	})
-	return st, wait, err
 }
 
 // Pushed records the head this machine just pushed to each pull request, so
 // a read before GitHub shows it answers with the pushed head rather than the
 // one polled before the push.
 func (s *Store) Pushed(ctx context.Context, heads map[int]string) error {
-	return cache.WithLock(ctx, s.dir, "poll", func() error {
-		st, err := s.load()
-		if err != nil {
-			return err
-		}
+	now := s.now()
+	if err := s.renew(Want{PRs: slices.Collect(maps.Keys(heads))}, now); err != nil {
+		return err
+	}
+	_, err := s.commit(ctx, func(st *State) bool {
 		if st.PRs == nil {
 			st.PRs = map[int]PR{}
 		}
-		now := s.now()
 		for n, head := range heads {
 			pr := st.PRs[n]
 			pr.Number, pr.PushedHead, pr.PushedAt = n, head, now
 			st.PRs[n] = pr
 		}
-		st.Leases.renew(Want{PRs: slices.Collect(maps.Keys(heads))}, now)
-		return s.save(st)
+		return true
 	})
+	return err
 }
 
-func (s *Store) read(ctx context.Context, want Want, mayWait bool) (State, time.Duration, error) {
+func (s *Store) read(ctx context.Context, want Want, waited bool) (State, time.Duration, error) {
 	st, err := s.load()
 	if err != nil {
 		return State{}, 0, err
 	}
 	now := s.now()
-	st.Leases.renew(want, now)
 	if st.fresh(want, now) {
-		return st, 0, s.save(st)
+		return st, 0, nil
 	}
 	if b := st.Backoff; b != nil {
 		if now.Before(b.ProbeAt) {
-			return st, 0, s.refuse(st)
+			return st, 0, &LimitedError{Backoff: *b}
 		}
-		rate, err := s.src.probe(ctx)
-		if wait, limited := ghapi.RateLimited(err); limited {
-			st.Backoff = b.again(now, wait)
-			return st, 0, s.refuse(st)
-		}
-		if err != nil {
+		if st, err = s.probe(ctx, st, now); err != nil {
 			return st, 0, err
-		}
-		st.Backoff, st.Rate = quotaBackoff(rate, now), rate
-		if st.Backoff != nil {
-			return st, 0, s.refuse(st)
 		}
 	}
 	if prs, ok := st.unpolled(want, now); ok && st.Failure == nil {
-		if err := s.fetchInto(ctx, &st, Want{PRs: prs}, now); err != nil {
-			return st, 0, errors.Join(err, s.save(st))
-		}
-		if err := s.save(st); err != nil {
+		st, err := s.fetch(ctx, Want{PRs: prs}, st.PRs, now, false)
+		if err != nil {
 			return st, 0, err
 		}
 		return st, 0, s.verdict(st, want, now)
 	}
 	if next := st.AttemptedAt.Add(MinInterval); now.Before(next) {
-		if mayWait {
-			return st, next.Sub(now), s.save(st)
+		if f := st.Failure; f != nil && waited {
+			return st, 0, fmt.Errorf("the poll at %s failed, and the next goes out at %s: %s",
+				f.At.UTC().Format(time.RFC3339), next.UTC().Format(time.RFC3339), f.Reason)
 		}
-		if f := st.Failure; f != nil {
-			return st, 0, errors.Join(fmt.Errorf("the poll at %s failed, and the next goes out at %s: %s",
-				f.At.UTC().Format(time.RFC3339), next.UTC().Format(time.RFC3339), f.Reason), s.save(st))
-		}
+		return st, next.Sub(now), nil
+	}
+	st, claimed, err := s.claim(ctx, want, now)
+	if err != nil {
+		return st, 0, err
+	}
+	if !claimed {
+		return s.read(ctx, want, waited)
 	}
 	req := st.request(now)
-	if err := s.pollInto(ctx, &st, req, now); err != nil {
+	if st, err = s.fetch(ctx, req, st.PRs, now, true); err != nil {
 		return st, 0, err
 	}
 	if unread := st.unread(req.Prefixes, now); len(unread) > 0 && st.Backoff == nil {
-		if err := s.pollInto(ctx, &st, Want{PRs: unread}, now); err != nil {
+		if st, err = s.fetch(ctx, Want{PRs: unread}, st.PRs, now, true); err != nil {
 			return st, 0, err
 		}
 	}
@@ -342,49 +331,97 @@ func (s *Store) verdict(st State, want Want, now time.Time) error {
 	return nil
 }
 
-func (s *Store) pollInto(ctx context.Context, st *State, req Want, now time.Time) error {
-	st.AttemptedAt, st.Failure = now, nil
-	err := s.fetchInto(ctx, st, req, now)
-	var limited *LimitedError
-	if err != nil && ctx.Err() == nil && !errors.As(err, &limited) {
-		st.Failure = &Failure{At: now, Reason: err.Error()}
+func (s *Store) probe(ctx context.Context, st State, now time.Time) (State, error) {
+	rate, err := s.src.probe(ctx)
+	wait, limited := ghapi.RateLimited(err)
+	if err != nil && !limited {
+		return st, err
 	}
-	return errors.Join(err, s.save(*st))
+	st, err = s.commit(ctx, func(st *State) bool {
+		switch {
+		case limited && st.Backoff != nil:
+			st.Backoff = st.Backoff.again(now, wait)
+		case limited:
+			st.Backoff = limitedAt(now, wait)
+		default:
+			st.Backoff, st.Rate = quotaBackoff(rate, now), rate
+		}
+		return true
+	})
+	if err == nil && st.Backoff != nil {
+		err = &LimitedError{Backoff: *st.Backoff}
+	}
+	return st, err
 }
 
-func (s *Store) fetchInto(ctx context.Context, st *State, req Want, now time.Time) error {
-	poll, err := s.src.poll(ctx, req, st.PRs)
-	if wait, limited := ghapi.RateLimited(err); limited {
-		st.Backoff = limitedAt(now, wait)
-		return &LimitedError{Backoff: *st.Backoff}
-	}
-	if err == nil {
-		st.absorb(poll, now)
-	}
-	return err
+func (s *Store) claim(ctx context.Context, want Want, now time.Time) (State, bool, error) {
+	claimed := false
+	st, err := s.commit(ctx, func(st *State) bool {
+		if st.fresh(want, now) || st.Backoff != nil || now.Before(st.AttemptedAt.Add(MinInterval)) {
+			return false
+		}
+		st.AttemptedAt, st.Failure, claimed = now, nil, true
+		return true
+	})
+	return st, claimed, err
 }
 
-func (s *Store) refuse(st State) error {
-	if err := s.save(st); err != nil {
-		return err
+func (s *Store) fetch(ctx context.Context, req Want, prev map[int]PR, now time.Time, attempt bool) (State, error) {
+	p, err := s.src.poll(ctx, req, prev)
+	wait, limited := ghapi.RateLimited(err)
+	st, cerr := s.commit(ctx, func(st *State) bool {
+		switch {
+		case limited:
+			st.Backoff = limitedAt(now, wait)
+		case err == nil:
+			st.absorb(p, now)
+		case attempt && ctx.Err() == nil && st.AttemptedAt.Equal(now):
+			st.Failure = &Failure{At: now, Reason: err.Error()}
+		default:
+			return false
+		}
+		return true
+	})
+	if limited {
+		err = &LimitedError{Backoff: *limitedAt(now, wait)}
 	}
-	return &LimitedError{Backoff: *st.Backoff}
+	return st, errors.Join(err, cerr)
+}
+
+func (s *Store) commit(ctx context.Context, apply func(*State) bool) (State, error) {
+	var st State
+	err := cache.WithLock(ctx, s.dir, "state", func() error {
+		var err error
+		if st, err = s.load(); err != nil {
+			return err
+		}
+		before := st.Leases.clone()
+		if !apply(&st) {
+			return nil
+		}
+		if err := s.save(st); err != nil {
+			return err
+		}
+		return s.settle(before, st.Leases)
+	})
+	return st, err
 }
 
 func (s *Store) load() (State, error) {
 	path := filepath.Join(s.dir, stateFile)
-	data, err := os.ReadFile(path) //nolint:gosec // under the machine's own cache dir
-	if errors.Is(err, os.ErrNotExist) {
-		return State{}, nil
-	}
-	if err != nil {
-		return State{}, fmt.Errorf("prstate: read %s: %w", path, err)
-	}
 	var st State
-	if err := json.Unmarshal(data, &st); err != nil {
-		return State{}, fmt.Errorf("prstate: parse %s: %w", path, err)
+	data, err := os.ReadFile(path) //nolint:gosec // under the machine's own cache dir
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+	case err != nil:
+		return State{}, fmt.Errorf("prstate: read %s: %w", path, err)
+	default:
+		if err := json.Unmarshal(data, &st); err != nil {
+			return State{}, fmt.Errorf("prstate: parse %s: %w", path, err)
+		}
 	}
-	return st, nil
+	st.Leases, err = s.leases()
+	return st, err
 }
 
 func (s *Store) save(st State) error {
@@ -398,19 +435,115 @@ func (s *Store) save(st State) error {
 	return nil
 }
 
-func (l *Leases) renew(want Want, now time.Time) {
-	if l.PRs == nil {
-		l.PRs = map[int]time.Time{}
-	}
-	if l.Prefixes == nil {
-		l.Prefixes = map[string]time.Time{}
-	}
+func (s *Store) renew(want Want, now time.Time) error {
 	for _, n := range want.PRs {
-		l.PRs[n] = now
+		if err := s.touch(prLease(n), now); err != nil {
+			return err
+		}
 	}
 	for _, prefix := range want.Prefixes {
-		l.Prefixes[prefix] = now
+		if err := s.touch(laneLease(prefix), now); err != nil {
+			return err
+		}
 	}
+	return nil
+}
+
+func (s *Store) leases() (Leases, error) {
+	l := Leases{PRs: map[int]time.Time{}, Prefixes: map[string]time.Time{}}
+	dir := filepath.Join(s.dir, leaseDir)
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return l, nil
+	}
+	if err != nil {
+		return l, fmt.Errorf("prstate: list %s: %w", dir, err)
+	}
+	for _, e := range entries {
+		info, err := e.Info()
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return l, fmt.Errorf("prstate: stat lease %s: %w", e.Name(), err)
+		}
+		at := info.ModTime().UTC()
+		if kind, key, ok := strings.Cut(e.Name(), "-"); ok && kind == "pr" {
+			if n, err := strconv.Atoi(key); err == nil {
+				l.PRs[n] = at
+			}
+		} else if ok && kind == "lane" {
+			if prefix, err := base64.RawURLEncoding.DecodeString(key); err == nil {
+				l.Prefixes[string(prefix)] = at
+			}
+		}
+	}
+	return l, nil
+}
+
+func (s *Store) settle(before, after Leases) error {
+	for n, at := range after.PRs {
+		if was, ok := before.PRs[n]; !ok || !was.Equal(at) {
+			if err := s.touch(prLease(n), at); err != nil {
+				return err
+			}
+		}
+	}
+	for n, at := range before.PRs {
+		if _, kept := after.PRs[n]; !kept {
+			if err := s.drop(prLease(n), at); err != nil {
+				return err
+			}
+		}
+	}
+	for prefix, at := range before.Prefixes {
+		if _, kept := after.Prefixes[prefix]; !kept {
+			if err := s.drop(laneLease(prefix), at); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (s *Store) touch(name string, at time.Time) error {
+	path := filepath.Join(s.dir, leaseDir, name)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0o600) //nolint:gosec // under the machine's own cache dir
+	if err == nil {
+		err = f.Close()
+	}
+	if err == nil {
+		err = os.Chtimes(path, at, at)
+	}
+	if err != nil {
+		return fmt.Errorf("prstate: renew lease %s: %w", path, err)
+	}
+	return nil
+}
+
+func (s *Store) drop(name string, at time.Time) error {
+	path := filepath.Join(s.dir, leaseDir, name)
+	info, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) || err == nil && !info.ModTime().Equal(at) {
+		return nil
+	}
+	if err == nil {
+		err = os.Remove(path)
+	}
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("prstate: drop lease %s: %w", path, err)
+	}
+	return nil
+}
+
+func prLease(n int) string { return "pr-" + strconv.Itoa(n) }
+
+func laneLease(prefix string) string {
+	return "lane-" + base64.RawURLEncoding.EncodeToString([]byte(prefix))
+}
+
+func (l Leases) clone() Leases {
+	return Leases{PRs: maps.Clone(l.PRs), Prefixes: maps.Clone(l.Prefixes)}
 }
 
 // Covers reports whether st holds a record for everything want names, however
@@ -494,7 +627,10 @@ func (st State) request(now time.Time) Want {
 }
 
 func (st *State) absorb(p poll, now time.Time) {
-	st.PolledAt, st.Trunk, st.Rate = now, p.trunk, p.rate
+	newest := !st.PolledAt.After(now)
+	if newest {
+		st.PolledAt, st.Trunk, st.Rate = now, p.trunk, p.rate
+	}
 	if st.PRs == nil {
 		st.PRs = map[int]PR{}
 	}
@@ -502,13 +638,20 @@ func (st *State) absorb(p poll, now time.Time) {
 		st.Lanes = map[string]Lane{}
 	}
 	for n, pr := range p.prs {
+		was := st.PRs[n]
+		if was.PolledAt.After(now) {
+			continue
+		}
 		pr.PolledAt = now
-		if was := st.PRs[n]; was.PushedHead != "" && pr.HeadRefOid != was.PushedHead && now.Sub(was.PushedAt) < pushLag {
+		if was.PushedHead != "" && pr.HeadRefOid != was.PushedHead && now.Sub(was.PushedAt) < pushLag {
 			pr.PushedHead, pr.PushedAt = was.PushedHead, was.PushedAt
 		}
 		st.PRs[n] = pr
 	}
 	for prefix, prs := range p.lanes {
+		if st.Lanes[prefix].PolledAt.After(now) {
+			continue
+		}
 		st.Lanes[prefix] = Lane{PRs: prs, PolledAt: now}
 		for _, n := range prs {
 			st.Leases.PRs[n] = now
@@ -534,7 +677,9 @@ func (st *State) absorb(p poll, now time.Time) {
 			delete(st.PRs, n)
 		}
 	}
-	st.Backoff = quotaBackoff(p.rate, now)
+	if newest {
+		st.Backoff = quotaBackoff(p.rate, now)
+	}
 }
 
 func quotaBackoff(rate Rate, now time.Time) *Backoff {
