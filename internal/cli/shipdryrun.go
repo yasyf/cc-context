@@ -255,12 +255,21 @@ func dryRunTrack(ctx context.Context, l lane, o shipOpts, state gtState, r *ship
 		if err != nil {
 			return err
 		}
-		if err := gtRefuseUntrackedBelow(ctx, l.dir(), state, r.branch, parent); err != nil {
+		chain, err := gtUntrackedChain(ctx, l.dir(), "ship", state, r.trunk, parent, r.branch, gtRestackRef(r.branch))
+		if err != nil {
 			return err
 		}
-		r.parent = parent
+		below := chain[:len(chain)-1]
+		r.parent = chain[len(chain)-1].parent
 		r.because = "untracked, so gt track -f takes the nearest tracked ancestor"
-		if parent == r.trunk {
+		switch {
+		case len(below) > 0:
+			names := make([]string, len(below))
+			for i, link := range below {
+				names[i] = link.name
+			}
+			r.because = "untracked, on untracked " + strings.Join(names, ", ") + ", which ship tracks bottom-up onto " + parent + " first"
+		case parent == r.trunk:
 			r.because = "untracked, with no tracked branch among its commits above the remote trunk, so ship records it on trunk"
 		}
 		return nil

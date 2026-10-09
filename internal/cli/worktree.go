@@ -123,7 +123,8 @@ and everything else mints a git worktree.
 A git worktree checks out an existing local branch <name> as it stands. If only
 the remote holds <name>, ccx fetches it and checks it out at the remote head
 without setting an upstream. This lets a removed lane resume at its published
-head. Otherwise, ccx cuts <name> from the freshly fetched remote trunk, or from
+head. In a Graphite repository a remote branch Graphite does not track is
+adopted as stack submit adopts one, with the untracked branches below it. Otherwise, ccx cuts <name> from the freshly fetched remote trunk, or from
 HEAD when the repository has no remote. An existing branch on the gt stack of
 the branch checked out here joins this working copy's lane, so stack submit
 from either submits it. In a Graphite repository a newly cut branch is tracked
@@ -481,6 +482,7 @@ func runWorktreeAdd(cmd *cobra.Command, name, requested string) error {
 		return fmt.Errorf("worktree add: mint pool for %q: %w", name, err)
 	}
 	var base worktreeBase
+	var tracked []string
 	switch mode {
 	case jjModeWorkspace:
 		if base, err = worktreeJJBase(ctx, l.dir()); err != nil {
@@ -493,12 +495,21 @@ func runWorktreeAdd(cmd *cobra.Command, name, requested string) error {
 		if base, err = worktreeGitBase(ctx, l.dir(), name); err != nil {
 			return err
 		}
+		var chain []gtChainLink
+		if base.existing {
+			if chain, err = worktreeUntrackedChain(ctx, l, name, base.rev); err != nil {
+				return err
+			}
+		}
 		args := []string{"worktree", "add", path, name}
 		if base.rev != "" {
 			args = []string{"worktree", "add", "-b", name, path, base.rev}
 		}
 		if _, err := render.RunCLI(ctx, l.dir(), "git", args); err != nil {
 			return fmt.Errorf("worktree add: git worktree add %s: %w", path, err)
+		}
+		if tracked, err = gtAdoptChain(ctx, l.dir(), "worktree add", chain); err != nil {
+			return err
 		}
 		if base.rev == "" || base.existing {
 			if err := worktreeJoinLane(ctx, l, name, path); err != nil {
@@ -508,7 +519,7 @@ func runWorktreeAdd(cmd *cobra.Command, name, requested string) error {
 			return err
 		}
 	}
-	cmd.Println(strings.Join([]string{"added " + name, worktreeShapeOf(mode), base.segment(), path}, shipSep))
+	cmd.Println(strings.Join(slices.Concat([]string{"added " + name, worktreeShapeOf(mode), base.segment()}, tracked, []string{path}), shipSep))
 	return nil
 }
 
@@ -538,6 +549,32 @@ func worktreeJoinLane(ctx context.Context, l lane, branch, path string) error {
 		return nil
 	}
 	return laneJoin("worktree add", l, path)
+}
+
+func worktreeUntrackedChain(ctx context.Context, l lane, name, tip string) ([]gtChainLink, error) {
+	graphite, err := vcs.GraphiteRepo(l.checkout)
+	if err != nil {
+		return nil, fmt.Errorf("worktree add: %w", err)
+	}
+	if !graphite {
+		return nil, nil
+	}
+	state, err := gtStateQuery(ctx, l.dir(), "worktree add")
+	if err != nil {
+		return nil, err
+	}
+	trunk, err := gtTrunkBranch("worktree add", state)
+	if err != nil {
+		return nil, err
+	}
+	if name == trunk || len(state[name].Parents) > 0 {
+		return nil, nil
+	}
+	base, err := gtNearestTrackedAt(ctx, l.dir(), state, trunk, name, tip)
+	if err != nil {
+		return nil, err
+	}
+	return gtUntrackedChain(ctx, l.dir(), "worktree add", state, trunk, base, name, tip)
 }
 
 // worktreeTrack adopts a newly cut branch onto parent in a Graphite

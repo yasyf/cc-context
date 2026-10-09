@@ -4930,30 +4930,27 @@ func TestShipGTTrackReportsParent(t *testing.T) {
 	}
 }
 
-// TestShipGTRefusesToAdoptAcrossAnUntrackedBranch is the ship from an
-// untracked top branch that gt track -f put on its grandparent: the untracked
-// branch between them rode into the top branch's pull request, and gt kept
-// recording the grandparent after the middle branch was tracked.
-func TestShipGTRefusesToAdoptAcrossAnUntrackedBranch(t *testing.T) {
+func TestShipGTAdoptsTheUntrackedBranchBelow(t *testing.T) {
 	f := shipGTRepo(t, vcstest.GTStack("base"))
 	shipGTUntracked(t, f, "middle")
 	shipGTUntracked(t, f, "top")
 	shipGTReady(t, f)
-	head := shipHead(t, f)
 
-	_, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push")
-	if err == nil || !strings.Contains(err.Error(), "top sits on untracked middle, above base") {
-		t.Fatalf("ship error = %v, want a refusal naming the untracked middle", err)
+	out, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push")
+	if err != nil {
+		t.Fatalf("ship: %v", err)
 	}
-	if got := shipHead(t, f); got != head {
-		t.Errorf("head moved to %s on a refusal", got)
+	if !strings.Contains(out, "tracked middle onto base"+shipSep) || !strings.Contains(out, "tracked top onto middle") {
+		t.Errorf("summary = %q, want middle adopted onto base before top onto middle", out)
 	}
 	var state gtState
 	if err := json.Unmarshal([]byte(mustRun(t, f.Env(), f.Dir, "gt", "state")), &state); err != nil {
 		t.Fatalf("parse gt state: %v", err)
 	}
-	if _, tracked := state["top"]; tracked {
-		t.Errorf("gt tracks top onto %v after the refusal", state["top"].Parents)
+	for child, parent := range map[string]string{"middle": "base", "top": "middle"} {
+		if parents := state[child].Parents; len(parents) != 1 || parents[0].Ref != parent {
+			t.Errorf("gt state %s parents = %v, want %s", child, parents, parent)
+		}
 	}
 }
 

@@ -666,6 +666,7 @@ func gtOffParent(branch, held string) string {
 // A --parent gt track would refuse, because the parent was rewritten after the
 // branch was cut from it, first has the branch's own commits replayed onto it.
 func gtTrack(ctx context.Context, errW io.Writer, l lane, o shipOpts, branch string, c *gtCache) (gtState, string, error) {
+	chained := ""
 	if o.parent == "" {
 		parent, stacked, err := gtTrunkParent(ctx, l, c, branch)
 		if err != nil {
@@ -681,9 +682,10 @@ func gtTrack(ctx context.Context, errW io.Writer, l lane, o shipOpts, branch str
 			if err != nil {
 				return nil, "", err
 			}
-			if err := gtRefuseUntrackedBelow(ctx, c.dir, state, branch, parent); err != nil {
+			if parent, chained, err = gtAdoptBelow(ctx, c.dir, "ship", state, parent, branch); err != nil {
 				return nil, "", err
 			}
+			c.forget()
 		}
 		o.parent = parent
 	}
@@ -737,7 +739,7 @@ func gtTrack(ctx context.Context, errW io.Writer, l lane, o shipOpts, branch str
 					}
 					c.forget()
 					state, err := c.at(ctx)
-					return state, "tracked " + branch + " onto " + trunk + replayed, err
+					return state, chained + "tracked " + branch + " onto " + trunk + replayed, err
 				}
 			}
 		}
@@ -758,7 +760,7 @@ func gtTrack(ctx context.Context, errW io.Writer, l lane, o shipOpts, branch str
 	if !tracked {
 		return nil, "", untracked
 	}
-	seg := adopted + "tracked " + branch
+	seg := chained + adopted + "tracked " + branch
 	if len(s.Parents) > 0 {
 		seg += " onto " + s.Parents[0].Ref
 	}
@@ -925,6 +927,10 @@ func gtInferParent(ctx context.Context, c *gtCache, branch string) (string, erro
 }
 
 func gtNearestTracked(ctx context.Context, dir render.Dir, state gtState, trunk, branch string) (string, error) {
+	return gtNearestTrackedAt(ctx, dir, state, trunk, branch, gtRestackRef(branch))
+}
+
+func gtNearestTrackedAt(ctx context.Context, dir render.Dir, state gtState, trunk, branch, tip string) (string, error) {
 	var candidates []string
 	for name := range state {
 		if name != branch && name != trunk && !gtRecordedAbove(state, name, branch) {
@@ -965,7 +971,7 @@ func gtNearestTracked(ctx context.Context, dir render.Dir, state gtState, trunk,
 	case !errors.Is(err, vcs.ErrNoTrunk):
 		return "", err
 	}
-	out, err = render.RunCLI(ctx, dir, "git", []string{"rev-list", floor + ".." + gtRestackRef(branch)})
+	out, err = render.RunCLI(ctx, dir, "git", []string{"rev-list", floor + ".." + tip})
 	if err != nil {
 		return "", fmt.Errorf("ship: list %s's commits above %s: %w", branch, floor, err)
 	}
@@ -994,48 +1000,6 @@ func gtNearestTracked(ctx context.Context, dir render.Dir, state gtState, trunk,
 		}
 	}
 	return cmp.Or(nearest, trunk), nil
-}
-
-// gtRefuseUntrackedBelow refuses to adopt branch onto an inferred parent when
-// an untracked branch sits between them: adopted there, branch would carry
-// that branch's commits into its own pull request.
-func gtRefuseUntrackedBelow(ctx context.Context, dir render.Dir, state gtState, branch, parent string) error {
-	trunk, err := gtTrunkBranch("ship", state)
-	if err != nil {
-		return err
-	}
-	floor := gtRestackRef(parent)
-	if parent == trunk {
-		tr, err := gtTrunkRefOffline(ctx, dir, "ship", trunk)
-		if errors.Is(err, vcs.ErrNoTrunk) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		floor = string(tr.Ref())
-	}
-	head, err := gtRestackHead(ctx, "ship", dir, branch)
-	if err != nil {
-		return err
-	}
-	out, err := render.RunCLI(ctx, dir, "git", []string{
-		"for-each-ref", "--merged=" + gtRestackRef(branch), "--no-merged=" + floor, "--format=%(objectname) %(refname:lstrip=2)", "refs/heads/",
-	})
-	if err != nil {
-		return fmt.Errorf("ship: git for-each-ref --merged %s --no-merged %s: %w", branch, floor, err)
-	}
-	var between []string
-	for line := range strings.Lines(out) {
-		sha, name, _ := strings.Cut(strings.TrimSpace(line), " ")
-		if _, tracked := state[name]; !tracked && sha != head {
-			between = append(between, name)
-		}
-	}
-	if len(between) == 0 {
-		return nil
-	}
-	return fmt.Errorf("ship: %s sits on untracked %s, above %s, and would carry its commits into its own pull request — ship %s first, then ship %s again; or pass --parent %s to adopt it onto %s with them", branch, strings.Join(between, ", "), parent, between[0], branch, parent, parent)
 }
 
 // gtRecordedAbove reports whether gt records name as stacked, at any depth, on

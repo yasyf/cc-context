@@ -175,7 +175,11 @@ base are pushed as they stand. A conflicting branch, an unpublished branch, or a
 whose parent landed is replayed onto its current parent; --restack also replays
 clean published branches. The plan closes with an "old base kept" line naming
 every branch left on an older trunk and --restack. The local trunk branch and other working copies are
-left untouched. A branch whose pull
+left untouched. A branch here Graphite does not track is adopted first, with
+every untracked branch below it down to its nearest tracked ancestor, local or
+only on the remote, bottom-up, each onto the one below it; one only the remote
+holds gets its local branch at the remote head. Two at one commit, or one off
+the first-parent line, form no single chain, and submit refuses naming them. A branch whose pull
 request landed through a merge queue squash is dropped, and its children move
 onto what it sat on, leaving its squashed commits behind.
 A branch whose pull request was closed without landing is dropped the same way,
@@ -439,6 +443,9 @@ func runStackSubmit(cmd *cobra.Command, o shipOpts, include []string, to string)
 	if !l.gt {
 		return errors.New("stack submit: this repository is not on the graphite lane, and a stack is Graphite's — ship the branch with ccx vcs ship instead")
 	}
+	if err := stackAdoptChain(cmd, l.dir()); err != nil {
+		return err
+	}
 	stack, stackState, err := gtStackAll(ctx, l.dir(), "stack submit")
 	if err != nil {
 		return err
@@ -475,6 +482,39 @@ func runStackSubmit(cmd *cobra.Command, o shipOpts, include []string, to string)
 		return err
 	}
 	return stackRepairTracking(cmd, opts, tracking)
+}
+
+func stackAdoptChain(cmd *cobra.Command, dir render.Dir) error {
+	ctx := cmd.Context()
+	branch, err := gitCurrentBranch(ctx, dir, "stack submit")
+	if err != nil || branch == "" {
+		return err
+	}
+	state, err := gtStateQueryFocused(ctx, dir, "stack submit", branch)
+	if err != nil {
+		return err
+	}
+	trunk, err := gtTrunkBranch("stack submit", state)
+	if err != nil {
+		return err
+	}
+	if branch == trunk || len(state[branch].Parents) > 0 {
+		return nil
+	}
+	base, err := gtNearestTracked(ctx, dir, state, trunk, branch)
+	if err != nil {
+		return err
+	}
+	chain, err := gtUntrackedChain(ctx, dir, "stack submit", state, trunk, base, branch, gtRestackRef(branch))
+	if err != nil {
+		return err
+	}
+	segs, err := gtAdoptChain(ctx, dir, "stack submit", chain)
+	if err != nil {
+		return err
+	}
+	cmd.Println(strings.Join(segs, shipSep))
+	return nil
 }
 
 func stackRepairTracking(cmd *cobra.Command, opts stackRebaseOpts, tracking *stackTracking) error {

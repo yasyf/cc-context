@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`stack submit`, `ship`, and `worktree add` adopt an untracked branch
+  chain.** A stack cut in another clone reaches this one as branches Graphite
+  never tracked here, often with no local branches below the tip, and submit
+  refused with a `gt track` to run per branch. These verbs now walk the
+  branch's first-parent ancestry down to its nearest tracked ancestor, create
+  the local branch each remote-only branch lacks at its remote head, and track
+  every branch onto the one below it, bottom-up. Two untracked branches at one
+  commit, or one off the first-parent line, still refuse, naming every
+  candidate.
+
 - **`pr status` stops reporting CI red on a landed pull request.** The
   queue closes what it lands, and runs it cancels on the way leave the head's
   rollup at `FAILURE` with every check under it green, so a landed line read
