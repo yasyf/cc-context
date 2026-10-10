@@ -371,8 +371,10 @@ func stackPushPublication(ctx context.Context, dir render.Dir, s gtSubmit, plan 
 }
 
 // stackRepushOverEquivalent retries a push refused on a stale lease when every
-// branch the remote moved now holds the same patches this run publishes, as
-// the merge queue's own restack of a landed parent's children leaves them.
+// branch the remote moved now holds the same patches this run publishes on
+// whatever base, as Graphite's own restack of a landed parent's children onto
+// a newer trunk leaves them, and re-leases the graphite-base branches that
+// restack moved or deleted.
 func stackRepushOverEquivalent(ctx context.Context, dir render.Dir, s gtSubmit, pin string, plan []gtSubmitBranch, pushErr error) error {
 	names := make([]string, len(plan))
 	for i, b := range plan {
@@ -394,18 +396,17 @@ func stackRepushOverEquivalent(ctx context.Context, dir render.Dir, s gtSubmit, 
 			plan[i].lease, plan[i].leaseSet = remote, true
 			continue
 		}
-		theirs, err := stackPatchSeries(ctx, dir, pin, remote)
+		onto, err := stackReplayedOnto(ctx, dir, remote, b.baseSha, b.head)
 		if err != nil {
 			return err
 		}
-		ours, err := stackPatchSeries(ctx, dir, pin, b.head)
-		if err != nil {
-			return err
-		}
-		if theirs == nil || ours == nil || !slices.Equal(theirs, ours) {
+		if onto == "" {
 			return gtPushFailure(s, plan, pushErr)
 		}
 		plan[i].lease, plan[i].leaseSet = remote, true
+	}
+	if err := gtLeaseParked(ctx, dir, plan, pin); err != nil {
+		return err
 	}
 	if err := gtRunPush(ctx, dir, s, plan); err != nil {
 		return gtPushFailure(s, plan, err)
