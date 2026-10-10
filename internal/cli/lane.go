@@ -2,9 +2,12 @@ package cli
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -18,7 +21,7 @@ import (
 
 // gtSchema is the on-disk format version of the cached reachability verdict;
 // a mismatch reads as a miss.
-const gtSchema = 2
+const gtSchema = 3
 
 // gtReachableTTL through gtUnknownTTL bound how long a cached reachability
 // verdict is served. They are deliberately asymmetric: a stale positive fails
@@ -107,9 +110,11 @@ type lane struct {
 func (l lane) dir() render.Dir { return render.Dir(l.root) }
 
 // gtRecord is one repo's cached gt-reachability verdict, stored beside its
-// GitHub metadata. Every verdict is written, each on its own TTL.
+// GitHub metadata. Every verdict is written, each on its own TTL, and answers
+// only for the Graphite token it was probed with.
 type gtRecord struct {
 	Schema    int       `json:"schema"`
+	Token     string    `json:"token"`
 	Verdict   gtVerdict `json:"verdict"`
 	Note      string    `json:"note"`
 	Transient bool      `json:"transient,omitempty"`
@@ -251,8 +256,12 @@ func gtReachability(ctx context.Context, root string, refresh bool) (gtVerdict, 
 	if err != nil {
 		return "", "", false, err
 	}
+	token, err := gtTokenFingerprint(ctx)
+	if err != nil {
+		return "", "", false, err
+	}
 	if !refresh {
-		if rec, ok := readGTRecord(path); ok {
+		if rec, ok := readGTRecord(path, token); ok {
 			return rec.Verdict, rec.Note, rec.Transient, nil
 		}
 	}
@@ -264,13 +273,13 @@ func gtReachability(ctx context.Context, root string, refresh bool) (gtVerdict, 
 		// Re-read under the lock: a concurrent probe of the same repo has likely
 		// already paid for the answer this one was about to ask for.
 		if !refresh {
-			if rec, ok := readGTRecord(path); ok {
+			if rec, ok := readGTRecord(path, token); ok {
 				verdict, note, transient = rec.Verdict, rec.Note, rec.Transient
 				return nil
 			}
 		}
 		verdict, note, transient = gtReachable(ctx, root)
-		data, err := json.Marshal(gtRecord{Schema: gtSchema, Verdict: verdict, Note: note, Transient: transient, FetchedAt: time.Now()})
+		data, err := json.Marshal(gtRecord{Schema: gtSchema, Token: token, Verdict: verdict, Note: note, Transient: transient, FetchedAt: time.Now()})
 		if err != nil {
 			return fmt.Errorf("marshal gt reachability for %q: %w", root, err)
 		}
@@ -402,13 +411,33 @@ func gtCachePath(ctx context.Context, root string) (string, error) {
 	return filepath.Join(filepath.Dir(repoPath), "gt.json"), nil
 }
 
-func readGTRecord(path string) (gtRecord, bool) {
+// gtTokenFingerprint identifies the Graphite credentials gt authenticates with —
+// GRAPHITE_AUTH_TOKEN and gt's auth file — as a sha256 prefix, so a rotated or
+// newly written token misses every verdict cached under the one it replaced.
+func gtTokenFingerprint(ctx context.Context) (string, error) {
+	home, err := render.Home(ctx)
+	if err != nil {
+		return "", err
+	}
+	path := filepath.Join(home, ".config", "graphite", "auth")
+	auth, err := os.ReadFile(path) //nolint:gosec // the path is gt's own auth file under the user's home
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return "", fmt.Errorf("read graphite auth %s: %w", path, err)
+	}
+	sum := sha256.New()
+	sum.Write([]byte(render.Getenv(ctx, "GRAPHITE_AUTH_TOKEN")))
+	sum.Write([]byte{0})
+	sum.Write(auth)
+	return hex.EncodeToString(sum.Sum(nil)[:8]), nil
+}
+
+func readGTRecord(path, token string) (gtRecord, bool) {
 	data, err := os.ReadFile(path) //nolint:gosec // path is rooted at the cache dir and keyed by sha256 hex
 	if err != nil {
 		return gtRecord{}, false
 	}
 	var rec gtRecord
-	if err := json.Unmarshal(data, &rec); err != nil || rec.Schema != gtSchema {
+	if err := json.Unmarshal(data, &rec); err != nil || rec.Schema != gtSchema || rec.Token != token {
 		return gtRecord{}, false
 	}
 	ttl := gtUnreachableTTL

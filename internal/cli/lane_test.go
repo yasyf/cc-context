@@ -64,8 +64,12 @@ func seedLaneRecords(ctx context.Context, t *testing.T, dir string, seed laneSee
 	if seed.unreachable {
 		verdict = gtVerdictDenied
 	}
+	token, err := gtTokenFingerprint(ctx)
+	if err != nil {
+		t.Fatalf("fingerprint graphite token: %v", err)
+	}
 	write(filepath.Join(filepath.Dir(repoPath), "gt.json"), fmt.Sprintf(
-		`{"schema":%d,"verdict":%q,"note":%q,"fetched_at":%q}`, gtSchema, verdict, seed.note, now))
+		`{"schema":%d,"token":%q,"verdict":%q,"note":%q,"fetched_at":%q}`, gtSchema, token, verdict, seed.note, now))
 }
 
 // clearLaneRecords empties dir's lane cache, so the gate has to look the repo
@@ -488,38 +492,51 @@ func TestGTReachabilityLauncherRefusalIsTransient(t *testing.T) {
 }
 
 // TestGTReachabilityCaches proves each verdict is served for its own TTL: a
-// positive for a day, a negative for an hour, and an unknown for a minute.
+// positive for a day, a negative for an hour, and an unknown for a minute, and
+// only to the Graphite token it was probed with.
 func TestGTReachabilityCaches(t *testing.T) {
 	tests := []struct {
 		name      string
 		schema    int
+		token     string
 		verdict   gtVerdict
 		age       time.Duration
 		wantFresh bool
 	}{
-		{"fresh positive", gtSchema, gtVerdictOK, time.Hour, true},
-		{"positive within 24h", gtSchema, gtVerdictOK, 23 * time.Hour, true},
-		{"positive past 24h", gtSchema, gtVerdictOK, 25 * time.Hour, false},
-		{"negative within 1h", gtSchema, gtVerdictDenied, 30 * time.Minute, true},
-		{"negative past 1h", gtSchema, gtVerdictDenied, 2 * time.Hour, false},
-		{"unknown within 60s", gtSchema, gtVerdictUnknown, 30 * time.Second, true},
-		{"unknown past 60s", gtSchema, gtVerdictUnknown, 2 * time.Minute, false},
-		{"a boolean schema-1 record reads as a miss", 1, gtVerdictOK, time.Hour, false},
+		{"fresh positive", gtSchema, "", gtVerdictOK, time.Hour, true},
+		{"positive within 24h", gtSchema, "", gtVerdictOK, 23 * time.Hour, true},
+		{"positive past 24h", gtSchema, "", gtVerdictOK, 25 * time.Hour, false},
+		{"negative within 1h", gtSchema, "", gtVerdictDenied, 30 * time.Minute, true},
+		{"negative past 1h", gtSchema, "", gtVerdictDenied, 2 * time.Hour, false},
+		{"unknown within 60s", gtSchema, "", gtVerdictUnknown, 30 * time.Second, true},
+		{"unknown past 60s", gtSchema, "", gtVerdictUnknown, 2 * time.Minute, false},
+		{"a boolean schema-1 record reads as a miss", 1, "", gtVerdictOK, time.Hour, false},
+		{"a negative probed under another token reads as a miss", gtSchema, "0123456789abcdef", gtVerdictDenied, time.Minute, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+			t.Setenv("HOME", t.TempDir())
+			t.Setenv("GRAPHITE_AUTH_TOKEN", "")
 			dir := t.TempDir()
 			path, err := gtCachePath(context.Background(), dir)
 			if err != nil {
 				t.Fatalf("gt cache path: %v", err)
 			}
-			body := fmt.Sprintf(`{"schema":%d,"verdict":%q,"note":"n","fetched_at":%q}`,
-				tt.schema, tt.verdict, time.Now().Add(-tt.age).Format(time.RFC3339Nano))
+			token, err := gtTokenFingerprint(context.Background())
+			if err != nil {
+				t.Fatalf("fingerprint graphite token: %v", err)
+			}
+			seeded := tt.token
+			if seeded == "" {
+				seeded = token
+			}
+			body := fmt.Sprintf(`{"schema":%d,"token":%q,"verdict":%q,"note":"n","fetched_at":%q}`,
+				tt.schema, seeded, tt.verdict, time.Now().Add(-tt.age).Format(time.RFC3339Nano))
 			if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 				t.Fatalf("seed gt record: %v", err)
 			}
-			if _, ok := readGTRecord(path); ok != tt.wantFresh {
+			if _, ok := readGTRecord(path, token); ok != tt.wantFresh {
 				t.Errorf("readGTRecord fresh = %v, want %v", ok, tt.wantFresh)
 			}
 		})
@@ -547,7 +564,11 @@ func TestGTReachabilityCachesUnknownBriefly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("gt cache path: %v", err)
 	}
-	rec, ok := readGTRecord(path)
+	token, err := gtTokenFingerprint(context.Background())
+	if err != nil {
+		t.Fatalf("fingerprint graphite token: %v", err)
+	}
+	rec, ok := readGTRecord(path, token)
 	if !ok || rec.Verdict != gtVerdictUnknown {
 		t.Fatalf("readGTRecord() = (%+v, %v), want a stored %q verdict", rec, ok, gtVerdictUnknown)
 	}
@@ -560,7 +581,7 @@ func TestGTReachabilityCachesUnknownBriefly(t *testing.T) {
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatalf("write backdated record: %v", err)
 	}
-	if _, ok := readGTRecord(path); ok {
+	if _, ok := readGTRecord(path, token); ok {
 		t.Errorf("readGTRecord() served a record older than gtUnknownTTL (%s), want a miss", gtUnknownTTL)
 	}
 }

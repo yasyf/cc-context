@@ -492,6 +492,53 @@ func TestVcsInfoRefreshLaneVerdict(t *testing.T) {
 	}
 }
 
+// TestVcsInfoTokenRotationReprobes proves a cached Graphite decline answers only
+// for the token it was probed with: a new auth file re-probes at once, while
+// the same token keeps serving the cached verdict.
+func TestVcsInfoTokenRotationReprobes(t *testing.T) {
+	tests := []struct {
+		name        string
+		rotate      bool
+		wantNote    string
+		wantLookups int
+	}{
+		{"same token serves the cached decline", false, gtGoldenCases["auth-no-token"].note, 0},
+		{"rotated token re-probes", true, gtGoldenCases["auth-no-perms"].note, 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repoView := loadGHGolden(t, "repo-view-own")
+			viewer := loadGHGolden(t, "viewer-graphql")
+			f := infoGTRepo(t)
+			seedLaneRecords(f.Context(), t, f.Dir, laneSeed{unreachable: true, note: gtGoldenCases["auth-no-token"].note})
+			ghReplay(t, f, repoView, viewer)
+			gtAuthGolden(t, f, loadGTGolden(t, "auth-no-perms"))
+			if tt.rotate {
+				home, err := render.Home(f.Context())
+				if err != nil {
+					t.Fatalf("fixture home: %v", err)
+				}
+				auth := filepath.Join(home, ".config", "graphite", "auth")
+				if err := os.MkdirAll(filepath.Dir(auth), 0o700); err != nil {
+					t.Fatalf("mkdir graphite config: %v", err)
+				}
+				if err := os.WriteFile(auth, []byte(`{"authToken":"rotated"}`), 0o600); err != nil {
+					t.Fatalf("write graphite auth: %v", err)
+				}
+			}
+			resetArgvLog(t, f)
+
+			got := runVcsInfoJSON(t, f)
+			if want := infoDeclinedPrefix + tt.wantNote; got.Lane != "git" || got.LaneReason != want {
+				t.Errorf("lane/lane_reason = %q/%q, want %q/%q", got.Lane, got.LaneReason, "git", want)
+			}
+			if n := countInvocations(vcstest.Invocations(t, f.ArgvLog), "gt", "auth"); n != tt.wantLookups {
+				t.Errorf("gt auth ran %d times, want %d", n, tt.wantLookups)
+			}
+		})
+	}
+}
+
 func TestVcsInfoDetachedHead(t *testing.T) {
 	f := infoRepo(t, vcstest.Remote(), vcstest.Detached())
 
