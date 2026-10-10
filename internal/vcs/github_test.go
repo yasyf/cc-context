@@ -60,19 +60,13 @@ type ghArgvDeviation struct{ recorded, production string }
 // ghArgvDeviations names every golden whose recorded argv cannot equal the
 // invocation production makes, so ghAssertServed still holds a served golden
 // against every other argument of the call it answers. testdata/gh/README.md,
-// "Where a recording deviates from production argv", carries the reasons: the
-// two foreign-repository views must name their repository, because production's
-// bare gh repo view reads the working directory's and neither of those is it;
-// and viewer-graphql asks for one organization where production asks for a
-// hundred, because the recorded account's memberships are mostly private and a
-// verbatim capture would publish them in a public repository.
+// "Where a recording deviates from production argv", carries the reason: the
+// foreign-repository views must name their repository, because production's
+// bare gh repo view reads the working directory's and none of those is it.
 var ghArgvDeviations = map[string]ghArgvDeviation{
-	"repo-view-foreign": {recorded: "cli/cli"},
-	"repo-view-missing": {recorded: "yasyf/cc-context-does-not-exist"},
-	"viewer-graphql": {
-		recorded:   "query={viewer{login organizations(first:1){nodes{login}}}}",
-		production: "query={viewer{login organizations(first:100){nodes{login}}}}",
-	},
+	"repo-view-foreign":    {recorded: "cli/cli"},
+	"repo-view-missing":    {recorded: "yasyf/cc-context-does-not-exist"},
+	"repo-view-repo-scope": {recorded: "cli/cli"},
 }
 
 // ghWantArgv is the invocation a golden may honestly answer: the argv it was
@@ -276,37 +270,33 @@ func TestRepoOwnership(t *testing.T) {
 	}
 }
 
-// TestViewerAffiliation runs the ownership predicates against the login and
-// organizations gh really answered with rather than a literal Affiliated. GitHub
-// spells each account in the case its owner chose and compares them without one,
-// so the recorded PostPushr membership must still affiliate an owner spelled
-// postpushr, and the recorded yasyf an owner spelled YASYF.
+// TestViewerAffiliation runs the ownership predicates against the membership
+// gh really answered for each owner rather than a literal Affiliated. GitHub
+// spells each account in the case its owner chose and compares them without
+// one, so the recorded yasyf must still affiliate an owner spelled YASYF.
 func TestViewerAffiliation(t *testing.T) {
-	f := vcstest.Repo(t)
-	f.Isolate(t)
-	ghReplay(t, f, map[string][]string{"api graphql": {"viewer-graphql"}})
-
-	v, err := lookupViewer(f.Context(), false)
-	if err != nil {
-		t.Fatalf("lookupViewer: %v", err)
-	}
-	if v.Login != "yasyf" || !slices.Equal(v.Orgs, []string{"PostPushr"}) {
-		t.Fatalf("viewer = %+v, want the login and organizations the golden recorded", v)
-	}
-
 	tests := []struct {
-		name                       string
-		owner                      string
+		name, golden, asked, owner string
 		affiliated, mine, personal bool
 	}{
-		{name: "the viewer itself", owner: "yasyf", affiliated: true, mine: true, personal: true},
-		{name: "the viewer in another case", owner: "YASYF", affiliated: true, mine: true, personal: true},
-		{name: "an organization the viewer belongs to", owner: "PostPushr", affiliated: true, mine: true},
-		{name: "that organization in another case", owner: "postpushr", affiliated: true, mine: true},
-		{name: "an owner the viewer has nothing to do with", owner: "cli"},
+		{name: "the viewer itself", golden: "viewer-graphql-own", asked: "yasyf", owner: "yasyf", affiliated: true, mine: true, personal: true},
+		{name: "the viewer in another case", golden: "viewer-graphql-own", asked: "yasyf", owner: "YASYF", affiliated: true, mine: true, personal: true},
+		{name: "an organization the viewer belongs to", golden: "viewer-graphql-member", asked: "PostPushr", owner: "PostPushr", affiliated: true, mine: true},
+		{name: "an owner the viewer has nothing to do with", golden: "viewer-graphql-foreign", asked: "cli", owner: "cli"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			f := vcstest.Repo(t)
+			f.Isolate(t)
+			ghReplay(t, f, map[string][]string{"api graphql": {tt.golden}})
+
+			v, err := fetchViewer(f.Context(), tt.asked)
+			if err != nil {
+				t.Fatalf("fetchViewer: %v", err)
+			}
+			if v.Login != "yasyf" {
+				t.Fatalf("viewer = %+v, want the login the golden recorded", v)
+			}
 			repo := Repo{Owner: tt.owner, ViewerLogin: v.Login, ViewerPermission: "READ"}
 			repo.Affiliated = affiliated(repo.Owner, v)
 			if repo.Affiliated != tt.affiliated {
@@ -322,6 +312,33 @@ func TestViewerAffiliation(t *testing.T) {
 	}
 }
 
+// TestLookupRepoWithRepoScopeToken replays a lookup recorded with a classic
+// token holding only the repo scope, the token CI jobs ship with. Asking for
+// the viewer's organizations failed that token with INSUFFICIENT_SCOPES, so a
+// query that needs read:org cannot be re-recorded here.
+func TestLookupRepoWithRepoScopeToken(t *testing.T) {
+	f := vcstest.Repo(t)
+	f.Isolate(t)
+	ghReplay(t, f, map[string][]string{
+		"repo view":   {"repo-view-repo-scope"},
+		"api graphql": {"viewer-graphql-repo-scope"},
+	})
+
+	repo, err := LookupRepo(f.Context(), render.Dir(f.Dir), false)
+	if err != nil {
+		t.Fatalf("LookupRepo: %v", err)
+	}
+	want := Repo{
+		NameWithOwner:    "cli/cli",
+		Owner:            "cli",
+		ViewerLogin:      "poetic-svc",
+		ViewerPermission: "READ",
+	}
+	if got := withoutFetchTime(repo); got != want {
+		t.Fatalf("LookupRepo = %+v, want %+v", got, want)
+	}
+}
+
 // TestLookupRepoCaches walks one repository through every reason a record is or
 // is not refetched, with the replay serving a different recorded repository on
 // each fetch: which repository comes back is the observable, so a cache that
@@ -330,9 +347,9 @@ func TestViewerAffiliation(t *testing.T) {
 func TestLookupRepoCaches(t *testing.T) {
 	f := vcstest.Repo(t)
 	f.Isolate(t)
-	log := ghReplay(t, f, map[string][]string{
+	ghReplay(t, f, map[string][]string{
 		"repo view":   {"repo-view-own", "repo-view-foreign", "repo-view-own"},
-		"api graphql": {"viewer-graphql", "viewer-graphql"},
+		"api graphql": {"viewer-graphql-own", "viewer-graphql-foreign", "viewer-graphql-own"},
 	})
 	ctx := f.Context()
 
@@ -391,9 +408,6 @@ func TestLookupRepoCaches(t *testing.T) {
 	if got := withoutFetchTime(bumped); got != own {
 		t.Fatalf("post-schema-bump LookupRepo = %+v, want the third recorded run %+v — a record of an unknown schema was served", got, own)
 	}
-	if got := ghVerbCount(t, log, "api graphql"); got != 2 {
-		t.Errorf("gh api graphql calls = %d, want 2: the viewer is cached machine-wide and only the explicit refresh refetches it", got)
-	}
 }
 
 // TestLookupRepoSharesOneRecordAcrossWorktrees pins the cache key to the
@@ -403,7 +417,7 @@ func TestLookupRepoSharesOneRecordAcrossWorktrees(t *testing.T) {
 	f := vcstest.Repo(t, vcstest.Worktree("feat"))
 	log := ghReplay(t, f, map[string][]string{
 		"repo view":   {"repo-view-own"},
-		"api graphql": {"viewer-graphql"},
+		"api graphql": {"viewer-graphql-own"},
 	})
 	ctx := f.Context()
 
