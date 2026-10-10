@@ -461,7 +461,7 @@ func TestVcsInfoRefreshLaneVerdict(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			repoView := loadGHGolden(t, "repo-view-own")
-			viewer := loadGHGolden(t, "viewer-graphql")
+			viewer := loadGHGolden(t, "viewer-graphql-own")
 			probe := loadGTGolden(t, "auth-no-perms")
 			f := infoGTRepo(t)
 			ghReplay(t, f, repoView, viewer)
@@ -508,7 +508,7 @@ func TestVcsInfoTokenRotationReprobes(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			repoView := loadGHGolden(t, "repo-view-own")
-			viewer := loadGHGolden(t, "viewer-graphql")
+			viewer := loadGHGolden(t, "viewer-graphql-own")
 			f := infoGTRepo(t)
 			seedLaneRecords(f.Context(), t, f.Dir, laneSeed{unreachable: true, note: gtGoldenCases["auth-no-token"].note})
 			ghReplay(t, f, repoView, viewer)
