@@ -475,11 +475,6 @@ func runShip(cmd *cobra.Command, o shipOpts) (err error) {
 		}
 	}
 	var held []stackSkip
-	if gtLane && !o.tipOnly && !o.allLanes {
-		if held, err = gtHeldUpstack(ctx, l, gtc, branch); err != nil {
-			return err
-		}
-	}
 	restackSeg := ""
 	if gtLane && !o.noPush {
 		tr, err := trunkFetch.join()
@@ -500,6 +495,11 @@ func runShip(cmd *cobra.Command, o shipOpts) (err error) {
 		}
 		var upstack []string
 		if !o.tipOnly {
+			if !o.allLanes && len(chain) > 0 {
+				if held, err = gtHeldUpstack(ctx, l, state, branch); err != nil {
+					return err
+				}
+			}
 			if upstack, err = gtPublishedUpstack(ctx, l.dir(), state, branch, stackSkipNames(held)); err != nil {
 				return err
 			}
@@ -558,7 +558,7 @@ func runShip(cmd *cobra.Command, o shipOpts) (err error) {
 	if restackSeg != "" {
 		segments = append(segments, restackSeg)
 	}
-	if len(held) > 0 && (!o.noCommit || restackSeg != "") {
+	if len(held) > 0 && o.noCommit && restackSeg != "" {
 		segments = append(segments, gtHeldUpstackSegment(held))
 	}
 

@@ -1444,31 +1444,31 @@ func gtModifyArgv(o shipOpts) []string {
 	return argv
 }
 
-func gtCommit(ctx context.Context, l lane, errW io.Writer, o shipOpts, plan branchPlan, env []string) error {
+func gtCommit(ctx context.Context, l lane, errW io.Writer, o shipOpts, plan branchPlan, env []string) (string, error) {
 	if gtCreates(o, plan) && plan.commitBeforeMove {
 		if _, err := render.RunCLI(ctx, l.dir(), "git", []string{"switch", "-c", plan.name}); err != nil {
-			return fmt.Errorf("ship: git switch -c %s: %w", plan.name, err)
+			return "", fmt.Errorf("ship: git switch -c %s: %w", plan.name, err)
 		}
 		if _, err := render.RunCLIEnv(ctx, l.dir(), "git", gtModifyArgv(o), env); err != nil {
-			return errors.Join(fmt.Errorf("ship: git commit: %w", err), shipRestoreBranch(ctx, l.dir(), plan.from, plan.name))
+			return "", errors.Join(fmt.Errorf("ship: git commit: %w", err), shipRestoreBranch(ctx, l.dir(), plan.from, plan.name))
 		}
-		return nil
+		return "", nil
 	}
 	if gtCreates(o, plan) {
 		r, runErr := gtRun(ctx, l.dir(), gtCommitArgv(o, plan), errW, env...)
 		if err := gtReport(ctx, errW, r); err != nil {
-			return err
+			return "", err
 		}
 		if runErr != nil {
-			return fmt.Errorf("ship: %w", runErr)
+			return "", fmt.Errorf("ship: %w", runErr)
 		}
-		return nil
+		return "", nil
 	}
 	if _, err := render.RunCLIEnv(ctx, l.dir(), "git", gtModifyArgv(o), env); err != nil {
-		return fmt.Errorf("ship: git commit: %w", err)
+		return "", fmt.Errorf("ship: git commit: %w", err)
 	}
 	if o.tipOnly {
-		return nil
+		return "", nil
 	}
 	return gtModifyRestack(ctx, l, o, plan.from)
 }
@@ -1499,11 +1499,7 @@ func gtPublishedUpstack(ctx context.Context, dir render.Dir, state gtState, bran
 // gtHeldUpstack names the lowest branches above branch that another working
 // copy holds. Ship leaves each where it is, with the branches above it, since
 // that copy's lane is the one editing it.
-func gtHeldUpstack(ctx context.Context, l lane, c *gtCache, branch string) ([]stackSkip, error) {
-	state, chain, err := gtStackChain(ctx, c, branch)
-	if err != nil || len(chain) == 0 {
-		return nil, err
-	}
+func gtHeldUpstack(ctx context.Context, l lane, state gtState, branch string) ([]stackSkip, error) {
 	up, err := gtUpstack("ship", state, branch)
 	if err != nil || len(up) == 0 {
 		return nil, err
@@ -1543,27 +1539,37 @@ func gtHeldUpstackSegment(held []stackSkip) string {
 // copy has checked out unless --all-lanes takes them. State is re-read after the
 // commit: each child's recorded parent revision now names a head its parent has
 // left, which is the "needs restack" gtRestackPlan reads.
-func gtModifyRestack(ctx context.Context, l lane, o shipOpts, branch string) error {
+func gtModifyRestack(ctx context.Context, l lane, o shipOpts, branch string) (string, error) {
 	commonDir, err := gtCommonDir(ctx, l.dir(), "ship")
 	if err != nil {
-		return err
+		return "", err
 	}
 	state, err := gtStateAtFocused(ctx, commonDir, "ship", branch, "")
 	if err != nil {
-		return err
+		return "", err
 	}
 	up, err := gtUpstack("ship", state, branch)
 	if err != nil {
-		return err
+		return "", err
 	}
-	if _, err := gtRestackChain(ctx, "ship", l.checkout, l.dir(), commonDir, state, up, o.allLanes); err != nil {
+	result, err := gtRestackChain(ctx, "ship", l.checkout, l.dir(), commonDir, state, up, o.allLanes)
+	if err != nil {
 		var conflict *errRestackConflict
 		if errors.As(err, &conflict) {
-			return errors.New(gtStuck("ship", gtRestackStopped(err, conflict), gtStuckSuffix(o)))
+			return "", errors.New(gtStuck("ship", gtRestackStopped(err, conflict), gtStuckSuffix(o)))
 		}
-		return err
+		return "", err
 	}
-	return nil
+	var held []stackSkip
+	for _, name := range up {
+		if holder, ok := strings.CutPrefix(result.held[name], gtHeldElsewhere); ok && !o.allLanes {
+			held = append(held, stackSkip{branch: name, holder: holder})
+		}
+	}
+	if len(held) == 0 {
+		return "", nil
+	}
+	return gtHeldUpstackSegment(held), nil
 }
 
 // shipCommitGT stages, refuses an empty commit, runs pre-commit hooks (or
@@ -1577,11 +1583,15 @@ func shipCommitGT(ctx context.Context, l lane, errW io.Writer, o shipOpts, sel *
 	}
 	o.message = message
 	if sel != nil {
-		seg := ""
+		var segs []string
 		if !o.noVerify && shipHasHookConfig(l.root) {
-			seg = "hooks hunk-skip"
+			segs = append(segs, "hooks hunk-skip")
 		}
-		return seg, shipCommitGTSelect(ctx, l, errW, o, sel, plan)
+		heldSeg, err := shipCommitGTSelect(ctx, l, errW, o, sel, plan)
+		if heldSeg != "" {
+			segs = append(segs, heldSeg)
+		}
+		return strings.Join(segs, shipSep), err
 	}
 	if o, err = shipScopeToIndex(ctx, l.dir(), o); err != nil {
 		return "", err
@@ -1600,11 +1610,12 @@ func shipCommitGT(ctx context.Context, l lane, errW io.Writer, o shipOpts, sel *
 		return "", err
 	}
 	o.hooksRan = hooksRan
-	if err := gtCommit(ctx, l, errW, o, plan, nil); err != nil {
+	heldSeg, err := gtCommit(ctx, l, errW, o, plan, nil)
+	if err != nil {
 		return "", err
 	}
-	segs := make([]string, 0, 2)
-	for _, seg := range []string{sweptSeg, hookSeg} {
+	segs := make([]string, 0, 3)
+	for _, seg := range []string{sweptSeg, hookSeg, heldSeg} {
 		if seg != "" {
 			segs = append(segs, seg)
 		}
@@ -1616,10 +1627,10 @@ func shipCommitGT(ctx context.Context, l lane, errW io.Writer, o shipOpts, sel *
 // technique as shipCommitGitSelect — gt shells out to git, which honors
 // GIT_INDEX_FILE, so running the commit under the same env commits only the temp
 // index. gt's only hunk surface is interactive -p, so staging stays on git.
-func shipCommitGTSelect(ctx context.Context, l lane, errW io.Writer, o shipOpts, sel *shipSelection, plan branchPlan) error {
+func shipCommitGTSelect(ctx context.Context, l lane, errW io.Writer, o shipOpts, sel *shipSelection, plan branchPlan) (string, error) {
 	idxFile, err := os.CreateTemp("", "ccx-ship-index-*")
 	if err != nil {
-		return fmt.Errorf("ship: create temp index: %w", err)
+		return "", fmt.Errorf("ship: create temp index: %w", err)
 	}
 	idxPath := idxFile.Name()
 	_ = idxFile.Close()
@@ -1627,27 +1638,28 @@ func shipCommitGTSelect(ctx context.Context, l lane, errW io.Writer, o shipOpts,
 	env := []string{"GIT_INDEX_FILE=" + idxPath}
 
 	if _, err := render.RunCLIEnv(ctx, l.dir(), "git", []string{"read-tree", "HEAD"}, env); err != nil {
-		return fmt.Errorf("ship: git read-tree: %w", err)
+		return "", fmt.Errorf("ship: git read-tree: %w", err)
 	}
 	if addArgv, ok := gitSelectAddArgv(o.rootPaths, sel); ok {
 		if _, err := render.RunCLIEnv(ctx, l.dir(), "git", addArgv, env); err != nil {
-			return fmt.Errorf("ship: git add: %w", err)
+			return "", fmt.Errorf("ship: git add: %w", err)
 		}
 	}
 	for _, path := range sortedSelectionFiles(sel) {
 		if err := gitStageSelected(ctx, l.dir(), path, sel, env); err != nil {
-			return err
+			return "", err
 		}
 	}
-	if err := gtCommit(ctx, l, errW, o, plan, env); err != nil {
-		return err
+	heldSeg, err := gtCommit(ctx, l, errW, o, plan, env)
+	if err != nil {
+		return "", err
 	}
 
 	restoreArgv := append([]string{"restore", "--staged", "--"}, gitRestorePaths(o.rootPaths)...)
 	if _, err := render.RunCLI(ctx, l.dir(), "git", restoreArgv); err != nil {
-		return fmt.Errorf("ship: git restore --staged: %w", err)
+		return "", fmt.Errorf("ship: git restore --staged: %w", err)
 	}
-	return nil
+	return heldSeg, nil
 }
 
 type gtAPIKey struct{}
