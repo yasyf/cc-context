@@ -555,7 +555,7 @@ func TestStackDropReplaysAChildAnotherWorkingCopyHolds(t *testing.T) {
 		"mid": {number: 1, state: "OPEN", base: "base"},
 		"top": {number: 2, state: "OPEN", base: "mid"},
 	})
-	lane := filepath.Join(t.TempDir(), "top")
+	lane := restackSiblingPath(t, "top")
 	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", lane, "top")
 
 	if _, _, err := runStackCmd(t, f, "drop", "mid"); err != nil {
@@ -584,7 +584,7 @@ func TestStackDropRefusesAChildCheckedOutWithUncommittedWork(t *testing.T) {
 		"mid": {number: 1, state: "OPEN", base: "base"},
 		"top": {number: 2, state: "OPEN", base: "mid"},
 	})
-	lane := filepath.Join(t.TempDir(), "top")
+	lane := restackSiblingPath(t, "top")
 	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", lane, "top")
 	writeShipFile(t, lane, "wip.txt", "unsaved\n")
 	top := gitAt(t, f.Env(), f.Dir, "rev-parse", "top")
