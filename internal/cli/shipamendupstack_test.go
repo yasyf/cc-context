@@ -29,9 +29,13 @@ func TestShipAmendOfAMidStackBranchCarriesItsChildren(t *testing.T) {
 			writeShipFile(t, f.Dir, "p.txt", "amended\n")
 			shipResetLog(t, f)
 
-			out, _, err := runShipCmdFull(f.Context(), t, "--amend", "--no-watch", "p.txt")
+			args := []string{"--amend", "--no-watch", "p.txt"}
+			if elsewhere {
+				args = append(args, "--all-lanes")
+			}
+			out, _, err := runShipCmdFull(f.Context(), t, args...)
 			if err != nil {
-				t.Fatalf("ship --amend = %v", err)
+				t.Fatalf("ship %v = %v", args, err)
 			}
 			if !strings.Contains(out, "resubmitted c, g above p") {
 				t.Errorf("ship output = %q, want it to name the resubmitted children", out)

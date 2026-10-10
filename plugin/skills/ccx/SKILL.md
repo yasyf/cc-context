@@ -270,12 +270,13 @@ the fetched trunk runs the stack rebase machinery over its downstack after the
 commit, reported as `restacked in isolation`. Published branches stacked above
 it join that run: an amend or a new commit mid-stack replays them onto the new
 head and resubmits them under their leases, reported as
-`resubmitted <branches> above <branch>`, and `--tip-only` leaves them where they
-are. `--tip-only` reads every ancestor at its published head and never locks or
+`resubmitted <branches> above <branch>`. One another working copy has checked
+out stays where it is, with the branches above it, reported as
+`left <branch> (checked out in <path>)`, unless `--all-lanes` carries it, and
+`--tip-only` leaves them all where they are. `--tip-only` reads every ancestor at its published head and never locks or
 writes an ancestor's local ref, so it ships while another worktree amends the
 parent. Every working copy holding a moved
-branch, this lane's or another's, must be clean and is moved onto its new head,
-still on its branch. A branch `gt freeze` is holding is left
+branch must be clean and is moved onto its new head, still on its branch. A branch `gt freeze` is holding is left
 where it is. A conflict stops in a conflict workspace with rerere off;
 `ccx vcs stack continue` finishes the rebase, pushes, submits, and restates the PR
 flags the invocation carried. No ship, stack submit, or continue opens a pull

@@ -21,6 +21,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs ship` leaves the branches above it that other working copies
+  hold.** On monorepo, each branch of the oncall stack lived in the worktree
+  of the lane editing it, and a plain ship from `oncall-card-manage` replayed
+  `oncall-deploy-discovery` onto `oncall-escalation-reason` under the lanes
+  holding them; only `--tip-only` shipped. Ship moved and resubmitted every
+  published branch above the shipped one, wherever it was checked out. A
+  branch above it that another working copy holds now stays where it is, with
+  the branches above it, both locally and on the remote, and the report names
+  it in a `left <branch> (checked out in <path>)` segment. `--all-lanes`
+  carries it as before, and `--dry-run` lists it as left instead of moved.
+
 - **`ccx vcs stack drop` finishes in seconds and replays branches other
   working copies hold.** On monorepo, with 2,742 branches tracked, each drop
   ran about 20 minutes: it checked every tracked branch for the dropped commits

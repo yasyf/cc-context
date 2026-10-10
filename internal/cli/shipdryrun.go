@@ -510,7 +510,7 @@ func dryRunMoves(state gtState, chain []string, holders map[string]string, o shi
 	for _, branch := range frozen {
 		r.notes = append(r.notes, branch+" is "+held[branch]+", so the restack would leave it off its parent")
 	}
-	if o.noCommit || !strings.HasPrefix(r.place, "append") {
+	if o.noCommit || o.tipOnly || !strings.HasPrefix(r.place, "append") {
 		return
 	}
 	up, err := gtUpstack("ship", state, r.branch)
@@ -518,7 +518,16 @@ func dryRunMoves(state gtState, chain []string, holders map[string]string, o shi
 		r.notes = append(r.notes, err.Error())
 		return
 	}
+	carried := map[string]bool{r.branch: true}
 	for _, branch := range up {
+		if !carried[state[branch].Parents[0].Ref] {
+			continue
+		}
+		if holder := holders[branch]; holder != "" && holder != r.root && !o.allLanes {
+			r.notes = append(r.notes, branch+" is "+gtHeldElsewhere+holder+", so the commit leaves it, and the branches above it, where they are; --all-lanes carries it")
+			continue
+		}
+		carried[branch] = true
 		r.moves = append(r.moves, dryRunMove{
 			branch: branch,
 			head:   shortSHA(state[branch].Head),

@@ -1473,7 +1473,7 @@ func gtCommit(ctx context.Context, l lane, errW io.Writer, o shipOpts, plan bran
 	return gtModifyRestack(ctx, l, o, plan.from)
 }
 
-func gtPublishedUpstack(ctx context.Context, dir render.Dir, state gtState, branch string) ([]string, error) {
+func gtPublishedUpstack(ctx context.Context, dir render.Dir, state gtState, branch string, held []string) ([]string, error) {
 	up, err := gtUpstack("ship", state, branch)
 	if err != nil {
 		return nil, err
@@ -1481,7 +1481,7 @@ func gtPublishedUpstack(ctx context.Context, dir render.Dir, state gtState, bran
 	carried := map[string]bool{branch: true}
 	var published []string
 	for _, name := range up {
-		if !carried[state[name].Parents[0].Ref] {
+		if !carried[state[name].Parents[0].Ref] || slices.Contains(held, name) {
 			continue
 		}
 		present, err := stackHasPublication(ctx, dir, []string{name})
@@ -1496,10 +1496,53 @@ func gtPublishedUpstack(ctx context.Context, dir render.Dir, state gtState, bran
 	return published, nil
 }
 
+// gtHeldUpstack names the lowest branches above branch that another working
+// copy holds. Ship leaves each where it is, with the branches above it, since
+// that copy's lane is the one editing it.
+func gtHeldUpstack(ctx context.Context, l lane, c *gtCache, branch string) ([]stackSkip, error) {
+	state, chain, err := gtStackChain(ctx, c, branch)
+	if err != nil || len(chain) == 0 {
+		return nil, err
+	}
+	up, err := gtUpstack("ship", state, branch)
+	if err != nil {
+		return nil, err
+	}
+	holders, err := vcs.BranchHolders(ctx, l.checkout)
+	if err != nil {
+		return nil, fmt.Errorf("ship: %w", err)
+	}
+	carried := map[string]bool{branch: true}
+	var held []stackSkip
+	for _, name := range up {
+		if !carried[state[name].Parents[0].Ref] {
+			continue
+		}
+		if holder := holders[name]; holder != "" && holder != l.checkout.Root {
+			held = append(held, stackSkip{branch: name, holder: holder})
+			continue
+		}
+		carried[name] = true
+	}
+	return held, nil
+}
+
+func gtHeldUpstackSegment(held []stackSkip) string {
+	names := make([]string, len(held))
+	for i, h := range held {
+		names[i] = h.branch + " (" + gtHeldElsewhere + h.holder + ")"
+	}
+	if len(held) == 1 {
+		return "left " + names[0] + " where it is, with the branches above it, for that working copy to restack; --all-lanes carries it"
+	}
+	return "left " + strings.Join(names, ", ") + " where they are, with the branches above them, for those working copies to restack; --all-lanes carries them"
+}
+
 // gtModifyRestack replays the branches above the one just committed onto its new
-// head, the other half of what gt modify does. State is re-read after the commit:
-// each child's recorded parent revision now names a head its parent has left,
-// which is the "needs restack" gtRestackPlan reads.
+// head, the other half of what gt modify does, holding the ones another working
+// copy has checked out unless --all-lanes takes them. State is re-read after the
+// commit: each child's recorded parent revision now names a head its parent has
+// left, which is the "needs restack" gtRestackPlan reads.
 func gtModifyRestack(ctx context.Context, l lane, o shipOpts, branch string) error {
 	commonDir, err := gtCommonDir(ctx, l.dir(), "ship")
 	if err != nil {
@@ -1513,7 +1556,7 @@ func gtModifyRestack(ctx context.Context, l lane, o shipOpts, branch string) err
 	if err != nil {
 		return err
 	}
-	if _, err := gtRestackChain(ctx, "ship", l.checkout, l.dir(), commonDir, state, up, true); err != nil {
+	if _, err := gtRestackChain(ctx, "ship", l.checkout, l.dir(), commonDir, state, up, o.allLanes); err != nil {
 		var conflict *errRestackConflict
 		if errors.As(err, &conflict) {
 			return errors.New(gtStuck("ship", gtRestackStopped(err, conflict), gtStuckSuffix(o)))
