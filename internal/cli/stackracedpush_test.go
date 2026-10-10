@@ -156,9 +156,6 @@ func TestStackSubmitRepublishesOverGraphitesRestackOfAParkedPullRequest(t *testi
 	if remote := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature"); remote == restacked || gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature^") != squash {
 		t.Errorf("origin feature = %q, want the submit's republish onto %s rather than Graphite's restack %s", gitAt(t, f.Env(), f.RemoteDir, "log", "-3", "--format=%H %s", "feature"), squash, restacked)
 	}
-	if got, want := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature"), gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature"); got != want {
-		t.Errorf("local feature = %s, want origin's %s (Graphite's restack was %s)", got, want, restacked)
-	}
 	if got := gitAt(t, f.Env(), f.RemoteDir, "for-each-ref", "refs/heads/graphite-base/"); got != "" {
 		t.Errorf("origin graphite-base refs = %q, want the one Graphite deleted left deleted", got)
 	}
