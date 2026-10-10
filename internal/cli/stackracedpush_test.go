@@ -133,7 +133,7 @@ func TestStackSubmitRepublishesOverGraphitesRestackOfAParkedPullRequest(t *testi
 	api.remote("update-ref", "refs/heads/graphite-base/101", baseHead)
 	api.presubmitRace = func() {
 		raced = true
-		cmd := exec.Command("git", "push", "-qf", "origin", trunk+":refs/heads/main", restacked+":refs/heads/feature", ":refs/heads/graphite-base/101")
+		cmd := exec.Command("git", "push", "-qf", "origin", trunk+":refs/heads/main", restacked+":refs/heads/feature", ":refs/heads/graphite-base/101") //nolint:gosec // the test's own shas
 		cmd.Dir, cmd.Env = elsewhere, f.Env()
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Errorf("graphite's restack push: %v: %s", err, out)
