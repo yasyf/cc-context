@@ -2,6 +2,7 @@ package cli
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -72,22 +73,8 @@ func stackRacedByRestack(t *testing.T, amended bool) (*vcstest.Fixture, string) 
 		mustRun(t, f.Env(), elsewhere, "git", "commit", "-q", "--amend", "-m", "feature amended elsewhere")
 	}
 
-	marker := stackRaceOnRef(t, f, "refs/ccx/", "git -C "+elsewhere+" push -qf origin HEAD:feature")
-	stubStackPRs(t, f, map[string]*stackPR{
-		"base":    {Number: 41, Title: "base", State: "MERGED", Landed: true, Head: baseHead},
-		"feature": {Number: 42, Title: "feature", State: "OPEN", Base: "main"},
-	})
-	shipResetLog(t, f)
-	return f, marker
-}
-
-// stackRaceOnRef runs command once, from a reference-transaction hook, the
-// first time this repository commits a ref under prefix, and returns the
-// marker file that records it ran.
-func stackRaceOnRef(t *testing.T, f *vcstest.Fixture, prefix, command string) string {
-	t.Helper()
 	marker := filepath.Join(t.TempDir(), "raced")
-	hook := "#!/bin/sh\n[ \"$1\" = committed ] || exit 0\ngrep -q " + prefix + " || exit 0\n[ -e " + marker + " ] && exit 0\ntouch " + marker + "\nunset GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE\n" + command + "\n"
+	hook := "#!/bin/sh\n[ \"$1\" = committed ] || exit 0\ngrep -q refs/ccx/ || exit 0\n[ -e " + marker + " ] && exit 0\ntouch " + marker + "\nunset GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE\ngit -C " + elsewhere + " push -qf origin HEAD:feature\n"
 	hooks := filepath.Join(gitAt(t, f.Env(), f.Dir, "rev-parse", "--git-common-dir"), "hooks")
 	if !filepath.IsAbs(hooks) {
 		hooks = filepath.Join(f.Dir, hooks)
@@ -98,7 +85,12 @@ func stackRaceOnRef(t *testing.T, f *vcstest.Fixture, prefix, command string) st
 	if err := os.WriteFile(filepath.Join(hooks, "reference-transaction"), []byte(hook), 0o700); err != nil { //nolint:gosec // a git hook must be executable
 		t.Fatal(err)
 	}
-	return marker
+	stubStackPRs(t, f, map[string]*stackPR{
+		"base":    {Number: 41, Title: "base", State: "MERGED", Landed: true, Head: baseHead},
+		"feature": {Number: 42, Title: "feature", State: "OPEN", Base: "main"},
+	})
+	shipResetLog(t, f)
+	return f, marker
 }
 
 // TestStackSubmitRepublishesOverGraphitesRestackOfAParkedPullRequest is the
@@ -118,14 +110,6 @@ func TestStackSubmitRepublishesOverGraphitesRestackOfAParkedPullRequest(t *testi
 	}
 	baseHead := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
 	restackSquashRemote(t, f, "main", "base (#100)", "base")
-	api.mu.Lock()
-	delete(api.prs, "base")
-	api.merged["base"] = gtStubMerged{number: 100, head: baseHead, state: gtapi.PRClosed}
-	api.prs["feature"] = 101
-	api.parked["feature"] = "graphite-base/101"
-	api.mergeability[101] = "NEEDS_RESTACK__BASE_BRANCH_MERGED"
-	api.remote("update-ref", "refs/heads/graphite-base/101", baseHead)
-	api.mu.Unlock()
 
 	elsewhere := filepath.Join(t.TempDir(), "graphite")
 	mustRun(t, f.Env(), f.Dir, "git", "clone", "-q", "--branch", "main", f.RemoteDir, elsewhere)
@@ -138,12 +122,32 @@ func TestStackSubmitRepublishesOverGraphitesRestackOfAParkedPullRequest(t *testi
 	mustRun(t, f.Env(), elsewhere, "git", "fetch", "-q", "origin", "feature")
 	mustRun(t, f.Env(), elsewhere, "git", "cherry-pick", baseHead+"..FETCH_HEAD")
 	restacked := gitAt(t, f.Env(), elsewhere, "rev-parse", "HEAD")
-	marker := stackRaceOnRef(t, f, "refs/remotes/origin/graphite-base/", "git -C "+elsewhere+" push -qf origin "+trunk+":refs/heads/main "+restacked+":refs/heads/feature :refs/heads/graphite-base/101")
+
+	raced := false
+	api.mu.Lock()
+	delete(api.prs, "base")
+	api.merged["base"] = gtStubMerged{number: 100, head: baseHead, state: gtapi.PRClosed}
+	api.prs["feature"] = 101
+	api.parked["feature"] = "graphite-base/101"
+	api.mergeability[101] = "NEEDS_RESTACK__BASE_BRANCH_MERGED"
+	api.remote("update-ref", "refs/heads/graphite-base/101", baseHead)
+	api.presubmitRace = func() {
+		raced = true
+		cmd := exec.Command("git", "push", "-qf", "origin", trunk+":refs/heads/main", restacked+":refs/heads/feature", ":refs/heads/graphite-base/101")
+		cmd.Dir, cmd.Env = elsewhere, f.Env()
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Errorf("graphite's restack push: %v: %s", err, out)
+		}
+	}
+	api.mu.Unlock()
 	shipResetLog(t, f)
 
 	out, errStr, err := runStackCmd(t, f, "submit")
-	if _, statErr := os.Stat(marker); statErr != nil {
-		t.Fatalf("fixture: Graphite's restack never raced the submit: %v", statErr)
+	api.mu.Lock()
+	ran := raced
+	api.mu.Unlock()
+	if !ran {
+		t.Fatal("fixture: Graphite's restack never raced the submit")
 	}
 	if err != nil {
 		t.Fatalf("stack submit = %v (stdout=%q stderr=%q)", err, out, errStr)
