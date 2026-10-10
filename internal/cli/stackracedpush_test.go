@@ -110,6 +110,7 @@ func TestStackSubmitRepublishesOverGraphitesRestackOfAParkedPullRequest(t *testi
 	}
 	baseHead := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
 	restackSquashRemote(t, f, "main", "base (#100)", "base")
+	squash := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "main")
 
 	elsewhere := filepath.Join(t.TempDir(), "graphite")
 	mustRun(t, f.Env(), f.Dir, "git", "clone", "-q", "--branch", "main", f.RemoteDir, elsewhere)
@@ -152,8 +153,11 @@ func TestStackSubmitRepublishesOverGraphitesRestackOfAParkedPullRequest(t *testi
 	if err != nil {
 		t.Fatalf("stack submit = %v (stdout=%q stderr=%q)", err, out, errStr)
 	}
-	if got, want := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature"), gitAt(t, f.Env(), f.Dir, "rev-parse", "feature"); got != want {
-		t.Errorf("origin feature = %s, want the submitted head %s", got, want)
+	if remote := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature"); remote == restacked || gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature^") != squash {
+		t.Errorf("origin feature = %q, want the submit's republish onto %s rather than Graphite's restack %s", gitAt(t, f.Env(), f.RemoteDir, "log", "-3", "--format=%H %s", "feature"), squash, restacked)
+	}
+	if got, want := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature"), gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature"); got != want {
+		t.Errorf("local feature = %s, want origin's %s (Graphite's restack was %s)", got, want, restacked)
 	}
 	if got := gitAt(t, f.Env(), f.RemoteDir, "for-each-ref", "refs/heads/graphite-base/"); got != "" {
 		t.Errorf("origin graphite-base refs = %q, want the one Graphite deleted left deleted", got)
