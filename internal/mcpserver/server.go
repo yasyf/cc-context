@@ -257,7 +257,7 @@ type BashFormatIn struct {
 	Budget    int      `json:"budget,omitempty" jsonschema:"token budget for the output"`
 }
 
-const serverInstructions = "Single question → the matching ccx_* tool; pipeline, filter, fan-out, or post-processed output → ccx_exec (catalog once via ccx_exec_tools). Producer outputs carry anchors (path:12#a3fk) and web refs (§2.3) — echo them into ccx_code_read or ccx_web_read to chain. Tool names may appear under a client-assigned mcp__…__ prefix; call tools exactly as listed in your client's tool inventory."
+const serverInstructions = "Single question → the matching ccx_* tool; pipeline, filter, fan-out, or post-processed output → ccx_exec (catalog once via ccx_exec_tools). Producer outputs carry anchors (path:12#a3fk) and web refs (§2.3) — echo them into ccx_code_read or ccx_web_read to chain. Where the client defers ccx tools behind ToolSearch, load them all in one call: query `ccx`, max_results 20. Tool names may appear under a client-assigned mcp__…__ prefix; call tools exactly as listed in your client's tool inventory."
 
 // Serve creates the proxy (engines connect lazily on first use) and the
 // resident sandbox engine, registers the static ccx_* tools, and serves them
@@ -277,15 +277,19 @@ func Serve(ctx context.Context) error {
 		defer func() { _ = eng.Close() }()
 	}
 
-	roots := newRootTracker()
+	s := newServer(newRootTracker())
+	register(s, p, eng)
+
+	return s.Run(ctx, &mcp.StdioTransport{})
+}
+
+func newServer(roots *rootTracker) *mcp.Server {
 	s := mcp.NewServer(&mcp.Implementation{Name: "cc-context", Version: version.String()}, &mcp.ServerOptions{
 		Instructions:            serverInstructions,
 		RootsListChangedHandler: roots.rearm,
 	})
 	s.AddReceivingMiddleware(roots.middleware)
-	register(s, p, eng)
-
-	return s.Run(ctx, &mcp.StdioTransport{})
+	return s
 }
 
 // metaAlwaysLoad is the tool _meta key Claude Code reads to exempt a tool from

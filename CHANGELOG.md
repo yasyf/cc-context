@@ -21,6 +21,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A session without the ccx MCP tools is no longer told to load them.** The
+  guard pack told every fresh session to load the deferred ccx tools with one
+  `ToolSearch` call. A `SessionStart` hook's input names no MCP server, so the
+  hook could not tell whether the session had them, and a remote worker
+  started with `--strict-mcp-config` and no cc-context server ran the search
+  and matched nothing. The guidance now travels in the MCP server's own
+  instructions, which a client receives only from a server it connected, and
+  the `SessionStart` nudge is gone. A session holding the `ccx` CLI alone
+  hears only the guard pack's CLI directions.
+
 - **`ccx vcs stack submit` republishes over Graphite's restack of a parked
   pull request.** On monorepo #34213, after its parent landed, Graphite
   restacked `monitor-titles-api-slug` onto a newer `dev` and deleted
