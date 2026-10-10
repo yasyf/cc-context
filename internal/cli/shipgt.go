@@ -1505,7 +1505,7 @@ func gtHeldUpstack(ctx context.Context, l lane, c *gtCache, branch string) ([]st
 		return nil, err
 	}
 	up, err := gtUpstack("ship", state, branch)
-	if err != nil {
+	if err != nil || len(up) == 0 {
 		return nil, err
 	}
 	holders, err := vcs.BranchHolders(ctx, l.checkout)
