@@ -271,6 +271,26 @@ func TestServerInstructionsNameInstalledTools(t *testing.T) {
 	}
 }
 
+func TestHandshakeCarriesDeferredToolLoading(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	ct, st := mcp.NewInMemoryTransports()
+	if _, err := newServer(newRootTracker()).Connect(ctx, st, nil); err != nil {
+		t.Fatalf("server connect: %v", err)
+	}
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "test"}, nil)
+	cs, err := client.Connect(ctx, ct, nil)
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+	t.Cleanup(func() { _ = cs.Close() })
+
+	want := "Where the client defers ccx tools behind ToolSearch, load them all in one call: query `ccx`, max_results 20."
+	if got := cs.InitializeResult().Instructions; !strings.Contains(got, want) {
+		t.Errorf("initialize instructions = %q, want them to carry %q", got, want)
+	}
+}
+
 func TestSemanticToolDescriptionsStateContentScope(t *testing.T) {
 	t.Parallel()
 	cs := connectTestServer(t.Context(), t)
