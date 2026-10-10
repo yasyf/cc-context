@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "repo",
+    "view",
+    "cli/cli",
+    "--json",
+    "nameWithOwner,owner,isPrivate,viewerPermission"
+  ],
+  "exit": 0,
+  "stdout": "{\"isPrivate\":false,\"nameWithOwner\":\"cli/cli\",\"owner\":{\"id\":\"MDEyOk9yZ2FuaXphdGlvbjU5NzA0NzEx\",\"login\":\"cli\"},\"viewerPermission\":\"READ\"}\n",
+  "stderr": ""
+}

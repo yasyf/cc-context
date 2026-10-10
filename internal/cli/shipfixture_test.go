@@ -173,7 +173,7 @@ exit 0
 // anyone wrote here.
 func writeShipGH(t *testing.T, f *vcstest.Fixture) {
 	t.Helper()
-	f.Setenv("GH_VIEWER_GOLDEN", ghStdout(t, "viewer-graphql"))
+	f.Setenv("GH_VIEWER_GOLDEN", ghStdout(t, "viewer-graphql-own"))
 	writeShipExecutable(t, f.ShimBin, "gh", "#!/bin/sh\n"+vcstest.RecordArgv("gh")+shipGHBody)
 }
 
@@ -1172,7 +1172,7 @@ func setupShip(t *testing.T, marker string, withGh bool) string {
 	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
 	seedLaneRecords(context.Background(), t, ".", laneSeed{})
 	t.Setenv("JJ_DIFF_NAMES", "f.txt\n")
-	t.Setenv("GH_VIEWER_GOLDEN", ghStdout(t, "viewer-graphql"))
+	t.Setenv("GH_VIEWER_GOLDEN", ghStdout(t, "viewer-graphql-own"))
 	// Zero the session id so subtests asserting bare commit argv stay green even
 	// when the suite runs inside a Claude Code session, which exports it.
 	t.Setenv(envClaudeSessionKey, "")
