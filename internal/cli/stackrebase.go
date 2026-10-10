@@ -1309,6 +1309,11 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 			if err := stackOwnWork(ctx, l.dir(), tr, pin, b); err != nil {
 				return nil, err
 			}
+			if o.tipOnly && name == o.tip && b.Parent != trunk {
+				if b.Stays, err = stackTipStays(ctx, l.dir(), b, byName[b.Parent].Head); err != nil {
+					return nil, err
+				}
+			}
 			b.Bump = slices.Contains(o.bump, name)
 			if o.stayClean && !b.Bump && !inherits[name] && b.Parent == trunk && b.WasParent == trunk && b.Remote != "" && b.OldBase != pin && queue[name] != prQueueEvicted && (b.PR == nil || b.PR.Mergeable != "CONFLICTING") {
 				if b.Stays, err = stackMergesClean(ctx, l.dir(), pin, stackUpstack(order, byName, name)); err != nil {
@@ -2217,6 +2222,17 @@ func stackKeepsAncestor(ctx context.Context, dir render.Dir, pin string, b *stac
 	return true, nil
 }
 
+func stackTipStays(ctx context.Context, dir render.Dir, b *stackRebaseBranch, parentHead string) (bool, error) {
+	if b.OldBase == parentHead {
+		return false, nil
+	}
+	held, err := gitIsAncestor(ctx, dir, stackRebasePrefix, b.OldBase, parentHead)
+	if err != nil || held {
+		return held, err
+	}
+	return false, fmt.Errorf("stack rebase: --tip-only replays nothing, and %s sits on %.12s, which %s's published head %.12s does not hold — pushing %s as it is would carry commits %s's pull request no longer has; run ccx vcs stack submit to replay %s onto %s", b.Name, b.OldBase, b.Parent, parentHead, b.Name, b.Parent, b.Name, b.Parent)
+}
+
 // stackRefuseUnpushedPins refuses a run kept at the published heads of branches
 // another lane holds and never pushed: there is nothing to stack on.
 func stackRefuseUnpushedPins(names []string) error {
@@ -2872,6 +2888,8 @@ func stackPlanLines(run *stackRebaseRun) []string {
 			fields = append(fields, fmt.Sprintf("kept at its local head %.12s", b.Head))
 		case b.Kept:
 			fields = append(fields, fmt.Sprintf("kept at its published head %.12s", b.Head))
+		case b.Stays && b.Parent != run.Trunk:
+			fields = append(fields, fmt.Sprintf("stays on %.12s", b.OldBase), fmt.Sprintf("lacks %s@%.12s", b.Parent, run.branch(b.Parent).Head), "--tip-only replays nothing")
 		case b.Stays:
 			stayed = append(stayed, b.Name)
 			fields = append(fields, fmt.Sprintf("stays on %.12s", b.OldBase), fmt.Sprintf("merges cleanly onto %s@%.12s", run.Trunk, run.Pin))

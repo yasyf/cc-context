@@ -471,3 +471,54 @@ func TestShipTipOnlyPublishesATipCutOnAnEmptyBase(t *testing.T) {
 		t.Errorf("published feature %s does not sit on the fetched trunk", feature)
 	}
 }
+
+func TestShipTipOnlyReplaysNothingWhenItsParentsPublishedHeadMoves(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		rewrite bool
+	}{
+		{"parent advanced", false},
+		{"parent rewritten", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := shipGTRepo(t)
+			shipGTStack(t, f, "base", "feature")
+			if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+				t.Fatalf("stack submit: %v", err)
+			}
+			stubStackPRs(t, f, map[string]*stackPR{
+				"base":    {Number: 100, Title: "base", State: "OPEN", Base: "main", Mergeable: "MERGEABLE"},
+				"feature": {Number: 101, Title: "feature", State: "OPEN", Base: "base", Mergeable: "MERGEABLE"},
+			})
+			cut := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
+			published := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature")
+			stackForeignPush(t, f, "base", "f.txt", tc.rewrite)
+			base := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
+			shipGTReady(t, f)
+
+			_, errStr, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--tip-only")
+			if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base"); got != base {
+				t.Errorf("origin base moved from %s to %s", base, got)
+			}
+			if tc.rewrite {
+				if err == nil || !strings.Contains(err.Error(), "--tip-only replays nothing") || !strings.Contains(err.Error(), "ccx vcs stack submit") {
+					t.Fatalf("ship --tip-only over a rewritten parent = %v, want a refusal naming ccx vcs stack submit", err)
+				}
+				if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature"); got != published {
+					t.Errorf("origin feature moved from %s to %s", published, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ship --tip-only after its parent advanced = %v (stderr=%q)", err, errStr)
+			}
+			if refs := gtPushedRefs(shipGTInvocations(t, f)); !slices.Equal(refs, []string{"feature"}) {
+				t.Errorf("pushed refs = %v, want only feature", refs)
+			}
+			feature := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature")
+			if feature == published || !stackOnto(t, f, cut, feature) || stackOnto(t, f, base, feature) {
+				t.Errorf("origin feature %s, want the new commit pushed on %.12s without a replay onto base's moved head %.12s", feature, cut, base)
+			}
+		})
+	}
+}

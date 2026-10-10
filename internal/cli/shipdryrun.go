@@ -483,7 +483,7 @@ func dryRunPlanned(ctx context.Context, l lane, state gtState, r *shipDryRun) (g
 func dryRunMoves(state gtState, chain []string, holders map[string]string, o shipOpts, r *shipDryRun) {
 	movers, held := gtRestackPlan(state, gtBottomUp(chain))
 	if o.tipOnly {
-		r.notes = append(r.notes, "--tip-only ships "+r.branch+" onto its parent's published head and pushes no ancestor")
+		r.notes = append(r.notes, "--tip-only ships "+r.branch+" on the base it sits on, replays nothing, and pushes no ancestor")
 		if o.noPush {
 			return
 		}

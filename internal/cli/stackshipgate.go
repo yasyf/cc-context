@@ -92,7 +92,7 @@ func stackRefuseGreenRestack(ctx context.Context, l lane, run *stackRebaseRun) e
 	if len(earned) == 0 {
 		return nil
 	}
-	return refuse("ship: shipping %s would restack %s onto a new base, restarting CI and dismissing approvals they already have — rerun with --tip-only to ship %s alone onto its parent's published head, or with --restack to move them anyway",
+	return refuse("ship: shipping %s would restack %s onto a new base, restarting CI and dismissing approvals they already have — rerun with --tip-only to ship %s alone on the base it sits on, or with --restack to move them anyway",
 		run.Tip, strings.Join(earned, ", "), run.Tip)
 }
 
