@@ -159,7 +159,8 @@ record_http() {
 	echo "recorded api/$name (HTTP $(cat "$streams/status"), $(wc -c <"$streams/body" | tr -d ' ') bytes)"
 }
 
-viewer_query='query={viewer{login organizations(first:1){nodes{login}}}}'
+viewer_query='query=query($owner:String!){viewer{login} repositoryOwner(login:$owner){... on Organization{viewerIsAMember}}}'
+member_owner="PostPushr"
 guidelines_fields='nameWithOwner,pullRequestTemplates,codeOfConduct,contactLinks,issueTemplates'
 repo_fields='nameWithOwner,owner,isPrivate,viewerPermission'
 run_fields='workflowName,conclusion,startedAt,updatedAt,url,jobs'
@@ -268,7 +269,14 @@ reviews_query() {
 record repo-view-own repo view --json "$repo_fields"
 record repo-view-foreign repo view "$foreign_repo" --json "$repo_fields"
 record repo-view-missing repo view "$own_repo-does-not-exist" --json "$repo_fields"
-record viewer-graphql api graphql -f "$viewer_query"
+record viewer-graphql-own api graphql -f "$viewer_query" -f "owner=${own_repo%%/*}"
+record viewer-graphql-member api graphql -f "$viewer_query" -f "owner=$member_owner"
+record viewer-graphql-foreign api graphql -f "$viewer_query" -f "owner=$foreign_owner"
+if wanted repo-view-repo-scope || wanted viewer-graphql-repo-scope; then
+	: "${GH_REPO_SCOPE_TOKEN:?record-gh-goldens: the repo-scope scenarios need GH_REPO_SCOPE_TOKEN, a classic token holding only the repo scope}"
+	GH_TOKEN="$GH_REPO_SCOPE_TOKEN" record repo-view-repo-scope repo view "$foreign_repo" --json "$repo_fields"
+	GH_TOKEN="$GH_REPO_SCOPE_TOKEN" record viewer-graphql-repo-scope api graphql -f "$viewer_query" -f "owner=$foreign_owner"
+fi
 
 ### ccx vcs guidelines — repo view + community profile + raw contents
 

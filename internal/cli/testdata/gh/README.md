@@ -71,7 +71,7 @@ review comments, a draft pull request).
 
 | Scenario group | Consumed by | Source |
 |---|---|---|
-| `repo-view-*`, `viewer-graphql` | `internal/vcs.fetchRepo` / `fetchViewer` | cc-context (own, ADMIN), cli/cli (foreign), a name that does not resolve |
+| `repo-view-*`, `viewer-graphql-*` | `internal/vcs.fetchRepo` / `fetchViewer` | cc-context (own, ADMIN), cli/cli (foreign), a name that does not resolve, the PostPushr organization (a member); `*-repo-scope` against cli/cli with a classic token holding only the `repo` scope, passed as `GH_REPO_SCOPE_TOKEN` |
 | `guidelines-*` | `internal/cli.fetchGuidelines` | cc-context (every field empty) and cli/cli (templates, code of conduct, `CONTRIBUTING.md`) |
 | `pr-list-*` | `internal/cli.lookupPR` | no pull request, an open one, a draft one |
 | `downstack-graphql-*` | `internal/cli.resolveDownstackPRs` | cc-context branches: one with a single pull request, one carrying two (the descending-order case), one with none |
@@ -80,20 +80,17 @@ review comments, a draft pull request).
 
 ## Where a recording deviates from production argv
 
-Four scenarios could not be captured with the exact argv production sends. Each
-still holds bytes `gh` printed; only the request differs, and only as noted.
+Three groups of scenarios could not be captured with the exact argv production
+sends. Each still holds bytes `gh` printed; only the request differs, and only as
+noted.
 
-- **`cli/viewer-graphql`** asks for `organizations(first:1)` where production asks
-  for `first:100`. The signed-in account belongs to twelve organizations and only
-  five of those memberships are public, so a verbatim recording would publish
-  seven private memberships in a public repository. The parser loops over
-  `nodes`, which a one-element array exercises.
 - **`api/reviews-paginate-page{1,2,3}`** ask for `per_page=1` where production
   asks for `per_page=100`. No feed on a reachable pull request answers
   `per_page=100` in more than one page, and a single page carries no `rel="next"`
   for `ghapi.Paginate` to walk.
-- **`cli/repo-view-foreign`**, **`cli/repo-view-missing`**, and
-  **`cli/guidelines-repo-view-populated`** name their repository positionally.
+- **`cli/repo-view-foreign`**, **`cli/repo-view-missing`**,
+  **`cli/repo-view-repo-scope`**, and **`cli/guidelines-repo-view-populated`**
+  name their repository positionally.
   Production runs `gh repo view` with no argument, against the working
   directory's repository, and there is only one of those to record from.
 - **`cli/rest-pull-create-empty-error`** is the one response GitHub did not

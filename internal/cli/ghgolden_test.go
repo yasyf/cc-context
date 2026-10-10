@@ -206,7 +206,10 @@ var ghGoldenUnnormalized = map[string]ghGoldenPayload{
 	"cli/status-draft-graphql.stdout":           {noFinalNewline: true},
 	"cli/status-graphql-one.stdout":             {noFinalNewline: true},
 	"cli/status-graphql-three.stdout":           {noFinalNewline: true},
-	"cli/viewer-graphql.stdout":                 {noFinalNewline: true},
+	"cli/viewer-graphql-foreign.stdout":         {noFinalNewline: true},
+	"cli/viewer-graphql-member.stdout":          {noFinalNewline: true},
+	"cli/viewer-graphql-own.stdout":             {noFinalNewline: true},
+	"cli/viewer-graphql-repo-scope.stdout":      {noFinalNewline: true},
 	// The one recorded payload carrying trailing whitespace: an Actions log,
 	// whose step lines gh pads and whose interleaved progress output ends in a
 	// carriage return.

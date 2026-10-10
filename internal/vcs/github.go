@@ -21,16 +21,18 @@ import (
 // yours": the lane gate only ever demotes on a positive answer.
 var ErrNoGitHub = errors.New("github metadata unavailable")
 
-// githubSchema is the on-disk format version of the cached repo and viewer
-// records; a mismatch reads as a miss.
+// githubSchema is the on-disk format version of the cached repo record; a
+// mismatch reads as a miss.
 const githubSchema = 1
 
 // githubTTL bounds how long a cached record is served before a refetch.
 const githubTTL = 24 * time.Hour
 
-// viewerQuery asks for the signed-in account and the organizations it belongs
-// to, the two inputs to Repo.Affiliated.
-const viewerQuery = "query={viewer{login organizations(first:100){nodes{login}}}}"
+// viewerQuery asks for the signed-in account and whether it belongs to the
+// organization named by $owner, the two inputs to Repo.Affiliated. A token
+// holding only the repo scope can read both; listing the viewer's organizations
+// needs read:org.
+const viewerQuery = "query=query($owner:String!){viewer{login} repositoryOwner(login:$owner){... on Organization{viewerIsAMember}}}"
 
 // Repo is a repository's GitHub metadata: who owns it, how visible it is, and
 // what the signed-in viewer may do with it.
@@ -44,22 +46,16 @@ type Repo struct {
 	FetchedAt        time.Time `json:"fetched_at"`
 }
 
-// viewer is the signed-in GitHub account and its organizations. Both are the
-// same for every repository on the machine, so they cache once.
+// viewer is the signed-in GitHub account and whether it is a member of the
+// organization that owns the repository being looked up.
 type viewer struct {
-	Login     string    `json:"login"`
-	Orgs      []string  `json:"orgs"`
-	FetchedAt time.Time `json:"fetched_at"`
+	Login  string
+	Member bool
 }
 
 type repoRecord struct {
 	Schema int  `json:"schema"`
 	Repo   Repo `json:"repo"`
-}
-
-type viewerRecord struct {
-	Schema int    `json:"schema"`
-	Viewer viewer `json:"viewer"`
 }
 
 // Writable reports whether the viewer's role can administer the repository:
@@ -113,7 +109,7 @@ func LookupRepo(ctx context.Context, root render.Dir, refresh bool) (Repo, error
 				return nil
 			}
 		}
-		fetched, err := fetchRepo(ctx, root, refresh)
+		fetched, err := fetchRepo(ctx, root)
 		if err != nil {
 			return err
 		}
@@ -144,7 +140,7 @@ func RepoCachePath(ctx context.Context, root string) (string, error) {
 	return filepath.Join(dir, "repo.json"), nil
 }
 
-func fetchRepo(ctx context.Context, root render.Dir, refresh bool) (Repo, error) {
+func fetchRepo(ctx context.Context, root render.Dir) (Repo, error) {
 	out, err := render.RunCLI(ctx, root, "gh", []string{"repo", "view", "--json", "nameWithOwner,owner,isPrivate,viewerPermission"})
 	if err != nil {
 		return Repo{}, fmt.Errorf("%w: gh repo view: %w", ErrNoGitHub, err)
@@ -161,7 +157,7 @@ func fetchRepo(ctx context.Context, root render.Dir, refresh bool) (Repo, error)
 		return Repo{}, fmt.Errorf("parse gh repo view: %w", err)
 	}
 
-	v, err := lookupViewer(ctx, refresh)
+	v, err := fetchViewer(ctx, view.Owner.Login)
 	if err != nil {
 		return Repo{}, err
 	}
@@ -176,80 +172,31 @@ func fetchRepo(ctx context.Context, root render.Dir, refresh bool) (Repo, error)
 	}, nil
 }
 
-// lookupViewer reads the signed-in account, cached machine-wide on the same TTL
-// as a repo record: the login and org list are identical for every repository.
-func lookupViewer(ctx context.Context, refresh bool) (viewer, error) {
-	dir, err := cache.Dir(ctx, "github")
-	if err != nil {
-		return viewer{}, err
-	}
-	path := filepath.Join(dir, "viewer.json")
-	if !refresh {
-		if v, ok := readViewer(path); ok {
-			return v, nil
-		}
-	}
-
-	var v viewer
-	err = cache.WithLock(ctx, dir, "viewer", func() error {
-		if !refresh {
-			if cached, ok := readViewer(path); ok {
-				v = cached
-				return nil
-			}
-		}
-		fetched, err := fetchViewer(ctx)
-		if err != nil {
-			return err
-		}
-		v = fetched
-		return storeRecord(path, viewerRecord{Schema: githubSchema, Viewer: v})
-	})
-	if err != nil {
-		return viewer{}, err
-	}
-	return v, nil
-}
-
-func fetchViewer(ctx context.Context) (viewer, error) {
-	out, err := render.RunCLI(ctx, render.Ambient, "gh", []string{"api", "graphql", "-f", viewerQuery})
+func fetchViewer(ctx context.Context, owner string) (viewer, error) {
+	out, err := render.RunCLI(ctx, render.Ambient, "gh", []string{"api", "graphql", "-f", viewerQuery, "-f", "owner=" + owner})
 	if err != nil {
 		return viewer{}, fmt.Errorf("%w: gh api graphql: %w", ErrNoGitHub, err)
 	}
 	var resp struct {
 		Data struct {
 			Viewer struct {
-				Login         string `json:"login"`
-				Organizations struct {
-					Nodes []struct {
-						Login string `json:"login"`
-					} `json:"nodes"`
-				} `json:"organizations"`
+				Login string `json:"login"`
 			} `json:"viewer"`
+			RepositoryOwner struct {
+				ViewerIsAMember bool `json:"viewerIsAMember"`
+			} `json:"repositoryOwner"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal([]byte(out), &resp); err != nil {
 		return viewer{}, fmt.Errorf("parse gh api graphql: %w", err)
 	}
-	v := viewer{Login: resp.Data.Viewer.Login, FetchedAt: time.Now()}
-	for _, node := range resp.Data.Viewer.Organizations.Nodes {
-		v.Orgs = append(v.Orgs, node.Login)
-	}
-	return v, nil
+	return viewer{Login: resp.Data.Viewer.Login, Member: resp.Data.RepositoryOwner.ViewerIsAMember}, nil
 }
 
-// affiliated reports whether owner is the viewer itself or one of its
-// organizations. GitHub logins are case-insensitive.
+// affiliated reports whether owner is the viewer itself or an organization it
+// belongs to. GitHub logins are case-insensitive.
 func affiliated(owner string, v viewer) bool {
-	if strings.EqualFold(owner, v.Login) {
-		return true
-	}
-	for _, org := range v.Orgs {
-		if strings.EqualFold(owner, org) {
-			return true
-		}
-	}
-	return false
+	return v.Member || strings.EqualFold(owner, v.Login)
 }
 
 func readRepo(path string) (Repo, bool) {
@@ -258,14 +205,6 @@ func readRepo(path string) (Repo, bool) {
 		return Repo{}, false
 	}
 	return rec.Repo, true
-}
-
-func readViewer(path string) (viewer, bool) {
-	var rec viewerRecord
-	if !readRecord(path, &rec) || rec.Schema != githubSchema || time.Since(rec.Viewer.FetchedAt) >= githubTTL {
-		return viewer{}, false
-	}
-	return rec.Viewer, true
 }
 
 // readRecord decodes path into out, reporting false for an absent or

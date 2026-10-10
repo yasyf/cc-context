@@ -1,0 +1,13 @@
+{
+  "argv": [
+    "api",
+    "graphql",
+    "-f",
+    "query=query($owner:String!){viewer{login} repositoryOwner(login:$owner){... on Organization{viewerIsAMember}}}",
+    "-f",
+    "owner=yasyf"
+  ],
+  "exit": 0,
+  "stdout": "{\"data\":{\"viewer\":{\"login\":\"yasyf\"},\"repositoryOwner\":{}}}",
+  "stderr": ""
+}
