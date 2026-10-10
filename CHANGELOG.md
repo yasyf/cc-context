@@ -21,6 +21,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs stack submit` republishes over Graphite's restack of a parked
+  pull request.** On monorepo #34213, after its parent landed, Graphite
+  restacked `monitor-titles-api-slug` onto a newer `dev` and deleted
+  `graphite-base/34213` between the submit's leases and its push, and the
+  atomic push refused both refs as stale though the patches were identical.
+  The stale-lease recovery compared patches from the submit's own trunk pin,
+  so a restack onto a newer trunk never matched, and it never re-read the
+  graphite-base lease. It now compares only each branch's own commits,
+  whatever base they sit on, and re-leases each parked graphite-base branch,
+  dropping its move when Graphite already deleted it; `ccx vcs ship` re-leases
+  it the same way.
+
 - **`ccx vcs ship` leaves the branches above it that other working copies
   hold.** On monorepo, each branch of the oncall stack lived in the worktree
   of the lane editing it, and a plain ship from `oncall-card-manage` replayed

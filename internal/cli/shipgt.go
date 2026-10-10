@@ -2254,17 +2254,27 @@ func gtRefuseQueueRestack(ctx context.Context, dir render.Dir, client *gtapi.Cli
 // gtParkedBases marks each branch whose pull request Graphite parked on a
 // graphite-base branch, leased on where that branch stands on the remote now.
 func gtParkedBases(ctx context.Context, dir render.Dir, plan []gtSubmitBranch, known map[string]gtapi.PullRequestInfo, trunkHead string) error {
-	var parked []string
 	for i, b := range plan {
 		if pr := known[b.name]; pr.IsBaseRefGraphiteBase {
 			plan[i].parkedOn = pr.BaseRefName
-			parked = append(parked, pr.BaseRefName)
+		}
+	}
+	return gtLeaseParked(ctx, dir, plan, trunkHead)
+}
+
+// gtLeaseParked leases each parked graphite-base branch on where it stands on
+// the remote now, and drops the move of one Graphite already deleted.
+func gtLeaseParked(ctx context.Context, dir render.Dir, plan []gtSubmitBranch, negotiationTip string) error {
+	var parked []string
+	for _, b := range plan {
+		if b.parkedOn != "" {
+			parked = append(parked, b.parkedOn)
 		}
 	}
 	if len(parked) == 0 {
 		return nil
 	}
-	heads, err := stackRemoteHeads(ctx, dir, stackRebasePrefix, "origin", parked, trunkHead)
+	heads, err := stackRemoteHeads(ctx, dir, stackRebasePrefix, "origin", parked, negotiationTip)
 	if err != nil {
 		return err
 	}
@@ -2273,7 +2283,7 @@ func gtParkedBases(ctx context.Context, dir render.Dir, plan []gtSubmitBranch, k
 			continue
 		}
 		if heads[b.parkedOn] == "" {
-			plan[i].parkedOn = ""
+			plan[i].parkedOn, plan[i].parkedLease = "", ""
 			continue
 		}
 		plan[i].parkedLease = heads[b.parkedOn]
@@ -2688,6 +2698,9 @@ func gtPushStack(ctx context.Context, dir render.Dir, s gtSubmit, plan []gtSubmi
 		plan[i].lease, plan[i].leaseSet = remote, true
 	}
 	if len(moved) == 0 {
+		if err := gtLeaseParked(ctx, dir, plan, s.trunkHead); err != nil {
+			return err
+		}
 		err = gtRunPush(ctx, dir, s, plan)
 		if err == nil {
 			return thinRecordPush(ctx, dir, "origin", gtPushedHeads(plan))

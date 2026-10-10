@@ -39,11 +39,14 @@ type gtAPIStub struct {
 	bodies         map[string]string
 	unauthorized   bool
 	presubmitError string
-	submitErrors   map[string]string
-	queued         map[string]bool
-	mergeability   map[int]string
-	untracked      map[int]gtStubUntracked
-	nextPR         int
+	// presubmitRace runs once, inside the first pre-submit call, for a test
+	// that moves origin between the submit's leases and its push.
+	presubmitRace func()
+	submitErrors  map[string]string
+	queued        map[string]bool
+	mergeability  map[int]string
+	untracked     map[int]gtStubUntracked
+	nextPR        int
 	// parked maps a branch to the graphite-base branch pre-submit moved its
 	// pull request onto; remote reads and writes that branch on origin.
 	parked   map[string]string
@@ -277,6 +280,10 @@ func (s *gtAPIStub) serve(w http.ResponseWriter, r *http.Request) {
 		if s.presubmitError != "" {
 			s.write(w, map[string]any{"result": map[string]any{"error": s.presubmitError}})
 			return
+		}
+		if race := s.presubmitRace; race != nil {
+			s.presubmitRace = nil
+			race()
 		}
 		var req struct {
 			Branches []gtapi.PreSubmitBranch `json:"branches"`
