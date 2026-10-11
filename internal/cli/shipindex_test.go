@@ -87,21 +87,18 @@ func TestShipRefusesAnIndexThatLeavesATrackedEditUnstaged(t *testing.T) {
 			writeShipFile(t, f.Dir, "partial.txt", "three\n")
 			writeShipFile(t, f.Dir, "edited.txt", "two\n")
 
-			plan, err := runShipCmd(f.Context(), t, "-m", "fix: retire gone.txt", "--no-push", "--dry-run")
-			if err != nil {
-				t.Fatalf("dry run = %v", err)
+			refusals := dryRunValues(dryRunReport(t, f, "-m", "fix: retire gone.txt", "--no-push"), "refuses")
+			if len(refusals) != 1 || !strings.Contains(refusals[0], "tracked edited.txt,") {
+				t.Errorf("dry run refusals = %q, want one naming edited.txt", refusals)
 			}
-			if !strings.Contains(plan, "refuses") || !strings.Contains(plan, "tracked edited.txt,") {
-				t.Errorf("dry run = %q, want it to report the refusal naming edited.txt", plan)
-			}
-			_, err = runShipCmd(f.Context(), t, "-m", "fix: retire gone.txt", "--no-push")
+			_, err := runShipCmd(f.Context(), t, "-m", "fix: retire gone.txt", "--no-push")
 			if err == nil || !strings.Contains(err.Error(), "the index stages gone.txt, partial.txt but none of the changes to tracked edited.txt,") {
 				t.Fatalf("ship = %v, want a refusal naming edited.txt and nothing else", err)
 			}
 			if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD"); got != head {
 				t.Errorf("HEAD = %s, want %s untouched by the refusal", got, head)
 			}
-			for path, want := range map[string]string{"gone.txt": "D  gone.txt", "edited.txt": " M edited.txt", "partial.txt": "MM partial.txt"} {
+			for path, want := range map[string]string{"gone.txt": "D  gone.txt", "edited.txt": "M edited.txt", "partial.txt": "MM partial.txt"} {
 				if status := gitAt(t, f.Env(), f.Dir, "status", "--porcelain", "--", path); status != want {
 					t.Errorf("%s status = %q, want %q", path, status, want)
 				}
