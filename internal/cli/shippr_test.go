@@ -512,13 +512,19 @@ func TestShipPRClaimsThePullRequestForTheSession(t *testing.T) {
 			if _, err := runShipCmd(f.Context(), t, append([]string{"-m", "fix: frobnicate", "--no-watch"}, tt.args...)...); err != nil {
 				t.Fatalf("ship error = %v", err)
 			}
-			var claims [][]string
+			var claims, lookups [][]string
 			for _, inv := range vcstest.Invocations(t, f.ArgvLog) {
-				if inv[0] == "cci" {
+				switch {
+				case inv[0] == "cci":
 					claims = append(claims, inv)
+				case inv[0] == "gh" && isPRLookup(inv):
+					lookups = append(lookups, inv)
 				}
 			}
 			assertInvocations(t, claims, want)
+			if tt.args == nil {
+				assertInvocations(t, lookups, [][]string{append([]string{"gh"}, ghPullsByHeadArgv(fakePRRepo, "feature", "open")...)})
+			}
 		})
 	}
 }
