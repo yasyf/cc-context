@@ -484,15 +484,21 @@ func TestShipPRClaimsThePullRequestForTheSession(t *testing.T) {
 		name    string
 		session string
 		pulls   string
+		args    []string
 		want    func(t *testing.T) [][]string
 	}{
-		{"a create claims it opened", "sess-abc", "rest-pulls-head-none", func(t *testing.T) [][]string {
+		{"a create claims it opened", "sess-abc", "rest-pulls-head-none", []string{"--pr-title", "Better title"}, func(t *testing.T) [][]string {
 			return [][]string{{"cci", "claim", "--rel", "opened", "--pr", strconv.Itoa(shipPRCreated(t).Number)}}
 		}},
-		{"a push to an open one claims it updated", "sess-abc", "rest-pulls-head-open", func(t *testing.T) [][]string {
+		{"a push to an open one claims it updated", "sess-abc", "rest-pulls-head-open", []string{"--pr-title", "Better title"}, func(t *testing.T) [][]string {
 			return [][]string{{"cci", "claim", "--rel", "updated", "--pr", strconv.Itoa(prFromListGolden(t, "rest-pulls-head-open").Number)}}
 		}},
-		{"no session claims nothing", "", "rest-pulls-head-open", func(*testing.T) [][]string { return nil }},
+		{"a bare push to an open one claims it updated", "sess-abc", "rest-pulls-head-open", nil, func(t *testing.T) [][]string {
+			return [][]string{{"cci", "claim", "--rel", "updated", "--pr", strconv.Itoa(prFromListGolden(t, "rest-pulls-head-open").Number)}}
+		}},
+		{"a bare push with none open claims nothing", "sess-abc", "rest-pulls-head-none", nil, func(*testing.T) [][]string { return nil }},
+		{"a bare push with --no-pr claims nothing", "sess-abc", "rest-pulls-head-open", []string{"--no-pr"}, func(*testing.T) [][]string { return nil }},
+		{"no session claims nothing", "", "rest-pulls-head-open", []string{"--pr-title", "Better title"}, func(*testing.T) [][]string { return nil }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -503,7 +509,7 @@ func TestShipPRClaimsThePullRequestForTheSession(t *testing.T) {
 			t.Setenv("GH_PULLS_JSON", ghStdout(t, tt.pulls))
 			want := tt.want(t)
 
-			if _, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--pr-title", "Better title"); err != nil {
+			if _, err := runShipCmd(f.Context(), t, append([]string{"-m", "fix: frobnicate", "--no-watch"}, tt.args...)...); err != nil {
 				t.Fatalf("ship error = %v", err)
 			}
 			var claims [][]string

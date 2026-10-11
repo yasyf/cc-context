@@ -343,8 +343,9 @@ func TestClassifyGTProbe(t *testing.T) {
 // TestShipGateProbe drives the probe end to end through ship, with the cached
 // verdict cleared so gt auth actually runs and answers out of the recorded
 // corpus. Every answer gt gives demotes — a decline and an exit 0 that never
-// confirms this repository alike — each carrying its own note into the report,
-// and the ship lands on the git lane regardless.
+// confirms this repository alike — and the ship lands on the git lane. Each
+// carries its note into the report except a decline for lack of access, whose
+// Graphite config is stale rather than a lane the ship fell back from.
 //
 // The ready line that would keep the lane has no recording: gt prints it only
 // for a repository Graphite is permitted to submit to, so testdata/gt names it
@@ -352,15 +353,12 @@ func TestClassifyGTProbe(t *testing.T) {
 // seeded verdict.
 func TestShipGateProbe(t *testing.T) {
 	tests := []struct {
-		golden   string
-		wantNote string
+		golden      string
+		wantSegment string
 	}{
-		{golden: "auth-no-token", wantNote: "graphite has no auth token — run gt auth --token <token>"},
-		{
-			golden:   "auth-no-perms",
-			wantNote: "graphite cannot submit to yasyf/cc-context — grant it access at " + gtGrantURL + ", or git config " + nogtKey + " true",
-		},
-		{golden: "auth-authenticated-elsewhere", wantNote: "gt auth exited 0 without confirming this repo is submittable"},
+		{golden: "auth-no-token", wantSegment: "lane git (graphite has no auth token — run gt auth --token <token>)"},
+		{golden: "auth-no-perms"},
+		{golden: "auth-authenticated-elsewhere", wantSegment: "lane git (gt auth exited 0 without confirming this repo is submittable)"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.golden, func(t *testing.T) {
@@ -377,9 +375,11 @@ func TestShipGateProbe(t *testing.T) {
 			if len(invocations) < 2 || invocations[1][0] != "gt" || invocations[1][1] != "auth" {
 				t.Fatalf("argv after the lane gate = %v, want gt auth", invocations)
 			}
-			want := "lane git (" + tt.wantNote + ")"
-			if !strings.HasPrefix(out, want) {
-				t.Errorf("report = %q, want it to lead with %q", out, want)
+			switch {
+			case tt.wantSegment == "" && strings.HasPrefix(out, "lane "):
+				t.Errorf("report = %q, want no lane segment for a repo Graphite has no access to", out)
+			case !strings.HasPrefix(out, tt.wantSegment):
+				t.Errorf("report = %q, want it to lead with %q", out, tt.wantSegment)
 			}
 			assertNoGTCommit(t, invocations)
 			if subject := gitAt(t, f.Env(), f.Dir, "log", "-1", "--format=%s"); subject != "fix: frobnicate" {
@@ -646,8 +646,11 @@ func TestShipGateRespectsNoGTConfig(t *testing.T) {
 	if l.gt {
 		t.Error("resolveLane() kept the gt lane over a set ccx.nogt")
 	}
-	if want := "gt disabled for this repo (" + nogtKey + ")"; l.note != want {
-		t.Errorf("lane note = %q, want %q", l.note, want)
+	if l.note != gtDisabledNote {
+		t.Errorf("lane note = %q, want %q", l.note, gtDisabledNote)
+	}
+	if seg := l.reportSegment(); seg != "" {
+		t.Errorf("reportSegment() = %q, want none for a repo that opted out", seg)
 	}
 	invocations := vcstest.Invocations(t, f.ArgvLog)
 	assertNoGT(t, invocations)
