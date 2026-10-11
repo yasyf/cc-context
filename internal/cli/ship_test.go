@@ -4703,6 +4703,42 @@ func TestShipIllegalBranchName(t *testing.T) {
 	}
 }
 
+// TestShipValueWordBranchName proves a value word given as a branch name is
+// refused before any lane work, though git would accept it.
+func TestShipValueWordBranchName(t *testing.T) {
+	t.Parallel()
+	f := shipRepo(t, vcstest.Remote(), vcstest.Dirty())
+	head := shipHead(t, f)
+	for _, row := range []struct {
+		args      []string
+		canonical string
+		name      string
+	}{
+		{[]string{"--new-branch=false"}, "--new-branch", "false"},
+		{[]string{"--new-branch", "false"}, "--new-branch", "false"},
+		{[]string{"--create=TRUE"}, "--new-branch", "TRUE"},
+		{[]string{"--new-branch=null"}, "--new-branch", "null"},
+		{[]string{"--branch=None"}, "--branch", "None"},
+		{[]string{"--bookmark", "false"}, "--branch", "false"},
+	} {
+		t.Run(strings.Join(row.args, " "), func(t *testing.T) {
+			shipResetLog(t, f)
+
+			_, err := runShipCmd(f.Context(), t, append([]string{"-m", "fix: frobnicate", "--no-push"}, row.args...)...)
+			wantErr := fmt.Sprintf("ship: %s %q reads as a flag value, not a branch name: omit %s to commit where ship otherwise would, or name the branch", row.canonical, row.name, row.canonical)
+			if err == nil || err.Error() != wantErr {
+				t.Fatalf("error = %v, want %q", err, wantErr)
+			}
+			invocations := vcstest.Invocations(t, f.ArgvLog)
+			assertNoShipMutation(t, invocations)
+			if invocations != nil {
+				t.Errorf("no VCS command may run before the value-word refusal, got %v", invocations)
+			}
+			assertShipRefusedClean(t, f, head)
+		})
+	}
+}
+
 // TestShipBranchFlag covers --branch's three outcomes: appending to the branch
 // already checked out, cutting one that does not exist, and refusing to switch
 // to one that exists elsewhere.

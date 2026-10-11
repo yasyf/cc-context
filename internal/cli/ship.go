@@ -203,7 +203,7 @@ With no paths, ship commits exactly the index when anything is staged: untracked
 
 Ship refuses an empty working copy only when the branch carries nothing above trunk either. Where it does carry commits trunk does not — work a delegate's worktree, a hand-made commit, or a codex lane already landed — there is nothing to cut and everything to submit, so ship skips the commit and goes on to push and the pull request, reporting "nothing to commit — shipping as --no-commit". A path-scoped ship whose scoped paths are clean takes that same path, naming them: scoping already declared everything else out, so finding them clean over a branch ahead of trunk means the work landed. --no-commit states the path outright and refuses a working copy holding changes to tracked files, which would otherwise be left out of the branch and the pull request this same run updates; git's untracked paths do not refuse it, since a run that cuts no commit was never going to carry a worktree's scratch into one, and the report names them as "left untracked: <paths>" instead. Under jj there is nothing to exempt: a new file is already part of the working-copy commit --no-commit pushes. --no-commit is refused alongside paths, where the two spellings contradict each other. Where the branch carries nothing above trunk there is nothing to submit either, and the refusal says so. Ship resolves the push target before committing, so a refusal leaves the working copy untouched. After committing, ship fetches from the remote first and, when the target is no longer an ancestor of the local stack, rebases the stack onto it (jj: the target bookmark; git: origin/<branch>). On git, an origin/<branch> that is the branch's own history rewritten locally — a head its reflog reaches, its last publication, or commits the stack carries patch for patch — is not rebased onto: ship force-pushes over it with a lease on that exact head and reports "force-pushed … replaced <sha> under a lease". A rebase that would conflict is rolled back and reported instead of pushed. Uncommitted work the rebase has to move — every hunk a scoped ship deliberately left in the tree — is kept as a commit of its own rather than on refs/stash, which every working copy of a repository shares, and put back afterwards; work that will not go back leaves the commit holding it and the files in it named in the refusal. A push the remote rejects because it advanced again mid-ship re-fetches, re-rebases, and retries up to 3 attempts before failing with the manual recovery steps. --amend never retries a rejected push: the force-with-lease refusal is reported for manual reconciliation instead of overwriting the concurrent push.
 
-Where the commit goes is one decision, resolved before any mutation and reported as a branch <name> or created <name> segment. On a non-trunk branch or bookmark, ship appends to it. On trunk it appends in your own repositories — direct-to-main is deliberate there — and starts a branch named from the commit subject when GitHub says the repository is someone else's, since an org trunk rejects the commit through its protect-<trunk> hook and leaves it dangling; the graphite lane always starts a branch on trunk, because gt has no verb that commits onto it. A detached HEAD is refused rather than guessed at, unless --new-branch names a branch to cut there, and so are several trunk candidates unless --branch names one of them. --branch <name> commits onto that branch, creating it here when it does not exist and refusing when it exists somewhere else, since ship does not check branches out; --new-branch [<name>] always starts one, deriving the name from the commit subject when bare; --new-branch name and --new-branch=name both name it, the positional after a bare --new-branch being its name unless -- separates the two, and a name that is also a path on disk is refused as ambiguous; --append refuses on trunk; --allow-trunk lets --branch advance a trunk you do not own. --bookmark is a jj-only alias of --branch, --create a deprecated alias of --new-branch. A new branch is cut with gt create (graphite), git switch -c (git), or jj bookmark create -r @- (jj).
+Where the commit goes is one decision, resolved before any mutation and reported as a branch <name> or created <name> segment. On a non-trunk branch or bookmark, ship appends to it. On trunk it appends in your own repositories — direct-to-main is deliberate there — and starts a branch named from the commit subject when GitHub says the repository is someone else's, since an org trunk rejects the commit through its protect-<trunk> hook and leaves it dangling; the graphite lane always starts a branch on trunk, because gt has no verb that commits onto it. A detached HEAD is refused rather than guessed at, unless --new-branch names a branch to cut there, and so are several trunk candidates unless --branch names one of them. --branch <name> commits onto that branch, creating it here when it does not exist and refusing when it exists somewhere else, since ship does not check branches out; --new-branch [<name>] always starts one, deriving the name from the commit subject when bare; --new-branch name and --new-branch=name both name it, the positional after a bare --new-branch being its name unless -- separates the two, a name that is also a path on disk is refused as ambiguous, and a value word (true, false, null, none) is refused for both flags rather than cut as a branch; --append refuses on trunk; --allow-trunk lets --branch advance a trunk you do not own. --bookmark is a jj-only alias of --branch, --create a deprecated alias of --new-branch. A new branch is cut with gt create (graphite), git switch -c (git), or jj bookmark create -r @- (jj).
 
 Ship runs the repository's hooks on every commit it makes, wherever the commit lands, a pull request's branch included: CI and the hooks both own formatting, and a hook skipped locally only resurfaces as a red check after the push. Where a prek config exists, ship runs the suite itself through uvx prek; auto-fixes fold into the commit, and the commit verb then carries --no-verify so git's own pre-commit hook does not repeat the same checks. Every push ship makes runs git's pre-push hook. --no-verify skips them all, the commit's and the push's; --verify states the default.
 
@@ -1323,7 +1323,8 @@ func shipAlreadyCommitted(ctx context.Context, dir render.Dir, kind vcs.Kind, pl
 // the two; a positional that is also a path on disk is refused as ambiguous
 // rather than guessed at.
 //
-// An explicit name skips deriveBranchName's legality check, so it runs here.
+// An explicit name skips deriveBranchName's legality check, so it runs here,
+// along with the refusal of a value word such as --new-branch=false.
 func resolveBranchFlags(cmd *cobra.Command, o *shipOpts) error {
 	for _, name := range []string{"new-branch", "create"} {
 		if cmd.Flags().Changed(name) && o.newBranch == "" {
@@ -1338,11 +1339,23 @@ func resolveBranchFlags(cmd *cobra.Command, o *shipOpts) error {
 		o.newBranch = name
 		o.paths = slices.Delete(slices.Clone(o.paths), o.newBranchAt, o.newBranchAt+1)
 	}
-	if o.branch != "" && !legalBranchName(o.branch) {
-		return fmt.Errorf("ship: --branch %q is not a legal branch name", o.branch)
+	if o.branch != "" {
+		if err := checkBranchFlagName("--branch", o.branch); err != nil {
+			return err
+		}
 	}
-	if o.newBranch != "" && o.newBranch != branchNoOptDefVal && !legalBranchName(o.newBranch) {
-		return fmt.Errorf("ship: --new-branch %q is not a legal branch name", o.newBranch)
+	if o.newBranch != "" && o.newBranch != branchNoOptDefVal {
+		return checkBranchFlagName("--new-branch", o.newBranch)
+	}
+	return nil
+}
+
+func checkBranchFlagName(flag, name string) error {
+	if valueWordBranchName(name) {
+		return fmt.Errorf("ship: %s %q reads as a flag value, not a branch name: omit %s to commit where ship otherwise would, or name the branch", flag, name, flag)
+	}
+	if !legalBranchName(name) {
+		return fmt.Errorf("ship: %s %q is not a legal branch name", flag, name)
 	}
 	return nil
 }

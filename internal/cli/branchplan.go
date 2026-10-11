@@ -243,6 +243,18 @@ func legalBranchName(name string) bool {
 	}
 }
 
+// valueWordBranchName reports whether name is a word a caller means as a flag
+// value rather than a branch: git accepts a branch named false, so
+// --new-branch=false would otherwise cut one.
+func valueWordBranchName(name string) bool {
+	switch strings.ToLower(name) {
+	case "true", "false", "null", "none":
+		return true
+	default:
+		return false
+	}
+}
+
 func firstLine(s string) string {
 	line, _, _ := strings.Cut(s, "\n")
 	return line
