@@ -29,6 +29,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs ship` refuses a value word as a branch name.** Git accepts a
+  branch named `false`, so `--new-branch=false` cut, tracked, and submitted
+  one, as on monorepo #34975. `--new-branch`, `--branch`, and their aliases
+  now refuse `true`, `false`, `null`, and `none` in any case before any
+  repository read, naming the flag and the value.
+
 - **`ccx vcs ship` drops the Graphite decline from its report when nothing
   fell back.** A repository with a stale `.graphite_repo_config` that Graphite
   has no access to printed `lane git (graphite cannot submit to …)` on every
