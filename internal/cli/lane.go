@@ -77,6 +77,11 @@ const gtGrantURL = "https://app.graphite.com/settings"
 // every ship.
 const nogtKey = "ccx.nogt"
 
+const (
+	gtDisabledNote = "gt disabled for this repo (" + nogtKey + ")"
+	gtNoAccessNote = "graphite cannot submit to "
+)
+
 // gtVerdict answers whether Graphite can submit for a repo. Unknown is its own
 // answer, not a synonym for either other: only gtVerdictOK keeps the gt lane.
 // An unknown gt answered, such as an exit 0 that never confirms the repo,
@@ -108,6 +113,13 @@ type lane struct {
 }
 
 func (l lane) dir() render.Dir { return render.Dir(l.root) }
+
+func (l lane) reportSegment() string {
+	if l.note == "" || l.note == gtDisabledNote || strings.HasPrefix(l.note, gtNoAccessNote) {
+		return ""
+	}
+	return fmt.Sprintf("lane %s (%s)", kindLabel(l.kind), l.note)
+}
 
 // gtRecord is one repo's cached gt-reachability verdict, stored beside its
 // GitHub metadata. Every verdict is written, each on its own TTL, and answers
@@ -169,7 +181,7 @@ func resolveLaneRefresh(ctx context.Context, name, dir string, noGT, refresh boo
 		return l, nil
 	}
 	if gtDisabled(ctx, render.Dir(root)) {
-		l.note = "gt disabled for this repo (" + nogtKey + ")"
+		l.note = gtDisabledNote
 		return l, nil
 	}
 	if render.LookPath(ctx, "gt") == "" {
@@ -385,7 +397,7 @@ func gtProbeFallbackNote(output string) string {
 func gtProbeDeniedNote(output string) string {
 	_, repo, _ := strings.Cut(gtProbeLine(output, gtProbeNoPerms), gtProbeNoPerms)
 	repo = strings.TrimSuffix(strings.TrimSpace(repo), ".")
-	return "graphite cannot submit to " + repo + " — grant it access at " + gtGrantURL + ", or git config " + nogtKey + " true"
+	return gtNoAccessNote + repo + " — grant it access at " + gtGrantURL + ", or git config " + nogtKey + " true"
 }
 
 // gtProbeLine returns the whole output line carrying marker, which is where

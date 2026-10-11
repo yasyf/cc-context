@@ -4208,8 +4208,8 @@ func stackFinishGit(ctx context.Context, cmd *cobra.Command, l lane, commonDir s
 	if err := errors.Join(stackDropPublicationPins(ctx, l.dir(), run), stackClearRun(commonDir, run)); err != nil {
 		return fmt.Errorf("restack: %s is rebased, but clearing the run failed: %w", b.Name, err)
 	}
-	if l.note != "" {
-		summary = fmt.Sprintf("lane %s (%s)%s%s", kindLabel(l.kind), l.note, shipSep, summary)
+	if seg := l.reportSegment(); seg != "" {
+		summary = seg + shipSep + summary
 	}
 	cmd.Println(summary)
 	return nil

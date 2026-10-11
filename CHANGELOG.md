@@ -29,6 +29,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs ship` drops the Graphite decline from its report when nothing
+  fell back.** A repository with a stale `.graphite_repo_config` that Graphite
+  has no access to printed `lane git (graphite cannot submit to …)` on every
+  ship, restack, and stack rebase, as did one opted out with `ccx.nogt`. Those
+  two lead with no lane segment now; `ccx vcs info` still names the verdict.
+  Every other decline keeps its segment.
+
+- **A bare push to an open pull request claims it in cci.** Outside the
+  Graphite lane, a ship without a PR flag skipped the pull request step, so
+  it claimed nothing. In a session with `cci` on the PATH it now looks up the
+  branch's open pull request and claims it with `--rel updated`. `--no-pr`
+  skips the lookup.
+
 - **A session without the ccx MCP tools is no longer told to load them.** The
   guard pack told every fresh session to load the deferred ccx tools with one
   `ToolSearch` call. A `SessionStart` hook's input names no MCP server, so the
