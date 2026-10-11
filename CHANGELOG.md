@@ -29,6 +29,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs ship` refuses a staged index that leaves a tracked edit out.**
+  With no paths, ship commits exactly the index once anything is staged, so a
+  `git rm` or `git mv` beside unstaged edits to other files committed only the
+  deletions, as on cc-context #364 and cc-skills #383. Ship now refuses before
+  anything moves when a tracked file holds changes none of which are staged,
+  naming it; `--dry-run` reports the same refusal. The unstaged half of a
+  partially staged file still stays behind.
+
 - **`ccx vcs ship` refuses a value word as a branch name.** Git accepts a
   branch named `false`, so `--new-branch=false` cut, tracked, and submitted
   one, as on monorepo #34975. `--new-branch`, `--branch`, and their aliases
