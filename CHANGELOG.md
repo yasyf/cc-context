@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`ccx vcs ship` and `ccx vcs stack submit` claim their pull requests in
+  cci.** In a Claude Code or Codex session with `cci` on the PATH, each pull
+  request the Graphite submit or ship's pull request step opens is claimed
+  with `cci claim --pr <n> --rel opened`. Each one they update is claimed
+  with `--rel updated`. `cci who --pr <n>` then names
+  the session without the agent remembering to claim it. Without `cci` or a
+  session nothing runs, and a failed claim only warns.
+
 - **`ccx vcs pr recreate <n>` replaces a pull request Graphite no longer
   tracks.** When Graphite's stack record for an open pull request still holds
   pull requests that already landed, the merge queue reads it as untracked,

@@ -1991,6 +1991,8 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 	}
 
 	var landed []gtapi.SubmittedPR
+	var submitted []gtSubmitBranch
+	defer func() { gtClaimPosted(ctx, errW, l.dir(), s.prefix, submitted, entries) }()
 	for i, pr := range gtSubmitPRs(posted, s.draft, s.updateDraft(tip)) {
 		out, err := client.SubmitPullRequests(ctx, gtapi.SubmitRequest{
 			RepoOwner:       owner,
@@ -2002,6 +2004,7 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 			return nil, nil, gtSubmitFailure(gtSubmitPartial(err, pr.Head, landed), s)
 		}
 		landed = append(landed, out...)
+		submitted = append(submitted, posted[i])
 		if posted[i].pr != 0 {
 			continue
 		}

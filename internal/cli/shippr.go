@@ -256,7 +256,7 @@ func shipPRRepo(ctx context.Context, l lane, plan branchPlan, base string) (stri
 // branch's pull request when there is none and restates exactly the fields this
 // invocation named when there is, so a description someone edited by hand
 // survives a re-ship that does not mention it.
-func shipPR(ctx context.Context, l lane, nwo, remote, branch, trunk, subject string, meta map[string]prMeta, stack []stackEntry) (string, error) {
+func shipPR(ctx context.Context, errW io.Writer, l lane, nwo, remote, branch, trunk, subject string, meta map[string]prMeta, stack []stackEntry) (string, error) {
 	if l.gt {
 		return shipPRGT(ctx, nwo, meta, stack)
 	}
@@ -270,17 +270,23 @@ func shipPR(ctx context.Context, l lane, nwo, remote, branch, trunk, subject str
 	if err != nil {
 		return "", err
 	}
-	if !found {
-		if m.base != "" {
-			return shipPRCreate(ctx, nwo, branch, m.base, false, subject, m)
-		}
-		base, err := shipPRBase(ctx, l.dir(), remote, branch, trunk)
-		if err != nil {
+	if found {
+		cciClaimPRs(ctx, errW, l.dir(), "ship", nil, []int{pr.Number})
+		return shipPREdit(ctx, nwo, pr, m)
+	}
+	base, picked := m.base, false
+	if base == "" {
+		if base, err = shipPRBase(ctx, l.dir(), remote, branch, trunk); err != nil {
 			return "", err
 		}
-		return shipPRCreate(ctx, nwo, branch, base, base != trunk, subject, m)
+		picked = base != trunk
 	}
-	return shipPREdit(ctx, nwo, pr, m)
+	created, err := shipPRCreate(ctx, nwo, branch, base, picked, subject, m)
+	if err != nil {
+		return "", err
+	}
+	cciClaimPRs(ctx, errW, l.dir(), "ship", []int{created.Number}, nil)
+	return shipPRSegment(created, base, picked), nil
 }
 
 // shipPRBase is the base a new pull request opens against when --parent named
@@ -360,16 +366,16 @@ func lookupPR(ctx context.Context, nwo, branch string) (prState, bool, error) {
 // resolve to the parent and can target upstream. The body is only what the
 // caller stated, never the commit message, which would publish
 // withSessionTrailer's Claude-Session-Id line into the description.
-func shipPRCreate(ctx context.Context, nwo, branch, base string, picked bool, subject string, m prMeta) (string, error) {
+func shipPRCreate(ctx context.Context, nwo, branch, base string, picked bool, subject string, m prMeta) (prState, error) {
 	title := m.title
 	if title == "" {
 		title = subject
 	}
 	draft := m.draft != nil && *m.draft
-	pr, err := createPR(ctx, nwo, branch, base, title, m.bodyPath, draft)
-	if err != nil {
-		return "", err
-	}
+	return createPR(ctx, nwo, branch, base, title, m.bodyPath, draft)
+}
+
+func shipPRSegment(pr prState, base string, picked bool) string {
 	seg := fmt.Sprintf("opened PR #%d %s", pr.Number, pr.URL)
 	if picked {
 		seg += " onto " + base
@@ -377,7 +383,7 @@ func shipPRCreate(ctx context.Context, nwo, branch, base string, picked bool, su
 	if pr.IsDraft {
 		seg += " [draft]"
 	}
-	return seg, nil
+	return seg
 }
 
 // prCreateAttempts bounds the creates a server error may repeat.

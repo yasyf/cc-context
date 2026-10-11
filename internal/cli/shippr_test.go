@@ -479,6 +479,44 @@ func TestShipPRCreateGitLaneOnAParentBranch(t *testing.T) {
 	}
 }
 
+func TestShipPRClaimsThePullRequestForTheSession(t *testing.T) {
+	tests := []struct {
+		name    string
+		session string
+		pulls   string
+		want    func(t *testing.T) [][]string
+	}{
+		{"a create claims it opened", "sess-abc", "rest-pulls-head-none", func(t *testing.T) [][]string {
+			return [][]string{{"cci", "claim", "--rel", "opened", "--pr", strconv.Itoa(shipPRCreated(t).Number)}}
+		}},
+		{"a push to an open one claims it updated", "sess-abc", "rest-pulls-head-open", func(t *testing.T) [][]string {
+			return [][]string{{"cci", "claim", "--rel", "updated", "--pr", strconv.Itoa(prFromListGolden(t, "rest-pulls-head-open").Number)}}
+		}},
+		{"no session claims nothing", "", "rest-pulls-head-open", func(*testing.T) [][]string { return nil }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := shipPRFixture(t, vcstest.Branch("feature"))
+			writeShipExecutable(t, f.ShimBin, "cci", "#!/bin/sh\n"+vcstest.RecordArgv("cci"))
+			f.Setenv(envClaudeSessionKey, tt.session)
+			f.Setenv(envCodexThreadKey, "")
+			t.Setenv("GH_PULLS_JSON", ghStdout(t, tt.pulls))
+			want := tt.want(t)
+
+			if _, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--pr-title", "Better title"); err != nil {
+				t.Fatalf("ship error = %v", err)
+			}
+			var claims [][]string
+			for _, inv := range vcstest.Invocations(t, f.ArgvLog) {
+				if inv[0] == "cci" {
+					claims = append(claims, inv)
+				}
+			}
+			assertInvocations(t, claims, want)
+		})
+	}
+}
+
 func TestShipPREditRetargetsOntoAParentBranch(t *testing.T) {
 	f := shipPRFixture(t, vcstest.Branch("feature"))
 	pr := prFromListGolden(t, "rest-pulls-head-open")
