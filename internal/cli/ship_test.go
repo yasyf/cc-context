@@ -6118,6 +6118,32 @@ func TestShipGTSubmitsAnUpdateAndACreateSeparately(t *testing.T) {
 	}
 }
 
+func TestShipGTClaimsWhatTheSubmitOpenedAndUpdated(t *testing.T) {
+	log, _ := setupShipGT(t, false)
+	writeShipExecutable(t, "bin", "cci", "#!/bin/sh\nprintf '%s\\0' cci \"$@\" '' >> \"$SHIP_LOG\"\n")
+	t.Setenv(envClaudeSessionKey, "sess-abc")
+	t.Setenv(envCodexThreadKey, "")
+	api := stubGTAPI(t)
+	api.prs["feature"] = 41
+	t.Setenv("GIT_BRANCH", "feature2")
+	setGTState(t, `{"main":{"trunk":true},"feature":{"parents":[{"ref":"main","sha":"deadbeef"}]},`+
+		`"feature2":{"parents":[{"ref":"feature","sha":"beadfeed"}]}}`)
+
+	if _, err := runShipCmd(api.ctx(context.Background()), t, "-m", "fix: frobnicate"); err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	var claims [][]string
+	for _, inv := range readInvocations(t, log) {
+		if inv[0] == "cci" {
+			claims = append(claims, inv)
+		}
+	}
+	assertInvocations(t, claims, [][]string{
+		{"cci", "claim", "--rel", "opened", "--pr", "100"},
+		{"cci", "claim", "--rel", "updated", "--pr", "41"},
+	})
+}
+
 // TestShipGTEmptySubjectRefusesBeforeTheSubmit covers the one field graphite
 // requires on a create that ccx derives rather than being given: a commit with
 // no subject leaves no title, so the submit refuses before it pushes anything.
