@@ -330,6 +330,9 @@ func dryRunRefusals(ctx context.Context, l lane, o shipOpts, r *shipDryRun) erro
 	if gitBacked(l) {
 		checks = append(checks, func() error { return refuseExistingBranch(ctx, l.dir(), o, r.plan) })
 	}
+	if gitBacked(l) && !o.noCommit && len(o.onlyHunks) == 0 && len(o.skipHunks) == 0 {
+		checks = append(checks, func() error { _, err := shipScopeToIndex(ctx, l.dir(), o); return err })
+	}
 	for _, check := range checks {
 		err := check()
 		var refusal *shipRefusal
