@@ -281,7 +281,7 @@ func shipPR(ctx context.Context, errW io.Writer, l lane, nwo, remote, branch, tr
 		}
 		picked = base != trunk
 	}
-	created, err := shipPRCreate(ctx, nwo, branch, base, picked, subject, m)
+	created, err := shipPRCreate(ctx, nwo, branch, base, subject, m)
 	if err != nil {
 		return "", err
 	}
@@ -366,7 +366,7 @@ func lookupPR(ctx context.Context, nwo, branch string) (prState, bool, error) {
 // resolve to the parent and can target upstream. The body is only what the
 // caller stated, never the commit message, which would publish
 // withSessionTrailer's Claude-Session-Id line into the description.
-func shipPRCreate(ctx context.Context, nwo, branch, base string, picked bool, subject string, m prMeta) (prState, error) {
+func shipPRCreate(ctx context.Context, nwo, branch, base, subject string, m prMeta) (prState, error) {
 	title := m.title
 	if title == "" {
 		title = subject
