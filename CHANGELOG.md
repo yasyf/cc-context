@@ -29,6 +29,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs stack rebase` accepts the `--include` its refusal names.** A
+  rebase keeps another lane's branch that this lane sits on at its published
+  head, and refuses when that head no longer serves the branches above it,
+  telling you to pass `--include <branch>`. Only `stack submit` took the flag,
+  so the rebase failed with `unknown flag: --include`. The rebase now takes
+  `--include <branch>`, repeatable, and moves and publishes that branch with
+  the rest of the run.
+
 - **`ccx vcs stack rebase --parent` and `--linearize` no longer stall in a
   repository with thousands of branches.** For every branch a run names a
   parent for, the rebase asked git once per tracked branch whether that

@@ -314,6 +314,10 @@ any other <branch> is refused, as is one a member was last published onto. --all
 tracks. Without it, a pushing run keeps a branch whose name differs from the
 checked-out branch's before the last slash at its published head when this lane
 sits on it, never pushing or submitting it, and leaves out the rest of that lane.
+--include <branch> takes such a branch into the run instead. A kept branch whose
+parent this run moves, or whose local head carries commits a branch published
+above it carries too, refuses the run before anything moves, naming the
+--include flags that take every such branch in.
 
 Every branch's local and remote head is recorded before anything moves, and each
 branch is replayed from the base it was recorded on (--onto <new parent>
@@ -379,6 +383,7 @@ branch with a pull request sits on is refused before anything moves.`,
 	cmd.Flags().BoolVar(&o.noPush, "no-push", false, "rewrite the local stack and gt's record, but push nothing")
 	cmd.Flags().BoolVar(&o.dropCommits, "drop-commits", false, stackDropCommitsUsage)
 	cmd.Flags().BoolVar(&o.allLanes, "all-lanes", false, "rebase every branch gt tracks, not only this lane's")
+	cmd.Flags().StringArrayVar(&o.include, "include", nil, "take this branch of another lane into the run instead of keeping it at its published head (repeatable)")
 	cmd.Flags().StringVar(&o.to, "to", "", stackToUsage)
 	cmd.MarkFlagsMutuallyExclusive("to", "all-lanes")
 	return cmd
