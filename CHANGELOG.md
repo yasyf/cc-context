@@ -29,6 +29,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs stack rebase --parent` and `--linearize` no longer stall in a
+  repository with thousands of branches.** For every branch a run names a
+  parent for, the rebase asked git once per tracked branch whether that
+  branch's head sat below it. On the monorepo's 3,100 tracked branches that
+  was 3,100 `git merge-base --is-ancestor` calls per named branch, and a
+  dry run ran past four minutes. The rebase now lists the named branch's own
+  commits once and checks only the heads among them.
+
+- **`ccx vcs stack submit` stops republishing pull requests that sit on
+  another lane's branch with no pull request.** A submit keeps a branch
+  another working copy holds at its published head and opens no pull request
+  for it, so Graphite tracks no stack for the pull requests above it. The
+  submit then republished those with fresh heads on every run, which cannot
+  help. It now names each such branch and the `--include` flags that open
+  their pull requests with the stack, and republishes nothing.
+
+- **A `ccx vcs stack rebase` with no pull request to push no longer refuses
+  over published heads it never pushes.** A run whose branches have no pull
+  request rebases locally, but it planned as a pushing run first. A branch an
+  earlier local-only `--linearize` moved stayed at its stale published head in
+  that plan, and the plan refused it as carrying no head of its new parent.
+  The run now settles on local-only before it reads published heads. A run
+  that does push names the stale published head and how to move it.
+
 - **`ccx vcs ship` refuses a staged index that leaves a tracked edit out.**
   With no paths, ship commits exactly the index once anything is staged, so a
   `git rm` or `git mv` beside unstaged edits to other files committed only the

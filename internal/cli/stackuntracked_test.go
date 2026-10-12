@@ -238,3 +238,43 @@ func TestStackSubmitClaimsNoRepairForAPullRequestAFreshHeadLeavesOnALandedOne(t 
 		t.Errorf("stack submit output = %q, want the wait to name %q", out, want)
 	}
 }
+
+func TestStackSubmitNamesTheHeldParentWithNoPullRequestInsteadOfRepublishing(t *testing.T) {
+	f := shipGTRepo(t)
+	stub := stubGTAPI(t)
+	f.Decorate(stub.ctx)
+	shipGTStack(t, f, "base", "feature")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base")
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", restackSiblingPath(t, "lane"), "base")
+	stub.prs = map[string]int{"feature": 9001}
+	stubStackPRs(t, f, map[string]*stackPR{
+		"feature": {Number: 9001, State: "OPEN", Base: "base", Mergeable: "MERGEABLE"},
+	})
+	stub.untracked[9001] = gtStubUntracked{base: "base", head: gitAt(t, f.Env(), f.Dir, "rev-parse", "feature"), stuck: true}
+	wait := stackTrackingWait
+	stackTrackingWait = 0
+	t.Cleanup(func() { stackTrackingWait = wait })
+
+	out, _, err := runStackCmd(t, f, "submit")
+	if err == nil {
+		t.Fatalf("stack submit exited 0 over a pull request Graphite does not track: %q", out)
+	}
+	for _, want := range []string{
+		"ccx vcs stack submit --include base",
+		"#9001 feature" + shipSep + "parent base" + shipSep + "Graphite tracks no stack for it" + shipSep + "below it base kept as another lane's with no pull request",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("stack submit = %v, want it to name %q", err, want)
+		}
+	}
+	if strings.Contains(out, "repair") {
+		t.Errorf("stack submit output = %q, want no republish a fresh head cannot help", out)
+	}
+	published := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature")
+	if _, _, err := runStackCmd(t, f, "submit"); err == nil {
+		t.Fatal("second stack submit exited 0 over the same untracked pull request")
+	}
+	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature"); got != published {
+		t.Errorf("second submit moved origin feature from %.12s to %.12s", published, got)
+	}
+}
