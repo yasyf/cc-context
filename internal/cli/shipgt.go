@@ -2053,7 +2053,7 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 	}
 
 	var landed []gtapi.SubmittedPR
-	var submitted []gtSubmitBranch
+	var submitted, recorded []gtSubmitBranch
 	defer func() { gtClaimPosted(ctx, errW, l.dir(), s.prefix, submitted, entries) }()
 	for i, pr := range gtSubmitPRs(posted, s.draft, s.updateDraft(tip)) {
 		out, err := client.SubmitPullRequests(ctx, gtapi.SubmitRequest{
@@ -2063,8 +2063,27 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 			PRs:             []gtapi.SubmitPR{pr},
 		})
 		if err != nil {
-			return nil, nil, gtSubmitFailure(gtSubmitPartial(err, pr.Head, landed), s)
+			refusal := gtSubmitFailure(gtSubmitPartial(err, pr.Head, landed), s)
+			var submitErr *gtapi.SubmitError
+			if !errors.As(err, &submitErr) {
+				return nil, nil, refusal
+			}
+			pull, served, lookupErr := gtServedOnGitHub(ctx, l.dir(), owner+"/"+name, pr)
+			if lookupErr != nil {
+				return nil, nil, errors.Join(refusal, lookupErr)
+			}
+			if !served {
+				return nil, nil, refusal
+			}
+			if _, err := fmt.Fprintf(errW, "%s: graphite refused %s, but GitHub's PR #%d %s already carries the pushed head %s on %s, so the push alone submitted it\n",
+				s.prefix, gtSubmitSplitFailed(submitErr), pull.Number, pull.HTMLURL, shortOID(pr.HeadSha), pr.Base); err != nil {
+				return nil, nil, fmt.Errorf("%s: name the pull request GitHub already serves: %w", s.prefix, err)
+			}
+			entries[pr.Head] = stackEntry{Branch: pr.Head, PR: pull.Number, URL: pull.HTMLURL, HasBody: strings.TrimSpace(pull.Body) != "", State: string(gtapi.PROpen)}
+			submitted = append(submitted, posted[i])
+			continue
 		}
+		recorded = append(recorded, posted[i])
 		landed = append(landed, out...)
 		submitted = append(submitted, posted[i])
 		if posted[i].pr != 0 {
@@ -2074,11 +2093,35 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 			entries[created.Head] = stackEntry{Branch: created.Head, PR: created.PRNumber, URL: created.PRURL, HasBody: strings.TrimSpace(posted[i].body) != "", State: string(gtapi.PROpen), metaApplied: posted[i].prepared}
 		}
 	}
-	if err := gtConfirmVersions(ctx, client, owner, name, tr.Name(), posted, s.updateDraft(tip)); err != nil {
+	if err := gtConfirmVersions(ctx, client, owner, name, tr.Name(), recorded, s.updateDraft(tip)); err != nil {
 		return nil, nil, gtSubmitFailure(err, s)
 	}
 	gtRecordPushed(ctx, errW, owner+"/"+name, posted, entries)
 	return gtPlanNames(posted), entries, nil
+}
+
+// gtServedOnGitHub reports whether GitHub's open pull request for a branch
+// Graphite refused already carries everything the refused entry asked for: the
+// pushed head, the planned base, and the draft state. Graphite answers "Pull
+// request not found" while its record of an open pull request lapses, and the
+// push alone has then already moved the pull request on GitHub.
+func gtServedOnGitHub(ctx context.Context, dir render.Dir, nwo string, pr gtapi.SubmitPR) (ghPull, bool, error) {
+	out, err := render.RunCLI(ctx, dir, "gh", ghPullsByHeadArgv(nwo, pr.Head, "open"))
+	if err != nil {
+		return ghPull{}, false, fmt.Errorf("gh api: read the open pull request of %s: %w", pr.Head, err)
+	}
+	var pulls []ghPull
+	if err := json.Unmarshal([]byte(out), &pulls); err != nil {
+		return ghPull{}, false, fmt.Errorf("gh api: parse the open pull request of %s: %w", pr.Head, err)
+	}
+	if len(pulls) == 0 {
+		return ghPull{}, false, nil
+	}
+	pull := pulls[0]
+	served := pull.Head.SHA == pr.HeadSha && pull.Base.Ref == pr.Base &&
+		(pr.PRNumber == 0 || pull.Number == pr.PRNumber) &&
+		(pr.Draft == nil || *pr.Draft == pull.Draft)
+	return pull, served, nil
 }
 
 func gtHoldUnopened(submit []gtSubmitBranch, s gtSubmit) (posted []gtSubmitBranch, held []string) {
@@ -2951,12 +2994,16 @@ func gtSubmitPartial(err error, head string, landed []gtapi.SubmittedPR) error {
 	}
 }
 
-func gtSubmitSplit(e *gtapi.SubmitError) string {
+func gtSubmitSplitFailed(e *gtapi.SubmitError) string {
 	failed := make([]string, 0, len(e.Failed))
 	for _, f := range e.Failed {
 		failed = append(failed, f.Head+" ("+f.Message+")")
 	}
-	problem := "graphite refused " + strings.Join(failed, ", ") + "; every branch is already pushed"
+	return strings.Join(failed, ", ")
+}
+
+func gtSubmitSplit(e *gtapi.SubmitError) string {
+	problem := "graphite refused " + gtSubmitSplitFailed(e) + "; every branch is already pushed"
 	if len(e.Submitted) == 0 {
 		return problem
 	}
