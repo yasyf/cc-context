@@ -236,13 +236,24 @@ func Open(root string, src *GitHub) (*Store, error) {
 // began answers it however long that poll takes. No read holds a lock across a
 // request, and a read of fresh records takes none.
 func (s *Store) Read(ctx context.Context, want Want) (State, error) {
+	return s.readFor(ctx, want, true)
+}
+
+// Peek is Read for a caller that drives its own polling loop: where Read
+// would sleep out MinInterval, Peek answers at once with the cached view when
+// that view covers want, so it spends at most one poll's latency.
+func (s *Store) Peek(ctx context.Context, want Want) (State, error) {
+	return s.readFor(ctx, want, false)
+}
+
+func (s *Store) readFor(ctx context.Context, want Want, patient bool) (State, error) {
 	asked := s.now()
 	if err := s.renew(want, asked); err != nil {
 		return State{}, err
 	}
 	for waited := false; ; waited = true {
 		st, wait, err := s.read(ctx, want, asked, waited)
-		if err != nil || wait <= 0 {
+		if err != nil || wait <= 0 || !patient && st.Covers(want) {
 			return st, err
 		}
 		if err := s.sleep(ctx, wait); err != nil {

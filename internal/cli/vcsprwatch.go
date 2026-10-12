@@ -142,6 +142,7 @@ type prWatchPoller interface {
 type prWatchSource struct {
 	store  *prstate.Store
 	prefix string
+	once   bool
 }
 
 func (s prWatchSource) poll(ctx context.Context, numbers []int, prev map[int]prWatchSnapshot) (prWatchTick, error) {
@@ -149,7 +150,11 @@ func (s prWatchSource) poll(ctx context.Context, numbers []int, prev map[int]prW
 	if s.prefix != "" {
 		want.Prefixes = []string{s.prefix}
 	}
-	st, err := s.store.Read(ctx, want)
+	read := s.store.Read
+	if s.once {
+		read = s.store.Peek
+	}
+	st, err := read(ctx, want)
 	if err != nil {
 		return prWatchTick{}, err
 	}
@@ -445,7 +450,9 @@ exits 0 once every one closed either way; never keeps watching.
 
 --state persists the last snapshot so a restarted watch resumes without
 replaying state it already reported, and --once polls a single time, for a
-caller that drives the loop itself. Output is line-buffered for Monitor.`,
+caller that drives the loop itself: it answers from the shared cache rather
+than wait out the 30-second spacing, so it spends at most one poll's latency.
+Output is line-buffered for Monitor.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runVcsPRWatch(cmd, args, repo, stack, o)
 		},
@@ -508,7 +515,7 @@ func runVcsPRWatch(cmd *cobra.Command, args []string, repo string, stack bool, o
 		return fmt.Errorf("pr watch: %w", err)
 	}
 	run := prWatchRun{
-		poller: prWatchSource{store: store, prefix: o.prefix},
+		poller: prWatchSource{store: store, prefix: o.prefix, once: o.once},
 		opts:   o,
 		out:    cmd.OutOrStdout(),
 		warn:   cmd.ErrOrStderr(),
