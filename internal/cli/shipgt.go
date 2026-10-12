@@ -722,8 +722,10 @@ func gtTrack(ctx context.Context, errW io.Writer, l lane, o shipOpts, branch str
 			if replayed, onto, _, err = gtOnto(ctx, l, o, branch, o.parent); err != nil {
 				return nil, "", err
 			}
-			if published, err := gtAdoptOntoPublished(ctx, c, state, branch, o.parent, onto); err != nil || published != nil {
-				return published, chained + adopted + "tracked " + branch + " onto " + o.parent + "'s published head " + shortSHA(onto) + replayed, err
+			if o.tipOnly {
+				if published, err := gtAdoptOntoPublished(ctx, c, state, branch, o.parent, onto); err != nil || published != nil {
+					return published, chained + adopted + "tracked " + branch + " onto " + o.parent + "'s published head " + shortSHA(onto) + replayed, err
+				}
 			}
 		}
 		if !o.amend {
