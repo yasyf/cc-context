@@ -141,6 +141,10 @@ func ghPREditArgv(number int, fields ...string) []string {
 	return append([]string{"gh", "api", "-X", "PATCH", fmt.Sprintf("repos/%s/pulls/%d", fakePRRepo, number), "--silent"}, fields...)
 }
 
+func ghPRBodyReadArgv(number int) []string {
+	return append([]string{"gh"}, prBodyArgv(fakePRRepo, number)...)
+}
+
 // The updatePullRequest mutations the GraphQL restate fallback sends.
 const (
 	prUpdateBody      = `mutation($id:ID!,$body:String!){updatePullRequest(input:{pullRequestId:$id,body:$body}){clientMutationId}}`
@@ -612,6 +616,86 @@ func TestShipPRBodyFromStdin(t *testing.T) {
 	}
 }
 
+func TestShipPREditCarriesLiveReleaseTrailers(t *testing.T) {
+	f := shipPRFixture(t, vcstest.Branch("feature"))
+	pr := prFromListGolden(t, "rest-pulls-head-open")
+	t.Setenv("GH_PULLS_JSON", ghStdout(t, "rest-pulls-head-open"))
+	var live map[string]any
+	if err := json.Unmarshal([]byte(ghStdout(t, "rest-pull-open")), &live); err != nil {
+		t.Fatalf("golden rest-pull-open: %v", err)
+	}
+	live["body"] = live["body"].(string) + "\r\n\r\nRelease-With: dashboard api\r\nRelease-Order: api before dashboard"
+	payload, err := json.Marshal(live)
+	if err != nil {
+		t.Fatalf("marshal live pull: %v", err)
+	}
+	f.Setenv("GH_PULL_JSON", string(payload))
+	bodyDump := filepath.Join(t.TempDir(), "body")
+	t.Setenv("GH_PR_BODY_DUMP", bodyDump)
+	body := writePRBody(t, "body.md", "regenerated\n")
+
+	if _, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", body); err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	var gh [][]string
+	for _, inv := range normalizeTempPaths(vcstest.Invocations(t, f.ArgvLog)) {
+		if inv[0] == "gh" && !isPRLookup(inv) {
+			gh = append(gh, inv)
+		}
+	}
+	assertInvocations(t, gh, [][]string{
+		ghPRBodyReadArgv(pr.Number),
+		ghPREditArgv(pr.Number, "-F", "<pr-body>"),
+	})
+	if got, want := readFileStr(t, bodyDump), "regenerated\n\nRelease-With: dashboard api\nRelease-Order: api before dashboard\n"; got != want {
+		t.Errorf("gh read a body of %q, want %q", got, want)
+	}
+}
+
+func TestCarryReleaseTrailers(t *testing.T) {
+	const live = "## Context\n\nwhy\n\nRelease-With: dashboard api\nRelease-Order: api before dashboard\n"
+	for _, tt := range []struct {
+		name, live, next, want string
+	}{
+		{
+			name: "a rewrite without the trailers keeps them",
+			live: live, next: "## Context\n\nrewritten\n",
+			want: "## Context\n\nrewritten\n\nRelease-With: dashboard api\nRelease-Order: api before dashboard\n",
+		},
+		{
+			name: "a rewrite that already carries them is unchanged",
+			live: live, next: "rewritten\n\nRelease-Order: api before dashboard\n  Release-With: dashboard api\n",
+			want: "rewritten\n\nRelease-Order: api before dashboard\n  Release-With: dashboard api\n",
+		},
+		{
+			name: "a changed Release-With line keeps both, joined to the closing trailer paragraph",
+			live: live, next: "rewritten\n\nRelease-With: api\n",
+			want: "rewritten\n\nRelease-With: api\nRelease-With: dashboard api\nRelease-Order: api before dashboard\n",
+		},
+		{
+			name: "keys match case-insensitively across every closing trailer paragraph",
+			live: "why\r\n\r\nrelease-with: api\r\n\r\nCo-authored-by: a <a@b.c>\r\n", next: "rewritten",
+			want: "rewritten\n\nrelease-with: api\n",
+		},
+		{
+			name: "a Release line above the closing trailers stays behind",
+			live: "Release-With: api\n\nprose after it\n", next: "rewritten\n",
+			want: "rewritten\n",
+		},
+		{
+			name: "a live body with no trailers carries nothing",
+			live: "", next: "rewritten\n",
+			want: "rewritten\n",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := carryReleaseTrailers(tt.live, tt.next); got != tt.want {
+				t.Errorf("carryReleaseTrailers() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 // TestShipPRGTWritesTheNewestPR proves a branch resubmitted after its first
 // pull request merged has its body written onto the live one. Verified against
 // github.com/yasyf/cc-context, whose yasyf/transcript-ccx-issues head carries
@@ -666,7 +750,7 @@ func TestShipPRGTSkipsDownstackQuery(t *testing.T) {
 			gh = append(gh, inv)
 		}
 	}
-	assertInvocations(t, gh, [][]string{ghPREditArgv(41, "-F", "body=@"+body)})
+	assertInvocations(t, gh, [][]string{ghPRBodyReadArgv(41), ghPREditArgv(41, "-F", "body=@"+body)})
 }
 
 // TestShipPRGTWarnsFromGraphitesBody weighs a branch this ship writes no body
@@ -728,6 +812,7 @@ func TestShipPRGTBothFlags(t *testing.T) {
 		{"git", "merge-base", "--is-ancestor", fakeTrunkSHA, vcstest.GraphiteLeafSHA},
 		gtPushInv(gtHead("feature", vcstest.GraphiteLeafSHA)),
 	}, gtReceiptInv("feature"), [][]string{
+		ghPRBodyReadArgv(7),
 		ghPREditArgv(7, "-f", "title=Better title", "-F", "body=@"+body),
 	})
 	assertInvocations(t, gtDropTrunkInv(t, readInvocations(t, log), "main", "feature"), wantInv)
@@ -788,6 +873,7 @@ func TestShipPRGTAlreadyCommitted(t *testing.T) {
 				{"git", "merge-base", "--is-ancestor", fakeTrunkSHA, vcstest.GraphiteLeafSHA},
 				gtPushInv(gtHead("feature", vcstest.GraphiteLeafSHA)),
 			}, gtReceiptInv("feature"), [][]string{
+				ghPRBodyReadArgv(7),
 				ghPREditArgv(7, "-f", "title=fix: 🐛 frobnicate the widget", "-F", "body=@"+body),
 			})
 			assertInvocations(t, gtDropTrunkInv(t, readInvocations(t, log), "main", "feature"), wantInv)
@@ -827,7 +913,9 @@ func TestShipPRGTBackfill(t *testing.T) {
 		}
 	}
 	assertInvocations(t, gh, [][]string{
+		ghPRBodyReadArgv(7),
 		ghPREditArgv(7, "-F", "body=@"+tipBody),
+		ghPRBodyReadArgv(6),
 		ghPREditArgv(6, "-F", "body=@"+midBody),
 	})
 }
@@ -997,6 +1085,7 @@ func TestShipPRRestateFallsBackToGraphQL(t *testing.T) {
 			}
 		}
 		assertInvocations(t, gh, [][]string{
+			ghPRBodyReadArgv(7),
 			ghPREditArgv(7, "-f", "title=Better title", "-F", "body=@"+body),
 			ghPRNodeIDArgv(7),
 			{"gh", "api", "graphql", "--silent", "-f", "query=" + prUpdateTitleBody, "-f", "title=Better title", "-F", "body=@" + body, "-f", "id=" + nodeID},
@@ -1024,6 +1113,7 @@ func TestShipPRRestateFallsBackToGraphQL(t *testing.T) {
 			}
 		}
 		assertInvocations(t, gh, [][]string{
+			ghPRBodyReadArgv(pr.Number),
 			ghPREditArgv(pr.Number, "-F", "body=@"+body),
 			ghPRNodeIDArgv(pr.Number),
 			{"gh", "api", "graphql", "--silent", "-f", "query=" + prUpdateBody, "-F", "body=@" + body, "-f", "id=" + nodeID},

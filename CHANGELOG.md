@@ -29,6 +29,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A restated pull request body keeps the release bot's `Release-*`
+  trailers.** The release bot writes lines such as `Release-With: dashboard
+  api` and `Release-Order: api before dashboard` at the end of a pull request's
+  body. A later `--pr-body-file` from `ccx vcs ship` or `ccx vcs stack submit`
+  replaced the body wholesale, so the squash on monorepo #34980 landed without
+  them. Before it overwrites the body of an open pull request, ccx now reads
+  the live body and appends each `Release-*` trailer from its closing trailer
+  paragraphs that the new body lacks, matched line for line. A new body that
+  already carries them is sent unchanged.
+
 - **`ccx vcs stack rebase` accepts the `--include` its refusal names.** A
   rebase keeps another lane's branch that this lane sits on at its published
   head, and refuses when that head no longer serves the branches above it,

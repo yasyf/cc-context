@@ -494,6 +494,14 @@ func prEditArgv(nwo string, number int, m prMeta) []string {
 // apart, so a secondary limit on REST writes leaves GraphQL open. viaGraphQL
 // reports that the fallback ran.
 func restatePR(ctx context.Context, nwo string, number int, m prMeta) (viaGraphQL bool, err error) {
+	if m.bodyPath != "" {
+		carried, cleanup, err := withLiveReleaseTrailers(ctx, nwo, number, m.bodyPath)
+		if err != nil {
+			return false, err
+		}
+		defer cleanup()
+		m.bodyPath = carried
+	}
 	_, err = render.RunCLI(ctx, render.Ambient, "gh", prEditArgv(nwo, number, m))
 	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "rate limit") {
 		return false, err
@@ -506,6 +514,105 @@ func restatePR(ctx context.Context, nwo string, number int, m prMeta) (viaGraphQ
 		return true, errors.Join(err, fmt.Errorf("graphql fallback: %w", gqlErr))
 	}
 	return true, nil
+}
+
+func withLiveReleaseTrailers(ctx context.Context, nwo string, number int, bodyPath string) (string, func(), error) {
+	noop := func() {}
+	out, err := render.RunCLI(ctx, render.Ambient, "gh", prBodyArgv(nwo, number))
+	if err != nil {
+		return "", noop, fmt.Errorf("ship: read PR #%d body: %w", number, err)
+	}
+	var live struct {
+		Body string `json:"body"`
+	}
+	if err := json.Unmarshal([]byte(out), &live); err != nil {
+		return "", noop, fmt.Errorf("ship: parse PR #%d body: %w", number, err)
+	}
+	next, err := os.ReadFile(bodyPath) //nolint:gosec // the caller names the body file
+	if err != nil {
+		return "", noop, fmt.Errorf("ship: --pr-body-file %s: %w", bodyPath, err)
+	}
+	carried := carryReleaseTrailers(live.Body, string(next))
+	if carried == string(next) {
+		return bodyPath, noop, nil
+	}
+	f, err := os.CreateTemp("", prBodyTempPrefix+"*")
+	if err != nil {
+		return "", noop, fmt.Errorf("ship: create pr body file: %w", err)
+	}
+	remove := func() { _ = os.Remove(f.Name()) }
+	if _, err := f.WriteString(carried); err != nil {
+		_ = f.Close()
+		remove()
+		return "", noop, fmt.Errorf("ship: write pr body file: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		remove()
+		return "", noop, fmt.Errorf("ship: write pr body file: %w", err)
+	}
+	return f.Name(), remove, nil
+}
+
+func prBodyArgv(nwo string, number int) []string {
+	return []string{"api", "-X", "GET", ghPullPath(nwo, number)}
+}
+
+var gitTrailerRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]*:(\s|$)`)
+
+func carryReleaseTrailers(live, next string) string {
+	present := map[string]bool{}
+	for _, line := range bodyLines(next) {
+		present[strings.TrimSpace(line)] = true
+	}
+	var carried []string
+	for _, line := range closingTrailers(live) {
+		key, _, _ := strings.Cut(line, ":")
+		if !strings.HasPrefix(strings.ToLower(key), "release-") || present[line] {
+			continue
+		}
+		carried = append(carried, line)
+		present[line] = true
+	}
+	if len(carried) == 0 {
+		return next
+	}
+	sep := "\n\n"
+	if len(closingTrailers(next)) > 0 {
+		sep = "\n"
+	}
+	return strings.TrimRight(next, " \t\r\n") + sep + strings.Join(carried, "\n") + "\n"
+}
+
+func closingTrailers(body string) []string {
+	lines := bodyLines(body)
+	var trailers []string
+	end := len(lines)
+	for {
+		for end > 0 && strings.TrimSpace(lines[end-1]) == "" {
+			end--
+		}
+		start := end
+		for start > 0 && strings.TrimSpace(lines[start-1]) != "" {
+			start--
+		}
+		if start == end {
+			return trailers
+		}
+		paragraph := make([]string, 0, end-start)
+		for _, line := range lines[start:end] {
+			trimmed := strings.TrimSpace(line)
+			if !gitTrailerRE.MatchString(trimmed) {
+				return trailers
+			}
+			paragraph = append(paragraph, trimmed)
+		}
+		trailers = slices.Concat(paragraph, trailers)
+		end = start
+	}
+}
+
+func bodyLines(body string) []string {
+	return strings.Split(strings.ReplaceAll(body, "\r\n", "\n"), "\n")
 }
 
 const prNodeIDQuery = `query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$number){id}}}`
