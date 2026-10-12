@@ -1,6 +1,7 @@
 package ghapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -353,9 +354,13 @@ func TestRateLimitRetryHonorsRetryAfter(t *testing.T) {
 	}))
 	t.Cleanup(ts.Close)
 
-	got, err := Paginate[item](context.Background(), testClient(ts.URL, fixedToken("tok")), "/repos/o/r/pulls/3")
+	var announced bytes.Buffer
+	got, err := Paginate[item](render.WithSlowWriter(context.Background(), &announced), testClient(ts.URL, fixedToken("tok")), "/repos/o/r/pulls/3")
 	if err != nil {
 		t.Fatalf("Paginate: %v", err)
+	}
+	if want := "ccx: GitHub rate-limited GET " + ts.URL + "/repos/o/r/pulls/3, retrying in 0s (wait 1 of 3)\n"; announced.String() != want {
+		t.Errorf("announcement = %q, want %q", announced.String(), want)
 	}
 	if len(got) != 1 || got[0] != (item{Number: 3, Body: "after the wait"}) {
 		t.Errorf("Paginate = %+v, want [{3 after the wait}]", got)
