@@ -612,7 +612,7 @@ func TestStackThinTwoBranchRebaseContinue(t *testing.T) {
 	refs, remote := thinRefs(t, f, store), thinRefs(t, f, f.RemoteDir)
 	api := stubGTAPI(t)
 	f.Decorate(api.ctx)
-	out, _, err = runStackCmdIn(t, f, laneB, "rebase", "--dry-run")
+	out, _, err = runStackCmdIn(t, f, laneB, "rebase", "--dry-run", "--include", "a")
 	if err != nil {
 		t.Fatalf("rebase --dry-run: %v", err)
 	}
