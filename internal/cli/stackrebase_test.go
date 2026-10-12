@@ -424,27 +424,44 @@ func TestStackSubmitSetsDraftOnNewPullRequestsAlone(t *testing.T) {
 }
 
 // TestStackRebaseMovesASourceAnotherCleanWorktreeHolds pins the one-worktree-
-// per-branch layout ccx vcs stack new cuts: a clean worktree holding base moves
-// onto its published head with it, and feature above it follows.
+// per-branch layout ccx vcs stack new cuts: from feature, base stays at its
+// published head; from the bottom worktree, base and feature above it move.
 func TestStackRebaseMovesASourceAnotherCleanWorktreeHolds(t *testing.T) {
 	t.Parallel()
 	f := stackRebaseRepo(t, "base", "feature")
 	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
 	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "feature")
+	published := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
 	held := f.WorktreePath("held")
 	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", held, "base")
 
 	out, _, err := runStackCmd(t, f, "rebase")
 	if err != nil {
-		t.Fatalf("stack rebase: %v", err)
+		t.Fatalf("stack rebase from feature: %v", err)
 	}
-	if !strings.Contains(out, "moved base, feature onto the published heads") {
-		t.Errorf("output = %q, want base and feature moved", out)
+	if !strings.Contains(out, "keeping base at its published head") || !strings.Contains(out, "--include base") {
+		t.Errorf("output = %q, want base named as kept with --include base", out)
+	}
+	for where, dir := range map[string]string{"local": f.Dir, "held": held, "origin": f.RemoteDir} {
+		if got := gitAt(t, f.Env(), dir, "rev-parse", "base"); got != published {
+			t.Errorf("%s base = %.12s, want its published head %.12s", where, got, published)
+		}
+	}
+
+	out, _, err = runStackCmdIn(t, f, held, "rebase")
+	if err != nil {
+		t.Fatalf("stack rebase from the bottom worktree: %v", err)
+	}
+	if strings.Contains(out, "keeping base") {
+		t.Errorf("output = %q, want base moved from its own worktree", out)
 	}
 	for _, branch := range []string{"base", "feature"} {
 		if local, remote := gitAt(t, f.Env(), f.Dir, "rev-parse", branch), gitAt(t, f.Env(), f.RemoteDir, "rev-parse", branch); local != remote {
 			t.Errorf("local %s = %s, want its published head %s", branch, local, remote)
 		}
+	}
+	if !stackOnto(t, f, "origin/main", "base") || !stackOnto(t, f, "base", "feature") {
+		t.Error("the stack did not reach the new trunk")
 	}
 	if status := gitAt(t, f.Env(), held, "status", "--porcelain"); status != "" {
 		t.Errorf("held status = %q, want it aligned with base's published head", status)
@@ -507,7 +524,7 @@ func TestStackRebaseMovesAHeldSourceWhoseReplayDroppedWhatTrunkAdded(t *testing.
 	stackAdvanceTrunk(t, f, "base.txt", "base\n")
 	stackAdvanceTrunk(t, f, "partial.txt", "partial\n")
 
-	out, _, err := runStackCmd(t, f, "rebase")
+	out, _, err := runStackCmd(t, f, "rebase", "--include", "base")
 	if err != nil {
 		t.Fatalf("stack rebase: %v", err)
 	}
@@ -562,7 +579,7 @@ func TestStackRebaseLeavesASourceADirtyWorktreeHolds(t *testing.T) {
 	}
 	sources := map[string]string{"base": gitAt(t, f.Env(), f.Dir, "rev-parse", "base"), "feature": gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")}
 
-	out, _, err := runStackCmd(t, f, "rebase")
+	out, _, err := runStackCmd(t, f, "rebase", "--include", "base")
 	if err != nil {
 		t.Fatalf("stack rebase: %v", err)
 	}

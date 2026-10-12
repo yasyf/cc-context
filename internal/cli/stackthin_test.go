@@ -573,7 +573,7 @@ func TestStackThinTwoBranchRebaseContinue(t *testing.T) {
 	thinCommit(t, f, laneB, "d.txt", "b\n")
 	restackAdvanceRemote(t, f, "main", "c.txt", "trunk\n")
 
-	_, _, err := runStackCmdIn(t, f, laneB, "rebase", "--no-push")
+	_, _, err := runStackCmdIn(t, f, laneB, "rebase", "--no-push", "--include", "a")
 	if err == nil || !strings.Contains(err.Error(), "a does not rebase onto main cleanly") {
 		t.Fatalf("rebase = %v, want a's conflict on c.txt", err)
 	}
@@ -612,7 +612,7 @@ func TestStackThinTwoBranchRebaseContinue(t *testing.T) {
 	refs, remote := thinRefs(t, f, store), thinRefs(t, f, f.RemoteDir)
 	api := stubGTAPI(t)
 	f.Decorate(api.ctx)
-	out, _, err = runStackCmdIn(t, f, laneB, "rebase", "--dry-run")
+	out, _, err = runStackCmdIn(t, f, laneB, "rebase", "--dry-run", "--include", "a")
 	if err != nil {
 		t.Fatalf("rebase --dry-run: %v", err)
 	}

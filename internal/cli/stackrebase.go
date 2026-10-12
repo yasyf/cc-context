@@ -205,6 +205,7 @@ type stackRebaseRun struct {
 	saved         time.Time
 	left          []stackLeft
 	lanePins      []string
+	heldBelow     map[string]string
 	adopted       gtState
 }
 
@@ -265,6 +266,7 @@ type stackRebaseOpts struct {
 	include     []string
 	to          string
 	bump        []string
+	keepHeld    bool
 }
 
 const stackDropCommitsUsage = "publish a branch whose local head drops commits its published head carries"
@@ -295,7 +297,7 @@ func stackPRs(ctx context.Context, dir render.Dir, trunk string, branches []stri
 }
 
 func newStackRebaseCmd() *cobra.Command {
-	var o stackRebaseOpts
+	o := stackRebaseOpts{keepHeld: true}
 	cmd := &cobra.Command{
 		Use:   "rebase",
 		Short: "Rebase the whole stack onto trunk and push it, stopping in a workspace on conflict",
@@ -314,6 +316,9 @@ any other <branch> is refused, as is one a member was last published onto. --all
 tracks. Without it, a pushing run keeps a branch whose name differs from the
 checked-out branch's before the last slash at its published head when this lane
 sits on it, never pushing or submitting it, and leaves out the rest of that lane.
+A branch below the checked-out one that another working copy holds is that
+working copy's: the run keeps it at its published head, or at its local head in
+a run that does not push, and moves only the branches above it.
 --include <branch> takes such a branch into the run instead. A kept branch whose
 parent this run moves, or whose local head carries commits a branch published
 above it carries too, refuses the run before anything moves, naming the
@@ -481,7 +486,7 @@ func stackBegin(ctx context.Context, cmd *cobra.Command, l lane, commonDir strin
 	}
 	switch {
 	case !o.submit && !o.noPush && run.NoPush:
-		cmd.Println("no branch of this stack has a pull request, and stack rebase never opens one, so it rebases locally without pushing")
+		cmd.Println("no branch this run moves has a pull request, and stack rebase never opens one, so it rebases locally without pushing")
 	case !o.submit && !o.noPush:
 		if err := stackKeepLocal(cmd, run); err != nil {
 			return err
@@ -507,7 +512,12 @@ func stackBegin(ctx context.Context, cmd *cobra.Command, l lane, commonDir strin
 	if err := stackAnnounceLeft(cmd, run.left); err != nil {
 		return err
 	}
-	if pins := slices.DeleteFunc(slices.Clone(run.lanePins), func(name string) bool { return run.branch(name) == nil || !run.branch(name).Pinned }); len(pins) > 0 {
+	if err := stackAnnounceHeld(cmd, run); err != nil {
+		return err
+	}
+	if pins := slices.DeleteFunc(slices.Clone(run.lanePins), func(name string) bool {
+		return run.branch(name) == nil || !run.branch(name).Pinned || run.heldBelow[name] != ""
+	}); len(pins) > 0 {
 		if _, err := fmt.Fprintf(cmd.ErrOrStderr(), "stack rebase: not pushing %s — another lane's, kept at their published heads; --all-lanes pushes them\n", strings.Join(pins, ", ")); err != nil {
 			return err
 		}
@@ -571,6 +581,21 @@ func stackKeepLocal(cmd *cobra.Command, run *stackRebaseRun) error {
 		verb = "has"
 	}
 	cmd.Printf("%s %s no pull request, and stack rebase never opens one, so it rebases locally without pushing\n", strings.Join(bare, ", "), verb)
+	return nil
+}
+
+func stackAnnounceHeld(cmd *cobra.Command, run *stackRebaseRun) error {
+	head := "published"
+	if run.NoPush {
+		head = "local"
+	}
+	for _, b := range run.Branches {
+		if holder := run.heldBelow[b.Name]; holder != "" && b.Kept {
+			if _, err := fmt.Fprintf(cmd.OutOrStdout(), "keeping %s at its %s head — the working copy at %s holds it; pass --include %s to move it\n", b.Name, head, holder, b.Name); err != nil {
+				return fmt.Errorf("stack rebase: name the held branches: %w", err)
+			}
+		}
+	}
 	return nil
 }
 
@@ -1066,8 +1091,14 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	}
 	var otherLanes []stackLeft
 	var lanePins []string
+	var heldBelow map[string]string
+	if o.keepHeld && !o.allLanes && o.replayed == nil && current != "" && current != trunk {
+		if heldBelow, err = stackHeldBelow(ctx, l, retargeted, current, members, o.include); err != nil {
+			return nil, err
+		}
+	}
 	if !o.noPush && !o.allLanes && !o.otherLanes && o.replayed == nil && current != "" && current != trunk {
-		members, lanePins, otherLanes = stackPinOtherLanes(retargeted, current, members, o.include)
+		members, lanePins, otherLanes = stackPinOtherLanes(retargeted, current, members, o.include, heldBelow)
 		o.pinned = append(o.pinned, slices.DeleteFunc(slices.Clone(lanePins), func(name string) bool { return slices.Contains(o.pinned, name) })...)
 	}
 	if above := slices.DeleteFunc(slices.Clone(members), func(name string) bool { return upTo == nil || slices.Contains(upTo, name) }); len(above) > 0 {
@@ -1113,7 +1144,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	if err != nil {
 		return nil, fmt.Errorf("stack rebase: %w", err)
 	}
-	run := &stackRebaseRun{Trunk: trunk, Pin: pin, NoPush: o.noPush, Origin: l.checkout.Root, Draft: o.draft, DraftAll: o.draftAll, NoVerify: o.noVerify, Tip: o.tip, TipOnly: o.tipOnly, DropCommits: o.dropCommits, StayClean: o.stayClean, Restack: o.restack, AllLanes: o.allLanes, To: o.to, NewPRs: o.newPRs, deferPush: o.deferPush, Ship: o.ship, Roots: roots, Pid: os.Getpid(), Started: stackProcStart(os.Getpid()), Host: host, left: left, lanePins: lanePins, adopted: adopted}
+	run := &stackRebaseRun{Trunk: trunk, Pin: pin, NoPush: o.noPush, Origin: l.checkout.Root, Draft: o.draft, DraftAll: o.draftAll, NoVerify: o.noVerify, Tip: o.tip, TipOnly: o.tipOnly, DropCommits: o.dropCommits, StayClean: o.stayClean, Restack: o.restack, AllLanes: o.allLanes, To: o.to, NewPRs: o.newPRs, deferPush: o.deferPush, Ship: o.ship, Roots: roots, Pid: os.Getpid(), Started: stackProcStart(os.Getpid()), Host: host, left: left, lanePins: lanePins, heldBelow: heldBelow, adopted: adopted}
 	own := map[string]bool{}
 	if current != "" && current != trunk {
 		down, err := gtDownstack(stackRebasePrefix, retargeted, current, trunk)
@@ -1290,7 +1321,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 				unpushed = append(unpushed, name)
 			}
 			b.Kept, b.Pinned = true, true
-		case queued || (moving != nil && !moving[name] && !inherits[name]):
+		case queued || (moving != nil && !moving[name] && !inherits[name]) || o.noPush && heldBelow[name] != "":
 			b.Kept = o.noPush || stackPinPublished(b)
 		case o.tip != "" && name != o.tip && !o.restack && (o.tipOnly || !inherits[name]):
 			if b.Kept, err = stackKeepsAncestor(ctx, l.dir(), pin, b, kept[b.Parent], o.tipOnly); err != nil {
@@ -1745,12 +1776,31 @@ func branchLane(branch string) string {
 	return branch[:max(strings.LastIndexByte(branch, '/'), 0)]
 }
 
-// stackPinOtherLanes pins at its published head each branch of another lane,
-// one whose name differs from the checked-out branch's before the last slash,
-// that this lane sits on, and leaves out the rest of the other lanes.
-func stackPinOtherLanes(state gtState, current string, members, include []string) (kept, pinned []string, left []stackLeft) {
+func stackHeldBelow(ctx context.Context, l lane, state gtState, current string, members, include []string) (map[string]string, error) {
+	holders, err := vcs.BranchHolders(ctx, l.checkout)
+	if err != nil {
+		return nil, fmt.Errorf("stack rebase: %w", err)
+	}
+	held := map[string]string{}
+	seen := map[string]bool{}
+	for name := state[current].Parents[0].Ref; slices.Contains(members, name) && !seen[name]; name = state[name].Parents[0].Ref {
+		seen[name] = true
+		if holders[name] != "" && !slices.Contains(include, name) {
+			held[name] = holders[name]
+		}
+	}
+	return held, nil
+}
+
+// stackPinOtherLanes pins at its published head each branch of another lane
+// that this lane sits on, and leaves out the rest of the other lanes. A branch
+// is another lane's when its name differs from the checked-out branch's before
+// the last slash, or when heldBelow names it.
+func stackPinOtherLanes(state gtState, current string, members, include []string, heldBelow map[string]string) (kept, pinned []string, left []stackLeft) {
 	lane := branchLane(current)
-	other := func(name string) bool { return branchLane(name) != lane && !slices.Contains(include, name) }
+	other := func(name string) bool {
+		return heldBelow[name] != "" || branchLane(name) != lane && !slices.Contains(include, name)
+	}
 	carried := map[string]bool{}
 	for _, name := range members {
 		if other(name) {
