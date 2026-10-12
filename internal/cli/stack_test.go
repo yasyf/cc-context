@@ -1659,7 +1659,7 @@ func TestStackSubmitTakesAPublishedParentAnotherWorkingCopyOfThisLaneHolds(t *te
 	a := stackLaneHere(t, f, "a")
 	z := stackLaneHere(t, f, "z")
 	writeShipFile(t, z, "scratch.txt", "scratch\n")
-	if _, _, err := runStackCmdIn(t, f, z, "rebase", "--parent", "z=a"); err != nil {
+	if _, _, err := runStackCmdIn(t, f, z, "rebase", "--parent", "z=a", "--include", "p", "--include", "a"); err != nil {
 		t.Fatalf("publish z onto a: %v", err)
 	}
 	if err := os.Remove(filepath.Join(z, "scratch.txt")); err != nil {

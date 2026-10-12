@@ -573,7 +573,7 @@ func TestStackThinTwoBranchRebaseContinue(t *testing.T) {
 	thinCommit(t, f, laneB, "d.txt", "b\n")
 	restackAdvanceRemote(t, f, "main", "c.txt", "trunk\n")
 
-	_, _, err := runStackCmdIn(t, f, laneB, "rebase", "--no-push")
+	_, _, err := runStackCmdIn(t, f, laneB, "rebase", "--no-push", "--include", "a")
 	if err == nil || !strings.Contains(err.Error(), "a does not rebase onto main cleanly") {
 		t.Fatalf("rebase = %v, want a's conflict on c.txt", err)
 	}
