@@ -424,8 +424,9 @@ func TestStackSubmitSetsDraftOnNewPullRequestsAlone(t *testing.T) {
 }
 
 // TestStackRebaseMovesASourceAnotherCleanWorktreeHolds pins the one-worktree-
-// per-branch layout ccx vcs stack new cuts: a clean worktree holding base moves
-// onto its published head with it, and feature above it follows.
+// per-branch layout ccx vcs stack new cuts: a clean worktree holding base,
+// taken in with --include, moves onto its published head with it, and feature
+// above it follows.
 func TestStackRebaseMovesASourceAnotherCleanWorktreeHolds(t *testing.T) {
 	t.Parallel()
 	f := stackRebaseRepo(t, "base", "feature")
@@ -434,7 +435,7 @@ func TestStackRebaseMovesASourceAnotherCleanWorktreeHolds(t *testing.T) {
 	held := f.WorktreePath("held")
 	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", held, "base")
 
-	out, _, err := runStackCmd(t, f, "rebase")
+	out, _, err := runStackCmd(t, f, "rebase", "--include", "base")
 	if err != nil {
 		t.Fatalf("stack rebase: %v", err)
 	}
@@ -507,7 +508,7 @@ func TestStackRebaseMovesAHeldSourceWhoseReplayDroppedWhatTrunkAdded(t *testing.
 	stackAdvanceTrunk(t, f, "base.txt", "base\n")
 	stackAdvanceTrunk(t, f, "partial.txt", "partial\n")
 
-	out, _, err := runStackCmd(t, f, "rebase")
+	out, _, err := runStackCmd(t, f, "rebase", "--include", "base")
 	if err != nil {
 		t.Fatalf("stack rebase: %v", err)
 	}
@@ -562,7 +563,7 @@ func TestStackRebaseLeavesASourceADirtyWorktreeHolds(t *testing.T) {
 	}
 	sources := map[string]string{"base": gitAt(t, f.Env(), f.Dir, "rev-parse", "base"), "feature": gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")}
 
-	out, _, err := runStackCmd(t, f, "rebase")
+	out, _, err := runStackCmd(t, f, "rebase", "--include", "base")
 	if err != nil {
 		t.Fatalf("stack rebase: %v", err)
 	}

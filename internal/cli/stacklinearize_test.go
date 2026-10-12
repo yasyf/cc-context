@@ -154,7 +154,7 @@ func TestStackRebaseLinearizesOntoABranchALocalRunMoved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("linearize grants,third: %v (stderr=%q)", err, errOut)
 	}
-	if want := "no branch of this stack has a pull request"; !strings.Contains(out, want) {
+	if want := "no branch this run moves has a pull request"; !strings.Contains(out, want) {
 		t.Errorf("output = %q, want %q", out, want)
 	}
 	if !stackOnto(t, f, "grants", "third") || !stackOnto(t, f, "culprits", "third") {
