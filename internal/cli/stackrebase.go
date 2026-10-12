@@ -989,6 +989,8 @@ func stackProcStart(pid int) string {
 }
 
 func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts) (*stackRebaseRun, error) {
+	requested := o
+	requested.pinned = slices.Clone(o.pinned)
 	prefix := stackRebasePrefix
 	state, err := gtStateAtFocused(ctx, commonDir, prefix, o.tip, "")
 	if err != nil {
@@ -1297,8 +1299,8 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 		ordered[i] = byName[name]
 	}
 	if live, bare := stackBare(ordered); !o.submit && !o.noPush && len(bare) > 0 && len(bare) == len(live) {
-		o.noPush = true
-		return stackPlan(ctx, l, commonDir, o)
+		requested.noPush = true
+		return stackPlan(ctx, l, commonDir, requested)
 	}
 	if len(unpushed) > 0 {
 		return nil, stackRefuseUnpushedPins(unpushed)

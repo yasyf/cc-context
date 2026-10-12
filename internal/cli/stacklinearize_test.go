@@ -182,3 +182,27 @@ func TestStackRebaseRefusesToStackOnAPublishedHeadALocalRunMovedPast(t *testing.
 		t.Errorf("remote heads moved from %v to %v before refusing", before, after)
 	}
 }
+
+func TestStackRebaseLocalOnlyKeepsAnotherLanesUnpushedCommits(t *testing.T) {
+	f := shipGTRepo(t)
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	shipGTStack(t, f, "other/base")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "other/base")
+	writeShipFile(t, f.Dir, "more.txt", "more\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "more.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "more")
+	local := gitAt(t, f.Env(), f.Dir, "rev-parse", "other/base")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
+	shipGTStack(t, f, "mine/feature")
+
+	if _, errOut, err := runStackCmd(t, f, "rebase", "--parent", "mine/feature=other/base"); err != nil {
+		t.Fatalf("rebase --parent: %v (stderr=%q)", err, errOut)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "other/base"); got != local {
+		t.Errorf("other/base = %.12s, want its unpushed head %.12s kept", got, local)
+	}
+	if !stackOnto(t, f, local, "mine/feature") {
+		t.Errorf("mine/feature does not sit on other/base's local head %.12s", local)
+	}
+}
