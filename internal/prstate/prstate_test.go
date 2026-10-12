@@ -244,6 +244,47 @@ func TestReadWaitsOutTheMinimumIntervalForANewLane(t *testing.T) {
 	}
 }
 
+func TestPeekAnswersFromTheCacheWhereReadWaitsOutTheInterval(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name     string
+		peek     bool
+		replies  int
+		slept    string
+		requests int
+	}{
+		{name: "read", replies: 1, slept: "[15s]", requests: 1},
+		{name: "peek", peek: true, slept: "[]", requests: 0},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			seed, err := Open(dir, &GitHub{owner: "yasyf", name: "cc-context"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			cached := State{AttemptedAt: epoch.Add(20 * time.Second), PolledAt: epoch, PRs: map[int]PR{190: {Number: 190, State: "OPEN", PolledAt: epoch}}}
+			if err := seed.save(cached); err != nil {
+				t.Fatal(err)
+			}
+			replies := slices.Repeat([]reply{ok(t, "poll-190.json")}, tt.replies)
+			c := &clock{now: epoch.Add(MinInterval + 5*time.Second)}
+			store, gh := newStore(t, dir, c, nil, replies...)
+			read := store.Read
+			if tt.peek {
+				read = store.Peek
+			}
+			st, err := read(testCtx(t), Want{PRs: []int{190}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := fmt.Sprint(c.slept); got != tt.slept || gh.requests() != tt.requests || st.PRs[190].State != "OPEN" {
+				t.Errorf("slept %s with %d requests, #190 = %+v; want slept %s with %d requests", got, gh.requests(), st.PRs[190], tt.slept, tt.requests)
+			}
+		})
+	}
+}
+
 func TestReadersWaitingOutTheIntervalShareTheNextPoll(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
