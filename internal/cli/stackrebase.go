@@ -474,8 +474,11 @@ func stackBegin(ctx context.Context, cmd *cobra.Command, l lane, commonDir strin
 			return err
 		}
 	}
-	if !o.submit && !o.noPush {
-		if run, err = stackKeepLocal(ctx, cmd, l, commonDir, o, run); err != nil {
+	switch {
+	case !o.submit && !o.noPush && run.NoPush:
+		cmd.Println("no branch of this stack has a pull request, and stack rebase never opens one, so it rebases locally without pushing")
+	case !o.submit && !o.noPush:
+		if err := stackKeepLocal(cmd, run); err != nil {
 			return err
 		}
 	}
@@ -527,9 +530,8 @@ func stackBegin(ctx context.Context, cmd *cobra.Command, l lane, commonDir strin
 	return stackDrive(ctx, cmd, l, commonDir, run)
 }
 
-func stackKeepLocal(ctx context.Context, cmd *cobra.Command, l lane, commonDir string, o stackRebaseOpts, run *stackRebaseRun) (*stackRebaseRun, error) {
-	var live, bare []string
-	for _, b := range run.Branches {
+func stackBare(branches []*stackRebaseBranch) (live, bare []string) {
+	for _, b := range branches {
 		if b.Landed != "" || b.Held != "" || b.Kept {
 			continue
 		}
@@ -538,29 +540,33 @@ func stackKeepLocal(ctx context.Context, cmd *cobra.Command, l lane, commonDir s
 			bare = append(bare, b.Name)
 		}
 	}
-	switch {
-	case len(bare) == 0:
-		return run, nil
-	case len(bare) < len(live):
-		verb, them := "have", "them"
-		if below := stackBareBelow(run, live, bare); len(below) > 0 {
-			if len(below) == 1 {
-				verb, them = "has", "it"
-			}
-			return nil, fmt.Errorf("stack rebase: %s %s no pull request, and stack rebase never opens one — rebase with --no-push to keep the stack local, or open %s first with ccx vcs ship --pr-body-file", strings.Join(below, ", "), verb, them)
-		}
-		for i := range run.Branches {
-			run.Branches[i].LocalOnly = slices.Contains(bare, run.Branches[i].Name)
-		}
-		if len(bare) == 1 {
-			verb = "has"
-		}
-		cmd.Printf("%s %s no pull request, and stack rebase never opens one, so it rebases locally without pushing\n", strings.Join(bare, ", "), verb)
-		return run, nil
+	return live, bare
+}
+
+func stackKeepLocal(cmd *cobra.Command, run *stackRebaseRun) error {
+	branches := make([]*stackRebaseBranch, len(run.Branches))
+	for i := range run.Branches {
+		branches[i] = &run.Branches[i]
 	}
-	cmd.Println("no branch of this stack has a pull request, and stack rebase never opens one, so it rebases locally without pushing")
-	o.noPush = true
-	return stackPlan(ctx, l, commonDir, o)
+	live, bare := stackBare(branches)
+	if len(bare) == 0 {
+		return nil
+	}
+	verb, them := "have", "them"
+	if below := stackBareBelow(run, live, bare); len(below) > 0 {
+		if len(below) == 1 {
+			verb, them = "has", "it"
+		}
+		return fmt.Errorf("stack rebase: %s %s no pull request, and stack rebase never opens one — rebase with --no-push to keep the stack local, or open %s first with ccx vcs ship --pr-body-file", strings.Join(below, ", "), verb, them)
+	}
+	for i := range run.Branches {
+		run.Branches[i].LocalOnly = slices.Contains(bare, run.Branches[i].Name)
+	}
+	if len(bare) == 1 {
+		verb = "has"
+	}
+	cmd.Printf("%s %s no pull request, and stack rebase never opens one, so it rebases locally without pushing\n", strings.Join(bare, ", "), verb)
+	return nil
 }
 
 func stackBareBelow(run *stackRebaseRun, live, bare []string) []string {
@@ -1285,6 +1291,14 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 			}
 		}
 		kept[name] = b.Kept
+	}
+	ordered := make([]*stackRebaseBranch, len(order))
+	for i, name := range order {
+		ordered[i] = byName[name]
+	}
+	if live, bare := stackBare(ordered); !o.submit && !o.noPush && len(bare) > 0 && len(bare) == len(live) {
+		o.noPush = true
+		return stackPlan(ctx, l, commonDir, o)
 	}
 	if len(unpushed) > 0 {
 		return nil, stackRefuseUnpushedPins(unpushed)
@@ -2568,6 +2582,9 @@ func stackOldBase(ctx context.Context, dir render.Dir, tr vcs.Trunk, pin string,
 			return "", err
 		}
 		if best == "" && self.Parent == parent {
+			if err := stackRefuseStalePublished(ctx, dir, self, candidates[0]); err != nil {
+				return "", err
+			}
 			return "", stackNoOldBase(ctx, dir, tr, state, self.Name, published)
 		}
 		if best == "" {
@@ -2593,19 +2610,22 @@ func stackPastCarried(ctx context.Context, dir render.Dir, state gtState, self *
 	if err != nil {
 		return "", err
 	}
+	span := self.OldBase + ".." + self.Head
+	out, err := render.RunCLI(ctx, dir, "git", []string{"rev-list", span})
+	if err != nil {
+		return "", fmt.Errorf("%s: git rev-list %s: %w", stackRebasePrefix, span, err)
+	}
+	own := map[string]bool{}
+	for _, commit := range strings.Fields(out) {
+		own[commit] = true
+	}
 	carried := []string{self.OldBase}
 	for _, name := range slices.Sorted(maps.Keys(state)) {
 		s := state[name]
-		if name == self.Name || s.Trunk || s.Head == "" || s.Head == self.Head || slices.Contains(up, name) {
+		if name == self.Name || s.Trunk || !own[s.Head] || s.Head == self.Head || slices.Contains(up, name) {
 			continue
 		}
-		in, err := gitIsAncestor(ctx, dir, stackRebasePrefix, s.Head, self.Head)
-		if err != nil {
-			return "", err
-		}
-		if in {
-			carried = append(carried, s.Head)
-		}
+		carried = append(carried, s.Head)
 	}
 	return stackFurthest(ctx, dir, self.Head, carried)
 }
@@ -2709,6 +2729,17 @@ func stackFurthest(ctx context.Context, dir render.Dir, head string, candidates 
 		}
 	}
 	return best, nil
+}
+
+func stackRefuseStalePublished(ctx context.Context, dir render.Dir, self *stackRebaseBranch, parentHead string) error {
+	if self.Head == self.Local {
+		return nil
+	}
+	moved, err := gitIsAncestor(ctx, dir, stackRebasePrefix, parentHead, self.Local)
+	if err != nil || !moved {
+		return err
+	}
+	return fmt.Errorf("stack rebase: %s stays at its published head %.12s, which does not sit on %s, while its local head %.12s does — a run that did not push moved it there; publish it first with ccx vcs stack submit --to %s, or name it with --parent %s=%s so this run moves it", self.Name, self.Head, self.Parent, self.Local, self.Name, self.Name, self.Parent)
 }
 
 func stackNoOldBase(ctx context.Context, dir render.Dir, tr vcs.Trunk, state gtState, name string, published bool) error {

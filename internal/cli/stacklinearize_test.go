@@ -2,6 +2,7 @@ package cli
 
 import (
 	"maps"
+	"slices"
 	"strings"
 	"testing"
 
@@ -86,5 +87,98 @@ func TestStackRebaseLinearizePushesSiblingsOntoEachOther(t *testing.T) {
 	}
 	if !stackOnto(t, f, "c1", "c2") {
 		t.Error("c2 does not sit on c1")
+	}
+}
+
+func TestStackRebaseLinearizeNeverAsksAboutAnUnrelatedBranch(t *testing.T) {
+	f := shipGTRepo(t)
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	unrelated := map[string]string{}
+	for _, name := range []string{"u1", "u2", "u3"} {
+		mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
+		shipGTStack(t, f, name)
+		unrelated[name] = gitAt(t, f.Env(), f.Dir, "rev-parse", name)
+	}
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
+	shipGTStack(t, f, "p", "c1")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "p")
+	shipGTStack(t, f, "c2")
+	shipResetLog(t, f)
+
+	if _, errOut, err := runStackCmd(t, f, "rebase", "--no-push", "--linearize", "p,c1,c2"); err != nil {
+		t.Fatalf("linearize siblings: %v (stderr=%q)", err, errOut)
+	}
+	if !stackOnto(t, f, "c1", "c2") {
+		t.Error("c2 does not sit on c1")
+	}
+	for _, argv := range shipGTInvocations(t, f) {
+		for name, head := range unrelated {
+			if slices.Contains(argv, head) {
+				t.Errorf("%v names %s's head, a branch outside the run", argv, name)
+			}
+		}
+	}
+}
+
+func linearizeLocallyMoved(t *testing.T, f *vcstest.Fixture) {
+	t.Helper()
+	for _, name := range []string{"culprits", "grants", "third"} {
+		mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "--detach", "main")
+		writeShipFile(t, f.Dir, name+".txt", name+"\n")
+		mustRun(t, f.Env(), f.Dir, "git", "add", name+".txt")
+		mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", name)
+		mustRun(t, f.Env(), f.Dir, "git", "branch", name)
+		mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", name)
+		mustRun(t, f.Env(), f.Dir, "gt", "track", "-f", "--parent", "main", "--no-interactive")
+	}
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "culprits", "grants", "third")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "grants")
+	if _, errOut, err := runStackCmd(t, f, "rebase", "--linearize", "culprits,grants"); err != nil {
+		t.Fatalf("linearize culprits,grants: %v (stderr=%q)", err, errOut)
+	}
+	if !stackOnto(t, f, "culprits", "grants") {
+		t.Fatal("grants does not sit on culprits after the local linearize")
+	}
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "third")
+}
+
+func TestStackRebaseLinearizesOntoABranchALocalRunMoved(t *testing.T) {
+	f := shipGTRepo(t)
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	linearizeLocallyMoved(t, f)
+	before := linearizeRemoteHeads(t, f, "culprits", "grants", "third")
+
+	out, errOut, err := runStackCmd(t, f, "rebase", "--linearize", "grants,third")
+	if err != nil {
+		t.Fatalf("linearize grants,third: %v (stderr=%q)", err, errOut)
+	}
+	if want := "no branch of this stack has a pull request"; !strings.Contains(out, want) {
+		t.Errorf("output = %q, want %q", out, want)
+	}
+	if !stackOnto(t, f, "grants", "third") || !stackOnto(t, f, "culprits", "third") {
+		t.Error("third does not sit on grants and culprits")
+	}
+	if after := linearizeRemoteHeads(t, f, "culprits", "grants", "third"); !maps.Equal(before, after) {
+		t.Errorf("remote heads moved from %v to %v in a run with no pull request", before, after)
+	}
+}
+
+func TestStackRebaseRefusesToStackOnAPublishedHeadALocalRunMovedPast(t *testing.T) {
+	f := shipGTRepo(t)
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	linearizeLocallyMoved(t, f)
+	stubOpenPRs(t, f, nil, "third")
+	api.prs["third"] = 9000
+	before := linearizeRemoteHeads(t, f, "culprits", "grants", "third")
+
+	_, _, err := runStackCmd(t, f, "rebase", "--linearize", "grants,third")
+	if err == nil || !strings.Contains(err.Error(), "grants stays at its published head") || !strings.Contains(err.Error(), "--parent grants=culprits") {
+		t.Fatalf("linearize grants,third = %v, want grants' stale published head named", err)
+	}
+	if after := linearizeRemoteHeads(t, f, "culprits", "grants", "third"); !maps.Equal(before, after) {
+		t.Errorf("remote heads moved from %v to %v before refusing", before, after)
 	}
 }

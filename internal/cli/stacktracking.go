@@ -30,6 +30,7 @@ type stackUntracked struct {
 	Stale  string
 	Landed []int
 	Closed []int
+	Bare   []string
 }
 
 func (u stackUntracked) String() string {
@@ -43,6 +44,9 @@ func (u stackUntracked) String() string {
 	if len(u.Closed) > 0 {
 		fields = append(fields, "its server-side stack still holds "+stackPRNumbers(u.Closed)+", which closed without landing")
 	}
+	if len(u.Bare) > 0 {
+		fields = append(fields, "below it "+strings.Join(u.Bare, ", ")+" kept as another lane's with no pull request")
+	}
 	return strings.Join(fields, shipSep)
 }
 
@@ -54,11 +58,15 @@ func stackPRNumbers(numbers []int) string {
 	return strings.Join(names, ", ")
 }
 
-func (u stackUntracked) repairable() bool { return len(u.Landed) == 0 && len(u.Closed) == 0 }
+func (u stackUntracked) repairable() bool {
+	return len(u.Landed) == 0 && len(u.Closed) == 0 && len(u.Bare) == 0
+}
 
 func (u stackUntracked) stranded() bool { return len(u.Closed) > 0 }
 
-func (u stackUntracked) pending() bool { return !u.repairable() && !u.stranded() }
+func (u stackUntracked) bare() bool { return !u.stranded() && len(u.Bare) > 0 }
+
+func (u stackUntracked) pending() bool { return !u.repairable() && !u.stranded() && !u.bare() }
 
 type stackTracking struct {
 	untracked []stackUntracked
@@ -83,6 +91,10 @@ func (t *stackTracking) repairable() []stackUntracked {
 
 func (t *stackTracking) stranded() []stackUntracked {
 	return slices.DeleteFunc(slices.Clone(t.untracked), func(u stackUntracked) bool { return !u.stranded() })
+}
+
+func (t *stackTracking) bare() []stackUntracked {
+	return slices.DeleteFunc(slices.Clone(t.untracked), func(u stackUntracked) bool { return !u.bare() })
 }
 
 func (t *stackTracking) pending() []stackUntracked {
@@ -121,6 +133,18 @@ func stackTrackingStranded(stranded []stackUntracked) error {
 	return fmt.Errorf("%s: pushed, but Graphite tracks no stack for these pull requests because its stack record still holds pull requests that closed without landing, so the merge queue cannot enqueue them; %s — replace each with a fresh pull request on the same branch, resetting its approvals: %s:\n%s", stackRebasePrefix, stackStrandedRemedy, strings.Join(recreate, "; "), stackUntrackedLines(stranded))
 }
 
+func stackTrackingBare(bare []stackUntracked) error {
+	var flags []string
+	for _, u := range bare {
+		for _, name := range u.Bare {
+			if flag := "--include " + name; !slices.Contains(flags, flag) {
+				flags = append(flags, flag)
+			}
+		}
+	}
+	return fmt.Errorf("%s: pushed, but Graphite tracks no stack for these pull requests because the run kept branches below them as another lane's, and those have no pull request; a fresh head cannot change that, so ccx does not republish them — run ccx vcs stack submit %s to open their pull requests with the stack, or submit each from the working copy holding it:\n%s", stackRebasePrefix, strings.Join(flags, " "), stackUntrackedLines(bare))
+}
+
 func (t *stackTracking) settled(cmd *cobra.Command) error {
 	if t.err != nil {
 		return t.unread()
@@ -128,9 +152,11 @@ func (t *stackTracking) settled(cmd *cobra.Command) error {
 	if pending := t.pending(); len(pending) > 0 {
 		cmd.Println("waiting on Graphite" + shipSep + "the merge queue cannot enqueue these pull requests until Graphite's stack record drops the landed ones; " + stackLandedRemedy + ":\n" + stackUntrackedLines(pending))
 	}
-	switch stranded, repairable := t.stranded(), t.repairable(); {
+	switch stranded, bare, repairable := t.stranded(), t.bare(), t.repairable(); {
 	case len(stranded) > 0:
 		return stackTrackingStranded(stranded)
+	case len(bare) > 0:
+		return stackTrackingBare(bare)
 	case len(repairable) > 0:
 		return fmt.Errorf("%s: pushed, but Graphite tracks no stack for these pull requests, so the merge queue cannot enqueue them — ccx vcs stack submit republishes them with fresh heads:\n%s", stackRebasePrefix, stackUntrackedLines(repairable))
 	}
@@ -197,6 +223,11 @@ func stackReadUntracked(ctx context.Context, client *gtapi.Client, owner, repo s
 	}
 	if recorded != u.Parent {
 		u.Stale = recorded
+	}
+	for b := run.branch(u.Parent); b != nil; b = run.branch(b.Parent) {
+		if b.Pinned && b.PR == nil {
+			u.Bare = append(u.Bare, b.Name)
+		}
 	}
 	slices.Sort(u.Landed)
 	slices.Sort(u.Closed)
