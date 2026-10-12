@@ -6062,7 +6062,7 @@ func TestShipGTSubmitFailures(t *testing.T) {
 	})
 
 	t.Run("a per-branch refusal names both sides", func(t *testing.T) {
-		setupShipGT(t, false)
+		setupShipGT(t, true)
 		api := stubGTAPI(t)
 		t.Setenv("GIT_BRANCH", "feature2")
 		setGTState(t, `{"main":{"trunk":true},"feature":{"parents":[{"ref":"main","sha":"deadbeef"}]},`+
@@ -6281,7 +6281,7 @@ func TestShipGTSubmitBodyMatchesGT(t *testing.T) {
 // requests, and stops before the ones above, whose base pull request never
 // opened.
 func TestShipGTMidStackRefusalNamesWhatLanded(t *testing.T) {
-	setupShipGT(t, false)
+	setupShipGT(t, true)
 	api := stubGTAPI(t)
 	t.Setenv("GIT_BRANCH", "feature2")
 	setGTState(t, `{"main":{"trunk":true},"base":{"parents":[{"ref":"main","sha":"deadbeef"}]},`+
@@ -6298,6 +6298,75 @@ func TestShipGTMidStackRefusalNamesWhatLanded(t *testing.T) {
 	if heads := api.submitHeads(); !slices.Equal(heads, []string{"base", "feature"}) {
 		t.Errorf("submit posts = %v, want the loop to stop at the branch graphite refused", heads)
 	}
+}
+
+// TestShipGTRefusalOfAPullRequestGitHubAlreadyServes is the #35552 refusal:
+// Graphite answered "Pull request not found" for an open pull request the push
+// had already moved, and ship reported that landed push as a failure. A refusal
+// counts as submitted only when GitHub's pull request carries the pushed head
+// on the planned base.
+func TestShipGTRefusalOfAPullRequestGitHubAlreadyServes(t *testing.T) {
+	const notFound = "GitHub returned an error: Pull request not found"
+	t.Run("the pushed head on the planned base is submitted", func(t *testing.T) {
+		log, api := setupShipGT(t, true)
+		api.prs["feature"] = 41
+		api.submitErrors["feature"] = notFound
+		t.Setenv("GH_PULLS_JSON", ghOpenPullAt(t, 41, vcstest.GraphiteLeafSHA, "main"))
+		body := writePRBody(t, "body.md", "why this change\n")
+
+		got, errStr, err := runShipCmdFull(api.ctx(context.Background()), t, "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", body)
+		if err != nil {
+			t.Fatalf("ship error = %v (stderr=%q)", err, errStr)
+		}
+		url := "https://github.com/yasyf/cc-context/pull/41"
+		if want := "ship: graphite refused feature (" + notFound + "), but GitHub's PR #41 " + url + " already carries the pushed head " + shortOID(vcstest.GraphiteLeafSHA) + " on main, so the push alone submitted it"; !strings.Contains(errStr, want) {
+			t.Errorf("stderr = %q, want it to carry %q", errStr, want)
+		}
+		if want := "submitted feature → PR #41 " + url; !strings.Contains(got, want) {
+			t.Errorf("summary = %q, want it to carry %q", got, want)
+		}
+		restated := false
+		for _, inv := range readInvocations(t, log) {
+			if len(inv) > 4 && inv[0] == "gh" && inv[2] == "-X" && inv[3] == "PATCH" && strings.HasSuffix(inv[4], "/pulls/41") {
+				restated = true
+			}
+		}
+		if !restated {
+			t.Errorf("ship never restated #41's body, want --pr-body-file applied to the pull request GitHub serves")
+		}
+	})
+
+	t.Run("a head GitHub does not carry stays refused", func(t *testing.T) {
+		_, api := setupShipGT(t, true)
+		api.prs["feature"] = 41
+		api.submitErrors["feature"] = notFound
+		t.Setenv("GH_PULLS_JSON", ghOpenPullAt(t, 41, "beadfeed", "main"))
+
+		_, err := runShipCmd(api.ctx(context.Background()), t, "-m", "fix: frobnicate")
+		want := submitAdvice("graphite refused feature (" + notFound + "); every branch is already pushed")
+		if err == nil || err.Error() != want {
+			t.Fatalf("error = %v, want %q", err, want)
+		}
+	})
+}
+
+// ghOpenPullAt replays the recorded open pull request of a head-filtered pulls
+// list, renumbered and moved onto this repository's head and base.
+func ghOpenPullAt(t *testing.T, number int, head, base string) string {
+	t.Helper()
+	var pulls []map[string]any
+	if err := json.Unmarshal([]byte(ghStdout(t, "rest-pulls-head-open")), &pulls); err != nil {
+		t.Fatalf("decode rest-pulls-head-open: %v", err)
+	}
+	pulls[0]["number"] = number
+	pulls[0]["html_url"] = fmt.Sprintf("https://github.com/yasyf/cc-context/pull/%d", number)
+	pulls[0]["head"].(map[string]any)["sha"] = head
+	pulls[0]["base"].(map[string]any)["ref"] = base
+	out, err := json.Marshal(pulls)
+	if err != nil {
+		t.Fatalf("encode pulls: %v", err)
+	}
+	return string(out)
 }
 
 // TestShipGTSubmitCarriesTheHookDecision pins the skip to the push half of the
