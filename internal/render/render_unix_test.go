@@ -4,6 +4,7 @@ package render
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -317,4 +319,45 @@ func awaitHelperLine(t *testing.T, lines *bufio.Scanner, want string) {
 		}
 	}
 	t.Fatalf("helper never printed %q: %v", want, lines.Err())
+}
+
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func TestSlowChildIsAnnouncedOnce(t *testing.T) {
+	restore := slowAfter
+	slowAfter = 50 * time.Millisecond
+	t.Cleanup(func() { slowAfter = restore })
+
+	var slow lockedBuffer
+	if _, err := RunCLI(WithSlowWriter(context.Background(), &slow), Ambient, "/bin/sh", []string{"-c", "sleep 0.3"}); err != nil {
+		t.Fatalf("RunCLI: %v", err)
+	}
+	got := slow.String()
+	if !strings.HasPrefix(got, "ccx: still waiting on /bin/sh -c sleep 0.3 after ") || strings.Count(got, "\n") != 1 {
+		t.Errorf("announcement = %q, want one line naming the child and its elapsed time", got)
+	}
+
+	var fast lockedBuffer
+	if _, err := RunCLI(WithSlowWriter(context.Background(), &fast), Ambient, "/bin/sh", []string{"-c", "true"}); err != nil {
+		t.Fatalf("RunCLI: %v", err)
+	}
+	time.Sleep(2 * slowAfter)
+	if got := fast.String(); got != "" {
+		t.Errorf("announcement = %q, want nothing for a child that finished before slowAfter", got)
+	}
 }

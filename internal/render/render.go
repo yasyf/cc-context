@@ -53,6 +53,45 @@ func WithProgress(ctx context.Context, probe func() string, stall time.Duration)
 	return context.WithValue(ctx, progressKey{}, progress{probe: probe, stall: stall})
 }
 
+// slowAfter is how long a wait runs before Slow names it. Tests shorten it.
+var slowAfter = 10 * time.Second
+
+type slowKey struct{}
+
+// WithSlowWriter returns ctx announcing its slow waits to w instead of stderr.
+func WithSlowWriter(ctx context.Context, w io.Writer) context.Context {
+	return context.WithValue(ctx, slowKey{}, w)
+}
+
+// Announce writes one line about a wait to the writer ctx names, stderr by
+// default, so a caller blocked on ccx can see what it waits on.
+func Announce(ctx context.Context, format string, args ...any) {
+	w, ok := ctx.Value(slowKey{}).(io.Writer)
+	if !ok {
+		w = os.Stderr
+	}
+	_, _ = fmt.Fprintf(w, "ccx: "+format+"\n", args...)
+}
+
+// Slow announces what once it has waited slowAfter, naming the elapsed time,
+// unless the returned stop runs first.
+func Slow(ctx context.Context, what string) (stop func()) {
+	start := time.Now()
+	t := time.AfterFunc(slowAfter, func() {
+		Announce(ctx, "still waiting on %s after %s", what, time.Since(start).Round(time.Second))
+	})
+	return func() { t.Stop() }
+}
+
+func describeChild(bin string, argv []string) string {
+	const limit = 120
+	what := strings.Join(append([]string{bin}, argv...), " ")
+	if len(what) > limit {
+		return what[:snapRuneStart(what, limit)] + "…"
+	}
+	return what
+}
+
 // Dir is the working copy a child runs in, required by every runner.
 type Dir string
 
@@ -75,7 +114,11 @@ func newCmd(ctx context.Context, dir Dir, bin string, argv, extraEnv []string) (
 	if _, ok := ctx.Value(progressKey{}).(progress); ok {
 		terminateOnCancel(cmd)
 	}
-	return cmd, runCtx, cancel
+	stop := Slow(ctx, describeChild(bin, argv))
+	return cmd, runCtx, func() {
+		stop()
+		cancel()
+	}
 }
 
 type envKey struct{}

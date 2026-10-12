@@ -181,7 +181,9 @@ func (c *Client) do(ctx context.Context, method, ref string, body []byte, read b
 		if err != nil {
 			return nil, nil, false, err
 		}
+		stop := render.Slow(ctx, "GitHub "+method+" "+target)
 		status, header, payload, err := c.send(ctx, method, target, body, token)
+		stop()
 		if err != nil {
 			return nil, nil, false, err
 		}
@@ -198,6 +200,7 @@ func (c *Client) do(ctx context.Context, method, ref string, body []byte, read b
 		}
 		if wait, ok := retryDelay(status, header, time.Now()); ok && waits < c.retries {
 			waits++
+			render.Announce(ctx, "GitHub rate-limited %s %s, retrying in %s (wait %d of %d)", method, target, wait.Round(time.Second), waits, c.retries)
 			if err := sleep(ctx, wait); err != nil {
 				return nil, nil, false, err
 			}
