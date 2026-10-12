@@ -12,8 +12,8 @@ func TestStackRebaseFromAChildKeepsAParentAnotherWorktreeHolds(t *testing.T) {
 		args []string
 		says string
 	}{
-		{name: "push", args: []string{"rebase"}, says: "not pushing base"},
-		{name: "no_push", args: []string{"rebase", "--no-push"}, says: "kept at its local head"},
+		{name: "push", args: []string{"rebase"}, says: "keeping base at its published head"},
+		{name: "no_push", args: []string{"rebase", "--no-push"}, says: "keeping base at its local head"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
