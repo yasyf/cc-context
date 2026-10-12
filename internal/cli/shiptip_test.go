@@ -522,3 +522,46 @@ func TestShipTipOnlyReplaysNothingWhenItsParentsPublishedHeadMoves(t *testing.T)
 		})
 	}
 }
+
+func TestShipTipOnlyAdoptsOntoAParentsPublishedHeadPastItsUnpushedWork(t *testing.T) {
+	f := shipGTRepo(t)
+	shipGTStack(t, f, "base")
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("stack submit: %v", err)
+	}
+	stubStackPRs(t, f, map[string]*stackPR{
+		"base": {Number: 100, Title: "base", State: "OPEN", Base: "main", Mergeable: "MERGEABLE"},
+	})
+	base := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "feature")
+	writeShipFile(t, f.Dir, "base.txt", "feature's base\n")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qam", "feature")
+	held := f.WorktreePath("held-base")
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", held, "base")
+	writeShipFile(t, held, "base.txt", "base's unpushed edit\n")
+	mustRun(t, f.Env(), held, "git", "commit", "-qam", "unpushed")
+	local := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
+	body := filepath.Join(t.TempDir(), "body.md")
+	if err := os.WriteFile(body, []byte("Exact body\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	shipResetLog(t, f)
+
+	got, errStr, err := runShipCmdFull(f.Context(), t, "--no-commit", "--no-watch", "--tip-only", "--parent", "base", "--pr-title", "feature=Exact title", "--pr-body-file", "feature="+body)
+	if err != nil {
+		t.Fatalf("ship --tip-only --parent base = %v (stderr=%q), want feature adopted onto base's published head", err, errStr)
+	}
+	if want := "tracked feature onto base's published head " + shortSHA(base); !strings.Contains(got, want) {
+		t.Errorf("summary = %q, want it to carry %q", got, want)
+	}
+	if parent := shipParentOf(t, f, "feature"); parent != "base" {
+		t.Errorf("feature's parent = %s, want base", parent)
+	}
+	if refs := gtPushedRefs(shipGTInvocations(t, f)); !slices.Equal(refs, []string{"feature"}) {
+		t.Errorf("pushed refs = %v, want only feature", refs)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); got != local {
+		t.Errorf("the base lane's unpushed head moved from %s to %s", local, got)
+	}
+	stackAssertBaseKept(t, f, base)
+}
