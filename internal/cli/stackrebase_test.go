@@ -3234,3 +3234,33 @@ func TestStackRebaseParentNamesTheFetchForAParentOnlyTheRemoteHolds(t *testing.T
 		t.Errorf("refusal = %q, want it to name %q", errOut+err.Error(), want)
 	}
 }
+
+func TestStackRebaseIncludeTakesAnotherLanesKeptBranchIntoTheRun(t *testing.T) {
+	f := stackRebaseRepo(t, "me/p", "you/x", "me/c")
+	if _, _, err := runStackCmd(t, f, "rebase", "--all-lanes"); err != nil {
+		t.Fatalf("publish the stack: %v", err)
+	}
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "me/p")
+	writeShipFile(t, f.Dir, "me/p.txt", "amended\n")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qa", "--amend", "--no-edit")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "me/c")
+	shipResetLog(t, f)
+
+	if _, _, err := runStackCmd(t, f, "rebase", "--dry-run"); err == nil || !strings.Contains(err.Error(), "pass --include you/x to take it into the run") {
+		t.Fatalf("stack rebase --dry-run = %v, want the kept you/x refused with --include you/x", err)
+	}
+	if n := pushCount(t, f); n != 0 {
+		t.Errorf("pushes = %d, want none before the refusal", n)
+	}
+
+	if _, _, err := runStackCmd(t, f, "rebase", "--include", "you/x"); err != nil {
+		t.Fatalf("stack rebase --include you/x: %v", err)
+	}
+	for _, pair := range [][2]string{{"me/p", "you/x"}, {"you/x", "me/c"}} {
+		parent := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", pair[0])
+		child := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", pair[1])
+		if !stackOnto(t, f, parent, child) {
+			t.Errorf("published %s %s is not stacked on published %s %s", pair[1], child, pair[0], parent)
+		}
+	}
+}
