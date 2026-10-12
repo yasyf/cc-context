@@ -1078,6 +1078,7 @@ func TestShipPRRestateRetryCarriesLiveReleaseTrailers(t *testing.T) {
 		var bodies []string
 		for _, field := range strings.Fields(finish) {
 			if path, ok := strings.CutPrefix(field, "body=@"); ok {
+				path = strings.TrimSuffix(path, ":")
 				bodies = append(bodies, path)
 				t.Cleanup(func() { _ = os.Remove(path) })
 			}
