@@ -629,7 +629,7 @@ func TestShipPREditCarriesLiveReleaseTrailers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal live pull: %v", err)
 	}
-	t.Setenv("GH_PULL_JSON", string(payload))
+	f.Setenv("GH_PULL_JSON", string(payload))
 	bodyDump := filepath.Join(t.TempDir(), "body")
 	t.Setenv("GH_PR_BODY_DUMP", bodyDump)
 	body := writePRBody(t, "body.md", "regenerated\n")
