@@ -1292,13 +1292,14 @@ func readInvocations(t *testing.T, log string) [][]string {
 	return got
 }
 
-// normalizeTempPaths rewrites the temp path a "-" body file materializes stdin
-// into, which is the one nondeterministic element an argv sequence can carry —
-// a --pr-body-file naming a fixture is the path the test itself created.
+// normalizeTempPaths rewrites the temp paths ship writes a body to, stdin a "-"
+// materializes and a body carrying live Release-* trailers, the nondeterministic
+// elements an argv sequence can carry — a --pr-body-file naming a fixture is the
+// path the test itself created.
 func normalizeTempPaths(invocations [][]string) [][]string {
 	for _, inv := range invocations {
 		for i, arg := range inv {
-			if strings.Contains(arg, "ccx-pr-body-") {
+			if strings.Contains(arg, prBodyTempPrefix) || strings.Contains(arg, prCarriedTempPrefix) {
 				inv[i] = "<pr-body>"
 			}
 		}

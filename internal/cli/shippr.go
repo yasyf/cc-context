@@ -28,6 +28,11 @@ const prBodyStdin = "-"
 // into.
 const prBodyTempPrefix = "ccx-pr-body-"
 
+// prCarriedTempPrefix names the temp file a restated body carrying live
+// Release-* trailers is written to. A failed restate leaves it in place for
+// the retry to name.
+const prCarriedTempPrefix = "ccx-pr-carried-"
+
 // prURLMarker separates a pull request URL's repository from its number.
 const prURLMarker = "/pull/"
 
@@ -446,19 +451,27 @@ func shipPREdit(ctx context.Context, nwo string, pr prState, m prMeta) (string, 
 			readyField = "draft"
 		}
 	}
-	if len(fields) > 0 {
-		if viaGraphQL, err := restatePR(ctx, nwo, pr.Number, m); err != nil {
-			var then []string
-			if ready != nil {
-				then = []string{ghCommand(ready)}
-			}
-			retry := append([]string{ghCommand(prRetryArgv(nwo, pr.Number, m))}, then...)
-			var graphQL []string
-			if viaGraphQL {
-				graphQL = append([]string{prUpdateRetry(nwo, pr.Number, m)}, then...)
-			}
-			return "", prStepError("the push", "restate", retry, graphQL, err)
+	restateFailed := func(m prMeta, viaGraphQL bool, err error) error {
+		var then []string
+		if ready != nil {
+			then = []string{ghCommand(ready)}
 		}
+		retry := append([]string{ghCommand(prRetryArgv(nwo, pr.Number, m))}, then...)
+		var graphQL []string
+		if viaGraphQL {
+			graphQL = append([]string{prUpdateRetry(nwo, pr.Number, m)}, then...)
+		}
+		return prStepError("the push", "restate", retry, graphQL, err)
+	}
+	if len(fields) > 0 {
+		carried, cleanup, err := withLiveReleaseTrailers(ctx, nwo, pr.Number, m)
+		if err != nil {
+			return "", restateFailed(m, false, err)
+		}
+		if viaGraphQL, err := restatePR(ctx, nwo, pr.Number, carried); err != nil {
+			return "", restateFailed(carried, viaGraphQL, err)
+		}
+		cleanup()
 	}
 	if ready != nil {
 		if _, err := render.RunCLI(ctx, render.Ambient, "gh", ready); err != nil {
@@ -492,16 +505,9 @@ func prEditArgv(nwo string, number int, m prMeta) []string {
 // restatePR writes the stated fields over REST, and over GraphQL's
 // updatePullRequest when REST refuses with a rate limit: GitHub meters the two
 // apart, so a secondary limit on REST writes leaves GraphQL open. viaGraphQL
-// reports that the fallback ran.
+// reports that the fallback ran. m's body already carries the live Release-*
+// trailers withLiveReleaseTrailers added.
 func restatePR(ctx context.Context, nwo string, number int, m prMeta) (viaGraphQL bool, err error) {
-	if m.bodyPath != "" {
-		carried, cleanup, err := withLiveReleaseTrailers(ctx, nwo, number, m.bodyPath)
-		if err != nil {
-			return false, err
-		}
-		defer cleanup()
-		m.bodyPath = carried
-	}
 	_, err = render.RunCLI(ctx, render.Ambient, "gh", prEditArgv(nwo, number, m))
 	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "rate limit") {
 		return false, err
@@ -516,41 +522,48 @@ func restatePR(ctx context.Context, nwo string, number int, m prMeta) (viaGraphQ
 	return true, nil
 }
 
-func withLiveReleaseTrailers(ctx context.Context, nwo string, number int, bodyPath string) (string, func(), error) {
+// withLiveReleaseTrailers is m with its body carrying the Release-* trailers
+// that close pull request number's live body. A body that needed them is
+// written to a temp file, which cleanup removes once the restate lands.
+func withLiveReleaseTrailers(ctx context.Context, nwo string, number int, m prMeta) (carried prMeta, cleanup func(), err error) {
 	noop := func() {}
+	if m.bodyPath == "" {
+		return m, noop, nil
+	}
 	out, err := render.RunCLI(ctx, render.Ambient, "gh", prBodyArgv(nwo, number))
 	if err != nil {
-		return "", noop, fmt.Errorf("ship: read PR #%d body: %w", number, err)
+		return m, noop, fmt.Errorf("ship: read PR #%d body: %w", number, err)
 	}
 	var live struct {
 		Body string `json:"body"`
 	}
 	if err := json.Unmarshal([]byte(out), &live); err != nil {
-		return "", noop, fmt.Errorf("ship: parse PR #%d body: %w", number, err)
+		return m, noop, fmt.Errorf("ship: parse PR #%d body: %w", number, err)
 	}
-	next, err := os.ReadFile(bodyPath) //nolint:gosec // the caller names the body file
+	next, err := os.ReadFile(m.bodyPath) //nolint:gosec // the caller names the body file
 	if err != nil {
-		return "", noop, fmt.Errorf("ship: --pr-body-file %s: %w", bodyPath, err)
+		return m, noop, fmt.Errorf("ship: --pr-body-file %s: %w", m.bodyPath, err)
 	}
-	carried := carryReleaseTrailers(live.Body, string(next))
-	if carried == string(next) {
-		return bodyPath, noop, nil
+	body := carryReleaseTrailers(live.Body, string(next))
+	if body == string(next) {
+		return m, noop, nil
 	}
-	f, err := os.CreateTemp("", prBodyTempPrefix+"*")
+	f, err := os.CreateTemp("", prCarriedTempPrefix+"*")
 	if err != nil {
-		return "", noop, fmt.Errorf("ship: create pr body file: %w", err)
+		return m, noop, fmt.Errorf("ship: create pr body file: %w", err)
 	}
 	remove := func() { _ = os.Remove(f.Name()) }
-	if _, err := f.WriteString(carried); err != nil {
+	if _, err := f.WriteString(body); err != nil {
 		_ = f.Close()
 		remove()
-		return "", noop, fmt.Errorf("ship: write pr body file: %w", err)
+		return m, noop, fmt.Errorf("ship: write pr body file: %w", err)
 	}
 	if err := f.Close(); err != nil {
 		remove()
-		return "", noop, fmt.Errorf("ship: write pr body file: %w", err)
+		return m, noop, fmt.Errorf("ship: write pr body file: %w", err)
 	}
-	return f.Name(), remove, nil
+	m.bodyPath = f.Name()
+	return m, remove, nil
 }
 
 func prBodyArgv(nwo string, number int) []string {
@@ -685,28 +698,46 @@ func prStepError(done, step string, retry, graphQL []string, err error) error {
 // this invocation named. A branch the caller did not name has nothing to
 // write, so it is left alone whether or not it already has a body.
 func shipPRGT(ctx context.Context, nwo string, meta map[string]prMeta, stack []stackEntry) (string, error) {
+	pending := make(map[string]prMeta, len(stack))
+	for _, entry := range stack {
+		if m := meta[entry.Branch]; !entry.metaApplied && entry.PR != 0 && len(m.stated()) > 0 {
+			pending[entry.Branch] = m
+		}
+	}
+	carried := make(map[string]prMeta, len(pending))
+	cleanups := make(map[string]func(), len(pending))
+	for i := len(stack) - 1; i >= 0; i-- {
+		entry := stack[i]
+		m, ok := pending[entry.Branch]
+		if !ok {
+			continue
+		}
+		c, cleanup, err := withLiveReleaseTrailers(ctx, nwo, entry.PR, m)
+		if err != nil {
+			for _, cleanup := range cleanups {
+				cleanup()
+			}
+			retry, _ := prRestatesLeft(nwo, pending, stack)
+			return "", prStepError("the push and graphite submit", "restate", retry, nil, err)
+		}
+		carried[entry.Branch], cleanups[entry.Branch] = c, cleanup
+	}
 	segs := make([]string, 0, len(stack))
 	for i := len(stack) - 1; i >= 0; i-- {
 		entry := stack[i]
-		if entry.metaApplied {
-			continue
-		}
-		m := meta[entry.Branch]
-		fields := m.stated()
-		if len(fields) == 0 {
-			continue
-		}
-		if entry.PR == 0 {
+		m, ok := carried[entry.Branch]
+		if !ok {
 			continue
 		}
 		if viaGraphQL, err := restatePR(ctx, nwo, entry.PR, m); err != nil {
-			retry, graphQL := prRestatesLeft(nwo, meta, stack[:i+1])
+			retry, graphQL := prRestatesLeft(nwo, carried, stack[:i+1])
 			if !viaGraphQL {
 				graphQL = nil
 			}
 			return "", prStepError("the push and graphite submit", "restate", retry, graphQL, err)
 		}
-		segs = append(segs, fmt.Sprintf("PR #%d %s", entry.PR, strings.Join(fields, "+")))
+		cleanups[entry.Branch]()
+		segs = append(segs, fmt.Sprintf("PR #%d %s", entry.PR, strings.Join(m.stated(), "+")))
 	}
 	if len(segs) == 0 {
 		return "", nil

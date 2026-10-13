@@ -39,6 +39,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   paragraphs that the new body lacks, matched line for line. A new body that
   already carries them is sent unchanged.
 
+- **The retry a refused pull request restate prints keeps the `Release-*`
+  trailers.** When GitHub refused the body write, the `finish it with:` hint
+  named the raw `--pr-body-file`, so running that `gh` command by hand dropped
+  the trailers ccx had carried forward. The carried body now goes to a temp
+  file that outlives a refused write, and the hint's REST and GraphQL commands
+  both name it, for every pull request left to restate. A body piped on stdin
+  that needed the trailers is named the same way instead of as `-`.
+
 - **`ccx vcs stack rebase` accepts the `--include` its refusal names.** A
   rebase keeps another lane's branch that this lane sits on at its published
   head, and refuses when that head no longer serves the branches above it,

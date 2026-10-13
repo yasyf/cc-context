@@ -620,16 +620,7 @@ func TestShipPREditCarriesLiveReleaseTrailers(t *testing.T) {
 	f := shipPRFixture(t, vcstest.Branch("feature"))
 	pr := prFromListGolden(t, "rest-pulls-head-open")
 	t.Setenv("GH_PULLS_JSON", ghStdout(t, "rest-pulls-head-open"))
-	var live map[string]any
-	if err := json.Unmarshal([]byte(ghStdout(t, "rest-pull-open")), &live); err != nil {
-		t.Fatalf("golden rest-pull-open: %v", err)
-	}
-	live["body"] = live["body"].(string) + "\r\n\r\nRelease-With: dashboard api\r\nRelease-Order: api before dashboard"
-	payload, err := json.Marshal(live)
-	if err != nil {
-		t.Fatalf("marshal live pull: %v", err)
-	}
-	f.Setenv("GH_PULL_JSON", string(payload))
+	f.Setenv("GH_PULL_JSON", livePullWithReleaseTrailers(t))
 	bodyDump := filepath.Join(t.TempDir(), "body")
 	t.Setenv("GH_PR_BODY_DUMP", bodyDump)
 	body := writePRBody(t, "body.md", "regenerated\n")
@@ -650,6 +641,22 @@ func TestShipPREditCarriesLiveReleaseTrailers(t *testing.T) {
 	if got, want := readFileStr(t, bodyDump), "regenerated\n\nRelease-With: dashboard api\nRelease-Order: api before dashboard\n"; got != want {
 		t.Errorf("gh read a body of %q, want %q", got, want)
 	}
+}
+
+// livePullWithReleaseTrailers is the recorded open pull request with a body the
+// release bot closed with its Release-* trailers.
+func livePullWithReleaseTrailers(t *testing.T) string {
+	t.Helper()
+	var live map[string]any
+	if err := json.Unmarshal([]byte(ghStdout(t, "rest-pull-open")), &live); err != nil {
+		t.Fatalf("golden rest-pull-open: %v", err)
+	}
+	live["body"] = live["body"].(string) + "\r\n\r\nRelease-With: dashboard api\r\nRelease-Order: api before dashboard"
+	payload, err := json.Marshal(live)
+	if err != nil {
+		t.Fatalf("marshal live pull: %v", err)
+	}
+	return string(payload)
 }
 
 func TestCarryReleaseTrailers(t *testing.T) {
@@ -914,8 +921,8 @@ func TestShipPRGTBackfill(t *testing.T) {
 	}
 	assertInvocations(t, gh, [][]string{
 		ghPRBodyReadArgv(7),
-		ghPREditArgv(7, "-F", "body=@"+tipBody),
 		ghPRBodyReadArgv(6),
+		ghPREditArgv(7, "-F", "body=@"+tipBody),
 		ghPREditArgv(6, "-F", "body=@"+midBody),
 	})
 }
@@ -1054,6 +1061,99 @@ func TestShipPRRestateFailureNamesTheRetry(t *testing.T) {
 		for _, inv := range vcstest.Invocations(t, f.ArgvLog) {
 			if slices.Contains(inv, "graphql") {
 				t.Errorf("ship ran %v — only a rate limit falls back to GraphQL", inv)
+			}
+		}
+	})
+}
+
+// TestShipPRRestateRetryCarriesLiveReleaseTrailers pins the retry a refused
+// restate names over a pull request whose live body closes with Release-*
+// trailers: every body it names is the carried one, left on disk for the
+// re-run, so finishing the restate by hand keeps the trailers too.
+func TestShipPRRestateRetryCarriesLiveReleaseTrailers(t *testing.T) {
+	const trailers = "\n\nRelease-With: dashboard api\nRelease-Order: api before dashboard\n"
+	retryBodies := func(t *testing.T, err error) []string {
+		t.Helper()
+		finish, _, _ := strings.Cut(err.Error(), ", or over GraphQL")
+		var bodies []string
+		for _, field := range strings.Fields(finish) {
+			if path, ok := strings.CutPrefix(field, "body=@"); ok {
+				path = strings.TrimSuffix(path, ":")
+				bodies = append(bodies, path)
+				t.Cleanup(func() { _ = os.Remove(path) })
+			}
+		}
+		return bodies
+	}
+	t.Run("git lane", func(t *testing.T) {
+		f := shipPRFixture(t, vcstest.Branch("feature"))
+		t.Setenv("GH_PULLS_JSON", ghStdout(t, "rest-pulls-head-open"))
+		f.Setenv("GH_PULL_JSON", livePullWithReleaseTrailers(t))
+		t.Setenv("GH_PR_EDIT_FAIL", "gh: Validation Failed (HTTP 422)")
+		body := writePRBody(t, "body.md", "regenerated\n")
+
+		_, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", body)
+		if err == nil {
+			t.Fatal("ship succeeded over a refused restate")
+		}
+		bodies := retryBodies(t, err)
+		if len(bodies) != 1 || bodies[0] == body {
+			t.Fatalf("retry bodies = %v in %q, want one carried body, not the raw %s", bodies, err, body)
+		}
+		if got, want := readFileStr(t, bodies[0]), "regenerated"+trailers; got != want {
+			t.Errorf("retry body = %q, want %q", got, want)
+		}
+	})
+	t.Run("piped body", func(t *testing.T) {
+		f := shipPRFixture(t, vcstest.Branch("feature"))
+		t.Setenv("GH_PULLS_JSON", ghStdout(t, "rest-pulls-head-open"))
+		f.Setenv("GH_PULL_JSON", livePullWithReleaseTrailers(t))
+		t.Setenv("GH_PR_EDIT_FAIL", "gh: Validation Failed (HTTP 422)")
+
+		_, err := runShipCmdStdin(t, f, strings.NewReader("piped body\n"), "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", "-")
+		if err == nil {
+			t.Fatal("ship succeeded over a refused restate")
+		}
+		bodies := retryBodies(t, err)
+		if len(bodies) != 1 || bodies[0] == prBodyStdin {
+			t.Fatalf("retry bodies = %v in %q, want the carried body, not stdin", bodies, err)
+		}
+		if got, want := readFileStr(t, bodies[0]), "piped body"+trailers; got != want {
+			t.Errorf("retry body = %q, want %q", got, want)
+		}
+	})
+	t.Run("graphite lane", func(t *testing.T) {
+		_, gt := setupShipGT(t, true)
+		t.Setenv("GIT_BRANCH", "feature2")
+		setGTState(t, `{"main":{"trunk":true},`+
+			`"feature":{"parents":[{"ref":"main","sha":"beadfeed"}]},`+
+			`"feature2":{"parents":[{"ref":"feature","sha":"feedface"}]}}`)
+		gt.prs["feature"], gt.prs["feature2"] = 6, 7
+		t.Setenv("GH_PULL_JSON", livePullWithReleaseTrailers(t))
+		t.Setenv("GH_PR_EDIT_FAIL", "gh: API rate limit exceeded (HTTP 403)")
+		t.Setenv("GH_PR_NODE_ID", prNodeIDGolden(t))
+		t.Setenv("GH_PR_GRAPHQL_FAIL", "gh: API rate limit exceeded")
+		tipBody := writePRBody(t, "tip.md", "tip body\n")
+		midBody := writePRBody(t, "mid.md", "mid body\n")
+
+		_, err := runShipCmd(gt.ctx(context.Background()), t, "-m", "fix: frobnicate", "--no-watch",
+			"--pr-body-file", tipBody, "--pr-body-file", "feature="+midBody)
+		if err == nil {
+			t.Fatal("ship succeeded over a refused restate")
+		}
+		bodies := retryBodies(t, err)
+		if len(bodies) != 2 {
+			t.Fatalf("retry bodies = %v in %q, want the tip's and the mid's", bodies, err)
+		}
+		for i, want := range []string{"tip body" + trailers, "mid body" + trailers} {
+			if got := readFileStr(t, bodies[i]); got != want {
+				t.Errorf("retry body %d (%s) = %q, want %q", i, bodies[i], got, want)
+			}
+		}
+		_, graphQL, _ := strings.Cut(err.Error(), ", or over GraphQL")
+		for _, path := range bodies {
+			if !strings.Contains(graphQL, "body=@"+path) {
+				t.Errorf("GraphQL retry %q does not name the carried body %s", graphQL, path)
 			}
 		}
 	})
