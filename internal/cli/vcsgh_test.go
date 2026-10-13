@@ -1,10 +1,18 @@
 package cli
 
 import (
+	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
+
+	"github.com/yasyf/cc-context/internal/execstub"
+	"github.com/yasyf/cc-context/internal/ghapi"
+	"github.com/yasyf/cc-context/internal/render"
+	"github.com/yasyf/cc-context/internal/workspace"
 )
 
 func TestGhRepoFlag(t *testing.T) {
@@ -34,6 +42,39 @@ func TestGhRepoFlag(t *testing.T) {
 	}
 }
 
+func TestGhTargetRepo(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		argv   []string
+		ghRepo string
+		want   string
+	}{
+		{name: "none", argv: []string{"pr", "checks", "12"}},
+		{name: "repo flag", argv: []string{"run", "view", "1", "--log", "--repo", "o/r"}, ghRepo: "g/h", want: "o/r"},
+		{name: "GH_REPO", argv: []string{"run", "view", "1", "--log"}, ghRepo: "github.com/g/h", want: "g/h"},
+		{name: "api endpoint", argv: []string{"api", "--allow-escape-sequences", "repos/o/r/actions/jobs/1/logs"}, ghRepo: "g/h", want: "o/r"},
+		{name: "api leading slash", argv: []string{"api", "/repos/o/r/pulls/1"}, want: "o/r"},
+		{name: "api url", argv: []string{"api", "https://api.github.com/repos/o/r/pulls?state=open"}, want: "o/r"},
+		{name: "api query", argv: []string{"api", "repos/o/r?per_page=1"}, want: "o/r"},
+		{name: "api after header", argv: []string{"api", "-H", "Accept: application/vnd.github.raw", "repos/o/r/readme"}, want: "o/r"},
+		{name: "api placeholder", argv: []string{"api", "repos/{owner}/{repo}/pulls"}, ghRepo: "g/h", want: "g/h"},
+		{name: "api placeholder outside a checkout", argv: []string{"api", "repos/{owner}/{repo}/pulls"}},
+		{name: "api no repo", argv: []string{"api", "rate_limit"}},
+		{name: "api owner only", argv: []string{"api", "repos/o"}},
+		{name: "api user repos", argv: []string{"api", "users/o/repos"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := render.WithEnv(t.Context(), "GH_REPO="+tt.ghRepo)
+			if got := ghTargetRepo(ctx, tt.argv); got != tt.want {
+				t.Errorf("ghTargetRepo(%q) = %q, want %q", tt.argv, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestGhReads(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -49,6 +90,8 @@ func TestGhReads(t *testing.T) {
 		{name: "api named get", argv: []string{"api", "-X", "GET", "search/issues", "-f", "q=is:open"}, want: true},
 		{name: "api lowercase get", argv: []string{"api", "--method=get", "repos/o/r"}, want: true},
 		{name: "api header", argv: []string{"api", "-H", "Accept: application/vnd.github.raw", "repos/o/r/readme"}, want: true},
+		{name: "api job log", argv: []string{"api", "--allow-escape-sequences", "repos/o/r/actions/jobs/1/logs"}, want: true},
+		{name: "run job log", argv: []string{"run", "view", "--job", "1", "--log"}, want: true},
 		{name: "pr merge", argv: []string{"pr", "merge", "12", "--squash"}},
 		{name: "pr comment", argv: []string{"pr", "comment", "12", "--body", "hi"}},
 		{name: "run rerun", argv: []string{"run", "rerun", "34"}},
@@ -85,5 +128,45 @@ func TestRunVcsGhRefusesWrite(t *testing.T) {
 	err := runVcsGh(&cobra.Command{}, []string{"api", "-X", "PUT", "repos/o/r/pulls/1/merge", "-f", "merge_method=merge"})
 	if err == nil || !strings.HasSuffix(err.Error(), ": gh api -X PUT repos/o/r/pulls/1/merge -f merge_method=merge") {
 		t.Fatalf("runVcsGh(write) = %v, want a refusal naming the plain gh command", err)
+	}
+}
+
+func TestRunVcsGhOutsideACheckoutRunsOnTheUserToken(t *testing.T) {
+	home := t.TempDir()
+	app := filepath.Join(home, "config", "ccx", "github-app.toml")
+	if err := os.MkdirAll(filepath.Dir(app), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(app, []byte("client_id = \"Iv1\"\nprivate_key_command = [\"cat\"]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	shims := t.TempDir()
+	execstub.Write(t, filepath.Join(shims, "gh"), `#!/bin/sh
+if [ "$1" = repo ]; then
+  echo "failed to run git: fatal: not a git repository" >&2
+  exit 1
+fi
+printf 'token=%s argv=%s\n' "${GH_TOKEN:-user}" "$*"
+`)
+	t.Setenv("PATH", shims+string(os.PathListSeparator)+os.Getenv("PATH"))
+	prior := reviewsAPI
+	reviewsAPI = func() *ghapi.Client { return ghapi.New("http://127.0.0.1:1") }
+	t.Cleanup(func() { reviewsAPI = prior })
+
+	ctx := render.WithEnv(workspace.WithRoot(t.Context(), t.TempDir()),
+		"HOME="+home,
+		"XDG_CONFIG_HOME="+filepath.Join(home, "config"),
+		"CLAUDE_PLUGIN_DATA="+filepath.Join(home, "data"),
+		"GH_TOKEN=", "GITHUB_TOKEN=", "GH_REPO=",
+	)
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetContext(ctx)
+	cmd.SetOut(&out)
+	if err := runVcsGh(cmd, []string{"api", "rate_limit"}); err != nil {
+		t.Fatalf("runVcsGh outside a checkout = %v, want gh run on the user's token", err)
+	}
+	if got, want := out.String(), "token=user argv=api rate_limit\n"; got != want {
+		t.Errorf("gh printed %q, want %q", got, want)
 	}
 }

@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"slices"
@@ -13,6 +15,7 @@ import (
 
 	"github.com/yasyf/cc-context/internal/ghapi"
 	"github.com/yasyf/cc-context/internal/render"
+	"github.com/yasyf/cc-context/internal/vcs"
 )
 
 func newVcsGhCmd() *cobra.Command {
@@ -28,8 +31,9 @@ The token is read-only, so vcs gh runs only reads: a gh api GET outside
 graphql (no field or --input, or -X GET), a gh search, or a command whose
 verb is view, list, status, checks, diff, or watch. It refuses anything else
 before running it and names the plain gh command to run on the user's token.
-The repository is --repo's (or GH_REPO's) when named, else the current
-checkout's. With no app installed on it, or GH_TOKEN or GITHUB_TOKEN set,
+The repository is the one --repo, a gh api endpoint under repos/OWNER/REPO,
+or GH_REPO names, else the current checkout's. With no repository to name, as
+outside a checkout, no app installed on it, or GH_TOKEN or GITHUB_TOKEN set,
 gh runs on the user's token as it would alone. Standard streams pass through,
 and ccx exits with gh's code. A command that fails once its token has
 expired, such as a watch that outlived it, runs again on a fresh one.`,
@@ -50,13 +54,10 @@ func runVcsGh(cmd *cobra.Command, argv []string) error {
 	}
 	ctx := cmd.Context()
 	dir := workingDir(ctx)
-	repo := ghRepoFlag(argv)
-	if repo == "" {
-		repo = ghRepoName(render.Getenv(ctx, "GH_REPO"))
-	}
+	repo := ghTargetRepo(ctx, argv)
 	for {
 		env, expires, err := ghRepoReadEnv(ctx, render.Dir(dir), repo, ghapi.AppWatchMargin)
-		if err != nil {
+		if err != nil && !errors.Is(err, vcs.ErrNoGitHub) {
 			return err
 		}
 		gh := exec.CommandContext(ctx, "gh", argv...) //nolint:gosec // argv is the caller's own gh command
@@ -72,6 +73,36 @@ func runVcsGh(cmd *cobra.Command, argv []string) error {
 			return err
 		}
 	}
+}
+
+// ghTargetRepo returns the repository argv's gh command reads: the one --repo
+// or -R names, else a gh api endpoint's repos/OWNER/REPO, else GH_REPO's, ""
+// when none names one.
+func ghTargetRepo(ctx context.Context, argv []string) string {
+	repo := ghRepoFlag(argv)
+	if repo == "" && argv[0] == "api" {
+		_, endpoint := ghAPIRequest(argv[1:])
+		repo = ghEndpointRepo(endpoint)
+	}
+	if repo == "" {
+		repo = ghRepoName(render.Getenv(ctx, "GH_REPO"))
+	}
+	return repo
+}
+
+// ghEndpointRepo returns OWNER/REPO for a gh api endpoint under
+// repos/OWNER/REPO, "" for any other endpoint or one whose OWNER or REPO is a
+// placeholder gh fills from the checkout.
+func ghEndpointRepo(endpoint string) string {
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return ""
+	}
+	parts := strings.SplitN(strings.TrimPrefix(u.Path, "/"), "/", 4)
+	if len(parts) < 3 || parts[0] != "repos" || parts[1] == "" || parts[2] == "" || strings.ContainsAny(parts[1]+parts[2], "{}") {
+		return ""
+	}
+	return parts[1] + "/" + parts[2]
 }
 
 // ghRepoFlag returns the repository gh's --repo or -R names in argv, "" when
@@ -123,10 +154,16 @@ func ghReads(argv []string) bool {
 	}
 }
 
-// ghAPIReads reports whether gh api's args make a GET outside graphql: gh
-// sends a POST once a field or --input is present unless -X names the method.
+// ghAPIReads reports whether gh api's args make a GET outside graphql.
 func ghAPIReads(args []string) bool {
-	method, sends, endpoint := "", false, ""
+	method, endpoint := ghAPIRequest(args)
+	return endpoint != "graphql" && method == "GET"
+}
+
+// ghAPIRequest returns the method and endpoint gh api's args name: gh sends a
+// POST once a field or --input is present unless -X names the method.
+func ghAPIRequest(args []string) (method, endpoint string) {
+	sends := false
 	for i := 0; i < len(args); i++ {
 		if args[i] == "--" {
 			if endpoint == "" && i+1 < len(args) {
@@ -148,10 +185,14 @@ func ghAPIReads(args []string) bool {
 			endpoint = flag
 		}
 	}
-	if method == "" && sends {
+	switch {
+	case method != "":
+	case sends:
 		method = "POST"
+	default:
+		method = "GET"
 	}
-	return endpoint != "graphql" && (method == "" || method == "GET")
+	return method, endpoint
 }
 
 // ghSplitFlag splits a --name=value or glued -Xvalue argument into its flag

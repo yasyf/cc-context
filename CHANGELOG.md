@@ -29,6 +29,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs gh` runs outside a checkout.** It looked up the current
+  checkout's repository even when the command named none. A read run outside
+  a git repository, such as a job log fetch from a scratch directory, failed
+  with `not a git repository` before gh started. A `gh api` endpoint
+  under `repos/OWNER/REPO` now names its repository the way `--repo` does, so
+  the read draws on that repository's installation. With no repository to
+  name, gh runs on the user's token as it would alone and reports its own
+  error when the command needs one.
+
 - **A restated pull request body keeps the release bot's `Release-*`
   trailers.** The release bot writes lines such as `Release-With: dashboard
   api` and `Release-Order: api before dashboard` at the end of a pull request's
