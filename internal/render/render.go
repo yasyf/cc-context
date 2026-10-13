@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -188,7 +189,22 @@ func childEnv(ctx context.Context, dir Dir, extraEnv []string) ([]string, lookpa
 	if path := resolve.GitPATH(); path != "" {
 		env = append(env, "PATH="+path)
 	}
-	return slices.Concat(env, extraEnv), resolve
+	env = slices.Concat(env, extraEnv)
+	return append(env, noCommitGraph(env)...), resolve
+}
+
+// noCommitGraph turns off fetch.writeCommitGraph for the child and every git it
+// spawns: a promisor clone fetches missing blobs from inside a checkout, and
+// that fetch dies on the commit-graph-chain.lock another worktree holds.
+func noCommitGraph(env []string) []string {
+	n := 0
+	for _, kv := range env {
+		if count, ok := strings.CutPrefix(kv, "GIT_CONFIG_COUNT="); ok {
+			n, _ = strconv.Atoi(count)
+		}
+	}
+	i := strconv.Itoa(n)
+	return []string{"GIT_CONFIG_COUNT=" + strconv.Itoa(n+1), "GIT_CONFIG_KEY_" + i + "=fetch.writeCommitGraph", "GIT_CONFIG_VALUE_" + i + "=false"}
 }
 
 // withRunGuard bounds ctx by runTimeout only when ctx carries no deadline at all.

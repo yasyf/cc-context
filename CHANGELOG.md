@@ -29,6 +29,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A ship in a partial clone no longer stops half way through moving the
+  worktree.** After publishing, ship moves the worktree onto the published
+  head with `git read-tree -u`. In a `blob:none` clone such as the monorepo's,
+  that checkout fetches missing blobs from the promisor remote. With
+  `fetch.writeCommitGraph` set, the fetch also rewrites the commit-graph, so
+  it failed with `could not fetch <oid> from promisor remote` while another
+  worktree held `commit-graph-chain.lock`. read-tree had already deleted
+  files, which left monorepo #36513's worktree half checked out. Every process
+  ccx starts now runs with `fetch.writeCommitGraph=false`, so an explicit or
+  lazy fetch never takes that lock.
+
+- **Resuming an interrupted worktree move no longer refuses its own files.**
+  `stack continue`, or a ship rerun, refused the files a stopped move left
+  behind as uncommitted work. It now puts them back and moves the worktree
+  again, when every changed path is one the move changes and either holds the
+  published head's content or is missing. Any other change still refuses.
+
 - **`ccx vcs stack submit --include` takes a branch another worktree holds
   even after origin rewrote it.** A held branch whose local head is an older
   published head was kept at its published head whether `--include`

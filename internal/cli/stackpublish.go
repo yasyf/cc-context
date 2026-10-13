@@ -530,8 +530,9 @@ func stackMovePublishedSources(ctx context.Context, l lane, commonDir string, ru
 	if err != nil {
 		return "", fmt.Errorf("%s: %w", stackRebasePrefix, err)
 	}
+	resumed := run.SourcesMoving
 	var left []string
-	if !run.SourcesMoving {
+	if !resumed {
 		if left, err = stackChooseSourceMoves(ctx, l, run, holders); err != nil {
 			return "", err
 		}
@@ -585,6 +586,13 @@ func stackMovePublishedSources(ctx context.Context, l lane, commonDir string, ru
 		revisions[b.Name] = b.NewBase
 	}
 	if len(moved) > 0 {
+		for _, m := range pending {
+			if holder := holders[m.branch]; resumed && holder != "" {
+				if err := gtRestackUndoAlign(ctx, holder, m); err != nil {
+					return "", fmt.Errorf("%s: put back the interrupted move of %s in %s: %w", stackRebasePrefix, m.branch, holder, err)
+				}
+			}
+		}
 		if err := stackCheckPendingHolders(ctx, holders, pending); err != nil {
 			return "", err
 		}

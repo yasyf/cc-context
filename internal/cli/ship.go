@@ -1843,7 +1843,7 @@ func shellSingleQuote(s string) string {
 // the target diverged, advance the bookmark, then push. It snapshots the op log
 // right after the bookmark move so a rejected push can undo exactly that move.
 func shipPushJJOnce(ctx context.Context, dir render.Dir, target string, amend bool) (int, error) {
-	if err := jjGitFetch(ctx, dir); err != nil {
+	if _, err := render.RunCLI(ctx, dir, "jj", []string{"git", "fetch"}); err != nil {
 		return 0, fmt.Errorf("ship: jj git fetch: %w", err)
 	}
 
