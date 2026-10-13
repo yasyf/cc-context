@@ -29,6 +29,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs ship --tip-only` replays the tip onto a rewritten parent's
+  published head.** When another lane amended or restacked the parent, the
+  tip-only ship refused and named `ccx vcs stack submit`. From the child's
+  worktree that verb dead-ends too: `stack rebase` refuses the parent's
+  diverged local ref, and a submit would move a parent another lane owns or
+  the merge queue holds. Lanes fell back to a raw `git rebase --onto`. The
+  ship now replays only the tip's own commits onto the parent's published
+  head and pushes only the tip. A parent that only advanced still leaves the
+  tip on its base.
+
 - **`ccx vcs stack rebase` and `stack submit` replay a child off its
   parent's pre-rewrite copy.** When another working copy rewrote and
   force-pushed a parent, a child cut from the old head still carries that old
