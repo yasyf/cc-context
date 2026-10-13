@@ -18,7 +18,7 @@ from captain_hook import (
     rewrite_command_occurrences,
 )
 
-from .common import ccx_bin, command_expands, once_note, rewrote_note
+from .common import ccx_bin, command_expands, once_note, rewrote_note, spells_argv
 from .headtail_rewrites import headtail_parse
 
 if TYPE_CHECKING:
@@ -86,6 +86,8 @@ def repo_find_to(evt: BaseHookEvent) -> str | None:
 
 
 def stdin_sink(cmd: Command) -> bool:
+    if cmd.executable not in ("head", "tail"):
+        return False
     parsed = headtail_parse(cmd)
     return (parsed is not None and not parsed[2]) or byte_sink(cmd)
 
@@ -94,10 +96,15 @@ def vcs_ship_to(evt: BaseHookEvent) -> str | None:
     return unpiped(evt.cmd.line.head, list(evt.cmd.line.head.args)) if stdin_sink(evt.cmd.line.primary) else None
 
 
+def pipe_source(occ: Occurrence) -> Command:
+    return next(part[0] for part in reversed(occ.line.parts[: occ.index]) if part[0].span is not None)
+
+
 def code_grep_sink_to(evt: BaseHookEvent, occ: Occurrence) -> str | None:
-    if occ.prev_op != "|" or not stdin_sink(occ.command):
+    sink = occ.command
+    if occ.prev_op != "|" or sink.redirects or not spells_argv(sink, occ.line.raw, sink.span) or not stdin_sink(sink):
         return None
-    source = occ.line.parts[occ.index - 1][0]
+    source = pipe_source(occ)
     return "cat" if source_is_ccx(source) and source.args[:2] == CODE_GREP else None
 
 
@@ -147,13 +154,24 @@ rewrite_command_occurrences(
         Input(command="ccx code grep foo | tail -20"): Rewrite(pattern="ccx code grep foo | cat"),
         Input(command="ccx code grep foo | head -c 100"): Rewrite(pattern="ccx code grep foo | cat"),
         Input(command="cd go/sand && ccx code grep 'OnLocalServer\\(' . 2>&1 | head"): Rewrite(
-            pattern="2>&1 | cat"
+            pattern="cd go/sand && ccx code grep 'OnLocalServer\\(' . 2>&1 | cat"
         ),
         Input(command="ccx code grep a x 2>&1 | head -30; ccx code grep b . 2>&1 | head"): Rewrite(
             pattern="ccx code grep a x 2>&1 | cat; ccx code grep b . 2>&1 | cat"
         ),
         Input(command="ccx code grep foo | grep -v test | head -3"): Allow(),
         Input(command="ccx code grep foo | head -5 f.txt"): Allow(),
+        Input(command="ccx code grep foo | cut -c 1"): Allow(),
+        Input(command="ccx code grep foo | wc -c 100"): Allow(),
+        Input(command="ccx code grep foo | head -5 < f.txt"): Allow(),
+        Input(command="ccx code grep foo | head -5 0< f.txt"): Allow(),
+        Input(command="ccx code grep foo | head -5 <<< other"): Allow(),
+        Input(command="ccx code grep foo | head -5 0<&3"): Allow(),
+        Input(command="ccx code grep foo | head -5 $(printf f.txt)"): Allow(),
+        Input(command="ccx code grep foo | head -5 `printf f.txt`"): Allow(),
+        Input(command="ccx code grep foo | head -5 <(cat f.txt)"): Allow(),
+        Input(command="printf 'prefix %s\\n' \"$(ccx code grep foo)\" | head -5"): Allow(),
+        Input(command="ccx code grep \"$(ccx code grep foo)\" | head -5"): Allow(),
         Input(command="ccx code grep foo | FOO=1 head -5"): Allow(),
         Input(command="ccx code grep $PAT | head"): Allow(),
         Input(command="FOO=1 ccx code grep foo | head"): Allow(),

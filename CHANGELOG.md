@@ -58,14 +58,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   published onto a parent that has since landed, the run brought the parent
   back to drop it, and `--to` refused it as a branch above the stop. The check
   now skips a parent whose pull request landed or that `--landed` names.
+
 - **A `head` or `tail` after `ccx code grep` no longer hides counted
   matches.** The grep header counts every match, so `ccx code grep X . |
   head` printed "6 matches in 6 files" over three file sections, with no
   overflow footer to say the rest were cut. The capt-hook pack now replaces
   that sink with `cat`, in a compound line too, and the note says to raise
   `--budget` or narrow the path. Another stage between the grep and the sink,
-  a sink reading its own file, and `# ccx:raw` still run as written.
-
+  a sink reading its own file or a redirect, a grep nested inside another
+  command's substitution, and `# ccx:raw` still run as written.
 
 - **The cleanup daemon's governor paces every deletion.** Three paths ran
   past it. A job a wait command polled deleted unpaced and past the throttle
