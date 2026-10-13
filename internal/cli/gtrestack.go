@@ -528,7 +528,7 @@ func gtRestackUndoAlign(ctx context.Context, holder string, m restackMove) error
 	var tracked, untracked, written []string
 	for _, entry := range strings.Split(strings.TrimSuffix(status, "\x00"), "\x00") {
 		code, path := entry[:2], entry[3:]
-		if !slices.Contains(moving, path) {
+		if !slices.Contains(moving, path) || strings.HasPrefix(path, `"`) || strings.Contains(path, "\n") {
 			return nil
 		}
 		switch code {
@@ -558,17 +558,16 @@ func gtRestackUndoAlign(ctx context.Context, holder string, m restackMove) error
 			return err
 		}
 	}
-	if len(tracked) > 0 {
-		if _, err := render.RunCLI(ctx, dir, "git", append([]string{"checkout-index", "-f", "--"}, tracked...)); err != nil {
-			return err
-		}
-	}
 	for _, path := range untracked {
 		if err := os.Remove(filepath.Join(holder, path)); err != nil {
 			return err
 		}
 	}
-	return nil
+	if len(tracked) == 0 {
+		return nil
+	}
+	_, err = render.RunCLI(ctx, dir, "git", append([]string{"checkout-index", "-f", "--"}, tracked...))
+	return err
 }
 
 // gtRestackSegment reports a restack in the words of what it did: the branches
