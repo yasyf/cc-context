@@ -38,7 +38,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   refused with `<parent> has diverged from origin/<parent>`. A commit that any
   former head in the parent's remote-tracking reflog reaches was published.
   Both verbs now take a parent another working copy holds at such a head at
-  its published head, and the child replays onto it without the old copy.
+  its published head, and the child replays onto it without the old copy. So
+  does a run that pushes nothing, as `stack rebase` does when no branch has an
+  open pull request.
   Parent commits origin never held still refuse, as does a rewrite of a branch
   this working copy holds.
 
