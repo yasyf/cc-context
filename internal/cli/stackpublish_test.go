@@ -592,6 +592,63 @@ func TestStackPublicationRechecksAHolderOnResume(t *testing.T) {
 	}
 }
 
+func TestStackPublicationResumesAnInterruptedAlign(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		content string
+		refused bool
+	}{
+		{name: "the published head's file", content: "upstream\n"},
+		{name: "the holder's own file", content: "local\n", refused: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f, run, l, common, held := stackPublishedElsewhere(t)
+			source := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")
+			holders, err := vcs.BranchHolders(f.Context(), l.checkout)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if left, err := stackChooseSourceMoves(f.Context(), l, run, holders); err != nil || len(left) != 0 {
+				t.Fatalf("choose = %q, %v, want feature moved", left, err)
+			}
+			run.SourcesMoving = true
+			if err := stackSaveRun(run); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(held, "upstream.txt"), []byte(tt.content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			saved, err := stackOnlyTestRun(common)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			report, err := stackMovePublishedSources(f.Context(), l, common, saved)
+			if tt.refused {
+				if err == nil || !strings.Contains(err.Error(), held+" has uncommitted work") {
+					t.Fatalf("resumed move = %q, %v, want the holder's file refused", report, err)
+				}
+				if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature"); got != source {
+					t.Errorf("feature = %s, want it left on its source %s", got, source)
+				}
+				if content, err := os.ReadFile(filepath.Join(held, "upstream.txt")); err != nil || string(content) != tt.content {
+					t.Errorf("held upstream.txt = %q, %v, want it untouched", content, err)
+				}
+				return
+			}
+			if err != nil || report != "moved feature onto the published heads" {
+				t.Fatalf("resumed move = %q, %v, want feature moved", report, err)
+			}
+			if got, want := gitAt(t, f.Env(), held, "rev-parse", "HEAD"), run.Branches[0].NewHead; got != want {
+				t.Errorf("held HEAD = %s, want the published head %s", got, want)
+			}
+			if status := gitAt(t, f.Env(), held, "status", "--porcelain"); status != "" {
+				t.Errorf("held status = %q, want the worktree on the published head", status)
+			}
+		})
+	}
+}
+
 // TestStackPublicationAlignsOnlyTheCurrentHolder switches the holding worktree
 // to another branch at the moment the refs move: the move re-reads the holders,
 // so that worktree is not realigned onto feature's published head.

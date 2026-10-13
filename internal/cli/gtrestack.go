@@ -511,6 +511,66 @@ func gtRestackAlignHolder(ctx context.Context, holder string, m restackMove) err
 	return err
 }
 
+// gtRestackUndoAlign reverts a read-tree -u that died part way: it rewrites files
+// before the index, so the index stays on m.previous while some paths m.head
+// changes already hold m.head's content or are gone.
+func gtRestackUndoAlign(ctx context.Context, holder string, m restackMove) error {
+	dir := render.Dir(holder)
+	status, err := render.RunCLI(ctx, dir, "git", []string{"status", "--porcelain", "-z", "--untracked-files=all", "--no-renames"})
+	if err != nil || status == "" {
+		return err
+	}
+	changed, err := render.RunCLI(ctx, dir, "git", []string{"diff", "--name-only", "-z", "--no-renames", m.previous, m.head})
+	if err != nil {
+		return err
+	}
+	moving := strings.Split(changed, "\x00")
+	var tracked, untracked, written []string
+	for _, entry := range strings.Split(strings.TrimSuffix(status, "\x00"), "\x00") {
+		code, path := entry[:2], entry[3:]
+		if !slices.Contains(moving, path) {
+			return nil
+		}
+		switch code {
+		case " D":
+			tracked = append(tracked, path)
+		case " M":
+			tracked = append(tracked, path)
+			written = append(written, path)
+		case "??":
+			untracked = append(untracked, path)
+			written = append(written, path)
+		default:
+			return nil
+		}
+	}
+	if len(written) > 0 {
+		hashed, err := render.RunCLIStdin(ctx, dir, "git", []string{"hash-object", "--stdin-paths"}, []byte(strings.Join(written, "\n")+"\n"))
+		if err != nil {
+			return err
+		}
+		var specs strings.Builder
+		for _, path := range written {
+			fmt.Fprintf(&specs, "%s:%s\n", m.head, path)
+		}
+		want, err := render.RunCLIStdin(ctx, dir, "git", []string{"cat-file", "--batch-check=%(objectname)"}, []byte(specs.String()))
+		if err != nil || hashed != want {
+			return err
+		}
+	}
+	if len(tracked) > 0 {
+		if _, err := render.RunCLI(ctx, dir, "git", append([]string{"checkout-index", "-f", "--"}, tracked...)); err != nil {
+			return err
+		}
+	}
+	for _, path := range untracked {
+		if err := os.Remove(filepath.Join(holder, path)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // gtRestackSegment reports a restack in the words of what it did: the branches
 // moved, and the working copies reset onto them when more than this one had to
 // be. A chain already on its parents moved nothing, and says so rather than

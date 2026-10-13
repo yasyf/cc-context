@@ -684,7 +684,7 @@ func worktreeJJBase(ctx context.Context, dir render.Dir) (worktreeBase, error) {
 	}
 	base := worktreeBase{rev: "@-", label: "@-"}
 	if strings.TrimSpace(remotes) != "" {
-		if err := jjGitFetch(ctx, dir); err != nil {
+		if _, err := render.RunCLI(ctx, dir, "jj", []string{"git", "fetch"}); err != nil {
 			return worktreeBase{}, fmt.Errorf("worktree add: jj git fetch: %w", err)
 		}
 		names, err := jjTrunkBookmarkNames(ctx, dir, "worktree add")

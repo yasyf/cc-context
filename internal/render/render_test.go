@@ -283,6 +283,31 @@ func TestWithEnvReachesTheChild(t *testing.T) {
 	}
 }
 
+func TestChildTurnsOffCommitGraphWrites(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses /bin/sh to read env")
+	}
+	script := `printf '%s %s=%s %s=%s' "$GIT_CONFIG_COUNT" "$GIT_CONFIG_KEY_0" "$GIT_CONFIG_VALUE_0" "$GIT_CONFIG_KEY_1" "$GIT_CONFIG_VALUE_1"`
+	for _, tt := range []struct {
+		name     string
+		extraEnv []string
+		want     string
+	}{
+		{"alone", []string{"GIT_CONFIG_COUNT="}, "1 fetch.writeCommitGraph=false ="},
+		{"after the caller's entries", []string{"GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=core.abbrev", "GIT_CONFIG_VALUE_0=12"}, "2 core.abbrev=12 fetch.writeCommitGraph=false"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := RunCLIEnv(context.Background(), Ambient, "/bin/sh", []string{"-c", script}, tt.extraEnv)
+			if err != nil {
+				t.Fatalf("RunCLIEnv: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("child config = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 // TestWithEnvPATHResolvesTheChildsGit proves the resolution reads the context's
 // PATH rather than the process's: a fake git reachable only through the context
 // is the one spawned, which is what lets a test hand each child its own tools
