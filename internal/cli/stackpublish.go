@@ -257,11 +257,7 @@ func stackRecordPublication(ctx context.Context, dir render.Dir, run *stackRebas
 		if receipt.SourceBase == "" {
 			return fmt.Errorf("stack publication: %s has no captured source base", b.Name)
 		}
-		expected := ""
-		if b.Publication != nil {
-			expected = b.Publication.OID
-		}
-		if err := stackReceiptTx(ctx, dir, &tx, receipt, expected); err != nil {
+		if err := stackReceiptTx(ctx, dir, &tx, receipt, b.Receipt); err != nil {
 			return err
 		}
 	}
