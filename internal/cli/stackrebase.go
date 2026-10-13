@@ -1155,6 +1155,10 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 			own[name] = true
 		}
 	}
+	holders, err := vcs.BranchHolders(ctx, l.checkout)
+	if err != nil {
+		return nil, fmt.Errorf("stack rebase: %w", err)
+	}
 	outside := map[string]bool{}
 	byName := map[string]*stackRebaseBranch{}
 	for _, name := range members {
@@ -1212,6 +1216,14 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 			effective.Head = prepared.NewHead
 		}
 		published := stackReadsPublished(o, name)
+		if holder := holders[name]; !published && !o.noPush && holder != "" && holder != l.checkout.Root {
+			if published, err = stackHeldSuperseded(ctx, l.dir(), tr, name, source.Head, remotes[name]); err != nil {
+				return nil, err
+			}
+			if published {
+				o.pinned = append(o.pinned, name)
+			}
+		}
 		b, err := stackSnapshot(ctx, l.dir(), tr, effective, name, remotes[name], ours, prs[name], slices.Contains(o.landed, name), pin, o.dropCommits, published)
 		if err != nil && len(own) > 0 && !own[name] {
 			outside[name] = true
@@ -2251,6 +2263,17 @@ func stackTipOnlyHint(o stackRebaseOpts, name string, err error) error {
 	return fmt.Errorf("%w; to ship %s alone onto %s's published head, run ccx vcs ship --tip-only", err, o.tip, name)
 }
 
+func stackHeldSuperseded(ctx context.Context, dir render.Dir, tr vcs.Trunk, name, local, remote string) (bool, error) {
+	if remote == "" || local == remote {
+		return false, nil
+	}
+	ahead, err := gitIsAncestor(ctx, dir, stackRebasePrefix, remote, local)
+	if err != nil || ahead {
+		return false, err
+	}
+	return gitReflogHolds(ctx, dir, stackRebasePrefix, "refs/remotes/"+tr.Remote()+"/"+name, local)
+}
+
 // stackReadsPublished is whether the run takes name at its published head
 // without reading its local one: every ancestor of a --tip-only ship, and every
 // branch pinned as another lane's.
@@ -2409,7 +2432,7 @@ func stackQueueStates(ctx context.Context, l lane, noPush bool, byName map[strin
 }
 
 func stackOwnRemote(ctx context.Context, dir render.Dir, name, local, remote, pin string) (bool, error) {
-	held, err := gitReflogHolds(ctx, dir, stackRebasePrefix, name, remote)
+	held, err := gitReflogHolds(ctx, dir, stackRebasePrefix, "refs/heads/"+name, remote)
 	if err != nil || held {
 		return held, err
 	}

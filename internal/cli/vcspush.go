@@ -372,7 +372,7 @@ func vcsPushGit(ctx context.Context, dir render.Dir, remote, branch, head string
 // that head rewrote: reachable from its reflog, its last publication, or
 // carried patch for patch by head.
 func gitRemoteRewritten(ctx context.Context, dir render.Dir, prefix, branch, tip, head, trunk string) (bool, error) {
-	held, err := gitReflogHolds(ctx, dir, prefix, branch, tip)
+	held, err := gitReflogHolds(ctx, dir, prefix, "refs/heads/"+branch, tip)
 	if err != nil || held {
 		return held, err
 	}
@@ -386,15 +386,15 @@ func gitRemoteRewritten(ctx context.Context, dir render.Dir, prefix, branch, tip
 	return gitOnlyCopies(ctx, dir, prefix, tip, head, trunk)
 }
 
-// gitReflogHolds reports whether branch's reflog reaches sha, as an entry or an
+// gitReflogHolds reports whether ref's reflog reaches sha, as an entry or an
 // ancestor of one — a rebase or amend leaves the head it replaced there, so a
 // reachable remote head is this branch's own earlier history. Patch identity
 // cannot answer it: a rebase onto a new base rewrites the context of every hunk
 // it replays, giving the same work different patch ids on either side.
-func gitReflogHolds(ctx context.Context, dir render.Dir, prefix, branch, sha string) (bool, error) {
-	out, err := render.RunCLI(ctx, dir, "git", []string{"reflog", "show", "--format=%H", "refs/heads/" + branch})
+func gitReflogHolds(ctx context.Context, dir render.Dir, prefix, ref, sha string) (bool, error) {
+	out, err := render.RunCLI(ctx, dir, "git", []string{"reflog", "show", "--format=%H", ref})
 	if err != nil {
-		return false, fmt.Errorf("%s: git reflog show %s: %w", prefix, branch, err)
+		return false, fmt.Errorf("%s: git reflog show %s: %w", prefix, ref, err)
 	}
 	seen := map[string]bool{}
 	for _, entry := range strings.Fields(out) {

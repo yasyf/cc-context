@@ -1898,47 +1898,60 @@ func TestStackSubmitPublishesAboveAHeldBranchWhoseUnpublishedWorkItDoesNotCarry(
 	}
 }
 
-func TestStackRebasePublishesAboveAHeldBranchOriginRewroteUnderTheCopyItCarries(t *testing.T) {
-	f := shipGTRepo(t)
-	api := stubGTAPI(t)
-	f.Decorate(api.ctx)
-	shipGTStack(t, f, "base", "mid", "top")
-	api.prs["base"], api.prs["mid"], api.prs["top"] = 7, 8, 9
-	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
-		t.Fatalf("publish the stack: %v", err)
-	}
-	stale := gitAt(t, f.Env(), f.Dir, "rev-parse", "mid")
-	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", restackSiblingPath(t, "lane"), "mid")
-	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "--detach", "refs/remotes/origin/mid")
-	writeShipFile(t, f.Dir, "mid.txt", "mid rewritten\n")
-	mustRun(t, f.Env(), f.Dir, "git", "commit", "-q", "--amend", "-am", "mid rewritten")
-	mustRun(t, f.Env(), f.Dir, "git", "push", "-qf", "origin", "HEAD:refs/heads/mid")
-	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin", "+refs/heads/mid:refs/remotes/origin/mid")
-	rewritten := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD")
-	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "top")
-	stubStackPRs(t, f, map[string]*stackPR{
-		"base": {Number: 7, Title: "base", State: "OPEN", Base: "main"},
-		"mid":  {Number: 8, Title: "mid", State: "OPEN", Base: "base"},
-		"top":  {Number: 9, Title: "top", State: "OPEN", Base: "mid"},
-	})
+func TestStackPublishesAboveALaneBranchOriginRewroteUnderTheCopyItCarries(t *testing.T) {
+	for _, verb := range []string{"rebase", "submit"} {
+		t.Run(verb, func(t *testing.T) {
+			f := shipGTRepo(t)
+			api := stubGTAPI(t)
+			f.Decorate(api.ctx)
+			shipGTStack(t, f, "base", "mid", "top")
+			api.prs["base"], api.prs["mid"], api.prs["top"] = 7, 8, 9
+			if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+				t.Fatalf("publish the stack: %v", err)
+			}
+			stale := gitAt(t, f.Env(), f.Dir, "rev-parse", "mid")
+			lane := restackSiblingPath(t, "lane")
+			mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", lane, "mid")
+			src, err := vcs.ResolveCheckout(f.Dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			held, err := vcs.ResolveCheckout(lane)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := vcs.JoinLane(src, held); err != nil {
+				t.Fatal(err)
+			}
+			mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "--detach", "refs/remotes/origin/mid")
+			writeShipFile(t, f.Dir, "mid.txt", "mid rewritten\n")
+			mustRun(t, f.Env(), f.Dir, "git", "commit", "-q", "--amend", "-am", "mid rewritten")
+			mustRun(t, f.Env(), f.Dir, "git", "push", "-qf", "origin", "HEAD:refs/heads/mid")
+			mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin", "+refs/heads/mid:refs/remotes/origin/mid")
+			rewritten := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD")
+			mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "top")
+			stubStackPRs(t, f, map[string]*stackPR{
+				"base": {Number: 7, Title: "base", State: "OPEN", Base: "main"},
+				"mid":  {Number: 8, Title: "mid", State: "OPEN", Base: "base"},
+				"top":  {Number: 9, Title: "top", State: "OPEN", Base: "mid"},
+			})
 
-	if _, _, err := runStackCmd(t, f, "rebase"); err != nil {
-		t.Fatalf("stack rebase: %v", err)
-	}
-	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "mid"); got != rewritten {
-		t.Errorf("origin mid = %s, want its rewritten head %s left alone", got, rewritten)
-	}
-	top := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "top")
-	if !stackOnto(t, f, rewritten, top) {
-		t.Errorf("published top %s is not stacked on mid's rewritten head %s", top, rewritten)
-	}
-	if stackOnto(t, f, stale, top) {
-		t.Errorf("published top %s still carries mid's pre-rewrite copy %s", top, stale)
-	}
-	if n := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", rewritten+".."+top); n != "1" {
-		t.Errorf("published top holds %s commits over mid, want its own 1", n)
-	}
-	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "mid"); got != stale {
-		t.Errorf("local mid = %s, want the other lane's copy left at %s", got, stale)
+			if _, _, err := runStackCmd(t, f, verb); err != nil {
+				t.Fatalf("stack %s: %v", verb, err)
+			}
+			if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "mid"); got != rewritten {
+				t.Errorf("origin mid = %s, want its rewritten head %s left alone", got, rewritten)
+			}
+			top := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "top")
+			if !stackOnto(t, f, rewritten, top) {
+				t.Errorf("published top %s is not stacked on mid's rewritten head %s", top, rewritten)
+			}
+			if stackOnto(t, f, stale, top) {
+				t.Errorf("published top %s still carries mid's pre-rewrite copy %s", top, stale)
+			}
+			if n := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", rewritten+".."+top); n != "1" {
+				t.Errorf("published top holds %s commits over mid, want its own 1", n)
+			}
+		})
 	}
 }
