@@ -143,6 +143,7 @@ type stackRebaseBranch struct {
 	OldBase     string            `json:"old_base"`
 	SourceBase  string            `json:"source_base"`
 	Publication *stackPublication `json:"publication,omitempty"`
+	Receipt     string            `json:"receipt,omitempty"`
 	Landed      string            `json:"landed,omitempty"`
 	Held        string            `json:"held,omitempty"`
 	Kept        bool              `json:"kept,omitempty"`
@@ -1101,13 +1102,15 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 		members, lanePins, otherLanes = stackPinOtherLanes(retargeted, current, members, o.include, heldBelow)
 		o.pinned = append(o.pinned, slices.DeleteFunc(slices.Clone(lanePins), func(name string) bool { return slices.Contains(o.pinned, name) })...)
 	}
-	if above := slices.DeleteFunc(slices.Clone(members), func(name string) bool { return upTo == nil || slices.Contains(upTo, name) }); len(above) > 0 {
-		return nil, fmt.Errorf("stack rebase: --to %s cannot stop there: %s, above it, is where a branch of the run was last published", o.to, strings.Join(above, ", "))
-	}
 
 	prs, err := stackPRs(ctx, l.dir(), trunk, members)
 	if err != nil {
 		return nil, fmt.Errorf("stack rebase: read the stack's pull requests: %w", err)
+	}
+	if above := slices.DeleteFunc(slices.Clone(members), func(name string) bool {
+		return upTo == nil || slices.Contains(upTo, name) || slices.Contains(o.landed, name) || prs[name] != nil && prs[name].Landed
+	}); len(above) > 0 {
+		return nil, fmt.Errorf("stack rebase: --to %s cannot stop there: %s, above it, is where a branch of the run was last published", o.to, strings.Join(above, ", "))
 	}
 	if err := stackSupersedeClosed(prs, members, o.newPRs, o.landed); err != nil {
 		return nil, err
@@ -1220,7 +1223,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 			if published, err = stackHeldSuperseded(ctx, l.dir(), tr, name, source.Head, remotes[name]); err != nil {
 				return nil, err
 			}
-			if published {
+			if published && !slices.Contains(o.include, name) {
 				o.pinned = append(o.pinned, name)
 			}
 		}
@@ -1238,6 +1241,9 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 		}
 		b.Local = source.Head
 		if !o.noPush {
+			if receipt != nil {
+				b.Receipt = receipt.OID
+			}
 			if superseded {
 				b.Publication = receipt
 				b.WasParent = cmp.Or(publishedOn, b.WasParent)

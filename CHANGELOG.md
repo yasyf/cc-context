@@ -29,6 +29,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs stack submit --include` takes a branch another worktree holds
+  even after origin rewrote it.** A held branch whose local head is an older
+  published head was kept at its published head whether `--include`
+  named it. The refusal then asked for the same `--include` flags the run was
+  given. An included branch is now read at its published head and moves with
+  the run. Its receipt is updated against the one the plan read, even when the
+  plan set that receipt aside.
+
+- **A landed parent no longer blocks `--to`.** When a branch was last
+  published onto a parent that has since landed, the run brought the parent
+  back to drop it, and `--to` refused it as a branch above the stop. The check
+  now skips a parent whose pull request landed or that `--landed` names.
+
 - **The cleanup daemon's governor paces every deletion.** Three paths ran
   past it. A job a wait command polled deleted unpaced and past the throttle
   for as long as the polls kept coming. A slice that spent its 50ms on
