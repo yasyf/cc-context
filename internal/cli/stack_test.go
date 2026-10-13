@@ -1899,8 +1899,15 @@ func TestStackSubmitPublishesAboveAHeldBranchWhoseUnpublishedWorkItDoesNotCarry(
 }
 
 func TestStackPublishesAboveALaneBranchOriginRewroteUnderTheCopyItCarries(t *testing.T) {
-	for _, verb := range []string{"rebase", "submit"} {
-		t.Run(verb, func(t *testing.T) {
+	for _, tc := range []struct {
+		name, verb string
+		prs        bool
+	}{
+		{"rebase", "rebase", true},
+		{"rebase with no pull request", "rebase", false},
+		{"submit", "submit", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			f := shipGTRepo(t)
 			api := stubGTAPI(t)
 			f.Decorate(api.ctx)
@@ -1930,27 +1937,32 @@ func TestStackPublishesAboveALaneBranchOriginRewroteUnderTheCopyItCarries(t *tes
 			mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin", "+refs/heads/mid:refs/remotes/origin/mid")
 			rewritten := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD")
 			mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "top")
-			stubStackPRs(t, f, map[string]*stackPR{
-				"base": {Number: 7, Title: "base", State: "OPEN", Base: "main"},
-				"mid":  {Number: 8, Title: "mid", State: "OPEN", Base: "base"},
-				"top":  {Number: 9, Title: "top", State: "OPEN", Base: "mid"},
-			})
+			if tc.prs {
+				stubStackPRs(t, f, map[string]*stackPR{
+					"base": {Number: 7, Title: "base", State: "OPEN", Base: "main"},
+					"mid":  {Number: 8, Title: "mid", State: "OPEN", Base: "base"},
+					"top":  {Number: 9, Title: "top", State: "OPEN", Base: "mid"},
+				})
+			}
 
-			if _, _, err := runStackCmd(t, f, verb); err != nil {
-				t.Fatalf("stack %s: %v", verb, err)
+			if _, _, err := runStackCmd(t, f, tc.verb); err != nil {
+				t.Fatalf("stack %s: %v", tc.verb, err)
 			}
 			if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "mid"); got != rewritten {
 				t.Errorf("origin mid = %s, want its rewritten head %s left alone", got, rewritten)
 			}
-			top := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "top")
+			top := gitAt(t, f.Env(), f.Dir, "rev-parse", "top")
+			if tc.prs {
+				top = gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "top")
+			}
 			if !stackOnto(t, f, rewritten, top) {
-				t.Errorf("published top %s is not stacked on mid's rewritten head %s", top, rewritten)
+				t.Errorf("top %s is not stacked on mid's rewritten head %s", top, rewritten)
 			}
 			if stackOnto(t, f, stale, top) {
-				t.Errorf("published top %s still carries mid's pre-rewrite copy %s", top, stale)
+				t.Errorf("top %s still carries mid's pre-rewrite copy %s", top, stale)
 			}
 			if n := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", rewritten+".."+top); n != "1" {
-				t.Errorf("published top holds %s commits over mid, want its own 1", n)
+				t.Errorf("top holds %s commits over mid, want its own 1", n)
 			}
 		})
 	}

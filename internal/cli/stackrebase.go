@@ -1216,7 +1216,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 			effective.Head = prepared.NewHead
 		}
 		published := stackReadsPublished(o, name)
-		if holder := holders[name]; !published && !o.noPush && holder != "" && holder != l.checkout.Root {
+		if holder := holders[name]; !published && holder != "" && holder != l.checkout.Root {
 			if published, err = stackHeldSuperseded(ctx, l.dir(), tr, name, source.Head, remotes[name]); err != nil {
 				return nil, err
 			}
