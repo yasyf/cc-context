@@ -275,9 +275,11 @@ out stays where it is, with the branches above it, reported as
 `left <branch> (checked out in <path>)`, unless `--all-lanes` carries it, and
 `--tip-only` leaves them all where they are. `--tip-only` reads every ancestor at its published head and never locks or
 writes an ancestor's local ref, so it ships while another worktree amends the
-parent. It replays nothing: when the parent's published head has moved past the
-tip's base, the tip is pushed on that base as it is, and when the parent was
-rewritten without that base, it refuses and names `ccx vcs stack submit`. Every working copy holding a moved
+parent. It moves no ancestor: when the parent's published head has moved past
+the tip's base, the tip is pushed on that base as it is, and when the parent was
+rewritten without that base, only the tip's own commits are replayed onto that
+published head, so a child lane follows a parent another lane amended, or one
+the merge queue holds, without a raw `git rebase --onto`. Every working copy holding a moved
 branch must be clean and is moved onto its new head, still on its branch. A branch `gt freeze` is holding is left
 where it is. A conflict stops in a conflict workspace with rerere off;
 `ccx vcs stack continue` finishes the rebase, pushes, submits, and restates the PR
