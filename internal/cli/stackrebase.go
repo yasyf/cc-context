@@ -1220,6 +1220,9 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 			if published, err = stackHeldSuperseded(ctx, l.dir(), tr, name, source.Head, remotes[name]); err != nil {
 				return nil, err
 			}
+			if published {
+				o.pinned = append(o.pinned, name)
+			}
 		}
 		b, err := stackSnapshot(ctx, l.dir(), tr, effective, name, remotes[name], ours, prs[name], slices.Contains(o.landed, name), pin, o.dropCommits, published)
 		if err != nil && len(own) > 0 && !own[name] {
