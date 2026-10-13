@@ -37,10 +37,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `carries 1 commit(s) of <parent> that origin does not`. `stack submit`
   refused with `<parent> has diverged from origin/<parent>`. A commit that any
   former head in the parent's remote-tracking reflog reaches was published.
-  Both verbs now take such a parent at its published head, and the child
-  replays onto it without the old copy. Parent commits origin never held still
-  refuse, and so does a local head reset to one it held before its published
-  head.
+  Both verbs now take a parent another working copy holds at such a head at
+  its published head, and the child replays onto it without the old copy.
+  Parent commits origin never held still refuse, as does a rewrite of a branch
+  this working copy holds.
 
 - **`ccx vcs gh` runs outside a checkout.** It looked up the current
   checkout's repository even when the command named none. A read run outside

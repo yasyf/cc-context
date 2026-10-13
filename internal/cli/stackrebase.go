@@ -1155,6 +1155,10 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 			own[name] = true
 		}
 	}
+	holders, err := vcs.BranchHolders(ctx, l.checkout)
+	if err != nil {
+		return nil, fmt.Errorf("stack rebase: %w", err)
+	}
 	outside := map[string]bool{}
 	byName := map[string]*stackRebaseBranch{}
 	for _, name := range members {
@@ -1212,6 +1216,11 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 			effective.Head = prepared.NewHead
 		}
 		published := stackReadsPublished(o, name)
+		if holder := holders[name]; !published && !o.noPush && holder != "" && holder != l.checkout.Root {
+			if published, err = stackHeldSuperseded(ctx, l.dir(), tr, name, source.Head, remotes[name]); err != nil {
+				return nil, err
+			}
+		}
 		b, err := stackSnapshot(ctx, l.dir(), tr, effective, name, remotes[name], ours, prs[name], slices.Contains(o.landed, name), pin, o.dropCommits, published)
 		if err != nil && len(own) > 0 && !own[name] {
 			outside[name] = true
@@ -2085,19 +2094,8 @@ func stackSnapshot(ctx context.Context, dir render.Dir, tr vcs.Trunk, s gtBranch
 		if err != nil {
 			return b, err
 		}
-		var returned, superseded bool
-		if !ahead && !behind && !dropCommits {
-			if returned, err = gitReflogReturned(ctx, dir, stackRebasePrefix, name, s.Head, remote); err != nil {
-				return b, err
-			}
-			if !returned {
-				if superseded, err = gitReflogHolds(ctx, dir, stackRebasePrefix, "refs/remotes/"+tr.Remote()+"/"+name, s.Head); err != nil {
-					return b, err
-				}
-			}
-		}
 		switch {
-		case behind || superseded:
+		case behind:
 			b.Head = remote
 		case !ahead && remote != submitted:
 			if s.Head == submitted {
@@ -2136,7 +2134,11 @@ func stackSnapshot(ctx context.Context, dir render.Dir, tr vcs.Trunk, s gtBranch
 			}
 			return b, stackDivergedError{fmt.Errorf("stack rebase: %s has diverged from %s/%s (local %.12s, remote %.12s) — someone pushed to it; reconcile the two by hand, then re-run", name, tr.Remote(), name, s.Head, remote)}
 		}
-		if !ahead && !behind && !superseded && !dropCommits {
+		if !ahead && !behind && !dropCommits {
+			returned, err := gitReflogReturned(ctx, dir, stackRebasePrefix, name, s.Head, remote)
+			if err != nil {
+				return b, err
+			}
 			if returned {
 				return b, stackDivergedError{fmt.Errorf("stack rebase: %s's local head %.12s is one it held before its published head %s/%s (%.12s) — a reset onto an older head; git reset --keep %s/%s to take the published head, or pass --drop-commits to publish the local head anyway", name, s.Head, tr.Remote(), name, remote, tr.Remote(), name)}
 			}
@@ -2256,6 +2258,17 @@ func stackTipOnlyHint(o stackRebaseOpts, name string, err error) error {
 		return err
 	}
 	return fmt.Errorf("%w; to ship %s alone onto %s's published head, run ccx vcs ship --tip-only", err, o.tip, name)
+}
+
+func stackHeldSuperseded(ctx context.Context, dir render.Dir, tr vcs.Trunk, name, local, remote string) (bool, error) {
+	if remote == "" || local == remote {
+		return false, nil
+	}
+	ahead, err := gitIsAncestor(ctx, dir, stackRebasePrefix, remote, local)
+	if err != nil || ahead {
+		return false, err
+	}
+	return gitReflogHolds(ctx, dir, stackRebasePrefix, "refs/remotes/"+tr.Remote()+"/"+name, local)
 }
 
 // stackReadsPublished is whether the run takes name at its published head
