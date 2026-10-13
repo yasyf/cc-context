@@ -94,10 +94,11 @@ retry does the same. They succeed only when a poll shows the job
 `deleted`. A blockage fails the wait with its reason.
 
 Each wait poll marks its job as awaited for the next 10s. The daemon deletes
-awaited jobs, in queue order, ahead of every job nobody awaits, without the rate
-cap or the `fseventsd` throttle. A wait then lasts about as long as its own
-tree's deletion, plus any awaited trees queued ahead of it. Logical removals
-still go first, and a paused queue or a blocked job still holds.
+awaited jobs, in queue order, ahead of every job nobody awaits. An awaited job
+keeps the same rate cap and throttle as any other job, so a wait lasts as long
+as its own tree's paced deletion, plus any awaited trees queued ahead of it.
+Logical removals still go first, and a paused queue or a blocked job still
+holds.
 
 The job keeps the requesting command as its requester, so the daemon's later
 retries do not count that command's own arguments naming the tree as activity
@@ -203,15 +204,30 @@ Git error output has a byte limit. Cancellation signals only the direct
 child, never a process group.
 
 The daemon deletes in bounded slices at up to 1,000 entries a second and
-yields to new logical removals. It samples `fseventsd` every 5s and learns its
-ambient load from samples taken while deletion ran no faster than its floor.
-It does not run idle repository or process scans.
+yields to new logical removals. A slice ends after 100 entries or 50ms, and
+the daemon rests after each one for the larger share it used of either bound.
+A slice that spends its 50ms on directories and removes little rests as long
+as a full one. The daemon samples `fseventsd` every 5s and learns its ambient
+load from samples taken while deletion ran no faster than its floor. It does
+not run idle repository or process scans.
 
-When deletion pushes `fseventsd` more than half a core over that load, the
-daemon slows to 100 entries a second. It returns to the full rate after three
-samples within a quarter core of it. The floor keeps the queue draining on a
-machine whose `fseventsd` never goes quiet. A job a wait command is polling
-skips the queue, the rate cap, and the floor.
+The daemon slows to at most 100 entries a second in three cases:
+
+| `cleanup status` governor | Cause | Lifts |
+| --- | --- | --- |
+| `throttled at N% cpu` | Deletion pushed `fseventsd` more than half a core over its ambient load | After three samples within a quarter core of that load |
+| `throttled at N% cpu: slices stalled past twice their time budget` | A slice took 100ms or more since the last sample, which takes one operation on the volume stalling for a whole 50ms | After three samples that each ran a slice, none of them stalled |
+| `unavailable: <error>` | `fseventsd` could not be sampled | One sample after `fseventsd` reads again; deletion waits out that 5s interval |
+
+A slice that ends at its 50ms is the budget working, and does not throttle.
+Both throttles can hold at once. The status then names the stalled slices, and
+the full rate returns once each has lifted. At the floor, a slice that takes
+its whole 50ms rests a full second whatever it removed, so deletion can run
+below 100 entries a second.
+
+The floor keeps the queue draining on a machine whose `fseventsd` never goes
+quiet. A job a wait command is polling skips the queue only. It deletes at the
+rate the governor allows.
 
 A completed internal conflict workspace can wait for inactivity while other
 cleanup jobs proceed and stack completion succeeds. Interactive Claude,

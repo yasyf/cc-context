@@ -29,6 +29,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The cleanup daemon's governor paces every deletion.** Three paths ran
+  past it. A job a wait command polled deleted unpaced and past the throttle
+  for as long as the polls kept coming. A slice that spent its 50ms on
+  directories and removed little rested only for what it removed, so the next
+  one followed at once. A sampler that could not read `fseventsd` ran the full
+  1,000 entries a second. An awaited job now keeps its place ahead of the
+  queue and deletes at the governed rate. A slice rests for the larger share
+  it used of its 100 entries or its 50ms. An unreadable sampler holds the
+  floor of 100 entries a second. The governor also drops to that floor when a
+  slice takes 100ms or more, which takes one operation stalling for a whole
+  50ms, and returns after three samples with no stalled slice. `cleanup
+  status` then reads `throttled at N% cpu: slices stalled past twice their
+  time budget`. A wait on an idle queue now starts after the governor's first
+  5s sample.
+
 - **`ccx vcs ship --tip-only` replays the tip onto a rewritten parent's
   published head.** When another lane amended or restacked the parent, the
   tip-only ship refused and named `ccx vcs stack submit`. From the child's

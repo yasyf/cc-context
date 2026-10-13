@@ -44,11 +44,13 @@ func (systemClock) After(d time.Duration) <-chan time.Time { return time.After(d
 // Tuning is the pace of physical deletion and the bounds of what the engine
 // retains and reports.
 type Tuning struct {
-	// Rate is the payload entries deleted per second while fseventsd keeps
-	// near its ambient load, and FloorRate the pace held while it does not.
+	// Rate caps the entries deleted per second while fseventsd keeps near its
+	// ambient load and no slice stalls past twice SliceBudget. FloorRate caps
+	// it otherwise, an unreadable fseventsd included.
 	Rate      int
 	FloorRate int
-	// SliceEntries and SliceBudget bound one uninterruptible step.
+	// SliceEntries and SliceBudget bound one uninterruptible step, which rests
+	// for the larger share it used of either bound, a full slice's rest at most.
 	SliceEntries int
 	SliceBudget  time.Duration
 	// SampleEvery is the interval between fseventsd CPU samples while deletion
@@ -59,8 +61,8 @@ type Tuning struct {
 	// FloorRate.
 	PauseAbove  float64
 	ResumeBelow float64
-	// ResumeSamples is how many consecutive samples under ResumeBelow lift a
-	// throttle.
+	// ResumeSamples is how many consecutive samples under ResumeBelow lift an
+	// fseventsd throttle, and how many with no stalled slice lift a stall one.
 	ResumeSamples int
 	// Recheck is the interval between activity checks of a waiting job.
 	Recheck time.Duration
@@ -81,8 +83,8 @@ type Tuning struct {
 }
 
 // DefaultTuning is the production pace: 1000 entries a second in slices of at
-// most 100 entries or 50ms, slowed to 100 a second while deletion pushes
-// fseventsd half a core over its ambient load.
+// most 100 entries or 50ms, and at most 100 a second while the governor
+// throttles.
 func DefaultTuning() Tuning {
 	return Tuning{
 		Rate:          1000,
@@ -639,19 +641,13 @@ func (e *Engine) work(ctx context.Context) error {
 				e.publishGovernor()
 			}
 			switch {
-			case e.awaited(job.ID, now):
-				e.loud = true
-				if err := e.slice(ctx, job, false); err != nil {
-					return err
-				}
-				continue
 			case e.gov.rate() == 0:
 				if err := e.park(); err != nil {
 					return err
 				}
 			case !now.Before(e.paceUntil):
 				e.loud = e.loud || e.gov.rate() > e.tuning.FloorRate
-				if err := e.slice(ctx, job, true); err != nil {
+				if err := e.slice(ctx, job); err != nil {
 					return err
 				}
 				continue
@@ -833,7 +829,7 @@ func (e *Engine) advance(ctx context.Context, job cleanup.Job) (cleanup.Job, err
 	return job, nil
 }
 
-func (e *Engine) slice(ctx context.Context, job cleanup.Job, paced bool) error {
+func (e *Engine) slice(ctx context.Context, job cleanup.Job) error {
 	if e.active == nil {
 		if err := e.open(ctx, &job); err != nil || e.active == nil {
 			return err
@@ -843,9 +839,8 @@ func (e *Engine) slice(ctx context.Context, job cleanup.Job, paced bool) error {
 	removed, done, err := e.active.deletion.Step(e.tuning.SliceEntries, e.tuning.SliceBudget)
 	end := e.clock.Now()
 	job.Removed += uint64(removed) //nolint:gosec // a step never removes a negative count
-	if paced {
-		e.paceUntil = start.Add(time.Duration(removed) * time.Second / time.Duration(e.gov.rate()))
-	}
+	e.gov.sliced(end.Sub(start))
+	e.paceUntil = start.Add(e.rest(removed, end.Sub(start)))
 	switch {
 	case err != nil:
 		e.active = nil
@@ -860,6 +855,14 @@ func (e *Engine) slice(ctx context.Context, job cleanup.Job, paced bool) error {
 	e.active.unsaved = true
 	e.put(job)
 	return nil
+}
+
+func (e *Engine) rest(removed int, took time.Duration) time.Duration {
+	rate := time.Duration(e.gov.rate())
+	whole := time.Duration(e.tuning.SliceEntries) * time.Second / rate
+	byEntries := time.Duration(removed) * time.Second / rate
+	byTime := time.Duration(min(float64(took)/float64(e.tuning.SliceBudget), 1) * float64(whole))
+	return max(byEntries, byTime)
 }
 
 func (e *Engine) open(ctx context.Context, job *cleanup.Job) error {

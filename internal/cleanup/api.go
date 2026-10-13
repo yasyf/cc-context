@@ -252,18 +252,20 @@ type Query struct {
 	// Limit caps the jobs reported; zero takes the daemon's default.
 	Limit int `json:"limit,omitempty"`
 	// Await marks JobID as awaited: while such reads keep arriving, the daemon
-	// deletes that job ahead of every job nobody awaits, past the throttle and
-	// the pace.
+	// deletes that job ahead of every job nobody awaits, at the governed pace.
 	Await bool `json:"await,omitempty"`
 }
 
 // Governor is the deletion throttle as an observer reads it.
 type Governor struct {
-	// State is idle, sampling, clear, throttled, or unavailable.
+	// State is idle, sampling, clear, throttled, or unavailable. Deletion is
+	// capped at its floor rate while throttled or unavailable.
 	State string `json:"state"`
 	// CPUPercent is fseventsd's last sampled CPU use, 100 being one core.
 	CPUPercent float64 `json:"cpu_percent"`
-	Detail     string  `json:"detail,omitempty"`
+	// Detail names what an unavailable sampler failed on, or says that slices
+	// stalled past twice their time budget, whether or not CPU throttles too.
+	Detail string `json:"detail,omitempty"`
 }
 
 // Report is the daemon's bounded view of its queue: unfinished jobs first in
