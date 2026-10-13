@@ -29,6 +29,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs stack rebase` replays a child off its parent's pre-rewrite
+  copy.** When another lane rewrote and force-pushed a parent, a child cut
+  from the old head still carries that old copy. The other lane's stale local
+  parent branch holds it too. The gate counted the
+  copy as parent work origin lacks and refused with `carries 1 commit(s) of
+  <parent> that origin does not`. A commit any former head in the parent's
+  remote-tracking reflog reaches was published, so the gate no longer counts
+  it, and the child replays onto the parent's published head without it.
+  Parent commits origin never held still refuse.
+
 - **`ccx vcs gh` runs outside a checkout.** It looked up the current
   checkout's repository even when the command named none. A read run outside
   a git repository, such as a job log fetch from a scratch directory, failed

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/yasyf/cc-context/internal/render"
+	"github.com/yasyf/cc-context/internal/vcs"
 )
 
 // stackStanding is what a pull request has already earned on its published
@@ -153,9 +154,13 @@ func stackRefusePins(ctx context.Context, dir render.Dir, run *stackRebaseRun) e
 	if err != nil {
 		return err
 	}
+	remote, err := vcs.GitRemoteFor(ctx, dir, "HEAD")
+	if err != nil {
+		return fmt.Errorf("%s: %w", stackRebasePrefix, err)
+	}
 	include := stale
 	for {
-		pins, more, err := stackUnpublishedPins(ctx, dir, run, include)
+		pins, more, err := stackUnpublishedPins(ctx, dir, run, remote, include)
 		if err != nil {
 			return err
 		}
@@ -216,9 +221,10 @@ func stackStalePins(ctx context.Context, dir render.Dir, run *stackRebaseRun) (s
 
 // stackUnpublishedPins names each pin a run branch sits on whose local head
 // holds work origin lacks that the branch carries, or that rewrote the
-// published head. A pure replay onto newer trunk is no loss; a pin in taken is
-// no pin, and a kept branch in taken publishes with the run.
-func stackUnpublishedPins(ctx context.Context, dir render.Dir, run *stackRebaseRun, taken []string) (pins, reasons []string, err error) {
+// published head. A pure replay onto newer trunk is no loss, and neither is a
+// head origin once published and has since rewritten; a pin in taken is no
+// pin, and a kept branch in taken publishes with the run.
+func stackUnpublishedPins(ctx context.Context, dir render.Dir, run *stackRebaseRun, remote string, taken []string) (pins, reasons []string, err error) {
 	byName := map[string]*stackRebaseBranch{}
 	for i := range run.Branches {
 		byName[run.Branches[i].Name] = &run.Branches[i]
@@ -228,13 +234,13 @@ func stackUnpublishedPins(ctx context.Context, dir render.Dir, run *stackRebaseR
 		if b.Landed != "" || b.Held != "" || (b.Kept && !slices.Contains(taken, b.Name)) || pin == nil || !pin.Pinned || pin.Local == pin.Remote || slices.Contains(taken, pin.Name) || slices.Contains(pins, pin.Name) {
 			continue
 		}
-		carried, err := stackCarriedUnpublished(ctx, dir, run.Pin, pin, b.Local)
+		carried, err := stackCarriedUnpublished(ctx, dir, remote, run.Pin, pin, b.Local)
 		if err != nil {
 			return nil, nil, err
 		}
 		rewritten := false
 		if carried == 0 {
-			if rewritten, err = stackRewrotePublished(ctx, dir, run.Pin, pin); err != nil {
+			if rewritten, err = stackRewrotePublished(ctx, dir, remote, run.Pin, pin); err != nil {
 				return nil, nil, err
 			}
 			if !rewritten {
@@ -259,12 +265,12 @@ func stackUnpublishedPins(ctx context.Context, dir render.Dir, run *stackRebaseR
 	return pins, reasons, nil
 }
 
-func stackRewrotePublished(ctx context.Context, dir render.Dir, trunk string, pin *stackRebaseBranch) (bool, error) {
+func stackRewrotePublished(ctx context.Context, dir render.Dir, remote, trunk string, pin *stackRebaseBranch) (bool, error) {
 	kept, err := gitIsAncestor(ctx, dir, stackRebasePrefix, pin.Remote, pin.Local)
 	if err != nil || kept {
 		return false, err
 	}
-	own, err := stackCarriedUnpublished(ctx, dir, trunk, pin, pin.Local)
+	own, err := stackCarriedUnpublished(ctx, dir, remote, trunk, pin, pin.Local)
 	return own > 0, err
 }
 
@@ -282,8 +288,10 @@ func stackAbove(run *stackRebaseRun, name string) []string {
 }
 
 // stackCarriedUnpublished counts the commits of pin's local head that head
-// also holds and neither pin's published head nor trunk does.
-func stackCarriedUnpublished(ctx context.Context, dir render.Dir, trunk string, pin *stackRebaseBranch, head string) (int, error) {
+// also holds and neither trunk nor any head the remote-tracking reflog records
+// for pin does: a copy origin published before a rewrite superseded it is no
+// unpublished work.
+func stackCarriedUnpublished(ctx context.Context, dir render.Dir, remote, trunk string, pin *stackRebaseBranch, head string) (int, error) {
 	out, code, stderr, err := render.RunCLIExitCode(ctx, dir, "git", []string{"merge-base", "--all", pin.Local, head})
 	if err != nil {
 		return 0, fmt.Errorf("%s: git merge-base --all %.12s %.12s: %w", stackRebasePrefix, pin.Local, head, err)
@@ -298,7 +306,12 @@ func stackCarriedUnpublished(ctx context.Context, dir render.Dir, trunk string, 
 	args := append([]string{"rev-list", "--count"}, strings.Fields(out)...)
 	args = append(args, "^"+trunk)
 	if pin.Remote != "" {
-		args = append(args, "^"+pin.Remote)
+		ref := "refs/remotes/" + remote + "/" + pin.Name
+		published, err := render.RunCLI(ctx, dir, "git", []string{"reflog", "show", "--format=^%H", ref, "--"})
+		if err != nil {
+			return 0, fmt.Errorf("%s: git reflog show %s: %w", stackRebasePrefix, ref, err)
+		}
+		args = append(append(args, "^"+pin.Remote), strings.Fields(published)...)
 	}
 	count, err := render.RunCLI(ctx, dir, "git", args)
 	if err != nil {
