@@ -2905,7 +2905,7 @@ func gtHeldRemote(ctx context.Context, dir render.Dir, prefix string, b gtSubmit
 	if err != nil || ancestor {
 		return remote, ancestor, err
 	}
-	held, err := gitReflogHolds(ctx, dir, prefix, b.name, remote)
+	held, err := gitReflogHolds(ctx, dir, prefix, "refs/heads/"+b.name, remote)
 	return remote, held, err
 }
 

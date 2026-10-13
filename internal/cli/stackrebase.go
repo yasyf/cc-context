@@ -2085,8 +2085,19 @@ func stackSnapshot(ctx context.Context, dir render.Dir, tr vcs.Trunk, s gtBranch
 		if err != nil {
 			return b, err
 		}
+		var returned, superseded bool
+		if !ahead && !behind && !dropCommits {
+			if returned, err = gitReflogReturned(ctx, dir, stackRebasePrefix, name, s.Head, remote); err != nil {
+				return b, err
+			}
+			if !returned {
+				if superseded, err = gitReflogHolds(ctx, dir, stackRebasePrefix, "refs/remotes/"+tr.Remote()+"/"+name, s.Head); err != nil {
+					return b, err
+				}
+			}
+		}
 		switch {
-		case behind:
+		case behind || superseded:
 			b.Head = remote
 		case !ahead && remote != submitted:
 			if s.Head == submitted {
@@ -2125,11 +2136,7 @@ func stackSnapshot(ctx context.Context, dir render.Dir, tr vcs.Trunk, s gtBranch
 			}
 			return b, stackDivergedError{fmt.Errorf("stack rebase: %s has diverged from %s/%s (local %.12s, remote %.12s) — someone pushed to it; reconcile the two by hand, then re-run", name, tr.Remote(), name, s.Head, remote)}
 		}
-		if !ahead && !behind && !dropCommits {
-			returned, err := gitReflogReturned(ctx, dir, stackRebasePrefix, name, s.Head, remote)
-			if err != nil {
-				return b, err
-			}
+		if !ahead && !behind && !superseded && !dropCommits {
 			if returned {
 				return b, stackDivergedError{fmt.Errorf("stack rebase: %s's local head %.12s is one it held before its published head %s/%s (%.12s) — a reset onto an older head; git reset --keep %s/%s to take the published head, or pass --drop-commits to publish the local head anyway", name, s.Head, tr.Remote(), name, remote, tr.Remote(), name)}
 			}
@@ -2409,7 +2416,7 @@ func stackQueueStates(ctx context.Context, l lane, noPush bool, byName map[strin
 }
 
 func stackOwnRemote(ctx context.Context, dir render.Dir, name, local, remote, pin string) (bool, error) {
-	held, err := gitReflogHolds(ctx, dir, stackRebasePrefix, name, remote)
+	held, err := gitReflogHolds(ctx, dir, stackRebasePrefix, "refs/heads/"+name, remote)
 	if err != nil || held {
 		return held, err
 	}

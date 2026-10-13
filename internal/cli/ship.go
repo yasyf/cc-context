@@ -2007,7 +2007,7 @@ func shipAmendLease(ctx context.Context, dir render.Dir, remote, branch, preAmen
 	if _, code, _, err := render.RunCLIExitCodeEnv(ctx, dir, "git", []string{"cat-file", "-e", tip + "^{commit}"}, gitRecordedHistoryEnv); err != nil || code != 0 {
 		return "", err
 	}
-	held, err := gitReflogHolds(ctx, dir, "ship", branch, tip)
+	held, err := gitReflogHolds(ctx, dir, "ship", "refs/heads/"+branch, tip)
 	if err != nil || !held {
 		return "", err
 	}
