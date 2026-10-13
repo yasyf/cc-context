@@ -411,7 +411,10 @@ plain `gh` command to run instead. `ccx vcs auth status` names both identities
 and their remaining quota, and still answers when the user's quota is spent.
 The guard pack rewrites a read-only `gh pr`, `gh run`, `gh issue`, or
 `gh api` GET call to `ccx vcs gh -- …` on its own; end the command with
-`# ccx:raw` to keep it on the user's token.
+`# ccx:raw` to keep it on the user's token. gh's own flags pass through unchanged: a job
+log from `gh api repos/OWNER/REPO/actions/jobs/<id>/logs` holds terminal
+escape sequences gh refuses to print without `--allow-escape-sequences`, under
+`ccx vcs gh` or not.
 
 `ccx vcs guidelines` (alias
 `contributing`) fetches and caches the repo's PR templates, `CONTRIBUTING.md`, code

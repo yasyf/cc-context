@@ -42,6 +42,9 @@ rewrite_command_occurrences(
             pattern="vcs gh -- pr view 12 --json state | jq -r .state"
         ),
         Input(command="gh api repos/o/r/pulls/12 --jq .state"): Rewrite(pattern="vcs gh -- api repos/o/r/pulls/12"),
+        Input(command="gh api --allow-escape-sequences repos/o/r/actions/jobs/1/logs"): Rewrite(
+            pattern="vcs gh -- api --allow-escape-sequences repos/o/r/actions/jobs/1/logs"
+        ),
         Input(command="gh pr view 12 --json state"): Allow(),
         Input(command="gh pr checks 12 && gh pr merge 12 --squash"): Rewrite(
             pattern="vcs gh -- pr checks 12 && gh pr merge 12 --squash"
