@@ -169,7 +169,7 @@ pinned under refs/ccx/cleanup/, and the daemon deletes the files afterward.
 A tree a live process is working in, holding open, or was started on is
 refused. --wait then polls that job until its tree is deleted, as
 "ccx vcs cleanup wait" does, and the daemon deletes the awaited tree ahead of
-every job nobody awaits, at full speed and past the fseventsd throttle;
+every job nobody awaits, at the pace its governor allows;
 "ccx vcs cleanup status" reports the queue.
 --dry-run runs the daemon's whole preflight in process, so it refuses whatever
 rm would.

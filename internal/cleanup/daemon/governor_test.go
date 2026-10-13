@@ -11,19 +11,28 @@ import (
 func TestGovernor(t *testing.T) {
 	errSampler := errors.New("fseventsd not found")
 	type step struct {
-		cpu   time.Duration
-		err   error
-		quiet bool
-		reset bool
-		want  cleanup.Governor
-		rate  int
+		slices []time.Duration
+		cpu    time.Duration
+		err    error
+		quiet  bool
+		reset  bool
+		want   cleanup.Governor
+		rate   int
 	}
-	const full, floor = 1000, 100
+	const (
+		full, floor = 1000, 100
+		onTime      = time.Millisecond
+		budget      = 50 * time.Millisecond
+		stall       = 2 * budget
+	)
 	sampling := cleanup.Governor{State: "sampling"}
 	unavailable := cleanup.Governor{State: "unavailable", Detail: "fseventsd not found"}
 	cleared := func(percent float64) cleanup.Governor { return cleanup.Governor{State: "clear", CPUPercent: percent} }
 	throttled := func(percent float64) cleanup.Governor {
 		return cleanup.Governor{State: "throttled", CPUPercent: percent}
+	}
+	stalled := func(percent float64) cleanup.Governor {
+		return cleanup.Governor{State: "throttled", CPUPercent: percent, Detail: "slices stalled past twice their time budget"}
 	}
 	tests := []struct {
 		name  string
@@ -84,11 +93,73 @@ func TestGovernor(t *testing.T) {
 			{cpu: time.Second, quiet: true, want: throttled(25), rate: floor},
 			{cpu: time.Second, quiet: true, want: cleared(25), rate: full},
 		}},
-		{"a sampler error proceeds at the full rate and discards the counter", []step{
-			{err: errSampler, want: unavailable, rate: full},
+		{"a sampler error holds the floor rate and discards the counter", []step{
+			{err: errSampler, want: unavailable, rate: floor},
 			{cpu: 3 * time.Second, want: sampling},
 			{cpu: 3 * time.Second, quiet: true, want: cleared(75), rate: full},
-			{err: errSampler, want: unavailable, rate: full},
+			{err: errSampler, want: unavailable, rate: floor},
+		}},
+		{"a slice that takes twice its budget throttles at the next sample", []step{
+			{want: sampling},
+			{cpu: time.Second, quiet: true, want: cleared(25), rate: full},
+			{slices: []time.Duration{onTime, stall}, cpu: time.Second, quiet: true, want: stalled(25), rate: floor},
+		}},
+		{"a slice that ends at its budget is on time", []step{
+			{want: sampling},
+			{cpu: time.Second, quiet: true, want: cleared(25), rate: full},
+			{slices: []time.Duration{budget, budget}, cpu: time.Second, quiet: true, want: cleared(25), rate: full},
+		}},
+		{"a slice a nanosecond short of twice its budget is on time", []step{
+			{want: sampling},
+			{cpu: time.Second, quiet: true, want: cleared(25), rate: full},
+			{slices: []time.Duration{stall - time.Nanosecond}, cpu: time.Second, quiet: true, want: cleared(25), rate: full},
+		}},
+		{"a stall throttle lifts after three samples of on-time slices, and a stalled slice restarts the count", []step{
+			{want: sampling},
+			{cpu: time.Second, quiet: true, want: cleared(25), rate: full},
+			{slices: []time.Duration{stall}, cpu: time.Second, quiet: true, want: stalled(25), rate: floor},
+			{slices: []time.Duration{onTime}, cpu: time.Second, quiet: true, want: stalled(25), rate: floor},
+			{slices: []time.Duration{onTime, stall}, cpu: time.Second, quiet: true, want: stalled(25), rate: floor},
+			{slices: []time.Duration{onTime}, cpu: time.Second, quiet: true, want: stalled(25), rate: floor},
+			{slices: []time.Duration{onTime}, cpu: time.Second, quiet: true, want: stalled(25), rate: floor},
+			{slices: []time.Duration{onTime}, cpu: time.Second, quiet: true, want: cleared(25), rate: full},
+		}},
+		{"a sample with no slice neither counts toward lifting a stall throttle nor restarts the count", []step{
+			{want: sampling},
+			{cpu: time.Second, quiet: true, want: cleared(25), rate: full},
+			{slices: []time.Duration{stall}, cpu: time.Second, quiet: true, want: stalled(25), rate: floor},
+			{slices: []time.Duration{onTime}, cpu: time.Second, quiet: true, want: stalled(25), rate: floor},
+			{cpu: time.Second, quiet: true, want: stalled(25), rate: floor},
+			{slices: []time.Duration{onTime}, cpu: time.Second, quiet: true, want: stalled(25), rate: floor},
+			{slices: []time.Duration{onTime}, cpu: time.Second, quiet: true, want: cleared(25), rate: full},
+		}},
+		{"a stall throttle outlasts the fseventsd throttle it began beside", []step{
+			{want: sampling},
+			{cpu: 4 * time.Second, quiet: true, want: cleared(100), rate: full},
+			{slices: []time.Duration{stall}, cpu: 7 * time.Second, want: stalled(175), rate: floor},
+			{slices: []time.Duration{stall}, cpu: 4500 * time.Millisecond, quiet: true, want: stalled(112.5), rate: floor},
+			{slices: []time.Duration{stall}, cpu: 4500 * time.Millisecond, quiet: true, want: stalled(112.5), rate: floor},
+			{slices: []time.Duration{stall}, cpu: 4500 * time.Millisecond, quiet: true, want: stalled(112.5), rate: floor},
+			{slices: []time.Duration{onTime}, cpu: 4500 * time.Millisecond, quiet: true, want: stalled(112.5), rate: floor},
+			{slices: []time.Duration{onTime}, cpu: 4500 * time.Millisecond, quiet: true, want: stalled(112.5), rate: floor},
+			{slices: []time.Duration{onTime}, cpu: 4500 * time.Millisecond, quiet: true, want: cleared(112.5), rate: full},
+		}},
+		{"a stall throttle keeps counting through a sampler error and its fresh baseline", []step{
+			{want: sampling},
+			{cpu: time.Second, quiet: true, want: cleared(25), rate: full},
+			{slices: []time.Duration{stall}, cpu: time.Second, quiet: true, want: stalled(25), rate: floor},
+			{slices: []time.Duration{onTime}, err: errSampler, want: unavailable, rate: floor},
+			{slices: []time.Duration{onTime}, cpu: 3 * time.Second, want: sampling},
+			{cpu: time.Second, quiet: true, want: stalled(25), rate: floor},
+			{slices: []time.Duration{onTime}, cpu: time.Second, quiet: true, want: cleared(25), rate: full},
+		}},
+		{"an idle queue forgets a stall throttle and the slices behind it", []step{
+			{want: sampling},
+			{cpu: time.Second, quiet: true, want: cleared(25), rate: full},
+			{slices: []time.Duration{stall}, cpu: time.Second, quiet: true, want: stalled(25), rate: floor},
+			{slices: []time.Duration{stall}, reset: true, want: cleanup.Governor{State: "idle"}},
+			{cpu: 3 * time.Second, want: sampling},
+			{cpu: time.Second, quiet: true, want: cleared(25), rate: full},
 		}},
 		{"a counter that falls is a fresh baseline, not a low reading", []step{
 			{want: sampling},
@@ -123,6 +194,9 @@ func TestGovernor(t *testing.T) {
 			now := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
 			var cpu time.Duration
 			for i, s := range tt.steps {
+				for _, took := range s.slices {
+					g.sliced(took)
+				}
 				if s.reset {
 					g.reset()
 				} else {

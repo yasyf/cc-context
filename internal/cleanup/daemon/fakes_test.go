@@ -285,6 +285,7 @@ func stayWaiting(job *cleanup.Job) { job.Phase = cleanup.PhaseWaiting }
 type payload struct {
 	entries  int
 	perStep  int
+	idle     int
 	stepTime time.Duration
 	openErr  error
 	stepErr  error
@@ -347,6 +348,10 @@ func (d *fakeDeletion) Step(limit int, _ time.Duration) (int, bool, error) {
 	d.deleter.h.clock.Advance(d.payload.stepTime)
 	if d.payload.stepErr != nil {
 		return 0, false, d.payload.stepErr
+	}
+	if d.payload.idle > 0 {
+		d.payload.idle--
+		return 0, false, nil
 	}
 	if d.payload.perStep > 0 {
 		limit = min(limit, d.payload.perStep)
@@ -744,6 +749,6 @@ func (h *harness) names(jobs []cleanup.Job) []string {
 
 func paced() Tuning {
 	t := DefaultTuning()
-	t.Rate = 250
+	t.Rate, t.FloorRate = 250, 250
 	return t
 }

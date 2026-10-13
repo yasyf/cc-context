@@ -192,7 +192,7 @@ func newCleanupStatusCmd() *cobra.Command {
 
 Each line is "<job-id> · <state> · <original path> · <n> entries", unfinished
 jobs first in queue order, then the most recently finished, under a header
-naming the daemon, its fseventsd throttle, and whether deletion is paused. The
+naming the daemon, its deletion governor, and whether deletion is paused. The
 report is bounded by --limit and says how many jobs it omitted; it never scans
 a tree for a total or estimates time remaining. While deletion is paused, a job
 waiting only on physical deletion reads "paused".
@@ -411,7 +411,7 @@ func newCleanupWaitCmd() *cobra.Command {
 
 It returns once the job is done, and fails with the blockage when the job stops
 for an operator instead. While it waits, the daemon deletes the job ahead of
-every job nobody awaits, at full speed and past the fseventsd throttle. It
+every job nobody awaits, at the pace its governor allows. It
 polls the job's status until then, and fails when the daemon leaves any one poll unanswered for ` + cleanupStatusTimeout.String() + `. A socket that is
 missing or refuses, as it does while another ccx replaces the daemon, is polled
 again for up to ` + cleanupHandoverTimeout.String() + `.
