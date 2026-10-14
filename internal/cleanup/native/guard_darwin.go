@@ -47,13 +47,13 @@ import (
 // A bystander is a process no shell, editor, agent, or build of the caller's
 // could be, told by the kernel's record and never by name: one whose real uid
 // is not the caller's, or a system daemon. A system daemon's proc_pidpath sits
-// under /System/ or /usr/libexec/ on the read-only root snapshot mounted at
-// "/", csops reports a valid platform binary that is not being debugged, its
-// uid is the caller's, its parent is launchd, and it has no controlling
-// terminal. The check runs before the first descriptor is skipped and again
-// after the last, and the process's start time must not change between them.
-// Where a skipped descriptor's file sits is unknown; it is assumed to be
-// outside every worktree.
+// under /System/Library/ or /usr/libexec/ on the read-only root snapshot
+// mounted at "/", csops reports a valid platform binary that is not being
+// debugged, its uid is the caller's, its parent is launchd, and it has no
+// controlling terminal. The check runs before the first descriptor is skipped
+// and again after the last, and the process's start time must not change
+// between them. Where a skipped descriptor's file sits is unknown; it is
+// assumed to be outside every worktree.
 //
 // A worktree that is itself a symlink, or a process that has not exited and
 // cannot be read in full, is an error rather than a pass. That covers a
