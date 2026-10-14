@@ -214,6 +214,35 @@ func RetiringFrom(ctx context.Context) []ProcessID {
 	return watchers
 }
 
+// Ignored is a process a guard passed over although the kernel would not say
+// where each of its descriptors points, with the reason it cannot be holding
+// the tree.
+type Ignored struct {
+	PID    int    `json:"pid"`
+	Name   string `json:"name"`
+	Reason string `json:"reason"`
+}
+
+func (i Ignored) String() string {
+	return fmt.Sprintf("%s (pid %d, %s)", i.Name, i.PID, i.Reason)
+}
+
+type ignoredKey struct{}
+
+// WithIgnored returns ctx carrying an empty list, and that list, which every
+// guard run under ctx extends with the processes it passed over.
+func WithIgnored(ctx context.Context) (context.Context, *[]Ignored) {
+	var ignored []Ignored
+	return context.WithValue(ctx, ignoredKey{}, &ignored), &ignored
+}
+
+// NoteIgnored extends the list ctx carries with ignored, when ctx carries one.
+func NoteIgnored(ctx context.Context, ignored ...Ignored) {
+	if list, ok := ctx.Value(ignoredKey{}).(*[]Ignored); ok {
+		*list = append(*list, ignored...)
+	}
+}
+
 type requesterKey struct{}
 
 // WithRequester returns ctx naming the transient client whose request the work
@@ -238,11 +267,21 @@ type Receipt struct {
 	RecoveryRef string `json:"recovery_ref,omitempty"`
 	// Detail says what a waiting job waits on.
 	Detail string `json:"detail,omitempty"`
+	// Ignored names the processes the job's last activity check passed over,
+	// each with the reason it could not be holding the tree.
+	Ignored string `json:"ignored,omitempty"`
 }
 
 // ReceiptOf is the receipt for job as it stands.
 func ReceiptOf(job Job) Receipt {
-	return Receipt{JobID: job.ID, State: job.State(), Original: job.Original, RecoveryRef: job.RecoveryRef}
+	ignored := make([]string, len(job.Ignored))
+	for i, process := range job.Ignored {
+		ignored[i] = process.String()
+	}
+	return Receipt{
+		JobID: job.ID, State: job.State(), Original: job.Original, RecoveryRef: job.RecoveryRef,
+		Ignored: strings.Join(ignored, "; "),
+	}
 }
 
 // Query selects what a status report carries.

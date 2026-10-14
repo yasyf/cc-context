@@ -543,7 +543,7 @@ func TestDescriptor(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			kernel := &staged{open: tt.open, denied: tt.denied}
 			s := &scan{lib: kernel.lib(t), root: f.real, given: f.tree}
-			path, err := s.descriptor(cleanup.ProcessID{PID: 4242})
+			path, err := s.descriptor(cleanup.ProcessID{PID: 4242}, "staged")
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("descriptor = %q, %v; want %v", path, err, tt.wantErr)
 			}
@@ -569,7 +569,7 @@ func TestDescriptorsThatCannotBeListed(t *testing.T) {
 		t.Errorf("listFDs = %+v, %v; want none and EPERM", fds, err)
 	}
 	s := &scan{lib: refused, root: "/tree", given: "/tree"}
-	if path, err := s.descriptor(cleanup.ProcessID{PID: 4242}); !errors.Is(err, unix.EPERM) || path != "" {
+	if path, err := s.descriptor(cleanup.ProcessID{PID: 4242}, "staged"); !errors.Is(err, unix.EPERM) || path != "" {
 		t.Errorf("descriptor = %q, %v; want no path and EPERM", path, err)
 	}
 }
@@ -645,40 +645,84 @@ func TestInspectSelectsEvidence(t *testing.T) {
 	}
 }
 
-func TestApprovedServices(t *testing.T) {
+func TestSystemDaemons(t *testing.T) {
 	const started = 100
-	want := []string{
-		"/System/Library/Frameworks/QuickLookThumbnailing.framework/Support/com.apple.quicklook.ThumbnailsAgent",
-		"/System/Library/Frameworks/ClassKit.framework/Versions/A/progressd",
-		"/System/Library/PrivateFrameworks/ScreenTimeCore.framework/Versions/A/ScreenTimeAgent",
-		"/usr/libexec/dmd",
-		"/usr/libexec/routined",
-		"/usr/libexec/nsurlsessiond",
-		"/usr/libexec/UserEventAgent",
-		"/usr/libexec/lsd",
-		"/usr/libexec/knowledge-agent",
+	for _, program := range []string{
+		"/System/Library/PrivateFrameworks/IntelligenceFlowRuntime.framework/Versions/A/intelligenceflowd",
 		"/System/Library/PrivateFrameworks/CoreDuetContext.framework/Versions/A/Resources/ContextStoreAgent",
-	}
-	if len(approvedServices) != 10 || !slices.Equal(approvedServices, want) {
-		t.Fatalf("approvedServices = %q, want exactly %q", approvedServices, want)
-	}
-	for _, program := range approvedServices {
+		"/usr/libexec/lsd",
+		"/usr/libexec/trustd",
+	} {
 		t.Run(program, func(t *testing.T) {
 			kernel := agent(program, started)
 			kernel.micros = []uint64{250}
 			s := scan{lib: kernel.lib(t), root: "/tree", given: "/tree"}
-			born, err := s.service(cleanup.ProcessID{PID: 4242, Start: started})
-			if want := (birth{seconds: started, micros: 250}); err != nil || born != want {
-				t.Errorf("service = %+v, %v; want %+v", born, err, want)
+			born, reason, err := s.bystander(cleanup.ProcessID{PID: 4242, Start: started})
+			if want := (birth{seconds: started, micros: 250}); err != nil || born != want || reason != "a system daemon at "+program {
+				t.Errorf("bystander = %+v, %q, %v; want %+v, %q", born, reason, err, want, "a system daemon at "+program)
 			}
-			if path, err := s.descriptor(cleanup.ProcessID{PID: 4242, Start: started}); path != "" || err != nil {
+			if path, err := s.descriptor(cleanup.ProcessID{PID: 4242, Start: started}, "daemon"); path != "" || err != nil {
 				t.Errorf("descriptor = %q, %v; want its refused descriptor skipped", path, err)
+			}
+			want := []cleanup.Ignored{{PID: 4242, Name: "daemon", Reason: "a system daemon at " + program}}
+			if !slices.Equal(s.ignored, want) {
+				t.Errorf("ignored = %+v, want %+v", s.ignored, want)
 			}
 		})
 	}
 }
 
-func TestInspectApprovedServices(t *testing.T) {
+func TestInspectIgnoresOnlyBystanders(t *testing.T) {
+	const (
+		started     = 100
+		daemon      = "/System/Library/PrivateFrameworks/IntelligenceFlowRuntime.framework/Versions/A/intelligenceflowd"
+		shell       = "/bin/zsh"
+		agentCLI    = "/opt/homebrew/bin/node"
+		buildTool   = "/usr/libexec/PlistBuddy"
+		terminal    = 0x10000005
+		parentShell = 4242
+	)
+	f := plant(t)
+	sleeper := spawn(t, f.outside, nil, "/bin/sleep", "60").Process.Pid
+	opens := vnodeRecord(t, f.file, f.real+"/file")
+	stranger := uint32(os.Getuid() + 1) //nolint:gosec // a uid is a C unsigned int
+
+	tests := []struct {
+		name    string
+		program string
+		stage   func(k *staged)
+		holder  bool
+		wantErr error
+		ignored string
+	}{
+		{"a system daemon's refused descriptor", daemon, func(*staged) {}, false, nil, "a system daemon at " + daemon},
+		{"a refused descriptor of a process another uid started", agentCLI, func(k *staged) { k.actual = stranger }, false, nil, fmt.Sprintf("started by uid %d", stranger)},
+		{"a terminal shell's refused descriptor", shell, func(k *staged) { k.parent, k.terminal = parentShell, terminal }, false, unix.EPERM, ""},
+		{"an agent's refused descriptor", agentCLI, func(k *staged) { k.parent = parentShell }, false, unix.EPERM, ""},
+		{"a build step's refused descriptor, run from a terminal", buildTool, func(k *staged) { k.parent, k.terminal = parentShell, terminal }, false, unix.EPERM, ""},
+		{"a system daemon's readable descriptor in the tree", daemon, func(k *staged) { k.beside = opens }, true, nil, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			kernel := agent(tt.program, started)
+			tt.stage(&kernel)
+			s := scan{lib: kernel.lib(t), root: f.real, given: f.tree}
+			_, held, err := s.inspect(sleeper)
+			if !errors.Is(err, tt.wantErr) || held != tt.holder {
+				t.Fatalf("inspect = %t, %v; want %t, %v", held, err, tt.holder, tt.wantErr)
+			}
+			var want []cleanup.Ignored
+			if tt.ignored != "" {
+				want = []cleanup.Ignored{{PID: sleeper, Name: "staged", Reason: tt.ignored}}
+			}
+			if !slices.Equal(s.ignored, want) {
+				t.Errorf("ignored = %+v, want %+v", s.ignored, want)
+			}
+		})
+	}
+}
+
+func TestInspectBystanders(t *testing.T) {
 	const (
 		started      = 100
 		lsd          = "/usr/libexec/lsd"
@@ -686,6 +730,7 @@ func TestInspectApprovedServices(t *testing.T) {
 		contextStore = "/System/Library/PrivateFrameworks/CoreDuetContext.framework/Versions/A/Resources/ContextStoreAgent"
 		knowledge    = "/usr/libexec/knowledge-agent"
 		trustd       = "/usr/libexec/trustd"
+		vim          = "/usr/bin/vim"
 		dataVolume   = "/System/Volumes/Data"
 	)
 	f := plant(t)
@@ -728,7 +773,7 @@ func TestInspectApprovedServices(t *testing.T) {
 		{"a refused descriptor whose vnode the kernel fails to read", sleeper, func(k *staged) { k.opaque = unix.EIO }, nil, unix.EIO, "", 1},
 		{"a descriptor at a path not proven to name its file, whose inode the kernel refuses to resolve", sleeper, func(k *staged) { k.denied, k.open = 0, unprovable }, nil, nil, "", 2},
 		{"such a descriptor whose vnode the kernel describes, then refuses to resolve again", sleeper, func(k *staged) { k.denied, k.open, k.opaque, k.vnode = 0, unprovable, 0, unprovable }, nil, nil, "", 2},
-		{"such a descriptor of an unapproved owner", sleeper, func(k *staged) { k.denied, k.open, k.programs = 0, unprovable, []string{trustd} }, nil, unix.EACCES, "does not name: permission denied; its owner is not an approved Apple service: its executable is " + trustd, 1},
+		{"such a descriptor of an owner outside the system directories", sleeper, func(k *staged) { k.denied, k.open, k.programs = 0, unprovable, []string{vim} }, nil, unix.EACCES, "does not name: permission denied; its owner may be a process this user started: its executable " + vim + " is outside /System/ and /usr/libexec/", 1},
 		{"a descriptor the kernel fails to read", sleeper, func(k *staged) { k.denied = unix.EIO }, nil, unix.EIO, "", 0},
 		{"descriptors that cannot be listed", sleeper, func(k *staged) { k.unlisted = unix.EIO }, nil, unix.EIO, "", 0},
 		{"a working directory in the tree", sleeper, func(k *staged) { k.cwd = works }, &cleanup.Holder{Evidence: cleanup.EvidenceCwd, Path: f.real + "/sub"}, nil, "", 0},
@@ -738,10 +783,10 @@ func TestInspectApprovedServices(t *testing.T) {
 		{"no refused descriptor, so no owner to verify", sleeper, func(k *staged) { k.denied, k.open, k.programs = 0, outside, []string{relocated} }, nil, nil, "", 0},
 		{"ContextStoreAgent", sleeper, run(contextStore), nil, nil, "", 2},
 		{"knowledge-agent", sleeper, run(knowledge), nil, nil, "", 2},
-		{"trustd", sleeper, run(trustd), nil, unix.EPERM, trustd, 1},
-		{"an approved name at another location", sleeper, run(relocated), nil, unix.EPERM, relocated, 1},
-		{"an approved path with a suffix", sleeper, run(lsd + "/"), nil, unix.EPERM, lsd + "/", 1},
-		{"an unapproved owner refused with EACCES", sleeper, func(k *staged) { k.denied, k.programs = unix.EACCES, []string{trustd} }, nil, unix.EACCES, trustd, 1},
+		{"trustd", sleeper, run(trustd), nil, nil, "", 2},
+		{"an editor on the system volume outside the system directories", sleeper, run(vim), nil, unix.EPERM, vim, 1},
+		{"a daemon's name at another location", sleeper, run(relocated), nil, unix.EPERM, relocated, 1},
+		{"an owner outside the system directories refused with EACCES", sleeper, func(k *staged) { k.denied, k.programs = unix.EACCES, []string{vim} }, nil, unix.EACCES, vim, 1},
 		{"an executable path the kernel withholds", sleeper, func(k *staged) { k.unlocated = unix.ESRCH }, nil, unix.EPERM, "executable path", 1},
 		{"an executable on a volume mounted elsewhere", sleeper, func(k *staged) { k.mount = dataVolume }, nil, unix.EPERM, dataVolume, 1},
 		{"an executable on the writable data volume", sleeper, func(k *staged) { k.mount, k.volume = dataVolume, 0x04909080 }, nil, unix.EPERM, dataVolume, 1},
@@ -756,11 +801,11 @@ func TestInspectApprovedServices(t *testing.T) {
 		{"a parent other than launchd", sleeper, func(k *staged) { k.parent = 4242 }, nil, unix.EPERM, "pid 4242", 1},
 		{"a controlling terminal", sleeper, func(k *staged) { k.terminal = 0x10000005 }, nil, unix.EPERM, "0x10000005", 1},
 		{"another effective uid", sleeper, func(k *staged) { k.effective++ }, nil, unix.EPERM, "uid", 1},
-		{"another real uid", sleeper, func(k *staged) { k.actual++ }, nil, unix.EPERM, "real uid", 1},
+		{"another real uid", sleeper, func(k *staged) { k.actual++ }, nil, nil, "", 2},
 		{"a pid that passed to another process before its owner was verified", sleeper, func(k *staged) { k.starts = []uint64{started, started + 1} }, nil, unix.EPERM, "started at 101", 1},
 		{"a pid that passed to a process started a second later while its descriptors were read", sleeper, func(k *staged) { k.starts = []uint64{started, started, started + 1} }, nil, unix.EPERM, "started at 101", 2},
 		{"a pid that passed to a process started a microsecond later while its descriptors were read", sleeper, func(k *staged) { k.micros = []uint64{5, 5, 6} }, nil, unix.EPERM, "100.000006", 2},
-		{"a process that stopped being the service while its descriptors were read", sleeper, func(k *staged) { k.programs = []string{lsd, relocated} }, nil, unix.EPERM, relocated, 2},
+		{"a process that stopped being a system daemon while its descriptors were read", sleeper, func(k *staged) { k.programs = []string{lsd, relocated} }, nil, unix.EPERM, relocated, 2},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

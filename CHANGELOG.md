@@ -29,6 +29,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs worktree rm` no longer refuses a clean tree because a macOS
+  daemon holds a file it cannot place.** The idle check skipped such a
+  descriptor only for ten listed Apple services. intelligenceflowd was not one
+  of them, so every removal refused with `could not verify that <tree> is
+  idle`. The check now skips such a descriptor when another user started its
+  process. It also skips one held by a system daemon. That is a valid platform
+  binary under `/System/` or `/usr/libexec/` on the sealed system volume,
+  started by launchd and without a terminal. The receipt names each
+  one as `ignored: <process> (pid <n>, <reason>)`. A shell, editor, agent, or
+  build still refuses, and so does a daemon's descriptor that the check can
+  place in the tree.
+
 - **A redirected `gh` read keeps one redirection when it is routed through
   `ccx vcs gh`.** The capt-hook guard pack rewrote `gh pr view 12 > /dev/stdout`
   to a command carrying the redirection twice. It built the replacement from the

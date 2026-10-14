@@ -1209,6 +1209,7 @@ func receiptOf(job cleanup.Job) cleanup.Receipt {
 
 func clone(job cleanup.Job) cleanup.Job {
 	job.Errors = slices.Clone(job.Errors)
+	job.Ignored = slices.Clone(job.Ignored)
 	if job.Blocked != nil {
 		blocked := *job.Blocked
 		job.Blocked = &blocked

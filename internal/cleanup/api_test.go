@@ -130,6 +130,14 @@ func TestReceiptOf(t *testing.T) {
 	if got := ReceiptOf(job); got != want {
 		t.Errorf("ReceiptOf(blocked) = %+v, want %+v", got, want)
 	}
+	job.Ignored = []Ignored{
+		{PID: 7, Name: "lsd", Reason: "a system daemon at /usr/libexec/lsd"},
+		{PID: 9, Name: "node", Reason: "started by uid 0"},
+	}
+	want.Ignored = "lsd (pid 7, a system daemon at /usr/libexec/lsd); node (pid 9, started by uid 0)"
+	if got := ReceiptOf(job); got != want {
+		t.Errorf("ReceiptOf(ignoring) = %+v, want %+v", got, want)
+	}
 }
 
 func TestRequestValidate(t *testing.T) {

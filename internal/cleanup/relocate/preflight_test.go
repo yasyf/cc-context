@@ -394,6 +394,26 @@ func TestAcceptGuardUnclear(t *testing.T) {
 	f.unjournaled()
 }
 
+func TestAcceptRecordsWhatTheGuardIgnored(t *testing.T) {
+	f := newFixture(t)
+	daemon := cleanup.Ignored{PID: 98135, Name: "intelligenceflowd", Reason: "a system daemon at /usr/libexec/intelligenceflowd"}
+	f.guard = func(ctx context.Context, _ string) error {
+		cleanup.NoteIgnored(ctx, daemon)
+		return nil
+	}
+
+	job, err := f.relocator.Accept(context.Background(), 1, f.request(false))
+	if err != nil {
+		t.Fatalf("Accept() error = %v", err)
+	}
+	if want := []cleanup.Ignored{daemon}; !reflect.DeepEqual(job.Ignored, want) {
+		t.Errorf("Accept().Ignored = %+v, want %+v", job.Ignored, want)
+	}
+	if got, want := cleanup.ReceiptOf(job).Ignored, "intelligenceflowd (pid 98135, a system daemon at /usr/libexec/intelligenceflowd)"; got != want {
+		t.Errorf("ReceiptOf(job).Ignored = %q, want %q", got, want)
+	}
+}
+
 func TestSameVolume(t *testing.T) {
 	tests := []struct {
 		name string
