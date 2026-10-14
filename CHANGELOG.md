@@ -29,6 +29,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A redirected `gh` read keeps one redirection when it is routed through
+  `ccx vcs gh`.** The capt-hook guard pack rewrote `gh pr view 12 > /dev/stdout`
+  to a command carrying the redirection twice. It built the replacement from the
+  command's whole source text, which includes its redirections, and the splice
+  that swaps the replacement in keeps them too. Under zsh, two `> /dev/stdout`
+  on one command feed its output back to itself without end, and a reader
+  waiting for end of input grows until the host runs out of memory. The
+  replacement is now built from the command's words alone.
+
 - **A ship in a partial clone no longer stops half way through moving the
   worktree.** After publishing, ship moves the worktree onto the published
   head with `git read-tree -u`. In a `blob:none` clone such as the monorepo's,

@@ -45,6 +45,8 @@ rewrite_command_occurrences(
         Input(command="gh api --allow-escape-sequences repos/o/r/actions/jobs/1/logs"): Rewrite(
             pattern="vcs gh -- api --allow-escape-sequences repos/o/r/actions/jobs/1/logs"
         ),
+        Input(command="gh pr view 12 > /dev/stdout"): Rewrite(pattern="vcs gh -- pr view 12 > /dev/stdout"),
+        Input(command="gh pr view > pr.txt 12"): Allow(),
         Input(command="gh pr view 12 --json state"): Allow(),
         Input(command="gh pr checks 12 && gh pr merge 12 --squash"): Rewrite(
             pattern="vcs gh -- pr checks 12 && gh pr merge 12 --squash"

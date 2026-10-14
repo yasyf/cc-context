@@ -145,7 +145,7 @@ def app_read(command: Command, ccx: str) -> str | None:
     """``ccx vcs gh -- <args>`` for a ``gh`` read, which then draws on the GitHub App's quota."""
     if not gh_read(command) or not ccx_supports("vcs", "gh"):
         return None
-    return f"{shlex.quote(ccx)} vcs gh --{command.raw[len(command.words[0].raw) :]}"
+    return f"{shlex.quote(ccx)} vcs gh -- {' '.join(word.raw for word in command.words[1:])}"
 
 
 def json_flagged(args: tuple[str, ...]) -> bool:
