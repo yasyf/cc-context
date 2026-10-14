@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -34,7 +35,9 @@ before running it and names the plain gh command to run on the user's token.
 The repository is the one --repo, a gh api endpoint under repos/OWNER/REPO,
 or GH_REPO names, else the current checkout's. With no repository to name, as
 outside a checkout, no app installed on it, or GH_TOKEN or GITHUB_TOKEN set,
-gh runs on the user's token as it would alone. Standard streams pass through,
+gh runs on the user's token as it would alone. On the app token @me names the
+gh user, not the app: an @me qualifier or flag value becomes the login gh is
+signed in as, and gh api user runs on the user's token. Standard streams pass through,
 and ccx exits with gh's code. A command that fails once its token has
 expired, such as a watch that outlived it, runs again on a fresh one.`,
 		Example: "  ccx vcs gh -- pr checks 123\n  ccx vcs gh -- run watch 456 --exit-status",
@@ -55,12 +58,24 @@ func runVcsGh(cmd *cobra.Command, argv []string) error {
 	ctx := cmd.Context()
 	dir := workingDir(ctx)
 	repo := ghTargetRepo(ctx, argv)
+	viewer := ghReadsViewer(argv)
+	args := argv
 	for {
-		env, expires, err := ghRepoReadEnv(ctx, render.Dir(dir), repo, ghapi.AppWatchMargin)
+		var env []string
+		var expires time.Time
+		var err error
+		if !viewer {
+			env, expires, err = ghRepoReadEnv(ctx, render.Dir(dir), repo, ghapi.AppWatchMargin)
+		}
 		if err != nil && !errors.Is(err, vcs.ErrNoGitHub) {
 			return err
 		}
-		gh := exec.CommandContext(ctx, "gh", argv...) //nolint:gosec // argv is the caller's own gh command
+		if len(env) > 0 && slices.ContainsFunc(argv, ghMe.MatchString) {
+			if args, err = ghResolveMe(ctx, render.Dir(dir), argv); err != nil {
+				return err
+			}
+		}
+		gh := exec.CommandContext(ctx, "gh", args...) //nolint:gosec // args is the caller's own gh command
 		gh.Dir = dir
 		gh.Env = slices.Concat(os.Environ(), render.EnvFrom(ctx), env)
 		gh.Stdin, gh.Stdout, gh.Stderr = cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr()
@@ -73,6 +88,37 @@ func runVcsGh(cmd *cobra.Command, argv []string) error {
 			return err
 		}
 	}
+}
+
+var ghMe = regexp.MustCompile(`(^|[\s:=,])@me\b`)
+
+func ghResolveMe(ctx context.Context, dir render.Dir, argv []string) ([]string, error) {
+	out, err := render.RunCLI(ctx, dir, "gh", []string{"config", "get", "--host", "github.com", "user"})
+	if err != nil {
+		return nil, fmt.Errorf("vcs gh: read the gh user that @me names: %w", err)
+	}
+	login := strings.TrimSpace(out)
+	if login == "" {
+		return nil, errors.New("vcs gh: gh names no signed-in user for @me; run gh auth login")
+	}
+	resolved := make([]string, len(argv))
+	for i, arg := range argv {
+		resolved[i] = ghMe.ReplaceAllString(arg, "${1}"+login)
+	}
+	return resolved, nil
+}
+
+func ghReadsViewer(argv []string) bool {
+	if argv[0] != "api" {
+		return false
+	}
+	_, endpoint := ghAPIRequest(argv[1:])
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return false
+	}
+	path := strings.TrimPrefix(u.Path, "/")
+	return path == "user" || strings.HasPrefix(path, "user/")
 }
 
 // ghTargetRepo returns the repository argv's gh command reads: the one --repo
