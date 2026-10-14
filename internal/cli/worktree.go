@@ -1138,14 +1138,17 @@ func queueGitWorktreeRemoval(ctx context.Context, path string, opts worktreeRmOp
 	if err != nil {
 		return nil, fmt.Errorf("worktree rm: %w", err)
 	}
-	queued := "deletion queued " + receipt.JobID
+	segs := []string{"deletion queued " + receipt.JobID}
+	if receipt.Ignored != "" {
+		segs = append(segs, "ignored: "+receipt.Ignored)
+	}
 	if !opts.wait {
-		return []string{queued}, nil
+		return segs, nil
 	}
 	if err := waitCleanupReceipt(ctx, receipt); err != nil {
 		return nil, fmt.Errorf("worktree rm: removed %s, deletion queued %s; wait: %w", path, receipt.JobID, err)
 	}
-	return []string{queued, "deleted"}, nil
+	return append(segs, "deleted"), nil
 }
 
 // removeJJWorkspace forgets the workspace and deletes its tree: forget alone

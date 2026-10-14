@@ -172,6 +172,8 @@ type Job struct {
 	// Requester is the client whose removal or adoption request last ran the
 	// job, discounted as that request's requester on every later pass.
 	Requester ProcessID `json:"requester,omitzero"`
+	// Ignored is what the job's last activity check passed over.
+	Ignored []Ignored `json:"ignored,omitempty"`
 	// Git is the absolute git binary every step of this job runs.
 	Git     string     `json:"git"`
 	Links   Links      `json:"links"`

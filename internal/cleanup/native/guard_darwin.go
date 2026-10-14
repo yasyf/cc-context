@@ -38,19 +38,22 @@ import (
 // descriptors, alone, of each retiring watcher ctx names, matched on both its
 // pid and the second the kernel started it, and only while that pid still
 // names that process once the rest of it has been read; and each descriptor of
-// an approved Apple service that the kernel refuses to place, with EPERM or
-// EACCES: refused the descriptor's path and then its vnode alone, or given a
-// path not proven to name the file and then refused the path of its inode.
+// a bystander that the kernel refuses to place, with EPERM or EACCES: refused
+// the descriptor's path and then its vnode alone, or given a path not proven
+// to name the file and then refused the path of its inode. Each bystander so
+// passed over is added, with its reason, to the list cleanup.WithIgnored put
+// in ctx.
 //
-// An approved service is one of the ten executables in approvedServices,
-// told by the kernel's record and never by name: proc_pidpath gives exactly a
-// listed path, that path is on the read-only root snapshot mounted at "/",
-// csops reports a valid platform binary that is not being debugged, the uid
-// and real uid are the caller's, the parent is launchd, and there is no
-// controlling terminal. The check runs before the first descriptor is skipped
-// and again after the last, and the process's start time must not change
-// between them. Where a skipped descriptor's file sits is unknown; it is
-// assumed to be outside every worktree.
+// A bystander is a process no shell, editor, agent, or build of the caller's
+// could be, told by the kernel's record and never by name: one whose real uid
+// is not the caller's, or a system daemon. A system daemon's proc_pidpath sits
+// under /System/ or /usr/libexec/ on the read-only root snapshot mounted at
+// "/", csops reports a valid platform binary that is not being debugged, its
+// uid is the caller's, its parent is launchd, and it has no controlling
+// terminal. The check runs before the first descriptor is skipped and again
+// after the last, and the process's start time must not change between them.
+// Where a skipped descriptor's file sits is unknown; it is assumed to be
+// outside every worktree.
 //
 // A worktree that is itself a symlink, or a process that has not exited and
 // cannot be read in full, is an error rather than a pass. That covers a
@@ -88,6 +91,7 @@ func Guard(ctx context.Context, worktree string) error {
 			holders = append(holders, holder)
 		}
 	}
+	cleanup.NoteIgnored(ctx, scan.ignored...)
 	return active(worktree, holders)
 }
 
@@ -205,6 +209,7 @@ type scan struct {
 	retiring  []cleanup.ProcessID
 	tail      []string
 	launchers []cleanup.ProcessID
+	ignored   []cleanup.Ignored
 }
 
 func (s *scan) inspect(pid int) (cleanup.Holder, bool, error) {
@@ -222,7 +227,7 @@ func (s *scan) inspect(pid int) (cleanup.Holder, bool, error) {
 	if name == "" {
 		name = unix.ByteSliceToString(bsd.comm[:])
 	}
-	evidence, path, err := s.evidence(cleanup.ProcessID{PID: pid, Start: int64(bsd.start)}, bsd.flags&flagThreadCwd != 0) //nolint:gosec // seconds since the epoch fit int64
+	evidence, path, err := s.evidence(cleanup.ProcessID{PID: pid, Start: int64(bsd.start)}, name, bsd.flags&flagThreadCwd != 0) //nolint:gosec // seconds since the epoch fit int64
 	if err != nil && s.exited(pid) {
 		return cleanup.Holder{}, false, nil
 	}
@@ -243,7 +248,7 @@ func (s *scan) exited(pid int) bool {
 	return bsd.status == statusZombie || bsd.flags&flagInExit != 0
 }
 
-func (s *scan) evidence(process cleanup.ProcessID, threaded bool) (kind, path string, err error) {
+func (s *scan) evidence(process cleanup.ProcessID, name string, threaded bool) (kind, path string, err error) {
 	pid := process.PID
 	if path, err = s.cwd(pid, threaded); err != nil || path != "" {
 		return cleanup.EvidenceCwd, path, err
@@ -253,7 +258,7 @@ func (s *scan) evidence(process cleanup.ProcessID, threaded bool) (kind, path st
 	}
 	retiring := slices.Contains(s.retiring, process)
 	if !retiring {
-		if path, err = s.descriptor(process); err != nil || path != "" {
+		if path, err = s.descriptor(process, name); err != nil || path != "" {
 			return cleanup.EvidenceFD, path, err
 		}
 	}
@@ -334,15 +339,16 @@ func (s *scan) threadCwd(pid int) (string, error) {
 type descriptorPass struct {
 	*scan
 	process  cleanup.ProcessID
+	name     string
 	approval *approval
 }
 
-func (s *scan) descriptor(process cleanup.ProcessID) (string, error) {
+func (s *scan) descriptor(process cleanup.ProcessID, name string) (string, error) {
 	fds, err := s.lib.listFDs(process.PID)
 	if err != nil {
 		return "", fmt.Errorf("list its descriptors: %w", err)
 	}
-	pass := &descriptorPass{scan: s, process: process}
+	pass := &descriptorPass{scan: s, process: process, name: name}
 	for _, fd := range fds {
 		if fd.kind != fdTypeVnode {
 			continue

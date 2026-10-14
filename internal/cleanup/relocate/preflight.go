@@ -282,7 +282,9 @@ func (r *Relocator) unretired(ctx context.Context, job *cleanup.Job) error {
 	case err != nil:
 		return err
 	}
-	err = r.cfg.Guard(cleanup.WithRetiring(ctx, watchers), job.Original)
+	guarded, ignored := cleanup.WithIgnored(cleanup.WithRetiring(ctx, watchers))
+	err = r.cfg.Guard(guarded, job.Original)
+	job.Ignored = *ignored
 	if err != nil && r.excused(ctx, job, job.Original, err) {
 		return nil
 	}
