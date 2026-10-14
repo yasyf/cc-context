@@ -29,6 +29,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`@me` under `ccx vcs gh` names the gh user, not the GitHub App.** On the
+  app's installation token GitHub resolves `@me` and `/user` to the app
+  itself. `gh pr list --author @me` listed the app's own pull requests and
+  none of the user's, and `gh api user` failed with HTTP 403
+  "Resource not accessible by integration". The guard pack routes both reads
+  through `ccx vcs gh`, so every agent that filtered by `@me` silently missed
+  its own pull requests. An `@me` qualifier or flag value now becomes the
+  login `gh config get user` names before gh runs, so the read stays on the
+  app's quota. `gh api user` and `user/…` endpoints run on the user's token.
+
 - **`ccx vcs worktree rm` no longer refuses a clean tree because a macOS
   daemon holds a file it cannot place.** The idle check skipped such a
   descriptor only for ten listed Apple services. intelligenceflowd was not one

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -167,6 +168,91 @@ printf 'token=%s argv=%s\n' "${GH_TOKEN:-user}" "$*"
 		t.Fatalf("runVcsGh outside a checkout = %v, want gh run on the user's token", err)
 	}
 	if got, want := out.String(), "token=user argv=api rate_limit\n"; got != want {
+		t.Errorf("gh printed %q, want %q", got, want)
+	}
+}
+
+func TestGhReadsViewer(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		argv []string
+		want bool
+	}{
+		{name: "user", argv: []string{"api", "user", "--jq", ".login"}, want: true},
+		{name: "leading slash", argv: []string{"api", "/user"}, want: true},
+		{name: "url", argv: []string{"api", "https://api.github.com/user"}, want: true},
+		{name: "user subpath", argv: []string{"api", "user/repos?per_page=1"}, want: true},
+		{name: "after header", argv: []string{"api", "-H", "Accept: application/json", "user"}, want: true},
+		{name: "users", argv: []string{"api", "users/o"}},
+		{name: "repo", argv: []string{"api", "repos/o/r/pulls/1"}},
+		{name: "pr list", argv: []string{"pr", "list", "--author", "@me"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := ghReadsViewer(tt.argv); got != tt.want {
+				t.Errorf("ghReadsViewer(%q) = %v, want %v", tt.argv, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestGhResolveMe(t *testing.T) {
+	shims := t.TempDir()
+	execstub.Write(t, filepath.Join(shims, "gh"), `#!/bin/sh
+[ "$*" = "config get --host github.com user" ] && echo octocat
+`)
+	t.Setenv("PATH", shims+string(os.PathListSeparator)+os.Getenv("PATH"))
+	argv := []string{
+		"pr", "list", "--author", "@me", "--assignee=@me",
+		"--search", "review-requested:@me is:open", "--label", "@meeting", "--jq", ".[].email",
+	}
+	got, err := ghResolveMe(t.Context(), render.Dir(t.TempDir()), argv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"pr", "list", "--author", "octocat", "--assignee=octocat",
+		"--search", "review-requested:octocat is:open", "--label", "@meeting", "--jq", ".[].email",
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("ghResolveMe(%q) = %q, want %q", argv, got, want)
+	}
+}
+
+func TestRunVcsGhViewerRunsOnTheUserToken(t *testing.T) {
+	home := t.TempDir()
+	app := filepath.Join(home, "config", "ccx", "github-app.toml")
+	if err := os.MkdirAll(filepath.Dir(app), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(app, []byte("client_id = \"Iv1\"\nprivate_key_command = [\"cat\"]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	shims := t.TempDir()
+	execstub.Write(t, filepath.Join(shims, "gh"), `#!/bin/sh
+printf 'token=%s argv=%s\n' "${GH_TOKEN:-user}" "$*"
+`)
+	t.Setenv("PATH", shims+string(os.PathListSeparator)+os.Getenv("PATH"))
+	prior := reviewsAPI
+	reviewsAPI = func() *ghapi.Client { return ghapi.New("http://127.0.0.1:1") }
+	t.Cleanup(func() { reviewsAPI = prior })
+
+	ctx := render.WithEnv(workspace.WithRoot(t.Context(), t.TempDir()),
+		"HOME="+home,
+		"XDG_CONFIG_HOME="+filepath.Join(home, "config"),
+		"CLAUDE_PLUGIN_DATA="+filepath.Join(home, "data"),
+		"GH_TOKEN=", "GITHUB_TOKEN=", "GH_REPO=o/r",
+	)
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetContext(ctx)
+	cmd.SetOut(&out)
+	if err := runVcsGh(cmd, []string{"api", "user", "--jq", ".login"}); err != nil {
+		t.Fatalf("runVcsGh(api user) = %v, want gh run on the user's token", err)
+	}
+	if got, want := out.String(), "token=user argv=api user --jq .login\n"; got != want {
 		t.Errorf("gh printed %q, want %q", got, want)
 	}
 }
