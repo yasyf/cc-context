@@ -18,7 +18,7 @@ const (
 	systemMount  = "/"
 )
 
-var systemDirectories = []string{"/System/", "/usr/libexec/"}
+var systemDirectories = []string{"/System/Library/", "/usr/libexec/"}
 
 type birth struct {
 	seconds uint64

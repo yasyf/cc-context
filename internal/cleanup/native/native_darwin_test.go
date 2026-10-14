@@ -731,6 +731,7 @@ func TestInspectBystanders(t *testing.T) {
 		knowledge    = "/usr/libexec/knowledge-agent"
 		trustd       = "/usr/libexec/trustd"
 		vim          = "/usr/bin/vim"
+		terminalApp  = "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal"
 		dataVolume   = "/System/Volumes/Data"
 	)
 	f := plant(t)
@@ -773,7 +774,7 @@ func TestInspectBystanders(t *testing.T) {
 		{"a refused descriptor whose vnode the kernel fails to read", sleeper, func(k *staged) { k.opaque = unix.EIO }, nil, unix.EIO, "", 1},
 		{"a descriptor at a path not proven to name its file, whose inode the kernel refuses to resolve", sleeper, func(k *staged) { k.denied, k.open = 0, unprovable }, nil, nil, "", 2},
 		{"such a descriptor whose vnode the kernel describes, then refuses to resolve again", sleeper, func(k *staged) { k.denied, k.open, k.opaque, k.vnode = 0, unprovable, 0, unprovable }, nil, nil, "", 2},
-		{"such a descriptor of an owner outside the system directories", sleeper, func(k *staged) { k.denied, k.open, k.programs = 0, unprovable, []string{vim} }, nil, unix.EACCES, "does not name: permission denied; its owner may be a process this user started: its executable " + vim + " is outside /System/ and /usr/libexec/", 1},
+		{"such a descriptor of an owner outside the system directories", sleeper, func(k *staged) { k.denied, k.open, k.programs = 0, unprovable, []string{vim} }, nil, unix.EACCES, "does not name: permission denied; its owner may be a process this user started: its executable " + vim + " is outside /System/Library/ and /usr/libexec/", 1},
 		{"a descriptor the kernel fails to read", sleeper, func(k *staged) { k.denied = unix.EIO }, nil, unix.EIO, "", 0},
 		{"descriptors that cannot be listed", sleeper, func(k *staged) { k.unlisted = unix.EIO }, nil, unix.EIO, "", 0},
 		{"a working directory in the tree", sleeper, func(k *staged) { k.cwd = works }, &cleanup.Holder{Evidence: cleanup.EvidenceCwd, Path: f.real + "/sub"}, nil, "", 0},
@@ -785,6 +786,7 @@ func TestInspectBystanders(t *testing.T) {
 		{"knowledge-agent", sleeper, run(knowledge), nil, nil, "", 2},
 		{"trustd", sleeper, run(trustd), nil, nil, "", 2},
 		{"an editor on the system volume outside the system directories", sleeper, run(vim), nil, unix.EPERM, vim, 1},
+		{"an app under /System/ outside /System/Library/", sleeper, run(terminalApp), nil, unix.EPERM, terminalApp, 1},
 		{"a daemon's name at another location", sleeper, run(relocated), nil, unix.EPERM, relocated, 1},
 		{"an owner outside the system directories refused with EACCES", sleeper, func(k *staged) { k.denied, k.programs = unix.EACCES, []string{vim} }, nil, unix.EACCES, vim, 1},
 		{"an executable path the kernel withholds", sleeper, func(k *staged) { k.unlocated = unix.ESRCH }, nil, unix.EPERM, "executable path", 1},
