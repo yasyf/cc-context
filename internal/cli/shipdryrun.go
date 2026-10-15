@@ -439,7 +439,13 @@ func dryRunStack(ctx context.Context, l lane, o shipOpts, c *gtCache, r *shipDry
 	if err != nil {
 		return fmt.Errorf("ship: %w", err)
 	}
-	dryRunMoves(state, chain, holders, o, r)
+	moveState := state
+	if o.noPush {
+		if moveState, err = gtHoldPublished(ctx, l.dir(), state, chain, r.branch); err != nil {
+			return err
+		}
+	}
+	dryRunMoves(moveState, chain, holders, o, r)
 	if err := dryRunRewrites(ctx, l, state, r); err != nil {
 		return err
 	}
