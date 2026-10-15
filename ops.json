@@ -1,1 +1,1 @@
-{"v":1,"lamport":2,"session":"8d9186e0-fba7-4817-bcc6-e16df6c05e3e","ops":[{"kind":"verify_note","witness":null,"verified_commit":"466d34834ba0da10182c201b1dde248855bd4efc"}]}
+{"v":1,"lamport":3,"session":"8d9186e0-fba7-4817-bcc6-e16df6c05e3e","ops":[{"kind":"add_tag","tag":"scope:ephemeral"},{"kind":"remove_tag","tag":"scope:durable"}]}
