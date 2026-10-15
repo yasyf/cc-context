@@ -959,3 +959,35 @@ func TestAReaderTakesTheInFlightPollThoughItLandsPastTheInterval(t *testing.T) {
 			err, gh.requests(), c.slept, st.PRs[190].PolledAt, 2*MinInterval)
 	}
 }
+
+func TestAReaderNoPollAnswersWithinTheBudgetReadsThroughREST(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	seed, err := Open(dir, &GitHub{owner: "yasyf", name: "cc-context"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inFlight := State{
+		AttemptedAt: epoch,
+		PolledAt:    epoch.Add(-MinInterval),
+		PRs:         map[int]PR{190: {Number: 190, State: "OPEN", PolledAt: epoch.Add(-MinInterval)}},
+	}
+	if err := seed.save(inFlight); err != nil {
+		t.Fatal(err)
+	}
+	c := &clock{now: epoch.Add(5 * time.Second)}
+	store, gh := newStore(t, dir, c, nil)
+	gh.rest = rest190()
+	store.budget = time.Millisecond
+	store.sleep = func(ctx context.Context, d time.Duration) error {
+		c.slept = append(c.slept, d)
+		<-ctx.Done()
+		return ctx.Err()
+	}
+
+	st, err := store.Read(testCtx(t), Want{PRs: []int{190}})
+	if err != nil || gh.requests() != 0 || fmt.Sprint(c.slept) != "[25s]" || st.PRs[190].Source != SourceREST || st.Failure != nil {
+		t.Errorf("read = %v after %d polls, slept %v, #190 from %q, failure %v; want REST once the budget ran out waiting on the poll in flight",
+			err, gh.requests(), c.slept, st.PRs[190].Source, st.Failure)
+	}
+}
