@@ -29,6 +29,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The cleanup daemon no longer copies and sorts its whole queue on every
+  scheduling pass.** Picking the next job, the next physical deletion, and the
+  next wake each cloned every job and sorted the copies by sequence. With 1,755
+  jobs on record and a deletion slice every 100 ms, that was up to about 50 full
+  copies and sorts a second. The daemon now keeps the jobs in sequence order as
+  they are added and pruned, scans them in place, and copies only the job it
+  hands on. Which job runs next is unchanged.
+
 - **`@me` under `ccx vcs gh` names the gh user, not the GitHub App.** On the
   app's installation token GitHub resolves `@me` and `/user` to the app
   itself. `gh pr list --author @me` listed the app's own pull requests and
