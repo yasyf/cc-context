@@ -29,6 +29,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs stack submit` keeps a parent this clone has no branch for.** Another
+  clone can insert a branch below one of the stack's, basing its pull request
+  on a branch this clone never fetched. The submit then replayed it onto the
+  parent gt last recorded here and retargeted its pull request there.
+  On monorepo #37115 that dropped its Graphite parent #38074, and the lane
+  repaired it by hand with `stack rebase --parent` (cci #74355). The run now
+  fetches that base, tracks it onto its own pull request's base, keeps it at
+  its published head, and names it on stderr. It does so when the remote
+  carries the base, its pull request is open, and the branch's published head
+  sits on it. When the branch's published head does not hold the base, or the
+  base's own parent is missing here too, the run refuses and names them.
+
 - **A `--pr-body-file` can replace or retract a carried release trailer.**
   `ccx vcs ship` and `ccx vcs stack submit` carried every `Release-*` trailer
   closing a live pull request body onto the new body, so a lane that reversed

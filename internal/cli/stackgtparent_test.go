@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -34,5 +36,68 @@ func TestStackSubmitCorrectsAStaleGraphiteParentRecord(t *testing.T) {
 	}
 	if entry := api.submitEntry("feature"); entry.Base != "base" {
 		t.Errorf("feature resubmitted onto %q, want base", entry.Base)
+	}
+}
+
+func TestStackSubmitKeepsAParentGraphiteRecordsWithNoLocalBranch(t *testing.T) {
+	f := shipGTRepo(t)
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	shipGTStack(t, f, "base", "mid")
+	api.prs["base"], api.prs["mid"], api.prs["inserted"] = 7, 8, 9
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("publish the stack: %v", err)
+	}
+	other := filepath.Join(t.TempDir(), "other")
+	restackRun(t, f, filepath.Dir(other), "git", "clone", "-q", "--branch", "base", f.RemoteDir, other)
+	restackRun(t, f, other, "git", "config", "user.email", "o@o.o")
+	restackRun(t, f, other, "git", "config", "user.name", "o")
+	restackRun(t, f, other, "git", "switch", "-qc", "inserted")
+	restackWrite(t, filepath.Join(other, "inserted.txt"), "inserted\n")
+	restackRun(t, f, other, "git", "add", "inserted.txt")
+	restackRun(t, f, other, "git", "commit", "-qm", "inserted")
+	restackRun(t, f, other, "git", "switch", "-qc", "mid", "origin/mid")
+	restackRun(t, f, other, "git", "rebase", "-q", "--onto", "inserted", "base", "mid")
+	restackRun(t, f, other, "git", "push", "-q", "origin", "inserted")
+	restackRun(t, f, other, "git", "push", "-qf", "origin", "mid")
+	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
+	mustRun(t, f.Env(), f.Dir, "git", "reset", "-q", "--hard", "origin/mid")
+	api.recorded["mid"] = "inserted"
+	stubStackPRs(t, f, map[string]*stackPR{
+		"base":     {Number: 7, Title: "base", State: "OPEN", Base: "main"},
+		"inserted": {Number: 9, Title: "inserted", State: "OPEN", Base: "base"},
+		"mid":      {Number: 8, Title: "mid", State: "OPEN", Base: "inserted"},
+	})
+	mid := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "mid")
+	posted := len(api.submitHeads())
+	shipResetLog(t, f)
+
+	_, errOut, err := runStackCmd(t, f, "submit")
+	if err != nil {
+		t.Fatalf("stack submit = %v (stderr=%q)", err, errOut)
+	}
+	if got := thinGTParent(t, f, f.Dir, "mid"); got != "inserted" {
+		t.Errorf("mid's gt parent = %q, want inserted, the base Graphite records for #8", got)
+	}
+	if got := thinGTParent(t, f, f.Dir, "inserted"); got != "base" {
+		t.Errorf("inserted's gt parent = %q, want base, the base of its own #9", got)
+	}
+	for _, inv := range shipGTInvocations(t, f) {
+		if slices.Contains(inv, "PATCH") {
+			t.Errorf("retargeted a pull request through GitHub: %v", inv)
+		}
+	}
+	api.mu.Lock()
+	for _, submit := range api.submits[posted:] {
+		if submit.entry.Head == "mid" && submit.entry.Base != "inserted" {
+			t.Errorf("mid submitted onto %q, want inserted", submit.entry.Base)
+		}
+	}
+	api.mu.Unlock()
+	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "mid"); got != mid {
+		t.Errorf("origin mid = %s, want %s, already on inserted, left alone", got, mid)
+	}
+	if want := "fetched inserted and kept it as mid's parent — Graphite stacks #8 on it"; !strings.Contains(errOut, want) {
+		t.Errorf("stderr = %q, want %q", errOut, want)
 	}
 }
