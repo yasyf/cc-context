@@ -42,6 +42,7 @@ const (
 	// GraphQL poll failed.
 	SourceREST = "REST"
 
+	readBudget       = 30 * time.Second
 	leaseTTL         = 15 * time.Minute
 	keepFor          = 24 * time.Hour
 	pushLag          = 10 * time.Minute
@@ -206,10 +207,11 @@ func (e *MissingError) Error() string {
 
 // Store is one repository's shared view on disk and the source that polls it.
 type Store struct {
-	dir   string
-	src   *GitHub
-	now   func() time.Time
-	sleep func(context.Context, time.Duration) error
+	dir    string
+	src    *GitHub
+	now    func() time.Time
+	sleep  func(context.Context, time.Duration) error
+	budget time.Duration
 }
 
 // DefaultRoot is the machine-wide directory every Store lives under. It
@@ -228,7 +230,7 @@ func Open(root string, src *GitHub) (*Store, error) {
 	if err := os.MkdirAll(filepath.Join(dir, leaseDir), 0o750); err != nil {
 		return nil, fmt.Errorf("prstate: create %s: %w", dir, err)
 	}
-	return &Store{dir: dir, src: src, now: func() time.Time { return time.Now().UTC() }, sleep: sleep}, nil
+	return &Store{dir: dir, src: src, now: func() time.Time { return time.Now().UTC() }, sleep: sleep, budget: readBudget}, nil
 }
 
 // Read returns the shared view with everything want names polled at most
@@ -240,10 +242,10 @@ func Open(root string, src *GitHub) (*Store, error) {
 // their last push fetches just those at once, leaving the shared poll's
 // schedule alone. Otherwise, inside MinInterval of the last poll a read sleeps,
 // so concurrent readers share the next poll, and a poll claimed after the read
-// began answers it however long that poll takes. A read whose poll failed, or
-// that finds the last poll failed, reads what it wants through REST instead.
-// No read holds a lock across a request, and a read of fresh records takes
-// none.
+// began answers it. A read whose poll failed, that finds the last poll failed,
+// or that no poll answers within 30 seconds reads what it wants through REST
+// instead. No read holds a lock across a request, and a read of fresh records
+// takes none.
 func (s *Store) Read(ctx context.Context, want Want) (State, error) {
 	return s.readFor(ctx, want, true)
 }
@@ -260,15 +262,29 @@ func (s *Store) readFor(ctx context.Context, want Want, patient bool) (State, er
 	if err := s.renew(want, asked); err != nil {
 		return State{}, err
 	}
+	polled, cancel := context.WithTimeout(ctx, s.budget)
+	defer cancel()
 	for waited := false; ; waited = true {
-		st, wait, err := s.read(ctx, want, asked, waited)
+		st, wait, err := s.read(polled, want, asked, waited)
+		if err == nil && wait > 0 && (patient || !st.Covers(want)) {
+			err = s.sleep(polled, wait)
+		}
+		if err != nil && polled.Err() != nil && ctx.Err() == nil {
+			return s.overBudget(ctx, want, asked, err)
+		}
 		if err != nil || wait <= 0 || !patient && st.Covers(want) {
 			return st, err
 		}
-		if err := s.sleep(ctx, wait); err != nil {
-			return st, err
-		}
 	}
+}
+
+func (s *Store) overBudget(ctx context.Context, want Want, asked time.Time, cause error) (State, error) {
+	st, err := s.load()
+	if err != nil {
+		return st, err
+	}
+	st, _, err = s.degrade(ctx, st, want, asked, s.now(), fmt.Errorf("no poll answered within %s: %w", s.budget, cause))
+	return st, err
 }
 
 // Pushed records the head this machine just pushed to each pull request, so
