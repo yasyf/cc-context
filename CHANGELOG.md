@@ -29,6 +29,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs ship --no-push` leaves published parents where they are.** The
+  in-place restack after a commit-only ship rewrote every downstack branch gt
+  read as off its parent. From a new stacked branch on monorepo that was 12
+  published branches, and it rewrote their parent revisions in
+  `.graphite_metadata`; the lane restored the refs by hand (cci #76726). A
+  parent with a remote-tracking branch is now held and named as left off its
+  parent, and `--dry-run` says the same. Unpublished parents and the shipped
+  branch restack as before, and a pushing ship is unchanged.
+
 - **`--drop-commits` publishes a head that sits behind its published head.**
   A branch whose top commits were reset away has a local head that is an
   ancestor of the head it published. The stack run took the published head

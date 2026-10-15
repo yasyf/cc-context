@@ -7799,6 +7799,38 @@ func TestShipGitAmendRefusesAForeignHeadSplicedIntoTheReflog(t *testing.T) {
 	}
 }
 
+// TestShipGTNoPushLeavesAPublishedParentWhereItStands is the adopted stack's
+// --no-push ship: a published parent sat off its own parent, and the restack
+// that followed the commit rewrote it and its parent revision locally though
+// the ship pushed nothing.
+func TestShipGTNoPushLeavesAPublishedParentWhereItStands(t *testing.T) {
+	f := shipGTRepo(t, vcstest.GTStack("base", "mid", "feature"))
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "mid")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "base")
+	writeShipFile(t, f.Dir, "base.txt", "amended\n")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qa", "--amend", "--no-edit")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "feature")
+	heads := func() []string {
+		return []string{
+			gitAt(t, f.Env(), f.Dir, "rev-parse", "base"),
+			gitAt(t, f.Env(), f.Dir, "rev-parse", "mid"),
+		}
+	}
+	before := heads()
+	shipGTReady(t, f)
+
+	got, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push")
+	if err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	if after := heads(); !slices.Equal(after, before) {
+		t.Errorf("base and mid = %v, want them left at %v: both are published and the ship pushed nothing", after, before)
+	}
+	if want := "left mid (" + gtHeldPublished + ") off its parent"; !strings.Contains(got, want) {
+		t.Errorf("summary = %q, want it to name %q", got, want)
+	}
+}
+
 // TestShipGTNoPushRestacksOntoTheFetchedTrunk is monorepo-consumer-2's
 // --no-push ship: base was restacked onto a trunk this clone's origin/main has
 // not fetched, so replaying against the stale ref moved base back onto it as a

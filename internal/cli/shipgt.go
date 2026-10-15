@@ -592,6 +592,9 @@ func gtRestack(ctx context.Context, l lane, suffix, branch string, c *gtCache) (
 	if err != nil {
 		return "", err
 	}
+	if state, err = gtHoldPublished(ctx, l.dir(), state, chain, branch); err != nil {
+		return "", err
+	}
 	result, err := gtRestackChain(ctx, "ship", l.checkout, l.dir(), commonDir, state, gtBottomUp(chain), false)
 	c.forget()
 	if err != nil {
@@ -610,7 +613,7 @@ func gtRestack(ctx context.Context, l lane, suffix, branch string, c *gtCache) (
 		if !state[b].NeedsRestack {
 			continue
 		}
-		if held := result.held[b]; strings.HasPrefix(held, gtHeldElsewhere) {
+		if held := result.held[b]; strings.HasPrefix(held, gtHeldElsewhere) || held == gtHeldPublished {
 			left = append(left, b+" ("+held+")")
 			continue
 		}
