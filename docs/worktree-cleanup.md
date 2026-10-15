@@ -74,8 +74,10 @@ before any preparation or Git work. The error names `ccx vcs cleanup resume`.
 A `worktree rm` during a pause runs the main-working-copy, trunk, lock,
 submodule, nesting, volume, and dirty-tree refusals, and skips the live-process
 and watcher checks. It then records a `pending` job and moves nothing.
-`cleanup status` lists the job as `pending`, and `worktree rm --wait` waits for
-the resume. On `resume`, the daemon runs each pending job's whole preflight
+`cleanup status` lists the job as `pending`, and the receipt reads
+`queue paused until ccx vcs cleanup resume`. `worktree rm --wait` and
+`cleanup wait` fail at once while the queue is paused, naming
+`ccx vcs cleanup resume`, instead of waiting for a resume nobody may run. On `resume`, the daemon runs each pending job's whole preflight
 again in queue order. It blocks any job that preflight refuses or whose tree
 changed, and removes the rest at the queue's pace.
 

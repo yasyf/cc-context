@@ -173,8 +173,9 @@ every job nobody awaits, at the pace its governor allows;
 "ccx vcs cleanup status" reports the queue. While "ccx vcs cleanup pause" holds
 the queue, rm runs only the checks that look for no live process, then queues
 the removal pending and moves nothing: "ccx vcs cleanup resume" runs the whole
-preflight again and removes the tree at the queue's pace, and --wait waits for
-that resume.
+preflight again and removes the tree at the queue's pace. --wait fails at once
+while the queue is paused, whether rm queued the removal pending or the pause
+came after it.
 --dry-run runs the daemon's whole preflight in process, so it refuses whatever
 rm would.
 
@@ -1151,11 +1152,7 @@ func reportGitWorktreeRemoval(ctx context.Context, cmd *cobra.Command, name, sha
 	}
 	held := receipt.State != cleanup.StateBlocked && cleanup.Phase(receipt.State).Logical()
 	if held {
-		resume := "until ccx vcs cleanup resume"
-		if wait {
-			resume = "waiting for ccx vcs cleanup resume"
-		}
-		cmd.Println(strings.Join([]string{"queued " + name, shape, path, string(receipt.State) + " " + receipt.JobID, resume}, shipSep))
+		cmd.Println(strings.Join([]string{"queued " + name, shape, path, string(receipt.State) + " " + receipt.JobID, "queue paused until ccx vcs cleanup resume"}, shipSep))
 	}
 	if !wait {
 		if !held {

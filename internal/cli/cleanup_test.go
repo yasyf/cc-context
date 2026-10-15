@@ -364,7 +364,7 @@ func TestCleanupWorktreeRmQueuesPendingWhilePaused(t *testing.T) {
 	}
 	id := jobs[0]
 	queued := "queued feat · git worktree · " + path + " · pending " + id + " · "
-	if want := queued + "until ccx vcs cleanup resume\n"; out != want {
+	if want := queued + "queue paused until ccx vcs cleanup resume\n"; out != want {
 		t.Errorf("rm while paused = %q, want %q", out, want)
 	}
 	if job := cleanupJob(t, f, h, id); job.Phase != cleanup.PhasePending || job.Blocked != nil {
@@ -374,7 +374,7 @@ func TestCleanupWorktreeRmQueuesPendingWhilePaused(t *testing.T) {
 	if refs := recoveryRefs(t, f); refs != "" {
 		t.Errorf("recovery refs = %q, want none", refs)
 	}
-	if out, err := runWorktreeCmd(t, f, "rm", "feat"); err != nil || out != queued+"until ccx vcs cleanup resume\n" {
+	if out, err := runWorktreeCmd(t, f, "rm", "feat"); err != nil || out != queued+"queue paused until ccx vcs cleanup resume\n" {
 		t.Errorf("a repeated rm while paused = %q, %v; want the same pending job", out, err)
 	}
 	if got := journaledJobs(t, h); !slices.Equal(got, jobs) {
@@ -384,26 +384,21 @@ func TestCleanupWorktreeRmQueuesPendingWhilePaused(t *testing.T) {
 		t.Errorf("status requests = %+v, want none without --wait", svc.queries)
 	}
 
-	svc.handoff = func(cleanup.Receipt) cleanup.Service {
-		if err := h.engine.Resume(f.Context()); err != nil {
-			t.Fatalf("resume: %v", err)
-		}
-		return h.engine
-	}
 	out, err = runWorktreeCmd(t, f, "rm", "feat", "--wait")
-	if err != nil {
-		t.Fatalf("rm --wait across the resume: %v", err)
+	want := "worktree rm: queued " + path + ", pending " + id + "; wait: job " + id + " rests pending: " + errCleanupPaused.Error()
+	if !errors.Is(err, errCleanupPaused) || err.Error() != want {
+		t.Errorf("rm --wait while paused = %v, want %q at once", err, want)
 	}
-	if want := queued + "waiting for ccx vcs cleanup resume\nremoved feat · git worktree · " + path + " · deletion queued " + id + " · deleted\n"; out != want {
-		t.Errorf("rm --wait across the resume = %q, want %q", out, want)
+	if out != queued+"queue paused until ccx vcs cleanup resume\n" {
+		t.Errorf("rm --wait while paused printed %q, want only the queued line", out)
 	}
-	if done := cleanupJob(t, f, h, id); done.Phase != cleanup.PhaseDone {
-		t.Errorf("job %s = phase %s, want done", id, done.Phase)
+	if want := []cleanup.Query{{JobID: id, Await: true}}; !slices.Equal(svc.queries, want) {
+		t.Errorf("status requests = %+v, want the one poll that saw the pause", svc.queries)
 	}
-	assertGone(t, path)
-	if worktreeRegistered(t, f.Env(), f.Dir, path) {
-		t.Errorf("git still registers %s, want it unregistered", path)
+	if job := cleanupJob(t, f, h, id); job.Phase != cleanup.PhasePending {
+		t.Errorf("job %s = phase %s, want still pending", id, job.Phase)
 	}
+	assertIntact(t, f, path)
 }
 
 func TestCleanupWorktreeRmWait(t *testing.T) {
@@ -1494,6 +1489,7 @@ func TestCleanupAdopt(t *testing.T) {
 type statusReply struct {
 	job     cleanup.Job
 	damaged []cleanup.Damaged
+	paused  bool
 	err     error
 }
 
@@ -1517,7 +1513,7 @@ func (s *scriptedStatus) Status(ctx context.Context, q cleanup.Query) (cleanup.R
 	if reply.err != nil {
 		return cleanup.Report{}, reply.err
 	}
-	return cleanup.Report{Jobs: []cleanup.Job{reply.job}, Damaged: reply.damaged}, nil
+	return cleanup.Report{Paused: reply.paused, Jobs: []cleanup.Job{reply.job}, Damaged: reply.damaged}, nil
 }
 
 func (s *scriptedStatus) Wait(context.Context, string) (cleanup.Job, error) {
@@ -1697,7 +1693,9 @@ func (s *handoffStatus) Status(ctx context.Context, q cleanup.Query) (cleanup.Re
 		s.Service = s.handoff()
 	}
 	s.queries = append(s.queries, q)
-	return s.Service.Status(ctx, q)
+	report, err := s.Service.Status(ctx, q)
+	report.Paused = false
+	return report, err
 }
 
 func TestCleanupWaitNeedsTheJobSeenDone(t *testing.T) {
@@ -2046,6 +2044,14 @@ func TestCleanupPollsOutlastADaemonReplacement(t *testing.T) {
 		job, err := waitCleanupJob(context.Background(), svc, id, cleanup.PhaseUnregistered)
 		if err != nil || job.Phase != cleanup.PhaseDone {
 			t.Errorf("waitCleanupJob() = %+v, %v; want the done job", job, err)
+		}
+	})
+
+	t.Run("a paused queue ends the wait at once", func(t *testing.T) {
+		svc := &scriptedStatus{t: t, replies: []statusReply{{job: unregistered, paused: true}}}
+		job, err := waitCleanupJob(context.Background(), svc, id, cleanup.PhaseUnregistered)
+		if !errors.Is(err, errCleanupPaused) || job.Phase != cleanup.PhaseUnregistered || len(svc.queries) != 1 {
+			t.Errorf("waitCleanupJob() = %+v, %v after %d polls; want %v after 1", job, err, len(svc.queries), errCleanupPaused)
 		}
 	})
 
