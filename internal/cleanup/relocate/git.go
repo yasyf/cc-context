@@ -273,6 +273,9 @@ func (r *Relocator) dirt(ctx context.Context, git, tree string) (string, error) 
 			status, name = head[:2], head[3:]
 		}
 		original = bytes.ContainsAny(status, "RC")
+		if dropping(status, name) {
+			return
+		}
 		total++
 		if len(shown) < dirtyShown {
 			shown = append(shown, string(name))
@@ -286,4 +289,8 @@ func (r *Relocator) dirt(ctx context.Context, git, tree string) (string, error) 
 		detail += fmt.Sprintf(" and %d more", total-len(shown))
 	}
 	return detail, nil
+}
+
+func dropping(status, name []byte) bool {
+	return string(status) == "??" && (bytes.HasPrefix(name, []byte(".watchman-cookie-")) || string(name) == ".git-pr-watch/")
 }

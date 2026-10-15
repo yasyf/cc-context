@@ -29,6 +29,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs worktree rm` no longer refuses a tree over tool droppings.**
+  Untracked watchman cookie files at the tree's root and a pr-watcher state
+  directory `.git-pr-watch/` no longer count as uncommitted changes. A clean,
+  pushed worktree that watchman or a PR watch touched is now queued for
+  removal instead of refused as dirty. A tracked or staged file with either
+  name still counts.
+
 - **`ccx vcs pr status` and `ccx vcs pr state` answer through REST when
   GitHub's GraphQL API fails.** On Oct 15, GraphQL answered 502 and 504 for
   about 30 minutes. Both commands hung for over four minutes on every pull

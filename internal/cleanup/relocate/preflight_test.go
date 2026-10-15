@@ -465,6 +465,34 @@ func TestDirtSkipsTheOriginOfARename(t *testing.T) {
 	}
 }
 
+func TestDirtIgnoresToolDroppings(t *testing.T) {
+	f := newFixture(t)
+	f.write(filepath.Join(f.worktree, ".watchman-cookie-host.local-1417-100"), "")
+	f.write(filepath.Join(f.worktree, ".watchman-cookie-host.local-1417-101"), "")
+	if err := os.MkdirAll(filepath.Join(f.worktree, ".git-pr-watch", "pr"), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	f.write(filepath.Join(f.worktree, ".git-pr-watch", "pr", "32890.json"), "{}\n")
+
+	dirt, err := f.relocator.dirt(context.Background(), f.git, f.worktree)
+	if err != nil {
+		t.Fatalf("dirt() error = %v", err)
+	}
+	if dirt != "" {
+		t.Errorf("dirt() = %q, want clean", dirt)
+	}
+
+	f.write(filepath.Join(f.worktree, "scratch.txt"), "scratch\n")
+	f.run(f.worktree, "add", "-f", ".watchman-cookie-host.local-1417-100")
+	dirt, err = f.relocator.dirt(context.Background(), f.git, f.worktree)
+	if err != nil {
+		t.Fatalf("dirt() error = %v", err)
+	}
+	if want := "uncommitted changes: .watchman-cookie-host.local-1417-100, scratch.txt"; dirt != want {
+		t.Errorf("dirt() = %q, want %q", dirt, want)
+	}
+}
+
 func TestIntendRefusesAnotherRepository(t *testing.T) {
 	f := newFixture(t)
 	f.run(f.root, "init", "-q", "-b", "main", "elsewhere")
