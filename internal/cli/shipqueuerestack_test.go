@@ -136,3 +136,38 @@ func TestStackSubmitMovesAParkedPullRequestGraphiteNoLongerRestacks(t *testing.T
 		t.Errorf("feature last submitted onto %q, want main", entry.Base)
 	}
 }
+
+func TestStackSubmitRefusesWhileGraphiteRestacksAnUnparkedMember(t *testing.T) {
+	f := shipGTRepo(t)
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	shipGTStack(t, f, "base", "feature")
+	api.prs["base"], api.prs["feature"] = 100, 101
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("stack submit: %v", err)
+	}
+	stubOpenPRs(t, f, nil, "base", "feature")
+	api.mu.Lock()
+	api.mergeability[101] = gtapi.MergeabilityRebasing
+	api.mu.Unlock()
+	stackCommit(t, f, "more.txt")
+	remoteFeature := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature")
+	posted := len(api.submitHeads())
+	shipResetLog(t, f)
+
+	_, _, err := runStackCmd(t, f, "submit")
+	if err == nil {
+		t.Fatal("stack submit pushed feature while Graphite restacks it")
+	}
+	for _, want := range []string{"#101 (feature)", "REBASING", "races that restack"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal = %q, want it to name %q", err, want)
+		}
+	}
+	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature"); got != remoteFeature {
+		t.Errorf("origin feature = %s, want it left at %s", got, remoteFeature)
+	}
+	if heads := api.submitHeads()[posted:]; len(heads) > 0 {
+		t.Errorf("submit posts = %v, want none", heads)
+	}
+}

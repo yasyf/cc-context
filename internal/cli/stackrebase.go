@@ -2562,6 +2562,17 @@ func stackQueueStates(ctx context.Context, l lane, noPush bool, byName map[strin
 	if err != nil {
 		return nil, fmt.Errorf("stack rebase: read the merge queue before pushing: %w", err)
 	}
+	var rebasing []string
+	for _, info := range infos {
+		if !info.IsBaseRefGraphiteBase && mergeability[info.PRNumber] == gtapi.MergeabilityRebasing {
+			rebasing = append(rebasing, fmt.Sprintf("#%d (%s)", info.PRNumber, info.HeadRefName))
+		}
+	}
+	if len(rebasing) > 0 {
+		slices.Sort(rebasing)
+		return nil, fmt.Errorf("stack rebase: Graphite is restacking %s after a parent landed (mergeability REBASING), and force-pushes its own restack of each one and of every pull request stacked on it; pushing now races that restack and leaves origin on a mix of both — wait until Graphite reports none of them REBASING, then re-run",
+			strings.Join(rebasing, ", "))
+	}
 	var watched []int
 	for _, info := range infos {
 		if gtapi.InMergeQueue(&info, mergeability[info.PRNumber]) || (prstate.PR{Labels: byName[info.HeadRefName].PR.Labels}).QueueLabelled() {

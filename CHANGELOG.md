@@ -29,6 +29,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs stack submit` waits out Graphite's own restack.** When a parent
+  lands, Graphite's merge queue restacks the pull requests above it and
+  force-pushes each one. A submit run in that window pushed the same branches,
+  and the two writers interleaved. On monorepo #38083 the run reported its own
+  head while origin ended on Graphite's later copy, whose diff carried both
+  parents' commits (cci #75243). A pushing run now refuses before anything
+  moves when Graphite reports any member `REBASING`. Graphite moved that pull
+  request straight to trunk, so the existing parked-branch check missed it.
+
 - **`ccx vcs stack submit` keeps a parent this clone has no branch for.** Another
   clone can insert a branch below one of the stack's, basing its pull request
   on a branch this clone never fetched. The submit then replayed it onto the
