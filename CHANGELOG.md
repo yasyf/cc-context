@@ -29,6 +29,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs pr status` and `ccx vcs pr state` answer through REST when
+  GitHub's GraphQL API fails.** On Oct 15, GraphQL answered 502 and 504 for
+  about 30 minutes. Both commands hung for over four minutes on every pull
+  request and then failed, while the REST pull endpoint answered in a second.
+  Each GraphQL chunk now has 20 seconds, Graphite's reads have 10, and a whole
+  poll has 30. When a poll fails, or a reader finds the last poll failed, the
+  reader fetches each pull request it asked for from REST: the pull request,
+  its reviews, the head's check runs and statuses, and the merge activity
+  comment. Queue state still comes from Graphite. Those records carry
+  `"source": "REST"`, and `pr status` ends their lines with `· via REST`.
+
 - **The cleanup daemon no longer copies and sorts its whole queue on every
   scheduling pass.** Picking the next job, the next physical deletion, and the
   next wake each cloned every job and sorted the copies by sequence. With 1,755

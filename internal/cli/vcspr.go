@@ -75,6 +75,7 @@ type prQueueReport struct {
 	EvictedAt   string       `json:"evicted_at,omitempty"`
 	Conflicting bool         `json:"conflicting,omitempty"`
 	Stale       *prStale     `json:"stale,omitempty"`
+	Source      string       `json:"source,omitempty"`
 }
 
 type prStatusReport struct {
@@ -204,6 +205,9 @@ shares, polled at most once per 30 seconds per repository. While GitHub
 rate-limits the machine the command waits for the next probe, up to ten
 minutes, then answers from the cache with each line marked "stale, polled
 <time>"; a pull request the cache never polled fails naming the next probe.
+When a GraphQL poll fails or runs past 20 seconds, or the last one failed, the
+command reads each pull request through GitHub's REST API and Graphite instead,
+and marks its line "via REST".
 The queue closes what it lands, so a landed pull request reads CLOSED with a
 null mergedAt on GitHub; the squash is what settles it.
 
@@ -240,6 +244,9 @@ and of each open pull request on a branch under a --lane-prefix, as one JSON
 object. Records are at most 30 seconds old; a read of anything older polls
 GitHub once for every pull request any process on the machine watches in the
 repository, the same poll ccx vcs pr watch and ccx vcs pr status share.
+When that poll fails or runs past 20 seconds, or the last one failed, each
+record is read through GitHub's REST API and Graphite instead and carries
+"source": "REST".
 
 While GitHub rate-limits the machine the command sits it out for as long as
 --wait allows, then serves the cached records with a top-level "stale" object
@@ -362,6 +369,7 @@ func collectPRQueue(ctx context.Context, repo string, numbers []int, warn io.Wri
 		}
 		r.Conflicting = r.Queue == prQueueEvicted && pr.MergeStateStatus == "DIRTY"
 		r.Stale = staleAt(limited, pr.PolledAt)
+		r.Source = pr.Source
 		report := prStatusReport{prQueueReport: r, Approval: prApprovalOf(pr), Mergeability: pr.Mergeability, Downstack: info.DependentPRNumber}
 		if r.Queue != prQueueLanded {
 			ci := prCIOf(pr.Rollup)
@@ -603,6 +611,9 @@ func renderPRQueue(reports []prStatusReport) string {
 		b.WriteString(shipSep + prApprovalValue(r.Approval) + shipSep + r.Verdict)
 		if r.Stale != nil {
 			b.WriteString(" · " + r.Stale.String())
+		}
+		if r.Source != "" {
+			b.WriteString(" · via " + r.Source)
 		}
 		b.WriteString("\n")
 	}

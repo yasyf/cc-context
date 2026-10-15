@@ -36,11 +36,26 @@ type fakeGitHub struct {
 	replies []reply
 	queries []string
 	vars    []map[string]any
+	rest    map[string]reply
+	reads   []string
 }
 
 func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if r.Method == http.MethodGet {
+		f.reads = append(f.reads, r.URL.Path)
+		next, ok := f.rest[r.URL.Path]
+		if !ok {
+			f.t.Errorf("unexpected REST read %s", r.URL.Path)
+			next.status = http.StatusNotFound
+		}
+		if next.status != 0 {
+			w.WriteHeader(next.status)
+		}
+		_, _ = io.WriteString(w, next.body)
+		return
+	}
 	var req struct {
 		Query     string         `json:"query"`
 		Variables map[string]any `json:"variables"`
@@ -319,7 +334,8 @@ func TestAReaderThatWaitedReturnsTheFailureOfThePollItWaitedFor(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := &clock{now: epoch}
-	first, _ := newStore(t, dir, c, nil, ok(t, "poll-190.json"), reply{status: http.StatusBadGateway})
+	first, firstGH := newStore(t, dir, c, nil, ok(t, "poll-190.json"), reply{status: http.StatusBadGateway})
+	firstGH.rest = map[string]reply{"/repos/yasyf/cc-context/pulls/190": {status: http.StatusServiceUnavailable}}
 	second, secondGH := newStore(t, dir, c, nil)
 	ctx, cancel := context.WithTimeout(testCtx(t), 10*time.Second)
 	defer cancel()
@@ -557,20 +573,118 @@ func TestAProbeThatFindsTheQuotaDrainedWaitsForItsReset(t *testing.T) {
 	}
 }
 
-func TestAFailedPollStillSpacesTheNextOne(t *testing.T) {
+const restHead = "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3"
+
+func rest190() map[string]reply {
+	return map[string]reply{
+		"/repos/yasyf/cc-context/pulls/190": {body: `{"number":190,"state":"open","merged":false,"title":"title of #190","created_at":"2026-09-29T20:00:00Z",` +
+			`"draft":false,"changed_files":3,"mergeable":false,"mergeable_state":"dirty","merge_commit_sha":"d4d4","user":{"login":"yasyf"},` +
+			`"base":{"ref":"main"},"head":{"ref":"yasyf/gh-budget/pr-190","sha":"` + restHead + `"},"labels":[{"name":"merge"}]}`},
+		"/repos/yasyf/cc-context/pulls/190/reviews": {body: `[{"state":"CHANGES_REQUESTED","user":{"login":"ann"}},{"state":"COMMENTED","user":{"login":"bob"}},` +
+			`{"state":"APPROVED","user":{"login":"bob"}},{"state":"APPROVED","user":{"login":"ann"}},{"state":"APPROVED","user":{"login":"cat"}},{"state":"DISMISSED","user":{"login":"cat"}}]`},
+		"/repos/yasyf/cc-context/commits/" + restHead + "/check-runs": {body: `{"total_count":2,"check_runs":[{"name":"test","status":"completed","conclusion":"success"},` +
+			`{"name":"lint","status":"in_progress","conclusion":null}]}`},
+		"/repos/yasyf/cc-context/commits/" + restHead + "/status": {body: `{"state":"success","total_count":1,"statuses":[{"context":"buildkite/test","state":"success"}]}`},
+		"/repos/yasyf/cc-context/issues/190/comments":             {body: `[{"body":"looks good"},{"body":"### Merge activity\n\n* queued"}]`},
+	}
+}
+
+func TestAFailedPollReadsThroughRESTAndSpacesTheNextPoll(t *testing.T) {
 	t.Parallel()
 	c := &clock{now: epoch}
 	store, gh := newStore(t, t.TempDir(), c, nil, reply{status: http.StatusBadGateway}, ok(t, "poll-190.json"))
+	gh.rest = rest190()
 
-	if _, err := store.Read(testCtx(t), Want{PRs: []int{190}}); err == nil {
-		t.Fatal("read through a 502 succeeded")
+	st, err := store.Read(testCtx(t), Want{PRs: []int{190}})
+	if err != nil {
+		t.Fatalf("read through a 502: %v", err)
 	}
+	pr := st.PRs[190]
+	if pr.Source != SourceREST || pr.State != "OPEN" || pr.HeadRefOid != restHead || pr.Mergeable != "CONFLICTING" || pr.MergeStateStatus != "DIRTY" ||
+		pr.MergeCommit != "" || pr.Author != "yasyf" || !pr.QueueLabelled() || !strings.HasPrefix(pr.Activity, ActivityHeading) {
+		t.Errorf("#190 = %+v, want the REST record of the open pull request", pr)
+	}
+	if fmt.Sprint(pr.Reviews) != "[{ann APPROVED} {bob APPROVED}]" {
+		t.Errorf("reviews = %v, want each reviewer's latest opinion with the dismissed one dropped", pr.Reviews)
+	}
+	if pr.Status != "SUCCESS" || pr.Rollup == nil || pr.Rollup.State != "PENDING" || len(pr.Rollup.Contexts.Nodes) != 3 ||
+		pr.Rollup.Contexts.Nodes[1] != (Context{Typename: "CheckRun", Name: "lint", Status: "IN_PROGRESS"}) {
+		t.Errorf("status %q, rollup %+v; want the check runs and statuses rolled up pending", pr.Status, pr.Rollup)
+	}
+	if st.Failure == nil || gh.requests() != 1 {
+		t.Errorf("failure %v after %d polls, want the failed poll recorded", st.Failure, gh.requests())
+	}
+
 	c.now = epoch.Add(5 * time.Second)
-	if _, err := store.Read(testCtx(t), Want{PRs: []int{190}}); err != nil {
+	if _, err := store.Read(testCtx(t), Want{PRs: []int{190}}); err != nil || gh.requests() != 1 || len(gh.reads) != 5 {
+		t.Fatalf("read inside the interval = %v after %d polls and %d REST reads, want the REST record served", err, gh.requests(), len(gh.reads))
+	}
+	c.now = epoch.Add(MinInterval)
+	st, err = store.Read(testCtx(t), Want{PRs: []int{190}})
+	if err != nil || gh.requests() != 2 || st.PRs[190].Source != "" || st.Failure != nil {
+		t.Errorf("read after the interval = %v after %d polls, #190 from %q; want GraphQL polled again", err, gh.requests(), st.PRs[190].Source)
+	}
+}
+
+func TestAReaderFindingAFailedPollReadsThroughRESTWithoutPolling(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	seed, err := Open(dir, &GitHub{owner: "yasyf", name: "cc-context"})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if len(c.slept) != 1 || c.slept[0] != 25*time.Second || gh.requests() != 2 {
-		t.Errorf("slept %v over %d requests, want the retry held to 30s after the failed attempt", c.slept, gh.requests())
+	failed := State{
+		AttemptedAt: epoch,
+		PolledAt:    epoch.Add(-MinInterval),
+		Failure:     &Failure{At: epoch, Reason: "ghapi: POST /graphql: 504"},
+		PRs:         map[int]PR{190: {Number: 190, State: "OPEN", PolledAt: epoch.Add(-MinInterval)}},
+	}
+	if err := seed.save(failed); err != nil {
+		t.Fatal(err)
+	}
+	c := &clock{now: epoch.Add(5 * time.Second)}
+	store, gh := newStore(t, dir, c, nil)
+	gh.rest = rest190()
+
+	st, err := store.Read(testCtx(t), Want{PRs: []int{190}})
+	if err != nil || gh.requests() != 0 || len(c.slept) != 0 || st.PRs[190].Source != SourceREST {
+		t.Errorf("read = %v after %d polls, slept %v, #190 from %q; want REST at once while the failure stands", err, gh.requests(), c.slept, st.PRs[190].Source)
+	}
+}
+
+func TestRESTReviewDecisionCarriesTheLastDecisionOfTheSameHead(t *testing.T) {
+	t.Parallel()
+	required := PR{HeadRefOid: restHead, ReviewDecision: "REVIEW_REQUIRED"}
+	tests := []struct {
+		name    string
+		reviews []Review
+		last    PR
+		want    string
+	}{
+		{"same head", []Review{{Author: "ann", State: "APPROVED"}}, required, "REVIEW_REQUIRED"},
+		{"new head", nil, PR{HeadRefOid: "old", ReviewDecision: "APPROVED"}, ""},
+		{"changes requested now", []Review{{Author: "ann", State: "CHANGES_REQUESTED"}}, required, "CHANGES_REQUESTED"},
+		{"changes requested before", []Review{{Author: "ann", State: "APPROVED"}}, PR{HeadRefOid: restHead, ReviewDecision: "CHANGES_REQUESTED"}, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := restReviewDecision(tt.reviews, tt.last, restHead); got != tt.want {
+				t.Errorf("decision = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAFailedRESTFallbackNamesBothFailures(t *testing.T) {
+	t.Parallel()
+	c := &clock{now: epoch}
+	store, gh := newStore(t, t.TempDir(), c, nil, reply{status: http.StatusBadGateway})
+	gh.rest = map[string]reply{"/repos/yasyf/cc-context/pulls/190": {status: http.StatusServiceUnavailable}}
+
+	_, err := store.Read(testCtx(t), Want{PRs: []int{190}})
+	if err == nil || !strings.Contains(err.Error(), "502") || !strings.Contains(err.Error(), "the REST fallback failed too") || !strings.Contains(err.Error(), "503") {
+		t.Errorf("read = %v, want the poll's failure and the fallback's", err)
 	}
 }
 
