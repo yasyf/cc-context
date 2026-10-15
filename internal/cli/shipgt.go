@@ -567,6 +567,7 @@ type gtSubmit struct {
 	otherLanes  []string
 	shipTip     string
 	prepared    map[string]stackShipMeta
+	noPR        bool
 }
 
 func (s gtSubmit) updateDraft(tip string) func(branch string) *bool {
@@ -1785,7 +1786,7 @@ func shipPushGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, meta ma
 	if err != nil {
 		return "", nil, nil, err
 	}
-	sub := gtSubmit{prefix: "ship", suffix: suffix, draft: &o.draft, draftAll: o.draft || o.publish, noVerify: o.noVerify, shipTip: branch, prepared: prepared}
+	sub := gtSubmit{prefix: "ship", suffix: suffix, draft: &o.draft, draftAll: o.draft || o.publish, noVerify: o.noVerify, shipTip: branch, prepared: prepared, noPR: o.noPR}
 	if c.restack != nil {
 		sub.publication = c.restack
 		sub.trunkHead = c.restack.Pin
@@ -1808,6 +1809,9 @@ func shipPushGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, meta ma
 	_, entries, err := gtSubmitStack(ctx, l, errW, sub, commonDir, state, tr, members, branch)
 	if err != nil {
 		return "", nil, nil, err
+	}
+	if o.noPR {
+		return "pushed " + branch + gtStackSegment(chain) + shipSep + "not submitted (--no-pr)", nil, nil, nil
 	}
 	submitted, bodyless, stack = gtPRSegment(branch, chain, meta, entries)
 	var above []string
@@ -2125,6 +2129,9 @@ func gtServedOnGitHub(ctx context.Context, dir render.Dir, nwo string, pr gtapi.
 }
 
 func gtHoldUnopened(submit []gtSubmitBranch, s gtSubmit) (posted []gtSubmitBranch, held []string) {
+	if s.noPR {
+		return nil, nil
+	}
 	for _, b := range submit {
 		if b.pr == 0 && b.name != s.shipTip && !s.prepared[b.name].complete() {
 			held = append(held, b.name)
@@ -3041,10 +3048,7 @@ func gtAnnounceContained(errW io.Writer, prefix string, tr vcs.Trunk, contained 
 }
 
 func gtPRSegment(branch string, chain []string, meta map[string]prMeta, entries map[string]stackEntry) (submitted string, bodyless []string, stack []stackEntry) {
-	stackSeg := ""
-	if len(chain) > 1 {
-		stackSeg = fmt.Sprintf(" (stack of %d: %s)", len(chain), strings.Join(gtStackNames(chain), ", "))
-	}
+	stackSeg := gtStackSegment(chain)
 	submitted = "submitted " + branch + stackSeg
 	stack = gtSubmitDownstack(chain, entries)
 	for _, entry := range stack {
@@ -3059,6 +3063,13 @@ func gtPRSegment(branch string, chain []string, meta map[string]prMeta, entries 
 		}
 	}
 	return submitted, bodyless, stack
+}
+
+func gtStackSegment(chain []string) string {
+	if len(chain) < 2 {
+		return ""
+	}
+	return fmt.Sprintf(" (stack of %d: %s)", len(chain), strings.Join(gtStackNames(chain), ", "))
 }
 
 // gtSubmitDownstack lays the submitted stack's pull requests out trunk-first
