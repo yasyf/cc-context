@@ -1162,7 +1162,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 			if requested.members != nil {
 				requested.members = slices.Insert(requested.members, max(slices.Index(requested.members, child), 0), r.branch)
 			}
-			if !slices.Contains(o.include, r.branch) {
+			if !o.allLanes && !slices.Contains(o.include, r.branch) {
 				requested.pinned = append(requested.pinned, r.branch)
 			}
 		}
@@ -1817,13 +1817,7 @@ func stackFetchRecordedParents(ctx context.Context, dir render.Dir, tr vcs.Trunk
 		if _, tracked := state[base]; tracked || base == "" || base == state[name].Parents[0].Ref || strings.HasPrefix(base, "graphite-base/") {
 			continue
 		}
-		local, err := gitRefExists(ctx, dir, stackRebasePrefix, gtRestackRef(base))
-		if err != nil {
-			return nil, err
-		}
-		if !local {
-			bases[name] = base
-		}
+		bases[name] = base
 	}
 	if len(bases) == 0 {
 		return nil, nil
@@ -1851,21 +1845,43 @@ func stackFetchRecordedParents(ctx context.Context, dir render.Dir, tr vcs.Trunk
 			return nil, err
 		}
 		if !on {
-			continue
+			return nil, fmt.Errorf("stack rebase: Graphite stacks %s's pull request #%d on %s, which gt does not track here, and %s's published head does not hold %s's — name the parent with ccx vcs stack rebase --parent %s=<branch> after fetching it, then re-run",
+				child, prs[child].Number, base, child, base, child)
 		}
 		if _, tracked := state[pr.base()]; !tracked {
 			return nil, fmt.Errorf("stack rebase: Graphite stacks %s's pull request #%d on %s and %s on %s, and this clone has no branch for either — fetch each with git fetch %s refs/heads/<branch>:refs/heads/<branch>, track them bottom-up with gt track <branch> --parent <parent>, then re-run",
 				child, prs[child].Number, base, base, pr.base(), tr.Remote())
 		}
 		if !fetched[base] {
-			if _, err := render.RunCLI(ctx, dir, "git", []string{"branch", "--no-track", base, heads[base]}); err != nil {
-				return nil, fmt.Errorf("stack rebase: git branch %s %s: %w", base, shortOID(heads[base]), err)
+			if err := stackFetchRecordedBranch(ctx, dir, base, heads[base]); err != nil {
+				return nil, err
 			}
 			fetched[base] = true
 		}
 		found[child] = stackRecordedParent{branch: base, parent: pr.base(), pr: prs[child].Number}
 	}
 	return found, nil
+}
+
+func stackFetchRecordedBranch(ctx context.Context, dir render.Dir, branch, head string) error {
+	local, err := gitRefExists(ctx, dir, stackRebasePrefix, gtRestackRef(branch))
+	if err != nil {
+		return err
+	}
+	if !local {
+		if _, err := render.RunCLI(ctx, dir, "git", []string{"branch", "--no-track", branch, head}); err != nil {
+			return fmt.Errorf("stack rebase: git branch %s %s: %w", branch, shortOID(head), err)
+		}
+		return nil
+	}
+	at, err := gtRestackHead(ctx, stackRebasePrefix, dir, branch)
+	if err != nil {
+		return err
+	}
+	if at != head {
+		return fmt.Errorf("stack rebase: %s, which Graphite stacks a branch of this run on, is at %.12s here and %.12s on the remote, and gt does not track it — move it to its published head or track it with gt track %s --parent <its parent>, then re-run", branch, at, head, branch)
+	}
+	return nil
 }
 
 func stackAdoptRecordedParents(ctx context.Context, dir render.Dir, tr vcs.Trunk, state gtState, recorded map[string]stackRecordedParent) (gtState, error) {

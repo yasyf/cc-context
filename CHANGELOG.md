@@ -38,8 +38,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fetches that base, tracks it onto its own pull request's base, keeps it at
   its published head, and names it on stderr. It does so when the remote
   carries the base, its pull request is open, and the branch's published head
-  sits on it. When the base's own parent is missing here too, the run refuses
-  and names both branches.
+  sits on it. When the branch's published head does not hold the base, or the
+  base's own parent is missing here too, the run refuses and names them.
 
 - **A `--pr-body-file` can replace or retract a carried release trailer.**
   `ccx vcs ship` and `ccx vcs stack submit` carried every `Release-*` trailer
