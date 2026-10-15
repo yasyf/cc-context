@@ -245,7 +245,8 @@ and --pr-body-file give it a title and a body; any other is pushed, not
 submitted, and named with the ccx vcs ship command that opens it. No flag opens
 one without them. --pr-title and --pr-body-file take ship's <branch>=<value> form; a bare
 value names the branch checked out here. They restate those pull requests after
-the push and survive a conflict stop. Naming a branch outside the stack, or one
+the push, carrying and retracting release trailers as ccx vcs ship --help
+describes, and survive a conflict stop. Naming a branch outside the stack, or one
 the run leaves out, is refused before anything moves.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {

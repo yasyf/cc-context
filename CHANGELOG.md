@@ -29,6 +29,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A `--pr-body-file` can replace or retract a carried release trailer.**
+  `ccx vcs ship` and `ccx vcs stack submit` carried every `Release-*` trailer
+  closing a live pull request body onto the new body, so a lane that reversed
+  a `Release-Order` ended up with both directions in the body. Nothing in ccx
+  could remove the stale line, and on monorepo #37980 the lane patched the
+  body over the REST API by hand. A body file whose closing trailers name a
+  key now replaces every carried line of that key. A closing trailer of the
+  form `Release-Order: -` retracts the key, and both the marker and the live
+  lines of that key drop out of the body. Keys the body file does not name still carry,
+  and `Readers-First` now carries like a `Release-*` trailer.
+
 - **The pull-request REST fallback reads as the user when the app's quota is
   spent.** On Oct 15 `ccx vcs pr status` refused with `403 API rate limit
   exceeded for installation ID 140742353` while the gh user's token still had

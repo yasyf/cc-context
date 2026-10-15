@@ -29,7 +29,7 @@ const prBodyStdin = "-"
 const prBodyTempPrefix = "ccx-pr-body-"
 
 // prCarriedTempPrefix names the temp file a restated body carrying live
-// Release-* trailers is written to. A failed restate leaves it in place for
+// release trailers is written to. A failed restate leaves it in place for
 // the retry to name.
 const prCarriedTempPrefix = "ccx-pr-carried-"
 
@@ -522,8 +522,9 @@ func restatePR(ctx context.Context, nwo string, number int, m prMeta) (viaGraphQ
 	return true, nil
 }
 
-// withLiveReleaseTrailers is m with its body carrying the Release-* trailers
-// that close pull request number's live body. A body that needed them is
+// withLiveReleaseTrailers is m with its body carrying the release trailers
+// that close pull request number's live body and that m's body neither
+// restates nor retracts. A body that needed them is
 // written to a temp file, which cleanup removes once the restate lands.
 func withLiveReleaseTrailers(ctx context.Context, nwo string, number int, m prMeta) (carried prMeta, cleanup func(), err error) {
 	noop := func() {}
@@ -572,7 +573,25 @@ func prBodyArgv(nwo string, number int) []string {
 
 var gitTrailerRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]*:(\s|$)`)
 
+const retractedTrailerValue = "-"
+
 func carryReleaseTrailers(live, next string) string {
+	lines := bodyLines(next)
+	start := closingTrailerStart(lines)
+	declared := map[string]bool{}
+	kept := lines[:start:start]
+	for _, line := range lines[start:] {
+		key, value, _ := strings.Cut(strings.TrimSpace(line), ":")
+		if strings.TrimSpace(line) != "" {
+			declared[strings.ToLower(key)] = true
+		}
+		if !isReleaseTrailerKey(key) || strings.TrimSpace(value) != retractedTrailerValue {
+			kept = append(kept, line)
+		}
+	}
+	if len(kept) < len(lines) {
+		next = strings.TrimRight(strings.Join(kept, "\n"), " \t\r\n") + "\n"
+	}
 	present := map[string]bool{}
 	for _, line := range bodyLines(next) {
 		present[strings.TrimSpace(line)] = true
@@ -580,7 +599,7 @@ func carryReleaseTrailers(live, next string) string {
 	var carried []string
 	for _, line := range closingTrailers(live) {
 		key, _, _ := strings.Cut(line, ":")
-		if !strings.HasPrefix(strings.ToLower(key), "release-") || present[line] {
+		if !isReleaseTrailerKey(key) || declared[strings.ToLower(key)] || present[line] {
 			continue
 		}
 		carried = append(carried, line)
@@ -596,31 +615,41 @@ func carryReleaseTrailers(live, next string) string {
 	return strings.TrimRight(next, " \t\r\n") + sep + strings.Join(carried, "\n") + "\n"
 }
 
+func isReleaseTrailerKey(key string) bool {
+	key = strings.ToLower(key)
+	return strings.HasPrefix(key, "release-") || key == "readers-first"
+}
+
 func closingTrailers(body string) []string {
 	lines := bodyLines(body)
 	var trailers []string
-	end := len(lines)
+	for _, line := range lines[closingTrailerStart(lines):] {
+		if trimmed := strings.TrimSpace(line); trimmed != "" {
+			trailers = append(trailers, trimmed)
+		}
+	}
+	return trailers
+}
+
+func closingTrailerStart(lines []string) int {
+	start, end := len(lines), len(lines)
 	for {
 		for end > 0 && strings.TrimSpace(lines[end-1]) == "" {
 			end--
 		}
-		start := end
-		for start > 0 && strings.TrimSpace(lines[start-1]) != "" {
-			start--
+		paragraph := end
+		for paragraph > 0 && strings.TrimSpace(lines[paragraph-1]) != "" {
+			paragraph--
 		}
-		if start == end {
-			return trailers
+		if paragraph == end {
+			return start
 		}
-		paragraph := make([]string, 0, end-start)
-		for _, line := range lines[start:end] {
-			trimmed := strings.TrimSpace(line)
-			if !gitTrailerRE.MatchString(trimmed) {
-				return trailers
+		for _, line := range lines[paragraph:end] {
+			if !gitTrailerRE.MatchString(strings.TrimSpace(line)) {
+				return start
 			}
-			paragraph = append(paragraph, trimmed)
 		}
-		trailers = slices.Concat(paragraph, trailers)
-		end = start
+		start, end = paragraph, paragraph
 	}
 }
 
