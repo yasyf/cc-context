@@ -25,10 +25,10 @@ func linearizeBelowItsBase(t *testing.T) (*vcstest.Fixture, *gtAPIStub, map[stri
 	api := stubGTAPI(t)
 	f.Decorate(api.ctx)
 	shipGTStack(t, f, "s15b", "s14b", "s13b", "i11b")
+	api.prs["s15b"], api.prs["s14b"], api.prs["s13b"], api.prs["i11b"] = 28, 29, 30, 31
 	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
 		t.Fatalf("stack submit: %v", err)
 	}
-	api.prs["s15b"], api.prs["s14b"], api.prs["s13b"], api.prs["i11b"] = 28, 29, 30, 31
 	stubOpenPRs(t, f, nil, "s15b", "s14b", "s13b", "i11b")
 	before := linearizeRemoteHeads(t, f, "s15b", "s14b", "s13b", "i11b")
 	shipResetLog(t, f)
@@ -37,11 +37,17 @@ func linearizeBelowItsBase(t *testing.T) (*vcstest.Fixture, *gtAPIStub, map[stri
 
 func TestStackRebaseLinearizeRetargetsAPullRequestThePushWouldMerge(t *testing.T) {
 	f, api, before := linearizeBelowItsBase(t)
+	writeShipGH(t, f)
+	var s14b []gtStubSubmitEntry
 	var remoteAtRetarget map[string]string
 	api.onSubmit = func(entry gtStubSubmitEntry) {
-		if entry.Head == "s14b" && remoteAtRetarget == nil {
+		if entry.Head != "s14b" {
+			return
+		}
+		if s14b == nil {
 			remoteAtRetarget = linearizeRemoteHeads(t, f, "s15b", "s14b", "s13b", "i11b")
 		}
+		s14b = append(s14b, entry)
 	}
 
 	_, errOut, err := runStackCmd(t, f, "rebase", "--parent", "s14b=main", "--linearize", "s14b,s13b,i11b,s15b")
@@ -54,8 +60,10 @@ func TestStackRebaseLinearizeRetargetsAPullRequestThePushWouldMerge(t *testing.T
 	if !maps.Equal(remoteAtRetarget, before) {
 		t.Errorf("remote heads were %v when #29 was retargeted, want %v: the retarget must precede the push", remoteAtRetarget, before)
 	}
-	retarget := api.submitEntry("s14b")
-	if retarget.Action != gtapi.SubmitUpdate || retarget.PRNumber != 29 || retarget.Base != "main" || retarget.HeadSha != before["s14b"] {
+	if len(s14b) < 2 {
+		t.Fatalf("s14b was submitted %d times, want the retarget and the submit after the push", len(s14b))
+	}
+	if retarget := s14b[0]; retarget.Action != gtapi.SubmitUpdate || retarget.PRNumber != 29 || retarget.Base != "main" || retarget.HeadSha != before["s14b"] {
 		t.Errorf("first s14b submit = %+v, want an update of #29 onto main at its pushed head %s", retarget, before["s14b"])
 	}
 	for _, inv := range shipGTInvocations(t, f) {
