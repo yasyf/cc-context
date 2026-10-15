@@ -146,7 +146,6 @@ func TestStackSubmitRefusesWhileGraphiteRestacksAnUnparkedMember(t *testing.T) {
 	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
 		t.Fatalf("stack submit: %v", err)
 	}
-	stubOpenPRs(t, f, nil, "base", "feature")
 	api.mu.Lock()
 	api.mergeability[101] = gtapi.MergeabilityRebasing
 	api.mu.Unlock()

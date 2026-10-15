@@ -2298,6 +2298,31 @@ func gtDropUnchanged(plan []gtSubmitBranch, last map[string]gtmeta.Version, know
 // onto trunk races graphite-app's force-push, as on #31266. One Graphite reads
 // as anything else has no restack coming, as #33251 sat for an hour.
 func gtRefuseQueueRestack(ctx context.Context, dir render.Dir, client *gtapi.Client, owner, name, prefix string, tr vcs.Trunk, plan []gtSubmitBranch, known map[string]gtapi.PullRequestInfo) error {
+	if len(plan) == 0 || len(known) == 0 {
+		return nil
+	}
+	numbers := make([]int, 0, len(known))
+	for _, branch := range slices.Sorted(maps.Keys(known)) {
+		numbers = append(numbers, known[branch].PRNumber)
+	}
+	statuses, err := client.MergeabilityStatuses(ctx, owner, name, numbers)
+	if err != nil {
+		return fmt.Errorf("%s: read whether Graphite is restacking the stack's pull requests: %w", prefix, err)
+	}
+	rerun := "re-run"
+	if prefix == stackRebasePrefix {
+		rerun = "run ccx vcs stack continue, which publishes the saved run without redoing a resolution"
+	}
+	var rebasing []string
+	for _, branch := range slices.Sorted(maps.Keys(known)) {
+		if pr := known[branch]; !pr.IsBaseRefGraphiteBase && statuses[pr.PRNumber] == gtapi.MergeabilityRebasing {
+			rebasing = append(rebasing, fmt.Sprintf("#%d (%s)", pr.PRNumber, branch))
+		}
+	}
+	if len(rebasing) > 0 {
+		return fmt.Errorf("%s: Graphite is restacking %s after a parent landed (mergeability REBASING), and force-pushes its own restack of each one and of every pull request stacked on it; pushing now races that restack and leaves origin on a mix of both — wait until Graphite reports none of them REBASING, then %s",
+			prefix, strings.Join(rebasing, ", "), rerun)
+	}
 	from := map[string]string{}
 	var parents []string
 	for _, b := range plan {
@@ -2329,23 +2354,6 @@ func gtRefuseQueueRestack(ctx context.Context, dir render.Dir, client *gtapi.Cli
 		if pruneLanded(ctx, dir, tr.Name(), info) {
 			landed[info.HeadRefName] = info.PRNumber
 		}
-	}
-	var numbers []int
-	for _, b := range plan {
-		if _, ok := landed[from[b.name]]; ok && from[b.name] != "" {
-			numbers = append(numbers, known[b.name].PRNumber)
-		}
-	}
-	if len(numbers) == 0 {
-		return nil
-	}
-	statuses, err := client.MergeabilityStatuses(ctx, owner, name, numbers)
-	if err != nil {
-		return fmt.Errorf("%s: read whether Graphite still restacks the pull requests it parked: %w", prefix, err)
-	}
-	rerun := "re-run"
-	if prefix == stackRebasePrefix {
-		rerun = "run ccx vcs stack continue, which publishes the saved run without redoing a resolution"
 	}
 	for _, b := range plan {
 		parent := from[b.name]
