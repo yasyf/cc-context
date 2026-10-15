@@ -89,8 +89,13 @@ func (g *governor) rate() int { return g.rates[g.state] }
 
 func (g *governor) sliced(took time.Duration) {
 	g.window.slices++
-	if took >= 2*g.sliceBudget {
-		g.window.stalls++
+	if took < 2*g.sliceBudget {
+		return
+	}
+	g.window.stalls++
+	g.stalled = hold{held: true}
+	if g.state == governorClear || g.state == governorThrottled {
+		g.state, g.detail = governorThrottled, detailStalled
 	}
 }
 

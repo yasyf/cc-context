@@ -107,6 +107,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a sink reading its own file or a redirect, a grep nested inside another
   command's substitution, and `# ccx:raw` still run as written.
 
+- **A stalled deletion slice throttles the slice after it.** The governor
+  noticed a slice of 100ms or more only at its next 5s sample, and the rest
+  after that slice was paced at the full rate. A slice that long has already
+  spent its whole 100ms share, so the next one started at once, and a
+  stalling volume took back-to-back slices for up to 5s. The stall hold now
+  engages as the slice ends: its rest is paced at the floor of 100 entries a
+  second, and `cleanup status` reads `slices stalled past twice their time
+  budget` from then on. Lifting the hold still takes three samples with no
+  stalled slice.
+
 - **The cleanup daemon's governor paces every deletion.** Three paths ran
   past it. A job a wait command polled deleted unpaced and past the throttle
   for as long as the polls kept coming. A slice that spent its 50ms on

@@ -99,7 +99,7 @@ func TestGovernor(t *testing.T) {
 			{cpu: 3 * time.Second, quiet: true, want: cleared(75), rate: full},
 			{err: errSampler, want: unavailable, rate: floor},
 		}},
-		{"a slice that takes twice its budget throttles at the next sample", []step{
+		{"a slice that takes twice its budget holds the throttle through the next sample", []step{
 			{want: sampling},
 			{cpu: time.Second, quiet: true, want: cleared(25), rate: full},
 			{slices: []time.Duration{onTime, stall}, cpu: time.Second, quiet: true, want: stalled(25), rate: floor},
@@ -210,6 +210,51 @@ func TestGovernor(t *testing.T) {
 				if got := g.rate(); got != s.rate {
 					t.Fatalf("step %d: rate() = %d, want %d", i, got, s.rate)
 				}
+			}
+		})
+	}
+}
+
+func TestGovernorThrottlesOnTheSliceThatStalls(t *testing.T) {
+	type sample struct {
+		cpu   time.Duration
+		err   error
+		quiet bool
+	}
+	const (
+		full, floor = 1000, 100
+		stall       = 100 * time.Millisecond
+	)
+	errSampler := errors.New("fseventsd not found")
+	detail := "slices stalled past twice their time budget"
+	tests := []struct {
+		name    string
+		samples []sample
+		took    time.Duration
+		want    cleanup.Governor
+		rate    int
+	}{
+		{"a stalled slice drops a clear governor to the floor", []sample{{quiet: true}, {cpu: time.Second, quiet: true}}, stall, cleanup.Governor{State: "throttled", CPUPercent: 25, Detail: detail}, floor},
+		{"a stalled slice names itself beside the fseventsd throttle", []sample{{quiet: true}, {cpu: 3 * time.Second}}, stall, cleanup.Governor{State: "throttled", CPUPercent: 75, Detail: detail}, floor},
+		{"a stalled slice leaves an unreadable sampler's report", []sample{{err: errSampler}}, stall, cleanup.Governor{State: "unavailable", Detail: "fseventsd not found"}, floor},
+		{"a slice a nanosecond short of a stall leaves a clear governor clear", []sample{{quiet: true}, {cpu: time.Second, quiet: true}}, stall - time.Nanosecond, cleanup.Governor{State: "clear", CPUPercent: 25}, full},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := newGovernor(DefaultTuning())
+			now := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
+			var cpu time.Duration
+			for _, s := range tt.samples {
+				now = now.Add(4 * time.Second)
+				cpu += s.cpu
+				g.observe(now, cpu, s.err, s.quiet)
+			}
+			g.sliced(tt.took)
+			if got := g.report(); got != tt.want {
+				t.Errorf("report() = %+v, want %+v", got, tt.want)
+			}
+			if got := g.rate(); got != tt.rate {
+				t.Errorf("rate() = %d, want %d", got, tt.rate)
 			}
 		})
 	}

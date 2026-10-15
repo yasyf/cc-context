@@ -844,6 +844,7 @@ func (e *Engine) slice(ctx context.Context, job cleanup.Job) error {
 	end := e.clock.Now()
 	job.Removed += uint64(removed) //nolint:gosec // a step never removes a negative count
 	e.gov.sliced(end.Sub(start))
+	e.publishGovernor()
 	e.paceUntil = start.Add(e.rest(removed, end.Sub(start)))
 	switch {
 	case err != nil:
