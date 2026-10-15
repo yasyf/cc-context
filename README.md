@@ -152,7 +152,7 @@ Each command is a token-bounded stand-in for a primitive an agent would otherwis
 | `ccx code read <file> --section A-B` | Read a line range or a `## Heading` instead of the whole file |
 | `ccx vcs diff [uncommitted\|staged\|<ref>]` | VCS-aware structural diff; defaults to uncommitted |
 | `ccx vcs status` | Every branch of the stack, its pull request, and what blocks each from landing |
-| `ccx vcs pr status <n>...` | Read several PR statuses from the shared 30-second cache, in input order; reports queued (failure handling included), not queued, evicted, or landed for each, with its CI, approval, and a `landable` or `blocked:<cause>` verdict |
+| `ccx vcs pr status <n>...` | Read several PR statuses from the shared 30-second cache, in input order; reports queued (failure handling included), not queued, evicted, or landed for each, with its CI, approval, and a `landable` or `blocked:<cause>` verdict; falls back to GitHub REST after 15 seconds of a failing Graphite or GraphQL, with queue `unknown` |
 | `ccx vcs pr watch <n>...` | Stream one line per transition (queued, ejected, conflicting, red, green, approved, landed...) until PRs land; `--stack` / `--lane-prefix` |
 | `ccx vcs pr state [<n>...]` | Print shared PR records and `--lane-prefix` discoveries as one JSON object; `--wait` allows waiting out rate limits |
 | `ccx vcs pr recreate <n>` | Replace an open PR whose Graphite stack record still holds a closed PR, or a landed one hours after the landing: close it, open a fresh one on the same branch through Graphite with the same title, body, and labels, and link the old one to it; approvals start over |

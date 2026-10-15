@@ -337,7 +337,7 @@ func TestPRStatusJSON(t *testing.T) {
 		t.Fatalf("unmarshal %q: %v", out, err)
 	}
 	want := []prStatusReport{{
-		prQueueReport: prQueueReport{Number: 25121, Queue: prQueueQueued, State: "OPEN", Base: "dev", Enqueued: "b103a57671412a4e260ecd9763ba764e66053d15"},
+		prQueueReport: prQueueReport{Number: 25121, Queue: prQueueQueued, State: "OPEN", Base: "dev", Enqueued: "b103a57671412a4e260ecd9763ba764e66053d15", Via: prstate.ViaFull},
 		CI:            &prCIReport{State: prCINone},
 		Approval:      prApprovalReport{State: prApproved},
 		Verdict:       "queued",

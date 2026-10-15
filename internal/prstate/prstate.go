@@ -99,12 +99,26 @@ type PR struct {
 	Graphite         *gtapi.PullRequestInfo `json:"graphite,omitempty"`
 	Mergeability     string                 `json:"mergeability,omitempty"`
 	SquashOn         []string               `json:"squashOn,omitempty"`
+	Via              string                 `json:"via,omitempty"`
 	PolledAt         time.Time              `json:"polledAt"`
 	// PushedHead is the head this machine pushed at PushedAt, kept while
 	// GitHub still shows another; HeadRefOid and the checks stay GitHub's.
 	PushedHead string    `json:"pushedHead,omitempty"`
 	PushedAt   time.Time `json:"pushedAt,omitzero"`
 }
+
+// A PR's Via names the GitHub path that answered it, prefixed with graphite+
+// when Graphite answered too; ViaFull is the path every record normally takes.
+const (
+	ViaGraphQL  = "graphql"
+	ViaREST     = "rest"
+	viaGraphite = "graphite+"
+	ViaFull     = viaGraphite + ViaGraphQL
+)
+
+// GraphiteDown reports whether the poll that read pr got no answer from
+// Graphite, so its queue state is unknown rather than absent.
+func (pr PR) GraphiteDown() bool { return pr.Via == ViaGraphQL || pr.Via == ViaREST }
 
 // Review is one reviewer's latest approving or change-requesting review.
 type Review struct {

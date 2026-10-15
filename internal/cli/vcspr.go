@@ -28,6 +28,7 @@ const (
 	prQueueNotQueued prQueueState = "not queued"
 	prQueueLanded    prQueueState = "landed"
 	prQueueEvicted   prQueueState = "evicted"
+	prQueueUnknown   prQueueState = "unknown"
 )
 
 type prCIState string
@@ -74,6 +75,7 @@ type prQueueReport struct {
 	Evicted     string       `json:"evicted,omitempty"`
 	EvictedAt   string       `json:"evicted_at,omitempty"`
 	Conflicting bool         `json:"conflicting,omitempty"`
+	Via         string       `json:"via,omitempty"`
 	Stale       *prStale     `json:"stale,omitempty"`
 }
 
@@ -208,7 +210,15 @@ The queue closes what it lands, so a landed pull request reads CLOSED with a
 null mergedAt on GitHub; the squash is what settles it.
 
 A queued pull request names the commit the queue admitted. A push after
-admission does not move it: the queue lands that commit and drops the rest.`,
+admission does not move it: the queue lands that commit and drops the rest.
+
+Each upstream, Graphite and GitHub's GraphQL, gets 15 seconds. When GraphQL
+fails other than by rate limit, the poll reads GitHub's REST endpoints instead:
+the pull request, its reviews, and its head's check runs and commit statuses.
+Without Graphite's answer the queue state reads unknown, which blocks the
+verdict as queue-unknown, except that a pull request GitHub itself shows merged
+reads landed. A line answered off the usual path ends with "via graphql" or
+"via rest"; the JSON report always names its path in "via".`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runVcsPRStatus(cmd, args, o)
@@ -244,7 +254,14 @@ repository, the same poll ccx vcs pr watch and ccx vcs pr status share.
 While GitHub rate-limits the machine the command sits it out for as long as
 --wait allows, then serves the cached records with a top-level "stale" object
 naming when they were polled and when the next probe is; records the cache
-never held fail naming the next probe.`,
+never held fail naming the next probe.
+
+Each upstream, Graphite and GitHub's GraphQL, gets 15 seconds. When GraphQL
+fails other than by rate limit, the poll reads GitHub's REST endpoints instead,
+and each record's "via" names the path that answered it: "graphite+graphql",
+"graphite+rest", "graphql" or "rest". A record without Graphite has a null
+"graphite" and no queue state. A REST record carries approvals from the
+reviews themselves, as reviewDecision has no REST form.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runVcsPRState(cmd, args, repo, prefixes, wait)
 		},
@@ -337,32 +354,39 @@ func collectPRQueue(ctx context.Context, repo string, numbers []int, warn io.Wri
 	reports := make([]prStatusReport, 0, len(numbers))
 	for _, number := range numbers {
 		pr := st.PRs[number]
-		if pr.Graphite == nil {
-			if limited != nil {
-				return nil, fmt.Errorf("pr status: the cache has never polled %s#%d, and github %s; next probe at %s", repo, number, limited.Reason, limited.ProbeAt.UTC().Format(time.RFC3339))
+		var r prQueueReport
+		var downstack int
+		switch {
+		case pr.Graphite != nil:
+			info := *pr.Graphite
+			landedOn := ""
+			switch {
+			case slices.Contains(pr.SquashOn, info.BaseRefName):
+				landedOn = info.BaseRefName
+			case len(pr.SquashOn) > 0:
+				landedOn = pr.SquashOn[0]
 			}
+			r = prQueueOf(info, pr, landedOn)
+			downstack = info.DependentPRNumber
+			if r.State == string(gtapi.PROpen) && (r.Queue == prQueueNotQueued || r.Queue == prQueueEvicted) && (limited != nil || pr.Mergeable == statusUnknown) {
+				mergeable, state, err := prReadMergeable(ctx, repo, number)
+				if err != nil {
+					_, _ = fmt.Fprintf(warn, "pr status: #%d: %v\n", number, err)
+				} else {
+					pr.Mergeable, pr.MergeStateStatus = mergeable, state
+				}
+			}
+			r.Conflicting = r.Queue == prQueueEvicted && pr.MergeStateStatus == "DIRTY"
+		case pr.GraphiteDown():
+			r = prQueueWithoutGraphite(pr)
+		case limited != nil:
+			return nil, fmt.Errorf("pr status: the cache has never polled %s#%d, and github %s; next probe at %s", repo, number, limited.Reason, limited.ProbeAt.UTC().Format(time.RFC3339))
+		default:
 			return nil, fmt.Errorf("pr status: graphite has no record of %s#%d", repo, number)
 		}
-		info := *pr.Graphite
-		landedOn := ""
-		switch {
-		case slices.Contains(pr.SquashOn, info.BaseRefName):
-			landedOn = info.BaseRefName
-		case len(pr.SquashOn) > 0:
-			landedOn = pr.SquashOn[0]
-		}
-		r := prQueueOf(info, pr, landedOn)
-		if r.State == string(gtapi.PROpen) && (r.Queue == prQueueNotQueued || r.Queue == prQueueEvicted) && (limited != nil || pr.Mergeable == statusUnknown) {
-			mergeable, state, err := prReadMergeable(ctx, repo, number)
-			if err != nil {
-				_, _ = fmt.Fprintf(warn, "pr status: #%d: %v\n", number, err)
-			} else {
-				pr.Mergeable, pr.MergeStateStatus = mergeable, state
-			}
-		}
-		r.Conflicting = r.Queue == prQueueEvicted && pr.MergeStateStatus == "DIRTY"
+		r.Via = pr.Via
 		r.Stale = staleAt(limited, pr.PolledAt)
-		report := prStatusReport{prQueueReport: r, Approval: prApprovalOf(pr), Mergeability: pr.Mergeability, Downstack: info.DependentPRNumber}
+		report := prStatusReport{prQueueReport: r, Approval: prApprovalOf(pr), Mergeability: pr.Mergeability, Downstack: downstack}
 		if r.Queue != prQueueLanded {
 			ci := prCIOf(pr.Rollup)
 			report.CI = &ci
@@ -407,6 +431,14 @@ func prQueueOf(info gtapi.PullRequestInfo, pr prstate.PR, landedOn string) prQue
 		activity = pr.Activity
 	}
 	return classifyPRQueue(info, pr.Mergeability, landedOn, activity)
+}
+
+func prQueueWithoutGraphite(pr prstate.PR) prQueueReport {
+	r := prQueueReport{Number: pr.Number, Queue: prQueueUnknown, State: pr.State, Base: pr.BaseRefName}
+	if pr.State == "MERGED" && len(pr.SquashOn) > 0 {
+		r.Queue, r.Squash = prQueueLanded, pr.MergeCommit
+	}
+	return r
 }
 
 func prCIOf(rollup *prstate.Rollup) prCIReport {
@@ -472,6 +504,9 @@ func prVerdict(r prStatusReport, pr prstate.PR) string {
 	var causes []string
 	if pr.Draft {
 		causes = append(causes, "draft")
+	}
+	if r.Queue == prQueueUnknown {
+		causes = append(causes, "queue-unknown")
 	}
 	switch {
 	case pr.Mergeable == "CONFLICTING" || pr.MergeStateStatus == "DIRTY" || r.Conflicting:
@@ -594,13 +629,16 @@ func renderPRQueue(reports []prStatusReport) string {
 			if r.Conflicting {
 				b.WriteString(" · conflicting")
 			}
-		case prQueueNotQueued:
+		case prQueueNotQueued, prQueueUnknown:
 			fmt.Fprintf(&b, " · %s", strings.ToLower(r.State))
 		}
 		if r.CI != nil {
 			b.WriteString(shipSep + prCIValue(*r.CI))
 		}
 		b.WriteString(shipSep + prApprovalValue(r.Approval) + shipSep + r.Verdict)
+		if r.Via != "" && r.Via != prstate.ViaFull {
+			b.WriteString(" · via " + r.Via)
+		}
 		if r.Stale != nil {
 			b.WriteString(" · " + r.Stale.String())
 		}

@@ -29,6 +29,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs pr state` and `pr status` no longer hang when Graphite or GitHub's
+  GraphQL is slow.** Graphite and GraphQL each get 15 seconds instead of the
+  caller's whole minute. When GraphQL fails other than by rate limit, the poll
+  reads GitHub's REST endpoints for the pull request, its reviews, and its
+  head's check runs and statuses. Without Graphite's answer the queue state
+  reads `unknown` and the verdict `blocked:queue-unknown`, except that a pull
+  request GitHub shows merged reads landed. Every record names the path that
+  answered in `via`, and `pr status` ends a line answered off the usual path
+  with `via graphql` or `via rest`.
+
 - **The cleanup daemon no longer copies and sorts its whole queue on every
   scheduling pass.** Picking the next job, the next physical deletion, and the
   next wake each cloned every job and sorted the copies by sequence. With 1,755

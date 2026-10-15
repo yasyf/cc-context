@@ -26,6 +26,11 @@ const (
 	probeQuery     = "query { viewer { login } rateLimit { remaining resetAt } }"
 )
 
+// upstreamDeadline bounds each upstream a poll calls: Graphite, GitHub's
+// GraphQL, and the REST fallback. Three of them in a row still finish inside a
+// caller's minute.
+const upstreamDeadline = 15 * time.Second
+
 // GitHub polls one repository through GitHub's GraphQL API, plus Graphite's
 // record of its merge queue when gt is set.
 type GitHub struct {
@@ -34,6 +39,8 @@ type GitHub struct {
 	owner string
 	name  string
 	warn  io.Writer
+
+	deadline time.Duration
 }
 
 // NewGitHub builds the source for repo, an owner/name pair. Its GitHub client
@@ -43,7 +50,7 @@ func NewGitHub(gh *ghapi.Client, gt *gtapi.Client, repo string, warn io.Writer) 
 	if !ok || owner == "" || name == "" {
 		return nil, fmt.Errorf("prstate: malformed repository name %q", repo)
 	}
-	return &GitHub{gh: gh.Unwaiting(), gt: gt, owner: owner, name: name, warn: warn}, nil
+	return &GitHub{gh: gh.Unwaiting(), gt: gt, owner: owner, name: name, warn: warn, deadline: upstreamDeadline}, nil
 }
 
 type poll struct {
@@ -146,6 +153,8 @@ type response struct {
 }
 
 func (g *GitHub) probe(ctx context.Context) (Rate, error) {
+	ctx, cancel := context.WithTimeout(ctx, g.deadline)
+	defer cancel()
 	resp, err := ghapi.GraphQL[struct {
 		RateLimit Rate `json:"rateLimit"`
 	}](ctx, g.gh, probeQuery, nil)
@@ -207,14 +216,14 @@ func (p *pass) chunk(ctx context.Context, chunk []target, first bool, prefixes [
 	if errors.As(err, &gql) {
 		retry, gone, ok := dropNotFound(chunk, gql)
 		if !ok {
-			return err
+			return p.fallBack(ctx, chunk, first, prefixes, err)
 		}
 		p.out.missing = append(p.out.missing, gone...)
 		chunk = retry
 		resp, err = p.query(ctx, chunk, first, prefixes)
 	}
 	if err != nil {
-		return err
+		return p.fallBack(ctx, chunk, first, prefixes, err)
 	}
 	p.out.rate = resp.RateLimit
 	if first {
@@ -236,6 +245,17 @@ func (p *pass) chunk(ctx context.Context, chunk []target, first bool, prefixes [
 			return err
 		}
 		p.out.prs[t.number] = pr
+	}
+	return nil
+}
+
+func (p *pass) fallBack(ctx context.Context, chunk []target, first bool, prefixes []string, cause error) error {
+	if _, limited := ghapi.RateLimited(cause); limited {
+		return cause
+	}
+	_, _ = fmt.Fprintf(p.warn, "prstate: github graphql: %v; answering from github rest\n", cause)
+	if err := p.restChunk(ctx, chunk, first, prefixes); err != nil {
+		return errors.Join(cause, err)
 	}
 	return nil
 }
@@ -272,6 +292,8 @@ func (p *pass) repoWide(resp response, prefixes []string) error {
 }
 
 func (g *GitHub) query(ctx context.Context, chunk []target, first bool, prefixes []string) (response, error) {
+	ctx, cancel := context.WithTimeout(ctx, g.deadline)
+	defer cancel()
 	decls := []string{"$owner: String!", "$repo: String!"}
 	vars := map[string]any{"owner": g.owner, "repo": g.name}
 	var fields strings.Builder
@@ -326,6 +348,7 @@ func (p *pass) record(node prNode, t target, i int, resp response) (PR, error) {
 		Activity:         last.Activity,
 		Graphite:         p.infos[t.number],
 		Mergeability:     p.mergeability[t.number],
+		Via:              p.via(ViaGraphQL),
 	}
 	if node.Author != nil {
 		pr.Author = node.Author.Login
@@ -376,10 +399,19 @@ func (p *pass) record(node prNode, t target, i int, resp response) (PR, error) {
 	return pr, nil
 }
 
+func (p *pass) via(source string) string {
+	if p.infos != nil {
+		return viaGraphite + source
+	}
+	return source
+}
+
 func (g *GitHub) queueRecords(ctx context.Context, numbers []int) (map[int]*gtapi.PullRequestInfo, map[int]string) {
 	if len(numbers) == 0 || g.gt == nil {
 		return nil, nil
 	}
+	ctx, cancel := context.WithTimeout(ctx, g.deadline)
+	defer cancel()
 	infos, err := g.gt.PullRequestInfo(ctx, gtapi.PullRequestInfoRequest{
 		RepoOwner:  g.owner,
 		RepoName:   g.name,

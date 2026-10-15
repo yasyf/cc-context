@@ -400,7 +400,10 @@ poll again; an uncached PR waits out the interval. `pr status` waits through
 rate limits for up to ten minutes. `ccx vcs pr state` prints PR records and
 open PRs found by repeatable `--lane-prefix` flags as one JSON object. When a
 poll is rate-limited, it fails naming the next probe unless `--wait` allows
-waiting.
+waiting. Graphite and GitHub's GraphQL get 15 seconds each; when either fails
+without a rate limit, the poll reads GitHub's REST endpoints and a record's
+`via` names the path that answered. Without Graphite the queue state is
+`unknown` and the verdict reads `blocked:queue-unknown`.
 
 `ccx vcs gh -- <gh args>` runs a read-only `gh` command, such as
 `gh pr checks`, `gh pr view`, or `gh run watch`, on the read-only GitHub App
