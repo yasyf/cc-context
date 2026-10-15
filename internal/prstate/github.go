@@ -333,6 +333,7 @@ func (p *pass) record(node prNode, t target, i int, resp response) (PR, error) {
 		Activity:         last.Activity,
 		Graphite:         p.infos[t.number],
 		Mergeability:     p.mergeability[t.number],
+		QueueUnknown:     p.queueUnknown(),
 	}
 	if node.Author != nil {
 		pr.Author = node.Author.Login
@@ -382,6 +383,8 @@ func (p *pass) record(node prNode, t target, i int, resp response) (PR, error) {
 	}
 	return pr, nil
 }
+
+func (p *pass) queueUnknown() bool { return p.gt != nil && p.infos == nil }
 
 func (g *GitHub) queueRecords(ctx context.Context, numbers []int) (map[int]*gtapi.PullRequestInfo, map[int]string) {
 	if len(numbers) == 0 || g.gt == nil {

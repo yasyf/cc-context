@@ -29,6 +29,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs pr status` reads the queue as `unknown` when Graphite does not
+  answer.** The poll used to leave the pull request without a Graphite record,
+  and `pr status` then failed the whole call with "graphite has no record" even
+  though GitHub's answer was fresh. The line now reads `unknown` and its verdict
+  adds `queue-unknown`, so the pull request is never `landable`, while a pull
+  request GitHub itself shows merged still reads `landed`. A pull request
+  Graphite answered for but does not know still fails as before. `pr state`
+  records carry `queueUnknown` for the same case.
+
 - **`ccx vcs worktree rm` no longer refuses a tree over tool droppings.**
   Untracked watchman cookie files at the tree's root and a pr-watcher state
   directory `.git-pr-watch/` no longer count as uncommitted changes. A clean,

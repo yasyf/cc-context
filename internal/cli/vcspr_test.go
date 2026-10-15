@@ -347,6 +347,43 @@ func TestPRStatusJSON(t *testing.T) {
 	}
 }
 
+func stubGraphiteDown(t *testing.T) *gtapi.Client {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusBadGateway) }))
+	t.Cleanup(srv.Close)
+	return gtapi.NewWithToken(srv.URL, "gt-stub-token")
+}
+
+func TestPRStatusReadsTheQueueAsUnknownWhenGraphiteDoesNotAnswer(t *testing.T) {
+	client := stubGraphiteDown(t)
+	stubPRState(t, prPoll(
+		`"p0":`+prNode(25116, "MERGED", `"mergeCommit":{"oid":"9cc33f055dc4db19da6eb13a210a810297ccdc05"}`),
+		`"p1":`+prNode(25121, "OPEN", prComments()),
+	))
+
+	out, err := runPRStatusCmd(t, client, "--repo", "Forge-AI/monorepo", "25121", "25116")
+	if err != nil {
+		t.Fatalf("pr status: %v", err)
+	}
+	want := "#25121  unknown · open · ci none · approved · blocked:queue-unknown,no-ci\n" +
+		"#25116  landed · squash 9cc33f05 on dev · approved · landed\n"
+	if !strings.HasSuffix(out, want) || !strings.Contains(out, "this poll carries no queue state") {
+		t.Errorf("report =\n%s\nwant it to end with\n%s", out, want)
+	}
+
+	jsonOut, err := runPRStatusCmd(t, client, "--repo", "Forge-AI/monorepo", "--json", "25121", "25116")
+	if err != nil {
+		t.Fatalf("pr status --json: %v", err)
+	}
+	var got []prQueueReport
+	if err := json.Unmarshal([]byte(jsonOut), &got); err != nil {
+		t.Fatalf("unmarshal %q: %v", jsonOut, err)
+	}
+	if len(got) != 2 || got[0].Queue != prQueueUnknown || got[1].Queue != prQueueLanded {
+		t.Errorf("report = %+v, want an unknown queue beside a landed one", got)
+	}
+}
+
 func TestPRStatusRefuses(t *testing.T) {
 	tests := []struct {
 		name string

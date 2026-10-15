@@ -91,8 +91,23 @@ func TestAGraphiteFailureLeavesTheQueueRecordOutButStillReadsActivity(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st.PRs[190].Graphite != nil || !strings.Contains(gh.queries[0], "comments(last: 100)") {
-		t.Errorf("#190 = %+v, want no stale queue record, and its activity still read off the last one", st.PRs[190])
+	if st.PRs[190].Graphite != nil || !st.PRs[190].QueueUnknown || !strings.Contains(gh.queries[0], "comments(last: 100)") {
+		t.Errorf("#190 = %+v, want no stale queue record marked unknown, and its activity still read off the last one", st.PRs[190])
+	}
+}
+
+func TestAPRGraphiteDoesNotKnowIsNotMarkedUnknown(t *testing.T) {
+	t.Parallel()
+	c := &clock{now: epoch}
+	gt := stubGraphite(t, http.StatusOK, `{"prNumber":190,"state":"OPEN","baseRefName":"main"}`)
+	store, _ := newStore(t, t.TempDir(), c, gt, ok(t, "poll-189-190.json"))
+
+	st, err := store.Read(testCtx(t), Want{PRs: []int{189, 190}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.PRs[189].Graphite != nil || st.PRs[189].QueueUnknown || st.PRs[190].Graphite == nil || st.PRs[190].QueueUnknown {
+		t.Errorf("#189 = %+v, #190 = %+v; want Graphite's silence on #189 left as no record, not unknown", st.PRs[189], st.PRs[190])
 	}
 }
 
