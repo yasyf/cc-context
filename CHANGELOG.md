@@ -34,8 +34,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   force-pushes each one. A submit run in that window pushed the same branches,
   and the two writers interleaved. On monorepo #38083 the run reported its own
   head while origin ended on Graphite's later copy, whose diff carried both
-  parents' commits (cci #75243). A pushing run now refuses before anything
-  moves when Graphite reports any member `REBASING`. Graphite moved that pull
+  parents' commits (cci #75243). A run that submits anything now refuses before
+  it pushes when Graphite reports a pull request of the stack `REBASING`,
+  and `ccx vcs stack continue` checks again before it publishes. Graphite moved that pull
   request straight to trunk, so the existing parked-branch check missed it.
 
 - **`ccx vcs stack submit` keeps a parent this clone has no branch for.** Another
