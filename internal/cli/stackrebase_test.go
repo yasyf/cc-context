@@ -2066,6 +2066,44 @@ func TestStackSnapshotRefusesALocalHeadResetBehindItsPublishedAmend(t *testing.T
 	}
 }
 
+func TestStackSnapshotPublishesALocalHeadBehindItsPublishedHeadOnlyWithDropCommits(t *testing.T) {
+	t.Parallel()
+	f := stackRebaseRepo(t, "feature")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "feature")
+	earlier := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")
+	writeShipFile(t, f.Dir, "extra.txt", "extra\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "extra.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "extra")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "feature")
+	remote := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")
+	mustRun(t, f.Env(), f.Dir, "git", "reset", "-q", "--hard", earlier)
+	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
+	dir := render.Dir(f.Dir)
+	tr, err := gtTrunkRefOffline(f.Context(), dir, stackRebasePrefix, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pin := gitAt(t, f.Env(), f.Dir, "rev-parse", "origin/main")
+	s := gtBranchState{Head: earlier, Parents: []gtRef{{Ref: "main", SHA: pin}}}
+
+	for _, tc := range []struct {
+		name        string
+		dropCommits bool
+		want        string
+	}{
+		{"without --drop-commits the published head wins", false, remote},
+		{"--drop-commits publishes the local head", true, earlier},
+	} {
+		b, err := stackSnapshot(f.Context(), dir, tr, s, "feature", remote, remote, nil, false, pin, tc.dropCommits, false)
+		if err != nil {
+			t.Fatalf("%s: stackSnapshot = %v", tc.name, err)
+		}
+		if b.Head != tc.want {
+			t.Errorf("%s: head = %.12s, want %.12s", tc.name, b.Head, tc.want)
+		}
+	}
+}
+
 func TestStackSnapshotComparesAServerRestackOntoARestackedParentByPatch(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
