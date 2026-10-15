@@ -675,9 +675,39 @@ func TestCarryReleaseTrailers(t *testing.T) {
 			want: "rewritten\n\nRelease-Order: api before dashboard\n  Release-With: dashboard api\n",
 		},
 		{
-			name: "a changed Release-With line keeps both, joined to the closing trailer paragraph",
+			name: "a declared key replaces the carried value and the unmentioned key carries, joined to the closing trailer paragraph",
 			live: live, next: "rewritten\n\nRelease-With: api\n",
-			want: "rewritten\n\nRelease-With: api\nRelease-With: dashboard api\nRelease-Order: api before dashboard\n",
+			want: "rewritten\n\nRelease-With: api\nRelease-Order: api before dashboard\n",
+		},
+		{
+			name: "a reversed Release-Order replaces the carried direction",
+			live: live, next: "rewritten\n\nrelease-order: dashboard before api\n",
+			want: "rewritten\n\nrelease-order: dashboard before api\nRelease-With: dashboard api\n",
+		},
+		{
+			name: "a retract marker drops the carried key and is itself dropped",
+			live: live, next: "rewritten\n\nRelease-Order: -\n",
+			want: "rewritten\n\nRelease-With: dashboard api\n",
+		},
+		{
+			name: "retract markers beside other trailers drop only their keys",
+			live: live + "Readers-First: #12 live in r1\n", next: "rewritten\n\nCo-authored-by: a <a@b.c>\nRelease-Order:  -\nReaders-First: -\n",
+			want: "rewritten\n\nCo-authored-by: a <a@b.c>\nRelease-With: dashboard api\n",
+		},
+		{
+			name: "a retract marker with nothing to retract leaves no trace",
+			live: "", next: "rewritten\r\n\r\nRelease-With: -\r\n",
+			want: "rewritten\n",
+		},
+		{
+			name: "Readers-First carries like a Release trailer",
+			live: "why\n\nReaders-First: #12 live in r1\nCo-authored-by: a <a@b.c>\n", next: "rewritten\n",
+			want: "rewritten\n\nReaders-First: #12 live in r1\n",
+		},
+		{
+			name: "a retract-shaped line above the closing trailers is prose",
+			live: live, next: "Release-Order: -\n\nrewritten\n",
+			want: "Release-Order: -\n\nrewritten\n\nRelease-With: dashboard api\nRelease-Order: api before dashboard\n",
 		},
 		{
 			name: "keys match case-insensitively across every closing trailer paragraph",
