@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"iter"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -198,6 +199,7 @@ type Engine struct {
 	changed  chan struct{}
 
 	seq       uint64
+	order     []seqKey
 	gov       *governor
 	checked   map[string]time.Time
 	active    *activeDeletion
@@ -554,8 +556,10 @@ func (e *Engine) load() error {
 	defer e.mu.Unlock()
 	for _, job := range jobs {
 		e.jobs[job.ID] = job
+		e.order = append(e.order, seqKey{seq: job.Seq, id: job.ID})
 		e.seq = max(e.seq, job.Seq)
 	}
+	slices.SortFunc(e.order, func(a, b seqKey) int { return cmp.Compare(a.seq, b.seq) })
 	e.damaged, e.paused = damaged, sw.Paused
 	close(e.loaded)
 	return nil
@@ -681,7 +685,7 @@ func (e *Engine) wake(physical bool) (time.Time, bool) {
 			wake, timed = at, true
 		}
 	}
-	for _, job := range e.ordered() {
+	for job := range e.ordered() {
 		if e.paused {
 			break
 		}
@@ -705,20 +709,20 @@ func (e *Engine) logicalDue(now time.Time) (cleanup.Job, bool) {
 	if e.paused {
 		return cleanup.Job{}, false
 	}
-	for _, job := range e.ordered() {
+	for job := range e.ordered() {
 		if !job.Phase.Logical() {
 			continue
 		}
 		if job.Blocked != nil {
 			if at, ok := e.retryAt(job); ok && !now.Before(at) {
-				return job, true
+				return clone(job), true
 			}
 			continue
 		}
 		if at, ok := e.checked[job.ID]; ok && job.Phase == cleanup.PhaseWaiting && now.Before(at.Add(e.tuning.Recheck)) {
 			continue
 		}
-		return job, true
+		return clone(job), true
 	}
 	return cleanup.Job{}, false
 }
@@ -775,7 +779,7 @@ func (e *Engine) physicalDue(now time.Time) (cleanup.Job, bool) {
 		next  cleanup.Job
 		found bool
 	)
-	for _, job := range e.ordered() {
+	for job := range e.ordered() {
 		if !job.Phase.Physical() {
 			continue
 		}
@@ -785,13 +789,13 @@ func (e *Engine) physicalDue(now time.Time) (cleanup.Job, bool) {
 			}
 		}
 		if e.awaited(job.ID, now) {
-			return job, true
+			return clone(job), true
 		}
 		if !found {
 			next, found = job, true
 		}
 	}
-	return next, found
+	return clone(next), found
 }
 
 func (e *Engine) awaited(jobID string, now time.Time) bool {
@@ -906,7 +910,12 @@ func (e *Engine) finish(job cleanup.Job) error {
 	e.mu.Lock()
 	delete(e.awaits, job.ID)
 	e.mu.Unlock()
-	finished := slices.DeleteFunc(e.ordered(), func(job cleanup.Job) bool { return job.Phase != cleanup.PhaseDone })
+	var finished []cleanup.Job
+	for job := range e.ordered() {
+		if job.Phase == cleanup.PhaseDone {
+			finished = append(finished, job)
+		}
+	}
 	slices.SortFunc(finished, byFinish)
 	for _, old := range finished[:max(len(finished)-e.tuning.KeepDone, 0)] {
 		if err := e.journal.Discard(old.ID); err != nil {
@@ -917,6 +926,7 @@ func (e *Engine) finish(job cleanup.Job) error {
 			e.kept[old.ID] = e.jobs[old.ID]
 		}
 		delete(e.jobs, old.ID)
+		e.dequeue(old)
 		e.broadcast()
 		e.mu.Unlock()
 	}
@@ -1088,14 +1098,14 @@ func holds(path string, tree cleanup.FileID) bool {
 }
 
 func (e *Engine) revive(rejoins rejoinable) (cleanup.Job, bool, error) {
-	for _, job := range e.ordered() {
+	for job := range e.ordered() {
 		if !rejoins(job) {
 			continue
 		}
 		if job.Blocked == nil {
-			return job, true, nil
+			return clone(job), true, nil
 		}
-		revived, err := e.unblock(job)
+		revived, err := e.unblock(clone(job))
 		return revived, true, err
 	}
 	return cleanup.Job{}, false, nil
@@ -1156,9 +1166,21 @@ func (e *Engine) save(job cleanup.Job) error {
 
 func (e *Engine) put(job cleanup.Job) {
 	e.mu.Lock()
+	if _, known := e.jobs[job.ID]; !known {
+		at, _ := slices.BinarySearchFunc(e.order, job.Seq, bySeqKey)
+		e.order = slices.Insert(e.order, at, seqKey{seq: job.Seq, id: job.ID})
+	}
 	e.jobs[job.ID] = clone(job)
 	e.broadcast()
 	e.mu.Unlock()
+}
+
+func (e *Engine) dequeue(job cleanup.Job) {
+	at, found := slices.BinarySearchFunc(e.order, job.Seq, bySeqKey)
+	if !found || e.order[at].id != job.ID {
+		panic(fmt.Sprintf("cleanup daemon: job %s at seq %d is missing from the queue order", job.ID, job.Seq))
+	}
+	e.order = slices.Delete(e.order, at, at+1)
 }
 
 func (e *Engine) broadcast() {
@@ -1177,13 +1199,14 @@ func (e *Engine) publishGovernor() {
 	e.mu.Unlock()
 }
 
-func (e *Engine) ordered() []cleanup.Job {
-	jobs := make([]cleanup.Job, 0, len(e.jobs))
-	for _, job := range e.jobs {
-		jobs = append(jobs, clone(job))
+func (e *Engine) ordered() iter.Seq[cleanup.Job] {
+	return func(yield func(cleanup.Job) bool) {
+		for _, key := range e.order {
+			if !yield(e.jobs[key.id]) {
+				return
+			}
+		}
 	}
-	slices.SortFunc(jobs, bySeq)
-	return jobs
 }
 
 func (e *Engine) info() cleanup.Info {
@@ -1191,6 +1214,13 @@ func (e *Engine) info() cleanup.Info {
 }
 
 func bySeq(a, b cleanup.Job) int { return cmp.Compare(a.Seq, b.Seq) }
+
+type seqKey struct {
+	seq uint64
+	id  string
+}
+
+func bySeqKey(key seqKey, seq uint64) int { return cmp.Compare(key.seq, seq) }
 
 func byFinish(a, b cleanup.Job) int {
 	if order := a.Updated.Compare(b.Updated); order != 0 {

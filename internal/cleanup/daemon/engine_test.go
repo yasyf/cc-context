@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"testing"
 	"testing/synctest"
@@ -1837,4 +1838,76 @@ func TestWaitFollowsATransientBlockageThroughItsRetry(t *testing.T) {
 			t.Errorf("Wait() = phase %s, err %v; want done once the retry cleared the blockage", got.job.Phase, got.err)
 		}
 	})
+}
+
+func TestQueueOrderFollowsSeqAcrossLoadPutAndPrune(t *testing.T) {
+	h := newHarness(t, paced())
+	jobs := map[uint64]cleanup.Job{}
+	for _, seq := range []uint64{5, 2, 9} {
+		jobs[seq] = h.seed(fmt.Sprintf("t%d", seq), seq, cleanup.PhaseDone)
+	}
+	e := h.build()
+	if err := e.load(); err != nil {
+		t.Fatalf("load() = %v", err)
+	}
+	seqs := func() []uint64 {
+		var got []uint64
+		for job := range e.ordered() {
+			got = append(got, job.Seq)
+		}
+		return got
+	}
+	if got, want := seqs(), []uint64{2, 5, 9}; !slices.Equal(got, want) {
+		t.Fatalf("loaded order = %v, want %v", got, want)
+	}
+
+	e.put(h.newJob("t7", 7, cleanup.PhaseQueued))
+	updated := jobs[5]
+	updated.Phase = cleanup.PhaseQueued
+	e.put(updated)
+	if got, want := seqs(), []uint64{2, 5, 7, 9}; !slices.Equal(got, want) {
+		t.Fatalf("order after a new and an updated job = %v, want %v", got, want)
+	}
+	if phase := e.jobs[updated.ID].Phase; phase != cleanup.PhaseQueued {
+		t.Fatalf("ordered view of the updated job = %s, want queued", phase)
+	}
+
+	delete(e.jobs, jobs[5].ID)
+	e.dequeue(jobs[5])
+	if got, want := seqs(), []uint64{2, 7, 9}; !slices.Equal(got, want) {
+		t.Fatalf("order after a prune = %v, want %v", got, want)
+	}
+	defer func() {
+		if recover() == nil {
+			t.Fatal("dequeue of a job absent from the order did not panic")
+		}
+	}()
+	e.dequeue(jobs[5])
+}
+
+func TestSelectionPassesDoNotCopyTheQueue(t *testing.T) {
+	h := newHarness(t, paced())
+	for seq := uint64(1); seq <= 200; seq++ {
+		h.seed(fmt.Sprintf("t%d", seq), seq, cleanup.PhaseDone)
+	}
+	e := h.build()
+	if err := e.load(); err != nil {
+		t.Fatalf("load() = %v", err)
+	}
+	now := h.clock.Now()
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	for range 100 {
+		if _, ok := e.logicalDue(now); ok {
+			t.Fatal("logicalDue found work among finished jobs")
+		}
+		if _, ok := e.physicalDue(now); ok {
+			t.Fatal("physicalDue found work among finished jobs")
+		}
+		e.wake(true)
+	}
+	runtime.ReadMemStats(&after)
+	if grew := after.TotalAlloc - before.TotalAlloc; grew > 1<<20 {
+		t.Fatalf("100 selection passes over 200 jobs allocated %d bytes, want under 1 MiB: a pass must not copy the queue", grew)
+	}
 }
