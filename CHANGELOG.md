@@ -29,6 +29,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs worktree rm --wait` and `ccx vcs cleanup wait` fail at once on a
+  paused deletion queue.** On Oct 15 a `worktree rm --wait` sat 13 minutes on
+  a job left `pending` by another session's `ccx vcs cleanup pause`, with
+  nothing saying why. Both now fail on the first poll that finds the queue
+  paused, with one line naming `ccx vcs cleanup resume`, and a removal queued
+  during a pause reads `queue paused until ccx vcs cleanup resume`.
+
 - **`ccx vcs pr status` reads the queue as `unknown` when Graphite does not
   answer.** The poll used to leave the pull request without a Graphite record,
   and `pr status` then failed the whole call with "graphite has no record" even

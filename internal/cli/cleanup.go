@@ -282,6 +282,8 @@ func waitCleanupReceipt(ctx context.Context, receipt cleanup.Receipt) error {
 	return err
 }
 
+var errCleanupPaused = errors.New("the deletion queue is paused until ccx vcs cleanup resume")
+
 func waitCleanupJob(ctx context.Context, svc cleanup.Service, id string, seen cleanup.Phase) (cleanup.Job, error) {
 	for delay := cleanupWaitPollFloor; ; delay = min(2*delay, cleanupWaitPollCeiling) {
 		report, err := pollCleanupStatus(ctx, svc, cleanup.Query{JobID: id, Await: true})
@@ -298,6 +300,8 @@ func waitCleanupJob(ctx context.Context, svc cleanup.Service, id string, seen cl
 			return job, nil
 		case job.Blocked != nil && job.Blocked.RetryAt == nil:
 			return job, &cleanup.BlockedError{Job: job}
+		case report.Paused:
+			return job, fmt.Errorf("job %s rests %s: %w", id, job.Phase, errCleanupPaused)
 		}
 		select {
 		case <-ctx.Done():
@@ -411,7 +415,8 @@ func newCleanupWaitCmd() *cobra.Command {
 		Long: `Wait until one job's tree is deleted.
 
 It returns once the job is done, and fails with the blockage when the job stops
-for an operator instead. While it waits, the daemon deletes the job ahead of
+for an operator instead. It fails at once while "ccx vcs cleanup pause" holds the
+queue, naming "ccx vcs cleanup resume". While it waits, the daemon deletes the job ahead of
 every job nobody awaits, at the pace its governor allows. It
 polls the job's status until then, and fails when the daemon leaves any one poll unanswered for ` + cleanupStatusTimeout.String() + `. A socket that is
 missing or refuses, as it does while another ccx replaces the daemon, is polled
