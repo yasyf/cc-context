@@ -29,6 +29,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`--drop-commits` publishes a head that sits behind its published head.**
+  A branch whose top commits were reset away has a local head that is an
+  ancestor of the head it published. The stack run took the published head
+  there whatever `--drop-commits` said, so `ccx vcs stack submit
+  --drop-commits` printed `taking the remote head` and the branch could never
+  drop its top commits; the lane on monorepo #36888 reverted them instead
+  (cci #76726). With the flag the local head is now the one published.
+
 - **A pull request poll reads only what was asked for since the last one.**
   Every `ccx vcs pr status`, `pr state`, and `pr watch` poll used to read
   every pull request leased on the machine in the last 15 minutes. On the

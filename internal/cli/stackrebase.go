@@ -2255,7 +2255,9 @@ func stackSnapshot(ctx context.Context, dir render.Dir, tr vcs.Trunk, s gtBranch
 		}
 		switch {
 		case behind:
-			b.Head = remote
+			if !dropCommits {
+				b.Head = remote
+			}
 		case !ahead && remote != submitted:
 			if s.Head == submitted {
 				restacked, err := stackQueueRestackBase(ctx, dir, pin, remote, submitted)
