@@ -208,6 +208,7 @@ type stackRebaseRun struct {
 	lanePins      []string
 	heldBelow     map[string]string
 	adopted       gtState
+	recorded      map[string]stackRecordedParent
 }
 
 // stackLeft is a branch of the stack a run leaves exactly where it is: an
@@ -268,6 +269,7 @@ type stackRebaseOpts struct {
 	to          string
 	bump        []string
 	keepHeld    bool
+	recorded    map[string]stackRecordedParent
 }
 
 const stackDropCommitsUsage = "publish a branch whose local head drops commits its published head carries"
@@ -369,7 +371,11 @@ for it, the run says so and still moves the local refs and finishes. An open
 pull request GitHub bases elsewhere than its recorded parent is retargeted
 onto that parent, including one the run submitted that Graphite left on its
 graphite-base branch; a refused retarget names the command that finishes it
-and fails the run once the local refs have moved.
+and fails the run once the local refs have moved. A base this clone has no
+branch for, such as one another clone inserted below the branch, is fetched
+and kept as the branch's parent at its published head, tracked onto its own
+pull request's base, when the remote carries it, its pull request is open,
+and the branch's published head sits on it; a run never retargets past it.
 Labels and draft state are never touched: a draft pull request stays a draft.
 
 stack rebase never opens a pull request. A stack none of whose branches has one
@@ -515,6 +521,12 @@ func stackBegin(ctx context.Context, cmd *cobra.Command, l lane, commonDir strin
 	}
 	if err := stackAnnounceHeld(cmd, run); err != nil {
 		return err
+	}
+	for _, child := range slices.Sorted(maps.Keys(run.recorded)) {
+		r := run.recorded[child]
+		if _, err := fmt.Fprintf(cmd.ErrOrStderr(), "stack rebase: fetched %s and kept it as %s's parent — Graphite stacks #%d on it, and this clone had no branch for it\n", r.branch, child, r.pr); err != nil {
+			return err
+		}
 	}
 	if pins := slices.DeleteFunc(slices.Clone(run.lanePins), func(name string) bool {
 		return run.branch(name) == nil || !run.branch(name).Pinned || run.heldBelow[name] != ""
@@ -1052,7 +1064,16 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 		return nil, err
 	}
 	maps.Copy(adopted, parents)
-	retargeted := stackRetargeted(state, overrides)
+	recorded, err := stackAdoptRecordedParents(ctx, l.dir(), tr, state, o.recorded)
+	if err != nil {
+		return nil, err
+	}
+	maps.Copy(adopted, recorded)
+	parentOverrides := maps.Clone(overrides)
+	for child, r := range o.recorded {
+		parentOverrides[child] = r.branch
+	}
+	retargeted := stackRetargeted(state, parentOverrides)
 	seeds := append(slices.Sorted(maps.Keys(overrides)), o.landed...)
 	if current != "" && current != trunk {
 		seeds = append([]string{current}, seeds...)
@@ -1081,7 +1102,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	}
 	if !o.noPush {
 		planned := members
-		if members, roots, err = stackWithPublishedParents(ctx, l.dir(), retargeted, submitted, trunk, members, roots, overrides); err != nil {
+		if members, roots, err = stackWithPublishedParents(ctx, l.dir(), retargeted, submitted, trunk, members, roots, parentOverrides); err != nil {
 			return nil, err
 		}
 		if o.submit && !o.otherLanes {
@@ -1126,7 +1147,28 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 		return nil, err
 	}
 	stackMarkParked(prs, submitted)
-	members, left, passed, err := stackKept(ctx, l.dir(), state, tr, current, members, prs, overrides, o.landed)
+	found, err := stackFetchRecordedParents(ctx, l.dir(), tr, retargeted, members, parentOverrides, prs)
+	if err != nil {
+		return nil, err
+	}
+	if len(found) > 0 {
+		requested.recorded = maps.Clone(o.recorded)
+		if requested.recorded == nil {
+			requested.recorded = map[string]stackRecordedParent{}
+		}
+		for _, child := range slices.Sorted(maps.Keys(found)) {
+			r := found[child]
+			requested.recorded[child] = r
+			if requested.members != nil {
+				requested.members = slices.Insert(requested.members, max(slices.Index(requested.members, child), 0), r.branch)
+			}
+			if !slices.Contains(o.include, r.branch) {
+				requested.pinned = append(requested.pinned, r.branch)
+			}
+		}
+		return stackPlan(ctx, l, commonDir, requested)
+	}
+	members, left, passed, err := stackKept(ctx, l.dir(), state, tr, current, members, prs, parentOverrides, o.landed)
 	if err != nil {
 		return nil, err
 	}
@@ -1147,7 +1189,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	if err != nil {
 		return nil, fmt.Errorf("stack rebase: %w", err)
 	}
-	run := &stackRebaseRun{Trunk: trunk, Pin: pin, NoPush: o.noPush, Origin: l.checkout.Root, Draft: o.draft, DraftAll: o.draftAll, NoVerify: o.noVerify, Tip: o.tip, TipOnly: o.tipOnly, DropCommits: o.dropCommits, StayClean: o.stayClean, Restack: o.restack, AllLanes: o.allLanes, To: o.to, NewPRs: o.newPRs, deferPush: o.deferPush, Ship: o.ship, Roots: roots, Pid: os.Getpid(), Started: stackProcStart(os.Getpid()), Host: host, left: left, lanePins: lanePins, heldBelow: heldBelow, adopted: adopted}
+	run := &stackRebaseRun{Trunk: trunk, Pin: pin, NoPush: o.noPush, Origin: l.checkout.Root, Draft: o.draft, DraftAll: o.draftAll, NoVerify: o.noVerify, Tip: o.tip, TipOnly: o.tipOnly, DropCommits: o.dropCommits, StayClean: o.stayClean, Restack: o.restack, AllLanes: o.allLanes, To: o.to, NewPRs: o.newPRs, deferPush: o.deferPush, Ship: o.ship, Roots: roots, Pid: os.Getpid(), Started: stackProcStart(os.Getpid()), Host: host, left: left, lanePins: lanePins, heldBelow: heldBelow, adopted: adopted, recorded: o.recorded}
 	own := map[string]bool{}
 	if current != "" && current != trunk {
 		down, err := gtDownstack(stackRebasePrefix, retargeted, current, trunk)
@@ -1277,7 +1319,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 		if _, member := byName[b.Parent]; b.Parent != trunk && !member {
 			b.Parent = stackPassThrough(passed, state[name].Parents[0].Ref)
 		}
-		if p, ok := overrides[name]; ok {
+		if p, ok := parentOverrides[name]; ok {
 			b.Parent = p
 		}
 		if _, member := byName[b.Parent]; b.Parent != trunk && !member {
@@ -1366,7 +1408,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 				if b.OldBase, err = stackOldBase(ctx, l.dir(), tr, pin, state, b, byName); err != nil {
 					return nil, err
 				}
-				if _, named := overrides[name]; named {
+				if _, moved := parentOverrides[name]; moved {
 					if b.OldBase, err = stackPastCarried(ctx, l.dir(), state, b); err != nil {
 						return nil, err
 					}
@@ -1759,6 +1801,95 @@ func stackAdoptUntrackedParents(ctx context.Context, dir render.Dir, commonDir s
 	return adopted, nil
 }
 
+type stackRecordedParent struct {
+	branch, parent string
+	pr             int
+}
+
+func stackFetchRecordedParents(ctx context.Context, dir render.Dir, tr vcs.Trunk, state gtState, members []string, overrides map[string]string, prs map[string]*stackPR) (map[string]stackRecordedParent, error) {
+	bases := map[string]string{}
+	for _, name := range members {
+		pr := prs[name]
+		if _, named := overrides[name]; named || pr == nil || pr.State != "OPEN" {
+			continue
+		}
+		base := pr.base()
+		if _, tracked := state[base]; tracked || base == "" || base == state[name].Parents[0].Ref || strings.HasPrefix(base, "graphite-base/") {
+			continue
+		}
+		local, err := gitRefExists(ctx, dir, stackRebasePrefix, gtRestackRef(base))
+		if err != nil {
+			return nil, err
+		}
+		if !local {
+			bases[name] = base
+		}
+	}
+	if len(bases) == 0 {
+		return nil, nil
+	}
+	children := slices.Sorted(maps.Keys(bases))
+	missing := slices.Compact(slices.Sorted(maps.Values(bases)))
+	heads, err := stackRemoteHeads(ctx, dir, stackRebasePrefix, tr.Remote(), slices.Concat(children, missing), "")
+	if err != nil {
+		return nil, err
+	}
+	parents, err := stackPRs(ctx, dir, tr.Name(), missing)
+	if err != nil {
+		return nil, fmt.Errorf("stack rebase: read the pull requests of the branches Graphite stacks this one on: %w", err)
+	}
+	found := map[string]stackRecordedParent{}
+	fetched := map[string]bool{}
+	for _, child := range children {
+		base := bases[child]
+		pr := parents[base]
+		if heads[base] == "" || heads[child] == "" || pr == nil || pr.State != "OPEN" {
+			continue
+		}
+		on, err := gitIsAncestor(ctx, dir, stackRebasePrefix, heads[base], heads[child])
+		if err != nil {
+			return nil, err
+		}
+		if !on {
+			continue
+		}
+		if _, tracked := state[pr.base()]; !tracked {
+			return nil, fmt.Errorf("stack rebase: Graphite stacks %s's pull request #%d on %s and %s on %s, and this clone has no branch for either — fetch each with git fetch %s refs/heads/<branch>:refs/heads/<branch>, track them bottom-up with gt track <branch> --parent <parent>, then re-run",
+				child, prs[child].Number, base, base, pr.base(), tr.Remote())
+		}
+		if !fetched[base] {
+			if _, err := render.RunCLI(ctx, dir, "git", []string{"branch", "--no-track", base, heads[base]}); err != nil {
+				return nil, fmt.Errorf("stack rebase: git branch %s %s: %w", base, shortOID(heads[base]), err)
+			}
+			fetched[base] = true
+		}
+		found[child] = stackRecordedParent{branch: base, parent: pr.base(), pr: prs[child].Number}
+	}
+	return found, nil
+}
+
+func stackAdoptRecordedParents(ctx context.Context, dir render.Dir, tr vcs.Trunk, state gtState, recorded map[string]stackRecordedParent) (gtState, error) {
+	adopted := gtState{}
+	for _, child := range slices.Sorted(maps.Keys(recorded)) {
+		r := recorded[child]
+		head, err := gtRestackHead(ctx, stackRebasePrefix, dir, r.branch)
+		if err != nil {
+			return nil, err
+		}
+		floor := string(tr.Ref())
+		if r.parent != tr.Name() {
+			floor = gtRestackRef(r.parent)
+		}
+		base, err := stackMergeBase(ctx, dir, head, floor)
+		if err != nil {
+			return nil, err
+		}
+		adopted[r.branch] = gtBranchState{Head: head, Parents: []gtRef{{Ref: r.parent, SHA: base}}}
+		state[r.branch] = adopted[r.branch]
+	}
+	return adopted, nil
+}
+
 func stackTrackAdopted(ctx context.Context, commonDir string, run *stackRebaseRun) error {
 	moves := map[string]string{}
 	for _, child := range slices.Sorted(maps.Keys(run.adopted)) {
@@ -1769,6 +1900,9 @@ func stackTrackAdopted(ctx context.Context, commonDir string, run *stackRebaseRu
 		if parent := s.Parents[0].Ref; parent != run.Trunk {
 			moves[child] = parent
 		}
+	}
+	for child, r := range run.recorded {
+		moves[child] = r.branch
 	}
 	if err := gtmeta.Reparent(ctx, commonDir, moves); err != nil {
 		return fmt.Errorf("stack rebase: %w", err)
