@@ -580,8 +580,8 @@ func rest190() map[string]reply {
 		"/repos/yasyf/cc-context/pulls/190": {body: `{"number":190,"state":"open","merged":false,"title":"title of #190","created_at":"2026-09-29T20:00:00Z",` +
 			`"draft":false,"changed_files":3,"mergeable":false,"mergeable_state":"dirty","merge_commit_sha":"d4d4","user":{"login":"yasyf"},` +
 			`"base":{"ref":"main"},"head":{"ref":"yasyf/gh-budget/pr-190","sha":"` + restHead + `"},"labels":[{"name":"merge"}]}`},
-		"/repos/yasyf/cc-context/pulls/190/reviews": {body: `[{"state":"CHANGES_REQUESTED","user":{"login":"ann"}},{"state":"COMMENTED","user":{"login":"bob"}},` +
-			`{"state":"APPROVED","user":{"login":"bob"}},{"state":"APPROVED","user":{"login":"ann"}},{"state":"APPROVED","user":{"login":"cat"}},{"state":"DISMISSED","user":{"login":"cat"}}]`},
+		"/repos/yasyf/cc-context/pulls/190/reviews": {body: `[{"state":"CHANGES_REQUESTED","user":{"login":"ann"}},{"state":"COMMENTED","user":{"login":"bob[bot]"}},` +
+			`{"state":"APPROVED","user":{"login":"bob[bot]"}},{"state":"APPROVED","user":{"login":"ann"}},{"state":"APPROVED","user":{"login":"cat"}},{"state":"DISMISSED","user":{"login":"cat"}}]`},
 		"/repos/yasyf/cc-context/commits/" + restHead + "/check-runs": {body: `{"total_count":2,"check_runs":[{"name":"test","status":"completed","conclusion":"success"},` +
 			`{"name":"lint","status":"in_progress","conclusion":null}]}`},
 		"/repos/yasyf/cc-context/commits/" + restHead + "/status": {body: `{"state":"success","total_count":1,"statuses":[{"context":"buildkite/test","state":"success"}]}`},

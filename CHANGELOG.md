@@ -56,7 +56,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   comment. Queue state still comes from Graphite. Those records carry
   `"source": "REST"`, and `pr status` ends their lines with `· via REST`.
   A read that no poll answers within 30 seconds also goes to REST. Before,
-  it could wait out another process's poll and then run one of its own.
+  it could wait out another process's poll and then run one of its own. REST
+  names an app reviewer `forge-pr-reviewer[bot]`. The fallback drops the
+  `[bot]` suffix, so it names reviewers the same way GraphQL does.
 
 - **The cleanup daemon no longer copies and sorts its whole queue on every
   scheduling pass.** Picking the next job, the next physical deletion, and the
