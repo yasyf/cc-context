@@ -226,7 +226,7 @@ The daemon slows to at most 100 entries a second in three cases:
 | `cleanup status` governor | Cause | Lifts |
 | --- | --- | --- |
 | `throttled at N% cpu` | Deletion pushed `fseventsd` more than half a core over its ambient load | After three samples within a quarter core of that load |
-| `throttled at N% cpu: slices stalled past twice their time budget` | A slice took 100ms or more since the last sample, which takes one operation on the volume stalling for a whole 50ms | After three samples that each ran a slice, none of them stalled |
+| `throttled at N% cpu: slices stalled past twice their time budget` | A slice took 100ms or more, which takes one operation on the volume stalling for a whole 50ms. The floor starts with that slice's own rest, not at the next sample | After three samples that each ran a slice, none of them stalled |
 | `unavailable: <error>` | `fseventsd` could not be sampled | One sample after `fseventsd` reads again; deletion waits out that 5s interval |
 
 A slice that ends at its 50ms is the budget working, and does not throttle.

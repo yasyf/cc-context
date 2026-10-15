@@ -245,8 +245,8 @@ func TestOnlyAStalledSliceHoldsTheFloorUntilThreeSamplesRunClean(t *testing.T) {
 		stepsTake(slow, 100*time.Millisecond)
 		h.clock.Advance(4950 * time.Millisecond)
 		h.expectEvents("sample", "step:a")
-		h.expectTimers(300 * time.Millisecond)
-		expectGovernor(cleared)
+		h.expectTimers(900 * time.Millisecond)
+		expectGovernor(stalled)
 
 		h.clock.Advance(4900 * time.Millisecond)
 		h.expectEvents("sample", "step:a")
