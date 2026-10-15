@@ -29,6 +29,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The pull-request REST fallback reads as the user when the app's quota is
+  spent.** On Oct 15 `ccx vcs pr status` refused with `403 API rate limit
+  exceeded for installation ID 140742353` while the gh user's token still had
+  budget, because the REST fallback reused the exhausted GitHub App
+  installation token. A REST read the installation's quota refuses now retries
+  once with the user's token when that token has more than 100 REST requests
+  left. Otherwise, the refusal names the spent installation quota and the
+  user's remaining requests, each with its reset time.
+
 - **`ccx vcs worktree rm --wait` and `ccx vcs cleanup wait` fail at once on a
   paused deletion queue.** On Oct 15 a `worktree rm --wait` sat 13 minutes on
   a job left `pending` by another session's `ccx vcs cleanup pause`, with

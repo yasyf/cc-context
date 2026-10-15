@@ -71,7 +71,8 @@ func (c *Client) ForRepo(nameWithOwner string) *Client {
 	return &bound
 }
 
-func (c *Client) asUser() *Client {
+// AsUser returns a copy of c whose reads keep the user's token.
+func (c *Client) AsUser() *Client {
 	user := *c
 	user.repo = ""
 	return &user
@@ -147,7 +148,7 @@ func GraphQL[T any](ctx context.Context, c *Client, query string, variables map[
 		return out, fmt.Errorf("ghapi: decode graphql response: %w", err)
 	}
 	if asApp && slices.ContainsFunc(resp.Errors, func(m GraphQLMessage) bool { return m.Type == "FORBIDDEN" }) {
-		return GraphQL[T](ctx, c.asUser(), query, variables)
+		return GraphQL[T](ctx, c.AsUser(), query, variables)
 	}
 	if len(resp.Errors) > 0 {
 		wait, exhausted := quotaReset(header, time.Now())
@@ -207,7 +208,9 @@ func (c *Client) do(ctx context.Context, method, ref string, body []byte, read b
 			continue
 		}
 		if status < 200 || status > 299 {
-			return nil, nil, false, statusError(method, target, status, header, payload, time.Now())
+			refusal := statusError(method, target, status, header, payload, time.Now())
+			refusal.AsApp = asApp
+			return nil, nil, false, refusal
 		}
 		return payload, header, asApp, nil
 	}

@@ -27,6 +27,7 @@ var (
 // StatusError is a request that reached GitHub and came back non-2xx. It
 // unwraps to ErrNotFound on 404 and ErrUnauthorized on 401. Limited marks a
 // rate-limit refusal, primary or secondary, and RetryAfter the wait it named.
+// AsApp marks a response to the GitHub App installation's token.
 type StatusError struct {
 	Method     string
 	URL        string
@@ -34,6 +35,7 @@ type StatusError struct {
 	Message    string
 	Limited    bool
 	RetryAfter time.Duration
+	AsApp      bool
 }
 
 func (e *StatusError) Error() string {

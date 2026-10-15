@@ -80,6 +80,43 @@ type restCompare struct {
 }
 
 func (g *GitHub) pollREST(ctx context.Context, numbers []int, prev map[int]PR, trunk string) (poll, error) {
+	p, err := g.restPass(ctx, numbers, prev, trunk)
+	var refusal *ghapi.StatusError
+	if !errors.As(err, &refusal) || !refusal.AsApp || !refusal.Limited {
+		return p, err
+	}
+	quota, qerr := g.gh.UserRESTQuota(ctx)
+	if qerr != nil {
+		return p, fmt.Errorf("%w; reading the user token's quota failed: %w", err, qerr)
+	}
+	now := time.Now().UTC()
+	if refused := userFallback(refusal, quota, now); refused != nil {
+		return p, refused
+	}
+	spent := appSpent(refusal, now)
+	_, _ = fmt.Fprintf(g.warn, "prstate: %s; reading as the user, %d requests left\n", spent, quota.Remaining)
+	user := *g
+	user.gh = g.gh.AsUser()
+	p, err = user.restPass(ctx, numbers, prev, trunk)
+	if err != nil {
+		return p, fmt.Errorf("%s; reading as the user failed: %w", spent, err)
+	}
+	return p, nil
+}
+
+func userFallback(refusal *ghapi.StatusError, quota ghapi.Quota, now time.Time) error {
+	if quota.Remaining > rateFloor {
+		return nil
+	}
+	return fmt.Errorf("%s and the user token has %d requests left, at or under the floor of %d, until %s: %w",
+		appSpent(refusal, now), quota.Remaining, rateFloor, quota.ResetAt.UTC().Format(time.RFC3339), refusal)
+}
+
+func appSpent(refusal *ghapi.StatusError, now time.Time) string {
+	return "the app installation's REST quota is spent until " + now.Add(refusal.RetryAfter).Format(time.RFC3339)
+}
+
+func (g *GitHub) restPass(ctx context.Context, numbers []int, prev map[int]PR, trunk string) (poll, error) {
 	ctx, cancel := context.WithTimeout(ctx, restDeadline)
 	defer cancel()
 	infos, mergeability := g.queueRecords(ctx, numbers)
