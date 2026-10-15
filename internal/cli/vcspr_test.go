@@ -784,3 +784,16 @@ func TestPRVerdict(t *testing.T) {
 		})
 	}
 }
+
+func TestPRStatusMarksALineReadThroughREST(t *testing.T) {
+	t.Parallel()
+	report := prStatusReport{
+		prQueueReport: prQueueReport{Number: 37837, Queue: prQueueNotQueued, State: "OPEN", Source: prstate.SourceREST},
+		CI:            &prCIReport{State: prCIGreen},
+		Approval:      prApprovalReport{State: prApproved, Approvers: []string{"poetic-svc"}},
+		Verdict:       prVerdictLandable,
+	}
+	if got, want := renderPRQueue([]prStatusReport{report}), "#37837  not queued · open · ci green · approved by poetic-svc · landable · via REST\n"; got != want {
+		t.Errorf("line = %q, want %q", got, want)
+	}
+}

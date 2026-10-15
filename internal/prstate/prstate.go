@@ -38,6 +38,9 @@ const (
 	// ActivityHeading opens the merge activity comment Graphite's queue edits in
 	// place on each pull request it handles.
 	ActivityHeading = "### Merge activity"
+	// SourceREST marks a record read through GitHub's REST API after a
+	// GraphQL poll failed.
+	SourceREST = "REST"
 
 	leaseTTL         = 15 * time.Minute
 	keepFor          = 24 * time.Hour
@@ -104,6 +107,7 @@ type PR struct {
 	// GitHub still shows another; HeadRefOid and the checks stay GitHub's.
 	PushedHead string    `json:"pushedHead,omitempty"`
 	PushedAt   time.Time `json:"pushedAt,omitzero"`
+	Source     string    `json:"source,omitempty"`
 }
 
 // Review is one reviewer's latest approving or change-requesting review.
@@ -233,8 +237,10 @@ func Open(root string, src *GitHub) (*Store, error) {
 // their last push fetches just those at once, leaving the shared poll's
 // schedule alone. Otherwise, inside MinInterval of the last poll a read sleeps,
 // so concurrent readers share the next poll, and a poll claimed after the read
-// began answers it however long that poll takes. No read holds a lock across a
-// request, and a read of fresh records takes none.
+// began answers it however long that poll takes. A read whose poll failed, or
+// that finds the last poll failed, reads what it wants through REST instead.
+// No read holds a lock across a request, and a read of fresh records takes
+// none.
 func (s *Store) Read(ctx context.Context, want Want) (State, error) {
 	return s.readFor(ctx, want, true)
 }
@@ -307,14 +313,13 @@ func (s *Store) read(ctx context.Context, want Want, asked time.Time, waited boo
 	if prs, ok := st.unpolled(want, asked); ok && st.Failure == nil {
 		st, err := s.fetch(ctx, Want{PRs: prs}, st.PRs, now, false)
 		if err != nil {
-			return st, 0, err
+			return s.degrade(ctx, st, want, asked, now, err)
 		}
 		return st, 0, s.verdict(st, want, asked)
 	}
-	if next := st.AttemptedAt.Add(MinInterval); now.Before(next) {
-		if f := st.Failure; f != nil && waited {
-			return st, 0, fmt.Errorf("the poll at %s failed, and the next goes out at %s: %s",
-				f.At.UTC().Format(time.RFC3339), next.UTC().Format(time.RFC3339), f.Reason)
+	if next := st.AttemptedAt.Add(MinInterval); now.Before(next) || waited && st.Failure != nil {
+		if f := st.Failure; f != nil {
+			return s.degrade(ctx, st, want, asked, now, fmt.Errorf("the poll at %s failed: %s", f.At.UTC().Format(time.RFC3339), f.Reason))
 		}
 		return st, next.Sub(now), nil
 	}
@@ -327,14 +332,43 @@ func (s *Store) read(ctx context.Context, want Want, asked time.Time, waited boo
 	}
 	req := st.request(now)
 	if st, err = s.fetch(ctx, req, st.PRs, now, true); err != nil {
-		return st, 0, err
+		return s.degrade(ctx, st, want, asked, now, err)
 	}
 	if unread := st.unread(req.Prefixes, now); len(unread) > 0 && st.Backoff == nil {
 		if st, err = s.fetch(ctx, Want{PRs: unread}, st.PRs, now, true); err != nil {
-			return st, 0, err
+			return s.degrade(ctx, st, want, asked, now, err)
 		}
 	}
 	return st, 0, s.verdict(st, want, asked)
+}
+
+func (s *Store) degrade(ctx context.Context, st State, want Want, asked, now time.Time, cause error) (State, time.Duration, error) {
+	if _, limited := errors.AsType[*LimitedError](cause); limited || ctx.Err() != nil {
+		return st, 0, cause
+	}
+	prs := slices.Clone(want.PRs)
+	for _, prefix := range want.Prefixes {
+		lane, ok := st.Lanes[prefix]
+		if !ok {
+			return st, 0, cause
+		}
+		prs = append(prs, lane.PRs...)
+	}
+	slices.Sort(prs)
+	prs = slices.DeleteFunc(slices.Compact(prs), func(n int) bool { return st.fresh(Want{PRs: []int{n}}, asked) })
+	_, _ = fmt.Fprintf(s.src.warn, "prstate: %v; reading %d pull requests through REST\n", cause, len(prs))
+	p, err := s.src.pollREST(ctx, prs, st.PRs, st.Trunk.Name)
+	if err != nil {
+		return st, 0, fmt.Errorf("%w; the REST fallback failed too: %w", cause, err)
+	}
+	st, err = s.commit(ctx, func(st *State) bool {
+		st.merge(p, now)
+		return true
+	})
+	if err != nil {
+		return st, 0, err
+	}
+	return st, 0, s.verdict(st, Want{PRs: want.PRs}, asked)
 }
 
 func (s *Store) verdict(st State, want Want, asked time.Time) error {
@@ -647,22 +681,8 @@ func (st *State) absorb(p poll, now time.Time) {
 	if newest {
 		st.PolledAt, st.Trunk, st.Rate = now, p.trunk, p.rate
 	}
-	if st.PRs == nil {
-		st.PRs = map[int]PR{}
-	}
 	if st.Lanes == nil {
 		st.Lanes = map[string]Lane{}
-	}
-	for n, pr := range p.prs {
-		was := st.PRs[n]
-		if was.PolledAt.After(now) {
-			continue
-		}
-		pr.PolledAt = now
-		if was.PushedHead != "" && pr.HeadRefOid != was.PushedHead && now.Sub(was.PushedAt) < pushLag {
-			pr.PushedHead, pr.PushedAt = was.PushedHead, was.PushedAt
-		}
-		st.PRs[n] = pr
 	}
 	for prefix, prs := range p.lanes {
 		if st.Lanes[prefix].PolledAt.After(now) {
@@ -675,13 +695,7 @@ func (st *State) absorb(p poll, now time.Time) {
 			}
 		}
 	}
-	for _, n := range p.missing {
-		if was := st.PRs[n]; was.PolledAt.After(now) || was.PushedAt.After(now) {
-			continue
-		}
-		delete(st.Leases.PRs, n)
-		delete(st.PRs, n)
-	}
+	st.merge(p, now)
 	for n, at := range st.Leases.PRs {
 		if now.Sub(at) >= leaseTTL {
 			delete(st.Leases.PRs, n)
@@ -700,6 +714,30 @@ func (st *State) absorb(p poll, now time.Time) {
 	}
 	if newest && (st.Backoff == nil || !st.Backoff.Since.After(now)) {
 		st.Backoff = quotaBackoff(p.rate, now)
+	}
+}
+
+func (st *State) merge(p poll, now time.Time) {
+	if st.PRs == nil {
+		st.PRs = map[int]PR{}
+	}
+	for n, pr := range p.prs {
+		was := st.PRs[n]
+		if was.PolledAt.After(now) {
+			continue
+		}
+		pr.PolledAt = now
+		if was.PushedHead != "" && pr.HeadRefOid != was.PushedHead && now.Sub(was.PushedAt) < pushLag {
+			pr.PushedHead, pr.PushedAt = was.PushedHead, was.PushedAt
+		}
+		st.PRs[n] = pr
+	}
+	for _, n := range p.missing {
+		if was := st.PRs[n]; was.PolledAt.After(now) || was.PushedAt.After(now) {
+			continue
+		}
+		delete(st.Leases.PRs, n)
+		delete(st.PRs, n)
 	}
 }
 

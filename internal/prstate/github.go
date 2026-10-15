@@ -16,7 +16,10 @@ import (
 )
 
 const (
-	chunkSize = 40
+	chunkSize        = 40
+	pollDeadline     = 30 * time.Second
+	graphqlDeadline  = 20 * time.Second
+	graphiteDeadline = 10 * time.Second
 
 	prFields = "number state title createdAt author { login } isDraft baseRefName headRefName headRefOid mergeable mergeStateStatus " +
 		"reviewDecision latestOpinionatedReviews(first: 20) { nodes { state author { login } } } changedFiles mergeCommit { oid } labels(first: 50) { nodes { name } } " +
@@ -153,6 +156,8 @@ func (g *GitHub) probe(ctx context.Context) (Rate, error) {
 }
 
 func (g *GitHub) poll(ctx context.Context, req Want, prev map[int]PR) (poll, error) {
+	ctx, cancel := context.WithTimeout(ctx, pollDeadline)
+	defer cancel()
 	infos, mergeability := g.queueRecords(ctx, req.PRs)
 	p := pass{GitHub: g, prev: prev, infos: infos, mergeability: mergeability, out: poll{prs: make(map[int]PR, len(req.PRs)), lanes: map[string][]int{}}}
 	targets := make([]target, 0, len(req.PRs))
@@ -202,6 +207,8 @@ func (p *pass) target(n int) target {
 }
 
 func (p *pass) chunk(ctx context.Context, chunk []target, first bool, prefixes []string) error {
+	ctx, cancel := context.WithTimeout(ctx, graphqlDeadline)
+	defer cancel()
 	resp, err := p.query(ctx, chunk, first, prefixes)
 	var gql *ghapi.GraphQLError
 	if errors.As(err, &gql) {
@@ -380,6 +387,8 @@ func (g *GitHub) queueRecords(ctx context.Context, numbers []int) (map[int]*gtap
 	if len(numbers) == 0 || g.gt == nil {
 		return nil, nil
 	}
+	ctx, cancel := context.WithTimeout(ctx, graphiteDeadline)
+	defer cancel()
 	infos, err := g.gt.PullRequestInfo(ctx, gtapi.PullRequestInfoRequest{
 		RepoOwner:  g.owner,
 		RepoName:   g.name,
