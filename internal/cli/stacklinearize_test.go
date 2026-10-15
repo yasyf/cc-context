@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yasyf/cc-context/internal/gtapi"
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
@@ -18,7 +19,8 @@ func linearizeRemoteHeads(t *testing.T, f *vcstest.Fixture, branches ...string) 
 	return heads
 }
 
-func TestStackRebaseLinearizeRefusesAPushThatMergesAnOpenPullRequest(t *testing.T) {
+func linearizeBelowItsBase(t *testing.T) (*vcstest.Fixture, *gtAPIStub, map[string]string) {
+	t.Helper()
 	f := shipGTRepo(t)
 	api := stubGTAPI(t)
 	f.Decorate(api.ctx)
@@ -30,32 +32,65 @@ func TestStackRebaseLinearizeRefusesAPushThatMergesAnOpenPullRequest(t *testing.
 	stubOpenPRs(t, f, nil, "s15b", "s14b", "s13b", "i11b")
 	before := linearizeRemoteHeads(t, f, "s15b", "s14b", "s13b", "i11b")
 	shipResetLog(t, f)
+	return f, api, before
+}
 
-	_, _, err := runStackCmd(t, f, "rebase", "--parent", "s14b=main", "--linearize", "s14b,s13b,i11b,s15b")
-	if err == nil {
-		t.Fatal("linearize pushed a stack that makes GitHub merge #29 into s15b")
-	}
-	if want := "#29 (s14b) into s15b"; !strings.Contains(err.Error(), want) {
-		t.Errorf("refusal = %q, want it to name %q", err, want)
-	}
-	if refs := gtPushedRefs(shipGTInvocations(t, f)); len(refs) != 0 {
-		t.Errorf("pushed %v before refusing", refs)
-	}
-	if after := linearizeRemoteHeads(t, f, "s15b", "s14b", "s13b", "i11b"); !maps.Equal(before, after) {
-		t.Errorf("remote heads moved from %v to %v", before, after)
+func TestStackRebaseLinearizeRetargetsAPullRequestThePushWouldMerge(t *testing.T) {
+	f, api, before := linearizeBelowItsBase(t)
+	writeShipGH(t, f)
+	var s14b []gtStubSubmitEntry
+	var remoteAtRetarget map[string]string
+	api.onSubmit = func(entry gtStubSubmitEntry) {
+		if entry.Head != "s14b" {
+			return
+		}
+		if s14b == nil {
+			remoteAtRetarget = linearizeRemoteHeads(t, f, "s15b", "s14b", "s13b", "i11b")
+		}
+		s14b = append(s14b, entry)
 	}
 
-	api.mu.Lock()
-	api.bases["s14b"] = "main"
-	api.mu.Unlock()
-	if _, errOut, err := runStackCmd(t, f, "continue"); err != nil {
-		t.Fatalf("continue after retargeting #29 onto main: %v (stderr=%q)", err, errOut)
+	_, errOut, err := runStackCmd(t, f, "rebase", "--parent", "s14b=main", "--linearize", "s14b,s13b,i11b,s15b")
+	if err != nil {
+		t.Fatalf("linearize: %v (stderr=%q)", err, errOut)
+	}
+	if want := "retargeted #29 (s14b) from s15b onto main"; !strings.Contains(errOut, want) {
+		t.Errorf("stderr = %q, want it to name %q", errOut, want)
+	}
+	if !maps.Equal(remoteAtRetarget, before) {
+		t.Errorf("remote heads were %v when #29 was retargeted, want %v: the retarget must precede the push", remoteAtRetarget, before)
+	}
+	if len(s14b) < 2 {
+		t.Fatalf("s14b was submitted %d times, want the retarget and the submit after the push", len(s14b))
+	}
+	if retarget := s14b[0]; retarget.Action != gtapi.SubmitUpdate || retarget.PRNumber != 29 || retarget.Base != "main" || retarget.HeadSha != before["s14b"] {
+		t.Errorf("first s14b submit = %+v, want an update of #29 onto main at its pushed head %s", retarget, before["s14b"])
+	}
+	for _, inv := range shipGTInvocations(t, f) {
+		if slices.Contains(inv, "PATCH") {
+			t.Errorf("retargeted through GitHub though Graphite took the submit: %v", inv)
+		}
 	}
 	if after := linearizeRemoteHeads(t, f, "s15b", "s14b", "s13b", "i11b"); maps.Equal(before, after) {
-		t.Error("continue pushed nothing after the retarget")
+		t.Error("linearize pushed nothing")
 	}
 	if !stackOnto(t, f, "i11b", "s15b") {
 		t.Error("s15b does not sit on i11b")
+	}
+}
+
+func TestStackRebaseLinearizeRetargetsThroughGitHubWhenGraphiteRefuses(t *testing.T) {
+	f, api, before := linearizeBelowItsBase(t)
+	writeShipGH(t, f)
+	api.refuseOnce["s14b"] = "Pull request not found"
+
+	_, errOut, err := runStackCmd(t, f, "rebase", "--parent", "s14b=main", "--linearize", "s14b,s13b,i11b,s15b")
+	if err != nil {
+		t.Fatalf("linearize: %v (stderr=%q)", err, errOut)
+	}
+	dropStep(t, shipGTInvocations(t, f), "gh", "PATCH", "repos/yasyf/cc-context/pulls/29", "base=main")
+	if after := linearizeRemoteHeads(t, f, "s15b", "s14b", "s13b", "i11b"); maps.Equal(before, after) {
+		t.Error("linearize pushed nothing")
 	}
 }
 

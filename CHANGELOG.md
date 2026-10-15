@@ -38,6 +38,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Graphite answered for but does not know still fails as before. `pr state`
   records carry `queueUnknown` for the same case.
 
+- **`stack rebase --linearize` and `stack continue` retarget a pull request
+  that moves below its base themselves.** When a reorder puts a branch below
+  the base its pull request targets, the push would leave that base holding
+  the pull request's head, which GitHub reads as merged. The publication
+  used to refuse and print `gh pr edit <n> --base <trunk>` for a person to
+  run, as on monorepo #37145. It now moves each such pull request onto trunk
+  before the push, through the Graphite submit that records the stack, and
+  names the move on stderr. The submit after the push gives every pull request
+  its real base. When Graphite refuses the entry, a GitHub base edit moves the
+  pull request onto trunk instead.
+
 - **`ccx vcs worktree rm` no longer refuses a tree over tool droppings.**
   Untracked watchman cookie files at the tree's root and a pr-watcher state
   directory `.git-pr-watch/` no longer count as uncommitted changes. A clean,

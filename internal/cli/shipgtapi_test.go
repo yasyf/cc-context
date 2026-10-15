@@ -49,10 +49,12 @@ type gtAPIStub struct {
 	nextPR        int
 	// parked maps a branch to the graphite-base branch pre-submit moved its
 	// pull request onto; remote reads and writes that branch on origin.
-	parked   map[string]string
-	remote   func(args ...string) string
-	bases    map[string]string
-	recorded map[string]string
+	parked     map[string]string
+	remote     func(args ...string) string
+	bases      map[string]string
+	recorded   map[string]string
+	onSubmit   func(entry gtStubSubmitEntry)
+	refuseOnce map[string]string
 	// unrecorded counts, per branch, the coming submits Graphite answers for
 	// without adding a version, as it did for #30280 after a restack push.
 	unrecorded map[string]int
@@ -160,6 +162,7 @@ func newGTAPIStub(t *testing.T) *gtAPIStub {
 		parked:       map[string]string{},
 		bases:        map[string]string{},
 		recorded:     map[string]string{},
+		refuseOnce:   map[string]string{},
 		unrecorded:   map[string]int{},
 		nextPR:       100,
 	}
@@ -333,6 +336,15 @@ func (s *gtAPIStub) submit(w http.ResponseWriter, r *http.Request) {
 	}
 	s.submits = append(s.submits, gtStubSubmit{body: body, entry: entry, unrecorded: unrecorded})
 	s.requireSubmitFields(entry)
+	if s.onSubmit != nil {
+		s.onSubmit(entry)
+	}
+	if message := s.refuseOnce[entry.Head]; message != "" {
+		delete(s.refuseOnce, entry.Head)
+		s.submits = s.submits[:len(s.submits)-1]
+		s.write(w, map[string]any{"prs": []map[string]any{{"head": entry.Head, "status": "error", "error": message}}})
+		return
+	}
 
 	if message := s.submitErrors[entry.Head]; message != "" {
 		s.write(w, map[string]any{"prs": []map[string]any{{"head": entry.Head, "status": "error", "error": message}}})

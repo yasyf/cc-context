@@ -4,19 +4,19 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
+	"io"
 
 	"github.com/yasyf/cc-context/internal/gtapi"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcs"
 )
 
-func gtRefuseMergingPush(ctx context.Context, dir render.Dir, s gtSubmit, tr vcs.Trunk, plan []gtSubmitBranch, known map[string]gtapi.PullRequestInfo) error {
+func gtMergingPushes(ctx context.Context, dir render.Dir, s gtSubmit, plan []gtSubmitBranch, known map[string]gtapi.PullRequestInfo) ([]gtSubmitBranch, error) {
 	pushed := make(map[string]string, len(plan))
 	for _, b := range plan {
 		pushed[b.name] = b.head
 	}
-	var merged, numbers []string
+	var merging []gtSubmitBranch
 	for _, b := range plan {
 		pr, open := known[b.name]
 		if !open || pr.IsBaseRefGraphiteBase || pr.BaseRefName == b.base {
@@ -28,17 +28,51 @@ func gtRefuseMergingPush(ctx context.Context, dir render.Dir, s gtSubmit, tr vcs
 		}
 		held, err := gitIsAncestor(ctx, dir, s.prefix, b.head, base)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if held {
-			merged = append(merged, fmt.Sprintf("#%d (%s) into %s", b.pr, b.name, pr.BaseRefName))
-			numbers = append(numbers, fmt.Sprintf("#%d", b.pr))
+			merging = append(merging, b)
 		}
 	}
-	if len(merged) == 0 {
-		return nil
+	return merging, nil
+}
+
+// Trunk never holds a branch's head, so the pull request survives the push. Trunk
+// needs no Graphite record, so a GitHub base edit stands in when Graphite refuses.
+func gtRetargetMergingPushes(ctx context.Context, errW io.Writer, dir render.Dir, client *gtapi.Client, owner, name string, s gtSubmit, tr vcs.Trunk, plan []gtSubmitBranch, known map[string]gtapi.PullRequestInfo) error {
+	merging, err := gtMergingPushes(ctx, dir, s, plan, known)
+	if err != nil {
+		return err
 	}
-	problem := fmt.Sprintf("pushing would make GitHub merge %s — each pull request still targets a branch this push moves onto a head that holds its own, which GitHub reads as merged, closing it and deleting its branch; retarget %s onto %s first, with gh pr edit <number> --base %s",
-		strings.Join(merged, ", "), strings.Join(numbers, ", "), tr.Name(), tr.Name())
-	return errors.New(gtStuck(s.prefix, problem, s.suffix))
+	for _, b := range merging {
+		pr := known[b.name]
+		_, err := client.SubmitPullRequests(ctx, gtapi.SubmitRequest{
+			RepoOwner:       owner,
+			RepoName:        name,
+			TrunkBranchName: tr.Name(),
+			PRs: []gtapi.SubmitPR{{
+				Action:   gtapi.SubmitUpdate,
+				Head:     b.name,
+				HeadSha:  pr.Newest().HeadSha,
+				Base:     tr.Name(),
+				BaseSha:  s.trunkHead,
+				PRNumber: b.pr,
+			}},
+		})
+		var refused *gtapi.SubmitError
+		switch {
+		case errors.As(err, &refused):
+			if err := dropRetarget(ctx, owner+"/"+name, b.pr, tr.Name()); err != nil {
+				return err
+			}
+		case err != nil:
+			return gtSubmitFailure(err, s)
+		}
+		if _, err := fmt.Fprintf(errW, "%s: retargeted #%d (%s) from %s onto %s — the push would make GitHub merge it into %s\n", s.prefix, b.pr, b.name, pr.BaseRefName, tr.Name(), pr.BaseRefName); err != nil {
+			return fmt.Errorf("%s: name the pull request retargeted before the push: %w", s.prefix, err)
+		}
+		pr.BaseRefName = tr.Name()
+		known[b.name] = pr
+	}
+	return nil
 }

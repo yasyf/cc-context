@@ -41,13 +41,12 @@ it local:
 git fetch origin refs/heads/theirs:refs/heads/theirs
 ```
 
-A reorder that puts a branch below the base its pull request targets is
-refused before anything is pushed. The push leaves that base holding the
-pull request's head, which GitHub reads as merged. GitHub closes the pull request
-and deletes its branch, and no push order avoids that. The refusal names each
-`#<n> (<branch>) into <base>`. Retarget those pull requests onto trunk with
-`gh pr edit <n> --base <trunk>`, then run `ccx vcs stack continue`; the submit
-sets every real base afterward.
+A reorder that puts a branch below the base its pull request targets leaves
+that base holding the pull request's head, which GitHub reads as merged. GitHub then closes the pull request and deletes its branch, and no push
+order avoids that. Before pushing, the run moves each such pull request onto
+trunk through a Graphite submit, falling back to a GitHub base edit if
+Graphite refuses the entry, and names it as `retargeted #<n> (<branch>) from
+<base> onto <trunk>`. The submit after the push sets every real base.
 
 A submit also refuses while the Graphite merge queue is restacking a pull
 request. When a parent lands, the queue parks each child on
