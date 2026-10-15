@@ -434,8 +434,8 @@ poll reports each pull request's standing state the same way.
 
 Polls go through the machine-wide pull request cache every ccx vcs pr
 command shares: one batched GitHub GraphQL query and one Graphite request for
-every pull request any process on the machine watches in the repository, at
-most once per 30 seconds, whatever --interval says. While GitHub rate-limits
+the pull requests this and any other process on the machine asked for since
+the last poll, at most once per 30 seconds, whatever --interval says. While GitHub rate-limits
 the machine it prints one "rate-limited until <time>" line and sleeps to the
 next probe, one cheap request at most two minutes out.
 
