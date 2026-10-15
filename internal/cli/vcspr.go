@@ -28,6 +28,7 @@ const (
 	prQueueNotQueued prQueueState = "not queued"
 	prQueueLanded    prQueueState = "landed"
 	prQueueEvicted   prQueueState = "evicted"
+	prQueueUnknown   prQueueState = "unknown"
 )
 
 type prCIState string
@@ -178,6 +179,10 @@ serves it stale under a GraphQL rate limit, the command asks GitHub's REST pull
 endpoint instead, and one still uncomputed reads blocked:mergeable-unknown.
 Graphite's own merge state adds needs-restack (parent landed), needs-restack,
 or waiting-on-downstack #N, naming the pull request below.
+
+When Graphite does not answer the poll, the queue reads unknown and the verdict
+adds queue-unknown, so the pull request is never landable. A pull request GitHub
+itself shows merged still reads landed.
 
 The answer comes from Graphite's own record of the pull request, the one gt
 reads, and its mergeability status, so a pull request enqueued from the
@@ -344,6 +349,13 @@ func collectPRQueue(ctx context.Context, repo string, numbers []int, warn io.Wri
 	reports := make([]prStatusReport, 0, len(numbers))
 	for _, number := range numbers {
 		pr := st.PRs[number]
+		if pr.Graphite == nil && pr.QueueUnknown {
+			r := prQueueWithoutGraphite(pr)
+			r.Stale = staleAt(limited, pr.PolledAt)
+			r.Source = pr.Source
+			reports = append(reports, newPRStatusReport(r, pr, 0))
+			continue
+		}
 		if pr.Graphite == nil {
 			if limited != nil {
 				return nil, fmt.Errorf("pr status: the cache has never polled %s#%d, and github %s; next probe at %s", repo, number, limited.Reason, limited.ProbeAt.UTC().Format(time.RFC3339))
@@ -370,15 +382,27 @@ func collectPRQueue(ctx context.Context, repo string, numbers []int, warn io.Wri
 		r.Conflicting = r.Queue == prQueueEvicted && pr.MergeStateStatus == "DIRTY"
 		r.Stale = staleAt(limited, pr.PolledAt)
 		r.Source = pr.Source
-		report := prStatusReport{prQueueReport: r, Approval: prApprovalOf(pr), Mergeability: pr.Mergeability, Downstack: info.DependentPRNumber}
-		if r.Queue != prQueueLanded {
-			ci := prCIOf(pr.Rollup)
-			report.CI = &ci
-		}
-		report.Verdict = prVerdict(report, pr)
-		reports = append(reports, report)
+		reports = append(reports, newPRStatusReport(r, pr, info.DependentPRNumber))
 	}
 	return reports, nil
+}
+
+func newPRStatusReport(r prQueueReport, pr prstate.PR, downstack int) prStatusReport {
+	report := prStatusReport{prQueueReport: r, Approval: prApprovalOf(pr), Mergeability: pr.Mergeability, Downstack: downstack}
+	if r.Queue != prQueueLanded {
+		ci := prCIOf(pr.Rollup)
+		report.CI = &ci
+	}
+	report.Verdict = prVerdict(report, pr)
+	return report
+}
+
+func prQueueWithoutGraphite(pr prstate.PR) prQueueReport {
+	r := prQueueReport{Number: pr.Number, Queue: prQueueUnknown, State: pr.State, Base: pr.BaseRefName}
+	if pr.State == "MERGED" && len(pr.SquashOn) > 0 {
+		r.Queue, r.Squash = prQueueLanded, pr.MergeCommit
+	}
+	return r
 }
 
 // prReadMergeable asks GitHub's REST pull endpoint for a pull request's
@@ -480,6 +504,9 @@ func prVerdict(r prStatusReport, pr prstate.PR) string {
 	var causes []string
 	if pr.Draft {
 		causes = append(causes, "draft")
+	}
+	if r.Queue == prQueueUnknown {
+		causes = append(causes, "queue-unknown")
 	}
 	switch {
 	case pr.Mergeable == "CONFLICTING" || pr.MergeStateStatus == "DIRTY" || r.Conflicting:
@@ -602,7 +629,7 @@ func renderPRQueue(reports []prStatusReport) string {
 			if r.Conflicting {
 				b.WriteString(" · conflicting")
 			}
-		case prQueueNotQueued:
+		case prQueueNotQueued, prQueueUnknown:
 			fmt.Fprintf(&b, " · %s", strings.ToLower(r.State))
 		}
 		if r.CI != nil {

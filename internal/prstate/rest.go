@@ -131,6 +131,7 @@ func (p *pass) restRecord(ctx context.Context, t target) (PR, error) {
 		Activity:         p.prev[t.number].Activity,
 		Graphite:         p.infos[t.number],
 		Mergeability:     p.mergeability[t.number],
+		QueueUnknown:     p.queueUnknown(),
 		Source:           SourceREST,
 	}
 	if pull.User != nil {

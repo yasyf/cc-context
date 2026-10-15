@@ -394,6 +394,9 @@ Graphite's own merge state names the hold instead, as
 `ccx vcs status` puts the same state on each `merge` line as `graphite <state>`,
 with a `blocked` line for a restack or a downstack wait.
 
+When Graphite does not answer the poll, the queue reads `unknown` and the
+verdict adds `queue-unknown`; a PR GitHub shows merged still reads `landed`.
+
 `pr status`, `pr watch`, and `pr state` share cached reads across processes
 for 30 seconds per repository. Repeated reads within that interval do not
 poll again; an uncached PR waits out the interval. `pr status` waits through

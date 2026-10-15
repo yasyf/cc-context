@@ -108,6 +108,9 @@ type PR struct {
 	PushedHead string    `json:"pushedHead,omitempty"`
 	PushedAt   time.Time `json:"pushedAt,omitzero"`
 	Source     string    `json:"source,omitempty"`
+	// QueueUnknown marks a record polled while Graphite did not answer, so a
+	// missing Graphite record is not Graphite's word that it has none.
+	QueueUnknown bool `json:"queueUnknown,omitempty"`
 }
 
 // Review is one reviewer's latest approving or change-requesting review.
