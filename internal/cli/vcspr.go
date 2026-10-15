@@ -247,8 +247,9 @@ func newVcsPRStateCmd() *cobra.Command {
 		Long: `Print the machine-wide pull request cache's record of each named pull request,
 and of each open pull request on a branch under a --lane-prefix, as one JSON
 object. Records are at most 30 seconds old; a read of anything older polls
-GitHub once for every pull request any process on the machine watches in the
-repository, the same poll ccx vcs pr watch and ccx vcs pr status share.
+GitHub once for what it names and what any other process on the machine asked
+for since the last poll, the same poll ccx vcs pr watch and ccx vcs pr status
+share.
 When that poll fails, the last one failed, or no poll answers within 30
 seconds, each record is read through GitHub's REST API and Graphite instead
 and carries "source": "REST".

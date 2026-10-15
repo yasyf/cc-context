@@ -29,6 +29,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A pull request poll reads only what was asked for since the last one.**
+  Every `ccx vcs pr status`, `pr state`, and `pr watch` poll used to read
+  every pull request leased on the machine in the last 15 minutes. On the
+  monorepo that was 333 leases and about nine GraphQL requests per poll. It
+  drained the GitHub App's GraphQL quota, and every reader then sat out a
+  backoff of up to ten minutes (cci #69611). A poll now reads the pull
+  requests and lane prefixes its caller named, plus those another process
+  asked for since the previous poll that are not already fresh. A leased pull
+  request nobody asks about again keeps its last record until someone does.
+
 - **`ccx vcs stack submit` waits out Graphite's own restack.** When a parent
   lands, Graphite's merge queue restacks the pull requests above it and
   force-pushes each one. A submit run in that window pushed the same branches,

@@ -1,7 +1,8 @@
 // Package prstate keeps one machine-wide view of a repository's pull requests.
-// Whichever process asks first polls GitHub for every pull request any process
-// on the machine still watches, in one batched query, and the rest read the
-// cache file it leaves, so every watcher spends one shared GitHub budget.
+// Whichever process asks first polls GitHub, in one batched query, for what it
+// asked for and what every other process asked for since the last poll, and
+// the rest read the cache file it leaves, so every watcher spends one shared
+// GitHub budget.
 package prstate
 
 import (
@@ -173,8 +174,8 @@ type Backoff struct {
 }
 
 // Leases is when a reader last asked for each pull request and prefix; a
-// poll reads everything asked for within leaseTTL. Each lease is a file whose
-// mtime a reader renews without the state lock.
+// poll reads what was asked for since the poll before it. Each lease is a file
+// whose mtime a reader renews without the state lock.
 type Leases struct {
 	PRs      map[int]time.Time    `json:"prs,omitempty"`
 	Prefixes map[string]time.Time `json:"prefixes,omitempty"`
@@ -342,14 +343,13 @@ func (s *Store) read(ctx context.Context, want Want, asked time.Time, waited boo
 		}
 		return st, next.Sub(now), nil
 	}
-	st, claimed, err := s.claim(ctx, want, asked, now)
+	st, req, claimed, err := s.claim(ctx, want, asked, now)
 	if err != nil {
 		return st, 0, err
 	}
 	if !claimed {
 		return s.read(ctx, want, asked, waited)
 	}
-	req := st.request(now)
 	if st, err = s.fetch(ctx, req, st.PRs, now, true); err != nil {
 		return s.degrade(ctx, st, want, asked, now, err)
 	}
@@ -423,16 +423,18 @@ func (s *Store) probe(ctx context.Context, st State, now time.Time) (State, erro
 	return st, err
 }
 
-func (s *Store) claim(ctx context.Context, want Want, asked, now time.Time) (State, bool, error) {
+func (s *Store) claim(ctx context.Context, want Want, asked, now time.Time) (State, Want, bool, error) {
+	var req Want
 	claimed := false
 	st, err := s.commit(ctx, func(st *State) bool {
 		if st.fresh(want, asked) || st.Backoff != nil || now.Before(st.AttemptedAt.Add(MinInterval)) {
 			return false
 		}
+		req = st.request(want, st.AttemptedAt, now)
 		st.AttemptedAt, st.Failure, claimed = now, nil, true
 		return true
 	})
-	return st, claimed, err
+	return st, req, claimed, err
 }
 
 func (s *Store) fetch(ctx context.Context, req Want, prev map[int]PR, now time.Time, attempt bool) (State, error) {
@@ -678,20 +680,35 @@ func (st State) unread(prefixes []string, now time.Time) []int {
 	return unread
 }
 
-func (st State) request(now time.Time) Want {
-	var req Want
+func (st State) request(want Want, since, now time.Time) Want {
+	asked := func(at time.Time) bool { return at.After(since) && now.Sub(at) < leaseTTL }
+	prs, prefixes := slices.Clone(want.PRs), slices.Clone(want.Prefixes)
 	for n, at := range st.Leases.PRs {
-		if now.Sub(at) < leaseTTL && !st.PRs[n].settled() {
-			req.PRs = append(req.PRs, n)
+		if asked(at) {
+			prs = append(prs, n)
 		}
 	}
 	for prefix, at := range st.Leases.Prefixes {
-		if now.Sub(at) < leaseTTL {
+		if asked(at) {
+			prefixes = append(prefixes, prefix)
+		}
+	}
+	var req Want
+	for _, prefix := range prefixes {
+		lane, ok := st.Lanes[prefix]
+		if !ok || now.Sub(lane.PolledAt) >= MinInterval {
 			req.Prefixes = append(req.Prefixes, prefix)
+		}
+		prs = append(prs, lane.PRs...)
+	}
+	for _, n := range prs {
+		if !st.fresh(Want{PRs: []int{n}}, now) {
+			req.PRs = append(req.PRs, n)
 		}
 	}
 	slices.Sort(req.PRs)
 	slices.Sort(req.Prefixes)
+	req.PRs, req.Prefixes = slices.Compact(req.PRs), slices.Compact(req.Prefixes)
 	return req
 }
 
