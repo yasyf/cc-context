@@ -170,7 +170,11 @@ A tree a live process is working in, holding open, or was started on is
 refused. --wait then polls that job until its tree is deleted, as
 "ccx vcs cleanup wait" does, and the daemon deletes the awaited tree ahead of
 every job nobody awaits, at the pace its governor allows;
-"ccx vcs cleanup status" reports the queue.
+"ccx vcs cleanup status" reports the queue. While "ccx vcs cleanup pause" holds
+the queue, rm runs only the checks that look for no live process, then queues
+the removal pending and moves nothing: "ccx vcs cleanup resume" runs the whole
+preflight again and removes the tree at the queue's pace, and --wait waits for
+that resume.
 --dry-run runs the daemon's whole preflight in process, so it refuses whatever
 rm would.
 
@@ -1091,12 +1095,11 @@ func removeGitWorktree(ctx context.Context, cmd *cobra.Command, l lane, wt vcs.W
 	}
 	segs := []string{"removed " + name, shape, wt.Path}
 	if cleanupDaemonized {
-		queued, err := queueGitWorktreeRemoval(ctx, wt.Path, opts)
+		receipt, err := queueGitWorktreeRemoval(ctx, wt.Path, opts)
 		if err != nil {
 			return err
 		}
-		cmd.Println(strings.Join(append(segs, queued...), shipSep))
-		return nil
+		return reportGitWorktreeRemoval(ctx, cmd, name, shape, wt.Path, receipt, opts.wait)
 	}
 	argv := []string{"worktree", "remove"}
 	if opts.force {
@@ -1120,14 +1123,14 @@ func previewGitWorktreeRemoval(ctx context.Context, path string, force bool) err
 	return nil
 }
 
-func queueGitWorktreeRemoval(ctx context.Context, path string, opts worktreeRmOptions) ([]string, error) {
+func queueGitWorktreeRemoval(ctx context.Context, path string, opts worktreeRmOptions) (cleanup.Receipt, error) {
 	git, err := cleanupGit(ctx, "worktree rm")
 	if err != nil {
-		return nil, err
+		return cleanup.Receipt{}, err
 	}
 	svc, err := cleanupService(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("worktree rm: %w", err)
+		return cleanup.Receipt{}, fmt.Errorf("worktree rm: %w", err)
 	}
 	receipt, err := cleanupHandoff(ctx, func(ctx context.Context) (cleanup.Receipt, error) {
 		return svc.Remove(ctx, cleanup.Request{Worktree: path, Force: opts.force, Git: git})
@@ -1136,19 +1139,38 @@ func queueGitWorktreeRemoval(ctx context.Context, path string, opts worktreeRmOp
 		receipt, err = followCleanupRetry(ctx, svc, err)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("worktree rm: %w", err)
+		return cleanup.Receipt{}, fmt.Errorf("worktree rm: %w", err)
 	}
-	segs := []string{"deletion queued " + receipt.JobID}
+	return receipt, nil
+}
+
+func reportGitWorktreeRemoval(ctx context.Context, cmd *cobra.Command, name, shape, path string, receipt cleanup.Receipt, wait bool) error {
+	segs := []string{"removed " + name, shape, path, "deletion queued " + receipt.JobID}
 	if receipt.Ignored != "" {
 		segs = append(segs, "ignored: "+receipt.Ignored)
 	}
-	if !opts.wait {
-		return segs, nil
+	held := receipt.State != cleanup.StateBlocked && cleanup.Phase(receipt.State).Logical()
+	if held {
+		resume := "until ccx vcs cleanup resume"
+		if wait {
+			resume = "waiting for ccx vcs cleanup resume"
+		}
+		cmd.Println(strings.Join([]string{"queued " + name, shape, path, string(receipt.State) + " " + receipt.JobID, resume}, shipSep))
+	}
+	if !wait {
+		if !held {
+			cmd.Println(strings.Join(segs, shipSep))
+		}
+		return nil
 	}
 	if err := waitCleanupReceipt(ctx, receipt); err != nil {
-		return nil, fmt.Errorf("worktree rm: removed %s, deletion queued %s; wait: %w", path, receipt.JobID, err)
+		if held {
+			return fmt.Errorf("worktree rm: queued %s, %s %s; wait: %w", path, receipt.State, receipt.JobID, err)
+		}
+		return fmt.Errorf("worktree rm: removed %s, deletion queued %s; wait: %w", path, receipt.JobID, err)
 	}
-	return append(segs, "deleted"), nil
+	cmd.Println(strings.Join(append(segs, "deleted"), shipSep))
+	return nil
 }
 
 // removeJJWorkspace forgets the workspace and deletes its tree: forget alone

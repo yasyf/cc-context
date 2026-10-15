@@ -432,6 +432,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`worktree rm` queues a removal while `ccx vcs cleanup pause` holds the
+  queue.** It used to refuse with "the queue is paused". It now runs the
+  main-working-copy, trunk, lock, submodule, nesting, volume, and dirty-tree
+  refusals, skips the live-process and watcher checks, records a `pending`
+  job, and moves nothing. `cleanup status` lists the job as `pending`, a repeat
+  `rm` rejoins it, and `rm --wait` waits for the resume. On `resume` the daemon
+  runs each pending job's whole preflight again in queue order. It blocks a
+  job that preflight refuses or whose tree changed, and removes the rest at the
+  queue's pace. Deferred workspace releases and `cleanup adopt` still refuse
+  while paused. The daemon protocol moves to 5, so the next queue-changing
+  command replaces a protocol-4 daemon.
+
 - **`stack submit` stops republishing a pull request a fresh head cannot
   repair.** When a pull request's old parent landed through the merge queue,
   Graphite's stack record can keep the landed pull requests beside it after

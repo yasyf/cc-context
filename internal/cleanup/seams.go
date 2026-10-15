@@ -54,6 +54,11 @@ type Relocator interface {
 	// refusal is a *RefusedError or an *ActiveError, with nothing journaled and
 	// nothing mutated.
 	Accept(ctx context.Context, seq uint64, r Request) (Job, error)
+	// Pend journals a removal asked for while the queue is paused at
+	// PhasePending under seq. It runs Accept's preflight short of the watchers
+	// and the guard, so a refusal is a *RefusedError with nothing journaled,
+	// and mutates nothing else.
+	Pend(ctx context.Context, seq uint64, r Request) (Job, error)
 	// Intend journals a deferred removal under seq, capturing the tree's
 	// identity and mutating nothing else: at PhaseQueued when the guard finds
 	// the tree idle, at PhaseWaiting with the holders noted when it reports the
@@ -71,6 +76,9 @@ type Relocator interface {
 	// journaling each phase before the step that leaves it. It first reconciles
 	// the phase against the filesystem, so it is equally the resume of a job a
 	// crash interrupted and the retry of one an operator unblocked.
+	//
+	// From PhasePending it runs Accept's whole preflight again, and blocks the
+	// job unless that passes for the tree the job captured.
 	//
 	// It returns nil with job at PhaseUnregistered on success, nil with job at
 	// PhaseWaiting when a deferred job's tree is still held, and nil with

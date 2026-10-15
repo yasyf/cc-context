@@ -50,7 +50,6 @@ func (f *gitFixture) refusedWhilePaused(engine *Engine) {
 		name string
 		ask  func() error
 	}{
-		{"remove", func() error { _, err := engine.Remove(ctx, f.request()); return err }},
 		{"defer", func() error { _, err := engine.Defer(ctx, deferral); return err }},
 		{"adopt", func() error { _, err := engine.Adopt(ctx, f.adoption()); return err }},
 	}
@@ -134,7 +133,7 @@ func TestQueuePauseRestsJournaledJobsAtTheirPhaseUntilResume(t *testing.T) {
 	}
 }
 
-func TestQueuePauseRefusesNewRemovalsBeforeAnyGitOrJournalWork(t *testing.T) {
+func TestQueuePauseHoldsANewRemovalPendingUntilResume(t *testing.T) {
 	f := newGitFixture(t)
 	tree, listing := f.id(f.worktree), f.listing()
 	clock := newPassClock()
@@ -146,9 +145,21 @@ func TestQueuePauseRefusesNewRemovalsBeforeAnyGitOrJournalWork(t *testing.T) {
 	if got := f.gitCalls(); got != "" {
 		t.Errorf("git ran for a refused request: %q", got)
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), drainWait)
+	defer cancel()
+	receipt, err := engine.Remove(ctx, f.request())
+	if err != nil || receipt.State != cleanup.State(cleanup.PhasePending) || receipt.Original != f.worktree {
+		t.Fatalf("Remove() under the pause = %+v, %v; want it pending", receipt, err)
+	}
+	if got := f.journaled(receipt.JobID); got.Phase != cleanup.PhasePending || got.Blocked != nil {
+		t.Errorf("journaled job = phase %s, blockage %+v; want pending", got.Phase, got.Blocked)
+	}
 	jobs, damaged, err := f.journal.Load()
-	if err != nil || len(damaged) != 0 || len(jobs) != 0 {
-		t.Errorf("Load() = %d jobs, damaged %v, %v; want an empty journal", len(jobs), damaged, err)
+	if err != nil || len(damaged) != 0 || len(jobs) != 1 {
+		t.Errorf("Load() = %d jobs, damaged %v, %v; want the one pending job", len(jobs), damaged, err)
+	}
+	if f.ran("worktree") || f.ran("update-ref") {
+		t.Errorf("git calls under the pause = %q, want no move and no recovery ref", f.gitCalls())
 	}
 	if got := f.id(f.worktree); got != tree {
 		t.Errorf("tree identity at %s = %v, want the untouched tree %v", f.worktree, got, tree)
@@ -160,24 +171,5 @@ func TestQueuePauseRefusesNewRemovalsBeforeAnyGitOrJournalWork(t *testing.T) {
 		t.Errorf("recovery refs = %q, want none", refs)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), drainWait)
-	defer cancel()
-	if err := engine.Resume(ctx); err != nil {
-		t.Fatalf("Resume() = %v", err)
-	}
-	receipt, err := engine.Remove(ctx, f.request())
-	if err != nil || receipt.State != cleanup.State(cleanup.PhaseUnregistered) {
-		t.Fatalf("Remove() after the resume = %+v, %v; want it unregistered", receipt, err)
-	}
-	done, err := engine.Wait(ctx, receipt.JobID)
-	if err != nil || done.Phase != cleanup.PhaseDone {
-		t.Fatalf("Wait() = phase %s, blockage %+v, %v; want done", done.Phase, done.Blocked, err)
-	}
-	if err := f.await(f.stop(engine), "Stop()"); err != nil {
-		t.Errorf("Stop() = %v", err)
-	}
-	if err := f.await(running, "Run()"); err != nil {
-		t.Errorf("Run() = %v", err)
-	}
-	f.finished(done)
+	f.finished(f.resumed(engine, running, receipt.JobID))
 }

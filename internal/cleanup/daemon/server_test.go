@@ -378,27 +378,27 @@ func TestServeGatesRequestsOnTheProtocol(t *testing.T) {
 		wantKind    string
 		wantMessage string
 	}{
-		{"another protocol", `{"protocol":5,"version":"v9",` + remove + `}`, kindIncompatible, "the daemon speaks protocol 4, the client sent 5"},
-		{"no protocol", `{"version":"v9",` + remove + `}`, kindIncompatible, "the daemon speaks protocol 4, the client sent 0"},
-		{"an unknown field", `{"protocol":4,"version":"v9","op":"status","query":{},"extra":1}`, kindInternal, ""},
-		{"an unknown op", `{"protocol":4,"version":"v9","op":"purge"}`, kindInternal, ""},
-		{"a remove with no request", `{"protocol":4,"version":"v9","op":"remove"}`, kindInternal, ""},
-		{"an adopt with no request", `{"protocol":4,"version":"v9","op":"adopt"}`, kindInternal, ""},
-		{"an adopt of a tree its ref does not pin", `{"protocol":4,"version":"v9",` + adopt + `}`, kindInternal, ""},
-		{"a pause naming a job", `{"protocol":4,"version":"v9","op":"pause","job_id":"` + unknownJob + `"}`, kindInternal, ""},
+		{"another protocol", `{"protocol":6,"version":"v9",` + remove + `}`, kindIncompatible, "the daemon speaks protocol 5, the client sent 6"},
+		{"no protocol", `{"version":"v9",` + remove + `}`, kindIncompatible, "the daemon speaks protocol 5, the client sent 0"},
+		{"an unknown field", `{"protocol":5,"version":"v9","op":"status","query":{},"extra":1}`, kindInternal, ""},
+		{"an unknown op", `{"protocol":5,"version":"v9","op":"purge"}`, kindInternal, ""},
+		{"a remove with no request", `{"protocol":5,"version":"v9","op":"remove"}`, kindInternal, ""},
+		{"an adopt with no request", `{"protocol":5,"version":"v9","op":"adopt"}`, kindInternal, ""},
+		{"an adopt of a tree its ref does not pin", `{"protocol":5,"version":"v9",` + adopt + `}`, kindInternal, ""},
+		{"a pause naming a job", `{"protocol":5,"version":"v9","op":"pause","job_id":"` + unknownJob + `"}`, kindInternal, ""},
 		{"not json", `remove everything`, kindInternal, ""},
-		{"a shutdown behind a duplicate op", `{"protocol":4,"version":"v9","op":"hello","op":"shutdown"}`, kindInternal, ""},
-		{"a shutdown with an unknown field", `{"protocol":4,"version":"v9","op":"shutdown","force":true}`, kindInternal, ""},
-		{"a shutdown naming a job", `{"protocol":4,"version":"v9","op":"shutdown","job_id":"` + unknownJob + `"}`, kindInternal, ""},
-		{"a hello carrying a query", `{"protocol":4,"version":"v9","op":"hello","query":{}}`, kindInternal, ""},
-		{"a hello with trailing data", `{"protocol":4,"version":"v9","op":"hello"} {"op":"shutdown"}`, kindInternal, ""},
-		{"a duplicate-op shutdown from another protocol", `{"protocol":5,"version":"v9","op":"hello","op":"shutdown"}`, kindIncompatible, "the daemon speaks protocol 4, the client sent 5"},
-		{"an unknown shape from another protocol", `{"protocol":5,"version":"v9","op":"purge","everything":true}`, kindIncompatible, "the daemon speaks protocol 4, the client sent 5"},
-		{"a hello with no version", `{"protocol":4,"op":"hello"}`, kindInternal, ""},
-		{"a remove with no version", `{"protocol":4,` + remove + `}`, kindInternal, ""},
-		{"a pause with an empty version", `{"protocol":4,"version":"","op":"pause"}`, kindInternal, ""},
-		{"a shutdown with no version", `{"protocol":4,"op":"shutdown"}`, kindInternal, ""},
-		{"a shutdown with no version from another protocol", `{"protocol":5,"op":"shutdown"}`, kindIncompatible, "the daemon speaks protocol 4, the client sent 5"},
+		{"a shutdown behind a duplicate op", `{"protocol":5,"version":"v9","op":"hello","op":"shutdown"}`, kindInternal, ""},
+		{"a shutdown with an unknown field", `{"protocol":5,"version":"v9","op":"shutdown","force":true}`, kindInternal, ""},
+		{"a shutdown naming a job", `{"protocol":5,"version":"v9","op":"shutdown","job_id":"` + unknownJob + `"}`, kindInternal, ""},
+		{"a hello carrying a query", `{"protocol":5,"version":"v9","op":"hello","query":{}}`, kindInternal, ""},
+		{"a hello with trailing data", `{"protocol":5,"version":"v9","op":"hello"} {"op":"shutdown"}`, kindInternal, ""},
+		{"a duplicate-op shutdown from another protocol", `{"protocol":6,"version":"v9","op":"hello","op":"shutdown"}`, kindIncompatible, "the daemon speaks protocol 5, the client sent 6"},
+		{"an unknown shape from another protocol", `{"protocol":6,"version":"v9","op":"purge","everything":true}`, kindIncompatible, "the daemon speaks protocol 5, the client sent 6"},
+		{"a hello with no version", `{"protocol":5,"op":"hello"}`, kindInternal, ""},
+		{"a remove with no version", `{"protocol":5,` + remove + `}`, kindInternal, ""},
+		{"a pause with an empty version", `{"protocol":5,"version":"","op":"pause"}`, kindInternal, ""},
+		{"a shutdown with no version", `{"protocol":5,"op":"shutdown"}`, kindInternal, ""},
+		{"a shutdown with no version from another protocol", `{"protocol":6,"op":"shutdown"}`, kindIncompatible, "the daemon speaks protocol 5, the client sent 6"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -417,11 +417,11 @@ func TestServeGatesRequestsOnTheProtocol(t *testing.T) {
 	if events := f.h.rec.take(); len(events) != 0 {
 		t.Errorf("refused requests executed %q, want nothing", events)
 	}
-	hello := f.raw(`{"protocol":5,"version":"v9","op":"hello"}`)
+	hello := f.raw(`{"protocol":6,"version":"v9","op":"hello"}`)
 	if want := (cleanup.Info{Version: "v1.2.3", Protocol: cleanup.Protocol, PID: os.Getpid()}); hello.Error != nil || hello.Info == nil || *hello.Info != want {
 		t.Errorf("hello from another protocol = %+v, want info %+v", hello, want)
 	}
-	if reply := f.raw(`{"protocol":5,"version":"v9","op":"shutdown"}`); reply != (response{}) {
+	if reply := f.raw(`{"protocol":6,"version":"v9","op":"shutdown"}`); reply != (response{}) {
 		t.Errorf("a well-formed shutdown from another protocol = %+v, want it acknowledged", reply)
 	}
 	if err := f.wait(); err != nil {
@@ -803,14 +803,18 @@ func TestRemoveSurvivesADisconnectedClient(t *testing.T) {
 	gated.gate <- struct{}{}
 }
 
-func TestServeRefusesNewRemovalsWhilePaused(t *testing.T) {
+func TestServeHoldsRemovalsAndRefusesDeferralsWhilePaused(t *testing.T) {
 	ctx := context.Background()
 	f := serveFixture(t, queuePaused)
+	client := strconv.Itoa(os.Getpid())
+	pending, err := f.client.Remove(ctx, f.h.request("a"))
+	if err != nil || pending.State != cleanup.State(cleanup.PhasePending) || pending.Original != f.h.tree("a") {
+		t.Fatalf("Remove() over the socket while paused = %+v, %v; want a pending", pending, err)
+	}
 	tests := []struct {
 		name string
 		ask  func() error
 	}{
-		{"remove", func() error { _, err := f.client.Remove(ctx, f.h.request("a")); return err }},
 		{"defer", func() error { _, err := f.client.Defer(ctx, f.h.deferral("d")); return err }},
 		{"adopt", func() error { _, err := f.client.Adopt(ctx, f.h.adoption("q")); return err }},
 	}
@@ -822,37 +826,36 @@ func TestServeRefusesNewRemovalsWhilePaused(t *testing.T) {
 			}
 		})
 	}
-	raw := f.raw(fmt.Sprintf(`{"protocol":4,"version":"v9","op":"remove","remove":{"worktree":%q,"git":"/usr/bin/git"}}`, f.h.tree("a")))
+	deferral, err := json.Marshal(f.h.deferral("e"))
+	if err != nil {
+		t.Fatalf("marshal a deferral: %v", err)
+	}
+	raw := f.raw(fmt.Sprintf(`{"protocol":%d,"version":"v9","op":"defer","defer":%s}`, cleanup.Protocol, deferral))
 	if raw.Error == nil || raw.Error.Kind != kindPaused || raw.Error.Message != cleanup.ErrPaused.Error() {
-		t.Errorf("raw remove reply = %+v, want a %s error carrying ErrPaused's message", raw, kindPaused)
+		t.Errorf("raw defer reply = %+v, want a %s error carrying ErrPaused's message", raw, kindPaused)
 	}
-	if events := f.h.rec.take(); len(events) != 0 {
-		t.Errorf("paused requests executed %q, want nothing", events)
+	if events := f.h.rec.take(); !slices.Equal(events, []string{"pend:a"}) {
+		t.Errorf("paused requests executed %q, want only a pended", events)
 	}
-	if served := f.h.relocator.takeServed(); len(served) != 0 {
-		t.Errorf("paused requests reached the relocator as %q, want never", served)
+	if got, want := f.h.relocator.takeServed(), []string{"pend:a=" + client}; !slices.Equal(got, want) {
+		t.Errorf("paused requests reached the relocator as %q, want %q", got, want)
 	}
 	jobs, damaged, err := f.h.journal.Load()
-	if err != nil || len(damaged) != 0 || len(jobs) != 0 {
-		t.Errorf("Load() = %d jobs, damaged %v, %v; want an empty journal", len(jobs), damaged, err)
+	if err != nil || len(damaged) != 0 || len(jobs) != 1 || jobs[0].Phase != cleanup.PhasePending {
+		t.Errorf("Load() = %+v, damaged %v, %v; want a pending alone", jobs, damaged, err)
 	}
 	report, err := f.client.Status(ctx, cleanup.Query{})
-	if err != nil || !report.Paused || len(report.Jobs) != 0 {
-		t.Errorf("Status() = paused %t, %d jobs, %v; want paused and empty", report.Paused, len(report.Jobs), err)
+	if err != nil || !report.Paused || len(report.Jobs) != 1 || report.Jobs[0].Phase != cleanup.PhasePending {
+		t.Errorf("Status() = paused %t, jobs %+v, %v; want paused with a pending", report.Paused, report.Jobs, err)
 	}
 
 	if err := f.client.Resume(ctx); err != nil {
 		t.Fatalf("Resume() = %v", err)
 	}
-	removed, err := f.client.Remove(ctx, f.h.request("a"))
-	if err != nil || removed.State != cleanup.State(cleanup.PhaseUnregistered) {
-		t.Fatalf("Remove() after the resume = %+v, %v; want it unregistered", removed, err)
-	}
-	if finished, err := f.client.Wait(ctx, removed.JobID); err != nil || finished.Phase != cleanup.PhaseDone {
+	if finished, err := f.client.Wait(ctx, pending.JobID); err != nil || finished.Phase != cleanup.PhaseDone {
 		t.Errorf("Wait() = phase %s, %v; want done", finished.Phase, err)
 	}
-	client := strconv.Itoa(os.Getpid())
-	if got, want := f.h.relocator.takeServed(), []string{"accept:a=" + client, "advance:a=" + client}; !slices.Equal(got, want) {
+	if got, want := f.h.relocator.takeServed(), []string{"advance:a=" + client}; !slices.Equal(got, want) {
 		t.Errorf("requesters after the resume = %q, want %q", got, want)
 	}
 }

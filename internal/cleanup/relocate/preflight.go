@@ -327,6 +327,17 @@ func (r *Relocator) capture(ctx context.Context, job *cleanup.Job) error {
 }
 
 func (r *Relocator) preflight(ctx context.Context, req cleanup.Request) (cleanup.Job, error) {
+	job, err := r.inspect(ctx, req)
+	if err != nil {
+		return cleanup.Job{}, err
+	}
+	if err := idle(job.Original, r.unretired(ctx, &job)); err != nil {
+		return cleanup.Job{}, err
+	}
+	return job, nil
+}
+
+func (r *Relocator) inspect(ctx context.Context, req cleanup.Request) (cleanup.Job, error) {
 	if err := req.Validate(); err != nil {
 		return cleanup.Job{}, fmt.Errorf("cleanup: remove request: %w", err)
 	}
@@ -348,9 +359,6 @@ func (r *Relocator) preflight(ctx context.Context, req cleanup.Request) (cleanup
 		}
 	}
 	if err := r.capture(ctx, &job); err != nil {
-		return cleanup.Job{}, err
-	}
-	if err := idle(job.Original, r.unretired(ctx, &job)); err != nil {
 		return cleanup.Job{}, err
 	}
 	return job, nil

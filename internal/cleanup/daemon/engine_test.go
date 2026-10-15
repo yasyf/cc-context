@@ -408,7 +408,7 @@ func TestProgressIsJournaledAtMostOnceAMinute(t *testing.T) {
 	})
 }
 
-func TestQueuePauseRestsEveryJobAndRefusesNewWork(t *testing.T) {
+func TestQueuePauseRestsEveryJobAndHoldsNewRemovals(t *testing.T) {
 	bubble(t, paced(), func(t *testing.T, h *harness) {
 		ctx := context.Background()
 		job := h.seed("a", 1, cleanup.PhaseUnregistered)
@@ -438,11 +438,18 @@ func TestQueuePauseRestsEveryJobAndRefusesNewWork(t *testing.T) {
 		h.expectEvents()
 		h.expectTimers()
 
+		pending, err := h.engine.Remove(ctx, h.request("b"))
+		if err != nil || pending.State != cleanup.State(cleanup.PhasePending) || pending.Original != h.tree("b") {
+			t.Fatalf("Remove() under a queue pause = %+v, %v; want b pending", pending, err)
+		}
+		again, err := h.engine.Remove(ctx, h.request("b"))
+		if err != nil || again != pending {
+			t.Errorf("a repeated Remove() under the pause = %+v, %v; want the pending receipt %+v", again, err, pending)
+		}
 		for _, tt := range []struct {
 			name string
 			ask  func() error
 		}{
-			{"remove", func() error { _, err := h.engine.Remove(ctx, h.request("b")); return err }},
 			{"defer", func() error { _, err := h.engine.Defer(ctx, h.deferral("d")); return err }},
 			{"adopt", func() error { _, err := h.engine.Adopt(ctx, h.adoption("q")); return err }},
 		} {
@@ -450,11 +457,14 @@ func TestQueuePauseRestsEveryJobAndRefusesNewWork(t *testing.T) {
 				t.Errorf("%s under a queue pause = %v, want ErrPaused", tt.name, err)
 			}
 		}
-		h.expectEvents()
+		h.expectEvents("pend:b")
 		h.expectTimers()
 		jobs, damaged, err := h.journal.Load()
-		if err != nil || len(damaged) != 0 || len(jobs) != 3 {
-			t.Fatalf("Load() = %d jobs, damaged %v, %v; want the three seeded and nothing new", len(jobs), damaged, err)
+		if err != nil || len(damaged) != 0 || len(jobs) != 4 {
+			t.Fatalf("Load() = %d jobs, damaged %v, %v; want the three seeded and b pending", len(jobs), damaged, err)
+		}
+		if got := h.journaled(pending.JobID); got.Phase != cleanup.PhasePending || got.Blocked != nil {
+			t.Errorf("b rests at %s, blockage %+v; want pending", got.Phase, got.Blocked)
 		}
 		for _, seeded := range []cleanup.Job{waiting, retrying} {
 			if got := h.journaled(seeded.ID); got.Phase != seeded.Phase || (got.Blocked == nil) != (seeded.Blocked == nil) {
@@ -469,8 +479,11 @@ func TestQueuePauseRestsEveryJobAndRefusesNewWork(t *testing.T) {
 		if err := h.engine.Resume(ctx); err != nil {
 			t.Fatalf("Resume() = %v", err)
 		}
-		h.expectEvents("advance:w@waiting", "advance:r@prepared", "sample", "admit:a", "open:a", "step:a")
+		h.expectEvents("advance:w@waiting", "advance:r@prepared", "advance:b@pending", "sample", "admit:a", "open:a", "step:a")
 		h.expectTimers(400 * time.Millisecond)
+		if got := h.journaled(pending.JobID); got.Phase != cleanup.PhaseUnregistered {
+			t.Errorf("b after the resume = %s, want it promoted and unregistered", got.Phase)
+		}
 		if sw, err := h.journal.LoadSwitch(); err != nil || sw.Paused {
 			t.Errorf("LoadSwitch() after resume = %+v, %v; want unpaused", sw, err)
 		}
@@ -483,11 +496,11 @@ func TestQueuePauseRestsEveryJobAndRefusesNewWork(t *testing.T) {
 		if got := h.status(retrying.ID); got.Phase != cleanup.PhaseUnregistered || got.Blocked != nil {
 			t.Errorf("retried job = phase %s, blockage %+v; want unregistered and unblocked once the queue resumed", got.Phase, got.Blocked)
 		}
-		receipt, err := h.engine.Remove(ctx, h.request("b"))
+		receipt, err := h.engine.Remove(ctx, h.request("c"))
 		if err != nil || receipt.State != cleanup.State(cleanup.PhaseUnregistered) {
-			t.Fatalf("Remove(b) after the resume = %+v, %v; want it unregistered", receipt, err)
+			t.Fatalf("Remove(c) after the resume = %+v, %v; want it unregistered", receipt, err)
 		}
-		h.expectEvents("accept:b", "advance:b@prepared")
+		h.expectEvents("accept:c", "advance:c@prepared")
 	})
 }
 

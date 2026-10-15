@@ -118,9 +118,14 @@ func readLinks(tree, adminDir string) (cleanup.Links, error) {
 
 func linkDrift(tree, adminDir string, want cleanup.Links) string {
 	links, err := readLinks(tree, adminDir)
-	switch {
-	case err != nil:
+	if err != nil {
 		return err.Error()
+	}
+	return drifted(tree, adminDir, links, want)
+}
+
+func drifted(tree, adminDir string, links, want cleanup.Links) string {
+	switch {
 	case links.DotGit != want.DotGit:
 		return fmt.Sprintf("%s reads %q, want %q", filepath.Join(tree, ".git"), links.DotGit, want.DotGit)
 	case links.AdminGitdir != want.AdminGitdir:
@@ -201,6 +206,8 @@ func (r *Relocator) Advance(ctx context.Context, job *cleanup.Job) error {
 		switch job.Phase {
 		case cleanup.PhaseQueued, cleanup.PhaseWaiting:
 			step = r.release
+		case cleanup.PhasePending:
+			step = r.promote
 		case cleanup.PhasePrepared:
 			step = r.relocate
 			if job.Adopted {
@@ -268,9 +275,40 @@ func (r *Relocator) release(ctx context.Context, job *cleanup.Job, vetted *bool)
 	return r.enter(job, cleanup.PhasePrepared)
 }
 
-// vanished settles a deferred removal whose tree left its path by other hands:
-// with its registration gone too there is nothing left to remove, and with the
-// registration still there only git worktree prune can drop it.
+func (r *Relocator) promote(ctx context.Context, job *cleanup.Job, _ *bool) (bool, error) {
+	current, err := r.inspect(ctx, cleanup.Request{Worktree: job.Original, Force: job.Force, Git: job.Git})
+	var refused *cleanup.RefusedError
+	switch {
+	case errors.As(err, &refused):
+		if tree, sightErr := sight(job.Original); sightErr == nil && !tree.exists {
+			return r.vanished(ctx, job)
+		}
+		return r.block(ctx, job, refused.Reason, refused.Detail)
+	case err != nil:
+		return r.block(ctx, job, gitReason(err), err.Error())
+	case registrationOf(current) != registrationOf(*job):
+		return r.block(ctx, job, "identity", replaced(job.Original, registrationOf(current), registrationOf(*job)))
+	case current.Links != job.Links:
+		return r.block(ctx, job, "identity", drifted(job.Original, job.AdminDir, current.Links, job.Links))
+	case current.Head != job.Head:
+		return r.block(ctx, job, "identity", headChanged(job, job.Original, current.Head))
+	case current.Branch != job.Branch:
+		return r.block(ctx, job, "identity", fmt.Sprintf("branch changed: the job captured %q, %s now holds %q", job.Branch, job.Original, current.Branch))
+	}
+	if err := r.unretired(ctx, job); err != nil {
+		var active *cleanup.ActiveError
+		if errors.As(err, &active) {
+			return r.block(ctx, job, "activity", active.Error())
+		}
+		return r.block(ctx, job, "activity", unclear(job.Original, err))
+	}
+	return r.enter(job, cleanup.PhasePrepared)
+}
+
+// vanished settles a deferred or pending removal whose tree left its path by
+// other hands: with its registration gone too there is nothing left to
+// remove, and with the registration still there only git worktree prune can
+// drop it.
 func (r *Relocator) vanished(ctx context.Context, job *cleanup.Job) (bool, error) {
 	admin, err := sight(job.AdminDir)
 	if err != nil {

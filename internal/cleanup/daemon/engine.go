@@ -310,7 +310,9 @@ func (e *Engine) Stop(ctx context.Context) error {
 // but the requester it names, which the job keeps for its later passes. A
 // request for a tree whose deferred removal still waits on its holders is a
 // *cleanup.RefusedError naming that job, and a request without Force never
-// rejoins a job journaled with it: it is preflighted afresh.
+// rejoins a job journaled with it: it is preflighted afresh. While the queue is
+// paused a new request is journaled pending and a repeat rejoins its job, and
+// either returns with nothing moved.
 func (e *Engine) Remove(ctx context.Context, r cleanup.Request) (cleanup.Receipt, error) {
 	if err := r.Validate(); err != nil {
 		return cleanup.Receipt{}, fmt.Errorf("cleanup daemon: remove request: %w", err)
@@ -440,16 +442,18 @@ func (e *Engine) Wait(ctx context.Context, jobID string) (cleanup.Job, error) {
 
 // Pause stops the queue: the deletion it interrupts is closed and its progress
 // journaled before Pause returns, every other job rests at its journaled phase
-// with no recheck or retry, and Remove, Defer, and Adopt are refused with
-// cleanup.ErrPaused. The switch is journaled, so a restarted daemon stays paused.
+// with no recheck or retry, Remove journals new removals pending, and Defer and
+// Adopt are refused with cleanup.ErrPaused. The switch is journaled, so a
+// restarted daemon stays paused.
 func (e *Engine) Pause(ctx context.Context) error {
 	_, err := call(ctx, e, func(context.Context) (struct{}, error) { return struct{}{}, e.pause(true) })
 	return err
 }
 
-// Resume lets the queue run again: rested jobs go on from their phase, new
-// removals are taken, and a payload is admitted and reopened, and so
-// re-verified, before another entry goes.
+// Resume lets the queue run again: rested jobs go on from their phase, pending
+// removals are preflighted afresh in queue order, new removals are taken, and
+// a payload is admitted and reopened, and so re-verified, before another entry
+// goes.
 func (e *Engine) Resume(ctx context.Context) error {
 	_, err := call(ctx, e, func(context.Context) (struct{}, error) { return struct{}{}, e.pause(false) })
 	return err
@@ -951,20 +955,28 @@ func (e *Engine) park() error {
 }
 
 func (e *Engine) remove(ctx context.Context, r cleanup.Request) (cleanup.Receipt, error) {
-	if e.paused {
-		return cleanup.Receipt{}, cleanup.ErrPaused
-	}
 	job, found, err := e.revive(sittingAt(r.Worktree, r.Force))
 	if err != nil {
 		return cleanup.Receipt{}, err
 	}
 	if !found {
+		accept := e.relocator.Accept
+		if e.paused {
+			accept = e.relocator.Pend
+		}
 		e.seq++
-		if job, err = e.created(e.relocator.Accept(ctx, e.seq, r)); err != nil {
+		if job, err = e.created(accept(ctx, e.seq, r)); err != nil {
 			return cleanup.Receipt{}, err
 		}
 	}
-	return e.relocate(ctx, requested(ctx, job))
+	job = requested(ctx, job)
+	if e.paused {
+		if err := e.save(job); err != nil {
+			return cleanup.Receipt{}, err
+		}
+		return receiptOf(job), nil
+	}
+	return e.relocate(ctx, job)
 }
 
 func (e *Engine) adopt(ctx context.Context, r cleanup.AdoptRequest) (cleanup.Receipt, error) {
@@ -1067,7 +1079,7 @@ type rejoinable func(job cleanup.Job) bool
 func registeredAt(worktree string, force bool) rejoinable {
 	resolved, _ := filepath.EvalSymlinks(worktree)
 	return func(job cleanup.Job) bool {
-		untouched := job.Phase == cleanup.PhaseQueued || job.Phase == cleanup.PhaseWaiting || job.Phase == cleanup.PhasePrepared
+		untouched := job.Phase == cleanup.PhaseQueued || job.Phase == cleanup.PhaseWaiting || job.Phase == cleanup.PhasePending || job.Phase == cleanup.PhasePrepared
 		authorized := force || !job.Force
 		return untouched && authorized && !job.Adopted && (job.Original == worktree || job.Original == resolved)
 	}

@@ -13,7 +13,7 @@ import (
 // Protocol is the version of the daemon's wire protocol. A client and a daemon
 // that disagree on it refuse each other rather than guess. Both sides decode
 // strictly, so any change to a request or reply shape bumps it.
-const Protocol = 4
+const Protocol = 5
 
 var (
 	// ErrUnsupported reports a platform the daemon does not run on; removal
@@ -21,9 +21,10 @@ var (
 	ErrUnsupported = errors.New("cleanup: the deletion daemon runs on macOS only")
 	// ErrUnknownJob reports a job id the journal does not hold.
 	ErrUnknownJob = errors.New("cleanup: no such job")
-	// ErrPaused reports a paused queue, which refuses every new removal before
-	// any preflight, journal record, git call, or filesystem change.
-	ErrPaused = errors.New("cleanup: the queue is paused and takes no new removal until ccx vcs cleanup resume")
+	// ErrPaused reports a paused queue, which refuses every new deferral or
+	// adoption before any preflight, journal record, git call, or filesystem
+	// change.
+	ErrPaused = errors.New("cleanup: the queue is paused and takes no new deferral or adoption until ccx vcs cleanup resume")
 	// ErrIdentity reports a file that is not the one a job captured.
 	ErrIdentity = errors.New("cleanup: identity mismatch")
 	// ErrUnprobed reports a process, watcher, or git probe that timed out or
@@ -337,7 +338,9 @@ type Service interface {
 	// Remove relocates and unregisters a worktree and returns once the removal
 	// is logically complete. A preflight refusal is a *RefusedError or an
 	// *ActiveError with nothing journaled; a removal that stopped part-way is a
-	// *BlockedError.
+	// *BlockedError. While the queue is paused it journals the removal at
+	// PhasePending after the preflight's checks that look for no live process,
+	// and returns with nothing moved; Resume runs the whole preflight again.
 	Remove(ctx context.Context, r Request) (Receipt, error)
 	// Defer journals a removal that waits for inactivity and returns without
 	// moving anything.
@@ -347,10 +350,12 @@ type Service interface {
 	// Wait returns once the job is done, or with a *BlockedError once it
 	// blocks.
 	Wait(ctx context.Context, jobID string) (Job, error)
-	// Pause stops the queue: every job rests at its journaled phase and
-	// Remove, Defer, and Adopt return ErrPaused until Resume, across restarts.
+	// Pause stops the queue: every job rests at its journaled phase, Remove
+	// journals a new removal as pending, and Defer and Adopt return ErrPaused
+	// until Resume, across restarts.
 	Pause(ctx context.Context) error
-	// Resume lets the queue run again, rested jobs and new removals alike.
+	// Resume lets the queue run again, rested and pending jobs and new
+	// removals alike.
 	Resume(ctx context.Context) error
 	// Retry clears a job's blockage and lets it run again from the phase it
 	// stopped in.

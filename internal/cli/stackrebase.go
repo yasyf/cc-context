@@ -3914,7 +3914,7 @@ func stackOccupied(ctx context.Context, ws string) (bool, error) {
 }
 
 func stackPausedLine(ws string) string {
-	return "left " + ws + " in place, since the cleanup queue is paused — remove it with ccx vcs worktree rm --path " + ws + " after ccx vcs cleanup resume"
+	return "left " + ws + " in place, since the cleanup queue is paused — ccx vcs worktree rm --path " + ws + " queues its removal until ccx vcs cleanup resume"
 }
 
 func stackKeptLine(ws string) string {

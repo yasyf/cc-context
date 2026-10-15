@@ -35,6 +35,10 @@ const (
 	// PhaseWaiting is a deferred removal whose tree a live process still holds.
 	// Nothing is mutated.
 	PhaseWaiting Phase = "waiting"
+	// PhasePending is a removal asked for while the queue was paused: its
+	// tree's identity is captured, no live process has been looked for, and
+	// nothing is mutated.
+	PhasePending Phase = "pending"
 	// PhasePrepared is journaled before the first mutation: from here watchers
 	// may be retired, the recovery ref written, and git's move attempted.
 	PhasePrepared Phase = "prepared"
@@ -56,12 +60,13 @@ const (
 var phaseRank = map[Phase]int{
 	PhaseQueued:       0,
 	PhaseWaiting:      1,
-	PhasePrepared:     2,
-	PhaseMoved:        3,
-	PhaseDetached:     4,
-	PhaseUnregistered: 5,
-	PhaseDeleting:     6,
-	PhaseDone:         7,
+	PhasePending:      2,
+	PhasePrepared:     3,
+	PhaseMoved:        4,
+	PhaseDetached:     5,
+	PhaseUnregistered: 6,
+	PhaseDeleting:     7,
+	PhaseDone:         8,
 }
 
 // Logical reports whether the phase still belongs to the logical half: the
@@ -116,7 +121,8 @@ type Links struct {
 // Blockage is why a job stopped and what an operator needs to know to move it.
 type Blockage struct {
 	// Reason is a short stable category: activity, identity, dirty, watchers,
-	// quarantine, git, timeout, reconcile, delete, or journal.
+	// quarantine, git, timeout, reconcile, delete, or journal, or the
+	// RefusedError reason a pending job's preflight refused it for.
 	Reason string    `json:"reason"`
 	Detail string    `json:"detail"`
 	At     time.Time `json:"at"`
@@ -246,6 +252,9 @@ func (j Job) Validate() error {
 	if !j.Deferred && (j.Phase == PhaseQueued || j.Phase == PhaseWaiting) {
 		return fmt.Errorf("phase %q belongs to a deferred job", j.Phase)
 	}
+	if j.Deferred && j.Phase == PhasePending {
+		return fmt.Errorf("phase %q belongs to a removal, not a deferred job", j.Phase)
+	}
 	for name, path := range map[string]string{
 		"repo": j.Repo, "original": j.Original, "registered": j.Registered, "payload": j.Payload, "git": j.Git,
 	} {
@@ -314,7 +323,7 @@ func (j Job) validateAdopted() error {
 	if j.Deferred {
 		return errors.New("an adopted job cannot be deferred")
 	}
-	if j.Phase == PhaseMoved || j.Phase == PhaseDetached {
+	if j.Phase == PhasePending || j.Phase == PhaseMoved || j.Phase == PhaseDetached {
 		return fmt.Errorf("phase %q belongs to a registered worktree, not an adopted tree", j.Phase)
 	}
 	if !cleanAbs(j.Source) {

@@ -179,6 +179,21 @@ func (f *fakeRelocator) Accept(ctx context.Context, seq uint64, r cleanup.Reques
 	return job, f.h.journal.Create(job)
 }
 
+func (f *fakeRelocator) Pend(ctx context.Context, seq uint64, r cleanup.Request) (cleanup.Job, error) {
+	name := filepath.Base(r.Worktree)
+	f.h.rec.add("pend:" + name)
+	f.serve(ctx, "pend", name)
+	f.mu.Lock()
+	refusal := f.refuse[name]
+	f.mu.Unlock()
+	if refusal != nil {
+		return cleanup.Job{}, refusal
+	}
+	job := f.h.newJob(name, seq, cleanup.PhasePending)
+	job.Force = r.Force
+	return job, f.h.journal.Create(job)
+}
+
 func (f *fakeRelocator) Intend(ctx context.Context, seq uint64, r cleanup.DeferRequest) (cleanup.Job, error) {
 	name := filepath.Base(r.Worktree)
 	f.h.rec.add("intend:" + name)
