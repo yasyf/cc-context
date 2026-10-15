@@ -39,6 +39,10 @@ type fakeGitHub struct {
 }
 
 func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/graphql" {
+		w.WriteHeader(http.StatusBadGateway)
+		return
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	var req struct {
