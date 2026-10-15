@@ -21,6 +21,7 @@ type stackShipIntent struct {
 	Branch  string                   `json:"branch"`
 	Meta    map[string]stackShipMeta `json:"meta"`
 	NoWatch bool                     `json:"no_watch"`
+	NoPR    bool                     `json:"no_pr"`
 	Reviews bool                     `json:"reviews"`
 	Budget  int                      `json:"budget"`
 }
@@ -34,7 +35,7 @@ func stackShipOptions(o shipOpts, meta map[string]prMeta, repo, branch string) (
 	if err != nil {
 		return nil, err
 	}
-	return &stackShipIntent{Repo: repo, Branch: branch, Meta: prepared, NoWatch: o.noWatch, Reviews: o.reviews, Budget: o.budget}, nil
+	return &stackShipIntent{Repo: repo, Branch: branch, Meta: prepared, NoWatch: o.noWatch, NoPR: o.noPR, Reviews: o.reviews, Budget: o.budget}, nil
 }
 
 func stackShipPrepared(meta map[string]prMeta) (map[string]stackShipMeta, error) {

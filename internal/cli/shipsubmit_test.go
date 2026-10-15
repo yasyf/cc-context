@@ -379,3 +379,42 @@ func TestShipGTHoldsADownstackBranchWithoutAPreparedBody(t *testing.T) {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
 }
+
+func TestShipGTNoPRPushesWithoutSubmitting(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		open []string
+	}{
+		{name: "no pull request yet"},
+		{name: "pull requests open", open: []string{"base", "feature"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := shipGTRepo(t)
+			api := stubGTAPI(t)
+			f.Decorate(api.ctx)
+			shipGTStack(t, f, "base", "feature")
+			api.openPRs(tc.open...)
+			shipGTReady(t, f)
+
+			got, errStr, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--no-pr")
+			if err != nil {
+				t.Fatalf("ship error = %v (stderr=%q)", err, errStr)
+			}
+			if heads := api.submitHeads(); len(heads) != 0 {
+				t.Errorf("submit posts = %v, want none under --no-pr", heads)
+			}
+			if n := api.routeCount("/graphite/cli/submit/pre-submit-pull-requests"); n != 0 {
+				t.Errorf("pre-submit calls = %d, want none under --no-pr", n)
+			}
+			if refs := gtPushedRefs(shipGTInvocations(t, f)); !slices.Contains(refs, "feature") {
+				t.Errorf("pushed %v, want feature pushed", refs)
+			}
+			if want := "pushed feature (stack of 2: base, feature)" + shipSep + "not submitted (--no-pr)"; !strings.Contains(got, want) {
+				t.Errorf("summary = %q, want it to carry %q", got, want)
+			}
+			if strings.Contains(got, "submitted feature") || strings.Contains(errStr, "pushed, not submitted:") {
+				t.Errorf("summary = %q, stderr = %q, want no submit and no prepared-body hold", got, errStr)
+			}
+		})
+	}
+}

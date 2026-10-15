@@ -652,6 +652,10 @@ func dryRunCreates(ctx context.Context, l lane, o shipOpts, state gtState, chain
 		if open[branch] || len(state[branch].Parents) == 0 || tipOnlyAncestor(o.tipOnly, r.branch, branch) {
 			continue
 		}
+		if o.noPR {
+			r.creates = append(r.creates, branch+shipSep+"pushed, not submitted (--no-pr)")
+			continue
+		}
 		base := state[branch].Parents[0].Ref
 		from := base
 		if !stacked[base] {
