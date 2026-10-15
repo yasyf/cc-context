@@ -135,7 +135,7 @@ func (p *pass) restRecord(ctx context.Context, t target) (PR, error) {
 		Source:           SourceREST,
 	}
 	if pull.User != nil {
-		pr.Author = pull.User.Login
+		pr.Author = graphQLLogin(pull.User.Login)
 	}
 	if pull.Merged {
 		pr.MergeCommit = pull.MergeCommitSHA
@@ -195,6 +195,10 @@ func (p *pass) restRecord(ctx context.Context, t target) (PR, error) {
 	return pr, nil
 }
 
+func graphQLLogin(login string) string {
+	return strings.TrimSuffix(login, "[bot]")
+}
+
 func restState(pull restPull) string {
 	if pull.Merged {
 		return "MERGED"
@@ -221,7 +225,7 @@ func latestOpinions(reviews []restReview) []Review {
 		}
 		review := Review{State: r.State}
 		if r.User != nil {
-			review.Author = r.User.Login
+			review.Author = graphQLLogin(r.User.Login)
 		}
 		if i, seen := at[review.Author]; seen {
 			out[i] = review
