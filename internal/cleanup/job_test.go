@@ -74,6 +74,7 @@ func TestJobValidate(t *testing.T) {
 		{"valid", func(*Job) {}, ""},
 		{"valid deferred queued", func(j *Job) { j.Deferred, j.Phase = true, PhaseQueued }, ""},
 		{"valid deferred waiting", func(j *Job) { j.Deferred, j.Phase = true, PhaseWaiting }, ""},
+		{"valid pending", func(j *Job) { j.Phase = PhasePending }, ""},
 		{"valid unborn head", func(j *Job) { j.Head, j.RecoveryRef = "", "" }, ""},
 		{"valid sha256 head", func(j *Job) { j.Head = strings.Repeat("ab", 32) }, ""},
 		{"valid blocked", func(j *Job) { j.Block(testCreated, "git", "move failed") }, ""},
@@ -84,6 +85,7 @@ func TestJobValidate(t *testing.T) {
 		{"unknown phase", func(j *Job) { j.Phase = "bogus" }, `unknown phase "bogus"`},
 		{"queued not deferred", func(j *Job) { j.Phase = PhaseQueued }, `phase "queued" belongs to a deferred job`},
 		{"waiting not deferred", func(j *Job) { j.Phase = PhaseWaiting }, `phase "waiting" belongs to a deferred job`},
+		{"pending deferred", func(j *Job) { j.Deferred, j.Phase = true, PhasePending }, `phase "pending" belongs to a removal, not a deferred job`},
 		{"relative repo", func(j *Job) { j.Repo = "repo/.git" }, `repo "repo/.git" is not a clean absolute path`},
 		{"unclean admin_dir", func(j *Job) { j.AdminDir = "/repo/.git/worktrees/x/../feature" }, `admin_dir "/repo/.git/worktrees/x/../feature" is not a clean absolute path`},
 		{"relative original", func(j *Job) { j.Original = "feature" }, `original "feature" is not a clean absolute path`},
@@ -138,6 +140,7 @@ func TestJobState(t *testing.T) {
 		want    State
 	}{
 		{"waiting", PhaseWaiting, nil, State("waiting")},
+		{"pending", PhasePending, nil, State("pending")},
 		{"running", PhaseMoved, nil, State("moved")},
 		{"deleting", PhaseDeleting, nil, State("deleting")},
 		{"done", PhaseDone, nil, State("done")},
@@ -172,6 +175,7 @@ func TestJobValidateAdopted(t *testing.T) {
 		{"deferred queued", func(j *Job) { j.Deferred, j.Phase = true, PhaseQueued }, "an adopted job cannot be deferred"},
 		{"queued", func(j *Job) { j.Phase = PhaseQueued }, `phase "queued" belongs to a deferred job`},
 		{"waiting", func(j *Job) { j.Phase = PhaseWaiting }, `phase "waiting" belongs to a deferred job`},
+		{"pending", func(j *Job) { j.Phase = PhasePending }, `phase "pending" belongs to a registered worktree, not an adopted tree`},
 		{"moved", func(j *Job) { j.Phase = PhaseMoved }, `phase "moved" belongs to a registered worktree, not an adopted tree`},
 		{"detached", func(j *Job) { j.Phase = PhaseDetached }, `phase "detached" belongs to a registered worktree, not an adopted tree`},
 		{"empty source", func(j *Job) { j.Source = "" }, `source "" is not a clean absolute path`},
@@ -309,6 +313,7 @@ func TestPhaseHalves(t *testing.T) {
 	}{
 		{PhaseQueued, true, false},
 		{PhaseWaiting, true, false},
+		{PhasePending, true, false},
 		{PhasePrepared, true, false},
 		{PhaseMoved, true, false},
 		{PhaseDetached, true, false},

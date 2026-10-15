@@ -342,7 +342,7 @@ func TestCleanupWorktreeRmQueuesDeletion(t *testing.T) {
 	mustRun(t, f.Env(), f.Dir, "git", "rev-parse", "--verify", "refs/heads/feat")
 }
 
-func TestCleanupWorktreeRmRefusedWhilePaused(t *testing.T) {
+func TestCleanupWorktreeRmQueuesPendingWhilePaused(t *testing.T) {
 	requireCleanupDaemon(t)
 	f := vcstest.Repo(t)
 	f.Isolate(t)
@@ -354,37 +354,56 @@ func TestCleanupWorktreeRmRefusedWhilePaused(t *testing.T) {
 		t.Fatalf("pause: %v", err)
 	}
 
-	for _, args := range [][]string{{"rm", "feat"}, {"rm", "feat", "--wait"}} {
-		out, err := runWorktreeCmd(t, f, args...)
-		if want := "worktree rm: " + cleanup.ErrPaused.Error(); !errors.Is(err, cleanup.ErrPaused) || err.Error() != want {
-			t.Fatalf("%v while paused = %v, want %q", args, err, want)
-		}
-		if out != "" {
-			t.Errorf("%v while paused printed %q, want nothing removed", args, out)
-		}
+	out, err := runWorktreeCmd(t, f, "rm", "feat")
+	if err != nil {
+		t.Fatalf("rm while paused: %v", err)
 	}
-	if len(svc.queries) != 0 {
-		t.Errorf("status requests = %+v, want none once the removal is refused", svc.queries)
+	jobs := journaledJobs(t, h)
+	if len(jobs) != 1 {
+		t.Fatalf("journaled jobs = %v, want the one pending removal", jobs)
+	}
+	id := jobs[0]
+	queued := "queued feat · git worktree · " + path + " · pending " + id + " · "
+	if want := queued + "until ccx vcs cleanup resume\n"; out != want {
+		t.Errorf("rm while paused = %q, want %q", out, want)
+	}
+	if job := cleanupJob(t, f, h, id); job.Phase != cleanup.PhasePending || job.Blocked != nil {
+		t.Errorf("job %s = phase %s, blockage %+v; want pending", id, job.Phase, job.Blocked)
 	}
 	assertIntact(t, f, path)
-	if jobs := journaledJobs(t, h); len(jobs) != 0 {
-		t.Errorf("journaled jobs = %v, want none", jobs)
-	}
 	if refs := recoveryRefs(t, f); refs != "" {
 		t.Errorf("recovery refs = %q, want none", refs)
 	}
+	if out, err := runWorktreeCmd(t, f, "rm", "feat"); err != nil || out != queued+"until ccx vcs cleanup resume\n" {
+		t.Errorf("a repeated rm while paused = %q, %v; want the same pending job", out, err)
+	}
+	if got := journaledJobs(t, h); !slices.Equal(got, jobs) {
+		t.Errorf("journaled jobs = %v, want only %v", got, jobs)
+	}
+	if len(svc.queries) != 0 {
+		t.Errorf("status requests = %+v, want none without --wait", svc.queries)
+	}
 
-	if err := h.engine.Resume(f.Context()); err != nil {
-		t.Fatalf("resume: %v", err)
+	svc.handoff = func(cleanup.Receipt) cleanup.Service {
+		if err := h.engine.Resume(f.Context()); err != nil {
+			t.Fatalf("resume: %v", err)
+		}
+		return h.engine
 	}
-	out, err := runWorktreeCmd(t, f, "rm", "feat")
+	out, err = runWorktreeCmd(t, f, "rm", "feat", "--wait")
 	if err != nil {
-		t.Fatalf("rm after the resume: %v", err)
+		t.Fatalf("rm --wait across the resume: %v", err)
 	}
-	if want := "removed feat · git worktree · " + path + " · deletion queued " + queuedJobID(t, out) + "\n"; out != want {
-		t.Errorf("rm after the resume = %q, want %q", out, want)
+	if want := queued + "waiting for ccx vcs cleanup resume\nremoved feat · git worktree · " + path + " · deletion queued " + id + " · deleted\n"; out != want {
+		t.Errorf("rm --wait across the resume = %q, want %q", out, want)
+	}
+	if done := cleanupJob(t, f, h, id); done.Phase != cleanup.PhaseDone {
+		t.Errorf("job %s = phase %s, want done", id, done.Phase)
 	}
 	assertGone(t, path)
+	if worktreeRegistered(t, f.Env(), f.Dir, path) {
+		t.Errorf("git still registers %s, want it unregistered", path)
+	}
 }
 
 func TestCleanupWorktreeRmWait(t *testing.T) {
@@ -1133,13 +1152,14 @@ func TestCleanupQueueCommands(t *testing.T) {
 	if out, err := runCleanupCmd(t, f, "pause"); err != nil || out != "deletion paused\n" {
 		t.Fatalf("pause = %q, %v; want %q", out, err, "deletion paused\n")
 	}
-	_, err = h.engine.Remove(ctx, cleanup.Request{Worktree: third, Git: git})
-	if !errors.Is(err, cleanup.ErrPaused) {
-		t.Fatalf("remove %s while paused = %v, want ErrPaused", third, err)
+	pending, err := h.engine.Remove(ctx, cleanup.Request{Worktree: third, Git: git})
+	if err != nil || pending.State != cleanup.State(cleanup.PhasePending) {
+		t.Fatalf("remove %s while paused = %+v, %v; want it pending", third, pending, err)
 	}
+	pendingID := pending.JobID
 	assertIntact(t, f, third)
-	if got := journaledJobs(t, h); len(got) != 2 {
-		t.Errorf("journaled jobs = %v, want only the two seeded before the pause", got)
+	if got := journaledJobs(t, h); len(got) != 3 {
+		t.Errorf("journaled jobs = %v, want the two seeded before the pause and the pending one", got)
 	}
 
 	out, err := runCleanupCmd(t, f, "status")
@@ -1147,14 +1167,17 @@ func TestCleanupQueueCommands(t *testing.T) {
 		t.Fatalf("status error = %v", err)
 	}
 	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
-	if len(lines) != 3 || !strings.HasPrefix(lines[0], header) || !strings.HasSuffix(lines[0], " · deletion paused") {
-		t.Fatalf("status = %q, want a paused header and two jobs", out)
+	if len(lines) != 4 || !strings.HasPrefix(lines[0], header) || !strings.HasSuffix(lines[0], " · deletion paused") {
+		t.Fatalf("status = %q, want a paused header and three jobs", out)
 	}
 	if want := firstID + " · paused · " + first + " · 0 entries"; lines[1] != want {
 		t.Errorf("status job line = %q, want %q", lines[1], want)
 	}
 	if want := blockedID + " · blocked · " + second + " · 0 entries · watchers: "; !strings.HasPrefix(lines[2], want) || !strings.Contains(lines[2], "watcher still attached") {
 		t.Errorf("status job line = %q, want it starting %q naming the watcher", lines[2], want)
+	}
+	if want := pendingID + " · pending · " + third + " · 0 entries"; lines[3] != want {
+		t.Errorf("status job line = %q, want %q", lines[3], want)
 	}
 	out, err = runCleanupCmd(t, f, "status", "--json")
 	if err != nil {
@@ -1164,8 +1187,8 @@ func TestCleanupQueueCommands(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &report); err != nil {
 		t.Fatalf("unmarshal report: %v\n%s", err, out)
 	}
-	if !report.Paused || report.Version != "test" || len(report.Jobs) != 2 || report.Jobs[0].ID != firstID || report.Jobs[0].Phase != cleanup.PhaseUnregistered {
-		t.Errorf("report = %+v, want paused with job %s unregistered first", report, firstID)
+	if !report.Paused || report.Version != "test" || len(report.Jobs) != 3 || report.Jobs[0].ID != firstID || report.Jobs[0].Phase != cleanup.PhaseUnregistered || report.Jobs[2].Phase != cleanup.PhasePending {
+		t.Errorf("report = %+v, want paused with job %s unregistered first and %s pending last", report, firstID, pendingID)
 	}
 
 	assertIntact(t, f, second)
@@ -1182,8 +1205,8 @@ func TestCleanupQueueCommands(t *testing.T) {
 		t.Fatalf("status --limit 1 error = %v", err)
 	}
 	lines = strings.Split(strings.TrimSuffix(out, "\n"), "\n")
-	if len(lines) != 3 || lines[1] != firstID+" · paused · "+first+" · 0 entries" || lines[2] != "omitted 1 more job" {
-		t.Errorf("status --limit 1 = %q, want the first job and one omitted", out)
+	if len(lines) != 3 || lines[1] != firstID+" · paused · "+first+" · 0 entries" || lines[2] != "omitted 2 more jobs" {
+		t.Errorf("status --limit 1 = %q, want the first job and two omitted", out)
 	}
 
 	h.refuseRetire(nil)
@@ -1201,7 +1224,7 @@ func TestCleanupQueueCommands(t *testing.T) {
 	if out, err := runCleanupCmd(t, f, "resume"); err != nil || out != "deletion resumed\n" {
 		t.Fatalf("resume = %q, %v; want %q", out, err, "deletion resumed\n")
 	}
-	for _, job := range []struct{ id, path string }{{firstID, first}, {blockedID, second}} {
+	for _, job := range []struct{ id, path string }{{firstID, first}, {blockedID, second}, {pendingID, third}} {
 		out, err := runCleanupCmd(t, f, "wait", job.id)
 		if err != nil {
 			t.Fatalf("wait %s error = %v", job.id, err)

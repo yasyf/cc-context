@@ -68,6 +68,22 @@ func (r *Relocator) Accept(ctx context.Context, seq uint64, req cleanup.Request)
 	return job, nil
 }
 
+// Pend journals a removal asked for while the queue is paused at PhasePending.
+// It runs Accept's preflight short of the watchers and the guard, so nothing
+// looks for a live process until Advance runs the whole preflight again. The
+// journal record is its only durable effect.
+func (r *Relocator) Pend(ctx context.Context, seq uint64, req cleanup.Request) (cleanup.Job, error) {
+	job, err := r.inspect(ctx, req)
+	if err != nil {
+		return cleanup.Job{}, err
+	}
+	r.stamp(&job, seq, cleanup.PhasePending)
+	if err := r.cfg.Journal.Create(job); err != nil {
+		return cleanup.Job{}, err
+	}
+	return job, nil
+}
+
 // Intend journals a deferred removal without consulting dirtiness and without
 // refusing for activity: a tree the guard finds idle is journaled at
 // PhaseQueued, a held one at PhaseWaiting with its holders noted, and one the
@@ -84,12 +100,7 @@ func (r *Relocator) Intend(ctx context.Context, seq uint64, req cleanup.DeferReq
 		return cleanup.Job{}, err
 	}
 	if held := registrationOf(job); held != req.Expected {
-		return cleanup.Job{}, refuse(
-			job.Original, "replaced",
-			"%s no longer holds the worktree the request named: it holds tree %s registered under %s (%s), the request named tree %s registered under %s (%s)",
-			job.Original, label(held.Tree), held.AdminDir, label(held.Admin),
-			label(req.Expected.Tree), req.Expected.AdminDir, label(req.Expected.Admin),
-		)
+		return cleanup.Job{}, refuse(job.Original, "replaced", "%s", replaced(job.Original, held, req.Expected))
 	}
 	if common, err := filepath.EvalSymlinks(req.CommonDir); err != nil || common != job.Repo {
 		return cleanup.Job{}, refuse(job.Original, "mismatch", "%s belongs to %s, not %s", job.Original, job.Repo, req.CommonDir)
@@ -122,6 +133,14 @@ func (r *Relocator) Intend(ctx context.Context, seq uint64, req cleanup.DeferReq
 		return cleanup.Job{}, err
 	}
 	return job, nil
+}
+
+func replaced(worktree string, held, named cleanup.Registration) string {
+	return fmt.Sprintf(
+		"%s no longer holds the worktree the request named: it holds tree %s registered under %s (%s), the request named tree %s registered under %s (%s)",
+		worktree, label(held.Tree), held.AdminDir, label(held.Admin),
+		label(named.Tree), named.AdminDir, label(named.Admin),
+	)
 }
 
 func (r *Relocator) stamp(job *cleanup.Job, seq uint64, phase cleanup.Phase) {

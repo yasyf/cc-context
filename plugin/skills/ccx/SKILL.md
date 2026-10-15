@@ -490,7 +490,9 @@ does not prove completion. Linux keeps synchronous removal.
 
 `ccx vcs cleanup wait <job-id>` waits for one job; `retry <job-id>` retries a
 blocked job after its cause is addressed. `ccx vcs cleanup pause` stops the
-queue, deletion and new removals alike, and `resume` lets it run again. Status
+queue: deletion halts, and a new `worktree rm` is queued `pending` with
+nothing moved. `resume` lets the queue run again and preflights each pending
+removal afresh. Status
 bounds its output and reports omitted jobs without scanning files for totals
 or an ETA.
 
