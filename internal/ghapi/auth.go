@@ -48,7 +48,7 @@ const appAuthQuery = `query { rateLimit { limit remaining resetAt } }`
 // to, with each identity's remaining GraphQL quota. It mints the app token a
 // read would, so it doubles as the check that minting works.
 func (c *Client) Auth(ctx context.Context) (Auth, error) {
-	writes, err := c.asUser().userIdentity(ctx)
+	writes, err := c.AsUser().userIdentity(ctx)
 	if err != nil {
 		return Auth{}, err
 	}
@@ -119,6 +119,25 @@ func (c *Client) userIdentity(ctx context.Context) (Identity, error) {
 		quota = &user.RateLimit
 	}
 	return Identity{Kind: identityUser, Name: user.Viewer.Login, Quota: quota}, nil
+}
+
+// UserRESTQuota reads the gh user's REST core quota. GitHub does not count the
+// read against it.
+func (c *Client) UserRESTQuota(ctx context.Context) (Quota, error) {
+	limits, err := Get[struct {
+		Resources struct {
+			Core struct {
+				Limit     int   `json:"limit"`
+				Remaining int   `json:"remaining"`
+				Reset     int64 `json:"reset"`
+			} `json:"core"`
+		} `json:"resources"`
+	}](ctx, c.AsUser(), "/rate_limit")
+	if err != nil {
+		return Quota{}, err
+	}
+	core := limits.Resources.Core
+	return Quota{Limit: core.Limit, Remaining: core.Remaining, ResetAt: time.Unix(core.Reset, 0).UTC()}, nil
 }
 
 func spentQuota(err error, now time.Time) (*Quota, bool) {
