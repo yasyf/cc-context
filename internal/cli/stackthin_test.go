@@ -1313,7 +1313,7 @@ func TestThinIsStoreRequiresTheDerivedPath(t *testing.T) {
 	if got, err := thinIsStore(f.ContextIn(decoy), ck); err == nil || !strings.Contains(err.Error(), "derives "+store) {
 		t.Errorf("thinIsStore(decoy) = %v, %v, want a refusal naming the store its remote derives", got, err)
 	}
-	if err := thinRecordPush(f.ContextIn(decoy), render.Dir(decoy), "origin", map[string]string{"decoy": head}); err == nil {
+	if err := recordPush(f.ContextIn(decoy), render.Dir(decoy), "origin", map[string]string{"decoy": head}); err == nil {
 		t.Error("push tracking accepted a store-shaped checkout whose remote derives another store")
 	}
 	if present, err := gitRefExists(f.ContextIn(decoy), render.Dir(decoy), "test", "refs/remotes/origin/decoy"); err != nil || present {

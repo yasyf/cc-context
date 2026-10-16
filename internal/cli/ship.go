@@ -1968,7 +1968,7 @@ func shipAmendKept(ctx context.Context, dir render.Dir, preAmendSHA string, err 
 func shipPushGitAmend(ctx context.Context, dir render.Dir, remote, branch, preAmendSHA string, noVerify bool) error {
 	_, err := render.RunCLI(ctx, dir, "git", gitPushArgv(noVerify, remote, branch))
 	if err == nil {
-		return thinRecordBranchPush(ctx, dir, remote, branch)
+		return recordBranchPush(ctx, dir, remote, branch)
 	}
 	if !gitPushRejected(err) {
 		return fmt.Errorf("ship: git push: %w", err)
@@ -1988,7 +1988,7 @@ func shipPushGitAmend(ctx context.Context, dir render.Dir, remote, branch, preAm
 		}
 		return fmt.Errorf("ship: git push: %w", err)
 	}
-	return thinRecordBranchPush(ctx, dir, remote, branch)
+	return recordBranchPush(ctx, dir, remote, branch)
 }
 
 // shipAmendLease is the remote head an amend may force over: the rewritten
@@ -2067,7 +2067,7 @@ func shipPushGitOnce(ctx context.Context, dir render.Dir, remote, branch, trunk 
 		}
 		return rebased, "", raw
 	}
-	return rebased, replaced, thinRecordBranchPush(ctx, dir, remote, branch)
+	return rebased, replaced, recordBranchPush(ctx, dir, remote, branch)
 }
 
 // gitRefuseTrunkReplay refuses a rebase onto the remote branch that would
