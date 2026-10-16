@@ -61,13 +61,20 @@ type ghArgvDeviation struct{ recorded, production string }
 // invocation production makes, so ghAssertServed still holds a served golden
 // against every other argument of the call it answers. testdata/gh/README.md,
 // "Where a recording deviates from production argv", carries the reason: the
-// foreign-repository views must name their repository, because production's
-// bare gh repo view reads the working directory's and none of those is it.
+// foreign-repository reads must name their repository, because production's
+// repos/{owner}/{repo} resolves to the working directory's and none of those is
+// it.
 var ghArgvDeviations = map[string]ghArgvDeviation{
-	"repo-view-foreign":    {recorded: "cli/cli"},
-	"repo-view-missing":    {recorded: "yasyf/cc-context-does-not-exist"},
-	"repo-view-repo-scope": {recorded: "cli/cli"},
+	"repo-api-foreign": {recorded: "repos/cli/cli", production: ghRepoPath},
+	"repo-api-missing": {recorded: "repos/yasyf/cc-context-does-not-exist", production: ghRepoPath},
 }
+
+// ghRepoPath is the REST path production reads the repository through; gh fills
+// the placeholders from the working directory's remote.
+const ghRepoPath = "repos/{owner}/{repo}"
+
+// ghRepoVerb is the replay key of that read.
+const ghRepoVerb = "api " + ghRepoPath
 
 // ghWantArgv is the invocation a golden may honestly answer: the argv it was
 // recorded with, carrying whatever deviation it declares.
@@ -124,7 +131,7 @@ func ghReplay(t *testing.T, f *vcstest.Fixture, runs map[string][]string) (argvL
 	argvLog = filepath.Join(dir, "argv")
 	state := filepath.Join(dir, "state")
 	for verb, names := range runs {
-		slug := strings.ReplaceAll(verb, " ", "-")
+		slug := strings.NewReplacer(" ", "-", "/", "_").Replace(verb)
 		mustMkdir(t, state)
 		mustWriteFile(t, filepath.Join(state, slug+".n"), "0")
 		for i, name := range names {
@@ -140,14 +147,15 @@ func ghReplay(t *testing.T, f *vcstest.Fixture, runs map[string][]string) (argvL
 	script := "#!/bin/sh\n" +
 		`printf '%s\0' "$#" "$@" >> ` + shQuote(argvLog) + "\n" +
 		`state=` + shQuote(state) + "\n" +
-		`counter="$state/$1-$2.n"` + "\n" +
+		`key=$(printf '%s-%s' "$1" "$2" | tr / _)` + "\n" +
+		`counter="$state/$key.n"` + "\n" +
 		`if [ ! -f "$counter" ]; then` + "\n" +
 		`  printf 'gh replay: no recorded runs for: %s\n' "$*" >&2` + "\n" +
 		"  exit 2\n" +
 		"fi\n" +
 		`n=$(($(cat "$counter") + 1))` + "\n" +
 		`printf '%s' "$n" > "$counter"` + "\n" +
-		`run="$state/$1-$2/$n"` + "\n" +
+		`run="$state/$key/$n"` + "\n" +
 		`if [ ! -d "$run" ]; then` + "\n" +
 		`  printf 'gh replay: call %s of "%s %s" exhausts the recorded runs\n' "$n" "$1" "$2" >&2` + "\n" +
 		"  exit 2\n" +
@@ -223,9 +231,9 @@ func withoutFetchTime(r Repo) Repo {
 
 func TestRepoOwnership(t *testing.T) {
 	tests := []struct {
-		name                     string
-		repo                     Repo
-		writable, mine, personal bool
+		name                            string
+		repo                            Repo
+		writable, mine, personal, known bool
 	}{
 		{
 			name:     "admin on own public repo",
@@ -238,12 +246,14 @@ func TestRepoOwnership(t *testing.T) {
 			writable: true, mine: true,
 		},
 		{
-			name: "write collaborator on a foreign public repo",
-			repo: Repo{Owner: "cli", ViewerLogin: "yasyf", ViewerPermission: "WRITE"},
+			name:  "write collaborator on a foreign public repo",
+			repo:  Repo{Owner: "cli", ViewerLogin: "yasyf", ViewerPermission: "WRITE"},
+			known: true,
 		},
 		{
-			name: "read on a foreign public repo",
-			repo: Repo{Owner: "cli", ViewerLogin: "yasyf", ViewerPermission: "READ"},
+			name:  "read on a foreign public repo",
+			repo:  Repo{Owner: "cli", ViewerLogin: "yasyf", ViewerPermission: "READ"},
+			known: true,
 		},
 		{
 			name: "read on a private repo",
@@ -251,8 +261,9 @@ func TestRepoOwnership(t *testing.T) {
 			mine: true,
 		},
 		{
-			name: "zero value is nobody's",
-			repo: Repo{},
+			name:  "zero value is nobody's",
+			repo:  Repo{},
+			known: true,
 		},
 	}
 	for _, tt := range tests {
@@ -265,6 +276,9 @@ func TestRepoOwnership(t *testing.T) {
 			}
 			if got := tt.repo.Personal(); got != tt.personal {
 				t.Errorf("Personal() = %v, want %v", got, tt.personal)
+			}
+			if got := tt.repo.AffiliationKnown(); got != tt.known {
+				t.Errorf("AffiliationKnown() = %v, want %v", got, tt.known)
 			}
 		})
 	}
@@ -312,30 +326,23 @@ func TestViewerAffiliation(t *testing.T) {
 	}
 }
 
-// TestLookupRepoWithRepoScopeToken replays a lookup recorded with a classic
-// token holding only the repo scope, the token CI jobs ship with. Asking for
-// the viewer's organizations failed that token with INSUFFICIENT_SCOPES, so a
-// query that needs read:org cannot be re-recorded here.
-func TestLookupRepoWithRepoScopeToken(t *testing.T) {
+// TestViewerWithRepoScopeToken replays the membership query recorded with a
+// classic token holding only the repo scope, the token CI jobs ship with. It is
+// the one GitHub read a lookup makes whose answer depends on the token's
+// scopes: asking for the viewer's organizations failed that token with
+// INSUFFICIENT_SCOPES, so a query that needs read:org cannot be re-recorded
+// here.
+func TestViewerWithRepoScopeToken(t *testing.T) {
 	f := vcstest.Repo(t)
 	f.Isolate(t)
-	ghReplay(t, f, map[string][]string{
-		"repo view":   {"repo-view-repo-scope"},
-		"api graphql": {"viewer-graphql-repo-scope"},
-	})
+	ghReplay(t, f, map[string][]string{"api graphql": {"viewer-graphql-repo-scope"}})
 
-	repo, err := LookupRepo(f.Context(), render.Dir(f.Dir), false)
+	v, err := fetchViewer(f.Context(), "cli")
 	if err != nil {
-		t.Fatalf("LookupRepo: %v", err)
+		t.Fatalf("fetchViewer: %v", err)
 	}
-	want := Repo{
-		NameWithOwner:    "cli/cli",
-		Owner:            "cli",
-		ViewerLogin:      "poetic-svc",
-		ViewerPermission: "READ",
-	}
-	if got := withoutFetchTime(repo); got != want {
-		t.Fatalf("LookupRepo = %+v, want %+v", got, want)
+	if want := (viewer{Login: "poetic-svc"}); v != want {
+		t.Fatalf("fetchViewer = %+v, want %+v", v, want)
 	}
 }
 
@@ -348,8 +355,9 @@ func TestLookupRepoCaches(t *testing.T) {
 	f := vcstest.Repo(t)
 	f.Isolate(t)
 	ghReplay(t, f, map[string][]string{
-		"repo view":   {"repo-view-own", "repo-view-foreign", "repo-view-own"},
-		"api graphql": {"viewer-graphql-own", "viewer-graphql-foreign", "viewer-graphql-own"},
+		ghRepoVerb:    {"repo-api-own", "repo-api-foreign", "repo-api-own"},
+		"api user":    {"user-api-own", "user-api-own"},
+		"api graphql": {"viewer-graphql-foreign"},
 	})
 	ctx := f.Context()
 
@@ -416,8 +424,8 @@ func TestLookupRepoCaches(t *testing.T) {
 func TestLookupRepoSharesOneRecordAcrossWorktrees(t *testing.T) {
 	f := vcstest.Repo(t, vcstest.Worktree("feat"))
 	log := ghReplay(t, f, map[string][]string{
-		"repo view":   {"repo-view-own"},
-		"api graphql": {"viewer-graphql-own"},
+		ghRepoVerb: {"repo-api-own"},
+		"api user": {"user-api-own"},
 	})
 	ctx := f.Context()
 
@@ -432,8 +440,8 @@ func TestLookupRepoSharesOneRecordAcrossWorktrees(t *testing.T) {
 	if withoutFetchTime(linked) != withoutFetchTime(main) {
 		t.Errorf("worktree lookup = %+v, want the main checkout's %+v", linked, main)
 	}
-	if got := ghVerbCount(t, log, "repo view"); got != 1 {
-		t.Errorf("gh repo view calls = %d, want 1 for both checkouts of one repository", got)
+	if got := ghVerbCount(t, log, ghRepoVerb); got != 1 {
+		t.Errorf("gh %s calls = %d, want 1 for both checkouts of one repository", ghRepoVerb, got)
 	}
 }
 
@@ -442,17 +450,17 @@ func TestLookupRepoSharesOneRecordAcrossWorktrees(t *testing.T) {
 // own diagnostic, and the viewer is never asked, so the replay records none.
 func TestLookupRepoUnresolvableName(t *testing.T) {
 	f := vcstest.Repo(t)
-	log := ghReplay(t, f, map[string][]string{"repo view": {"repo-view-missing"}})
+	log := ghReplay(t, f, map[string][]string{ghRepoVerb: {"repo-api-missing"}})
 
 	repo, err := LookupRepo(f.Context(), render.Dir(f.Dir), false)
 	if !errors.Is(err, ErrNoGitHub) {
 		t.Fatalf("LookupRepo = %+v, %v; want an error wrapping ErrNoGitHub", repo, err)
 	}
-	if want := "Could not resolve to a Repository"; !strings.Contains(err.Error(), want) {
+	if want := "Not Found (HTTP 404)"; !strings.Contains(err.Error(), want) {
 		t.Errorf("error = %q, want it to carry gh's own %q", err, want)
 	}
-	if got := ghVerbCount(t, log, "api graphql"); got != 0 {
-		t.Errorf("gh api graphql calls = %d, want 0: a repository that does not resolve needs no viewer", got)
+	if got := ghVerbCount(t, log, "api graphql") + ghVerbCount(t, log, "api user"); got != 0 {
+		t.Errorf("viewer calls = %d, want 0: a repository that does not resolve needs no viewer", got)
 	}
 }
 

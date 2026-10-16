@@ -573,7 +573,7 @@ func renderVcsInfo(info vcsInfo) string {
 		line("repo", info.GitHub.NameWithOwner)
 		line("visibility", infoVisibility(*info.GitHub))
 		line("permission", info.GitHub.ViewerPermission)
-		line("viewer", fmt.Sprintf("%s (affiliated: %s)", info.GitHub.ViewerLogin, infoAffiliation(*info.GitHub)))
+		line("viewer", infoViewer(*info.GitHub))
 	case info.GitHubError != "":
 		line("github", strings.TrimPrefix(info.GitHubError, vcs.ErrNoGitHub.Error()+": "))
 	}
@@ -624,16 +624,19 @@ func infoVisibility(repo vcs.Repo) string {
 	return "public"
 }
 
-// infoAffiliation names how the viewer relates to the repository's owner: their
-// own account, an organization they belong to, or neither.
-func infoAffiliation(repo vcs.Repo) string {
+// infoViewer names the viewer and how they relate to the repository's owner:
+// their own account, an organization they belong to, or neither. A lookup that
+// never asked about membership names the viewer alone.
+func infoViewer(repo vcs.Repo) string {
 	switch {
 	case repo.Personal():
-		return "self"
+		return repo.ViewerLogin + " (affiliated: self)"
 	case repo.Affiliated:
-		return "org"
+		return repo.ViewerLogin + " (affiliated: org)"
+	case !repo.AffiliationKnown():
+		return repo.ViewerLogin
 	default:
-		return "no"
+		return repo.ViewerLogin + " (affiliated: no)"
 	}
 }
 

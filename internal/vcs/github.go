@@ -77,6 +77,13 @@ func (r Repo) Mine() bool {
 	return r.IsPrivate || r.Writable() || r.Affiliated
 }
 
+// AffiliationKnown reports whether Affiliated answers the membership question.
+// A lookup asks GitHub about organization membership only for a public
+// repository the viewer cannot administer, the one case where it decides Mine.
+func (r Repo) AffiliationKnown() bool {
+	return !r.IsPrivate && !r.Writable()
+}
+
 // Personal reports whether the repository is owned by the viewer's own account
 // rather than an organization — the case where committing straight to trunk is
 // the established workflow.
@@ -125,7 +132,7 @@ func LookupRepo(ctx context.Context, root render.Dir, refresh bool) (Repo, error
 // RepoCachePath resolves the cached-record path for the GitHub metadata of the
 // repository root belongs to. The key is the repository, not the checkout, so
 // a repository's linked worktrees share one record rather than each paying
-// their own `gh repo view`. It is exported so tests can seed or clear the
+// their own lookup. It is exported so tests can seed or clear the
 // record.
 func RepoCachePath(ctx context.Context, root string) (string, error) {
 	c, err := ResolveCheckout(root)
@@ -141,35 +148,85 @@ func RepoCachePath(ctx context.Context, root string) (string, error) {
 }
 
 func fetchRepo(ctx context.Context, root render.Dir) (Repo, error) {
-	out, err := render.RunCLI(ctx, root, "gh", []string{"repo", "view", "--json", "nameWithOwner,owner,isPrivate,viewerPermission"})
+	out, err := render.RunCLI(ctx, root, "gh", []string{"api", "repos/{owner}/{repo}"})
 	if err != nil {
-		return Repo{}, fmt.Errorf("%w: gh repo view: %w", ErrNoGitHub, err)
+		return Repo{}, fmt.Errorf("%w: gh api repos/{owner}/{repo}: %w", ErrNoGitHub, err)
 	}
-	var view struct {
-		NameWithOwner string `json:"nameWithOwner"`
-		Owner         struct {
+	var payload struct {
+		FullName string `json:"full_name"`
+		Owner    struct {
 			Login string `json:"login"`
+			Type  string `json:"type"`
 		} `json:"owner"`
-		IsPrivate        bool   `json:"isPrivate"`
-		ViewerPermission string `json:"viewerPermission"`
+		Private     bool            `json:"private"`
+		Permissions restPermissions `json:"permissions"`
 	}
-	if err := json.Unmarshal([]byte(out), &view); err != nil {
-		return Repo{}, fmt.Errorf("parse gh repo view: %w", err)
+	if err := json.Unmarshal([]byte(out), &payload); err != nil {
+		return Repo{}, fmt.Errorf("parse gh api repos/{owner}/{repo}: %w", err)
 	}
 
-	v, err := fetchViewer(ctx, view.Owner.Login)
+	repo := Repo{
+		NameWithOwner:    payload.FullName,
+		Owner:            payload.Owner.Login,
+		IsPrivate:        payload.Private,
+		ViewerPermission: payload.Permissions.role(),
+		FetchedAt:        time.Now(),
+	}
+	var v viewer
+	if repo.AffiliationKnown() && payload.Owner.Type == "Organization" {
+		v, err = fetchViewer(ctx, repo.Owner)
+	} else {
+		v.Login, err = fetchLogin(ctx)
+	}
 	if err != nil {
 		return Repo{}, err
 	}
-	return Repo{
-		NameWithOwner:    view.NameWithOwner,
-		Owner:            view.Owner.Login,
-		IsPrivate:        view.IsPrivate,
-		ViewerLogin:      v.Login,
-		ViewerPermission: view.ViewerPermission,
-		Affiliated:       affiliated(view.Owner.Login, v),
-		FetchedAt:        time.Now(),
-	}, nil
+	repo.ViewerLogin = v.Login
+	repo.Affiliated = affiliated(repo.Owner, v)
+	return repo, nil
+}
+
+// restPermissions is the viewer's access as the REST repository payload
+// spells it, one flag per role GitHub grants.
+type restPermissions struct {
+	Admin    bool `json:"admin"`
+	Maintain bool `json:"maintain"`
+	Push     bool `json:"push"`
+	Triage   bool `json:"triage"`
+	Pull     bool `json:"pull"`
+}
+
+// role names the highest role the flags grant in GraphQL's
+// RepositoryPermission spelling, the one Repo.ViewerPermission carries.
+func (p restPermissions) role() string {
+	switch {
+	case p.Admin:
+		return "ADMIN"
+	case p.Maintain:
+		return "MAINTAIN"
+	case p.Push:
+		return "WRITE"
+	case p.Triage:
+		return "TRIAGE"
+	case p.Pull:
+		return "READ"
+	default:
+		return ""
+	}
+}
+
+func fetchLogin(ctx context.Context) (string, error) {
+	out, err := render.RunCLI(ctx, render.Ambient, "gh", []string{"api", "user"})
+	if err != nil {
+		return "", fmt.Errorf("%w: gh api user: %w", ErrNoGitHub, err)
+	}
+	var user struct {
+		Login string `json:"login"`
+	}
+	if err := json.Unmarshal([]byte(out), &user); err != nil {
+		return "", fmt.Errorf("parse gh api user: %w", err)
+	}
+	return user.Login, nil
 }
 
 func fetchViewer(ctx context.Context, owner string) (viewer, error) {

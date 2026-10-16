@@ -71,7 +71,7 @@ review comments, a draft pull request).
 
 | Scenario group | Consumed by | Source |
 |---|---|---|
-| `repo-view-*`, `viewer-graphql-*` | `internal/vcs.fetchRepo` / `fetchViewer` | cc-context (own, ADMIN), cli/cli (foreign), a name that does not resolve, the PostPushr organization (a member); `*-repo-scope` against cli/cli with a classic token holding only the `repo` scope, passed as `GH_REPO_SCOPE_TOKEN` |
+| `repo-api-*`, `user-api-*`, `viewer-graphql-*` | `internal/vcs.fetchRepo` / `fetchLogin` / `fetchViewer` | cc-context (own, ADMIN), cli/cli (foreign), a name that does not resolve, the PostPushr organization (a member); `viewer-graphql-repo-scope` against cli/cli with a classic token holding only the `repo` scope, passed as `GH_REPO_SCOPE_TOKEN` |
 | `guidelines-*` | `internal/cli.fetchGuidelines` | cc-context (every field empty) and cli/cli (templates, code of conduct, `CONTRIBUTING.md`) |
 | `pr-list-*` | `internal/cli.lookupPR` | no pull request, an open one, a draft one |
 | `downstack-graphql-*` | `internal/cli.resolveDownstackPRs` | cc-context branches: one with a single pull request, one carrying two (the descending-order case), one with none |
@@ -88,11 +88,11 @@ noted.
   asks for `per_page=100`. No feed on a reachable pull request answers
   `per_page=100` in more than one page, and a single page carries no `rel="next"`
   for `ghapi.Paginate` to walk.
-- **`cli/repo-view-foreign`**, **`cli/repo-view-missing`**,
-  **`cli/repo-view-repo-scope`**, and **`cli/guidelines-repo-view-populated`**
-  name their repository positionally.
-  Production runs `gh repo view` with no argument, against the working
-  directory's repository, and there is only one of those to record from.
+- **`cli/repo-api-foreign`** and **`cli/repo-api-missing`** name their
+  repository in the path, and **`cli/guidelines-repo-view-populated`** names it
+  positionally. Production asks for `repos/{owner}/{repo}` and runs
+  `gh repo view` with no argument, both against the working directory's
+  repository, and there is only one of those to record from.
 - **`cli/rest-pull-create-empty-error`** is the one response GitHub did not
   send. GitHub cannot be made to fail on demand, so `gh` posts ship's create, under
   ship's `GH_DEBUG=api`, to a local server that answers a 502 with an empty JSON

@@ -685,7 +685,7 @@ func TestRestackGitFailsWhenThePullRequestLookupFails(t *testing.T) {
 		uncached  bool
 		wantError string
 	}{
-		{name: "repository lookup", uncached: true, wantError: "restack: github metadata unavailable: gh repo view"},
+		{name: "repository lookup", uncached: true, wantError: "restack: github metadata unavailable: gh api repos/{owner}/{repo}"},
 		{name: "pull request lookup", wantError: "restack: list the open pull requests of feature"},
 	}
 	for _, tt := range tests {

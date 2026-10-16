@@ -29,6 +29,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The repository lookup stays off GraphQL for private repositories.** Ship,
+  stack, and `vcs info` read a repository's owner, visibility, and the viewer's
+  role through `gh repo view` and the viewer through `gh api graphql`, so an
+  exhausted GraphQL quota failed every ship with `github metadata unavailable`
+  even while the REST quota had thousands of requests left. The lookup now
+  reads `gh api repos/{owner}/{repo}` and `gh api user`, and asks GraphQL about
+  organization membership only for a public repository the viewer cannot
+  administer, the one case where membership decides ownership. `vcs info`
+  names the viewer without an affiliation when it never asked.
+
 - **`ccx vcs ship --no-push` leaves published parents where they are.** The
   in-place restack after a commit-only ship rewrote every downstack branch gt
   read as off its parent. From a new stacked branch on monorepo that was 12

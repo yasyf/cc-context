@@ -162,7 +162,6 @@ record_http() {
 viewer_query='query=query($owner:String!){viewer{login} repositoryOwner(login:$owner){... on Organization{viewerIsAMember}}}'
 member_owner="PostPushr"
 guidelines_fields='nameWithOwner,pullRequestTemplates,codeOfConduct,contactLinks,issueTemplates'
-repo_fields='nameWithOwner,owner,isPrivate,viewerPermission'
 run_fields='workflowName,conclusion,startedAt,updatedAt,url,jobs'
 raw_accept='Accept: application/vnd.github.raw'
 
@@ -264,17 +263,17 @@ reviews_query() {
 	printf 'query(%s) {\n  repository(owner: $owner, name: $repo) {\n%s  }\n}' "$decls" "$fields"
 }
 
-### vcs.LookupRepo — gh repo view + the viewer graphql
+### vcs.LookupRepo — the REST repository and user, and the viewer graphql
 
-record repo-view-own repo view --json "$repo_fields"
-record repo-view-foreign repo view "$foreign_repo" --json "$repo_fields"
-record repo-view-missing repo view "$own_repo-does-not-exist" --json "$repo_fields"
+record repo-api-own api 'repos/{owner}/{repo}'
+record repo-api-foreign api "repos/$foreign_repo"
+record repo-api-missing api "repos/$own_repo-does-not-exist"
+record user-api-own api user
 record viewer-graphql-own api graphql -f "$viewer_query" -f "owner=${own_repo%%/*}"
 record viewer-graphql-member api graphql -f "$viewer_query" -f "owner=$member_owner"
 record viewer-graphql-foreign api graphql -f "$viewer_query" -f "owner=$foreign_owner"
-if wanted repo-view-repo-scope || wanted viewer-graphql-repo-scope; then
-	: "${GH_REPO_SCOPE_TOKEN:?record-gh-goldens: the repo-scope scenarios need GH_REPO_SCOPE_TOKEN, a classic token holding only the repo scope}"
-	GH_TOKEN="$GH_REPO_SCOPE_TOKEN" record repo-view-repo-scope repo view "$foreign_repo" --json "$repo_fields"
+if wanted viewer-graphql-repo-scope; then
+	: "${GH_REPO_SCOPE_TOKEN:?record-gh-goldens: the repo-scope scenario needs GH_REPO_SCOPE_TOKEN, a classic token holding only the repo scope}"
 	GH_TOKEN="$GH_REPO_SCOPE_TOKEN" record viewer-graphql-repo-scope api graphql -f "$viewer_query" -f "owner=$foreign_owner"
 fi
 

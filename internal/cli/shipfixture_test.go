@@ -174,6 +174,7 @@ exit 0
 func writeShipGH(t *testing.T, f *vcstest.Fixture) {
 	t.Helper()
 	f.Setenv("GH_VIEWER_GOLDEN", ghStdout(t, "viewer-graphql-own"))
+	f.Setenv("GH_USER_GOLDEN", ghStdout(t, "user-api-own"))
 	f.Setenv("GH_PULL_JSON", ghStdout(t, "rest-pull-open"))
 	writeShipExecutable(t, f.ShimBin, "gh", "#!/bin/sh\n"+vcstest.RecordArgv("gh")+shipGHBody)
 }
@@ -1023,7 +1024,8 @@ const shipGHBody = `if [ -n "$GH_PR_BODY_DUMP" ]; then
   done
 fi
 case "$1 $2" in
-  "repo view") printf '%s' "$GH_REPO_VIEW_JSON" ;;
+  "api repos/{owner}/{repo}") printf '%s' "$GH_REPO_JSON" ;;
+  "api user") printf '%s' "$GH_USER_GOLDEN" ;;
   "api -X")
     case "$3 $4" in
       "GET "*/pulls)
@@ -1175,6 +1177,7 @@ func setupShip(t *testing.T, marker string, withGh bool) string {
 	seedLaneRecords(context.Background(), t, ".", laneSeed{})
 	t.Setenv("JJ_DIFF_NAMES", "f.txt\n")
 	t.Setenv("GH_VIEWER_GOLDEN", ghStdout(t, "viewer-graphql-own"))
+	t.Setenv("GH_USER_GOLDEN", ghStdout(t, "user-api-own"))
 	t.Setenv("GH_PULL_JSON", ghStdout(t, "rest-pull-open"))
 	// Zero the session id so subtests asserting bare commit argv stay green even
 	// when the suite runs inside a Claude Code session, which exports it.
