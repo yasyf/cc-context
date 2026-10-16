@@ -29,6 +29,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A check run cancelled for a newer run of the same check no longer reads
+  red.** `ccx vcs pr status`, `pr watch`, `vcs status`, and the ship gate
+  treated every run on the head as a verdict. GitHub lists runs in no time
+  order, and its own rollup state counts a cancelled run that a later run
+  replaced. On monorepo, where a workflow cancels its superseded run, green
+  pull requests read `ci red: grade` or `ci red: rollup failure` (#38537,
+  #38482). Now the latest run of each check name decides, by start time and
+  then run id, and a skipped run does not replace one that was graded. When
+  the rollup lists every context, its state is regraded from the runs that
+  stand. A cancelled run with no later run still reads red.
+
 - **`ccx vcs ship --tip-only` ships onto a parent another lane rewrote
   locally.** When a sibling worktree held the parent and had amended it past
   its published head, the stack gate read that local head and refused with

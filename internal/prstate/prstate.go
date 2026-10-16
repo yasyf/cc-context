@@ -126,18 +126,63 @@ type Review struct {
 type Rollup struct {
 	State    string `json:"state"`
 	Contexts struct {
-		Nodes []Context `json:"nodes"`
+		TotalCount int       `json:"totalCount,omitempty"`
+		Nodes      []Context `json:"nodes"`
 	} `json:"contexts"`
 }
 
 // Context is one CheckRun or StatusContext of a Rollup.
 type Context struct {
-	Typename   string `json:"__typename"`
-	Name       string `json:"name,omitempty"`
-	Conclusion string `json:"conclusion,omitempty"`
-	Status     string `json:"status,omitempty"`
-	Context    string `json:"context,omitempty"`
-	State      string `json:"state,omitempty"`
+	Typename   string    `json:"__typename"`
+	Name       string    `json:"name,omitempty"`
+	Conclusion string    `json:"conclusion,omitempty"`
+	Status     string    `json:"status,omitempty"`
+	StartedAt  time.Time `json:"startedAt,omitzero"`
+	DatabaseID int64     `json:"databaseId,omitempty"`
+	Context    string    `json:"context,omitempty"`
+	State      string    `json:"state,omitempty"`
+}
+
+// Latest returns the rollup without the check runs a later run of the same
+// name replaced, so a run cancelled for a newer one grades nothing. A skipped
+// run replaces no run that was graded. A rollup that carries every context is
+// regraded from the runs left standing; GitHub's own state counts them all.
+func (r *Rollup) Latest() *Rollup {
+	if r == nil {
+		return nil
+	}
+	nodes := r.Contexts.Nodes
+	latest := map[string]int{}
+	for i, c := range nodes {
+		if j, seen := latest[c.Name]; c.Typename == "CheckRun" && (!seen || c.replaces(nodes[j])) {
+			latest[c.Name] = i
+		}
+	}
+	standing := make([]Context, 0, len(nodes))
+	for i, c := range nodes {
+		if c.Typename != "CheckRun" || latest[c.Name] == i {
+			standing = append(standing, c)
+		}
+	}
+	if len(standing) == len(nodes) {
+		return r
+	}
+	out := &Rollup{State: r.State}
+	out.Contexts.TotalCount, out.Contexts.Nodes = r.Contexts.TotalCount, standing
+	if len(nodes) == r.Contexts.TotalCount {
+		out.State = rollupState(standing)
+	}
+	return out
+}
+
+func (c Context) replaces(prior Context) bool {
+	if skipped, priorSkipped := c.Conclusion == "SKIPPED", prior.Conclusion == "SKIPPED"; skipped != priorSkipped {
+		return priorSkipped
+	}
+	if !c.StartedAt.Equal(prior.StartedAt) {
+		return c.StartedAt.IsZero() || !prior.StartedAt.IsZero() && c.StartedAt.After(prior.StartedAt)
+	}
+	return c.DatabaseID > prior.DatabaseID
 }
 
 // Trunk is the default branch and its newest hundred commits.

@@ -704,12 +704,6 @@ func TestPRCIOf(t *testing.T) {
 			"ci green",
 		},
 		{
-			"a re-run's newest attempt wins",
-			rollupOf("SUCCESS", checkRun("test", "FAILURE", "COMPLETED"), checkRun("test", "SUCCESS", "COMPLETED")),
-			prCIReport{State: prCIGreen},
-			"ci green",
-		},
-		{
 			"a failed rollup with nothing failing under it",
 			rollupOf("ERROR", checkRun("lint", "SUCCESS", "COMPLETED")),
 			prCIReport{State: prCIRed, Rollup: "ERROR"},

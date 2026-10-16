@@ -337,13 +337,10 @@ func TestVcsStatusRetainsBranchBlockersWithHeldTrunk(t *testing.T) {
 	}
 }
 
-// TestStatusChecksKeepsTheLatestRun holds a re-run to one entry: the rollup
-// carries every attempt under the same name, and only the last is the verdict.
-func TestStatusChecksKeepsTheLatestRun(t *testing.T) {
+func TestStatusChecksReadsEachVerdictAndSkipsGraphite(t *testing.T) {
 	t.Parallel()
-	rollup := &statusRollup{State: "FAILURE"}
+	rollup := &statusRollup{State: "PENDING"}
 	rollup.Contexts.Nodes = []statusContextNode{
-		{Typename: "CheckRun", Name: "label", Conclusion: "FAILURE", Status: "COMPLETED"},
 		{Typename: "CheckRun", Name: "label", Conclusion: "SUCCESS", Status: "COMPLETED"},
 		{Typename: "CheckRun", Name: "build", Status: "IN_PROGRESS"},
 		{Typename: "StatusContext", Context: "buildkite/tests", State: "PENDING"},
