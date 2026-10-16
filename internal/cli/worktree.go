@@ -487,7 +487,7 @@ func runWorktreeAdd(cmd *cobra.Command, name, requested string) error {
 		return fmt.Errorf("worktree add: mint pool for %q: %w", name, err)
 	}
 	var base worktreeBase
-	var tracked []string
+	var tracked, reclaimed []string
 	switch mode {
 	case jjModeWorkspace:
 		if base, err = worktreeJJBase(ctx, l.dir()); err != nil {
@@ -497,6 +497,9 @@ func runWorktreeAdd(cmd *cobra.Command, name, requested string) error {
 			return fmt.Errorf("worktree add: jj workspace add %s: %w", name, err)
 		}
 	default:
+		if reclaimed, err = worktreeReclaimInterrupted(ctx, l, path); err != nil {
+			return err
+		}
 		if base, err = worktreeGitBase(ctx, l.dir(), name); err != nil {
 			return err
 		}
@@ -524,8 +527,26 @@ func runWorktreeAdd(cmd *cobra.Command, name, requested string) error {
 			return err
 		}
 	}
-	cmd.Println(strings.Join(slices.Concat([]string{"added " + name, worktreeShapeOf(mode), base.segment()}, tracked, []string{path}), shipSep))
+	cmd.Println(strings.Join(slices.Concat([]string{"added " + name, worktreeShapeOf(mode), base.segment()}, reclaimed, tracked, []string{path}), shipSep))
 	return nil
+}
+
+// worktreeReclaimInterrupted removes the registration a git worktree add killed
+// mid-checkout leaves at path, still under the lock git takes while it
+// initializes, which refuses every later add and remove of that path.
+func worktreeReclaimInterrupted(ctx context.Context, l lane, path string) ([]string, error) {
+	list, err := vcs.Worktrees(ctx, l.checkout)
+	if err != nil {
+		return nil, fmt.Errorf("worktree add: %w", err)
+	}
+	i := slices.IndexFunc(list, func(wt vcs.Worktree) bool { return wt.Path == path && wt.Locked == "initializing" })
+	if i < 0 {
+		return nil, nil
+	}
+	if _, err := render.RunCLI(ctx, l.dir(), "git", []string{"worktree", "remove", "--force", "--force", path}); err != nil {
+		return nil, fmt.Errorf("worktree add: clear the interrupted add at %s: %w", path, err)
+	}
+	return []string{"cleared an interrupted add"}, nil
 }
 
 // worktreeJoinLane puts the working copy checked out on branch at path into
