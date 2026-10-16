@@ -73,8 +73,10 @@ func writeInfoFile(t *testing.T, dir, name, content string) {
 func ghReplayKey(t *testing.T, g ghGolden) string {
 	t.Helper()
 	switch {
-	case slices.Equal(g.argv[:min(2, len(g.argv))], []string{"repo", "view"}):
-		return "REPO_VIEW"
+	case slices.Equal(g.argv, []string{"api", "repos/{owner}/{repo}"}):
+		return "REPO"
+	case slices.Equal(g.argv, []string{"api", "user"}):
+		return "USER"
 	case !slices.Equal(g.argv[:min(2, len(g.argv))], []string{"api", "graphql"}):
 		t.Fatalf("golden cli/%s: argv %q answers no invocation a vcs report makes", g.name, g.argv)
 		return ""
@@ -113,7 +115,8 @@ func ghReplay(t *testing.T, f *vcstest.Fixture, goldens ...ghGolden) {
 	}
 	script := "#!/bin/sh\n" + vcstest.RecordArgv("gh") +
 		`case "$1 $2" in
-  "repo view") key=REPO_VIEW ;;
+  "api repos/{owner}/{repo}") key=REPO ;;
+  "api user") key=USER ;;
   "api graphql")
     case "$*" in
       *prStatus*) key=STATUS ;;
@@ -460,11 +463,11 @@ func TestVcsInfoRefreshLaneVerdict(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			repoView := loadGHGolden(t, "repo-view-own")
-			viewer := loadGHGolden(t, "viewer-graphql-own")
+			repo := loadGHGolden(t, "repo-api-own")
+			user := loadGHGolden(t, "user-api-own")
 			probe := loadGTGolden(t, "auth-no-perms")
 			f := infoGTRepo(t)
-			ghReplay(t, f, repoView, viewer)
+			ghReplay(t, f, repo, user)
 			gtAuthGolden(t, f, probe)
 			resetArgvLog(t, f)
 
@@ -485,8 +488,8 @@ func TestVcsInfoRefreshLaneVerdict(t *testing.T) {
 			if n := countInvocations(invocations, "gt", "auth"); n != tt.wantLookups {
 				t.Errorf("gt auth ran %d times, want %d", n, tt.wantLookups)
 			}
-			if n := countInvocations(invocations, "gh", "repo", "view"); n != tt.wantLookups {
-				t.Errorf("gh repo view ran %d times, want %d", n, tt.wantLookups)
+			if n := countInvocations(invocations, "gh", "api", "repos/{owner}/{repo}"); n != tt.wantLookups {
+				t.Errorf("gh api repos/{owner}/{repo} ran %d times, want %d", n, tt.wantLookups)
 			}
 		})
 	}
@@ -507,11 +510,11 @@ func TestVcsInfoTokenRotationReprobes(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			repoView := loadGHGolden(t, "repo-view-own")
-			viewer := loadGHGolden(t, "viewer-graphql-own")
+			repo := loadGHGolden(t, "repo-api-own")
+			user := loadGHGolden(t, "user-api-own")
 			f := infoGTRepo(t)
 			seedLaneRecords(f.Context(), t, f.Dir, laneSeed{unreachable: true, note: gtGoldenCases["auth-no-token"].note})
-			ghReplay(t, f, repoView, viewer)
+			ghReplay(t, f, repo, user)
 			gtAuthGolden(t, f, loadGTGolden(t, "auth-no-perms"))
 			if tt.rotate {
 				home, err := render.Home(f.Context())

@@ -1,0 +1,9 @@
+{
+  "argv": [
+    "api",
+    "repos/yasyf/cc-context-does-not-exist"
+  ],
+  "exit": 1,
+  "stdout": "{\"message\":\"Not Found\",\"documentation_url\":\"https://docs.github.com/rest/repos/repos#get-a-repository\",\"status\":\"404\"}",
+  "stderr": "gh: Not Found (HTTP 404)\n"
+}
