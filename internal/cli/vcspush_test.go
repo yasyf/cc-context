@@ -140,30 +140,6 @@ func TestVcsPushFetchesOnlyTheBranchItMoves(t *testing.T) {
 	}
 }
 
-// TestVcsPushRecordsARewriteTheFetchRefspecSkips rewrites a branch in a clone
-// whose fetch refspec names only trunk, where git's own push never moves the
-// branch's remote-tracking ref.
-func TestVcsPushRecordsARewriteTheFetchRefspecSkips(t *testing.T) {
-	f := shipRepo(t, vcstest.Remote())
-	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "main")
-	mustRun(t, f.Env(), f.Dir, "git", "config", "remote.origin.fetch", "+refs/heads/main:refs/remotes/origin/main")
-	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "feat")
-	pushCommit(t, f, "a.txt", "a\n", "test: 🧪 a")
-	if _, err := runVcsPushCmd(f.Context(), t); err != nil {
-		t.Fatalf("first push error = %v", err)
-	}
-	writeShipFile(t, f.Dir, "a.txt", "amended\n")
-	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qa", "--amend", "--no-edit")
-	head := shipHead(t, f)
-
-	if _, err := runVcsPushCmd(f.Context(), t); err != nil {
-		t.Fatalf("rewrite push error = %v", err)
-	}
-	if tracked := gitAt(t, f.Env(), f.Dir, "rev-parse", "refs/remotes/origin/feat"); tracked != head {
-		t.Errorf("origin/feat tracks %s after the push, want the pushed %s", tracked, head)
-	}
-}
-
 // TestVcsPushServerRestackWithNoRemoteHead restacks feat onto a newer main on
 // the server, in a clone with no refs/remotes/origin/HEAD: the remote names its
 // trunk, so main's commit is not counted as work feat never held.

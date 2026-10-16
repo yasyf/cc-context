@@ -739,12 +739,12 @@ func stackRequireHistory(ctx context.Context, dir render.Dir, prefix, remote, tr
 	return nil
 }
 
-func recordPush(ctx context.Context, dir render.Dir, remote string, pushed map[string]string) error {
+func thinRecordPush(ctx context.Context, dir render.Dir, remote string, pushed map[string]string) error {
 	if len(pushed) == 0 {
 		return nil
 	}
-	ck, _, err := thinDirIsStore(ctx, dir)
-	if err != nil {
+	ck, store, err := thinDirIsStore(ctx, dir)
+	if err != nil || !store {
 		return err
 	}
 	var tx strings.Builder
@@ -768,12 +768,15 @@ func thinDirIsStore(ctx context.Context, dir render.Dir) (vcs.Checkout, bool, er
 	return ck, store, err
 }
 
-func recordBranchPush(ctx context.Context, dir render.Dir, remote, branch string) error {
+func thinRecordBranchPush(ctx context.Context, dir render.Dir, remote, branch string) error {
+	if _, store, err := thinDirIsStore(ctx, dir); err != nil || !store {
+		return err
+	}
 	head, err := stackRevParse(ctx, dir, gtRestackRef(branch))
 	if err != nil {
 		return err
 	}
-	return recordPush(ctx, dir, remote, map[string]string{branch: head})
+	return thinRecordPush(ctx, dir, remote, map[string]string{branch: head})
 }
 
 func thinRefuseAdoptedPush(ctx context.Context, dir render.Dir, prefix string, branches []string) error {

@@ -322,7 +322,7 @@ func vcsPushGit(ctx context.Context, dir render.Dir, remote, branch, head string
 		if _, err := render.RunCLI(ctx, dir, "git", gitPushArgv(noVerify, remote, refspec)); err != nil {
 			return "", fmt.Errorf("push: git push: %w", err)
 		}
-		if err := recordPush(ctx, dir, remote, map[string]string{branch: head}); err != nil {
+		if err := thinRecordPush(ctx, dir, remote, map[string]string{branch: head}); err != nil {
 			return "", fmt.Errorf("push: %w", err)
 		}
 		return fmt.Sprintf("pushed %s → %s · created %s/%s at %s", branch, remote, remote, branch, shortOID(head)), nil
@@ -338,7 +338,7 @@ func vcsPushGit(ctx context.Context, dir render.Dir, remote, branch, head string
 		if _, err := render.RunCLI(ctx, dir, "git", gitPushArgv(noVerify, remote, refspec)); err != nil {
 			return "", fmt.Errorf("push: git push: %w", err)
 		}
-		if err := recordPush(ctx, dir, remote, map[string]string{branch: head}); err != nil {
+		if err := thinRecordPush(ctx, dir, remote, map[string]string{branch: head}); err != nil {
 			return "", fmt.Errorf("push: %w", err)
 		}
 		return fmt.Sprintf("pushed %s → %s · %s..%s", branch, remote, shortOID(tip), shortOID(head)), nil
@@ -362,7 +362,7 @@ func vcsPushGit(ctx context.Context, dir render.Dir, remote, branch, head string
 		}
 		return "", fmt.Errorf("push: git push: %w", err)
 	}
-	if err := recordPush(ctx, dir, remote, map[string]string{branch: head}); err != nil {
+	if err := thinRecordPush(ctx, dir, remote, map[string]string{branch: head}); err != nil {
 		return "", fmt.Errorf("push: %w", err)
 	}
 	return fmt.Sprintf("force-pushed %s → %s · replaced %s with %s", branch, remote, shortOID(tip), shortOID(head)), nil
