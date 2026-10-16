@@ -23,8 +23,8 @@ const (
 
 	prFields = "number state title createdAt author { login } isDraft baseRefName headRefName headRefOid mergeable mergeStateStatus " +
 		"reviewDecision latestOpinionatedReviews(first: 20) { nodes { state author { login } } } changedFiles mergeCommit { oid } labels(first: 50) { nodes { name } } " +
-		"checks: commits(last: 1) { nodes { commit { status { state } statusCheckRollup { state contexts(last: 100) { nodes { __typename " +
-		"... on CheckRun { name conclusion status } ... on StatusContext { context state } } } } } } }"
+		"checks: commits(last: 1) { nodes { commit { status { state } statusCheckRollup { state contexts(last: 100) { totalCount nodes { __typename " +
+		"... on CheckRun { name conclusion status startedAt databaseId } ... on StatusContext { context state } } } } } } }"
 	activityFields = " comments(last: 100) { nodes { body } }"
 	probeQuery     = "query { viewer { login } rateLimit { remaining resetAt } }"
 )
@@ -356,7 +356,7 @@ func (p *pass) record(node prNode, t target, i int, resp response) (PR, error) {
 	}
 	if len(node.Checks.Nodes) > 0 {
 		commit := node.Checks.Nodes[0].Commit
-		pr.Rollup = commit.StatusCheckRollup
+		pr.Rollup = commit.StatusCheckRollup.Latest()
 		if commit.Status != nil {
 			pr.Status = commit.Status.State
 		}

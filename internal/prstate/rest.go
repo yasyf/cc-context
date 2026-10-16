@@ -56,9 +56,11 @@ type restReview struct {
 
 type restCheckRuns struct {
 	CheckRuns []struct {
-		Name       string `json:"name"`
-		Status     string `json:"status"`
-		Conclusion string `json:"conclusion"`
+		ID         int64     `json:"id"`
+		Name       string    `json:"name"`
+		Status     string    `json:"status"`
+		Conclusion string    `json:"conclusion"`
+		StartedAt  time.Time `json:"started_at"`
 	} `json:"check_runs"`
 }
 
@@ -297,6 +299,8 @@ func restRollup(runs restCheckRuns, status restStatus) (*Rollup, string) {
 			Name:       run.Name,
 			Status:     strings.ToUpper(run.Status),
 			Conclusion: strings.ToUpper(run.Conclusion),
+			StartedAt:  run.StartedAt,
+			DatabaseID: run.ID,
 		})
 	}
 	for _, s := range status.Statuses {
@@ -305,6 +309,7 @@ func restRollup(runs restCheckRuns, status restStatus) (*Rollup, string) {
 	if len(rollup.Contexts.Nodes) == 0 {
 		return nil, combined
 	}
+	rollup = rollup.Latest()
 	rollup.State = rollupState(rollup.Contexts.Nodes)
 	if combined == "FAILURE" || combined == "ERROR" {
 		rollup.State = "FAILURE"

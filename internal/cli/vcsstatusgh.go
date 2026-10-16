@@ -21,8 +21,8 @@ const statusPRFields = "number url body isDraft baseRefName headRefOid mergeable
 	"labels(first: 20) { nodes { name } } " +
 	"latestOpinionatedReviews(first: 20) { nodes { state author { login __typename } commit { oid } } } " +
 	"history: commits(last: 50) { nodes { commit { oid committedDate messageHeadline } } } " +
-	"checks: commits(last: 1) { nodes { commit { statusCheckRollup { state contexts(first: 100) { nodes { __typename " +
-	"... on CheckRun { name conclusion status } ... on StatusContext { context state } } } } } } } " +
+	"checks: commits(last: 1) { nodes { commit { statusCheckRollup { state contexts(first: 100) { totalCount nodes { __typename " +
+	"... on CheckRun { name conclusion status startedAt databaseId } ... on StatusContext { context state } } } } } } } " +
 	"events: timelineItems(last: 100, itemTypes: [LABELED_EVENT, UNLABELED_EVENT, HEAD_REF_FORCE_PUSHED_EVENT]) " +
 	"{ nodes { __typename ... on LabeledEvent { createdAt label { name } actor { login } } " +
 	"... on UnlabeledEvent { createdAt label { name } actor { login } } " +
@@ -574,12 +574,12 @@ func statusDraftsFor(activity string, drafts map[int]time.Time) map[int]time.Tim
 }
 
 // statusRollupOf reads the head commit's rollup, which is absent until a check
-// has reported on it.
+// has reported on it, with each check name's latest run standing.
 func statusRollupOf(node statusPRNode) *statusRollup {
 	if len(node.Checks.Nodes) == 0 {
 		return nil
 	}
-	return node.Checks.Nodes[0].Commit.StatusCheckRollup
+	return node.Checks.Nodes[0].Commit.StatusCheckRollup.Latest()
 }
 
 func statusLabels(node statusPRNode) []string {
@@ -591,17 +591,14 @@ func statusLabels(node statusPRNode) []string {
 }
 
 // statusChecks flattens the head commit's rollup, reading a CheckRun's verdict
-// off its conclusion and an unfinished one off its status. A re-run is a fresh
-// check run under the same name, so the newest entry of each name wins — the
-// rollup carries every attempt and only the last one is the verdict.
-// Graphite's mergeability check is left out: Graphite holds it in progress
-// while the pull request waits on its stack, so it grades nothing on the head.
+// off its conclusion and an unfinished one off its status. Graphite's
+// mergeability check is left out: Graphite holds it in progress while the pull
+// request waits on its stack, so it grades nothing on the head.
 func statusChecks(rollup *statusRollup) []statusCheck {
 	if rollup == nil {
 		return nil
 	}
 	var checks []statusCheck
-	at := map[string]int{}
 	for _, c := range rollup.Contexts.Nodes {
 		check := statusCheck{Name: c.Context, State: c.State, External: true}
 		if c.Typename == "CheckRun" {
@@ -613,11 +610,7 @@ func statusChecks(rollup *statusRollup) []statusCheck {
 		if check.Name == gtMergeabilityCheck {
 			continue
 		}
-		if i, seen := at[check.Name]; seen {
-			checks[i] = check
-			continue
-		}
-		at[check.Name], checks = len(checks), append(checks, check)
+		checks = append(checks, check)
 	}
 	return checks
 }
