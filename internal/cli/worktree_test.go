@@ -310,6 +310,47 @@ func TestWorktreeAddChecksOutExistingBranch(t *testing.T) {
 	}
 }
 
+// TestWorktreeAddReclaimsAnInterruptedAdd leaves the registration of an add
+// killed mid-checkout: git's initializing lock, with the partial tree or
+// without it.
+func TestWorktreeAddReclaimsAnInterruptedAdd(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		dropTree bool
+	}{{"partial tree", false}, {"tree gone", true}} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := vcstest.Repo(t)
+			f.Isolate(t)
+			head := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD")
+			path := addPoolWorktree(t, f, "feat")
+			admin := gitAt(t, f.Env(), path, "rev-parse", "--absolute-git-dir")
+			if err := os.WriteFile(filepath.Join(admin, "locked"), []byte("initializing\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if tt.dropTree {
+				if err := os.RemoveAll(path); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			out, err := runWorktreeCmd(t, f, "add", "feat")
+			if err != nil {
+				t.Fatalf("re-add error = %v", err)
+			}
+			want := strings.Join([]string{"added feat", "git worktree", "existing feat at " + shortOID(head), "cleared an interrupted add", path}, shipSep) + "\n"
+			if out != want {
+				t.Errorf("summary = %q, want %q", out, want)
+			}
+			if listing := mustRun(t, f.Env(), f.Dir, "git", "worktree", "list", "--porcelain"); strings.Contains(listing, "locked") {
+				t.Errorf("worktree list still carries a lock:\n%s", listing)
+			}
+			if got := gitAt(t, f.Env(), path, "symbolic-ref", "--short", "HEAD"); got != "feat" {
+				t.Errorf("checked out %q, want feat", got)
+			}
+		})
+	}
+}
+
 func TestWorktreeAddChecksOutTheRemoteBranch(t *testing.T) {
 	f := vcstest.Repo(t, vcstest.Remote())
 	f.Isolate(t)
