@@ -221,9 +221,10 @@ func stackStalePins(ctx context.Context, dir render.Dir, run *stackRebaseRun) (s
 
 // stackUnpublishedPins names each pin a run branch sits on whose local head
 // holds work origin lacks that the branch carries, or that rewrote the
-// published head. A pure replay onto newer trunk is no loss, and neither is a
-// head origin once published and has since rewritten; a pin in taken is no
-// pin, and a kept branch in taken publishes with the run.
+// published head outside a --tip-only run, which publishes onto that head. A
+// pure replay onto newer trunk is no loss, and neither is a head origin once
+// published and has since rewritten; a pin in taken is no pin, and a kept
+// branch in taken publishes with the run.
 func stackUnpublishedPins(ctx context.Context, dir render.Dir, run *stackRebaseRun, remote string, taken []string) (pins, reasons []string, err error) {
 	byName := map[string]*stackRebaseBranch{}
 	for i := range run.Branches {
@@ -240,6 +241,9 @@ func stackUnpublishedPins(ctx context.Context, dir render.Dir, run *stackRebaseR
 		}
 		rewritten := false
 		if carried == 0 {
+			if run.TipOnly {
+				continue
+			}
 			if rewritten, err = stackRewrotePublished(ctx, dir, remote, run.Pin, pin); err != nil {
 				return nil, nil, err
 			}

@@ -29,6 +29,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs ship --tip-only` ships onto a parent another lane rewrote
+  locally.** When a sibling worktree held the parent and had amended it past
+  its published head, the stack gate read that local head and refused with
+  `rewrote that head ... pass --include`, though a tip-only ship publishes onto
+  the parent's published head and never moves the parent. On monorepo this
+  refused a child already based on the published parent (#38523). A tip-only
+  run now skips the rewrite check. A child that carries the parent's
+  unpublished commits is still refused.
+
 - **The repository lookup stays off GraphQL for private repositories.** Ship,
   stack, and `vcs info` read a repository's owner, visibility, and the viewer's
   role through `gh repo view` and the viewer through `gh api graphql`, so an
