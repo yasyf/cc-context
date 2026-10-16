@@ -207,39 +207,51 @@ func TestShipTipOnlyCommitsWithAncestorCheckedOut(t *testing.T) {
 }
 
 func TestShipTipOnlyReadsAParentAnotherLaneRewroteLocally(t *testing.T) {
-	f := shipGTRepo(t)
-	shipGTStack(t, f, "base", "feature")
-	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
-		t.Fatalf("stack submit: %v", err)
-	}
-	stubStackPRs(t, f, map[string]*stackPR{
-		"base":    {Number: 100, Title: "base", State: "OPEN", Base: "main", Mergeable: "MERGEABLE"},
-		"feature": {Number: 101, Title: "feature", State: "OPEN", Base: "base", Mergeable: "MERGEABLE"},
-	})
-	cut := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
-	held := f.WorktreePath("held-base")
-	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", held, "base")
-	writeShipFile(t, held, "base.txt", "base, amended and pushed\n")
-	mustRun(t, f.Env(), held, "git", "commit", "-qa", "--amend", "--no-edit")
-	mustRun(t, f.Env(), held, "git", "push", "-qf", "origin", "base")
-	mustRun(t, f.Env(), f.Dir, "git", "rebase", "-q", "--onto", "base", cut, "feature")
-	mustRun(t, f.Env(), f.Dir, "git", "push", "-qf", "origin", "feature")
-	base := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
-	writeShipFile(t, held, "base.txt", "base, amended again and not pushed\n")
-	mustRun(t, f.Env(), held, "git", "commit", "-qa", "--amend", "--no-edit")
-	local := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
-	shipGTReady(t, f)
+	for _, tc := range []struct{ name, parent, tip string }{
+		{"one lane", "base", "feature"},
+		{"another lane's parent", "yasyf/chat-move-r4", "chat-move-r4c"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := shipGTRepo(t)
+			shipGTStack(t, f, tc.parent, tc.tip)
+			if _, _, err := runStackCmd(t, f, "submit", "--all-lanes"); err != nil {
+				t.Fatalf("stack submit: %v", err)
+			}
+			stubStackPRs(t, f, map[string]*stackPR{
+				tc.parent: {Number: 100, Title: tc.parent, State: "OPEN", Base: "main", Mergeable: "MERGEABLE"},
+				tc.tip:    {Number: 101, Title: tc.tip, State: "OPEN", Base: tc.parent, Mergeable: "MERGEABLE"},
+			})
+			cut := gitAt(t, f.Env(), f.Dir, "rev-parse", tc.parent)
+			held := f.WorktreePath("held-parent")
+			mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", held, tc.parent)
+			writeShipFile(t, held, tc.parent+".txt", "amended and pushed\n")
+			mustRun(t, f.Env(), held, "git", "commit", "-qa", "--amend", "--no-edit")
+			mustRun(t, f.Env(), held, "git", "push", "-qf", "origin", tc.parent)
+			mustRun(t, f.Env(), f.Dir, "git", "rebase", "-q", "--onto", tc.parent, cut, tc.tip)
+			mustRun(t, f.Env(), f.Dir, "git", "push", "-qf", "origin", tc.tip)
+			parent := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", tc.parent)
+			writeShipFile(t, held, tc.parent+".txt", "amended again and not pushed\n")
+			mustRun(t, f.Env(), held, "git", "commit", "-qa", "--amend", "--no-edit")
+			local := gitAt(t, f.Env(), f.Dir, "rev-parse", tc.parent)
+			shipGTReady(t, f)
 
-	if _, errStr, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--tip-only"); err != nil {
-		t.Fatalf("ship --tip-only = %v (stderr=%q)", err, errStr)
+			if _, errStr, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--tip-only"); err != nil {
+				t.Fatalf("ship --tip-only = %v (stderr=%q)", err, errStr)
+			}
+			if refs := gtPushedRefs(shipGTInvocations(t, f)); !slices.Equal(refs, []string{tc.tip}) {
+				t.Errorf("pushed refs = %v, want only %s", refs, tc.tip)
+			}
+			if got := gitAt(t, f.Env(), f.Dir, "rev-parse", tc.parent); got != local {
+				t.Errorf("the parent lane's local rewrite moved from %s to %s", local, got)
+			}
+			if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", tc.parent); got != parent {
+				t.Errorf("origin %s moved to %s, want its published head %s kept", tc.parent, got, parent)
+			}
+			if !stackOnto(t, f, parent, gitAt(t, f.Env(), f.RemoteDir, "rev-parse", tc.tip)) {
+				t.Errorf("origin %s does not sit on %s's published head", tc.tip, tc.parent)
+			}
+		})
 	}
-	if refs := gtPushedRefs(shipGTInvocations(t, f)); !slices.Equal(refs, []string{"feature"}) {
-		t.Errorf("pushed refs = %v, want only feature", refs)
-	}
-	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); got != local {
-		t.Errorf("the base lane's local rewrite moved from %s to %s", local, got)
-	}
-	stackAssertBaseKept(t, f, base)
 }
 
 func TestShipTipOnlyPreviewsAndPublishesExplicitChildMeta(t *testing.T) {
