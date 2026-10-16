@@ -1534,6 +1534,33 @@ func TestStackSubmitKeepsAnotherLanesParentAtItsPublishedHead(t *testing.T) {
 	}
 }
 
+// TestStackSubmitCountsAHeldBranchAgainstTheRemoteItself leaves base's
+// remote-tracking ref a commit behind the branch origin holds, as a push does in
+// a clone whose fetch refspec names only trunk.
+func TestStackSubmitCountsAHeldBranchAgainstTheRemoteItself(t *testing.T) {
+	f := shipGTRepo(t)
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	shipGTStack(t, f, "base")
+	api.prs["base"] = 7
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("publish base: %v", err)
+	}
+	shipGTStack(t, f, "feature")
+	api.prs["feature"] = 8
+	lane := restackSiblingPath(t, "lane")
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", lane, "base")
+	mustRun(t, f.Env(), f.Dir, "git", "update-ref", "refs/remotes/origin/base", "base~1")
+
+	out, _, err := runStackCmd(t, f, "submit")
+	if err != nil {
+		t.Fatalf("stack submit: %v", err)
+	}
+	if want := "stack submit: keeping base (checked out in " + lane + ") at its published head — another lane owns it; 0 commit(s) not on origin; pass --include base to submit it\n"; !strings.Contains(out, want) {
+		t.Errorf("stdout = %q, want %q", out, want)
+	}
+}
+
 // stackLaneOfTwo publishes base, checks it out in a working copy of its own, and
 // cuts feature onto it through cut; it returns both working copies.
 func stackLaneOfTwo(t *testing.T, f *vcstest.Fixture, api *gtAPIStub, cut func(holder string) (string, error)) (string, string) {

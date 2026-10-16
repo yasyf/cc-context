@@ -708,16 +708,14 @@ func stackUnpublished(ctx context.Context, dir render.Dir, branch string) (strin
 	if err != nil {
 		return "", fmt.Errorf("stack submit: %w", err)
 	}
-	ref := "refs/remotes/" + remote + "/" + branch
-	if _, code, stderr, err := render.RunCLIExitCode(ctx, dir, "git", []string{"rev-parse", "--verify", "--quiet", ref}); err != nil {
-		return "", fmt.Errorf("stack submit: git rev-parse %s: %w", ref, err)
-	} else if code != 0 {
-		if strings.TrimSpace(stderr) != "" {
-			return "", fmt.Errorf("stack submit: git rev-parse %s: exit %d: %s", ref, code, strings.TrimSpace(stderr))
-		}
+	heads, err := stackRemoteHeads(ctx, dir, "stack submit", remote, []string{branch}, "")
+	if err != nil {
+		return "", err
+	}
+	if heads[branch] == "" {
 		return "never pushed to " + remote, nil
 	}
-	ahead, err := gitCommitsAhead(ctx, dir, "stack submit", ref, branch)
+	ahead, err := gitCommitsAhead(ctx, dir, "stack submit", heads[branch], branch)
 	if err != nil {
 		return "", err
 	}
