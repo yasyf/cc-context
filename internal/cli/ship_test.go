@@ -767,6 +767,26 @@ func TestShipHooksScopedPaths(t *testing.T) {
 	}
 }
 
+func TestShipScopedPathsCommitAStagedSymlinkByItsOwnName(t *testing.T) {
+	t.Parallel()
+	f := shipRepo(t, vcstest.Remote())
+	writeShipFile(t, f.Dir, "real.txt", "payload\n")
+	if err := os.Symlink("real.txt", filepath.Join(f.Dir, "link.txt")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	mustRun(t, f.Env(), f.Dir, "git", "add", "link.txt")
+
+	if _, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push", "real.txt", "link.txt"); err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	if files := gitAt(t, f.Env(), f.Dir, "show", "--name-only", "--format=", "HEAD"); files != "link.txt\nreal.txt" {
+		t.Errorf("committed files = %q, want the symlink and its target", files)
+	}
+	if staged := gitAt(t, f.Env(), f.Dir, "diff", "--cached", "--name-only"); staged != "" {
+		t.Errorf("staged after ship = %q, want nothing left behind", staged)
+	}
+}
+
 // TestShipHooksFiltersMissingFile runs the jj lane, where a deletion reaches the
 // hook file list at all: git's own --diff-filter=d has already dropped it.
 func TestShipHooksFiltersMissingFile(t *testing.T) {
