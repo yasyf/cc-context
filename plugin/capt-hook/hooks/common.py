@@ -87,6 +87,10 @@ def call_of(evt: BaseHookEvent, occ: Occurrence) -> Call:
     return next(call for call in evt.cmd.calls() if call.occurrence.index == occ.index)
 
 
+def output_reaches_terminal(occ: Occurrence) -> bool:
+    return not (occ.nesting or occ.piped or occ.command.redirects)
+
+
 def command_expands(command: Command, markers: tuple[str, ...] = ("$", "`")) -> bool:
     return any(word.value is None or any(marker in word.raw for marker in markers) for word in command.words)
 

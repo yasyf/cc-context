@@ -20,7 +20,7 @@ from captain_hook import (
     rewrite_command_occurrences,
 )
 
-from .common import carries_expansion, ccx_bin, command_expands, rewrote_note
+from .common import carries_expansion, ccx_bin, command_expands, output_reaches_terminal, rewrote_note
 
 if TYPE_CHECKING:
     from cc_transcript.command import Occurrence
@@ -52,7 +52,7 @@ def headtail_parse(cmd: Command) -> tuple[str, int | None, list[str]] | None:
 
 def headtail_file_parts(occ: Occurrence) -> tuple[str, int | None, list[str]] | None:
     cmd = occ.command
-    if occ.piped or cmd.redirects or command_expands(cmd) or (parsed := headtail_parse(cmd)) is None:
+    if not output_reaches_terminal(occ) or command_expands(cmd) or (parsed := headtail_parse(cmd)) is None:
         return None
     return parsed if parsed[2] and not any(carries_expansion(file) for file in parsed[2]) else None
 
@@ -120,6 +120,16 @@ rewrite_command_occurrences(
             pattern="echo x; "
         ),
         Input(command="echo x; tail -20 f.go"): Allow(),
+        Input(command="head -n 5 {file}", file=FileFixture(size=64, name="file.py")): Rewrite(
+            pattern="file.py --section 1-5"
+        ),
+        Input(command="TITLE=$(head -1 {file})", file=FileFixture(size=64, name="commit.txt")): Allow(),
+        Input(command='gh pr edit 1 --title "$(head -1 {file})"', file=FileFixture(size=64, name="commit.txt")): Allow(),
+        Input(command="TITLE=`head -1 {file}`", file=FileFixture(size=64, name="commit.txt")): Allow(),
+        Input(command='bash -c "head -1 {file}"', file=FileFixture(size=64, name="commit.txt")): Allow(),
+        Input(command="TITLE=$(git log -1 --format=%s | head -1)"): Allow(),
+        Input(command="head -1 {file} | cat", file=FileFixture(size=64, name="commit.txt")): Allow(),
+        Input(command="{ head -1 {file}; } > out.txt", file=FileFixture(size=64, name="commit.txt")): Allow(),
         Input(command="head -40 {file} # ccx:raw", file=FileFixture(size=64, name="f.go")): Allow(),
         Input(command="echo '# ccx:raw'; head -40 {file}", file=FileFixture(size=64, name="f.go")): Rewrite(
             pattern="--section 1-40"

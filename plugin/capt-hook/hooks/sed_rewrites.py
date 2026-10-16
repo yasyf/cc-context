@@ -18,7 +18,7 @@ from captain_hook import (
     rewrite_command_occurrences,
 )
 
-from .common import call_of, carries_expansion, ccx_bin, rewrote_note
+from .common import call_of, carries_expansion, ccx_bin, output_reaches_terminal, rewrote_note
 
 if TYPE_CHECKING:
     from cc_transcript.command import Occurrence
@@ -32,7 +32,7 @@ LINE_RANGE = re.compile(r"(\d+),(\d+)p")
 
 
 def sed_to(evt: BaseHookEvent, occ: Occurrence) -> str | None:
-    if occ.piped or occ.command.redirects or occ.command.executable != "sed":
+    if not output_reaches_terminal(occ) or occ.command.executable != "sed":
         return None
     arguments = SED_PRINT.bind(call_of(evt, occ))
     if not arguments.complete or arguments.values.get("quiet") != (True,):
@@ -65,5 +65,8 @@ rewrite_command_occurrences(
         Input(command="cat f | sed -n '1,2p'; echo y"): Allow(),
         Input(command="sed -n 10,40p f.go # ccx:raw"): Allow(),
         Input(command="echo '# ccx:raw'; sed -n 10,40p f.go"): Rewrite(pattern="--section 10-40"),
+        Input(command="TITLE=$(sed -n 1,1p f.go)"): Allow(),
+        Input(command='bash -c "sed -n 1,1p f.go"'): Allow(),
+        Input(command="sed -n 1,1p f.go > out.txt"): Allow(),
     },
 )
