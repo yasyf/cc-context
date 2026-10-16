@@ -29,6 +29,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs ship` with path arguments commits a staged symlink under its
+  own name.** A path argument that is itself a symlink resolved to its
+  target before the commit was scoped, so the commit took the regular file
+  and left the symlink staged. Only the directories above the last path
+  element are resolved now.
+
 - **A check run cancelled for a newer run of the same check no longer reads
   red.** `ccx vcs pr status`, `pr watch`, `vcs status`, and the ship gate
   treated every run on the head as a verdict. GitHub lists runs in no time

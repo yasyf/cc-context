@@ -149,13 +149,20 @@ func repoRoot(ctx context.Context, kind vcs.Kind) (render.Dir, error) {
 // resolves to, or absolute — to a slash-separated path relative to root. Both
 // sides resolve their symlinks first so a /var vs /private/var frame split
 // (macOS, where the VCS reports the physical root but the working directory is
-// the logical one) does not yield a ../.. path.
+// the logical one) does not yield a ../.. path. The path's own last element is
+// left unresolved: a tracked symlink is addressed by its own name, never by its
+// target's.
 func rootRel(ctx context.Context, root, path string) (string, error) {
 	abs := path
 	if !filepath.IsAbs(abs) {
 		abs = filepath.Join(workingDir(ctx), abs)
 	}
-	rel, err := filepath.Rel(evalSymlinks(root), evalSymlinks(abs))
+	physicalRoot := evalSymlinks(root)
+	physical := evalSymlinks(abs)
+	if physical != physicalRoot {
+		physical = filepath.Join(evalSymlinks(filepath.Dir(abs)), filepath.Base(abs))
+	}
+	rel, err := filepath.Rel(physicalRoot, physical)
 	if err != nil {
 		return "", fmt.Errorf("resolve %s against repo root: %w", path, err)
 	}
