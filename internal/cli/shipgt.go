@@ -1706,10 +1706,8 @@ func shipCommitGTSelect(ctx context.Context, l lane, errW io.Writer, o shipOpts,
 	if _, err := render.RunCLIEnv(ctx, l.dir(), "git", []string{"read-tree", "HEAD"}, env); err != nil {
 		return "", fmt.Errorf("ship: git read-tree: %w", err)
 	}
-	if addArgv, ok := gitSelectAddArgv(o.rootPaths, sel); ok {
-		if _, err := render.RunCLIEnv(ctx, l.dir(), "git", addArgv, env); err != nil {
-			return "", fmt.Errorf("ship: git add: %w", err)
-		}
+	if err := gitSelectAdd(ctx, l.dir(), o.rootPaths, sel, env); err != nil {
+		return "", err
 	}
 	for _, path := range sortedSelectionFiles(sel) {
 		if err := gitStageSelected(ctx, l.dir(), path, sel, env); err != nil {

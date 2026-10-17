@@ -935,6 +935,9 @@ exit 0
         fi ;;
     esac ;;
   "add"*|"read-tree"*|"update-index"*|"restore"*) : ;;
+  # Every path a scoped ship names reads as one untracked, unignored file.
+  "ls-files -z")
+    if [ "$3" = --others ]; then shift 5; for p in "$@"; do printf '%s\0' "${p#:(literal)}"; done; fi ;;
   # $GIT_CHERRY is what git cherry prints: empty is a branch carrying no commit
   # the upstream already holds, which is every fixture that does not say so.
   "cherry"*) printf '%s' "$GIT_CHERRY" ;;
