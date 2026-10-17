@@ -246,6 +246,8 @@ class TestHeadHasJsonOutputFlag:
             "ps aux | awk '{print $1}'",
             "terraform output | jq .",
             "cat pods.json | jq '.items'",
+            "X=1",
+            "# comment",
         ],
     )
     def test_negative(self, command: str) -> None:
