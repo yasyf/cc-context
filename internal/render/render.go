@@ -368,7 +368,13 @@ func RunCLIEnv(ctx context.Context, dir Dir, bin string, argv, extraEnv []string
 // RunCLIStdin is RunCLI with stdin fed from the given bytes, for a command that
 // reads its payload from stdin (e.g. git hash-object --stdin).
 func RunCLIStdin(ctx context.Context, dir Dir, bin string, argv []string, stdin []byte) (string, error) {
-	cmd, runCtx, cancel := newCmd(ctx, dir, bin, argv, nil)
+	return RunCLIStdinEnv(ctx, dir, bin, argv, stdin, nil)
+}
+
+// RunCLIStdinEnv is RunCLIStdin with extraEnv appended to the child's
+// environment, as RunCLIEnv appends it.
+func RunCLIStdinEnv(ctx context.Context, dir Dir, bin string, argv []string, stdin []byte, extraEnv []string) (string, error) {
+	cmd, runCtx, cancel := newCmd(ctx, dir, bin, argv, extraEnv)
 	defer cancel()
 	cmd.Stdin = bytes.NewReader(stdin)
 	var stdout, stderr bytes.Buffer

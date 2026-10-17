@@ -752,7 +752,9 @@ func TestShipHooksScopedPaths(t *testing.T) {
 	assertInvocations(t, vcstest.Invocations(t, f.ArgvLog), [][]string{
 		{"git", "branch", "--show-current"},
 		gitTrunkArgv,
-		{"git", "add", "-A", "--", "src/a.go"},
+		{"git", "ls-files", "-z", "--cached", "--", ":(literal)src/a.go"},
+		{"git", "ls-files", "-z", "--others", "--exclude-standard", "--", ":(literal)src/a.go"},
+		{"git", "add", "--pathspec-from-file=-", "--pathspec-file-nul"},
 		{"git", "diff", "--cached", "--name-only", "--diff-filter=d", "-z", "--", "src/a.go"},
 		{"uvx", "prek", "run", "--cd", f.Dir, "--files", "src/a.go"},
 		{"git", "commit", "-m", "fix: frobnicate", "--no-verify", "--", "src/a.go"},
@@ -784,6 +786,38 @@ func TestShipScopedPathsCommitAStagedSymlinkByItsOwnName(t *testing.T) {
 	}
 	if staged := gitAt(t, f.Env(), f.Dir, "diff", "--cached", "--name-only"); staged != "" {
 		t.Errorf("staged after ship = %q, want nothing left behind", staged)
+	}
+}
+
+// TestShipScopedPathsInsideAnIgnoredDirectory reproduces a macOS checkout, where
+// core.ignorecase makes a VERSION rule match the version/ directory: git add
+// refuses that directory whole, though the file shipped under it is tracked.
+func TestShipScopedPathsInsideAnIgnoredDirectory(t *testing.T) {
+	t.Parallel()
+	f := shipRepo(t, vcstest.Remote())
+	mustRun(t, f.Env(), f.Dir, "git", "config", "core.ignorecase", "true")
+	writeShipFile(t, f.Dir, ".gitignore", "VERSION\n")
+	writeShipFile(t, f.Dir, "version/version.go", "package version\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "-f", ".gitignore", "version/version.go")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "version")
+	writeShipFile(t, f.Dir, "version/version.go", "package version\n\nconst V = 1\n")
+	writeShipFile(t, f.Dir, "version/new.go", "package version\n")
+	writeShipFile(t, f.Dir, "src/VERSION", "1.2.3\n")
+
+	for _, paths := range [][]string{{"version"}, {"version/version.go"}} {
+		_, err := runShipCmd(f.Context(), t, append([]string{"-m", "fix: bump", "--no-push"}, paths...)...)
+		if err != nil {
+			t.Fatalf("ship %v error = %v", paths, err)
+		}
+		if files := gitAt(t, f.Env(), f.Dir, "show", "--name-only", "--format=", "HEAD"); files != "version/version.go" {
+			t.Errorf("ship %v committed %q, want the tracked file alone", paths, files)
+		}
+		writeShipFile(t, f.Dir, "version/version.go", "package version\n\nconst V = 2\n")
+	}
+
+	_, err := runShipCmd(f.Context(), t, "-m", "fix: stamp", "--no-push", "src/VERSION")
+	if want := "src/VERSION is ignored by .gitignore:1:VERSION"; err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("ship of an ignored untracked file error = %v, want a refusal containing %q", err, want)
 	}
 }
 
@@ -982,7 +1016,9 @@ func TestShipCommitOnlyVariants(t *testing.T) {
 			want: [][]string{
 				{"git", "branch", "--show-current"},
 				gitTrunkArgv,
-				{"git", "add", "-A", "--", "src/a.go", "docs"},
+				{"git", "ls-files", "-z", "--cached", "--", ":(literal)src/a.go", ":(literal)docs"},
+				{"git", "ls-files", "-z", "--others", "--exclude-standard", "--", ":(literal)src/a.go", ":(literal)docs"},
+				{"git", "add", "--pathspec-from-file=-", "--pathspec-file-nul"},
 				{"git", "commit", "-m", "fix: frobnicate", "--", "src/a.go", "docs"},
 				{"git", "branch", "--show-current"},
 				{"git", "log", "-1", "--format=%h%x00%s"},
@@ -1018,7 +1054,9 @@ func TestShipCommitOnlyVariants(t *testing.T) {
 			want: [][]string{
 				{"git", "branch", "--show-current"},
 				gitTrunkArgv,
-				{"git", "add", "-A", "--", "src/a.go"},
+				{"git", "ls-files", "-z", "--cached", "--", ":(literal)src/a.go"},
+				{"git", "ls-files", "-z", "--others", "--exclude-standard", "--", ":(literal)src/a.go"},
+				{"git", "add", "--pathspec-from-file=-", "--pathspec-file-nul"},
 				{"git", "commit", "--amend", "-m", "fix: frobnicate", "--", "src/a.go"},
 				{"git", "branch", "--show-current"},
 				{"git", "log", "-1", "--format=%h%x00%s"},
@@ -5237,7 +5275,9 @@ func TestShipGTPathScoped(t *testing.T) {
 		{"git", "branch", "--show-current"},
 		gtCommonDirArgv,
 		gtRealRefsArgv(t, f),
-		{"git", "add", "-A", "--", "src/a.go", "docs"},
+		{"git", "ls-files", "-z", "--cached", "--", ":(literal)src/a.go", ":(literal)docs"},
+		{"git", "ls-files", "-z", "--others", "--exclude-standard", "--", ":(literal)src/a.go", ":(literal)docs"},
+		{"git", "add", "--pathspec-from-file=-", "--pathspec-file-nul"},
 		{"git", "diff", "--cached", "--quiet", "--", "src/a.go", "docs"},
 		{"git", "commit", "-m", "fix: frobnicate"},
 		gtCommonDirArgv,
@@ -5250,6 +5290,21 @@ func TestShipGTPathScoped(t *testing.T) {
 	}
 	if status := gitAt(t, f.Env(), f.Dir, "status", "--porcelain"); status != "M f.txt" {
 		t.Errorf("working copy = %q, want the unscoped edit left behind", status)
+	}
+}
+
+func TestShipGTPathScopedPassesOverAnEmptyDirectory(t *testing.T) {
+	f := shipGTFeature(t)
+	writeShipFile(t, f.Dir, "src/a.go", "a\n")
+	if err := os.Mkdir(filepath.Join(f.Dir, "empty"), 0o750); err != nil {
+		t.Fatalf("mkdir empty: %v", err)
+	}
+
+	if _, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push", "src/a.go", "empty"); err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	if names := gitAt(t, f.Env(), f.Dir, "show", "--name-only", "--format=", "HEAD"); names != "src/a.go" {
+		t.Errorf("committed %q, want the file beside the empty directory", names)
 	}
 }
 

@@ -875,35 +875,90 @@ func shipCommit(ctx context.Context, errW io.Writer, dir render.Dir, kind vcs.Ki
 // Only the sweep runs --verbose and returns the segment naming what it took: a
 // checkout several sessions share can hold another lane's work.
 func shipGitAdd(ctx context.Context, dir render.Dir, o shipOpts) (string, error) {
-	scoped := len(o.rootPaths) > 0 || o.indexOnly
-	addArgv := []string{"add", "-A"}
-	if scoped {
+	if o.indexOnly {
+		return "", gitAddPaths(ctx, dir, o.indexPaths, nil)
+	}
+	if len(o.rootPaths) > 0 {
 		paths, err := gitUnstagedPaths(ctx, dir, o.rootPaths)
 		if err != nil {
 			return "", err
 		}
-		if o.indexOnly {
-			paths = make([]string, len(o.indexPaths))
-			for i, p := range o.indexPaths {
-				paths[i] = ":(literal)" + p
-			}
-		}
-		if len(paths) == 0 {
-			return "", nil
-		}
-		addArgv = append(addArgv, "--")
-		addArgv = append(addArgv, paths...)
-	} else {
-		addArgv = append(addArgv, "--verbose")
+		return "", gitAddPaths(ctx, dir, paths, nil)
 	}
-	out, err := render.RunCLI(ctx, dir, "git", addArgv)
+	out, err := render.RunCLI(ctx, dir, "git", []string{"add", "-A", "--verbose"})
 	if err != nil {
 		return "", fmt.Errorf("ship: git add: %w", err)
 	}
-	if scoped {
-		return "", nil
-	}
 	return sweptSegment(parseAddVerbose(out)), nil
+}
+
+// gitAddPaths never hands git add a directory: one an ignore rule matches fails
+// the whole add even when its files are tracked, as core.ignorecase makes a
+// VERSION rule match version/. Tracked content goes through add -u, untracked
+// files git does not ignore by name, and a path holding only ignored files is
+// refused with its rule.
+func gitAddPaths(ctx context.Context, dir render.Dir, paths, env []string) error {
+	if len(paths) == 0 {
+		return nil
+	}
+	pathspecs := literalPathspecs(paths)
+	tracked, err := gitPathsZEnv(ctx, dir, env, append([]string{"ls-files", "-z", "--cached", "--"}, pathspecs...)...)
+	if err != nil {
+		return err
+	}
+	untracked, err := gitPathsZEnv(ctx, dir, env, append([]string{"ls-files", "-z", "--others", "--exclude-standard", "--"}, pathspecs...)...)
+	if err != nil {
+		return err
+	}
+	update := make([]string, 0, len(paths))
+	for i, p := range paths {
+		holds := func(file string) bool { return p == "." || file == p || strings.HasPrefix(file, p+"/") }
+		switch {
+		case slices.ContainsFunc(tracked, holds):
+			update = append(update, pathspecs[i])
+		case !slices.ContainsFunc(untracked, holds):
+			if err := refuseIgnoredPath(ctx, dir, p, env); err != nil {
+				return err
+			}
+			if _, err := os.Lstat(filepath.Join(string(dir), p)); errors.Is(err, fs.ErrNotExist) {
+				update = append(update, pathspecs[i])
+			}
+		}
+	}
+	if len(update) > 0 {
+		if _, err := render.RunCLIEnv(ctx, dir, "git", append([]string{"add", "-u", "--"}, update...), env); err != nil {
+			return fmt.Errorf("ship: git add: %w", err)
+		}
+	}
+	if len(untracked) > 0 {
+		stdin := []byte(strings.Join(literalPathspecs(untracked), "\x00"))
+		if _, err := render.RunCLIStdinEnv(ctx, dir, "git", []string{"add", "--pathspec-from-file=-", "--pathspec-file-nul"}, stdin, env); err != nil {
+			return fmt.Errorf("ship: git add: %w", err)
+		}
+	}
+	return nil
+}
+
+func refuseIgnoredPath(ctx context.Context, dir render.Dir, path string, env []string) error {
+	out, code, stderr, err := render.RunCLIExitCodeEnv(ctx, dir, "git", []string{"check-ignore", "-v", "--", path}, env)
+	switch {
+	case err != nil:
+		return fmt.Errorf("ship: git check-ignore %s: %w", path, err)
+	case code == 1:
+		return nil
+	case code != 0:
+		return fmt.Errorf("ship: git check-ignore %s: exit %d: %s", path, code, strings.TrimSpace(stderr))
+	}
+	rule, _, _ := strings.Cut(strings.TrimSpace(out), "\t")
+	return refuse("ship: %s is ignored by %s and holds no tracked file, so git add refuses it — git add -f it to ship it anyway, or narrow the rule", path, rule)
+}
+
+func literalPathspecs(paths []string) []string {
+	specs := make([]string, len(paths))
+	for i, p := range paths {
+		specs[i] = ":(literal)" + p
+	}
+	return specs
 }
 
 func shipScopeToIndex(ctx context.Context, dir render.Dir, o shipOpts) (shipOpts, error) {
@@ -936,7 +991,11 @@ func shipScopeToIndex(ctx context.Context, dir render.Dir, o shipOpts) (shipOpts
 }
 
 func gitPathsZ(ctx context.Context, dir render.Dir, argv ...string) ([]string, error) {
-	out, err := render.RunCLI(ctx, dir, "git", argv)
+	return gitPathsZEnv(ctx, dir, nil, argv...)
+}
+
+func gitPathsZEnv(ctx context.Context, dir render.Dir, env []string, argv ...string) ([]string, error) {
+	out, err := render.RunCLIEnv(ctx, dir, "git", argv, env)
 	if err != nil {
 		return nil, fmt.Errorf("ship: git %s: %w", strings.Join(argv, " "), err)
 	}

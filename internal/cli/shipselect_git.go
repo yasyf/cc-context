@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -34,10 +35,8 @@ func shipCommitGitSelect(ctx context.Context, dir render.Dir, o shipOpts, sel *s
 	if _, err := render.RunCLIEnv(ctx, dir, "git", []string{"read-tree", "HEAD"}, env); err != nil {
 		return fmt.Errorf("ship: git read-tree: %w", err)
 	}
-	if addArgv, ok := gitSelectAddArgv(o.rootPaths, sel); ok {
-		if _, err := render.RunCLIEnv(ctx, dir, "git", addArgv, env); err != nil {
-			return fmt.Errorf("ship: git add: %w", err)
-		}
+	if err := gitSelectAdd(ctx, dir, o.rootPaths, sel, env); err != nil {
+		return err
 	}
 	for _, path := range sortedSelectionFiles(sel) {
 		if err := gitStageSelected(ctx, dir, path, sel, env); err != nil {
@@ -91,25 +90,19 @@ func gitStageSelected(ctx context.Context, dir render.Dir, path string, sel *shi
 	return nil
 }
 
-// gitSelectAddArgv builds the git-add argv that stages the fully-shipped paths —
-// those shipped whole, not hunk-scoped — into the temp index; ok is false when a
-// scoped ship names no whole file, so no add runs. An empty ship-path set stages
-// the whole worktree (git add -A), and the per-file update-index pass then
-// overwrites each hunk-scoped file with its selected blob.
-func gitSelectAddArgv(paths []string, sel *shipSelection) ([]string, bool) {
+// gitSelectAdd stages the fully-shipped paths — those shipped whole, not
+// hunk-scoped — into the temp index. An empty ship-path set stages the whole
+// worktree (git add -A), and the per-file update-index pass then overwrites each
+// hunk-scoped file with its selected blob.
+func gitSelectAdd(ctx context.Context, dir render.Dir, paths []string, sel *shipSelection, env []string) error {
 	if len(paths) == 0 {
-		return []string{"add", "-A"}, true
-	}
-	var whole []string
-	for _, p := range paths {
-		if !selectionScoped(sel, p) {
-			whole = append(whole, p)
+		if _, err := render.RunCLIEnv(ctx, dir, "git", []string{"add", "-A"}, env); err != nil {
+			return fmt.Errorf("ship: git add: %w", err)
 		}
+		return nil
 	}
-	if len(whole) == 0 {
-		return nil, false
-	}
-	return append([]string{"add", "-A", "--"}, whole...), true
+	whole := slices.DeleteFunc(slices.Clone(paths), func(p string) bool { return selectionScoped(sel, p) })
+	return gitAddPaths(ctx, dir, whole, env)
 }
 
 // selectionScoped reports whether the root-relative ship path p is one of the

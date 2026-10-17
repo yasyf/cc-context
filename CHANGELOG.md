@@ -29,6 +29,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs ship` with path arguments stages a tracked file inside an
+  ignored directory.** Ship handed its paths to one `git add -A`, which
+  refuses a directory an ignore rule matches even when the files under it
+  are tracked. On macOS, `core.ignorecase` makes monorepo's `VERSION` rule
+  match `go/sand/internal/version/`, so shipping that directory failed whole
+  (monorepo #39628). Ship now stages tracked content with `git add -u` and
+  each untracked file git does not ignore by name. A path holding only
+  ignored files is refused with the rule that ignores it.
+
 - **`ccx vcs ship` with path arguments commits a staged symlink under its
   own name.** A path argument that is itself a symlink resolved to its
   target before the commit was scoped, so the commit took the regular file
