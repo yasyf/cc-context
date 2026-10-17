@@ -44,6 +44,7 @@ nudge(
         Input(command="gh pr list --json number,title | /usr/bin/jq '.[].title'"): Warn(pattern="ccx exec"),
         Input(command='gh pr list --json number,title | "jq" .'): Warn(pattern="ccx exec"),
         Input(command="gh pr list --json number"): Allow(),
+        Input(command="X=1"): Allow(),
         Input(command="ps aux | awk '{print $1}'"): Allow(),
         Input(command="gh pr list --json x && echo done"): Allow(),
         Input(command="ccx format -- gh pr list --json x | jq ."): Allow(),

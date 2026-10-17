@@ -163,7 +163,7 @@ def has_json_output_flag(cl: CommandLine) -> bool:
 
 
 def head_has_json_output_flag(cl: CommandLine) -> bool:
-    return json_flagged(cl.head.args)
+    return cl.head is not None and json_flagged(cl.head.args)
 
 
 def runs_ccx(command: Command) -> bool:
