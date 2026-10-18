@@ -29,6 +29,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Deletion commands keep working after an upgrade replaces the `ccx`
+  link.** Every command that reaches the cleanup daemon resolved its own
+  executable's symlink before it said hello, so a `ccx` started from
+  `/opt/homebrew/bin/ccx` failed `worktree rm` with `resolve the ccx
+  executable: lstat /opt/homebrew/bin/ccx: no such file or directory` once
+  Homebrew had unlinked it, even with a current daemon serving. The
+  executable is now read only when the daemon's program copy is installed,
+  and then from whatever the link names at that moment.
+
 - **`ccx vcs ship` with path arguments stages a tracked file inside an
   ignored directory.** Ship handed its paths to one `git add -A`, which
   refuses a directory an ignore rule matches even when the files under it

@@ -17,7 +17,6 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
@@ -53,8 +52,9 @@ type Options struct {
 	Layout cleanup.Layout
 	// Version is the client's own; a daemon Outdated against it is replaced.
 	Version string
-	// Source is the client's own executable with symlinks resolved: the bytes
-	// the daemon's program copy is refreshed from.
+	// Source is the path the client's own executable was started from: the
+	// bytes the daemon's program copy is refreshed from. It is opened only
+	// when the copy is installed, following a link replaced since the start.
 	Source string
 	// Dial opens a control connection to a daemon socket.
 	Dial func(socket string) cleanup.Control
@@ -131,7 +131,7 @@ func InstallProgram(layout cleanup.Layout, source string) (changed bool, err err
 	if err := layout.Ensure(); err != nil {
 		return false, err
 	}
-	src, err := os.Open(source) //nolint:gosec // source is the caller's own resolved executable
+	src, err := os.Open(source) //nolint:gosec // source is the path the caller's own executable started from
 	if err != nil {
 		return false, fmt.Errorf("cleanup agent: open program source: %w", err)
 	}
@@ -255,11 +255,6 @@ func (s starter) vacant(socket string, refused error) error {
 }
 
 func (s starter) connect(ctx context.Context) (cleanup.Control, error) {
-	source, err := filepath.EvalSymlinks(s.Source)
-	if err != nil {
-		return nil, fmt.Errorf("cleanup: resolve the ccx executable: %w", err)
-	}
-	s.Source = source
 	socket, err := s.Layout.Socket()
 	if err != nil {
 		return nil, err

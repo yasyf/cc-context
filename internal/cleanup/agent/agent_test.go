@@ -703,15 +703,15 @@ func TestConnectAfterTheExecutableLinkIsReplaced(t *testing.T) {
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("connect() error = %v, want %v", err, tt.wantErr)
 			}
+			if events, _ := d.recorded(); !reflect.DeepEqual(events, tt.wantEvents) {
+				t.Errorf("events = %q, want %q", events, tt.wantEvents)
+			}
 			if tt.wantErr == nil {
 				if info, err := ctl.Hello(context.Background()); err != nil || info != current {
 					t.Errorf("returned control answers %+v, %v; want %+v", info, err, current)
 				}
 			} else if !strings.Contains(err.Error(), link) {
 				t.Errorf("connect() error = %q, want it to name %s", err, link)
-			}
-			if events, _ := d.recorded(); !reflect.DeepEqual(events, tt.wantEvents) {
-				t.Errorf("events = %q, want %q", events, tt.wantEvents)
 			}
 			got, err := os.ReadFile(s.Layout.ProgramPath())
 			switch {
