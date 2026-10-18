@@ -3,6 +3,8 @@ package cli
 import (
 	"bytes"
 	"database/sql"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -453,5 +455,22 @@ func TestStackNewPublishedParentAcceptsAPlainSubmitsReceipt(t *testing.T) {
 	}
 	if got := gitAt(t, f.Env(), child, "rev-parse", "HEAD"); got != head {
 		t.Fatalf("child head = %s, want the published parent %s", got, head)
+	}
+}
+
+func TestStackNewPublishedParentNamesTheShipThatPublishesAMovedSource(t *testing.T) {
+	f, receipt := publishedSparseParent(t)
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-q", "--allow-empty", "-m", "unpushed parent work")
+	moved := shipHead(t, f)
+	holder := gitAt(t, f.Env(), f.Dir, "rev-parse", "--show-toplevel")
+	child := filepath.Join(t.TempDir(), "child")
+
+	_, _, err := runStackCmd(t, f, "new", "--full-history", "child", "--published-parent", "--no-checkout", "--path", child)
+	want := "stack new: parent source changed since publication: it is at " + shortOID(moved) + ", published from " + shortOID(receipt.Source) + "; publish it before creating a published child: cd " + holder + " && ccx vcs ship --no-commit"
+	if err == nil || err.Error() != want {
+		t.Fatalf("stack new error = %v, want %q", err, want)
+	}
+	if _, err := os.Stat(child); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("refused child stat error = %v, want nothing created", err)
 	}
 }

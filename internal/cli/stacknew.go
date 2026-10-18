@@ -160,7 +160,7 @@ func runStackNew(cmd *cobra.Command, name string, options stackNewOpts) error {
 		if receipt == nil {
 			return fmt.Errorf("stack new: %s has no publication receipt; publish it first", parent)
 		}
-		if err := stackVerifyNewParent(ctx, l.dir(), receipt); err != nil {
+		if err := stackVerifyNewParent(ctx, l, receipt); err != nil {
 			return err
 		}
 		if err := stackVerifyNewRemote(ctx, l.dir(), receipt); err != nil {
@@ -228,7 +228,7 @@ func runStackNew(cmd *cobra.Command, name string, options stackNewOpts) error {
 		if err := stackTrackPublished(ctx, created, cmd.ErrOrStderr(), common, name, receipt); err != nil {
 			return err
 		}
-		if err := stackVerifyNewParent(ctx, l.dir(), receipt); err != nil {
+		if err := stackVerifyNewParent(ctx, l, receipt); err != nil {
 			return err
 		}
 		head, err := stackRevParse(ctx, created, "HEAD")
@@ -294,7 +294,7 @@ func stackThinParent(ctx context.Context, src, store lane, name, parent, trunk s
 	if receipt == nil {
 		return nil, fmt.Errorf("stack new: %s lives outside thin store %s and %s has no publication to bring in; publish it with ccx vcs stack submit from its working copy and rerun, or cut the lane from this checkout's full history with %s", parent, store.root, parent, fullHistory)
 	}
-	if err := stackVerifyNewParent(ctx, src.dir(), receipt); err != nil {
+	if err := stackVerifyNewParent(ctx, src, receipt); err != nil {
 		return nil, err
 	}
 	if err := stackVerifyNewRemote(ctx, src.dir(), receipt); err != nil {
@@ -330,7 +330,7 @@ func stackFinishAdopted(ctx context.Context, errW io.Writer, src, store lane, cr
 	if err := gtmeta.RecordRestacked(ctx, store.checkout.CommonDir, map[string]string{name: receipt.Head}); err != nil {
 		return err
 	}
-	if err := stackVerifyNewParent(ctx, src.dir(), receipt); err != nil {
+	if err := stackVerifyNewParent(ctx, src, receipt); err != nil {
 		return err
 	}
 	head, err := stackRevParse(ctx, created, "HEAD")
@@ -637,13 +637,22 @@ func stackInstallSparseIndex(ctx context.Context, dir render.Dir, prefix, privat
 	return nil
 }
 
-func stackVerifyNewParent(ctx context.Context, dir render.Dir, receipt *stackPublication) error {
+func stackVerifyNewParent(ctx context.Context, l lane, receipt *stackPublication) error {
+	dir := l.dir()
 	source, err := stackRevParse(ctx, dir, gtRestackRef(receipt.Branch))
 	if err != nil {
 		return err
 	}
 	if source != receipt.Source {
-		return fmt.Errorf("stack new: %s source changed since publication; publish it before creating a published child", receipt.Branch)
+		holders, err := vcs.BranchHolders(ctx, l.checkout)
+		if err != nil {
+			return fmt.Errorf("stack new: %w", err)
+		}
+		publish := "ccx vcs worktree add " + receipt.Branch + ", then ccx vcs ship --no-commit in the working copy it prints"
+		if holder := holders[receipt.Branch]; holder != "" {
+			publish = "cd " + holder + " && ccx vcs ship --no-commit"
+		}
+		return fmt.Errorf("stack new: %s source changed since publication: it is at %s, published from %s; publish it before creating a published child: %s", receipt.Branch, shortOID(source), shortOID(receipt.Source), publish)
 	}
 	tx := fmt.Sprintf("start\nverify %s %s\nverify %s %s\ncommit\n", gtRestackRef(receipt.Branch), receipt.Source, stackPublicationRef(receipt.Branch, "receipt"), receipt.OID)
 	if _, err := render.RunCLIStdin(ctx, dir, "git", []string{"update-ref", "--stdin"}, []byte(tx)); err != nil {
