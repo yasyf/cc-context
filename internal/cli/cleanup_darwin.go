@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"slices"
 	"time"
 
@@ -31,9 +30,6 @@ func connectCleanup(ctx context.Context) (cleanup.Service, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return nil, fmt.Errorf("cleanup: locate the ccx executable: %w", err)
-	}
-	if exe, err = filepath.EvalSymlinks(exe); err != nil {
-		return nil, fmt.Errorf("cleanup: resolve the ccx executable: %w", err)
 	}
 	control, err := agent.Connect(ctx, agent.Options{
 		Layout:    cleanup.DefaultLayout(),
