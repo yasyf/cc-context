@@ -639,6 +639,91 @@ func TestConnect(t *testing.T) {
 	}
 }
 
+func TestConnectAfterTheExecutableLinkIsReplaced(t *testing.T) {
+	current := cleanup.Info{Version: "v1.2.3", Protocol: cleanup.Protocol, PID: 42}
+	upgraded := []byte("#!/bin/sh\nexec false\n")
+	started := []string{"hello", "held serve.lock", "hello", "held serve.lock"}
+	tests := []struct {
+		name       string
+		serving    *cleanup.Info
+		starts     *cleanup.Info
+		relink     bool
+		wantEvents []string
+		wantErr    error
+		wantCopy   []byte
+	}{
+		{
+			name:       "current daemon is reached while the link is gone",
+			serving:    &current,
+			wantEvents: []string{"hello"},
+		},
+		{
+			name:       "missing daemon is installed from the build the link names now",
+			starts:     &current,
+			relink:     true,
+			wantEvents: append(slices.Clone(started), "apply", "hello"),
+			wantCopy:   upgraded,
+		},
+		{
+			name:       "missing daemon is not started while the link is gone",
+			starts:     &current,
+			wantEvents: started,
+			wantErr:    fs.ErrNotExist,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := &fakeDaemon{serving: tt.serving, starts: tt.starts}
+			s := fixture(t, d)
+			bin := filepath.Join(filepath.Dir(s.Source), "bin")
+			if err := os.Mkdir(bin, 0o750); err != nil {
+				t.Fatal(err)
+			}
+			link := filepath.Join(bin, "ccx")
+			if err := os.Symlink(s.Source, link); err != nil {
+				t.Fatal(err)
+			}
+			s.Source = link
+			if err := os.Remove(link); err != nil {
+				t.Fatal(err)
+			}
+			if tt.relink {
+				build := filepath.Join(filepath.Dir(bin), "ccx-upgraded")
+				if err := os.WriteFile(build, upgraded, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(build, link); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			ctl, err := s.connect(ctx)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("connect() error = %v, want %v", err, tt.wantErr)
+			}
+			if tt.wantErr == nil {
+				if info, err := ctl.Hello(context.Background()); err != nil || info != current {
+					t.Errorf("returned control answers %+v, %v; want %+v", info, err, current)
+				}
+			} else if !strings.Contains(err.Error(), link) {
+				t.Errorf("connect() error = %q, want it to name %s", err, link)
+			}
+			if events, _ := d.recorded(); !reflect.DeepEqual(events, tt.wantEvents) {
+				t.Errorf("events = %q, want %q", events, tt.wantEvents)
+			}
+			got, err := os.ReadFile(s.Layout.ProgramPath())
+			switch {
+			case tt.wantCopy != nil && (err != nil || !bytes.Equal(got, tt.wantCopy)):
+				t.Errorf("program copy = %q, %v; want %q", got, err, tt.wantCopy)
+			case tt.wantCopy == nil && !errors.Is(err, fs.ErrNotExist):
+				t.Errorf("program copy read error = %v, want nothing installed", err)
+			}
+		})
+	}
+}
+
 func TestConnectReportsACancelledCallerDuringStart(t *testing.T) {
 	d := &fakeDaemon{applyHangs: true, entered: make(chan struct{})}
 	s := fixture(t, d)

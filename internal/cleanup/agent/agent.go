@@ -17,6 +17,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
@@ -254,6 +255,11 @@ func (s starter) vacant(socket string, refused error) error {
 }
 
 func (s starter) connect(ctx context.Context) (cleanup.Control, error) {
+	source, err := filepath.EvalSymlinks(s.Source)
+	if err != nil {
+		return nil, fmt.Errorf("cleanup: resolve the ccx executable: %w", err)
+	}
+	s.Source = source
 	socket, err := s.Layout.Socket()
 	if err != nil {
 		return nil, err
