@@ -29,6 +29,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs stack new --published-parent` names the command that
+  publishes a moved parent.** When the parent branch had moved past its
+  publication receipt, as with an unpushed commit, the refusal said only
+  `publish it before creating a published child`, and lanes fell back to a
+  raw rebase. It now gives both heads and the command, such as
+  `cd <parent's working copy> && ccx vcs ship --no-commit`, or
+  `ccx vcs worktree add <parent>` first when no working copy holds it.
+
 - **Deletion commands keep working after an upgrade replaces the `ccx`
   link.** Every command that reaches the cleanup daemon resolved its own
   executable's symlink before it said hello, so a `ccx` started from
