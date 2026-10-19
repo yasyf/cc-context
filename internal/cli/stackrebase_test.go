@@ -2287,6 +2287,60 @@ func TestStackContinueRefusesConcurrentLocalAdvance(t *testing.T) {
 	}
 }
 
+func TestStackContinuePublishesUpToAfterGTMovesOffItsLandedRoot(t *testing.T) {
+	t.Parallel()
+	for _, forget := range []bool{false, true} {
+		t.Run(fmt.Sprintf("forget=%t", forget), func(t *testing.T) {
+			t.Parallel()
+			f := shipGTRepo(t, vcstest.GTStack("base"))
+			stubOpenPRs(t, f, nil, "base", "feature")
+			stackConflicting(t, f)
+			mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "feature")
+			landedAt := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
+			_, _, err := runStackCmd(t, f, "rebase", "--to", "feature")
+			if err == nil {
+				t.Fatal("stack rebase succeeded, want the conflict to stop")
+			}
+			ws := stackWorkspaceOf(t, err)
+			restackAdvanceRemote(t, f, "main", "base.txt", "base\n")
+			mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "--delete", "base")
+			commonDir, err := gtCommonDir(t.Context(), render.Dir(f.Dir), "test")
+			if err != nil {
+				t.Fatalf("gt common dir: %v", err)
+			}
+			if err := gtmeta.Reparent(t.Context(), commonDir, map[string]string{"feature": "main"}); err != nil {
+				t.Fatalf("reparent feature onto main: %v", err)
+			}
+			if forget {
+				if err := gtmeta.Forget(t.Context(), commonDir, []string{"base"}); err != nil {
+					t.Fatalf("forget base: %v", err)
+				}
+			}
+			stubOpenPRs(t, f, map[string]*stackPR{"base": {Number: 5, Title: "base", State: "CLOSED", Head: landedAt, Landed: true}}, "feature")
+			writeShipFile(t, ws, "c.txt", "resolved\n")
+			mustRun(t, f.Env(), ws, "git", "add", "c.txt")
+
+			out, _, err := runStackCmdIn(t, f, ws, "continue")
+			if err != nil {
+				t.Fatalf("continue: %v", err)
+			}
+			if !strings.Contains(out, "base landed while the run was stopped") {
+				t.Errorf("output = %q, want the landed root dropped", out)
+			}
+			published := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature")
+			if n := gitAt(t, f.Env(), f.RemoteDir, "rev-list", "--count", "main.."+published); n != "1" {
+				t.Errorf("published feature holds %s commits over trunk, want its own 1", n)
+			}
+			if got := gitAt(t, f.Env(), f.RemoteDir, "show", published+":c.txt"); got != "resolved" {
+				t.Errorf("published feature's c.txt = %q, want the resolution kept", got)
+			}
+			if left, _ := os.ReadDir(filepath.Join(f.Dir, ".git", stackRebaseStateDir)); len(left) != 0 {
+				t.Errorf("run state left behind: %v", left)
+			}
+		})
+	}
+}
+
 func TestStackContinueRefusesConcurrentRemoteAdvance(t *testing.T) {
 	t.Parallel()
 	f := shipGTRepo(t, vcstest.GTStack("base"))
