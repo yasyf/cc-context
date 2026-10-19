@@ -1150,8 +1150,8 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 		return nil, err
 	}
 	stackMarkParked(prs, submitted)
-	moving := slices.DeleteFunc(slices.Clone(members), func(name string) bool { return tipOnlyAncestor(o.tipOnly, o.tip, name) })
-	found, err := stackFetchRecordedParents(ctx, l.dir(), tr, retargeted, moving, parentOverrides, prs)
+	rebased := slices.DeleteFunc(slices.Clone(members), func(name string) bool { return tipOnlyAncestor(o.tipOnly, o.tip, name) })
+	found, err := stackFetchRecordedParents(ctx, l.dir(), tr, retargeted, rebased, parentOverrides, prs)
 	if err != nil {
 		return nil, err
 	}
