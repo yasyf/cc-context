@@ -1860,27 +1860,6 @@ func TestShipGitRebase(t *testing.T) {
 				[]string{"git", "merge-base", "--is-ancestor", "refs/remotes/backup/main", "HEAD"},
 				[]string{"git", "push", "--no-follow-tags", "--quiet", "--no-thin", "backup", "main"}),
 		},
-		{
-			// A crashed rebase left its state directory behind, so this one exits
-			// before touching the working tree: the state is somebody else's to
-			// finish or drop.
-			name: "rebase failing before it starts is not a conflict",
-			build: func(t *testing.T, f *vcstest.Fixture) {
-				shipDivergeRemote(t, f, "main", "u.txt", "upstream\n")
-				if err := os.MkdirAll(filepath.Join(f.Dir, ".git", "rebase-merge"), 0o750); err != nil {
-					t.Fatalf("mkdir rebase-merge: %v", err)
-				}
-			},
-			want: append(plan,
-				[]string{"git", "config", "--get", "branch.main.remote"},
-				[]string{"git", "ls-remote", "origin", "refs/heads/main"},
-				gitForEachRefStdinArgv,
-				shipFetchArgv("origin", "main"),
-				[]string{"git", "merge-base", "--is-ancestor", remoteRef, "HEAD"},
-				rewriteProbe("main"),
-				[]string{"git", "rev-parse", "--path-format=absolute", "--git-path", "rebase-merge"}),
-			wantErr: []string{"ship: a rebase is already in progress here", "ccx never aborts a rebase it did not start"},
-		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -7540,6 +7519,44 @@ func TestGitRebaseOntoRefusesARebaseItDidNotStart(t *testing.T) {
 	}
 	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD"); got != head {
 		t.Errorf("HEAD = %s, want the pre-refusal %s", got, head)
+	}
+}
+
+// TestShipRefusesARebaseItDidNotStartBeforeCommitting is DA4's Oct 19 lane: a
+// predecessor's rebase was left stopped in the worktree, and ship misread its
+// detached HEAD as downstack trouble instead of naming it.
+func TestShipRefusesARebaseItDidNotStartBeforeCommitting(t *testing.T) {
+	f := shipRepo(t, vcstest.Remote())
+	shipStopRebase(t, f)
+	onto := gitAt(t, f.Env(), f.Dir, "rev-parse", "refs/remotes/origin/main")
+	head := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD")
+
+	_, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-watch")
+	want := fmt.Sprintf("ship: a git rebase of main onto %.12s is in progress in %s, and ccx did not start it", onto, f.Dir)
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("ship = %v, want %q", err, want)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD"); got != head {
+		t.Errorf("HEAD = %s, want the stopped rebase's %s", got, head)
+	}
+	if state := gitAt(t, f.Env(), f.Dir, "rev-parse", "--path-format=absolute", "--git-path", "rebase-merge"); !dirExists(state) {
+		t.Error("ship touched the rebase it found in progress")
+	}
+}
+
+func TestShipRefusesTheStateDirectoryACrashedRebaseLeft(t *testing.T) {
+	f := shipRepo(t, vcstest.Remote(), vcstest.Dirty())
+	if err := os.MkdirAll(filepath.Join(f.Dir, ".git", "rebase-merge"), 0o750); err != nil {
+		t.Fatalf("mkdir rebase-merge: %v", err)
+	}
+	head := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD")
+
+	_, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-watch")
+	if want := "ship: a git rebase is in progress in " + f.Dir; err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("ship = %v, want %q", err, want)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD"); got != head {
+		t.Errorf("HEAD = %s, want nothing committed over %s", got, head)
 	}
 }
 

@@ -29,6 +29,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs ship` and `ccx vcs stack rebase` name a git rebase left in
+  progress in the working copy before doing anything else.** A predecessor
+  lane's stopped rebase left a monorepo worktree on a detached HEAD with a
+  half-applied index (Oct 19), and ship misread it as downstack trouble,
+  refusing with "own commits do not replay onto mem-d5-canary-impact
+  cleanly" and later failing in `git switch`. Both commands now refuse up
+  front, naming the branch being rebased, its base, and the working copy,
+  and point at `git rebase --continue`, `--abort`, or `--quit`. A stack
+  rebase's own conflict workspace is exempt.
+
+- **`ccx vcs ship --tip-only` no longer reads the Graphite base of an
+  ancestor it keeps at its published head.** The run looked up the base
+  Graphite records for every branch of the stack, so a stale local ref of
+  an untracked branch two levels down refused a tip-only ship (`mem-d7a-claim-edit
+  ... is at 367e966583de here and 1fdafcad4570 on the remote, and gt does
+  not track it`). Only the branches a tip-only run moves have their recorded
+  bases fetched now.
+
 - **`ccx vcs stack rebase` no longer refuses when another lane moves a
   branch the run never stands on, and names the branch when it does.** The
   ref write verified every unmoved branch of the stack, so a lane resetting a
