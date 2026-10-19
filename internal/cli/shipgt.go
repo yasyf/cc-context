@@ -2060,7 +2060,7 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 
 	var landed []gtapi.SubmittedPR
 	var submitted, recorded []gtSubmitBranch
-	defer func() { gtClaimPosted(ctx, errW, l.dir(), s.prefix, submitted, entries) }()
+	defer func() { gtClaimPosted(ctx, errW, l.dir(), s.prefix, owner+"/"+name, submitted, entries) }()
 	for i, pr := range gtSubmitPRs(posted, s.draft, s.updateDraft(tip)) {
 		out, err := client.SubmitPullRequests(ctx, gtapi.SubmitRequest{
 			RepoOwner:       owner,

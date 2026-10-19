@@ -6229,8 +6229,8 @@ func TestShipGTClaimsWhatTheSubmitOpenedAndUpdated(t *testing.T) {
 		}
 	}
 	assertInvocations(t, claims, [][]string{
-		{"cci", "claim", "--rel", "opened", "--pr", "100"},
-		{"cci", "claim", "--rel", "updated", "--pr", "41"},
+		{"cci", "claim", "--rel", "opened", "--pr", fakePRRepo + "#100"},
+		{"cci", "claim", "--rel", "updated", "--pr", fakePRRepo + "#41"},
 	})
 }
 

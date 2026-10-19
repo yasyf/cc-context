@@ -19,7 +19,7 @@ func cciClaimable(ctx context.Context) bool {
 	return render.LookPath(ctx, "cci") != ""
 }
 
-func cciClaimPRs(ctx context.Context, errW io.Writer, dir render.Dir, prefix string, opened, updated []int) {
+func cciClaimPRs(ctx context.Context, errW io.Writer, dir render.Dir, prefix, repo string, opened, updated []int) {
 	if !cciClaimable(ctx) {
 		return
 	}
@@ -32,7 +32,7 @@ func cciClaimPRs(ctx context.Context, errW io.Writer, dir render.Dir, prefix str
 		}
 		argv := []string{"claim", "--rel", c.rel}
 		for _, pr := range c.prs {
-			argv = append(argv, "--pr", strconv.Itoa(pr))
+			argv = append(argv, "--pr", repo+"#"+strconv.Itoa(pr))
 		}
 		if _, err := render.RunCLI(ctx, dir, "cci", argv); err != nil {
 			_, _ = fmt.Fprintf(errW, "%s: cci claim --rel %s: %v\n", prefix, c.rel, err)
@@ -40,7 +40,7 @@ func cciClaimPRs(ctx context.Context, errW io.Writer, dir render.Dir, prefix str
 	}
 }
 
-func gtClaimPosted(ctx context.Context, errW io.Writer, dir render.Dir, prefix string, posted []gtSubmitBranch, entries map[string]stackEntry) {
+func gtClaimPosted(ctx context.Context, errW io.Writer, dir render.Dir, prefix, repo string, posted []gtSubmitBranch, entries map[string]stackEntry) {
 	var opened, updated []int
 	for _, b := range posted {
 		switch {
@@ -50,7 +50,7 @@ func gtClaimPosted(ctx context.Context, errW io.Writer, dir render.Dir, prefix s
 			opened = append(opened, entries[b.name].PR)
 		}
 	}
-	cciClaimPRs(ctx, errW, dir, prefix, opened, updated)
+	cciClaimPRs(ctx, errW, dir, prefix, repo, opened, updated)
 }
 
 func cciClaimPushed(ctx context.Context, errW io.Writer, l lane, branch, trunk string) {
@@ -68,6 +68,6 @@ func cciClaimPushed(ctx context.Context, errW io.Writer, l lane, branch, trunk s
 		return
 	}
 	if found {
-		cciClaimPRs(ctx, errW, l.dir(), "ship", nil, []int{pr.Number})
+		cciClaimPRs(ctx, errW, l.dir(), "ship", repo.NameWithOwner, nil, []int{pr.Number})
 	}
 }

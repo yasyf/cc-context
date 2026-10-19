@@ -276,7 +276,7 @@ func shipPR(ctx context.Context, errW io.Writer, l lane, nwo, remote, branch, tr
 		return "", err
 	}
 	if found {
-		cciClaimPRs(ctx, errW, l.dir(), "ship", nil, []int{pr.Number})
+		cciClaimPRs(ctx, errW, l.dir(), "ship", nwo, nil, []int{pr.Number})
 		return shipPREdit(ctx, nwo, pr, m)
 	}
 	base, picked := m.base, false
@@ -290,7 +290,7 @@ func shipPR(ctx context.Context, errW io.Writer, l lane, nwo, remote, branch, tr
 	if err != nil {
 		return "", err
 	}
-	cciClaimPRs(ctx, errW, l.dir(), "ship", []int{created.Number}, nil)
+	cciClaimPRs(ctx, errW, l.dir(), "ship", nwo, []int{created.Number}, nil)
 	return shipPRSegment(created, base, picked), nil
 }
 
