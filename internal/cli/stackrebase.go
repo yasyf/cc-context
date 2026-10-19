@@ -3928,10 +3928,10 @@ func stackRefuseForeignRebase(l lane, prefix string) error {
 		return nil
 	}
 	what := "a git rebase"
-	if head, err := os.ReadFile(filepath.Join(state, "head-name")); err == nil {
+	if head, err := os.ReadFile(filepath.Join(state, "head-name")); err == nil { //nolint:gosec // state is this checkout's own rebase directory
 		what += " of " + strings.TrimPrefix(strings.TrimSpace(string(head)), "refs/heads/")
 	}
-	if onto, err := os.ReadFile(filepath.Join(state, "onto")); err == nil {
+	if onto, err := os.ReadFile(filepath.Join(state, "onto")); err == nil { //nolint:gosec // state is this checkout's own rebase directory
 		what += fmt.Sprintf(" onto %.12s", strings.TrimSpace(string(onto)))
 	}
 	return fmt.Errorf("%s: %s is in progress in %s, and ccx did not start it — finish it with git rebase --continue, drop it with git rebase --abort, or keep the working tree with git rebase --quit, then re-run", prefix, what, l.root)
