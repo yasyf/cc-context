@@ -60,7 +60,8 @@ type gtAPIStub struct {
 	// without adding a version, as it did for #30280 after a restack push.
 	unrecorded map[string]int
 	// restacks adds, per branch, a newest version graphite-app's own restack
-	// push records: authorless, Graphite-generated, onto the current base.
+	// push records: authorless, Graphite-generated, onto the current base. A
+	// recorded submit of the branch supersedes it.
 	restacks map[string]gtStubRestack
 
 	routes    []string
@@ -379,6 +380,9 @@ func (s *gtAPIStub) submit(w http.ResponseWriter, r *http.Request) {
 		s.untracked[entry.PRNumber] = gtStubUntracked{base: entry.Base, head: entry.HeadSha, closed: u.reveals}
 	} else if ok && !u.stuck && entry.HeadSha != u.head {
 		delete(s.untracked, entry.PRNumber)
+	}
+	if !unrecorded {
+		delete(s.restacks, entry.Head)
 	}
 	number, status := s.nextPR, "created"
 	if entry.Action == gtapi.SubmitUpdate {
