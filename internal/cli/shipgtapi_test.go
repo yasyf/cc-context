@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/yasyf/cc-context/internal/gtapi"
 	"github.com/yasyf/cc-context/internal/vcstest"
@@ -58,6 +59,10 @@ type gtAPIStub struct {
 	// unrecorded counts, per branch, the coming submits Graphite answers for
 	// without adding a version, as it did for #30280 after a restack push.
 	unrecorded map[string]int
+	// restacks adds, per branch, a newest version graphite-app's own restack
+	// push records: authorless, Graphite-generated, onto the current base. A
+	// recorded submit of the branch supersedes it.
+	restacks map[string]gtStubRestack
 
 	routes    []string
 	infoHeads [][]string
@@ -70,6 +75,11 @@ type gtStubMerged struct {
 	number int
 	head   string
 	state  gtapi.PRState
+}
+
+type gtStubRestack struct {
+	head      string
+	createdAt time.Time
 }
 
 type gtStubUntracked struct {
@@ -164,6 +174,7 @@ func newGTAPIStub(t *testing.T) *gtAPIStub {
 		recorded:     map[string]string{},
 		refuseOnce:   map[string]string{},
 		unrecorded:   map[string]int{},
+		restacks:     map[string]gtStubRestack{},
 		nextPR:       100,
 	}
 	srv := httptest.NewServer(http.HandlerFunc(s.serve))
@@ -253,6 +264,10 @@ func (s *gtAPIStub) serve(w http.ResponseWriter, r *http.Request) {
 				}
 				if base := s.parked[branch]; base != "" {
 					pr["baseRefName"], pr["isBaseRefGraphiteBase"] = base, true
+				}
+				if r, ok := s.restacks[branch]; ok {
+					versions, _ := pr["versions"].([]map[string]any)
+					pr["versions"] = append(versions, map[string]any{"headSha": r.head, "baseName": pr["baseRefName"], "createdAt": r.createdAt.UTC().Format(time.RFC3339Nano), "isGraphiteGenerated": true})
 				}
 				prs = append(prs, pr)
 			}
@@ -365,6 +380,9 @@ func (s *gtAPIStub) submit(w http.ResponseWriter, r *http.Request) {
 		s.untracked[entry.PRNumber] = gtStubUntracked{base: entry.Base, head: entry.HeadSha, closed: u.reveals}
 	} else if ok && !u.stuck && entry.HeadSha != u.head {
 		delete(s.untracked, entry.PRNumber)
+	}
+	if !unrecorded {
+		delete(s.restacks, entry.Head)
 	}
 	number, status := s.nextPR, "created"
 	if entry.Action == gtapi.SubmitUpdate {
