@@ -4276,11 +4276,11 @@ func stackFinish(ctx context.Context, cmd *cobra.Command, l lane, commonDir stri
 		if err := stackSaveRun(run); err != nil {
 			return err
 		}
-		if err := stackWriteRefs(ctx, l.dir(), run, left); err != nil {
+		if err := stackWriteRefs(ctx, l, run, left); err != nil {
 			run.Applied = false
 			return errors.Join(err, stackSaveRun(run))
 		}
-	} else if err := stackWriteRefs(ctx, l.dir(), run, left); err != nil {
+	} else if err := stackWriteRefs(ctx, l, run, left); err != nil {
 		return err
 	}
 	if !run.Aligned {
@@ -4434,14 +4434,14 @@ func stackFinishGit(ctx context.Context, cmd *cobra.Command, l lane, commonDir s
 		if err := gtRestackRefuseClobbers(ctx, "restack", holders, []restackMove{move}); err != nil {
 			return err
 		}
-		if err := stackWriteRefs(ctx, l.dir(), run, nil); err != nil {
+		if err := stackWriteRefs(ctx, l, run, nil); err != nil {
 			return err
 		}
 		run.Applied = true
 		if err := stackSaveRun(run); err != nil {
 			return err
 		}
-	} else if err := stackWriteRefs(ctx, l.dir(), run, nil); err != nil {
+	} else if err := stackWriteRefs(ctx, l, run, nil); err != nil {
 		return err
 	}
 	if !run.Aligned {
@@ -4480,35 +4480,72 @@ func stackFinishGit(ctx context.Context, cmd *cobra.Command, l lane, commonDir s
 	return nil
 }
 
-// stackWriteRefs moves every rewritten branch but those left where they are in
-// one transaction and verifies every unmoved one, so a branch that changed
-// locally while the run was stopped fails the whole write rather than leaving a
-// child on a parent it never saw.
-func stackWriteRefs(ctx context.Context, dir render.Dir, run *stackRebaseRun, left map[string]string) error {
+// stackWriteRefs moves every rewritten branch in one transaction, verifying
+// each unmoved parent a moved branch was replayed onto, so a parent that moved
+// meanwhile fails the write instead of stranding its child.
+func stackWriteRefs(ctx context.Context, l lane, run *stackRebaseRun, left map[string]string) error {
+	moves := func(b stackRebaseBranch) bool { return b.Landed == "" && b.NewHead != b.Local && left[b.Name] == "" }
+	bases := map[string]bool{}
+	for _, b := range run.Branches {
+		if moves(b) {
+			bases[b.Parent] = true
+		}
+	}
 	var tx strings.Builder
 	tx.WriteString("start\n")
+	expected := map[string]string{}
 	for _, b := range run.Branches {
 		switch {
-		case b.Landed != "":
-		case b.NewHead != b.Local && left[b.Name] == "":
-			at, err := stackRevParse(ctx, dir, gtRestackRef(b.Name))
+		case moves(b):
+			at, err := stackRevParse(ctx, l.dir(), gtRestackRef(b.Name))
 			if err != nil {
 				return err
 			}
 			if at == b.NewHead {
 				fmt.Fprintf(&tx, "verify %s %s\n", gtRestackRef(b.Name), b.NewHead)
+				expected[b.Name] = b.NewHead
 			} else {
 				fmt.Fprintf(&tx, "update %s %s %s\n", gtRestackRef(b.Name), b.NewHead, b.Local)
+				expected[b.Name] = b.Local
 			}
-		default:
+		case b.Landed == "" && left[b.Name] == "" && bases[b.Name]:
 			fmt.Fprintf(&tx, "verify %s %s\n", gtRestackRef(b.Name), b.Local)
+			expected[b.Name] = b.Local
 		}
 	}
 	tx.WriteString("commit\n")
-	if _, err := render.RunCLIStdin(ctx, dir, "git", []string{"update-ref", "--stdin"}, []byte(tx.String())); err != nil {
-		return fmt.Errorf("stack rebase: a branch moved locally since the run started, so nothing was written — ccx vcs stack abort, then re-run: %w", err)
+	if _, err := render.RunCLIStdin(ctx, l.dir(), "git", []string{"update-ref", "--stdin"}, []byte(tx.String())); err != nil {
+		return fmt.Errorf("stack rebase: %s since the run started, so nothing was written — ccx vcs stack abort, then re-run: %w", stackMovedBranches(ctx, l, expected), err)
 	}
 	return nil
+}
+
+// stackMovedBranches names each branch whose ref no longer holds the revision
+// the write expected, with its new head and the working copy holding it.
+func stackMovedBranches(ctx context.Context, l lane, expected map[string]string) string {
+	holders, err := vcs.BranchHolders(ctx, l.checkout)
+	if err != nil {
+		return "a branch moved locally"
+	}
+	var moved []string
+	for _, name := range slices.Sorted(maps.Keys(expected)) {
+		at, err := stackRevParse(ctx, l.dir(), gtRestackRef(name))
+		if err == nil && at == expected[name] {
+			continue
+		}
+		line := name + " was deleted"
+		if err == nil {
+			line = fmt.Sprintf("%s moved from %s to %s", name, shortOID(expected[name]), shortOID(at))
+		}
+		if holder := holders[name]; holder != "" {
+			line += " in " + holder
+		}
+		moved = append(moved, line)
+	}
+	if len(moved) == 0 {
+		return "a branch moved locally"
+	}
+	return strings.Join(moved, ", ")
 }
 
 // stackVerdict reports each live branch's pull request after a publication and

@@ -1409,14 +1409,72 @@ func TestStackWriteRefsTakesARefAlreadyWritten(t *testing.T) {
 	local := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
 	moved := gitAt(t, f.Env(), f.Dir, "rev-parse", "main")
 	run := &stackRebaseRun{Branches: []stackRebaseBranch{{Name: "base", Local: local, NewHead: moved}}}
+	l := stackTestLane(t, f)
 	for range 2 {
-		if err := stackWriteRefs(f.Context(), render.Dir(f.Dir), run, nil); err != nil {
+		if err := stackWriteRefs(f.Context(), l, run, nil); err != nil {
 			t.Fatalf("stackWriteRefs: %v", err)
 		}
 	}
 	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); got != moved {
 		t.Errorf("base = %s, want %s", got, moved)
 	}
+}
+
+// TestStackWriteRefsIgnoresABranchNoMoveStandsOn pins the Oct 19 refusal: a
+// lane reset a kept branch below the one branch the run moved, and the write
+// refused although nothing it wrote stood on that branch.
+func TestStackWriteRefsIgnoresABranchNoMoveStandsOn(t *testing.T) {
+	t.Parallel()
+	f := stackRebaseRepo(t, "base", "mid", "top")
+	head := func(name string) string { return gitAt(t, f.Env(), f.Dir, "rev-parse", name) }
+	run := &stackRebaseRun{Branches: []stackRebaseBranch{
+		{Name: "base", Parent: "main", Local: head("base"), NewHead: head("base"), Kept: true},
+		{Name: "mid", Parent: "base", Local: head("mid"), NewHead: head("mid"), Kept: true},
+		{Name: "top", Parent: "mid", Local: head("top"), NewHead: head("mid")},
+	}}
+	held := f.WorktreePath("held")
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", held, "base")
+	mustRun(t, f.Env(), held, "git", "commit", "--allow-empty", "-qm", "concurrent work")
+
+	if err := stackWriteRefs(f.Context(), stackTestLane(t, f), run, nil); err != nil {
+		t.Fatalf("stackWriteRefs with base moved under an unmoved mid: %v", err)
+	}
+	if got, want := head("top"), run.Branches[2].NewHead; got != want {
+		t.Errorf("top = %.12s, want the head it was replayed to, %.12s", got, want)
+	}
+}
+
+func TestStackWriteRefsNamesTheParentThatMovedAndItsWorktree(t *testing.T) {
+	t.Parallel()
+	f := stackRebaseRepo(t, "base", "feature")
+	base := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
+	feature := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")
+	run := &stackRebaseRun{Branches: []stackRebaseBranch{
+		{Name: "base", Parent: "main", Local: base, NewHead: base, Kept: true},
+		{Name: "feature", Parent: "base", Local: feature, NewHead: base},
+	}}
+	held := f.WorktreePath("held")
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", held, "base")
+	mustRun(t, f.Env(), held, "git", "commit", "--allow-empty", "-qm", "concurrent work")
+	moved := gitAt(t, f.Env(), held, "rev-parse", "HEAD")
+
+	err := stackWriteRefs(f.Context(), stackTestLane(t, f), run, nil)
+	want := fmt.Sprintf("base moved from %.12s to %.12s in %s since the run started", base, moved, held)
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("stackWriteRefs with base moved under feature = %v, want %q", err, want)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature"); got != feature {
+		t.Errorf("feature = %.12s, want it left at %.12s", got, feature)
+	}
+}
+
+func stackTestLane(t *testing.T, f *vcstest.Fixture) lane {
+	t.Helper()
+	l, err := resolveLane(f.Context(), stackRebasePrefix, f.Dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return l
 }
 
 func TestStackAbortDropsTheRun(t *testing.T) {
@@ -2193,11 +2251,12 @@ func TestStackContinueRefusesConcurrentLocalAdvance(t *testing.T) {
 	ws := run.Conflict.Workspace
 	writeShipFile(t, ws, "c.txt", "resolved\n")
 	mustRun(t, f.Env(), ws, "git", "add", "c.txt")
+	planned := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")
 	mustRun(t, f.Env(), f.Dir, "git", "commit", "--allow-empty", "-qm", "concurrent work")
 	advanced := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")
 	_, _, err = runStackCmd(t, f, "continue")
-	if err == nil || !strings.Contains(err.Error(), "branch moved locally") {
-		t.Fatalf("continue = %v, want ref transaction refusal", err)
+	if want := fmt.Sprintf("feature moved from %.12s to %.12s in %s", planned, advanced, f.Dir); err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("continue = %v, want the ref transaction refusal naming %q", err, want)
 	}
 	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature"); got != advanced {
 		t.Errorf("concurrent work replaced with %s", got)
