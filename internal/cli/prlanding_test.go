@@ -2,7 +2,15 @@ package cli
 
 import (
 	"encoding/json"
+	"fmt"
+	"maps"
+	"os"
+	"os/exec"
+	"strings"
 	"testing"
+
+	"github.com/yasyf/cc-context/internal/render"
+	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
 // The four shapes GitHub answers a landing question with. The merged one is
@@ -104,6 +112,50 @@ func TestPRSquashSubject(t *testing.T) {
 		if got := pattern.MatchString(subject); got != want {
 			t.Errorf("prSquashSubject(20486) on %q = %t, want %t", subject, got, want)
 		}
+	}
+}
+
+// TestPRSquashesOnBaseWalksOnlyTheCandidateWindow is the stack submit that spent
+// a core walking the monorepo's whole dev history for squashes it never carried:
+// the window bounds the commits read, not the matches, so a squash older than it
+// is left unfound and widens only with the numbers asked about.
+func TestPRSquashesOnBaseWalksOnlyTheCandidateWindow(t *testing.T) {
+	f := shipRepo(t, vcstest.Remote())
+	var stream strings.Builder
+	for i := range prSquashCandidates + 1 {
+		subject := fmt.Sprintf("filler %d", i)
+		from := ""
+		if i == 0 {
+			subject = "old (#7)"
+			from = "from " + gitAt(t, f.Env(), f.Dir, "rev-parse", "origin/main") + "\n"
+		}
+		fmt.Fprintf(&stream, "commit refs/remotes/origin/main\ncommitter t <t@t.t> 1700000000 +0000\ndata %d\n%s\n%s", len(subject), subject, from)
+	}
+	cmd := exec.Command("git", "fast-import", "--quiet")
+	cmd.Dir = f.Dir
+	cmd.Env = append(os.Environ(), f.Env()...)
+	cmd.Stdin = strings.NewReader(stream.String())
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git fast-import: %v\n%s", err, out)
+	}
+	old := gitAt(t, f.Env(), f.Dir, "rev-parse", fmt.Sprintf("origin/main~%d", prSquashCandidates))
+
+	tests := []struct {
+		name    string
+		numbers []int
+		want    map[int]string
+	}{
+		{"absent", []int{9}, map[int]string{}},
+		{"older than the window", []int{7}, map[int]string{}},
+		{"inside a window widened by a second number", []int{7, 9}, map[int]string{7: old}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := prSquashesOnBase(f.Context(), render.Dir(f.Dir), "main", tt.numbers)
+			if !maps.Equal(got, tt.want) {
+				t.Errorf("prSquashesOnBase(%v) = %v, want %v", tt.numbers, got, tt.want)
+			}
+		})
 	}
 }
 

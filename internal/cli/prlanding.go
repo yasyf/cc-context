@@ -105,30 +105,25 @@ func prSquashSubject(number int) *regexp.Regexp {
 // is empty when this checkout's copy of the base branch carries none. A checkout
 // that has not fetched since the landing answers the same way, so emptiness is
 // only ever the absence of evidence here, never proof of an abandonment.
-//
-// git's --grep reads the whole message, where the number also appears in bodies
-// citing the pull request, so it only narrows the candidates: the subject of
-// each is what decides.
 func prSquashOnBase(ctx context.Context, dir render.Dir, base string, number int) string {
 	return prSquashesOnBase(ctx, dir, base, []int{number})[number]
 }
 
 // prSquashesOnBase is prSquashOnBase for several pull requests in one walk of
-// the base branch, keyed by number and holding only the ones it found.
+// the base branch, keyed by number and holding only the ones it found. The walk
+// stops at prSquashCandidates commits per number, so a number the branch never
+// carries costs that many commits rather than its whole history.
 func prSquashesOnBase(ctx context.Context, dir render.Dir, base string, numbers []int) map[int]string {
 	squashes := make(map[int]string, len(numbers))
 	if base == "" || len(numbers) == 0 {
 		return squashes
 	}
-	alternatives := make([]string, len(numbers))
 	subjects := make(map[int]*regexp.Regexp, len(numbers))
-	for i, number := range numbers {
-		alternatives[i] = strconv.Itoa(number)
+	for _, number := range numbers {
 		subjects[number] = prSquashSubject(number)
 	}
 	out, err := render.RunCLI(ctx, dir, "git", []string{
-		"log", "--format=%H%x09%s", "--extended-regexp",
-		fmt.Sprintf("--grep=\\(#(%s)\\)", strings.Join(alternatives, "|")), "-" + strconv.Itoa(prSquashCandidates*len(numbers)), "origin/" + base,
+		"log", "--format=%H%x09%s", "-" + strconv.Itoa(prSquashCandidates*len(numbers)), "origin/" + base,
 	})
 	if err != nil {
 		return squashes
