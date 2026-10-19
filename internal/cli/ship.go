@@ -302,6 +302,11 @@ func runShip(cmd *cobra.Command, o shipOpts) (err error) {
 	if gtLane {
 		kind = vcs.Git
 	}
+	if gitBacked(l) {
+		if err := stackRefuseForeignRebase(l, "ship"); err != nil {
+			return err
+		}
+	}
 	if !gtLane && o.parent != "" && o.noPush {
 		return errors.New("ship: --parent outside the graphite lane sets the pull request's base, which requires push (drop --no-push)")
 	}

@@ -101,3 +101,53 @@ func TestStackSubmitKeepsAParentGraphiteRecordsWithNoLocalBranch(t *testing.T) {
 		t.Errorf("stderr = %q, want %q", errOut, want)
 	}
 }
+
+// TestShipTipOnlyLeavesAnAncestorsUntrackedGraphiteParentAlone is DA4's Oct 19
+// refusal: a --tip-only ship read the base Graphite records for an ancestor it
+// keeps at its published head, and refused on that base's stale local ref.
+func TestShipTipOnlyLeavesAnAncestorsUntrackedGraphiteParentAlone(t *testing.T) {
+	f := shipGTRepo(t)
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	shipGTStack(t, f, "base", "mid", "top")
+	api.prs["base"], api.prs["mid"], api.prs["top"], api.prs["inserted"] = 7, 8, 10, 9
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("publish the stack: %v", err)
+	}
+	other := filepath.Join(t.TempDir(), "other")
+	restackRun(t, f, filepath.Dir(other), "git", "clone", "-q", "--branch", "base", f.RemoteDir, other)
+	restackRun(t, f, other, "git", "config", "user.email", "o@o.o")
+	restackRun(t, f, other, "git", "config", "user.name", "o")
+	restackRun(t, f, other, "git", "switch", "-qc", "inserted")
+	restackWrite(t, filepath.Join(other, "inserted.txt"), "inserted\n")
+	restackRun(t, f, other, "git", "add", "inserted.txt")
+	restackRun(t, f, other, "git", "commit", "-qm", "inserted")
+	restackRun(t, f, other, "git", "switch", "-qc", "mid", "origin/mid")
+	restackRun(t, f, other, "git", "rebase", "-q", "--onto", "inserted", "base", "mid")
+	restackRun(t, f, other, "git", "push", "-q", "origin", "inserted")
+	restackRun(t, f, other, "git", "push", "-qf", "origin", "mid")
+	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
+	mustRun(t, f.Env(), f.Dir, "git", "branch", "inserted", "base")
+	stale := gitAt(t, f.Env(), f.Dir, "rev-parse", "inserted")
+	stubStackPRs(t, f, map[string]*stackPR{
+		"base":     {Number: 7, Title: "base", State: "OPEN", Base: "main"},
+		"inserted": {Number: 9, Title: "inserted", State: "OPEN", Base: "base"},
+		"mid":      {Number: 8, Title: "mid", State: "OPEN", Base: "inserted"},
+		"top":      {Number: 10, Title: "top", State: "OPEN", Base: "mid"},
+	})
+	stackCommit(t, f, "tip.txt")
+	shipResetLog(t, f)
+
+	if _, errStr, err := runShipCmdFull(f.Context(), t, "--no-commit", "--no-watch", "--tip-only"); err != nil {
+		t.Fatalf("ship --tip-only = %v (stderr=%q), want top shipped onto mid's published head", err, errStr)
+	}
+	if refs := gtPushedRefs(shipGTInvocations(t, f)); !slices.Equal(refs, []string{"top"}) {
+		t.Errorf("pushed refs = %v, want only top", refs)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "inserted"); got != stale {
+		t.Errorf("local inserted moved from %.12s to %.12s", stale, got)
+	}
+	if !stackOnto(t, f, gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "mid"), gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "top")) {
+		t.Error("origin top is not on mid's published head")
+	}
+}

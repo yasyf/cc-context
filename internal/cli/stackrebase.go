@@ -474,6 +474,9 @@ func runStackRebase(cmd *cobra.Command, o stackRebaseOpts) error {
 			gated = append(gated, other)
 		}
 	}
+	if err := stackRefuseForeignRebase(l, stackRebasePrefix); err != nil {
+		return err
+	}
 	rest := slices.DeleteFunc(slices.Clone(runs), func(other *stackRebaseRun) bool { return slices.Contains(gated, other) })
 	return stackBegin(ctx, cmd, l, commonDir, rest, o)
 }
@@ -1147,7 +1150,8 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 		return nil, err
 	}
 	stackMarkParked(prs, submitted)
-	found, err := stackFetchRecordedParents(ctx, l.dir(), tr, retargeted, members, parentOverrides, prs)
+	moving := slices.DeleteFunc(slices.Clone(members), func(name string) bool { return tipOnlyAncestor(o.tipOnly, o.tip, name) })
+	found, err := stackFetchRecordedParents(ctx, l.dir(), tr, retargeted, moving, parentOverrides, prs)
 	if err != nil {
 		return nil, err
 	}
@@ -3899,6 +3903,38 @@ func stackRebasing(ctx context.Context, ws render.Dir) bool {
 		}
 	}
 	return false
+}
+
+// stackRefuseForeignRebase refuses to run in a working copy holding a git
+// rebase that no stack rebase of this repository stopped there, naming the
+// branch and base it was replaying, before that rebase's detached HEAD and
+// half-applied index mislead every check that follows.
+func stackRefuseForeignRebase(l lane, prefix string) error {
+	var state string
+	for _, dir := range []string{"rebase-merge", "rebase-apply"} {
+		if _, err := os.Stat(filepath.Join(l.checkout.GitDir, dir)); err == nil {
+			state = filepath.Join(l.checkout.GitDir, dir)
+			break
+		}
+	}
+	if state == "" {
+		return nil
+	}
+	runs, err := stackRuns(l.checkout.CommonDir)
+	if err != nil {
+		return err
+	}
+	if slices.ContainsFunc(runs, func(run *stackRebaseRun) bool { return run.Conflict != nil && run.Conflict.Workspace == l.root }) {
+		return nil
+	}
+	what := "a git rebase"
+	if head, err := os.ReadFile(filepath.Join(state, "head-name")); err == nil {
+		what += " of " + strings.TrimPrefix(strings.TrimSpace(string(head)), "refs/heads/")
+	}
+	if onto, err := os.ReadFile(filepath.Join(state, "onto")); err == nil {
+		what += fmt.Sprintf(" onto %.12s", strings.TrimSpace(string(onto)))
+	}
+	return fmt.Errorf("%s: %s is in progress in %s, and ccx did not start it — finish it with git rebase --continue, drop it with git rebase --abort, or keep the working tree with git rebase --quit, then re-run", prefix, what, l.root)
 }
 
 func stackRevParse(ctx context.Context, dir render.Dir, rev string) (string, error) {

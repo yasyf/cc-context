@@ -2235,6 +2235,27 @@ func TestGTPushArgvPinsAnAbsentRemote(t *testing.T) {
 	}
 }
 
+func TestStackRebaseRefusesARebaseItDidNotStart(t *testing.T) {
+	t.Parallel()
+	f := stackRebaseRepo(t, "base", "feature")
+	onto := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
+	rebase := exec.Command("git", "rebase", "--force-rebase", "--exec", "false", "base") //nolint:gosec // fixed argv against the fixture's TempDir
+	rebase.Dir = f.Dir
+	rebase.Env = append(os.Environ(), f.Env()...)
+	if err := rebase.Run(); err == nil {
+		t.Fatal("the seeded rebase did not stop")
+	}
+
+	_, _, err := runStackCmd(t, f, "rebase", "--no-push")
+	want := fmt.Sprintf("stack rebase: a git rebase of feature onto %.12s is in progress in %s, and ccx did not start it", onto, f.Dir)
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("stack rebase = %v, want %q", err, want)
+	}
+	if !stackRebasing(f.Context(), render.Dir(f.Dir)) {
+		t.Error("stack rebase touched the rebase it found in progress")
+	}
+}
+
 func TestStackContinueRefusesConcurrentLocalAdvance(t *testing.T) {
 	t.Parallel()
 	f := shipGTRepo(t, vcstest.GTStack("base"))
