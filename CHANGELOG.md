@@ -29,6 +29,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs ship` claims each pull request it opens or updates as
+  `owner/repo#N`.** It passed `cci claim --pr` a bare number, so a drive's
+  `opened` records could not say which repository a pull request belongs to:
+  the monorepo drive held `opened #397` and `opened #428` from captain-hook
+  and cc-context beside its own `#40339`, and the landing runner could not
+  tell them apart. A reader that filters `--pr owner/repo#N` finds these
+  records and the older bare ones once cci matches both (cc-inbox #102); a
+  reader that still filters by the bare number misses the new ones.
+
 - **`ccx vcs ship` and `ccx vcs stack rebase` name a git rebase left in
   progress in the working copy before doing anything else.** A predecessor
   lane's stopped rebase left a monorepo worktree on a detached HEAD with a
