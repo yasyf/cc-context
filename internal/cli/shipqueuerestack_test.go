@@ -3,8 +3,10 @@ package cli
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yasyf/cc-context/internal/gtapi"
+	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
 func TestShipLeavesAPullRequestTheQueueIsRestackingAlone(t *testing.T) {
@@ -138,21 +140,8 @@ func TestStackSubmitMovesAParkedPullRequestGraphiteNoLongerRestacks(t *testing.T
 }
 
 func TestStackSubmitRefusesWhileGraphiteRestacksAnUnparkedMember(t *testing.T) {
-	f := shipGTRepo(t)
-	api := stubGTAPI(t)
-	f.Decorate(api.ctx)
-	shipGTStack(t, f, "base", "feature")
-	api.prs["base"], api.prs["feature"] = 100, 101
-	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
-		t.Fatalf("stack submit: %v", err)
-	}
-	api.mu.Lock()
-	api.mergeability[101] = gtapi.MergeabilityRebasing
-	api.mu.Unlock()
-	stackCommit(t, f, "more.txt")
-	remoteFeature := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature")
+	f, api, remoteFeature := rebasingFeature(t)
 	posted := len(api.submitHeads())
-	shipResetLog(t, f)
 
 	_, _, err := runStackCmd(t, f, "submit")
 	if err == nil {
@@ -169,4 +158,68 @@ func TestStackSubmitRefusesWhileGraphiteRestacksAnUnparkedMember(t *testing.T) {
 	if heads := api.submitHeads()[posted:]; len(heads) > 0 {
 		t.Errorf("submit posts = %v, want none", heads)
 	}
+}
+
+// TestStackSubmitPushesOverAStaleRebasingOnceGraphitesRestackStands is
+// #40214: Graphite kept reporting the stack REBASING for 25 minutes after
+// graphite-app had pushed its restack of every pull request in it.
+func TestStackSubmitPushesOverAStaleRebasingOnceGraphitesRestackStands(t *testing.T) {
+	f, api, remoteFeature := rebasingFeature(t)
+	api.mu.Lock()
+	api.restacks["feature"] = gtStubRestack{head: remoteFeature, createdAt: time.Now().Add(-gtRestackSettle - time.Minute)}
+	api.mu.Unlock()
+
+	if _, errStr, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("stack submit = %v (stderr=%q), want graphite-app's settled restack read as a stale REBASING", err, errStr)
+	}
+	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature"); got == remoteFeature {
+		t.Errorf("origin feature is still %s, want the new commit pushed", got)
+	}
+}
+
+func TestStackSubmitRefusesWhileGraphitesRestackHasNotSettled(t *testing.T) {
+	for name, restack := range map[string]func(remoteFeature string) gtStubRestack{
+		"fresh push": func(head string) gtStubRestack { return gtStubRestack{head: head, createdAt: time.Now()} },
+		"origin moved on": func(string) gtStubRestack {
+			return gtStubRestack{head: strings.Repeat("e", 40), createdAt: time.Now().Add(-time.Hour)}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, api, remoteFeature := rebasingFeature(t)
+			api.mu.Lock()
+			api.restacks["feature"] = restack(remoteFeature)
+			api.mu.Unlock()
+
+			_, _, err := runStackCmd(t, f, "submit")
+			if err == nil {
+				t.Fatal("stack submit pushed feature before Graphite's restack settled on origin")
+			}
+			for _, want := range []string{"#101 (feature)", "REBASING", "stood on origin for 10m0s"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("refusal = %q, want it to name %q", err, want)
+				}
+			}
+			if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature"); got != remoteFeature {
+				t.Errorf("origin feature = %s, want it left at %s", got, remoteFeature)
+			}
+		})
+	}
+}
+
+func rebasingFeature(t *testing.T) (*vcstest.Fixture, *gtAPIStub, string) {
+	t.Helper()
+	f := shipGTRepo(t)
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	shipGTStack(t, f, "base", "feature")
+	api.prs["base"], api.prs["feature"] = 100, 101
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("stack submit: %v", err)
+	}
+	api.mu.Lock()
+	api.mergeability[101] = gtapi.MergeabilityRebasing
+	api.mu.Unlock()
+	stackCommit(t, f, "more.txt")
+	shipResetLog(t, f)
+	return f, api, gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature")
 }

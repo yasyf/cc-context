@@ -2293,6 +2293,48 @@ func gtDropUnchanged(plan []gtSubmitBranch, last map[string]gtmeta.Version, know
 	return submit, unchanged
 }
 
+// gtRestackSettle is how long graphite-app's pushed restack of every pull
+// request still reading REBASING must stand untouched before the status counts
+// as stale: #40214 read REBASING for 25 minutes after graphite-app pushed the
+// whole stack, and its second pass came six minutes after the first.
+const gtRestackSettle = 10 * time.Minute
+
+// gtRestackPublished reports whether graphite-app already pushed its restack of
+// every pull request in rebasing: each one's newest version is graphite-app's
+// own, authorless and onto the base the pull request names, origin still holds
+// that head, and the newest of them is at least gtRestackSettle old.
+func gtRestackPublished(ctx context.Context, dir render.Dir, prefix, remote string, rebasing []gtapi.PullRequestInfo, now time.Time) (bool, error) {
+	var settled time.Time
+	branches := make([]string, 0, len(rebasing))
+	for _, pr := range rebasing {
+		v := pr.Newest()
+		if !v.IsGraphiteGenerated || v.AuthorGithubHandle != "" || v.BaseName != pr.BaseRefName {
+			return false, nil
+		}
+		at, err := time.Parse(time.RFC3339, v.CreatedAt)
+		if err != nil {
+			return false, fmt.Errorf("%s: #%d's newest Graphite version has createdAt %q: %w", prefix, pr.PRNumber, v.CreatedAt, err)
+		}
+		if at.After(settled) {
+			settled = at
+		}
+		branches = append(branches, pr.HeadRefName)
+	}
+	if now.Sub(settled) < gtRestackSettle {
+		return false, nil
+	}
+	heads, err := stackListRemoteHeads(ctx, dir, prefix, remote, branches)
+	if err != nil {
+		return false, err
+	}
+	for _, pr := range rebasing {
+		if heads[pr.HeadRefName] != pr.Newest().HeadSha {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
 // gtRefuseQueueRestack refuses a submit over a pull request the merge queue
 // parked on graphite-base/N after its parent landed while Graphite still
 // restacks it: moving that branch drops the new parent's commits, and a push
@@ -2314,15 +2356,23 @@ func gtRefuseQueueRestack(ctx context.Context, dir render.Dir, client *gtapi.Cli
 	if prefix == stackRebasePrefix {
 		rerun = "run ccx vcs stack continue, which publishes the saved run without redoing a resolution"
 	}
-	var rebasing []string
+	var rebasing []gtapi.PullRequestInfo
+	var named []string
 	for _, branch := range slices.Sorted(maps.Keys(known)) {
 		if pr := known[branch]; !pr.IsBaseRefGraphiteBase && statuses[pr.PRNumber] == gtapi.MergeabilityRebasing {
-			rebasing = append(rebasing, fmt.Sprintf("#%d (%s)", pr.PRNumber, branch))
+			rebasing = append(rebasing, pr)
+			named = append(named, fmt.Sprintf("#%d (%s)", pr.PRNumber, branch))
 		}
 	}
 	if len(rebasing) > 0 {
-		return fmt.Errorf("%s: Graphite is restacking %s after a parent landed (mergeability REBASING), and force-pushes its own restack of each one and of every pull request stacked on it; pushing now races that restack and leaves origin on a mix of both — wait until Graphite reports none of them REBASING, then %s",
-			prefix, strings.Join(rebasing, ", "), rerun)
+		published, err := gtRestackPublished(ctx, dir, prefix, tr.Remote(), rebasing, time.Now())
+		if err != nil {
+			return err
+		}
+		if !published {
+			return fmt.Errorf("%s: Graphite is restacking %s after a parent landed (mergeability REBASING), and force-pushes its own restack of each one and of every pull request stacked on it; pushing now races that restack and leaves origin on a mix of both — wait until Graphite reports none of them REBASING, or until the restack it pushed of each has stood on origin for %s, then %s",
+				prefix, strings.Join(named, ", "), gtRestackSettle, rerun)
+		}
 	}
 	from := map[string]string{}
 	var parents []string
