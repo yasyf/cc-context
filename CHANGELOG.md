@@ -29,6 +29,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs stack rebase` no longer refuses when another lane moves a
+  branch the run never stands on, and names the branch when it does.** The
+  ref write verified every unmoved branch of the stack, so a lane resetting a
+  kept branch far below the one branch the run moved failed the whole write
+  with git's raw `cannot lock ref ... is at X but expected Y` (monorepo,
+  Oct 19: `mem-da4-closed-loop-replay` reset in a sibling worktree during a
+  rebase that only moved `mem-da1-batch-loop`). The write now verifies only
+  each unmoved branch a moved one was replayed onto, and a refusal names
+  every branch that moved, from and to which head, and the working copy
+  holding it.
+
 - **`ccx vcs ship` with path arguments stages a tracked file inside an
   ignored directory.** Ship handed its paths to one `git add -A`, which
   refuses a directory an ignore rule matches even when the files under it
