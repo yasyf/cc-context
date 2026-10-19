@@ -2251,11 +2251,12 @@ func TestStackContinueRefusesConcurrentLocalAdvance(t *testing.T) {
 	ws := run.Conflict.Workspace
 	writeShipFile(t, ws, "c.txt", "resolved\n")
 	mustRun(t, f.Env(), ws, "git", "add", "c.txt")
+	planned := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")
 	mustRun(t, f.Env(), f.Dir, "git", "commit", "--allow-empty", "-qm", "concurrent work")
 	advanced := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")
 	_, _, err = runStackCmd(t, f, "continue")
-	if err == nil || !strings.Contains(err.Error(), "branch moved locally") {
-		t.Fatalf("continue = %v, want ref transaction refusal", err)
+	if want := fmt.Sprintf("feature moved from %.12s to %.12s in %s", planned, advanced, f.Dir); err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("continue = %v, want the ref transaction refusal naming %q", err, want)
 	}
 	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature"); got != advanced {
 		t.Errorf("concurrent work replaced with %s", got)
