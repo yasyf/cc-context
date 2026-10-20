@@ -29,6 +29,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs gh` runs a `gh api` read outside the installation on the user's
+  token.** The guard pack rewrote `gh api /orgs/Forge-FDE/installations` to
+  `ccx vcs gh`, which sent it on the checkout's installation token, and GitHub
+  answered HTTP 403. Only `/user` went to the user's token. Now every
+  `gh api` endpoint other than `repos/…` and `rate_limit` runs on the
+  user's token, as plain `gh` would, and repository reads and the
+  installation's quota stay on the app's token.
+
 - **A ccx fetch into a partial clone with submodules no longer dies on `bad
   object 0000…`.** On Oct 20 a `ccx vcs ship --tip-only --amend` in the
   monorepo refused with `stack rebase: git fetch origin: git: exit status 128:
