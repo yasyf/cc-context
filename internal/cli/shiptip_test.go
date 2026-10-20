@@ -2,8 +2,10 @@ package cli
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -583,4 +585,82 @@ func TestShipTipOnlyAdoptsOntoAParentsPublishedHeadPastItsUnpushedWork(t *testin
 		t.Errorf("the base lane's unpushed head moved from %s to %s", local, got)
 	}
 	stackAssertBaseKept(t, f, base)
+}
+
+func TestShipTipOnlySetsAsideAnExitedRunWritingItsTip(t *testing.T) {
+	for _, pushed := range []bool{false, true} {
+		t.Run("pushed="+strconv.FormatBool(pushed), func(t *testing.T) {
+			f, _, base := stackMergeableBase(t, "CONFLICTING")
+			run := stackPlantClaims(t, f, stackExitedPid(t), "", 0, []string{"feature"}, stackRebaseBranch{Name: "base", Kept: true}, stackRebaseBranch{Name: "feature"})
+			if pushed {
+				run.PushTargets = []stackPublicationTarget{{Name: "feature", Head: gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature")}}
+				if err := stackSaveRun(run); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			got, errStr, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--tip-only")
+			if err != nil {
+				t.Fatalf("ship --tip-only beside an exited run of its tip = %v (stderr=%q)", err, errStr)
+			}
+			if want := "set aside the exited stack rebase of base in " + run.dir + " (pid " + strconv.Itoa(run.Pid) + " on "; !strings.Contains(got, want) {
+				t.Errorf("summary = %q, want %q", got, want)
+			}
+			if refs := gtPushedRefs(shipGTInvocations(t, f)); !slices.Equal(refs, []string{"feature"}) {
+				t.Errorf("pushed refs = %v, want only feature", refs)
+			}
+			stackAssertBaseKept(t, f, base)
+			stackAssertNoRun(t, f)
+		})
+	}
+}
+
+func TestShipTipOnlyBesideRunsOfOtherBranches(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		alive   bool
+		claims  string
+		refusal string
+	}{
+		{name: "live run of the tip", alive: true, claims: "feature", refusal: "a stack rebase of base is already in progress (pid "},
+		{name: "live run of a sibling", alive: true, claims: "sibling"},
+		{name: "exited run of a sibling", claims: "sibling"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, _, base := stackMergeableBase(t, "CONFLICTING")
+			pid, started := stackExitedPid(t), ""
+			if tc.alive {
+				live := exec.Command("sleep", "60")
+				if err := live.Start(); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = live.Process.Kill(); _ = live.Wait() })
+				pid, started = live.Process.Pid, stackProcStart(live.Process.Pid)
+			}
+			stackPlantClaims(t, f, pid, started, 0, []string{tc.claims}, stackRebaseBranch{Name: "base", Kept: true}, stackRebaseBranch{Name: tc.claims})
+			remote := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature")
+
+			got, errStr, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--tip-only")
+			if tc.refusal != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.refusal) {
+					t.Fatalf("ship --tip-only beside a live run of its tip = %q, %v, want %q", got, err, tc.refusal)
+				}
+				if now := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature"); now != remote {
+					t.Errorf("origin feature moved to %s, want it untouched at %s", now, remote)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("ship --tip-only beside a run of %s = %v (stderr=%q)", tc.claims, err, errStr)
+				}
+				if strings.Contains(got, "set aside") {
+					t.Errorf("summary = %q, want the run of %s left alone", got, tc.claims)
+				}
+				stackAssertBaseKept(t, f, base)
+			}
+			runs, err := stackRuns(filepath.Join(f.Dir, ".git"))
+			if err != nil || len(runs) != 1 || !slices.Equal(runs[0].Claims, []string{tc.claims}) {
+				t.Fatalf("runs = %v, %v, want only the run of %s kept", runs, err, tc.claims)
+			}
+		})
+	}
 }

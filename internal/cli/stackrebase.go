@@ -467,6 +467,9 @@ func runStackRebase(cmd *cobra.Command, o stackRebaseOpts) error {
 	}
 	var gated []*stackRebaseRun
 	for _, other := range runs {
+		if stackShipIgnores(o.tip, other) {
+			continue
+		}
 		if (other.Conflict != nil && other.Conflict.Workspace == l.root) || (current != "" && slices.Contains(stackOwned(other), current)) {
 			if _, err := stackGate(ctx, cmd, l, commonDir, other, o.dryRun); err != nil {
 				return err
@@ -817,7 +820,7 @@ func stackAdmit(ctx context.Context, cmd *cobra.Command, l lane, commonDir strin
 	}
 	var apart []*stackRebaseRun
 	for _, other := range runs {
-		if other.Conflict == nil && !stackOverlaps(run, other) {
+		if other.Conflict == nil && !stackOverlaps(run, other) && !stackShipIgnores(run.Tip, other) {
 			apart = append(apart, other)
 		}
 	}
@@ -837,6 +840,12 @@ func stackAdmit(ctx context.Context, cmd *cobra.Command, l lane, commonDir strin
 		if !stackOverlaps(run, other) {
 			continue
 		}
+		if stackShipIgnores(run.Tip, other) {
+			if err := stackShipPast(ctx, cmd, l, commonDir, other, dryRun); err != nil && !errors.Is(err, errStackRunGone) {
+				return false, err
+			}
+			continue
+		}
 		done, err := stackGate(ctx, cmd, l, commonDir, other, dryRun)
 		if err != nil {
 			return false, err
@@ -844,6 +853,24 @@ func stackAdmit(ctx context.Context, cmd *cobra.Command, l lane, commonDir strin
 		finished = finished || done
 	}
 	return finished, nil
+}
+
+func stackShipIgnores(tip string, run *stackRebaseRun) bool {
+	host, _ := os.Hostname()
+	return tip != "" && run.Host == host && run.Conflict == nil && (!run.Applied || !run.NoPush) && !stackPidAlive(run)
+}
+
+func stackShipPast(ctx context.Context, cmd *cobra.Command, l lane, commonDir string, run *stackRebaseRun, dryRun bool) error {
+	line := fmt.Sprintf("the exited stack rebase of %s in %s (%s), so the ship goes ahead without it", strings.Join(run.Roots, ", "), run.dir, stackHolder(run))
+	if dryRun {
+		cmd.Println("would set aside " + line)
+		return nil
+	}
+	if err := stackReclaim(ctx, l, commonDir, run); err != nil {
+		return err
+	}
+	cmd.Println("set aside " + line)
+	return nil
 }
 
 func stackInProgress(run *stackRebaseRun) error {
