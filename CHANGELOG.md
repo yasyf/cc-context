@@ -29,6 +29,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs stack rebase` pushes only the invoking lane's branches.** In the
+  monorepo drive on Oct 19, a rebase run from step 7's top worktree planned to
+  push `durable-step-6b-run-migration`, a step 6 branch no working copy held,
+  because only the branches another working copy held counted as another
+  lane's. Every branch below the nearest one another working copy holds now
+  belongs to that working copy's lane, and the run keeps it at its published
+  head. In a pushing run, a branch above the checked-out one that another
+  lane's working copy holds, and everything stacked on it, is left where it
+  is. Each skipped branch gets a line such as `low sits under mid, held by
+  <worktree>, not pushed; its lane runs ccx vcs stack submit`. `--include`
+  still takes a branch in, `ccx vcs stack continue` keeps the run's pins, and
+  `ccx vcs stack submit` is unchanged.
+
 - **`ccx vcs ship` claims each pull request it opens or updates as
   `owner/repo#N`.** It passed `cci claim --pr` a bare number, so a drive's
   `opened` records could not say which repository a pull request belongs to:
