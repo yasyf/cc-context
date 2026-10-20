@@ -857,7 +857,7 @@ func stackAdmit(ctx context.Context, cmd *cobra.Command, l lane, commonDir strin
 
 func stackShipIgnores(tip string, run *stackRebaseRun) bool {
 	host, _ := os.Hostname()
-	return tip != "" && run.Host == host && run.Conflict == nil && !(run.Applied && run.NoPush) && !stackPidAlive(run)
+	return tip != "" && run.Host == host && run.Conflict == nil && (!run.Applied || !run.NoPush) && !stackPidAlive(run)
 }
 
 func stackShipPast(ctx context.Context, cmd *cobra.Command, l lane, commonDir string, run *stackRebaseRun, dryRun bool) error {
