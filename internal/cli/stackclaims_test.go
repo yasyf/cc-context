@@ -183,6 +183,36 @@ func TestStackReclaimAbandonedKeepsAClaimWhoseOwnerIsRecorded(t *testing.T) {
 	}
 }
 
+func TestStackClaimRefusalNamesTheHoldersRunAndAge(t *testing.T) {
+	t.Parallel()
+	common := t.TempDir()
+	host, err := os.Hostname()
+	if err != nil {
+		t.Fatal(err)
+	}
+	holder := &stackRebaseRun{Roots: []string{"bottom"}, Claims: []string{"left", "right"}, Pid: os.Getpid(), Started: stackProcStart(os.Getpid()), Host: host}
+	if err := stackClaim(common, holder); err != nil {
+		t.Fatal(err)
+	}
+	held := stackRunDir(common, "left")
+
+	err = stackClaim(common, &stackRebaseRun{Roots: []string{"right"}, Pid: 1})
+	for _, want := range []string{"claimed right meanwhile", held + " holds it with no run state yet, claimed 0m ago", "reclaims a claim left without run state for 5m"} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal before the holder saved = %v, want %q", err, want)
+		}
+	}
+	if err := stackSaveRun(holder); err != nil {
+		t.Fatal(err)
+	}
+	err = stackClaim(common, &stackRebaseRun{Roots: []string{"right"}, Pid: 1})
+	for _, want := range []string{held + " holds it (pid " + strconv.Itoa(os.Getpid()) + " on " + host + " running, last saved", "re-run once it finishes", "ccx vcs stack abort --stack left"} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal once the holder saved = %v, want %q", err, want)
+		}
+	}
+}
+
 func TestStackWritesClaimsAKeptBranchItAligns(t *testing.T) {
 	t.Parallel()
 	run := &stackRebaseRun{Branches: []stackRebaseBranch{

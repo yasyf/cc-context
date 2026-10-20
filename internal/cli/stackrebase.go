@@ -1077,7 +1077,12 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 		parentOverrides[child] = r.branch
 	}
 	retargeted := stackRetargeted(state, parentOverrides)
-	seeds := append(slices.Sorted(maps.Keys(overrides)), o.landed...)
+	seeds := slices.Sorted(maps.Keys(overrides))
+	for _, name := range o.landed {
+		if _, tracked := retargeted[name]; tracked || o.replayed == nil {
+			seeds = append(seeds, name)
+		}
+	}
 	if current != "" && current != trunk {
 		seeds = append([]string{current}, seeds...)
 	}
@@ -1090,14 +1095,17 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	var members, roots, upTo []string
 	if o.to == "" {
 		members, roots, err = stackMembers(retargeted, trunk, seeds)
-	} else if upTo, err = stackUpTo(prefix, retargeted, trunk, seeds, o.to); err == nil {
+	} else if upTo, err = stackUpTo(prefix, retargeted, trunk, slices.DeleteFunc(slices.Clone(seeds), func(name string) bool { return o.replayed != nil && slices.Contains(o.landed, name) }), o.to); err == nil {
 		members, roots = gtBottomUp(upTo), upTo[len(upTo)-1:]
 	}
 	if err != nil {
 		return nil, err
 	}
 	if o.members != nil {
-		members = o.members
+		members = slices.DeleteFunc(slices.Clone(o.members), func(name string) bool {
+			_, tracked := retargeted[name]
+			return !tracked && slices.Contains(o.landed, name)
+		})
 	}
 	submitted, err := gtmeta.LastSubmitted(ctx, commonDir)
 	if err != nil {
@@ -4437,7 +4445,7 @@ func stackReplanLanded(ctx context.Context, cmd *cobra.Command, l lane, commonDi
 	if err != nil {
 		return err
 	}
-	if !slices.Equal(run.Roots, next.Roots) {
+	if stackRootsMoved(run, next, landed) {
 		return errors.New("stack rebase: stack roots changed during replanning; original recovery state retained")
 	}
 	for i := range next.Branches {
@@ -4449,9 +4457,35 @@ func stackReplanLanded(ctx context.Context, cmd *cobra.Command, l lane, commonDi
 	if err := stackSaveRun(next); err != nil {
 		return err
 	}
+	forgotten := *run
+	forgotten.Branches = slices.DeleteFunc(slices.Clone(run.Branches), func(b stackRebaseBranch) bool { return next.branch(b.Name) != nil })
+	if err := stackDropPublicationPins(ctx, l.dir(), &forgotten); err != nil {
+		return err
+	}
 	cmd.Println(fmt.Sprintf("%s landed while the run was stopped%snothing pushed%sreplanning without it", strings.Join(landed, ", "), shipSep, shipSep))
 	cmd.Println(strings.Join(stackPlanLines(next), "\n"))
 	return stackDrive(ctx, cmd, l, commonDir, next)
+}
+
+func stackRootsMoved(run, next *stackRebaseRun, landed []string) bool {
+	return slices.ContainsFunc(run.Roots, func(root string) bool {
+		return !slices.Contains(next.Roots, root) && !slices.Contains(landed, root)
+	}) || slices.ContainsFunc(next.Roots, func(root string) bool {
+		return !slices.Contains(run.Roots, root) && !stackOnLandedOnly(run, root, landed)
+	})
+}
+
+func stackOnLandedOnly(run *stackRebaseRun, name string, landed []string) bool {
+	b := run.branch(name)
+	if b == nil || b.Parent == run.Trunk {
+		return false
+	}
+	for parent := b.Parent; parent != run.Trunk; parent = run.branch(parent).Parent {
+		if run.branch(parent) == nil || !slices.Contains(landed, parent) {
+			return false
+		}
+	}
+	return true
 }
 
 // stackFinishGit writes a git-lane restack's branch and moves the working copy
@@ -4791,7 +4825,7 @@ func stackClaim(commonDir string, run *stackRebaseRun) error {
 				_ = os.Remove(stackRunDir(commonDir, claimed))
 			}
 			if errors.Is(err, fs.ErrExist) {
-				return fmt.Errorf("stack rebase: another stack rebase claimed %s meanwhile — re-run to see which, or drop it with ccx vcs stack abort --stack %s", name, name)
+				return stackClaimedMeanwhile(commonDir, name)
 			}
 			return fmt.Errorf("stack rebase: %w", err)
 		}
@@ -4803,6 +4837,38 @@ func stackClaim(commonDir string, run *stackRebaseRun) error {
 	}
 	run.dir = stackRunDir(commonDir, locks[0])
 	return nil
+}
+
+func stackClaimedMeanwhile(commonDir, name string) error {
+	dir := stackRunDir(commonDir, name)
+	info, err := os.Stat(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("stack rebase: another stack rebase claimed %s and released it meanwhile — re-run", name)
+	}
+	if err != nil {
+		return fmt.Errorf("stack rebase: %w", err)
+	}
+	holder := dir
+	if owner, err := os.ReadFile(filepath.Join(dir, stackClaimOwner)); err == nil { //nolint:gosec // a claim directory ccx created under the git common dir
+		holder = stackRunDir(commonDir, string(owner))
+	}
+	runs, err := stackRuns(commonDir)
+	if err != nil {
+		return err
+	}
+	i := slices.IndexFunc(runs, func(run *stackRebaseRun) bool { return run.dir == holder })
+	switch {
+	case i < 0:
+		return fmt.Errorf("stack rebase: another stack rebase claimed %s meanwhile: %s holds it with no run state yet, claimed %s ago — re-run once it saves or exits; a re-run reclaims a claim left without run state for %s", name, holder, stackAge(time.Since(info.ModTime())), stackAge(stackStaleAfter))
+	case runs[i].Conflict != nil:
+		run := runs[i]
+		return fmt.Errorf("stack rebase: another stack rebase claimed %s meanwhile: %s holds it, stopped on a conflict in %s %s ago — resolve it there and run ccx vcs stack continue --stack %s, or drop it with ccx vcs stack abort --stack %s", name, holder, run.Conflict.Workspace, stackAge(time.Since(run.saved)), run.locks()[0], run.locks()[0])
+	}
+	run := runs[i]
+	if stackPidAlive(run) {
+		return fmt.Errorf("stack rebase: another stack rebase claimed %s meanwhile: %s holds it (%s) — re-run once it finishes, or drop it with ccx vcs stack abort --stack %s", name, holder, stackHolder(run), run.locks()[0])
+	}
+	return fmt.Errorf("stack rebase: another stack rebase claimed %s meanwhile: %s holds it (%s) — finish it with ccx vcs stack continue --stack %s or drop it with ccx vcs stack abort --stack %s; a re-run reclaims a run that stopped mid-replay once it has not saved for %s", name, holder, stackHolder(run), run.locks()[0], run.locks()[0], stackAge(stackStaleAfter))
 }
 
 func stackReclaimAbandoned(commonDir, dir string) error {
