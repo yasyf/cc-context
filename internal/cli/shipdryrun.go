@@ -441,7 +441,7 @@ func dryRunStack(ctx context.Context, l lane, o shipOpts, c *gtCache, r *shipDry
 	}
 	moveState := state
 	if o.noPush {
-		if moveState, err = gtHoldPublished(ctx, l.dir(), state, chain, r.branch); err != nil {
+		if moveState, err = gtHoldPublished(ctx, l.dir(), state, chain); err != nil {
 			return err
 		}
 	}

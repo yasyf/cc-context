@@ -7923,6 +7923,35 @@ func TestShipGTNoPushLeavesAPublishedParentWhereItStands(t *testing.T) {
 	}
 }
 
+func TestShipGTNoPushCommitsAPublishedBranchOnItsHeadWhenItsParentMoved(t *testing.T) {
+	f := shipGTRepo(t, vcstest.GTStack("base", "feature"))
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "feature")
+	published := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "base")
+	writeShipFile(t, f.Dir, "base.txt", "amended\n")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qa", "--amend", "--no-edit")
+	moved := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "feature")
+	shipGTReady(t, f)
+
+	got, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push")
+	if err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	if parent := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature^"); parent != published {
+		t.Errorf("the commit sits on %s, want feature's published head %s", parent, published)
+	}
+	if after := gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); after != moved {
+		t.Errorf("base = %s, want its moved head %s left alone", after, moved)
+	}
+	if want := "kept feature on its published base though base moved — run ccx vcs stack rebase to replay it onto base"; !strings.Contains(got, want) {
+		t.Errorf("summary = %q, want it to name %q", got, want)
+	}
+	if strings.Contains(got, "restacked") {
+		t.Errorf("summary = %q, want no restack reported", got)
+	}
+}
+
 // TestShipGTNoPushRestacksOntoTheFetchedTrunk is monorepo-consumer-2's
 // --no-push ship: base was restacked onto a trunk this clone's origin/main has
 // not fetched, so replaying against the stale ref moved base back onto it as a
