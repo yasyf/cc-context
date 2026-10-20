@@ -37,8 +37,10 @@ or GH_REPO names, else the current checkout's. With no repository to name, as
 outside a checkout, no app installed on it, or GH_TOKEN or GITHUB_TOKEN set,
 gh runs on the user's token as it would alone. On the app token @me names the
 gh user, not the app: an @me qualifier or flag value becomes the login gh is
-signed in as, and gh api user runs on the user's token. Standard streams pass through,
-and ccx exits with gh's code. A command that fails once its token has
+signed in as. A gh api endpoint outside the installation, anything but
+repos/... and rate_limit, runs on the user's token, since the app's token
+gets HTTP 403 from endpoints such as user and orgs/ORG/installations.
+Standard streams pass through, and ccx exits with gh's code. A command that fails once its token has
 expired, such as a watch that outlived it, runs again on a fresh one.`,
 		Example: "  ccx vcs gh -- pr checks 123\n  ccx vcs gh -- run watch 456 --exit-status",
 		Args: func(cmd *cobra.Command, args []string) error {
@@ -58,13 +60,13 @@ func runVcsGh(cmd *cobra.Command, argv []string) error {
 	ctx := cmd.Context()
 	dir := workingDir(ctx)
 	repo := ghTargetRepo(ctx, argv)
-	viewer := ghReadsViewer(argv)
+	userToken := ghReadsOutsideInstallation(argv)
 	args := argv
 	for {
 		var env []string
 		var expires time.Time
 		var err error
-		if !viewer {
+		if !userToken {
 			env, expires, err = ghRepoReadEnv(ctx, render.Dir(dir), repo, ghapi.AppWatchMargin)
 		}
 		if err != nil && !errors.Is(err, vcs.ErrNoGitHub) {
@@ -108,7 +110,10 @@ func ghResolveMe(ctx context.Context, dir render.Dir, argv []string) ([]string, 
 	return resolved, nil
 }
 
-func ghReadsViewer(argv []string) bool {
+// ghReadsOutsideInstallation reports whether argv is a gh api read of an
+// endpoint the app's installation token does not reach: anything but a
+// repository's repos/... endpoint or the installation's own rate_limit.
+func ghReadsOutsideInstallation(argv []string) bool {
 	if argv[0] != "api" {
 		return false
 	}
@@ -118,7 +123,7 @@ func ghReadsViewer(argv []string) bool {
 		return false
 	}
 	path := strings.TrimPrefix(u.Path, "/")
-	return path == "user" || strings.HasPrefix(path, "user/")
+	return path != "rate_limit" && !strings.HasPrefix(path, "repos/")
 }
 
 // ghTargetRepo returns the repository argv's gh command reads: the one --repo

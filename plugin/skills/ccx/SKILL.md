@@ -417,7 +417,10 @@ leaves the gh user's GraphQL quota for writes. It runs reads only: a
 plain `gh` command to run instead. `ccx vcs auth status` names both identities
 and their remaining quota, and still answers when the user's quota is spent.
 On the app token an `@me` qualifier or flag value becomes the gh user's login,
-and `gh api user` runs on the user's token, so `@me` never names the app.
+so `@me` never names the app. A `gh api` endpoint outside the installation,
+anything but `repos/…` and `rate_limit`, such as `user` or
+`orgs/ORG/installations`, runs on the user's token, since the app's token gets
+HTTP 403 from it.
 The guard pack rewrites a read-only `gh pr`, `gh run`, `gh issue`, or
 `gh api` GET call to `ccx vcs gh -- …` on its own; end the command with
 `# ccx:raw` to keep it on the user's token. gh's own flags pass through unchanged: a job

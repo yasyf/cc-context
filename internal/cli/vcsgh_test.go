@@ -172,7 +172,7 @@ printf 'token=%s argv=%s\n' "${GH_TOKEN:-user}" "$*"
 	}
 }
 
-func TestGhReadsViewer(t *testing.T) {
+func TestGhReadsOutsideInstallation(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name string
@@ -184,15 +184,20 @@ func TestGhReadsViewer(t *testing.T) {
 		{name: "url", argv: []string{"api", "https://api.github.com/user"}, want: true},
 		{name: "user subpath", argv: []string{"api", "user/repos?per_page=1"}, want: true},
 		{name: "after header", argv: []string{"api", "-H", "Accept: application/json", "user"}, want: true},
-		{name: "users", argv: []string{"api", "users/o"}},
+		{name: "users", argv: []string{"api", "users/o"}, want: true},
+		{name: "org installations", argv: []string{"api", "/orgs/Forge-FDE/installations"}, want: true},
+		{name: "app", argv: []string{"api", "apps/ccx"}, want: true},
+		{name: "search", argv: []string{"api", "search/issues?q=org:o"}, want: true},
 		{name: "repo", argv: []string{"api", "repos/o/r/pulls/1"}},
+		{name: "repo placeholder", argv: []string{"api", "repos/{owner}/{repo}/pulls"}},
+		{name: "rate limit", argv: []string{"api", "rate_limit"}},
 		{name: "pr list", argv: []string{"pr", "list", "--author", "@me"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			if got := ghReadsViewer(tt.argv); got != tt.want {
-				t.Errorf("ghReadsViewer(%q) = %v, want %v", tt.argv, got, tt.want)
+			if got := ghReadsOutsideInstallation(tt.argv); got != tt.want {
+				t.Errorf("ghReadsOutsideInstallation(%q) = %v, want %v", tt.argv, got, tt.want)
 			}
 		})
 	}
