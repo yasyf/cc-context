@@ -4452,14 +4452,29 @@ func stackReplanLanded(ctx context.Context, cmd *cobra.Command, l lane, commonDi
 	if err := stackCheckSources(ctx, l.dir(), run); err != nil {
 		return err
 	}
+	return stackReplan(ctx, cmd, l, commonDir, run, landed, nil, fmt.Sprintf("%s landed while the run was stopped%snothing pushed%sreplanning without it", strings.Join(landed, ", "), shipSep, shipSep))
+}
+
+func stackReplanMoved(ctx context.Context, cmd *cobra.Command, l lane, commonDir string, run *stackRebaseRun, moved map[string]string) error {
+	sources := stackSources(run)
+	var moves []string
+	for _, name := range slices.Sorted(maps.Keys(moved)) {
+		moves = append(moves, fmt.Sprintf("%s moved from %s to %s", name, shortOID(sources[name]), shortOID(moved[name])))
+	}
+	return stackReplan(ctx, cmd, l, commonDir, run, nil, moved, fmt.Sprintf("%s while the run was stopped%snothing pushed%sreplaying the run onto it", strings.Join(moves, ", "), shipSep, shipSep))
+}
+
+func stackReplan(ctx context.Context, cmd *cobra.Command, l lane, commonDir string, run *stackRebaseRun, landed []string, moved map[string]string, report string) error {
 	var members, pinned []string
 	vetted := map[string]string{}
 	replayed := map[string]stackRebaseBranch{}
 	for _, b := range run.Branches {
-		if b.Landed == "" {
+		if _, fresh := moved[b.Name]; b.Landed == "" {
 			members = append(members, b.Name)
-			vetted[b.Name] = b.Remote
-			replayed[b.Name] = b
+			if !fresh {
+				vetted[b.Name] = b.Remote
+				replayed[b.Name] = b
+			}
 		}
 		if b.Pinned {
 			pinned = append(pinned, b.Name)
@@ -4476,7 +4491,7 @@ func stackReplanLanded(ctx context.Context, cmd *cobra.Command, l lane, commonDi
 		return errors.New("stack rebase: stack roots changed during replanning; original recovery state retained")
 	}
 	for i := range next.Branches {
-		if b := run.branch(next.Branches[i].Name); b != nil {
+		if b, ok := replayed[next.Branches[i].Name]; ok {
 			next.Branches[i].LocalOnly, next.Branches[i].Resolved = b.LocalOnly, b.Resolved
 		}
 	}
@@ -4489,7 +4504,7 @@ func stackReplanLanded(ctx context.Context, cmd *cobra.Command, l lane, commonDi
 	if err := stackDropPublicationPins(ctx, l.dir(), &forgotten); err != nil {
 		return err
 	}
-	cmd.Println(fmt.Sprintf("%s landed while the run was stopped%snothing pushed%sreplanning without it", strings.Join(landed, ", "), shipSep, shipSep))
+	cmd.Println(report)
 	cmd.Println(strings.Join(stackPlanLines(next), "\n"))
 	return stackDrive(ctx, cmd, l, commonDir, next)
 }

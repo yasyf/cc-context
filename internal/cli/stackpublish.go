@@ -201,24 +201,61 @@ func stackPublicationState(state gtState, run *stackRebaseRun) gtState {
 	return state
 }
 
-func stackCheckSources(ctx context.Context, dir render.Dir, run *stackRebaseRun) error {
-	var tx strings.Builder
-	tx.WriteString("start\n")
+func stackSources(run *stackRebaseRun) map[string]string {
+	sources := map[string]string{}
 	for _, b := range run.Branches {
 		if run.leavesLocalRef(b) {
 			continue
 		}
-		source := b.Local
+		sources[b.Name] = b.Local
 		if b.LocalOnly && run.LocalApplied {
-			source = b.NewHead
+			sources[b.Name] = b.NewHead
 		}
-		fmt.Fprintf(&tx, "verify %s %s\n", gtRestackRef(b.Name), source)
+	}
+	return sources
+}
+
+func stackCheckSources(ctx context.Context, dir render.Dir, run *stackRebaseRun) error {
+	sources := stackSources(run)
+	var tx strings.Builder
+	tx.WriteString("start\n")
+	for _, name := range slices.Sorted(maps.Keys(sources)) {
+		fmt.Fprintf(&tx, "verify %s %s\n", gtRestackRef(name), sources[name])
 	}
 	tx.WriteString("commit\n")
 	if _, err := render.RunCLIStdin(ctx, dir, "git", []string{"update-ref", "--stdin"}, []byte(tx.String())); err != nil {
-		return fmt.Errorf("stack publication: a source branch moved; all source refs and working copies were left untouched — ccx vcs stack abort drops the run: %w", err)
+		return fmt.Errorf("stack publication: a source branch moved (%s); all source refs and working copies were left untouched — ccx vcs stack continue replays the run onto it, or ccx vcs stack abort drops the run: %w", stackSourceMoves(ctx, dir, sources), err)
 	}
 	return nil
+}
+
+func stackSourceMoves(ctx context.Context, dir render.Dir, sources map[string]string) string {
+	var moves []string
+	for _, name := range slices.Sorted(maps.Keys(sources)) {
+		at, err := stackRevParse(ctx, dir, gtRestackRef(name))
+		switch {
+		case err != nil:
+			moves = append(moves, name+" was deleted")
+		case at != sources[name]:
+			moves = append(moves, fmt.Sprintf("%s moved from %s to %s", name, shortOID(sources[name]), shortOID(at)))
+		}
+	}
+	return cmp.Or(strings.Join(moves, ", "), "a branch moved locally")
+}
+
+func stackMovedSources(ctx context.Context, dir render.Dir, run *stackRebaseRun) (map[string]string, error) {
+	sources := stackSources(run)
+	moved := map[string]string{}
+	for _, name := range slices.Sorted(maps.Keys(sources)) {
+		at, err := stackRevParse(ctx, dir, gtRestackRef(name))
+		if err != nil {
+			return nil, fmt.Errorf("stack rebase: %s was deleted since the run started, at %s, so the run cannot replay onto it — restore it with git branch %s %s and run ccx vcs stack continue, or drop the run with ccx vcs stack abort", name, shortOID(sources[name]), name, sources[name])
+		}
+		if at != sources[name] {
+			moved[name] = at
+		}
+	}
+	return moved, nil
 }
 
 func stackPublicationPin(run *stackRebaseRun, branch string) string {
@@ -443,6 +480,15 @@ func stackDropPublicationPins(ctx context.Context, dir render.Dir, run *stackReb
 func stackFinishPublication(ctx context.Context, cmd *cobra.Command, l lane, commonDir string, run *stackRebaseRun) error {
 	if run.SourcesMoving {
 		return stackFinishSourceMoves(ctx, cmd, l, commonDir, run)
+	}
+	if !run.deferPush && !run.Publishing && !run.LocalApplied {
+		moved, err := stackMovedSources(ctx, l.dir(), run)
+		if err != nil {
+			return err
+		}
+		if len(moved) > 0 {
+			return stackReplanMoved(ctx, cmd, l, commonDir, run, moved)
+		}
 	}
 	if err := stackPinPublication(ctx, l.dir(), run); err != nil {
 		return err
