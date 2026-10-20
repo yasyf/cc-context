@@ -205,7 +205,8 @@ func fetchConfig(env []string) []string {
 			n, _ = strconv.Atoi(count)
 		}
 	}
-	out := []string{"GIT_CONFIG_COUNT=" + strconv.Itoa(n+len(childFetchConfig))}
+	out := make([]string, 0, 1+2*len(childFetchConfig))
+	out = append(out, "GIT_CONFIG_COUNT="+strconv.Itoa(n+len(childFetchConfig)))
 	for j, kv := range childFetchConfig {
 		i := strconv.Itoa(n + j)
 		out = append(out, "GIT_CONFIG_KEY_"+i+"="+kv[0], "GIT_CONFIG_VALUE_"+i+"="+kv[1])
