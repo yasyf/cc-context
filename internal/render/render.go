@@ -190,21 +190,27 @@ func childEnv(ctx context.Context, dir Dir, extraEnv []string) ([]string, lookpa
 		env = append(env, "PATH="+path)
 	}
 	env = slices.Concat(env, extraEnv)
-	return append(env, noCommitGraph(env)...), resolve
+	return append(env, fetchConfig(env)...), resolve
 }
 
-// noCommitGraph turns off fetch.writeCommitGraph for the child and every git it
-// spawns: a promisor clone fetches missing blobs from inside a checkout, and
-// that fetch dies on the commit-graph-chain.lock another worktree holds.
-func noCommitGraph(env []string) []string {
+// childFetchConfig holds for the child and every git it spawns. In a promisor
+// clone a fetch dies on the commit-graph-chain.lock another worktree holds, and
+// its submodule walk dies "bad object 0000…" on a ref another worktree deletes.
+var childFetchConfig = [][2]string{{"fetch.writeCommitGraph", "false"}, {"fetch.recurseSubmodules", "false"}}
+
+func fetchConfig(env []string) []string {
 	n := 0
 	for _, kv := range env {
 		if count, ok := strings.CutPrefix(kv, "GIT_CONFIG_COUNT="); ok {
 			n, _ = strconv.Atoi(count)
 		}
 	}
-	i := strconv.Itoa(n)
-	return []string{"GIT_CONFIG_COUNT=" + strconv.Itoa(n+1), "GIT_CONFIG_KEY_" + i + "=fetch.writeCommitGraph", "GIT_CONFIG_VALUE_" + i + "=false"}
+	out := []string{"GIT_CONFIG_COUNT=" + strconv.Itoa(n+len(childFetchConfig))}
+	for j, kv := range childFetchConfig {
+		i := strconv.Itoa(n + j)
+		out = append(out, "GIT_CONFIG_KEY_"+i+"="+kv[0], "GIT_CONFIG_VALUE_"+i+"="+kv[1])
+	}
+	return out
 }
 
 // withRunGuard bounds ctx by runTimeout only when ctx carries no deadline at all.
