@@ -481,7 +481,7 @@ func stackFinishPublication(ctx context.Context, cmd *cobra.Command, l lane, com
 	if run.SourcesMoving {
 		return stackFinishSourceMoves(ctx, cmd, l, commonDir, run)
 	}
-	if !run.deferPush && !run.Publishing && !run.LocalApplied {
+	if !run.deferPush && !run.Applied && !run.Publishing && !run.LocalApplied {
 		moved, err := stackMovedSources(ctx, l.dir(), run)
 		if err != nil {
 			return err
