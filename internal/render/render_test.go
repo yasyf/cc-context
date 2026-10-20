@@ -283,18 +283,18 @@ func TestWithEnvReachesTheChild(t *testing.T) {
 	}
 }
 
-func TestChildTurnsOffCommitGraphWrites(t *testing.T) {
+func TestChildTurnsOffCommitGraphWritesAndSubmoduleFetches(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("uses /bin/sh to read env")
 	}
-	script := `printf '%s %s=%s %s=%s' "$GIT_CONFIG_COUNT" "$GIT_CONFIG_KEY_0" "$GIT_CONFIG_VALUE_0" "$GIT_CONFIG_KEY_1" "$GIT_CONFIG_VALUE_1"`
+	script := `printf '%s %s=%s %s=%s %s=%s' "$GIT_CONFIG_COUNT" "$GIT_CONFIG_KEY_0" "$GIT_CONFIG_VALUE_0" "$GIT_CONFIG_KEY_1" "$GIT_CONFIG_VALUE_1" "$GIT_CONFIG_KEY_2" "$GIT_CONFIG_VALUE_2"`
 	for _, tt := range []struct {
 		name     string
 		extraEnv []string
 		want     string
 	}{
-		{"alone", []string{"GIT_CONFIG_COUNT="}, "1 fetch.writeCommitGraph=false ="},
-		{"after the caller's entries", []string{"GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=core.abbrev", "GIT_CONFIG_VALUE_0=12"}, "2 core.abbrev=12 fetch.writeCommitGraph=false"},
+		{"alone", []string{"GIT_CONFIG_COUNT="}, "2 fetch.writeCommitGraph=false fetch.recurseSubmodules=false ="},
+		{"after the caller's entries", []string{"GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=core.abbrev", "GIT_CONFIG_VALUE_0=12"}, "3 core.abbrev=12 fetch.writeCommitGraph=false fetch.recurseSubmodules=false"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := RunCLIEnv(context.Background(), Ambient, "/bin/sh", []string{"-c", script}, tt.extraEnv)

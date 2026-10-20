@@ -112,3 +112,27 @@ func TestAlignInAPromisorCloneSkipsAnotherWorktreesCommitGraphLock(t *testing.T)
 		t.Errorf("kept.txt = %q, %v, want the published head's new", got, err)
 	}
 }
+
+// TestRemoteHeadsFetchIntoAPromisorCloneSkipsTheSubmoduleWalk is fix-release-noop:
+// a fetch into the monorepo's partial clone, which carries a submodule, walked
+// every ref tip for submodule commits, met a ref another worktree was deleting,
+// and died "fatal: bad object 0000000000000000000000000000000000000000".
+func TestRemoteHeadsFetchIntoAPromisorCloneSkipsTheSubmoduleWalk(t *testing.T) {
+	f := stackRebaseRepo(t, "feature")
+	mustRun(t, f.Env(), f.RemoteDir, "git", "config", "uploadpack.allowFilter", "true")
+	holder := filepath.Join(t.TempDir(), "partial")
+	mustRun(t, f.Env(), filepath.Dir(holder), "git", "clone", "-q", "--no-local", "--filter=blob:none", "--branch", "main", f.RemoteDir, holder)
+	writeShipFile(t, holder, ".gitmodules", "[submodule \"vendor\"]\n\tpath = vendor\n\turl = ./vendor\n")
+	if err := os.WriteFile(filepath.Join(holder, ".git", "refs", "heads", "deleting"), []byte("garbage\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	restackAdvanceRemote(t, f, "main", "upstream.txt", "upstream\n")
+
+	heads, err := stackRemoteHeads(f.Context(), render.Dir(holder), stackRebasePrefix, "origin", []string{"main"}, "")
+	if err != nil {
+		t.Fatalf("remote heads fetch past a ref mid-deletion = %v", err)
+	}
+	if got, want := gitAt(t, f.Env(), holder, "rev-parse", "refs/remotes/origin/main"), gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "main"); got != want || heads["main"] != want {
+		t.Errorf("refs/remotes/origin/main = %s, heads = %v, want the remote main %s", got, heads, want)
+	}
+}

@@ -29,6 +29,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A ccx fetch into a partial clone with submodules no longer dies on `bad
+  object 0000…`.** On Oct 20 a `ccx vcs ship --tip-only --amend` in the
+  monorepo refused with `stack rebase: git fetch origin: git: exit status 128:
+  fatal: bad object 0000000000000000000000000000000000000000`. The monorepo is
+  a `blob:none` clone with a submodule, so git's on-demand submodule
+  recursion walked every ref tip after the fetch. Git reads a ref deleted
+  mid-walk, or any broken ref, as the null OID, and the walk died on it. Every
+  git ccx spawns now runs with `fetch.recurseSubmodules=false`, beside the
+  `fetch.writeCommitGraph=false` it already set.
+
 - **`ccx vcs stack continue` keeps a run's `--parent` re-parenting when it
   replans.** In the monorepo drive on Oct 20, a `stack rebase --parent
   durable-step-6b-run-migration=durable-step-6a-fork-wiring --to
