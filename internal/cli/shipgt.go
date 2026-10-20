@@ -592,7 +592,7 @@ func gtRestack(ctx context.Context, l lane, suffix, branch string, c *gtCache) (
 	if err != nil {
 		return "", err
 	}
-	if state, err = gtHoldPublished(ctx, l.dir(), state, chain, branch); err != nil {
+	if state, err = gtHoldPublished(ctx, l.dir(), state, chain); err != nil {
 		return "", err
 	}
 	result, err := gtRestackChain(ctx, "ship", l.checkout, l.dir(), commonDir, state, gtBottomUp(chain), false)
@@ -608,22 +608,31 @@ func gtRestack(ctx context.Context, l lane, suffix, branch string, c *gtCache) (
 	if err != nil {
 		return "", err
 	}
-	var left []string
+	var segs, left []string
 	for _, b := range chain {
 		if !state[b].NeedsRestack {
 			continue
 		}
-		if held := result.held[b]; strings.HasPrefix(held, gtHeldElsewhere) || held == gtHeldPublished {
+		switch held := result.held[b]; {
+		case b == branch && held == gtHeldPublished:
+			segs = append(segs, gtKeptOffMovedParent(b, state[b].Parents[0].Ref))
+		case strings.HasPrefix(held, gtHeldElsewhere) || held == gtHeldPublished:
 			left = append(left, b+" ("+held+")")
-			continue
+		default:
+			return "", errors.New(gtStuck("ship", gtOffParent(b, held), suffix))
 		}
-		return "", errors.New(gtStuck("ship", gtOffParent(b, result.held[b]), suffix))
 	}
-	seg := gtRestackSegment(result)
 	if len(left) > 0 {
-		seg += " · left " + strings.Join(left, ", ") + " off its parent for its own lane to restack"
+		segs = append(segs, "left "+strings.Join(left, ", ")+" off its parent for its own lane to restack")
 	}
-	return seg, nil
+	if len(result.moved) > 0 || len(segs) == 0 {
+		segs = append([]string{gtRestackSegment(result)}, segs...)
+	}
+	return strings.Join(segs, " · "), nil
+}
+
+func gtKeptOffMovedParent(branch, parent string) string {
+	return "kept " + branch + " on its published base though " + parent + " moved — run ccx vcs stack rebase to replay it onto " + parent
 }
 
 // gtRestackStopped leads with the failure that explains the rest and still

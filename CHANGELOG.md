@@ -29,6 +29,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs ship --no-push` commits a published branch on its own head when
+  its parent moved.** In the monorepo drive on Oct 20, a `--no-push` ship from
+  `durable-step-6b-mac`, whose parent had moved locally, replayed the branch
+  onto that parent after the commit. The commit landed off the head the lane
+  had published, and the only report line was `restacked 1 branch`. The
+  in-place replay now holds the shipped branch when it is published, the way
+  it already held published branches below it. The report names it with a
+  segment such as `kept feature on its published base though base moved — run
+  ccx vcs stack rebase to replay it onto base`. A pushing ship still restacks
+  and submits as before.
+
 - **`ccx vcs stack rebase` pushes only the invoking lane's branches.** In the
   monorepo drive on Oct 19, a rebase run from step 7's top worktree planned to
   push `durable-step-6b-run-migration`, a step 6 branch no working copy held,

@@ -134,11 +134,11 @@ func gtHoldElsewhere(state gtState, chain []string, holders map[string]string, o
 
 const gtHeldPublished = "published to the remote"
 
-// gtHoldPublished holds every published chain branch but shipped, the way
-// gtHoldElsewhere holds a branch another working copy has: a commit-only ship
-// pushes nothing, so rewriting a parent whose pull request is open would only
-// leave its local head diverged from the one it published.
-func gtHoldPublished(ctx context.Context, dir render.Dir, state gtState, chain []string, shipped string) (gtState, error) {
+// gtHoldPublished holds every published chain branch, the shipped one
+// included, the way gtHoldElsewhere holds a branch another working copy has: a
+// commit-only ship pushes nothing, so rewriting a branch whose pull request is
+// open would only leave its local head diverged from the one it published.
+func gtHoldPublished(ctx context.Context, dir render.Dir, state gtState, chain []string) (gtState, error) {
 	remote, err := vcs.GitRemoteFor(ctx, dir, "HEAD")
 	if err != nil {
 		return nil, fmt.Errorf("ship: %w", err)
@@ -146,7 +146,7 @@ func gtHoldPublished(ctx context.Context, dir render.Dir, state gtState, chain [
 	held := maps.Clone(state)
 	for _, name := range chain {
 		s := held[name]
-		if name == shipped || s.State != "" {
+		if s.State != "" {
 			continue
 		}
 		published, err := gitRefExists(ctx, dir, "ship", "refs/remotes/"+remote+"/"+name)
