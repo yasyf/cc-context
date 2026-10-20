@@ -423,9 +423,9 @@ func TestStackSubmitSetsDraftOnNewPullRequestsAlone(t *testing.T) {
 	}
 }
 
-// TestStackRebaseMovesASourceAnotherCleanWorktreeHolds pins the one-worktree-
-// per-branch layout ccx vcs stack new cuts: from feature, base stays at its
-// published head; from the bottom worktree, base and feature above it move.
+// TestStackRebaseMovesASourceAnotherCleanWorktreeHolds pins a one-worktree-
+// per-branch layout: from feature, base stays at its published head; from the
+// bottom worktree, base moves and feature, the first worktree's, stays put.
 func TestStackRebaseMovesASourceAnotherCleanWorktreeHolds(t *testing.T) {
 	t.Parallel()
 	f := stackRebaseRepo(t, "base", "feature")
@@ -439,7 +439,7 @@ func TestStackRebaseMovesASourceAnotherCleanWorktreeHolds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stack rebase from feature: %v", err)
 	}
-	if !strings.Contains(out, "keeping base at its published head") || !strings.Contains(out, "--include base") {
+	if !strings.Contains(out, "base held by ") || !strings.Contains(out, " · kept at its published head; --include base moves it") {
 		t.Errorf("output = %q, want base named as kept with --include base", out)
 	}
 	for where, dir := range map[string]string{"local": f.Dir, "held": held, "origin": f.RemoteDir} {
@@ -448,20 +448,27 @@ func TestStackRebaseMovesASourceAnotherCleanWorktreeHolds(t *testing.T) {
 		}
 	}
 
+	feature := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")
 	out, _, err = runStackCmdIn(t, f, held, "rebase")
 	if err != nil {
 		t.Fatalf("stack rebase from the bottom worktree: %v", err)
 	}
-	if strings.Contains(out, "keeping base") {
+	if strings.Contains(out, "base held by") {
 		t.Errorf("output = %q, want base moved from its own worktree", out)
 	}
-	for _, branch := range []string{"base", "feature"} {
-		if local, remote := gitAt(t, f.Env(), f.Dir, "rev-parse", branch), gitAt(t, f.Env(), f.RemoteDir, "rev-parse", branch); local != remote {
-			t.Errorf("local %s = %s, want its published head %s", branch, local, remote)
+	if !strings.Contains(out, "feature held by ") || !strings.Contains(out, ", not pushed; its lane runs ccx vcs stack submit") {
+		t.Errorf("output = %q, want feature named as the first worktree's, not pushed", out)
+	}
+	if local, remote := gitAt(t, f.Env(), f.Dir, "rev-parse", "base"), gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base"); local != remote {
+		t.Errorf("local base = %s, want its published head %s", local, remote)
+	}
+	for where, dir := range map[string]string{"local": f.Dir, "origin": f.RemoteDir} {
+		if got := gitAt(t, f.Env(), dir, "rev-parse", "feature"); got != feature {
+			t.Errorf("%s feature = %.12s, want it left at %.12s", where, got, feature)
 		}
 	}
-	if !stackOnto(t, f, "origin/main", "base") || !stackOnto(t, f, "base", "feature") {
-		t.Error("the stack did not reach the new trunk")
+	if !stackOnto(t, f, "origin/main", "base") {
+		t.Error("base did not reach the new trunk")
 	}
 	if status := gitAt(t, f.Env(), held, "status", "--porcelain"); status != "" {
 		t.Errorf("held status = %q, want it aligned with base's published head", status)
