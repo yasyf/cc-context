@@ -4457,7 +4457,7 @@ func stackReplanLanded(ctx context.Context, cmd *cobra.Command, l lane, commonDi
 
 func stackReplanMoved(ctx context.Context, cmd *cobra.Command, l lane, commonDir string, run *stackRebaseRun, moved map[string]string) error {
 	sources := stackSources(run)
-	var moves []string
+	moves := make([]string, 0, len(moved))
 	for _, name := range slices.Sorted(maps.Keys(moved)) {
 		moves = append(moves, fmt.Sprintf("%s moved from %s to %s", name, shortOID(sources[name]), shortOID(moved[name])))
 	}
