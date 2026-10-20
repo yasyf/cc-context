@@ -2423,6 +2423,48 @@ func TestStackContinueDropsAParentThatLandedMidRun(t *testing.T) {
 	}
 }
 
+func TestStackContinueReplaysOntoAParentMovedMidRun(t *testing.T) {
+	t.Parallel()
+	f := shipGTRepo(t, vcstest.GTStack("base"))
+	stubOpenPRs(t, f, nil, "base", "feature")
+	stackConflicting(t, f)
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "feature")
+	was := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
+	_, _, err := runStackCmd(t, f, "rebase")
+	if err == nil {
+		t.Fatal("stack rebase succeeded, want the conflict to stop")
+	}
+	ws := stackWorkspaceOf(t, err)
+	restackAdvanceRemote(t, f, "base", "moved.txt", "another lane\n")
+	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
+	moved := gitAt(t, f.Env(), f.Dir, "rev-parse", "origin/base")
+	mustRun(t, f.Env(), f.Dir, "git", "update-ref", "refs/heads/base", moved, was)
+	writeShipFile(t, ws, "c.txt", "resolved\n")
+	mustRun(t, f.Env(), ws, "git", "add", "c.txt")
+
+	out, _, err := runStackCmdIn(t, f, ws, "continue")
+	if err != nil {
+		t.Fatalf("continue: %v", err)
+	}
+	if want := fmt.Sprintf("base moved from %s to %s while the run was stopped", shortOID(was), shortOID(moved)); !strings.Contains(out, want) {
+		t.Errorf("output = %q, want %q", out, want)
+	}
+	base := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
+	feature := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature")
+	if got := gitAt(t, f.Env(), f.RemoteDir, "show", base+":moved.txt"); got != "another lane" {
+		t.Errorf("published base's moved.txt = %q, want the other lane's commit kept", got)
+	}
+	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", feature+"^"); got != base {
+		t.Errorf("published feature sits on %s, want the published base %s", got, base)
+	}
+	if got := gitAt(t, f.Env(), f.RemoteDir, "show", feature+":c.txt"); got != "resolved" {
+		t.Errorf("published feature's c.txt = %q, want the resolution kept", got)
+	}
+	if left, _ := os.ReadDir(filepath.Join(f.Dir, ".git", stackRebaseStateDir)); len(left) != 0 {
+		t.Errorf("run state left behind: %v", left)
+	}
+}
+
 func TestStackContinueRefusesAPullRequestClosedMidRun(t *testing.T) {
 	t.Parallel()
 	f := shipGTRepo(t, vcstest.GTStack("base"))
