@@ -29,6 +29,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs stack continue` keeps a run's `--parent` re-parenting when it
+  replans.** In the monorepo drive on Oct 20, a `stack rebase --parent
+  durable-step-6b-run-migration=durable-step-6a-fork-wiring --to
+  durable-step-6b-infra` stopped on conflicts eight times. After the last
+  `continue`, the replan for a branch that moved or landed during the stop
+  refused with `--to durable-step-6b-infra cannot stop there:
+  durable-step-6a-detach-route, durable-step-6a-fork-wiring, above it`. The
+  replan rebuilt the plan from gt's recorded parents and dropped the
+  `--parent` override, so the two branches that now sit below the moved
+  sub-stack read as stacked above the `--to` tip. A run now records the
+  branches it re-parents, and its replan keeps each on the parent the run gave
+  it.
+
 - **`ccx vcs ship --no-push` commits a published branch on its own head when
   its parent moved.** In the monorepo drive on Oct 20, a `--no-push` ship from
   `durable-step-6b-mac`, whose parent had moved locally, replayed the branch

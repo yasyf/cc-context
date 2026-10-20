@@ -182,6 +182,7 @@ type stackRebaseRun struct {
 	Restack       bool     `json:"restack,omitempty"`
 	AllLanes      bool     `json:"all_lanes,omitempty"`
 	To            string   `json:"to,omitempty"`
+	Reparented    []string `json:"reparented,omitempty"`
 	NewPRs        []string `json:"new_prs,omitempty"`
 	deferPush     bool
 	Ship          *stackShipIntent         `json:"ship,omitempty"`
@@ -1262,7 +1263,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	if err != nil {
 		return nil, fmt.Errorf("stack rebase: %w", err)
 	}
-	run := &stackRebaseRun{Trunk: trunk, Pin: pin, NoPush: o.noPush, Origin: l.checkout.Root, Draft: o.draft, DraftAll: o.draftAll, NoVerify: o.noVerify, Tip: o.tip, TipOnly: o.tipOnly, DropCommits: o.dropCommits, StayClean: o.stayClean, Restack: o.restack, AllLanes: o.allLanes, To: o.to, NewPRs: o.newPRs, deferPush: o.deferPush, Ship: o.ship, Roots: roots, Pid: os.Getpid(), Started: stackProcStart(os.Getpid()), Host: host, left: left, lanePins: lanePins, heldBelow: heldBelow, heldAbove: heldAbove, adopted: adopted, recorded: o.recorded}
+	run := &stackRebaseRun{Trunk: trunk, Pin: pin, NoPush: o.noPush, Origin: l.checkout.Root, Draft: o.draft, DraftAll: o.draftAll, NoVerify: o.noVerify, Tip: o.tip, TipOnly: o.tipOnly, DropCommits: o.dropCommits, StayClean: o.stayClean, Restack: o.restack, AllLanes: o.allLanes, To: o.to, Reparented: slices.Sorted(maps.Keys(overrides)), NewPRs: o.newPRs, deferPush: o.deferPush, Ship: o.ship, Roots: roots, Pid: os.Getpid(), Started: stackProcStart(os.Getpid()), Host: host, left: left, lanePins: lanePins, heldBelow: heldBelow, heldAbove: heldAbove, adopted: adopted, recorded: o.recorded}
 	own := map[string]bool{}
 	if current != "" && current != trunk {
 		down, err := gtDownstack(stackRebasePrefix, retargeted, current, trunk)
@@ -4535,12 +4536,15 @@ func stackReplanMoved(ctx context.Context, cmd *cobra.Command, l lane, commonDir
 }
 
 func stackReplan(ctx context.Context, cmd *cobra.Command, l lane, commonDir string, run *stackRebaseRun, landed []string, moved map[string]string, report string) error {
-	var members, pinned []string
+	var members, pinned, parents []string
 	vetted := map[string]string{}
 	replayed := map[string]stackRebaseBranch{}
 	for _, b := range run.Branches {
 		if _, fresh := moved[b.Name]; b.Landed == "" {
 			members = append(members, b.Name)
+			if slices.Contains(run.Reparented, b.Name) && !slices.Contains(landed, b.Name) {
+				parents = append(parents, b.Name+"="+b.Parent)
+			}
 			if !fresh {
 				vetted[b.Name] = b.Remote
 				replayed[b.Name] = b
@@ -4551,7 +4555,7 @@ func stackReplan(ctx context.Context, cmd *cobra.Command, l lane, commonDir stri
 		}
 	}
 	next, err := stackPlan(ctx, l, commonDir, stackRebaseOpts{
-		members: members, pinned: pinned, landed: landed, vetted: vetted, replayed: replayed, draft: run.Draft, draftAll: run.DraftAll, noVerify: run.NoVerify, ship: run.Ship,
+		parents: parents, members: members, pinned: pinned, landed: landed, vetted: vetted, replayed: replayed, draft: run.Draft, draftAll: run.DraftAll, noVerify: run.NoVerify, ship: run.Ship,
 		tip: run.Tip, tipOnly: run.TipOnly, dropCommits: run.DropCommits, stayClean: run.StayClean, restack: run.Restack, allLanes: run.AllLanes, to: run.To, newPRs: run.NewPRs,
 	})
 	if err != nil {

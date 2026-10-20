@@ -2472,6 +2472,60 @@ func TestStackContinueReplaysOntoAParentMovedMidRun(t *testing.T) {
 	}
 }
 
+func TestStackContinueStopsAReparentedSubStackAtItsTipAfterAReplan(t *testing.T) {
+	t.Parallel()
+	f := shipGTRepo(t, vcstest.GTStack("a", "b", "c"))
+	stubOpenPRs(t, f, nil, "a", "b", "c", "d", "e")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "d", "a")
+	writeShipFile(t, f.Dir, "c.txt", "d\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "c.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "d")
+	mustRun(t, f.Env(), f.Dir, "gt", "track", "-f", "--no-interactive")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "e")
+	writeShipFile(t, f.Dir, "e.txt", "e\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "e.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "e")
+	mustRun(t, f.Env(), f.Dir, "gt", "track", "-f", "--no-interactive")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "a", "b", "c", "d", "e")
+	was := gitAt(t, f.Env(), f.Dir, "rev-parse", "a")
+	_, _, err := runStackCmd(t, f, "rebase", "--parent", "d=c", "--to", "e")
+	if err == nil {
+		t.Fatal("stack rebase succeeded, want the conflict to stop")
+	}
+	ws := stackWorkspaceOf(t, err)
+	restackAdvanceRemote(t, f, "a", "moved.txt", "another lane\n")
+	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
+	moved := gitAt(t, f.Env(), f.Dir, "rev-parse", "origin/a")
+	mustRun(t, f.Env(), f.Dir, "git", "update-ref", "refs/heads/a", moved, was)
+	writeShipFile(t, ws, "c.txt", "resolved\n")
+	mustRun(t, f.Env(), ws, "git", "add", "c.txt")
+
+	out, _, err := runStackCmdIn(t, f, ws, "continue")
+	if err != nil {
+		t.Fatalf("continue: %v", err)
+	}
+	if want := fmt.Sprintf("a moved from %s to %s while the run was stopped", shortOID(was), shortOID(moved)); !strings.Contains(out, want) {
+		t.Errorf("output = %q, want %q", out, want)
+	}
+	c := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "c")
+	d := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "d")
+	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", d+"^"); got != c {
+		t.Errorf("published d sits on %s, want the published c %s", got, c)
+	}
+	if got := gitAt(t, f.Env(), f.RemoteDir, "show", d+":c.txt"); got != "resolved" {
+		t.Errorf("published d's c.txt = %q, want the resolution kept", got)
+	}
+	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "e^"); got != d {
+		t.Errorf("published e sits on %s, want the published d %s", got, d)
+	}
+	if got := stackParent(t, f, "d"); got != "c" {
+		t.Errorf("d's gt parent = %s, want c", got)
+	}
+	if left, _ := os.ReadDir(filepath.Join(f.Dir, ".git", stackRebaseStateDir)); len(left) != 0 {
+		t.Errorf("run state left behind: %v", left)
+	}
+}
+
 func TestStackContinueRefusesAPullRequestClosedMidRun(t *testing.T) {
 	t.Parallel()
 	f := shipGTRepo(t, vcstest.GTStack("base"))
