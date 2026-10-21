@@ -92,14 +92,12 @@ func gitStageSelected(ctx context.Context, dir render.Dir, path string, sel *shi
 
 // gitSelectAdd stages the fully-shipped paths — those shipped whole, not
 // hunk-scoped — into the temp index. An empty ship-path set stages the whole
-// worktree (git add -A), and the per-file update-index pass then overwrites each
+// worktree but its untracked machine-local files, and the per-file update-index pass then overwrites each
 // hunk-scoped file with its selected blob.
 func gitSelectAdd(ctx context.Context, dir render.Dir, paths []string, sel *shipSelection, env []string) error {
 	if len(paths) == 0 {
-		if _, err := render.RunCLIEnv(ctx, dir, "git", []string{"add", "-A"}, env); err != nil {
-			return fmt.Errorf("ship: git add: %w", err)
-		}
-		return nil
+		_, _, err := gitSweep(ctx, dir, env)
+		return err
 	}
 	whole := slices.DeleteFunc(slices.Clone(paths), func(p string) bool { return selectionScoped(sel, p) })
 	return gitAddPaths(ctx, dir, whole, env)
