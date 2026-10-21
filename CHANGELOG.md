@@ -29,6 +29,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **An unscoped `ccx vcs ship` no longer sweeps untracked machine-local
+  files into the commit.** On Oct 20 a lane in Forge-AI/interview-tools
+  shipped with nothing staged, and the sweep committed the untracked
+  `mise.local.toml` (`swept 1 path(s): mise.local.toml`), so the lane had to
+  drop the commit by hand. The sweep now leaves untracked files named
+  `*.local.*` or `.env*` in the working copy and reports them as `held N
+  machine-local path(s): …`. Tracked files matching those names are still
+  swept, and naming a path on the command line ships it as before.
+
 - **`ccx vcs gh` runs a `gh api` read outside the installation on the user's
   token.** The guard pack rewrote `gh api /orgs/Forge-FDE/installations` to
   `ccx vcs gh`, which sent it on the checkout's installation token, and GitHub

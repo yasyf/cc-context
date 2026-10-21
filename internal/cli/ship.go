@@ -199,7 +199,7 @@ func newShipCmd() *cobra.Command {
 		Short: "Commit, push, and watch CI in one step",
 		Long: `Commit, push, and watch CI in one step.
 
-With no paths, ship commits exactly the index when anything is staged: untracked files and the unstaged half of a partially staged file stay in the working copy, and a hook's fixes to a fully staged file are staged with it. A tracked file with changes none of which are staged refuses that ship before anything moves, naming the file: an index that holds only what git rm or git mv staged would otherwise carry half the change out unnoticed. Stage it to ship everything, or name the paths to ship. With nothing staged it stages the whole working copy and names what it swept.
+With no paths, ship commits exactly the index when anything is staged: untracked files and the unstaged half of a partially staged file stay in the working copy, and a hook's fixes to a fully staged file are staged with it. A tracked file with changes none of which are staged refuses that ship before anything moves, naming the file: an index that holds only what git rm or git mv staged would otherwise carry half the change out unnoticed. Stage it to ship everything, or name the paths to ship. With nothing staged it stages the whole working copy and names what it swept, holding back untracked machine-local files (*.local.*, .env*) unless they are named.
 
 Ship refuses an empty working copy only when the branch carries nothing above trunk either. Where it does carry commits trunk does not — work a delegate's worktree, a hand-made commit, or a codex lane already landed — there is nothing to cut and everything to submit, so ship skips the commit and goes on to push and the pull request, reporting "nothing to commit — shipping as --no-commit". A path-scoped ship whose scoped paths are clean takes that same path, naming them: scoping already declared everything else out, so finding them clean over a branch ahead of trunk means the work landed. --no-commit states the path outright and refuses a working copy holding changes to tracked files, which would otherwise be left out of the branch and the pull request this same run updates; git's untracked paths do not refuse it, since a run that cuts no commit was never going to carry a worktree's scratch into one, and the report names them as "left untracked: <paths>" instead. Under jj there is nothing to exempt: a new file is already part of the working-copy commit --no-commit pushes. --no-commit is refused alongside paths, where the two spellings contradict each other. Where the branch carries nothing above trunk there is nothing to submit either, and the refusal says so. Ship resolves the push target before committing, so a refusal leaves the working copy untouched. After committing, ship fetches from the remote first and, when the target is no longer an ancestor of the local stack, rebases the stack onto it (jj: the target bookmark; git: origin/<branch>). On git, an origin/<branch> that is the branch's own history rewritten locally — a head its reflog reaches, its last publication, or commits the stack carries patch for patch — is not rebased onto: ship force-pushes over it with a lease on that exact head and reports "force-pushed … replaced <sha> under a lease". A rebase that would conflict is rolled back and reported instead of pushed. Uncommitted work the rebase has to move — every hunk a scoped ship deliberately left in the tree — is kept as a commit of its own rather than on refs/stash, which every working copy of a repository shares, and put back afterwards; work that will not go back leaves the commit holding it and the files in it named in the refusal. A push the remote rejects because it advanced again mid-ship re-fetches, re-rebases, and retries up to 3 attempts before failing with the manual recovery steps. --amend never retries a rejected push: the force-with-lease refusal is reported for manual reconciliation instead of overwriting the concurrent push.
 
@@ -877,8 +877,9 @@ func shipCommit(ctx context.Context, errW io.Writer, dir render.Dir, kind vcs.Ki
 
 // shipGitAdd stages the ship's paths, the fully staged paths of an index-only
 // ship, or everything into the real index ahead of hook attempts and the commit.
-// Only the sweep runs --verbose and returns the segment naming what it took: a
-// checkout several sessions share can hold another lane's work.
+// Only the sweep runs --verbose and returns the segments naming what it took and
+// the machine-local files it held back: a checkout several sessions share can
+// hold another lane's work.
 func shipGitAdd(ctx context.Context, dir render.Dir, o shipOpts) (string, error) {
 	if o.indexOnly {
 		return "", gitAddPaths(ctx, dir, o.indexPaths, nil)
@@ -890,11 +891,52 @@ func shipGitAdd(ctx context.Context, dir render.Dir, o shipOpts) (string, error)
 		}
 		return "", gitAddPaths(ctx, dir, paths, nil)
 	}
-	out, err := render.RunCLI(ctx, dir, "git", []string{"add", "-A", "--verbose"})
+	out, held, err := gitSweep(ctx, dir, nil, "--verbose")
 	if err != nil {
-		return "", fmt.Errorf("ship: git add: %w", err)
+		return "", err
 	}
-	return sweptSegment(parseAddVerbose(out)), nil
+	segs := make([]string, 0, 2)
+	if seg := sweptSegment(parseAddVerbose(out)); seg != "" {
+		segs = append(segs, seg)
+	}
+	if len(held) > 0 {
+		segs = append(segs, heldLocalSegment(held))
+	}
+	return strings.Join(segs, shipSep), nil
+}
+
+func gitSweep(ctx context.Context, dir render.Dir, env []string, flags ...string) (string, []string, error) {
+	untracked, err := gitPathsZEnv(ctx, dir, env, "ls-files", "-z", "--others", "--exclude-standard", "--full-name", "--", ":/")
+	if err != nil {
+		return "", nil, err
+	}
+	held := slices.DeleteFunc(untracked, func(p string) bool { return !machineLocalPath(p) })
+	argv := append(append([]string{"add", "-A"}, flags...), "--", ":/")
+	for _, p := range held {
+		argv = append(argv, ":(top,exclude,literal)"+p)
+	}
+	out, err := render.RunCLIEnv(ctx, dir, "git", argv, env)
+	if err != nil {
+		return "", nil, fmt.Errorf("ship: git add: %w", err)
+	}
+	return out, held, nil
+}
+
+func machineLocalPath(p string) bool {
+	base := filepath.Base(p)
+	return strings.Contains(base, ".local.") || strings.HasPrefix(base, ".env")
+}
+
+func heldLocalSegment(paths []string) string {
+	named := paths
+	if len(named) > shipSweptNamed {
+		named = named[:shipSweptNamed]
+	}
+	seg := fmt.Sprintf("held %d machine-local path(s): %s", len(paths), strings.Join(named, ", "))
+	if len(paths) > len(named) {
+		seg += fmt.Sprintf(", and %d more", len(paths)-len(named))
+	}
+	return seg + " — name them to ship them"
 }
 
 // gitAddPaths never hands git add a directory: one an ignore rule matches fails

@@ -82,7 +82,8 @@ func shipPRPushed(branch string) [][]string {
 		{"git", "branch", "--show-current"},
 		gitTrunkArgv,
 		{"git", "diff", "--cached", "--name-status", "--no-renames", "-z"},
-		{"git", "add", "-A", "--verbose"},
+		{"git", "ls-files", "-z", "--others", "--exclude-standard", "--full-name", "--", ":/"},
+		{"git", "add", "-A", "--verbose", "--", ":/"},
 		{"git", "commit", "-m", "fix: frobnicate"},
 		{"git", "branch", "--show-current"},
 		{"git", "log", "-1", "--format=%h%x00%s"},
@@ -835,7 +836,8 @@ func TestShipPRGTBothFlags(t *testing.T) {
 		gtCommonDirArgv,
 		gtRefsArgv(),
 		{"git", "diff", "--cached", "--name-status", "--no-renames", "-z"},
-		{"git", "add", "-A", "--verbose"},
+		{"git", "ls-files", "-z", "--others", "--exclude-standard", "--full-name", "--", ":/"},
+		{"git", "add", "-A", "--verbose", "--", ":/"},
 		{"git", "diff", "--cached", "--quiet"},
 		{"git", "commit", "-m", "fix: frobnicate"},
 		gtCommonDirArgv,
@@ -867,7 +869,7 @@ func TestShipPRGTAlreadyCommitted(t *testing.T) {
 		add   [][]string
 		probe []string
 	}{
-		{name: "unscoped", add: [][]string{{"git", "diff", "--cached", "--name-status", "--no-renames", "-z"}, {"git", "add", "-A", "--verbose"}}, probe: []string{"git", "diff", "--cached", "--quiet"}},
+		{name: "unscoped", add: [][]string{{"git", "diff", "--cached", "--name-status", "--no-renames", "-z"}, {"git", "ls-files", "-z", "--others", "--exclude-standard", "--full-name", "--", ":/"}, {"git", "add", "-A", "--verbose", "--", ":/"}}, probe: []string{"git", "diff", "--cached", "--quiet"}},
 		{
 			name: "path scoped", paths: []string{"src/a.go"}, scope: " in src/a.go",
 			add: [][]string{
