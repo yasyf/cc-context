@@ -470,8 +470,9 @@ func TestShipHooksRetryRederivesFiles(t *testing.T) {
 }
 
 // TestShipHooksPersistentFailure proves a hook finding no longer blocks the
-// commit: ship runs the suite once, cannot tell a finding from a fix, commits
-// anyway, and surfaces the output so the finding is not swallowed. CI grades it.
+// commit: ship runs the suite once, commits anyway, and surfaces the output so
+// the finding is not swallowed. CI grades it. A pass that changed no file fixed
+// nothing, so the summary says the hooks failed rather than that they fixed it.
 func TestShipHooksPersistentFailure(t *testing.T) {
 	t.Parallel()
 	f := shipRepo(t, vcstest.Remote())
@@ -481,8 +482,8 @@ func TestShipHooksPersistentFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ship error = %v, want the commit to proceed (stderr=%q)", err, errStr)
 	}
-	if !strings.Contains(got, "hooks fixed") {
-		t.Errorf("summary = %q, want it to carry %q", got, "hooks fixed")
+	if !strings.Contains(got, "hooks failed") {
+		t.Errorf("summary = %q, want it to carry %q", got, "hooks failed")
 	}
 	if !strings.Contains(errStr, shipHookFindingsLead) {
 		t.Errorf("stderr = %q, want the findings lead-in", errStr)

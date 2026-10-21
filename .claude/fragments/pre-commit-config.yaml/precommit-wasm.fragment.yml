@@ -1,0 +1,11 @@
+# The go:embed'd WASM engines and grammars are gitignored build outputs, so a
+# fresh worktree has none and golangci-lint's typecheck fails on their
+# packages. Restore them from the per-input cache, building only on a miss.
+  - repo: local
+    hooks:
+      - id: ensure-wasm
+        name: ensure go:embed WASM artifacts
+        entry: bash scripts/ensure-wasm.sh
+        language: system
+        pass_filenames: false
+        types: [go]
