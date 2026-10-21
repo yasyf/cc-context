@@ -29,6 +29,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs ship` reports `hooks failed` when prek fails and fixes nothing.**
+  A nonzero prek pass always reported `hooks fixed`, including on Oct 20 when
+  golangci-lint's typecheck failed in a fresh worktree and changed no file.
+  Ship now compares the files it handed prek before and after the pass. A pass
+  that changed none of them reports `hooks failed`, and one that changed any
+  still reports `hooks fixed`. Either way the output is surfaced and the commit
+  proceeds for CI to grade.
+
+- **Fresh cc-context worktrees pass the golangci-lint commit hook.** The
+  `go:embed`'d WASM engines and grammars are gitignored build outputs, so a
+  new worktree had none and the hook failed with `pattern embedcore.wasm: no
+  matching files found`. A new `ensure-wasm` hook runs before golangci-lint
+  and restores any missing artifact from a cache under
+  `~/.cache/cc-context/wasm/`, keyed on the hash of the build scripts and the
+  Rust and grammar sources. On a miss it builds them once with the existing
+  `scripts/build-*.sh`, and later worktrees on the same sources reuse the cache.
+
 - **An unscoped `ccx vcs ship` no longer sweeps untracked machine-local
   files into the commit.** On Oct 20 a lane in Forge-AI/interview-tools
   shipped with nothing staged, and the sweep committed the untracked

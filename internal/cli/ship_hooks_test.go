@@ -258,8 +258,8 @@ func TestShipHooksStreamingSeam(t *testing.T) {
 	}{
 		{"a clean pass streams on a terminal", true, 0, "hooks ok", 1, false, 1},
 		{"a clean pass stays out of a capture", false, 0, "hooks ok", 0, false, 1},
-		{"a finding streams once on a terminal, with no replay", true, 1, "hooks fixed", 1, false, 1},
-		{"a finding is replayed into a capture behind the lead-in", false, 1, "hooks fixed", 1, true, 1},
+		{"a finding streams once on a terminal, with no replay", true, 1, "hooks failed", 1, false, 1},
+		{"a finding is replayed into a capture behind the lead-in", false, 1, "hooks failed", 1, true, 1},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			f := shipRepo(t, vcstest.Remote())

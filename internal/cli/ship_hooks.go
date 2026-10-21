@@ -3,9 +3,11 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path"
 	"path/filepath"
@@ -32,9 +34,9 @@ var shipHookEntryLine = regexp.MustCompile(`(?m)^[\s-]*entry\s*[:=]\s*(.+)$`)
 const shipHookIndexLock = "index.lock"
 
 // shipHookFindingsLead precedes the first pass's output when that pass came back
-// nonzero. Ship adopts the auto-fixes and commits regardless, so this output is
+// nonzero. Ship adopts any auto-fixes and commits regardless, so this output is
 // the only place a genuine finding is ever shown; CI is what grades it.
-const shipHookFindingsLead = "ship: hooks: prek reported the following; auto-fixes were adopted and the commit proceeds — CI grades the result\n"
+const shipHookFindingsLead = "ship: hooks: prek reported the following; any auto-fixes were adopted and the commit proceeds — CI grades the result\n"
 
 // shipHookStartNotice announces the hook run to a caller that is not getting the
 // stream. Off a terminal the first pass is discarded, so without this line a
@@ -49,9 +51,11 @@ const shipHookStartNotice = "ship: hooks: running prek over %d file(s) — a col
 // from files it modified, and the retry pass that used to resolve that ambiguity
 // doubled the most expensive thing ship does — the Go hooks declare
 // pass_filenames: false, so each pass analyzes the whole module however small
-// the commit — to answer a question CI answers anyway. A nonzero pass therefore
-// reports "hooks fixed" and its output is surfaced rather than swallowed, since
-// it is the only place a real finding is shown. External hook execution retains
+// the commit — to answer a question CI answers anyway. A nonzero pass that
+// changed the files it was handed reports "hooks fixed"; one that left them
+// byte-for-byte as they were fixed nothing and reports "hooks failed". Either
+// way its output is surfaced rather than swallowed, since it is the only place
+// a real finding is shown. External hook execution retains
 // the same staging window as a manual git add followed by git commit. A later jj
 // push-time auto-rebase may incorporate upstream content the hooks did not
 // inspect; upstream CI covers that boundary. The covered result reports whether
@@ -103,21 +107,23 @@ func shipRunHooks(ctx context.Context, errW io.Writer, dir render.Dir, kind vcs.
 	} else if _, werr := fmt.Fprintf(errW, shipHookStartNotice, len(files)); werr != nil {
 		return "", false, fmt.Errorf("ship: hooks: announce the run: %w", werr)
 	}
+	before := shipHookSnapshot(dir, files)
 	// Leading-dash filenames intentionally reach prek unchanged so it fails loudly.
 	argv := append([]string{"prek", "run", "--cd", string(dir), "--files"}, files...)
 	if err := shipRunPrek(ctx, dir, argv, passW); err == nil {
 		return "hooks ok", covered, nil
 	}
+	after := shipHookSnapshot(dir, files)
 	if kind == vcs.Git {
 		if _, err := shipGitAdd(ctx, dir, o); err != nil {
 			return "", false, err
 		}
 	}
-	files, err = shipHookFiles(ctx, dir, kind, o)
+	rederived, err := shipHookFiles(ctx, dir, kind, o)
 	if err != nil {
 		return "", false, err
 	}
-	if len(files) == 0 {
+	if len(rederived) == 0 {
 		return "", false, errors.New("ship: hooks: auto-fixes reverted every pending change; nothing to commit")
 	}
 	if !streamed {
@@ -128,7 +134,22 @@ func shipRunHooks(ctx context.Context, errW io.Writer, dir render.Dir, kind vcs.
 			return "", false, fmt.Errorf("ship: hooks: report the findings: %w", werr)
 		}
 	}
+	if maps.Equal(before, after) && slices.Equal(files, rederived) {
+		return "hooks failed", covered, nil
+	}
 	return "hooks fixed", covered, nil
+}
+
+func shipHookSnapshot(dir render.Dir, files []string) map[string][sha256.Size]byte {
+	sums := make(map[string][sha256.Size]byte, len(files))
+	for _, f := range files {
+		data, err := os.ReadFile(filepath.Join(string(dir), f)) //nolint:gosec // f is a root-relative path git or jj listed as part of this commit
+		if err != nil {
+			continue
+		}
+		sums[f] = sha256.Sum256(data)
+	}
+	return sums
 }
 
 // shipRunPrek spawns prek with uvx in dir, whose pin is what keeps GIT_DIR and
