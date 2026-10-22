@@ -220,7 +220,9 @@ that a branch the run publishes above it carries too, would be dropped from
 what that branch publishes, so the run refuses the same way unless those
 commits only replay the published ones onto newer trunk. One refusal names
 every such branch with the --include flags that take them all in, counting a
-kept branch above one it takes in as moved with it.
+kept branch above one it takes in as moved with it. So does a kept branch under
+a branch the run publishes that conflicts with trunk: GitHub grades that branch
+mergeable against the kept head's older trunk while the merge queue ejects it.
 
 Above the branch checked out here, a branch belongs to another lane when the
 rest of the record contradicts its gt parent: its open pull request is based on

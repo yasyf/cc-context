@@ -29,6 +29,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs stack submit` refuses a branch that conflicts with trunk under a
+  parent another worktree holds.** On Oct 22 the merge queue ejected monorepo
+  #42038 for conflicts with `dev`, and both `stack submit` and
+  `stack submit --restack` still kept it on its old base and reported it
+  `mergeable`. Its parent was checked out in another worktree, so the run kept
+  the parent at its published head on an older `dev`, and GitHub graded the
+  child only against that parent. The run now merges each branch it publishes
+  above such a kept parent against the fetched trunk. When one conflicts, it
+  refuses before anything is pushed, naming the branch, the conflicting files,
+  and the `--include <parent>` flag that replays the parent onto trunk with it.
+  `stack rebase` refuses the same way. `ccx vcs ship` is unchanged.
+
 - **`ccx vcs ship` reports `hooks failed` when prek fails and fixes nothing.**
   A nonzero prek pass always reported `hooks fixed`, including on Oct 20 when
   golangci-lint's typecheck failed in a fresh worktree and changed no file.

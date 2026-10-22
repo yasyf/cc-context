@@ -333,7 +333,8 @@ copy ccx vcs stack new cut from this one is this lane's.
 --include <branch> takes such a branch into the run instead. A kept branch whose
 parent this run moves, or whose local head carries commits a branch published
 above it carries too, refuses the run before anything moves, naming the
---include flags that take every such branch in.
+--include flags that take every such branch in, as does a kept branch under a
+branch the run publishes that conflicts with trunk.
 
 Every branch's local and remote head is recorded before anything moves, and each
 branch is replayed from the base it was recorded on (--onto <new parent>
