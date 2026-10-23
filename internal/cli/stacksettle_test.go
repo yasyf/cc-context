@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -161,12 +162,12 @@ func TestStackAbortKeepsTheResolvedHeads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("abort: %v", err)
 	}
-	const ref = "refs/ccx/resolved/base/base"
-	if kept := gitAt(t, f.Env(), f.Dir, "for-each-ref", "--format=%(refname)", "refs/ccx/resolved"); kept != ref {
-		t.Fatalf("resolved refs = %q, want only %s", kept, ref)
+	ref := gitAt(t, f.Env(), f.Dir, "for-each-ref", "--format=%(refname)", "refs/ccx/resolved")
+	if !regexp.MustCompile(`^refs/ccx/resolved/base-[0-9a-f]{8}/base$`).MatchString(ref) {
+		t.Fatalf("resolved refs = %q, want only base's under the run's own name", ref)
 	}
 	resolved := gitAt(t, f.Env(), f.Dir, "rev-parse", ref)
-	if want := "aborted · no branch moved\nkept base's resolved head " + resolved[:12] + " at " + ref + " · restore it with git branch -f base " + ref; out != want {
+	if want := "aborted · no branch moved\nkept base's resolved head " + resolved[:12] + " at " + ref + " · restore it with git branch -f 'base' '" + ref + "'"; out != want {
 		t.Errorf("abort output = %q, want %q", out, want)
 	}
 	if got := gitAt(t, f.Env(), f.Dir, "show", ref+":base.txt"); got != "trunk\nbase" {
@@ -190,6 +191,8 @@ func TestStackKeepResolvedKeepsTheHeadAReplanCarried(t *testing.T) {
 	head := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
 	run := &stackRebaseRun{
 		Branches: []stackRebaseBranch{{Name: "base", Head: head, Resolved: true}, {Name: "feature", Head: head}},
+		Started:  "Fri Oct 23 05:31:02 2026",
+		Pid:      4242,
 		dir:      stackRunDir(filepath.Join(f.Dir, ".git"), "base"),
 	}
 
@@ -197,12 +200,31 @@ func TestStackKeepResolvedKeepsTheHeadAReplanCarried(t *testing.T) {
 	if err != nil {
 		t.Fatalf("keep resolved: %v", err)
 	}
-	const ref = "refs/ccx/resolved/base/base"
-	if want := []string{"kept base's resolved head " + head[:12] + " at " + ref + " · restore it with git branch -f base " + ref}; !slices.Equal(restores, want) {
+	ref := gitAt(t, f.Env(), f.Dir, "for-each-ref", "--format=%(refname)", "--points-at", head, "refs/ccx/resolved")
+	if !regexp.MustCompile(`^refs/ccx/resolved/base-[0-9a-f]{8}/base$`).MatchString(ref) {
+		t.Fatalf("resolved refs at the replanned head %s = %q, want only base's", head, ref)
+	}
+	if want := []string{"kept base's resolved head " + head[:12] + " at " + ref + " · restore it with git branch -f 'base' '" + ref + "'"}; !slices.Equal(restores, want) {
 		t.Errorf("restores = %q, want %q", restores, want)
 	}
-	if got := gitAt(t, f.Env(), f.Dir, "for-each-ref", "--format=%(refname) %(objectname)", "refs/ccx/resolved"); got != ref+" "+head {
-		t.Errorf("resolved refs = %q, want %s at the replanned head %s", got, ref, head)
+}
+
+func TestStackKeepResolvedKeepsEachAbortedRunOfOneStack(t *testing.T) {
+	t.Parallel()
+	f := shipGTRepo(t, vcstest.GTStack("base"))
+	dir := stackRunDir(filepath.Join(f.Dir, ".git"), "base")
+	heads := []string{gitAt(t, f.Env(), f.Dir, "rev-parse", "base"), gitAt(t, f.Env(), f.Dir, "rev-parse", "main")}
+	for i, head := range heads {
+		run := &stackRebaseRun{Branches: []stackRebaseBranch{{Name: "base", NewHead: head, Resolved: true}}, Started: "Fri Oct 23 05:3" + strconv.Itoa(i) + ":02 2026", Pid: 4242, dir: dir}
+		if _, err := stackKeepResolved(f.Context(), render.Dir(f.Dir), run); err != nil {
+			t.Fatalf("keep resolved, run %d: %v", i, err)
+		}
+	}
+
+	kept := strings.Split(gitAt(t, f.Env(), f.Dir, "for-each-ref", "--format=%(objectname)", "refs/ccx/resolved"), "\n")
+	slices.Sort(kept)
+	if !slices.Equal(kept, slices.Sorted(slices.Values(heads))) {
+		t.Errorf("resolved heads = %q, want both aborted runs' %q", kept, heads)
 	}
 }
 

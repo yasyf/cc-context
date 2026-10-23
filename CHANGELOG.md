@@ -29,6 +29,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Each aborted stack rebase keeps its resolved commits under a name of its
+  own.** `ccx vcs stack abort` named the kept refs after the run's state
+  directory alone, so a second aborted run of the same stack overwrote the
+  first run's `refs/ccx/resolved/<run>/<branch>`, and nothing else reached
+  those commits. `<run>` now adds eight hex digits of the run's start to the
+  directory name. The printed restore command also quotes the branch and the
+  ref, so a branch name holding shell characters reaches git intact.
+
 - **`ccx vcs ship --parent` names a rebase in progress before it replays the
   branch.** A move onto a new parent, by re-parenting a tracked branch or
   adopting an untracked one, replays the branch's own commits. From a working
@@ -46,8 +54,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   resolved branch's head to `refs/ccx/resolved/<run>/<branch>` before it drops
   the run, and prints one line per branch naming the ref and the restore
   command, `git branch -f <branch> refs/ccx/resolved/<run>/<branch>`. `<run>`
-  is the name of the run's state directory: its first branch, with each slash
-  turned into a dash.
+  is the name of the run's state directory, its first branch with each slash
+  turned into a dash, plus eight hex digits of the run's start.
 
 - **`ccx vcs stack submit` refuses a branch that conflicts with trunk under a
   parent another worktree holds.** On Oct 22 the merge queue ejected monorepo
