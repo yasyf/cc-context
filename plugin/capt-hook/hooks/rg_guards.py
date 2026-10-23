@@ -42,6 +42,7 @@ from .search_common import (
     forfeits_substitution,
     glued_value,
     grep_glob,
+    has_dependency_segment,
     resolved_is_dir,
     scratch_tree,
     search_note,
@@ -175,7 +176,7 @@ def rg_visit(evt: PreToolUseEvent, occ: Occurrence, ctx: WalkContext) -> Rewritt
         return None
     if not rg_tree_shaped(call) or forfeits_substitution(call) or scratch_tree(rg_operands(call) or [], call.cwd):
         return None
-    if (ops := rg_operands(call)) and any(forfeits_operand(p) for p in ops):
+    if (ops := rg_operands(call)) and any(forfeits_operand(p) or has_dependency_segment(p) for p in ops):
         return None
     if forfeits_count(call.args):
         return None

@@ -41,6 +41,7 @@ from .search_common import (
     forfeits_substitution,
     glued_value,
     grep_glob,
+    has_dependency_segment,
     loose_operands,
     resolve_operand,
     resolved_is_dir,
@@ -380,6 +381,8 @@ def grep_visit(evt: PreToolUseEvent, occ: Occurrence, ctx: WalkContext) -> Rewri
         return None
     searched = grep_operands(call)
     if flood and scratch_tree(loose_operands(call, GREP) if searched is None else searched, call.cwd):
+        return None
+    if searched and any(has_dependency_segment(p) for p in searched):
         return None
     if forfeits_substitution(call):
         return None

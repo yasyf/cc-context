@@ -87,27 +87,21 @@ def is_page_url(url: str) -> bool:
     return is_remote_url(url) and not is_api_url(url)
 
 
-class WholePageWebFetch(CustomCondition):
-    """Matches the first ``WebFetch`` of each remote URL per session."""
+class RemoteWebFetch(CustomCondition):
+    """Matches a ``WebFetch`` of a remote URL."""
 
     def check(self, evt: BaseHookEvent) -> bool:
-        url = (evt.input.raw.get("url") or "").strip()
-        return is_remote_url(url) and evt.ctx.s.once(url, scope="ccx-web-fetch")
+        return is_remote_url((evt.input.raw.get("url") or "").strip())
 
 
 @on(
     Event.PreToolUse,
-    only_if=[Tool("WebFetch"), WholePageWebFetch()],
+    only_if=[Tool("WebFetch"), RemoteWebFetch()],
     max_fires=1,
     tests={
         Input(tool="WebFetch", tool_input={"url": "https://docs.example.com/en/guide/config"}): Warn(
             pattern="ccx web outline"
         ),
-        Input(
-            tool="WebFetch",
-            tool_input={"url": "https://docs.example.com/en/guide/config"},
-            seen={"ccx-web-fetch": ["https://docs.example.com/en/guide/config"]},
-        ): Allow(),
         Input(tool="WebFetch", tool_input={"url": "http://localhost:3000/health"}): Allow(),
         Input(tool="WebFetch", tool_input={"url": "http://127.0.0.1:8080/metrics"}): Allow(),
     },

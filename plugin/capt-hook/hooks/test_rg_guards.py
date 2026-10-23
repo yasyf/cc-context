@@ -273,6 +273,11 @@ class TestDependencyDirTargets:
     def test_non_dependency_targets_run(self, command: str, program: str) -> None:
         assert not dep_steer(command, program)
 
+    def test_dependency_dir_search_runs_raw(self, repo: Path) -> None:
+        (repo / ".venv" / "lib").mkdir(parents=True)
+        assert grep_verdict("grep -rn foo .venv/lib/") is None
+        assert rg_verdict("rg foo .venv/lib/") is None
+
     def test_rewrite_lane_ignores_the_filter_stage(self) -> None:
         assert grep_verdict("grep -rn foo . | grep -v generated") == "/fake/ccx code grep foo | grep -v generated"
         assert rg_verdict("rg -n foo . | rg -P generated") is None

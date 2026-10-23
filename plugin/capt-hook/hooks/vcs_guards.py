@@ -37,7 +37,7 @@ if TYPE_CHECKING:
 
 LOG_PATCH_FLAGS = frozenset({"-p", "--patch", "-u"})
 
-SUMMARY_FLAGS = frozenset({*GIT_DIFF_SUMMARY_FLAGS, "-s", "--summary", "--no-patch"})
+SUMMARY_FLAGS = frozenset({*GIT_DIFF_SUMMARY_FLAGS, "-s", "--summary", "--no-patch", "--quiet"})
 
 PATCH_DUMP_NOTE = (
     "`git diff`, `jj diff`, `git show`, and `git log -p` print whole patches into context. "
@@ -220,10 +220,12 @@ def dumps_patch(occ: Occurrence) -> bool:
     if not output_reaches_terminal(occ) or not SUMMARY_FLAGS.isdisjoint(cmd.args):
         return False
     match cmd.executable, cmd.args:
-        case "git" | "jj", ("diff", *rest):
+        case "git", ("diff", *rest):
             return "--" not in rest
+        case "jj", ("diff", *rest):
+            return all(arg.startswith("-") for arg in rest)
         case "git", ("show", *rest):
-            return not any(":" in arg for arg in rest)
+            return not any(":" in arg for arg in rest if not arg.startswith("-"))
         case "git", ("log", *rest):
             return not LOG_PATCH_FLAGS.isdisjoint(rest)
         case _:
@@ -256,6 +258,9 @@ def dumps_patch(occ: Occurrence) -> bool:
         Input(command="jj diff --stat"): Allow(),
         Input(command="jj diff -s"): Allow(),
         Input(command="jj diff --summary"): Allow(),
+        Input(command="jj diff internal/cli/root.go"): Allow(),
+        Input(command="git diff --quiet"): Allow(),
+        Input(command="git show --format=format:%h HEAD"): Warn(),
         Input(command="git show HEAD:internal/cli/root.go"): Allow(),
         Input(command="git show -s HEAD"): Allow(),
         Input(command="git show --no-patch --format=%H HEAD"): Allow(),
