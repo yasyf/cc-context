@@ -1203,11 +1203,18 @@ type gtOntoMove struct {
 }
 
 // gtOntoPlan computes the replay gtOnto makes and refuses the ones it cannot:
-// a branch whose own commits sit among copies of the parent's, a replay that
-// conflicts, and one that would overwrite uncommitted work in the working copy
-// holding the branch. The commits parent carries no patch of are the branch's
-// own, and they alone are replayed.
+// a working copy whose REBASE_HEAD resolves, own commits among copies of the
+// parent's, a conflicting replay, and one that would overwrite uncommitted
+// work where the branch is held. Only the commits parent has no patch of, the
+// branch's own, are replayed.
 func gtOntoPlan(ctx context.Context, l lane, o shipOpts, branch, parent string) (gtOntoMove, error) {
+	rebasing, err := gitRefExists(ctx, l.dir(), "ship", "REBASE_HEAD")
+	if err != nil {
+		return gtOntoMove{}, err
+	}
+	if rebasing {
+		return gtOntoMove{}, refuse("ship: a rebase is in progress in %s: finish it with ccx vcs stack continue or drop it with git rebase --abort, then ship again", l.root)
+	}
 	onto, err := gtOntoHead(ctx, l.dir(), o, parent)
 	if err != nil {
 		return gtOntoMove{}, err
