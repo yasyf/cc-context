@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -181,6 +182,28 @@ func TestStackAbortKeepsTheResolvedHeads(t *testing.T) {
 		t.Errorf("feature = %s, want it left at %s", got, feature)
 	}
 	stackAssertNoRun(t, f)
+}
+
+func TestStackKeepResolvedKeepsTheHeadAReplanCarried(t *testing.T) {
+	t.Parallel()
+	f := shipGTRepo(t, vcstest.GTStack("base"))
+	head := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
+	run := &stackRebaseRun{
+		Branches: []stackRebaseBranch{{Name: "base", Head: head, Resolved: true}, {Name: "feature", Head: head}},
+		dir:      stackRunDir(filepath.Join(f.Dir, ".git"), "base"),
+	}
+
+	restores, err := stackKeepResolved(f.Context(), render.Dir(f.Dir), run)
+	if err != nil {
+		t.Fatalf("keep resolved: %v", err)
+	}
+	const ref = "refs/ccx/resolved/base/base"
+	if want := []string{"kept base's resolved head " + head[:12] + " at " + ref + " · restore it with git branch -f base " + ref}; !slices.Equal(restores, want) {
+		t.Errorf("restores = %q, want %q", restores, want)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "for-each-ref", "--format=%(refname) %(objectname)", "refs/ccx/resolved"); got != ref+" "+head {
+		t.Errorf("resolved refs = %q, want %s at the replanned head %s", got, ref, head)
+	}
 }
 
 func TestShipLeavesNoRunWhenItsRestackIsNotPublished(t *testing.T) {

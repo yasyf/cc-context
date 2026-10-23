@@ -4317,9 +4317,9 @@ func stackKeepResolved(ctx context.Context, dir render.Dir, run *stackRebaseRun)
 		if !b.Resolved {
 			continue
 		}
-		ref := stackResolvedRef(run, b.Name)
-		fmt.Fprintf(&tx, "update %s %s\n", ref, b.NewHead)
-		restores = append(restores, fmt.Sprintf("kept %s's resolved head %.12s at %s%srestore it with git branch -f %s %s", b.Name, b.NewHead, ref, shipSep, b.Name, ref))
+		ref, head := stackResolvedRef(run, b.Name), cmp.Or(b.NewHead, b.Head)
+		fmt.Fprintf(&tx, "update %s %s\n", ref, head)
+		restores = append(restores, fmt.Sprintf("kept %s's resolved head %.12s at %s%srestore it with git branch -f %s %s", b.Name, head, ref, shipSep, b.Name, ref))
 	}
 	if len(restores) == 0 {
 		return nil, nil
