@@ -4284,6 +4284,10 @@ func stackSettle(ctx context.Context, l lane, commonDir string, run *stackRebase
 		}
 		outcome = "aborted · the branches no longer hold the rewrite, so every branch stays where it is"
 	}
+	restores, err := stackKeepResolved(ctx, dir, run)
+	if err != nil {
+		return "", err
+	}
 	if c := run.Conflict; c != nil {
 		note, err := stackReleaseWorkspace(ctx, l, commonDir, c, true)
 		if err != nil {
@@ -4299,7 +4303,31 @@ func stackSettle(ctx context.Context, l lane, commonDir string, run *stackRebase
 	if err := stackClearRun(commonDir, run); err != nil {
 		return "", fmt.Errorf("stack abort: %w", err)
 	}
-	return outcome, nil
+	return strings.Join(append([]string{outcome}, restores...), "\n"), nil
+}
+
+func stackResolvedRef(run *stackRebaseRun, branch string) string {
+	return "refs/ccx/resolved/" + filepath.Base(run.dir) + "/" + branch
+}
+
+func stackKeepResolved(ctx context.Context, dir render.Dir, run *stackRebaseRun) ([]string, error) {
+	var tx strings.Builder
+	var restores []string
+	for _, b := range run.Branches {
+		if !b.Resolved {
+			continue
+		}
+		ref := stackResolvedRef(run, b.Name)
+		fmt.Fprintf(&tx, "update %s %s\n", ref, b.NewHead)
+		restores = append(restores, fmt.Sprintf("kept %s's resolved head %.12s at %s%srestore it with git branch -f %s %s", b.Name, b.NewHead, ref, shipSep, b.Name, ref))
+	}
+	if len(restores) == 0 {
+		return nil, nil
+	}
+	if _, err := render.RunCLIStdin(ctx, dir, "git", []string{"update-ref", "--stdin"}, []byte("start\n"+tx.String()+"commit\n")); err != nil {
+		return nil, fmt.Errorf("stack abort: keep the resolved heads under refs/ccx/resolved, the run is kept, so abort can run again: %w", err)
+	}
+	return restores, nil
 }
 
 func stackLegacyApplied(run *stackRebaseRun) bool {

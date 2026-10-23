@@ -122,6 +122,14 @@ branch's checkout or its conflict workspace; use `--stack` with the bottom
 branch's name when selecting a run explicitly. Native `git replay` has no
 continue or abort operation.
 
+Abort moves no branch, but it keeps every stop you already resolved. Each
+resolved branch's head stays at `refs/ccx/resolved/<run>/<branch>`, and abort
+prints the command that puts the branch there:
+
+```sh
+git branch -f <branch> refs/ccx/resolved/<run>/<branch>
+```
+
 On macOS, a completed conflict workspace still occupied by a shell, editor,
 or agent stays in place until inactive. Stack completion succeeds while its
 [cleanup job](worktree-cleanup.md) waits. Leave the workspace when finished;

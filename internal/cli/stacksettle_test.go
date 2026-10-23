@@ -138,6 +138,51 @@ func TestStackAbortOfAPushedRunWithoutReceipts(t *testing.T) {
 	}
 }
 
+func TestStackAbortKeepsTheResolvedHeads(t *testing.T) {
+	t.Parallel()
+	f := shipGTRepo(t, vcstest.GTStack("base"))
+	restackAdvanceRemote(t, f, "main", "base.txt", "trunk\n")
+	stackConflicting(t, f)
+	base := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
+	feature := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")
+	_, _, err := runStackCmd(t, f, "rebase", "--no-push")
+	if err == nil || !strings.Contains(err.Error(), "conflicted files:\n  base.txt\n") {
+		t.Fatalf("stack rebase = %v, want the first stop on base.txt", err)
+	}
+	ws := stackWorkspaceOf(t, err)
+	writeShipFile(t, ws, "base.txt", "trunk\nbase\n")
+	mustRun(t, f.Env(), ws, "git", "add", "base.txt")
+	if _, _, err := runStackCmd(t, f, "continue"); err == nil || !strings.Contains(err.Error(), "conflicted files:\n  c.txt\n") {
+		t.Fatalf("continue = %v, want base resolved and the second stop on c.txt", err)
+	}
+
+	out, _, err := runStackCmd(t, f, "abort")
+	if err != nil {
+		t.Fatalf("abort: %v", err)
+	}
+	const ref = "refs/ccx/resolved/base/base"
+	if kept := gitAt(t, f.Env(), f.Dir, "for-each-ref", "--format=%(refname)", "refs/ccx/resolved"); kept != ref {
+		t.Fatalf("resolved refs = %q, want only %s", kept, ref)
+	}
+	resolved := gitAt(t, f.Env(), f.Dir, "rev-parse", ref)
+	if want := "aborted · no branch moved\nkept base's resolved head " + resolved[:12] + " at " + ref + " · restore it with git branch -f base " + ref; out != want {
+		t.Errorf("abort output = %q, want %q", out, want)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "show", ref+":base.txt"); got != "trunk\nbase" {
+		t.Errorf("%s base.txt = %q, want the resolution", ref, got)
+	}
+	if got, want := gitAt(t, f.Env(), f.Dir, "rev-parse", ref+"^"), gitAt(t, f.Env(), f.Dir, "rev-parse", "main"); got != want {
+		t.Errorf("%s sits on %s, want the new trunk %s", ref, got, want)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); got != base {
+		t.Errorf("base = %s, want it left at %s", got, base)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature"); got != feature {
+		t.Errorf("feature = %s, want it left at %s", got, feature)
+	}
+	stackAssertNoRun(t, f)
+}
+
 func TestShipLeavesNoRunWhenItsRestackIsNotPublished(t *testing.T) {
 	for _, stop := range []string{"graphite unsynced", "push refused"} {
 		t.Run(stop, func(t *testing.T) {
