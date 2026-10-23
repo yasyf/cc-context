@@ -8,7 +8,7 @@ path so the ``hooks`` package (and its relative imports) resolves::
 
 ``RenderedArtifact`` stats a sibling ``.claude/fragments/<rel>/layout.toml`` and reads the
 target's banner, and ``RenderSource``'s cc-skills ``guides/`` arm reads ``repo_root.name`` —
-all disk-dependent, so the Block/True cases run against a real tmp repo tree with the root
+all disk-dependent, so the True cases run against a real tmp repo tree with the root
 pinned on the event. The inline ``tests={}`` in render_guards.py cover only the ALLOW cases a
 bare fixture can express; the precise reason-by-reason matrix lives here.
 """
@@ -47,16 +47,16 @@ def artifact(root: Path, rel: str, *, banner: str = BANNER, body: str = "# Guide
 
 
 class TestRenderedArtifact:
-    def test_banner_and_layout_blocks(self, tmp_path: Path) -> None:
+    def test_banner_and_layout_matches(self, tmp_path: Path) -> None:
         target = artifact(tmp_path, "AGENTS.md")
         assert RenderedArtifact().check(make_evt(target, tmp_path)) is True
 
-    def test_banner_on_second_line_blocks(self, tmp_path: Path) -> None:
+    def test_banner_on_second_line_matches(self, tmp_path: Path) -> None:
         # The banner is a first-OR-second-line stamp; a leading blank line still matches.
         target = artifact(tmp_path, "AGENTS.md", banner="", body=f"{BANNER}\n# Guide\n")
         assert RenderedArtifact().check(make_evt(target, tmp_path)) is True
 
-    def test_nested_shell_artifact_blocks(self, tmp_path: Path) -> None:
+    def test_nested_shell_artifact_matches(self, tmp_path: Path) -> None:
         # A rendered install-binary.sh carries the banner in a shell comment; the fragment
         # tree mirrors the full repo-relative path.
         banner = "# cc-guides 0.2.0 src=.claude/fragments/plugin/scripts/install-binary.sh fragments=none | GENERATED"

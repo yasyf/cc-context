@@ -8,7 +8,7 @@ path so the ``hooks`` package (and its relative imports) resolves::
 
 The ``-i``/``-w`` rewrites are gated on ``ccx_supports("code", "grep", flag="--ignore-case")``,
 which shells out to ``ccx … --help`` — an environment-dependent probe, so those shapes can
-never live in inline ``tests={}`` (they would rewrite or block depending on the local binary).
+never live in inline ``tests={}`` (they would rewrite or run raw depending on the local binary).
 Here the probe boundary (``ccx_bin`` + ``subprocess.run``) is monkeypatched and the
 ``ccx_supports`` cache is cleared around every case so a result never leaks between them;
 ``search_common.ccx_bin`` is pinned too so the rewritten command is deterministic.
@@ -23,7 +23,6 @@ from types import SimpleNamespace
 
 import pytest
 from captain_hook import Call
-from captain_hook.types import HookResult
 
 from conftest import (
     FILES_WITH_MATCHES_HELP,
@@ -49,9 +48,8 @@ def rg_rewrite(command: str, index: int = 0) -> str | None:
     return rg_guards.rg_to(call_at(command, index))
 
 
-def rg_verdict(command: str) -> HookResult | str | None:
-    """The whole-line verdict from the ``visit=`` walk: a block ``HookResult``, a rewrite string, or
-    ``None`` for a genuine allow."""
+def rg_verdict(command: str) -> str | None:
+    """The whole-line verdict from the ``visit=`` walk: a rewrite string, or ``None`` when the line runs raw."""
     return run_visit(make_evt(command), rg_guards.rg_visit)
 
 
@@ -71,7 +69,7 @@ def dep_steer(command: str, program: str) -> bool:
     return condition.check_command_line(evt, evt.cmd.line)
 
 
-def grep_verdict(command: str) -> HookResult | str | None:
+def grep_verdict(command: str) -> str | None:
     return run_visit(make_evt(command), grep_guards.grep_visit)
 
 
@@ -83,8 +81,6 @@ class TestRgIgnoreCaseWord:
 
     @pytest.fixture(autouse=True)
     def pin_ccx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-        # `src/` must exist: `rg_parse` classifies path operands against the filesystem, so a
-        # bare cwd would block these at parse instead of exercising the gate.
         (tmp_path / "src").mkdir()
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(search_common, "ccx_bin", lambda: "/fake/ccx")
@@ -106,12 +102,11 @@ class TestRgIgnoreCaseWord:
         assert rg_rewrite(command) == expected
 
     @pytest.mark.parametrize("command", ["rg -i foo src/", "rg -w foo src/"])
-    def test_blocks_when_flag_absent(self, monkeypatch: pytest.MonkeyPatch, command: str) -> None:
-        # `--help` exits 0 but without `--ignore-case` (an older binary) → fall back to block.
+    def test_declines_when_flag_absent(self, monkeypatch: pytest.MonkeyPatch, command: str) -> None:
         probe(monkeypatch, NO_SUPPORT_HELP)
         assert rg_rewrite(command) is None
 
-    def test_blocks_when_probe_errors(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_declines_when_probe_errors(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(common.subprocess, "run", fake_run(1, stderr='unknown flag "--ignore-case"'))
         assert rg_rewrite("rg -i foo src/") is None
 
@@ -210,11 +205,10 @@ class TestRgPathGlobbing:
 
 class TestDependencyDirTargets:
     """Dependency-source operands are a policy steer: an unambiguous dep segment (`.venv/…`,
-    `node_modules/…`) blocks textually regardless of on-disk existence, and a directory operand
-    the cwd repo's own `git check-ignore` reports ignored blocks the same way — both even through
+    `node_modules/…`) warns textually regardless of on-disk existence, and a directory operand
+    the cwd repo's own `git check-ignore` reports ignored warns the same way — both even through
     a downstream pipe. Everything git doesn't claim (`~/.config/…`, an ignored plain file, a
-    dep-lookalike pattern) runs raw. The block lands at the verdict, not in the emitter —
-    `rg_to`/`grep_to` would happily glob an ignored dir.
+    dep-lookalike pattern) stays silent.
     """
 
     @pytest.fixture(autouse=True)
@@ -279,6 +273,11 @@ class TestDependencyDirTargets:
     def test_non_dependency_targets_run(self, command: str, program: str) -> None:
         assert not dep_steer(command, program)
 
+    def test_dependency_dir_search_runs_raw(self, repo: Path) -> None:
+        (repo / ".venv" / "lib").mkdir(parents=True)
+        assert grep_verdict("grep -rn foo .venv/lib/") is None
+        assert rg_verdict("rg foo .venv/lib/") is None
+
     def test_rewrite_lane_ignores_the_filter_stage(self) -> None:
         assert grep_verdict("grep -rn foo . | grep -v generated") == "/fake/ccx code grep foo | grep -v generated"
         assert rg_verdict("rg -n foo . | rg -P generated") is None
@@ -305,13 +304,12 @@ class TestRgOccurrenceRewrite:
         assert call.command.executable == "rg"
         assert search_common.UnpipedSearch("rg").check_command_line(evt, evt.cmd.line) is True
         assert rg_guards.rg_to(call) is None
-        assert isinstance(rg_verdict("sudo rg foo ."), HookResult)
+        assert rg_verdict("sudo rg foo .") is None
 
 
 class TestInfraNoneAllows:
     """Fix 4: infra unavailability (no ``ccx`` on disk, or a required probe fails) runs the tree-shaped
-    search raw — it never converts a failed rewrite into a block. Only a genuinely unmappable shape
-    (a value-taking short like ``-t``) blocks, and that block still fires with ``ccx`` absent.
+    search raw, as does a genuinely unmappable shape (a value-taking short like ``-t``).
     """
 
     @pytest.fixture(autouse=True)
@@ -323,8 +321,8 @@ class TestInfraNoneAllows:
     def test_ccx_bin_none_allows_tree_rg(self) -> None:
         assert rg_verdict("rg needle") is None
 
-    def test_ccx_bin_none_still_blocks_unmappable_shape(self) -> None:
-        assert isinstance(rg_verdict("rg -t py foo"), HookResult)
+    def test_ccx_bin_none_allows_unmappable_shape(self) -> None:
+        assert rg_verdict("rg -t py foo") is None
 
 
 class TestRgBigContextCount:
@@ -345,7 +343,7 @@ class TestRgBigContextCount:
 
 class TestScratchTree:
     """A tree-shaped rg over a scratch directory outside any repository runs raw; inside a repository it still
-    rewrites or blocks."""
+    rewrites."""
 
     @pytest.fixture
     def notes(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -358,7 +356,7 @@ class TestScratchTree:
     def test_scratch_notes_run_raw(self, notes: Path) -> None:
         assert rg_verdict(f"cd {notes}; rg -l 'ledger.py' briefs specs") is None
 
-    def test_scratch_inside_a_repo_blocks(self, notes: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_scratch_inside_a_repo_rewrites(self, notes: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
         subprocess.run(["git", "init", "-q"], cwd=notes.parent.parent, check=True)
-        assert isinstance(rg_verdict(f"cd {notes}; rg -c 'ledger.py' briefs specs"), HookResult)
+        assert rg_verdict(f"cd {notes}; rg ledger .") == f"cd {notes}; /fake/ccx code grep ledger"

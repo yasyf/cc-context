@@ -1,4 +1,4 @@
-"""Block a full re-read of a text file this context already read or edited, unchanged since."""
+"""Warn once on a full re-read of a text file this context already read or edited, unchanged since."""
 
 from __future__ import annotations
 
@@ -127,6 +127,7 @@ def record_file_access(evt: BaseHookEvent) -> None:
     Event.PreToolUse,
     only_if=[Tool("Read")],
     skip_if=[Annotated("raw")],
+    max_fires=1,
     tests={
         Input(tool="Read", file=FileFixture(size=64)): Allow(),
         Input(tool="Read", file=FileFixture(size=64), offset=1, limit=50): Allow(),
@@ -145,7 +146,7 @@ def gate_reread(evt: BaseHookEvent) -> HookResult | None:
     if record is None or file_digest(path) != record.digest:
         return None
     template = EDITED_MESSAGE if record.kind == "edited" else READ_MESSAGE
-    return evt.block(template)
+    return evt.context(template)
 
 
 @on(Event.PreCompact)

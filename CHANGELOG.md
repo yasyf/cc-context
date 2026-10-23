@@ -27,6 +27,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Graphite opens nothing, the old pull request is reopened. The `stack submit`
   refusal for such a pull request now names the command for each one.
 
+### Changed
+
+- **The guard pack warns where it used to block, and lets the command run.**
+  A recursive or directory `grep` or `rg` whose flags `ccx code grep` cannot
+  express (`-v`, `-c`, `-o`, `-P`, a second `-e`, a `sudo` wrapper) now runs
+  raw instead of being refused; the clean rewrites stay. A search into session
+  transcripts or dependency source, a `cat` of a root manifest, an `ls` of a
+  workspace or module-cache root, an edit to a cc-guides rendered artifact, a
+  whole-page `WebFetch`, a full re-read of an unchanged file, and an `ls -R`
+  the rewrite cannot splice all run as written. Each kind carries a one-time
+  note per agent naming the bounded alternative. These notes never
+  pre-approve the tool call.
+
+- **Large `Read`s and patch reads are no longer cut down.** An unbounded
+  `Read` of a large text file reads the whole file, with a one-time note
+  naming `ccx code read --section`, instead of being trimmed to its first
+  100 lines. `git diff`, `jj diff`, `git show`, and `git log -p` print their
+  patches instead of being swapped for `ccx vcs diff`, `show`, or `history`
+  summaries; the first one an agent runs notes that those commands give
+  bounded per-file summaries. The `git worktree remove` block is unchanged.
+
 ### Fixed
 
 - **Each aborted stack rebase keeps its resolved commits under a name of its

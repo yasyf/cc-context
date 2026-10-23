@@ -14,17 +14,19 @@ from captain_hook import (
     Annotated,
     Arguments,
     BaseHookEvent,
-    Block,
     Command,
     CommandSchema,
     CustomCondition,
     Event,
+    HookResult,
     Input,
     Operand,
     Option,
+    PreToolUseEvent,
     Rewrite,
     Tool,
-    hook,
+    Warn,
+    on,
     rewrite_command_occurrences,
 )
 
@@ -85,35 +87,30 @@ def is_page_url(url: str) -> bool:
     return is_remote_url(url) and not is_api_url(url)
 
 
-class WholePageWebFetch(CustomCondition):
-    """Matches the first ``WebFetch`` of each remote URL per session."""
+class RemoteWebFetch(CustomCondition):
+    """Matches a ``WebFetch`` of a remote URL."""
 
     def check(self, evt: BaseHookEvent) -> bool:
-        url = (evt.input.raw.get("url") or "").strip()
-        return is_remote_url(url) and evt.ctx.s.once(url, scope="ccx-web-fetch")
+        return is_remote_url((evt.input.raw.get("url") or "").strip())
 
 
-hook(
+@on(
     Event.PreToolUse,
-    only_if=[Tool("WebFetch"), WholePageWebFetch()],
-    message=(
-        "WebFetch pulls a whole page into context. Run `ccx web outline <url>`, then "
-        "`ccx web read <url> --section <ref>`, or spawn the `cc-context:web-fetch` agent with the URL and prompt."
-    ),
-    block=True,
+    only_if=[Tool("WebFetch"), RemoteWebFetch()],
+    max_fires=1,
     tests={
-        Input(tool="WebFetch", tool_input={"url": "https://docs.example.com/en/guide/config"}): Block(
+        Input(tool="WebFetch", tool_input={"url": "https://docs.example.com/en/guide/config"}): Warn(
             pattern="ccx web outline"
         ),
-        Input(
-            tool="WebFetch",
-            tool_input={"url": "https://docs.example.com/en/guide/config"},
-            seen={"ccx-web-fetch": ["https://docs.example.com/en/guide/config"]},
-        ): Allow(),
         Input(tool="WebFetch", tool_input={"url": "http://localhost:3000/health"}): Allow(),
         Input(tool="WebFetch", tool_input={"url": "http://127.0.0.1:8080/metrics"}): Allow(),
     },
 )
+def steer_whole_page_fetch(evt: PreToolUseEvent) -> HookResult:
+    return evt.context(
+        "WebFetch pulls a whole page into context. Run `ccx web outline <url>`, then "
+        "`ccx web read <url> --section <ref>`, or spawn the `cc-context:web-fetch` agent with the URL and prompt."
+    )
 
 
 def sinks_stdout(cmd: Command) -> bool:

@@ -133,13 +133,13 @@ class TestFirstAccess:
 
 
 class TestGate:
-    def test_full_reread_blocks(self, tmp_path: Path) -> None:
+    def test_full_reread_warns(self, tmp_path: Path) -> None:
         sd = tmp_path / "s"
         f = make_file(tmp_path / "a.txt")
         record_file_access(post("Read", f, sd))
         result = gate_reread(read_pre(f, sd))
         assert result is not None
-        assert result.action is Action.block
+        assert result.action is Action.warn
         assert "already read" in result.message
         assert "ccx code read" in result.message
 
@@ -149,23 +149,23 @@ class TestGate:
         record_file_access(post("Read", f, sd))
         assert gate_reread(read_pre(f, sd, offset=10, limit=100)) is None
 
-    def test_edit_then_full_read_blocks(self, tmp_path: Path) -> None:
+    def test_edit_then_full_read_warns(self, tmp_path: Path) -> None:
         sd = tmp_path / "s"
         f = make_file(tmp_path / "a.txt")
         record_file_access(post("Edit", f, sd, old_string="x", new_string="y"))
         result = gate_reread(read_pre(f, sd))
         assert result is not None
-        assert result.action is Action.block
+        assert result.action is Action.warn
         assert "You just edited" in result.message
         assert "ccx vcs diff" in result.message
 
-    def test_write_then_full_read_blocks(self, tmp_path: Path) -> None:
+    def test_write_then_full_read_warns(self, tmp_path: Path) -> None:
         sd = tmp_path / "s"
         f = make_file(tmp_path / "a.txt")
         record_file_access(post("Write", f, sd, content="new"))
         result = gate_reread(read_pre(f, sd))
         assert result is not None
-        assert result.action is Action.block
+        assert result.action is Action.warn
         assert "You just edited" in result.message
 
     def test_unseen_path_allows(self, tmp_path: Path) -> None:
@@ -201,7 +201,7 @@ class TestPagedAndMedia:
         sd = tmp_path / "s"
         f = make_file(tmp_path / "diagram.png")
         remember(read_pre(f, sd), f.resolve(), "read", file_digest(f))  # force a record past the recorder
-        assert gate_reread(read_pre(f, sd)) is None  # gate still refuses to block media
+        assert gate_reread(read_pre(f, sd)) is None
 
 
 class TestContentFingerprint:
@@ -227,7 +227,7 @@ class TestContentFingerprint:
         f.write_text("y" * 128)  # a real out-of-session edit
         assert gate_reread(read_pre(f, sd)) is None
 
-    def test_mtime_bump_same_content_still_blocks(self, tmp_path: Path) -> None:
+    def test_mtime_bump_same_content_still_warns(self, tmp_path: Path) -> None:
         sd = tmp_path / "s"
         f = make_file(tmp_path / "a.txt")
         record_file_access(post("Read", f, sd))
@@ -235,25 +235,25 @@ class TestContentFingerprint:
         os.utime(f, (bumped, bumped))  # touch: mtime moves, content identical
         result = gate_reread(read_pre(f, sd))
         assert result is not None
-        assert result.action is Action.block  # identical content is still in context
+        assert result.action is Action.warn
 
 
 class TestContextIsolation:
-    """Finding #3 — one agent's read/edit must never block another agent's first read."""
+    """Finding #3 — one agent's read/edit must never warn on another agent's first read."""
 
-    def test_subagent_read_does_not_block_main(self, tmp_path: Path) -> None:
+    def test_subagent_read_does_not_warn_main(self, tmp_path: Path) -> None:
         sd = tmp_path / "s"  # one shared session store, as a subagent and its parent share
         f = make_file(tmp_path / "a.txt")
         record_file_access(post("Read", f, sd, agent_id=AGENT_A))  # subagent reads
         assert gate_reread(read_pre(f, sd)) is None  # main agent's first read
 
-    def test_subagent_edit_does_not_block_main(self, tmp_path: Path) -> None:
+    def test_subagent_edit_does_not_warn_main(self, tmp_path: Path) -> None:
         sd = tmp_path / "s"
         f = make_file(tmp_path / "a.txt")
         record_file_access(post("Edit", f, sd, agent_id=AGENT_A, old_string="x", new_string="y"))
         assert gate_reread(read_pre(f, sd)) is None  # main agent's first read of a subagent-edited file
 
-    def test_main_read_does_not_block_subagent(self, tmp_path: Path) -> None:
+    def test_main_read_does_not_warn_subagent(self, tmp_path: Path) -> None:
         sd = tmp_path / "s"
         f = make_file(tmp_path / "a.txt")
         record_file_access(post("Read", f, sd))  # main agent reads
@@ -265,13 +265,13 @@ class TestContextIsolation:
         record_file_access(post("Read", f, sd, agent_id=AGENT_A))
         assert gate_reread(read_pre(f, sd, agent_id=AGENT_B)) is None  # a different subagent's first read
 
-    def test_subagent_reread_blocks_same_subagent(self, tmp_path: Path) -> None:
+    def test_subagent_reread_warns_same_subagent(self, tmp_path: Path) -> None:
         sd = tmp_path / "s"
         f = make_file(tmp_path / "a.txt")
         record_file_access(post("Read", f, sd, agent_id=AGENT_A))
         result = gate_reread(read_pre(f, sd, agent_id=AGENT_A))  # same context re-read
         assert result is not None
-        assert result.action is Action.block
+        assert result.action is Action.warn
 
 
 class TestRawEscape:
@@ -302,7 +302,7 @@ class TestPathNormalization:
         record_file_access(post("Read", detour, sd))
         result = gate_reread(read_pre(f, sd))
         assert result is not None
-        assert result.action is Action.block
+        assert result.action is Action.warn
 
 
 class TestCompactionReset:
@@ -310,7 +310,7 @@ class TestCompactionReset:
         sd = tmp_path / "s"
         f = make_file(tmp_path / "a.txt")
         record_file_access(post("Read", f, sd))
-        assert gate_reread(read_pre(f, sd)) is not None  # blocked before compaction
+        assert gate_reread(read_pre(f, sd)) is not None
         reset_on_compact(precompact(sd))
         assert gate_reread(read_pre(f, sd)) is None  # log wiped -> re-read allowed
 

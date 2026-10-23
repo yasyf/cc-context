@@ -1,4 +1,4 @@
-"""Rewrite ``ls -R`` to ``ccx repo find``; block ``ls`` of a workspace or module-cache root."""
+"""Rewrite ``ls -R`` to ``ccx repo find``; warn on ``ls`` of a workspace or module-cache root."""
 
 from __future__ import annotations
 
@@ -10,15 +10,17 @@ from captain_hook import (
     Allow,
     Annotated,
     BaseHookEvent,
-    Block,
     Command,
     CommandLine,
     CustomCommandLineCondition,
     Event,
+    HookResult,
     Input,
+    PreToolUseEvent,
     Rewrite,
     Tool,
-    hook,
+    Warn,
+    on,
     rewrite_command_occurrences,
 )
 from captain_hook.util.shell import normalize_executable
@@ -77,7 +79,6 @@ rewrite_command_occurrences(
     only_if=[LsRecursive()],
     skip_if=[Annotated("raw")],
     to=ls_to,
-    block='`ls -R` walks the whole tree into context. Run `ccx repo find "<glob>"` to list paths by pattern.',
     note=rewrote_note('ccx repo find "<glob>"', "same paths, token-bounded"),
     tests={
         Input(command="ls -R"): Rewrite(pattern='repo find "**"'),
@@ -115,28 +116,29 @@ def is_scan_root(path: str) -> bool:
     return bool(WORKSPACE_ROOT.match(path)) or "go/pkg/mod" in path
 
 
-hook(
+@on(
     Event.PreToolUse,
     only_if=[Tool("Bash"), LsWorkspaceRoot()],
     skip_if=[Annotated("raw")],
-    message=(
-        "`ls` of a workspace or module-cache root floods context. "
-        "Run `ccx repo locate <name>` to find a repo or module, or `ccx repo overview` to orient."
-    ),
-    block=True,
+    max_fires=1,
     tests={
-        Input(command="ls ~/Code"): Block(pattern="ccx repo locate"),
-        Input(command="ls $HOME/Code"): Block(pattern="ccx repo locate"),
-        Input(command="ls -la ~/Code"): Block(pattern="ccx repo overview"),
-        Input(command="ls ~/go/pkg/mod/github.com/foo"): Block(pattern="ccx repo locate"),
-        Input(command="/bin/ls ~/Code"): Block(pattern="ccx repo locate"),
-        Input(command='"ls" ~/Code'): Block(pattern="ccx repo locate"),
+        Input(command="ls ~/Code"): Warn(pattern="ccx repo locate"),
+        Input(command="ls $HOME/Code"): Warn(pattern="ccx repo locate"),
+        Input(command="ls -la ~/Code"): Warn(pattern="ccx repo overview"),
+        Input(command="ls ~/go/pkg/mod/github.com/foo"): Warn(pattern="ccx repo locate"),
+        Input(command="/bin/ls ~/Code"): Warn(pattern="ccx repo locate"),
+        Input(command='"ls" ~/Code'): Warn(pattern="ccx repo locate"),
         Input(command="ls internal"): Allow(),
         Input(command="ls"): Allow(),
         Input(command="ls src/Code"): Allow(),
-        Input(command="ls ~/Code; echo hi"): Block(pattern="ccx repo locate"),
+        Input(command="ls ~/Code; echo hi"): Warn(pattern="ccx repo locate"),
         Input(command="ls ~/Code | wc -l"): Allow(),
         Input(command="ls ~/Code # ccx:raw"): Allow(),
-        Input(command="echo '# ccx:raw'; ls ~/Code"): Block(pattern="ccx repo locate"),
+        Input(command="echo '# ccx:raw'; ls ~/Code"): Warn(pattern="ccx repo locate"),
     },
 )
+def steer_ls_scan_root(evt: PreToolUseEvent) -> HookResult:
+    return evt.context(
+        "`ls` of a workspace or module-cache root floods context. "
+        "Run `ccx repo locate <name>` to find a repo or module, or `ccx repo overview` to orient."
+    )

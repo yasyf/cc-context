@@ -1,4 +1,4 @@
-"""Rewrite a large bare single-file ``cat`` to ``ccx code read --full``; block a bare root manifest ``cat``."""
+"""Rewrite a large bare single-file ``cat`` to ``ccx code read --full``; warn on a bare root manifest ``cat``."""
 
 from __future__ import annotations
 
@@ -12,15 +12,17 @@ from captain_hook import (
     Allow,
     Annotated,
     BaseHookEvent,
-    Block,
     CommandLine,
     CustomCommandLineCondition,
     Event,
     FileFixture,
+    HookResult,
     Input,
+    PreToolUseEvent,
     Rewrite,
     Tool,
-    hook,
+    Warn,
+    on,
     rewrite_command_occurrences,
 )
 from captain_hook.util.shell import normalize_executable
@@ -97,39 +99,35 @@ class ManifestCat(CustomCommandLineCondition):
         )
 
 
-hook(
+@on(
     Event.PreToolUse,
     only_if=[Tool("Bash"), ManifestCat()],
     skip_if=[Annotated("raw")],
-    message=(
-        "`cat` of a root manifest dumps what `ccx repo overview` already summarizes. "
-        "Run `ccx repo overview`, or `ccx code read <file> --full` for the raw file."
-    ),
-    block=True,
+    max_fires=1,
     tests={
-        Input(command="cat go.mod", cwd="/usr", commands=AT_ROOT): Block(pattern="ccx repo overview"),
-        Input(command="cat README.md", cwd="/usr", commands=AT_ROOT): Block(pattern="ccx repo overview"),
-        Input(command="bat CLAUDE.md", cwd="/usr", commands=AT_ROOT): Block(pattern="ccx repo overview"),
-        Input(command="cat ./package.json", cwd="/usr", commands=AT_ROOT): Block(pattern="ccx code read"),
-        Input(command="cat go.mod; echo x", cwd="/usr", commands=AT_ROOT): Block(pattern="ccx repo overview"),
-        Input(command="/bin/cat go.mod", cwd="/usr", commands=AT_ROOT): Block(pattern="ccx repo overview"),
-        Input(command='"cat" go.mod', cwd="/usr", commands=AT_ROOT): Block(pattern="ccx repo overview"),
-        Input(command="cd /usr && cat pyproject.toml", cwd="/", commands=AT_ROOT): Block(
+        Input(command="cat go.mod", cwd="/usr", commands=AT_ROOT): Warn(pattern="ccx repo overview"),
+        Input(command="cat README.md", cwd="/usr", commands=AT_ROOT): Warn(pattern="ccx repo overview"),
+        Input(command="bat CLAUDE.md", cwd="/usr", commands=AT_ROOT): Warn(pattern="ccx repo overview"),
+        Input(command="cat ./package.json", cwd="/usr", commands=AT_ROOT): Warn(pattern="ccx code read"),
+        Input(command="cat go.mod; echo x", cwd="/usr", commands=AT_ROOT): Warn(pattern="ccx repo overview"),
+        Input(command="/bin/cat go.mod", cwd="/usr", commands=AT_ROOT): Warn(pattern="ccx repo overview"),
+        Input(command='"cat" go.mod', cwd="/usr", commands=AT_ROOT): Warn(pattern="ccx repo overview"),
+        Input(command="cd /usr && cat pyproject.toml", cwd="/", commands=AT_ROOT): Warn(
             pattern="ccx repo overview"
         ),
         Input(command="cd lib && cat pyproject.toml", cwd="/usr", commands=AT_ROOT): Allow(),
         Input(command="cd bin && cat package.json", cwd="/usr", commands=AT_ROOT): Allow(),
         Input(command="cat go.mod", cwd="/usr/lib", commands={"git -C /usr/lib rev-parse": "/usr"}): Allow(),
-        Input(command='cd "$PWD" && cat package.json', cwd="/usr", commands=AT_ROOT): Block(
+        Input(command='cd "$PWD" && cat package.json', cwd="/usr", commands=AT_ROOT): Warn(
             pattern="ccx repo overview"
         ),
-        Input(command="cat go.mod"): Block(pattern="ccx repo overview"),
+        Input(command="cat go.mod"): Warn(pattern="ccx repo overview"),
         Input(command="cat go.mod", cwd="/"): Allow(),
         Input(command='cd "$PWD" && cat package.json', cwd="/usr/lib", commands={"git -C /usr/lib rev-parse": "/usr"}): Allow(),
         Input(command="sudo cat go.mod", cwd="/usr", commands=AT_ROOT): Allow(),
         Input(command="cat internal/go.mod", cwd="/usr", commands=AT_ROOT): Allow(),
         Input(command="cat go.mod # ccx:raw", cwd="/usr", commands=AT_ROOT): Allow(),
-        Input(command="echo '# ccx:raw'; cat go.mod", cwd="/usr", commands=AT_ROOT): Block(pattern="ccx repo overview"),
+        Input(command="echo '# ccx:raw'; cat go.mod", cwd="/usr", commands=AT_ROOT): Warn(pattern="ccx repo overview"),
         Input(command="cat main.go", cwd="/usr", commands=AT_ROOT): Allow(),
         Input(command="cat go.mod | grep module", cwd="/usr", commands=AT_ROOT): Allow(),
         Input(
@@ -139,6 +137,11 @@ hook(
         ): Allow(),
     },
 )
+def steer_manifest_cat(evt: PreToolUseEvent) -> HookResult:
+    return evt.context(
+        "`cat` of a root manifest dumps what `ccx repo overview` already summarizes. "
+        "Run `ccx repo overview`, or `ccx code read <file> --full` for the raw file."
+    )
 
 
 rewrite_command_occurrences(

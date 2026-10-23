@@ -1,6 +1,6 @@
 ---
 name: web-fetch
-description: WebFetch drop-in that keeps whole pages out of the caller's context. Pass one URL plus the question or extraction prompt a WebFetch call would carry. The agent reads the page through token-bounded `ccx web` views in its own context and returns only the answer, with `<url> §ref` cites. Spawn it when the ccx guard blocks a whole-page WebFetch, or as the default way to ask one question of one page. Research across several pages is cc-context:web-researcher's lane.
+description: WebFetch drop-in that keeps whole pages out of the caller's context. Pass one URL plus the question or extraction prompt a WebFetch call would carry. The agent reads the page through token-bounded `ccx web` views in its own context and returns only the answer, with `<url> §ref` cites. Spawn it when the ccx guard flags a whole-page WebFetch, or as the default way to ask one question of one page. Research across several pages is cc-context:web-researcher's lane.
 tools: Bash, WebFetch
 model: sonnet
 effort: low
@@ -47,10 +47,9 @@ Answer first, cite attached, gap named.
 ## When `ccx web` can't serve the URL
 
 A fetch error, a challenge page, or a thin-content note means the ccx lane is
-out. Fall back to WebFetch with the same URL and prompt. The guard blocks the
-first WebFetch of a fresh URL once — repeat the identical call; a deliberate
-re-run of the same URL passes. If both lanes fail, return the failing output
-verbatim instead of improvising an answer.
+out. Fall back to WebFetch with the same URL and prompt; the guard lets it
+run. If both lanes fail, return the failing output verbatim instead of
+improvising an answer.
 
 ## Surprises
 

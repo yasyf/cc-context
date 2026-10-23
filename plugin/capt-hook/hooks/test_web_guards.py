@@ -1,4 +1,4 @@
-"""Tests for the stateful ``WholePageWebFetch`` condition and page-dump rewrite.
+"""Tests for the ``RemoteWebFetch`` condition and page-dump rewrite.
 
 Run from the repo root against the captain-hook source env, with ``plugin/`` on the
 path so the ``hooks`` package (and its relative imports) resolves::
@@ -22,7 +22,7 @@ from captain_hook.session import SessionStore
 
 from conftest import fake_run, make_evt
 from hooks import common, web_guards
-from hooks.web_guards import WholePageWebFetch, page_dump_to
+from hooks.web_guards import RemoteWebFetch, page_dump_to
 
 
 def webfetch_event(url: str, session_dir: Path) -> PreToolUseEvent:
@@ -30,34 +30,15 @@ def webfetch_event(url: str, session_dir: Path) -> PreToolUseEvent:
     return PreToolUseEvent(_raw={"tool_name": "WebFetch", "tool_input": {"url": url, "prompt": "how do I X"}}, ctx=ctx)
 
 
-class TestWholePageWebFetch:
-    def test_first_attempt_blocks(self, tmp_path: Path) -> None:
-        cond = WholePageWebFetch()
-        evt = webfetch_event("https://docs.example.com/guide", tmp_path / "s1")
-        assert cond.check(evt)
-
-    def test_same_url_retry_passes(self, tmp_path: Path) -> None:
-        cond = WholePageWebFetch()
+class TestRemoteWebFetch:
+    def test_remote_url_matches_every_time(self, tmp_path: Path) -> None:
+        cond = RemoteWebFetch()
         session = tmp_path / "s1"
-        first = webfetch_event("https://docs.example.com/guide", session)
-        second = webfetch_event("https://docs.example.com/guide", session)
-        assert cond.check(first)
-        assert not cond.check(second)
+        assert cond.check(webfetch_event("https://docs.example.com/guide", session))
+        assert cond.check(webfetch_event("https://docs.example.com/guide", session))
 
-    def test_distinct_urls_each_block_first_time(self, tmp_path: Path) -> None:
-        cond = WholePageWebFetch()
-        session = tmp_path / "s1"
-        assert cond.check(webfetch_event("https://a.example.com/x", session))
-        assert cond.check(webfetch_event("https://b.example.com/y", session))
-
-    def test_retry_isolated_per_session(self, tmp_path: Path) -> None:
-        cond = WholePageWebFetch()
-        url = "https://docs.example.com/guide"
-        assert cond.check(webfetch_event(url, tmp_path / "sessionA"))
-        assert cond.check(webfetch_event(url, tmp_path / "sessionB"))
-
-    def test_local_never_blocks_or_records(self, tmp_path: Path) -> None:
-        cond = WholePageWebFetch()
+    def test_local_never_matches(self, tmp_path: Path) -> None:
+        cond = RemoteWebFetch()
         session = tmp_path / "s1"
         assert not cond.check(webfetch_event("http://localhost:3000/health", session))
         assert not cond.check(webfetch_event("http://127.0.0.1:8080/metrics", session))
