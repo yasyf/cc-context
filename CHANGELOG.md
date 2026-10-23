@@ -29,6 +29,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs ship --parent` names a rebase in progress before it replays the
+  branch.** A move onto a new parent, by re-parenting a tracked branch or
+  adopting an untracked one, replays the branch's own commits. From a working
+  copy where `REBASE_HEAD` resolves, a conflicting replay was reported as "own
+  commits do not replay onto <parent> cleanly", pointing at the wrong cause.
+  Ship now checks `REBASE_HEAD` before computing the move, and refuses with "a
+  rebase is in progress in <dir>: finish it with ccx vcs stack continue or drop
+  it with git rebase --abort, then ship again". `ccx vcs ship --dry-run`
+  reports the same refusal.
+
 - **`ccx vcs stack abort` keeps the commits of every conflict you already
   resolved.** On Oct 20 a lane resolved several stops of a stack rebase, hit
   one more, and aborted, and the abort dropped the run's pins with the

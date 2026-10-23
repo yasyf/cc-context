@@ -198,6 +198,35 @@ func TestShipGTParentRefusesABranchAboveIt(t *testing.T) {
 	}
 }
 
+func TestShipGTParentNamesARebaseInProgressBeforeTheReplay(t *testing.T) {
+	f := shipGTRepo(t)
+	shipParentRewritten(t, f, "main")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "p")
+	writeShipFile(t, f.Dir, "c.txt", "p\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "c.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "p writes c.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "c")
+	before := gitAt(t, f.Env(), f.Dir, "rev-parse", "c")
+	shipGTReady(t, f)
+
+	if _, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push", "--parent", "p"); err == nil || !strings.Contains(err.Error(), "c's own commits do not replay onto p cleanly") {
+		t.Fatalf("ship with no rebase in progress = %v, want the replay refusal", err)
+	}
+	mustRun(t, f.Env(), f.Dir, "git", "update-ref", "REBASE_HEAD", before)
+
+	_, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push", "--parent", "p")
+	want := "ship: a rebase is in progress in " + f.Dir + ": finish it with ccx vcs stack continue or drop it with git rebase --abort, then ship again"
+	if err == nil || err.Error() != want {
+		t.Fatalf("ship with REBASE_HEAD set = %v, want %q", err, want)
+	}
+	if after := gitAt(t, f.Env(), f.Dir, "rev-parse", "c"); after != before {
+		t.Errorf("c moved from %s to %s on a refusal", before, after)
+	}
+	if parent := shipParentOf(t, f, "c"); parent != "main" {
+		t.Errorf("c's parent = %s, want it left on main", parent)
+	}
+}
+
 // TestShipGTParentMovesNothingWhenALaterCheckRefuses holds the move to the
 // same rule as every other write: a ship refused for a dirty --no-commit
 // checkout leaves the branch where it was, on the parent gt recorded.
