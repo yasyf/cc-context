@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -4307,7 +4308,7 @@ func stackSettle(ctx context.Context, l lane, commonDir string, run *stackRebase
 }
 
 func stackResolvedRef(run *stackRebaseRun, branch string) string {
-	return "refs/ccx/resolved/" + filepath.Base(run.dir) + "/" + branch
+	return fmt.Sprintf("refs/ccx/resolved/%s-%.4x/%s", filepath.Base(run.dir), sha256.Sum256([]byte(run.Started+"\x00"+strconv.Itoa(run.Pid))), branch)
 }
 
 func stackKeepResolved(ctx context.Context, dir render.Dir, run *stackRebaseRun) ([]string, error) {
@@ -4319,7 +4320,7 @@ func stackKeepResolved(ctx context.Context, dir render.Dir, run *stackRebaseRun)
 		}
 		ref, head := stackResolvedRef(run, b.Name), cmp.Or(b.NewHead, b.Head)
 		fmt.Fprintf(&tx, "update %s %s\n", ref, head)
-		restores = append(restores, fmt.Sprintf("kept %s's resolved head %.12s at %s%srestore it with git branch -f %s %s", b.Name, head, ref, shipSep, b.Name, ref))
+		restores = append(restores, fmt.Sprintf("kept %s's resolved head %.12s at %s%srestore it with git branch -f %s %s", b.Name, head, ref, shipSep, shellSingleQuote(b.Name), shellSingleQuote(ref)))
 	}
 	if len(restores) == 0 {
 		return nil, nil
