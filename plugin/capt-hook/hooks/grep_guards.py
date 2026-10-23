@@ -7,10 +7,10 @@ from typing import TYPE_CHECKING
 from captain_hook import (
     Allow,
     Annotated,
-    Block,
     Call,
     CommandSchema,
     Event,
+    HookResult,
     Input,
     Operand,
     Option,
@@ -18,7 +18,8 @@ from captain_hook import (
     Rewrite,
     Rewritten,
     Tool,
-    hook,
+    Warn,
+    on,
     rewrite_command_occurrences,
 )
 
@@ -54,13 +55,8 @@ from .search_common import (
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from captain_hook import HookResult, WalkContext
+    from captain_hook import WalkContext
     from cc_transcript.command import Occurrence
-
-GREP_FLOOD = (
-    "Raw `grep` over a directory floods context. "
-    "Run `ccx code grep '<text>'` (`--regex` for a pattern), or grep explicit files."
-)
 
 GREP = CommandSchema(
     "grep",
@@ -371,10 +367,10 @@ def grep_to(call: Call) -> str | None:
     return build_ccx_grep(parsed) if (parsed := grep_parse(call)) is not None else None
 
 
-def grep_visit(evt: PreToolUseEvent, occ: Occurrence, ctx: WalkContext) -> str | Rewritten | HookResult | None:
-    """Rewrite a tree-shaped or source-file grep, block an unmappable tree-shaped one, and run everything else raw.
+def grep_visit(evt: PreToolUseEvent, occ: Occurrence, ctx: WalkContext) -> Rewritten | None:
+    """Rewrite a tree-shaped or source-file grep whose every flag maps, and run everything else raw.
 
-    Substitutions, expanding operands, and a ``ccx`` too old to express the search all run raw.
+    Unmappable flags, substitutions, expanding operands, and a ``ccx`` too old to express the search all run raw.
     """
     call = Call(evt.cmd, occ, ctx.cwd)
     if call.name != "grep" or occ.prev_op == "|":
@@ -389,56 +385,56 @@ def grep_visit(evt: PreToolUseEvent, occ: Occurrence, ctx: WalkContext) -> str |
         return None
     if (ops := grep_operands(call)) and any(forfeits_operand(p) for p in ops):
         return None
-    if (parsed := grep_parse(call)) is None:
-        return evt.block(GREP_FLOOD) if flood else None
-    if (text := build_ccx_grep(parsed)) is None:
+    if (parsed := grep_parse(call)) is None or (text := build_ccx_grep(parsed)) is None or not ctx.spliceable:
         return None
-    if ctx.spliceable:
-        return Rewritten(text, note=first_sight(evt, search_note(parsed)))
-    return evt.block(GREP_FLOOD) if flood else None
+    return Rewritten(text, note=first_sight(evt, search_note(parsed)))
 
 
-hook(
+@on(
     Event.PreToolUse,
     only_if=[Tool("Bash"), SearchTargets(GREP, grep_operands, targets_transcript)],
     skip_if=[Annotated("raw")],
-    message=TRANSCRIPT_STEER,
-    block=True,
+    max_fires=1,
     tests={
-        Input(command=f"grep -r foo {TRANSCRIPTS}/"): Block(pattern="cc-transcript"),
-        Input(command=f"grep -r foo {TRANSCRIPTS}/ | head"): Block(pattern="cc-transcript"),
-        Input(command=f"grep foo {EXAMPLE_SESSION}{TRANSCRIPT_SUFFIX}; grep -v bar ."): Block(pattern="cc-transcript"),
-        Input(command=f"/usr/bin/grep -r foo {TRANSCRIPTS}/"): Block(pattern="cc-transcript"),
-        Input(command=f"grep -n foo {EXAMPLE_SESSION}/subagents/agent-a1{TRANSCRIPT_SUFFIX}"): Block(
+        Input(command=f"grep -r foo {TRANSCRIPTS}/"): Warn(pattern="cc-transcript"),
+        Input(command=f"grep -r foo {TRANSCRIPTS}/ | head"): Warn(pattern="cc-transcript"),
+        Input(command=f"grep foo {EXAMPLE_SESSION}{TRANSCRIPT_SUFFIX}; grep -v bar ."): Warn(pattern="cc-transcript"),
+        Input(command=f"/usr/bin/grep -r foo {TRANSCRIPTS}/"): Warn(pattern="cc-transcript"),
+        Input(command=f"grep -n foo {EXAMPLE_SESSION}/subagents/agent-a1{TRANSCRIPT_SUFFIX}"): Warn(
             pattern="cc-transcript"
         ),
-        Input(command=f"grep -r foo {EXAMPLE_SESSION}/"): Block(pattern="cc-transcript"),
-        Input(command=f"grep -r needle {EXAMPLE_SESSION}/*/"): Block(pattern="cc-transcript"),
+        Input(command=f"grep -r foo {EXAMPLE_SESSION}/"): Warn(pattern="cc-transcript"),
+        Input(command=f"grep -r needle {EXAMPLE_SESSION}/*/"): Warn(pattern="cc-transcript"),
         Input(command="grep -r foo ~/.claude/plugins/"): Allow(),
         Input(command=f"grep -r foo {TRANSCRIPTS}/ # ccx:raw"): Allow(),
-        Input(command=f"echo '# ccx:raw'; grep -r foo {TRANSCRIPTS}/"): Block(pattern="cc-transcript"),
+        Input(command=f"echo '# ccx:raw'; grep -r foo {TRANSCRIPTS}/"): Warn(pattern="cc-transcript"),
         Input(command=f"cat x | grep foo {EXAMPLE_SESSION}{TRANSCRIPT_SUFFIX}"): Allow(),
         Input(command=f"grep -E 'landing-desk' {EXAMPLE_SESSION}/tool-results/toolu_01H.txt"): Allow(),
         Input(command=f"grep -n lint notes.md {TRANSCRIPTS}/-Users-me-repo/memory/capt-hook-call-args.md"): Allow(),
     },
 )
+def steer_grep_transcript(evt: PreToolUseEvent) -> HookResult:
+    return evt.context(TRANSCRIPT_STEER)
 
-hook(
+
+@on(
     Event.PreToolUse,
     only_if=[Tool("Bash"), SearchTargets(GREP, grep_operands, targets_dependency)],
     skip_if=[Annotated("raw")],
-    message=DEP_STEER,
-    block=True,
+    max_fires=1,
     tests={
-        Input(command="grep -r foo .git/ | head"): Block(pattern="dep-reader"),
-        Input(command="grep -rn foo .venv/lib/"): Block(pattern="dep-reader"),
-        Input(command="grep -r foo node_modules/express | head"): Block(pattern="dep-reader"),
+        Input(command="grep -r foo .git/ | head"): Warn(pattern="dep-reader"),
+        Input(command="grep -rn foo .venv/lib/"): Warn(pattern="dep-reader"),
+        Input(command="grep -r foo node_modules/express | head"): Warn(pattern="dep-reader"),
         Input(command="grep -rn '.venv' README.md"): Allow(),
         Input(command="grep -rn foo .venv/lib/ # ccx:raw"): Allow(),
-        Input(command="echo '# ccx:raw'; grep -rn foo .venv/lib/"): Block(pattern="dep-reader"),
+        Input(command="echo '# ccx:raw'; grep -rn foo .venv/lib/"): Warn(pattern="dep-reader"),
         Input(command="grep -rn foo . | grep -v node_modules"): Allow(),
     },
 )
+def steer_grep_dependency(evt: PreToolUseEvent) -> HookResult:
+    return evt.context(DEP_STEER)
+
 
 rewrite_command_occurrences(
     only_if=[UnpipedSearch("grep")],
@@ -461,24 +457,24 @@ rewrite_command_occurrences(
         Input(command="grep 'a\\|b' ."): Rewrite(pattern="--regex"),
         Input(command="grep 'x\\(ab\\)\\+' ."): Rewrite(pattern="--regex"),
         Input(command="grep 'foo$' ."): Rewrite(pattern="--regex"),
-        Input(command="grep -rnC3 foo ."): Block(pattern="ccx code grep"),
-        Input(command="grep -v foo ."): Block(pattern="ccx code grep"),
-        Input(command="grep -rv foo ."): Block(),
+        Input(command="grep -rnC3 foo ."): Allow(),
+        Input(command="grep -v foo ."): Allow(),
+        Input(command="grep -rv foo ."): Allow(),
         Input(command="grep -rn foo . # ccx:raw"): Allow(),
         Input(command="grep -v foo . # ccx:raw"): Allow(),
         Input(command="echo '# ccx:raw'; grep -rn foo ."): Rewrite(pattern="code grep foo"),
         Input(command="grep -rhoE 'log (append|show)' /tmp"): Allow(),
-        Input(command="grep --recursive=oops foo ."): Block(),
-        Input(command="grep -P 'x(?=y)' ."): Block(),
-        Input(command="grep 'a^b' ."): Block(),
-        Input(command="grep -F 'foo.*' ."): Block(),
-        Input(command="grep -E -F foo ."): Block(),
-        Input(command="grep -q foo ."): Block(),
-        Input(command="grep -c foo ."): Block(),
-        Input(command="grep -o foo ."): Block(),
-        Input(command="grep -e foo -e bar ."): Block(),
-        Input(command="grep -f patterns.txt ."): Block(),
-        Input(command="GREP_OPTIONS=-v grep foo ."): Block(),
+        Input(command="grep --recursive=oops foo ."): Allow(),
+        Input(command="grep -P 'x(?=y)' ."): Allow(),
+        Input(command="grep 'a^b' ."): Allow(),
+        Input(command="grep -F 'foo.*' ."): Allow(),
+        Input(command="grep -E -F foo ."): Allow(),
+        Input(command="grep -q foo ."): Allow(),
+        Input(command="grep -c foo ."): Allow(),
+        Input(command="grep -o foo ."): Allow(),
+        Input(command="grep -e foo -e bar ."): Allow(),
+        Input(command="grep -f patterns.txt ."): Allow(),
+        Input(command="GREP_OPTIONS=-v grep foo ."): Allow(),
         Input(command="grep foo /var/log/x.log"): Allow(),
         Input(command="grep foo ~/notes.md"): Allow(),
         Input(command="grep foo ghost.py"): Allow(),
@@ -523,20 +519,20 @@ rewrite_command_occurrences(
         Input(command="grep -i points data.json && grep foo ."): Rewrite(pattern="grep -i points data.json && "),
         Input(command="grep -c foo data.json && grep -rn bar ."): Rewrite(pattern="grep -c foo data.json && "),
         Input(command="grep foo $d/host.go; grep bar ."): Rewrite(pattern="grep foo $d/host.go; "),
-        Input(command="grep -c foo . && grep -rn bar ."): Block(),
-        Input(command="echo x; grep -c foo ."): Block(),
+        Input(command="grep -c foo . && grep -rn bar ."): Rewrite(pattern="grep -c foo . && "),
+        Input(command="echo x; grep -c foo ."): Allow(),
         Input(command="grep -r foo $(dir)"): Allow(),
         Input(command="grep foo $(printf /tmp/target)"): Allow(),
         Input(command="grep -n foo `printf x`"): Allow(),
         Input(command="grep -r . . '$(printf x)'"): Allow(),
         Input(command="grep -r . . ~/notes.md"): Allow(),
         Input(command="grep -r foo 'src[old]/' ."): Allow(),
-        Input(command="grep -r --weird foo ."): Block(),
+        Input(command="grep -r --weird foo ."): Allow(),
         Input(command="grep needle docs/notes.md"): Allow(),
-        Input(command="sudo grep foo ."): Block(),
-        Input(command="timeout 10 grep foo ."): Block(),
-        Input(command="/usr/bin/grep -rn foo ."): Block(),
-        Input(command='"grep" -rn foo .'): Block(),
+        Input(command="sudo grep foo ."): Allow(),
+        Input(command="timeout 10 grep foo ."): Allow(),
+        Input(command="/usr/bin/grep -rn foo ."): Allow(),
+        Input(command='"grep" -rn foo .'): Allow(),
         Input(command="ls | grep foo"): Allow(),
         Input(command="cat x | grep foo | sort"): Allow(),
         Input(command="git log --grep=fix"): Allow(),

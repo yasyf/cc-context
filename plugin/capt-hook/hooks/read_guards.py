@@ -1,4 +1,4 @@
-"""Bound an unbounded ``Read`` of a large text file to a windowed head."""
+"""Warn once on an unbounded ``Read`` of a large text file, naming the sliced ``ccx code read`` view."""
 
 from __future__ import annotations
 
@@ -14,8 +14,8 @@ from captain_hook import (
     Input,
     PreToolUseEvent,
     ReadCall,
-    Rewrite,
     Tool,
+    Warn,
     on,
 )
 
@@ -39,8 +39,11 @@ def line_count(path: Path) -> int:
 @on(
     Event.PreToolUse,
     only_if=[Tool("Read"), UnboundedLargeRead()],
+    max_fires=1,
     tests={
-        Input(tool="Read", file=FileFixture(content=LONG_TEXT_FIXTURE, name="big.txt")): Rewrite(limit="100"),
+        Input(tool="Read", file=FileFixture(content=LONG_TEXT_FIXTURE, name="big.txt")): Warn(
+            pattern="ccx code read <path> --section"
+        ),
         Input(tool="Read", file=FileFixture(size=LARGE_READ_BYTES + 1, name="one-line.txt")): Allow(),
         Input(tool="Read", file=FileFixture(content=BINARY_FIXTURE, name="image.png")): Allow(),
         Input(tool="Read", file=FileFixture(content=BINARY_FIXTURE, name="blob.bin")): Allow(),
@@ -48,13 +51,10 @@ def line_count(path: Path) -> int:
         Input(tool="Read", file=FileFixture(content=LONG_TEXT_FIXTURE), offset=1, limit=100): Allow(),
     },
 )
-def bound_large_read(evt: PreToolUseEvent) -> HookResult | None:
+def warn_large_read(evt: PreToolUseEvent) -> HookResult | None:
     if (total := line_count(evt.file.path)) <= READ_WINDOW_LINES:
         return None
-    return evt.rewrite(
-        evt.input.raw | {"limit": READ_WINDOW_LINES},
-        note=(
-            f"Showed lines 1-{READ_WINDOW_LINES} of {total}; "
-            f"read the rest with `ccx code read <path> --section {READ_WINDOW_LINES + 1}-{total}`."
-        ),
+    return evt.context(
+        f"This file has {total} lines. "
+        "Run `ccx code read <path> --section A-B` for the slice you need, or pass offset/limit to Read."
     )

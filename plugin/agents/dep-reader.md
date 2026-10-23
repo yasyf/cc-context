@@ -1,6 +1,6 @@
 ---
 name: dep-reader
-description: Installed-dependency source reader. Pass a question like "how does <package> implement X" (import or dist name both work). The agent resolves the package's on-disk source with `ccx repo locate`, reads it through token-bounded ccx views, and returns the answer with `path:line#hash` cites — the dependency's source never enters the caller's context. Spawn it for questions about `.venv`, site-packages, vendored, or Go-module dependency internals — the lane the raw-`rg` guard block points at.
+description: Installed-dependency source reader. Pass a question like "how does <package> implement X" (import or dist name both work). The agent resolves the package's on-disk source with `ccx repo locate`, reads it through token-bounded ccx views, and returns the answer with `path:line#hash` cites — the dependency's source never enters the caller's context. Spawn it for questions about `.venv`, site-packages, vendored, or Go-module dependency internals — the lane the dependency-search guard note points at.
 tools: Bash, Read, Grep, Glob
 model: sonnet
 effort: medium

@@ -1,5 +1,4 @@
-"""Tests for the ``git log -p`` -> ``ccx vcs history`` rewrite builder, the ``git worktree remove`` block
-condition, and the ``gh run watch`` nudge condition.
+"""Tests for the ``git worktree remove`` block condition and the ``gh run watch`` nudge condition.
 
 Run from the repo root against the captain-hook source env::
 
@@ -26,11 +25,9 @@ from captain_hook.events import PreToolUseEvent
 from captain_hook.session import SessionStore
 
 from conftest import make_evt
-from hooks import vcs_guards
 from hooks.vcs_guards import GhRunWatchSingle, GitWorktreeRemove
 
 MAIN_T = "/transcripts/main.jsonl"
-FAKE_CCX = "/fake/ccx"
 LINKED = ("sib", "wt")
 BASH = ("bash", "--noprofile", "--norc", "-c")
 
@@ -84,19 +81,6 @@ class GitPool:
         return Outcome(removed, proc.returncode == 0, proc.stdout)
 
 
-@pytest.fixture
-def repo(tmp_path: Path) -> Path:
-    (tmp_path / "f.go").write_text("package main\n")
-    (tmp_path / "g.go").write_text("package main\n")
-    (tmp_path / "pkg").mkdir()
-    return tmp_path
-
-
-@pytest.fixture
-def pin_ccx(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(vcs_guards, "ccx_bin", lambda: FAKE_CCX)
-
-
 @pytest.fixture(scope="module")
 def gitpool(tmp_path_factory: pytest.TempPathFactory) -> GitPool:
     """The pool every real-git case shares, run under an environment that reaches no other repository."""
@@ -128,116 +112,6 @@ def gitpool(tmp_path_factory: pytest.TempPathFactory) -> GitPool:
 def removes_worktree(command: str) -> bool:
     evt = make_evt(command)
     return GitWorktreeRemove().check_command_line(evt, evt.cmd.line)
-
-
-def call_logpatch_to(command: str, *, cwd: Path | None = None) -> str | None:
-    evt = bash_pre(command, cwd=cwd)
-    return vcs_guards.logpatch_to(evt, evt.cmd.line.occurrences[-1])
-
-
-class TestLogPatchRewriteDashDash:
-    """The ``--`` branch of the ``git log -p`` -> ``ccx vcs history`` rewrite takes the path verbatim."""
-
-    @pytest.mark.parametrize(
-        "command, expected",
-        [
-            ("git log -p -- internal/cli/root.go", f"{FAKE_CCX} vcs history internal/cli/root.go"),
-            ("git log -p -- ghost/never-there.go", f"{FAKE_CCX} vcs history ghost/never-there.go"),
-            ("git log -p -n 5 -- f.go", f"{FAKE_CCX} vcs history f.go -n 5"),
-            ("git log -p -5 -- f.go", f"{FAKE_CCX} vcs history f.go -n 5"),
-            ("git log -p --max-count=5 -- f.go", f"{FAKE_CCX} vcs history f.go -n 5"),
-            ("git log -p --max-count 5 -- f.go", f"{FAKE_CCX} vcs history f.go -n 5"),
-            ("git log -p --follow -- f.go", f"{FAKE_CCX} vcs history f.go"),
-            ("git log --patch -- f.go", f"{FAKE_CCX} vcs history f.go"),
-            ("git log -u -- f.go", f"{FAKE_CCX} vcs history f.go"),
-        ],
-        ids=[
-            "plain_path",
-            "path_need_not_exist",
-            "count_two_token",
-            "count_glued_short",
-            "count_max_count_equals",
-            "count_max_count_two_token",
-            "follow_dropped",
-            "patch_synonym",
-            "u_synonym",
-        ],
-    )
-    def test_rewrites(self, pin_ccx: None, command: str, expected: str) -> None:
-        assert call_logpatch_to(command) == expected
-
-
-class TestLogPatchRewriteResiduals:
-    """Shapes with no faithful rewrite return ``None`` and leave the raw command unchanged."""
-
-    @pytest.mark.parametrize(
-        "command",
-        [
-            "git log -p",
-            "git log -p -- a.go b.go",
-            "git log -p --",
-            "git log -p HEAD -- f.go",
-            "git log -p --author=me -- f.go",
-            "git log -p -n x -- f.go",
-            "git log -p -n",
-            "git log -- f.go",
-            "jj log -p",
-        ],
-        ids=[
-            "no_path",
-            "two_paths_after_dashdash",
-            "empty_dashdash",
-            "revision_before_dashdash",
-            "unrecognized_flag",
-            "non_numeric_count",
-            "dangling_count_flag",
-            "no_patch_flag",
-            "jj",
-        ],
-    )
-    def test_allows_raw(self, pin_ccx: None, command: str) -> None:
-        assert call_logpatch_to(command) is None
-
-
-class TestLogPatchRewritePositional:
-    """The no-``--`` branch maps only a sole positional existing relative to the event cwd."""
-
-    def test_sole_existing_file(self, pin_ccx: None, repo: Path) -> None:
-        assert call_logpatch_to("git log -p f.go", cwd=repo) == f"{FAKE_CCX} vcs history f.go"
-
-    def test_sole_existing_directory(self, pin_ccx: None, repo: Path) -> None:
-        assert call_logpatch_to("git log -p pkg", cwd=repo) == f"{FAKE_CCX} vcs history pkg"
-
-    def test_sole_existing_positional_with_count(self, pin_ccx: None, repo: Path) -> None:
-        assert call_logpatch_to("git log -p -3 f.go", cwd=repo) == f"{FAKE_CCX} vcs history f.go -n 3"
-
-    @pytest.mark.parametrize("command", ["git log -p HEAD~5", "git log -p missing.go"])
-    def test_nonexistent_positional_allows_raw(self, pin_ccx: None, repo: Path, command: str) -> None:
-        assert call_logpatch_to(command, cwd=repo) is None
-
-    def test_overlong_positional_allows_raw(self, pin_ccx: None, repo: Path) -> None:
-        assert call_logpatch_to(f"git log -p {'a' * 5000}", cwd=repo) is None
-
-    def test_unresolvable_positional_allows_raw(self, pin_ccx: None) -> None:
-        assert call_logpatch_to("git log -p f.go") is None
-
-    def test_two_positionals_allow_raw(self, pin_ccx: None, repo: Path) -> None:
-        assert call_logpatch_to("git log -p f.go g.go", cwd=repo) is None
-
-
-class TestMissingCcx:
-    """An unresolved ``ccx`` binary leaves every canonical raw command unchanged."""
-
-    def test_allows_raw(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(vcs_guards, "ccx_bin", lambda: None)
-        for builder, command in (
-            (vcs_guards.gitdiff_to, "git diff"),
-            (vcs_guards.jjdiff_to, "jj diff"),
-            (vcs_guards.gitshow_to, "git show"),
-            (vcs_guards.logpatch_to, "git log -p -- f.go"),
-        ):
-            evt = bash_pre(command)
-            assert builder(evt, evt.cmd.line.occurrences[-1]) is None
 
 
 class TestWorktreeRemoveBlocks:

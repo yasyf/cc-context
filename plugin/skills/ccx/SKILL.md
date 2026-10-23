@@ -16,7 +16,7 @@ description: >-
   from", "fetch this page", "read these docs", "what does the page say about X",
   or running any command that emits JSON.
   Reach for ccx before Read, cat, sed, grep, git diff, ls -R, find, WebFetch, or a
-  curl page dump, since the guard hooks block those on anything token-heavy.
+  curl page dump, since the guard hooks rewrite or flag those on anything token-heavy.
 ---
 
 # ccx — compact codebase context
@@ -649,18 +649,17 @@ These hold for every command, which is what makes ccx safe to trust over a raw r
 
 ## Why ccx first
 
-The guard hooks block token-heavy primitives: a full-file `Read` of a large file, a
-broad `git diff`, raw `grep`, `sed -n`, a bare `cat`, `ls -R`, `find` enumeration, a
-whole-page `WebFetch`, and an unpiped `curl`/`wget` page dump (a URL `ccx web` can't
-serve stays reachable — the same WebFetch passes on a deliberate re-run).
+The guard hooks rewrite the token-heavy primitives they can map (`sed -n`, a bare
+`cat`, `ls -R`, `find` enumeration, a literal `grep`, an unpiped `curl`/`wget` page
+dump) and let the rest run with a one-time note: a full-file `Read` of a large file, a
+broad `git diff`, a `grep` with a flag ccx can't map, and a whole-page `WebFetch`.
 Each has a ccx equivalent that returns a bounded, structured answer — line-numbered,
 budget-capped, explicit about what was cut — where native output can be unbounded and
 says nothing about what's missing. Measured head-to-head across two 450-run
 campaigns, that structure bought correctness: ccx arms matched or beat native
 accuracy on locate/trace/diff tasks; under the terse defaults the CLI scored 100% on
 the gated re-run (MCP: 96.0% vs baseline 96.2%); and the structural diff caught a
-misattributed hunk that raw hunks missed. Reach for ccx on targeted questions; reach
-for the raw tool and the hook turns you back anyway.
+misattributed hunk that raw hunks missed. Reach for ccx on targeted questions.
 
 The honest exception is exhaustive enumeration. When the deliverable is a complete
 set, compact views can withhold exactly the members you need — measured on

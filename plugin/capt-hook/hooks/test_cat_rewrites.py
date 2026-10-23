@@ -161,7 +161,7 @@ class TestManifestClassifier:
 
 
 class TestManifestCatAtToplevel:
-    """The root-manifest block fires only for a manifest at the git toplevel of the call's cd-threaded cwd."""
+    """The root-manifest warning fires only for a manifest at the git toplevel of the call's cd-threaded cwd."""
 
     @pytest.fixture
     def repo(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -195,7 +195,7 @@ class TestManifestCatAtToplevel:
         ["cat pyproject.toml", "cd {repo}/plugins && cd .. && cat pyproject.toml"],
         ids=["at-root", "cd-back-to-root"],
     )
-    def test_toplevel_manifest_blocks(self, repo: Path, command: str) -> None:
+    def test_toplevel_manifest_warns(self, repo: Path, command: str) -> None:
         assert self.fires(command.format(repo=repo), repo)
 
     def test_outside_a_repo_runs(self, tmp_path: Path) -> None:

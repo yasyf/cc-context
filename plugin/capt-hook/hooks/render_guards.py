@@ -1,4 +1,4 @@
-"""Guard the cc-guides rendered-artifact regime: block edits to a generated artifact, nudge edits to its render sources."""
+"""Guard the cc-guides rendered-artifact regime: warn on edits to a generated artifact or its render sources."""
 
 from __future__ import annotations
 
@@ -10,11 +10,13 @@ from captain_hook import (
     CustomCondition,
     Event,
     FileFixture,
+    HookResult,
     Input,
+    PreToolUseEvent,
     Tool,
     Warn,
-    hook,
     nudge,
+    on,
 )
 
 
@@ -36,17 +38,20 @@ class RenderedArtifact(CustomCondition):
         return bool(re.search(r"cc-guides \S+ src=\S+( fragments=\S+)? \| GENERATED", head))
 
 
-hook(
+@on(
     Event.PreToolUse,
-    "This file is a cc-guides rendered artifact, so a direct edit is discarded on the next render. "
-    "Edit the matching parts under `.claude/fragments/`, then run `cc-guides render` and commit both together.",
     only_if=[Tool("Edit", "Write", "MultiEdit", "NotebookEdit"), RenderedArtifact()],
-    block=True,
+    max_fires=1,
     tests={
         Input(tool="Edit", file="/nope/internal/cli/root.go", content="x"): Allow(),
         Input(tool="Write", file=FileFixture(content="see the GENERATED docs\n", name="notes.md"), content="y"): Allow(),
     },
 )
+def steer_rendered_artifact_edit(evt: PreToolUseEvent) -> HookResult:
+    return evt.context(
+        "This file is a cc-guides rendered artifact, so a direct edit is discarded on the next render. "
+        "Edit the matching parts under `.claude/fragments/`, then run `cc-guides render` and commit both together."
+    )
 
 
 class RenderSource(CustomCondition):

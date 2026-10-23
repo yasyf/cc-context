@@ -7,10 +7,10 @@ from typing import TYPE_CHECKING
 from captain_hook import (
     Allow,
     Annotated,
-    Block,
     Call,
     CommandSchema,
     Event,
+    HookResult,
     Input,
     Operand,
     Option,
@@ -18,7 +18,8 @@ from captain_hook import (
     Rewrite,
     Rewritten,
     Tool,
-    hook,
+    Warn,
+    on,
     rewrite_command_occurrences,
 )
 
@@ -50,13 +51,8 @@ from .search_common import (
 )
 
 if TYPE_CHECKING:
-    from captain_hook import HookResult, WalkContext
+    from captain_hook import WalkContext
     from cc_transcript.command import Occurrence
-
-RG_FLOOD = (
-    "Raw `rg` over a directory floods context. "
-    "Run `ccx code grep '<text>'` (`--regex` for a pattern), or rg explicit files."
-)
 
 RG = CommandSchema(
     "rg",
@@ -168,10 +164,11 @@ def rg_to(call: Call) -> str | None:
     return build_ccx_grep(parsed) if (parsed := rg_parse(call)) is not None else None
 
 
-def rg_visit(evt: PreToolUseEvent, occ: Occurrence, ctx: WalkContext) -> str | Rewritten | HookResult | None:
-    """Rewrite a tree-shaped, unpiped rg, block an unmappable one, and run everything else raw.
+def rg_visit(evt: PreToolUseEvent, occ: Occurrence, ctx: WalkContext) -> Rewritten | None:
+    """Rewrite a tree-shaped, unpiped rg whose every flag maps, and run everything else raw.
 
-    Substitutions, expanding operands, oversized counts, and a ``ccx`` too old to express the search all run raw.
+    Unmappable flags, substitutions, expanding operands, oversized counts, and a ``ccx`` too old to express the
+    search all run raw.
     """
     call = Call(evt.cmd, occ, ctx.cwd)
     if call.name != "rg" or occ.prev_op == "|" or occ.next_op == "|":
@@ -182,34 +179,29 @@ def rg_visit(evt: PreToolUseEvent, occ: Occurrence, ctx: WalkContext) -> str | R
         return None
     if forfeits_count(call.args):
         return None
-    if (parsed := rg_parse(call)) is None:
-        return evt.block(RG_FLOOD)
-    if (text := build_ccx_grep(parsed)) is None:
+    if (parsed := rg_parse(call)) is None or (text := build_ccx_grep(parsed)) is None or not ctx.spliceable:
         return None
-    if ctx.spliceable:
-        return Rewritten(text, note=first_sight(evt, search_note(parsed)))
-    return evt.block(RG_FLOOD)
+    return Rewritten(text, note=first_sight(evt, search_note(parsed)))
 
 
-hook(
+@on(
     Event.PreToolUse,
     only_if=[Tool("Bash"), SearchTargets(RG, rg_operands, targets_transcript)],
     skip_if=[Annotated("raw")],
-    message=TRANSCRIPT_STEER,
-    block=True,
+    max_fires=1,
     tests={
-        Input(command=f"rg foo {TRANSCRIPTS}/"): Block(pattern="cc-transcript"),
-        Input(command=f"rg --no-ignore foo {TRANSCRIPTS}/ | head"): Block(pattern="cc-transcript"),
-        Input(command=f"rg foo {EXAMPLE_SESSION}{TRANSCRIPT_SUFFIX}; rg -v bar ."): Block(pattern="cc-transcript"),
-        Input(command=f"/opt/homebrew/bin/rg foo {TRANSCRIPTS}/"): Block(pattern="cc-transcript"),
-        Input(command=f"rg -o -m 3 'Exit code' {EXAMPLE_SESSION}{TRANSCRIPT_SUFFIX} | head -3"): Block(
+        Input(command=f"rg foo {TRANSCRIPTS}/"): Warn(pattern="cc-transcript"),
+        Input(command=f"rg --no-ignore foo {TRANSCRIPTS}/ | head"): Warn(pattern="cc-transcript"),
+        Input(command=f"rg foo {EXAMPLE_SESSION}{TRANSCRIPT_SUFFIX}; rg -v bar ."): Warn(pattern="cc-transcript"),
+        Input(command=f"/opt/homebrew/bin/rg foo {TRANSCRIPTS}/"): Warn(pattern="cc-transcript"),
+        Input(command=f"rg -o -m 3 'Exit code' {EXAMPLE_SESSION}{TRANSCRIPT_SUFFIX} | head -3"): Warn(
             pattern="cc-transcript"
         ),
-        Input(command=f"rg foo {TRANSCRIPTS}/proj/*/subagents/*{TRANSCRIPT_SUFFIX}"): Block(pattern="cc-transcript"),
-        Input(command=f"rg needle {EXAMPLE_SESSION}/*/agent-a1{TRANSCRIPT_SUFFIX}"): Block(pattern="cc-transcript"),
+        Input(command=f"rg foo {TRANSCRIPTS}/proj/*/subagents/*{TRANSCRIPT_SUFFIX}"): Warn(pattern="cc-transcript"),
+        Input(command=f"rg needle {EXAMPLE_SESSION}/*/agent-a1{TRANSCRIPT_SUFFIX}"): Warn(pattern="cc-transcript"),
         Input(command="rg -l x ~/.claude/plugins/"): Allow(),
         Input(command=f"rg foo {TRANSCRIPTS}/ # ccx:raw"): Allow(),
-        Input(command=f"echo '# ccx:raw'; rg foo {TRANSCRIPTS}/"): Block(pattern="cc-transcript"),
+        Input(command=f"echo '# ccx:raw'; rg foo {TRANSCRIPTS}/"): Warn(pattern="cc-transcript"),
         Input(command=f"cat x | rg foo {EXAMPLE_SESSION}{TRANSCRIPT_SUFFIX}"): Allow(),
         Input(command=f"rg -o '\"slug\": \"[^\"]*\"' {EXAMPLE_SESSION}/tool-results/bo61h71tu.txt"): Allow(),
         Input(
@@ -220,25 +212,27 @@ hook(
         ): Allow(),
     },
 )
+def steer_rg_transcript(evt: PreToolUseEvent) -> HookResult:
+    return evt.context(TRANSCRIPT_STEER)
 
-hook(
+
+@on(
     Event.PreToolUse,
     only_if=[Tool("Bash"), SearchTargets(RG, rg_operands, targets_dependency)],
     skip_if=[Annotated("raw")],
-    message=DEP_STEER,
-    block=True,
+    max_fires=1,
     tests={
-        Input(command="rg x .jj/repo | head"): Block(pattern="dep-reader"),
-        Input(command="rg --hidden needle .venv/ | head"): Block(pattern="dep-reader"),
+        Input(command="rg x .jj/repo | head"): Warn(pattern="dep-reader"),
+        Input(command="rg --hidden needle .venv/ | head"): Warn(pattern="dep-reader"),
         Input(
             command='rg -n "class ToolUse" .venv/lib/python3.13/site-packages/cc_transcript/ -A 20 | head -40'
-        ): Block(pattern="dep-reader"),
-        Input(command="rg --hidden -g '*.py' needle node_modules/express | head"): Block(pattern="dep-reader"),
-        Input(command="rg --hidden --glob 'node_modules/**' needle ."): Block(pattern="dep-reader"),
+        ): Warn(pattern="dep-reader"),
+        Input(command="rg --hidden -g '*.py' needle node_modules/express | head"): Warn(pattern="dep-reader"),
+        Input(command="rg --hidden --glob 'node_modules/**' needle ."): Warn(pattern="dep-reader"),
         Input(command="rg -n foo . | rg -v node_modules"): Allow(),
         Input(command="rg -n foo . | rg -P node_modules"): Allow(),
         Input(command="rg x .jj/repo | head # ccx:raw"): Allow(),
-        Input(command="echo '# ccx:raw'; rg x .jj/repo | head"): Block(pattern="dep-reader"),
+        Input(command="echo '# ccx:raw'; rg x .jj/repo | head"): Warn(pattern="dep-reader"),
         Input(command="rg -n -l \"gpt-5.6-sol\" --hidden -g '!**/node_modules/**' . | head -20"): Allow(),
         Input(
             command="rg -n --no-messages -g '!**/node_modules/**' -g '!**/target/**' -e 'no_watch' "
@@ -246,6 +240,9 @@ hook(
         ): Allow(),
     },
 )
+def steer_rg_dependency(evt: PreToolUseEvent) -> HookResult:
+    return evt.context(DEP_STEER)
+
 
 rewrite_command_occurrences(
     only_if=[UnpipedSearch("rg")],
@@ -265,22 +262,22 @@ rewrite_command_occurrences(
         Input(command="rg --color always plugin"): Rewrite(pattern="code grep plugin"),
         Input(command="rg --color=always plugin"): Rewrite(pattern="code grep plugin"),
         Input(command="printf 'left  side'; rg foo"): Rewrite(pattern="printf 'left  side'; "),
-        Input(command="rg 'foo.*' ."): Block(pattern="ccx code grep"),
-        Input(command="rg -t py foo"): Block(pattern="ccx code grep"),
-        Input(command="rg -P 'x(?=y)' ."): Block(),
-        Input(command="rg -U foo ."): Block(),
-        Input(command="rg -uu foo"): Block(),
+        Input(command="rg 'foo.*' ."): Allow(),
+        Input(command="rg -t py foo"): Allow(),
+        Input(command="rg -P 'x(?=y)' ."): Allow(),
+        Input(command="rg -U foo ."): Allow(),
+        Input(command="rg -uu foo"): Allow(),
         Input(command="rg foo # ccx:raw"): Allow(),
         Input(command="rg -v bar . # ccx:raw"): Allow(),
         Input(command="echo '# ccx:raw'; rg foo"): Rewrite(pattern="code grep foo"),
-        Input(command="rg -r repl foo"): Block(),
-        Input(command="rg -e a -e b ."): Block(),
-        Input(command="rg -m 5 foo ."): Block(),
-        Input(command="rg -d 1 app.log"): Block(),
-        Input(command="rg --files-with-matches=oops foo"): Block(),
+        Input(command="rg -r repl foo"): Allow(),
+        Input(command="rg -e a -e b ."): Allow(),
+        Input(command="rg -m 5 foo ."): Allow(),
+        Input(command="rg -d 1 app.log"): Allow(),
+        Input(command="rg --files-with-matches=oops foo"): Allow(),
         Input(command="rg --no-ignore foo ."): Allow(),
         Input(command="rg --no-ignore plugin README.md"): Allow(),
-        Input(command="RIPGREP_CONFIG_PATH=rg.conf rg foo ."): Block(),
+        Input(command="RIPGREP_CONFIG_PATH=rg.conf rg foo ."): Allow(),
         Input(command="rg foo /etc/hosts"): Allow(),
         Input(command="rg foo app.log"): Allow(),
         Input(command="rg -c foo app.log"): Allow(),
@@ -304,18 +301,18 @@ rewrite_command_occurrences(
         Input(command="rg -n foo . | rg -v node_modules"): Allow(),
         Input(command="cat f | rg foo"): Allow(),
         Input(command="journalctl | rg err | head -5"): Allow(),
-        Input(command="rg -c foo"): Block(),
+        Input(command="rg -c foo"): Allow(),
         Input(command="rg -c foo data.json && rg bar ."): Rewrite(pattern="rg -c foo data.json && "),
-        Input(command="rg -c foo . && rg bar ."): Block(),
-        Input(command="rg -v bar ."): Block(),
+        Input(command="rg -c foo . && rg bar ."): Rewrite(pattern="rg -c foo . && "),
+        Input(command="rg -v bar ."): Allow(),
         Input(command="rg foo $(printf /tmp/target)"): Allow(),
         Input(command="rg -n foo `printf x`"): Allow(),
         Input(command="rg foo $(printf /tmp/t); rg bar ."): Rewrite(pattern="rg foo $(printf /tmp/t); "),
         Input(command="rg foo . $d"): Allow(),
         Input(command="rg -A " + "9" * 5000 + " -B 1 needle"): Allow(),
-        Input(command="sudo rg foo ."): Block(),
-        Input(command="/opt/homebrew/bin/rg foo ."): Block(),
-        Input(command='"rg" foo .'): Block(),
+        Input(command="sudo rg foo ."): Allow(),
+        Input(command="/opt/homebrew/bin/rg foo ."): Allow(),
+        Input(command='"rg" foo .'): Allow(),
         Input(
             command="ccx exec 'async def main(): return await sh(\"rg -n foo src/\")\nasyncio.run(main())'"
         ): Allow(),

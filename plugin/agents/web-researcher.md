@@ -38,10 +38,8 @@ and the gaps — questions the pages didn't answer, or answered inconsistently.
 ## When `ccx web` can't serve a URL
 
 A fetch error, a challenge page, or a thin-content note means that page's ccx
-lane is out. Fall back to WebFetch for that URL. The guard blocks the first
-WebFetch of a fresh URL once — repeat the identical call; a deliberate re-run
-passes. A page that fails both lanes gets listed in the gaps, not silently
-dropped.
+lane is out. Fall back to WebFetch for that URL; the guard lets it run. A page
+that fails both lanes gets listed in the gaps, not silently dropped.
 
 ## Surprises
 

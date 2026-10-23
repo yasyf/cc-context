@@ -8,7 +8,7 @@ path so the ``hooks`` package (and its relative imports) resolves::
 
 The ``-i``/``-w`` rewrites are gated on ``ccx_supports("code", "grep", flag="--ignore-case")``,
 which shells out to ``ccx … --help`` — an environment-dependent probe, so those shapes can
-never live in inline ``tests={}`` (they would rewrite or block depending on the local binary).
+never live in inline ``tests={}`` (they would rewrite or run raw depending on the local binary).
 Here the probe boundary (``ccx_bin`` + ``subprocess.run``) is monkeypatched and the
 ``ccx_supports`` cache is cleared around every case so a result never leaks between them;
 ``search_common.ccx_bin`` is pinned too so the rewritten command is deterministic.
@@ -23,7 +23,6 @@ from types import SimpleNamespace
 
 import pytest
 from captain_hook import Call
-from captain_hook.types import HookResult
 
 from conftest import (
     FILES_WITH_MATCHES_HELP,
@@ -49,9 +48,8 @@ def grep_rewrite(command: str, index: int = 0) -> str | None:
     return grep_guards.grep_to(call_at(command, index))
 
 
-def grep_verdict(command: str) -> HookResult | str | None:
-    """The whole-line verdict from the ``visit=`` walk: a block ``HookResult``, a rewrite string, or
-    ``None`` for a genuine allow (the ``UnpipedSearch`` gate is no longer the allow signal)."""
+def grep_verdict(command: str) -> str | None:
+    """The whole-line verdict from the ``visit=`` walk: a rewrite string, or ``None`` when the line runs raw."""
     return run_visit(make_evt(command), grep_guards.grep_visit)
 
 
@@ -69,8 +67,6 @@ def unpiped_grep(command: str) -> bool:
 class TestGrepIgnoreCaseWord:
     @pytest.fixture(autouse=True)
     def pin_ccx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-        # `src/` must exist on disk: `grep_to` classifies path operands against the filesystem
-        # (finding 1), so a bare cwd would block these at parse instead of exercising the gate.
         (tmp_path / "src").mkdir()
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(search_common, "ccx_bin", lambda: "/fake/ccx")
@@ -95,12 +91,11 @@ class TestGrepIgnoreCaseWord:
         assert grep_rewrite(command) == expected
 
     @pytest.mark.parametrize("command", ["grep -i foo src/", "grep -w foo src/", "grep -i -w foo src/"])
-    def test_blocks_when_flag_absent(self, monkeypatch: pytest.MonkeyPatch, command: str) -> None:
-        # `--help` returns 0 but without `--ignore-case` (an older binary) → fall back to block.
+    def test_declines_when_flag_absent(self, monkeypatch: pytest.MonkeyPatch, command: str) -> None:
         probe(monkeypatch, NO_SUPPORT_HELP)
         assert grep_rewrite(command) is None
 
-    def test_blocks_when_probe_errors(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_declines_when_probe_errors(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(common.subprocess, "run", fake_run(1, stderr='unknown flag "--ignore-case"'))
         assert grep_rewrite("grep -i foo src/") is None
 
@@ -260,9 +255,8 @@ class TestGrepPathGlobbing:
         # A missing path is not a directory → not tree-shaped → runs raw under fail-open.
         assert grep_verdict(command) is None
 
-    def test_real_dir_with_missing_sibling_blocks(self, tree: Path) -> None:
-        # A real dir makes it tree-shaped, but the mixed dir+missing target has no single glob → block.
-        assert isinstance(grep_verdict("grep -rn foo src/ ghost/"), HookResult)
+    def test_real_dir_with_missing_sibling_runs_raw(self, tree: Path) -> None:
+        assert grep_verdict("grep -rn foo src/ ghost/") is None
 
 
 class TestGrepCwdThreading:
@@ -356,7 +350,7 @@ class TestRegexRewritable:
     """`translate_pattern`'s dialect translation, seen through the public `grep_to` rewrite: a pattern
     carrying an active-dialect metachar is handed to the translator, and its Rust-regex form rides out
     on `--regex` in the rewritten command (`-E` selects ERE, the default is BRE). A pattern the
-    translator refuses is unrewritable, so over `.` (repo-wide) the grep falls through to the block.
+    translator refuses is unrewritable, so the grep runs raw.
     """
 
     @pytest.fixture(autouse=True)
@@ -404,7 +398,6 @@ class TestRegexRewritable:
         ],
     )
     def test_rejects_dialect_divergent(self, command: str) -> None:
-        # Unrewritable over `.` (a tree-wide dir, unbounded): no rewrite, so the condition fires (block).
         assert grep_rewrite(command) is None
         assert unpiped_grep(command) is True
 
@@ -500,9 +493,9 @@ class TestGrepRegexRewrite:
     @pytest.mark.parametrize(
         "command",
         [
-            "grep 'a|b' .",  # `|` is BRE-literal — classified literal, but not ccx-literal-safe → block
+            "grep 'a|b' .",
             "grep -P 'x(?=y)' .",  # PCRE lookahead — -P never maps
-            "grep 'foo(bar' .",  # BRE-literal `(` — classified literal, but not ccx-literal-safe → block
+            "grep 'foo(bar' .",
             r"grep 'a\d' .",  # backslash — a dialect metachar the validator rejects (defense in depth)
             r"grep 'a\1b' .",  # backref `\1` — Rust regex has none → refused
             r"grep 'a\bc' .",  # `\b` word boundary — no faithful cross-dialect form → refused
@@ -510,7 +503,7 @@ class TestGrepRegexRewrite:
             r"grep '\+ab' .",  # leading BRE `\+` quantifier with nothing to bind → refused
         ],
     )
-    def test_unmappable_regex_blocks(self, monkeypatch: pytest.MonkeyPatch, command: str) -> None:
+    def test_unmappable_regex_declines(self, monkeypatch: pytest.MonkeyPatch, command: str) -> None:
         probe(monkeypatch, REGEX_SUPPORTS_HELP)
         assert grep_rewrite(command) is None
 
@@ -660,8 +653,6 @@ class TestGrepSourceFileShape:
     def test_unmappable_source_search_allows_never_blocks(
         self, monkeypatch: pytest.MonkeyPatch, command: str
     ) -> None:
-        # The bounded lane has nothing to steer away from: an unmappable shape runs raw, and a block
-        # here would be a regression — these same flags over `.` still block.
         probe(monkeypatch, REGEX_SUPPORTS_HELP)
         assert grep_verdict(command) is None
 
@@ -693,11 +684,9 @@ class TestGrepIncludeOverDir:
             "/fake/ccx code grep adoptionPinRefusals --glob 'infra/lib/**/*.ts'"
         )
 
-    def test_include_over_log_dir_keeps_the_block_lane(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # An absolute dir has no repo-relative glob, so the flood lane still blocks rather than
-        # emitting a glob ccx would 0-match — the source widening does not reach this shape.
+    def test_include_over_log_dir_runs_raw(self, monkeypatch: pytest.MonkeyPatch) -> None:
         probe(monkeypatch, REGEX_SUPPORTS_HELP)
-        assert isinstance(grep_verdict("grep -rn foo --include='*.log' /var/log/"), HookResult)
+        assert grep_verdict("grep -rn foo --include='*.log' /var/log/") is None
 
 
 class TestGrepOccurrenceRewrite:
@@ -710,26 +699,24 @@ class TestGrepOccurrenceRewrite:
         assert replacement == "/fake/ccx code grep foo"
         assert cl.splice({grep_occ.index: replacement}) == "echo x; /fake/ccx code grep foo"
 
-    def test_one_flooding_grep_blocks_benign_siblings(self) -> None:
-        # The `.` tree grep fires a block that aborts the whole line despite the benign `echo x` sibling.
-        assert isinstance(grep_verdict("echo x; grep -c foo ."), HookResult)
+    def test_unmappable_tree_grep_runs_raw_beside_siblings(self) -> None:
+        assert grep_verdict("echo x; grep -c foo .") is None
 
     def test_wrapped_grep_matches_but_never_rewrites(self) -> None:
         call = call_at("sudo grep foo .")
         assert call.command.executable == "grep"
         assert unpiped_grep("sudo grep foo .") is True
         assert grep_guards.grep_to(call) is None
-        assert isinstance(grep_verdict("sudo grep foo ."), HookResult)
+        assert grep_verdict("sudo grep foo .") is None
 
-    def test_spanless_grep_rechecks_and_blocks(self) -> None:
+    def test_spanless_grep_runs_raw(self) -> None:
         assert call_at("grep foo > out .").occurrence.command.span is None
-        assert isinstance(grep_verdict("grep foo > out ."), HookResult)
+        assert grep_verdict("grep foo > out .") is None
 
 
 class TestInfraNoneAllows:
     """Fix 4: infra unavailability (no ``ccx`` on disk, or a required probe fails) runs the tree-shaped
-    search raw — it never converts a failed rewrite into a block. Only a genuinely unmappable shape
-    (``-P``, an exotic regex) blocks, and that block still fires with ``ccx`` absent.
+    search raw, as does a genuinely unmappable shape (``-P``, an exotic regex).
     """
 
     @pytest.fixture(autouse=True)
@@ -741,8 +728,8 @@ class TestInfraNoneAllows:
     def test_ccx_bin_none_allows_tree_grep(self) -> None:
         assert grep_verdict("grep needle .") is None
 
-    def test_ccx_bin_none_still_blocks_unmappable_shape(self) -> None:
-        assert isinstance(grep_verdict("grep -P 'x(?=y)' ."), HookResult)
+    def test_ccx_bin_none_allows_unmappable_shape(self) -> None:
+        assert grep_verdict("grep -P 'x(?=y)' .") is None
 
 
 class TestTranscriptSteer:
@@ -781,7 +768,7 @@ class TestTranscriptSteer:
 
 
 class TestGrepBundleMap:
-    """A MAP short (`-i`/`-w`) glued into a DROP bundle (`-ri`) maps instead of blocking. Needs the
+    """A MAP short (`-i`/`-w`) glued into a DROP bundle (`-ri`) maps instead of running raw. Needs the
     `--ignore-case` probe and a real tmp tree, so it lives in pytest with exact-equality assertions.
     """
 
@@ -802,7 +789,7 @@ class TestGrepBundleMap:
 
 class TestScratchTree:
     """A tree-shaped grep over a scratch directory outside any repository runs raw; the same tree inside a
-    repository, or a plain directory, still blocks."""
+    repository, or a plain directory, still rewrites."""
 
     @pytest.fixture
     def notes(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -822,11 +809,12 @@ class TestScratchTree:
     def test_scratch_notes_run_raw(self, notes: Path, command: str) -> None:
         assert grep_verdict(command.format(notes=notes)) is None
 
-    def test_scratch_inside_a_repo_blocks(self, notes: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_scratch_inside_a_repo_rewrites(self, notes: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
         subprocess.run(["git", "init", "-q"], cwd=notes.parent.parent, check=True)
-        assert isinstance(grep_verdict(f"cd {notes}; grep -rhoE 'log' ."), HookResult)
+        assert grep_verdict(f"cd {notes}; grep -rn log .") == f"cd {notes}; /fake/ccx code grep log"
 
-    def test_plain_directory_blocks(self, tmp_path: Path) -> None:
+    def test_plain_directory_rewrites(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(search_common, "ccx_bin", lambda: "/fake/ccx")
         (notes := tmp_path / "notes").mkdir()
-        assert isinstance(grep_verdict(f"cd {notes}; grep -rhoE 'log' ."), HookResult)
+        assert grep_verdict(f"cd {notes}; grep -rn log .") == f"cd {notes}; /fake/ccx code grep log"

@@ -31,7 +31,7 @@ def webfetch_event(url: str, session_dir: Path) -> PreToolUseEvent:
 
 
 class TestWholePageWebFetch:
-    def test_first_attempt_blocks(self, tmp_path: Path) -> None:
+    def test_first_attempt_matches(self, tmp_path: Path) -> None:
         cond = WholePageWebFetch()
         evt = webfetch_event("https://docs.example.com/guide", tmp_path / "s1")
         assert cond.check(evt)
@@ -44,7 +44,7 @@ class TestWholePageWebFetch:
         assert cond.check(first)
         assert not cond.check(second)
 
-    def test_distinct_urls_each_block_first_time(self, tmp_path: Path) -> None:
+    def test_distinct_urls_each_match_first_time(self, tmp_path: Path) -> None:
         cond = WholePageWebFetch()
         session = tmp_path / "s1"
         assert cond.check(webfetch_event("https://a.example.com/x", session))
@@ -56,7 +56,7 @@ class TestWholePageWebFetch:
         assert cond.check(webfetch_event(url, tmp_path / "sessionA"))
         assert cond.check(webfetch_event(url, tmp_path / "sessionB"))
 
-    def test_local_never_blocks_or_records(self, tmp_path: Path) -> None:
+    def test_local_never_matches_or_records(self, tmp_path: Path) -> None:
         cond = WholePageWebFetch()
         session = tmp_path / "s1"
         assert not cond.check(webfetch_event("http://localhost:3000/health", session))
