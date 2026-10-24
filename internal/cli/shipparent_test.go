@@ -390,9 +390,10 @@ func TestShipGTAdoptsOntoTheRemoteTrunkNotALocalTrunkLeftBehindIt(t *testing.T) 
 	writeShipFile(t, f.Dir, "own.txt", "own\n")
 	mustRun(t, f.Env(), f.Dir, "git", "add", ".")
 	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "own work")
+	writeShipFile(t, f.Dir, "more.txt", "more\n")
 	shipResetLog(t, f)
 
-	got, err := runShipCmd(f.Context(), t, "--no-commit", "--no-push")
+	got, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push", "more.txt")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
@@ -402,7 +403,7 @@ func TestShipGTAdoptsOntoTheRemoteTrunkNotALocalTrunkLeftBehindIt(t *testing.T) 
 	if base := gitAt(t, f.Env(), f.Dir, "merge-base", stale, "b"); base == stale {
 		t.Errorf("b carries %s, a commit only the local trunk holds; summary %q", stale, got)
 	}
-	if subjects := gitAt(t, f.Env(), f.Dir, "log", "--format=%s", remote+"..b"); subjects != "own work" {
-		t.Errorf("b carries %q above the remote trunk, want its own commit alone", subjects)
+	if subjects := gitAt(t, f.Env(), f.Dir, "log", "--format=%s", remote+"..b"); subjects != "fix: frobnicate\nown work" {
+		t.Errorf("b carries %q above the remote trunk, want its own commits alone", subjects)
 	}
 }

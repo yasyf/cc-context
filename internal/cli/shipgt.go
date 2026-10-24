@@ -1215,13 +1215,19 @@ func gtOntoPlan(ctx context.Context, l lane, o shipOpts, branch, parent string, 
 	if rebasing {
 		return gtOntoMove{}, refuse("ship: a rebase is in progress in %s: finish it with ccx vcs stack continue or drop it with git rebase --abort, then ship again", l.root)
 	}
-	upstream, onto, err := gtOntoHead(ctx, l.dir(), o, parent, trunk)
+	onto, err := gtOntoHead(ctx, l.dir(), o, parent)
 	if err != nil {
 		return gtOntoMove{}, err
 	}
 	on, err := gitIsAncestor(ctx, l.dir(), "ship", onto, gtRestackRef(branch))
 	if err != nil || on {
 		return gtOntoMove{onto: onto}, err
+	}
+	upstream := gtRestackRef(parent)
+	if trunk {
+		if upstream, onto, err = gtRemoteTrunkOnto(ctx, l.dir(), parent, upstream, onto); err != nil {
+			return gtOntoMove{}, err
+		}
 	}
 	fork, own, err := gtOwnFork(ctx, l.dir(), o, branch, parent, upstream)
 	if err != nil {
@@ -1321,46 +1327,46 @@ func gtOnto(ctx context.Context, l lane, o shipOpts, branch, parent string, trun
 	return fmt.Sprintf(" (replayed its %d own commit(s))", m.own), m.onto, true, nil
 }
 
-// gtOntoHead is the ref a branch's own commits are measured against and the
-// parent head the branch moves onto. For trunk both are the remote trunk, so a
-// local trunk left behind it is never a base; a repository with no remote
-// trunk ref falls back to the local one. Under --tip-only, which pushes no
-// ancestor, a parent moves onto its published head when it has one, else its
+// gtOntoHead is the parent head a branch moves onto: under --tip-only, which
+// pushes no ancestor, the parent's published head when it has one, else its
 // local head.
-func gtOntoHead(ctx context.Context, dir render.Dir, o shipOpts, parent string, trunk bool) (string, string, error) {
-	if trunk {
-		tr, err := gtTrunkRefOffline(ctx, dir, "ship", parent)
-		if err == nil {
-			head, err := gtTrunkHead(ctx, dir, "ship", tr)
-			return string(tr.Ref()), head, err
-		}
-		if !errors.Is(err, vcs.ErrNoTrunk) {
-			return "", "", err
-		}
-	}
-	local := gtRestackRef(parent)
+func gtOntoHead(ctx context.Context, dir render.Dir, o shipOpts, parent string) (string, error) {
 	if !o.tipOnly {
-		head, err := gtRestackHead(ctx, "ship", dir, parent)
-		return local, head, err
+		return gtRestackHead(ctx, "ship", dir, parent)
 	}
 	remote, err := vcs.GitRemoteFor(ctx, dir, "HEAD")
 	if err != nil {
-		return "", "", fmt.Errorf("ship: %w", err)
+		return "", fmt.Errorf("ship: %w", err)
 	}
 	published := "refs/remotes/" + remote + "/" + parent
 	out, code, stderr, err := render.RunCLIExitCode(ctx, dir, "git", []string{"rev-parse", "--verify", "--quiet", published})
 	if err != nil {
-		return "", "", fmt.Errorf("ship: git rev-parse %s: %w", published, err)
+		return "", fmt.Errorf("ship: git rev-parse %s: %w", published, err)
 	}
 	switch code {
 	case 0:
-		return local, strings.TrimSpace(out), nil
+		return strings.TrimSpace(out), nil
 	case 1:
-		head, err := gtRestackHead(ctx, "ship", dir, parent)
-		return local, head, err
+		return gtRestackHead(ctx, "ship", dir, parent)
 	default:
-		return "", "", fmt.Errorf("ship: git rev-parse %s: exit %d: %s", published, code, strings.TrimSpace(stderr))
+		return "", fmt.Errorf("ship: git rev-parse %s: exit %d: %s", published, code, strings.TrimSpace(stderr))
 	}
+}
+
+// gtRemoteTrunkOnto is the ref a replay onto trunk measures the branch's own
+// commits against and the head it replays them onto: the remote trunk, so a
+// local trunk left behind it, or carrying commits it never got, is never a
+// base. A repository with no remote trunk ref keeps the local one.
+func gtRemoteTrunkOnto(ctx context.Context, dir render.Dir, trunk, local, head string) (string, string, error) {
+	tr, err := gtTrunkRefOffline(ctx, dir, "ship", trunk)
+	if errors.Is(err, vcs.ErrNoTrunk) {
+		return local, head, nil
+	}
+	if err != nil {
+		return "", "", err
+	}
+	remote, err := gtTrunkHead(ctx, dir, "ship", tr)
+	return string(tr.Ref()), remote, err
 }
 
 // gtOwnFork finds where branch's own work starts above parent: the commit below
