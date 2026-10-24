@@ -23,8 +23,8 @@ type cciPeer struct {
 }
 
 func (p cciPeer) self(ctx context.Context) bool {
-	session := p.Session == render.Getenv(ctx, envClaudeSessionKey) || p.Session == render.Getenv(ctx, envCodexThreadKey)
-	return session && p.Agent == render.Getenv(ctx, envCCIAgentKey)
+	session := cmp.Or(render.Getenv(ctx, envClaudeSessionKey), render.Getenv(ctx, envCodexThreadKey))
+	return p.Session == session && p.Agent == render.Getenv(ctx, envCCIAgentKey)
 }
 
 func stackLaneHolders(ctx context.Context, l lane, branches []string) (map[string]string, error) {
@@ -32,29 +32,44 @@ func stackLaneHolders(ctx context.Context, l lane, branches []string) (map[strin
 	if err != nil {
 		return nil, err
 	}
-	if err := stackAddClaims(ctx, l.dir(), holders, branches); err != nil {
+	claims, err := stackClaims(ctx, l.dir(), branches)
+	if err != nil {
 		return nil, err
 	}
-	return holders, nil
+	return stackWithClaims(holders, claims), nil
 }
 
-func stackAddClaims(ctx context.Context, dir render.Dir, holders map[string]string, branches []string) error {
-	if !cciClaimable(ctx) {
-		return nil
+func stackClaims(ctx context.Context, dir render.Dir, branches []string) (map[string]string, error) {
+	if render.LookPath(ctx, "cci") == "" {
+		return nil, nil
 	}
+	current, err := gitCurrentBranch(ctx, dir, "stack")
+	if err != nil {
+		return nil, err
+	}
+	claims := map[string]string{}
 	for _, branch := range branches {
-		if holders[branch] != "" {
+		if branch == current {
 			continue
 		}
 		owner, err := cciBranchOwner(ctx, dir, branch)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if owner != "" {
-			holders[branch] = "lane " + owner
+			claims[branch] = "lane " + owner
 		}
 	}
-	return nil
+	return claims, nil
+}
+
+func stackWithClaims(holders, claims map[string]string) map[string]string {
+	for branch, owner := range claims {
+		if holders[branch] == "" {
+			holders[branch] = owner
+		}
+	}
+	return holders
 }
 
 func cciBranchOwner(ctx context.Context, dir render.Dir, branch string) (string, error) {

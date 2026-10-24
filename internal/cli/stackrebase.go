@@ -1172,7 +1172,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 			return nil, err
 		}
 		if o.submit && !o.otherLanes {
-			if o.pinned, err = stackPinHeldParents(ctx, l, planned, members, o.pinned); err != nil {
+			if o.pinned, err = stackPinHeldParents(ctx, l, planned, members, o.pinned, o.owners); err != nil {
 				return nil, err
 			}
 		}
@@ -1186,15 +1186,17 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 		if err != nil {
 			return nil, fmt.Errorf("stack rebase: %w", err)
 		}
-		if err := stackAddClaims(ctx, l.dir(), holders, members); err != nil {
+		claims, err := stackClaims(ctx, l.dir(), members)
+		if err != nil {
 			return nil, fmt.Errorf("stack rebase: %w", err)
 		}
-		heldBelow = stackHeldBelow(retargeted, current, members, o.include, holders)
+		heldBelow = stackHeldBelow(retargeted, current, members, o.include, stackWithClaims(holders, claims))
 		if !o.noPush {
-			foreign, err := stackLaneHolders(ctx, l, members)
+			foreign, err := vcs.ForeignBranchHolders(ctx, l.checkout)
 			if err != nil {
 				return nil, fmt.Errorf("stack rebase: %w", err)
 			}
+			foreign = stackWithClaims(foreign, claims)
 			if members, heldAbove, err = stackHeldAbove(retargeted, current, members, o.include, foreign, parentOverrides); err != nil {
 				return nil, err
 			}
@@ -2111,16 +2113,19 @@ func stackPinOtherLanes(state gtState, current string, members, include []string
 }
 
 // stackPinHeldParents pins a published parent stackWithPublishedParents
-// brought back when a working copy of another lane holds it, so a submit keeps
-// it at its published head like any held ancestor gt still records.
-func stackPinHeldParents(ctx context.Context, l lane, planned, members, pinned []string) ([]string, error) {
-	holders, err := vcs.ForeignBranchHolders(ctx, l.checkout)
+// brought back when a working copy of another lane holds it or another lane
+// claims it, so a submit keeps it at its published head like any held ancestor
+// gt still records.
+func stackPinHeldParents(ctx context.Context, l lane, planned, members, pinned []string, owners map[string]string) ([]string, error) {
+	added := slices.DeleteFunc(slices.Clone(members), func(name string) bool { return slices.Contains(planned, name) })
+	holders, err := stackLaneHolders(ctx, l, added)
 	if err != nil {
 		return nil, fmt.Errorf("stack submit: %w", err)
 	}
-	for _, name := range members {
-		if holders[name] != "" && !slices.Contains(planned, name) && !slices.Contains(pinned, name) {
+	for _, name := range added {
+		if holders[name] != "" && !slices.Contains(pinned, name) {
 			pinned = append(pinned, name)
+			owners[name] = holders[name]
 		}
 	}
 	return pinned, nil
