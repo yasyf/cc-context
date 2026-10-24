@@ -34,7 +34,7 @@ func stubBuildkite(t *testing.T) {
 	prior := buildkiteAPI
 	buildkiteAPI = ts.URL
 	t.Cleanup(func() { buildkiteAPI = prior })
-	t.Setenv(envBuildkiteToken, "bk-test")
+	t.Setenv(buildkiteEnv, "bk-test")
 }
 
 func prSkippedNode() string {

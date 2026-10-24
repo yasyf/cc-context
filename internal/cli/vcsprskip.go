@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	envBuildkiteToken  = "BUILDKITE_API_TOKEN"
+	buildkiteEnv       = "BUILDKITE_API_TOKEN"
 	buildkiteRedundant = "redundant within its stack"
 	prSkipUnproven     = "redundant skip, no full run"
 )
@@ -133,14 +133,14 @@ func buildkiteSkipped(ctx context.Context, buildURL string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if verdict, err := os.ReadFile(cache); err == nil {
+	if verdict, err := os.ReadFile(cache); err == nil { //nolint:gosec // cache is one file name under the PR state root, built from a build URL the regexp matched
 		return string(verdict) == "skip", nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return false, err
 	}
-	token := render.Getenv(ctx, envBuildkiteToken)
+	token := render.Getenv(ctx, buildkiteEnv)
 	if token == "" {
-		return false, fmt.Errorf("no %s to read %s", envBuildkiteToken, buildURL)
+		return false, fmt.Errorf("no %s to read %s", buildkiteEnv, buildURL)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("%s/organizations/%s/pipelines/%s/builds/%s", buildkiteAPI, m[1], m[2], m[3]), nil)
 	if err != nil {
@@ -151,7 +151,7 @@ func buildkiteSkipped(ctx context.Context, buildURL string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("read %s: %w", buildURL, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		return false, fmt.Errorf("read %s: HTTP %d: %s", buildURL, resp.StatusCode, strings.TrimSpace(string(body)))
