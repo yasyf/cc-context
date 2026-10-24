@@ -12,19 +12,15 @@ import (
 	"github.com/yasyf/cc-context/internal/vcs"
 )
 
-const envCCIAgentKey = "CCI_AGENT_ID"
-
 type cciPeer struct {
 	Session   string `json:"session"`
-	Agent     string `json:"agent"`
 	AgentName string `json:"agent_name"`
 	Lane      string `json:"lane"`
 	Name      string `json:"name"`
 }
 
 func (p cciPeer) self(ctx context.Context) bool {
-	session := cmp.Or(render.Getenv(ctx, envClaudeSessionKey), render.Getenv(ctx, envCodexThreadKey))
-	return p.Session == session && p.Agent == render.Getenv(ctx, envCCIAgentKey)
+	return p.Session == cmp.Or(render.Getenv(ctx, envClaudeSessionKey), render.Getenv(ctx, envCodexThreadKey))
 }
 
 func stackLaneHolders(ctx context.Context, l lane, branches []string) (map[string]string, error) {
