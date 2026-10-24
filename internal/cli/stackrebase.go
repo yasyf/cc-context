@@ -502,7 +502,7 @@ func stackBegin(ctx context.Context, cmd *cobra.Command, l lane, commonDir strin
 	if err != nil {
 		return err
 	}
-	if err := stackRefusePins(ctx, l.dir(), run); err != nil {
+	if err := stackRefusePins(ctx, cmd.ErrOrStderr(), l.dir(), run); err != nil {
 		return err
 	}
 	if o.tip != "" && !o.restack {
