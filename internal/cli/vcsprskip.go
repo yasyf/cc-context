@@ -39,6 +39,14 @@ type ghCombinedStatus struct {
 	} `json:"statuses"`
 }
 
+type buildkiteRun string
+
+const (
+	buildkiteSkip       buildkiteRun = "skip"
+	buildkiteFull       buildkiteRun = "full"
+	buildkiteUnfinished buildkiteRun = "unfinished"
+)
+
 type prSkipProof struct {
 	ctx    context.Context
 	client *ghapi.Client
@@ -54,13 +62,17 @@ func prProveRedundantSkips(ctx context.Context, repo string, pr prstate.PR, ci *
 		if c.Typename != "StatusContext" || c.State != "SUCCESS" || !buildkiteBuildURL.MatchString(c.TargetURL) {
 			continue
 		}
-		skipped, err := buildkiteSkipped(ctx, c.TargetURL)
+		run, err := buildkiteRead(ctx, c.TargetURL)
 		if err != nil {
 			ci.State, ci.Unproven = prCIUnproven, err.Error()
 			return
 		}
-		if !skipped {
+		switch run {
+		case buildkiteFull:
 			continue
+		case buildkiteUnfinished:
+			ci.State, ci.Running = prCIPending, ci.Running+1
+			return
 		}
 		child, state, err := p.deferredRun(pr.HeadRefName, pr.HeadRefOid, c.Context)
 		switch {
@@ -80,39 +92,59 @@ func prProveRedundantSkips(ctx context.Context, repo string, pr prstate.PR, ci *
 }
 
 func (p prSkipProof) deferredRun(branch, head, statusContext string) (int, prCIState, error) {
-	children, err := ghapi.Get[[]ghPull](p.ctx, p.client, fmt.Sprintf("repos/%s/pulls?base=%s&state=all&per_page=20", p.repo, url.QueryEscape(branch)))
+	children, err := ghapi.Paginate[ghPull](p.ctx, p.client, fmt.Sprintf("repos/%s/pulls?base=%s&state=all&per_page=100", p.repo, url.QueryEscape(branch)))
 	if err != nil {
 		return 0, "", err
 	}
+	pending := 0
 	for _, child := range children {
 		if child.State != "open" && child.MergedAt == nil {
 			continue
 		}
-		status, err := ghapi.Get[ghCombinedStatus](p.ctx, p.client, fmt.Sprintf("repos/%s/commits/%s/status", p.repo, child.Head.SHA))
+		number, state, err := p.childRun(child, head, statusContext)
+		if err != nil || state == prCIGreen {
+			return number, state, err
+		}
+		if state == prCIPending && pending == 0 {
+			pending = number
+		}
+	}
+	if pending != 0 {
+		return pending, prCIPending, nil
+	}
+	return 0, prCIUnproven, nil
+}
+
+func (p prSkipProof) childRun(child ghPull, head, statusContext string) (int, prCIState, error) {
+	status, err := ghapi.Get[ghCombinedStatus](p.ctx, p.client, fmt.Sprintf("repos/%s/commits/%s/status", p.repo, child.Head.SHA))
+	if err != nil {
+		return 0, "", err
+	}
+	for _, s := range status.Statuses {
+		if s.Context != statusContext {
+			continue
+		}
+		switch {
+		case s.State == "pending":
+			return child.Number, prCIPending, nil
+		case s.State != "success" || !buildkiteBuildURL.MatchString(s.TargetURL):
+			return 0, prCIUnproven, nil
+		}
+		run, err := buildkiteRead(p.ctx, s.TargetURL)
 		if err != nil {
 			return 0, "", err
 		}
-		for _, s := range status.Statuses {
-			if s.Context != statusContext {
-				continue
-			}
-			switch s.State {
-			case "pending":
-				return child.Number, prCIPending, nil
-			case "success":
-				skipped, err := buildkiteSkipped(p.ctx, s.TargetURL)
-				if err != nil {
-					return 0, "", err
-				}
-				if skipped {
-					return p.deferredRun(child.Head.Ref, head, statusContext)
-				}
-				contains, err := p.contains(head, child.Head.SHA)
-				if err != nil || contains {
-					return child.Number, prCIGreen, err
-				}
-			}
+		switch run {
+		case buildkiteSkip:
+			return p.deferredRun(child.Head.Ref, head, statusContext)
+		case buildkiteUnfinished:
+			return child.Number, prCIPending, nil
 		}
+		contains, err := p.contains(head, child.Head.SHA)
+		if err != nil || !contains {
+			return 0, prCIUnproven, err
+		}
+		return child.Number, prCIGreen, nil
 	}
 	return 0, prCIUnproven, nil
 }
@@ -124,37 +156,36 @@ func (p prSkipProof) contains(ancestor, head string) (bool, error) {
 	return compared.Status == "ahead" || compared.Status == "identical", err
 }
 
-func buildkiteSkipped(ctx context.Context, buildURL string) (bool, error) {
+func buildkiteRead(ctx context.Context, buildURL string) (buildkiteRun, error) {
 	m := buildkiteBuildURL.FindStringSubmatch(buildURL)
-	if m == nil {
-		return false, nil
-	}
 	cache, err := buildkiteVerdictPath(m[1], m[2], m[3])
 	if err != nil {
-		return false, err
+		return "", err
 	}
-	if verdict, err := os.ReadFile(cache); err == nil { //nolint:gosec // cache is one file name under the PR state root, built from a build URL the regexp matched
-		return string(verdict) == "skip", nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return false, err
+	cached, err := os.ReadFile(cache) //nolint:gosec // cache is one file name under the PR state root, built from a build URL the regexp matched
+	switch run := buildkiteRun(cached); {
+	case err == nil && (run == buildkiteSkip || run == buildkiteFull):
+		return run, nil
+	case err != nil && !errors.Is(err, os.ErrNotExist):
+		return "", err
 	}
 	token := render.Getenv(ctx, buildkiteEnv)
 	if token == "" {
-		return false, fmt.Errorf("no %s to read %s", buildkiteEnv, buildURL)
+		return "", fmt.Errorf("no %s to read %s", buildkiteEnv, buildURL)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("%s/organizations/%s/pipelines/%s/builds/%s", buildkiteAPI, m[1], m[2], m[3]), nil)
 	if err != nil {
-		return false, err
+		return "", err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	resp, err := buildkiteClient.Do(req)
 	if err != nil {
-		return false, fmt.Errorf("read %s: %w", buildURL, err)
+		return "", fmt.Errorf("read %s: %w", buildURL, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return false, fmt.Errorf("read %s: HTTP %d: %s", buildURL, resp.StatusCode, strings.TrimSpace(string(body)))
+		return "", fmt.Errorf("read %s: HTTP %d: %s", buildURL, resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 	var build struct {
 		State string `json:"state"`
@@ -163,19 +194,33 @@ func buildkiteSkipped(ctx context.Context, buildURL string) (bool, error) {
 		} `json:"jobs"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&build); err != nil {
-		return false, fmt.Errorf("read %s: %w", buildURL, err)
+		return "", fmt.Errorf("read %s: %w", buildURL, err)
 	}
-	skipped := false
+	if build.State != "passed" {
+		return buildkiteUnfinished, nil
+	}
+	run := buildkiteFull
 	for _, job := range build.Jobs {
-		skipped = skipped || strings.Contains(strings.ToLower(job.Name), buildkiteRedundant)
-	}
-	if build.State == "passed" {
-		verdict := map[bool]string{true: "skip", false: "full"}[skipped]
-		if err := os.WriteFile(cache, []byte(verdict), 0o600); err != nil {
-			return false, err
+		if strings.Contains(strings.ToLower(job.Name), buildkiteRedundant) {
+			run = buildkiteSkip
 		}
 	}
-	return skipped, nil
+	return run, buildkiteCache(cache, run)
+}
+
+func buildkiteCache(path string, run buildkiteRun) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*")
+	if err != nil {
+		return err
+	}
+	if _, err := tmp.WriteString(string(run)); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
 }
 
 func buildkiteVerdictPath(org, pipeline, number string) (string, error) {
