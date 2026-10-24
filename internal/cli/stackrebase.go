@@ -470,11 +470,11 @@ func runStackRebase(cmd *cobra.Command, o stackRebaseOpts) error {
 	if err != nil {
 		return err
 	}
-	runs, err := stackRuns(commonDir)
+	current, err := gitCurrentBranch(ctx, l.dir(), stackRebasePrefix)
 	if err != nil {
 		return err
 	}
-	current, err := gitCurrentBranch(ctx, l.dir(), stackRebasePrefix)
+	runs, err := stackRuns(cmd.ErrOrStderr(), commonDir, current)
 	if err != nil {
 		return err
 	}
@@ -490,7 +490,7 @@ func runStackRebase(cmd *cobra.Command, o stackRebaseOpts) error {
 			gated = append(gated, other)
 		}
 	}
-	if err := stackRefuseForeignRebase(l, stackRebasePrefix); err != nil {
+	if err := stackRefuseForeignRebase(cmd.ErrOrStderr(), l, stackRebasePrefix); err != nil {
 		return err
 	}
 	rest := slices.DeleteFunc(slices.Clone(runs), func(other *stackRebaseRun) bool { return slices.Contains(gated, other) })
@@ -526,7 +526,7 @@ func stackBegin(ctx context.Context, cmd *cobra.Command, l lane, commonDir strin
 		return err
 	}
 	if finished {
-		runs, err := stackRuns(commonDir)
+		runs, err := stackRuns(cmd.ErrOrStderr(), commonDir, run.locks()...)
 		if err != nil {
 			return err
 		}
@@ -3739,7 +3739,7 @@ func stackBriefIntent(s *strings.Builder, side, name string, pr *stackPR) {
 
 func runStackContinue(cmd *cobra.Command, stack string) error {
 	ctx := cmd.Context()
-	l, commonDir, run, err := stackResolveRun(ctx, stack)
+	l, commonDir, run, err := stackResolveRun(ctx, cmd.ErrOrStderr(), stack)
 	if errors.Is(err, errNoStackRebase) && stack == "" {
 		return stackContinueStranded(ctx, cmd)
 	}
@@ -4028,7 +4028,7 @@ func stackRebasing(ctx context.Context, ws render.Dir) bool {
 // rebase that no stack rebase of this repository stopped there, naming the
 // branch and base it was replaying, before that rebase's detached HEAD and
 // half-applied index mislead every check that follows.
-func stackRefuseForeignRebase(l lane, prefix string) error {
+func stackRefuseForeignRebase(w io.Writer, l lane, prefix string) error {
 	var state string
 	for _, dir := range []string{"rebase-merge", "rebase-apply"} {
 		if _, err := os.Stat(filepath.Join(l.checkout.GitDir, dir)); err == nil {
@@ -4039,7 +4039,7 @@ func stackRefuseForeignRebase(l lane, prefix string) error {
 	if state == "" {
 		return nil
 	}
-	runs, err := stackRuns(l.checkout.CommonDir)
+	runs, err := stackRuns(w, l.checkout.CommonDir)
 	if err != nil {
 		return err
 	}
@@ -4252,7 +4252,7 @@ func stackDiscardWorkspace(ctx context.Context, l lane, ws string) error {
 
 func runStackAbort(cmd *cobra.Command, stack string) error {
 	ctx := cmd.Context()
-	l, commonDir, run, err := stackResolveRun(ctx, stack)
+	l, commonDir, run, err := stackResolveRun(ctx, cmd.ErrOrStderr(), stack)
 	if err != nil {
 		return err
 	}
@@ -4366,7 +4366,7 @@ func stackRewriteHeld(ctx context.Context, dir render.Dir, run *stackRebaseRun) 
 	return true, nil
 }
 
-func stackResolveRun(ctx context.Context, stack string) (lane, string, *stackRebaseRun, error) {
+func stackResolveRun(ctx context.Context, w io.Writer, stack string) (lane, string, *stackRebaseRun, error) {
 	l, err := resolveLane(ctx, stackRebasePrefix, workingDir(ctx), false)
 	if err != nil {
 		return lane{}, "", nil, err
@@ -4375,11 +4375,11 @@ func stackResolveRun(ctx context.Context, stack string) (lane, string, *stackReb
 	if err != nil {
 		return lane{}, "", nil, err
 	}
-	runs, err := stackRuns(commonDir)
+	current, err := gitCurrentBranch(ctx, l.dir(), stackRebasePrefix)
 	if err != nil {
 		return lane{}, "", nil, err
 	}
-	current, err := gitCurrentBranch(ctx, l.dir(), stackRebasePrefix)
+	runs, err := stackRuns(w, commonDir, stack, current)
 	if err != nil {
 		return lane{}, "", nil, err
 	}
@@ -5009,7 +5009,7 @@ func stackClaimedMeanwhile(commonDir, name string) error {
 	if owner, err := os.ReadFile(filepath.Join(dir, stackClaimOwner)); err == nil { //nolint:gosec // a claim directory ccx created under the git common dir
 		holder = stackRunDir(commonDir, string(owner))
 	}
-	runs, err := stackRuns(commonDir)
+	runs, err := stackRuns(io.Discard, commonDir, name)
 	if err != nil {
 		return err
 	}
@@ -5074,7 +5074,7 @@ func stackClearRun(commonDir string, run *stackRebaseRun) error {
 	return nil
 }
 
-func stackRuns(commonDir string) ([]*stackRebaseRun, error) {
+func stackRuns(w io.Writer, commonDir string, own ...string) ([]*stackRebaseRun, error) {
 	if err := stackRefuseFlatState(filepath.Join(commonDir, stackRebaseStateDir)); err != nil {
 		return nil, err
 	}
@@ -5104,7 +5104,13 @@ func stackRuns(commonDir string) ([]*stackRebaseRun, error) {
 		}
 		run := &stackRebaseRun{dir: dir, saved: info.ModTime()}
 		if err := json.Unmarshal(data, run); err != nil {
-			return nil, fmt.Errorf("stack rebase: read %s: %w", stackStatePath(dir), err)
+			if slices.ContainsFunc(own, func(name string) bool { return name != "" && stackRunDir(commonDir, name) == dir }) {
+				return nil, fmt.Errorf("stack rebase: read %s: %w", stackStatePath(dir), err)
+			}
+			if _, err := fmt.Fprintf(w, "stack rebase: warning: skipped %s, another lane's run state that does not parse (%v)\n", dir, err); err != nil {
+				return nil, err
+			}
+			continue
 		}
 		runs = append(runs, run)
 	}
@@ -5179,7 +5185,21 @@ func stackSaveRun(run *stackRebaseRun) error {
 	if err != nil {
 		return fmt.Errorf("stack rebase: encode the run state: %w", err)
 	}
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+	tmp, err := os.CreateTemp(run.dir, stackRebaseState+".*")
+	if err != nil {
+		return fmt.Errorf("stack rebase: write %s: %w", path, err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmp.Name())
+		return fmt.Errorf("stack rebase: write %s: %w", path, err)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmp.Name())
+		return fmt.Errorf("stack rebase: write %s: %w", path, err)
+	}
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		_ = os.Remove(tmp.Name())
 		return fmt.Errorf("stack rebase: write %s: %w", path, err)
 	}
 	return nil

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -163,7 +164,7 @@ func TestStackShipIntentSurvivesRemovedBodyFile(t *testing.T) {
 }
 
 func stackOnlyTestRun(commonDir string) (*stackRebaseRun, error) {
-	runs, err := stackRuns(commonDir)
+	runs, err := stackRuns(io.Discard, commonDir)
 	if err != nil {
 		return nil, err
 	}

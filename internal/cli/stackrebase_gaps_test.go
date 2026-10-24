@@ -2,6 +2,7 @@ package cli
 
 import (
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -73,7 +74,7 @@ func TestStackContinueSelectsARunByStack(t *testing.T) {
 	if err != nil {
 		t.Fatalf("abort --stack b-top from a working copy on neither stack = %v, want b-top's run dropped", err)
 	}
-	runs, err := stackRuns(filepath.Join(f.Dir, ".git"))
+	runs, err := stackRuns(io.Discard, filepath.Join(f.Dir, ".git"))
 	if err != nil {
 		t.Fatal(err)
 	}

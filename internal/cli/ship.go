@@ -303,7 +303,7 @@ func runShip(cmd *cobra.Command, o shipOpts) (err error) {
 		kind = vcs.Git
 	}
 	if gitBacked(l) {
-		if err := stackRefuseForeignRebase(l, "ship"); err != nil {
+		if err := stackRefuseForeignRebase(cmd.ErrOrStderr(), l, "ship"); err != nil {
 			return err
 		}
 	}
