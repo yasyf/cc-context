@@ -387,7 +387,7 @@ func stackPushPublication(ctx context.Context, dir render.Dir, s gtSubmit, plan 
 				}
 			}
 		}
-		if err := thinRecordPush(ctx, dir, "origin", gtPushedHeads(plan)); err != nil {
+		if err := gitRecordPush(ctx, dir, "origin", gtPushedHeads(plan)); err != nil {
 			return err
 		}
 		run.Pushed = true

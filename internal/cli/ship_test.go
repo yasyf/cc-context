@@ -200,6 +200,7 @@ func TestShipCommitPushWatch(t *testing.T) {
 					gitForEachRefStdinArgv,
 					{"git", "merge-base", "--is-ancestor", "refs/remotes/origin/main", "HEAD"},
 					{"git", "push", "--no-follow-tags", "--quiet", "--no-thin", "origin", "main"},
+					gitRecordPushArgv,
 					{"git", "rev-parse", "HEAD"},
 					ghRunListArgvFor(sha),
 					ghRunWatchArgv,
@@ -1582,6 +1583,7 @@ func TestShipGitUsesPostCommitBranch(t *testing.T) {
 		{"git", "ls-remote", "origin", "refs/heads/other", "refs/heads/main"},
 		gitForEachRefStdinArgv,
 		{"git", "push", "--no-follow-tags", "--quiet", "--no-thin", "origin", "other"},
+		gitRecordPushArgv,
 	})
 }
 
@@ -1737,6 +1739,7 @@ func TestShipGitAmendFastForwardPush(t *testing.T) {
 		{"git", "log", "-1", "--format=%h%x00%s"},
 		{"git", "config", "--get", "branch.main.remote"},
 		{"git", "push", "--no-follow-tags", "--quiet", "--no-thin", "origin", "main"},
+		gitRecordPushArgv,
 	})
 	// An amend of an unpushed commit fast-forwards: a plain push lands with no
 	// force at all, and the lane must never fetch (a fetch would refresh the lease).
@@ -1789,7 +1792,8 @@ func TestShipGitRebase(t *testing.T) {
 				[]string{"git", "ls-remote", "origin", "refs/heads/main"},
 				gitForEachRefStdinArgv,
 				[]string{"git", "merge-base", "--is-ancestor", remoteRef, "HEAD"},
-				[]string{"git", "push", "--no-follow-tags", "--quiet", "--no-thin", "origin", "main"}),
+				[]string{"git", "push", "--no-follow-tags", "--quiet", "--no-thin", "origin", "main"},
+				gitRecordPushArgv),
 		},
 		{
 			name: "diverged rebases then pushes",
@@ -1812,6 +1816,7 @@ func TestShipGitRebase(t *testing.T) {
 				[]string{"git", "diff", "--name-only", "HEAD"},
 				[]string{"git", "rebase", remoteRef},
 				[]string{"git", "push", "--no-follow-tags", "--quiet", "--no-thin", "origin", "main"},
+				gitRecordPushArgv,
 				[]string{"git", "log", "-1", "--format=%h%x00%s"}),
 		},
 		{
@@ -1856,6 +1861,7 @@ func TestShipGitRebase(t *testing.T) {
 				{"git", "ls-remote", "origin", "refs/heads/feature", "refs/heads/main"},
 				gitForEachRefStdinArgv,
 				{"git", "push", "--no-follow-tags", "--quiet", "--no-thin", "origin", "feature"},
+				gitRecordPushArgv,
 			},
 		},
 		{
@@ -1871,7 +1877,8 @@ func TestShipGitRebase(t *testing.T) {
 				[]string{"git", "ls-remote", "backup", "refs/heads/main"},
 				gitForEachRefStdinArgv,
 				[]string{"git", "merge-base", "--is-ancestor", "refs/remotes/backup/main", "HEAD"},
-				[]string{"git", "push", "--no-follow-tags", "--quiet", "--no-thin", "backup", "main"}),
+				[]string{"git", "push", "--no-follow-tags", "--quiet", "--no-thin", "backup", "main"},
+				gitRecordPushArgv),
 		},
 	}
 	for _, tt := range tests {
@@ -2064,7 +2071,7 @@ func TestShipGitPushRetry(t *testing.T) {
 			},
 			rebased:     1,
 			remoteCount: 3,
-			want:        slices.Concat(plan, attempt, rebasingAttempt, [][]string{describe}),
+			want:        slices.Concat(plan, attempt, rebasingAttempt, [][]string{gitRecordPushArgv, describe}),
 		},
 		{
 			name: "retries exhausted names the remedy",
@@ -2143,7 +2150,7 @@ func TestShipGitPushRetry(t *testing.T) {
 			},
 			rebased:     1,
 			remoteCount: 4,
-			want:        slices.Concat(plan, rebasingAttempt, rebasingAttempt, [][]string{describe}),
+			want:        slices.Concat(plan, rebasingAttempt, rebasingAttempt, [][]string{gitRecordPushArgv, describe}),
 		},
 	}
 	for _, tt := range tests {

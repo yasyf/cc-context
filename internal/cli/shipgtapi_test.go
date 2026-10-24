@@ -591,11 +591,14 @@ func gtPushInv(refs ...gtPushRef) []string {
 	return append(argv, "--atomic")
 }
 
-// gtReceiptInv is the publication receipt a plain submit records after its
-// push: per branch, the prior read, the receipt blob, and the read
-// stackReceiptTx makes, then one update-ref transaction.
+var gitRecordPushArgv = []string{"git", "update-ref", "-m", "update by push", "--stdin"}
+
+// gtReceiptInv is what a plain submit records after its push: the pushed
+// heads in their remote-tracking refs, then the publication receipt, per
+// branch the prior read, the receipt blob, and the read stackReceiptTx makes,
+// then one update-ref transaction.
 func gtReceiptInv(branches ...string) [][]string {
-	var inv [][]string
+	inv := [][]string{gitRecordPushArgv}
 	for _, branch := range branches {
 		read := []string{"git", "rev-parse", "--verify", "--quiet", stackPublicationRef(branch, "receipt")}
 		inv = append(inv, read, []string{"git", "hash-object", "-w", "--stdin"}, read)
