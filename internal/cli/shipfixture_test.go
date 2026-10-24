@@ -935,6 +935,7 @@ exit 0
         fi ;;
     esac ;;
   "add"*|"read-tree"*|"update-index"*|"restore"*) : ;;
+  "update-ref -m") cat >/dev/null ;;
   # Every path a scoped ship names reads as one untracked, unignored file.
   "ls-files -z")
     if [ "$3" = --others ]; then shift 5; for p in "$@"; do printf '%s\0' "${p#:(literal)}"; done; fi ;;

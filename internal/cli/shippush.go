@@ -194,9 +194,5 @@ func gitRecordPush(ctx context.Context, dir render.Dir, remote string, pushed ma
 }
 
 func gitRecordBranchPush(ctx context.Context, dir render.Dir, remote, branch string) error {
-	head, err := stackRevParse(ctx, dir, gtRestackRef(branch))
-	if err != nil {
-		return err
-	}
-	return gitRecordPush(ctx, dir, remote, map[string]string{branch: head})
+	return gitRecordPush(ctx, dir, remote, map[string]string{branch: gtRestackRef(branch)})
 }

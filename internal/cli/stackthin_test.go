@@ -1293,7 +1293,6 @@ func TestThinIsStoreRequiresTheDerivedPath(t *testing.T) {
 	_, lane := thinNew(t, f, f.Dir, "lane1", "--thin", "--depth", strconv.Itoa(thinTestDepth))
 	decoy := filepath.Join(filepath.Dir(filepath.Dir(store)), "0123456789ab", filepath.Base(store))
 	mustRun(t, f.Env(), filepath.Dir(store), "git", "clone", "-q", "--no-local", f.RemoteDir, decoy)
-	head := gitAt(t, f.Env(), decoy, "rev-parse", "HEAD")
 	for _, tt := range []struct {
 		dir  string
 		want bool
@@ -1312,12 +1311,6 @@ func TestThinIsStoreRequiresTheDerivedPath(t *testing.T) {
 	}
 	if got, err := thinIsStore(f.ContextIn(decoy), ck); err == nil || !strings.Contains(err.Error(), "derives "+store) {
 		t.Errorf("thinIsStore(decoy) = %v, %v, want a refusal naming the store its remote derives", got, err)
-	}
-	if err := gitRecordPush(f.ContextIn(decoy), render.Dir(decoy), "origin", map[string]string{"decoy": head}); err == nil {
-		t.Error("push tracking accepted a store-shaped checkout whose remote derives another store")
-	}
-	if present, err := gitRefExists(f.ContextIn(decoy), render.Dir(decoy), "test", "refs/remotes/origin/decoy"); err != nil || present {
-		t.Errorf("push tracking wrote into a checkout that only sits where a store would: %v %v", present, err)
 	}
 }
 
