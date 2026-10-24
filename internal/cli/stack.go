@@ -23,6 +23,7 @@ type stackListEntry struct {
 	Path         string `json:"path"`
 	Current      bool   `json:"current"`
 	NeedsRestack bool   `json:"needs_restack"`
+	NeedsSubmit  bool   `json:"needs_submit"`
 	State        string `json:"state"`
 }
 
@@ -338,6 +339,12 @@ func runStackList(cmd *cobra.Command, asJSON bool) error {
 	if err != nil {
 		return fmt.Errorf("stack list: %w", err)
 	}
+	unrecorded := map[string]bool{}
+	for _, branch := range stack {
+		if unrecorded[branch], err = gtUnrecorded(l.checkout.CommonDir, branch); err != nil {
+			return fmt.Errorf("stack list: %w", err)
+		}
+	}
 	if asJSON {
 		report := stackListReport{Root: l.checkout.Root, Branches: make([]stackListEntry, 0, len(stack))}
 		for _, branch := range stack {
@@ -346,6 +353,7 @@ func runStackList(cmd *cobra.Command, asJSON bool) error {
 				Path:         holders[branch],
 				Current:      holders[branch] == l.checkout.Root,
 				NeedsRestack: state[branch].NeedsRestack,
+				NeedsSubmit:  unrecorded[branch],
 				State:        state[branch].State,
 			})
 		}
@@ -357,7 +365,7 @@ func runStackList(cmd *cobra.Command, asJSON bool) error {
 		return nil
 	}
 	for _, branch := range stack {
-		cmd.Println(stackListLine(branch, holders[branch], l.checkout.Root, state[branch]))
+		cmd.Println(stackListLine(branch, holders[branch], l.checkout.Root, state[branch], unrecorded[branch]))
 	}
 	return nil
 }
@@ -433,7 +441,7 @@ func gtStackUpTo(ctx context.Context, dir render.Dir, prefix string, state gtSta
 // holding it — the answer to which lane a branch has to be worked from. A branch
 // no working copy holds is named as such rather than left blank, since "nowhere"
 // is the fact that decides whether a lane has to be cut for it.
-func stackListLine(branch, holder, root string, state gtBranchState) string {
+func stackListLine(branch, holder, root string, state gtBranchState, unrecorded bool) string {
 	where := "no working copy"
 	switch holder {
 	case "":
@@ -445,6 +453,9 @@ func stackListLine(branch, holder, root string, state gtBranchState) string {
 	fields := []string{branch, where}
 	if state.NeedsRestack {
 		fields = append(fields, "needs restack")
+	}
+	if unrecorded {
+		fields = append(fields, "needs stack submit: Graphite has no record of its pull request")
 	}
 	return strings.Join(fields, shipSep)
 }
