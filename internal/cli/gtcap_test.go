@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yasyf/cc-context/internal/vcs"
+	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
@@ -14,11 +14,11 @@ const gtStackCapRefusal = "🥞 Nice stack! Only opening PRs for the first 50 br
 
 func gtCapCommonDir(t *testing.T) string {
 	t.Helper()
-	ck, err := vcs.ResolveCheckout(".")
+	common, err := gtCommonDir(context.Background(), render.Dir("."), "test")
 	if err != nil {
 		t.Fatal(err)
 	}
-	return ck.CommonDir
+	return common
 }
 
 func TestShipGTOpensThePullRequestGraphiteCapsThroughGitHub(t *testing.T) {

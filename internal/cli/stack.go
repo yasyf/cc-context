@@ -339,9 +339,13 @@ func runStackList(cmd *cobra.Command, asJSON bool) error {
 	if err != nil {
 		return fmt.Errorf("stack list: %w", err)
 	}
+	commonDir, err := gtCommonDir(ctx, l.dir(), "stack list")
+	if err != nil {
+		return err
+	}
 	unrecorded := map[string]bool{}
 	for _, branch := range stack {
-		if unrecorded[branch], err = gtUnrecorded(l.checkout.CommonDir, branch); err != nil {
+		if unrecorded[branch], err = gtUnrecorded(commonDir, branch); err != nil {
 			return fmt.Errorf("stack list: %w", err)
 		}
 	}

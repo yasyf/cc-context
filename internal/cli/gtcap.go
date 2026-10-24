@@ -102,10 +102,10 @@ func gtUnrecordedPath(commonDir, branch string) string {
 
 func gtMarkUnrecorded(commonDir, branch string) error {
 	path := gtUnrecordedPath(commonDir, branch)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return fmt.Errorf("mark %s as unrecorded by Graphite: %w", branch, err)
 	}
-	if err := os.WriteFile(path, []byte(branch+"\n"), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(branch+"\n"), 0o600); err != nil {
 		return fmt.Errorf("mark %s as unrecorded by Graphite: %w", branch, err)
 	}
 	return nil
