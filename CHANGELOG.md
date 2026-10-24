@@ -65,6 +65,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A push moves the remote-tracking ref of every branch it pushed.** In a
+  clone whose fetch refspec maps only trunk, git leaves
+  `refs/remotes/origin/<branch>` where the last fetch put it. After
+  `ccx vcs push` force-pushed a stack, a later `ccx vcs ship --tip-only` of a
+  child read the parent's pre-push head there and refused with "own commits
+  do not replay onto ... cleanly". `ccx vcs push`, `ccx vcs ship` and
+  `ccx vcs stack submit` now record each pushed head in its remote-tracking
+  ref in every clone, which only thin stores did before.
+
 - **`ccx vcs stack submit` says when it leaves a saved rebase behind.** A
   submit that saved its rebase state and then returned on an error or a
   SIGINT or SIGTERM used to exit with the state still on disk and no word

@@ -739,26 +739,6 @@ func stackRequireHistory(ctx context.Context, dir render.Dir, prefix, remote, tr
 	return nil
 }
 
-func thinRecordPush(ctx context.Context, dir render.Dir, remote string, pushed map[string]string) error {
-	if len(pushed) == 0 {
-		return nil
-	}
-	ck, store, err := thinDirIsStore(ctx, dir)
-	if err != nil || !store {
-		return err
-	}
-	var tx strings.Builder
-	tx.WriteString("start\n")
-	for _, branch := range slices.Sorted(maps.Keys(pushed)) {
-		fmt.Fprintf(&tx, "update refs/remotes/%s/%s %s\n", remote, branch, pushed[branch])
-	}
-	tx.WriteString("commit\n")
-	if _, err := render.RunCLIStdin(ctx, dir, "git", []string{"update-ref", "-m", "update by push", "--stdin"}, []byte(tx.String())); err != nil {
-		return fmt.Errorf("record the push in %s's remote-tracking refs: %w", ck.Root, err)
-	}
-	return nil
-}
-
 func thinDirIsStore(ctx context.Context, dir render.Dir) (vcs.Checkout, bool, error) {
 	ck, err := vcs.ResolveCheckout(string(dir))
 	if err != nil {
@@ -766,17 +746,6 @@ func thinDirIsStore(ctx context.Context, dir render.Dir) (vcs.Checkout, bool, er
 	}
 	store, err := thinIsStore(ctx, ck)
 	return ck, store, err
-}
-
-func thinRecordBranchPush(ctx context.Context, dir render.Dir, remote, branch string) error {
-	if _, store, err := thinDirIsStore(ctx, dir); err != nil || !store {
-		return err
-	}
-	head, err := stackRevParse(ctx, dir, gtRestackRef(branch))
-	if err != nil {
-		return err
-	}
-	return thinRecordPush(ctx, dir, remote, map[string]string{branch: head})
 }
 
 func thinRefuseAdoptedPush(ctx context.Context, dir render.Dir, prefix string, branches []string) error {

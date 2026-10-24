@@ -5,7 +5,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/yasyf/cc-context/internal/render"
@@ -159,7 +161,7 @@ func shipPushGitExpected(ctx context.Context, dir render.Dir, remote, branch, ex
 	if err != nil {
 		return fmt.Errorf("ship: publish %s/%s with expected remote %s failed; the pinned lease was not refreshed — inspect and reconcile before retrying: %w", remote, branch, expected, err)
 	}
-	if err := thinRecordPush(ctx, dir, remote, map[string]string{branch: source}); err != nil {
+	if err := gitRecordPush(ctx, dir, remote, map[string]string{branch: source}); err != nil {
 		return err
 	}
 	current, err := gtRestackHead(ctx, "ship", dir, branch)
@@ -170,4 +172,31 @@ func shipPushGitExpected(ctx context.Context, dir render.Dir, remote, branch, ex
 		return fmt.Errorf("ship: published %s to %s/%s, but the local branch moved to %s during publication; left the local ref unchanged and stopped before PR and CI updates", source, remote, branch, current)
 	}
 	return nil
+}
+
+// gitRecordPush moves the remote-tracking ref of every branch a push moved to
+// the head it pushed. Git moves only refs its fetch refspec maps, and a clone
+// narrowed to trunk maps none of a lane's branches.
+func gitRecordPush(ctx context.Context, dir render.Dir, remote string, pushed map[string]string) error {
+	if len(pushed) == 0 {
+		return nil
+	}
+	var tx strings.Builder
+	tx.WriteString("start\n")
+	for _, branch := range slices.Sorted(maps.Keys(pushed)) {
+		fmt.Fprintf(&tx, "update refs/remotes/%s/%s %s\n", remote, branch, pushed[branch])
+	}
+	tx.WriteString("commit\n")
+	if _, err := render.RunCLIStdin(ctx, dir, "git", []string{"update-ref", "-m", "update by push", "--stdin"}, []byte(tx.String())); err != nil {
+		return fmt.Errorf("record the push in %s's remote-tracking refs: %w", dir, err)
+	}
+	return nil
+}
+
+func gitRecordBranchPush(ctx context.Context, dir render.Dir, remote, branch string) error {
+	head, err := stackRevParse(ctx, dir, gtRestackRef(branch))
+	if err != nil {
+		return err
+	}
+	return gitRecordPush(ctx, dir, remote, map[string]string{branch: head})
 }

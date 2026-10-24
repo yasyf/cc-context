@@ -478,3 +478,36 @@ func TestVcsPushKeepsAParentGraphiteRestackedOnTheRemote(t *testing.T) {
 		t.Errorf("gt parent of c = %s, want b kept", parent)
 	}
 }
+
+func TestVcsPushMovesTheTrackingRefOfATrunkOnlyClone(t *testing.T) {
+	for _, move := range []string{"create", "fast-forward", "rewrite"} {
+		t.Run(move, func(t *testing.T) {
+			f := shipRepo(t, vcstest.Remote())
+			mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "main")
+			mustRun(t, f.Env(), f.Dir, "git", "config", "remote.origin.fetch", "+refs/heads/main:refs/remotes/origin/main")
+			mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "feat")
+			head := pushCommit(t, f, "a.txt", "a\n", "test: 🧪 a")
+			if move != "create" {
+				mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "feat")
+				mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin", "+refs/heads/feat:refs/remotes/origin/feat")
+			}
+			switch move {
+			case "fast-forward":
+				head = pushCommit(t, f, "b.txt", "b\n", "test: 🧪 b")
+			case "rewrite":
+				mustRun(t, f.Env(), f.Dir, "git", "commit", "-q", "--amend", "-m", "test: 🧪 a, amended")
+				head = shipHead(t, f)
+			}
+
+			if _, err := runVcsPushCmd(f.Context(), t); err != nil {
+				t.Fatalf("push error = %v", err)
+			}
+			if remote := shipRemoteTip(t, f, "origin", "feat"); remote != head {
+				t.Fatalf("origin feat = %s, want %s", remote, head)
+			}
+			if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "refs/remotes/origin/feat"); got != head {
+				t.Errorf("refs/remotes/origin/feat = %s, want the pushed %s", got, head)
+			}
+		})
+	}
+}

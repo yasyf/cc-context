@@ -2871,7 +2871,7 @@ func gtPushStack(ctx context.Context, dir render.Dir, s gtSubmit, plan []gtSubmi
 	}
 	err := gtRunPush(ctx, dir, s, plan)
 	if err == nil {
-		return thinRecordPush(ctx, dir, "origin", gtPushedHeads(plan))
+		return gitRecordPush(ctx, dir, "origin", gtPushedHeads(plan))
 	}
 	if !gitPushStaleLease(err) {
 		return gtPushFailure(s, plan, err)
@@ -2902,7 +2902,7 @@ func gtPushStack(ctx context.Context, dir render.Dir, s gtSubmit, plan []gtSubmi
 		}
 		err = gtRunPush(ctx, dir, s, plan)
 		if err == nil {
-			return thinRecordPush(ctx, dir, "origin", gtPushedHeads(plan))
+			return gitRecordPush(ctx, dir, "origin", gtPushedHeads(plan))
 		}
 		if !gitPushStaleLease(err) {
 			return gtPushFailure(s, plan, err)
