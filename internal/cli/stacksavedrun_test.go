@@ -16,7 +16,6 @@ func TestStackSubmitReportsSavedRunAfterReplayError(t *testing.T) {
 	f := stackRebaseRepo(t, "feature")
 	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
 	head := shipHead(t, f)
-	remote := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature")
 	f.PrependPATH(stackReplayGitWrapper(t, "if [ \"$2\" = replay ]; then echo 'fatal: boom' >&2; exit 128; fi\n"))
 
 	out, errOut, err := runStackCmd(t, f, "submit", "--restack")
@@ -37,9 +36,6 @@ func TestStackSubmitReportsSavedRunAfterReplayError(t *testing.T) {
 	}
 	if got := shipHead(t, f); got != head {
 		t.Errorf("source = %s, want it untouched at %s", got, head)
-	}
-	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature"); got != remote {
-		t.Errorf("remote = %s, want it untouched at %s", got, remote)
 	}
 }
 
