@@ -290,7 +290,7 @@ func shipPR(ctx context.Context, errW io.Writer, l lane, nwo, remote, branch, tr
 	if err != nil {
 		return "", err
 	}
-	cciClaimPRs(ctx, errW, l.dir(), "ship", nwo, []int{created.Number}, nil)
+	cciClaimPRs(ctx, errW, l.dir(), "ship", nwo, []cciOpened{{pr: created.Number, branch: branch}}, nil)
 	return shipPRSegment(created, base, picked), nil
 }
 

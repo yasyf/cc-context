@@ -150,6 +150,9 @@ func stackRefusePins(ctx context.Context, dir render.Dir, run *stackRebaseRun) e
 	if run.NoPush {
 		return nil
 	}
+	if err := stackRefuseOffOwnedPins(ctx, dir, run); err != nil {
+		return err
+	}
 	stale, reasons, err := stackStalePins(ctx, dir, run)
 	if err != nil {
 		return err
@@ -189,6 +192,28 @@ func stackRefusePins(ctx context.Context, dir render.Dir, run *stackRebaseRun) e
 	}
 	return refuse("%s: %s, so nothing was pushed; pass %s to take %s into the run",
 		stackRebasePrefix, strings.Join(reasons, "; "), strings.Join(flags, " "), them)
+}
+
+func stackRefuseOffOwnedPins(ctx context.Context, dir render.Dir, run *stackRebaseRun) error {
+	for _, b := range run.Branches {
+		pin, owner := run.branch(b.Parent), run.owners[b.Parent]
+		if b.Landed != "" || b.Held != "" || b.Kept || pin == nil || !pin.Pinned || owner == "" || b.OldBase == pin.Head {
+			continue
+		}
+		_, code, stderr, err := render.RunCLIExitCode(ctx, dir, "git", []string{"--attr-source=" + pin.Head, "merge-tree", "--write-tree", "--merge-base=" + b.OldBase, pin.Head, b.Head})
+		if err != nil {
+			return fmt.Errorf("stack submit: git merge-tree %.12s %.12s: %w", pin.Head, b.Head, err)
+		}
+		switch code {
+		case 0:
+		case 1:
+			return refuse("stack submit: %s no longer applies on %s's published head %.12s, which %s owns, so nothing was pushed; publish %s alone with ccx vcs ship --tip-only from its working copy",
+				b.Name, pin.Name, pin.Head, stackOwnerName(owner), b.Name)
+		default:
+			return fmt.Errorf("stack submit: git merge-tree %.12s %.12s: exit %d: %s", pin.Head, b.Head, code, strings.TrimSpace(stderr))
+		}
+	}
+	return nil
 }
 
 // stackStalePins names each branch kept at its published head while the run

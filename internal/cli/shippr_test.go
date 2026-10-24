@@ -493,7 +493,7 @@ func TestShipPRClaimsThePullRequestForTheSession(t *testing.T) {
 		want    func(t *testing.T) [][]string
 	}{
 		{"a create claims it opened", "sess-abc", "rest-pulls-head-none", []string{"--pr-title", "Better title"}, func(t *testing.T) [][]string {
-			return [][]string{{"cci", "claim", "--rel", "opened", "--pr", fakePRRepo + "#" + strconv.Itoa(shipPRCreated(t).Number)}}
+			return [][]string{{"cci", "claim", "--rel", "opened", "--pr", fakePRRepo + "#" + strconv.Itoa(shipPRCreated(t).Number), "--branch", "feature"}}
 		}},
 		{"a push to an open one claims it updated", "sess-abc", "rest-pulls-head-open", []string{"--pr-title", "Better title"}, func(t *testing.T) [][]string {
 			return [][]string{{"cci", "claim", "--rel", "updated", "--pr", fakePRRepo + "#" + strconv.Itoa(prFromListGolden(t, "rest-pulls-head-open").Number)}}

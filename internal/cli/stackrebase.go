@@ -210,6 +210,7 @@ type stackRebaseRun struct {
 	lanePins      []string
 	heldBelow     map[string]stackSkip
 	heldAbove     []string
+	owners        map[string]string
 	adopted       gtState
 	recorded      map[string]stackRecordedParent
 }
@@ -252,6 +253,7 @@ type stackRebaseOpts struct {
 	noPush      bool
 	members     []string
 	pinned      []string
+	owners      map[string]string
 	draft       *bool
 	draftAll    bool
 	noVerify    bool
@@ -326,7 +328,8 @@ A branch below the checked-out one that another working copy holds is that
 working copy's, and so is every branch below it down to the next one another
 working copy holds: the run keeps each at its published head, or at its local
 head in a run that does not push, names it with the working copy whose lane
-owns it, and moves only the branches above them. In a run that pushes, a branch
+owns it, and moves only the branches above them. A branch another live cci
+session claims is held by that session's lane the same way. In a run that pushes, a branch
 above the checked-out one that a working copy of another lane holds is that
 lane's too: it and every branch stacked on it are left where they are, named,
 and never pushed; that lane publishes them with ccx vcs stack submit. A working
@@ -1183,9 +1186,12 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 		if err != nil {
 			return nil, fmt.Errorf("stack rebase: %w", err)
 		}
+		if err := stackAddClaims(ctx, l.dir(), holders, members); err != nil {
+			return nil, fmt.Errorf("stack rebase: %w", err)
+		}
 		heldBelow = stackHeldBelow(retargeted, current, members, o.include, holders)
 		if !o.noPush {
-			foreign, err := vcs.ForeignBranchHolders(ctx, l.checkout)
+			foreign, err := stackLaneHolders(ctx, l, members)
 			if err != nil {
 				return nil, fmt.Errorf("stack rebase: %w", err)
 			}
@@ -1265,7 +1271,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	if err != nil {
 		return nil, fmt.Errorf("stack rebase: %w", err)
 	}
-	run := &stackRebaseRun{Trunk: trunk, Pin: pin, NoPush: o.noPush, Origin: l.checkout.Root, Draft: o.draft, DraftAll: o.draftAll, NoVerify: o.noVerify, Tip: o.tip, TipOnly: o.tipOnly, DropCommits: o.dropCommits, StayClean: o.stayClean, Restack: o.restack, AllLanes: o.allLanes, To: o.to, Reparented: slices.Sorted(maps.Keys(overrides)), NewPRs: o.newPRs, deferPush: o.deferPush, Ship: o.ship, Roots: roots, Pid: os.Getpid(), Started: stackProcStart(os.Getpid()), Host: host, left: left, lanePins: lanePins, heldBelow: heldBelow, heldAbove: heldAbove, adopted: adopted, recorded: o.recorded}
+	run := &stackRebaseRun{Trunk: trunk, Pin: pin, NoPush: o.noPush, Origin: l.checkout.Root, Draft: o.draft, DraftAll: o.draftAll, NoVerify: o.noVerify, Tip: o.tip, TipOnly: o.tipOnly, DropCommits: o.dropCommits, StayClean: o.stayClean, Restack: o.restack, AllLanes: o.allLanes, To: o.to, Reparented: slices.Sorted(maps.Keys(overrides)), NewPRs: o.newPRs, deferPush: o.deferPush, Ship: o.ship, Roots: roots, Pid: os.Getpid(), Started: stackProcStart(os.Getpid()), Host: host, left: left, lanePins: lanePins, heldBelow: heldBelow, heldAbove: heldAbove, owners: o.owners, adopted: adopted, recorded: o.recorded}
 	own := map[string]bool{}
 	if current != "" && current != trunk {
 		down, err := gtDownstack(stackRebasePrefix, retargeted, current, trunk)
