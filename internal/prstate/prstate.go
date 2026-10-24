@@ -59,6 +59,16 @@ const (
 type Want struct {
 	PRs      []int
 	Prefixes []string
+	// MaxAge is how long ago a record may have been polled and still answer
+	// the read; zero means MinInterval.
+	MaxAge time.Duration
+}
+
+func (w Want) maxAge() time.Duration {
+	if w.MaxAge > 0 {
+		return w.MaxAge
+	}
+	return MinInterval
 }
 
 // State is a repository's shared view as of its last poll.
@@ -282,7 +292,8 @@ func Open(root string, src *GitHub) (*Store, error) {
 }
 
 // Read returns the shared view with everything want names polled at most
-// MinInterval before the read began, polling first when it is not. Every read
+// want.MaxAge, MinInterval by default, before the read began, polling first
+// when it is not. Every read
 // renews want's leases, so the next poll by any process reads them too. A read the budget refuses returns
 // the stale view with a *LimitedError.
 //
@@ -425,7 +436,7 @@ func (s *Store) degrade(ctx context.Context, st State, want Want, asked, now tim
 		prs = append(prs, lane.PRs...)
 	}
 	slices.Sort(prs)
-	prs = slices.DeleteFunc(slices.Compact(prs), func(n int) bool { return st.fresh(Want{PRs: []int{n}}, asked) })
+	prs = slices.DeleteFunc(slices.Compact(prs), func(n int) bool { return st.fresh(Want{PRs: []int{n}, MaxAge: want.MaxAge}, asked) })
 	_, _ = fmt.Fprintf(s.src.warn, "prstate: %v; reading %d pull requests through REST\n", cause, len(prs))
 	p, err := s.src.pollREST(ctx, prs, st.PRs, st.Trunk.Name)
 	if err != nil {
@@ -688,13 +699,13 @@ func (st State) Covers(want Want) bool {
 func (st State) fresh(want Want, now time.Time) bool {
 	for _, n := range want.PRs {
 		pr, ok := st.PRs[n]
-		if !ok || pr.PushedAt.After(pr.PolledAt) || !pr.settled() && now.Sub(pr.PolledAt) >= MinInterval {
+		if !ok || pr.PushedAt.After(pr.PolledAt) || !pr.settled() && now.Sub(pr.PolledAt) >= want.maxAge() {
 			return false
 		}
 	}
 	for _, prefix := range want.Prefixes {
 		lane, ok := st.Lanes[prefix]
-		if !ok || now.Sub(lane.PolledAt) >= MinInterval || !st.fresh(Want{PRs: lane.PRs}, now) {
+		if !ok || now.Sub(lane.PolledAt) >= want.maxAge() || !st.fresh(Want{PRs: lane.PRs, MaxAge: want.MaxAge}, now) {
 			return false
 		}
 	}
@@ -702,7 +713,7 @@ func (st State) fresh(want Want, now time.Time) bool {
 }
 
 func (st State) unpolled(want Want, now time.Time) ([]int, bool) {
-	if st.AttemptedAt.IsZero() || !st.fresh(Want{Prefixes: want.Prefixes}, now) {
+	if st.AttemptedAt.IsZero() || !st.fresh(Want{Prefixes: want.Prefixes, MaxAge: want.MaxAge}, now) {
 		return nil, false
 	}
 	var prs []int
@@ -711,7 +722,7 @@ func (st State) unpolled(want Want, now time.Time) ([]int, bool) {
 		switch {
 		case !ok || pr.PushedAt.After(pr.PolledAt):
 			prs = append(prs, n)
-		case !st.fresh(Want{PRs: []int{n}}, now):
+		case !st.fresh(Want{PRs: []int{n}, MaxAge: want.MaxAge}, now):
 			return nil, false
 		}
 	}
