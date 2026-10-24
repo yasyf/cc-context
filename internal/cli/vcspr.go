@@ -242,13 +242,13 @@ type prStateReport struct {
 func newVcsPRStateCmd() *cobra.Command {
 	var repo string
 	var prefixes []string
-	var wait time.Duration
+	var wait, maxAge time.Duration
 	cmd := &cobra.Command{
 		Use:   "state [<number>...]",
 		Short: "Print the shared cache's record of each pull request and lane prefix as JSON",
 		Long: `Print the machine-wide pull request cache's record of each named pull request,
 and of each open pull request on a branch under a --lane-prefix, as one JSON
-object. Records are at most 30 seconds old; a read of anything older polls
+object. Records are at most 30 seconds old, or --max-age; a read of anything older polls
 GitHub once for what it names and what any other process on the machine asked
 for since the last poll, the same poll ccx vcs pr watch and ccx vcs pr status
 share.
@@ -261,16 +261,17 @@ While GitHub rate-limits the machine the command sits it out for as long as
 naming when they were polled and when the next probe is; records the cache
 never held fail naming the next probe.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runVcsPRState(cmd, args, repo, prefixes, wait)
+			return runVcsPRState(cmd, args, repo, prefixes, wait, maxAge)
 		},
 	}
 	cmd.Flags().StringVarP(&repo, "repo", "R", "", "the owner/name repository (default: the current checkout's)")
 	cmd.Flags().StringArrayVar(&prefixes, "lane-prefix", nil, "also list the open pull requests on branches under this prefix; repeatable")
 	cmd.Flags().DurationVar(&wait, "wait", 0, "how long to sit out a GitHub rate limit before failing")
+	cmd.Flags().DurationVar(&maxAge, "max-age", prstate.MinInterval, "how old a cached record may be and still answer, so a caller that needs no fresher view skips the wait for a poll")
 	return cmd
 }
 
-func runVcsPRState(cmd *cobra.Command, args []string, repo string, prefixes []string, wait time.Duration) error {
+func runVcsPRState(cmd *cobra.Command, args []string, repo string, prefixes []string, wait, maxAge time.Duration) error {
 	ctx := cmd.Context()
 	numbers, err := prNumbers(args)
 	if err != nil {
@@ -290,7 +291,7 @@ func runVcsPRState(cmd *cobra.Command, args []string, repo string, prefixes []st
 	if err != nil {
 		return fmt.Errorf("pr state: %w", err)
 	}
-	st, limited, err := readPRStateWaiting(ctx, store, prstate.Want{PRs: numbers, Prefixes: prefixes}, wait)
+	st, limited, err := readPRStateWaiting(ctx, store, prstate.Want{PRs: numbers, Prefixes: prefixes, MaxAge: maxAge}, wait)
 	if err != nil {
 		return fmt.Errorf("pr state: %w", err)
 	}

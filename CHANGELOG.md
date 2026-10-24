@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`ccx vcs pr state --max-age <duration>` accepts older cached records.**
+  A record polled within the given age answers the read, where the default
+  is 30 seconds. A caller that reads every few minutes no longer waits out the
+  next shared poll, which takes 10 to 30 seconds on a busy machine. A record
+  older than the age polls as before.
+
 - **`ccx vcs ship` and `ccx vcs stack submit` claim their pull requests in
   cci.** In a Claude Code or Codex session with `cci` on the PATH, each pull
   request the Graphite submit or ship's pull request step opens is claimed

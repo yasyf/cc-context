@@ -154,6 +154,23 @@ func TestReadSharesOnePollAcrossStoresWithinTheMinimumInterval(t *testing.T) {
 	}
 }
 
+func TestAReadWithAMaxAgeAnswersFromAnOlderPollWithoutWaiting(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c := &clock{now: epoch}
+	first, firstGH := newStore(t, dir, c, nil, ok(t, "poll-189-190.json"))
+	second, secondGH := newStore(t, dir, c, nil)
+
+	if _, err := first.Read(testCtx(t), Want{PRs: []int{189, 190}}); err != nil {
+		t.Fatalf("first read: %v", err)
+	}
+	c.now = c.now.Add(3 * MinInterval)
+	st, err := second.Read(testCtx(t), Want{PRs: []int{190}, MaxAge: 4 * MinInterval})
+	if err != nil || firstGH.requests() != 1 || secondGH.requests() != 0 || len(c.slept) != 0 || st.PRs[190].HeadRefOid == "" {
+		t.Errorf("read = %v with %d, %d requests, slept %v, #190 = %+v; want the older poll's record at once", err, firstGH.requests(), secondGH.requests(), c.slept, st.PRs[190])
+	}
+}
+
 func TestAPollReadsOnlyWhatWasAskedForSinceTheLastPoll(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
