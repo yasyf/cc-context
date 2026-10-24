@@ -369,3 +369,40 @@ func TestShipGTRefusesAReplayOverEditsItLeavesOut(t *testing.T) {
 		t.Errorf("status = %q, want both edits left uncommitted", status)
 	}
 }
+
+func TestShipGTAdoptsOntoTheRemoteTrunkNotALocalTrunkLeftBehindIt(t *testing.T) {
+	f := shipGTRepo(t)
+	writeShipFile(t, f.Dir, "base.txt", "base\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", ".")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "base")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "main")
+	mustRun(t, f.Env(), f.Dir, "git", "branch", "b")
+	writeShipFile(t, f.Dir, "trunk.txt", "remote\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", ".")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "remote trunk")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "main")
+	remote := gitAt(t, f.Env(), f.Dir, "rev-parse", "main")
+	writeShipFile(t, f.Dir, "local.txt", "local only\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", ".")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "local trunk only")
+	stale := gitAt(t, f.Env(), f.Dir, "rev-parse", "main")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "b")
+	writeShipFile(t, f.Dir, "own.txt", "own\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", ".")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "own work")
+	shipResetLog(t, f)
+
+	got, err := runShipCmd(f.Context(), t, "--no-commit", "--no-push")
+	if err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	if base := gitAt(t, f.Env(), f.Dir, "merge-base", remote, "b"); base != remote {
+		t.Errorf("b forks from main at %s, want it on the remote trunk %s; summary %q", base, remote, got)
+	}
+	if base := gitAt(t, f.Env(), f.Dir, "merge-base", stale, "b"); base == stale {
+		t.Errorf("b carries %s, a commit only the local trunk holds; summary %q", stale, got)
+	}
+	if subjects := gitAt(t, f.Env(), f.Dir, "log", "--format=%s", remote+"..b"); subjects != "own work" {
+		t.Errorf("b carries %q above the remote trunk, want its own commit alone", subjects)
+	}
+}

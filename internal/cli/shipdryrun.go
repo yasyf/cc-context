@@ -205,7 +205,7 @@ func dryRunReparent(ctx context.Context, l lane, o shipOpts, state gtState, was 
 // dryRunOnto names the replay gtOnto would make to put the branch on --parent,
 // or records the refusal it would make instead.
 func dryRunOnto(ctx context.Context, l lane, o shipOpts, r *shipDryRun) (string, error) {
-	m, err := gtOntoPlan(ctx, l, o, r.branch, r.parent)
+	m, err := gtOntoPlan(ctx, l, o, r.branch, r.parent, r.parent == r.trunk)
 	r.onto = r.parent
 	first, err := gtCommitBeforeMove(ctx, l, o, r.plan, err)
 	if first {

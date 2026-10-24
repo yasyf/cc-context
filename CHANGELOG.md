@@ -65,6 +65,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Adopting an untracked branch onto trunk measures against the remote
+  trunk.** `ccx vcs ship` in the graphite lane replayed an untracked branch's
+  own commits onto the local trunk ref whenever that ref was not in the
+  branch's history. A local trunk left behind origin, or carrying commits
+  origin never got, became the branch's new base, and a pushing ship
+  force-pushed it there while reporting the old base kept. It now finds the
+  branch's own commits against, and replays them onto, the remote-tracking
+  trunk, and falls back to the local trunk only when no remote trunk ref
+  exists.
+
 - **`ccx vcs stack rebase --parent <child>=<parent>` follows a parent that
   conflicts with trunk.** When the parent is another lane's branch kept at its
   published head and conflicts with trunk, the run replays the child onto that
