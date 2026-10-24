@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"os"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -447,7 +449,8 @@ func stackListLine(branch, holder, root string, state gtBranchState) string {
 	return strings.Join(fields, shipSep)
 }
 
-func runStackSubmit(cmd *cobra.Command, o shipOpts, include []string, to string) error {
+func runStackSubmit(cmd *cobra.Command, o shipOpts, include []string, to string) (err error) {
+	since := time.Now()
 	ctx := cmd.Context()
 	l, err := resolveLane(ctx, "stack submit", workingDir(ctx), false)
 	if err != nil {
@@ -456,6 +459,7 @@ func runStackSubmit(cmd *cobra.Command, o shipOpts, include []string, to string)
 	if !l.gt {
 		return errors.New("stack submit: this repository is not on the graphite lane, and a stack is Graphite's — ship the branch with ccx vcs ship instead")
 	}
+	defer func() { err = errors.Join(err, stackReportSaved(cmd, l.checkout.CommonDir, since)) }()
 	if err := stackAdoptChain(cmd, l.dir()); err != nil {
 		return err
 	}
@@ -499,6 +503,26 @@ func runStackSubmit(cmd *cobra.Command, o shipOpts, include []string, to string)
 		return err
 	}
 	return stackRepairTracking(cmd, opts, tracking)
+}
+
+func stackReportSaved(cmd *cobra.Command, commonDir string, since time.Time) error {
+	runs, err := stackRuns(cmd.ErrOrStderr(), commonDir)
+	if err != nil {
+		return err
+	}
+	host, err := os.Hostname()
+	if err != nil {
+		return err
+	}
+	for _, run := range runs {
+		if run.Pid != os.Getpid() || run.Host != host || run.Conflict != nil || run.saved.Before(since) {
+			continue
+		}
+		if _, err := fmt.Fprintf(cmd.ErrOrStderr(), "stack submit: saved stack rebase of %s remains in %s — finish it with ccx vcs stack continue --stack %s, or drop it with ccx vcs stack abort --stack %s\n", strings.Join(run.Roots, ", "), run.dir, run.locks()[0], run.locks()[0]); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func stackAdoptChain(cmd *cobra.Command, dir render.Dir) error {

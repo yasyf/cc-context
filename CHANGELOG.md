@@ -65,6 +65,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs stack submit` says when it leaves a saved rebase behind.** A
+  submit that saved its rebase state and then returned on an error or a
+  SIGINT or SIGTERM used to exit with the state still on disk and no word
+  of it. The next submit then refused over that run, and `continue` published
+  the old plan. It now names the saved run's directory on stderr with the
+  `ccx vcs stack continue --stack` and `ccx vcs stack abort --stack` commands
+  that finish or drop it. A run stopped on a conflict keeps its own message.
+
 - **Adopting an untracked branch onto trunk measures against the remote
   trunk.** `ccx vcs ship` in the graphite lane replayed an untracked branch's
   own commits onto the local trunk ref whenever that ref was not in the
