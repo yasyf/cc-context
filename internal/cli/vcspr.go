@@ -34,10 +34,11 @@ const (
 type prCIState string
 
 const (
-	prCIGreen   prCIState = "green"
-	prCIRed     prCIState = "red"
-	prCIPending prCIState = "pending"
-	prCINone    prCIState = "none"
+	prCIGreen    prCIState = "green"
+	prCIRed      prCIState = "red"
+	prCIPending  prCIState = "pending"
+	prCINone     prCIState = "none"
+	prCIUnproven prCIState = "unproven"
 )
 
 type prApprovalState string
@@ -89,10 +90,11 @@ type prStatusReport struct {
 }
 
 type prCIReport struct {
-	State   prCIState `json:"state"`
-	Failing []string  `json:"failing,omitempty"`
-	Running int       `json:"running,omitempty"`
-	Rollup  string    `json:"rollup,omitempty"`
+	State    prCIState `json:"state"`
+	Failing  []string  `json:"failing,omitempty"`
+	Running  int       `json:"running,omitempty"`
+	Rollup   string    `json:"rollup,omitempty"`
+	Deferred int       `json:"deferred_to,omitempty"`
 }
 
 type prApprovalReport struct {
@@ -354,7 +356,7 @@ func collectPRQueue(ctx context.Context, repo string, numbers []int, warn io.Wri
 			r := prQueueWithoutGraphite(pr)
 			r.Stale = staleAt(limited, pr.PolledAt)
 			r.Source = pr.Source
-			reports = append(reports, newPRStatusReport(r, pr, 0))
+			reports = append(reports, newPRStatusReport(ctx, warn, repo, r, pr, 0))
 			continue
 		}
 		if pr.Graphite == nil {
@@ -383,15 +385,16 @@ func collectPRQueue(ctx context.Context, repo string, numbers []int, warn io.Wri
 		r.Conflicting = r.Queue == prQueueEvicted && pr.MergeStateStatus == "DIRTY"
 		r.Stale = staleAt(limited, pr.PolledAt)
 		r.Source = pr.Source
-		reports = append(reports, newPRStatusReport(r, pr, info.DependentPRNumber))
+		reports = append(reports, newPRStatusReport(ctx, warn, repo, r, pr, info.DependentPRNumber))
 	}
 	return reports, nil
 }
 
-func newPRStatusReport(r prQueueReport, pr prstate.PR, downstack int) prStatusReport {
+func newPRStatusReport(ctx context.Context, warn io.Writer, repo string, r prQueueReport, pr prstate.PR, downstack int) prStatusReport {
 	report := prStatusReport{prQueueReport: r, Approval: prApprovalOf(pr), Mergeability: pr.Mergeability, Downstack: downstack}
 	if r.Queue != prQueueLanded {
 		ci := prCIOf(pr.Rollup)
+		prProveRedundantSkips(ctx, warn, repo, pr, &ci)
 		report.CI = &ci
 	}
 	report.Verdict = prVerdict(report, pr)
@@ -525,6 +528,8 @@ func prVerdict(r prStatusReport, pr prstate.PR) string {
 		causes = append(causes, "ci-pending")
 	case prCINone:
 		causes = append(causes, "no-ci")
+	case prCIUnproven:
+		causes = append(causes, "ci-unproven")
 	}
 	switch r.Approval.State {
 	case prChangesRequested:
@@ -658,8 +663,14 @@ func prCIValue(ci prCIReport) string {
 		return "ci red: " + strings.Join(named, ", ") + rest
 	case ci.Rollup != "":
 		return "ci red: rollup " + strings.ToLower(ci.Rollup)
+	case ci.State == prCIUnproven:
+		return "ci unproven: redundant skip, no full run"
+	case ci.State == prCIPending && ci.Deferred != 0:
+		return fmt.Sprintf("ci pending: %d running, full run on #%d", ci.Running, ci.Deferred)
 	case ci.State == prCIPending:
 		return fmt.Sprintf("ci pending: %d running", ci.Running)
+	case ci.Deferred != 0:
+		return fmt.Sprintf("ci green: full run on #%d", ci.Deferred)
 	}
 	return "ci " + string(ci.State)
 }

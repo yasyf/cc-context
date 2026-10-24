@@ -141,6 +141,7 @@ type Context struct {
 	DatabaseID int64     `json:"databaseId,omitempty"`
 	Context    string    `json:"context,omitempty"`
 	State      string    `json:"state,omitempty"`
+	TargetURL  string    `json:"targetUrl,omitempty"`
 }
 
 // Latest returns the rollup without the check runs a later run of the same

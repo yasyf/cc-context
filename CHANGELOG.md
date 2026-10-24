@@ -50,6 +50,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs pr status` no longer calls a redundant-in-stack skip green.**
+  Graphite's CI optimizer lets a Buildkite pipeline pass a pull request in a
+  few seconds when a pull request stacked above it will run the full build.
+  The status reported that skip as `ci green` even when the pull request it
+  deferred to was closed or red. The poll now records each status's target
+  URL, and `pr status` reads a passed Buildkite build with
+  `BUILDKITE_API_TOKEN`. A build whose jobs say it was redundant within its
+  stack is graded by the pull request stacked on it: its full build must pass
+  on a head that contains this one, reported as `ci green: full run on #N`.
+  A closed, red, or missing child reads `ci unproven: redundant skip, no full
+  run`, which blocks the verdict as `ci-unproven`.
+
 - **A cci claim covers every agent of the session that made it.** ccx 0.79.46
   matched a claim to the caller by session and agent id, so a subagent of the
   claiming lane, such as the one that ships its pull requests, read the lane's

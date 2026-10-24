@@ -68,8 +68,9 @@ type restStatus struct {
 	State      string `json:"state"`
 	TotalCount int    `json:"total_count"`
 	Statuses   []struct {
-		Context string `json:"context"`
-		State   string `json:"state"`
+		Context   string `json:"context"`
+		State     string `json:"state"`
+		TargetURL string `json:"target_url"`
 	} `json:"statuses"`
 }
 
@@ -304,7 +305,7 @@ func restRollup(runs restCheckRuns, status restStatus) (*Rollup, string) {
 		})
 	}
 	for _, s := range status.Statuses {
-		rollup.Contexts.Nodes = append(rollup.Contexts.Nodes, Context{Typename: "StatusContext", Context: s.Context, State: strings.ToUpper(s.State)})
+		rollup.Contexts.Nodes = append(rollup.Contexts.Nodes, Context{Typename: "StatusContext", Context: s.Context, State: strings.ToUpper(s.State), TargetURL: s.TargetURL})
 	}
 	if len(rollup.Contexts.Nodes) == 0 {
 		return nil, combined
