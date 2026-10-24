@@ -99,3 +99,31 @@ func TestStackSubmitRefusesAChildOfAHeldParentThatConflictsWithTrunk(t *testing.
 		})
 	}
 }
+
+func TestStackRebaseParentFollowsAHeldParentThatConflictsWithTrunk(t *testing.T) {
+	f := stackRebaseRepo(t, "base", "feature")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "feature")
+	held := f.WorktreePath("held")
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", held, "base")
+	writeShipFile(t, held, "base.txt", "base moved\n")
+	mustRun(t, f.Env(), held, "git", "commit", "-qam", "base moves")
+	mustRun(t, f.Env(), held, "git", "push", "-q", "origin", "base")
+	base := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
+	stackAdvanceTrunk(t, f, "base.txt", "upstream\n")
+	pin := gitAt(t, f.Env(), f.Dir, "rev-parse", "origin/main")
+
+	out, errOut, err := runStackCmd(t, f, "rebase", "--parent", "feature=base")
+	if err != nil {
+		t.Fatalf("stack rebase --parent feature=base: %v\n%s%s", err, out, errOut)
+	}
+	if want := "warning: feature follows base's published head, and feature on it conflicts with main@" + pin[:12] + " in base.txt — the merge queue ejects it until base moves onto main by ccx vcs stack submit from the working copy holding it"; !strings.Contains(errOut, want) {
+		t.Errorf("stderr = %q, want the warning %q", errOut, want)
+	}
+	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base"); got != base {
+		t.Errorf("origin base = %.12s, want it left at its published %.12s", got, base)
+	}
+	feature := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature")
+	if parent := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", feature+"^"); parent != base {
+		t.Errorf("origin feature sits on %.12s, want base's published head %.12s", parent, base)
+	}
+}

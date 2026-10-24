@@ -59,6 +59,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs stack rebase --parent <child>=<parent>` follows a parent that
+  conflicts with trunk.** When the parent is another lane's branch kept at its
+  published head and conflicts with trunk, the run replays the child onto that
+  head, pushes it, and prints one warning naming the conflicting files and
+  `ccx vcs stack submit` from the parent's working copy as the fix. Before, it
+  refused and offered only `--include <parent>`, which rewrites the other
+  lane's branch. A child that conflicts with its parent is still refused.
+
 - **`ccx vcs pr status` no longer calls a redundant-in-stack skip green.**
   Graphite's CI optimizer lets a Buildkite pipeline pass a pull request in a
   few seconds when a pull request stacked above it will run the full build.
