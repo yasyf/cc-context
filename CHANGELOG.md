@@ -50,6 +50,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A cci claim covers every agent of the session that made it.** ccx 0.79.46
+  matched a claim to the caller by session and agent id, so a subagent of the
+  claiming lane, such as the one that ships its pull requests, read the lane's
+  own branches as another lane's and kept them at their published heads. A
+  claim now belongs to its session, and any agent in that session submits the
+  branch.
+
 - **`ccx vcs stack submit` keeps a branch another lane owns at its published
   head even when no working copy holds it.** A submit from the top of a stack
   replayed and pushed the lower branches of another lane whenever none of that
