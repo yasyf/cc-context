@@ -397,7 +397,7 @@ dependencies: set those up in the workspace first.`,
 
 func runStackRegenerate(cmd *cobra.Command, o stackRegenOpts) error {
 	ctx := cmd.Context()
-	_, _, run, err := stackResolveRun(ctx, o.stack)
+	_, _, run, err := stackResolveRun(ctx, cmd.ErrOrStderr(), o.stack)
 	if err != nil {
 		return err
 	}

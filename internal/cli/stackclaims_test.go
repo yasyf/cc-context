@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -64,7 +65,7 @@ func TestStackRebaseProceedsBesideALiveRunWritingAnotherBranch(t *testing.T) {
 	if !stackOnto(t, f, "origin/main", "base") {
 		t.Error("base is not on the new trunk")
 	}
-	runs, err := stackRuns(filepath.Join(f.Dir, ".git"))
+	runs, err := stackRuns(io.Discard, filepath.Join(f.Dir, ".git"))
 	if err != nil || len(runs) != 1 || !slices.Equal(runs[0].Claims, []string{"sibling"}) {
 		t.Fatalf("runs = %v, %v, want only the sibling lane's live run kept", runs, err)
 	}
@@ -113,7 +114,7 @@ func TestStackRebaseDiscardsAnExitedRunWhoseBranchesAreGone(t *testing.T) {
 			if err != nil {
 				t.Fatalf("rebase beside an exited run of another branch = %v", err)
 			}
-			runs, err := stackRuns(filepath.Join(f.Dir, ".git"))
+			runs, err := stackRuns(io.Discard, filepath.Join(f.Dir, ".git"))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -283,7 +284,7 @@ func TestStackGateTreatsARunThatEndedMeanwhileAsFinished(t *testing.T) {
 	f := stackRebaseRepo(t, "base", "feature")
 	stackPlantRun(t, f, stackStaleAfter+time.Minute, "base")
 	common := filepath.Join(f.Dir, ".git")
-	runs, err := stackRuns(common)
+	runs, err := stackRuns(io.Discard, common)
 	if err != nil || len(runs) != 1 {
 		t.Fatalf("runs = %v, %v, want the planted run", runs, err)
 	}
@@ -301,5 +302,37 @@ func TestStackGateTreatsARunThatEndedMeanwhileAsFinished(t *testing.T) {
 	done, err := stackGate(f.Context(), cmd, l, common, runs[0], false)
 	if err != nil || !done || !strings.Contains(out.String(), "the stack rebase of base ended meanwhile") {
 		t.Fatalf("stackGate over a removed run = %v, %v, %q, want it finished", done, err, out.String())
+	}
+}
+
+func TestStackRunsSkipsAnotherLanesUnreadableState(t *testing.T) {
+	t.Parallel()
+	common := t.TempDir()
+	valid := &stackRebaseRun{Roots: []string{"mine"}, Pid: 1}
+	if err := stackClaim(common, valid); err != nil {
+		t.Fatal(err)
+	}
+	if err := stackSaveRun(valid); err != nil {
+		t.Fatal(err)
+	}
+	broken := stackRunDir(common, "theirs")
+	if err := os.Mkdir(broken, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stackStatePath(broken), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var warned bytes.Buffer
+	runs, err := stackRuns(&warned, common, "mine")
+	if err != nil || len(runs) != 1 || runs[0].dir != valid.dir {
+		t.Fatalf("stackRuns beside an empty sibling state = %v, %v, want only the run of mine", runs, err)
+	}
+	if want := "stack rebase: warning: skipped " + broken + ","; strings.Count(warned.String(), "\n") != 1 || !strings.HasPrefix(warned.String(), want) {
+		t.Fatalf("warning = %q, want one line starting %q", warned.String(), want)
+	}
+
+	if _, err := stackRuns(io.Discard, common, "theirs"); err == nil || !strings.Contains(err.Error(), "read "+stackStatePath(broken)) {
+		t.Fatalf("stackRuns for the lane owning the empty state = %v, want a refusal naming %s", err, stackStatePath(broken))
 	}
 }

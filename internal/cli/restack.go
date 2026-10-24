@@ -284,7 +284,7 @@ func restackGit(ctx context.Context, cmd *cobra.Command, l lane, parent string) 
 	if err != nil {
 		return "", err
 	}
-	runs, err := stackRuns(commonDir)
+	runs, err := stackRuns(cmd.ErrOrStderr(), commonDir, run.locks()...)
 	if err != nil {
 		return "", err
 	}

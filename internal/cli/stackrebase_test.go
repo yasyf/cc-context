@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"maps"
 	"os"
@@ -1377,7 +1378,7 @@ func TestStackContinueRefusesARunAnotherProcessDrives(t *testing.T) {
 			t.Fatalf("%s beside a live run = %v, want the refusal naming its pid", verb, err)
 		}
 	}
-	if runs, err := stackRuns(filepath.Join(f.Dir, ".git")); err != nil || len(runs) != 1 {
+	if runs, err := stackRuns(io.Discard, filepath.Join(f.Dir, ".git")); err != nil || len(runs) != 1 {
 		t.Fatalf("runs = %v, %v, want the live run kept", runs, err)
 	}
 }
@@ -2938,7 +2939,7 @@ func stackRunConflict(t *testing.T, f *vcstest.Fixture) *stackConflict {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runs, err := stackRuns(commonDir)
+	runs, err := stackRuns(io.Discard, commonDir)
 	if err != nil {
 		t.Fatal(err)
 	}

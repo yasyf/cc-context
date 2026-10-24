@@ -2,6 +2,7 @@ package cli
 
 import (
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -45,7 +46,7 @@ func stackOwnRun(t *testing.T, run *stackRebaseRun) {
 
 func stackAssertNoRun(t *testing.T, f *vcstest.Fixture) {
 	t.Helper()
-	if runs, err := stackRuns(filepath.Join(f.Dir, ".git")); err != nil || len(runs) != 0 {
+	if runs, err := stackRuns(io.Discard, filepath.Join(f.Dir, ".git")); err != nil || len(runs) != 0 {
 		t.Fatalf("runs = %v, %v, want none", runs, err)
 	}
 	if pins := gitAt(t, f.Env(), f.Dir, "for-each-ref", "refs/ccx/publication-runs", "refs/heads/"+stackRebaseStateDir); pins != "" {

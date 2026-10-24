@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -657,7 +658,7 @@ func TestShipTipOnlyBesideRunsOfOtherBranches(t *testing.T) {
 				}
 				stackAssertBaseKept(t, f, base)
 			}
-			runs, err := stackRuns(filepath.Join(f.Dir, ".git"))
+			runs, err := stackRuns(io.Discard, filepath.Join(f.Dir, ".git"))
 			if err != nil || len(runs) != 1 || !slices.Equal(runs[0].Claims, []string{tc.claims}) {
 				t.Fatalf("runs = %v, %v, want only the run of %s kept", runs, err, tc.claims)
 			}
