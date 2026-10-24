@@ -203,8 +203,11 @@ ran, or one worktree add checked out on such a branch, joins that working
 copy's lane, and a branch any working copy of this lane has checked
 out is submitted as if it were checked out here. A branch a working copy of
 another lane has checked out is that lane's, so it is skipped and named with the
-working copy holding it, along with every branch stacked above it; --include
-submits it anyway, and --all-lanes submits every such branch. One whose pull request landed is no
+working copy holding it, along with every branch stacked above it. So is a
+branch another live cci session claims, checked out or not: ccx vcs ship and
+stack submit claim the branch of each pull request they open, and the lane
+that opened it owns it. --include submits it anyway, and --all-lanes submits
+every such branch. One whose pull request landed is no
 lane's any more: it is dropped like any landed branch, and the branches on it
 move onto trunk.
 
@@ -215,6 +218,9 @@ neither pushed nor submitted, and named on stderr; the rest are left out.
 whose parent this run moves no longer sits on that parent's new head, so the
 run refuses before anything moves rather than publish the branches above it
 onto a stale base; --include takes it into the run, --to stops below it.
+A branch the run publishes that no longer applies on the published head of a
+parent another lane owns refuses the run before anything is pushed, naming
+that lane and ccx vcs ship --tip-only, which publishes the branch alone.
 A kept branch whose local head carries commits its published head lacks, and
 that a branch the run publishes above it carries too, would be dropped from
 what that branch publishes, so the run refuses the same way unless those
@@ -467,7 +473,7 @@ func runStackSubmit(cmd *cobra.Command, o shipOpts, include []string, to string)
 	if err != nil {
 		return err
 	}
-	holders, err := vcs.ForeignBranchHolders(ctx, l.checkout)
+	holders, err := stackLaneHolders(ctx, l, stack)
 	if err != nil {
 		return fmt.Errorf("stack submit: %w", err)
 	}
@@ -488,7 +494,7 @@ func runStackSubmit(cmd *cobra.Command, o shipOpts, include []string, to string)
 	}
 	tracking := &stackTracking{}
 	cmd.SetContext(withStackTracking(ctx, tracking))
-	opts := stackRebaseOpts{members: chain, pinned: stackSkipNames(pinned), landed: o.landed, newPRs: o.newPRs, draft: &o.draft, ship: intent, submit: true, dropCommits: o.dropCommits, stayClean: !o.restack, restack: o.restack, to: to, include: include, otherLanes: o.allLanes}
+	opts := stackRebaseOpts{members: chain, pinned: stackSkipNames(pinned), owners: holders, landed: o.landed, newPRs: o.newPRs, draft: &o.draft, ship: intent, submit: true, dropCommits: o.dropCommits, stayClean: !o.restack, restack: o.restack, to: to, include: include, otherLanes: o.allLanes}
 	if err := runStackRebase(cmd, opts); err != nil {
 		return err
 	}
@@ -688,15 +694,15 @@ func stackAnnounceSkipped(ctx context.Context, w io.Writer, dir render.Dir, pinn
 		skips []stackSkip
 		verb  string
 	}{
-		{pinned, "keeping %s (checked out in %s) at its published head"},
-		{skipped, "skipping %s (checked out in %s)"},
+		{pinned, "keeping %s (%s) at its published head"},
+		{skipped, "skipping %s (%s)"},
 	} {
 		for _, s := range group.skips {
 			unpublished, err := stackUnpublished(ctx, dir, s.branch)
 			if err != nil {
 				return err
 			}
-			if _, err := fmt.Fprintf(w, "stack submit: "+group.verb+" — another lane owns it; %s; pass --include %s to submit it\n", s.branch, s.holder, unpublished, s.branch); err != nil {
+			if _, err := fmt.Fprintf(w, "stack submit: "+group.verb+" — another lane owns it; %s; pass --include %s to submit it\n", s.branch, stackHolderPhrase(s.holder), unpublished, s.branch); err != nil {
 				return fmt.Errorf("stack submit: name the skipped branches: %w", err)
 			}
 		}

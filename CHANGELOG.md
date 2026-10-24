@@ -50,6 +50,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs stack submit` keeps a branch another lane owns at its published
+  head even when no working copy holds it.** A submit from the top of a stack
+  replayed and pushed the lower branches of another lane whenever none of that
+  lane's working copies had them checked out, and collided with that lane's
+  own rework. `ccx vcs ship` and `stack submit` now claim the branch of each
+  pull request they open in cci, and `stack submit` and `stack rebase` treat a
+  branch another live session claims as that session's lane's. When a branch
+  the run publishes no longer applies on such a parent's published head, the
+  submit refuses before any push, naming the owning lane and
+  `ccx vcs ship --tip-only`.
+
 - **Each aborted stack rebase keeps its resolved commits under a name of its
   own.** `ccx vcs stack abort` named the kept refs after the run's state
   directory alone, so a second aborted run of the same stack overwrote the
