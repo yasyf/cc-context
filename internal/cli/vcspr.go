@@ -94,7 +94,6 @@ type prCIReport struct {
 	Failing  []string  `json:"failing,omitempty"`
 	Running  int       `json:"running,omitempty"`
 	Rollup   string    `json:"rollup,omitempty"`
-	Unproven string    `json:"unproven,omitempty"`
 	Deferred int       `json:"deferred_to,omitempty"`
 }
 
@@ -357,7 +356,7 @@ func collectPRQueue(ctx context.Context, repo string, numbers []int, warn io.Wri
 			r := prQueueWithoutGraphite(pr)
 			r.Stale = staleAt(limited, pr.PolledAt)
 			r.Source = pr.Source
-			reports = append(reports, newPRStatusReport(ctx, repo, r, pr, 0))
+			reports = append(reports, newPRStatusReport(ctx, warn, repo, r, pr, 0))
 			continue
 		}
 		if pr.Graphite == nil {
@@ -386,16 +385,16 @@ func collectPRQueue(ctx context.Context, repo string, numbers []int, warn io.Wri
 		r.Conflicting = r.Queue == prQueueEvicted && pr.MergeStateStatus == "DIRTY"
 		r.Stale = staleAt(limited, pr.PolledAt)
 		r.Source = pr.Source
-		reports = append(reports, newPRStatusReport(ctx, repo, r, pr, info.DependentPRNumber))
+		reports = append(reports, newPRStatusReport(ctx, warn, repo, r, pr, info.DependentPRNumber))
 	}
 	return reports, nil
 }
 
-func newPRStatusReport(ctx context.Context, repo string, r prQueueReport, pr prstate.PR, downstack int) prStatusReport {
+func newPRStatusReport(ctx context.Context, warn io.Writer, repo string, r prQueueReport, pr prstate.PR, downstack int) prStatusReport {
 	report := prStatusReport{prQueueReport: r, Approval: prApprovalOf(pr), Mergeability: pr.Mergeability, Downstack: downstack}
 	if r.Queue != prQueueLanded {
 		ci := prCIOf(pr.Rollup)
-		prProveRedundantSkips(ctx, repo, pr, &ci)
+		prProveRedundantSkips(ctx, warn, repo, pr, &ci)
 		report.CI = &ci
 	}
 	report.Verdict = prVerdict(report, pr)
@@ -665,7 +664,7 @@ func prCIValue(ci prCIReport) string {
 	case ci.Rollup != "":
 		return "ci red: rollup " + strings.ToLower(ci.Rollup)
 	case ci.State == prCIUnproven:
-		return "ci unproven: " + ci.Unproven
+		return "ci unproven: redundant skip, no full run"
 	case ci.State == prCIPending && ci.Deferred != 0:
 		return fmt.Sprintf("ci pending: %d running, full run on #%d", ci.Running, ci.Deferred)
 	case ci.State == prCIPending:

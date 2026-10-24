@@ -20,7 +20,7 @@ var prBuildkiteJobs = map[string]string{
 	"78300": `[{"name":"unit"},{"name":"lint"},{"name":"label"}]`,
 }
 
-func stubBuildkite(t *testing.T) {
+func stubBuildkite(t *testing.T, token string) {
 	t.Helper()
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		number := r.URL.Path[strings.LastIndexByte(r.URL.Path, '/')+1:]
@@ -34,7 +34,7 @@ func stubBuildkite(t *testing.T) {
 	prior := buildkiteAPI
 	buildkiteAPI = ts.URL
 	t.Cleanup(func() { buildkiteAPI = prior })
-	t.Setenv(buildkiteEnv, "bk-test")
+	t.Setenv(buildkiteEnv, token)
 }
 
 func prSkippedNode() string {
@@ -44,14 +44,18 @@ func prSkippedNode() string {
 }
 
 func TestPRStatusGradesARedundantSkipByTheFullRunItDeferredTo(t *testing.T) {
+	closed := `[{"number":42690,"state":"closed","merged_at":null,"head":{"ref":"child","sha":"` + prSkipChildHead + `"}}]`
+	open := `[{"number":42690,"state":"open","merged_at":null,"head":{"ref":"child","sha":"` + prSkipChildHead + `"}}]`
 	tests := []struct {
 		name  string
 		child string
+		token string
 		want  string
 	}{
-		{"a closed child", `[{"number":42690,"state":"closed","merged_at":null,"head":{"ref":"child","sha":"` + prSkipChildHead + `"}}]`, "ci unproven: redundant skip, no full run · approved · blocked:ci-unproven"},
-		{"no child", `[]`, "ci unproven: redundant skip, no full run · approved · blocked:ci-unproven"},
-		{"an open child whose full run holds the head", `[{"number":42690,"state":"open","merged_at":null,"head":{"ref":"child","sha":"` + prSkipChildHead + `"}}]`, "ci green: full run on #42690 · approved · landable"},
+		{"a closed child", closed, "bk-test", "ci unproven: redundant skip, no full run · approved · blocked:ci-unproven"},
+		{"no child", `[]`, "bk-test", "ci unproven: redundant skip, no full run · approved · blocked:ci-unproven"},
+		{"an open child whose full run holds the head", open, "bk-test", "ci green: full run on #42690 · approved · landable"},
+		{"an unreadable build", closed, "", "ci green · approved · landable"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -60,14 +64,14 @@ func TestPRStatusGradesARedundantSkipByTheFullRunItDeferredTo(t *testing.T) {
 			github.pull("/repos/Forge-AI/monorepo/pulls", tt.child)
 			github.pull("/repos/Forge-AI/monorepo/commits/"+prSkipChildHead+"/status", `{"statuses":[{"context":"buildkite/test","state":"success","target_url":"`+prFullBuild+`"}]}`)
 			github.pull("/repos/Forge-AI/monorepo/compare/"+prSkipHead+"..."+prSkipChildHead, `{"status":"ahead"}`)
-			stubBuildkite(t)
+			stubBuildkite(t, tt.token)
 
 			out, err := runPRStatusCmd(t, client, "--repo", "Forge-AI/monorepo", "25131")
 			if err != nil {
 				t.Fatalf("pr status: %v", err)
 			}
-			if want := "#25131  not queued · open · " + tt.want + "\n"; out != want {
-				t.Errorf("report = %q, want %q", out, want)
+			if want := "#25131  not queued · open · " + tt.want + "\n"; !strings.HasSuffix(out, want) || strings.Contains(out, "kept GitHub's verdict") != (tt.token == "") {
+				t.Errorf("report = %q, want it to end %q and warn only on an unreadable build", out, want)
 			}
 		})
 	}

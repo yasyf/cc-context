@@ -22,7 +22,6 @@ import (
 const (
 	buildkiteEnv       = "BUILDKITE_API_TOKEN"
 	buildkiteRedundant = "redundant within its stack"
-	prSkipUnproven     = "redundant skip, no full run"
 )
 
 var (
@@ -53,7 +52,7 @@ type prSkipProof struct {
 	repo   string
 }
 
-func prProveRedundantSkips(ctx context.Context, repo string, pr prstate.PR, ci *prCIReport) {
+func prProveRedundantSkips(ctx context.Context, warn io.Writer, repo string, pr prstate.PR, ci *prCIReport) {
 	if ci.State != prCIGreen || pr.Rollup == nil {
 		return
 	}
@@ -64,7 +63,7 @@ func prProveRedundantSkips(ctx context.Context, repo string, pr prstate.PR, ci *
 		}
 		run, err := buildkiteRead(ctx, c.TargetURL)
 		if err != nil {
-			ci.State, ci.Unproven = prCIUnproven, err.Error()
+			_, _ = fmt.Fprintf(warn, "pr status: #%d: %v; kept GitHub's verdict\n", pr.Number, err)
 			return
 		}
 		switch run {
@@ -77,7 +76,7 @@ func prProveRedundantSkips(ctx context.Context, repo string, pr prstate.PR, ci *
 		child, state, err := p.deferredRun(pr.HeadRefName, pr.HeadRefOid, c.Context)
 		switch {
 		case err != nil:
-			ci.State, ci.Unproven = prCIUnproven, prSkipUnproven+": "+err.Error()
+			_, _ = fmt.Fprintf(warn, "pr status: #%d: %s is a redundant skip, and the run it deferred to could not be read: %v; kept GitHub's verdict\n", pr.Number, c.TargetURL, err)
 			return
 		case state == prCIGreen:
 			ci.Deferred = child
@@ -85,7 +84,7 @@ func prProveRedundantSkips(ctx context.Context, repo string, pr prstate.PR, ci *
 			ci.State, ci.Running, ci.Deferred = prCIPending, ci.Running+1, child
 			return
 		default:
-			ci.State, ci.Unproven = prCIUnproven, prSkipUnproven
+			ci.State = prCIUnproven
 			return
 		}
 	}
