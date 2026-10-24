@@ -65,6 +65,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A branch past Graphite's stack cap still gets its pull request.**
+  Graphite refuses to open or update pull requests for branches past the
+  first 50 of a stack, counted from trunk, so no narrower submit gets a
+  branch past it. `ccx vcs ship` and `ccx vcs stack submit` stopped there,
+  after the push, and lanes opened the pull request by hand. They now open it
+  through GitHub with the carried title and body, or move an open one onto
+  the planned base. The run says Graphite has no record of it, and
+  `ccx vcs stack list` marks the branch "needs stack submit" until a submit
+  Graphite records clears the mark.
+
 - **A push moves the remote-tracking ref of every branch it pushed.** In a
   clone whose fetch refspec maps only trunk, git leaves
   `refs/remotes/origin/<branch>` where the last fetch put it. After

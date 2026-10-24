@@ -2112,6 +2112,15 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 			if !errors.As(err, &submitErr) {
 				return nil, nil, refusal
 			}
+			if gtStackCapped(submitErr) {
+				entry, err := gtOpenPastTheCap(ctx, errW, l.dir(), commonDir, s.prefix, owner+"/"+name, pr)
+				if err != nil {
+					return nil, nil, errors.Join(refusal, err)
+				}
+				entries[pr.Head] = entry
+				submitted = append(submitted, posted[i])
+				continue
+			}
 			pull, served, lookupErr := gtServedOnGitHub(ctx, l.dir(), owner+"/"+name, pr)
 			if lookupErr != nil {
 				return nil, nil, errors.Join(refusal, lookupErr)
@@ -2126,6 +2135,9 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 			entries[pr.Head] = stackEntry{Branch: pr.Head, PR: pull.Number, URL: pull.HTMLURL, HasBody: strings.TrimSpace(pull.Body) != "", State: string(gtapi.PROpen)}
 			submitted = append(submitted, posted[i])
 			continue
+		}
+		if err := gtClearUnrecorded(commonDir, posted[i].name); err != nil {
+			return nil, nil, err
 		}
 		recorded = append(recorded, posted[i])
 		landed = append(landed, out...)
@@ -2150,18 +2162,10 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 // request not found" while its record of an open pull request lapses, and the
 // push alone has then already moved the pull request on GitHub.
 func gtServedOnGitHub(ctx context.Context, dir render.Dir, nwo string, pr gtapi.SubmitPR) (ghPull, bool, error) {
-	out, err := render.RunCLI(ctx, dir, "gh", ghPullsByHeadArgv(nwo, pr.Head, "open"))
-	if err != nil {
-		return ghPull{}, false, fmt.Errorf("gh api: read the open pull request of %s: %w", pr.Head, err)
+	pull, found, err := gtOpenPull(ctx, dir, nwo, pr.Head)
+	if err != nil || !found {
+		return ghPull{}, false, err
 	}
-	var pulls []ghPull
-	if err := json.Unmarshal([]byte(out), &pulls); err != nil {
-		return ghPull{}, false, fmt.Errorf("gh api: parse the open pull request of %s: %w", pr.Head, err)
-	}
-	if len(pulls) == 0 {
-		return ghPull{}, false, nil
-	}
-	pull := pulls[0]
 	served := pull.Head.SHA == pr.HeadSha && pull.Base.Ref == pr.Base &&
 		(pr.PRNumber == 0 || pull.Number == pr.PRNumber) &&
 		(pr.Draft == nil || *pr.Draft == pull.Draft)

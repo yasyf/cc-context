@@ -149,9 +149,9 @@ func TestStackListJSON(t *testing.T) {
 			want := map[string]any{
 				"root": f.Dir,
 				"branches": []any{
-					map[string]any{"branch": "base", "path": f.Dir, "current": true, "needs_restack": false, "state": "frozen"},
-					map[string]any{"branch": "middle", "path": "", "current": false, "needs_restack": stale, "state": "frozen"},
-					map[string]any{"branch": "feature", "path": lane, "current": false, "needs_restack": false, "state": "frozen"},
+					map[string]any{"branch": "base", "path": f.Dir, "current": true, "needs_restack": false, "needs_submit": false, "state": "frozen"},
+					map[string]any{"branch": "middle", "path": "", "current": false, "needs_restack": stale, "needs_submit": false, "state": "frozen"},
+					map[string]any{"branch": "feature", "path": lane, "current": false, "needs_restack": false, "needs_submit": false, "state": "frozen"},
 				},
 			}
 			if !reflect.DeepEqual(got, want) {
