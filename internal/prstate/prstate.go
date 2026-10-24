@@ -44,6 +44,7 @@ const (
 	SourceREST = "REST"
 
 	readBudget       = 30 * time.Second
+	pollBudget       = time.Minute
 	leaseTTL         = 15 * time.Minute
 	keepFor          = 24 * time.Hour
 	pushLag          = 10 * time.Minute
@@ -291,8 +292,10 @@ func Open(root string, src *GitHub) (*Store, error) {
 // so concurrent readers share the next poll, and a poll claimed after the read
 // began answers it. A read whose poll failed, that finds the last poll failed,
 // or that no poll answers within 30 seconds reads what it wants through REST
-// instead. No read holds a lock across a request, and a read of fresh records
-// takes none.
+// instead. A poll a read claims runs to its own one-minute deadline, so a read
+// that spent its budget waiting for its turn still lands the poll the other
+// readers share. No read holds a lock across a request, and a read of fresh
+// records takes none.
 func (s *Store) Read(ctx context.Context, want Want) (State, error) {
 	return s.readFor(ctx, want, true)
 }
@@ -389,18 +392,20 @@ func (s *Store) read(ctx context.Context, want Want, asked time.Time, waited boo
 		}
 		return st, next.Sub(now), nil
 	}
-	st, req, claimed, err := s.claim(ctx, want, asked, now)
+	poll, cancel := context.WithTimeout(context.WithoutCancel(ctx), pollBudget)
+	defer cancel()
+	st, req, claimed, err := s.claim(poll, want, asked, now)
 	if err != nil {
 		return st, 0, err
 	}
 	if !claimed {
 		return s.read(ctx, want, asked, waited)
 	}
-	if st, err = s.fetch(ctx, req, st.PRs, now, true); err != nil {
+	if st, err = s.fetch(poll, req, st.PRs, now, true); err != nil {
 		return s.degrade(ctx, st, want, asked, now, err)
 	}
 	if unread := st.unread(req.Prefixes, now); len(unread) > 0 && st.Backoff == nil {
-		if st, err = s.fetch(ctx, Want{PRs: unread}, st.PRs, now, true); err != nil {
+		if st, err = s.fetch(poll, Want{PRs: unread}, st.PRs, now, true); err != nil {
 			return s.degrade(ctx, st, want, asked, now, err)
 		}
 	}

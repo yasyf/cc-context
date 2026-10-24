@@ -1000,3 +1000,35 @@ func TestAReaderNoPollAnswersWithinTheBudgetReadsThroughREST(t *testing.T) {
 			err, gh.requests(), c.slept, st.PRs[190].Source, st.Failure)
 	}
 }
+
+func TestAReaderThatSpentItsBudgetWaitingStillLandsThePollItClaims(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	seed, err := Open(dir, &GitHub{owner: "yasyf", name: "cc-context"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := State{
+		AttemptedAt: epoch,
+		PolledAt:    epoch.Add(-MinInterval),
+		PRs:         map[int]PR{190: {Number: 190, State: "OPEN", PolledAt: epoch.Add(-MinInterval)}},
+	}
+	if err := seed.save(last); err != nil {
+		t.Fatal(err)
+	}
+	c := &clock{now: epoch.Add(5 * time.Second)}
+	store, gh := newStore(t, dir, c, nil, ok(t, "poll-190.json"))
+	store.budget = 50 * time.Millisecond
+	store.sleep = func(ctx context.Context, d time.Duration) error {
+		c.slept = append(c.slept, d)
+		c.now = c.now.Add(d)
+		<-ctx.Done()
+		return nil
+	}
+
+	st, err := store.Read(testCtx(t), Want{PRs: []int{190}})
+	if err != nil || gh.requests() != 1 || st.PRs[190].Source == SourceREST || !st.PolledAt.Equal(epoch.Add(MinInterval)) || st.Failure != nil {
+		t.Errorf("read = %v after %d polls, #190 from %q, polled %s, failure %v; want the claimed poll to land though the reader's budget ran out before it began",
+			err, gh.requests(), st.PRs[190].Source, st.PolledAt, st.Failure)
+	}
+}

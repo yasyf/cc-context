@@ -29,6 +29,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A pull request state poll runs to its own one-minute deadline.** A read
+  that waits out the 30-second interval between polls used to claim the next
+  poll with almost none of its 30-second budget left. The poll then died at
+  the read's deadline without recording anything, so the next reader waited
+  too, and nearly every `ccx vcs pr state`, `pr status`, and `pr watch` call
+  on a busy machine paid 30 seconds and then read through REST. The claimed
+  poll now runs on its own deadline, and the readers that share it read the
+  cache.
+
 - **The guard pack warns where it used to block, and lets the command run.**
   A recursive or directory `grep` or `rg` whose flags `ccx code grep` cannot
   express (`-v`, `-c`, `-o`, `-P`, a second `-e`, a `sudo` wrapper) now runs
