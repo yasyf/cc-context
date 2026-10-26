@@ -65,6 +65,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs stack submit` and `ship` move a pull request Graphite has no
+  record of onto its planned base.** When Graphite refuses a branch whose open
+  pull request already carries the pushed head but sits on a stale base, ccx
+  retargets that pull request's base through GitHub, marks the branch as
+  untracked by Graphite, and prints a warning to re-run `ccx vcs stack submit`
+  after each parent lands. Before, the run refused, and lanes retargeted the
+  base by hand with `gh pr edit --base`.
+
 - **`ccx vcs stack rebase` and `stack submit` restack under another lane's
   parent that conflicts with trunk.** A branch the run publishes onto a parent
   kept at its published head, which conflicts with trunk, now draws a stderr

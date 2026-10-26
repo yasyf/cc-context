@@ -6385,8 +6385,8 @@ func TestShipGTMidStackRefusalNamesWhatLanded(t *testing.T) {
 // TestShipGTRefusalOfAPullRequestGitHubAlreadyServes is the #35552 refusal:
 // Graphite answered "Pull request not found" for an open pull request the push
 // had already moved, and ship reported that landed push as a failure. A refusal
-// counts as submitted only when GitHub's pull request carries the pushed head
-// on the planned base.
+// counts as submitted only when GitHub's pull request carries the pushed head;
+// one on a stale base moves onto the planned base through GitHub.
 func TestShipGTRefusalOfAPullRequestGitHubAlreadyServes(t *testing.T) {
 	const notFound = "GitHub returned an error: Pull request not found"
 	t.Run("the pushed head on the planned base is submitted", func(t *testing.T) {
@@ -6415,6 +6415,30 @@ func TestShipGTRefusalOfAPullRequestGitHubAlreadyServes(t *testing.T) {
 		}
 		if !restated {
 			t.Errorf("ship never restated #41's body, want --pr-body-file applied to the pull request GitHub serves")
+		}
+	})
+
+	t.Run("the pushed head on a stale base moves onto the planned base", func(t *testing.T) {
+		log, api := setupShipGT(t, true)
+		api.prs["feature"] = 41
+		api.submitErrors["feature"] = notFound
+		t.Setenv("GH_PULLS_JSON", ghOpenPullAt(t, 41, vcstest.GraphiteLeafSHA, "graphite-base/41"))
+
+		_, errStr, err := runShipCmdFull(api.ctx(context.Background()), t, "-m", "fix: frobnicate", "--no-watch")
+		if err != nil {
+			t.Fatalf("ship error = %v (stderr=%q)", err, errStr)
+		}
+		if want := "ship: warning: graphite refused feature (" + notFound + "), so ccx moved GitHub's PR #41 https://github.com/yasyf/cc-context/pull/41 carrying the pushed head " + shortOID(vcstest.GraphiteLeafSHA) + " onto main through GitHub alone; Graphite does not track it, so run ccx vcs stack submit after each parent lands to re-set its base"; !strings.Contains(errStr, want) {
+			t.Errorf("stderr = %q, want it to carry %q", errStr, want)
+		}
+		moved := slices.ContainsFunc(readInvocations(t, log), func(inv []string) bool {
+			return len(inv) > 4 && inv[0] == "gh" && inv[3] == "PATCH" && strings.HasSuffix(inv[4], "/pulls/41") && slices.Contains(inv, "base=main")
+		})
+		if !moved {
+			t.Errorf("invocations = %v, want #41 moved onto main", readInvocations(t, log))
+		}
+		if marked, err := gtUnrecorded(gtCapCommonDir(t), "feature"); err != nil || !marked {
+			t.Errorf("unrecorded mark = %v, %v; want feature marked for a stack submit", marked, err)
 		}
 	})
 
