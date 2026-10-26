@@ -9,9 +9,11 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/yasyf/cc-context/internal/ghapi"
 	"github.com/yasyf/cc-context/internal/gtapi"
@@ -59,7 +61,10 @@ const (
 	gtWaitingOnDownstack = "WAITING_ON_DOWNSTACK"
 )
 
-const prNamedFailures = 3
+const (
+	prNamedFailures = 3
+	prStatusWorkers = 8
+)
 
 var prStatusRateLimitWait = 10 * time.Minute
 
@@ -350,45 +355,68 @@ func collectPRQueue(ctx context.Context, repo string, numbers []int, warn io.Wri
 	if err != nil {
 		return nil, fmt.Errorf("pr status: %w", err)
 	}
-	reports := make([]prStatusReport, 0, len(numbers))
-	for _, number := range numbers {
-		pr := st.PRs[number]
-		if pr.Graphite == nil && pr.QueueUnknown {
-			r := prQueueWithoutGraphite(pr)
-			r.Stale = staleAt(limited, pr.PolledAt)
-			r.Source = pr.Source
-			reports = append(reports, newPRStatusReport(ctx, warn, repo, r, pr, 0))
-			continue
-		}
-		if pr.Graphite == nil {
-			if limited != nil {
-				return nil, fmt.Errorf("pr status: the cache has never polled %s#%d, and github %s; next probe at %s", repo, number, limited.Reason, limited.ProbeAt.UTC().Format(time.RFC3339))
-			}
-			return nil, fmt.Errorf("pr status: graphite has no record of %s#%d", repo, number)
-		}
-		info := *pr.Graphite
-		landedOn := ""
-		switch {
-		case slices.Contains(pr.SquashOn, info.BaseRefName):
-			landedOn = info.BaseRefName
-		case len(pr.SquashOn) > 0:
-			landedOn = pr.SquashOn[0]
-		}
-		r := prQueueOf(info, pr, landedOn)
-		if r.State == string(gtapi.PROpen) && (r.Queue == prQueueNotQueued || r.Queue == prQueueEvicted) && (limited != nil || pr.Mergeable == statusUnknown) {
-			mergeable, state, err := prReadMergeable(ctx, repo, number)
-			if err != nil {
-				_, _ = fmt.Fprintf(warn, "pr status: #%d: %v\n", number, err)
-			} else {
-				pr.Mergeable, pr.MergeStateStatus = mergeable, state
-			}
-		}
-		r.Conflicting = r.Queue == prQueueEvicted && pr.MergeStateStatus == "DIRTY"
-		r.Stale = staleAt(limited, pr.PolledAt)
-		r.Source = pr.Source
-		reports = append(reports, newPRStatusReport(ctx, warn, repo, r, pr, info.DependentPRNumber))
+	warn = &lockedWriter{w: warn}
+	reports := make([]prStatusReport, len(numbers))
+	group, gctx := errgroup.WithContext(ctx)
+	group.SetLimit(prStatusWorkers)
+	for i, number := range numbers {
+		group.Go(func() error {
+			report, err := prStatusOf(gctx, warn, repo, number, st.PRs[number], limited)
+			reports[i] = report
+			return err
+		})
+	}
+	if err := group.Wait(); err != nil {
+		return nil, err
 	}
 	return reports, nil
+}
+
+func prStatusOf(ctx context.Context, warn io.Writer, repo string, number int, pr prstate.PR, limited *prstate.Backoff) (prStatusReport, error) {
+	if pr.Graphite == nil && pr.QueueUnknown {
+		r := prQueueWithoutGraphite(pr)
+		r.Stale = staleAt(limited, pr.PolledAt)
+		r.Source = pr.Source
+		return newPRStatusReport(ctx, warn, repo, r, pr, 0), nil
+	}
+	if pr.Graphite == nil {
+		if limited != nil {
+			return prStatusReport{}, fmt.Errorf("pr status: the cache has never polled %s#%d, and github %s; next probe at %s", repo, number, limited.Reason, limited.ProbeAt.UTC().Format(time.RFC3339))
+		}
+		return prStatusReport{}, fmt.Errorf("pr status: graphite has no record of %s#%d", repo, number)
+	}
+	info := *pr.Graphite
+	landedOn := ""
+	switch {
+	case slices.Contains(pr.SquashOn, info.BaseRefName):
+		landedOn = info.BaseRefName
+	case len(pr.SquashOn) > 0:
+		landedOn = pr.SquashOn[0]
+	}
+	r := prQueueOf(info, pr, landedOn)
+	if r.State == string(gtapi.PROpen) && (r.Queue == prQueueNotQueued || r.Queue == prQueueEvicted) && (limited != nil || pr.Mergeable == statusUnknown) {
+		mergeable, state, err := prReadMergeable(ctx, repo, number)
+		if err != nil {
+			_, _ = fmt.Fprintf(warn, "pr status: #%d: %v\n", number, err)
+		} else {
+			pr.Mergeable, pr.MergeStateStatus = mergeable, state
+		}
+	}
+	r.Conflicting = r.Queue == prQueueEvicted && pr.MergeStateStatus == "DIRTY"
+	r.Stale = staleAt(limited, pr.PolledAt)
+	r.Source = pr.Source
+	return newPRStatusReport(ctx, warn, repo, r, pr, info.DependentPRNumber), nil
+}
+
+type lockedWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (l *lockedWriter) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.w.Write(p)
 }
 
 func newPRStatusReport(ctx context.Context, warn io.Writer, repo string, r prQueueReport, pr prstate.PR, downstack int) prStatusReport {

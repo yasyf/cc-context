@@ -350,6 +350,23 @@ type watchGitHub struct {
 	queries   []string
 	pulls     map[string][]string
 	reads     []string
+	overlap   time.Duration
+	flight    sync.Mutex
+	inFlight  int
+	peak      int
+}
+
+func (g *watchGitHub) peakReads() int {
+	g.flight.Lock()
+	defer g.flight.Unlock()
+	return g.peak
+}
+
+func (g *watchGitHub) fly(delta int) {
+	g.flight.Lock()
+	defer g.flight.Unlock()
+	g.inFlight += delta
+	g.peak = max(g.peak, g.inFlight)
 }
 
 // pull makes the REST read of path answer the nth time with the nth body,
@@ -364,6 +381,11 @@ func (g *watchGitHub) pull(path string, bodies ...string) {
 }
 
 func (g *watchGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if g.overlap > 0 && r.Method == http.MethodGet {
+		g.fly(1)
+		defer g.fly(-1)
+		time.Sleep(g.overlap)
+	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if bodies, ok := g.pulls[r.URL.Path]; ok && r.Method == http.MethodGet {
