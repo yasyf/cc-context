@@ -83,6 +83,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with a `--no-checkout` worktree. A branch never pushed still publishes as
   before.
 
+- **`ccx vcs stack submit` keeps a published parent no working copy holds.**
+  A parent the run reaches only through a member's publication receipt is
+  kept at its published head unless `--include` names it or a working copy of
+  this lane holds it. Before, such a parent was replayed and force-pushed
+  whenever no working copy had it checked out, which reset another lane's
+  pull request, and lanes held it off with a `--no-checkout` worktree.
+
 - **A branch Graphite caps is recorded on a segment base instead of left on
   GitHub alone.** When Graphite refuses a branch with "Only opening PRs for
   the first 50 branches in the stack", `ccx vcs stack submit` and `ship` push

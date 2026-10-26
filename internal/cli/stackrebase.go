@@ -1174,7 +1174,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 			return nil, err
 		}
 		if o.submit && !o.otherLanes {
-			if o.pinned, err = stackPinHeldParents(ctx, l, planned, members, o.pinned, o.owners); err != nil {
+			if o.pinned, err = stackPinPublishedParents(ctx, l, planned, members, o.include, o.pinned, o.owners); err != nil {
 				return nil, err
 			}
 		}
@@ -2114,20 +2114,29 @@ func stackPinOtherLanes(state gtState, current string, members, include []string
 	return kept, pinned, left
 }
 
-// stackPinHeldParents pins a published parent stackWithPublishedParents
-// brought back when a working copy of another lane holds it or another lane
-// claims it, so a submit keeps it at its published head like any held ancestor
-// gt still records.
-func stackPinHeldParents(ctx context.Context, l lane, planned, members, pinned []string, owners map[string]string) ([]string, error) {
-	added := slices.DeleteFunc(slices.Clone(members), func(name string) bool { return slices.Contains(planned, name) })
-	holders, err := stackLaneHolders(ctx, l, added)
+// stackPinPublishedParents pins each published parent stackWithPublishedParents
+// brought back unless --include takes it or a working copy of this lane holds
+// it, so a submit keeps it at its published head like any held ancestor gt
+// still records.
+func stackPinPublishedParents(ctx context.Context, l lane, planned, members, include, pinned []string, owners map[string]string) ([]string, error) {
+	added := slices.DeleteFunc(slices.Clone(members), func(name string) bool {
+		return slices.Contains(planned, name) || slices.Contains(include, name) || slices.Contains(pinned, name)
+	})
+	foreign, err := stackLaneHolders(ctx, l, added)
+	if err != nil {
+		return nil, fmt.Errorf("stack submit: %w", err)
+	}
+	holders, err := vcs.BranchHolders(ctx, l.checkout)
 	if err != nil {
 		return nil, fmt.Errorf("stack submit: %w", err)
 	}
 	for _, name := range added {
-		if holders[name] != "" && !slices.Contains(pinned, name) {
-			pinned = append(pinned, name)
-			owners[name] = holders[name]
+		if foreign[name] == "" && holders[name] != "" {
+			continue
+		}
+		pinned = append(pinned, name)
+		if foreign[name] != "" {
+			owners[name] = foreign[name]
 		}
 	}
 	return pinned, nil
