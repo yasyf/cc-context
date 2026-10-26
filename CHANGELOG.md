@@ -72,6 +72,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   own 10-second deadline, so a slow queue read no longer leaves the poll with
   no mergeability.
 
+- **`ccx vcs stack submit` keeps a branch below another lane's at its published
+  head, even when no working copy holds it.** Below the checked-out branch, a
+  branch under one another lane holds or claims now stays at its published
+  head, and so, once `--include` names branches, does every branch under the
+  lowest one the run names. Each is named on stdout with the `--include` that
+  takes it in. Before, a branch nobody had checked out read as the run's own,
+  so a submit from the top of one lane planned to replay and force-push another
+  lane's branch sitting under branches the same run kept, and lanes held it off
+  with a `--no-checkout` worktree. A branch never pushed still publishes as
+  before.
+
 - **`ccx vcs stack submit` and `ship` move a pull request Graphite has no
   record of onto its planned base.** When Graphite refuses a branch whose open
   pull request already carries the pushed head but sits on a stale base, ccx
