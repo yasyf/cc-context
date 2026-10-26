@@ -2111,8 +2111,10 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 			TrunkBranchName: tr.Name(),
 			PRs:             []gtapi.SubmitPR{pr},
 		})
+		segmented := posted[i]
 		var submitErr *gtapi.SubmitError
 		if err != nil && errors.As(err, &submitErr) && gtStackCapped(submitErr) {
+			segmented.base = gtSegmentBase(pr.Head)
 			out, err = gtSubmitOnSegment(ctx, errW, client, l.dir(), s.prefix, owner, name, tr.Name(), posted[i], pr)
 			var segmentErr *gtapi.SubmitError
 			if err != nil && errors.As(err, &segmentErr) {
@@ -2134,6 +2136,9 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 			refusal := gtSubmitFailure(gtSubmitPartial(err, pr.Head, landed), s)
 			if !errors.As(err, &submitErr) {
 				return nil, nil, refusal
+			}
+			if posted[i].parkedOn == gtSegmentBase(pr.Head) {
+				pr.Base = posted[i].parkedOn
 			}
 			pull, served, lookupErr := gtServedOnGitHub(ctx, l.dir(), owner+"/"+name, pr)
 			if lookupErr != nil {
@@ -2165,7 +2170,7 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 		if err := gtClearUnrecorded(commonDir, posted[i].name); err != nil {
 			return nil, nil, err
 		}
-		recorded = append(recorded, posted[i])
+		recorded = append(recorded, segmented)
 		landed = append(landed, out...)
 		submitted = append(submitted, posted[i])
 		if posted[i].pr != 0 {

@@ -36,7 +36,7 @@ func gtSegmentBase(branch string) string { return gtSegmentPrefix + branch }
 func gtSubmitOnSegment(ctx context.Context, errW io.Writer, client *gtapi.Client, dir render.Dir, prefix, owner, name, trunk string, b gtSubmitBranch, pr gtapi.SubmitPR) ([]gtapi.SubmittedPR, error) {
 	segment := gtSegmentBase(pr.Head)
 	if b.parkedOn != segment {
-		if err := gtPushSegment(ctx, dir, prefix, segment, pr.BaseSha); err != nil {
+		if err := gtPushSegment(ctx, dir, prefix, pr, segment); err != nil {
 			return nil, err
 		}
 	}
@@ -56,14 +56,16 @@ func gtSubmitOnSegment(ctx context.Context, errW io.Writer, client *gtapi.Client
 	return out, nil
 }
 
-func gtPushSegment(ctx context.Context, dir render.Dir, prefix, segment, sha string) error {
+func gtPushSegment(ctx context.Context, dir render.Dir, prefix string, pr gtapi.SubmitPR, segment string) error {
 	heads, err := stackListRemoteHeads(ctx, dir, prefix, "origin", []string{segment})
 	if err != nil {
 		return err
 	}
-	argv := pushArgv("origin", "--no-verify", "--force-with-lease="+gtRestackRef(segment)+":"+heads[segment], sha+":"+gtRestackRef(segment))
+	argv := pushArgv("origin", "--no-verify", "--atomic",
+		"--force-with-lease="+gtRestackRef(pr.Head)+":"+pr.HeadSha, pr.HeadSha+":"+gtRestackRef(pr.Head),
+		"--force-with-lease="+gtRestackRef(segment)+":"+heads[segment], pr.BaseSha+":"+gtRestackRef(segment))
 	if _, err := render.RunCLI(ctx, dir, "git", argv); err != nil {
-		return fmt.Errorf("%s: push segment base %s at %s: %w", prefix, segment, shortOID(sha), err)
+		return fmt.Errorf("%s: push segment base %s at %s under %s at %s: %w", prefix, segment, shortOID(pr.BaseSha), pr.Head, shortOID(pr.HeadSha), err)
 	}
 	return nil
 }
