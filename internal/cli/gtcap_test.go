@@ -34,9 +34,9 @@ func newSegmentStack(t *testing.T) segmentStack {
 	api.parkOn(f)
 	shipGTStack(t, f, "p", "c")
 	api.capped["c"] = true
+	api.prs["p"], api.prs["c"] = 100, 101
 	s := segmentStack{f: f, api: api}
 	s.submit(t)
-	api.prs["p"], api.prs["c"] = 100, 101
 	return s
 }
 
