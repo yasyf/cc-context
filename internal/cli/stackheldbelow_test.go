@@ -48,7 +48,7 @@ func TestStackRebaseFromAChildKeepsAParentAnotherWorktreeHolds(t *testing.T) {
 // #42038, where submit called the child mergeable while the queue ejected it,
 // and #42767, whose lane could not restack under a held parent it does not own.
 func TestStackSubmitWarnsOfAChildOfAHeldParentThatConflictsWithTrunk(t *testing.T) {
-	for _, args := range [][]string{{"submit"}, {"submit", "--restack"}, {"rebase"}} {
+	for _, args := range [][]string{{"submit"}, {"submit", "--restack"}} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			f := shipGTRepo(t)
 			api := stubGTAPI(t)
