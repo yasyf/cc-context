@@ -33,7 +33,7 @@ func TestShipGTOpensThePullRequestGraphiteCapsThroughGitHub(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ship error = %v (stderr=%q)", err, errStr)
 	}
-	if want := "ship: graphite refused feature at its stack cap, so ccx opened PR #77 https://github.com/yasyf/cc-context/pull/77 on main through GitHub alone; Graphite has no record of it, so run ccx vcs stack submit once the stack is split"; !strings.Contains(errStr, want) {
+	if want := "ship: graphite refused feature at its stack cap, so ccx opened PR #77 https://github.com/yasyf/cc-context/pull/77 on main through GitHub alone; Graphite has no record of it, so run ccx vcs stack submit after each parent lands to re-set its base, and once the stack is split"; !strings.Contains(errStr, want) {
 		t.Errorf("stderr = %q, want %q", errStr, want)
 	}
 	opened := slices.ContainsFunc(readInvocations(t, log), func(inv []string) bool {

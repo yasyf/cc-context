@@ -2128,7 +2128,19 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 			if !served {
 				return nil, nil, refusal
 			}
-			if _, err := fmt.Fprintf(errW, "%s: graphite refused %s, but GitHub's PR #%d %s already carries the pushed head %s on %s, so the push alone submitted it\n",
+			moved, err := gtRetargetOnGitHub(ctx, l.dir(), owner+"/"+name, &pull, pr.Base)
+			if err != nil {
+				return nil, nil, errors.Join(refusal, err)
+			}
+			if moved {
+				if err := gtMarkUnrecorded(commonDir, pr.Head); err != nil {
+					return nil, nil, err
+				}
+				if _, err := fmt.Fprintf(errW, "%s: warning: graphite refused %s, so ccx moved GitHub's PR #%d %s carrying the pushed head %s onto %s through GitHub alone; Graphite does not track it, so run ccx vcs stack submit after each parent lands to re-set its base\n",
+					s.prefix, gtSubmitSplitFailed(submitErr), pull.Number, pull.HTMLURL, shortOID(pr.HeadSha), pr.Base); err != nil {
+					return nil, nil, fmt.Errorf("%s: name the pull request Graphite does not track: %w", s.prefix, err)
+				}
+			} else if _, err := fmt.Fprintf(errW, "%s: graphite refused %s, but GitHub's PR #%d %s already carries the pushed head %s on %s, so the push alone submitted it\n",
 				s.prefix, gtSubmitSplitFailed(submitErr), pull.Number, pull.HTMLURL, shortOID(pr.HeadSha), pr.Base); err != nil {
 				return nil, nil, fmt.Errorf("%s: name the pull request GitHub already serves: %w", s.prefix, err)
 			}
@@ -2157,16 +2169,16 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 }
 
 // gtServedOnGitHub reports whether GitHub's open pull request for a branch
-// Graphite refused already carries everything the refused entry asked for: the
-// pushed head, the planned base, and the draft state. Graphite answers "Pull
-// request not found" while its record of an open pull request lapses, and the
-// push alone has then already moved the pull request on GitHub.
+// Graphite refused carries the pushed head and draft state the refused entry
+// asked for, leaving the base to move through GitHub. Graphite answers "Pull
+// request not found" for an open pull request it has no record of, and the
+// push alone has then already moved the pull request's head on GitHub.
 func gtServedOnGitHub(ctx context.Context, dir render.Dir, nwo string, pr gtapi.SubmitPR) (ghPull, bool, error) {
 	pull, found, err := gtOpenPull(ctx, dir, nwo, pr.Head)
 	if err != nil || !found {
 		return ghPull{}, false, err
 	}
-	served := pull.Head.SHA == pr.HeadSha && pull.Base.Ref == pr.Base &&
+	served := pull.Head.SHA == pr.HeadSha &&
 		(pr.PRNumber == 0 || pull.Number == pr.PRNumber) &&
 		(pr.Draft == nil || *pr.Draft == pull.Draft)
 	return pull, served, nil

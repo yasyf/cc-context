@@ -42,27 +42,37 @@ func gtOpenPastTheCap(ctx context.Context, errW io.Writer, dir render.Dir, commo
 		return stackEntry{}, err
 	}
 	did := "kept"
-	switch {
-	case !found:
+	if !found {
 		if pull, err = gtCreatePull(ctx, dir, nwo, pr); err != nil {
 			return stackEntry{}, err
 		}
 		did = "opened"
-	case pull.Base.Ref != pr.Base:
-		if _, err := render.RunCLI(ctx, dir, "gh", ghPatchPullArgv(nwo, pull.Number, "-f", "base="+pr.Base)); err != nil {
-			return stackEntry{}, fmt.Errorf("gh api: move PR #%d onto %s: %w", pull.Number, pr.Base, err)
-		}
-		pull.Base.Ref = pr.Base
+	} else if moved, err := gtRetargetOnGitHub(ctx, dir, nwo, &pull, pr.Base); err != nil {
+		return stackEntry{}, err
+	} else if moved {
 		did = "retargeted"
 	}
 	if err := gtMarkUnrecorded(commonDir, pr.Head); err != nil {
 		return stackEntry{}, err
 	}
-	if _, err := fmt.Fprintf(errW, "%s: graphite refused %s at its stack cap, so ccx %s PR #%d %s on %s through GitHub alone; Graphite has no record of it, so run ccx vcs stack submit once the stack is split\n",
+	if _, err := fmt.Fprintf(errW, "%s: graphite refused %s at its stack cap, so ccx %s PR #%d %s on %s through GitHub alone; Graphite has no record of it, so run ccx vcs stack submit after each parent lands to re-set its base, and once the stack is split\n",
 		prefix, pr.Head, did, pull.Number, pull.HTMLURL, pr.Base); err != nil {
 		return stackEntry{}, fmt.Errorf("%s: name the pull request Graphite did not record: %w", prefix, err)
 	}
 	return stackEntry{Branch: pr.Head, PR: pull.Number, URL: pull.HTMLURL, HasBody: strings.TrimSpace(pull.Body) != "", State: string(gtapi.PROpen)}, nil
+}
+
+// gtRetargetOnGitHub moves an open pull request onto base through GitHub alone,
+// reporting whether it had to move.
+func gtRetargetOnGitHub(ctx context.Context, dir render.Dir, nwo string, pull *ghPull, base string) (bool, error) {
+	if pull.Base.Ref == base {
+		return false, nil
+	}
+	if _, err := render.RunCLI(ctx, dir, "gh", ghPatchPullArgv(nwo, pull.Number, "-f", "base="+base)); err != nil {
+		return false, fmt.Errorf("gh api: move PR #%d onto %s: %w", pull.Number, base, err)
+	}
+	pull.Base.Ref = base
+	return true, nil
 }
 
 func gtOpenPull(ctx context.Context, dir render.Dir, nwo, head string) (ghPull, bool, error) {
