@@ -18,6 +18,7 @@ import (
 
 type vcsPushOpts struct {
 	noVerify bool
+	branch   string
 }
 
 func newVcsPushCmd() *cobra.Command {
@@ -59,13 +60,19 @@ it, is one gt calls diverged and refuses to stack another branch on. Push
 re-records it in gt's local tracking: onto the same parent when that parent's
 head is in its history, otherwise onto the nearest tracked branch that is, at
 its fork from that parent — what gt track --parent records — and names the
-move in its report.`,
+move in its report.
+
+--branch <name> pushes HEAD as <name> from a detached HEAD, the state a working
+copy is left in when another working copy has <name> checked out. The local
+<name> stays where it is, since moving it would change the files under that
+other working copy. On a branch, --branch must name that branch.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runVcsPush(cmd, o)
 		},
 	}
 	cmd.Flags().BoolVar(&o.noVerify, "no-verify", false, "skip the repository's pre-push hook")
+	cmd.Flags().StringVar(&o.branch, "branch", "", "push HEAD as this branch, from a detached HEAD")
 	return cmd
 }
 
@@ -82,12 +89,9 @@ func runVcsPush(cmd *cobra.Command, o vcsPushOpts) error {
 		return errors.New("push: jj git push already moves a rewritten bookmark under a lease of its own — run ccx vcs ship")
 	}
 	dir := render.Dir(ck.Root)
-	branch, err := gitCurrentBranch(ctx, dir, "push")
+	branch, detached, err := vcsPushBranch(ctx, dir, o.branch)
 	if err != nil {
 		return err
-	}
-	if branch == "" {
-		return errors.New("push: HEAD is detached — check out the branch you mean to move")
 	}
 	remote, err := vcs.GitRemoteFor(ctx, dir, branch)
 	if err != nil {
@@ -101,11 +105,11 @@ func runVcsPush(cmd *cobra.Command, o vcsPushOpts) error {
 	if err != nil {
 		return err
 	}
-	receipt, prior, err := vcsPushPublication(ctx, dir, remote, branch, head)
+	receipt, prior, err := vcsPushPublication(ctx, dir, remote, branch, head, detached)
 	if err != nil {
 		return err
 	}
-	summary, err := vcsPushGit(ctx, dir, remote, branch, head, o.noVerify)
+	summary, err := vcsPushGit(ctx, dir, remote, branch, head, o.noVerify, detached)
 	if err != nil {
 		return err
 	}
@@ -126,6 +130,25 @@ func runVcsPush(cmd *cobra.Command, o vcsPushOpts) error {
 	}
 	cmd.Println(summary)
 	return nil
+}
+
+func vcsPushBranch(ctx context.Context, dir render.Dir, named string) (string, bool, error) {
+	current, err := gitCurrentBranch(ctx, dir, "push")
+	if err != nil {
+		return "", false, err
+	}
+	switch {
+	case current == "" && named == "":
+		return "", false, errors.New("push: HEAD is detached — check out the branch you mean to move, or name it with --branch")
+	case current == "":
+		if _, err := gitRevParse(ctx, dir, "push", "refs/heads/"+named); err != nil {
+			return "", false, fmt.Errorf("push: --branch %s names no local branch: %w", named, err)
+		}
+		return named, true, nil
+	case named != "" && named != current:
+		return "", false, fmt.Errorf("push: HEAD is on %s, so --branch %s would push %s's commits as another branch — run it from a detached HEAD or from %s", current, named, current, named)
+	}
+	return current, false, nil
 }
 
 // vcsPushSubmitted moves Graphite's last submitted version to the receipt push
@@ -185,7 +208,7 @@ func vcsPushRetrack(ctx context.Context, ck vcs.Checkout, dir render.Dir, remote
 		if err != nil {
 			return "", err
 		}
-		if parent, err = gtNearestTracked(ctx, dir, state, trunk, branch); err != nil {
+		if parent, err = gtNearestTrackedAt(ctx, dir, state, trunk, branch, head); err != nil {
 			return "", err
 		}
 		if fork, err = stackMergeBase(ctx, dir, head, state[parent].Head); err != nil {
@@ -239,7 +262,7 @@ func vcsPushParentHeld(ctx context.Context, dir render.Dir, remote string, state
 	return gtNearestHeld(ctx, dir, "push", append(held, former[parent]...), floor, head)
 }
 
-func vcsPushPublication(ctx context.Context, dir render.Dir, remote, branch, head string) (*stackPublication, string, error) {
+func vcsPushPublication(ctx context.Context, dir render.Dir, remote, branch, head string, detached bool) (*stackPublication, string, error) {
 	prior, err := stackReadPublication(ctx, dir, branch)
 	if err != nil || prior == nil {
 		return nil, "", err
@@ -292,10 +315,14 @@ func vcsPushPublication(ctx context.Context, dir render.Dir, remote, branch, hea
 	if base == "" {
 		return nil, "", fmt.Errorf("push: %s's published base %s and its parent %s at %s are both off HEAD, so no base marks its own commits; publish it with ccx vcs stack submit instead", branch, shortOID(prior.Base), parent.Ref, shortOID(parent.SHA))
 	}
-	return &stackPublication{Branch: branch, Source: head, SourceBase: base, Head: head, Base: base, Parent: parent.Ref}, prior.OID, nil
+	receipt := &stackPublication{Branch: branch, Source: head, SourceBase: base, Head: head, Base: base, Parent: parent.Ref}
+	if detached {
+		receipt.Source, receipt.SourceBase = prior.Source, prior.SourceBase
+	}
+	return receipt, prior.OID, nil
 }
 
-func vcsPushGit(ctx context.Context, dir render.Dir, remote, branch, head string, noVerify bool) (string, error) {
+func vcsPushGit(ctx context.Context, dir render.Dir, remote, branch, head string, noVerify, detached bool) (string, error) {
 	if err := thinRefuseAdoptedPush(ctx, dir, "push", []string{branch}); err != nil {
 		return "", err
 	}
@@ -346,6 +373,11 @@ func vcsPushGit(ctx context.Context, dir render.Dir, remote, branch, head string
 	rewrite, err := gitRemoteRewritten(ctx, dir, "push", branch, tip, head, trunk)
 	if err != nil {
 		return "", err
+	}
+	if !rewrite && detached {
+		if rewrite, err = gitReflogHolds(ctx, dir, "push", "HEAD", tip); err != nil {
+			return "", err
+		}
 	}
 	if !rewrite {
 		unheld, err := gitCommitsNotIn(ctx, dir, "push", tip, head)

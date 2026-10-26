@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`ccx vcs push --branch <name>` pushes a detached HEAD as a branch.** A
+  working copy whose branch another working copy has checked out sits on a
+  detached HEAD, where push refused. `--branch` names the branch to move, and
+  push grades and pushes HEAD as that branch the way it pushes a checked-out
+  one, leaving the local branch for the working copy holding it. On a branch,
+  `--branch` must name that branch.
+
 - **`ccx vcs pr state --max-age <duration>` accepts older cached records.**
   A record polled within the given age answers the read, where the default
   is 30 seconds. A caller that reads every few minutes no longer waits out the

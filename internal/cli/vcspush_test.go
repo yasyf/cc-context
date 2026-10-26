@@ -71,6 +71,68 @@ func TestVcsPushFastForward(t *testing.T) {
 	}
 }
 
+func detachFromHeldBranch(t *testing.T, f *vcstest.Fixture, branch string) string {
+	t.Helper()
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", branch)
+	tip := pushCommit(t, f, branch+".txt", branch+"\n", "test: 🧪 "+branch)
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", branch)
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "--detach")
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", filepath.Join(t.TempDir(), branch), branch)
+	return tip
+}
+
+func TestVcsPushNamedBranchFromADetachedHead(t *testing.T) {
+	f := shipRepo(t, vcstest.Remote())
+	tip := detachFromHeldBranch(t, f, "feature")
+	head := pushCommit(t, f, "b.txt", "b\n", "test: 🧪 b")
+	shipResetLog(t, f)
+
+	got, err := runVcsPushCmd(f.Context(), t, "--branch", "feature")
+	if err != nil {
+		t.Fatalf("push error = %v", err)
+	}
+	if want := "pushed feature → origin · " + shortOID(tip) + ".." + shortOID(head); got != want {
+		t.Errorf("summary = %q, want %q", got, want)
+	}
+	if remote := shipRemoteTip(t, f, "origin", "feature"); remote != head {
+		t.Errorf("origin feature = %s, want %s", remote, head)
+	}
+	if local := gitAt(t, f.Env(), f.Dir, "rev-parse", "refs/heads/feature"); local != tip {
+		t.Errorf("local feature = %s, want %s left for the working copy holding it", local, tip)
+	}
+}
+
+func TestVcsPushNamedBranchRewritesItsOwnDetachedPush(t *testing.T) {
+	f := shipRepo(t, vcstest.Remote())
+	detachFromHeldBranch(t, f, "feature")
+	first := pushCommit(t, f, "b.txt", "b\n", "test: 🧪 b")
+	if _, err := runVcsPushCmd(f.Context(), t, "--branch", "feature"); err != nil {
+		t.Fatalf("first push error = %v", err)
+	}
+	writeShipFile(t, f.Dir, "b.txt", "amended\n")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qa", "--amend", "--no-edit")
+	amended := shipHead(t, f)
+
+	got, err := runVcsPushCmd(f.Context(), t, "--branch", "feature")
+	if err != nil {
+		t.Fatalf("push error = %v", err)
+	}
+	if want := "force-pushed feature → origin · replaced " + shortOID(first) + " with " + shortOID(amended); got != want {
+		t.Errorf("summary = %q, want %q", got, want)
+	}
+}
+
+func TestVcsPushRefusesANamedBranchOtherThanTheCheckedOutOne(t *testing.T) {
+	f := shipRepo(t, vcstest.Remote())
+	detachFromHeldBranch(t, f, "feature")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
+
+	_, err := runVcsPushCmd(f.Context(), t, "--branch", "feature")
+	if err == nil || !strings.Contains(err.Error(), "HEAD is on main") {
+		t.Fatalf("push error = %v, want a refusal naming main", err)
+	}
+}
+
 // TestVcsPushIgnoresConfiguredRefspec pins the push to the commit it graded and
 // the branch it graded it against: a configured remote.<name>.push would
 // otherwise redirect a bare branch argument at another ref, with a force this
