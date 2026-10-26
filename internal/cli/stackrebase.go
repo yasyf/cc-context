@@ -69,6 +69,7 @@ type stackPR struct {
 	BaseGone   bool     `json:"base_gone,omitempty"`
 	BaseBack   bool     `json:"base_back,omitempty"`
 	ParkedFrom string   `json:"parked_from,omitempty"`
+	Segment    bool     `json:"segment,omitempty"`
 }
 
 func (p *stackPR) base() string {
@@ -79,7 +80,7 @@ func (p *stackPR) base() string {
 }
 
 func (p *stackPR) parked() bool {
-	return p.Base == fmt.Sprintf("graphite-base/%d", p.Number)
+	return p.Segment || p.Base == fmt.Sprintf("graphite-base/%d", p.Number)
 }
 
 func stackMarkParked(prs map[string]*stackPR, submitted map[string]gtmeta.Version) {
@@ -1899,7 +1900,7 @@ func stackFetchRecordedParents(ctx context.Context, dir render.Dir, tr vcs.Trunk
 			continue
 		}
 		base := pr.base()
-		if _, tracked := state[base]; tracked || base == "" || base == state[name].Parents[0].Ref || strings.HasPrefix(base, "graphite-base/") {
+		if _, tracked := state[base]; tracked || base == "" || base == state[name].Parents[0].Ref || strings.HasPrefix(base, "graphite-base/") || strings.HasPrefix(base, gtSegmentPrefix) {
 			continue
 		}
 		bases[name] = base
@@ -4873,9 +4874,10 @@ func stackSubmittedParent(ctx context.Context, dir render.Dir, run *stackRebaseR
 // stackBaseStrays is an open pull request GitHub bases somewhere other than the
 // parent the submit gave it. One parked on its graphite-base branch strays only
 // once this run submitted it, since that submit moves it back; one the run
-// left out is the merge queue's to move.
+// left out is the merge queue's to move, and one on its segment base stays
+// there until Graphite records it on its parent.
 func stackBaseStrays(pr *stackPR, parent string, submitted bool) bool {
-	return pr.State == "OPEN" && pr.Base != "" && pr.Base != parent && (submitted || !pr.parked())
+	return pr.State == "OPEN" && pr.Base != "" && pr.Base != parent && !pr.Segment && (submitted || !pr.parked())
 }
 
 // stackParentOpen is a parent whose pull request has not closed: once it lands,

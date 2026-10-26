@@ -44,6 +44,7 @@ type gtAPIStub struct {
 	// that moves origin between the submit's leases and its push.
 	presubmitRace func()
 	submitErrors  map[string]string
+	capped        map[string]bool
 	queued        map[string]bool
 	mergeability  map[int]string
 	untracked     map[int]gtStubUntracked
@@ -166,6 +167,7 @@ func newGTAPIStub(t *testing.T) *gtAPIStub {
 		merged:       map[string]gtStubMerged{},
 		bodies:       map[string]string{},
 		submitErrors: map[string]string{},
+		capped:       map[string]bool{},
 		queued:       map[string]bool{},
 		mergeability: map[int]string{},
 		untracked:    map[int]gtStubUntracked{},
@@ -353,6 +355,11 @@ func (s *gtAPIStub) submit(w http.ResponseWriter, r *http.Request) {
 	s.requireSubmitFields(entry)
 	if s.onSubmit != nil {
 		s.onSubmit(entry)
+	}
+	if s.capped[entry.Head] && !strings.HasPrefix(entry.Base, gtSegmentPrefix) {
+		s.submits = s.submits[:len(s.submits)-1]
+		s.write(w, map[string]any{"prs": []map[string]any{{"head": entry.Head, "status": "error", "error": gtStackCapRefusal}}})
+		return
 	}
 	if message := s.refuseOnce[entry.Head]; message != "" {
 		delete(s.refuseOnce, entry.Head)
