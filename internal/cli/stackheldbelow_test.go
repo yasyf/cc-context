@@ -44,9 +44,10 @@ func TestStackRebaseFromAChildKeepsAParentAnotherWorktreeHolds(t *testing.T) {
 	}
 }
 
-// TestStackSubmitRefusesAChildOfAHeldParentThatConflictsWithTrunk is monorepo
-// #42038: submit called it mergeable while the queue ejected it.
-func TestStackSubmitRefusesAChildOfAHeldParentThatConflictsWithTrunk(t *testing.T) {
+// TestStackSubmitWarnsOfAChildOfAHeldParentThatConflictsWithTrunk is monorepo
+// #42038, where submit called the child mergeable while the queue ejected it,
+// and #42767, whose lane could not restack under a held parent it does not own.
+func TestStackSubmitWarnsOfAChildOfAHeldParentThatConflictsWithTrunk(t *testing.T) {
 	for _, args := range [][]string{{"submit"}, {"submit", "--restack"}} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			f := shipGTRepo(t)
@@ -56,38 +57,28 @@ func TestStackSubmitRefusesAChildOfAHeldParentThatConflictsWithTrunk(t *testing.
 			if _, _, err := runStackCmd(t, f, "submit"); err != nil {
 				t.Fatalf("first stack submit: %v", err)
 			}
-			published := map[string]string{}
-			for _, name := range []string{"base", "feature"} {
-				published[name] = gitAt(t, f.Env(), f.RemoteDir, "rev-parse", name)
-			}
+			base := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
 			mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", restackSiblingPath(t, "lane-base"), "base")
 			stackAdvanceTrunk(t, f, "feature.txt", "upstream\n")
 			pin := gitAt(t, f.Env(), f.Dir, "rev-parse", "origin/main")
-			shipResetLog(t, f)
 
-			out, _, err := runStackCmd(t, f, args...)
-			if err == nil {
-				t.Fatalf("stack submit %v succeeded with output %q, want a refusal: feature conflicts with main under a held base", args, out)
+			out, errOut, err := runStackCmd(t, f, args...)
+			if err != nil {
+				t.Fatalf("stack %v: %v\n%s%s", args, err, out, errOut)
 			}
-			for _, want := range []string{
-				"base is another lane's, kept at its published head, and feature on it conflicts with main@" + pin[:12] + " in feature.txt",
-				"pass --include base to take it into the run",
-			} {
-				if !strings.Contains(err.Error(), want) {
-					t.Errorf("error = %q, want it to name %q", err, want)
-				}
+			if want := "warning: feature follows base's published head, and feature on it conflicts with main@" + pin[:12] + " in feature.txt — the merge queue ejects it until base moves onto main by ccx vcs stack submit from the working copy holding it, or by --include base here"; !strings.Contains(errOut, want) {
+				t.Errorf("stderr = %q, want the warning %q", errOut, want)
 			}
-			if n := pushCount(t, f); n != 0 {
-				t.Errorf("pushes = %d, want none before the refusal", n)
+			if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base"); got != base {
+				t.Errorf("origin base = %.12s, want it left at its published %.12s", got, base)
 			}
-			for name, head := range published {
-				if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", name); got != head {
-					t.Errorf("origin %s = %.12s, want it untouched at %.12s", name, got, head)
-				}
+			feature := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature")
+			if parent := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", feature+"^"); parent != base {
+				t.Errorf("origin feature sits on %.12s, want base's published head %.12s", parent, base)
 			}
 
 			if _, _, err := runStackCmd(t, f, append(args, "--include", "base")...); err == nil {
-				t.Fatalf("stack submit %v --include base succeeded, want a conflict stop on feature", args)
+				t.Fatalf("stack %v --include base succeeded, want a conflict stop on feature", args)
 			}
 			run, err := stackOnlyTestRun(filepath.Join(f.Dir, ".git"))
 			if err != nil {

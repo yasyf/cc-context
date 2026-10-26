@@ -65,6 +65,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs stack rebase` and `stack submit` restack under another lane's
+  parent that conflicts with trunk.** A branch the run publishes onto a parent
+  kept at its published head, which conflicts with trunk, now draws a stderr
+  warning naming the files and the fix, and the run publishes it onto that
+  head. Before, only a `--parent` run warned; every other run refused and
+  asked for `--include`, which rewrites the other lane's branch, so lanes fell
+  back to a raw `git rebase --onto`.
+
 - **A branch past Graphite's stack cap still gets its pull request.**
   Graphite refuses to open or update pull requests for branches past the
   first 50 of a stack, counted from trunk, so no narrower submit gets a
