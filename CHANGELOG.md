@@ -65,6 +65,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs pr status` reads many pull requests in parallel.** The REST
+  mergeability read and the Buildkite skip proof now run eight pull requests
+  at a time instead of one after another. One call for 96 pull requests took
+  153 seconds. Graphite's queue record and mergeability reads each get their
+  own 10-second deadline, so a slow queue read no longer leaves the poll with
+  no mergeability.
+
 - **`ccx vcs stack submit` and `ship` move a pull request Graphite has no
   record of onto its planned base.** When Graphite refuses a branch whose open
   pull request already carries the pushed head but sits on a stale base, ccx

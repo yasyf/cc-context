@@ -390,9 +390,9 @@ func (g *GitHub) queueRecords(ctx context.Context, numbers []int) (map[int]*gtap
 	if len(numbers) == 0 || g.gt == nil {
 		return nil, nil
 	}
-	ctx, cancel := context.WithTimeout(ctx, graphiteDeadline)
+	infoCtx, cancel := context.WithTimeout(ctx, graphiteDeadline)
 	defer cancel()
-	infos, err := g.gt.PullRequestInfo(ctx, gtapi.PullRequestInfoRequest{
+	infos, err := g.gt.PullRequestInfo(infoCtx, gtapi.PullRequestInfoRequest{
 		RepoOwner:  g.owner,
 		RepoName:   g.name,
 		PRNumbers:  numbers,
@@ -408,7 +408,9 @@ func (g *GitHub) queueRecords(ctx context.Context, numbers []int) (map[int]*gtap
 		info.Body, info.Versions = "", nil
 		byNumber[info.PRNumber] = &info
 	}
-	mergeability, err := g.gt.MergeabilityStatuses(ctx, g.owner, g.name, numbers)
+	mergeCtx, cancelMerge := context.WithTimeout(ctx, graphiteDeadline)
+	defer cancelMerge()
+	mergeability, err := g.gt.MergeabilityStatuses(mergeCtx, g.owner, g.name, numbers)
 	if err != nil {
 		_, _ = fmt.Fprintf(g.warn, "prstate: graphite: %v; this poll carries no mergeability\n", err)
 	}

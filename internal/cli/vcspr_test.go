@@ -671,6 +671,23 @@ func TestPRStatusReadsAStaleMergeabilityFromREST(t *testing.T) {
 	}
 }
 
+func TestPRStatusReadsEachRESTMergeabilityAtOnce(t *testing.T) {
+	second := func(body string) string { return strings.ReplaceAll(body, "31511", "31512") }
+	_, client := stubPRInfo(t, prInfoConflicting, second(prInfoConflicting))
+	node := prConflictingNode("UNKNOWN", "UNKNOWN")
+	github := stubPRState(t, prPoll(`"p0":`+node, `"p1":`+second(node)))
+	github.pull(prPullPath, prPullConflicting)
+	github.pull(second(prPullPath), second(prPullConflicting))
+	github.overlap = 200 * time.Millisecond
+
+	if _, err := runPRStatusCmd(t, client, "--repo", "Forge-AI/monorepo", "31511", "31512"); err != nil {
+		t.Fatalf("pr status: %v", err)
+	}
+	if peak := github.peakReads(); peak != 2 {
+		t.Errorf("REST reads in flight at once = %d, want both pull requests read together", peak)
+	}
+}
+
 func rollupOf(state string, contexts ...prstate.Context) *prstate.Rollup {
 	r := &prstate.Rollup{State: state}
 	r.Contexts.Nodes = contexts
