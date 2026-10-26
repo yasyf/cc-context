@@ -174,7 +174,7 @@ func stackRefusePins(ctx context.Context, w io.Writer, dir render.Dir, run *stac
 		include, reasons = append(include, pins...), append(reasons, more...)
 	}
 	if run.Tip == "" {
-		pins, more, warnings, err := stackConflictingPins(ctx, dir, run, include)
+		warnings, err := stackConflictingPins(ctx, dir, run, include)
 		if err != nil {
 			return err
 		}
@@ -183,7 +183,6 @@ func stackRefusePins(ctx context.Context, w io.Writer, dir render.Dir, run *stac
 				return err
 			}
 		}
-		include, reasons = append(include, pins...), append(reasons, more...)
 	}
 	if len(include) == 0 {
 		return nil
@@ -257,9 +256,10 @@ func stackStalePins(ctx context.Context, dir render.Dir, run *stackRebaseRun) (s
 	return stale, reasons, nil
 }
 
-// stackConflictingPins names each pin under a published branch that conflicts
-// with trunk, which GitHub grades mergeable against the pin's older trunk.
-func stackConflictingPins(ctx context.Context, dir render.Dir, run *stackRebaseRun, taken []string) (pins, reasons, warnings []string, err error) {
+// stackConflictingPins warns of each pin under a published branch that
+// conflicts with trunk, which GitHub grades mergeable against the pin's older
+// trunk; the branch still publishes onto the pin.
+func stackConflictingPins(ctx context.Context, dir render.Dir, run *stackRebaseRun, taken []string) (warnings []string, err error) {
 	byName := map[string]*stackRebaseBranch{}
 	for i := range run.Branches {
 		byName[run.Branches[i].Name] = &run.Branches[i]
@@ -267,7 +267,7 @@ func stackConflictingPins(ctx context.Context, dir render.Dir, run *stackRebaseR
 	publishes := func(b *stackRebaseBranch) bool { return b.Landed == "" && b.Held == "" && !b.Kept }
 	for _, b := range run.Branches {
 		pin := byName[b.Parent]
-		if !publishes(&b) || pin == nil || !pin.Pinned || slices.Contains(taken, pin.Name) || slices.Contains(pins, pin.Name) {
+		if !publishes(&b) || pin == nil || !pin.Pinned || slices.Contains(taken, pin.Name) {
 			continue
 		}
 		var conflicted, files []string
@@ -278,7 +278,7 @@ func stackConflictingPins(ctx context.Context, dir render.Dir, run *stackRebaseR
 			}
 			merges, conflicts, err := stackTrunkConflicts(ctx, dir, run.Pin, up.Head)
 			if err != nil {
-				return nil, nil, nil, err
+				return nil, err
 			}
 			if merges {
 				continue
@@ -293,16 +293,10 @@ func stackConflictingPins(ctx context.Context, dir render.Dir, run *stackRebaseR
 		if len(conflicted) == 0 {
 			continue
 		}
-		if slices.Contains(run.Reparented, b.Name) {
-			warnings = append(warnings, fmt.Sprintf("%s follows %s's published head, and %s on it conflicts with %s@%.12s in %s — the merge queue ejects it until %s moves onto %s by ccx vcs stack submit from the working copy holding it",
-				b.Name, pin.Name, strings.Join(conflicted, ", "), run.Trunk, run.Pin, strings.Join(files, ", "), pin.Name, run.Trunk))
-			continue
-		}
-		pins = append(pins, pin.Name)
-		reasons = append(reasons, fmt.Sprintf("%s is another lane's, kept at its published head, and %s on it conflicts with %s@%.12s in %s — GitHub grades it mergeable against %s, but the merge queue ejects it until %s moves onto %s, here or by ccx vcs stack submit from the working copy holding it",
-			pin.Name, strings.Join(conflicted, ", "), run.Trunk, run.Pin, strings.Join(files, ", "), pin.Name, pin.Name, run.Trunk))
+		warnings = append(warnings, fmt.Sprintf("%s follows %s's published head, and %s on it conflicts with %s@%.12s in %s — the merge queue ejects it until %s moves onto %s by ccx vcs stack submit from the working copy holding it, or by --include %s here",
+			b.Name, pin.Name, strings.Join(conflicted, ", "), run.Trunk, run.Pin, strings.Join(files, ", "), pin.Name, run.Trunk, pin.Name))
 	}
-	return pins, reasons, warnings, nil
+	return warnings, nil
 }
 
 // stackUnpublishedPins names each pin a run branch sits on whose local head
