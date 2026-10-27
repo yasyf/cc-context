@@ -65,8 +65,9 @@ read, and a watch is never cached.
 
 Anything else, such as gh pr close or a gh api write, runs on the user's
 token as plain gh would, charged to its pool but never refused or cached. A
-merge (gh pr merge, a write to repos/OWNER/REPO/pulls/N/merge, or a GraphQL
-mergePullRequest or enablePullRequestAutoMerge), and a write to a ruleset or
+merge (gh pr merge, a write to repos/OWNER/REPO/pulls/N/merge or /merges, or a
+GraphQL mergePullRequest, enablePullRequestAutoMerge, enqueuePullRequest, or
+mergeBranch), and a write to a ruleset or
 branch protection, is refused before it runs: those stay on plain gh, where
 the merge hooks gate them.
 Standard streams pass through, and ccx exits with gh's code. A read that fails
@@ -222,8 +223,8 @@ func ghForbidden(stdout []byte) bool {
 }
 
 var (
-	ghGuardedEndpoint = regexp.MustCompile(`(^|/)repos/[^/]+/[^/]+/(pulls/[^/]+/merge|rulesets|branches/.+/protection)(/|$|\?)|(^|/)orgs/[^/]+/rulesets`)
-	ghGuardedMutation = regexp.MustCompile(`(?i)\b(mergePullRequest|enablePullRequestAutoMerge|\w*Ruleset|\w*BranchProtectionRule)\b`)
+	ghGuardedEndpoint = regexp.MustCompile(`(^|/)repos/[^/]+/[^/]+/(pulls/[^/]+/merge|merges|rulesets|branches/.+/protection)(/|$|\?)|(^|/)orgs/[^/]+/rulesets`)
+	ghGuardedMutation = regexp.MustCompile(`(?i)\b(mergePullRequest|enablePullRequestAutoMerge|enqueuePullRequest|mergeBranch|\w*Ruleset|\w*BranchProtectionRule)\b`)
 )
 
 func ghGuarded(argv []string, stdin []byte) bool {
