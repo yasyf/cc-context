@@ -1558,7 +1558,7 @@ func gtCommitsPending(ctx context.Context, dir render.Dir, o shipOpts) (bool, er
 // would commit onto a branch whose pull request sits in the merge queue: the
 // push evicts it, and the stack rebase guard that refuses the move runs only
 // after the commit, leaving it unpushed on the queued branch. Only a branch
-// Graphite has submitted from this clone is asked about.
+// this clone has submitted, by gt's record or ccx's receipt, is asked about.
 func gtRefuseQueuedCommit(ctx context.Context, l lane, o shipOpts, selected bool, plan branchPlan, c *gtCache) error {
 	common, err := c.common(ctx)
 	if err != nil {
@@ -1569,7 +1569,10 @@ func gtRefuseQueuedCommit(ctx context.Context, l lane, o shipOpts, selected bool
 		return fmt.Errorf("ship: %w", err)
 	}
 	if _, ok := submitted[plan.name]; !ok {
-		return nil
+		published, err := stackHasPublication(ctx, l.dir(), []string{plan.name})
+		if err != nil || !published {
+			return err
+		}
 	}
 	owner, name, err := gtRepoOwnerName(ctx, l, "ship")
 	if err != nil {
