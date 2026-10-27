@@ -42,3 +42,36 @@ func TestShipTipOnlyNamesAParentTheQueueJustDeleted(t *testing.T) {
 		t.Error("origin feature is not on the trunk base landed on")
 	}
 }
+
+// TestShipTipOnlyShipsOverAnUnpublishedGrandparent is dar-sikan-symptom-tests's
+// refusal: gt parented the tip on a published branch whose own parent another
+// lane never pushed, and --tip-only refused naming that grandparent, though the
+// tip ships onto its parent's published head alone.
+func TestShipTipOnlyShipsOverAnUnpublishedGrandparent(t *testing.T) {
+	f := shipGTRepo(t)
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	shipGTStack(t, f, "base", "mid", "top")
+	api.prs["mid"], api.prs["top"] = 8, 10
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "mid", "top")
+	stubStackPRs(t, f, map[string]*stackPR{
+		"mid": {Number: 8, Title: "mid", State: "OPEN", Base: "main"},
+		"top": {Number: 10, Title: "top", State: "OPEN", Base: "mid"},
+	})
+	base := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
+	stackCommit(t, f, "tip.txt")
+	shipResetLog(t, f)
+
+	if _, errStr, err := runShipCmdFull(f.Context(), t, "--no-commit", "--no-watch", "--tip-only"); err != nil {
+		t.Fatalf("ship --tip-only = %v (stderr=%q), want top shipped onto mid's published head", err, errStr)
+	}
+	if refs := gtPushedRefs(shipGTInvocations(t, f)); !slices.Equal(refs, []string{"top"}) {
+		t.Errorf("pushed refs = %v, want only top", refs)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); got != base {
+		t.Errorf("local base moved from %.12s to %.12s", base, got)
+	}
+	if !stackOnto(t, f, gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "mid"), gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "top")) {
+		t.Error("origin top is not on mid's published head")
+	}
+}
