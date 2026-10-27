@@ -87,7 +87,7 @@ const ghRateLimitRetries = 3
 // honored as given, an exhausted quota, whose reset can be an hour out, fails
 // at once, and a refusal with quota left is the request-rate limit.
 func ghAPI(ctx context.Context, dir render.Dir, args ...string) (string, error) {
-	return ghAPIWaiting(ctx, dir, ghRateLimitWait, args...)
+	return ghAPIWaiting(ctx, dir, ghRateLimitWait, ghRateLimitRetries, args...)
 }
 
 // ghRefusal is a gh api call that failed: gh's exit status and own error, and
@@ -102,7 +102,7 @@ func (r *ghRefusal) Error() string {
 	return fmt.Sprintf("gh: exit status %d: %s", r.exit, r.message)
 }
 
-func ghAPIWaiting(ctx context.Context, dir render.Dir, wait time.Duration, args ...string) (string, error) {
+func ghAPIWaiting(ctx context.Context, dir render.Dir, wait time.Duration, retries int, args ...string) (string, error) {
 	for waits := 0; ; waits++ {
 		out, code, stderr, err := render.RunCLIExitCodeEnv(ctx, dir, "gh", append([]string{"api"}, args...), []string{"GH_DEBUG=api"})
 		if err != nil || code == 0 {
@@ -113,7 +113,7 @@ func ghAPIWaiting(ctx context.Context, dir render.Dir, wait time.Duration, args 
 		httpStatus, _ := strconv.Atoi(status)
 		failure := &ghRefusal{exit: code, status: httpStatus, message: refusal}
 		delay, ok := ghRateLimitDelay(ghDebugLastResponse(stderr), wait)
-		if !ok || waits == ghRateLimitRetries || !strings.Contains(strings.ToLower(refusal), "rate limit") {
+		if !ok || waits == retries || !strings.Contains(strings.ToLower(refusal), "rate limit") {
 			return "", failure
 		}
 		select {

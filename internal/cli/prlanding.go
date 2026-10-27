@@ -188,7 +188,7 @@ func prQueueActivity(ctx context.Context, dir render.Dir, numbers []int) map[int
 // number, empty when it has none. Graphite posts it through the token of
 // whoever enqueued, so the heading names it, not the author.
 func prMergeActivity(ctx context.Context, dir render.Dir, repoPath string, number int, wait time.Duration) (string, error) {
-	out, err := ghAPIWaiting(ctx, dir, wait, "--paginate", "--slurp", fmt.Sprintf("%s/issues/%d/comments?per_page=100", repoPath, number))
+	out, err := ghAPIWaiting(ctx, dir, wait, ghRateLimitRetries, "--paginate", "--slurp", fmt.Sprintf("%s/issues/%d/comments?per_page=100", repoPath, number))
 	if err != nil {
 		return "", fmt.Errorf("gh api: read the comments of #%d: %w", number, err)
 	}

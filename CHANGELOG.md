@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs ship` opens a rate-limited pull request over GraphQL.** GitHub
+  meters REST writes apart from GraphQL, so a secondary rate limit can refuse
+  the REST create while GraphQL has room. Ship used to wait the limit out and
+  then fail after the push. It now sends the create to GraphQL's
+  `createPullRequest` at once, with the same head, base, title, body and draft
+  flag. The summary ends `over GraphQL` whenever a create or a restate took
+  that path.
+
 - **`ccx vcs stack rebase` drops a closed Graphite parent this clone has no
   branch for.** Graphite can stack a lane's pull request on a branch whose own
   pull request closed without merging. When this clone never fetched that

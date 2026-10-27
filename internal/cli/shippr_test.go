@@ -340,6 +340,96 @@ func TestShipPRCreateRefused(t *testing.T) {
 	})
 }
 
+// TestShipPRCreateRateLimitedFallsBackToGraphQL is a ship whose REST create
+// GitHub refused with a secondary rate limit while the core quota had room: a
+// lane opened the pull request by hand with createPullRequest.
+func TestShipPRCreateRateLimitedFallsBackToGraphQL(t *testing.T) {
+	const (
+		repoNodeID = "R_kgDOMcc0nQ"
+		repoQuery  = `query($owner:String!,$repo:String!){repository(owner:$owner,name:$repo){id}}`
+		mutation   = `mutation($id:ID!,$head:String!,$base:String!,$title:String!,$body:String!,$draft:Boolean!)` +
+			`{createPullRequest(input:{repositoryId:$id,headRefName:$head,baseRefName:$base,title:$title,body:$body,draft:$draft})` +
+			`{pullRequest{number,html_url:url,draft:isDraft}}}`
+	)
+	rateLimited := func(t *testing.T) prState {
+		t.Helper()
+		t.Setenv("GH_PULLS_JSON", ghStdout(t, "rest-pulls-head-none"))
+		t.Setenv("GH_PULL_CREATE_STDERR", "gh: You have exceeded a secondary rate limit. Please wait a few minutes before you try again. (HTTP 403)\n")
+		t.Setenv("GH_PULL_CREATE_EXIT", "1")
+		t.Setenv("GH_PULL_CREATE_REFUSALS", "1")
+		posts := filepath.Join(t.TempDir(), "posts")
+		if err := os.WriteFile(posts, nil, 0o600); err != nil {
+			t.Fatalf("write %s: %v", posts, err)
+		}
+		t.Setenv("GH_PULL_CREATE_LOG", posts)
+		t.Setenv("GH_REPO_NODE_ID", repoNodeID)
+		var pr prState
+		if err := json.Unmarshal([]byte(ghStdout(t, "rest-pull-open")), &pr); err != nil {
+			t.Fatalf("golden rest-pull-open: %v", err)
+		}
+		pr.IsDraft = true
+		created, err := json.Marshal(pr)
+		if err != nil {
+			t.Fatalf("marshal created pull request: %v", err)
+		}
+		t.Setenv("GH_PULL_CREATE_GRAPHQL_JSON", string(created))
+		return pr
+	}
+
+	t.Run("opened over GraphQL", func(t *testing.T) {
+		f := shipPRFixture(t, vcstest.Branch("feature"))
+		created := rateLimited(t)
+		bodyDump := filepath.Join(t.TempDir(), "body")
+		t.Setenv("GH_PR_BODY_DUMP", bodyDump)
+		const bodyText = "why this change\n"
+		body := writePRBody(t, "body.md", bodyText)
+
+		got, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--pr-title", "Better title", "--pr-body-file", body, "--draft")
+		if err != nil {
+			t.Fatalf("ship error = %v", err)
+		}
+		lookup := append([]string{"gh"}, ghPullsByHeadArgv(fakePRRepo, "feature", "open")...)
+		assertInvocations(t, vcstest.Invocations(t, f.ArgvLog), append(shipPRPushed("feature"),
+			lookup,
+			[]string{"git", "ls-remote", "origin", "refs/heads/main"},
+			gitForEachRefStdinArgv,
+			shipPRBaseArgv,
+			[]string{"gh", "api", "-X", "POST", "repos/" + fakePRRepo + "/pulls", "-f", "head=feature", "-f", "base=main", "-f", "title=Better title", "-F", "body=@" + body, "-F", "draft=true"},
+			lookup,
+			[]string{"gh", "api", "graphql", "-f", "owner=yasyf", "-f", "repo=cc-context", "-f", "query=" + repoQuery, "--jq", ".data.repository.id"},
+			[]string{
+				"gh", "api", "graphql", "-f", "query=" + mutation, "-f", "head=feature", "-f", "base=main", "-f", "title=Better title",
+				"-F", "body=@" + body, "-F", "draft=true", "--jq", ".data.createPullRequest.pullRequest", "-f", "id=" + repoNodeID,
+			},
+		))
+		if want := fmt.Sprintf(" · opened PR #%d %s [draft] over GraphQL", created.Number, created.URL); !strings.HasSuffix(got, want) {
+			t.Errorf("summary = %q, want suffix %q", got, want)
+		}
+		if got := readFileStr(t, bodyDump); got != bodyText {
+			t.Errorf("gh read a body of %q, want %q", got, bodyText)
+		}
+	})
+	t.Run("GraphQL refused too", func(t *testing.T) {
+		f := shipPRFixture(t, vcstest.Branch("feature"))
+		rateLimited(t)
+		t.Setenv("GH_PR_CREATE_GRAPHQL_FAIL", "gh: API rate limit exceeded")
+		body := writePRBody(t, "body.md", "why this change\n")
+
+		_, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--pr-title", "Better title", "--pr-body-file", body)
+		want := "ship: the push already happened; only the pull request create failed — finish it with: " +
+			"gh api -X POST repos/yasyf/cc-context/pulls -f head=feature -f base=main -f 'title=Better title' -F body=@" + body +
+			", or over GraphQL: gh api graphql -f '" + "query=" + mutation + "' -f head=feature -f base=main -f 'title=Better title' -F body=@" + body +
+			` -F draft=false --jq .data.createPullRequest.pullRequest -f id="$(gh api graphql -f owner=yasyf -f repo=cc-context -f '` +
+			"query=" + repoQuery + `' --jq .data.repository.id)": `
+		if err == nil || !strings.HasPrefix(err.Error(), want) {
+			t.Errorf("error = %v, want prefix %q", err, want)
+		}
+		if n := prCreates(t, f); n != 1 {
+			t.Errorf("ship posted %d REST creates, want 1 — a rate limit goes to GraphQL, not a wait", n)
+		}
+	})
+}
+
 func TestShipMessageFromPRFlags(t *testing.T) {
 	f := shipPRFixture(t, vcstest.Branch("feature"))
 	shipPRCreated(t)
@@ -1212,7 +1302,7 @@ func TestShipPRRestateFallsBackToGraphQL(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ship error = %v", err)
 		}
-		if want := ` · set PR #7 title+body`; !strings.HasSuffix(got, want) {
+		if want := ` · set PR #7 title+body over GraphQL`; !strings.HasSuffix(got, want) {
 			t.Errorf("summary = %q, want suffix %q", got, want)
 		}
 		var gh [][]string
@@ -1240,7 +1330,7 @@ func TestShipPRRestateFallsBackToGraphQL(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ship error = %v", err)
 		}
-		if want := fmt.Sprintf(" · updated PR #%d %s (body)", pr.Number, pr.URL); !strings.HasSuffix(got, want) {
+		if want := fmt.Sprintf(" · updated PR #%d %s (body) over GraphQL", pr.Number, pr.URL); !strings.HasSuffix(got, want) {
 			t.Errorf("summary = %q, want suffix %q", got, want)
 		}
 		var gh [][]string
