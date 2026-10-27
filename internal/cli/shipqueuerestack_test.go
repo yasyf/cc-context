@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -163,20 +164,32 @@ func TestStackSubmitRefusesWhileGraphiteRestacksAnUnparkedMember(t *testing.T) {
 }
 
 func TestStackSubmitPushesAPullRequestGraphiteHasNoRecordOfThroughItsRebasing(t *testing.T) {
-	f, _, remoteFeature := rebasingFeature(t)
-	common, err := gtCommonDir(context.Background(), render.Dir(f.Dir), "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := gtMarkUnrecorded(common, "feature"); err != nil {
-		t.Fatal(err)
-	}
+	for name, tc := range map[string]struct {
+		markedAt time.Time
+		pushes   bool
+	}{
+		"no record since the mark": {time.Now(), true},
+		"recorded since the mark":  {time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC), false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, _, remoteFeature := rebasingFeature(t)
+			common, err := gtCommonDir(context.Background(), render.Dir(f.Dir), "test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := gtMarkUnrecorded(common, "feature"); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chtimes(gtUnrecordedPath(common, "feature"), tc.markedAt, tc.markedAt); err != nil {
+				t.Fatal(err)
+			}
 
-	if _, errStr, err := runStackCmd(t, f, "submit"); err != nil {
-		t.Fatalf("stack submit = %v (stderr=%q), want a pull request Graphite has no record of pushed under its lease", err, errStr)
-	}
-	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature"); got == remoteFeature {
-		t.Errorf("origin feature is still %s, want the new commit pushed", got)
+			_, errStr, err := runStackCmd(t, f, "submit")
+			pushed := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature") != remoteFeature
+			if pushed != tc.pushes || (err == nil) != tc.pushes {
+				t.Errorf("stack submit = %v (stderr=%q), pushed %v, want pushed %v", err, errStr, pushed, tc.pushes)
+			}
+		})
 	}
 }
 

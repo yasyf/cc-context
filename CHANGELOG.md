@@ -93,7 +93,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   restack of Graphite's ever settled it, so every run refused until the
   branches were rebased and pushed by hand. The REBASING check now covers
   only the pull requests Graphite tracks; the rest are rebased locally and
-  pushed under their lease. A lease a push by other hands broke now names the
+  pushed under their lease. A branch's no-record mark clears the moment
+  Graphite records a submit of it, and a mark older than a submit Graphite
+  recorded counts as stale. A lease a push by other hands broke now names the
   head that push left on origin and says to abort and rebase again, since
   `stack continue` republishes under the same lease.
 

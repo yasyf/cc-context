@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/yasyf/cc-context/internal/gtapi"
 	"github.com/yasyf/cc-context/internal/render"
@@ -175,14 +176,19 @@ func gtClearUnrecorded(commonDir, branch string) error {
 }
 
 func gtUnrecorded(commonDir, branch string) (bool, error) {
-	_, err := os.Stat(gtUnrecordedPath(commonDir, branch))
+	at, err := gtUnrecordedSince(commonDir, branch)
+	return !at.IsZero(), err
+}
+
+func gtUnrecordedSince(commonDir, branch string) (time.Time, error) {
+	info, err := os.Stat(gtUnrecordedPath(commonDir, branch))
 	if errors.Is(err, fs.ErrNotExist) {
-		return false, nil
+		return time.Time{}, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("read %s's unrecorded mark: %w", branch, err)
+		return time.Time{}, fmt.Errorf("read %s's unrecorded mark: %w", branch, err)
 	}
-	return true, nil
+	return info.ModTime(), nil
 }
 
 func gtUnrecordedOf(commonDir string, plan []gtSubmitBranch) (map[string]bool, error) {
@@ -200,13 +206,36 @@ func gtUnrecordedOf(commonDir string, plan []gtSubmitBranch) (map[string]bool, e
 func gtTrackedOf(commonDir string, known map[string]gtapi.PullRequestInfo) (map[string]gtapi.PullRequestInfo, error) {
 	tracked := make(map[string]gtapi.PullRequestInfo, len(known))
 	for branch, pr := range known {
-		unrecorded, err := gtUnrecorded(commonDir, branch)
+		if pr.BaseRefName == gtSegmentBase(branch) {
+			continue
+		}
+		marked, err := gtUnrecordedSince(commonDir, branch)
 		if err != nil {
 			return nil, err
 		}
-		if !unrecorded && pr.BaseRefName != gtSegmentBase(branch) {
+		recorded, err := gtSubmittedSince(pr, marked)
+		if err != nil {
+			return nil, err
+		}
+		if marked.IsZero() || recorded {
 			tracked[branch] = pr
 		}
 	}
 	return tracked, nil
+}
+
+func gtSubmittedSince(pr gtapi.PullRequestInfo, since time.Time) (bool, error) {
+	for _, v := range pr.Versions {
+		if v.IsGraphiteGenerated {
+			continue
+		}
+		at, err := time.Parse(time.RFC3339, v.CreatedAt)
+		if err != nil {
+			return false, fmt.Errorf("#%d's Graphite version has createdAt %q: %w", pr.PRNumber, v.CreatedAt, err)
+		}
+		if at.After(since) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
