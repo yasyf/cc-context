@@ -6,6 +6,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A stack submit re-run from the same worktree resumes its own saved run.**
+  A submit that saved its replays and then refused, for instance because
+  Graphite was still restacking after a parent landed, left its run behind,
+  and a re-run from the same lane within five minutes refused with "already
+  in progress" until someone ran `ccx vcs stack continue` or `abort`. A
+  submit or rebase from the worktree that started an exited run with no
+  conflict now resumes it as `continue` would, keeping its replays, and
+  prints `resuming this worktree's saved stack rebase of <roots>`. A run
+  another worktree started, one whose process still runs, or a pushing run
+  met by a `--no-push` rebase refuses as before, and the refusal now names
+  the worktree that started it. The
+  saved-run notice names the branches the run writes rather than its stack
+  roots, which read as if the submit were rebasing other lanes' branches.
+
 ### Added
 
 - **`ccx vcs ship --tip-only --restack` replays only the tip onto its

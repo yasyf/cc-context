@@ -553,7 +553,7 @@ func stackReportSaved(cmd *cobra.Command, commonDir string, since time.Time) err
 		if run.Pid != os.Getpid() || run.Host != host || run.Conflict != nil || run.saved.Before(since) {
 			continue
 		}
-		if _, err := fmt.Fprintf(cmd.ErrOrStderr(), "stack submit: saved stack rebase of %s remains in %s — finish it with ccx vcs stack continue --stack %s, or drop it with ccx vcs stack abort --stack %s\n", strings.Join(run.Roots, ", "), run.dir, run.locks()[0], run.locks()[0]); err != nil {
+		if _, err := fmt.Fprintf(cmd.ErrOrStderr(), "stack submit: saved stack rebase writing %s remains in %s — re-run ccx vcs stack submit from this worktree or ccx vcs stack continue --stack %s to resume it, or drop it with ccx vcs stack abort --stack %s\n", strings.Join(stackOwned(run), ", "), run.dir, run.locks()[0], run.locks()[0]); err != nil {
 			return err
 		}
 	}

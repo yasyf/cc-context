@@ -5,7 +5,6 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -377,14 +376,19 @@ func TestStackSubmitAdoptsAPublicationTheBranchWasResetTo(t *testing.T) {
 
 func TestStackSubmitBesideADeadPublicationRun(t *testing.T) {
 	for _, tc := range []struct {
-		name    string
-		pushed  bool
-		alive   bool
-		refusal string
+		name      string
+		pushed    bool
+		alive     bool
+		elsewhere bool
+		args      []string
+		resumed   string
+		refusal   string
 	}{
-		{name: "pushed, holder exited", pushed: true},
+		{name: "pushed, holder exited", pushed: true, resumed: "finishing the stack rebase of feature"},
 		{name: "pushed, holder running", pushed: true, alive: true, refusal: " running, last saved "},
-		{name: "unpushed, holder exited", refusal: " exited, last saved "},
+		{name: "unpushed, holder exited", resumed: "resuming this worktree's saved stack rebase of feature"},
+		{name: "unpushed, holder exited in another worktree", elsewhere: true, refusal: " exited, last saved "},
+		{name: "unpushed, holder exited, rebase --no-push", args: []string{"rebase", "--no-push"}, refusal: " exited, last saved "},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f, run, plan := prepareStackPublication(t)
@@ -400,18 +404,21 @@ func TestStackSubmitBesideADeadPublicationRun(t *testing.T) {
 			if tc.alive {
 				run.Started = stackProcStart(run.Pid)
 			} else {
-				exited := exec.Command("true")
-				if err := exited.Run(); err != nil {
-					t.Fatal(err)
-				}
-				run.Pid = exited.Process.Pid
+				run.Pid = stackExitedPid(t)
+			}
+			if tc.elsewhere {
+				run.Origin = filepath.Join(t.TempDir(), "lane-b")
 			}
 			if err := stackSaveRun(run); err != nil {
 				t.Fatal(err)
 			}
 			remote := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature")
+			args := []string{"submit"}
+			if tc.args != nil {
+				args = tc.args
+			}
 
-			out, _, err := runStackCmd(t, f, "submit")
+			out, _, err := runStackCmd(t, f, args...)
 			if tc.refusal != "" {
 				want := "a stack rebase of feature is already in progress (pid " + strconv.Itoa(run.Pid) + " on "
 				if err == nil || !strings.Contains(err.Error(), want) || !strings.Contains(err.Error(), tc.refusal) {
@@ -425,8 +432,8 @@ func TestStackSubmitBesideADeadPublicationRun(t *testing.T) {
 				}
 				return
 			}
-			if want := "finishing the stack rebase of feature (pid " + strconv.Itoa(run.Pid) + " on "; err != nil || !strings.Contains(out, want) {
-				t.Fatalf("submit beside the dead run = %q, %v, want it finished first", out, err)
+			if want := tc.resumed + " (pid " + strconv.Itoa(run.Pid) + " on "; err != nil || !strings.Contains(out, want) {
+				t.Fatalf("submit beside the dead run = %q, %v, want %q first", out, err, want)
 			}
 			receipt, err := stackReadPublication(f.Context(), render.Dir(f.Dir), "feature")
 			if err != nil || receipt == nil || receipt.Head != plan[0].head {

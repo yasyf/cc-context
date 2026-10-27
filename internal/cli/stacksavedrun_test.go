@@ -26,7 +26,7 @@ func TestStackSubmitReportsSavedRunAfterReplayError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"saved stack rebase of feature remains in " + run.dir, "ccx vcs stack continue --stack feature", "ccx vcs stack abort --stack feature"} {
+	for _, want := range []string{"saved stack rebase writing feature remains in " + run.dir, "re-run ccx vcs stack submit from this worktree", "ccx vcs stack continue --stack feature", "ccx vcs stack abort --stack feature"} {
 		if !strings.Contains(errOut, want) {
 			t.Errorf("stderr = %q, want %q", errOut, want)
 		}
@@ -73,4 +73,41 @@ func TestStackSubmitReportsSavedRunAfterCancellation(t *testing.T) {
 	if strings.Contains(out, "published") {
 		t.Fatalf("stdout = %q, want cancellation before publication", out)
 	}
+}
+
+func TestStackSubmitFromTheSameWorktreeResumesItsSavedRun(t *testing.T) {
+	t.Parallel()
+	f := stackRebaseRepo(t, "feature")
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	refuse := filepath.Join(t.TempDir(), "refuse")
+	if err := os.WriteFile(refuse, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f.PrependPATH(stackReplayGitWrapper(t, "if [ \"$2\" = replay ] && [ -e '"+refuse+"' ]; then echo 'fatal: boom' >&2; exit 128; fi\n"))
+	if _, _, err := runStackCmd(t, f, "submit", "--restack"); err == nil {
+		t.Fatal("first submit published, want the replay error that saves its run")
+	}
+	if err := os.Remove(refuse); err != nil {
+		t.Fatal(err)
+	}
+	run, err := stackOnlyTestRun(filepath.Join(f.Dir, ".git"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.Pid = stackExitedPid(t)
+	if err := stackSaveRun(run); err != nil {
+		t.Fatal(err)
+	}
+
+	out, _, err := runStackCmd(t, f, "submit", "--restack")
+
+	if err != nil || !strings.Contains(out, "resuming this worktree's saved stack rebase of feature") {
+		t.Fatalf("re-run submit = %q, %v, want it to resume the saved run", out, err)
+	}
+	if remote := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature"); !stackOnto(t, f, "origin/main", remote) {
+		t.Errorf("published feature %s missed the fresh trunk", remote)
+	}
+	stackAssertNoRun(t, f)
 }
