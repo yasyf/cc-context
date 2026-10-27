@@ -42,6 +42,9 @@ const (
 	// SourceREST marks a record read through GitHub's REST API after a
 	// GraphQL poll failed.
 	SourceREST = "REST"
+	// SourceAppRefused marks a record read through REST with the user's token
+	// after the poll's GraphQL answered that the pull request does not exist.
+	SourceAppRefused = "the user's token, app-refused"
 
 	readBudget       = 30 * time.Second
 	pollBudget       = time.Minute

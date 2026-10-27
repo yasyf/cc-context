@@ -551,8 +551,8 @@ func TestMissingPRIsDroppedFromTheBatchAndReported(t *testing.T) {
 }
 
 // TestAPRGraphQLCannotResolveIsReadOverRESTBeforeItIsDropped is a landing
-// pass over 85 pull requests that failed on five open ones GraphQL answered
-// NOT_FOUND for under load: the poll took the answer as the pull request being
+// pass over 88 pull requests that failed on 25 open ones the app's GraphQL
+// answered NOT_FOUND for: the poll took the answer as the pull request being
 // gone and dropped its record.
 func TestAPRGraphQLCannotResolveIsReadOverRESTBeforeItIsDropped(t *testing.T) {
 	t.Parallel()
@@ -569,8 +569,8 @@ func TestAPRGraphQLCannotResolveIsReadOverRESTBeforeItIsDropped(t *testing.T) {
 	if !errors.As(err, &missing) || fmt.Sprint(missing.PRs) != "[99999]" {
 		t.Fatalf("read = %v, want only #99999, which REST also has no record of, reported missing", err)
 	}
-	if pr := st.PRs[190]; pr.Source != SourceREST || pr.State != "OPEN" || pr.HeadRefOid != restHead {
-		t.Errorf("#190 = %+v, want the REST record of the open pull request GraphQL could not resolve", pr)
+	if pr := st.PRs[190]; pr.Source != SourceAppRefused || pr.State != "OPEN" || pr.HeadRefOid != restHead {
+		t.Errorf("#190 = %+v, want the user's REST record of the open pull request GraphQL could not resolve", pr)
 	}
 }
 
@@ -837,6 +837,7 @@ func TestAPushRenewsTheLeaseSoAnotherPollKeepsIt(t *testing.T) {
 	t.Parallel()
 	c := &clock{now: epoch}
 	store, gh := newStore(t, t.TempDir(), c, nil, ok(t, "poll-190.json"))
+	gh.rest = map[string]reply{"/repos/yasyf/cc-context/pulls/191": {status: http.StatusNotFound, body: `{"message":"Not Found"}`}}
 	if err := store.Pushed(testCtx(t), map[int]string{191: "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"}); err != nil {
 		t.Fatal(err)
 	}
