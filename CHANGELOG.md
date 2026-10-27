@@ -89,6 +89,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   head when the run publishes a rebase of it, since moving the shared ref
   would leave one of them on stale files.
 
+- **`ccx vcs worktree rm --path` removes a worktree of any repository, from
+  any directory.** Run from a checkout of another repository, it refused
+  with "is a working copy of <repo>, not of this repository". It now
+  resolves the repository from the worktree's own `.git` file.
+
 - **`ccx vcs pr status` over many pull requests gives each page its own
   deadline.** A read of 97 pull requests failed every landing pass: the
   shared poll had one 30-second deadline for all of its pages, and the REST

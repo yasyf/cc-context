@@ -878,24 +878,15 @@ func runWorktreeRmPath(cmd *cobra.Command, opts worktreeRmOptions) error {
 	if err != nil {
 		return fmt.Errorf("worktree rm: --path %s: %w", path, err)
 	}
-	l, err := resolveWorktreeRmLane(ctx)
-	if err != nil {
-		return err
-	}
 	switch {
 	case target.Kind == vcs.None:
 		return fmt.Errorf("worktree rm: this repository registers no worktree at %s: %w", path, ErrNotFound)
 	case target.Root != path:
 		return fmt.Errorf("worktree rm: %s is inside the working copy %s, not its root", path, target.Root)
-	case target.CommonDir != l.checkout.CommonDir:
-		store, ok, err := worktreeThinStore(ctx, l)
-		if err != nil {
-			return err
-		}
-		if !ok || target.CommonDir != store.checkout.CommonDir {
-			return fmt.Errorf("worktree rm: %s is a working copy of %s, not of this repository", path, target.CommonDir)
-		}
-		l = store
+	}
+	l, err := worktreeRmLaneOf(ctx, target)
+	if err != nil {
+		return err
 	}
 	list, err := vcs.Worktrees(ctx, l.checkout)
 	if err != nil {
@@ -907,6 +898,23 @@ func runWorktreeRmPath(cmd *cobra.Command, opts worktreeRmOptions) error {
 		}
 	}
 	return fmt.Errorf("worktree rm: this repository registers no worktree at %s: %w", path, ErrNotFound)
+}
+
+func worktreeRmLaneOf(ctx context.Context, target vcs.Checkout) (lane, error) {
+	l, err := resolveWorktreeRmLane(ctx)
+	if err == nil && target.CommonDir == l.checkout.CommonDir {
+		return l, nil
+	}
+	if err == nil {
+		store, ok, err := worktreeThinStore(ctx, l)
+		if err != nil {
+			return lane{}, err
+		}
+		if ok && target.CommonDir == store.checkout.CommonDir {
+			return store, nil
+		}
+	}
+	return resolveLane(ctx, "worktree rm", target.MainRoot, true)
 }
 
 func resolveWorktreeRmLane(ctx context.Context) (lane, error) {
