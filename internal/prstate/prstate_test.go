@@ -535,6 +535,7 @@ func TestMissingPRIsDroppedFromTheBatchAndReported(t *testing.T) {
 	c := &clock{now: epoch}
 	notFound := reply{body: `{"data":null,"errors":[{"type":"NOT_FOUND","path":["repository","p1"],"message":"Could not resolve to a PullRequest with the number of 99999."}]}`}
 	store, gh := newStore(t, t.TempDir(), c, nil, notFound, ok(t, "poll-190.json"))
+	gh.rest = map[string]reply{"/repos/yasyf/cc-context/pulls/99999": {status: http.StatusNotFound, body: `{"message":"Not Found"}`}}
 
 	st, err := store.Read(testCtx(t), Want{PRs: []int{190, 99999}})
 	var missing *MissingError
@@ -546,6 +547,30 @@ func TestMissingPRIsDroppedFromTheBatchAndReported(t *testing.T) {
 	}
 	if _, asked := gh.vars[1]["p1"]; asked {
 		t.Errorf("retry vars = %v, want #99999 left out", gh.vars[1])
+	}
+}
+
+// TestAPRGraphQLCannotResolveIsReadOverRESTBeforeItIsDropped is a landing
+// pass over 88 pull requests that failed on 25 open ones the app's GraphQL
+// answered NOT_FOUND for: the poll took the answer as the pull request being
+// gone and dropped its record.
+func TestAPRGraphQLCannotResolveIsReadOverRESTBeforeItIsDropped(t *testing.T) {
+	t.Parallel()
+	c := &clock{now: epoch}
+	notFound := reply{body: `{"data":null,"errors":[` +
+		`{"type":"NOT_FOUND","path":["repository","p0"],"message":"Could not resolve to a PullRequest with the number of 190."},` +
+		`{"type":"NOT_FOUND","path":["repository","p1"],"message":"Could not resolve to a PullRequest with the number of 99999."}]}`}
+	store, gh := newStore(t, t.TempDir(), c, nil, notFound, ok(t, "poll-190.json"))
+	gh.rest = rest190()
+	gh.rest["/repos/yasyf/cc-context/pulls/99999"] = reply{status: http.StatusNotFound, body: `{"message":"Not Found"}`}
+
+	st, err := store.Read(testCtx(t), Want{PRs: []int{190, 99999}})
+	var missing *MissingError
+	if !errors.As(err, &missing) || fmt.Sprint(missing.PRs) != "[99999]" {
+		t.Fatalf("read = %v, want only #99999, which REST also has no record of, reported missing", err)
+	}
+	if pr := st.PRs[190]; pr.Source != SourceAppRefused || pr.State != "OPEN" || pr.HeadRefOid != restHead {
+		t.Errorf("#190 = %+v, want the user's REST record of the open pull request GraphQL could not resolve", pr)
 	}
 }
 
@@ -812,6 +837,7 @@ func TestAPushRenewsTheLeaseSoAnotherPollKeepsIt(t *testing.T) {
 	t.Parallel()
 	c := &clock{now: epoch}
 	store, gh := newStore(t, t.TempDir(), c, nil, ok(t, "poll-190.json"))
+	gh.rest = map[string]reply{"/repos/yasyf/cc-context/pulls/191": {status: http.StatusNotFound, body: `{"message":"Not Found"}`}}
 	if err := store.Pushed(testCtx(t), map[int]string{191: "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"}); err != nil {
 		t.Fatal(err)
 	}

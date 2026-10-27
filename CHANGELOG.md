@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs pr status` fails a row it cannot read, never the whole run.** A
+  run over many pull requests failed outright when the GitHub App's GraphQL
+  answered NOT_FOUND for some of them, and the cache dropped their records as
+  gone. A pull request GraphQL cannot resolve is now read over REST with the
+  user's token before it counts as missing, and its row says `via the user's
+  token, app-refused`. A pull request still unread, or one Graphite has no
+  record of, prints as an `unread` row with its reason, and the run fails only
+  when it read none.
+
 - **A refused `ccx vcs ship --parent` puts the branch back.** Ship moves the
   branch onto `--parent` before the stack rebase plans the push. When that
   plan refused, for instance on a landed ancestor holding commits past its

@@ -174,7 +174,29 @@ func (g *GitHub) poll(ctx context.Context, req Want, prev map[int]PR) (poll, err
 			return poll{}, err
 		}
 	}
+	if len(p.out.missing) == 0 {
+		return p.out, nil
+	}
+	user := *g
+	user.gh = g.gh.AsUser()
+	read, err := user.restPass(ctx, p.out.missing, prev, p.out.trunk.Name)
+	if err != nil {
+		return poll{}, fmt.Errorf("prstate: GitHub answered no pull request %s, and reading them as the user failed: %w", prNumbers(p.out.missing), err)
+	}
+	for n, pr := range read.prs {
+		pr.Source = SourceAppRefused
+		p.out.prs[n] = pr
+	}
+	p.out.missing = read.missing
 	return p.out, nil
+}
+
+func prNumbers(numbers []int) string {
+	refs := make([]string, 0, len(numbers))
+	for _, n := range numbers {
+		refs = append(refs, fmt.Sprintf("#%d", n))
+	}
+	return strings.Join(refs, " ")
 }
 
 type pass struct {
