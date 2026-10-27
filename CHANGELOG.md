@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs ship --branch <b> --tip-only` ships a pull request Graphite
+  parked on `graphite-base/<n>`.** After a parent lands, Graphite moves a
+  child's pull request onto a temporary `graphite-base/<n>` branch. A ship
+  of that child with `--branch` refused with "ship it once Graphite moves it
+  back, or from a working copy holding it", so lanes shipped from the
+  worktree holding the branch instead. It now pushes the branch and moves
+  `graphite-base/<n>` to the branch's base in the same atomic push, as a
+  ship from the holding worktree does, and Graphite moves the pull request
+  back onto its parent.
+
 - **`ccx vcs worktree add` mints beside a clone that itself sits in the
   worktree pool.** A repository whose only clone was made as
   `~/.claude/worktrees/<repo>/<lane>` named its pool after that lane, so every

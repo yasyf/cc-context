@@ -664,8 +664,6 @@ func gtPinTarget(s gtSubmit, plan []gtSubmitBranch) error {
 		switch {
 		case b.name != s.target.branch:
 			return refuse("%s: --branch %s pushes only %s, and this submit would push %s too — ship it from a working copy holding it", s.prefix, s.target.branch, s.target.branch, b.name)
-		case b.parkedOn != "":
-			return refuse("%s: %s's pull request sits on %s, which this submit would push too, and --branch %s pushes only %s — ship it once Graphite moves it back, or from a working copy holding it", s.prefix, b.name, b.parkedOn, b.name, b.name)
 		case s.publication == nil:
 			if err := s.target.moved(b.head, s.target.remote); err != nil {
 				return err
