@@ -122,7 +122,13 @@ func (t *stackTracking) unread() error {
 }
 
 func stackTrackingStuck(untracked []stackUntracked) error {
-	return fmt.Errorf("%s: Graphite still tracks no stack for these pull requests after republishing them with fresh heads, so the merge queue cannot enqueue them:\n%s", stackRebasePrefix, stackUntrackedLines(untracked))
+	var remedies []string
+	for _, u := range untracked {
+		if u.Stale == gtSegmentBase(u.Branch) {
+			remedies = append(remedies, fmt.Sprintf("#%d still sits on its segment base %s: from the working copy holding %s, run gt track --parent %s --no-interactive, then ccx vcs ship --tip-only --no-commit, which records it on %s and deletes the segment", u.PR, u.Stale, u.Branch, u.Parent, u.Parent))
+		}
+	}
+	return fmt.Errorf("%s: Graphite still tracks no stack for these pull requests after republishing them with fresh heads, so the merge queue cannot enqueue them:\n%s", stackRebasePrefix, strings.Join(append([]string{stackUntrackedLines(untracked)}, remedies...), "\n"))
 }
 
 func stackTrackingStranded(stranded []stackUntracked) error {

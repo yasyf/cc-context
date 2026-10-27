@@ -16,6 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   flag. The summary ends `over GraphQL` whenever a create or a restate took
   that path.
 
+- **A stack submit names the hand repair for a pull request left on its
+  segment base.** When Graphite still recorded a pull request on ccx's
+  segment copy of its parent after the fresh-head republish, the refusal named
+  the segment and stopped. It now also gives the two commands that record it
+  on its real parent and delete the segment: `gt track --parent <parent>`,
+  then `ccx vcs ship --tip-only --no-commit` from the working copy holding it.
+
 - **`ccx vcs stack rebase` drops a closed Graphite parent this clone has no
   branch for.** Graphite can stack a lane's pull request on a branch whose own
   pull request closed without merging. When this clone never fetched that

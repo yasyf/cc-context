@@ -100,6 +100,19 @@ func TestStackSubmitFailsNamingAPullRequestGraphiteStillDoesNotTrack(t *testing.
 	}
 }
 
+func TestStackSubmitNamesTheHandRepairForAPullRequestLeftOnItsSegmentBase(t *testing.T) {
+	f, stub := stackUntrackedRepo(t)
+	stub.untracked[9001] = gtStubUntracked{base: gtSegmentBase("feature"), head: gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature"), stuck: true}
+
+	_, _, err := runStackCmd(t, f, "submit")
+	if err == nil {
+		t.Fatal("stack submit exited 0 over a pull request left on its segment base")
+	}
+	if want := "#9001 still sits on its segment base ccx-segment/feature: from the working copy holding feature, run gt track --parent base --no-interactive, then ccx vcs ship --tip-only --no-commit"; !strings.Contains(err.Error(), want) {
+		t.Errorf("stack submit = %v, want it to name %q", err, want)
+	}
+}
+
 func TestStackSubmitLeavesATrackedStackAlone(t *testing.T) {
 	f, _ := stackUntrackedRepo(t)
 	before := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
