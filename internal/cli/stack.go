@@ -269,7 +269,13 @@ one without them. --pr-title and --pr-body-file take ship's <branch>=<value> for
 value names the branch checked out here. They restate those pull requests after
 the push, carrying and retracting release trailers as ccx vcs ship --help
 describes, and survive a conflict stop. Naming a branch outside the stack, or one
-the run leaves out, is refused before anything moves.`,
+the run leaves out, is refused before anything moves.
+
+On plain git, submit is ccx vcs restack --parent for the branch checked out
+here, which must have an open pull request: the parent is the pull request's
+base, or trunk once that base's own pull request merged, so a child of a
+squash-landed parent moves onto trunk without the parent's commits. The branch
+is force-pushed under a lease and its pull request retargeted onto the parent.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runStackSubmit(cmd, o, include, to)
@@ -483,7 +489,7 @@ func runStackSubmit(cmd *cobra.Command, o shipOpts, include []string, to string)
 		return err
 	}
 	if !l.gt {
-		return errors.New("stack submit: this repository is not on the graphite lane, and a stack is Graphite's — ship the branch with ccx vcs ship instead")
+		return stackSubmitGit(cmd, l)
 	}
 	defer func() { err = errors.Join(err, stackReportSaved(cmd, l.checkout.CommonDir, since)) }()
 	if err := stackAdoptChain(cmd, l.dir()); err != nil {
@@ -542,6 +548,55 @@ func runStackSubmit(cmd *cobra.Command, o shipOpts, include []string, to string)
 		return err
 	}
 	return stackRepairTracking(cmd, l, opts, tracking)
+}
+
+func stackSubmitGit(cmd *cobra.Command, l lane) error {
+	ctx := cmd.Context()
+	if l.kind != vcs.Git {
+		return fmt.Errorf("stack submit: this repository is on the %s lane, which has no pull request stack — restack it with ccx vcs restack and push it with ccx vcs push", kindLabel(l.kind))
+	}
+	dir := l.dir()
+	branch, err := gitCurrentBranch(ctx, dir, "stack submit")
+	if err != nil {
+		return err
+	}
+	if branch == "" {
+		return errors.New("stack submit: detached HEAD — check out a branch before submitting")
+	}
+	remote, err := vcs.GitRemoteFor(ctx, dir, branch)
+	if err != nil {
+		return fmt.Errorf("stack submit: %w", err)
+	}
+	trunk, _, err := gitRemoteHead(ctx, dir, "stack submit", remote)
+	if err != nil {
+		return err
+	}
+	if trunk == "" {
+		return fmt.Errorf("stack submit: %s names no default branch", remote)
+	}
+	pr, err := restackGitPR(ctx, dir, remote, branch)
+	if err != nil {
+		return err
+	}
+	if pr == nil {
+		return fmt.Errorf("stack submit: %s has no open pull request — open one with ccx vcs ship", branch)
+	}
+	parent := pr.Base
+	if parent != trunk {
+		out, err := render.RunCLI(ctx, render.Ambient, "gh", ghPullsByHeadArgv(pr.Repo, parent, "all"))
+		if err != nil {
+			return fmt.Errorf("stack submit: list the pull requests of %s: %w", parent, err)
+		}
+		var prs []ghPull
+		if err := json.Unmarshal([]byte(out), &prs); err != nil {
+			return fmt.Errorf("stack submit: parse the pull requests of %s: %w", parent, err)
+		}
+		if len(prs) > 0 && prs[0].MergedAt != nil {
+			parent = trunk
+		}
+	}
+	_, err = restackGit(ctx, cmd, l, parent)
+	return err
 }
 
 func stackReportSaved(cmd *cobra.Command, commonDir string, since time.Time) error {

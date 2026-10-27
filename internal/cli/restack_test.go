@@ -781,6 +781,53 @@ func TestRestackGitParentMovesThePullRequest(t *testing.T) {
 	}
 }
 
+func TestStackSubmitGitFollowsTheParentPullRequest(t *testing.T) {
+	tests := []struct {
+		name       string
+		baseState  string
+		advance    string
+		onto       string
+		wantPRBase string
+	}{
+		{name: "open parent", baseState: "OPEN", advance: "base", onto: "base", wantPRBase: "OPEN base"},
+		{name: "squash-landed parent", baseState: "MERGED", advance: "main", onto: "main", wantPRBase: "OPEN main"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f, gh := restackGitStacked(t, map[string]dropSeed{
+				"base":    {number: 1, state: tt.baseState, base: "main"},
+				"feature": {number: 2, state: "OPEN", base: "base"},
+			})
+			restackAdvanceRemote(t, f, tt.advance, "base.txt", "base, landed\n")
+
+			if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+				t.Fatalf("stack submit: %v", err)
+			}
+			if got := gh.pr(2); got != tt.wantPRBase {
+				t.Errorf("PR #2 = %q, want %q", got, tt.wantPRBase)
+			}
+			if !stackOnto(t, f, "refs/remotes/origin/"+tt.onto, "feature") {
+				t.Errorf("feature is not on the fetched %s", tt.onto)
+			}
+			if got := strings.TrimSpace(restackRun(t, f, f.Dir, "git", "rev-list", "--count", "refs/remotes/origin/"+tt.onto+"..feature")); got != "1" {
+				t.Errorf("commits above %s = %s, want feature's own 1", tt.onto, got)
+			}
+			if local, remote := restackRev(t, f, f.Dir, "feature"), restackRev(t, f, f.Dir, "refs/remotes/origin/feature"); local != remote {
+				t.Errorf("origin/feature = %s, want the rebased %s", remote, local)
+			}
+		})
+	}
+}
+
+func TestStackSubmitGitRefusesABranchWithoutAPullRequest(t *testing.T) {
+	f, _ := restackGitStacked(t, nil)
+	_, _, err := runStackCmd(t, f, "submit")
+	if want := "stack submit: feature has no open pull request — open one with ccx vcs ship"; err == nil || err.Error() != want {
+		t.Fatalf("error = %v, want %q", err, want)
+	}
+	assertNoRestackMutation(t, restackInvocations(t, f))
+}
+
 func TestRestackGitParentAlreadyThereRetargetsOnly(t *testing.T) {
 	f, gh := restackGitStacked(t, map[string]dropSeed{"feature": {number: 2, state: "OPEN", base: "main"}})
 	published := restackRev(t, f, f.Dir, "feature")
