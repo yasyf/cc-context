@@ -85,6 +85,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   read together with its local head, and refuses instead of pushing a parked
   `graphite-base` branch or moving another working copy's checkout.
 
+- **`ccx vcs stack rebase`, `stack continue`, `stack submit` and `ship` push
+  a pull request Graphite does not track instead of waiting on its REBASING
+  status.** A branch past
+  Graphite's stack cap, which Graphite has no record of or recorded only on
+  its segment base, kept reading REBASING after a parent landed, and no
+  restack of Graphite's ever settled it, so every run refused until the
+  branches were rebased and pushed by hand. The REBASING check now covers
+  only the pull requests Graphite tracks; the rest are rebased locally and
+  pushed under their lease. A branch's no-record mark clears the moment
+  Graphite records a submit of it, and a mark older than a submit Graphite
+  recorded counts as stale. A lease a push by other hands broke now names the
+  head that push left on origin and says to abort and rebase again, since
+  `stack continue` republishes under the same lease.
+
 - **`ccx vcs ship --tip-only` ships past another lane's stopped stack
   rebase.** A tip-only ship whose tip needed no replay claimed the stack's
   bottom branch, so a rebase another lane had stopped on a conflict anywhere

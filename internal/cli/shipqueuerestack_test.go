@@ -1,11 +1,14 @@
 package cli
 
 import (
+	"context"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/yasyf/cc-context/internal/gtapi"
+	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
@@ -157,6 +160,36 @@ func TestStackSubmitRefusesWhileGraphiteRestacksAnUnparkedMember(t *testing.T) {
 	}
 	if heads := api.submitHeads()[posted:]; len(heads) > 0 {
 		t.Errorf("submit posts = %v, want none", heads)
+	}
+}
+
+func TestStackSubmitPushesAPullRequestGraphiteHasNoRecordOfThroughItsRebasing(t *testing.T) {
+	for name, tc := range map[string]struct {
+		markedAt time.Time
+		pushes   bool
+	}{
+		"no record since the mark": {time.Now(), true},
+		"recorded since the mark":  {time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC), false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, _, remoteFeature := rebasingFeature(t)
+			common, err := gtCommonDir(context.Background(), render.Dir(f.Dir), "test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := gtMarkUnrecorded(common, "feature"); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chtimes(gtUnrecordedPath(common, "feature"), tc.markedAt, tc.markedAt); err != nil {
+				t.Fatal(err)
+			}
+
+			_, errStr, err := runStackCmd(t, f, "submit")
+			pushed := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature") != remoteFeature
+			if pushed != tc.pushes || (err == nil) != tc.pushes {
+				t.Errorf("stack submit = %v (stderr=%q), pushed %v, want pushed %v", err, errStr, pushed, tc.pushes)
+			}
+		})
 	}
 }
 
