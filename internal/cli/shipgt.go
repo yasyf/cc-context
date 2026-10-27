@@ -1559,21 +1559,6 @@ func gtCommitsPending(ctx context.Context, dir render.Dir, o shipOpts) (bool, er
 // push evicts it, and the stack rebase guard that refuses the move runs only
 // after the commit, leaving it unpushed on the queued branch.
 func gtRefuseQueuedCommit(ctx context.Context, l lane, o shipOpts, selected bool, plan branchPlan) error {
-	if !selected && !o.amend {
-		pending, err := gtCommitsPending(ctx, l.dir(), o)
-		if err != nil || !pending {
-			return err
-		}
-	}
-	remote, err := vcs.GitRemoteFor(ctx, l.dir(), "HEAD")
-	if err != nil {
-		return fmt.Errorf("ship: %w", err)
-	}
-	pushed := string(vcs.RemoteBranchRef(remote, plan.name))
-	published, err := gitRefExists(ctx, l.dir(), "ship", pushed)
-	if err != nil || !published {
-		return err
-	}
 	prs, err := stackPRs(ctx, l.dir(), plan.trunk, []string{plan.name})
 	if err != nil {
 		return fmt.Errorf("ship: read %s's pull request: %w", plan.name, err)
@@ -1582,17 +1567,31 @@ func gtRefuseQueuedCommit(ctx context.Context, l lane, o shipOpts, selected bool
 	if pr == nil || pr.State != "OPEN" {
 		return nil
 	}
+	if !selected && !o.amend {
+		pending, err := gtCommitsPending(ctx, l.dir(), o)
+		if err != nil || !pending {
+			return err
+		}
+	}
 	b := &stackRebaseBranch{Name: plan.name, PR: pr}
 	queue, err := stackQueueStates(ctx, l, false, map[string]*stackRebaseBranch{plan.name: b})
 	if err != nil || queue[plan.name] != prQueueQueued {
 		return err
 	}
-	trunk := string(vcs.RemoteBranchRef(remote, plan.trunk))
+	remote, err := vcs.GitRemoteFor(ctx, l.dir(), "HEAD")
+	if err != nil {
+		return fmt.Errorf("ship: %w", err)
+	}
+	pushed, trunk := string(vcs.RemoteBranchRef(remote, plan.name)), string(vcs.RemoteBranchRef(remote, plan.trunk))
+	published, err := gitRefExists(ctx, l.dir(), "ship", pushed)
+	if err != nil {
+		return err
+	}
 	fetched, err := gitRefExists(ctx, l.dir(), "ship", trunk)
 	if err != nil {
 		return err
 	}
-	if fetched {
+	if published && fetched {
 		if b.Remote, err = gitRevParse(ctx, l.dir(), "ship", pushed); err != nil {
 			return err
 		}

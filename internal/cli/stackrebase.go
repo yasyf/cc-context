@@ -214,6 +214,7 @@ type stackRebaseRun struct {
 	owners        map[string]string
 	adopted       gtState
 	recorded      map[string]stackRecordedParent
+	rewound       map[string]string
 }
 
 // stackLeft is a branch of the stack a run leaves exactly where it is: an
@@ -547,6 +548,14 @@ func stackBegin(ctx context.Context, cmd *cobra.Command, l lane, commonDir strin
 	}
 	if err := stackAnnounceLeft(cmd, run.left); err != nil {
 		return err
+	}
+	for _, name := range slices.Sorted(maps.Keys(run.rewound)) {
+		if run.branch(name) == nil {
+			continue
+		}
+		if _, err := fmt.Fprintf(cmd.ErrOrStderr(), "stack rebase: took the commits of %s above %s as its own — gt recorded its parent revision at its own head, and %s was since reset below it\n", name, run.rewound[name], run.rewound[name]); err != nil {
+			return err
+		}
 	}
 	if err := stackAnnounceHeld(cmd, run); err != nil {
 		return err
@@ -1140,6 +1149,10 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	if err != nil {
 		return nil, err
 	}
+	rewound, err := stackClaimRewound(ctx, l.dir(), state)
+	if err != nil {
+		return nil, err
+	}
 	overrides, err := stackOverrides(o, state)
 	if err != nil {
 		return nil, err
@@ -1322,7 +1335,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	if err != nil {
 		return nil, fmt.Errorf("stack rebase: %w", err)
 	}
-	run := &stackRebaseRun{Trunk: trunk, Pin: pin, NoPush: o.noPush, Origin: l.checkout.Root, Draft: o.draft, DraftAll: o.draftAll, NoVerify: o.noVerify, Tip: o.tip, TipOnly: o.tipOnly, DropCommits: o.dropCommits, StayClean: o.stayClean, Restack: o.restack, AllLanes: o.allLanes, To: o.to, Reparented: slices.Sorted(maps.Keys(overrides)), NewPRs: o.newPRs, deferPush: o.deferPush, Ship: o.ship, Roots: roots, Pid: os.Getpid(), Started: stackProcStart(os.Getpid()), Host: host, left: left, lanePins: lanePins, heldBelow: heldBelow, heldAbove: heldAbove, owners: o.owners, adopted: adopted, recorded: o.recorded}
+	run := &stackRebaseRun{Trunk: trunk, Pin: pin, NoPush: o.noPush, Origin: l.checkout.Root, Draft: o.draft, DraftAll: o.draftAll, NoVerify: o.noVerify, Tip: o.tip, TipOnly: o.tipOnly, DropCommits: o.dropCommits, StayClean: o.stayClean, Restack: o.restack, AllLanes: o.allLanes, To: o.to, Reparented: slices.Sorted(maps.Keys(overrides)), NewPRs: o.newPRs, deferPush: o.deferPush, Ship: o.ship, Roots: roots, Pid: os.Getpid(), Started: stackProcStart(os.Getpid()), Host: host, left: left, lanePins: lanePins, heldBelow: heldBelow, heldAbove: heldAbove, owners: o.owners, adopted: adopted, recorded: o.recorded, rewound: rewound}
 	own := map[string]bool{}
 	if current != "" && current != trunk {
 		down, err := gtDownstack(stackRebasePrefix, retargeted, current, trunk)
@@ -1622,11 +1635,7 @@ func stackKept(ctx context.Context, dir render.Dir, state gtState, tr vcs.Trunk,
 		case gone[parent]:
 			left = append(left, stackLeft{branch: name, why: "it sits on " + parent + ", which is left where it is"})
 		case !isLanded(name) && s.Parents[0].SHA == s.Head:
-			why, err := stackRewoundParent(ctx, dir, state, name, parent)
-			if err != nil {
-				return nil, nil, nil, err
-			}
-			left = append(left, stackLeft{branch: name, empty: true, why: why})
+			left = append(left, stackLeft{branch: name, empty: true})
 			if below[name] {
 				passed[name] = parent
 				continue
@@ -1661,20 +1670,32 @@ func stackKept(ctx context.Context, dir render.Dir, state gtState, tr vcs.Trunk,
 	return kept, left, passed, nil
 }
 
-// stackRewoundParent explains an empty lane whose parent was reset below the
-// revision gt recorded for it: the commits between the parent's head and the
-// branch's are ones the parent dropped, and only the branch's owner can say
-// whether they are its own.
-func stackRewoundParent(ctx context.Context, dir render.Dir, state gtState, name, parent string) (string, error) {
-	recorded, parentHead := state[name].Parents[0].SHA, state[parent].Head
-	if parentHead == "" || parentHead == recorded {
-		return "", nil
+// stackClaimRewound re-records, in state, the parent revision of a branch gt
+// reads as empty only because its parent was reset below the commit it was
+// cut at: the commits between are on no other branch, so they are the
+// branch's own, as gt track --parent would record them.
+func stackClaimRewound(ctx context.Context, dir render.Dir, state gtState) (map[string]string, error) {
+	claimed := map[string]string{}
+	for _, name := range slices.Sorted(maps.Keys(state)) {
+		s := state[name]
+		if s.Trunk || len(s.Parents) == 0 || s.Head != s.Parents[0].SHA {
+			continue
+		}
+		parent := state[s.Parents[0].Ref]
+		if parent.Trunk || parent.Head == "" || parent.Head == s.Head {
+			continue
+		}
+		below, err := gitIsAncestor(ctx, dir, stackRebasePrefix, parent.Head, s.Head)
+		if err != nil {
+			return nil, err
+		}
+		if below {
+			s.Parents = []gtRef{{Ref: s.Parents[0].Ref, SHA: parent.Head}}
+			state[name] = s
+			claimed[name] = s.Parents[0].Ref
+		}
 	}
-	below, err := gitIsAncestor(ctx, dir, stackRebasePrefix, parentHead, recorded)
-	if err != nil || !below {
-		return "", err
-	}
-	return fmt.Sprintf("gt records %s's parent revision at %.12s, its own head, so it reads as empty, but %s has since been reset to %.12s below it — if the commits between are %s's own, re-record it with gt track --parent %s %s and re-run", name, recorded, parent, parentHead, name, parent, name), nil
+	return claimed, nil
 }
 
 func stackPassThrough(passed map[string]string, parent string) string {
@@ -1834,7 +1855,7 @@ func stackRefuseForeignBelow(ctx context.Context, dir render.Dir, state gtState,
 func stackAnnounceLeft(cmd *cobra.Command, left []stackLeft) error {
 	var empty []string
 	for _, l := range left {
-		if l.empty && l.why == "" {
+		if l.empty {
 			empty = append(empty, l.branch)
 			continue
 		}

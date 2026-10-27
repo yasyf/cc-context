@@ -325,28 +325,53 @@ func TestShipTipOnlyOpensAChildOfAQueuedBranch(t *testing.T) {
 	}
 }
 
-// TestShipNamesARewoundParentWhenItLeavesTheTipOut is #43587's child as it
-// stood after the hand reset: cut while the parent held its commit, it reads as
-// empty once the parent went back, and the refusal said only that the run left
-// it out.
-func TestShipNamesARewoundParentWhenItLeavesTheTipOut(t *testing.T) {
-	f := stackRebaseRepo(t, "base")
-	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
-		t.Fatalf("stack submit: %v", err)
-	}
-	published := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
-	stackCommit(t, f, "readback.txt")
-	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "child")
-	mustRun(t, f.Env(), f.Dir, "gt", "track", "--parent", "base", "--no-interactive")
-	mustRun(t, f.Env(), f.Dir, "git", "branch", "-f", "base", published)
+// TestShipTakesTheCommitsAboveARewoundParent is #43587's child as it stood
+// after the hand reset: cut while the parent held a stray commit, gt recorded
+// its parent revision at that commit, its own head, so once the parent was
+// reset below it the run read the child as empty and refused its title.
+func TestShipTakesTheCommitsAboveARewoundParent(t *testing.T) {
+	for _, landed := range []bool{false, true} {
+		t.Run(map[bool]string{false: "open parent", true: "landed parent"}[landed], func(t *testing.T) {
+			f := stackRebaseRepo(t, "base")
+			api := stubGTAPI(t)
+			f.Decorate(api.ctx)
+			if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+				t.Fatalf("stack submit: %v", err)
+			}
+			published := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
+			stackCommit(t, f, "readback.txt")
+			mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "child")
+			mustRun(t, f.Env(), f.Dir, "gt", "track", "--parent", "base", "--no-interactive")
+			mustRun(t, f.Env(), f.Dir, "git", "branch", "-f", "base", published)
+			args := []string{"--no-commit", "--no-watch", "--pr-title", "child: ✨ the child"}
+			if landed {
+				stubStackPRs(t, f, map[string]*stackPR{"base": {Number: 41, Title: "base", State: "MERGED", Landed: true, Head: published}})
+				restackSquashRemote(t, f, "main", "base (#41)", "base")
+			} else {
+				args = append(args, "--tip-only")
+			}
 
-	_, errStr, err := runShipCmdFull(f.Context(), t, "--no-commit", "--no-watch", "--tip-only", "--pr-title", "child: ✨ the child")
-	if err == nil {
-		t.Fatalf("ship of a child read as empty succeeded (stderr=%q)", errStr)
-	}
-	for _, want := range []string{"which this run leaves out: gt records child's parent revision", "base has since been reset to", "gt track --parent base child"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("refusal = %q, want it to say %q", err, want)
-		}
+			_, errStr, err := runShipCmdFull(f.Context(), t, args...)
+			if err != nil {
+				t.Fatalf("ship of a child above a rewound parent = %v (stderr=%q)", err, errStr)
+			}
+			if !strings.Contains(errStr, "took the commits of child above base as its own") {
+				t.Errorf("stderr = %q, want it to name the commits it took", errStr)
+			}
+			remote := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "child")
+			if names := gitAt(t, f.Env(), f.Dir, "show", "--name-only", "--format=", remote); names != "readback.txt" {
+				t.Errorf("origin child's tip touches %q, want the readback commit", names)
+			}
+			want := "base"
+			if landed {
+				want = "main"
+			}
+			if entry := api.submitEntry("child"); entry.Base != want {
+				t.Errorf("child submitted onto %s, want %s", entry.Base, want)
+			}
+			if got := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", "refs/remotes/origin/"+want+".."+remote); got != "1" {
+				t.Errorf("origin child carries %s commit(s) above %s, want the readback commit alone", got, want)
+			}
+		})
 	}
 }

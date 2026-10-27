@@ -27,13 +27,16 @@ func TestShipAmendOfAQueuedBranchRefusesInsteadOfClaimingItPublished(t *testing.
 	if err == nil {
 		t.Fatalf("ship --amend of a queued branch = %q, want a refusal", out)
 	}
-	for _, want := range []string{"feature is in the merge queue", "the amend stays committed"} {
+	for _, want := range []string{"feature is in the merge queue", "nothing was committed"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error = %v (stderr=%q), want %q", err, errStr, want)
 		}
 	}
 	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature"); got != queued {
 		t.Errorf("origin feature moved to %s while queued at %s", got, queued)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature"); got != queued {
+		t.Errorf("feature amended to %s, want it left at its queued head %s", got, queued)
 	}
 }
 
