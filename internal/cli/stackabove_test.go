@@ -18,6 +18,8 @@ func stackBottomMovedByGraphite(t *testing.T) *vcstest.Fixture {
 	restackAdvanceRemote(t, f, "main", "upstream.txt", "upstream\n")
 	clone := filepath.Join(t.TempDir(), "graphite")
 	mustRun(t, f.Env(), filepath.Dir(clone), "git", "clone", "-q", f.RemoteDir, clone)
+	mustRun(t, f.Env(), clone, "git", "config", "user.email", "t@t.t")
+	mustRun(t, f.Env(), clone, "git", "config", "user.name", "t")
 	mustRun(t, f.Env(), clone, "git", "branch", "a", "origin/a")
 	mustRun(t, f.Env(), clone, "git", "switch", "-q", "b")
 	mustRun(t, f.Env(), clone, "git", "rebase", "-q", "--update-refs", "--onto", "origin/main", was, "b")
