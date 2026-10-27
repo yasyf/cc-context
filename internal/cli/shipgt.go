@@ -467,32 +467,83 @@ func gtNeedsRestack(state gtState, branch, trunk string) (bool, error) {
 
 // gtMoveOntoParent applies the move the preflight cleared: an untracked branch
 // is adopted onto --parent, a tracked one re-parented onto it. It runs after
-// every other refusal, so a ship that stops short of its commit never leaves
-// the branch moved.
-func gtMoveOntoParent(ctx context.Context, errW io.Writer, l lane, o shipOpts, c *gtCache) (string, bool, error) {
+// every other preflight refusal, and returns the record a later refusal puts
+// the branch back from.
+func gtMoveOntoParent(ctx context.Context, errW io.Writer, l lane, o shipOpts, c *gtCache) (string, bool, *gtMoveUndo, error) {
 	branch, err := shipBranch(ctx, l.dir(), o)
 	if err != nil {
-		return "", false, err
+		return "", false, nil, err
 	}
 	state, err := c.at(ctx)
 	if err != nil {
-		return "", false, err
+		return "", false, nil, err
+	}
+	undo := &gtMoveUndo{branch: branch, parent: o.parent}
+	if undo.head, err = gtRestackHead(ctx, "ship", l.dir(), branch); err != nil {
+		return "", false, nil, err
 	}
 	var seg string
-	if _, tracked := state[branch]; tracked {
+	if s, tracked := state[branch]; tracked {
+		undo.from, undo.base = s.Parents[0].Ref, s.Parents[0].SHA
 		state, seg, err = gtReparent(ctx, l, o, branch, o.parent, c)
 	} else {
 		state, seg, err = gtTrack(ctx, errW, l, o, branch, c)
 	}
 	if err != nil {
-		return "", false, err
+		return "", false, nil, err
+	}
+	if undo.moved, err = gtRestackHead(ctx, "ship", l.dir(), branch); err != nil {
+		return "", false, nil, err
 	}
 	trunk, err := gtTrunkBranch("ship", state)
 	if err != nil {
-		return "", false, err
+		return "", false, nil, err
 	}
 	needsRestack, err := gtNeedsRestack(state, branch, trunk)
-	return seg, needsRestack, err
+	return seg, needsRestack, undo, err
+}
+
+type gtMoveUndo struct {
+	branch, parent string
+	head, moved    string
+	from, base     string
+}
+
+func (u *gtMoveUndo) restore(ctx context.Context, l lane, c *gtCache, err error) error {
+	head, headErr := gtRestackHead(ctx, "ship", l.dir(), u.branch)
+	if headErr != nil {
+		return errors.Join(err, headErr)
+	}
+	if head != u.moved {
+		return fmt.Errorf("%w\nship: %s stays on %s at %.12s, past the move — it was at %.12s before it", err, u.branch, u.parent, head, u.head)
+	}
+	if head != u.head {
+		holders, holdersErr := vcs.BranchHolders(ctx, l.checkout)
+		if holdersErr != nil {
+			return errors.Join(err, holdersErr)
+		}
+		if _, alignErr := gtRestackAlign(ctx, "ship", holders, []restackMove{{branch: u.branch, head: u.head, parent: u.from, previous: head}}); alignErr != nil {
+			return fmt.Errorf("%w\nship: %s stays on %s at %.12s — its working copy could not be put back at %.12s: wv", err, u.branch, u.parent, head, u.head, alignErr)
+		}
+		if _, moveErr := render.RunCLI(ctx, l.dir(), "git", []string{"update-ref", gtRestackRef(u.branch), u.head, head}); moveErr != nil {
+			return errors.Join(err, fmt.Errorf("ship: put %s back at %.12s: %w", u.branch, u.head, moveErr))
+		}
+	}
+	commonDir, commonErr := c.common(ctx)
+	if commonErr != nil {
+		return errors.Join(err, commonErr)
+	}
+	c.forget()
+	if u.from == "" {
+		if forgetErr := gtmeta.Forget(ctx, commonDir, []string{u.branch}); forgetErr != nil {
+			return errors.Join(err, forgetErr)
+		}
+		return fmt.Errorf("%w\nship: put %s back at %.12s, untracked as it was before the move onto %s", err, u.branch, u.head, u.parent)
+	}
+	if recordErr := errors.Join(gtmeta.Reparent(ctx, commonDir, map[string]string{u.branch: u.from}), gtmeta.RecordRestacked(ctx, commonDir, map[string]string{u.branch: u.base})); recordErr != nil {
+		return errors.Join(err, recordErr)
+	}
+	return fmt.Errorf("%w\nship: put %s back at %.12s on %s, where it was before the move onto %s", err, u.branch, u.head, u.from, u.parent)
 }
 
 // gtTrunkFlagRefusal is the refusal a flag earns on trunk in the graphite lane,

@@ -432,8 +432,14 @@ func runShip(cmd *cobra.Command, o shipOpts) (err error) {
 		}
 	}
 
+	var moveUndo *gtMoveUndo
+	defer func() {
+		if err != nil && moveUndo != nil && (gtc.restack == nil || gtc.restack.dir == "") {
+			err = moveUndo.restore(ctx, l, gtc, err)
+		}
+	}()
 	if plan.moveOntoParent && !plan.commitBeforeMove {
-		if planSeg, plan.needsRestack, err = gtMoveOntoParent(ctx, cmd.ErrOrStderr(), l, o, gtc); err != nil {
+		if planSeg, plan.needsRestack, moveUndo, err = gtMoveOntoParent(ctx, cmd.ErrOrStderr(), l, o, gtc); err != nil {
 			return err
 		}
 	}
@@ -486,7 +492,7 @@ func runShip(cmd *cobra.Command, o shipOpts) (err error) {
 	stuckOpts.noCommit = o.noCommit
 	stuck := gtStuckSuffix(stuckOpts)
 	if plan.commitBeforeMove {
-		if planSeg, plan.needsRestack, err = gtMoveOntoParent(ctx, cmd.ErrOrStderr(), l, o, gtc); err != nil {
+		if planSeg, plan.needsRestack, moveUndo, err = gtMoveOntoParent(ctx, cmd.ErrOrStderr(), l, o, gtc); err != nil {
 			return fmt.Errorf("%w%s", err, stuck)
 		}
 	}
@@ -538,6 +544,7 @@ func runShip(cmd *cobra.Command, o shipOpts) (err error) {
 			restackSeg = "restacked in isolation" + shipTipStayed(gtc.restack, branch)
 		}
 	} else if plan.needsRestack && !o.tipOnly {
+		moveUndo = nil
 		if _, err := gtTrunkRef(ctx, dir, "ship", plan.trunk); err != nil {
 			return fmt.Errorf("%w. The commit already landed and the restack did not run — run ccx vcs stack restack once the fetch succeeds", err)
 		}
@@ -546,6 +553,7 @@ func runShip(cmd *cobra.Command, o shipOpts) (err error) {
 			return err
 		}
 	}
+	moveUndo = nil
 
 	var short, subject string
 	if elsewhere {
