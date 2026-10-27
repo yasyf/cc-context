@@ -32,6 +32,18 @@ rebasing that lane, run this from your branch's worktree:
 ccx vcs stack rebase --parent mine=theirs
 ```
 
+When Graphite moves the bottom of a stack after a parent lands, restack only
+what sits above the moved branches, leaving their heads and their pull
+requests' approvals as they are:
+
+```sh
+ccx vcs stack rebase --above <branch>
+```
+
+`--above <branch>` is `--parent <child>=<branch>` for each branch stacked
+directly on `<branch>`. It refuses a `<branch>` outside the stack checked out
+here, trunk included, and one with nothing stacked on it.
+
 gt does not need to track the other lane's branch already. The run tracks it
 on its nearest tracked ancestor, or on trunk, the way `ship` adopts a branch.
 A parent that exists only on the remote is refused with the fetch that brings

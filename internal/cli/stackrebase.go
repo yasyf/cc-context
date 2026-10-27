@@ -273,6 +273,7 @@ type stackRebaseOpts struct {
 	otherLanes  bool
 	include     []string
 	to          string
+	above       string
 	bump        []string
 	keepHeld    bool
 	recorded    map[string]stackRecordedParent
@@ -319,7 +320,11 @@ to trunk, and those stacked above it, with the same for each branch --parent,
 out, even when its branches sit on one this run moves. --parent and
 --linearize move only the branches they name a parent for and those stacked
 above them: each new parent and the branches below it stay at their published
-heads, or at their local heads in a run that does not push. --to <branch> stops the
+heads, or at their local heads in a run that does not push. --above <branch> is
+--parent <child>=<branch> for each branch stacked directly on <branch>: after
+Graphite moves the bottom of a stack, it replays only the branches above
+<branch> onto its head and leaves <branch> and those below it as published. A
+<branch> outside the stack of the branch checked out here is refused. --to <branch> stops the
 run at <branch>: of the branches stacked above a seed, only those <branch> sits
 on, and <branch> itself, join it. Every seed must be <branch> or sit below it;
 any other <branch> is refused, as is one a member was last published onto. --all-lanes widens the run to every branch gt
@@ -413,7 +418,9 @@ branch with a pull request sits on is refused before anything moves.`,
 	cmd.Flags().BoolVar(&o.allLanes, "all-lanes", false, "rebase every branch gt tracks, not only this lane's")
 	cmd.Flags().StringArrayVar(&o.include, "include", nil, "take this branch of another lane into the run instead of keeping it at its published head (repeatable)")
 	cmd.Flags().StringVar(&o.to, "to", "", stackToUsage)
+	cmd.Flags().StringVar(&o.above, "above", "", "move only the branches stacked above this branch, onto its head; it and every branch below it stay where they are")
 	cmd.MarkFlagsMutuallyExclusive("to", "all-lanes")
+	cmd.MarkFlagsMutuallyExclusive("above", "all-lanes")
 	return cmd
 }
 
@@ -1141,6 +1148,11 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	if err != nil {
 		return nil, err
 	}
+	if o.above != "" {
+		if err := stackAboveOverrides(state, trunk, current, o.above, overrides); err != nil {
+			return nil, err
+		}
+	}
 	tr, err := gtTrunkRef(ctx, l.dir(), prefix, trunk)
 	if err != nil {
 		return nil, err
@@ -1856,6 +1868,34 @@ func stackOverrides(o stackRebaseOpts, state gtState) (map[string]string, error)
 		}
 	}
 	return overrides, nil
+}
+
+func stackAboveOverrides(state gtState, trunk, current, above string, overrides map[string]string) error {
+	if current == "" || current == trunk {
+		return fmt.Errorf("stack rebase: --above %s needs a branch of its stack checked out here", above)
+	}
+	lane, _, err := stackMembers(state, trunk, []string{current})
+	if err != nil {
+		return err
+	}
+	if !slices.Contains(lane, above) {
+		return fmt.Errorf("stack rebase: --above %s is not in %s's stack (%s)", above, current, strings.Join(lane, ", "))
+	}
+	var children []string
+	for _, name := range lane {
+		if s := state[name]; len(s.Parents) > 0 && s.Parents[0].Ref == above {
+			children = append(children, name)
+		}
+	}
+	if len(children) == 0 {
+		return fmt.Errorf("stack rebase: --above %s has no branch stacked on it", above)
+	}
+	for _, child := range children {
+		if _, named := overrides[child]; !named {
+			overrides[child] = above
+		}
+	}
+	return nil
 }
 
 func stackLinearizeBase(state gtState, chain []string) string {

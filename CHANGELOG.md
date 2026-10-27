@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`ccx vcs stack rebase --above <branch>`** replays only the branches
+  stacked above `<branch>` onto its head. `<branch>` and every branch below it
+  stay at their published heads, so a stack whose bottom Graphite moved after
+  a parent landed restacks without moving heads that already carry approvals.
+  A `<branch>` outside the checked-out stack, or one with nothing on it, is
+  refused, and `--dry-run` shows the plan.
 - **`ccx vcs gh` is the machine's GitHub gateway.** Every request ccx makes,
   and every gh run through `vcs gh`, is charged to its pool in one ledger
   shared by every process, under `CCX_CALLER`. A pool is an identity, app or
