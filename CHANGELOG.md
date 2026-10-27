@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs pr status` answers from the shared poll again, not over REST.**
+  On a repository with 104 pull requests and 46 lane prefixes asked for, the
+  shared poll's first GraphQL query carried the trunk, every prefix search,
+  and 40 pull requests. GitHub answered it with a 502 after 11 seconds, so the
+  poll failed and every reader in the next 30 seconds read its pull requests
+  one by one over REST. A reader that lost the race to claim the poll also
+  slept until the poll after it was due, past its own 30-second budget, and
+  read over REST even when the claimed poll succeeded. The poll now sends
+  pages of at most 20 pull requests and prefixes, four at a time: one page of
+  20 takes about 4 seconds where one of 40 took 9. A reader that lost the
+  claim checks every second and takes the claimed poll when it lands, however
+  much of its own budget it spent waiting for its turn.
+
 - `ccx vcs ship` watches each CI run with `gh run watch --interval 60` instead of gh's 3-second default. A ship's 15-minute watch now costs about 30 GitHub reads per run, down from about 600, and reports a finished run at most a minute late.
 - **`ccx vcs ship` outside the graphite lane bases a new pull request on the
   branch it was cut from, even after that branch moved on.** A branch cut from

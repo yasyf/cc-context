@@ -1012,6 +1012,47 @@ func TestAReaderTakesTheInFlightPollThoughItLandsPastTheInterval(t *testing.T) {
 	}
 }
 
+func TestAReaderThatLostItsSlotToAnotherClaimTakesThatPollPastItsBudget(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ctx, cancel := context.WithTimeout(testCtx(t), 10*time.Second)
+	defer cancel()
+	seed, err := Open(dir, &GitHub{owner: "yasyf", name: "cc-context"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.save(State{AttemptedAt: epoch, PolledAt: epoch, PRs: map[int]PR{190: {Number: 190, State: "OPEN", PolledAt: epoch}}}); err != nil {
+		t.Fatal(err)
+	}
+	slot := epoch.Add(MinInterval)
+	poller, inFlight, release := blockedPoller(t, dir, slot)
+	polled := make(chan error, 1)
+	go func() {
+		_, err := poller.Read(ctx, Want{PRs: []int{190}})
+		polled <- err
+	}()
+	awaitInFlight(ctx, t, inFlight)
+
+	c := &clock{now: slot}
+	reader, gh := newStore(t, dir, c, nil)
+	gh.rest = rest190()
+	reader.budget = time.Millisecond
+	reader.sleep = func(ctx context.Context, d time.Duration) error {
+		c.slept = append(c.slept, d)
+		if err := sleep(ctx, d/100); err != nil {
+			return err
+		}
+		c.now = c.now.Add(d)
+		release()
+		return <-polled
+	}
+	st, err := reader.Read(ctx, Want{PRs: []int{190}})
+	if pr := st.PRs[190]; err != nil || gh.requests() != 0 || len(gh.reads) != 0 || pr.Source != "" || !pr.PolledAt.Equal(slot) || fmt.Sprint(c.slept) != "[1s]" {
+		t.Errorf("read = %v after %d polls and REST reads %v, slept %v, #190 from %q polled %s; want the poll claimed at the reader's slot, taken the second it lands though the reader's budget was spent",
+			err, gh.requests(), gh.reads, c.slept, pr.Source, pr.PolledAt)
+	}
+}
+
 func TestAReaderNoPollAnswersWithinTheBudgetReadsThroughREST(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -1095,9 +1136,10 @@ func inFlightOver(t *testing.T, count int) (string, Want) {
 	return dir, want
 }
 
-func TestAReaderWaitsOneBudgetPerPageOfPullRequests(t *testing.T) {
+func TestAReaderWaitsOneBudgetPerRoundOfPages(t *testing.T) {
 	t.Parallel()
-	for _, c := range []struct{ prs, pages int }{{1, 1}, {chunkSize, 1}, {chunkSize + 1, 2}, {97, 3}} {
+	round := pageSize * pollWorkers
+	for _, c := range []struct{ prs, rounds int }{{1, 1}, {round, 1}, {round + 1, 2}, {200, 3}} {
 		t.Run(fmt.Sprintf("%d pull requests", c.prs), func(t *testing.T) {
 			t.Parallel()
 			dir, want := inFlightOver(t, c.prs)
@@ -1111,8 +1153,8 @@ func TestAReaderWaitsOneBudgetPerPageOfPullRequests(t *testing.T) {
 			}
 
 			_, _ = store.Read(testCtx(t), want)
-			if budget <= time.Duration(c.pages-1)*time.Minute || budget > time.Duration(c.pages)*time.Minute {
-				t.Errorf("a read of %d pull requests waits %s on the poll; want %d one-minute budgets, one per page of %d", c.prs, budget, c.pages, chunkSize)
+			if budget <= time.Duration(c.rounds-1)*time.Minute || budget > time.Duration(c.rounds)*time.Minute {
+				t.Errorf("a read of %d pull requests waits %s on the poll; want %d one-minute budgets, one per round of %d pages of %d", c.prs, budget, c.rounds, pollWorkers, pageSize)
 			}
 		})
 	}

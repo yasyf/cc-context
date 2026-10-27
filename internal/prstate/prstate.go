@@ -1,8 +1,8 @@
 // Package prstate keeps one machine-wide view of a repository's pull requests.
-// Whichever process asks first polls GitHub, in one batched query, for what it
-// asked for and what every other process asked for since the last poll, and
-// the rest read the cache file it leaves, so every watcher spends one shared
-// GitHub budget.
+// Whichever process asks first polls GitHub, in batched queries sent at once,
+// for what it asked for and what every other process asked for since the last
+// poll, and the rest read the cache file it leaves, so every watcher spends one
+// shared GitHub budget.
 package prstate
 
 import (
@@ -48,6 +48,7 @@ const (
 
 	readBudget       = 30 * time.Second
 	pollBudget       = time.Minute
+	landCheck        = time.Second
 	leaseTTL         = 15 * time.Minute
 	keepFor          = 24 * time.Hour
 	pushLag          = 10 * time.Minute
@@ -300,12 +301,13 @@ func Open(root string, src *GitHub) (*Store, error) {
 // their last push fetches just those at once, leaving the shared poll's
 // schedule alone. Otherwise, inside MinInterval of the last poll a read sleeps,
 // so concurrent readers share the next poll, and a poll claimed after the read
-// began answers it. A read whose poll failed, that finds the last poll failed,
-// or that no poll answers within 30 seconds reads what it wants through REST
-// instead. A poll a read claims runs to its own one-minute deadline, so a read
-// that spent its budget waiting for its turn still lands the poll the other
-// readers share. No read holds a lock across a request, and a read of fresh
-// records takes none.
+// began answers it the second it lands. A read whose poll failed, that finds
+// the last poll failed, or that no poll answers within 30 seconds per round of
+// pages reads what it wants through REST instead. A poll claimed after the read
+// began runs to its own deadline of a minute per round of pages, and the read
+// waits for it past its own budget, so a read that spent its budget waiting for
+// its turn still lands the poll the other readers share, whoever claimed it. No
+// read holds a lock across a request, and a read of fresh records takes none.
 func (s *Store) Read(ctx context.Context, want Want) (State, error) {
 	return s.readFor(ctx, want, true)
 }
@@ -322,13 +324,17 @@ func (s *Store) readFor(ctx context.Context, want Want, patient bool) (State, er
 	if err := s.renew(want, asked); err != nil {
 		return State{}, err
 	}
-	budget := perPage(s.budget, len(want.PRs))
+	budget := perRound(s.budget, len(want.PRs))
 	polled, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 	for waited := false; ; waited = true {
 		st, wait, err := s.read(polled, want, asked, waited)
 		if err == nil && wait > 0 && (patient || !st.Covers(want)) {
-			err = s.sleep(polled, wait)
+			until := polled
+			if st.claimedSince(asked) {
+				until = ctx
+			}
+			err = s.sleep(until, wait)
 		}
 		if err != nil && polled.Err() != nil && ctx.Err() == nil {
 			return s.overBudget(ctx, want, asked, budget, err)
@@ -339,8 +345,9 @@ func (s *Store) readFor(ctx context.Context, want Want, patient bool) (State, er
 	}
 }
 
-func perPage(d time.Duration, prs int) time.Duration {
-	return d * time.Duration(max(1, (prs+chunkSize-1)/chunkSize))
+func perRound(d time.Duration, prs int) time.Duration {
+	round := pageSize * pollWorkers
+	return d * time.Duration(max(1, (prs+round-1)/round))
 }
 
 func (s *Store) overBudget(ctx context.Context, want Want, asked time.Time, budget time.Duration, cause error) (State, error) {
@@ -405,6 +412,9 @@ func (s *Store) read(ctx context.Context, want Want, asked time.Time, waited boo
 		if f := st.Failure; f != nil {
 			return s.degrade(ctx, st, want, asked, now, fmt.Errorf("the poll at %s failed: %s", f.At.UTC().Format(time.RFC3339), f.Reason))
 		}
+		if st.claimedSince(asked) {
+			return st, min(next.Sub(now), landCheck), nil
+		}
 		return st, next.Sub(now), nil
 	}
 	claiming, cancelClaim := context.WithTimeout(context.WithoutCancel(ctx), pollBudget)
@@ -416,7 +426,7 @@ func (s *Store) read(ctx context.Context, want Want, asked time.Time, waited boo
 	if !claimed {
 		return s.read(ctx, want, asked, waited)
 	}
-	poll, cancel := context.WithTimeout(context.WithoutCancel(ctx), perPage(pollBudget, len(req.PRs)))
+	poll, cancel := context.WithTimeout(context.WithoutCancel(ctx), perRound(pollBudget, len(req.PRs)))
 	defer cancel()
 	if st, err = s.fetch(poll, req, st.PRs, now, true); err != nil {
 		return s.degrade(ctx, st, want, asked, now, err)
@@ -716,6 +726,10 @@ func (st State) fresh(want Want, now time.Time) bool {
 		}
 	}
 	return true
+}
+
+func (st State) claimedSince(asked time.Time) bool {
+	return !st.AttemptedAt.Before(asked)
 }
 
 func (st State) unpolled(want Want, now time.Time) ([]int, bool) {
