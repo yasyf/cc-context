@@ -787,6 +787,31 @@ func TestStackSubmitSkipsABranchAnotherWorkingCopyHolds(t *testing.T) {
 	}
 }
 
+func TestStackSubmitTakesTheBranchCheckedOutHereThoughAnotherWorkingCopyHoldsItToo(t *testing.T) {
+	f := shipGTRepo(t)
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	api.openPRs("base")
+	shipGTStack(t, f, "base")
+	lane := stackLane(t, f, "feature")
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-qf", restackSiblingPath(t, "takeover"), "base")
+	shipResetLog(t, f)
+
+	out, _, err := runStackCmd(t, f, "submit")
+	if err != nil {
+		t.Fatalf("stack submit: %v", err)
+	}
+	if heads := api.submitHeads(); !slices.Equal(heads, []string{"base"}) {
+		t.Errorf("submit posts = %v, want base alone — it is checked out here, and feature is another lane's", heads)
+	}
+	if gitBranchExists(t, f.Env(), f.RemoteDir, "feature") {
+		t.Error("origin carries feature — the submit pushed another lane's branch")
+	}
+	if !strings.Contains(out, "skipping feature (checked out in "+lane+")") || strings.Contains(out, "skipping base") {
+		t.Errorf("stdout = %q, want feature skipped and base submitted", out)
+	}
+}
+
 func TestStackSubmitIncludesANamedLane(t *testing.T) {
 	f := shipGTRepo(t)
 	api := stubGTAPI(t)
