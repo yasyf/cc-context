@@ -616,22 +616,36 @@ func TestCleanupWorktreeRmPathTargets(t *testing.T) {
 }
 
 func TestCleanupWorktreeRmPathRemovesAWorkingCopyOfAnotherRepository(t *testing.T) {
-	for _, bare := range []bool{false, true} {
-		t.Run(map[bool]string{false: "repository with a working copy", true: "bare repository"}[bare], func(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		bare    bool
+		outside bool
+	}{
+		{"from a repository with a working copy", false, false},
+		{"from a bare repository", true, false},
+		{"from outside any repository", false, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
 			f := vcstest.Repo(t)
 			f.Isolate(t)
 			fixtureCleanup(t, f)
 			other := vcstest.Repo(t)
 			owner := other.Dir
-			if bare {
+			if tt.bare {
 				owner = filepath.Join(t.TempDir(), "other.git")
 				mustRun(t, other.Env(), other.Dir, "git", "clone", "-q", "--bare", other.Dir, owner)
 			}
 			foreign := filepath.Join(filepath.Dir(f.Dir), "foreign")
 			addLinkedWorktree(t, other.Env(), owner, foreign, "")
+			ctx := f.Context()
+			if tt.outside {
+				unrelated := worktreeTempDir(t)
+				t.Chdir(unrelated)
+				ctx = f.ContextIn(unrelated)
+			}
 
-			if _, err := runWorktreeCmd(t, f, "rm", "--path", foreign); err != nil {
-				t.Fatalf("rm --path %s from another repository = %v, want it resolved from the worktree's own repository", foreign, err)
+			if _, err := runWorktreeCmdIn(ctx, t, "rm", "--path", foreign); err != nil {
+				t.Fatalf("rm --path %s = %v, want it resolved from the worktree's own repository", foreign, err)
 			}
 			assertGone(t, foreign)
 			if worktreeRegistered(t, other.Env(), owner, foreign) {
