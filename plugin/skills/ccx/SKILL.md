@@ -465,6 +465,12 @@ running hooks. It linearizes merge commits. Existing run selection, output
 pins, source checks, publication receipts, atomic pushes, and remote leases
 still apply; cleanup adds no shared stack lock or fetch retry loop.
 
+When another lane restacks a branch yours sit on, run `ccx vcs stack submit`
+from your branch's worktree. That parent stays in the run at its published
+head, whichever working copy holds it, and your branches are replayed onto
+that head and resubmitted, which also moves a pull request Graphite parked on
+`graphite-base/<n>` back onto the parent. Never retarget it by hand.
+
 Conflicts stop in sparse internal workspaces with rerere off. Root files and
 the directories containing conflicted paths are present; later conflicts
 expand that selection. Ordinary user worktrees stay full unless sparse
