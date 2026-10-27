@@ -79,6 +79,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its help already said: it reads each ancestor at its published head and
   locks none of them.
 
+- **`ccx vcs stack submit` keeps the branch checked out here when another
+  working copy holds it too.** A branch checked out in this working copy and
+  in another one counted as the other lane's, so a submit from a takeover
+  worktree skipped every branch of the stack. With nothing left as its own,
+  the run fell back to the whole stack and pushed the other lanes' parent
+  and child it had just printed as skipped. The branch checked out here is
+  always this run's own. A branch two working copies hold keeps its local
+  head when the run publishes a rebase of it, since moving the shared ref
+  would leave one of them on stale files.
+
 - **`ccx vcs pr status` over many pull requests gives each page its own
   deadline.** A read of 97 pull requests failed every landing pass: the
   shared poll had one 30-second deadline for all of its pages, and the REST

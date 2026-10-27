@@ -787,6 +787,58 @@ func TestStackSubmitSkipsABranchAnotherWorkingCopyHolds(t *testing.T) {
 	}
 }
 
+func stackTakeover(t *testing.T) (*vcstest.Fixture, *gtAPIStub, string) {
+	t.Helper()
+	f := shipGTRepo(t)
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	api.openPRs("base")
+	shipGTStack(t, f, "base")
+	takeover := restackSiblingPath(t, "takeover")
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-qf", takeover, "base")
+	return f, api, takeover
+}
+
+func TestStackSubmitTakesTheBranchCheckedOutHereThoughAnotherWorkingCopyHoldsItToo(t *testing.T) {
+	f, api, _ := stackTakeover(t)
+	lane := stackLane(t, f, "feature")
+	shipResetLog(t, f)
+
+	out, _, err := runStackCmd(t, f, "submit")
+	if err != nil {
+		t.Fatalf("stack submit: %v", err)
+	}
+	if heads := api.submitHeads(); !slices.Equal(heads, []string{"base"}) {
+		t.Errorf("submit posts = %v, want base alone — it is checked out here, and feature is another lane's", heads)
+	}
+	if gitBranchExists(t, f.Env(), f.RemoteDir, "feature") {
+		t.Error("origin carries feature — the submit pushed another lane's branch")
+	}
+	if !strings.Contains(out, "skipping feature (checked out in "+lane+")") || strings.Contains(out, "skipping base") {
+		t.Errorf("stdout = %q, want feature skipped and base submitted", out)
+	}
+}
+
+func TestStackSubmitLeavesABranchTwoWorkingCopiesHoldAtItsLocalHead(t *testing.T) {
+	f, _, takeover := stackTakeover(t)
+	local := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
+	restackAdvanceRemote(t, f, "main", "trunk.txt", "trunk\n")
+	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
+
+	if _, _, err := runStackCmd(t, f, "submit", "--restack"); err != nil {
+		t.Fatalf("stack submit --restack: %v", err)
+	}
+	if published := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base"); !stackOnto(t, f, "origin/main", published) {
+		t.Errorf("origin base %s is not on the advanced trunk", published)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); got != local {
+		t.Errorf("local base moved from %s to %s under two working copies", local, got)
+	}
+	if status := gitAt(t, f.Env(), takeover, "status", "--porcelain"); status != "" {
+		t.Errorf("the second working copy reads %q, want it clean", status)
+	}
+}
+
 func TestStackSubmitIncludesANamedLane(t *testing.T) {
 	f := shipGTRepo(t)
 	api := stubGTAPI(t)

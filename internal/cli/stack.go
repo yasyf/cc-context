@@ -507,7 +507,14 @@ func runStackSubmit(cmd *cobra.Command, o shipOpts, include []string, to string)
 	if err != nil {
 		return err
 	}
+	current, err := gitCurrentBranch(ctx, l.dir(), "stack submit")
+	if err != nil {
+		return err
+	}
 	taken := append(slices.Clone(include), landed...)
+	if slices.Contains(stack, current) {
+		taken = append(taken, current)
+	}
 	if o.allLanes {
 		taken = stack
 	}
@@ -517,10 +524,6 @@ func runStackSubmit(cmd *cobra.Command, o shipOpts, include []string, to string)
 	}
 	var under []stackUnder
 	if !o.allLanes {
-		current, err := gitCurrentBranch(ctx, l.dir(), "stack submit")
-		if err != nil {
-			return err
-		}
 		if under, err = stackPublishedUnder(ctx, l.dir(), stackUnnamedBelow(stackState, stack, current, l.checkout.Root, holders, taken, include)); err != nil {
 			return err
 		}

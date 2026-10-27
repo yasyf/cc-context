@@ -572,14 +572,15 @@ func stackFinishSourceMoves(ctx context.Context, cmd *cobra.Command, l lane, com
 }
 
 func stackMovePublishedSources(ctx context.Context, l lane, commonDir string, run *stackRebaseRun) (string, error) {
-	holders, err := vcs.BranchHolders(ctx, l.checkout)
+	worktrees, err := vcs.Worktrees(ctx, l.checkout)
 	if err != nil {
 		return "", fmt.Errorf("%s: %w", stackRebasePrefix, err)
 	}
+	holders, shared := stackSourceHolders(worktrees)
 	resumed := run.SourcesMoving
 	var left []string
 	if !resumed {
-		if left, err = stackChooseSourceMoves(ctx, l, run, holders); err != nil {
+		if left, err = stackChooseSourceMoves(ctx, l, run, holders, shared); err != nil {
 			return "", err
 		}
 		run.SourcesMoving = true
@@ -732,7 +733,22 @@ func stackCheckPendingHolders(ctx context.Context, holders map[string]string, pe
 	return gtRestackRefuseClobbers(ctx, stackRebasePrefix, holders, pending)
 }
 
-func stackChooseSourceMoves(ctx context.Context, l lane, run *stackRebaseRun, holders map[string]string) ([]string, error) {
+func stackSourceHolders(worktrees []vcs.Worktree) (map[string]string, map[string]bool) {
+	holders := map[string]string{}
+	shared := map[string]bool{}
+	for _, wt := range worktrees {
+		if wt.Branch == "" {
+			continue
+		}
+		if _, held := holders[wt.Branch]; held {
+			shared[wt.Branch] = true
+		}
+		holders[wt.Branch] = wt.Path
+	}
+	return holders, shared
+}
+
+func stackChooseSourceMoves(ctx context.Context, l lane, run *stackRebaseRun, holders map[string]string, shared map[string]bool) ([]string, error) {
 	stays := map[string]bool{}
 	var left []string
 	for i := range run.Branches {
@@ -752,6 +768,8 @@ func stackChooseSourceMoves(ctx context.Context, l lane, run *stackRebaseRun, ho
 		switch {
 		case receipt == nil || receipt.Head != b.NewHead:
 			why = "no receipt names its published head"
+		case at != b.NewHead && shared[b.Name]:
+			why = "checked out in more than one working copy"
 		case at != b.NewHead:
 			if why, err = stackSourceStays(ctx, l, *b, at, holders, stays); err != nil {
 				return nil, err

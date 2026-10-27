@@ -563,7 +563,7 @@ func TestStackPublicationRechecksAHolderOnResume(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if left, err := stackChooseSourceMoves(f.Context(), l, run, holders); err != nil || len(left) != 0 {
+	if left, err := stackChooseSourceMoves(f.Context(), l, run, holders, nil); err != nil || len(left) != 0 {
 		t.Fatalf("choose = %q, %v, want feature moved", left, err)
 	}
 	run.SourcesMoving = true
@@ -608,7 +608,7 @@ func TestStackPublicationResumesAnInterruptedAlign(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if left, err := stackChooseSourceMoves(f.Context(), l, run, holders); err != nil || len(left) != 0 {
+			if left, err := stackChooseSourceMoves(f.Context(), l, run, holders, nil); err != nil || len(left) != 0 {
 				t.Fatalf("choose = %q, %v, want feature moved", left, err)
 			}
 			run.SourcesMoving = true
