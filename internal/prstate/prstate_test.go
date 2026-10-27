@@ -1049,3 +1049,45 @@ func TestAReaderThatSpentItsBudgetWaitingStillLandsThePollItClaims(t *testing.T)
 			err, gh.requests(), st.PRs[190].Source, st.PolledAt, st.Failure)
 	}
 }
+
+func inFlightOver(t *testing.T, count int) (string, Want) {
+	t.Helper()
+	dir := t.TempDir()
+	seed, err := Open(dir, &GitHub{owner: "yasyf", name: "cc-context"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := State{AttemptedAt: epoch, PolledAt: epoch.Add(-MinInterval), PRs: map[int]PR{}}
+	var want Want
+	for n := 190; n < 190+count; n++ {
+		want.PRs = append(want.PRs, n)
+		st.PRs[n] = PR{Number: n, State: "OPEN", PolledAt: epoch.Add(-MinInterval)}
+	}
+	if err := seed.save(st); err != nil {
+		t.Fatal(err)
+	}
+	return dir, want
+}
+
+func TestAReaderWaitsOneBudgetPerPageOfPullRequests(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct{ prs, pages int }{{1, 1}, {chunkSize, 1}, {chunkSize + 1, 2}, {97, 3}} {
+		t.Run(fmt.Sprintf("%d pull requests", c.prs), func(t *testing.T) {
+			t.Parallel()
+			dir, want := inFlightOver(t, c.prs)
+			store, _ := newStore(t, dir, &clock{now: epoch.Add(5 * time.Second)}, nil)
+			store.budget = time.Minute
+			var budget time.Duration
+			store.sleep = func(ctx context.Context, _ time.Duration) error {
+				deadline, _ := ctx.Deadline()
+				budget = time.Until(deadline)
+				return context.Canceled
+			}
+
+			_, _ = store.Read(testCtx(t), want)
+			if budget <= time.Duration(c.pages-1)*time.Minute || budget > time.Duration(c.pages)*time.Minute {
+				t.Errorf("a read of %d pull requests waits %s on the poll; want %d one-minute budgets, one per page of %d", c.prs, budget, c.pages, chunkSize)
+			}
+		})
+	}
+}

@@ -323,7 +323,8 @@ func (s *Store) readFor(ctx context.Context, want Want, patient bool) (State, er
 	if err := s.renew(want, asked); err != nil {
 		return State{}, err
 	}
-	polled, cancel := context.WithTimeout(ctx, s.budget)
+	budget := perPage(s.budget, len(want.PRs))
+	polled, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 	for waited := false; ; waited = true {
 		st, wait, err := s.read(polled, want, asked, waited)
@@ -331,7 +332,7 @@ func (s *Store) readFor(ctx context.Context, want Want, patient bool) (State, er
 			err = s.sleep(polled, wait)
 		}
 		if err != nil && polled.Err() != nil && ctx.Err() == nil {
-			return s.overBudget(ctx, want, asked, err)
+			return s.overBudget(ctx, want, asked, budget, err)
 		}
 		if err != nil || wait <= 0 || !patient && st.Covers(want) {
 			return st, err
@@ -339,12 +340,16 @@ func (s *Store) readFor(ctx context.Context, want Want, patient bool) (State, er
 	}
 }
 
-func (s *Store) overBudget(ctx context.Context, want Want, asked time.Time, cause error) (State, error) {
+func perPage(d time.Duration, prs int) time.Duration {
+	return d * time.Duration(max(1, (prs+chunkSize-1)/chunkSize))
+}
+
+func (s *Store) overBudget(ctx context.Context, want Want, asked time.Time, budget time.Duration, cause error) (State, error) {
 	st, err := s.load()
 	if err != nil {
 		return st, err
 	}
-	st, _, err = s.degrade(ctx, st, want, asked, s.now(), fmt.Errorf("no poll answered within %s: %w", s.budget, cause))
+	st, _, err = s.degrade(ctx, st, want, asked, s.now(), fmt.Errorf("no poll answered within %s: %w", budget, cause))
 	return st, err
 }
 
@@ -403,15 +408,17 @@ func (s *Store) read(ctx context.Context, want Want, asked time.Time, waited boo
 		}
 		return st, next.Sub(now), nil
 	}
-	poll, cancel := context.WithTimeout(context.WithoutCancel(ctx), pollBudget)
-	defer cancel()
-	st, req, claimed, err := s.claim(poll, want, asked, now)
+	claiming, cancelClaim := context.WithTimeout(context.WithoutCancel(ctx), pollBudget)
+	defer cancelClaim()
+	st, req, claimed, err := s.claim(claiming, want, asked, now)
 	if err != nil {
 		return st, 0, err
 	}
 	if !claimed {
 		return s.read(ctx, want, asked, waited)
 	}
+	poll, cancel := context.WithTimeout(context.WithoutCancel(ctx), perPage(pollBudget, len(req.PRs)))
+	defer cancel()
 	if st, err = s.fetch(poll, req, st.PRs, now, true); err != nil {
 		return s.degrade(ctx, st, want, asked, now, err)
 	}
