@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs stack rebase` drops a closed Graphite parent this clone has no
+  branch for.** Graphite can stack a lane's pull request on a branch whose own
+  pull request closed without merging. When this clone never fetched that
+  branch, the run planned the lane onto trunk from its merge base. That base
+  carried the closed parent's commits along, so the run moved nothing. The run
+  now fetches the closed parent, drops it from the stack, replays the lane
+  onto trunk from the closed parent's head, and retargets the lane's pull
+  request onto trunk.
+
 - **A stack submit moves a branch onto its published head when the trees
   match.** A submit that re-committed a checked-out branch with a tree
   identical to the local head kept the local ref and reported "its published
