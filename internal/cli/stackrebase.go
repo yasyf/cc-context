@@ -487,7 +487,7 @@ func runStackRebase(cmd *cobra.Command, o stackRebaseOpts) error {
 			continue
 		}
 		if (other.Conflict != nil && other.Conflict.Workspace == l.root) || (current != "" && slices.Contains(stackOwned(other), current)) {
-			if _, err := stackGate(ctx, cmd, l, commonDir, other, o.dryRun); err != nil {
+			if err := stackGateOwn(ctx, cmd, l, commonDir, other, o.dryRun); err != nil {
 				return err
 			}
 			gated = append(gated, other)
@@ -674,6 +674,36 @@ func stackGate(ctx context.Context, cmd *cobra.Command, l lane, commonDir string
 		return true, nil
 	}
 	return done, err
+}
+
+// stackGateOwn resumes this worktree's own exited run, as stack continue
+// would, so a re-run after a refusal picks up its saved replays, and gates a
+// run any other lane or a live process holds.
+func stackGateOwn(ctx context.Context, cmd *cobra.Command, l lane, commonDir string, other *stackRebaseRun, dryRun bool) error {
+	host, _ := os.Hostname()
+	if other.Origin != l.root || other.Host != host || other.Conflict != nil || stackPidAlive(other) {
+		_, err := stackGate(ctx, cmd, l, commonDir, other, dryRun)
+		return err
+	}
+	line := fmt.Sprintf("this worktree's saved stack rebase of %s (%s)", strings.Join(other.Roots, ", "), stackHolder(other))
+	if dryRun {
+		cmd.Println("would resume " + line)
+		return nil
+	}
+	cmd.Println("resuming " + line)
+	if err := stackAdopt(other); errors.Is(err, errStackRunGone) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	owner, err := stackTakeOver(ctx, l, other)
+	if err != nil {
+		return err
+	}
+	if err := stackDrive(ctx, cmd, owner, commonDir, other); err != nil {
+		return fmt.Errorf("stack rebase: resume the saved stack rebase of %s: %w", strings.Join(other.Roots, ", "), err)
+	}
+	return nil
 }
 
 func stackGateRun(ctx context.Context, cmd *cobra.Command, l lane, commonDir string, other *stackRebaseRun, dryRun bool) (bool, error) {
@@ -1064,7 +1094,11 @@ func stackHolder(run *stackRebaseRun) string {
 	if stackPidAlive(run) {
 		state = "running"
 	}
-	return fmt.Sprintf("pid %d on %s %s, last saved %s ago", run.Pid, run.Host, state, time.Since(run.saved).Round(time.Second))
+	holder := fmt.Sprintf("pid %d on %s %s, last saved %s ago", run.Pid, run.Host, state, time.Since(run.saved).Round(time.Second))
+	if run.Origin != "" {
+		holder += ", started in " + run.Origin
+	}
+	return holder
 }
 
 // stackStale reports a run whose process died mid-replay: a run stopped on a

@@ -1200,6 +1200,27 @@ func TestStackRebaseRefusesARecentRunOfADeadProcess(t *testing.T) {
 	}
 }
 
+func TestStackRebaseRefusesAnotherWorktreesSavedRunNamingWhereItStarted(t *testing.T) {
+	t.Parallel()
+	f := stackRebaseRepo(t, "base", "feature")
+	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	stackPlantRun(t, f, time.Minute, "base")
+	run, err := stackOnlyTestRun(filepath.Join(f.Dir, ".git"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.Origin = filepath.Join(t.TempDir(), "lane-b")
+	if err := stackSaveRun(run); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err = runStackCmd(t, f, "rebase", "--no-push")
+
+	if err == nil || !strings.Contains(err.Error(), "a stack rebase of base is already in progress") || !strings.Contains(err.Error(), "started in "+run.Origin) {
+		t.Fatalf("err = %v, want the refusal naming the worktree that started the run", err)
+	}
+}
+
 func TestStackRebaseKeepsAStaleRunWaitingOnItsWorkspace(t *testing.T) {
 	t.Parallel()
 	f := stackRebaseRepo(t, "base", "feature")
