@@ -495,6 +495,10 @@ head, whichever working copy holds it, and your branches are replayed onto
 that head and resubmitted, which also moves a pull request Graphite parked on
 `graphite-base/<n>` back onto the parent. Never retarget it by hand.
 
+On plain git, `ccx vcs stack submit` moves the checked-out branch alone: onto
+its pull request's base, or onto trunk once that base's pull request merged,
+then force-pushes it under a lease and retargets the pull request.
+
 Conflicts stop in sparse internal workspaces with rerere off. Root files and
 the directories containing conflicted paths are present; later conflicts
 expand that selection. Ordinary user worktrees stay full unless sparse
