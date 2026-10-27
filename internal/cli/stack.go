@@ -212,7 +212,13 @@ stack submit claim the branch of each pull request they open, and the lane
 that opened it owns it. --include submits it anyway, and --all-lanes submits
 every such branch. One whose pull request landed is no
 lane's any more: it is dropped like any landed branch, and the branches on it
-move onto trunk.
+move onto trunk. Below the branch checked out here, a branch under one another
+lane holds or claims is that lane's too, kept at its published head whether or
+not a working copy holds it. Once --include names branches, so is every branch
+under the lowest branch the run names, counting the one checked out here: the
+run publishes the named branches, those between them, and those above. Each
+such branch is named on stdout with the --include that takes it in; one never
+pushed has no published head to keep, so it is submitted as before.
 
 A branch whose name differs from the checked-out branch's before the last slash
 is another lane's too: one this lane sits on is kept at its published head,
@@ -268,7 +274,7 @@ the run leaves out, is refused before anything moves.`,
 	cmd.Flags().BoolVar(&o.draft, "draft", false, "open new PRs as drafts")
 	cmd.Flags().StringArrayVar(&o.prTitle, "pr-title", nil, "title for a pull request: <branch>=<title>, or a bare title for the branch checked out here (repeatable)")
 	cmd.Flags().StringArrayVar(&o.prBodyFile, "pr-body-file", nil, "body file for a pull request: <branch>=<path>, or a bare path for the branch checked out here; - reads stdin (repeatable)")
-	cmd.Flags().StringArrayVar(&include, "include", nil, "submit this branch even though another lane's working copy has it checked out or it is another lane's (repeatable)")
+	cmd.Flags().StringArrayVar(&include, "include", nil, "submit this branch even though another lane's working copy has it checked out or it is another lane's; a published branch below every one named and the one checked out here stays at its published head (repeatable)")
 	cmd.Flags().BoolVar(&o.allLanes, "all-lanes", false, "submit the branches of other lanes too, a lane being the branch name before its last slash or the working copy holding the branch")
 	cmd.Flags().StringArrayVar(&o.landed, "landed", nil, "treat <branch> as landed and drop it (repeatable)")
 	cmd.Flags().StringArrayVar(&o.newPRs, "new-pr", nil, stackNewPRUsage)
@@ -509,12 +515,22 @@ func runStackSubmit(cmd *cobra.Command, o shipOpts, include []string, to string)
 	if err != nil {
 		return err
 	}
-	if err := stackAnnounceSkipped(ctx, cmd.OutOrStdout(), l.dir(), pinned, skipped); err != nil {
+	var under []stackUnder
+	if !o.allLanes {
+		current, err := gitCurrentBranch(ctx, l.dir(), "stack submit")
+		if err != nil {
+			return err
+		}
+		if under, err = stackPublishedUnder(ctx, l.dir(), stackUnnamedBelow(stackState, stack, current, l.checkout.Root, holders, taken, include)); err != nil {
+			return err
+		}
+	}
+	if err := stackAnnounceSkipped(ctx, cmd.OutOrStdout(), l.dir(), pinned, skipped, under); err != nil {
 		return err
 	}
 	tracking := &stackTracking{}
 	cmd.SetContext(withStackTracking(ctx, tracking))
-	opts := stackRebaseOpts{members: chain, pinned: stackSkipNames(pinned), owners: holders, landed: o.landed, newPRs: o.newPRs, draft: &o.draft, ship: intent, submit: true, dropCommits: o.dropCommits, stayClean: !o.restack, restack: o.restack, to: to, include: include, otherLanes: o.allLanes}
+	opts := stackRebaseOpts{members: chain, pinned: append(stackSkipNames(pinned), stackUnderNames(under)...), owners: holders, landed: o.landed, newPRs: o.newPRs, draft: &o.draft, ship: intent, submit: true, dropCommits: o.dropCommits, stayClean: !o.restack, restack: o.restack, to: to, include: include, otherLanes: o.allLanes}
 	if err := runStackRebase(cmd, opts); err != nil {
 		return err
 	}
@@ -727,9 +743,73 @@ func stackOwnBranches(stack []string, state gtState, holders map[string]string, 
 	return members, pinned, skipped, nil
 }
 
+type stackUnder struct {
+	branch string
+	under  stackSkip
+}
+
+func stackUnderNames(under []stackUnder) []string {
+	names := make([]string, 0, len(under))
+	for _, u := range under {
+		names = append(names, u.branch)
+	}
+	return names
+}
+
+func stackUnnamedBelow(state gtState, stack []string, current, root string, holders map[string]string, taken, include []string) []stackUnder {
+	lowest := current
+	var down []string
+	for name := state[current].Parents[0].Ref; slices.Contains(stack, name); name = state[name].Parents[0].Ref {
+		down = append(down, name)
+		if slices.Contains(include, name) {
+			lowest = name
+		}
+	}
+	var bound stackSkip
+	if len(include) > 0 && lowest == current {
+		bound = stackSkip{branch: current}
+	}
+	var below []stackUnder
+	for _, name := range down {
+		switch holder := holders[name]; {
+		case slices.Contains(taken, name):
+		case holder != "" && holder != root:
+			bound = stackSkip{branch: name, holder: holder}
+		case bound.branch != "":
+			below = append(below, stackUnder{branch: name, under: bound})
+		}
+		if name == lowest && bound.branch == "" {
+			bound = stackSkip{branch: name}
+		}
+	}
+	return below
+}
+
+func stackPublishedUnder(ctx context.Context, dir render.Dir, under []stackUnder) ([]stackUnder, error) {
+	byRemote := map[string][]string{}
+	for _, u := range under {
+		remote, err := vcs.GitRemoteFor(ctx, dir, u.branch)
+		if err != nil {
+			return nil, fmt.Errorf("stack submit: %w", err)
+		}
+		byRemote[remote] = append(byRemote[remote], u.branch)
+	}
+	published := map[string]bool{}
+	for remote, branches := range byRemote {
+		heads, err := stackListRemoteHeads(ctx, dir, "stack submit", remote, branches)
+		if err != nil {
+			return nil, err
+		}
+		for branch := range heads {
+			published[branch] = true
+		}
+	}
+	return slices.DeleteFunc(under, func(u stackUnder) bool { return !published[u.branch] }), nil
+}
+
 // stackAnnounceSkipped names on stdout every branch the run leaves to another
 // lane, with what that lane holds unpublished and the flag that takes it in.
-func stackAnnounceSkipped(ctx context.Context, w io.Writer, dir render.Dir, pinned, skipped []stackSkip) error {
+func stackAnnounceSkipped(ctx context.Context, w io.Writer, dir render.Dir, pinned, skipped []stackSkip, under []stackUnder) error {
 	for _, group := range []struct {
 		skips []stackSkip
 		verb  string
@@ -745,6 +825,19 @@ func stackAnnounceSkipped(ctx context.Context, w io.Writer, dir render.Dir, pinn
 			if _, err := fmt.Fprintf(w, "stack submit: "+group.verb+" — another lane owns it; %s; pass --include %s to submit it\n", s.branch, stackHolderPhrase(s.holder), unpublished, s.branch); err != nil {
 				return fmt.Errorf("stack submit: name the skipped branches: %w", err)
 			}
+		}
+	}
+	for _, u := range under {
+		unpublished, err := stackUnpublished(ctx, dir, u.branch)
+		if err != nil {
+			return err
+		}
+		why := "the lowest branch this run names"
+		if u.under.holder != "" {
+			why = stackHolderPhrase(u.under.holder)
+		}
+		if _, err := fmt.Fprintf(w, "stack submit: keeping %s at its published head — it sits under %s, %s; %s; pass --include %s to submit it\n", u.branch, u.under.branch, why, unpublished, u.branch); err != nil {
+			return fmt.Errorf("stack submit: name the kept branches: %w", err)
 		}
 	}
 	return nil
