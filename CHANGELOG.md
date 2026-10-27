@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A stack submit moves a branch onto its published head when the trees
+  match.** A submit that re-committed a checked-out branch with a tree
+  identical to the local head kept the local ref and reported "its published
+  head carries other changes" whenever the source range held a merge or a
+  stale base, leaving the lane to move each ref by hand. A published head
+  whose tree equals the local head now always counts as replaying it, so the
+  local branch moves to it.
+
 - **`ccx vcs ship --tip-only` ships over an unpublished ancestor below its
   parent.** A tip-only ship refused when any ancestor down to trunk had no
   remote branch, naming it as the head the tip ships onto (`--tip-only ships

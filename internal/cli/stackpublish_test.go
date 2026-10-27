@@ -815,3 +815,31 @@ func TestStackSubmitOpensNoPullRequestWithoutAPreparedBody(t *testing.T) {
 		})
 	}
 }
+
+func TestStackPublishedHeadWithTheSourceTreeReplaysTheSource(t *testing.T) {
+	f := stackRebaseRepo(t, "feature")
+	env, dir := f.Env(), f.Dir
+	oldBase := gitAt(t, env, dir, "rev-parse", "main")
+	mustRun(t, env, dir, "git", "checkout", "-q", "-b", "side", "main")
+	writeShipFile(t, dir, "side.txt", "side\n")
+	mustRun(t, env, dir, "git", "add", "side.txt")
+	mustRun(t, env, dir, "git", "commit", "-qm", "side")
+	mustRun(t, env, dir, "git", "checkout", "-q", "main")
+	writeShipFile(t, dir, "parent.txt", "parent\n")
+	mustRun(t, env, dir, "git", "add", "parent.txt")
+	mustRun(t, env, dir, "git", "commit", "-qm", "parent")
+	mustRun(t, env, dir, "git", "merge", "-q", "--no-edit", "side")
+	newBase := gitAt(t, env, dir, "rev-parse", "HEAD")
+	writeShipFile(t, dir, "feature.txt", "feature\n")
+	mustRun(t, env, dir, "git", "add", "feature.txt")
+	mustRun(t, env, dir, "git", "commit", "-qm", "feature")
+	local := gitAt(t, env, dir, "rev-parse", "HEAD")
+	published := gitAt(t, append(env, "GIT_COMMITTER_DATE=2001-01-01T00:00:00Z"), dir, "commit-tree", local+"^{tree}", "-p", newBase, "-m", "feature, published")
+	b := stackRebaseBranch{Name: "feature", Local: local, OldBase: oldBase, NewBase: newBase, NewHead: published}
+
+	replays, err := stackPublishedReplaysSource(f.Context(), render.Dir(dir), b)
+
+	if err != nil || !replays {
+		t.Fatalf("stackPublishedReplaysSource over a tree-identical published head = %v, %v, want true", replays, err)
+	}
+}
