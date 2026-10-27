@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/yasyf/cc-context/internal/ghapi"
 	"github.com/yasyf/cc-context/internal/gtapi"
@@ -196,5 +198,103 @@ func TestPollDecodesARecordedGitHubResponse(t *testing.T) {
 	}
 	if gh.requests() != 1 {
 		t.Errorf("requests = %d, want one batched query", gh.requests())
+	}
+}
+
+func TestAPollOfAHundredPullRequestsAndFortyLanesFitsGitHubsGatewayAndSendsItsPagesAtOnce(t *testing.T) {
+	t.Parallel()
+	const (
+		gatewayLimit = 10 * time.Second
+		perQuery     = 1500 * time.Millisecond
+		perNode      = 135 * time.Millisecond
+	)
+	var want Want
+	lanePR := map[string]int{}
+	for n := 1; n <= 150; n++ {
+		want.PRs = append(want.PRs, n)
+	}
+	for k := range 46 {
+		prefix := fmt.Sprintf("lane-%02d/", k)
+		want.Prefixes = append(want.Prefixes, prefix)
+		lanePR[prefix] = 1000 + k
+	}
+	var mu sync.Mutex
+	sent := 0
+	second := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Query     string         `json:"query"`
+			Variables map[string]any `json:"variables"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		mu.Lock()
+		sent++
+		nth := sent
+		mu.Unlock()
+		switch nth {
+		case 1:
+			select {
+			case <-second:
+			case <-time.After(5 * time.Second):
+				t.Error("the poll sent its second page only after GitHub answered the first")
+			}
+		case 2:
+			close(second)
+		}
+		repo := map[string]any{}
+		if strings.Contains(req.Query, "trunk: defaultBranchRef") {
+			repo["trunk"] = map[string]any{"name": "main", "target": map[string]any{"history": map[string]any{"nodes": []any{}}}}
+		}
+		nodes := 0
+		for alias, v := range req.Variables {
+			switch alias[0] {
+			case 'l':
+				nodes++
+				prefix := v.(string)
+				ref := map[string]any{"name": prefix + "tip", "associatedPullRequests": map[string]any{"nodes": []any{map[string]any{"number": lanePR[prefix]}}}}
+				repo[alias] = map[string]any{"totalCount": 1, "nodes": []any{ref}}
+			case 'p':
+				nodes++
+				repo[alias] = map[string]any{"number": v, "state": "OPEN", "title": fmt.Sprintf("#%v", v), "headRefOid": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"}
+			}
+		}
+		if perQuery+time.Duration(nodes)*perNode > gatewayLimit {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
+			"rateLimit":  map[string]any{"remaining": 4000, "resetAt": "2026-09-30T08:00:00Z"},
+			"repository": repo,
+		}})
+	}))
+	t.Cleanup(srv.Close)
+	src, err := NewGitHub(ghapi.New(srv.URL), nil, "yasyf/cc-context", io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := Open(t.TempDir(), src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.now = func() time.Time { return epoch }
+
+	st, err := store.Read(testCtx(t), want)
+	if err != nil {
+		t.Fatalf("read = %v, want one poll over every pull request and lane", err)
+	}
+	for _, n := range want.PRs {
+		if pr := st.PRs[n]; pr.Number != n || pr.Source != "" {
+			t.Errorf("#%d = %+v, want the poll's own record", n, pr)
+		}
+	}
+	for prefix, n := range lanePR {
+		if lane := st.Lanes[prefix]; fmt.Sprint(lane.PRs) != fmt.Sprintf("[%d]", n) || st.PRs[n].Number != n {
+			t.Errorf("lane %s = %v with #%d = %+v, want the lane's one pull request read", prefix, lane.PRs, n, st.PRs[n])
+		}
+	}
+	if st.Trunk.Name != "main" || st.Failure != nil {
+		t.Errorf("trunk %q, failure %v; want main with no failure", st.Trunk.Name, st.Failure)
 	}
 }

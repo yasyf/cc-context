@@ -11,12 +11,15 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/yasyf/cc-context/internal/ghapi"
 	"github.com/yasyf/cc-context/internal/gtapi"
 )
 
 const (
-	chunkSize        = 40
+	pageSize         = 20
+	pollWorkers      = 4
 	graphqlDeadline  = 20 * time.Second
 	graphiteDeadline = 10 * time.Second
 
@@ -61,6 +64,14 @@ type target struct {
 	activity bool
 	squash   string
 	base     string
+}
+
+type page struct {
+	trunk    bool
+	prefixes []string
+	targets  []target
+	resp     response
+	gone     []int
 }
 
 type prNode struct {
@@ -161,16 +172,17 @@ func (g *GitHub) poll(ctx context.Context, req Want, prev map[int]PR) (poll, err
 	for _, n := range req.PRs {
 		targets = append(targets, p.target(n))
 	}
-	chunks := slices.Collect(slices.Chunk(targets, chunkSize))
-	if len(chunks) == 0 {
-		chunks = [][]target{nil}
+	pages := paginate(req.Prefixes, targets)
+	group, gctx := errgroup.WithContext(ctx)
+	group.SetLimit(pollWorkers)
+	for i := range pages {
+		group.Go(func() error { return g.send(gctx, &pages[i]) })
 	}
-	for i, chunk := range chunks {
-		var prefixes []string
-		if i == 0 {
-			prefixes = req.Prefixes
-		}
-		if err := p.chunk(ctx, chunk, i == 0, prefixes); err != nil {
+	if err := group.Wait(); err != nil {
+		return poll{}, err
+	}
+	for _, pg := range pages {
+		if err := p.collect(pg); err != nil {
 			return poll{}, err
 		}
 	}
@@ -225,39 +237,56 @@ func (p *pass) target(n int) target {
 	return t
 }
 
-func (p *pass) chunk(ctx context.Context, chunk []target, first bool, prefixes []string) error {
+func paginate(prefixes []string, targets []target) []page {
+	pages := []page{{trunk: true}}
+	for {
+		pg := &pages[len(pages)-1]
+		n := min(len(prefixes), pageSize)
+		pg.prefixes, prefixes = prefixes[:n], prefixes[n:]
+		m := min(len(targets), pageSize-n)
+		pg.targets, targets = targets[:m], targets[m:]
+		if len(prefixes)+len(targets) == 0 {
+			return pages
+		}
+		pages = append(pages, page{})
+	}
+}
+
+func (g *GitHub) send(ctx context.Context, pg *page) error {
 	ctx, cancel := context.WithTimeout(ctx, graphqlDeadline)
 	defer cancel()
-	resp, err := p.query(ctx, chunk, first, prefixes)
+	resp, err := g.query(ctx, *pg)
 	var gql *ghapi.GraphQLError
 	if errors.As(err, &gql) {
-		retry, gone, ok := dropNotFound(chunk, gql)
+		retry, gone, ok := dropNotFound(pg.targets, gql)
 		if !ok {
 			return err
 		}
-		p.out.missing = append(p.out.missing, gone...)
-		chunk = retry
-		resp, err = p.query(ctx, chunk, first, prefixes)
+		pg.targets, pg.gone = retry, gone
+		resp, err = g.query(ctx, *pg)
 	}
-	if err != nil {
+	pg.resp = resp
+	return err
+}
+
+func (p *pass) collect(pg page) error {
+	p.out.missing = append(p.out.missing, pg.gone...)
+	if pg.trunk || pg.resp.RateLimit.Remaining < p.out.rate.Remaining {
+		p.out.rate = pg.resp.RateLimit
+	}
+	if err := p.repoWide(pg); err != nil {
 		return err
 	}
-	p.out.rate = resp.RateLimit
-	if first {
-		if err := p.repoWide(resp, prefixes); err != nil {
-			return err
-		}
-	}
-	for i, t := range chunk {
+	for i, t := range pg.targets {
 		var node *prNode
-		if err := decode(resp.Repository["p"+strconv.Itoa(i)], &node); err != nil {
+		if err := decode(pg.resp.Repository["p"+strconv.Itoa(i)], &node); err != nil {
 			return err
 		}
 		if node == nil {
 			p.out.missing = append(p.out.missing, t.number)
 			continue
 		}
-		pr, err := p.record(*node, t, i, resp)
+		pr, err := p.record(*node, t, i, pg.resp)
 		if err != nil {
 			return err
 		}
@@ -266,18 +295,20 @@ func (p *pass) chunk(ctx context.Context, chunk []target, first bool, prefixes [
 	return nil
 }
 
-func (p *pass) repoWide(resp response, prefixes []string) error {
-	var trunk trunkNode
-	if err := decode(resp.Repository["trunk"], &trunk); err != nil {
-		return err
+func (p *pass) repoWide(pg page) error {
+	if pg.trunk {
+		var trunk trunkNode
+		if err := decode(pg.resp.Repository["trunk"], &trunk); err != nil {
+			return err
+		}
+		p.out.trunk = Trunk{Name: trunk.Name}
+		for _, c := range trunk.Target.History.Nodes {
+			p.out.trunk.History = append(p.out.trunk.History, Commit{OID: c.OID, Headline: c.MessageHeadline})
+		}
 	}
-	p.out.trunk = Trunk{Name: trunk.Name}
-	for _, c := range trunk.Target.History.Nodes {
-		p.out.trunk.History = append(p.out.trunk.History, Commit{OID: c.OID, Headline: c.MessageHeadline})
-	}
-	for k, prefix := range prefixes {
+	for k, prefix := range pg.prefixes {
 		var refs refsNode
-		if err := decode(resp.Repository["l"+strconv.Itoa(k)], &refs); err != nil {
+		if err := decode(pg.resp.Repository["l"+strconv.Itoa(k)], &refs); err != nil {
 			return err
 		}
 		if refs.TotalCount > len(refs.Nodes) {
@@ -297,19 +328,19 @@ func (p *pass) repoWide(resp response, prefixes []string) error {
 	return nil
 }
 
-func (g *GitHub) query(ctx context.Context, chunk []target, first bool, prefixes []string) (response, error) {
+func (g *GitHub) query(ctx context.Context, pg page) (response, error) {
 	decls := []string{"$owner: String!", "$repo: String!"}
 	vars := map[string]any{"owner": g.owner, "repo": g.name}
 	var fields strings.Builder
-	if first {
+	if pg.trunk {
 		fields.WriteString("    trunk: defaultBranchRef { name target { ... on Commit { history(first: 100) { nodes { oid messageHeadline } } } } }\n")
-		for k, prefix := range prefixes {
-			decls = append(decls, fmt.Sprintf("$l%d: String!", k))
-			vars[fmt.Sprintf("l%d", k)] = prefix
-			fmt.Fprintf(&fields, "    l%d: refs(refPrefix: \"refs/heads/\", query: $l%d, first: 100) { totalCount nodes { name associatedPullRequests(states: [OPEN], first: 5) { nodes { number } } } }\n", k, k)
-		}
 	}
-	for i, t := range chunk {
+	for k, prefix := range pg.prefixes {
+		decls = append(decls, fmt.Sprintf("$l%d: String!", k))
+		vars[fmt.Sprintf("l%d", k)] = prefix
+		fmt.Fprintf(&fields, "    l%d: refs(refPrefix: \"refs/heads/\", query: $l%d, first: 100) { totalCount nodes { name associatedPullRequests(states: [OPEN], first: 5) { nodes { number } } } }\n", k, k)
+	}
+	for i, t := range pg.targets {
 		decls = append(decls, fmt.Sprintf("$p%d: Int!", i))
 		vars[fmt.Sprintf("p%d", i)] = t.number
 		selection := prFields
