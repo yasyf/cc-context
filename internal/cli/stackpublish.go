@@ -839,6 +839,14 @@ func stackSourceStays(ctx context.Context, l lane, b stackRebaseBranch, at strin
 }
 
 func stackPublishedReplaysSource(ctx context.Context, dir render.Dir, b stackRebaseBranch) (bool, error) {
+	trees, err := render.RunCLI(ctx, dir, "git", []string{"rev-parse", b.NewHead + "^{tree}", b.Local + "^{tree}"})
+	if err != nil {
+		return false, fmt.Errorf("%s: git rev-parse %.12s^{tree} %.12s^{tree}: %w", stackRebasePrefix, b.NewHead, b.Local, err)
+	}
+	tree, local, _ := strings.Cut(strings.TrimSpace(trees), "\n")
+	if tree == local {
+		return true, nil
+	}
 	sourceBase := cmp.Or(b.SourceBase, b.OldBase)
 	source, err := stackPatchSeries(ctx, dir, sourceBase, b.Local)
 	if err != nil {
@@ -877,11 +885,7 @@ func stackPublishedReplaysSource(ctx context.Context, dir render.Dir, b stackReb
 	default:
 		return false, fmt.Errorf("%s: git merge-tree %.12s %.12s: exit %d: %s", stackRebasePrefix, b.NewBase, b.Local, code, strings.TrimSpace(stderr))
 	}
-	tree, err := render.RunCLI(ctx, dir, "git", []string{"rev-parse", b.NewHead + "^{tree}"})
-	if err != nil {
-		return false, fmt.Errorf("%s: git rev-parse %.12s^{tree}: %w", stackRebasePrefix, b.NewHead, err)
-	}
-	return strings.TrimSpace(strings.SplitN(merged, "\n", 2)[0]) == strings.TrimSpace(tree), nil
+	return strings.TrimSpace(strings.SplitN(merged, "\n", 2)[0]) == tree, nil
 }
 
 func stackLocalOnlyMoves(run *stackRebaseRun) []restackMove {
