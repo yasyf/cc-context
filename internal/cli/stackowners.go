@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/yasyf/cc-context/internal/render"
@@ -45,12 +47,16 @@ func stackClaims(ctx context.Context, dir render.Dir, branches []string) (map[st
 	if err != nil {
 		return nil, err
 	}
+	_, me, err := cciDriveLane(ctx, dir)
+	if err != nil {
+		return nil, err
+	}
 	claims := map[string]string{}
 	for _, branch := range branches {
 		if branch == current {
 			continue
 		}
-		owner, err := cciBranchOwner(ctx, dir, branch)
+		owner, err := cciBranchOwner(ctx, dir, branch, me)
 		if err != nil {
 			return nil, err
 		}
@@ -70,7 +76,7 @@ func stackWithClaims(holders, claims map[string]string) map[string]string {
 	return holders
 }
 
-func cciBranchOwner(ctx context.Context, dir render.Dir, branch string) (string, error) {
+func cciBranchOwner(ctx context.Context, dir render.Dir, branch, me string) (string, error) {
 	out, err := render.RunCLI(ctx, dir, "cci", []string{"who", "--ref", "branch:" + branch, "--json"})
 	if err != nil {
 		return "", fmt.Errorf("cci who --ref branch:%s: %w", branch, err)
@@ -80,11 +86,32 @@ func cciBranchOwner(ctx context.Context, dir render.Dir, branch string) (string,
 		if err := json.Unmarshal([]byte(line), &p); err != nil {
 			return "", fmt.Errorf("cci who --ref branch:%s: %w", branch, err)
 		}
-		if !p.self(ctx) {
+		if !p.self(ctx) && !laneCarries(me, p.Lane) && !laneCarries(me, p.AgentName) {
 			return cmp.Or(p.Lane, p.AgentName, p.Name, p.Session), nil
 		}
 	}
 	return "", nil
+}
+
+var laneNumber = regexp.MustCompile(`^(.+?)(?:-(\d+))?$`)
+
+func laneCarries(me, other string) bool {
+	if me == "" || other == "" {
+		return false
+	}
+	if me == other {
+		return true
+	}
+	mine, theirs := laneNumber.FindStringSubmatch(me), laneNumber.FindStringSubmatch(other)
+	if mine[1] != theirs[1] || mine[2] == "" {
+		return false
+	}
+	n, _ := strconv.Atoi(mine[2])
+	m := 1
+	if theirs[2] != "" {
+		m, _ = strconv.Atoi(theirs[2])
+	}
+	return m < n
 }
 
 func stackHolderPhrase(holder string) string {
