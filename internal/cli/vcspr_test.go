@@ -285,6 +285,28 @@ func TestPRStatusSharesOnePollAcrossInvocations(t *testing.T) {
 	}
 }
 
+func TestPRStatusMaxAgeReadsAPollOlderThanThirtySeconds(t *testing.T) {
+	_, client := stubPRInfo(t, prInfoQueued)
+	github := stubPRState(t, prPoll(`"p0":`+prNode(25121, "OPEN", prComments())), prPoll(`"p0":`+prNode(25121, "OPEN", prComments())))
+
+	if _, err := runPRStatusCmd(t, client, "--repo", "Forge-AI/monorepo", "25121"); err != nil {
+		t.Fatalf("pr status: %v", err)
+	}
+	prStateBackdate(t, 2*time.Minute)
+	if _, err := runPRStatusCmd(t, client, "--repo", "Forge-AI/monorepo", "--max-age", "5m", "25121"); err != nil {
+		t.Fatalf("pr status --max-age: %v", err)
+	}
+	if len(github.queries) != 1 {
+		t.Errorf("graphql queries = %d, want a two-minute-old poll to answer under --max-age 5m", len(github.queries))
+	}
+	if _, err := runPRStatusCmd(t, client, "--repo", "Forge-AI/monorepo", "25121"); err != nil {
+		t.Fatalf("pr status: %v", err)
+	}
+	if len(github.queries) != 2 {
+		t.Errorf("graphql queries = %d, want the default 30-second age to poll again", len(github.queries))
+	}
+}
+
 func TestPRStatusReadsALabelledPRTheQueueDropped(t *testing.T) {
 	_, client := stubPRInfo(t, `{"prNumber":26918,"state":"OPEN","baseRefName":"dev","mergeQueueStatus":null,"mergeCommitSha":null}`)
 	stubPRState(t, prPoll(`"p0":`+strings.Replace(prNode(26918, "OPEN", prComments(prActivityEvicted)), `"labels":{"nodes":[]}`, `"labels":{"nodes":[{"name":"merge"}]}`, 1)))

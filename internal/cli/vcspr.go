@@ -148,8 +148,9 @@ func openPRState(ctx context.Context, repo string, warn io.Writer) (*prstate.Sto
 }
 
 type vcsPRStatusOpts struct {
-	json bool
-	repo string
+	json   bool
+	repo   string
+	maxAge time.Duration
 }
 
 func newVcsPRCmd() *cobra.Command {
@@ -217,7 +218,8 @@ branch on GitHub, or from the default branch, as a stacked pull request's is
 once its parent lands.
 
 Every read goes through the machine-wide pull request cache ccx vcs pr watch
-shares, polled at most once per 30 seconds per repository. While GitHub
+shares, polled at most once per 30 seconds per repository; --max-age lets a
+caller that needs no fresher view read records up to that old instead. While GitHub
 rate-limits the machine the command waits for the next probe, up to ten
 minutes, then answers from the cache with each line marked "stale, polled
 <time>"; a pull request the cache never polled fails naming the next probe.
@@ -236,6 +238,7 @@ admission does not move it: the queue lands that commit and drops the rest.`,
 	}
 	cmd.Flags().BoolVar(&o.json, "json", false, "emit the report as JSON")
 	cmd.Flags().StringVarP(&o.repo, "repo", "R", "", "the owner/name repository (default: the current checkout's)")
+	cmd.Flags().DurationVar(&o.maxAge, "max-age", prstate.MinInterval, "how old a cached record may be and still answer, so a caller that polled moments ago reads its own poll")
 	return cmd
 }
 
@@ -338,7 +341,7 @@ func runVcsPRStatus(cmd *cobra.Command, args []string, o vcsPRStatusOpts) error 
 		}
 		repo = looked.NameWithOwner
 	}
-	reports, err := collectPRQueue(ctx, repo, numbers, cmd.ErrOrStderr())
+	reports, err := collectPRQueue(ctx, repo, numbers, o.maxAge, cmd.ErrOrStderr())
 	if err != nil {
 		return err
 	}
@@ -357,8 +360,8 @@ func runVcsPRStatus(cmd *cobra.Command, args []string, o vcsPRStatusOpts) error 
 	return nil
 }
 
-func collectPRQueue(ctx context.Context, repo string, numbers []int, warn io.Writer) ([]prStatusReport, error) {
-	st, limited, err := readPRQueue(ctx, repo, numbers, warn, prStatusRateLimitWait)
+func collectPRQueue(ctx context.Context, repo string, numbers []int, maxAge time.Duration, warn io.Writer) ([]prStatusReport, error) {
+	st, limited, err := readPRQueue(ctx, repo, prstate.Want{PRs: numbers, MaxAge: maxAge}, warn, prStatusRateLimitWait)
 	missing := &prstate.MissingError{}
 	if err != nil && !errors.As(err, &missing) {
 		return nil, fmt.Errorf("pr status: %w", err)
@@ -477,12 +480,12 @@ func prReadMergeable(ctx context.Context, repo string, number int) (string, stri
 	}
 }
 
-func readPRQueue(ctx context.Context, repo string, numbers []int, warn io.Writer, wait time.Duration) (prstate.State, *prstate.Backoff, error) {
+func readPRQueue(ctx context.Context, repo string, want prstate.Want, warn io.Writer, wait time.Duration) (prstate.State, *prstate.Backoff, error) {
 	store, err := openPRState(ctx, repo, warn)
 	if err != nil {
 		return prstate.State{}, nil, err
 	}
-	return readPRStateWaiting(ctx, store, prstate.Want{PRs: numbers}, wait)
+	return readPRStateWaiting(ctx, store, want, wait)
 }
 
 func prQueueOf(info gtapi.PullRequestInfo, pr prstate.PR, landedOn string) prQueueReport {
