@@ -88,3 +88,41 @@ func TestStackSubmitTakesAParentAnotherAgentOfThisSessionClaims(t *testing.T) {
 		t.Errorf("stdout = %q, want base taken as this session's", out)
 	}
 }
+
+func TestStackSubmitTakesAParentItsPredecessorLaneClaims(t *testing.T) {
+	for _, tc := range []struct{ me, want string }{{"go-client-2", "base feature"}, {"go-client", "base feature"}, {"go-clients-2", "feature"}} {
+		t.Run(tc.me, func(t *testing.T) {
+			f, api := stackClaimedBase(t, stackClaimingLane)
+			f.Setenv(envCCIDrive, "drive")
+			f.Setenv(envCCILane, tc.me)
+			restackAdvanceRemote(t, f, "main", "upstream.txt", "upstream\n")
+			posted := len(api.submitHeads())
+
+			if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+				t.Fatalf("stack submit: %v", err)
+			}
+			if heads := strings.Join(api.submitHeads()[posted:], " "); heads != tc.want {
+				t.Errorf("submit posts = %q, want %q", heads, tc.want)
+			}
+		})
+	}
+}
+
+func TestLaneCarriesOnlyItselfAndItsNumberedPredecessors(t *testing.T) {
+	for _, tc := range []struct {
+		me, other string
+		want      bool
+	}{
+		{"p8f-replica-4", "p8f-replica", true},
+		{"p8f-replica-4", "p8f-replica-3", true},
+		{"p8f-replica-4", "p8f-replica-4", true},
+		{"p8f-replica-4", "p8f-replica-5", false},
+		{"p8f-replica", "p8f-replica-2", false},
+		{"p8f-replica-4", "p8f-replicas", false},
+		{"", "p8f-replica", false},
+	} {
+		if got := laneCarries(tc.me, tc.other); got != tc.want {
+			t.Errorf("laneCarries(%q, %q) = %v, want %v", tc.me, tc.other, got, tc.want)
+		}
+	}
+}
