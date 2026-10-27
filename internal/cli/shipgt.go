@@ -2072,7 +2072,11 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 			plan[i].lease, plan[i].leaseSet = lease, true
 		}
 	}
-	if err := gtRefuseQueueRestack(ctx, l.dir(), client, owner, name, s.prefix, tr, plan, known); err != nil {
+	tracked, err := gtTrackedOf(commonDir, known)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%s: %w", s.prefix, err)
+	}
+	if err := gtRefuseQueueRestack(ctx, l.dir(), client, owner, name, s.prefix, tr, plan, tracked); err != nil {
 		return nil, nil, err
 	}
 	if err := gtParkedBases(ctx, l.dir(), plan, known, s.trunkHead); err != nil {

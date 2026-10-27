@@ -1,11 +1,13 @@
 package cli
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/yasyf/cc-context/internal/gtapi"
+	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
@@ -157,6 +159,24 @@ func TestStackSubmitRefusesWhileGraphiteRestacksAnUnparkedMember(t *testing.T) {
 	}
 	if heads := api.submitHeads()[posted:]; len(heads) > 0 {
 		t.Errorf("submit posts = %v, want none", heads)
+	}
+}
+
+func TestStackSubmitPushesAPullRequestGraphiteHasNoRecordOfThroughItsRebasing(t *testing.T) {
+	f, _, remoteFeature := rebasingFeature(t)
+	common, err := gtCommonDir(context.Background(), render.Dir(f.Dir), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := gtMarkUnrecorded(common, "feature"); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, errStr, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("stack submit = %v (stderr=%q), want a pull request Graphite has no record of pushed under its lease", err, errStr)
+	}
+	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature"); got == remoteFeature {
+		t.Errorf("origin feature is still %s, want the new commit pushed", got)
 	}
 }
 

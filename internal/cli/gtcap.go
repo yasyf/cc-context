@@ -196,3 +196,17 @@ func gtUnrecordedOf(commonDir string, plan []gtSubmitBranch) (map[string]bool, e
 	}
 	return marked, nil
 }
+
+func gtTrackedOf(commonDir string, known map[string]gtapi.PullRequestInfo) (map[string]gtapi.PullRequestInfo, error) {
+	tracked := make(map[string]gtapi.PullRequestInfo, len(known))
+	for branch, pr := range known {
+		unrecorded, err := gtUnrecorded(commonDir, branch)
+		if err != nil {
+			return nil, err
+		}
+		if !unrecorded && pr.BaseRefName != gtSegmentBase(branch) {
+			tracked[branch] = pr
+		}
+	}
+	return tracked, nil
+}

@@ -423,7 +423,7 @@ func stackRepushOverEquivalent(ctx context.Context, dir render.Dir, s gtSubmit, 
 			continue
 		}
 		if remote == "" {
-			return gtPushFailure(s, plan, pushErr)
+			return stackMovedElsewhere(s, plan, b, "deleted it", pushErr)
 		}
 		if remote == b.head {
 			plan[i].lease, plan[i].leaseSet = remote, true
@@ -434,7 +434,7 @@ func stackRepushOverEquivalent(ctx context.Context, dir render.Dir, s gtSubmit, 
 			return err
 		}
 		if onto == "" {
-			return gtPushFailure(s, plan, pushErr)
+			return stackMovedElsewhere(s, plan, b, "moved it to "+shortOID(remote)+", which carries other patches", pushErr)
 		}
 		plan[i].lease, plan[i].leaseSet = remote, true
 	}
@@ -445,6 +445,16 @@ func stackRepushOverEquivalent(ctx context.Context, dir render.Dir, s gtSubmit, 
 		return gtPushFailure(s, plan, err)
 	}
 	return nil
+}
+
+func stackMovedElsewhere(s gtSubmit, plan []gtSubmitBranch, b gtSubmitBranch, moved string, pushErr error) error {
+	leased := "absent"
+	if b.lease != "" {
+		leased = "at " + shortOID(b.lease)
+	}
+	problem := fmt.Sprintf("the atomic push of %s moved nothing: this run leased origin's %s %s, and a push it did not make %s, so the lease kept that push rather than overwrite it — fetch %s, fold in what it added, and ccx vcs stack abort then rebase again, since stack continue republishes under the same lease: %s",
+		strings.Join(gtPlanNames(plan), ", "), b.name, leased, moved, b.name, gitPushVerdict(pushErr))
+	return &gtAdvice{advice: gtStuck(s.prefix, problem, ""), cause: pushErr}
 }
 
 func stackCompletePublication(ctx context.Context, dir render.Dir, commonDir string, run *stackRebaseRun) error {
