@@ -29,7 +29,7 @@ func rateLimitBody(graphql, core int, reset time.Time) string {
 func TestAdmitRefusesAPoolUnderTheFloorAndNamesItsCallers(t *testing.T) {
 	reset := time.Now().Add(30 * time.Minute).Truncate(time.Second)
 	rateReads := 0
-	c, l := quotaClient(t, func(w http.ResponseWriter, r *http.Request) {
+	c, l := quotaClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		rateReads++
 		_, _ = fmt.Fprint(w, rateLimitBody(Floor-1, Floor, reset))
 	})
@@ -59,7 +59,7 @@ func TestAdmitRefusesAPoolUnderTheFloorAndNamesItsCallers(t *testing.T) {
 
 func TestAdmitReadsAPoolPastItsResetAgain(t *testing.T) {
 	past := time.Now().Add(-time.Minute)
-	c, l := quotaClient(t, func(w http.ResponseWriter, r *http.Request) {
+	c, l := quotaClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = fmt.Fprint(w, rateLimitBody(4999, 5000, time.Now().Add(time.Hour)))
 	})
 	header := http.Header{}
@@ -156,7 +156,7 @@ func TestResource(t *testing.T) {
 
 func TestAdmitScalesTheFloorToASmallPool(t *testing.T) {
 	reset := time.Now().Add(time.Minute).Truncate(time.Second)
-	c, _ := quotaClient(t, func(w http.ResponseWriter, r *http.Request) {
+	c, _ := quotaClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = fmt.Fprintf(w, `{"resources":{"search":{"limit":30,"remaining":%d,"reset":%d}}}`, 30, reset.Unix())
 	})
 	if err := c.Admit(t.Context(), IdentityUser, ResourceSearch); err != nil {

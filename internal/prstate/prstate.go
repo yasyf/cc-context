@@ -461,7 +461,9 @@ func (s *Store) degrade(ctx context.Context, st State, want Want, asked, now tim
 	if len(prs) == 0 {
 		return st, 0, s.verdict(st, want, asked)
 	}
-	_, _ = fmt.Fprintf(s.src.warn, "prstate: %v; reading %d pull requests through REST\n", cause, len(prs))
+	if _, limited := errors.AsType[*LimitedError](cause); !limited {
+		_, _ = fmt.Fprintf(s.src.warn, "prstate: %v; reading %d pull requests through REST\n", cause, len(prs))
+	}
 	p, err := s.src.pollREST(ctx, prs, st.PRs, st.Trunk.Name)
 	if err != nil {
 		if wait, limited := ghapi.RateLimited(err); limited {
