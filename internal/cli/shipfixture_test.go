@@ -1057,6 +1057,10 @@ case "$1 $2" in
     esac ;;
   "api graphql")
     case "$*" in
+      *createPullRequest*)
+        if [ -n "$GH_PR_CREATE_GRAPHQL_FAIL" ]; then printf '%s\n' "$GH_PR_CREATE_GRAPHQL_FAIL" >&2; exit 1; fi
+        printf '%s' "$GH_PULL_CREATE_GRAPHQL_JSON" ;;
+      *'name:$repo){id}'*) printf '%s\n' "$GH_REPO_NODE_ID" ;;
       *updatePullRequest*) if [ -n "$GH_PR_GRAPHQL_FAIL" ]; then printf '%s\n' "$GH_PR_GRAPHQL_FAIL" >&2; exit 1; fi ;;
       *'pullRequest(number:$number){id}'*) printf '%s\n' "$GH_PR_NODE_ID" ;;
       *pullRequests*)

@@ -286,12 +286,12 @@ func shipPR(ctx context.Context, errW io.Writer, l lane, nwo, remote, branch, tr
 		}
 		picked = base != trunk
 	}
-	created, err := shipPRCreate(ctx, nwo, branch, base, subject, m)
+	created, viaGraphQL, err := shipPRCreate(ctx, nwo, branch, base, subject, m)
 	if err != nil {
 		return "", err
 	}
 	cciClaimPRs(ctx, errW, l.dir(), "ship", nwo, []cciOpened{{pr: created.Number, branch: branch}}, nil)
-	return shipPRSegment(created, base, picked), nil
+	return shipPRSegment(created, base, picked, viaGraphQL), nil
 }
 
 // shipPRBase is the base a new pull request opens against when --parent named
@@ -371,7 +371,7 @@ func lookupPR(ctx context.Context, nwo, branch string) (prState, bool, error) {
 // resolve to the parent and can target upstream. The body is only what the
 // caller stated, never the commit message, which would publish
 // withSessionTrailer's Claude-Session-Id line into the description.
-func shipPRCreate(ctx context.Context, nwo, branch, base, subject string, m prMeta) (prState, error) {
+func shipPRCreate(ctx context.Context, nwo, branch, base, subject string, m prMeta) (prState, bool, error) {
 	title := m.title
 	if title == "" {
 		title = subject
@@ -380,7 +380,7 @@ func shipPRCreate(ctx context.Context, nwo, branch, base, subject string, m prMe
 	return createPR(ctx, nwo, branch, base, title, m.bodyPath, draft)
 }
 
-func shipPRSegment(pr prState, base string, picked bool) string {
+func shipPRSegment(pr prState, base string, picked, viaGraphQL bool) string {
 	seg := fmt.Sprintf("opened PR #%d %s", pr.Number, pr.URL)
 	if picked {
 		seg += " onto " + base
@@ -388,7 +388,14 @@ func shipPRSegment(pr prState, base string, picked bool) string {
 	if pr.IsDraft {
 		seg += " [draft]"
 	}
-	return seg
+	return seg + overGraphQL(viaGraphQL)
+}
+
+func overGraphQL(viaGraphQL bool) string {
+	if viaGraphQL {
+		return " over GraphQL"
+	}
+	return ""
 }
 
 // prCreateAttempts bounds the creates a server error may repeat.
@@ -397,29 +404,87 @@ const prCreateAttempts = 2
 // createPR posts the pull request. GitHub can open one and still answer an
 // error, so a refused create fails only when the branch has no open pull
 // request afterward. A server error that left none is posted again: GitHub
-// refuses a second open pull request for one head and base.
-func createPR(ctx context.Context, nwo, branch, base, title, bodyPath string, draft bool) (prState, error) {
+// refuses a second open pull request for one head and base. A rate limit is
+// not waited out but sent to GraphQL's createPullRequest, which GitHub meters
+// apart from REST writes; viaGraphQL reports that it opened the pull request.
+func createPR(ctx context.Context, nwo, branch, base, title, bodyPath string, draft bool) (pr prState, viaGraphQL bool, err error) {
 	argv := prCreateArgv(nwo, branch, base, title, bodyPath, draft)
 	for attempt := 1; ; attempt++ {
-		out, err := ghAPI(ctx, render.Ambient, argv[1:]...)
+		out, err := ghAPIWaiting(ctx, render.Ambient, ghRateLimitWait, 0, argv[1:]...)
 		if err == nil {
 			var pr prState
 			if err := json.Unmarshal([]byte(out), &pr); err != nil {
-				return prState{}, fmt.Errorf("ship: parse gh api create pull: %w", err)
+				return prState{}, false, fmt.Errorf("ship: parse gh api create pull: %w", err)
 			}
-			return pr, nil
+			return pr, false, nil
 		}
 		pr, found, lookupErr := lookupPR(ctx, nwo, branch)
 		if found {
-			return pr, nil
+			return pr, false, nil
 		}
 		var refusal *ghRefusal
-		if attempt < prCreateAttempts && lookupErr == nil && errors.As(err, &refusal) && refusal.status >= http.StatusInternalServerError {
+		refused := lookupErr == nil && errors.As(err, &refusal)
+		if attempt < prCreateAttempts && refused && refusal.status >= http.StatusInternalServerError {
 			continue
 		}
-		retry := ghCommand(prCreateArgv(nwo, branch, base, title, prRetryBody(bodyPath), draft))
-		return prState{}, prStepError("the push", "create", []string{retry}, nil, errors.Join(err, lookupErr))
+		retry := []string{ghCommand(prCreateArgv(nwo, branch, base, title, prRetryBody(bodyPath), draft))}
+		if !refused || !strings.Contains(strings.ToLower(refusal.message), "rate limit") {
+			return prState{}, false, prStepError("the push", "create", retry, nil, errors.Join(err, lookupErr))
+		}
+		pr, gqlErr := createPRGraphQL(ctx, nwo, branch, base, title, bodyPath, draft)
+		if gqlErr != nil {
+			graphQL := []string{prCreateGraphQLRetry(nwo, branch, base, title, prRetryBody(bodyPath), draft)}
+			return prState{}, true, prStepError("the push", "create", retry, graphQL, errors.Join(err, fmt.Errorf("graphql fallback: %w", gqlErr)))
+		}
+		return pr, true, nil
 	}
+}
+
+func createPRGraphQL(ctx context.Context, nwo, branch, base, title, bodyPath string, draft bool) (prState, error) {
+	id, err := render.RunCLI(ctx, render.Ambient, "gh", repoNodeIDArgv(nwo))
+	if err != nil {
+		return prState{}, err
+	}
+	out, err := render.RunCLI(ctx, render.Ambient, "gh", append(prCreateGraphQLArgv(branch, base, title, bodyPath, draft), "-f", "id="+strings.TrimSpace(id)))
+	if err != nil {
+		return prState{}, err
+	}
+	var pr prState
+	if err := json.Unmarshal([]byte(out), &pr); err != nil {
+		return prState{}, fmt.Errorf("parse createPullRequest: %w", err)
+	}
+	return pr, nil
+}
+
+const repoNodeIDQuery = `query($owner:String!,$repo:String!){repository(owner:$owner,name:$repo){id}}`
+
+func repoNodeIDArgv(nwo string) []string {
+	owner, repo, _ := strings.Cut(nwo, "/")
+	return []string{"api", "graphql", "-f", "owner=" + owner, "-f", "repo=" + repo, "-f", "query=" + repoNodeIDQuery, "--jq", ".data.repository.id"}
+}
+
+// prCreateMutation aliases the created pull request's fields to the REST names
+// prState decodes.
+const prCreateMutation = `mutation($id:ID!,$head:String!,$base:String!,$title:String!,$body:String!,$draft:Boolean!)` +
+	`{createPullRequest(input:{repositoryId:$id,headRefName:$head,baseRefName:$base,title:$title,body:$body,draft:$draft})` +
+	`{pullRequest{number,html_url:url,draft:isDraft}}}`
+
+// prCreateGraphQLArgv is prCreateArgv over GraphQL, less the repository's node
+// id.
+func prCreateGraphQLArgv(branch, base, title, bodyPath string, draft bool) []string {
+	argv := []string{"api", "graphql", "-f", "query=" + prCreateMutation, "-f", "head=" + branch, "-f", "base=" + base, "-f", "title=" + title}
+	if bodyPath != "" {
+		argv = append(argv, "-F", "body=@"+bodyPath)
+	} else {
+		argv = append(argv, "-f", "body=")
+	}
+	return append(argv, "-F", "draft="+strconv.FormatBool(draft), "--jq", ".data.createPullRequest.pullRequest")
+}
+
+// prCreateGraphQLRetry is prCreateGraphQLArgv as a person re-runs it, the node
+// id looked up inline.
+func prCreateGraphQLRetry(nwo, branch, base, title, bodyPath string, draft bool) string {
+	return ghCommand(prCreateGraphQLArgv(branch, base, title, bodyPath, draft)) + ` -f id="$(` + ghCommand(repoNodeIDArgv(nwo)) + `)"`
 }
 
 func prCreateArgv(nwo, branch, trunk, title, bodyPath string, draft bool) []string {
@@ -463,12 +528,13 @@ func shipPREdit(ctx context.Context, nwo string, pr prState, m prMeta) (string, 
 		}
 		return prStepError("the push", "restate", retry, graphQL, err)
 	}
+	viaGraphQL := false
 	if len(fields) > 0 {
 		carried, cleanup, err := withLiveReleaseTrailers(ctx, nwo, pr.Number, m)
 		if err != nil {
 			return "", restateFailed(m, false, err)
 		}
-		if viaGraphQL, err := restatePR(ctx, nwo, pr.Number, carried); err != nil {
+		if viaGraphQL, err = restatePR(ctx, nwo, pr.Number, carried); err != nil {
 			return "", restateFailed(carried, viaGraphQL, err)
 		}
 		cleanup()
@@ -482,7 +548,7 @@ func shipPREdit(ctx context.Context, nwo string, pr prState, m prMeta) (string, 
 	if len(fields) == 0 {
 		return "", nil
 	}
-	return fmt.Sprintf("updated PR #%d %s (%s)", pr.Number, pr.URL, strings.Join(fields, ", ")), nil
+	return fmt.Sprintf("updated PR #%d %s (%s)", pr.Number, pr.URL, strings.Join(fields, ", ")) + overGraphQL(viaGraphQL), nil
 }
 
 // prEditArgv restates the stated fields through REST. -F body=@path sends the
@@ -758,7 +824,8 @@ func shipPRGT(ctx context.Context, nwo string, meta map[string]prMeta, stack []s
 		if !ok {
 			continue
 		}
-		if viaGraphQL, err := restatePR(ctx, nwo, entry.PR, m); err != nil {
+		viaGraphQL, err := restatePR(ctx, nwo, entry.PR, m)
+		if err != nil {
 			retry, graphQL := prRestatesLeft(nwo, carried, stack[:i+1])
 			if !viaGraphQL {
 				graphQL = nil
@@ -766,7 +833,7 @@ func shipPRGT(ctx context.Context, nwo string, meta map[string]prMeta, stack []s
 			return "", prStepError("the push and graphite submit", "restate", retry, graphQL, err)
 		}
 		cleanups[entry.Branch]()
-		segs = append(segs, fmt.Sprintf("PR #%d %s", entry.PR, strings.Join(m.stated(), "+")))
+		segs = append(segs, fmt.Sprintf("PR #%d %s", entry.PR, strings.Join(m.stated(), "+"))+overGraphQL(viaGraphQL))
 	}
 	if len(segs) == 0 {
 		return "", nil
