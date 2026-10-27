@@ -1554,6 +1554,80 @@ func gtCommitsPending(ctx context.Context, dir render.Dir, o shipOpts) (bool, er
 	return strings.TrimSpace(out) != "", nil
 }
 
+// gtRefuseQueuedCommit refuses, before the commit forms, a pushing ship that
+// would commit onto a branch whose pull request sits in the merge queue: the
+// push evicts it, and the stack rebase guard that refuses the move runs only
+// after the commit, leaving it unpushed on the queued branch. Only a branch
+// this clone has submitted, by gt's record or ccx's receipt, is asked about.
+func gtRefuseQueuedCommit(ctx context.Context, l lane, o shipOpts, selected bool, plan branchPlan, c *gtCache) error {
+	common, err := c.common(ctx)
+	if err != nil {
+		return err
+	}
+	submitted, err := gtmeta.LastSubmitted(ctx, common)
+	if err != nil {
+		return fmt.Errorf("ship: %w", err)
+	}
+	if _, ok := submitted[plan.name]; !ok {
+		published, err := stackHasPublication(ctx, l.dir(), []string{plan.name})
+		if err != nil || !published {
+			return err
+		}
+	}
+	owner, name, err := gtRepoOwnerName(ctx, l, "ship")
+	if err != nil {
+		return err
+	}
+	infos, err := gtAPI(ctx).PullRequestInfo(ctx, gtapi.PullRequestInfoRequest{RepoOwner: owner, RepoName: name, PRHeadRefNames: []string{plan.name}, Consistent: true, Callsite: "ccx"})
+	if err != nil {
+		return fmt.Errorf("ship: read the merge queue before committing: %w", err)
+	}
+	infos = slices.DeleteFunc(infos, func(info gtapi.PullRequestInfo) bool {
+		return info.State != gtapi.PROpen || info.HeadRefName != plan.name
+	})
+	if len(infos) == 0 {
+		return nil
+	}
+	queue, err := stackQueueOf(ctx, owner, name, infos, nil)
+	if err != nil || queue[plan.name] != prQueueQueued {
+		return err
+	}
+	if !selected && !o.amend {
+		pending, err := gtCommitsPending(ctx, l.dir(), o)
+		if err != nil || !pending {
+			return err
+		}
+	}
+	remote, err := vcs.GitRemoteFor(ctx, l.dir(), "HEAD")
+	if err != nil {
+		return fmt.Errorf("ship: %w", err)
+	}
+	pushed, trunk := string(vcs.RemoteBranchRef(remote, plan.name)), string(vcs.RemoteBranchRef(remote, plan.trunk))
+	published, err := gitRefExists(ctx, l.dir(), "ship", pushed)
+	if err != nil {
+		return err
+	}
+	fetched, err := gitRefExists(ctx, l.dir(), "ship", trunk)
+	if err != nil {
+		return err
+	}
+	if published && fetched {
+		b := &stackRebaseBranch{Name: plan.name}
+		if b.Remote, err = gitRevParse(ctx, l.dir(), "ship", pushed); err != nil {
+			return err
+		}
+		pin, err := gitRevParse(ctx, l.dir(), "ship", trunk)
+		if err != nil {
+			return err
+		}
+		lands, err := stackQueueCanLand(ctx, l.dir(), pin, b)
+		if err != nil || !lands {
+			return err
+		}
+	}
+	return fmt.Errorf("ship: %s is in the merge queue as #%d, and pushing a commit onto it would evict it, so nothing was committed — take it out of the queue first, or commit the change onto a branch stacked on it with ccx vcs ship --new-branch <name>", plan.name, infos[0].PRNumber)
+}
+
 func gtCherryMarks(ctx context.Context, prefix string, dir render.Dir, parent, head string) ([]gtCherryMark, error) {
 	span := parent + "..." + head
 	out, err := render.RunCLI(ctx, dir, "git", []string{"rev-list", "--cherry-mark", "--right-only", "--no-merges", "--reverse", "--topo-order", span})

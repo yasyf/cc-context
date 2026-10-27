@@ -214,6 +214,7 @@ type stackRebaseRun struct {
 	owners        map[string]string
 	adopted       gtState
 	recorded      map[string]stackRecordedParent
+	rewound       map[string]string
 }
 
 // stackLeft is a branch of the stack a run leaves exactly where it is: an
@@ -547,6 +548,14 @@ func stackBegin(ctx context.Context, cmd *cobra.Command, l lane, commonDir strin
 	}
 	if err := stackAnnounceLeft(cmd, run.left); err != nil {
 		return err
+	}
+	for _, name := range slices.Sorted(maps.Keys(run.rewound)) {
+		if run.branch(name) == nil {
+			continue
+		}
+		if _, err := fmt.Fprintf(cmd.ErrOrStderr(), "stack rebase: took the commits of %s above %s as its own — gt recorded its parent revision at its own head, and %s was since reset below it\n", name, run.rewound[name], run.rewound[name]); err != nil {
+			return err
+		}
 	}
 	if err := stackAnnounceHeld(cmd, run); err != nil {
 		return err
@@ -1140,6 +1149,10 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	if err != nil {
 		return nil, err
 	}
+	rewound, err := stackClaimRewound(ctx, l.dir(), state)
+	if err != nil {
+		return nil, err
+	}
 	overrides, err := stackOverrides(o, state)
 	if err != nil {
 		return nil, err
@@ -1322,7 +1335,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	if err != nil {
 		return nil, fmt.Errorf("stack rebase: %w", err)
 	}
-	run := &stackRebaseRun{Trunk: trunk, Pin: pin, NoPush: o.noPush, Origin: l.checkout.Root, Draft: o.draft, DraftAll: o.draftAll, NoVerify: o.noVerify, Tip: o.tip, TipOnly: o.tipOnly, DropCommits: o.dropCommits, StayClean: o.stayClean, Restack: o.restack, AllLanes: o.allLanes, To: o.to, Reparented: slices.Sorted(maps.Keys(overrides)), NewPRs: o.newPRs, deferPush: o.deferPush, Ship: o.ship, Roots: roots, Pid: os.Getpid(), Started: stackProcStart(os.Getpid()), Host: host, left: left, lanePins: lanePins, heldBelow: heldBelow, heldAbove: heldAbove, owners: o.owners, adopted: adopted, recorded: o.recorded}
+	run := &stackRebaseRun{Trunk: trunk, Pin: pin, NoPush: o.noPush, Origin: l.checkout.Root, Draft: o.draft, DraftAll: o.draftAll, NoVerify: o.noVerify, Tip: o.tip, TipOnly: o.tipOnly, DropCommits: o.dropCommits, StayClean: o.stayClean, Restack: o.restack, AllLanes: o.allLanes, To: o.to, Reparented: slices.Sorted(maps.Keys(overrides)), NewPRs: o.newPRs, deferPush: o.deferPush, Ship: o.ship, Roots: roots, Pid: os.Getpid(), Started: stackProcStart(os.Getpid()), Host: host, left: left, lanePins: lanePins, heldBelow: heldBelow, heldAbove: heldAbove, owners: o.owners, adopted: adopted, recorded: o.recorded, rewound: rewound}
 	own := map[string]bool{}
 	if current != "" && current != trunk {
 		down, err := gtDownstack(stackRebasePrefix, retargeted, current, trunk)
@@ -1657,6 +1670,34 @@ func stackKept(ctx context.Context, dir render.Dir, state gtState, tr vcs.Trunk,
 	return kept, left, passed, nil
 }
 
+// stackClaimRewound re-records, in state, the parent revision of a branch gt
+// reads as empty only because its parent was reset below the commit it was
+// cut at: the commits between are on no other branch, so they are the
+// branch's own, as gt track --parent would record them.
+func stackClaimRewound(ctx context.Context, dir render.Dir, state gtState) (map[string]string, error) {
+	claimed := map[string]string{}
+	for _, name := range slices.Sorted(maps.Keys(state)) {
+		s := state[name]
+		if s.Trunk || len(s.Parents) == 0 || s.Head != s.Parents[0].SHA {
+			continue
+		}
+		parent := state[s.Parents[0].Ref]
+		if parent.Trunk || parent.Head == "" || parent.Head == s.Head {
+			continue
+		}
+		below, err := gitIsAncestor(ctx, dir, stackRebasePrefix, parent.Head, s.Head)
+		if err != nil {
+			return nil, err
+		}
+		if below {
+			s.Parents = []gtRef{{Ref: s.Parents[0].Ref, SHA: parent.Head}}
+			state[name] = s
+			claimed[name] = s.Parents[0].Ref
+		}
+	}
+	return claimed, nil
+}
+
 func stackPassThrough(passed map[string]string, parent string) string {
 	for {
 		below, ok := passed[parent]
@@ -1830,15 +1871,26 @@ func stackAnnounceLeft(cmd *cobra.Command, left []stackLeft) error {
 
 // stackShipCovers refuses, before anything moves, a --pr-title or
 // --pr-body-file naming a branch the run leaves out: its pull request is one
-// nothing will push to.
+// nothing will push to. The refusal carries the reason the run left it.
 func stackShipCovers(run *stackRebaseRun, ship *stackShipIntent) error {
 	if ship == nil {
 		return nil
 	}
 	for _, name := range slices.Sorted(maps.Keys(ship.Meta)) {
-		if b := run.branch(name); b == nil || b.Landed != "" {
-			return fmt.Errorf("stack rebase: --pr-title/--pr-body-file named %s, which this run leaves out", name)
+		b := run.branch(name)
+		if b != nil && b.Landed == "" {
+			continue
 		}
+		why := ""
+		switch i := slices.IndexFunc(run.left, func(l stackLeft) bool { return l.branch == name }); {
+		case b != nil:
+			why = ": it landed"
+		case i >= 0 && run.left[i].why != "":
+			why = ": " + run.left[i].why
+		case i >= 0:
+			why = ": it has no commit of its own yet"
+		}
+		return fmt.Errorf("stack rebase: --pr-title/--pr-body-file named %s, which this run leaves out%s", name, why)
 	}
 	return nil
 }
@@ -2774,6 +2826,16 @@ func stackQueueStates(ctx context.Context, l lane, noPush bool, byName map[strin
 	infos = slices.DeleteFunc(infos, func(info gtapi.PullRequestInfo) bool {
 		return info.State != gtapi.PROpen || !slices.Contains(heads, info.HeadRefName)
 	})
+	labels := map[string][]string{}
+	for _, info := range infos {
+		labels[info.HeadRefName] = byName[info.HeadRefName].PR.Labels
+	}
+	return stackQueueOf(ctx, owner, name, infos, labels)
+}
+
+// stackQueueOf settles the queue state of each open pull request in infos,
+// where labels holds each head's GitHub labels.
+func stackQueueOf(ctx context.Context, owner, name string, infos []gtapi.PullRequestInfo, labels map[string][]string) (map[string]prQueueState, error) {
 	numbers := make([]int, 0, len(infos))
 	for _, info := range infos {
 		numbers = append(numbers, info.PRNumber)
@@ -2784,7 +2846,7 @@ func stackQueueStates(ctx context.Context, l lane, noPush bool, byName map[strin
 	}
 	var watched []int
 	for _, info := range infos {
-		if gtapi.InMergeQueue(&info, mergeability[info.PRNumber]) || (prstate.PR{Labels: byName[info.HeadRefName].PR.Labels}).QueueLabelled() {
+		if gtapi.InMergeQueue(&info, mergeability[info.PRNumber]) || (prstate.PR{Labels: labels[info.HeadRefName]}).QueueLabelled() {
 			watched = append(watched, info.PRNumber)
 		}
 	}

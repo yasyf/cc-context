@@ -8,6 +8,7 @@ import (
 
 	"github.com/yasyf/cc-context/internal/gtapi"
 	"github.com/yasyf/cc-context/internal/vcs"
+	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
 // TestStackQueueStatesSkipsPullRequestsNotAskedAbout is pulumi-cli-3268's
@@ -250,5 +251,127 @@ func TestShipNewBranchOnAnOpenParentReadsTheQueue(t *testing.T) {
 	}
 	if !stackOnto(t, f, published, gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "bench")) {
 		t.Error("origin bench does not sit on p's published head")
+	}
+}
+
+// stackQueuedBase submits base, then has Graphite and GitHub report its pull
+// request #100 in the merge queue.
+func stackQueuedBase(t *testing.T) (*vcstest.Fixture, *gtAPIStub) {
+	t.Helper()
+	f := stackRebaseRepo(t, "base")
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("stack submit: %v", err)
+	}
+	api.prs["base"] = 100
+	api.queued["base"] = true
+	stubPRState(t, prPoll(`"p0":`+prNode(100, "OPEN", prComments())))
+	stubStackPRs(t, f, map[string]*stackPR{"base": {Number: 100, Title: "base", State: "OPEN", Base: "main"}})
+	return f, api
+}
+
+// TestShipRefusesACommitOntoAQueuedBranchBeforeCommitting is #43587 in
+// Forge-AI/monorepo: ship committed onto the queued branch, then the stack
+// rebase refused to push it, leaving an unpushed commit to reset by hand.
+func TestShipRefusesACommitOntoAQueuedBranchBeforeCommitting(t *testing.T) {
+	f, _ := stackQueuedBase(t)
+	head := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD")
+	published := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
+	writeShipFile(t, f.Dir, "fix.txt", "fix\n")
+
+	_, errStr, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--tip-only", "fix.txt")
+	if err == nil {
+		t.Fatalf("ship committed onto a queued branch (stderr=%q)", errStr)
+	}
+	for _, want := range []string{"base is in the merge queue as #100", "nothing was committed"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal = %q, want it to say %q", err, want)
+		}
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD"); got != head {
+		t.Errorf("HEAD moved to %s, want it left at %s", got, head)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "status", "--porcelain", "--", "fix.txt"); got != "?? fix.txt" {
+		t.Errorf("fix.txt status = %q, want it left uncommitted", got)
+	}
+	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base"); got != published {
+		t.Errorf("origin base moved to %s while queued at %s", got, published)
+	}
+}
+
+// TestShipTipOnlyOpensAChildOfAQueuedBranch is #43587's child: --tip-only
+// ships it onto the queued parent's published head and leaves the parent where
+// the queue holds it.
+func TestShipTipOnlyOpensAChildOfAQueuedBranch(t *testing.T) {
+	f, api := stackQueuedBase(t)
+	published := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "child")
+	stackCommit(t, f, "child.txt")
+	mustRun(t, f.Env(), f.Dir, "gt", "track", "--parent", "base", "--no-interactive")
+
+	_, errStr, err := runShipCmdFull(f.Context(), t, "--no-commit", "--no-watch", "--tip-only", "--pr-title", "child: ✨ the child")
+	if err != nil {
+		t.Fatalf("ship --tip-only of a queued branch's child = %v (stderr=%q)", err, errStr)
+	}
+	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base"); got != published {
+		t.Errorf("origin base moved to %s while queued at %s", got, published)
+	}
+	if got, want := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "child"), gitAt(t, f.Env(), f.Dir, "rev-parse", "child"); got != want {
+		t.Errorf("origin child = %s, want the local child %s", got, want)
+	}
+	if entry := api.submitEntry("child"); entry.Base != "base" || entry.BaseSha != published {
+		t.Errorf("child submitted onto %s at %s, want base at its queued head %s", entry.Base, entry.BaseSha, published)
+	}
+}
+
+// TestShipTakesTheCommitsAboveARewoundParent is #43587's child as it stood
+// after the hand reset: cut while the parent held a stray commit, gt recorded
+// its parent revision at that commit, its own head, so once the parent was
+// reset below it the run read the child as empty and refused its title.
+func TestShipTakesTheCommitsAboveARewoundParent(t *testing.T) {
+	for _, landed := range []bool{false, true} {
+		t.Run(map[bool]string{false: "open parent", true: "landed parent"}[landed], func(t *testing.T) {
+			f := stackRebaseRepo(t, "base")
+			api := stubGTAPI(t)
+			f.Decorate(api.ctx)
+			if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+				t.Fatalf("stack submit: %v", err)
+			}
+			published := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
+			stackCommit(t, f, "readback.txt")
+			mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "child")
+			mustRun(t, f.Env(), f.Dir, "gt", "track", "--parent", "base", "--no-interactive")
+			mustRun(t, f.Env(), f.Dir, "git", "branch", "-f", "base", published)
+			args := []string{"--no-commit", "--no-watch", "--pr-title", "child: ✨ the child"}
+			if landed {
+				stubStackPRs(t, f, map[string]*stackPR{"base": {Number: 41, Title: "base", State: "MERGED", Landed: true, Head: published}})
+				restackSquashRemote(t, f, "main", "base (#41)", "base")
+			} else {
+				args = append(args, "--tip-only")
+			}
+
+			_, errStr, err := runShipCmdFull(f.Context(), t, args...)
+			if err != nil {
+				t.Fatalf("ship of a child above a rewound parent = %v (stderr=%q)", err, errStr)
+			}
+			if !strings.Contains(errStr, "took the commits of child above base as its own") {
+				t.Errorf("stderr = %q, want it to name the commits it took", errStr)
+			}
+			remote := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "child")
+			if names := gitAt(t, f.Env(), f.Dir, "show", "--name-only", "--format=", remote); names != "readback.txt" {
+				t.Errorf("origin child's tip touches %q, want the readback commit", names)
+			}
+			want := "base"
+			if landed {
+				want = "main"
+			}
+			if entry := api.submitEntry("child"); entry.Base != want {
+				t.Errorf("child submitted onto %s, want %s", entry.Base, want)
+			}
+			if got := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", "refs/remotes/origin/"+want+".."+remote); got != "1" {
+				t.Errorf("origin child carries %s commit(s) above %s, want the readback commit alone", got, want)
+			}
+		})
 	}
 }
