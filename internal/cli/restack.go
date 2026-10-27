@@ -350,7 +350,7 @@ func restackGitPublish(ctx context.Context, dir render.Dir, branch, head, parent
 		if local != head {
 			return "", fmt.Errorf("restack: %s moved to %.12s after this run rewrote it to %.12s, so nothing was pushed or retargeted", branch, local, head)
 		}
-		if pushed, err = vcsPushGit(ctx, dir, r.Remote, branch, head, false); err != nil {
+		if pushed, err = vcsPushGit(ctx, dir, r.Remote, branch, head, false, false); err != nil {
 			return "", fmt.Errorf("restack: %s sits on %s locally, but the push failed — finish with ccx vcs push, then %s: %w", branch, parent, ghCommand(retarget), err)
 		}
 		r.Pushed = true
