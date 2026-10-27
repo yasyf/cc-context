@@ -62,7 +62,10 @@ their publication rules. The public command group is `ccx vcs cleanup`.
 | `ccx vcs cleanup status [job-id] --json` | Report the queue, or one job, with progress and any blockage |
 | `ccx vcs cleanup wait <job-id>` | Wait for one job to finish; report a blockage if it cannot proceed |
 | `ccx vcs cleanup pause` | Stop preparation, relocation, and deletion; queue new `worktree rm` removals as pending |
-| `ccx vcs cleanup resume` | Resume the queue |
+| `ccx vcs cleanup resume` | Resume the queue; refused while a maintenance hold stands |
+| `ccx vcs cleanup hold acquire --id <id> --reason <text>` | Stop the queue as `pause` does, under a hold that `resume` cannot lift |
+| `ccx vcs cleanup hold release --id <id>` | Lift the hold `<id>` names, leaving any ordinary pause in place |
+| `ccx vcs cleanup hold status [--json]` | Report the hold, if any, and the ordinary pause apart from it |
 | `ccx vcs cleanup retry <job-id>` | Retry a blocked job from its recorded phase after its cause is addressed |
 | `ccx vcs cleanup watchers --json` | Inspect watcher roots and consumers without retiring them |
 
@@ -126,6 +129,7 @@ the job. Only a job `cleanup wait` has never seen is "not found" (exit 3).
 
 `launchd` starts the daemon at login; queue-changing commands that reach the
 daemon (`ccx vcs worktree rm`, `ccx vcs cleanup pause`/`resume`/`retry`/`adopt`,
+`ccx vcs cleanup hold acquire`/`release`,
 and deferred removals) install and start or replace it. Under the start
 lock, they read and keep the kernel peer process and user IDs and the
 process's kernel unique ID on the hello connection, before sending hello.
@@ -186,6 +190,40 @@ Status bounds the number of jobs it returns and reports omissions. It does not
 scan the remaining files to invent a total or an estimated completion time.
 Query the job ID from a removal report to inspect a job omitted from the queue
 view.
+
+### Maintenance hold
+
+An operator who needs the queue stopped through maintenance takes a hold:
+`ccx vcs cleanup hold acquire --id <id> --reason <text>`. The hold stops the
+queue at the same points a pause does, and `acquire` returns once the deletion
+in flight has stopped and its progress is journaled. It differs from a pause
+in what lifts it:
+
+- `resume` fails while the hold stands and changes nothing. The error names
+  the holder, when it took the hold, and the reason. The daemon itself refuses,
+  so a `resume` from an older ccx on the same protocol fails the same way.
+- Only `hold release --id <id>` with the holder's `--id` lifts the hold. Any
+  other `--id`, or a release with no hold standing, fails and leaves the queue
+  as it was.
+- `release` lifts the hold and nothing else. A queue paused before or during
+  the hold stays paused until `resume`; one that was not paused runs again.
+- `acquire` again with the same `--id` changes nothing and reports the hold
+  that stands. Another `--id` fails, naming the holder.
+
+The hold is journaled with the pause switch, so it survives a daemon restart
+and an upgrade, and it never expires. `cleanup status` reports a held queue
+exactly as a paused one, for every ccx version: the header reads
+`deletion paused`, jobs waiting on deletion read `paused`, and `cleanup wait`
+and `worktree rm --wait` fail at once as they do under a pause. Only
+`hold status` names the holder. It reads `held by <id> since <time>: <reason>`
+and whether deletion is paused, held, or running, where `paused` is the
+ordinary pause alone; `--json` prints `{"paused": <bool>, "hold": <hold or
+null>}`. It is read-only like `cleanup status`, and a daemon older than the
+hold refuses it. The daemon logs every acquire, repeat, release, and refusal
+with the same caller fields as `pause` and `resume`.
+
+A hold prevents an accidental `resume`. It is not a security boundary: any
+process running as the same user can release a hold whose ID it knows.
 
 ## Completion and recovery
 

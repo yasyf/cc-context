@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -497,5 +498,55 @@ func TestJournalSwitchStrict(t *testing.T) {
 	}
 	if _, err := j.LoadSwitch(); err == nil || !strings.Contains(err.Error(), `json: unknown field "extra"`) {
 		t.Fatalf("LoadSwitch() = %v, want unknown field error", err)
+	}
+}
+
+func TestJournalSwitchHold(t *testing.T) {
+	j, l := openJournal(t)
+	hold := Hold{ID: "host-maintenance", Reason: "disk repair", Since: testCreated}
+	for _, want := range []Switch{{Paused: false, Hold: &hold}, {Paused: true, Hold: &hold}} {
+		if err := j.SaveSwitch(want); err != nil {
+			t.Fatalf("SaveSwitch(%+v) = %v", want, err)
+		}
+		got, err := j.LoadSwitch()
+		if err != nil || got.Paused != want.Paused || got.Hold == nil || got.Hold.ID != hold.ID || got.Hold.Reason != hold.Reason || !got.Hold.Since.Equal(hold.Since) {
+			t.Fatalf("LoadSwitch() = %+v (hold %+v), %v; want paused %t held by %+v", got, got.Hold, err, want.Paused, hold)
+		}
+	}
+	if err := j.SaveSwitch(Switch{Paused: true}); err != nil {
+		t.Fatalf("SaveSwitch(released) = %v", err)
+	}
+	data, err := os.ReadFile(l.SwitchPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil || len(fields) != 1 || string(fields["paused"]) != "true" {
+		t.Errorf("released switch record = %s, %v; want the paused field alone, the shape older daemons decode", data, err)
+	}
+}
+
+func TestJournalSwitchLoadsTheShapeOlderDaemonsWrote(t *testing.T) {
+	for _, paused := range []bool{true, false} {
+		j, l := openJournal(t)
+		if err := os.WriteFile(l.SwitchPath(), []byte(`{"paused":`+strconv.FormatBool(paused)+`}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := j.LoadSwitch(); err != nil || got.Paused != paused || got.Hold != nil {
+			t.Errorf("LoadSwitch() of an older record = %+v, %v; want paused %t with no hold", got, err, paused)
+		}
+	}
+}
+
+func TestJournalSwitchRefusesAnIncompleteHold(t *testing.T) {
+	j, l := openJournal(t)
+	if err := os.WriteFile(l.SwitchPath(), []byte(`{"paused":false,"hold":{"id":"host-maintenance","reason":"","since":"2026-10-26T23:51:28Z"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := j.LoadSwitch(); err == nil || !strings.Contains(err.Error(), "the hold names no reason") {
+		t.Errorf("LoadSwitch() = %v, want the hold's validation failure", err)
+	}
+	if err := j.SaveSwitch(Switch{Hold: &Hold{ID: "host-maintenance", Reason: "disk repair"}}); err == nil || !strings.Contains(err.Error(), "the hold records no start") {
+		t.Errorf("SaveSwitch(no start) = %v, want the hold's validation failure", err)
 	}
 }

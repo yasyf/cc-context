@@ -1924,3 +1924,181 @@ func TestSelectionPassesDoNotCopyTheQueue(t *testing.T) {
 		t.Fatalf("100 selection passes over 200 jobs allocated %d bytes, want under 1 MiB: a pass must not copy the queue", grew)
 	}
 }
+
+func sameHold(got, want cleanup.Hold) bool {
+	return got.ID == want.ID && got.Reason == want.Reason && got.Since.Equal(want.Since)
+}
+
+func heldBy(err error, want cleanup.Hold) bool {
+	var held *cleanup.HeldError
+	return errors.As(err, &held) && sameHold(held.Hold, want)
+}
+
+func TestMaintenanceHoldRestsTheQueueAcrossARestartUntilItsHolderReleasesIt(t *testing.T) {
+	bubble(t, paced(), func(t *testing.T, h *harness) {
+		ctx := context.Background()
+		job := h.seed("a", 1, cleanup.PhaseUnregistered)
+		h.deleter.put("a", &payload{entries: 300})
+		h.start()
+		h.expectEvents("sample", "admit:a", "open:a", "step:a")
+		h.expectTimers(400 * time.Millisecond)
+
+		maintenance := cleanup.HoldRequest{ID: "host-maintenance", Reason: "disk repair"}
+		receipt, err := h.engine.Hold(ctx, maintenance)
+		want := cleanup.Hold{ID: maintenance.ID, Reason: maintenance.Reason, Since: h.clock.Now()}
+		if err != nil || receipt.Already || !sameHold(receipt.Hold, want) {
+			t.Fatalf("Hold() = %+v, %v; want a fresh hold %+v", receipt, err, want)
+		}
+		h.expectEvents("close:a")
+		h.expectTimers()
+		if got := h.journaled(job.ID); got.Phase != cleanup.PhaseDeleting || got.Removed != 100 {
+			t.Errorf("journal after the hold = phase %s, removed %d; want deleting, 100", got.Phase, got.Removed)
+		}
+
+		if again, err := h.engine.Hold(ctx, maintenance); err != nil || !again.Already || !sameHold(again.Hold, want) {
+			t.Errorf("a repeated Hold() by the holder = %+v, %v; want the standing hold, already held", again, err)
+		}
+		if _, err := h.engine.Hold(ctx, cleanup.HoldRequest{ID: "claude-session", Reason: "unblock my rm"}); !heldBy(err, want) {
+			t.Errorf("Hold() by another holder = %v, want a *HeldError naming %+v", err, want)
+		}
+		if err := h.engine.Resume(ctx); !heldBy(err, want) {
+			t.Errorf("Resume() under the hold = %v, want a *HeldError naming %+v", err, want)
+		}
+		if err := h.engine.Release(ctx, "claude-session"); !heldBy(err, want) {
+			t.Errorf("Release() naming another holder = %v, want a *HeldError naming %+v", err, want)
+		}
+		h.clock.Advance(time.Hour)
+		h.expectEvents()
+		h.expectTimers()
+
+		pending, err := h.engine.Remove(ctx, h.request("b"))
+		if err != nil || pending.State != cleanup.State(cleanup.PhasePending) {
+			t.Fatalf("Remove() under the hold = %+v, %v; want b pending", pending, err)
+		}
+		for _, tt := range []struct {
+			name string
+			ask  func() error
+		}{
+			{"defer", func() error { _, err := h.engine.Defer(ctx, h.deferral("d")); return err }},
+			{"adopt", func() error { _, err := h.engine.Adopt(ctx, h.adoption("q")); return err }},
+		} {
+			if err := tt.ask(); !errors.Is(err, cleanup.ErrPaused) {
+				t.Errorf("%s under the hold = %v, want ErrPaused", tt.name, err)
+			}
+		}
+		h.expectEvents("pend:b")
+		h.expectTimers()
+		sw, err := h.journal.LoadSwitch()
+		if err != nil || sw.Paused || sw.Hold == nil || !sameHold(*sw.Hold, want) {
+			t.Fatalf("LoadSwitch() under the hold = %+v, %v; want unpaused and held by %+v", sw, err, want)
+		}
+
+		h.stop()
+		h.start()
+		h.expectEvents()
+		h.expectTimers()
+		state, err := h.engine.HoldState(ctx)
+		if err != nil || state.Paused || state.Hold == nil || !sameHold(*state.Hold, want) {
+			t.Fatalf("HoldState() after the restart = %+v, %v; want unpaused and held by %+v", state, err, want)
+		}
+		if report, err := h.engine.Status(ctx, cleanup.Query{}); err != nil || !report.Paused {
+			t.Errorf("Status() after the restart = paused %t, %v; want the held queue reported paused", report.Paused, err)
+		}
+		if err := h.engine.Resume(ctx); !heldBy(err, want) {
+			t.Errorf("Resume() after the restart = %v, want a *HeldError naming %+v", err, want)
+		}
+		h.clock.Advance(time.Hour)
+		h.expectEvents()
+		if got := h.journaled(pending.JobID); got.Phase != cleanup.PhasePending {
+			t.Errorf("b after the restart = %s, want it still pending", got.Phase)
+		}
+
+		if err := h.engine.Release(ctx, maintenance.ID); err != nil {
+			t.Fatalf("Release() by the holder = %v", err)
+		}
+		h.expectEvents("advance:b@pending", "sample", "admit:a", "open:a", "step:a")
+		h.expectTimers(400 * time.Millisecond)
+		if sw, err := h.journal.LoadSwitch(); err != nil || sw.Paused || sw.Hold != nil {
+			t.Errorf("LoadSwitch() after the release = %+v, %v; want neither paused nor held", sw, err)
+		}
+		if got := h.status(job.ID); got.Phase != cleanup.PhaseDeleting || got.Removed != 200 {
+			t.Errorf("job after the release = phase %s, removed %d; want deleting, 200", got.Phase, got.Removed)
+		}
+		if err := h.engine.Release(ctx, maintenance.ID); !errors.Is(err, cleanup.ErrNotHeld) {
+			t.Errorf("a stale Release() = %v, want ErrNotHeld", err)
+		}
+		if state, err := h.engine.HoldState(ctx); err != nil || state != (cleanup.HoldState{}) {
+			t.Errorf("HoldState() after the release = %+v, %v; want neither paused nor held", state, err)
+		}
+		if report, err := h.engine.Status(ctx, cleanup.Query{}); err != nil || report.Paused {
+			t.Errorf("Status() after the release = paused %t, %v; want running", report.Paused, err)
+		}
+	})
+}
+
+func TestReleaseLiftsTheHoldAndLeavesAnOrdinaryPause(t *testing.T) {
+	maintenance := cleanup.HoldRequest{ID: "host-maintenance", Reason: "disk repair"}
+	tests := []struct {
+		name  string
+		steps func(ctx context.Context, t *testing.T, h *harness)
+	}{
+		{"paused before the hold", func(ctx context.Context, t *testing.T, h *harness) {
+			if err := h.engine.Pause(ctx); err != nil {
+				t.Fatalf("Pause() = %v", err)
+			}
+			h.expectEvents("close:a")
+			if _, err := h.engine.Hold(ctx, maintenance); err != nil {
+				t.Fatalf("Hold() = %v", err)
+			}
+			h.expectEvents()
+		}},
+		{"paused during the hold", func(ctx context.Context, t *testing.T, h *harness) {
+			if _, err := h.engine.Hold(ctx, maintenance); err != nil {
+				t.Fatalf("Hold() = %v", err)
+			}
+			h.expectEvents("close:a")
+			if err := h.engine.Pause(ctx); err != nil {
+				t.Fatalf("Pause() under the hold = %v", err)
+			}
+			h.expectEvents()
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bubble(t, paced(), func(t *testing.T, h *harness) {
+				ctx := context.Background()
+				job := h.seed("a", 1, cleanup.PhaseUnregistered)
+				h.deleter.put("a", &payload{entries: 300})
+				h.start()
+				h.expectEvents("sample", "admit:a", "open:a", "step:a")
+				h.expectTimers(400 * time.Millisecond)
+
+				tt.steps(ctx, t, h)
+				if sw, err := h.journal.LoadSwitch(); err != nil || !sw.Paused || sw.Hold == nil {
+					t.Fatalf("LoadSwitch() = %+v, %v; want paused and held", sw, err)
+				}
+				if err := h.engine.Release(ctx, maintenance.ID); err != nil {
+					t.Fatalf("Release() = %v", err)
+				}
+				h.clock.Advance(time.Hour)
+				h.expectEvents()
+				h.expectTimers()
+				if sw, err := h.journal.LoadSwitch(); err != nil || !sw.Paused || sw.Hold != nil {
+					t.Errorf("LoadSwitch() after the release = %+v, %v; want paused and no longer held", sw, err)
+				}
+				if state, err := h.engine.HoldState(ctx); err != nil || state != (cleanup.HoldState{Paused: true}) {
+					t.Errorf("HoldState() after the release = %+v, %v; want paused, no hold", state, err)
+				}
+
+				if err := h.engine.Resume(ctx); err != nil {
+					t.Fatalf("Resume() after the release = %v", err)
+				}
+				h.expectEvents("sample", "admit:a", "open:a", "step:a")
+				h.expectTimers(400 * time.Millisecond)
+				if got := h.status(job.ID); got.Removed != 200 {
+					t.Errorf("job after the resume = removed %d, want 200", got.Removed)
+				}
+			})
+		})
+	}
+}

@@ -204,17 +204,13 @@ func (s *server) dispatch(ctx context.Context, conn *net.UnixConn, line []byte) 
 		return incompatible(req.Protocol), false
 	}
 	switch req.Op {
-	case opRemove, opDefer, opAdopt, opPause, opResume:
+	case opRemove, opDefer, opAdopt, opPause, opResume, opHold, opRelease:
 		pid, err := peerPID(conn)
 		if err != nil {
 			return failure(fmt.Errorf("cleanup daemon: identify the client behind the %s request: %w", req.Op, err)), false
 		}
-		if req.Op == opPause || req.Op == opResume {
-			reply := s.execute(ctx, req)
-			if reply.Error == nil {
-				s.engine.announce(req.Op, pid, req.Version)
-			}
-			return reply, false
+		if req.Op == opPause || req.Op == opResume || req.Op == opHold || req.Op == opRelease {
+			return s.steer(ctx, req, pid), false
 		}
 		requester, err := s.engine.identify(pid)
 		if err != nil {
@@ -264,16 +260,67 @@ func (s *server) execute(ctx context.Context, req request) response {
 			return failure(err)
 		}
 		return response{Job: &job}
-	case opPause:
-		if err := s.engine.Pause(ctx); err != nil {
+	case opHolding:
+		state, err := s.engine.HoldState(ctx)
+		if err != nil {
 			return failure(err)
 		}
-	case opResume:
-		if err := s.engine.Resume(ctx); err != nil {
-			return failure(err)
-		}
+		return response{Holding: &state}
 	}
 	return response{}
+}
+
+func (s *server) steer(ctx context.Context, req request, pid int) response {
+	var (
+		receipt cleanup.HoldReceipt
+		err     error
+	)
+	switch req.Op {
+	case opPause:
+		err = s.engine.Pause(ctx)
+	case opResume:
+		err = s.engine.Resume(ctx)
+	case opHold:
+		receipt, err = s.engine.Hold(ctx, *req.Hold)
+	case opRelease:
+		err = s.engine.Release(ctx, req.Holder)
+	}
+	s.audit(req, pid, receipt, err)
+	switch {
+	case err != nil:
+		return failure(err)
+	case req.Op == opHold:
+		return response{Hold: &receipt}
+	}
+	return response{}
+}
+
+func (s *server) audit(req request, pid int, receipt cleanup.HoldReceipt, err error) {
+	var details []any
+	switch req.Op {
+	case opHold:
+		details = []any{"requested_id", req.Hold.ID, "requested_reason", req.Hold.Reason}
+	case opRelease:
+		details = []any{"requested_id", req.Holder}
+	}
+	var held *cleanup.HeldError
+	switch {
+	case errors.As(err, &held):
+		s.engine.announce(req.Op+" refused", pid, req.Version, append(details, holdAttrs(held.Hold)...)...)
+	case errors.Is(err, cleanup.ErrNotHeld):
+		s.engine.announce(req.Op+" refused", pid, req.Version, append(details, "error", err.Error())...)
+	case err != nil:
+	case receipt.Already:
+		s.engine.announce(req.Op+" already held", pid, req.Version, append(details, holdAttrs(receipt.Hold)...)...)
+	case req.Op == opHold:
+		s.engine.announce(req.Op, pid, req.Version, append(details, holdAttrs(receipt.Hold)...)...)
+	default:
+		s.engine.announce(req.Op, pid, req.Version, details...)
+	}
+}
+
+func holdAttrs(h cleanup.Hold) []any {
+	return []any{"hold_id", h.ID, "hold_reason", h.Reason, "hold_since", h.Since}
 }
 
 func failure(err error) response { return response{Error: wireErrorOf(err)} }

@@ -153,6 +153,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`ccx vcs cleanup hold` gives an operator a maintenance hold that `resume`
+  cannot lift.** A host-maintenance operator paused the cleanup queue, and an
+  unrelated Claude session running as the same user cleared the pause three
+  times with a plain `ccx vcs cleanup resume`. `hold acquire --id <id> --reason
+  <text>` now stops the queue at the same points a pause does, and returns once
+  the deletion in flight has parked. While the hold stands, the daemon refuses
+  every `resume`, including one from an older ccx, with an error naming the
+  holder and the reason. Only `hold release --id <id>` with the same ID lifts
+  it, and it lifts the hold alone: a queue paused before or during the hold
+  stays paused. A repeat `acquire` with the same ID changes nothing, and
+  another ID, a wrong release, or a release with no hold fails and changes
+  nothing. The hold is journaled in the pause switch, survives a restart or an
+  upgrade, and never expires. The daemon logs every acquire, repeat, release,
+  and refusal with the caller's process, version, and parent. Every existing
+  reply keeps its shape: `cleanup status` from any ccx reports a held queue as
+  paused, and only the new read-only `hold status [--json]` names the holder.
+
 - **Stack writes post a cci HEAD record for each pull request they push in a
   drive.** `ccx vcs stack submit`, `restack` and `rebase`, and a Graphite-lane
   `ccx vcs ship`, now post `cci post --kind head` for every open pull request

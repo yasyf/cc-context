@@ -1265,6 +1265,95 @@ func TestCleanupQueueCommands(t *testing.T) {
 	}
 }
 
+func TestCleanupHoldCommands(t *testing.T) {
+	f := vcstest.Repo(t)
+	f.Isolate(t)
+	h, ids, paths := pausedHarness(t, f, cleanupTuning(), "first")
+	attachCleanup(t, f, h)
+	firstID, first := ids[0], paths[0]
+	ctx := f.Context()
+
+	out, err := runCleanupCmd(t, f, "hold", "acquire", "--id", "host-maintenance", "--reason", "disk repair")
+	if err != nil {
+		t.Fatalf("hold acquire = %q, %v", out, err)
+	}
+	standing, err := h.engine.HoldState(ctx)
+	if err != nil || standing.Hold == nil || standing.Hold.ID != "host-maintenance" || standing.Hold.Reason != "disk repair" || !standing.Paused {
+		t.Fatalf("HoldState() after hold acquire = %+v, %v; want paused and held", standing, err)
+	}
+	held := cleanupHoldSegment(*standing.Hold)
+	if want := "deletion held · " + held + "\n"; out != want {
+		t.Errorf("hold acquire = %q, want %q", out, want)
+	}
+	if out, err := runCleanupCmd(t, f, "hold", "acquire", "--id", "host-maintenance", "--reason", "disk repair"); err != nil || out != "deletion already held · "+held+"\n" {
+		t.Errorf("a repeated hold acquire = %q, %v; want the standing hold, already held", out, err)
+	}
+	refusal := (&cleanup.HeldError{Hold: *standing.Hold}).Error()
+	for _, tt := range []struct {
+		args   []string
+		prefix string
+	}{
+		{[]string{"hold", "acquire", "--id", "claude-session", "--reason", "unblock my rm"}, "cleanup hold acquire: "},
+		{[]string{"resume"}, "cleanup resume: "},
+		{[]string{"hold", "release", "--id", "claude-session"}, "cleanup hold release: "},
+	} {
+		out, err := runCleanupCmd(t, f, tt.args...)
+		var refused *cleanup.HeldError
+		if !errors.As(err, &refused) || err.Error() != tt.prefix+refusal || out != "" {
+			t.Errorf("%v = %q, %v; want it refused with %q", tt.args, out, err, tt.prefix+refusal)
+		}
+	}
+	if sw, err := h.config.Journal.LoadSwitch(); err != nil || !sw.Paused || sw.Hold == nil || sw.Hold.ID != "host-maintenance" {
+		t.Errorf("LoadSwitch() after the refusals = %+v, %v; want paused and still held", sw, err)
+	}
+
+	out, err = runCleanupCmd(t, f, "status")
+	if err != nil {
+		t.Fatalf("status error = %v", err)
+	}
+	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
+	if len(lines) != 2 || !strings.HasSuffix(lines[0], " · deletion paused") || lines[1] != firstID+" · paused · "+first+" · 0 entries" {
+		t.Errorf("status = %q, want the paused header it prints for any stopped queue, then the resting job", out)
+	}
+	if out, err := runCleanupCmd(t, f, "hold", "status"); err != nil || out != held+" · deletion paused\n" {
+		t.Errorf("hold status = %q, %v; want %q", out, err, held+" · deletion paused\n")
+	}
+	out, err = runCleanupCmd(t, f, "hold", "status", "--json")
+	if err != nil {
+		t.Fatalf("hold status --json error = %v", err)
+	}
+	var state cleanup.HoldState
+	if err := json.Unmarshal([]byte(out), &state); err != nil || !state.Paused || state.Hold == nil || state.Hold.ID != "host-maintenance" || state.Hold.Reason != "disk repair" {
+		t.Errorf("hold status --json = %s, %v; want paused and held", out, err)
+	}
+	if _, err := runCleanupCmd(t, f, "wait", firstID); !errors.Is(err, errCleanupPaused) {
+		t.Errorf("wait under the hold = %v, want it to fail at once as under a pause", err)
+	}
+
+	if out, err := runCleanupCmd(t, f, "hold", "release", "--id", "host-maintenance"); err != nil || out != "released the hold host-maintenance · deletion paused\n" {
+		t.Errorf("hold release = %q, %v; want the hold released and the pause kept", out, err)
+	}
+	if out, err := runCleanupCmd(t, f, "hold", "status"); err != nil || out != "no maintenance hold · deletion paused\n" {
+		t.Errorf("hold status after the release = %q, %v", out, err)
+	}
+	if out, err := runCleanupCmd(t, f, "hold", "status", "--json"); err != nil || !strings.Contains(out, `"hold": null`) {
+		t.Errorf("hold status --json after the release = %q, %v; want a null hold", out, err)
+	}
+	if _, err := runCleanupCmd(t, f, "hold", "release", "--id", "host-maintenance"); !errors.Is(err, cleanup.ErrNotHeld) {
+		t.Errorf("a stale hold release = %v, want ErrNotHeld", err)
+	}
+	if _, err := runCleanupCmd(t, f, "hold", "acquire", "--id", "host-maintenance"); err == nil || !strings.Contains(err.Error(), `"reason" not set`) {
+		t.Errorf("hold acquire without --reason = %v, want the required flag named", err)
+	}
+	if out, err := runCleanupCmd(t, f, "resume"); err != nil || out != "deletion resumed\n" {
+		t.Fatalf("resume after the release = %q, %v", out, err)
+	}
+	if _, err := runCleanupCmd(t, f, "wait", firstID); err != nil {
+		t.Errorf("wait after the resume = %v", err)
+	}
+	assertGone(t, h.layout.Payload(firstID))
+}
+
 func TestCleanupDeferWorkspace(t *testing.T) {
 	f := vcstest.Repo(t)
 	f.Isolate(t)

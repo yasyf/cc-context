@@ -172,6 +172,7 @@ inline and runs no daemon.`,
 		newCleanupWaitCmd(),
 		newCleanupPauseCmd(),
 		newCleanupResumeCmd(),
+		newCleanupHoldCmd(),
 		newCleanupRetryCmd(),
 		newCleanupServeCmd(),
 		newCleanupAdoptCmd(),
@@ -382,6 +383,20 @@ func renderCleanupReport(r cleanup.Report) string {
 	return b.String()
 }
 
+func cleanupDeletionSegment(s cleanup.HoldState) string {
+	switch {
+	case s.Paused:
+		return "deletion paused"
+	case s.Hold != nil:
+		return "deletion held"
+	}
+	return "deletion running"
+}
+
+func cleanupHoldSegment(h cleanup.Hold) string {
+	return fmt.Sprintf("held by %s since %s: %s", h.ID, h.Since.Local().Format(time.RFC3339), h.Reason)
+}
+
 func governorSegment(g cleanup.Governor) string {
 	seg := "governor " + g.State
 	if g.State == "clear" || g.State == "throttled" {
@@ -472,7 +487,12 @@ func newCleanupResumeCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "resume",
 		Short: "Let the deletion queue run again",
-		Args:  cobra.NoArgs,
+		Long: `Let the deletion queue run again.
+
+While a maintenance hold stands, resume changes nothing and fails naming the
+holder and the reason; only "cleanup hold release" with the holder's --id lifts
+a hold. The daemon enforces this, so an older ccx's resume fails the same way.`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
 			svc, err := cleanupService(ctx)
@@ -486,6 +506,154 @@ func newCleanupResumeCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+func newCleanupHoldCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "hold",
+		Short: "Take, release, or read the operator's maintenance hold",
+		Long: `Take, release, or read the operator's maintenance hold.
+
+A hold stops the queue exactly as "pause" does, but "resume" cannot lift it:
+resume fails naming the holder and the reason, even from an older ccx. Only
+"hold release" naming the same --id lifts it, and release lifts the hold
+alone: a queue paused before or during the hold stays paused. The hold is
+journaled, survives a daemon restart or upgrade, and never expires.
+
+It guards against an accidental resume, not against another process of the
+same user, which can release any hold it can name.`,
+		Args: cobra.NoArgs,
+		RunE: groupHelp,
+	}
+	cmd.AddCommand(newCleanupHoldAcquireCmd(), newCleanupHoldReleaseCmd(), newCleanupHoldStatusCmd())
+	return cmd
+}
+
+func newCleanupHoldAcquireCmd() *cobra.Command {
+	var r cleanup.HoldRequest
+	cmd := &cobra.Command{
+		Use:   "acquire",
+		Short: "Hold the deletion queue for maintenance",
+		Long: `Hold the deletion queue for maintenance.
+
+It returns once the deletion in flight has stopped and its progress is
+journaled. Acquiring again with the same --id changes nothing and reports the
+standing hold; another --id fails naming the holder. The daemon logs every
+acquire, release, and refusal with the requesting process, its ccx version,
+and its parent.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			ctx := cmd.Context()
+			svc, err := cleanupService(ctx)
+			if err != nil {
+				return fmt.Errorf("cleanup hold acquire: %w", err)
+			}
+			receipt, err := svc.Hold(ctx, r)
+			if err != nil {
+				return fmt.Errorf("cleanup hold acquire: %w", err)
+			}
+			line := "deletion held"
+			if receipt.Already {
+				line = "deletion already held"
+			}
+			cmd.Println(strings.Join([]string{line, cleanupHoldSegment(receipt.Hold)}, shipSep))
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&r.ID, "id", "", "who holds the queue; release must name it again")
+	cmd.Flags().StringVar(&r.Reason, "reason", "", "why the queue is held")
+	for _, name := range []string{"id", "reason"} {
+		_ = cmd.MarkFlagRequired(name)
+	}
+	return cmd
+}
+
+func newCleanupHoldReleaseCmd() *cobra.Command {
+	var id string
+	cmd := &cobra.Command{
+		Use:   "release",
+		Short: "Lift the maintenance hold --id names",
+		Long: `Lift the maintenance hold --id names.
+
+Only the hold is lifted: a queue paused before or during the hold stays paused
+until "resume". An --id that is not the holder's, or a release with no hold
+standing, fails and leaves the queue as it was.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			ctx := cmd.Context()
+			svc, err := cleanupService(ctx)
+			if err != nil {
+				return fmt.Errorf("cleanup hold release: %w", err)
+			}
+			if err := svc.Release(ctx, id); err != nil {
+				return fmt.Errorf("cleanup hold release: %w", err)
+			}
+			state, err := readCleanupHold(ctx, svc)
+			if err != nil {
+				return fmt.Errorf("cleanup hold release: released the hold %s; read the queue: %w", id, err)
+			}
+			cmd.Println(strings.Join([]string{"released the hold " + id, cleanupDeletionSegment(state)}, shipSep))
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&id, "id", "", "the holder the hold was acquired with")
+	_ = cmd.MarkFlagRequired("id")
+	return cmd
+}
+
+func newCleanupHoldStatusCmd() *cobra.Command {
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "status",
+		Short: "Report the maintenance hold and the ordinary pause",
+		Long: `Report the maintenance hold and the ordinary pause.
+
+The line reads "held by <id> since <time>: <reason>" or "no maintenance hold",
+then whether deletion is paused, held, or running; "paused" is the ordinary
+pause alone. --json emits {"paused": <bool>, "hold": <hold or null>}. "cleanup
+status" reports a held queue as paused and names no holder. A daemon older than
+the hold refuses this read as an unknown op.
+
+` + cleanupReadNote,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			ctx := cmd.Context()
+			svc, err := cleanupReadService(ctx)
+			if err != nil {
+				return fmt.Errorf("cleanup hold status: %w", err)
+			}
+			state, err := readCleanupHold(ctx, svc)
+			if err != nil {
+				return fmt.Errorf("cleanup hold status: %w", err)
+			}
+			if asJSON {
+				data, err := json.MarshalIndent(state, "", "  ")
+				if err != nil {
+					return fmt.Errorf("cleanup hold status: marshal: %w", err)
+				}
+				cmd.Println(string(data))
+				return nil
+			}
+			hold := "no maintenance hold"
+			if state.Hold != nil {
+				hold = cleanupHoldSegment(*state.Hold)
+			}
+			cmd.Println(strings.Join([]string{hold, cleanupDeletionSegment(state)}, shipSep))
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "emit the hold and the pause as JSON")
+	return cmd
+}
+
+func readCleanupHold(ctx context.Context, svc cleanup.Service) (cleanup.HoldState, error) {
+	ctx, cancel := context.WithTimeout(ctx, cleanupStatusTimeout)
+	defer cancel()
+	state, err := svc.HoldState(ctx)
+	if errors.Is(err, context.DeadlineExceeded) {
+		return cleanup.HoldState{}, fmt.Errorf("the daemon answered its hello but sent no hold state within %s: %w", cleanupStatusTimeout, err)
+	}
+	return state, err
 }
 
 func newCleanupRetryCmd() *cobra.Command {

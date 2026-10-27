@@ -29,10 +29,18 @@ type Damaged struct {
 type Switch struct {
 	// Paused stops physical deletion of every job.
 	Paused bool `json:"paused"`
+	// Hold is the maintenance hold, which stops the queue as Paused does
+	// whatever Paused says. Unset, the record is the shape older daemons wrote.
+	Hold *Hold `json:"hold,omitempty"`
 }
 
-// Validate accepts every Switch; the type has no invalid value.
-func (Switch) Validate() error { return nil }
+// Validate rejects a switch whose hold is incomplete.
+func (s Switch) Validate() error {
+	if s.Hold == nil {
+		return nil
+	}
+	return s.Hold.Validate()
+}
 
 // OpenJournal readies layout's directories and returns its journal.
 func OpenJournal(layout Layout) (*Journal, error) {

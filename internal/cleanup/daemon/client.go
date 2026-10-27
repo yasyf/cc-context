@@ -24,7 +24,9 @@ const (
 
 // Client reaches a serving daemon over its socket, one connection per call.
 // The errors it returns are the ones the engine returned, rebuilt so
-// errors.As and errors.Is match exactly as they do in process.
+// errors.As and errors.Is match exactly as they do in process, save the hold's
+// refusals: they travel as their message alone, which every older client
+// decodes and prints.
 type Client struct {
 	socket string
 }
@@ -170,6 +172,36 @@ func (c *Client) Pause(ctx context.Context) error {
 func (c *Client) Resume(ctx context.Context) error {
 	_, err := c.roundTrip(ctx, request{Op: opResume})
 	return err
+}
+
+// Hold takes the maintenance hold once the daemon has parked its deletion.
+func (c *Client) Hold(ctx context.Context, r cleanup.HoldRequest) (cleanup.HoldReceipt, error) {
+	reply, err := c.roundTrip(ctx, request{Op: opHold, Hold: &r})
+	if err != nil {
+		return cleanup.HoldReceipt{}, err
+	}
+	if reply.Hold == nil {
+		return cleanup.HoldReceipt{}, errors.New("cleanup daemon: the hold reply carries no hold")
+	}
+	return *reply.Hold, nil
+}
+
+// Release lifts the maintenance hold id names, leaving an ordinary pause.
+func (c *Client) Release(ctx context.Context, id string) error {
+	_, err := c.roundTrip(ctx, request{Op: opRelease, Holder: id})
+	return err
+}
+
+// HoldState reads the ordinary pause and the maintenance hold apart.
+func (c *Client) HoldState(ctx context.Context) (cleanup.HoldState, error) {
+	reply, err := c.roundTrip(ctx, request{Op: opHolding})
+	if err != nil {
+		return cleanup.HoldState{}, err
+	}
+	if reply.Holding == nil {
+		return cleanup.HoldState{}, errors.New("cleanup daemon: the holding reply carries no state")
+	}
+	return *reply.Holding, nil
 }
 
 // Retry clears a job's blockage and returns the job as journaled.

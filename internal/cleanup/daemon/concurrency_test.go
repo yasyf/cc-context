@@ -332,3 +332,70 @@ func TestStopDuringASampleRunsNoFurtherSlice(t *testing.T) {
 		})
 	}
 }
+
+func TestHoldParksTheDeletionBeforeItAnswersAndOutlastsAConcurrentResume(t *testing.T) {
+	bubble(t, paced(), func(t *testing.T, h *harness) {
+		ctx := context.Background()
+		job := h.seed("a", 1, cleanup.PhaseUnregistered)
+		gated := &payload{entries: 300, entered: make(chan struct{}, 16)}
+		h.deleter.put("a", gated)
+		h.start()
+		engine := h.engine
+		h.expectEvents("sample", "admit:a", "open:a", "step:a")
+		h.expectTimers(400 * time.Millisecond)
+
+		gate := make(chan struct{})
+		h.deleter.mu.Lock()
+		gated.gate = gate
+		h.deleter.mu.Unlock()
+		h.clock.Advance(400 * time.Millisecond)
+		h.expectEvents("step:a")
+
+		type outcome struct {
+			receipt cleanup.HoldReceipt
+			err     error
+		}
+		maintenance := cleanup.HoldRequest{ID: "host-maintenance", Reason: "disk repair"}
+		holding, resumed := make(chan outcome, 1), make(chan error, 1)
+		go func() {
+			receipt, err := engine.Hold(ctx, maintenance)
+			holding <- outcome{receipt, err}
+		}()
+		synctest.Wait()
+		select {
+		case got := <-holding:
+			t.Fatalf("Hold() = %+v, %v while a slice was still in flight; want it to wait for the slice to park", got.receipt, got.err)
+		default:
+		}
+		go func() { resumed <- engine.Resume(ctx) }()
+		synctest.Wait()
+		h.deleter.mu.Lock()
+		gated.gate = nil
+		h.deleter.mu.Unlock()
+		gate <- struct{}{}
+
+		got := <-holding
+		if got.err != nil || got.receipt.Already || got.receipt.Hold.ID != maintenance.ID || got.receipt.Hold.Reason != maintenance.Reason {
+			t.Fatalf("Hold() = %+v, %v; want a fresh hold for %+v", got.receipt, got.err, maintenance)
+		}
+		if events := h.rec.take(); !slices.Equal(events, []string{"close:a"}) {
+			t.Errorf("events when Hold() answered = %q, want the deletion already closed", events)
+		}
+		if parked := h.journaled(job.ID); parked.Phase != cleanup.PhaseDeleting || parked.Removed != 200 {
+			t.Errorf("journal when Hold() answered = phase %s, removed %d; want deleting, 200", parked.Phase, parked.Removed)
+		}
+		if err := <-resumed; !heldBy(err, got.receipt.Hold) {
+			t.Errorf("Resume() racing the hold = %v, want a *HeldError naming %+v", err, got.receipt.Hold)
+		}
+		h.expectEvents()
+		h.expectTimers()
+		if sw, err := h.journal.LoadSwitch(); err != nil || sw.Paused || sw.Hold == nil || !sameHold(*sw.Hold, got.receipt.Hold) {
+			t.Errorf("LoadSwitch() after the racing resume = %+v, %v; want the hold still journaled", sw, err)
+		}
+		h.clock.Advance(time.Minute)
+		h.expectEvents()
+		if state, err := engine.HoldState(ctx); err != nil || state.Paused || state.Hold == nil || state.Hold.ID != maintenance.ID {
+			t.Errorf("HoldState() after the racing resume = %+v, %v; want it still held", state, err)
+		}
+	})
+}

@@ -195,6 +195,7 @@ type Engine struct {
 	kept     map[string]cleanup.Job
 	damaged  []cleanup.Damaged
 	paused   bool
+	hold     *cleanup.Hold
 	governed cleanup.Governor
 	changed  chan struct{}
 
@@ -311,8 +312,8 @@ func (e *Engine) Stop(ctx context.Context) error {
 // request for a tree whose deferred removal still waits on its holders is a
 // *cleanup.RefusedError naming that job, and a request without Force never
 // rejoins a job journaled with it: it is preflighted afresh. While the queue is
-// paused a new request is journaled pending and a repeat rejoins its job, and
-// either returns with nothing moved.
+// paused or held a new request is journaled pending and a repeat rejoins its
+// job, and either returns with nothing moved.
 func (e *Engine) Remove(ctx context.Context, r cleanup.Request) (cleanup.Receipt, error) {
 	if err := r.Validate(); err != nil {
 		return cleanup.Receipt{}, fmt.Errorf("cleanup daemon: remove request: %w", err)
@@ -335,8 +336,8 @@ func (e *Engine) Defer(ctx context.Context, r cleanup.DeferRequest) (cleanup.Rec
 
 // Adopt journals a tree the retired janitor parked and relocates it into its
 // job folder on the worker. A repeat of a request whose tree still sits at its
-// source rejoins the job the first one journaled. While the queue is paused it
-// is cleanup.ErrPaused, before any preflight or record.
+// source rejoins the job the first one journaled. While the queue is paused or
+// held it is cleanup.ErrPaused, before any preflight or record.
 func (e *Engine) Adopt(ctx context.Context, r cleanup.AdoptRequest) (cleanup.Receipt, error) {
 	if err := r.Validate(); err != nil {
 		return cleanup.Receipt{}, fmt.Errorf("cleanup daemon: adopt request: %w", err)
@@ -357,7 +358,7 @@ func (e *Engine) Status(ctx context.Context, q cleanup.Query) (cleanup.Report, e
 	report := cleanup.Report{
 		Version:  e.version,
 		PID:      os.Getpid(),
-		Paused:   e.paused,
+		Paused:   e.halted(),
 		Governor: e.governed,
 		Jobs:     []cleanup.Job{},
 		Damaged:  slices.Clone(e.damaged),
@@ -453,10 +454,46 @@ func (e *Engine) Pause(ctx context.Context) error {
 // Resume lets the queue run again: rested jobs go on from their phase, pending
 // removals are preflighted afresh in queue order, new removals are taken, and
 // a payload is admitted and reopened, and so re-verified, before another entry
-// goes.
+// goes. While a maintenance hold stands it is a *cleanup.HeldError and changes
+// nothing.
 func (e *Engine) Resume(ctx context.Context) error {
 	_, err := call(ctx, e, func(context.Context) (struct{}, error) { return struct{}{}, e.pause(false) })
 	return err
+}
+
+// Hold takes the maintenance hold and, as Pause does, returns only once the
+// deletion it interrupts is closed and its progress journaled. The hold is
+// journaled in the pause switch, so a restarted daemon stays held.
+func (e *Engine) Hold(ctx context.Context, r cleanup.HoldRequest) (cleanup.HoldReceipt, error) {
+	if err := r.Validate(); err != nil {
+		return cleanup.HoldReceipt{}, fmt.Errorf("cleanup daemon: hold request: %w", err)
+	}
+	return call(ctx, e, func(context.Context) (cleanup.HoldReceipt, error) { return e.take(r) })
+}
+
+// Release lifts the maintenance hold id names and journals the switch with the
+// ordinary pause as it stands, so a queue paused before or during the hold
+// stays paused.
+func (e *Engine) Release(ctx context.Context, id string) error {
+	_, err := call(ctx, e, func(context.Context) (struct{}, error) { return struct{}{}, e.release(id) })
+	return err
+}
+
+// HoldState reads a snapshot of the pause switch, the ordinary pause and the
+// maintenance hold apart, and never waits behind the worker once Run has loaded
+// the journal.
+func (e *Engine) HoldState(ctx context.Context) (cleanup.HoldState, error) {
+	if err := e.ready(ctx); err != nil {
+		return cleanup.HoldState{}, err
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	state := cleanup.HoldState{Paused: e.paused}
+	if e.hold != nil {
+		hold := *e.hold
+		state.Hold = &hold
+	}
+	return state, nil
 }
 
 // Retry clears a job's blockage and returns the job as journaled; the worker's
@@ -564,7 +601,7 @@ func (e *Engine) load() error {
 		e.seq = max(e.seq, job.Seq)
 	}
 	slices.SortFunc(e.order, func(a, b seqKey) int { return cmp.Compare(a.seq, b.seq) })
-	e.damaged, e.paused = damaged, sw.Paused
+	e.damaged, e.paused, e.hold = damaged, sw.Paused, sw.Hold
 	close(e.loaded)
 	return nil
 }
@@ -690,7 +727,7 @@ func (e *Engine) wake(physical bool) (time.Time, bool) {
 		}
 	}
 	for job := range e.ordered() {
-		if e.paused {
+		if e.halted() {
 			break
 		}
 		if job.Phase == cleanup.PhaseWaiting && job.Blocked == nil {
@@ -710,7 +747,7 @@ func (e *Engine) wake(physical bool) (time.Time, bool) {
 }
 
 func (e *Engine) logicalDue(now time.Time) (cleanup.Job, bool) {
-	if e.paused {
+	if e.halted() {
 		return cleanup.Job{}, false
 	}
 	for job := range e.ordered() {
@@ -776,7 +813,7 @@ func transient(reason string) bool {
 }
 
 func (e *Engine) physicalDue(now time.Time) (cleanup.Job, bool) {
-	if e.paused {
+	if e.halted() {
 		return cleanup.Job{}, false
 	}
 	var (
@@ -962,7 +999,7 @@ func (e *Engine) remove(ctx context.Context, r cleanup.Request) (cleanup.Receipt
 	}
 	if !found {
 		accept := e.relocator.Accept
-		if e.paused {
+		if e.halted() {
 			accept = e.relocator.Pend
 		}
 		e.seq++
@@ -971,7 +1008,7 @@ func (e *Engine) remove(ctx context.Context, r cleanup.Request) (cleanup.Receipt
 		}
 	}
 	job = requested(ctx, job)
-	if e.paused {
+	if e.halted() {
 		if err := e.save(job); err != nil {
 			return cleanup.Receipt{}, err
 		}
@@ -981,7 +1018,7 @@ func (e *Engine) remove(ctx context.Context, r cleanup.Request) (cleanup.Receipt
 }
 
 func (e *Engine) adopt(ctx context.Context, r cleanup.AdoptRequest) (cleanup.Receipt, error) {
-	if e.paused {
+	if e.halted() {
 		return cleanup.Receipt{}, cleanup.ErrPaused
 	}
 	job, found, err := e.revive(parkedAt(r))
@@ -1022,7 +1059,7 @@ func (e *Engine) relocate(ctx context.Context, job cleanup.Job) (cleanup.Receipt
 }
 
 func (e *Engine) intend(ctx context.Context, r cleanup.DeferRequest) (cleanup.Receipt, error) {
-	if e.paused {
+	if e.halted() {
 		return cleanup.Receipt{}, cleanup.ErrPaused
 	}
 	job, found, err := e.revive(boundTo(r))
@@ -1141,26 +1178,60 @@ func (e *Engine) retry(jobID string) (cleanup.Job, error) {
 	return e.unblock(clone(job))
 }
 
-func (e *Engine) announce(op string, pid int, version string) {
-	attrs := []any{"client_pid", pid, "client_version", version}
+func (e *Engine) announce(event string, pid int, version string, details ...any) {
+	attrs := append([]any{"client_pid", pid, "client_version", version}, details...)
 	parent, command, err := e.parent(pid)
 	if err != nil {
 		attrs = append(attrs, "client_parent_error", err)
 	} else {
 		attrs = append(attrs, "client_parent_pid", parent, "client_parent", strings.Join(command, " "))
 	}
-	slog.Info("cleanup daemon: "+op, attrs...)
+	slog.Info("cleanup daemon: "+event, attrs...)
 }
 
+func (e *Engine) halted() bool { return e.paused || e.hold != nil }
+
 func (e *Engine) pause(paused bool) error {
-	if e.paused == paused {
+	switch {
+	case !paused && e.hold != nil:
+		return &cleanup.HeldError{Hold: *e.hold}
+	case e.paused == paused:
 		return nil
 	}
-	if err := e.journal.SaveSwitch(cleanup.Switch{Paused: paused}); err != nil {
+	return e.publish(cleanup.Switch{Paused: paused, Hold: e.hold})
+}
+
+func (e *Engine) take(r cleanup.HoldRequest) (cleanup.HoldReceipt, error) {
+	switch {
+	case e.hold == nil:
+	case e.hold.ID == r.ID:
+		return cleanup.HoldReceipt{Hold: *e.hold, Already: true}, nil
+	default:
+		return cleanup.HoldReceipt{}, &cleanup.HeldError{Hold: *e.hold}
+	}
+	hold := cleanup.Hold{ID: r.ID, Reason: r.Reason, Since: e.clock.Now()}
+	if err := e.publish(cleanup.Switch{Paused: e.paused, Hold: &hold}); err != nil {
+		return cleanup.HoldReceipt{}, err
+	}
+	return cleanup.HoldReceipt{Hold: hold}, nil
+}
+
+func (e *Engine) release(id string) error {
+	switch {
+	case e.hold == nil:
+		return cleanup.ErrNotHeld
+	case e.hold.ID != id:
+		return &cleanup.HeldError{Hold: *e.hold}
+	}
+	return e.publish(cleanup.Switch{Paused: e.paused})
+}
+
+func (e *Engine) publish(sw cleanup.Switch) error {
+	if err := e.journal.SaveSwitch(sw); err != nil {
 		return &fatalError{fmt.Errorf("cleanup daemon: journal the pause switch: %w", err)}
 	}
 	e.mu.Lock()
-	e.paused = paused
+	e.paused, e.hold = sw.Paused, sw.Hold
 	e.broadcast()
 	e.mu.Unlock()
 	return e.park()

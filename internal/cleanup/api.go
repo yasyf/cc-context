@@ -34,6 +34,8 @@ var (
 	// ErrUnidentifiedPeer reports a daemon connection whose serving process the
 	// kernel would not name, so nothing was sent on it.
 	ErrUnidentifiedPeer = errors.New("cleanup: the process serving the daemon socket could not be identified")
+	// ErrNotHeld reports a Release while no maintenance hold stands.
+	ErrNotHeld = errors.New("cleanup: no maintenance hold stands on the queue")
 )
 
 // Request asks for one registered linked worktree to be removed now.
@@ -314,7 +316,8 @@ type Governor struct {
 type Report struct {
 	Version string `json:"version"`
 	PID     int    `json:"pid"`
-	// Paused reports that physical deletion is stopped queue-wide.
+	// Paused reports that physical deletion is stopped queue-wide, by a pause
+	// or a maintenance hold.
 	Paused   bool     `json:"paused"`
 	Governor Governor `json:"governor"`
 	Jobs     []Job    `json:"jobs"`
@@ -331,6 +334,66 @@ type Info struct {
 	Version  string `json:"version"`
 	Protocol int    `json:"protocol"`
 	PID      int    `json:"pid"`
+}
+
+// HoldRequest asks for the operator's maintenance hold on the queue.
+type HoldRequest struct {
+	// ID names the holder; only a Release naming it again lifts the hold.
+	ID     string `json:"id"`
+	Reason string `json:"reason"`
+}
+
+// Validate rejects a request that names no holder or no reason.
+func (r HoldRequest) Validate() error {
+	switch {
+	case strings.TrimSpace(r.ID) == "":
+		return errors.New("the hold names no holder")
+	case strings.TrimSpace(r.Reason) == "":
+		return errors.New("the hold names no reason")
+	}
+	return nil
+}
+
+// Hold is an operator's maintenance hold on the queue. While it stands the
+// queue rests as a pause rests it and Resume is refused; it never expires, and
+// only a Release naming its ID lifts it.
+type Hold struct {
+	ID     string    `json:"id"`
+	Reason string    `json:"reason"`
+	Since  time.Time `json:"since"`
+}
+
+// Validate rejects a hold with no holder, no reason, or no start.
+func (h Hold) Validate() error {
+	if h.Since.IsZero() {
+		return errors.New("the hold records no start")
+	}
+	return HoldRequest{ID: h.ID, Reason: h.Reason}.Validate()
+}
+
+// HoldState is the queue's stop as an operator sets it: the ordinary pause and
+// the maintenance hold apart, Hold nil when none stands.
+type HoldState struct {
+	Paused bool  `json:"paused"`
+	Hold   *Hold `json:"hold"`
+}
+
+// HoldReceipt is the hold standing once a Hold request returns. Already
+// reports that the same holder held the queue before, so nothing changed.
+type HoldReceipt struct {
+	Hold    Hold `json:"hold"`
+	Already bool `json:"already,omitempty"`
+}
+
+// HeldError is a request the maintenance hold refused: a Resume, a Hold by
+// another holder, or a Release naming anyone but the holder. It names the
+// hold that stands.
+type HeldError struct {
+	Hold Hold
+}
+
+func (e *HeldError) Error() string {
+	return fmt.Sprintf("cleanup: %s holds the queue for maintenance since %s: %s; only ccx vcs cleanup hold release --id %q lifts it", e.Hold.ID, e.Hold.Since.Local().Format(time.RFC3339), e.Hold.Reason, e.Hold.ID)
 }
 
 // Service is the daemon as a caller uses it, in process or over its socket.
@@ -355,8 +418,21 @@ type Service interface {
 	// until Resume, across restarts.
 	Pause(ctx context.Context) error
 	// Resume lets the queue run again, rested and pending jobs and new
-	// removals alike.
+	// removals alike. While a maintenance hold stands it is a *HeldError and
+	// changes nothing.
 	Resume(ctx context.Context) error
+	// Hold takes the operator's maintenance hold and returns once the deletion
+	// in flight has parked: the queue rests as Pause rests it, across
+	// restarts, until Release names the same ID. A repeat by the holder
+	// changes nothing; another holder's is a *HeldError.
+	Hold(ctx context.Context, r HoldRequest) (HoldReceipt, error)
+	// Release lifts the hold id names and nothing else: an ordinary pause
+	// stays. A hold under another ID is a *HeldError and no hold at all is
+	// ErrNotHeld, either leaving the queue as it was.
+	Release(ctx context.Context, id string) error
+	// HoldState reads the ordinary pause and the maintenance hold apart, never
+	// waiting behind the worker once it has loaded the journal.
+	HoldState(ctx context.Context) (HoldState, error)
 	// Retry clears a job's blockage and lets it run again from the phase it
 	// stopped in.
 	Retry(ctx context.Context, jobID string) (Job, error)

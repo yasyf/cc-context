@@ -531,7 +531,11 @@ blocked job after its cause is addressed. `ccx vcs cleanup pause` stops the
 queue: deletion halts, and a new `worktree rm` is queued `pending` with
 nothing moved. `resume` lets the queue run again and preflights each pending
 removal afresh. While the queue is paused, `worktree rm --wait` and
-`cleanup wait` fail at once instead of waiting. Status
+`cleanup wait` fail at once instead of waiting. `ccx vcs cleanup hold acquire
+--id <id> --reason <text>` stops the queue under an operator's maintenance
+hold that `resume` refuses to lift; only `hold release --id <id>` lifts it, and
+an ordinary pause stays. `cleanup status` shows a held queue as paused;
+`hold status` names the holder. Never release a hold you did not take. Status
 bounds its output and reports omitted jobs without scanning files for totals
 or an ETA.
 

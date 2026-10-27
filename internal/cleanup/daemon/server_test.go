@@ -10,6 +10,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"maps"
 	"net"
 	"os"
 	"path/filepath"
@@ -946,5 +947,204 @@ func TestShutdownReportsADaemonItCannotReach(t *testing.T) {
 	}
 	if err := <-acknowledged; err != nil {
 		t.Errorf("the stand-in daemon = %v", err)
+	}
+}
+
+func TestServeRefusesAnOlderClientsPlainResumeWhileHeld(t *testing.T) {
+	ctx := context.Background()
+	hold := cleanup.Hold{ID: "host-maintenance", Reason: "disk repair", Since: time.Date(2026, 10, 26, 23, 51, 28, 0, time.UTC)}
+	f := serveFixture(t, func(h *harness) {
+		if err := h.journal.SaveSwitch(cleanup.Switch{Hold: &hold}); err != nil {
+			h.t.Fatal(err)
+		}
+	})
+	want := (&cleanup.HeldError{Hold: hold}).Error()
+	stillHeld := func(when string) {
+		t.Helper()
+		if sw, err := f.h.journal.LoadSwitch(); err != nil || sw.Paused || sw.Hold == nil || !sameHold(*sw.Hold, hold) {
+			t.Errorf("LoadSwitch() after %s = %+v, %v; want the hold %+v intact", when, sw, err, hold)
+		}
+	}
+
+	conn, err := net.Dial("unix", f.socket)
+	if err != nil {
+		t.Fatalf("dial %s: %v", f.socket, err)
+	}
+	line, err := exchange(conn, fmt.Appendf(nil, `{"protocol":%d,"version":"v0.82.0","op":"resume"}`+"\n", cleanup.Protocol))
+	_ = conn.Close()
+	if err != nil {
+		t.Fatalf("exchange: %v", err)
+	}
+	var old map[string]map[string]string
+	if err := json.Unmarshal(line, &old); err != nil || len(old) != 1 || len(old["error"]) != 2 || old["error"]["kind"] != kindInternal || old["error"]["message"] != want {
+		t.Errorf("reply to a plain resume = %s, %v; want only an internal error carrying %q, the shape every older client decodes", line, err, want)
+	}
+	stillHeld("an older client's resume")
+
+	if err := f.client.Resume(ctx); err == nil || err.Error() != want {
+		t.Errorf("Resume() = %v, want %q", err, want)
+	}
+	if state, err := f.client.HoldState(ctx); err != nil || state.Paused || state.Hold == nil || !sameHold(*state.Hold, hold) {
+		t.Errorf("HoldState() = %+v, %v; want unpaused and held by %+v", state, err, hold)
+	}
+	if report, err := f.client.Status(ctx, cleanup.Query{}); err != nil || !report.Paused {
+		t.Errorf("Status() = paused %t, %v; want the held queue reported paused", report.Paused, err)
+	}
+	if _, err := f.client.Hold(ctx, cleanup.HoldRequest{ID: "claude-session", Reason: "unblock my rm"}); err == nil || err.Error() != want {
+		t.Errorf("Hold() by another holder = %v, want %q", err, want)
+	}
+	if receipt, err := f.client.Hold(ctx, cleanup.HoldRequest{ID: hold.ID, Reason: "another reason"}); err != nil || !receipt.Already || !sameHold(receipt.Hold, hold) {
+		t.Errorf("Hold() by the holder = %+v, %v; want the standing hold, already held", receipt, err)
+	}
+	if err := f.client.Release(ctx, "claude-session"); err == nil || err.Error() != want {
+		t.Errorf("Release() naming another holder = %v, want %q", err, want)
+	}
+	stillHeld("refused requests")
+
+	if err := f.client.Release(ctx, hold.ID); err != nil {
+		t.Fatalf("Release() by the holder = %v", err)
+	}
+	if sw, err := f.h.journal.LoadSwitch(); err != nil || sw.Paused || sw.Hold != nil {
+		t.Errorf("LoadSwitch() after the release = %+v, %v; want neither paused nor held", sw, err)
+	}
+	if err := f.client.Release(ctx, hold.ID); err == nil || err.Error() != cleanup.ErrNotHeld.Error() {
+		t.Errorf("a stale Release() = %v, want %q", err, cleanup.ErrNotHeld)
+	}
+	if err := f.client.Resume(ctx); err != nil {
+		t.Errorf("Resume() with no hold = %v", err)
+	}
+	fresh, err := f.client.Hold(ctx, cleanup.HoldRequest{ID: "claude-session", Reason: "unblock my rm"})
+	if want := (cleanup.Hold{ID: "claude-session", Reason: "unblock my rm", Since: f.h.clock.Now()}); err != nil || fresh.Already || !sameHold(fresh.Hold, want) {
+		t.Errorf("Hold() once released = %+v, %v; want a fresh hold %+v", fresh, err, want)
+	}
+}
+
+func TestServeLogsEveryHoldDecisionWithItsCaller(t *testing.T) {
+	var logged bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logged, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	ctx := context.Background()
+	f := serveFixture(t, nil)
+	maintenance := cleanup.HoldRequest{ID: "host-maintenance", Reason: "disk repair"}
+	other := cleanup.HoldRequest{ID: "claude-session", Reason: "unblock my rm"}
+
+	_, _ = f.client.Hold(ctx, maintenance)
+	_, _ = f.client.Hold(ctx, maintenance)
+	_, _ = f.client.Hold(ctx, other)
+	_ = f.client.Resume(ctx)
+	_ = f.client.Pause(ctx)
+	_ = f.client.Release(ctx, other.ID)
+	_ = f.client.Release(ctx, maintenance.ID)
+	_ = f.client.Release(ctx, maintenance.ID)
+	_ = f.client.Resume(ctx)
+
+	type decision struct{ event, holder, requested string }
+	want := []decision{
+		{"hold", maintenance.ID, maintenance.ID},
+		{"hold already held", maintenance.ID, maintenance.ID},
+		{"hold refused", maintenance.ID, other.ID},
+		{"resume refused", maintenance.ID, ""},
+		{"pause", "", ""},
+		{"release refused", maintenance.ID, other.ID},
+		{"release", "", maintenance.ID},
+		{"release refused", "", maintenance.ID},
+		{"resume", "", ""},
+	}
+	audited := map[string]bool{}
+	for _, d := range want {
+		audited[d.event] = true
+	}
+	var got []decision
+	for line := range strings.Lines(logged.String()) {
+		var record struct {
+			Msg           string `json:"msg"`
+			ClientPID     int    `json:"client_pid"`
+			ClientVersion string `json:"client_version"`
+			ParentPID     int    `json:"client_parent_pid"`
+			Parent        string `json:"client_parent"`
+			HoldID        string `json:"hold_id"`
+			HoldReason    string `json:"hold_reason"`
+			RequestedID   string `json:"requested_id"`
+		}
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("log line %q: %v", line, err)
+		}
+		event, found := strings.CutPrefix(record.Msg, "cleanup daemon: ")
+		if !found || !audited[event] {
+			continue
+		}
+		got = append(got, decision{event, record.HoldID, record.RequestedID})
+		if record.ClientPID != os.Getpid() || record.ClientVersion != version.String() || record.ParentPID != 1 || record.Parent != "zsh -c ccx vcs cleanup pause" {
+			t.Errorf("%s record = %+v, want this process, its version, and its parent's command", event, record)
+		}
+		if record.HoldID != "" && record.HoldReason != maintenance.Reason {
+			t.Errorf("%s record names the hold's reason %q, want %q", event, record.HoldReason, maintenance.Reason)
+		}
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("logged decisions = %+v, want %+v", got, want)
+	}
+}
+
+func TestServeAnswersAnOlderClientsStatusInItsOwnShapeWhileHeld(t *testing.T) {
+	hold := cleanup.Hold{ID: "host-maintenance", Reason: "disk repair", Since: time.Date(2026, 10, 26, 23, 51, 28, 0, time.UTC)}
+	type oldReport struct {
+		Version  string            `json:"version"`
+		PID      int               `json:"pid"`
+		Paused   bool              `json:"paused"`
+		Governor cleanup.Governor  `json:"governor"`
+		Jobs     []cleanup.Job     `json:"jobs"`
+		Omitted  int               `json:"omitted,omitempty"`
+		Damaged  []cleanup.Damaged `json:"damaged,omitempty"`
+	}
+	tests := []struct {
+		name   string
+		paused bool
+	}{
+		{"held and paused", true},
+		{"held alone", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := serveFixture(t, func(h *harness) {
+				if err := h.journal.SaveSwitch(cleanup.Switch{Paused: tt.paused, Hold: &hold}); err != nil {
+					h.t.Fatal(err)
+				}
+			})
+			conn, err := net.Dial("unix", f.socket)
+			if err != nil {
+				t.Fatalf("dial %s: %v", f.socket, err)
+			}
+			line, err := exchange(conn, fmt.Appendf(nil, `{"protocol":%d,"version":"v0.82.0","op":"status","query":{}}`+"\n", cleanup.Protocol))
+			_ = conn.Close()
+			if err != nil {
+				t.Fatalf("exchange: %v", err)
+			}
+			var fields map[string]map[string]json.RawMessage
+			if err := json.Unmarshal(line, &fields); err != nil {
+				t.Fatalf("decode %s: %v", line, err)
+			}
+			got := slices.Sorted(maps.Keys(fields["report"]))
+			if want := []string{"governor", "jobs", "paused", "pid", "version"}; len(fields) != 1 || !slices.Equal(got, want) {
+				t.Errorf("status reply = %s; want only a report carrying %v", line, want)
+			}
+			var old struct {
+				Report *oldReport `json:"report"`
+			}
+			decoder := json.NewDecoder(bytes.NewReader(line))
+			decoder.DisallowUnknownFields()
+			if err := decoder.Decode(&old); err != nil || old.Report == nil || !old.Report.Paused {
+				t.Errorf("an older client's strict decode of %s = %+v, %v; want a paused report", line, old.Report, err)
+			}
+
+			state, err := f.client.HoldState(context.Background())
+			if err != nil || state.Paused != tt.paused || state.Hold == nil || !sameHold(*state.Hold, hold) {
+				t.Errorf("HoldState() = %+v, %v; want paused %t apart from the hold %+v", state, err, tt.paused, hold)
+			}
+			if sw, err := f.h.journal.LoadSwitch(); err != nil || sw.Paused != tt.paused || sw.Hold == nil || !sameHold(*sw.Hold, hold) {
+				t.Errorf("LoadSwitch() after the reads = %+v, %v; want it unchanged", sw, err)
+			}
+		})
 	}
 }
