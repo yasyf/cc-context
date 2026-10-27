@@ -81,7 +81,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with `--pr-title`, `--pr-body-file`, and `--parent` applying to it, from
   any working copy, without checking it out. Uncommitted changes in the
   working copy ship runs from no longer refuse it, since they are not part
-  of that branch.
+  of that branch. It pushes that branch alone, leased on the remote head
+  read together with its local head, and refuses instead of pushing a parked
+  `graphite-base` branch or moving another working copy's checkout.
 
 - **`ccx vcs ship --tip-only` ships past another lane's stopped stack
   rebase.** A tip-only ship whose tip needed no replay claimed the stack's

@@ -438,6 +438,12 @@ func runShip(cmd *cobra.Command, o shipOpts) (err error) {
 			return err
 		}
 	}
+	var target shipTarget
+	if elsewhere {
+		if target, err = shipReadTarget(ctx, dir, o.branch); err != nil {
+			return err
+		}
+	}
 
 	var preAmendSHA string
 	if !o.noPush && o.amend && (gtLane || kind == vcs.Git) {
@@ -520,7 +526,7 @@ func runShip(cmd *cobra.Command, o shipOpts) (err error) {
 			if err != nil {
 				return err
 			}
-			if err := runStackRebase(cmd, stackRebaseOpts{members: append(gtBottomUp(chain), upstack...), landed: o.landed, newPRs: o.newPRs, draft: &o.draft, draftAll: o.draft || o.publish, noVerify: o.noVerify, deferPush: true, result: &gtc.restack, ship: intent, submit: true, owners: map[string]string{}, tip: branch, tipOnly: o.tipOnly, restack: o.restack, stayClean: !o.restack, dropCommits: o.dropCommits || o.yolo, otherLanes: o.allLanes}); err != nil {
+			if err := runStackRebase(cmd, stackRebaseOpts{members: append(gtBottomUp(chain), upstack...), landed: o.landed, newPRs: o.newPRs, draft: &o.draft, draftAll: o.draft || o.publish, noVerify: o.noVerify, deferPush: true, result: &gtc.restack, ship: intent, submit: true, owners: map[string]string{}, tip: branch, tipOnly: o.tipOnly, restack: o.restack, stayClean: !o.restack, dropCommits: o.dropCommits || o.yolo, otherLanes: o.allLanes, target: target}); err != nil {
 				if preAmendSHA != "" && gtc.restack == nil {
 					return shipAmendKept(ctx, dir, preAmendSHA, err)
 				}
@@ -544,7 +550,7 @@ func runShip(cmd *cobra.Command, o shipOpts) (err error) {
 
 	var short, subject string
 	if elsewhere {
-		short, subject, err = gitDescribe(ctx, dir, branch)
+		short, subject, err = gitDescribe(ctx, dir, target.head)
 	} else {
 		short, subject, err = shipDescribe(ctx, dir, kind)
 	}
@@ -597,7 +603,7 @@ func runShip(cmd *cobra.Command, o shipOpts) (err error) {
 	var gtStack []stackEntry
 	var movedSeg string
 	if gtLane {
-		prSeg, bodylessSegs, gtStack, err = shipPushGT(ctx, cmd.ErrOrStderr(), l, o, meta, trunkFetch, branch, stuck, gtc)
+		prSeg, bodylessSegs, gtStack, err = shipPushGT(ctx, cmd.ErrOrStderr(), l, o, meta, trunkFetch, branch, stuck, gtc, target)
 	} else {
 		remote, rebased, replaced, err = shipPush(ctx, dir, kind, o, branch, plan.trunk, preAmendSHA)
 	}
@@ -675,11 +681,7 @@ func runShip(cmd *cobra.Command, o shipOpts) (err error) {
 	case gtLane && gtc.restack != nil:
 		ciSeg, report, ciErr = shipWatchCIHead(ctx, cmd.ErrOrStderr(), dir, gtc.restack.branch(branch).NewHead, o.budget)
 	case elsewhere:
-		head, err := gitRevParse(ctx, dir, "ship", branch)
-		if err != nil {
-			return err
-		}
-		ciSeg, report, ciErr = shipWatchCIHead(ctx, cmd.ErrOrStderr(), dir, head, o.budget)
+		ciSeg, report, ciErr = shipWatchCIHead(ctx, cmd.ErrOrStderr(), dir, target.head, o.budget)
 	default:
 		ciSeg, report, ciErr = shipWatchCI(ctx, cmd.ErrOrStderr(), dir, kind, o.budget)
 	}

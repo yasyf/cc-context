@@ -331,6 +331,45 @@ func TestShipBranchTipOnlyShipsABranchAnotherWorktreeHolds(t *testing.T) {
 	}
 }
 
+func TestShipBranchTipOnlyMovesNoOtherWorktreesCheckout(t *testing.T) {
+	f := shipGTRepo(t)
+	shipGTStack(t, f, "base", "feature")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
+	shipGTStack(t, f, "other")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
+	held := f.WorktreePath("held-feature")
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", held, "feature")
+	head := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")
+
+	_, errStr, err := runShipCmdFull(f.Context(), t, "--branch", "feature", "--tip-only", "--no-commit", "--no-watch", "--parent", "other")
+	if err == nil || !strings.Contains(err.Error(), filepath.Base(held)) {
+		t.Fatalf("ship --parent other = %v (stderr=%q), want a refusal naming the worktree holding feature", err, errStr)
+	}
+	if got := gitAt(t, f.Env(), held, "rev-parse", "HEAD"); got != head {
+		t.Errorf("the holder's checkout moved to %s, want it left at %s", got, head)
+	}
+}
+
+func TestShipBranchTipOnlyPushesNoParkedBase(t *testing.T) {
+	f, api, base := stackMergeableBase(t, "MERGEABLE")
+	api.parkOn(f)
+	api.mu.Lock()
+	api.parked["feature"] = "graphite-base/101"
+	api.remote("update-ref", "refs/heads/graphite-base/101", base)
+	api.mu.Unlock()
+	stackCommit(t, f, "tip.txt")
+	published := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
+
+	_, errStr, err := runShipCmdFull(f.Context(), t, "--branch", "feature", "--tip-only", "--no-commit", "--no-watch")
+	if err == nil || !strings.Contains(err.Error(), "graphite-base/101") {
+		t.Fatalf("ship --branch feature = %v (stderr=%q), want a refusal naming graphite-base/101", err, errStr)
+	}
+	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature"); got != published {
+		t.Errorf("origin feature moved to %s, want it left at %s", got, published)
+	}
+}
+
 // TestShipKeepsAnApprovedParentOnlyRestackedLocally is ci-go's #25915: the parent
 // #25742 was restacked locally onto newer trunk without a push, GitHub had not
 // computed its mergeability, and each ship from the child force-pushed the

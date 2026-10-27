@@ -276,6 +276,7 @@ type stackRebaseOpts struct {
 	bump        []string
 	keepHeld    bool
 	recorded    map[string]stackRecordedParent
+	target      shipTarget
 }
 
 const stackDropCommitsUsage = "publish a branch whose local head drops commits its published head carries"
@@ -1283,6 +1284,11 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	}
 	if err := stackRequireHistory(ctx, l.dir(), prefix, tr.Remote(), trunk, remotes); err != nil {
 		return nil, err
+	}
+	if o.target.branch != "" {
+		if err := o.target.moved(state[o.target.branch].Head, remotes[o.target.branch]); err != nil {
+			return nil, err
+		}
 	}
 
 	host, err := os.Hostname()
