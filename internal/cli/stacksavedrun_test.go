@@ -92,6 +92,14 @@ func TestStackSubmitFromTheSameWorktreeResumesItsSavedRun(t *testing.T) {
 	if err := os.Remove(refuse); err != nil {
 		t.Fatal(err)
 	}
+	run, err := stackOnlyTestRun(filepath.Join(f.Dir, ".git"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.Pid = stackExitedPid(t)
+	if err := stackSaveRun(run); err != nil {
+		t.Fatal(err)
+	}
 
 	out, _, err := runStackCmd(t, f, "submit", "--restack")
 

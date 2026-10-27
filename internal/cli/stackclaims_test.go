@@ -299,7 +299,7 @@ func TestStackGateTreatsARunThatEndedMeanwhileAsFinished(t *testing.T) {
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 
-	done, err := stackGate(f.Context(), cmd, l, common, runs[0], false)
+	done, err := stackGate(f.Context(), cmd, l, common, runs[0], false, false)
 	if err != nil || !done || !strings.Contains(out.String(), "the stack rebase of base ended meanwhile") {
 		t.Fatalf("stackGate over a removed run = %v, %v, %q, want it finished", done, err, out.String())
 	}
