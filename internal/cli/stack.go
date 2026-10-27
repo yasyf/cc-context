@@ -205,10 +205,14 @@ A working copy stack new cut onto a branch of the stack checked out where it
 ran, or one worktree add checked out on such a branch, joins that working
 copy's lane, and a branch any working copy of this lane has checked
 out is submitted as if it were checked out here. A branch a working copy of
-another lane has checked out is that lane's, so it is skipped and named with the
-working copy holding it, along with every branch stacked above it. So is a
-branch another live cci session claims, checked out or not: ccx vcs ship and
-stack submit claim the branch of each pull request they open, and the lane
+another lane has checked out is that lane's. When one of this lane's branches
+sits on it, it stays in the run at its published head, neither pushed nor
+submitted, and this lane's branches are replayed onto that head and submitted,
+so after the parent's lane restacks the parent, the child lane resubmits onto it
+from its own working copy. One with none of this lane's branches above it is
+skipped and named with the working copy holding it. A branch another live cci
+session claims, checked out or not, is that lane's the same way: ccx vcs ship
+and stack submit claim the branch of each pull request they open, and the lane
 that opened it owns it. --include submits it anyway, and --all-lanes submits
 every such branch. One whose pull request landed is no
 lane's any more: it is dropped like any landed branch, and the branches on it
