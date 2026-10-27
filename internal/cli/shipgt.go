@@ -2196,6 +2196,7 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 		}
 	}
 
+	heads := cciHeadsBeforePush(ctx, errW, l.dir(), s.prefix, plan)
 	if s.publication != nil {
 		if err := stackPushPublication(ctx, l.dir(), s, plan); err != nil {
 			return nil, nil, err
@@ -2203,6 +2204,7 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 	} else if err := gtPushStack(ctx, l.dir(), s, plan); err != nil {
 		return nil, nil, err
 	}
+	heads.post(ctx, errW, l.dir(), s, owner+"/"+name, plan, known)
 	versions := make(map[string]gtmeta.Version, len(posted))
 	for _, b := range posted {
 		versions[b.name] = gtmeta.Version{HeadSha: b.head, BaseSha: b.baseSha, BaseName: b.base}

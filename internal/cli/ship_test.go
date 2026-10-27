@@ -6253,7 +6253,7 @@ func TestShipGTClaimsWhatTheSubmitOpenedAndUpdated(t *testing.T) {
 	}
 	var claims [][]string
 	for _, inv := range readInvocations(t, log) {
-		if inv[0] == "cci" {
+		if inv[0] == "cci" && inv[1] == "claim" {
 			claims = append(claims, inv)
 		}
 	}

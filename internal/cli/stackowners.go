@@ -14,7 +14,9 @@ import (
 
 type cciPeer struct {
 	Session   string `json:"session"`
+	Agent     string `json:"agent"`
 	AgentName string `json:"agent_name"`
+	Drive     string `json:"drive"`
 	Lane      string `json:"lane"`
 	Name      string `json:"name"`
 }

@@ -110,6 +110,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Stack writes post a cci HEAD record for each pull request they push in a
+  drive.** `ccx vcs stack submit`, `restack` and `rebase`, and a Graphite-lane
+  `ccx vcs ship`, now post `cci post --kind head` for every open pull request
+  whose head the push moved. The record reads `HEAD #<n> <new sha> (was <old
+  sha>): restack|replay|ship, range-diff <summary>`, where `restack` means
+  every commit is patch-identical to the old head and `replay` means some
+  changed. The summary counts the identical, changed, added and dropped
+  commits. A session is in a drive when `CCI_DRIVE` and `CCI_LANE` name one,
+  or when `cci who` lists this session's agent with a drive and a lane.
+  Outside a drive nothing is posted, and a failed post only warns.
+
 - **`ccx vcs ship --tip-only --restack` replays only the tip onto its
   parent's published head.** A tip-only ship keeps the tip on its base when
   the parent only moved past it, and its report said nothing about it, so a
