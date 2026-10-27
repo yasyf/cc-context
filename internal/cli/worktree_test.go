@@ -1076,6 +1076,24 @@ func TestWorktreeMode(t *testing.T) {
 	}
 }
 
+// TestWorktreeMintPathPoolOfACloneInThePool is a repository whose only clone
+// was itself made in the pool as <pool>/cc-slack/owner-stopped: worktrees cut
+// from it minted under <pool>/owner-stopped/ instead of beside it.
+func TestWorktreeMintPathPoolOfACloneInThePool(t *testing.T) {
+	home := worktreeTempDir(t)
+	t.Setenv("HOME", home)
+	clone := filepath.Join(home, ".claude", "worktrees", "cc-slack", "owner-stopped")
+	sibling := vcs.Checkout{Root: filepath.Join(home, ".claude", "worktrees", "cc-slack", "w4-cards"), Shape: vcs.ShapeGitWorktree, MainRoot: clone, CommonDir: filepath.Join(clone, ".git")}
+
+	got, err := mintWorktreePath(context.Background(), "t", sibling, "feat")
+	if err != nil {
+		t.Fatalf("mintWorktreePath: %v", err)
+	}
+	if want := filepath.Join(home, ".claude", "worktrees", "cc-slack", "feat"); got != want {
+		t.Errorf("minted %q, want %q beside the clone", got, want)
+	}
+}
+
 // TestWorktreeMintPathPool proves the pool is keyed by the main root's
 // basename: every sibling checkout of one repository mints into the same
 // directory, a differently named repository gets its own, and a same-named
