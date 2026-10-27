@@ -30,6 +30,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs stack submit` moves a pull request off its segment base itself.**
+  When Graphite still recorded a pull request on ccx's segment copy of its
+  parent after the fresh-head republish, the refusal named two commands to
+  run by hand from the working copy holding the branch. The submit now sends
+  Graphite that pull request's published head on its real parent and deletes
+  the segment once GitHub shows it moved. It pushes no branch and switches no
+  working copy, so a branch another working copy holds is repaired too. When
+  Graphite's stack cap still refuses the parent, the segment stays and the
+  refusal says so. The hand commands remain only for a pull request whose
+  head no longer holds its parent's published head.
+
 - **`ccx vcs ship --branch <b> --tip-only` ships a pull request Graphite
   parked on `graphite-base/<n>`.** After a parent lands, Graphite moves a
   child's pull request onto a temporary `graphite-base/<n>` branch. A ship

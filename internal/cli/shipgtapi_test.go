@@ -385,7 +385,7 @@ func (s *gtAPIStub) submit(w http.ResponseWriter, r *http.Request) {
 	}
 	if u, ok := s.untracked[entry.PRNumber]; ok && len(u.reveals) > 0 && entry.HeadSha != u.head {
 		s.untracked[entry.PRNumber] = gtStubUntracked{base: entry.Base, head: entry.HeadSha, closed: u.reveals}
-	} else if ok && !u.stuck && entry.HeadSha != u.head {
+	} else if ok && !u.stuck && (entry.HeadSha != u.head || strings.HasPrefix(u.base, gtSegmentPrefix) && entry.Base != u.base) {
 		delete(s.untracked, entry.PRNumber)
 	}
 	if !unrecorded {

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/yasyf/cc-context/internal/gtapi"
+	"github.com/yasyf/cc-context/internal/gtmeta"
 	"github.com/yasyf/cc-context/internal/render"
 )
 
@@ -24,13 +26,16 @@ var (
 )
 
 type stackUntracked struct {
-	Branch string
-	PR     int
-	Parent string
-	Stale  string
-	Landed []int
-	Closed []int
-	Bare   []string
+	Branch     string
+	PR         int
+	Parent     string
+	Head       string
+	ParentHead string
+	Stale      string
+	Capped     bool
+	Landed     []int
+	Closed     []int
+	Bare       []string
 }
 
 func (u stackUntracked) String() string {
@@ -69,6 +74,7 @@ func (u stackUntracked) bare() bool { return !u.stranded() && len(u.Bare) > 0 }
 func (u stackUntracked) pending() bool { return !u.repairable() && !u.stranded() && !u.bare() }
 
 type stackTracking struct {
+	trunk     string
 	untracked []stackUntracked
 	err       error
 }
@@ -79,9 +85,9 @@ func withStackTracking(ctx context.Context, t *stackTracking) context.Context {
 	return context.WithValue(ctx, stackTrackingKey{}, t)
 }
 
-func recordStackTracking(ctx context.Context, untracked []stackUntracked, err error) {
+func recordStackTracking(ctx context.Context, trunk string, untracked []stackUntracked, err error) {
 	if t, ok := ctx.Value(stackTrackingKey{}).(*stackTracking); ok {
-		t.untracked, t.err = untracked, err
+		t.trunk, t.untracked, t.err = trunk, untracked, err
 	}
 }
 
@@ -124,8 +130,11 @@ func (t *stackTracking) unread() error {
 func stackTrackingStuck(untracked []stackUntracked) error {
 	var remedies []string
 	for _, u := range untracked {
-		if u.Stale == gtSegmentBase(u.Branch) {
-			remedies = append(remedies, fmt.Sprintf("#%d still sits on its segment base %s: from the working copy holding %s, run gt track --parent %s --no-interactive, then ccx vcs ship --tip-only --no-commit, which records it on %s and deletes the segment", u.PR, u.Stale, u.Branch, u.Parent, u.Parent))
+		switch {
+		case u.Capped:
+			remedies = append(remedies, fmt.Sprintf("#%d stays on its segment base %s: Graphite still caps the stack under %s and refused it there again; the stack submit after %s lands moves it off", u.PR, u.Stale, u.Parent, u.Parent))
+		case u.Stale == gtSegmentBase(u.Branch):
+			remedies = append(remedies, fmt.Sprintf("#%d still sits on its segment base %s, and its head %.12s does not hold %s's published head %.12s: from the working copy holding %s, run gt track --parent %s --no-interactive, then ccx vcs ship --tip-only --no-commit, which replays it onto %s, records it there and deletes the segment", u.PR, u.Stale, u.Head, u.Parent, u.ParentHead, u.Branch, u.Parent, u.Parent))
 		}
 	}
 	return fmt.Errorf("%s: Graphite still tracks no stack for these pull requests after republishing them with fresh heads, so the merge queue cannot enqueue them:\n%s", stackRebasePrefix, strings.Join(append([]string{stackUntrackedLines(untracked)}, remedies...), "\n"))
@@ -215,7 +224,11 @@ func stackReadUntracked(ctx context.Context, client *gtapi.Client, owner, repo s
 	if err != nil {
 		return stackUntracked{}, err
 	}
-	u := stackUntracked{Branch: branch, PR: number, Parent: run.branch(branch).Parent}
+	b := run.branch(branch)
+	u := stackUntracked{Branch: branch, PR: number, Parent: b.Parent, Head: b.NewHead, ParentHead: run.Pin}
+	if parent := run.branch(b.Parent); parent != nil {
+		u.ParentHead = parent.NewHead
+	}
 	var recorded string
 	for _, info := range infos {
 		switch {
@@ -238,6 +251,77 @@ func stackReadUntracked(ctx context.Context, client *gtapi.Client, owner, repo s
 	slices.Sort(u.Landed)
 	slices.Sort(u.Closed)
 	return u, nil
+}
+
+func stackRecordOffSegments(cmd *cobra.Command, l lane, tracking *stackTracking) error {
+	ctx := cmd.Context()
+	onSegment := func(u stackUntracked) bool { return u.repairable() && u.Stale == gtSegmentBase(u.Branch) }
+	var segments []string
+	for _, u := range tracking.untracked {
+		if onSegment(u) {
+			segments = append(segments, u.Stale)
+		}
+	}
+	if len(segments) == 0 {
+		return nil
+	}
+	owner, repo, err := gtRepoOwnerName(ctx, l, stackRebasePrefix)
+	if err != nil {
+		return err
+	}
+	leases, err := stackListRemoteHeads(ctx, l.dir(), stackRebasePrefix, "origin", segments)
+	if err != nil {
+		return err
+	}
+	client := gtAPI(ctx)
+	var recorded []int
+	for i, u := range tracking.untracked {
+		if !onSegment(u) {
+			continue
+		}
+		holds, err := gitIsAncestor(ctx, l.dir(), stackRebasePrefix, u.ParentHead, u.Head)
+		if err != nil {
+			return err
+		}
+		if !holds {
+			continue
+		}
+		pr := gtapi.SubmitPR{Action: gtapi.SubmitUpdate, Head: u.Branch, HeadSha: u.Head, Base: u.Parent, BaseSha: u.ParentHead, PRNumber: u.PR}
+		_, err = client.SubmitPullRequests(ctx, gtapi.SubmitRequest{RepoOwner: owner, RepoName: repo, TrunkBranchName: tracking.trunk, PRs: []gtapi.SubmitPR{pr}})
+		var submitErr *gtapi.SubmitError
+		if errors.As(err, &submitErr) && gtStackCapped(submitErr) {
+			tracking.untracked[i].Capped = true
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("%s: record #%d on %s off its segment base %s: %w", stackRebasePrefix, u.PR, u.Parent, u.Stale, err)
+		}
+		if err := gtmeta.RecordSubmitted(ctx, l.checkout.CommonDir, map[string]gtmeta.Version{u.Branch: {HeadSha: u.Head, BaseSha: u.ParentHead, BaseName: u.Parent}}); err != nil {
+			return fmt.Errorf("%s: %w", stackRebasePrefix, err)
+		}
+		if err := gtClearUnrecorded(l.checkout.CommonDir, u.Branch); err != nil {
+			return fmt.Errorf("%s: %w", stackRebasePrefix, err)
+		}
+		if lease := leases[u.Stale]; lease != "" {
+			if err := gtDropSegment(ctx, cmd.ErrOrStderr(), l.dir(), stackRebasePrefix, owner+"/"+repo, gtSubmitBranch{name: u.Branch, baseSha: lease, parkedOn: u.Stale}); err != nil {
+				return err
+			}
+		}
+		cmd.Println("repaired" + shipSep + fmt.Sprintf("#%d recorded by Graphite on %s, off its segment base %s", u.PR, u.Parent, u.Stale))
+		tracking.untracked[i].Stale = ""
+		recorded = append(recorded, u.PR)
+	}
+	if len(recorded) == 0 {
+		return nil
+	}
+	missing, err := stackAwaitTracking(ctx, client, owner, repo, recorded)
+	if err != nil {
+		return err
+	}
+	tracking.untracked = slices.DeleteFunc(tracking.untracked, func(u stackUntracked) bool {
+		return slices.Contains(recorded, u.PR) && !slices.Contains(missing, u.PR)
+	})
+	return nil
 }
 
 func stackAwaitTracking(ctx context.Context, client *gtapi.Client, owner, repo string, numbers []int) ([]int, error) {

@@ -541,7 +541,7 @@ func runStackSubmit(cmd *cobra.Command, o shipOpts, include []string, to string)
 	if err := runStackRebase(cmd, opts); err != nil {
 		return err
 	}
-	return stackRepairTracking(cmd, opts, tracking)
+	return stackRepairTracking(cmd, l, opts, tracking)
 }
 
 func stackReportSaved(cmd *cobra.Command, commonDir string, since time.Time) error {
@@ -597,7 +597,7 @@ func stackAdoptChain(cmd *cobra.Command, dir render.Dir) error {
 	return nil
 }
 
-func stackRepairTracking(cmd *cobra.Command, opts stackRebaseOpts, tracking *stackTracking) error {
+func stackRepairTracking(cmd *cobra.Command, l lane, opts stackRebaseOpts, tracking *stackTracking) error {
 	if tracking.err != nil {
 		return tracking.unread()
 	}
@@ -615,9 +615,6 @@ func stackRepairTracking(cmd *cobra.Command, opts stackRebaseOpts, tracking *sta
 	if tracking.err != nil {
 		return tracking.unread()
 	}
-	if stuck := tracking.repairable(); len(stuck) > 0 {
-		return stackTrackingStuck(stuck)
-	}
 	var names []string
 	for _, u := range repairing {
 		if !slices.ContainsFunc(tracking.untracked, func(left stackUntracked) bool { return left.PR == u.PR }) {
@@ -626,6 +623,12 @@ func stackRepairTracking(cmd *cobra.Command, opts stackRebaseOpts, tracking *sta
 	}
 	if len(names) > 0 {
 		cmd.Println("repaired" + shipSep + strings.Join(names, ", ") + " republished with a fresh head and tracked by Graphite")
+	}
+	if err := stackRecordOffSegments(cmd, l, tracking); err != nil {
+		return err
+	}
+	if stuck := tracking.repairable(); len(stuck) > 0 {
+		return stackTrackingStuck(stuck)
 	}
 	return tracking.settled(cmd)
 }

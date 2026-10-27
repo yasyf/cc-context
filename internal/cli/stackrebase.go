@@ -4866,7 +4866,7 @@ func stackVerdict(ctx context.Context, cmd *cobra.Command, l lane, run *stackReb
 		}
 	}
 	untracked, trackingErr := stackReadTracking(ctx, l, run, live, prs)
-	recordStackTracking(ctx, untracked, trackingErr)
+	recordStackTracking(ctx, run.Trunk, untracked, trackingErr)
 	for _, name := range live {
 		b := run.branch(name)
 		parent, err := stackSubmittedParent(ctx, dir, run, b)
