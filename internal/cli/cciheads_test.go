@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"fmt"
 	"strconv"
 	"testing"
 
@@ -13,7 +14,9 @@ func TestRangeDiffSummaryCountsPairsByMark(t *testing.T) {
 	}{
 		{"identical", "1:  aaaaaaa = 1:  bbbbbbb base\n2:  ccccccc = 2:  ddddddd more\n", "patch-identical (2 commits)"},
 		{"one identical", "1:  aaaaaaa = 1:  bbbbbbb base\n", "patch-identical (1 commit)"},
-		{"changed, added and dropped", "1:  aaaaaaa ! 1:  bbbbbbb base\n    @@ base.txt\n    -a = b\n    +a ! c\n2:  ccccccc < -:  ------- gone\n-:  ------- > 2:  ddddddd new\n3:  eeeeeee = 3:  fffffff kept\n", "1 identical, 1 changed, 1 added, 1 dropped"},
+		{"changed, added and dropped", "1:  aaaaaaa ! 1:  bbbbbbb base\n    @@ base.txt\n    -a = b\n    +a ! c\n2:  ccccccc < -:  ------- gone\n-:  ------- > 2:  ddddddd new\n3:  eeeeeee = 3:  fffffff kept\n", "1 identical, 1 changed, 1 added (ddddddd), 1 dropped"},
+		{"ten or more pairs pad their numbers", paddedRangeDiff(10) + " -:  ------- > 11:  ccccccc new\n", "10 identical, 1 added (ccccccc)"},
+		{"ten or more identical pairs", paddedRangeDiff(12), "patch-identical (12 commits)"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := rangeDiffSummary(tc.out); got != tc.want {
@@ -21,6 +24,15 @@ func TestRangeDiffSummaryCountsPairsByMark(t *testing.T) {
 			}
 		})
 	}
+}
+
+func paddedRangeDiff(n int) string {
+	var out string
+	for i := 1; i <= n; i++ {
+		index := fmt.Sprintf("%2d", i)
+		out += index + ":  aaaaaaa = " + index + ":  bbbbbbb commit " + strconv.Itoa(i) + "\n"
+	}
+	return out
 }
 
 func TestStackSubmitPostsAHeadRecordPerMovedPullRequestInADrive(t *testing.T) {
