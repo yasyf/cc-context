@@ -418,7 +418,7 @@ func runShip(cmd *cobra.Command, o shipOpts) (err error) {
 		}
 	}
 	if gtLane && !o.noPush && !o.noCommit && plan.action != branchCreate {
-		if err := gtRefuseQueuedCommit(ctx, l, o, sel != nil, plan); err != nil {
+		if err := gtRefuseQueuedCommit(ctx, l, o, sel != nil, plan, gtc); err != nil {
 			return err
 		}
 	}

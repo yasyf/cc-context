@@ -2826,6 +2826,16 @@ func stackQueueStates(ctx context.Context, l lane, noPush bool, byName map[strin
 	infos = slices.DeleteFunc(infos, func(info gtapi.PullRequestInfo) bool {
 		return info.State != gtapi.PROpen || !slices.Contains(heads, info.HeadRefName)
 	})
+	labels := map[string][]string{}
+	for _, info := range infos {
+		labels[info.HeadRefName] = byName[info.HeadRefName].PR.Labels
+	}
+	return stackQueueOf(ctx, owner, name, infos, labels)
+}
+
+// stackQueueOf settles the queue state of each open pull request in infos,
+// where labels holds each head's GitHub labels.
+func stackQueueOf(ctx context.Context, owner, name string, infos []gtapi.PullRequestInfo, labels map[string][]string) (map[string]prQueueState, error) {
 	numbers := make([]int, 0, len(infos))
 	for _, info := range infos {
 		numbers = append(numbers, info.PRNumber)
@@ -2836,7 +2846,7 @@ func stackQueueStates(ctx context.Context, l lane, noPush bool, byName map[strin
 	}
 	var watched []int
 	for _, info := range infos {
-		if gtapi.InMergeQueue(&info, mergeability[info.PRNumber]) || (prstate.PR{Labels: byName[info.HeadRefName].PR.Labels}).QueueLabelled() {
+		if gtapi.InMergeQueue(&info, mergeability[info.PRNumber]) || (prstate.PR{Labels: labels[info.HeadRefName]}).QueueLabelled() {
 			watched = append(watched, info.PRNumber)
 		}
 	}

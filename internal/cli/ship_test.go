@@ -6084,8 +6084,8 @@ func TestShipGTSubmitFailures(t *testing.T) {
 		if n := api.routeCount("/graphite/cli/is-repo-synced"); n != 1 {
 			t.Errorf("is-repo-synced requests = %d, want the second ship served from cache", n)
 		}
-		if n := api.routeCount("/graphite/cli/pull-request-info"); n != 2 {
-			t.Errorf("pull-request-info requests = %d, want one per ship — only the sync verdict caches", n)
+		if n := api.routeCount("/graphite/cli/pull-request-info"); n != 3 {
+			t.Errorf("pull-request-info requests = %d, want one per ship plus the second's queue check on the branch the first submitted — only the sync verdict caches", n)
 		}
 	})
 
