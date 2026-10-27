@@ -384,7 +384,7 @@ func stackBranches(ctx context.Context, c *gtCache) ([]string, error) {
 }
 
 func shipPreflightGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, c *gtCache) (branchPlan, string, error) {
-	branch, err := gitCurrentBranch(ctx, l.dir(), "ship")
+	branch, err := shipBranch(ctx, l.dir(), o)
 	if err != nil {
 		return branchPlan{}, "", err
 	}
@@ -470,7 +470,7 @@ func gtNeedsRestack(state gtState, branch, trunk string) (bool, error) {
 // every other refusal, so a ship that stops short of its commit never leaves
 // the branch moved.
 func gtMoveOntoParent(ctx context.Context, errW io.Writer, l lane, o shipOpts, c *gtCache) (string, bool, error) {
-	branch, err := gitCurrentBranch(ctx, l.dir(), "ship")
+	branch, err := shipBranch(ctx, l.dir(), o)
 	if err != nil {
 		return "", false, err
 	}
@@ -568,6 +568,61 @@ type gtSubmit struct {
 	shipTip     string
 	prepared    map[string]stackShipMeta
 	noPR        bool
+	target      shipTarget
+}
+
+type shipTarget struct {
+	branch string
+	head   string
+	remote string
+}
+
+func shipReadTarget(ctx context.Context, dir render.Dir, branch string) (shipTarget, error) {
+	local, tracking := "refs/heads/"+branch, "refs/remotes/origin/"+branch
+	out, err := render.RunCLI(ctx, dir, "git", []string{"for-each-ref", "--format=%(refname) %(objectname)", local, tracking})
+	if err != nil {
+		return shipTarget{}, fmt.Errorf("ship: git for-each-ref %s %s: %w", local, tracking, err)
+	}
+	t := shipTarget{branch: branch}
+	for line := range strings.Lines(out) {
+		switch ref, sha, _ := strings.Cut(strings.TrimSpace(line), " "); ref {
+		case local:
+			t.head = sha
+		case tracking:
+			t.remote = sha
+		}
+	}
+	if t.head == "" {
+		return shipTarget{}, refuse("ship: --branch %s names no local branch", branch)
+	}
+	return t, nil
+}
+
+func (t shipTarget) moved(head, remote string) error {
+	switch {
+	case head != t.head:
+		return refuse("ship: %s moved from %.12s to %.12s while ship read it — ship again once the working copy holding it is done with it", t.branch, t.head, head)
+	case remote != t.remote:
+		return refuse("ship: origin's %s is at %.12s, not the %.12s this repository last saw — fetch it and fold in what it added, then ship again", t.branch, cmp.Or(remote, "nothing"), cmp.Or(t.remote, "nothing"))
+	}
+	return nil
+}
+
+func gtPinTarget(s gtSubmit, plan []gtSubmitBranch) error {
+	for i, b := range plan {
+		switch {
+		case b.name != s.target.branch:
+			return refuse("%s: --branch %s pushes only %s, and this submit would push %s too — ship it from a working copy holding it", s.prefix, s.target.branch, s.target.branch, b.name)
+		case b.parkedOn != "":
+			return refuse("%s: %s's pull request sits on %s, which this submit would push too, and --branch %s pushes only %s — ship it once Graphite moves it back, or from a working copy holding it", s.prefix, b.name, b.parkedOn, b.name, b.name)
+		case s.publication == nil:
+			if err := s.target.moved(b.head, s.target.remote); err != nil {
+				return err
+			}
+		}
+		plan[i].lease, plan[i].leaseSet = s.target.remote, true
+	}
+	return nil
 }
 
 func (s gtSubmit) updateDraft(tip string) func(branch string) *bool {
@@ -1249,6 +1304,9 @@ func gtOntoPlan(ctx context.Context, l lane, o shipOpts, branch, parent string, 
 		return gtOntoMove{}, fmt.Errorf("ship: %w", err)
 	}
 	if holder := holders[branch]; holder != "" {
+		if holder != l.checkout.Root {
+			return gtOntoMove{}, refuse("ship: moving %s onto %s replays its own commits, and %s has it checked out — ship moves no other working copy's checkout, so rebase it there, then ship again", branch, parent, holder)
+		}
 		if _, err := render.RunCLI(ctx, render.Dir(holder), "git", []string{"read-tree", "-m", "-u", "-n", was, head}); err != nil {
 			return gtOntoMove{}, &errReplayDirty{
 				shipRefusal: &shipRefusal{msg: fmt.Sprintf("ship: replaying %s onto %s would overwrite uncommitted changes in %s (%v) — commit or set them aside, then ship again", branch, parent, holder, err)},
@@ -1793,7 +1851,7 @@ func gtAPI(ctx context.Context) *gtapi.Client {
 // else, and never rebases or retries — gt owns restacking.
 // The resolved downstack it returns is the one the pull request step then
 // backfills into, so the stack is walked and its pull requests fetched once.
-func shipPushGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, meta map[string]prMeta, fetch *gtTrunkFetch, branch, suffix string, c *gtCache) (submitted string, bodyless []string, stack []stackEntry, err error) {
+func shipPushGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, meta map[string]prMeta, fetch *gtTrunkFetch, branch, suffix string, c *gtCache, target shipTarget) (submitted string, bodyless []string, stack []stackEntry, err error) {
 	state, err := c.at(ctx)
 	if err != nil {
 		return "", nil, nil, err
@@ -1825,7 +1883,7 @@ func shipPushGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, meta ma
 	if err != nil {
 		return "", nil, nil, err
 	}
-	sub := gtSubmit{prefix: "ship", suffix: suffix, draft: &o.draft, draftAll: o.draft || o.publish, noVerify: o.noVerify, shipTip: branch, prepared: prepared, noPR: o.noPR}
+	sub := gtSubmit{prefix: "ship", suffix: suffix, draft: &o.draft, draftAll: o.draft || o.publish, noVerify: o.noVerify, shipTip: branch, prepared: prepared, noPR: o.noPR, target: target}
 	if c.restack != nil {
 		sub.publication = c.restack
 		sub.trunkHead = c.restack.Pin
@@ -2019,6 +2077,11 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 	}
 	if err := gtParkedBases(ctx, l.dir(), plan, known, s.trunkHead); err != nil {
 		return nil, nil, err
+	}
+	if s.target.branch != "" {
+		if err := gtPinTarget(s, plan); err != nil {
+			return nil, nil, err
+		}
 	}
 	unrecorded, err := gtUnrecordedOf(commonDir, plan)
 	if err != nil {

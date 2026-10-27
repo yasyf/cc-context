@@ -72,6 +72,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs ship --branch <name> --tip-only --no-commit` ships a branch
+  another working copy holds.** Ship refused `--branch` with `--no-commit`
+  outside jj and could submit only the branch checked out where it ran, so a
+  branch pinned in another worktree, `--no-checkout` included, needed a
+  second worktree just to run ship. In the graphite lane, that combination
+  now pushes the named branch under its lease and submits its pull request,
+  with `--pr-title`, `--pr-body-file`, and `--parent` applying to it, from
+  any working copy, without checking it out. Uncommitted changes in the
+  working copy ship runs from no longer refuse it, since they are not part
+  of that branch. It pushes that branch alone, leased on the remote head
+  read together with its local head, and refuses instead of pushing a parked
+  `graphite-base` branch or moving another working copy's checkout.
+
 - **`ccx vcs ship --tip-only` ships past another lane's stopped stack
   rebase.** A tip-only ship whose tip needed no replay claimed the stack's
   bottom branch, so a rebase another lane had stopped on a conflict anywhere

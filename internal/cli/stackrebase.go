@@ -276,6 +276,7 @@ type stackRebaseOpts struct {
 	bump        []string
 	keepHeld    bool
 	recorded    map[string]stackRecordedParent
+	target      shipTarget
 }
 
 const stackDropCommitsUsage = "publish a branch whose local head drops commits its published head carries"
@@ -472,7 +473,7 @@ func runStackRebase(cmd *cobra.Command, o stackRebaseOpts) error {
 	if err != nil {
 		return err
 	}
-	current, err := gitCurrentBranch(ctx, l.dir(), stackRebasePrefix)
+	current, err := stackCenter(ctx, l.dir(), stackRebasePrefix, o)
 	if err != nil {
 		return err
 	}
@@ -1098,6 +1099,13 @@ func stackProcStart(pid int) string {
 	return strings.TrimSpace(string(out))
 }
 
+func stackCenter(ctx context.Context, dir render.Dir, prefix string, o stackRebaseOpts) (string, error) {
+	if o.tipOnly {
+		return o.tip, nil
+	}
+	return gitCurrentBranch(ctx, dir, prefix)
+}
+
 func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts) (*stackRebaseRun, error) {
 	requested := o
 	requested.pinned = slices.Clone(o.pinned)
@@ -1114,7 +1122,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	if err != nil {
 		return nil, err
 	}
-	current, err := gitCurrentBranch(ctx, l.dir(), prefix)
+	current, err := stackCenter(ctx, l.dir(), prefix, o)
 	if err != nil {
 		return nil, err
 	}
@@ -1276,6 +1284,11 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	}
 	if err := stackRequireHistory(ctx, l.dir(), prefix, tr.Remote(), trunk, remotes); err != nil {
 		return nil, err
+	}
+	if o.target.branch != "" {
+		if err := o.target.moved(state[o.target.branch].Head, remotes[o.target.branch]); err != nil {
+			return nil, err
+		}
 	}
 
 	host, err := os.Hostname()

@@ -137,7 +137,7 @@ func dryRunPosition(ctx context.Context, l lane, o shipOpts, c *gtCache, r *ship
 }
 
 func dryRunPositionGT(ctx context.Context, l lane, o shipOpts, c *gtCache, r *shipDryRun) error {
-	branch, err := gitCurrentBranch(ctx, l.dir(), "ship")
+	branch, err := shipBranch(ctx, l.dir(), o)
 	if err != nil {
 		return err
 	}
@@ -321,7 +321,11 @@ func dryRunPlace(ctx context.Context, l lane, o shipOpts, r *shipDryRun) error {
 // predicate, never a restatement of its wording.
 func dryRunRefusals(ctx context.Context, l lane, o shipOpts, r *shipDryRun) error {
 	checks := []func() error{}
-	if o.noCommit {
+	elsewhere, err := shipElsewhere(ctx, l, o)
+	if err != nil {
+		return err
+	}
+	if o.noCommit && !elsewhere {
 		checks = append(checks, func() error { _, err := shipRefuseDirty(ctx, l.dir(), l.kind, o); return err })
 	}
 	if l.gt {

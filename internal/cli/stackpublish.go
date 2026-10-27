@@ -770,6 +770,8 @@ func stackChooseSourceMoves(ctx context.Context, l lane, run *stackRebaseRun, ho
 			why = "no receipt names its published head"
 		case at != b.NewHead && shared[b.Name]:
 			why = "checked out in more than one working copy"
+		case at != b.NewHead && b.Name == run.Tip && holders[b.Name] != "" && holders[b.Name] != run.Origin:
+			why = "checked out in " + holders[b.Name]
 		case at != b.NewHead:
 			if why, err = stackSourceStays(ctx, l, *b, at, holders, stays); err != nil {
 				return nil, err
