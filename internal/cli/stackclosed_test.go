@@ -383,3 +383,56 @@ func TestStackSubmitReopensAPullRequestClosedWhileGraphiteRecreatedItsBase(t *te
 		t.Errorf("b submitted as %s #%d onto %s, want an update of #2 onto main", entry.Action, entry.PRNumber, entry.Base)
 	}
 }
+
+// TestStackRebaseDropsAClosedGraphiteParentThisCloneHasNoBranchFor is a lane
+// whose Graphite parent closed without merging, in a clone that never had a
+// branch for that parent: the run planned the lane onto trunk from its merge
+// base, which carried the closed parent's commits along and moved nothing.
+func TestStackRebaseDropsAClosedGraphiteParentThisCloneHasNoBranchFor(t *testing.T) {
+	f := shipGTRepo(t)
+	api := stubGTAPI(t)
+	api.prs["feature"] = 6
+	f.Decorate(api.ctx)
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "parent")
+	stackCommit(t, f, "parent.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "feature")
+	stackCommit(t, f, "feature.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "parent", "feature")
+	closed := gitAt(t, f.Env(), f.Dir, "rev-parse", "parent")
+	mustRun(t, f.Env(), f.Dir, "git", "branch", "-D", "parent")
+	mustRun(t, f.Env(), f.Dir, "gt", "track", "-f", "--no-interactive")
+	stubStackPRs(t, f, map[string]*stackPR{
+		"parent":  {Number: 5, Title: "parent", State: "CLOSED", Base: "main"},
+		"feature": {Number: 6, Title: "feature", State: "OPEN", Base: "parent"},
+	})
+	writeShipGH(t, f)
+
+	plan, errOut, err := runStackCmd(t, f, "rebase", "--dry-run")
+	if err != nil {
+		t.Fatalf("stack rebase --dry-run = %v (stderr=%q)", err, errOut)
+	}
+	if want := "parent" + shipSep + "drop (#5 closed)"; !strings.Contains(plan, want) {
+		t.Errorf("plan = %q, want %q", plan, want)
+	}
+	if want := "feature" + shipSep + "onto main (was parent)" + shipSep + "from " + closed[:12]; !strings.Contains(plan, want) {
+		t.Errorf("plan = %q, want %q", plan, want)
+	}
+	if want := "fetched parent to drop it from under feature — Graphite stacks #6 on it, and its pull request #5 closed without merging"; !strings.Contains(errOut, want) {
+		t.Errorf("stderr = %q, want %q", errOut, want)
+	}
+	shipResetLog(t, f)
+
+	if _, errOut, err := runStackCmd(t, f, "rebase"); err != nil {
+		t.Fatalf("stack rebase = %v (stderr=%q)", err, errOut)
+	}
+	dropStep(t, shipGTInvocations(t, f), "gh", "PATCH", "repos/yasyf/cc-context/pulls/6", "base=main")
+	if n := gitAt(t, f.Env(), f.RemoteDir, "rev-list", "--count", "main..feature"); n != "1" {
+		t.Errorf("origin feature holds %s commits over main, want its own 1", n)
+	}
+	if files := gitAt(t, f.Env(), f.RemoteDir, "ls-tree", "--name-only", "feature"); strings.Contains(files, "parent.txt") {
+		t.Errorf("origin feature carries the closed parent's parent.txt: %q", files)
+	}
+	if got := dropGTParent(t, f, "feature"); got != "main" {
+		t.Errorf("gt parent of feature = %s, want main", got)
+	}
+}

@@ -546,7 +546,11 @@ func stackBegin(ctx context.Context, cmd *cobra.Command, l lane, commonDir strin
 	}
 	for _, child := range slices.Sorted(maps.Keys(run.recorded)) {
 		r := run.recorded[child]
-		if _, err := fmt.Fprintf(cmd.ErrOrStderr(), "stack rebase: fetched %s and kept it as %s's parent — Graphite stacks #%d on it, and this clone had no branch for it\n", r.branch, child, r.pr); err != nil {
+		line := fmt.Sprintf("stack rebase: fetched %s and kept it as %s's parent — Graphite stacks #%d on it, and this clone had no branch for it\n", r.branch, child, r.pr)
+		if r.closed != 0 {
+			line = fmt.Sprintf("stack rebase: fetched %s to drop it from under %s — Graphite stacks #%d on it, and its pull request #%d closed without merging\n", r.branch, child, r.pr, r.closed)
+		}
+		if _, err := io.WriteString(cmd.ErrOrStderr(), line); err != nil {
 			return err
 		}
 	}
@@ -1399,6 +1403,9 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 			return nil, stackTipClosedError{branch: name, number: b.PR.Number}
 		}
 		b.Local = source.Head
+		if r := o.recorded[name]; r.closed != 0 {
+			b.WasParent = r.branch
+		}
 		if !o.noPush {
 			if receipt != nil {
 				b.Receipt = receipt.OID
@@ -1920,7 +1927,7 @@ func stackAdoptUntrackedParents(ctx context.Context, dir render.Dir, commonDir s
 
 type stackRecordedParent struct {
 	branch, parent string
-	pr             int
+	pr, closed     int
 }
 
 func stackFetchRecordedParents(ctx context.Context, dir render.Dir, tr vcs.Trunk, state gtState, members []string, overrides map[string]string, prs map[string]*stackPR) (map[string]stackRecordedParent, error) {
@@ -1954,7 +1961,7 @@ func stackFetchRecordedParents(ctx context.Context, dir render.Dir, tr vcs.Trunk
 	for _, child := range children {
 		base := bases[child]
 		pr := parents[base]
-		if heads[base] == "" || heads[child] == "" || pr == nil || pr.State != "OPEN" {
+		if heads[base] == "" || heads[child] == "" || pr == nil || pr.State != "OPEN" && !pr.abandoned() {
 			continue
 		}
 		on, err := gitIsAncestor(ctx, dir, stackRebasePrefix, heads[base], heads[child])
@@ -1975,7 +1982,11 @@ func stackFetchRecordedParents(ctx context.Context, dir render.Dir, tr vcs.Trunk
 			}
 			fetched[base] = true
 		}
-		found[child] = stackRecordedParent{branch: base, parent: pr.base(), pr: prs[child].Number}
+		r := stackRecordedParent{branch: base, parent: pr.base(), pr: prs[child].Number}
+		if pr.abandoned() {
+			r.closed = pr.Number
+		}
+		found[child] = r
 	}
 	return found, nil
 }
