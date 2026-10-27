@@ -117,7 +117,7 @@ func writeAuth(w io.Writer, auth ghapi.Auth) {
 	for _, id := range identities {
 		for _, p := range id.Pools {
 			line := fmt.Sprintf("%s %s %d/%d left, resets %s", p.Identity, p.Resource, p.Remaining, p.Limit, p.ResetAt.Local().Format(time.Kitchen))
-			if p.Remaining < ghapi.Floor {
+			if p.Remaining < p.Floor {
 				line += ", under the floor"
 			}
 			if top := ghapi.TopCallers(p, 5); top != "" {
