@@ -20,7 +20,8 @@ import (
 )
 
 // Floor is how much of a pool ccx leaves unread: a read that finds its pool
-// under Floor before the pool resets is refused, so the rest stays for writes.
+// under Floor, or a fifth of a smaller pool's limit, before the pool resets is
+// refused, so the rest stays for writes.
 const Floor = 1000
 
 const quotaStale = time.Minute
@@ -39,6 +40,7 @@ type Pool struct {
 	Resource  string    `json:"resource"`
 	Limit     int       `json:"limit"`
 	Remaining int       `json:"remaining"`
+	Floor     int       `json:"floor"`
 	ResetAt   time.Time `json:"resetAt"`
 	ReadAt    time.Time `json:"readAt"`
 	Callers   []Caller  `json:"callers"`
@@ -59,7 +61,7 @@ func (e *FloorError) Error() string {
 	p := e.Pool
 	reset := p.ResetAt.Local()
 	msg := fmt.Sprintf("%s %s has %d of %d left, under the floor of %d, until %s (%s)",
-		p.Identity, p.Resource, p.Remaining, p.Limit, Floor, reset.Format(time.Kitchen), reset.Format(time.RFC3339))
+		p.Identity, p.Resource, p.Remaining, p.Limit, p.Floor, reset.Format(time.Kitchen), reset.Format(time.RFC3339))
 	if top := TopCallers(p, 5); top != "" {
 		msg += "; top callers: " + top
 	}
@@ -86,6 +88,20 @@ type poolState struct {
 func (p *poolState) roll(now time.Time, reset time.Time) {
 	if !p.ResetAt.IsZero() && (!now.Before(p.ResetAt) || reset.After(p.ResetAt.Add(time.Minute))) {
 		p.Callers = nil
+	}
+}
+
+func (p *poolState) floor() int { return min(Floor, p.Limit/5) }
+
+func (p *poolState) observe(now time.Time, limit, remaining int, reset time.Time) {
+	reset = reset.UTC()
+	switch {
+	case reset.Before(p.ResetAt.Add(-time.Second)):
+	case !p.ReadAt.IsZero() && reset.Sub(p.ResetAt).Abs() <= time.Second:
+		p.Limit, p.Remaining, p.ReadAt = limit, min(p.Remaining, remaining), now.UTC()
+	default:
+		p.roll(now, reset)
+		p.Limit, p.Remaining, p.ResetAt, p.ReadAt = limit, remaining, reset, now.UTC()
 	}
 }
 
@@ -171,8 +187,7 @@ func (l *ledger) charge(ctx context.Context, identity, resource, caller string, 
 		remaining, remainingErr := strconv.Atoi(header.Get("X-RateLimit-Remaining"))
 		reset, resetErr := strconv.ParseInt(header.Get("X-RateLimit-Reset"), 10, 64)
 		if limitErr == nil && remainingErr == nil && resetErr == nil {
-			p.roll(now, time.Unix(reset, 0))
-			p.Limit, p.Remaining, p.ResetAt, p.ReadAt = limit, remaining, time.Unix(reset, 0).UTC(), now.UTC()
+			p.observe(now, limit, remaining, time.Unix(reset, 0))
 		} else {
 			p.roll(now, p.ResetAt)
 			p.Remaining = max(p.Remaining-1, 0)
@@ -199,14 +214,12 @@ func (l *ledger) record(ctx context.Context, identity string, limits rateLimits)
 			if resource != ResourceCore && resource != ResourceGraphQL && resource != ResourceSearch {
 				continue
 			}
-			p := l.pool(pools, identity, resource)
-			p.roll(now, time.Unix(r.Reset, 0))
-			p.Limit, p.Remaining, p.ResetAt, p.ReadAt = r.Limit, r.Remaining, time.Unix(r.Reset, 0).UTC(), now.UTC()
+			l.pool(pools, identity, resource).observe(now, r.Limit, r.Remaining, time.Unix(r.Reset, 0))
 		}
 	})
 }
 
-func (l *ledger) pools(identity string) ([]Pool, error) {
+func (l *ledger) pools(principal string) ([]Pool, error) {
 	states, err := l.load()
 	if err != nil {
 		return nil, err
@@ -215,17 +228,18 @@ func (l *ledger) pools(identity string) ([]Pool, error) {
 	var out []Pool
 	for key, p := range states {
 		id, resource, _ := strings.Cut(key, ":")
-		if id != identity {
+		if id != principal {
 			continue
 		}
-		out = append(out, p.public(id, resource, now))
+		out = append(out, p.public(principal, resource, now))
 	}
 	slices.SortFunc(out, func(a, b Pool) int { return cmp.Compare(a.Resource, b.Resource) })
 	return out, nil
 }
 
-func (p *poolState) public(identity, resource string, now time.Time) Pool {
-	pool := Pool{Identity: identity, Resource: resource, Limit: p.Limit, Remaining: p.Remaining, ResetAt: p.ResetAt, ReadAt: p.ReadAt, Callers: []Caller{}}
+func (p *poolState) public(principal, resource string, now time.Time) Pool {
+	kind, _, _ := strings.Cut(principal, "#")
+	pool := Pool{Identity: kind, Resource: resource, Limit: p.Limit, Remaining: p.Remaining, Floor: p.floor(), ResetAt: p.ResetAt, ReadAt: p.ReadAt, Callers: []Caller{}}
 	if !now.Before(p.ResetAt) {
 		pool.Remaining = p.Limit
 		return pool
@@ -260,33 +274,37 @@ func Resource(target string) string {
 }
 
 // Admit refuses a read from identity's resource pool with a *FloorError when
-// the pool is under Floor, re-reading a stale pool from rate_limit first. The
-// app identity reads through c's repository.
+// the pool is under its floor, re-reading a stale pool from rate_limit first.
+// The app identity is the installation on c's repository.
 func (c *Client) Admit(ctx context.Context, identity, resource string) error {
-	if c.quota == nil {
+	if c.quota == nil || c.floorless {
 		return nil
+	}
+	principal, err := c.principal(ctx, identity)
+	if err != nil {
+		return err
 	}
 	states, err := c.quota.load()
 	if err != nil {
 		return err
 	}
 	now := c.quota.now()
-	p, ok := states[poolKey(identity, resource)]
+	p, ok := states[poolKey(principal, resource)]
 	if !ok || p.stale(now) {
-		if err := c.readQuota(ctx, identity); err != nil {
+		if err := c.readQuota(ctx, identity, principal); err != nil {
 			return err
 		}
 		if states, err = c.quota.load(); err != nil {
 			return err
 		}
-		if p, ok = states[poolKey(identity, resource)]; !ok {
+		if p, ok = states[poolKey(principal, resource)]; !ok {
 			return nil
 		}
 	}
-	if p.Remaining >= Floor || !now.Before(p.ResetAt) {
+	if p.Remaining >= p.floor() || !now.Before(p.ResetAt) {
 		return nil
 	}
-	return &FloorError{Pool: p.public(identity, resource, now)}
+	return &FloorError{Pool: p.public(principal, resource, now)}
 }
 
 // Charge counts one request by the calling process against identity's
@@ -295,7 +313,11 @@ func (c *Client) Charge(ctx context.Context, identity, resource string) error {
 	if c.quota == nil {
 		return nil
 	}
-	return c.quota.charge(ctx, identity, resource, CallerName(ctx), http.Header{})
+	principal, err := c.principal(ctx, identity)
+	if err != nil {
+		return err
+	}
+	return c.quota.charge(ctx, principal, resource, CallerName(ctx), http.Header{})
 }
 
 // Pools reads identity's pools fresh from rate_limit and returns them with
@@ -304,13 +326,32 @@ func (c *Client) Pools(ctx context.Context, identity string) ([]Pool, error) {
 	if c.quota == nil {
 		return nil, nil
 	}
-	if err := c.readQuota(ctx, identity); err != nil {
+	principal, err := c.principal(ctx, identity)
+	if err != nil {
 		return nil, err
 	}
-	return c.quota.pools(identity)
+	if err := c.readQuota(ctx, identity, principal); err != nil {
+		return nil, err
+	}
+	return c.quota.pools(principal)
 }
 
-func (c *Client) readQuota(ctx context.Context, identity string) error {
+func (c *Client) principal(ctx context.Context, identity string) (string, error) {
+	if identity != IdentityApp {
+		return IdentityUser, nil
+	}
+	src, err := c.readApp(ctx)
+	if err != nil || src == nil {
+		return IdentityApp, err
+	}
+	_, id, err := src.token(ctx, c.repo, AppRefreshMargin, "")
+	if err != nil {
+		return "", err
+	}
+	return IdentityApp + "#" + strconv.FormatInt(id, 10), nil
+}
+
+func (c *Client) readQuota(ctx context.Context, identity, principal string) error {
 	var cred credential = c.tokens
 	if identity == IdentityApp {
 		src, err := c.readApp(ctx)
@@ -337,7 +378,7 @@ func (c *Client) readQuota(ctx context.Context, identity string) error {
 	if err := json.Unmarshal(payload, &limits); err != nil {
 		return fmt.Errorf("ghapi: decode /rate_limit: %w", err)
 	}
-	return c.quota.record(ctx, identity, limits)
+	return c.quota.record(ctx, principal, limits)
 }
 
 // CallerName names whoever a request is charged to: $CCX_CALLER, else

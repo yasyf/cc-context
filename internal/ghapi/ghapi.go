@@ -32,13 +32,14 @@ var nextRel = regexp.MustCompile(`<([^>]+)>\s*;\s*rel="next"`)
 
 // Client issues authenticated GitHub API requests against one API root.
 type Client struct {
-	base    string
-	http    *http.Client
-	tokens  *tokenSource
-	apps    *appLoader
-	repo    string
-	retries int
-	quota   *ledger
+	base      string
+	http      *http.Client
+	tokens    *tokenSource
+	apps      *appLoader
+	repo      string
+	retries   int
+	quota     *ledger
+	floorless bool
 }
 
 var defaultClient = sync.OnceValue(func() *Client {
@@ -78,6 +79,14 @@ func (c *Client) AsUser() *Client {
 	user := *c
 	user.repo = ""
 	return &user
+}
+
+// Unfloored returns a copy of c whose reads skip the quota floor, for a
+// caller reporting the quota itself. Its requests are still charged.
+func (c *Client) Unfloored() *Client {
+	unfloored := *c
+	unfloored.floorless = true
+	return &unfloored
 }
 
 // Unwaiting returns a copy of c that hands a rate-limited response straight
@@ -189,6 +198,10 @@ func (c *Client) do(ctx context.Context, method, ref string, body []byte, read b
 				return nil, nil, false, err
 			}
 		}
+		principal, err := c.principal(ctx, identity)
+		if err != nil {
+			return nil, nil, false, err
+		}
 		token, err := cred.get(ctx)
 		if err != nil {
 			return nil, nil, false, err
@@ -200,7 +213,7 @@ func (c *Client) do(ctx context.Context, method, ref string, body []byte, read b
 			return nil, nil, false, err
 		}
 		if c.quota != nil {
-			if err := c.quota.charge(ctx, identity, Resource(target), CallerName(ctx), header); err != nil {
+			if err := c.quota.charge(ctx, principal, Resource(target), CallerName(ctx), header); err != nil {
 				return nil, nil, false, err
 			}
 		}

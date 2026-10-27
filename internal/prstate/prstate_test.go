@@ -462,11 +462,11 @@ func TestBackoffIsSharedAcrossStores(t *testing.T) {
 	if _, err := first.Read(testCtx(t), Want{PRs: []int{190}}); err == nil {
 		t.Fatal("first read succeeded")
 	}
-	c.now = c.now.Add(time.Minute)
+	c.now = c.now.Add(30 * time.Second)
 	_, err := second.Read(testCtx(t), Want{PRs: []int{189}})
 	var refused *LimitedError
-	if !errors.As(err, &refused) || secondGH.requests() != 0 {
-		t.Errorf("second store read = %v after %d requests, want it refused by the first store's backoff", err, secondGH.requests())
+	if !errors.As(err, &refused) || secondGH.requests() != 0 || len(secondGH.reads) != 0 {
+		t.Errorf("second store read = %v after %d queries and %d REST reads, want it refused by the first store's GraphQL and REST backoffs", err, secondGH.requests(), len(secondGH.reads))
 	}
 }
 

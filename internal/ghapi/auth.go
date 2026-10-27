@@ -51,6 +51,7 @@ const appAuthQuery = `query { rateLimit { limit remaining resetAt } }`
 // ledger tracks for it. It mints the app token a
 // read would, so it doubles as the check that minting works.
 func (c *Client) Auth(ctx context.Context) (Auth, error) {
+	c = c.Unfloored()
 	writes, err := c.AsUser().userIdentity(ctx)
 	if err != nil {
 		return Auth{}, err

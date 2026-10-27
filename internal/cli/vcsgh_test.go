@@ -120,6 +120,9 @@ func TestGhReads(t *testing.T) {
 		{name: "api graphql mutation", argv: []string{"api", "graphql", "-f", "query= mutation { addStar(input: {}) { clientMutationId } }"}},
 		{name: "api graphql stdin mutation", argv: []string{"api", "graphql", "--input", "-"}, stdin: `{"query":"mutation { addStar(input: {}) { clientMutationId } }"}`},
 		{name: "api graphql unreadable input", argv: []string{"api", "graphql", "--input", "missing.json"}},
+		{name: "api graphql commented mutation", argv: []string{"api", "graphql", "-f", "query=# merge it\nmutation { mergePullRequest(input: {}) { clientMutationId } }"}},
+		{name: "api graphql mutation after a query", argv: []string{"api", "graphql", "-f", "query=query A { viewer { login } } mutation B { addStar(input: {}) { clientMutationId } }"}},
+		{name: "api graphql leading slash", argv: []string{"api", "/graphql", "-f", "query={ viewer { login } }"}, want: true},
 		{name: "api graphql after terminator", argv: []string{"api", "--", "graphql"}},
 	}
 	for _, tt := range tests {
@@ -168,6 +171,9 @@ func TestRunVcsGhRefusesAMerge(t *testing.T) {
 		{"api", "-X", "PATCH", "orgs/o/rulesets/9", "-f", "enforcement=disabled"},
 		{"api", "graphql", "-f", "query=mutation { mergePullRequest(input: {pullRequestId: \"x\"}) { clientMutationId } }"},
 		{"api", "graphql", "-f", "query=mutation { updateBranchProtectionRule(input: {}) { clientMutationId } }"},
+		{"api", "graphql", "-f", "query=# a comment\nmutation { mergePullRequest(input: {pullRequestId: \"x\"}) { clientMutationId } }"},
+		{"api", "/graphql", "-f", "query=mutation { mergePullRequest(input: {pullRequestId: \"x\"}) { clientMutationId } }"},
+		{"api", "https://api.github.com/graphql", "-f", "query=mutation { enablePullRequestAutoMerge(input: {}) { clientMutationId } }"},
 	} {
 		err := runVcsGh(&cobra.Command{}, argv, time.Minute)
 		if err == nil || !strings.HasSuffix(err.Error(), ": "+ghCommand(argv)) || !strings.Contains(err.Error(), "merge with gh pr merge") {

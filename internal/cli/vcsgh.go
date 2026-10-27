@@ -109,8 +109,8 @@ func runVcsGh(cmd *cobra.Command, argv []string, maxAge time.Duration) error {
 	}
 	repo := ghTargetRepo(ctx, argv)
 	userToken := ghReadsOutsideInstallation(argv)
-	cacheable := maxAge > 0 && !ghWatches(argv)
-	key := ghCacheKey(repo, argv, stdin)
+	cacheable := maxAge > 0 && !ghWatches(argv) && !ghReadsFiles(argv)
+	key := ghCacheKey(cmp.Or(repo, dir), argv, stdin)
 	if cacheable {
 		if hit, ok := ghCached(key); ok && time.Since(hit.At) < maxAge {
 			_, err := cmd.OutOrStdout().Write(hit.Stdout)
@@ -234,11 +234,25 @@ func ghGuarded(argv []string, stdin []byte) bool {
 		return false
 	}
 	_, endpoint := ghAPIRequest(argv[1:])
-	if endpoint != "graphql" {
+	if ghapi.Resource(endpoint) != ghapi.ResourceGraphQL {
 		return ghGuardedEndpoint.MatchString(endpoint)
 	}
 	query, ok := ghGraphQLQuery(argv[1:], stdin)
 	return !ok || ghGuardedMutation.MatchString(query)
+}
+
+func ghReadsFiles(argv []string) bool {
+	for i, arg := range argv {
+		switch {
+		case arg == "--input" && i+1 < len(argv) && argv[i+1] != "-":
+			return true
+		case strings.HasPrefix(arg, "--input=") && arg != "--input=-":
+			return true
+		case strings.Contains(arg, "=@") && !strings.HasSuffix(arg, "=@-"):
+			return true
+		}
+	}
+	return false
 }
 
 func ghWatches(argv []string) bool {
@@ -390,12 +404,17 @@ func ghReads(argv []string, stdin []byte) bool {
 // GraphQL query that is not a mutation.
 func ghAPIReads(args []string, stdin []byte) bool {
 	method, endpoint := ghAPIRequest(args)
-	if endpoint != "graphql" {
+	if ghapi.Resource(endpoint) != ghapi.ResourceGraphQL {
 		return method == "GET"
 	}
 	query, ok := ghGraphQLQuery(args, stdin)
-	return ok && !strings.HasPrefix(strings.TrimSpace(query), "mutation")
+	return ok && !ghMutation.MatchString(ghGraphQLComment.ReplaceAllString(query, ""))
 }
+
+var (
+	ghGraphQLComment = regexp.MustCompile(`#[^\n]*`)
+	ghMutation       = regexp.MustCompile(`\bmutation\b`)
+)
 
 // ghGraphQLQuery returns the GraphQL document gh api's args send: a query
 // field, raw or typed and read from a file or stdin with @, or an --input

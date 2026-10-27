@@ -84,6 +84,7 @@ type State struct {
 	PRs         map[int]PR      `json:"prs,omitempty"`
 	Rate        Rate            `json:"rate"`
 	Backoff     *Backoff        `json:"backoff,omitempty"`
+	RESTBackoff *Backoff        `json:"restBackoff,omitempty"`
 	Failure     *Failure        `json:"failure,omitempty"`
 	Leases      Leases          `json:"-"`
 }
@@ -444,7 +445,7 @@ func (s *Store) read(ctx context.Context, want Want, asked time.Time, waited boo
 }
 
 func (s *Store) degrade(ctx context.Context, st State, want Want, asked, now time.Time, cause error) (State, time.Duration, error) {
-	if ctx.Err() != nil {
+	if b := st.RESTBackoff; ctx.Err() != nil || b != nil && now.Before(b.ProbeAt) {
 		return st, 0, cause
 	}
 	prs := slices.Clone(want.PRs)
@@ -458,21 +459,30 @@ func (s *Store) degrade(ctx context.Context, st State, want Want, asked, now tim
 	slices.Sort(prs)
 	prs = slices.DeleteFunc(slices.Compact(prs), func(n int) bool { return st.fresh(Want{PRs: []int{n}, MaxAge: want.MaxAge}, asked) })
 	if len(prs) == 0 {
-		return st, 0, s.verdict(st, Want{PRs: want.PRs, MaxAge: want.MaxAge}, asked)
+		return st, 0, s.verdict(st, want, asked)
 	}
 	_, _ = fmt.Fprintf(s.src.warn, "prstate: %v; reading %d pull requests through REST\n", cause, len(prs))
 	p, err := s.src.pollREST(ctx, prs, st.PRs, st.Trunk.Name)
 	if err != nil {
+		if wait, limited := ghapi.RateLimited(err); limited {
+			if st, cerr := s.commit(ctx, func(st *State) bool {
+				st.RESTBackoff = limitedAt(now, wait)
+				return true
+			}); cerr != nil {
+				return st, 0, cerr
+			}
+		}
 		return st, 0, fmt.Errorf("%w; the REST fallback failed too: %w", cause, err)
 	}
 	st, err = s.commit(ctx, func(st *State) bool {
 		st.merge(p, now)
+		st.RESTBackoff = nil
 		return true
 	})
 	if err != nil {
 		return st, 0, err
 	}
-	return st, 0, s.verdict(st, Want{PRs: want.PRs}, asked)
+	return st, 0, s.verdict(st, want, asked)
 }
 
 func (s *Store) verdict(st State, want Want, asked time.Time) error {

@@ -153,3 +153,34 @@ func TestResource(t *testing.T) {
 		}
 	}
 }
+
+func TestAdmitScalesTheFloorToASmallPool(t *testing.T) {
+	reset := time.Now().Add(time.Minute).Truncate(time.Second)
+	c, _ := quotaClient(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprintf(w, `{"resources":{"search":{"limit":30,"remaining":%d,"reset":%d}}}`, 30, reset.Unix())
+	})
+	if err := c.Admit(t.Context(), IdentityUser, ResourceSearch); err != nil {
+		t.Errorf("Admit(search) with all 30 left = %v, want it admitted under the pool's own floor of 6", err)
+	}
+}
+
+func TestALateResponseNeverRaisesTheBalanceWithinAWindow(t *testing.T) {
+	reset := time.Now().Add(time.Hour).Truncate(time.Second)
+	l := &ledger{dir: t.TempDir(), now: time.Now}
+	for _, remaining := range []string{"4000", "4100"} {
+		header := http.Header{}
+		header.Set("X-RateLimit-Limit", "5000")
+		header.Set("X-RateLimit-Remaining", remaining)
+		header.Set("X-RateLimit-Reset", strconv.FormatInt(reset.Unix(), 10))
+		if err := l.charge(t.Context(), IdentityUser, ResourceCore, "watch.sh", header); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pools, err := l.pools(IdentityUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pools) != 1 || pools[0].Remaining != 4000 || pools[0].Callers[0].Requests != 2 {
+		t.Errorf("pools = %+v, want 4000 left after a late 4100 and two requests charged", pools)
+	}
+}
