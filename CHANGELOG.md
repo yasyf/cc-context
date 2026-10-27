@@ -72,6 +72,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs ship --tip-only` ships past another lane's stopped stack
+  rebase.** A tip-only ship whose tip needed no replay claimed the stack's
+  bottom branch, so a rebase another lane had stopped on a conflict anywhere
+  above that bottom refused it. A tip-only run now claims only its tip, as
+  its help already said: it reads each ancestor at its published head and
+  locks none of them.
+
 - **`ccx vcs pr status` over many pull requests gives each page its own
   deadline.** A read of 97 pull requests failed every landing pass: the
   shared poll had one 30-second deadline for all of its pages, and the REST

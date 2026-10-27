@@ -665,3 +665,38 @@ func TestShipTipOnlyBesideRunsOfOtherBranches(t *testing.T) {
 		})
 	}
 }
+
+func TestShipTipOnlyClaimsOnlyItsTipPastAnotherLanesStoppedRebase(t *testing.T) {
+	t.Parallel()
+	stopped := &stackRebaseRun{
+		Roots:    []string{"bottom"},
+		Claims:   []string{"bottom", "sibling"},
+		Conflict: &stackConflict{Branch: "sibling", Workspace: "conflict-sibling"},
+	}
+	published := func(name, parent string) stackRebaseBranch {
+		return stackRebaseBranch{Name: name, Parent: parent, Head: "published-" + name, Local: "published-" + name, Kept: true}
+	}
+	for _, c := range []struct {
+		name     string
+		tipOnly  bool
+		claims   []string
+		overlaps bool
+	}{
+		{"tip only", true, []string{"feature"}, false},
+		{"whole stack", false, []string{"bottom"}, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			ship := &stackRebaseRun{
+				Roots:    []string{"bottom"},
+				Tip:      "feature",
+				TipOnly:  c.tipOnly,
+				Branches: []stackRebaseBranch{published("bottom", "main"), published("feature", "bottom")},
+			}
+			ship.Claims = stackRunClaims(ship)
+			if !slices.Equal(ship.Claims, c.claims) || stackOverlaps(ship, stopped) != c.overlaps {
+				t.Errorf("a ship publishing nothing claims %v, overlapping the stopped rebase of bottom: %v; want %v, %v", ship.Claims, stackOverlaps(ship, stopped), c.claims, c.overlaps)
+			}
+		})
+	}
+}
