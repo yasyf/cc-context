@@ -36,6 +36,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs ship` refuses a commit onto a queued branch before committing.**
+  On a branch whose pull request sat in Graphite's merge queue, ship cut the
+  commit first and only then refused to push it, leaving an unpushed commit on
+  the queued branch to reset by hand. Ship now asks the queue before the
+  commit forms, refuses with the working copy untouched, and names
+  `--new-branch` for stacking the change on top instead.
+- **A refusal for a branch the run leaves out says why.** When
+  `--pr-title` or `--pr-body-file` named a branch the stack run left out,
+  the refusal said only that, and the reason printed nowhere. It now carries
+  the reason. A branch cut while its parent held a commit and left behind
+  when the parent was reset below that commit reads as empty to gt; the
+  reason names the reset and the `gt track --parent` that re-records it.
 - **`ccx vcs stack submit` moves a pull request off its segment base itself.**
   When Graphite still recorded a pull request on ccx's segment copy of its
   parent after the fresh-head republish, the refusal named two commands to

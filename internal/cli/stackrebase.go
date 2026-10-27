@@ -1622,7 +1622,11 @@ func stackKept(ctx context.Context, dir render.Dir, state gtState, tr vcs.Trunk,
 		case gone[parent]:
 			left = append(left, stackLeft{branch: name, why: "it sits on " + parent + ", which is left where it is"})
 		case !isLanded(name) && s.Parents[0].SHA == s.Head:
-			left = append(left, stackLeft{branch: name, empty: true})
+			why, err := stackRewoundParent(ctx, dir, state, name, parent)
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			left = append(left, stackLeft{branch: name, empty: true, why: why})
 			if below[name] {
 				passed[name] = parent
 				continue
@@ -1655,6 +1659,22 @@ func stackKept(ctx context.Context, dir render.Dir, state gtState, tr vcs.Trunk,
 		}
 	}
 	return kept, left, passed, nil
+}
+
+// stackRewoundParent explains an empty lane whose parent was reset below the
+// revision gt recorded for it: the commits between the parent's head and the
+// branch's are ones the parent dropped, and only the branch's owner can say
+// whether they are its own.
+func stackRewoundParent(ctx context.Context, dir render.Dir, state gtState, name, parent string) (string, error) {
+	recorded, parentHead := state[name].Parents[0].SHA, state[parent].Head
+	if parentHead == "" || parentHead == recorded {
+		return "", nil
+	}
+	below, err := gitIsAncestor(ctx, dir, stackRebasePrefix, parentHead, recorded)
+	if err != nil || !below {
+		return "", err
+	}
+	return fmt.Sprintf("gt records %s's parent revision at %.12s, its own head, so it reads as empty, but %s has since been reset to %.12s below it — if the commits between are %s's own, re-record it with gt track --parent %s %s and re-run", name, recorded, parent, parentHead, name, parent, name), nil
 }
 
 func stackPassThrough(passed map[string]string, parent string) string {
@@ -1814,7 +1834,7 @@ func stackRefuseForeignBelow(ctx context.Context, dir render.Dir, state gtState,
 func stackAnnounceLeft(cmd *cobra.Command, left []stackLeft) error {
 	var empty []string
 	for _, l := range left {
-		if l.empty {
+		if l.empty && l.why == "" {
 			empty = append(empty, l.branch)
 			continue
 		}
@@ -1830,15 +1850,26 @@ func stackAnnounceLeft(cmd *cobra.Command, left []stackLeft) error {
 
 // stackShipCovers refuses, before anything moves, a --pr-title or
 // --pr-body-file naming a branch the run leaves out: its pull request is one
-// nothing will push to.
+// nothing will push to. The refusal carries the reason the run left it.
 func stackShipCovers(run *stackRebaseRun, ship *stackShipIntent) error {
 	if ship == nil {
 		return nil
 	}
 	for _, name := range slices.Sorted(maps.Keys(ship.Meta)) {
-		if b := run.branch(name); b == nil || b.Landed != "" {
-			return fmt.Errorf("stack rebase: --pr-title/--pr-body-file named %s, which this run leaves out", name)
+		b := run.branch(name)
+		if b != nil && b.Landed == "" {
+			continue
 		}
+		why := ""
+		switch i := slices.IndexFunc(run.left, func(l stackLeft) bool { return l.branch == name }); {
+		case b != nil:
+			why = ": it landed"
+		case i >= 0 && run.left[i].why != "":
+			why = ": " + run.left[i].why
+		case i >= 0:
+			why = ": it has no commit of its own yet"
+		}
+		return fmt.Errorf("stack rebase: --pr-title/--pr-body-file named %s, which this run leaves out%s", name, why)
 	}
 	return nil
 }

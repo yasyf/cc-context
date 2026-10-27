@@ -8,6 +8,7 @@ import (
 
 	"github.com/yasyf/cc-context/internal/gtapi"
 	"github.com/yasyf/cc-context/internal/vcs"
+	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
 // TestStackQueueStatesSkipsPullRequestsNotAskedAbout is pulumi-cli-3268's
@@ -250,5 +251,102 @@ func TestShipNewBranchOnAnOpenParentReadsTheQueue(t *testing.T) {
 	}
 	if !stackOnto(t, f, published, gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "bench")) {
 		t.Error("origin bench does not sit on p's published head")
+	}
+}
+
+// stackQueuedBase submits base, then has Graphite and GitHub report its pull
+// request #100 in the merge queue.
+func stackQueuedBase(t *testing.T) (*vcstest.Fixture, *gtAPIStub) {
+	t.Helper()
+	f := stackRebaseRepo(t, "base")
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("stack submit: %v", err)
+	}
+	api.prs["base"] = 100
+	api.queued["base"] = true
+	stubPRState(t, prPoll(`"p0":`+prNode(100, "OPEN", prComments())))
+	stubStackPRs(t, f, map[string]*stackPR{"base": {Number: 100, Title: "base", State: "OPEN", Base: "main"}})
+	return f, api
+}
+
+// TestShipRefusesACommitOntoAQueuedBranchBeforeCommitting is #43587 in
+// Forge-AI/monorepo: ship committed onto the queued branch, then the stack
+// rebase refused to push it, leaving an unpushed commit to reset by hand.
+func TestShipRefusesACommitOntoAQueuedBranchBeforeCommitting(t *testing.T) {
+	f, _ := stackQueuedBase(t)
+	head := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD")
+	published := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
+	writeShipFile(t, f.Dir, "fix.txt", "fix\n")
+
+	_, errStr, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--tip-only", "fix.txt")
+	if err == nil {
+		t.Fatalf("ship committed onto a queued branch (stderr=%q)", errStr)
+	}
+	for _, want := range []string{"base is in the merge queue as #100", "nothing was committed"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal = %q, want it to say %q", err, want)
+		}
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD"); got != head {
+		t.Errorf("HEAD moved to %s, want it left at %s", got, head)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "status", "--porcelain", "--", "fix.txt"); got != "?? fix.txt" {
+		t.Errorf("fix.txt status = %q, want it left uncommitted", got)
+	}
+	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base"); got != published {
+		t.Errorf("origin base moved to %s while queued at %s", got, published)
+	}
+}
+
+// TestShipTipOnlyOpensAChildOfAQueuedBranch is #43587's child: --tip-only
+// ships it onto the queued parent's published head and leaves the parent where
+// the queue holds it.
+func TestShipTipOnlyOpensAChildOfAQueuedBranch(t *testing.T) {
+	f, api := stackQueuedBase(t)
+	published := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "child")
+	stackCommit(t, f, "child.txt")
+	mustRun(t, f.Env(), f.Dir, "gt", "track", "--parent", "base", "--no-interactive")
+
+	_, errStr, err := runShipCmdFull(f.Context(), t, "--no-commit", "--no-watch", "--tip-only", "--pr-title", "child: ✨ the child")
+	if err != nil {
+		t.Fatalf("ship --tip-only of a queued branch's child = %v (stderr=%q)", err, errStr)
+	}
+	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base"); got != published {
+		t.Errorf("origin base moved to %s while queued at %s", got, published)
+	}
+	if got, want := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "child"), gitAt(t, f.Env(), f.Dir, "rev-parse", "child"); got != want {
+		t.Errorf("origin child = %s, want the local child %s", got, want)
+	}
+	if entry := api.submitEntry("child"); entry.Base != "base" || entry.BaseSha != published {
+		t.Errorf("child submitted onto %s at %s, want base at its queued head %s", entry.Base, entry.BaseSha, published)
+	}
+}
+
+// TestShipNamesARewoundParentWhenItLeavesTheTipOut is #43587's child as it
+// stood after the hand reset: cut while the parent held its commit, it reads as
+// empty once the parent went back, and the refusal said only that the run left
+// it out.
+func TestShipNamesARewoundParentWhenItLeavesTheTipOut(t *testing.T) {
+	f := stackRebaseRepo(t, "base")
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("stack submit: %v", err)
+	}
+	published := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
+	stackCommit(t, f, "readback.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "child")
+	mustRun(t, f.Env(), f.Dir, "gt", "track", "--parent", "base", "--no-interactive")
+	mustRun(t, f.Env(), f.Dir, "git", "branch", "-f", "base", published)
+
+	_, errStr, err := runShipCmdFull(f.Context(), t, "--no-commit", "--no-watch", "--tip-only", "--pr-title", "child: ✨ the child")
+	if err == nil {
+		t.Fatalf("ship of a child read as empty succeeded (stderr=%q)", errStr)
+	}
+	for _, want := range []string{"which this run leaves out: gt records child's parent revision", "base has since been reset to", "gt track --parent base child"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal = %q, want it to say %q", err, want)
+		}
 	}
 }
