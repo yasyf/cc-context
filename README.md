@@ -160,7 +160,7 @@ Each command is a token-bounded stand-in for a primitive an agent would otherwis
 | `ccx vcs pr watch <n>...` | Stream one line per transition (queued, ejected, conflicting, red, green, approved, landed...) until PRs land; `--stack` / `--lane-prefix` |
 | `ccx vcs pr state [<n>...]` | Print shared PR records and `--lane-prefix` discoveries as one JSON object; `--wait` allows waiting out rate limits, and `--max-age` accepts older cached records |
 | `ccx vcs pr recreate <n>` | Replace an open PR whose Graphite stack record still holds a closed PR, or a landed one hours after the landing: close it, open a fresh one on the same branch through Graphite with the same title, body, and labels, and link the old one to it; approvals start over |
-| `ccx vcs gh -- <gh args>` | Run a read-only `gh` command such as `pr checks` or `run watch` on the GitHub App's quota instead of the gh user's; refuses a write, naming the plain `gh` command; exits with gh's code |
+| `ccx vcs gh [--max-age DUR] -- <gh args>` | Run a `gh` read, GraphQL queries included, on the GitHub App's quota instead of the gh user's, through a machine-wide cache and a per-pool floor of 1000 that serves the cached answer or names the reset; charges every request to `CCX_CALLER`; refuses a merge or ruleset write, naming the plain `gh` command; exits with gh's code |
 | `ccx vcs worktree add <name>` | Create a worktree in the repository's pool; a branch name like `user/slug` keeps its branch and mints the directory `user-slug` |
 | `ccx vcs worktree rm <name>` | Remove an unused worktree; macOS queues physical deletion after logical removal |
 | `ccx vcs worktree rm --path <absolute-path>` | Remove the worktree at a path; an orphaned pool worktree whose admin dir is gone moves to the Trash |

@@ -372,10 +372,10 @@ func TestAuthReportsBothIdentities(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Auth: %v", err)
 	}
-	if auth.Reads.Kind != identityApp || auth.Reads.Name != "test-app" || auth.Reads.Installation != 7 || auth.Reads.Quota.Remaining != 9999 {
+	if auth.Reads.Kind != IdentityApp || auth.Reads.Name != "test-app" || auth.Reads.Installation != 7 || auth.Reads.Quota.Remaining != 9999 {
 		t.Errorf("reads = %+v, want app test-app on installation 7 with 9999 left", auth.Reads)
 	}
-	if auth.Writes.Kind != identityUser || auth.Writes.Name != "octocat" || auth.Writes.Quota.Remaining != 4000 {
+	if auth.Writes.Kind != IdentityUser || auth.Writes.Name != "octocat" || auth.Writes.Quota.Remaining != 4000 {
 		t.Errorf("writes = %+v, want user octocat with 4000 left", auth.Writes)
 	}
 
@@ -383,7 +383,7 @@ func TestAuthReportsBothIdentities(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Auth: %v", err)
 	}
-	if other.Reads.Kind != identityUser || other.Reason != "test-app is not installed on o/elsewhere" {
+	if other.Reads.Kind != IdentityUser || other.Reason != "test-app is not installed on o/elsewhere" {
 		t.Errorf("auth = %+v, want reads on the user with the reason named", other)
 	}
 }
@@ -416,7 +416,7 @@ func TestAuthReportsASpentUserQuota(t *testing.T) {
 	if got := auth.Writes.Quota.ResetAt; got.Sub(reset).Abs() > 2*time.Second {
 		t.Errorf("resetAt = %v, want about %v", got, reset)
 	}
-	if auth.Reads.Kind != identityApp || auth.Reads.Quota.Remaining != 9999 {
+	if auth.Reads.Kind != IdentityApp || auth.Reads.Quota.Remaining != 9999 {
 		t.Errorf("reads = %+v, want the app with 9999 left", auth.Reads)
 	}
 }

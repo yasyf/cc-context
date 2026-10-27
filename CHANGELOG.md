@@ -6,6 +6,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`ccx vcs gh` is the machine's GitHub gateway.** Every request ccx makes,
+  and every gh run through `vcs gh`, is charged to its pool in one ledger
+  shared by every process, under `CCX_CALLER`. A pool is an identity, app or
+  user, and a resource, core, graphql, or search. A read whose pool is under
+  1000 left before its reset is refused without calling GitHub. The refusal
+  is one line starting `ccx: GitHub rate limit floor:` that names the reset
+  and the top callers. `vcs gh` first serves a cached answer to the same
+  read, then tries the user's pool. `vcs gh` now runs `gh api graphql` queries on the app's
+  token, takes `--max-age` to answer an identical read from a shared cache,
+  and runs writes other than merges and ruleset or branch-protection changes
+  on the user's token. `ccx vcs auth status` prints each pool's remainder,
+  reset, and top callers, and `--json` carries them as `pools`.
+
+### Changed
+
+- **`ccx vcs pr status` and `pr state` read through REST when GraphQL is
+  rate-limited.** They used to serve the cached record marked stale until
+  the next probe. They now read the stale pull requests through REST, and
+  serve the cache marked stale only when REST is at its floor too.
+
 ### Fixed
 
 - **`ccx vcs ship --branch <b> --tip-only` ships a pull request Graphite

@@ -407,20 +407,42 @@ waiting. When a GraphQL poll fails or runs past its deadline, both commands
 read the PRs they name through REST and Graphite; `pr status` marks those
 lines `via REST`.
 
-`ccx vcs gh -- <gh args>` runs a read-only `gh` command, such as
-`gh pr checks`, `gh pr view`, or `gh run watch`, on the read-only GitHub App
-token these reads use. A poll then draws on the installation's quota and
-leaves the gh user's GraphQL quota for writes. It runs reads only: a
-`gh api` `GET` outside `graphql`, a `gh search`, or a `view`, `list`,
-`status`, `checks`, `diff`, or `watch` verb. Anything else, such as
-`gh pr merge` or `gh api -X PUT …`, is refused before it runs, with the
-plain `gh` command to run instead. `ccx vcs auth status` names both identities
-and their remaining quota, and still answers when the user's quota is spent.
-On the app token an `@me` qualifier or flag value becomes the gh user's login,
-so `@me` never names the app. A `gh api` endpoint outside the installation,
-anything but `repos/…` and `rate_limit`, such as `user` or
-`orgs/ORG/installations`, runs on the user's token, since the app's token gets
-HTTP 403 from it.
+`ccx vcs gh [--max-age DUR] -- <gh args>` is the machine's one gateway to
+GitHub. A read, such as `gh pr checks`, `gh pr view`, `gh run watch`, or a
+`gh api graphql` query, runs on the read-only GitHub App token these reads
+use, so a poll draws on the installation's quota and leaves the gh user's
+GraphQL quota for writes. A read is a `gh api` `GET` outside `graphql`, a
+`gh api graphql` query that is not a mutation, a `gh search`, or a `view`,
+`list`, `status`, `checks`, `diff`, or `watch` verb. A GraphQL query rides in
+`-f query=…`, `-F query=@file`, or an `--input -` body of
+`{"query", "variables"}`, with `GH_REPO` naming the repository.
+`--max-age 5m` answers an identical read from a machine-wide cache while the
+stored answer is younger than five minutes; every loop that reads GitHub
+passes it.
+
+Every request, from `vcs gh` and from ccx's own reads, is charged to its pool
+in a machine-wide ledger. A pool is an identity, app or user, and a resource,
+core, graphql, or search. The charge goes to `CCX_CALLER`, which every script
+and daemon sets, else `CCI_AGENT_ID`, else the script that started ccx. A
+pool under 1000 left before its reset takes no more reads. `vcs gh` then
+serves the cached answer to the same read, however old. Without one it moves
+an app read onto the user's pool. When that pool is under the floor too, it
+exits 1 without calling GitHub and prints one line starting
+`ccx: GitHub rate limit floor:`, naming the pool, its reset time, and the top
+callers. Back off until that reset. `ccx vcs pr status` and `pr state` read through REST when GraphQL is
+refused, and stop when REST is at its floor too. `ccx vcs auth status` prints
+each pool's remainder, reset, and top callers; `--json` carries them as
+`pools`.
+
+A write other than a merge, such as `gh pr close`, runs on the user's token
+as plain `gh` would, charged to its pool. `vcs gh` refuses a merge before it
+runs, whether `gh pr merge`, a write to `pulls/N/merge`, or a GraphQL
+`mergePullRequest`, and so a write to a ruleset or branch protection, since
+the merge hooks gate only the plain `gh` form. On the app token an `@me` qualifier or flag value
+becomes the gh user's login, so `@me` never names the app. A `gh api`
+endpoint outside the installation, anything but `repos/…`, `graphql`, and
+`rate_limit`, such as `user` or `orgs/ORG/installations`, runs on the user's
+token, since the app's token gets HTTP 403 from it.
 The guard pack rewrites a read-only `gh pr`, `gh run`, `gh issue`, or
 `gh api` GET call to `ccx vcs gh -- …` on its own; end the command with
 `# ccx:raw` to keep it on the user's token. gh's own flags pass through unchanged: a job
@@ -441,6 +463,8 @@ ccx vcs pr status 123 124                         # queue state, CI, approval, a
 ccx vcs pr state 123 124 --lane-prefix yasyf/work/  # shared cache records and lane PRs, as JSON
 ccx vcs pr recreate 123                          # replace a PR Graphite's stale stack record leaves untracked
 ccx vcs gh -- pr checks 123                      # a gh read on the app's quota
+CCX_CALLER=watch.sh ccx vcs gh --max-age 5m -- pr view 123 --json state  # a cached, accounted poll
+ccx vcs auth status                              # every pool's remainder, reset, and top callers
 ccx vcs guidelines                               # PR templates + contribution rules, verbatim
 ```
 

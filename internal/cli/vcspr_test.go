@@ -502,6 +502,7 @@ func TestPRStatusServesTheCacheMarkedStaleWhileRateLimited(t *testing.T) {
 	_, client := stubPRInfo(t, prInfoQueued)
 	drained := strings.Replace(prPoll(`"p0":`+prNode(25121, "OPEN", prComments())), `"remaining":4900,"resetAt":"2026-09-30T08:00:00Z"`, `"remaining":12,"resetAt":"2099-01-01T00:00:00Z"`, 1)
 	github := stubPRState(t, drained)
+	github.limitREST = true
 
 	fresh, err := runPRStatusCmd(t, client, "--repo", "Forge-AI/monorepo", "25121")
 	if err != nil {
@@ -540,7 +541,7 @@ func TestPRStatusServesTheCacheMarkedStaleWhileRateLimited(t *testing.T) {
 func TestPRStateMarksABackoffServedReadStale(t *testing.T) {
 	_, client := stubPRInfo(t, prInfoQueued)
 	drained := strings.Replace(prPoll(`"p0":`+prNode(25121, "OPEN", prComments())), `"remaining":4900,"resetAt":"2026-09-30T08:00:00Z"`, `"remaining":12,"resetAt":"2099-01-01T00:00:00Z"`, 1)
-	stubPRState(t, drained)
+	stubPRState(t, drained).limitREST = true
 	run := func() prStateReport {
 		t.Helper()
 		cmd := newVcsPRCmd()
@@ -691,6 +692,7 @@ func TestPRStatusReadsAStaleMergeabilityFromREST(t *testing.T) {
 	drained := strings.Replace(prPoll(`"p0":`+prConflictingNode("MERGEABLE", "BLOCKED")), `"remaining":4900,"resetAt":"2026-09-30T08:00:00Z"`, `"remaining":12,"resetAt":"2099-01-01T00:00:00Z"`, 1)
 	github := stubPRState(t, drained)
 	github.pull(prPullPath, prPullConflicting)
+	github.limitREST = true
 
 	fresh, err := runPRStatusCmd(t, client, "--repo", "Forge-AI/monorepo", "31511")
 	if err != nil {
@@ -708,8 +710,8 @@ func TestPRStatusReadsAStaleMergeabilityFromREST(t *testing.T) {
 	if !strings.HasPrefix(out, "#31511  not queued · open · ci pending: 1 running · approved · blocked:conflict,ci-pending · stale, polled 20") {
 		t.Errorf("stale report = %q, want the REST conflict ahead of ci-pending", out)
 	}
-	if len(github.queries) != 1 || len(github.reads) != 1 {
-		t.Errorf("graphql queries = %d, REST reads = %d; want the one poll and one REST read", len(github.queries), len(github.reads))
+	if len(github.queries) != 1 || len(github.reads) != 2 {
+		t.Errorf("graphql queries = %d, REST reads = %d; want the one poll, the REST fallback's refused pass, and the conflict read", len(github.queries), len(github.reads))
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -79,9 +80,10 @@ func TestGhTargetRepo(t *testing.T) {
 func TestGhReads(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name string
-		argv []string
-		want bool
+		name  string
+		argv  []string
+		stdin string
+		want  bool
 	}{
 		{name: "pr checks", argv: []string{"pr", "checks", "12", "--watch"}, want: true},
 		{name: "run watch", argv: []string{"run", "watch", "34", "--exit-status"}, want: true},
@@ -110,25 +112,109 @@ func TestGhReads(t *testing.T) {
 		{name: "api typed field", argv: []string{"api", "repos/o/r/issues/1/labels", "-F", "labels[]=bug"}},
 		{name: "api long field", argv: []string{"api", "repos/o/r/issues/1/comments", "--raw-field=body=hi"}},
 		{name: "api input", argv: []string{"api", "repos/o/r/pulls/1/merge", "--input", "body.json"}},
-		{name: "api graphql", argv: []string{"api", "graphql", "-f", "query={ viewer { login } }"}},
-		{name: "api graphql get", argv: []string{"api", "-X", "GET", "graphql", "-f", "query={ viewer { login } }"}},
+		{name: "api graphql query", argv: []string{"api", "graphql", "-f", "query={ viewer { login } }"}, want: true},
+		{name: "api graphql named query", argv: []string{"api", "graphql", "--raw-field=query=query Q { viewer { login } }"}, want: true},
+		{name: "api graphql get", argv: []string{"api", "-X", "GET", "graphql", "-f", "query={ viewer { login } }"}, want: true},
+		{name: "api graphql stdin query", argv: []string{"api", "graphql", "--input", "-"}, stdin: `{"query":"query { viewer { login } }","variables":{}}`, want: true},
+		{name: "api graphql stdin field", argv: []string{"api", "graphql", "-F", "query=@-"}, stdin: "{ viewer { login } }", want: true},
+		{name: "api graphql mutation", argv: []string{"api", "graphql", "-f", "query= mutation { addStar(input: {}) { clientMutationId } }"}},
+		{name: "api graphql stdin mutation", argv: []string{"api", "graphql", "--input", "-"}, stdin: `{"query":"mutation { addStar(input: {}) { clientMutationId } }"}`},
+		{name: "api graphql unreadable input", argv: []string{"api", "graphql", "--input", "missing.json"}},
+		{name: "api graphql commented mutation", argv: []string{"api", "graphql", "-f", "query=# merge it\nmutation { mergePullRequest(input: {}) { clientMutationId } }"}},
+		{name: "api graphql mutation after a query", argv: []string{"api", "graphql", "-f", "query=query A { viewer { login } } mutation B { addStar(input: {}) { clientMutationId } }"}},
+		{name: "api graphql leading slash", argv: []string{"api", "/graphql", "-f", "query={ viewer { login } }"}, want: true},
 		{name: "api graphql after terminator", argv: []string{"api", "--", "graphql"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			if got := ghReads(tt.argv); got != tt.want {
+			var stdin []byte
+			if tt.stdin != "" {
+				stdin = []byte(tt.stdin)
+			}
+			if got := ghReads(tt.argv, stdin); got != tt.want {
 				t.Errorf("ghReads(%q) = %v, want %v", tt.argv, got, tt.want)
 			}
 		})
 	}
 }
 
-func TestRunVcsGhRefusesWrite(t *testing.T) {
+func TestGhResource(t *testing.T) {
 	t.Parallel()
-	err := runVcsGh(&cobra.Command{}, []string{"api", "-X", "PUT", "repos/o/r/pulls/1/merge", "-f", "merge_method=merge"})
-	if err == nil || !strings.HasSuffix(err.Error(), ": gh api -X PUT repos/o/r/pulls/1/merge -f merge_method=merge") {
-		t.Fatalf("runVcsGh(write) = %v, want a refusal naming the plain gh command", err)
+	tests := []struct {
+		argv []string
+		want string
+	}{
+		{argv: []string{"pr", "view", "12"}, want: ghapi.ResourceGraphQL},
+		{argv: []string{"pr", "merge", "12", "--squash"}, want: ghapi.ResourceGraphQL},
+		{argv: []string{"run", "view", "34", "--log"}, want: ghapi.ResourceCore},
+		{argv: []string{"api", "repos/o/r/pulls/1"}, want: ghapi.ResourceCore},
+		{argv: []string{"api", "-H", "Accept: application/json", "/repos/o/r/pulls/1"}, want: ghapi.ResourceCore},
+		{argv: []string{"api", "graphql", "-f", "query={ viewer { login } }"}, want: ghapi.ResourceGraphQL},
+		{argv: []string{"api", "search/issues?q=is:open"}, want: ghapi.ResourceSearch},
+		{argv: []string{"search", "prs", "--author", "@me"}, want: ghapi.ResourceSearch},
+	}
+	for _, tt := range tests {
+		if got := ghResource(tt.argv); got != tt.want {
+			t.Errorf("ghResource(%q) = %q, want %q", tt.argv, got, tt.want)
+		}
+	}
+}
+
+func TestRunVcsGhRefusesAMerge(t *testing.T) {
+	t.Parallel()
+	for _, argv := range [][]string{
+		{"pr", "merge", "12", "--squash", "--admin"},
+		{"api", "-X", "PUT", "repos/o/r/pulls/1/merge", "-f", "merge_method=merge"},
+		{"api", "-X", "PUT", "/repos/o/r/branches/dev/protection", "--input", "rule.json"},
+		{"api", "-X", "POST", "repos/o/r/rulesets", "--input", "ruleset.json"},
+		{"api", "-X", "PATCH", "orgs/o/rulesets/9", "-f", "enforcement=disabled"},
+		{"api", "graphql", "-f", "query=mutation { mergePullRequest(input: {pullRequestId: \"x\"}) { clientMutationId } }"},
+		{"api", "graphql", "-f", "query=mutation { updateBranchProtectionRule(input: {}) { clientMutationId } }"},
+		{"api", "graphql", "-f", "query=# a comment\nmutation { mergePullRequest(input: {pullRequestId: \"x\"}) { clientMutationId } }"},
+		{"api", "/graphql", "-f", "query=mutation { mergePullRequest(input: {pullRequestId: \"x\"}) { clientMutationId } }"},
+		{"api", "https://api.github.com/graphql", "-f", "query=mutation { enablePullRequestAutoMerge(input: {}) { clientMutationId } }"},
+	} {
+		err := runVcsGh(&cobra.Command{}, argv, time.Minute)
+		if err == nil || !strings.HasSuffix(err.Error(), ": "+ghCommand(argv)) || !strings.Contains(err.Error(), "merge with gh pr merge") {
+			t.Errorf("runVcsGh(%q) = %v, want a refusal naming the plain gh command", argv, err)
+		}
+	}
+}
+
+func TestRunVcsGhRunsAWriteOnTheUserToken(t *testing.T) {
+	home := t.TempDir()
+	app := filepath.Join(home, "config", "ccx", "github-app.toml")
+	if err := os.MkdirAll(filepath.Dir(app), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(app, []byte("client_id = \"Iv1\"\nprivate_key_command = [\"cat\"]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	shims := t.TempDir()
+	execstub.Write(t, filepath.Join(shims, "gh"), `#!/bin/sh
+printf 'token=%s argv=%s\n' "${GH_TOKEN:-user}" "$*"
+`)
+	t.Setenv("PATH", shims+string(os.PathListSeparator)+os.Getenv("PATH"))
+	prior := reviewsAPI
+	reviewsAPI = func() *ghapi.Client { return ghapi.New("http://127.0.0.1:1") }
+	t.Cleanup(func() { reviewsAPI = prior })
+
+	ctx := render.WithEnv(workspace.WithRoot(t.Context(), t.TempDir()),
+		"HOME="+home,
+		"XDG_CONFIG_HOME="+filepath.Join(home, "config"),
+		"CLAUDE_PLUGIN_DATA="+filepath.Join(home, "data"),
+		"GH_TOKEN=", "GITHUB_TOKEN=", "GH_REPO=o/r",
+	)
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetContext(ctx)
+	cmd.SetOut(&out)
+	if err := runVcsGh(cmd, []string{"pr", "close", "12", "--delete-branch"}, time.Minute); err != nil {
+		t.Fatalf("runVcsGh(pr close) = %v, want gh run on the user's token", err)
+	}
+	if got, want := out.String(), "token=user argv=pr close 12 --delete-branch\n"; got != want {
+		t.Errorf("gh printed %q, want %q", got, want)
 	}
 }
 
@@ -164,7 +250,7 @@ printf 'token=%s argv=%s\n' "${GH_TOKEN:-user}" "$*"
 	cmd := &cobra.Command{}
 	cmd.SetContext(ctx)
 	cmd.SetOut(&out)
-	if err := runVcsGh(cmd, []string{"api", "rate_limit"}); err != nil {
+	if err := runVcsGh(cmd, []string{"api", "rate_limit"}, 0); err != nil {
 		t.Fatalf("runVcsGh outside a checkout = %v, want gh run on the user's token", err)
 	}
 	if got, want := out.String(), "token=user argv=api rate_limit\n"; got != want {
@@ -191,6 +277,7 @@ func TestGhReadsOutsideInstallation(t *testing.T) {
 		{name: "repo", argv: []string{"api", "repos/o/r/pulls/1"}},
 		{name: "repo placeholder", argv: []string{"api", "repos/{owner}/{repo}/pulls"}},
 		{name: "rate limit", argv: []string{"api", "rate_limit"}},
+		{name: "graphql", argv: []string{"api", "graphql", "-f", "query={ viewer { login } }"}},
 		{name: "pr list", argv: []string{"pr", "list", "--author", "@me"}},
 	}
 	for _, tt := range tests {
@@ -254,7 +341,7 @@ printf 'token=%s argv=%s\n' "${GH_TOKEN:-user}" "$*"
 	cmd := &cobra.Command{}
 	cmd.SetContext(ctx)
 	cmd.SetOut(&out)
-	if err := runVcsGh(cmd, []string{"api", "user", "--jq", ".login"}); err != nil {
+	if err := runVcsGh(cmd, []string{"api", "user", "--jq", ".login"}, 0); err != nil {
 		t.Fatalf("runVcsGh(api user) = %v, want gh run on the user's token", err)
 	}
 	if got, want := out.String(), "token=user argv=api user --jq .login\n"; got != want {

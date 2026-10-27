@@ -48,6 +48,13 @@ they expire, and shared by every ccx process on the machine. Reads stay on the
 gh user's token when the app is not installed on the repository, when minting
 fails, or when GH_TOKEN or GITHUB_TOKEN is set. Writes always use the gh user.
 
+Each identity's pools (core, graphql, search) come fresh from GitHub's
+rate_limit, which costs no quota, with the callers ccx and ccx vcs gh charged
+to each since it last reset, heaviest first. A pool under 1000 left refuses
+reads until its reset; --json carries each identity's pools as
+[{"identity", "resource", "limit", "remaining", "resetAt", "readAt",
+"callers": [{"caller", "requests"}]}].
+
 With no repository named, reports the current checkout's.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runVcsAuthStatus(cmd, args, asJSON)
@@ -97,12 +104,29 @@ func writeAuth(w io.Writer, auth ghapi.Auth) {
 	}
 	_, _ = fmt.Fprintln(w, reads)
 	_, _ = fmt.Fprintln(w, "  writes  "+authIdentity(auth.Writes))
+	identities := []ghapi.Identity{auth.Writes}
 	if auth.Reads.Kind != auth.Writes.Kind {
-		_, _ = fmt.Fprintln(w, "  quota   "+authQuota(auth.Reads))
-		_, _ = fmt.Fprintln(w, "          "+authQuota(auth.Writes))
-		return
+		identities = []ghapi.Identity{auth.Reads, auth.Writes}
 	}
-	_, _ = fmt.Fprintln(w, "  quota   "+authQuota(auth.Writes))
+	label := "  quota   "
+	for _, id := range identities {
+		_, _ = fmt.Fprintln(w, label+authQuota(id))
+		label = "          "
+	}
+	label = "  pools   "
+	for _, id := range identities {
+		for _, p := range id.Pools {
+			line := fmt.Sprintf("%s %s %d/%d left, resets %s", p.Identity, p.Resource, p.Remaining, p.Limit, p.ResetAt.Local().Format(time.Kitchen))
+			if p.Remaining < ghapi.Floor {
+				line += ", under the floor"
+			}
+			if top := ghapi.TopCallers(p, 5); top != "" {
+				line += "; top callers: " + top
+			}
+			_, _ = fmt.Fprintln(w, label+line)
+			label = "          "
+		}
+	}
 }
 
 func authIdentity(id ghapi.Identity) string {

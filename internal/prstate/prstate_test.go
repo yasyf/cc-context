@@ -387,6 +387,7 @@ func TestSecondaryLimitProbesEveryTwoMinutesAndResumesOnTheFirst200(t *testing.T
 	probed := reply{body: `{"data":{"viewer":{"login":"yasyf"},"rateLimit":{"remaining":4000,"resetAt":"2026-09-30T08:00:00Z"}}}`}
 	c := &clock{now: epoch}
 	store, gh := newStore(t, t.TempDir(), c, nil, limited, limited, probed, ok(t, "poll-190.json"))
+	gh.rest = restLimited(190)
 	want := Want{PRs: []int{190}}
 
 	_, err := store.Read(testCtx(t), want)
@@ -426,7 +427,8 @@ func TestSecondaryLimitProbesEveryTwoMinutesAndResumesOnTheFirst200(t *testing.T
 func TestShortRetryAfterIsHonoredBeforeTheProbe(t *testing.T) {
 	t.Parallel()
 	c := &clock{now: epoch}
-	store, _ := newStore(t, t.TempDir(), c, nil, reply{status: http.StatusTooManyRequests, header: map[string]string{"Retry-After": "20"}})
+	store, gh := newStore(t, t.TempDir(), c, nil, reply{status: http.StatusTooManyRequests, header: map[string]string{"Retry-After": "20"}})
+	gh.rest = restLimited(190)
 
 	_, err := store.Read(testCtx(t), Want{PRs: []int{190}})
 	var refused *LimitedError
@@ -438,7 +440,8 @@ func TestShortRetryAfterIsHonoredBeforeTheProbe(t *testing.T) {
 func TestSecondaryLimitWithoutRetryAfterWaitsAMinute(t *testing.T) {
 	t.Parallel()
 	c := &clock{now: epoch}
-	store, _ := newStore(t, t.TempDir(), c, nil, reply{status: http.StatusForbidden, body: `{"message":"You have exceeded a secondary rate limit"}`})
+	store, gh := newStore(t, t.TempDir(), c, nil, reply{status: http.StatusForbidden, body: `{"message":"You have exceeded a secondary rate limit"}`})
+	gh.rest = restLimited(190)
 
 	_, err := store.Read(testCtx(t), Want{PRs: []int{190}})
 	var refused *LimitedError
@@ -451,17 +454,19 @@ func TestBackoffIsSharedAcrossStores(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := &clock{now: epoch}
-	first, _ := newStore(t, dir, c, nil, reply{status: http.StatusForbidden, header: map[string]string{"Retry-After": "600"}, body: `{"message":"secondary rate limit"}`})
+	first, firstGH := newStore(t, dir, c, nil, reply{status: http.StatusForbidden, header: map[string]string{"Retry-After": "600"}, body: `{"message":"secondary rate limit"}`})
+	firstGH.rest = restLimited(190)
 	second, secondGH := newStore(t, dir, c, nil)
+	secondGH.rest = restLimited(189)
 
 	if _, err := first.Read(testCtx(t), Want{PRs: []int{190}}); err == nil {
 		t.Fatal("first read succeeded")
 	}
-	c.now = c.now.Add(time.Minute)
+	c.now = c.now.Add(30 * time.Second)
 	_, err := second.Read(testCtx(t), Want{PRs: []int{189}})
 	var refused *LimitedError
-	if !errors.As(err, &refused) || secondGH.requests() != 0 {
-		t.Errorf("second store read = %v after %d requests, want it refused by the first store's backoff", err, secondGH.requests())
+	if !errors.As(err, &refused) || secondGH.requests() != 0 || len(secondGH.reads) != 0 {
+		t.Errorf("second store read = %v after %d queries and %d REST reads, want it refused by the first store's GraphQL and REST backoffs", err, secondGH.requests(), len(secondGH.reads))
 	}
 }
 
@@ -470,6 +475,7 @@ func TestQuotaBelowTheFloorWaitsForTheReset(t *testing.T) {
 	c := &clock{now: epoch}
 	low := strings.Replace(fixture(t, "poll-190.json"), `"remaining": 4990`, `"remaining": 50`, 1)
 	store, gh := newStore(t, t.TempDir(), c, nil, reply{body: low})
+	gh.rest = restLimited(190)
 
 	if _, err := store.Read(testCtx(t), Want{PRs: []int{190}}); err != nil {
 		t.Fatalf("read that drained the quota: %v", err)
@@ -607,6 +613,7 @@ func TestAProbeThatFindsTheQuotaDrainedWaitsForItsReset(t *testing.T) {
 	drained := reply{body: `{"data":{"viewer":{"login":"yasyf"},"rateLimit":{"remaining":50,"resetAt":"2026-09-30T07:40:00Z"}}}`}
 	c := &clock{now: epoch}
 	store, gh := newStore(t, t.TempDir(), c, nil, limited, drained)
+	gh.rest = restLimited(190)
 
 	if _, err := store.Read(testCtx(t), Want{PRs: []int{190}}); err == nil {
 		t.Fatal("first read succeeded")
@@ -616,6 +623,35 @@ func TestAProbeThatFindsTheQuotaDrainedWaitsForItsReset(t *testing.T) {
 	var refused *LimitedError
 	if !errors.As(err, &refused) || !refused.ProbeAt.Equal(time.Date(2026, 9, 30, 7, 40, 0, 0, time.UTC)) || gh.requests() != 2 {
 		t.Errorf("read = %v after %d requests, want the probe's drained quota to hold polling until its reset", err, gh.requests())
+	}
+}
+
+func restLimited(numbers ...int) map[string]reply {
+	replies := map[string]reply{}
+	for _, n := range numbers {
+		replies[fmt.Sprintf("/repos/yasyf/cc-context/pulls/%d", n)] = reply{status: http.StatusForbidden, body: `{"message":"API rate limit exceeded"}`}
+	}
+	return replies
+}
+
+func TestAGraphQLLimitReadsThroughREST(t *testing.T) {
+	t.Parallel()
+	c := &clock{now: epoch}
+	store, gh := newStore(t, t.TempDir(), c, nil, reply{status: http.StatusForbidden, header: map[string]string{"Retry-After": "600"}, body: `{"message":"secondary rate limit"}`})
+	gh.rest = rest190()
+
+	st, err := store.Read(testCtx(t), Want{PRs: []int{190}})
+	if err != nil {
+		t.Fatalf("read under a GraphQL limit = %v, want #190 read through REST", err)
+	}
+	if pr := st.PRs[190]; pr.Source != SourceREST || pr.HeadRefOid != restHead || st.Backoff == nil {
+		t.Errorf("state = %+v, want #190 from REST at %s with GraphQL's backoff kept", st, restHead)
+	}
+
+	reads := len(gh.reads)
+	c.now = epoch.Add(10 * time.Second)
+	if _, err := store.Read(testCtx(t), Want{PRs: []int{190}}); err != nil || gh.requests() != 1 || len(gh.reads) != reads {
+		t.Errorf("read inside the backoff of a fresh record = %v after %d queries and %d REST reads, want the shared record and no request", err, gh.requests(), len(gh.reads)-reads)
 	}
 }
 

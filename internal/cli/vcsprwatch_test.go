@@ -351,6 +351,7 @@ type watchGitHub struct {
 	pulls     map[string][]string
 	reads     []string
 	overlap   time.Duration
+	limitREST bool
 	flight    sync.Mutex
 	inFlight  int
 	peak      int
@@ -397,6 +398,11 @@ func (g *watchGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		_, _ = io.WriteString(w, bodies[min(n, len(bodies))-1])
+		return
+	}
+	if g.limitREST && r.Method == http.MethodGet {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = io.WriteString(w, `{"message":"API rate limit exceeded"}`)
 		return
 	}
 	if r.URL.Path != "/graphql" {

@@ -84,6 +84,7 @@ type State struct {
 	PRs         map[int]PR      `json:"prs,omitempty"`
 	Rate        Rate            `json:"rate"`
 	Backoff     *Backoff        `json:"backoff,omitempty"`
+	RESTBackoff *Backoff        `json:"restBackoff,omitempty"`
 	Failure     *Failure        `json:"failure,omitempty"`
 	Leases      Leases          `json:"-"`
 }
@@ -302,8 +303,9 @@ func Open(root string, src *GitHub) (*Store, error) {
 // schedule alone. Otherwise, inside MinInterval of the last poll a read sleeps,
 // so concurrent readers share the next poll, and a poll claimed after the read
 // began answers it the second it lands. A read whose poll failed, that finds
-// the last poll failed, or that no poll answers within 30 seconds per round of
-// pages reads what it wants through REST instead. A poll claimed after the read
+// the last poll failed, that GraphQL's rate limit or ccx's floor refuses, or
+// that no poll answers within 30 seconds per round of pages reads what it
+// wants through REST instead, unless the REST pool is at its floor too. A poll claimed after the read
 // began runs to its own deadline of a minute per round of pages, and the read
 // waits for it past its own budget, so a read that spent its budget waiting for
 // its turn still lands the poll the other readers share, whoever claimed it. No
@@ -395,9 +397,12 @@ func (s *Store) read(ctx context.Context, want Want, asked time.Time, waited boo
 	}
 	if b := st.Backoff; b != nil {
 		if now.Before(b.ProbeAt) {
-			return st, 0, &LimitedError{Backoff: *b}
+			return s.degrade(ctx, st, want, asked, now, &LimitedError{Backoff: *b})
 		}
 		if st, err = s.probe(ctx, st, now); err != nil {
+			if _, limited := errors.AsType[*LimitedError](err); limited {
+				return s.degrade(ctx, st, want, asked, now, err)
+			}
 			return st, 0, err
 		}
 	}
@@ -440,7 +445,7 @@ func (s *Store) read(ctx context.Context, want Want, asked time.Time, waited boo
 }
 
 func (s *Store) degrade(ctx context.Context, st State, want Want, asked, now time.Time, cause error) (State, time.Duration, error) {
-	if _, limited := errors.AsType[*LimitedError](cause); limited || ctx.Err() != nil {
+	if b := st.RESTBackoff; ctx.Err() != nil || b != nil && now.Before(b.ProbeAt) {
 		return st, 0, cause
 	}
 	prs := slices.Clone(want.PRs)
@@ -453,19 +458,33 @@ func (s *Store) degrade(ctx context.Context, st State, want Want, asked, now tim
 	}
 	slices.Sort(prs)
 	prs = slices.DeleteFunc(slices.Compact(prs), func(n int) bool { return st.fresh(Want{PRs: []int{n}, MaxAge: want.MaxAge}, asked) })
-	_, _ = fmt.Fprintf(s.src.warn, "prstate: %v; reading %d pull requests through REST\n", cause, len(prs))
+	if len(prs) == 0 {
+		return st, 0, s.verdict(st, want, asked)
+	}
+	if _, limited := errors.AsType[*LimitedError](cause); !limited {
+		_, _ = fmt.Fprintf(s.src.warn, "prstate: %v; reading %d pull requests through REST\n", cause, len(prs))
+	}
 	p, err := s.src.pollREST(ctx, prs, st.PRs, st.Trunk.Name)
 	if err != nil {
+		if wait, limited := ghapi.RateLimited(err); limited {
+			if st, cerr := s.commit(ctx, func(st *State) bool {
+				st.RESTBackoff = limitedAt(now, wait)
+				return true
+			}); cerr != nil {
+				return st, 0, cerr
+			}
+		}
 		return st, 0, fmt.Errorf("%w; the REST fallback failed too: %w", cause, err)
 	}
 	st, err = s.commit(ctx, func(st *State) bool {
 		st.merge(p, now)
+		st.RESTBackoff = nil
 		return true
 	})
 	if err != nil {
 		return st, 0, err
 	}
-	return st, 0, s.verdict(st, Want{PRs: want.PRs}, asked)
+	return st, 0, s.verdict(st, want, asked)
 }
 
 func (s *Store) verdict(st State, want Want, asked time.Time) error {
