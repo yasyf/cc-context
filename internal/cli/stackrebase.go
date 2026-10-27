@@ -2750,7 +2750,7 @@ func stackQueueStates(ctx context.Context, l lane, noPush bool, byName map[strin
 	}
 	var st prstate.State
 	if len(watched) > 0 {
-		if st, _, err = readPRQueue(ctx, owner+"/"+name, watched, io.Discard, ghRateLimitWait); err != nil {
+		if st, _, err = readPRQueue(ctx, owner+"/"+name, prstate.Want{PRs: watched}, io.Discard, ghRateLimitWait); err != nil {
 			return nil, fmt.Errorf("stack rebase: read the merge activity before pushing: %w", err)
 		}
 	}
