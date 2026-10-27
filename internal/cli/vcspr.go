@@ -391,7 +391,7 @@ func collectPRQueue(ctx context.Context, repo string, numbers []int, maxAge time
 }
 
 func prStatusOf(ctx context.Context, warn io.Writer, repo string, number int, pr prstate.PR, limited *prstate.Backoff) (prStatusReport, error) {
-	if pr.Graphite == nil && pr.QueueUnknown {
+	if pr.Graphite == nil && pr.State != "" {
 		r := prQueueWithoutGraphite(pr)
 		r.Stale = staleAt(limited, pr.PolledAt)
 		r.Source = pr.Source
@@ -401,7 +401,7 @@ func prStatusOf(ctx context.Context, warn io.Writer, repo string, number int, pr
 		if limited != nil {
 			return prStatusReport{}, fmt.Errorf("pr status: the cache has never polled %s#%d, and github %s; next probe at %s", repo, number, limited.Reason, limited.ProbeAt.UTC().Format(time.RFC3339))
 		}
-		return prStatusReport{}, fmt.Errorf("pr status: graphite has no record of %s#%d", repo, number)
+		return prStatusReport{}, fmt.Errorf("pr status: the cache has no record of %s#%d", repo, number)
 	}
 	info := *pr.Graphite
 	landedOn := ""
@@ -453,7 +453,10 @@ func newPRStatusReport(ctx context.Context, warn io.Writer, repo string, r prQue
 }
 
 func prQueueWithoutGraphite(pr prstate.PR) prQueueReport {
-	r := prQueueReport{Number: pr.Number, Queue: prQueueUnknown, State: pr.State, Base: pr.BaseRefName}
+	r := prQueueReport{Number: pr.Number, Queue: prQueueNotQueued, State: pr.State, Base: pr.BaseRefName}
+	if pr.QueueUnknown {
+		r.Queue = prQueueUnknown
+	}
 	if pr.State == "MERGED" && len(pr.SquashOn) > 0 {
 		r.Queue, r.Squash = prQueueLanded, pr.MergeCommit
 	}
