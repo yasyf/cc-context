@@ -694,11 +694,6 @@ func TestWorktreeRmPathOrphanRefusals(t *testing.T) {
 		want  string
 	}{
 		{
-			name:  "pointer resolves",
-			setup: func(*testing.T, *vcstest.Fixture, string) {},
-			want:  "no git or jj repository in the working directory",
-		},
-		{
 			name: "symlinked gitdir file",
 			setup: func(t *testing.T, f *vcstest.Fixture, path string) {
 				orphanWorktree(t, f.Env(), path)

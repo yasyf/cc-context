@@ -446,13 +446,6 @@ func TestCleanupWorktreeRmPathTargets(t *testing.T) {
 	if err := os.Symlink(checkouts, alias); err != nil {
 		t.Fatalf("symlink %s: %v", alias, err)
 	}
-	other := vcstest.Repo(t)
-	foreign := filepath.Join(root, "foreign")
-	addLinkedWorktree(t, other.Env(), other.Dir, foreign, "")
-	otherCommon, err := filepath.EvalSymlinks(filepath.Join(other.Dir, ".git"))
-	if err != nil {
-		t.Fatalf("resolve %s: %v", other.Dir, err)
-	}
 	mainRefusal := `worktree rm: "` + f.Dir + `" is the repository's own working copy, not a linked worktree`
 	pool := filepath.Join(fixtureHome(t, f), ".claude", "worktrees")
 	outsidePool := func(tree string) string {
@@ -505,13 +498,6 @@ func TestCleanupWorktreeRmPathTargets(t *testing.T) {
 			name: "main working copy forced",
 			args: func(string) []string { return []string{"rm", "--path", f.Dir, "--force"} },
 			want: func(string) string { return mainRefusal },
-		},
-		{
-			name: "another repository",
-			args: func(string) []string { return []string{"rm", "--path", foreign, "--force"} },
-			want: func(string) string {
-				return "worktree rm: " + foreign + " is a working copy of " + otherCommon + ", not of this repository"
-			},
 		},
 		{
 			name: "unregistered",
@@ -620,15 +606,53 @@ func TestCleanupWorktreeRmPathTargets(t *testing.T) {
 		})
 	}
 	assertIntact(t, f, f.Dir)
-	if !worktreeRegistered(t, other.Env(), other.Dir, foreign) {
-		t.Errorf("the other repository no longer registers %s, want it untouched", foreign)
-	}
 	want := 0
 	if cleanupDaemonized {
 		want = removed
 	}
 	if got := journaledJobs(t, h); len(got) != want {
 		t.Errorf("journaled jobs = %v, want %d, one per removal", got, want)
+	}
+}
+
+func TestCleanupWorktreeRmPathRemovesAWorkingCopyOfAnotherRepository(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		bare    bool
+		outside bool
+	}{
+		{"from a repository with a working copy", false, false},
+		{"from a bare repository", true, false},
+		{"from outside any repository", false, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := vcstest.Repo(t)
+			f.Isolate(t)
+			fixtureCleanup(t, f)
+			other := vcstest.Repo(t)
+			owner := other.Dir
+			if tt.bare {
+				owner = filepath.Join(t.TempDir(), "other.git")
+				mustRun(t, other.Env(), other.Dir, "git", "clone", "-q", "--bare", other.Dir, owner)
+			}
+			foreign := filepath.Join(filepath.Dir(f.Dir), "foreign")
+			addLinkedWorktree(t, other.Env(), owner, foreign, "")
+			ctx := f.Context()
+			if tt.outside {
+				unrelated := worktreeTempDir(t)
+				t.Chdir(unrelated)
+				ctx = f.ContextIn(unrelated)
+			}
+
+			if _, err := runWorktreeCmdIn(ctx, t, "rm", "--path", foreign); err != nil {
+				t.Fatalf("rm --path %s = %v, want it resolved from the worktree's own repository", foreign, err)
+			}
+			assertGone(t, foreign)
+			if worktreeRegistered(t, other.Env(), owner, foreign) {
+				t.Errorf("%s still registers %s, want it unregistered", owner, foreign)
+			}
+			assertIntact(t, f, f.Dir)
+		})
 	}
 }
 
