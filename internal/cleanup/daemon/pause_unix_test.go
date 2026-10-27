@@ -29,14 +29,19 @@ func (c *passClock) After(d time.Duration) <-chan time.Time { return time.After(
 
 func (f *gitFixture) startPaused(engine *Engine, clock *passClock) <-chan error {
 	f.t.Helper()
-	if err := f.journal.SaveSwitch(cleanup.Switch{Paused: true}); err != nil {
+	return f.startStopped(engine, clock, cleanup.Switch{Paused: true})
+}
+
+func (f *gitFixture) startStopped(engine *Engine, clock *passClock, sw cleanup.Switch) <-chan error {
+	f.t.Helper()
+	if err := f.journal.SaveSwitch(sw); err != nil {
 		f.t.Fatalf("SaveSwitch() = %v", err)
 	}
 	running := f.start(engine)
 	select {
 	case <-clock.passed:
 	case <-time.After(drainWait):
-		f.t.Fatalf("the paused worker made no pass within %s", drainWait)
+		f.t.Fatalf("the stopped worker made no pass within %s", drainWait)
 	}
 	return running
 }
@@ -172,4 +177,47 @@ func TestQueuePauseHoldsANewRemovalPendingUntilResume(t *testing.T) {
 	}
 
 	f.finished(f.resumed(engine, running, receipt.JobID))
+}
+
+func TestMaintenanceHoldRestsAJournaledJobUntilItsHolderReleasesIt(t *testing.T) {
+	f := newGitFixture(t)
+	job := f.accept()
+	before, listing := f.gitCalls(), f.listing()
+	clock := newPassClock()
+	f.clock = clock
+	engine := f.engine()
+	hold := cleanup.Hold{ID: "host-maintenance", Reason: "disk repair", Since: time.Now()}
+	running := f.startStopped(engine, clock, cleanup.Switch{Hold: &hold})
+
+	f.refusedWhilePaused(engine)
+	ctx, cancel := context.WithTimeout(context.Background(), drainWait)
+	defer cancel()
+	if err := engine.Resume(ctx); !heldBy(err, hold) {
+		t.Errorf("Resume() under the hold = %v, want a *HeldError naming %+v", err, hold)
+	}
+	if got := f.gitCalls(); got != before {
+		t.Errorf("git ran under the hold: %q", strings.TrimPrefix(got, before))
+	}
+	rested := f.rests(job, cleanup.PhasePrepared)
+	if got := f.id(f.worktree); got != rested.Tree {
+		t.Errorf("tree identity at %s = %v, want the tree %v", f.worktree, got, rested.Tree)
+	}
+	if got := f.listing(); got != listing {
+		t.Errorf("worktree list under the hold = %q, want it untouched: %q", got, listing)
+	}
+
+	if err := engine.Release(ctx, hold.ID); err != nil {
+		t.Fatalf("Release() = %v", err)
+	}
+	done, err := engine.Wait(ctx, job.ID)
+	if err != nil || done.Phase != cleanup.PhaseDone {
+		t.Fatalf("Wait() after the release = phase %s, blockage %+v, %v; want done", done.Phase, done.Blocked, err)
+	}
+	if err := f.await(f.stop(engine), "Stop()"); err != nil {
+		t.Errorf("Stop() = %v", err)
+	}
+	if err := f.await(running, "Run()"); err != nil {
+		t.Errorf("Run() = %v", err)
+	}
+	f.finished(done)
 }

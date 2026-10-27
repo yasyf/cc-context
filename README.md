@@ -165,6 +165,7 @@ Each command is a token-bounded stand-in for a primitive an agent would otherwis
 | `ccx vcs worktree rm <name>` | Remove an unused worktree; macOS queues physical deletion after logical removal |
 | `ccx vcs worktree rm --path <absolute-path>` | Remove the worktree at a path; an orphaned pool worktree whose admin dir is gone moves to the Trash |
 | `ccx vcs cleanup status [job-id] --json` | Inspect the macOS cleanup queue or one job |
+| `ccx vcs cleanup hold acquire --id <id> --reason <text>` | Hold the macOS cleanup queue for maintenance; `resume` is refused until `hold release --id <id>` |
 | `ccx vcs cleanup watchers --json` | Inspect watcher roots and consumers without changing them |
 | `ccx web outline <url>` | Heading tree of a web page with stable `§` section refs |
 | `ccx web read <url> --section <ref>` | Read one section of a page, with prev/next nav, instead of the whole thing |

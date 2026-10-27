@@ -3,6 +3,7 @@ package daemon
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/yasyf/cc-context/internal/cleanup"
 )
@@ -16,6 +17,9 @@ const (
 	opWait     = "wait"
 	opPause    = "pause"
 	opResume   = "resume"
+	opHold     = "hold"
+	opRelease  = "release"
+	opHolding  = "holding"
 	opRetry    = "retry"
 	opShutdown = "shutdown"
 
@@ -49,6 +53,8 @@ type request struct {
 	Adopt    *cleanup.AdoptRequest `json:"adopt,omitempty"`
 	Query    *cleanup.Query        `json:"query,omitempty"`
 	JobID    string                `json:"job_id,omitempty"`
+	Hold     *cleanup.HoldRequest  `json:"hold,omitempty"`
+	Holder   string                `json:"holder,omitempty"`
 }
 
 func (r request) Validate() error {
@@ -56,9 +62,19 @@ func (r request) Validate() error {
 		return errors.New("the request names no client version")
 	}
 	switch r.Op {
-	case opHello, opShutdown, opPause, opResume:
-		if r.Remove != nil || r.Defer != nil || r.Adopt != nil || r.Query != nil || r.JobID != "" {
+	case opHello, opShutdown, opPause, opResume, opHolding:
+		if r.Remove != nil || r.Defer != nil || r.Adopt != nil || r.Query != nil || r.JobID != "" || r.Hold != nil || r.Holder != "" {
 			return fmt.Errorf("%s carries nothing beyond its op", r.Op)
+		}
+		return nil
+	case opHold:
+		if r.Hold == nil {
+			return errors.New("hold carries no request")
+		}
+		return r.Hold.Validate()
+	case opRelease:
+		if strings.TrimSpace(r.Holder) == "" {
+			return errors.New("release names no holder")
 		}
 		return nil
 	case opRemove:
@@ -94,11 +110,13 @@ func (r request) Validate() error {
 }
 
 type response struct {
-	Error   *wireError       `json:"error,omitempty"`
-	Info    *cleanup.Info    `json:"info,omitempty"`
-	Receipt *cleanup.Receipt `json:"receipt,omitempty"`
-	Report  *cleanup.Report  `json:"report,omitempty"`
-	Job     *cleanup.Job     `json:"job,omitempty"`
+	Error   *wireError           `json:"error,omitempty"`
+	Info    *cleanup.Info        `json:"info,omitempty"`
+	Receipt *cleanup.Receipt     `json:"receipt,omitempty"`
+	Report  *cleanup.Report      `json:"report,omitempty"`
+	Job     *cleanup.Job         `json:"job,omitempty"`
+	Hold    *cleanup.HoldReceipt `json:"hold,omitempty"`
+	Holding *cleanup.HoldState   `json:"holding,omitempty"`
 }
 
 func (r response) Validate() error {

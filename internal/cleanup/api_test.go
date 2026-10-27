@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestActiveErrorMessage(t *testing.T) {
@@ -443,5 +444,50 @@ func assertValidate(t *testing.T, err error, want string) {
 	}
 	if err == nil || err.Error() != want {
 		t.Fatalf("Validate() = %v, want %q", err, want)
+	}
+}
+
+func TestHoldRequestValidate(t *testing.T) {
+	tests := []struct {
+		name string
+		r    HoldRequest
+		want string
+	}{
+		{"valid", HoldRequest{ID: "host-maintenance", Reason: "disk repair"}, ""},
+		{"no holder", HoldRequest{Reason: "disk repair"}, "the hold names no holder"},
+		{"a blank holder", HoldRequest{ID: " \t", Reason: "disk repair"}, "the hold names no holder"},
+		{"no reason", HoldRequest{ID: "host-maintenance"}, "the hold names no reason"},
+		{"a blank reason", HoldRequest{ID: "host-maintenance", Reason: "  "}, "the hold names no reason"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assertValidate(t, tt.r.Validate(), tt.want)
+		})
+	}
+}
+
+func TestHoldValidate(t *testing.T) {
+	tests := []struct {
+		name string
+		h    Hold
+		want string
+	}{
+		{"valid", Hold{ID: "host-maintenance", Reason: "disk repair", Since: testCreated}, ""},
+		{"no start", Hold{ID: "host-maintenance", Reason: "disk repair"}, "the hold records no start"},
+		{"no holder", Hold{Reason: "disk repair", Since: testCreated}, "the hold names no holder"},
+		{"no reason", Hold{ID: "host-maintenance", Since: testCreated}, "the hold names no reason"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assertValidate(t, tt.h.Validate(), tt.want)
+		})
+	}
+}
+
+func TestHeldErrorNamesTheHolderTheReasonAndTheRelease(t *testing.T) {
+	err := &HeldError{Hold: Hold{ID: "host-maintenance", Reason: "disk repair", Since: testCreated}}
+	want := "cleanup: host-maintenance holds the queue for maintenance since " + testCreated.Local().Format(time.RFC3339) + ": disk repair; only ccx vcs cleanup hold release --id \"host-maintenance\" lifts it"
+	if got := err.Error(); got != want {
+		t.Errorf("Error() = %q, want %q", got, want)
 	}
 }
