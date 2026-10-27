@@ -271,7 +271,7 @@ the push, carrying and retracting release trailers as ccx vcs ship --help
 describes, and survive a conflict stop. Naming a branch outside the stack, or one
 the run leaves out, is refused before anything moves.
 
-On plain git, submit is ccx vcs restack --parent for the branch checked out
+On plain git, submit is ccx vcs stack restack --parent for the branch checked out
 here, which must have an open pull request: the parent is the pull request's
 base, or trunk once that base's own pull request merged, so a child of a
 squash-landed parent moves onto trunk without the parent's commits. The branch
@@ -553,7 +553,7 @@ func runStackSubmit(cmd *cobra.Command, o shipOpts, include []string, to string)
 func stackSubmitGit(cmd *cobra.Command, l lane) error {
 	ctx := cmd.Context()
 	if l.kind != vcs.Git {
-		return fmt.Errorf("stack submit: this repository is on the %s lane, which has no pull request stack — restack it with ccx vcs restack and push it with ccx vcs push", kindLabel(l.kind))
+		return fmt.Errorf("stack submit: this repository is on the %s lane, which has no pull request stack — restack it with ccx vcs stack restack and push it with ccx vcs push", kindLabel(l.kind))
 	}
 	dir := l.dir()
 	branch, err := gitCurrentBranch(ctx, dir, "stack submit")
