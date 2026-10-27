@@ -1831,6 +1831,7 @@ func TestStackBaseStrays(t *testing.T) {
 		{name: "off its parent", pr: stackPR{Number: 7, State: "OPEN", Base: "main"}, want: true},
 		{name: "parked after this run submitted it", pr: stackPR{Number: 7, State: "OPEN", Base: "graphite-base/7"}, submitted: true, want: true},
 		{name: "parked and left out of this run", pr: stackPR{Number: 7, State: "OPEN", Base: "graphite-base/7"}},
+		{name: "on its segment after this run submitted it", pr: stackPR{Number: 7, State: "OPEN", Base: "ccx-segment/c", Segment: true}, submitted: true},
 		{name: "closed", pr: stackPR{Number: 7, State: "CLOSED", Base: "main"}, submitted: true},
 		{name: "base unread", pr: stackPR{Number: 7, State: "OPEN"}, submitted: true},
 	}

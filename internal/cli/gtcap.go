@@ -20,44 +20,90 @@ import (
 const (
 	gtStackCapMessage = "Only opening PRs for the first"
 	gtUnrecordedDir   = "ccx-graphite-unrecorded"
+	gtSegmentPrefix   = "ccx-segment/"
 )
 
 // gtStackCapped reports whether Graphite refused an entry for its cap on how
-// many branches above trunk one stack may open pull requests for. The cap
-// counts from trunk, so no narrower submit gets the branch past it.
+// many branches one stack may open pull requests for.
 func gtStackCapped(e *gtapi.SubmitError) bool {
 	return slices.ContainsFunc(e.Failed, func(f gtapi.BranchSubmitError) bool {
 		return strings.Contains(f.Message, gtStackCapMessage)
 	})
 }
 
-// gtOpenPastTheCap gives a branch Graphite refused at its stack cap the pull
-// request the submit asked for, through GitHub alone: it opens one with the
-// carried title and body, or moves an open one onto the planned base. Graphite
-// records neither, so the branch is marked for a stack submit once the stack
-// is split.
-func gtOpenPastTheCap(ctx context.Context, errW io.Writer, dir render.Dir, commonDir, prefix, nwo string, pr gtapi.SubmitPR) (stackEntry, error) {
+func gtSegmentBase(branch string) string { return gtSegmentPrefix + branch }
+
+func gtSubmitOnSegment(ctx context.Context, errW io.Writer, client *gtapi.Client, dir render.Dir, prefix, owner, name, trunk string, b gtSubmitBranch, pr gtapi.SubmitPR) ([]gtapi.SubmittedPR, error) {
+	segment := gtSegmentBase(pr.Head)
+	if b.parkedOn != segment {
+		if err := gtPushSegment(ctx, dir, prefix, pr, segment); err != nil {
+			return nil, err
+		}
+	}
+	pr.Base = segment
+	out, err := client.SubmitPullRequests(ctx, gtapi.SubmitRequest{RepoOwner: owner, RepoName: name, TrunkBranchName: trunk, PRs: []gtapi.SubmitPR{pr}})
+	if err != nil {
+		return nil, err
+	}
+	number := pr.PRNumber
+	for _, created := range out {
+		number = created.PRNumber
+	}
+	if _, err := fmt.Fprintf(errW, "%s: graphite caps the stack under %s, so ccx recorded %s's PR #%d on %s, a copy of %s at %s that no landing deletes; the stack submit after %s lands moves it onto %s\n",
+		prefix, b.base, pr.Head, number, segment, b.base, shortOID(pr.BaseSha), b.base, trunk); err != nil {
+		return nil, fmt.Errorf("%s: name the segment Graphite recorded: %w", prefix, err)
+	}
+	return out, nil
+}
+
+func gtPushSegment(ctx context.Context, dir render.Dir, prefix string, pr gtapi.SubmitPR, segment string) error {
+	heads, err := stackListRemoteHeads(ctx, dir, prefix, "origin", []string{segment})
+	if err != nil {
+		return err
+	}
+	argv := pushArgv("origin", "--no-verify", "--atomic",
+		"--force-with-lease="+gtRestackRef(pr.Head)+":"+pr.HeadSha, pr.HeadSha+":"+gtRestackRef(pr.Head),
+		"--force-with-lease="+gtRestackRef(segment)+":"+heads[segment], pr.BaseSha+":"+gtRestackRef(segment))
+	if _, err := render.RunCLI(ctx, dir, "git", argv); err != nil {
+		return fmt.Errorf("%s: push segment base %s at %s under %s at %s: %w", prefix, segment, shortOID(pr.BaseSha), pr.Head, shortOID(pr.HeadSha), err)
+	}
+	return nil
+}
+
+func gtDropSegment(ctx context.Context, errW io.Writer, dir render.Dir, prefix, nwo string, b gtSubmitBranch) error {
+	segment := gtSegmentBase(b.name)
+	if b.parkedOn != segment {
+		return nil
+	}
+	pull, found, err := gtOpenPull(ctx, dir, nwo, b.name)
+	if err != nil || !found || pull.Base.Ref == segment {
+		return err
+	}
+	argv := pushArgv("origin", "--no-verify", "--force-with-lease="+gtRestackRef(segment)+":"+b.baseSha, ":"+gtRestackRef(segment))
+	if _, err := render.RunCLI(ctx, dir, "git", argv); err != nil {
+		return fmt.Errorf("%s: delete segment base %s: %w", prefix, segment, err)
+	}
+	if _, err := fmt.Fprintf(errW, "%s: graphite records #%d on %s, so ccx deleted its segment base %s\n", prefix, pull.Number, pull.Base.Ref, segment); err != nil {
+		return fmt.Errorf("%s: name the segment ccx deleted: %w", prefix, err)
+	}
+	return nil
+}
+
+func gtKeepOnSegment(ctx context.Context, dir render.Dir, commonDir, nwo string, pr gtapi.SubmitPR) (stackEntry, error) {
+	pr.Base = gtSegmentBase(pr.Head)
 	pull, found, err := gtOpenPull(ctx, dir, nwo, pr.Head)
 	if err != nil {
 		return stackEntry{}, err
 	}
-	did := "kept"
 	if !found {
 		if pull, err = gtCreatePull(ctx, dir, nwo, pr); err != nil {
 			return stackEntry{}, err
 		}
-		did = "opened"
-	} else if moved, err := gtRetargetOnGitHub(ctx, dir, nwo, &pull, pr.Base); err != nil {
+	} else if _, err := gtRetargetOnGitHub(ctx, dir, nwo, &pull, pr.Base); err != nil {
 		return stackEntry{}, err
-	} else if moved {
-		did = "retargeted"
 	}
 	if err := gtMarkUnrecorded(commonDir, pr.Head); err != nil {
 		return stackEntry{}, err
-	}
-	if _, err := fmt.Fprintf(errW, "%s: graphite refused %s at its stack cap, so ccx %s PR #%d %s on %s through GitHub alone; Graphite has no record of it, so run ccx vcs stack submit after each parent lands to re-set its base, and once the stack is split\n",
-		prefix, pr.Head, did, pull.Number, pull.HTMLURL, pr.Base); err != nil {
-		return stackEntry{}, fmt.Errorf("%s: name the pull request Graphite did not record: %w", prefix, err)
 	}
 	return stackEntry{Branch: pr.Head, PR: pull.Number, URL: pull.HTMLURL, HasBody: strings.TrimSpace(pull.Body) != "", State: string(gtapi.PROpen)}, nil
 }
@@ -137,4 +183,16 @@ func gtUnrecorded(commonDir, branch string) (bool, error) {
 		return false, fmt.Errorf("read %s's unrecorded mark: %w", branch, err)
 	}
 	return true, nil
+}
+
+func gtUnrecordedOf(commonDir string, plan []gtSubmitBranch) (map[string]bool, error) {
+	marked := map[string]bool{}
+	for _, b := range plan {
+		unrecorded, err := gtUnrecorded(commonDir, b.name)
+		if err != nil {
+			return nil, err
+		}
+		marked[b.name] = unrecorded
+	}
+	return marked, nil
 }

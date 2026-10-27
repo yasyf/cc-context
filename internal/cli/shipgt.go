@@ -2020,7 +2020,11 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 	if err := gtParkedBases(ctx, l.dir(), plan, known, s.trunkHead); err != nil {
 		return nil, nil, err
 	}
-	submit, unchanged := gtDropUnchanged(plan, last, known, tip, s.updateDraft(tip))
+	unrecorded, err := gtUnrecordedOf(commonDir, plan)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%s: %w", s.prefix, err)
+	}
+	submit, unchanged := gtDropUnchanged(plan, last, known, unrecorded, tip, s.updateDraft(tip))
 	posted, unopened := gtHoldUnopened(submit, s)
 	if err := gtAnnounceUnchanged(errW, s.prefix, unchanged); err != nil {
 		return nil, nil, err
@@ -2098,6 +2102,7 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 
 	var landed []gtapi.SubmittedPR
 	var submitted, recorded []gtSubmitBranch
+	var unrecordable []string
 	defer func() { gtClaimPosted(ctx, errW, l.dir(), s.prefix, owner+"/"+name, submitted, entries) }()
 	for i, pr := range gtSubmitPRs(posted, s.draft, s.updateDraft(tip)) {
 		out, err := client.SubmitPullRequests(ctx, gtapi.SubmitRequest{
@@ -2106,20 +2111,34 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 			TrunkBranchName: tr.Name(),
 			PRs:             []gtapi.SubmitPR{pr},
 		})
+		segmented := posted[i]
+		var submitErr *gtapi.SubmitError
+		if err != nil && errors.As(err, &submitErr) && gtStackCapped(submitErr) {
+			segmented.base = gtSegmentBase(pr.Head)
+			out, err = gtSubmitOnSegment(ctx, errW, client, l.dir(), s.prefix, owner, name, tr.Name(), posted[i], pr)
+			var segmentErr *gtapi.SubmitError
+			if err != nil && errors.As(err, &segmentErr) {
+				entry, keepErr := gtKeepOnSegment(ctx, l.dir(), commonDir, owner+"/"+name, pr)
+				if keepErr != nil {
+					return nil, nil, errors.Join(gtSubmitFailure(gtSubmitPartial(err, pr.Head, landed), s), keepErr)
+				}
+				entries[pr.Head] = entry
+				unrecordable = append(unrecordable, fmt.Sprintf("#%d %s (%s)", entry.PR, pr.Head, gtSubmitSplitFailed(segmentErr)))
+				submitted = append(submitted, posted[i])
+				continue
+			}
+		} else if err == nil {
+			if err := gtDropSegment(ctx, errW, l.dir(), s.prefix, owner+"/"+name, posted[i]); err != nil {
+				return nil, nil, err
+			}
+		}
 		if err != nil {
 			refusal := gtSubmitFailure(gtSubmitPartial(err, pr.Head, landed), s)
-			var submitErr *gtapi.SubmitError
 			if !errors.As(err, &submitErr) {
 				return nil, nil, refusal
 			}
-			if gtStackCapped(submitErr) {
-				entry, err := gtOpenPastTheCap(ctx, errW, l.dir(), commonDir, s.prefix, owner+"/"+name, pr)
-				if err != nil {
-					return nil, nil, errors.Join(refusal, err)
-				}
-				entries[pr.Head] = entry
-				submitted = append(submitted, posted[i])
-				continue
+			if posted[i].parkedOn == gtSegmentBase(pr.Head) {
+				pr.Base = posted[i].parkedOn
 			}
 			pull, served, lookupErr := gtServedOnGitHub(ctx, l.dir(), owner+"/"+name, pr)
 			if lookupErr != nil {
@@ -2151,7 +2170,7 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 		if err := gtClearUnrecorded(commonDir, posted[i].name); err != nil {
 			return nil, nil, err
 		}
-		recorded = append(recorded, posted[i])
+		recorded = append(recorded, segmented)
 		landed = append(landed, out...)
 		submitted = append(submitted, posted[i])
 		if posted[i].pr != 0 {
@@ -2165,6 +2184,9 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 		return nil, nil, gtSubmitFailure(err, s)
 	}
 	gtRecordPushed(ctx, errW, owner+"/"+name, posted, entries)
+	if len(unrecordable) > 0 {
+		return nil, nil, fmt.Errorf("%s: graphite refused to record %s even on a segment base, so each stays open through GitHub alone on that copy of its parent, which no landing deletes; run ccx vcs stack submit again once the branches below it land", s.prefix, strings.Join(unrecordable, ", "))
+	}
 	return gtPlanNames(posted), entries, nil
 }
 
@@ -2330,14 +2352,18 @@ func gtTipOnlyPlan(plan []gtSubmitBranch, run *stackRebaseRun) ([]gtSubmitBranch
 // parent, unless its parent is resubmitted: Graphite's pre-submit
 // moves every open child of a submitted branch that the submit leaves out onto
 // a graphite-base branch.
-func gtDropUnchanged(plan []gtSubmitBranch, last map[string]gtmeta.Version, known map[string]gtapi.PullRequestInfo, tip string, update func(branch string) *bool) (submit []gtSubmitBranch, unchanged []string) {
+func gtDropUnchanged(plan []gtSubmitBranch, last map[string]gtmeta.Version, known map[string]gtapi.PullRequestInfo, unrecorded map[string]bool, tip string, update func(branch string) *bool) (submit []gtSubmitBranch, unchanged []string) {
 	resubmitted := map[string]bool{}
 	for _, b := range plan {
 		now := gtmeta.Version{HeadSha: b.head, BaseSha: b.baseSha, BaseName: b.base}
 		pr, open := known[b.name]
 		newest := pr.Newest()
 		draft := update(b.name)
-		if b.name != tip && !resubmitted[b.base] && b.pr != 0 && open && (draft == nil || pr.IsDraft == *draft) && last[b.name] == now && pr.BaseRefName == b.base && newest.BaseName == b.base && newest.HeadSha == b.head && newest.BaseSha == b.baseSha {
+		base := b.base
+		if pr.BaseRefName == gtSegmentBase(b.name) && !unrecorded[b.name] {
+			base = pr.BaseRefName
+		}
+		if b.name != tip && !resubmitted[b.base] && b.pr != 0 && open && (draft == nil || pr.IsDraft == *draft) && last[b.name] == now && pr.BaseRefName == base && newest.BaseName == base && newest.HeadSha == b.head && newest.BaseSha == b.baseSha {
 			unchanged = append(unchanged, b.name)
 			continue
 		}
@@ -2484,7 +2510,7 @@ func gtRefuseQueueRestack(ctx context.Context, dir render.Dir, client *gtapi.Cli
 // graphite-base branch, leased on where that branch stands on the remote now.
 func gtParkedBases(ctx context.Context, dir render.Dir, plan []gtSubmitBranch, known map[string]gtapi.PullRequestInfo, trunkHead string) error {
 	for i, b := range plan {
-		if pr := known[b.name]; pr.IsBaseRefGraphiteBase {
+		if pr := known[b.name]; pr.IsBaseRefGraphiteBase || pr.BaseRefName == gtSegmentBase(b.name) {
 			plan[i].parkedOn = pr.BaseRefName
 		}
 	}

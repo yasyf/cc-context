@@ -81,7 +81,7 @@ func gtUntrackedChain(ctx context.Context, dir render.Dir, prefix string, state 
 		for row := range strings.Lines(heads) {
 			head, ref, _ := strings.Cut(strings.TrimSpace(row), "\t")
 			name := strings.TrimPrefix(ref, "refs/heads/")
-			if local[name] || strings.HasPrefix(name, "graphite-base/") {
+			if local[name] || strings.HasPrefix(name, "graphite-base/") || strings.HasPrefix(name, gtSegmentPrefix) {
 				continue
 			}
 			remoteOnly[name] = true

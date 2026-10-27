@@ -83,6 +83,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with a `--no-checkout` worktree. A branch never pushed still publishes as
   before.
 
+- **A branch Graphite caps is recorded on a segment base instead of left on
+  GitHub alone.** When Graphite refuses a branch with "Only opening PRs for
+  the first 50 branches in the stack", `ccx vcs stack submit` and `ship` push
+  `ccx-segment/<branch>`, a copy of the parent's head, and submit the pull
+  request onto it. Graphite records the pull request as the bottom of a stack of
+  its own, and no landing deletes its base, so GitHub never closes it when the
+  parent's branch goes. Each later submit moves the segment with the parent,
+  tries the real parent first, and deletes the segment once Graphite records
+  the pull request there. A pull request Graphite refuses even on its segment
+  stays open there through GitHub, and the run fails naming each one. Before,
+  such a pull request sat on its real parent through GitHub alone, and the
+  parent's landing closed it.
+
 - **`ccx vcs stack submit` and `ship` move a pull request Graphite has no
   record of onto its planned base.** When Graphite refuses a branch whose open
   pull request already carries the pushed head but sits on a stale base, ccx

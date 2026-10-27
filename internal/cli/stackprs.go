@@ -116,7 +116,7 @@ func stackReadPRsGraphQL(ctx context.Context, dir render.Dir, branches []string)
 func stackGraphQLRead(branch string, n stackPRNode) stackPRRead {
 	pr := &stackPR{
 		Number: n.Number, URL: n.URL, Title: n.Title, Body: n.Body, State: n.State,
-		Base: n.BaseRefName, Head: n.HeadRefOid, Mergeable: n.Mergeable,
+		Base: n.BaseRefName, Head: n.HeadRefOid, Mergeable: n.Mergeable, Segment: n.BaseRefName == gtSegmentBase(branch),
 	}
 	for _, label := range n.Labels.Nodes {
 		pr.Labels = append(pr.Labels, label.Name)
@@ -145,7 +145,7 @@ func stackReadPRsREST(ctx context.Context, dir render.Dir, branches []string) ([
 		}
 		pr := &stackPR{
 			Number: p.Number, URL: p.HTMLURL, Title: p.Title, Body: p.Body, State: landing.State,
-			Base: p.Base.Ref, Head: p.Head.SHA, Mergeable: p.mergeable(), Labels: p.labelNames(),
+			Base: p.Base.Ref, Head: p.Head.SHA, Mergeable: p.mergeable(), Labels: p.labelNames(), Segment: p.Base.Ref == gtSegmentBase(branch),
 		}
 		reads = append(reads, stackPRRead{branch: branch, pr: pr, landing: landing})
 	}
