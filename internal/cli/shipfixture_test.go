@@ -1363,7 +1363,7 @@ func shipFetchArgv(remote, branch string) []string {
 // out buries the argv under test.
 var (
 	ghRunListArgv  = ghRunListArgvFor(fakeHeadSHA)
-	ghRunWatchArgv = []string{"gh", "run", "watch", "42", "--exit-status"}
+	ghRunWatchArgv = []string{"gh", "run", "watch", "42", "--exit-status", "--interval", "60"}
 	ghRunViewArgv  = []string{"gh", "run", "view", "42", "--json", "workflowName,conclusion,startedAt,updatedAt,url,jobs"}
 )
 

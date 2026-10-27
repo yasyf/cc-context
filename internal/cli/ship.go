@@ -55,8 +55,9 @@ const (
 )
 
 var (
-	shipCIPollTries    = 12
-	shipCIPollInterval = 5 * time.Second
+	shipCIPollTries     = 12
+	shipCIPollInterval  = 5 * time.Second
+	shipCIWatchInterval = "60"
 
 	// shipCIWatchTimeout is the runaway guard on one gh run watch, which blocks
 	// until the run concludes and so is legitimately slower than any generic
@@ -2678,9 +2679,9 @@ func watchCIRun(ctx context.Context, errW io.Writer, dir render.Dir, id string) 
 			return err
 		}
 		if shipStreamCI(errW) {
-			err = render.RunCLIStreamEnv(watchCtx, dir, "gh", []string{"run", "watch", id, "--exit-status", "--compact"}, errW, env)
+			err = render.RunCLIStreamEnv(watchCtx, dir, "gh", []string{"run", "watch", id, "--exit-status", "--interval", shipCIWatchInterval, "--compact"}, errW, env)
 		} else {
-			_, err = render.RunCLIEnv(watchCtx, dir, "gh", []string{"run", "watch", id, "--exit-status"}, env)
+			_, err = render.RunCLIEnv(watchCtx, dir, "gh", []string{"run", "watch", id, "--exit-status", "--interval", shipCIWatchInterval}, env)
 		}
 		if err == nil || expires.IsZero() || time.Now().Before(expires) || watchCtx.Err() != nil {
 			return err
