@@ -557,9 +557,11 @@ func TestShipTipOnlyMovesNoAncestorWhenItsParentsPublishedHeadMoves(t *testing.T
 		name    string
 		file    string
 		rewrite bool
+		restack bool
 	}{
-		{"parent advanced", "f.txt", false},
-		{"parent rewritten", "g.txt", true},
+		{"parent advanced", "f.txt", false, false},
+		{"parent rewritten", "g.txt", true, false},
+		{"parent advanced, restacked", "g.txt", false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := shipGTRepo(t)
@@ -577,9 +579,13 @@ func TestShipTipOnlyMovesNoAncestorWhenItsParentsPublishedHeadMoves(t *testing.T
 			base := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
 			shipGTReady(t, f)
 
-			_, errStr, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--tip-only")
+			args := []string{"-m", "fix: frobnicate", "--no-watch", "--tip-only"}
+			if tc.restack {
+				args = append(args, "--restack")
+			}
+			out, errStr, err := runShipCmdFull(f.Context(), t, args...)
 			if err != nil {
-				t.Fatalf("ship --tip-only = %v (stderr=%q)", err, errStr)
+				t.Fatalf("ship %v = %v (stderr=%q)", args, err, errStr)
 			}
 			if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base"); got != base {
 				t.Errorf("origin base moved from %s to %s", base, got)
@@ -603,8 +609,17 @@ func TestShipTipOnlyMovesNoAncestorWhenItsParentsPublishedHeadMoves(t *testing.T
 				}
 				return
 			}
+			if tc.restack {
+				if !stackOnto(t, f, base, feature) {
+					t.Errorf("origin feature %s, want it replayed onto base's advanced head %.12s", feature, base)
+				}
+				return
+			}
 			if !stackOnto(t, f, cut, feature) || stackOnto(t, f, base, feature) {
 				t.Errorf("origin feature %s, want the new commit pushed on %.12s without a replay onto base's moved head %.12s", feature, cut, base)
+			}
+			if !strings.Contains(out, "kept feature on") || !strings.Contains(out, "--tip-only --restack replays it") {
+				t.Errorf("summary = %q, want it to name the kept base and the --tip-only --restack that replays it", out)
 			}
 		})
 	}

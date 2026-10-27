@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`ccx vcs ship --tip-only --restack` replays only the tip onto its
+  parent's published head.** A tip-only ship keeps the tip on its base when
+  the parent only moved past it, and its report said nothing about it, so a
+  lane that wanted the parent's new commits under its branch had no verb
+  short of a whole-stack ship. The report now names the kept base, and
+  `--restack` alongside `--tip-only` replays the tip onto the parent's
+  published head while every ancestor stays where it is.
+
 - **`ccx vcs push --branch <name>` pushes a detached HEAD as a branch.** A
   working copy whose branch another working copy has checked out sits on a
   detached HEAD, where push refused. `--branch` names the branch to move, and
