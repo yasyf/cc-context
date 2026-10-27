@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs worktree add` mints beside a clone that itself sits in the
+  worktree pool.** A repository whose only clone was made as
+  `~/.claude/worktrees/<repo>/<lane>` named its pool after that lane, so every
+  worktree cut from it landed under `~/.claude/worktrees/<lane>/`. A main
+  checkout inside the pool now names the pool after the directory above it.
+
 - **`ccx vcs pr status` answers from the shared poll again, not over REST.**
   On a repository with 104 pull requests and 46 lane prefixes asked for, the
   shared poll's first GraphQL query carried the trunk, every prefix search,

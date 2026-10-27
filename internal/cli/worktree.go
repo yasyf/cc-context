@@ -791,7 +791,12 @@ func mintWorktreePath(ctx context.Context, prefix string, c vcs.Checkout, name s
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(worktreePool(home), filepath.Base(c.MainRoot), strings.Join(elements, "-")), nil
+	pool := worktreePool(home)
+	repo := filepath.Base(c.MainRoot)
+	if filepath.Dir(filepath.Dir(c.MainRoot)) == pool {
+		repo = filepath.Base(filepath.Dir(c.MainRoot))
+	}
+	return filepath.Join(pool, repo, strings.Join(elements, "-")), nil
 }
 
 func canonicalHome(ctx context.Context, prefix string) (string, error) {
