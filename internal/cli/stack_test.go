@@ -1673,10 +1673,14 @@ func TestStackSubmitKeepsTheParentOfAWorkingCopyRecreatedAtTheFoundersPath(t *te
 	}
 }
 
-// TestStackSubmitTakesAPublishedParentAnotherWorkingCopyOfThisLaneHolds covers
-// the parent a publication receipt brings back after gt lost it: one this
-// lane holds goes up with its new commits.
-func TestStackSubmitTakesAPublishedParentAnotherWorkingCopyOfThisLaneHolds(t *testing.T) {
+type publishedParentLane struct {
+	f    *vcstest.Fixture
+	api  *gtAPIStub
+	a, z string
+}
+
+func newPublishedParentLane(t *testing.T) publishedParentLane {
+	t.Helper()
 	f := shipGTRepo(t)
 	api := stubGTAPI(t)
 	f.Decorate(api.ctx)
@@ -1696,21 +1700,46 @@ func TestStackSubmitTakesAPublishedParentAnotherWorkingCopyOfThisLaneHolds(t *te
 	if got := dropGTParent(t, f, "z"); got != "p" {
 		t.Fatalf("gt parent of z = %s, want the stale p", got)
 	}
-	published := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "a")
-	writeShipFile(t, a, "fix.txt", "fix\n")
-	mustRun(t, f.Env(), a, "git", "add", "fix.txt")
-	mustRun(t, f.Env(), a, "git", "commit", "-qm", "fix")
-	restackAdvanceRemote(t, f, "main", "upstream.txt", "upstream\n")
-	posted := len(api.submitHeads())
+	return publishedParentLane{f: f, api: api, a: a, z: z}
+}
 
-	if _, _, err := runStackCmdIn(t, f, z, "submit"); err != nil {
+// TestStackSubmitTakesAPublishedParentAnotherWorkingCopyOfThisLaneHolds covers
+// the parent a publication receipt brings back after gt lost it: one this
+// lane holds goes up with its new commits.
+func TestStackSubmitTakesAPublishedParentAnotherWorkingCopyOfThisLaneHolds(t *testing.T) {
+	l := newPublishedParentLane(t)
+	published := gitAt(t, l.f.Env(), l.f.RemoteDir, "rev-parse", "a")
+	writeShipFile(t, l.a, "fix.txt", "fix\n")
+	mustRun(t, l.f.Env(), l.a, "git", "add", "fix.txt")
+	mustRun(t, l.f.Env(), l.a, "git", "commit", "-qm", "fix")
+	restackAdvanceRemote(t, l.f, "main", "upstream.txt", "upstream\n")
+	posted := len(l.api.submitHeads())
+
+	if _, _, err := runStackCmdIn(t, l.f, l.z, "submit"); err != nil {
 		t.Fatalf("stack submit: %v", err)
 	}
-	if heads := api.submitHeads()[posted:]; !slices.Contains(heads, "a") {
+	if heads := l.api.submitHeads()[posted:]; !slices.Contains(heads, "a") {
 		t.Errorf("submit posts = %v, want a among them — it is this lane's", heads)
 	}
-	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "a"); got == published {
+	if got := gitAt(t, l.f.Env(), l.f.RemoteDir, "rev-parse", "a"); got == published {
 		t.Errorf("origin a = %s, still its old published head", got)
+	}
+}
+
+func TestStackSubmitPinsAPublishedParentNoWorkingCopyHolds(t *testing.T) {
+	l := newPublishedParentLane(t)
+	mustRun(t, l.f.Env(), l.f.Dir, "git", "worktree", "remove", l.a)
+	run, err := resolveLane(l.f.Context(), "stack submit", l.z, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pinned, err := stackPinPublishedParents(l.f.Context(), run, []string{"p", "z"}, []string{"p", "a", "z"}, nil, nil, map[string]string{})
+	if err != nil {
+		t.Fatalf("pin published parents: %v", err)
+	}
+	if !slices.Equal(pinned, []string{"a"}) {
+		t.Errorf("pinned = %v, want a kept at its published head", pinned)
 	}
 }
 
