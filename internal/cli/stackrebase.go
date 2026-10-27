@@ -844,10 +844,7 @@ func stackAge(d time.Duration) string {
 }
 
 func stackAdmit(ctx context.Context, cmd *cobra.Command, l lane, commonDir string, runs []*stackRebaseRun, run *stackRebaseRun, dryRun bool) (bool, error) {
-	run.Claims = stackWrites(run)
-	if len(run.Claims) == 0 {
-		run.Claims = run.Roots
-	}
+	run.Claims = stackRunClaims(run)
 	var apart []*stackRebaseRun
 	for _, other := range runs {
 		if other.Conflict == nil && !stackOverlaps(run, other) && !stackShipIgnores(run.Tip, other) {
@@ -883,6 +880,16 @@ func stackAdmit(ctx context.Context, cmd *cobra.Command, l lane, commonDir strin
 		finished = finished || done
 	}
 	return finished, nil
+}
+
+func stackRunClaims(run *stackRebaseRun) []string {
+	switch writes := stackWrites(run); {
+	case len(writes) > 0:
+		return writes
+	case run.TipOnly:
+		return []string{run.Tip}
+	}
+	return run.Roots
 }
 
 func stackShipIgnores(tip string, run *stackRebaseRun) bool {
