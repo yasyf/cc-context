@@ -914,7 +914,7 @@ func worktreeRmLaneOf(ctx context.Context, target vcs.Checkout) (lane, error) {
 			return store, nil
 		}
 	}
-	return resolveLane(ctx, "worktree rm", target.MainRoot, true)
+	return resolveLane(ctx, "worktree rm", cmp.Or(target.MainRoot, target.Root), true)
 }
 
 func resolveWorktreeRmLane(ctx context.Context) (lane, error) {
