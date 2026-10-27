@@ -1489,7 +1489,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 			b.Kept, b.Pinned = true, true
 		case queued || (moving != nil && !moving[name] && !inherits[name]) || o.noPush && heldBelow[name].holder != "":
 			b.Kept = o.noPush || stackPinPublished(b)
-		case o.tip != "" && name != o.tip && !o.restack && (o.tipOnly || !inherits[name]):
+		case o.tip != "" && name != o.tip && (o.tipOnly || !o.restack && !inherits[name]):
 			if b.Kept, err = stackKeepsAncestor(ctx, l.dir(), pin, b, kept[b.Parent], o.tipOnly); err != nil {
 				return nil, err
 			}
@@ -1527,7 +1527,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 			if err := stackOwnWork(ctx, l.dir(), tr, pin, b); err != nil {
 				return nil, err
 			}
-			if o.tipOnly && name == o.tip && b.Parent != trunk {
+			if o.tipOnly && !o.restack && name == o.tip && b.Parent != trunk {
 				if b.Stays, err = stackTipStays(ctx, l.dir(), b, byName[b.Parent].Head); err != nil {
 					return nil, err
 				}
