@@ -523,7 +523,7 @@ func (u *gtMoveUndo) restore(ctx context.Context, l lane, c *gtCache, err error)
 			return errors.Join(err, holdersErr)
 		}
 		if _, alignErr := gtRestackAlign(ctx, "ship", holders, []restackMove{{branch: u.branch, head: u.head, parent: u.from, previous: head}}); alignErr != nil {
-			return fmt.Errorf("%w\nship: %s stays on %s at %.12s — its working copy could not be put back at %.12s: wv", err, u.branch, u.parent, head, u.head, alignErr)
+			return fmt.Errorf("%w\nship: %s stays on %s at %.12s — its working copy could not be put back at %.12s: %w", err, u.branch, u.parent, head, u.head, alignErr)
 		}
 		if _, moveErr := render.RunCLI(ctx, l.dir(), "git", []string{"update-ref", gtRestackRef(u.branch), u.head, head}); moveErr != nil {
 			return errors.Join(err, fmt.Errorf("ship: put %s back at %.12s: %w", u.branch, u.head, moveErr))
