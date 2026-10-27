@@ -17,7 +17,6 @@ import (
 
 const (
 	chunkSize        = 40
-	pollDeadline     = 30 * time.Second
 	graphqlDeadline  = 20 * time.Second
 	graphiteDeadline = 10 * time.Second
 
@@ -156,8 +155,6 @@ func (g *GitHub) probe(ctx context.Context) (Rate, error) {
 }
 
 func (g *GitHub) poll(ctx context.Context, req Want, prev map[int]PR) (poll, error) {
-	ctx, cancel := context.WithTimeout(ctx, pollDeadline)
-	defer cancel()
 	infos, mergeability := g.queueRecords(ctx, req.PRs)
 	p := pass{GitHub: g, prev: prev, infos: infos, mergeability: mergeability, out: poll{prs: make(map[int]PR, len(req.PRs)), lanes: map[string][]int{}}}
 	targets := make([]target, 0, len(req.PRs))

@@ -120,8 +120,6 @@ func appSpent(refusal *ghapi.StatusError, now time.Time) string {
 }
 
 func (g *GitHub) restPass(ctx context.Context, numbers []int, prev map[int]PR, trunk string) (poll, error) {
-	ctx, cancel := context.WithTimeout(ctx, restDeadline)
-	defer cancel()
 	infos, mergeability := g.queueRecords(ctx, numbers)
 	p := pass{GitHub: g, prev: prev, infos: infos, mergeability: mergeability, out: poll{prs: make(map[int]PR, len(numbers)), trunk: Trunk{Name: trunk}}}
 	var mu sync.Mutex
@@ -130,7 +128,9 @@ func (g *GitHub) restPass(ctx context.Context, numbers []int, prev map[int]PR, t
 	for _, n := range numbers {
 		t := p.target(n)
 		group.Go(func() error {
-			pr, err := p.restRecord(ctx, t)
+			read, cancel := context.WithTimeout(ctx, restDeadline)
+			defer cancel()
+			pr, err := p.restRecord(read, t)
 			mu.Lock()
 			defer mu.Unlock()
 			switch {

@@ -72,6 +72,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs pr status` over many pull requests gives each page its own
+  deadline.** A read of 97 pull requests failed every landing pass: the
+  shared poll had one 30-second deadline for all of its pages, and the REST
+  fallback spent its single 20-second deadline on the Graphite reads before
+  reading any pull request. A reader now waits one budget per page of 40,
+  the poll it claims runs one budget per page, and the REST fallback gives
+  each pull request its own 20 seconds.
+
 - **`ccx vcs pr status` reads many pull requests in parallel.** The REST
   mergeability read and the Buildkite skip proof now run eight pull requests
   at a time instead of one after another. One call for 96 pull requests took
