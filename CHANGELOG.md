@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs ship --tip-only` ships over an unpublished ancestor below its
+  parent.** A tip-only ship refused when any ancestor down to trunk had no
+  remote branch, naming it as the head the tip ships onto (`--tip-only ships
+  onto <grandparent>'s published head, and the remote has none`), though the
+  tip ships onto its parent's published head alone. Only that parent, or the
+  branch below a landed one, must be published now; an unpublished branch
+  further down stays at its local head, unpushed.
+
 - **A stack submit re-run from the same worktree resumes its own saved run.**
   A submit that saved its replays and then refused, for instance because
   Graphite was still restacking after a parent landed, left its run behind,

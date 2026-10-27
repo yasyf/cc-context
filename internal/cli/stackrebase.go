@@ -1501,7 +1501,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 		case queued || (moving != nil && !moving[name] && !inherits[name]) || o.noPush && heldBelow[name].holder != "":
 			b.Kept = o.noPush || stackPinPublished(b)
 		case o.tip != "" && name != o.tip && (o.tipOnly || !o.restack && !inherits[name]):
-			if b.Kept, err = stackKeepsAncestor(ctx, l.dir(), pin, b, kept[b.Parent], o.tipOnly); err != nil {
+			if b.Kept, err = stackKeepsAncestor(ctx, l.dir(), pin, b, kept[b.Parent], o.tipOnly, byName[o.tip].Parent); err != nil {
 				return nil, err
 			}
 		}
@@ -2614,14 +2614,16 @@ func tipOnlyAncestor(tipOnly bool, tip, name string) bool {
 // already shows: a force-push of a pull request that does not conflict onto
 // newer trunk dismisses its approvals for nothing. A local head that only
 // replays the published commits onto newer trunk, as a restack leaves it, is
-// kept at the published head. --tip-only keeps every published ancestor,
-// whatever moved under it.
-func stackKeepsAncestor(ctx context.Context, dir render.Dir, pin string, b *stackRebaseBranch, parentKept, tipOnly bool) (bool, error) {
+// kept at the published head.
+//
+// --tip-only keeps every published ancestor, whatever moved under it, and
+// every unpublished one below tipBase, the parent the tip ships onto.
+func stackKeepsAncestor(ctx context.Context, dir render.Dir, pin string, b *stackRebaseBranch, parentKept, tipOnly bool, tipBase string) (bool, error) {
 	if b.Remote == "" {
-		if tipOnly {
+		if tipOnly && b.Name == tipBase {
 			return false, fmt.Errorf("stack rebase: --tip-only ships onto %s's published head, and the remote has none — push it first, or pass --landed %s if it just landed", b.Name, b.Name)
 		}
-		return false, nil
+		return tipOnly, nil
 	}
 	if !tipOnly {
 		pr := b.PR
