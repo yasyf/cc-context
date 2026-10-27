@@ -472,7 +472,7 @@ func runStackRebase(cmd *cobra.Command, o stackRebaseOpts) error {
 	if err != nil {
 		return err
 	}
-	current, err := gitCurrentBranch(ctx, l.dir(), stackRebasePrefix)
+	current, err := stackCenter(ctx, l.dir(), stackRebasePrefix, o)
 	if err != nil {
 		return err
 	}
@@ -1098,6 +1098,13 @@ func stackProcStart(pid int) string {
 	return strings.TrimSpace(string(out))
 }
 
+func stackCenter(ctx context.Context, dir render.Dir, prefix string, o stackRebaseOpts) (string, error) {
+	if o.tipOnly {
+		return o.tip, nil
+	}
+	return gitCurrentBranch(ctx, dir, prefix)
+}
+
 func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts) (*stackRebaseRun, error) {
 	requested := o
 	requested.pinned = slices.Clone(o.pinned)
@@ -1114,7 +1121,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	if err != nil {
 		return nil, err
 	}
-	current, err := gitCurrentBranch(ctx, l.dir(), prefix)
+	current, err := stackCenter(ctx, l.dir(), prefix, o)
 	if err != nil {
 		return nil, err
 	}

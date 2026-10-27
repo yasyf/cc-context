@@ -384,7 +384,7 @@ func stackBranches(ctx context.Context, c *gtCache) ([]string, error) {
 }
 
 func shipPreflightGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, c *gtCache) (branchPlan, string, error) {
-	branch, err := gitCurrentBranch(ctx, l.dir(), "ship")
+	branch, err := shipBranch(ctx, l.dir(), o)
 	if err != nil {
 		return branchPlan{}, "", err
 	}
@@ -470,7 +470,7 @@ func gtNeedsRestack(state gtState, branch, trunk string) (bool, error) {
 // every other refusal, so a ship that stops short of its commit never leaves
 // the branch moved.
 func gtMoveOntoParent(ctx context.Context, errW io.Writer, l lane, o shipOpts, c *gtCache) (string, bool, error) {
-	branch, err := gitCurrentBranch(ctx, l.dir(), "ship")
+	branch, err := shipBranch(ctx, l.dir(), o)
 	if err != nil {
 		return "", false, err
 	}

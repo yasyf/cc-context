@@ -305,6 +305,32 @@ func TestShipTipOnlyPreviewsAndPublishesExplicitChildMeta(t *testing.T) {
 	}
 }
 
+func TestShipBranchTipOnlyShipsABranchAnotherWorktreeHolds(t *testing.T) {
+	f, _, _ := stackMergeableBase(t, "MERGEABLE")
+	stackCommit(t, f, "tip.txt")
+	head := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
+	held := f.WorktreePath("held-feature")
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", "--no-checkout", held, "feature")
+	shipResetLog(t, f)
+
+	if _, errStr, err := runShipCmdFull(f.Context(), t, "--branch", "feature", "--tip-only", "--no-commit", "--no-watch"); err != nil {
+		t.Fatalf("ship --branch feature = %v (stderr=%q)", err, errStr)
+	}
+	if refs := gtPushedRefs(shipGTInvocations(t, f)); !slices.Equal(refs, []string{"feature"}) {
+		t.Errorf("pushed refs = %v, want only feature", refs)
+	}
+	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature"); got != head {
+		t.Errorf("origin feature = %s, want its local head %s", got, head)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "branch", "--show-current"); got != "main" {
+		t.Errorf("this working copy moved to %q, want it left on main", got)
+	}
+	if files := gitAt(t, f.Env(), held, "ls-files"); files != "" {
+		t.Errorf("the holder's empty index now lists %q, want it untouched", files)
+	}
+}
+
 // TestShipKeepsAnApprovedParentOnlyRestackedLocally is ci-go's #25915: the parent
 // #25742 was restacked locally onto newer trunk without a push, GitHub had not
 // computed its mergeability, and each ship from the child force-pushed the
