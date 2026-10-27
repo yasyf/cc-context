@@ -38,11 +38,13 @@ type Client struct {
 	apps    *appLoader
 	repo    string
 	retries int
+	quota   *ledger
 }
 
 var defaultClient = sync.OnceValue(func() *Client {
 	c := New(baseURLProd)
 	c.apps = defaultAppLoader(baseURLProd)
+	c.quota = defaultLedger()
 	return c
 })
 
@@ -178,6 +180,15 @@ func (c *Client) do(ctx context.Context, method, ref string, body []byte, read b
 	waits := 0
 	for {
 		asApp := cred != credential(c.tokens)
+		identity := IdentityUser
+		if asApp {
+			identity = IdentityApp
+		}
+		if read {
+			if err := c.Admit(ctx, identity, Resource(target)); err != nil {
+				return nil, nil, false, err
+			}
+		}
 		token, err := cred.get(ctx)
 		if err != nil {
 			return nil, nil, false, err
@@ -187,6 +198,11 @@ func (c *Client) do(ctx context.Context, method, ref string, body []byte, read b
 		stop()
 		if err != nil {
 			return nil, nil, false, err
+		}
+		if c.quota != nil {
+			if err := c.quota.charge(ctx, identity, Resource(target), CallerName(ctx), header); err != nil {
+				return nil, nil, false, err
+			}
 		}
 		if status == http.StatusUnauthorized && !reresolved {
 			reresolved = true

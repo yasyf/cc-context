@@ -24,6 +24,7 @@ type Identity struct {
 	Installation int64      `json:"installation,omitempty"`
 	ExpiresAt    *time.Time `json:"expiresAt,omitempty"`
 	Quota        *Quota     `json:"quota,omitempty"`
+	Pools        []Pool     `json:"pools,omitempty"`
 }
 
 // Auth is the identity a repository-bound client's reads and writes resolve
@@ -35,9 +36,10 @@ type Auth struct {
 	Reason string   `json:"reason,omitempty"`
 }
 
+// Identities name who a request authenticates as.
 const (
-	identityApp  = "app"
-	identityUser = "user"
+	IdentityApp  = "app"
+	IdentityUser = "user"
 )
 
 const userAuthQuery = `query { viewer { login } rateLimit { limit remaining resetAt } }`
@@ -45,11 +47,15 @@ const userAuthQuery = `query { viewer { login } rateLimit { limit remaining rese
 const appAuthQuery = `query { rateLimit { limit remaining resetAt } }`
 
 // Auth reports which identity c's reads and writes on its repository resolve
-// to, with each identity's remaining GraphQL quota. It mints the app token a
+// to, with each identity's remaining GraphQL quota and every pool the quota
+// ledger tracks for it. It mints the app token a
 // read would, so it doubles as the check that minting works.
 func (c *Client) Auth(ctx context.Context) (Auth, error) {
 	writes, err := c.AsUser().userIdentity(ctx)
 	if err != nil {
+		return Auth{}, err
+	}
+	if writes.Pools, err = c.AsUser().Pools(ctx, IdentityUser); err != nil {
 		return Auth{}, err
 	}
 	auth := Auth{Repo: c.repo, Reads: writes, Writes: writes}
@@ -89,7 +95,11 @@ func (c *Client) Auth(ctx context.Context) (Auth, error) {
 	default:
 		quota = &app.RateLimit
 	}
-	auth.Reads = Identity{Kind: identityApp, Name: src.cfg.Name, Installation: id, ExpiresAt: &tok.ExpiresAt, Quota: quota}
+	pools, err := c.Pools(ctx, IdentityApp)
+	if err != nil {
+		return Auth{}, err
+	}
+	auth.Reads = Identity{Kind: IdentityApp, Name: src.cfg.Name, Installation: id, ExpiresAt: &tok.ExpiresAt, Quota: quota, Pools: pools}
 	return auth, nil
 }
 
@@ -118,7 +128,7 @@ func (c *Client) userIdentity(ctx context.Context) (Identity, error) {
 	default:
 		quota = &user.RateLimit
 	}
-	return Identity{Kind: identityUser, Name: user.Viewer.Login, Quota: quota}, nil
+	return Identity{Kind: IdentityUser, Name: user.Viewer.Login, Quota: quota}, nil
 }
 
 // UserRESTQuota reads the gh user's REST core quota. GitHub does not count the

@@ -61,9 +61,13 @@ func quotaReset(header http.Header, now time.Time) (time.Duration, bool) {
 	return 0, false
 }
 
-// RateLimited reports whether err is GitHub refusing a request for rate rather
-// than failing it, and the wait GitHub named, zero when it named none.
+// RateLimited reports whether err is GitHub, or ccx's own floor, refusing a
+// request for rate rather than failing it, and the wait named, zero when none.
 func RateLimited(err error) (time.Duration, bool) {
+	var floor *FloorError
+	if errors.As(err, &floor) {
+		return max(time.Until(floor.Pool.ResetAt), 0), true
+	}
 	var status *StatusError
 	if errors.As(err, &status) {
 		return status.RetryAfter, status.Limited
