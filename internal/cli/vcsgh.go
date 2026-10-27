@@ -48,21 +48,27 @@ runs on the user's token, and so does a GraphQL query the app is forbidden.
 Every request is charged to its pool (app or user, and core, graphql, or
 search) in a machine-wide ledger, under the caller CCX_CALLER names, else
 CCI_AGENT_ID, else the script or command that started ccx; set CCX_CALLER in
-daemons. ccx vcs auth status prints each pool's remainder, reset, and top
-callers. Before a read, ccx reads its pool's standing from GitHub's free
-rate_limit when the ledger's is over a minute old. A pool under 1000 left
-before its reset refuses the read: ccx serves the cached answer to the same
-read when one exists, else exits 1 without calling GitHub and prints one line
-starting "ccx: GitHub rate limit floor:" naming the pool, its remainder and
-limit, its reset time, and the top callers. Back off until that reset.
+every script and daemon. ccx vcs auth status prints each pool's remainder,
+reset, and top callers. Before a read, ccx reads its pool's standing from
+GitHub's free rate_limit when the ledger's is over a minute old. A pool under
+1000 left before its reset takes no more reads: ccx serves the cached answer
+to the same read, however old, saying so on stderr; else a read on the app's
+pool runs on the user's pool instead; else ccx exits 1 without calling GitHub
+and prints one line starting "ccx: GitHub rate limit floor:" naming the pool,
+its remainder and limit, its reset time, and the top callers. Back off until
+that reset.
 
 --max-age serves an identical read (same repository, arguments, and stdin)
 from the machine-wide cache while its stored answer is younger than DUR. Only
 a read that exited 0 is stored, nothing expires a stored answer but a later
 read, and a watch is never cached.
 
-Anything else, such as gh pr merge or a gh api write, runs on the user's
-token as plain gh would, charged to its pool but never refused or cached.
+Anything else, such as gh pr close or a gh api write, runs on the user's
+token as plain gh would, charged to its pool but never refused or cached. A
+merge (gh pr merge, a write to repos/OWNER/REPO/pulls/N/merge, or a GraphQL
+mergePullRequest or enablePullRequestAutoMerge), and a write to a ruleset or
+branch protection, is refused before it runs: those stay on plain gh, where
+the merge hooks gate them.
 Standard streams pass through, and ccx exits with gh's code. A read that fails
 once its token has expired, such as a watch that outlived it, runs again on a
 fresh one.`,
@@ -89,9 +95,13 @@ func runVcsGh(cmd *cobra.Command, argv []string, maxAge time.Duration) error {
 	if err != nil {
 		return err
 	}
+	reads := ghReads(argv, stdin)
+	if !reads && ghGuarded(argv, stdin) {
+		return fmt.Errorf("vcs gh: merge with gh pr merge; the merge hooks gate that form: %s", ghCommand(argv))
+	}
 	dir := workingDir(ctx)
 	resource := ghResource(argv)
-	if !ghReads(argv, stdin) {
+	if !reads {
 		if err := reviewsAPI().Charge(ctx, ghapi.IdentityUser, resource); err != nil {
 			return err
 		}
@@ -129,7 +139,16 @@ func runVcsGh(cmd *cobra.Command, argv []string, maxAge time.Duration) error {
 			api, identity = reviewsAPI().ForRepo(cmp.Or(repo, ghCheckoutRepo(ctx, dir))), ghapi.IdentityApp
 		}
 		if err := api.Admit(ctx, identity, resource); err != nil {
-			return ghFloor(cmd, key, err)
+			if hit, ok := ghCached(key); ok && errors.As(err, new(*ghapi.FloorError)) {
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "ccx: serving the answer cached at %s; %v\n", hit.At.Local().Format(time.Kitchen), err)
+				_, werr := cmd.OutOrStdout().Write(hit.Stdout)
+				return werr
+			}
+			if identity == ghapi.IdentityApp && errors.As(err, new(*ghapi.FloorError)) {
+				userToken = true
+				continue
+			}
+			return ghFloor(cmd, err)
 		}
 		if err := api.Charge(ctx, identity, resource); err != nil {
 			return err
@@ -178,14 +197,9 @@ func ghExit(err error) error {
 	return err
 }
 
-func ghFloor(cmd *cobra.Command, key string, err error) error {
+func ghFloor(cmd *cobra.Command, err error) error {
 	var floor *ghapi.FloorError
 	if !errors.As(err, &floor) {
-		return err
-	}
-	if hit, ok := ghCached(key); ok {
-		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "ccx: serving the answer cached at %s; %s\n", hit.At.Local().Format(time.Kitchen), floor)
-		_, err := cmd.OutOrStdout().Write(hit.Stdout)
 		return err
 	}
 	_, _ = fmt.Fprintln(cmd.ErrOrStderr(), ghFloorPrefix+floor.Error())
@@ -205,6 +219,26 @@ func ghForbidden(stdout []byte) bool {
 		Errors []ghapi.GraphQLMessage `json:"errors"`
 	}
 	return json.Unmarshal(stdout, &body) == nil && slices.ContainsFunc(body.Errors, func(m ghapi.GraphQLMessage) bool { return m.Type == "FORBIDDEN" })
+}
+
+var (
+	ghGuardedEndpoint = regexp.MustCompile(`(^|/)repos/[^/]+/[^/]+/(pulls/[^/]+/merge|rulesets|branches/.+/protection)(/|$|\?)|(^|/)orgs/[^/]+/rulesets`)
+	ghGuardedMutation = regexp.MustCompile(`(?i)\b(mergePullRequest|enablePullRequestAutoMerge|\w*Ruleset|\w*BranchProtectionRule)\b`)
+)
+
+func ghGuarded(argv []string, stdin []byte) bool {
+	switch {
+	case len(argv) > 1 && argv[0] == "pr" && argv[1] == "merge":
+		return true
+	case argv[0] != "api":
+		return false
+	}
+	_, endpoint := ghAPIRequest(argv[1:])
+	if endpoint != "graphql" {
+		return ghGuardedEndpoint.MatchString(endpoint)
+	}
+	query, ok := ghGraphQLQuery(argv[1:], stdin)
+	return !ok || ghGuardedMutation.MatchString(query)
 }
 
 func ghWatches(argv []string) bool {

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -157,6 +158,24 @@ func TestGhResource(t *testing.T) {
 	}
 }
 
+func TestRunVcsGhRefusesAMerge(t *testing.T) {
+	t.Parallel()
+	for _, argv := range [][]string{
+		{"pr", "merge", "12", "--squash", "--admin"},
+		{"api", "-X", "PUT", "repos/o/r/pulls/1/merge", "-f", "merge_method=merge"},
+		{"api", "-X", "PUT", "/repos/o/r/branches/dev/protection", "--input", "rule.json"},
+		{"api", "-X", "POST", "repos/o/r/rulesets", "--input", "ruleset.json"},
+		{"api", "-X", "PATCH", "orgs/o/rulesets/9", "-f", "enforcement=disabled"},
+		{"api", "graphql", "-f", "query=mutation { mergePullRequest(input: {pullRequestId: \"x\"}) { clientMutationId } }"},
+		{"api", "graphql", "-f", "query=mutation { updateBranchProtectionRule(input: {}) { clientMutationId } }"},
+	} {
+		err := runVcsGh(&cobra.Command{}, argv, time.Minute)
+		if err == nil || !strings.HasSuffix(err.Error(), ": "+ghCommand(argv)) || !strings.Contains(err.Error(), "merge with gh pr merge") {
+			t.Errorf("runVcsGh(%q) = %v, want a refusal naming the plain gh command", argv, err)
+		}
+	}
+}
+
 func TestRunVcsGhRunsAWriteOnTheUserToken(t *testing.T) {
 	home := t.TempDir()
 	app := filepath.Join(home, "config", "ccx", "github-app.toml")
@@ -185,10 +204,10 @@ printf 'token=%s argv=%s\n' "${GH_TOKEN:-user}" "$*"
 	cmd := &cobra.Command{}
 	cmd.SetContext(ctx)
 	cmd.SetOut(&out)
-	if err := runVcsGh(cmd, []string{"pr", "merge", "12", "--squash"}, time.Minute); err != nil {
-		t.Fatalf("runVcsGh(pr merge) = %v, want gh run on the user's token", err)
+	if err := runVcsGh(cmd, []string{"pr", "close", "12", "--delete-branch"}, time.Minute); err != nil {
+		t.Fatalf("runVcsGh(pr close) = %v, want gh run on the user's token", err)
 	}
-	if got, want := out.String(), "token=user argv=pr merge 12 --squash\n"; got != want {
+	if got, want := out.String(), "token=user argv=pr close 12 --delete-branch\n"; got != want {
 		t.Errorf("gh printed %q, want %q", got, want)
 	}
 }
