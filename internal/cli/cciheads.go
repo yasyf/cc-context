@@ -127,7 +127,7 @@ func cciRangeDiff(ctx context.Context, dir render.Dir, prefix, was string, last 
 			return "", err
 		}
 	}
-	out, err := render.RunCLI(ctx, dir, "git", []string{"range-diff", "--no-color", oldBase + ".." + was, b.baseSha + ".." + b.head})
+	out, err := render.RunCLI(ctx, dir, "git", []string{"range-diff", "--no-color", "--no-patch", oldBase + ".." + was, b.baseSha + ".." + b.head})
 	if err != nil {
 		return "", fmt.Errorf("git range-diff: %w", err)
 	}
