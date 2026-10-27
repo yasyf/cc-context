@@ -100,16 +100,107 @@ func TestStackSubmitFailsNamingAPullRequestGraphiteStillDoesNotTrack(t *testing.
 	}
 }
 
-func TestStackSubmitNamesTheHandRepairForAPullRequestLeftOnItsSegmentBase(t *testing.T) {
+func TestStackSubmitNamesNoHandRepairOnceGraphiteRecordsAPullRequestOffItsSegment(t *testing.T) {
 	f, stub := stackUntrackedRepo(t)
 	stub.untracked[9001] = gtStubUntracked{base: gtSegmentBase("feature"), head: gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature"), stuck: true}
 
-	_, _, err := runStackCmd(t, f, "submit")
+	out, _, err := runStackCmd(t, f, "submit")
 	if err == nil {
-		t.Fatal("stack submit exited 0 over a pull request left on its segment base")
+		t.Fatal("stack submit exited 0 over a pull request Graphite still does not track")
 	}
-	if want := "#9001 still sits on its segment base ccx-segment/feature: from the working copy holding feature, run gt track --parent base --no-interactive, then ccx vcs ship --tip-only --no-commit"; !strings.Contains(err.Error(), want) {
+	if want := "repaired" + shipSep + "#9001 recorded by Graphite on base, off its segment base ccx-segment/feature"; !strings.Contains(out, want) {
+		t.Errorf("stack submit output = %q, want %q", out, want)
+	}
+	if entry := stackLastSubmit(stub, "feature"); entry.Base != "base" || entry.HeadSha != gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature") {
+		t.Errorf("feature last submitted on %s at %.12s, want base at its published head", entry.Base, entry.HeadSha)
+	}
+	if want := "#9001 feature" + shipSep + "parent base" + shipSep + "Graphite tracks no stack for it\n"; !strings.Contains(err.Error()+"\n", want) {
 		t.Errorf("stack submit = %v, want it to name %q", err, want)
+	}
+	if strings.Contains(err.Error(), "gt track") {
+		t.Errorf("stack submit = %v, sends the caller to a hand repair ccx already made", err)
+	}
+}
+
+func stackHeldSegmentRepo(t *testing.T) (*vcstest.Fixture, *gtAPIStub, string) {
+	t.Helper()
+	f := shipGTRepo(t)
+	stub := stubGTAPI(t)
+	f.Decorate(stub.ctx)
+	shipGTStack(t, f, "base", "feature")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "main:"+gtRestackRef(gtSegmentBase("base")))
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", restackSiblingPath(t, "lane"), "base")
+	stub.prs = map[string]int{"base": 9000, "feature": 9001}
+	stubStackPRs(t, f, map[string]*stackPR{
+		"base":    {Number: 9000, State: "OPEN", Base: gtSegmentBase("base"), Mergeable: "MERGEABLE", Segment: true},
+		"feature": {Number: 9001, State: "OPEN", Base: "base", Mergeable: "MERGEABLE"},
+	})
+	head := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
+	stub.untracked[9000] = gtStubUntracked{base: gtSegmentBase("base"), head: head}
+	wait := stackTrackingWait
+	stackTrackingWait = 0
+	t.Cleanup(func() { stackTrackingWait = wait })
+	return f, stub, head
+}
+
+func stackLastSubmit(stub *gtAPIStub, branch string) gtStubSubmitEntry {
+	stub.mu.Lock()
+	defer stub.mu.Unlock()
+	entry, _ := stub.lastEntry(branch)
+	return entry
+}
+
+func stackOriginSegment(t *testing.T, f *vcstest.Fixture, branch string) string {
+	t.Helper()
+	return gitAt(t, f.Env(), f.Dir, "--git-dir="+f.RemoteDir, "for-each-ref", "--format=%(objectname)", gtRestackRef(gtSegmentBase(branch)))
+}
+
+func TestStackSubmitRecordsAPullRequestAnotherWorkingCopyHoldsOffItsSegment(t *testing.T) {
+	f, stub, head := stackHeldSegmentRepo(t)
+	writeShipGH(t, f)
+	f.Setenv("GH_PULLS_JSON", ghOpenPullAt(t, 9000, head, "main"))
+
+	out, errStr, err := runStackCmd(t, f, "submit")
+	if err != nil {
+		t.Fatalf("stack submit = %v (stderr=%q)", err, errStr)
+	}
+	if want := "repaired" + shipSep + "#9000 recorded by Graphite on main, off its segment base ccx-segment/base"; !strings.Contains(out, want) {
+		t.Errorf("stack submit output = %q, want %q", out, want)
+	}
+	if entry := stackLastSubmit(stub, "base"); entry.Base != "main" || entry.HeadSha != head || entry.PRNumber != 9000 {
+		t.Errorf("base last submitted as #%d on %s at %.12s, want #9000 on main at its published head %.12s", entry.PRNumber, entry.Base, entry.HeadSha, head)
+	}
+	if segment := stackOriginSegment(t, f, "base"); segment != "" {
+		t.Errorf("origin %s = %.12s, want it deleted (stderr=%q)", gtSegmentBase("base"), segment, errStr)
+	}
+	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base"); got != head {
+		t.Errorf("origin base moved from %.12s to %.12s, want another lane's branch left where it was published", head, got)
+	}
+	if len(stub.untracked) != 0 {
+		t.Errorf("Graphite still holds %v untracked", stub.untracked)
+	}
+}
+
+func TestStackSubmitLeavesAPullRequestOnItsSegmentWhileGraphiteStillCapsIt(t *testing.T) {
+	f, stub, _ := stackHeldSegmentRepo(t)
+	stub.capped["base"] = true
+	segment := stackOriginSegment(t, f, "base")
+
+	out, _, err := runStackCmd(t, f, "submit")
+	if err == nil {
+		t.Fatalf("stack submit exited 0 over a pull request Graphite still caps: %q", out)
+	}
+	if want := "#9000 stays on its segment base ccx-segment/base: Graphite still caps the stack under main"; !strings.Contains(err.Error(), want) {
+		t.Errorf("stack submit = %v, want it to name %q", err, want)
+	}
+	if strings.Contains(err.Error(), "gt track") {
+		t.Errorf("stack submit = %v, sends the caller to a hand repair the cap refuses too", err)
+	}
+	if strings.Contains(out, "repaired"+shipSep+"#9000") {
+		t.Errorf("stack submit output = %q, claims a repair Graphite refused", out)
+	}
+	if got := stackOriginSegment(t, f, "base"); got != segment {
+		t.Errorf("origin %s = %.12s, want it left at %.12s", gtSegmentBase("base"), got, segment)
 	}
 }
 
