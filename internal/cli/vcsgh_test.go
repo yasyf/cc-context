@@ -174,6 +174,9 @@ func TestRunVcsGhRefusesAMerge(t *testing.T) {
 		{"api", "graphql", "-f", "query=# a comment\nmutation { mergePullRequest(input: {pullRequestId: \"x\"}) { clientMutationId } }"},
 		{"api", "/graphql", "-f", "query=mutation { mergePullRequest(input: {pullRequestId: \"x\"}) { clientMutationId } }"},
 		{"api", "https://api.github.com/graphql", "-f", "query=mutation { enablePullRequestAutoMerge(input: {}) { clientMutationId } }"},
+		{"api", "graphql", "-f", "query=mutation { enqueuePullRequest(input: {pullRequestId: \"x\"}) { clientMutationId } }"},
+		{"api", "graphql", "-f", "query=mutation { mergeBranch(input: {repositoryId: \"x\", base: \"main\", head: \"b\"}) { clientMutationId } }"},
+		{"api", "-X", "POST", "repos/o/r/merges", "-f", "base=main", "-f", "head=b"},
 	} {
 		err := runVcsGh(&cobra.Command{}, argv, time.Minute)
 		if err == nil || !strings.HasSuffix(err.Error(), ": "+ghCommand(argv)) || !strings.Contains(err.Error(), "merge with gh pr merge") {
