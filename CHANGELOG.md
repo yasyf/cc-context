@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs ship` outside the graphite lane bases a new pull request on the
+  branch it was cut from, even after that branch moved on.** A branch cut from
+  an open pull request's head opened its pull request against trunk once the
+  parent gained a commit, because no remote head was an ancestor any more, and
+  the new pull request proposed the parent's commits as its own. When no
+  remote head is an ancestor, ship now bases the pull request on the remote
+  branch holding the nearest of the branch's commits trunk lacks.
+
 - **`ccx vcs pr status` fails a row it cannot read, never the whole run.** A
   run over many pull requests failed outright when the GitHub App's GraphQL
   answered NOT_FOUND for some of them, and the cache dropped their records as

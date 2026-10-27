@@ -1691,6 +1691,25 @@ func TestShipPRCreateGitLaneBasesOnTheNearestPushedAncestor(t *testing.T) {
 	}
 }
 
+// TestShipPRCreateGitLaneBasesOnAParentThatMovedOnAfterTheCut is a branch cut
+// from an open pull request's head that gained a commit afterwards: no remote
+// head was an ancestor any more, so the pull request opened against trunk and
+// proposed the parent's commits as its own.
+func TestShipPRCreateGitLaneBasesOnAParentThatMovedOnAfterTheCut(t *testing.T) {
+	f := shipPRFixture(t)
+	shipCutPushedParent(t, f, "base", "feature")
+	mustRun(t, f.Env(), f.Dir, "git", "checkout", "-q", "base")
+	writeShipFile(t, f.Dir, "later.txt", "later\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "later.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "later")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base")
+	mustRun(t, f.Env(), f.Dir, "git", "checkout", "-q", "feature")
+
+	if base := shipPRCreateNoParent(t, f); base != "base" {
+		t.Errorf("base = %q, want base, the open parent the branch was cut from", base)
+	}
+}
+
 func TestShipPRCreateGitLaneBasesOnAParentPushedFromAnotherClone(t *testing.T) {
 	f := shipPRFixture(t)
 	shipCutPushedParent(t, f, "base", "feature")

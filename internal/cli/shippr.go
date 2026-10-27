@@ -296,7 +296,8 @@ func shipPR(ctx context.Context, errW io.Writer, l lane, nwo, remote, branch, tr
 
 // shipPRBase is the base a new pull request opens against when --parent named
 // none: the nearest ancestor of the branch that a remote branch points at and
-// the remote trunk does not carry, and trunk when there is none. A branch cut
+// the remote trunk does not carry, else the remote branch it forked from, and
+// trunk when there is neither. A branch cut
 // from an unlanded one holds that branch's commits, so a pull request based on
 // trunk proposes them as its own and only the file count says so.
 func shipPRBase(ctx context.Context, dir render.Dir, remote, branch, trunk string) (string, error) {
@@ -323,7 +324,7 @@ func shipPRBase(ctx context.Context, dir render.Dir, remote, branch, trunk strin
 	}
 	head := "refs/heads/" + branch
 	exclude := "^refs/remotes/" + remote + "/" + trunk
-	out, err = render.RunCLI(ctx, dir, "git", []string{"rev-list", head, exclude})
+	out, err = render.RunCLI(ctx, dir, "git", []string{"rev-list", "--topo-order", head, exclude})
 	if err != nil {
 		return "", fmt.Errorf("ship: git rev-list %s %s: %w", head, exclude, err)
 	}
@@ -345,7 +346,61 @@ func shipPRBase(ctx context.Context, dir render.Dir, remote, branch, trunk strin
 		}
 		base, nearest = name, ahead
 	}
-	return base, nil
+	if base != trunk {
+		return base, nil
+	}
+	live := map[string]string{}
+	for sha, names := range heads {
+		for _, name := range names {
+			live[name] = sha
+		}
+	}
+	return shipPRForkBase(ctx, dir, "refs/remotes/"+remote+"/", head, trunk, strings.Fields(out), live)
+}
+
+func shipPRForkBase(ctx context.Context, dir render.Dir, prefix, head, trunk string, unlanded []string, live map[string]string) (string, error) {
+	above, err := shipRemoteContaining(ctx, dir, prefix, head)
+	if err != nil {
+		return "", err
+	}
+	for _, fork := range unlanded {
+		names, err := shipRemoteContaining(ctx, dir, prefix, fork)
+		if err != nil {
+			return "", err
+		}
+		base, fewest := "", 0
+		for _, name := range slices.Sorted(maps.Keys(names)) {
+			if live[name] != names[name] || above[name] != "" {
+				continue
+			}
+			past, err := gitCommitsAhead(ctx, dir, "ship", fork, prefix+name)
+			if err != nil {
+				return "", err
+			}
+			if base == "" || past < fewest {
+				base, fewest = name, past
+			}
+		}
+		if base != "" {
+			return base, nil
+		}
+	}
+	return trunk, nil
+}
+
+func shipRemoteContaining(ctx context.Context, dir render.Dir, prefix, rev string) (map[string]string, error) {
+	out, err := render.RunCLI(ctx, dir, "git", []string{"for-each-ref", "--format=%(refname) %(objectname)", "--contains", rev, prefix})
+	if err != nil {
+		return nil, fmt.Errorf("ship: git for-each-ref --contains %s: %w", rev, err)
+	}
+	names := map[string]string{}
+	for line := range strings.Lines(out) {
+		ref, sha, _ := strings.Cut(strings.TrimSpace(line), " ")
+		if name, ok := strings.CutPrefix(ref, prefix); ok && name != "HEAD" {
+			names[name] = sha
+		}
+	}
+	return names, nil
 }
 
 // lookupPR resolves branch's open pull request over REST, which answers an
