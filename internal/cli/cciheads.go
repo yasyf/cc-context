@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -126,18 +127,26 @@ func cciRangeDiff(ctx context.Context, dir render.Dir, prefix, was string, last 
 			return "", err
 		}
 	}
-	out, err := render.RunCLI(ctx, dir, "git", []string{"range-diff", "--no-color", oldBase + ".." + was, b.baseSha + ".." + b.head})
+	out, err := render.RunCLI(ctx, dir, "git", []string{"range-diff", "--no-color", "--no-patch", oldBase + ".." + was, b.baseSha + ".." + b.head})
 	if err != nil {
 		return "", fmt.Errorf("git range-diff: %w", err)
 	}
 	return rangeDiffSummary(out), nil
 }
 
+var rangeDiffPair = regexp.MustCompile(`^\s*(?:\d+|-+):\s+(?:[0-9a-f]+|-+)\s+([=!<>])\s+(?:\d+|-+):\s+([0-9a-f]+|-+)`)
+
 func rangeDiffSummary(out string) string {
 	counts := map[string]int{}
+	var added []string
 	for line := range strings.Lines(out) {
-		if fields := strings.Fields(line); len(fields) > 2 && !strings.HasPrefix(line, " ") {
-			counts[fields[2]]++
+		pair := rangeDiffPair.FindStringSubmatch(line)
+		if pair == nil {
+			continue
+		}
+		counts[pair[1]]++
+		if pair[1] == ">" {
+			added = append(added, pair[2])
 		}
 	}
 	if counts["!"]+counts["<"]+counts[">"] == 0 {
@@ -146,7 +155,11 @@ func rangeDiffSummary(out string) string {
 	var parts []string
 	for _, m := range []struct{ mark, name string }{{"=", "identical"}, {"!", "changed"}, {">", "added"}, {"<", "dropped"}} {
 		if n := counts[m.mark]; n > 0 {
-			parts = append(parts, fmt.Sprintf("%d %s", n, m.name))
+			part := fmt.Sprintf("%d %s", n, m.name)
+			if m.mark == ">" {
+				part += " (" + strings.Join(added, ", ") + ")"
+			}
+			parts = append(parts, part)
 		}
 	}
 	return strings.Join(parts, ", ")
