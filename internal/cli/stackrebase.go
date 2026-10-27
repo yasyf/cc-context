@@ -1501,7 +1501,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 		case queued || (moving != nil && !moving[name] && !inherits[name]) || o.noPush && heldBelow[name].holder != "":
 			b.Kept = o.noPush || stackPinPublished(b)
 		case o.tip != "" && name != o.tip && (o.tipOnly || !o.restack && !inherits[name]):
-			if b.Kept, err = stackKeepsAncestor(ctx, l.dir(), pin, b, kept[b.Parent], o.tipOnly, byName[o.tip].Parent); err != nil {
+			if b.Kept, err = stackKeepsAncestor(ctx, l.dir(), pin, b, kept[b.Parent], o.tipOnly, byName[o.tip]); err != nil {
 				return nil, err
 			}
 		}
@@ -2617,10 +2617,10 @@ func tipOnlyAncestor(tipOnly bool, tip, name string) bool {
 // kept at the published head.
 //
 // --tip-only keeps every published ancestor, whatever moved under it, and
-// every unpublished one below tipBase, the parent the tip ships onto.
-func stackKeepsAncestor(ctx context.Context, dir render.Dir, pin string, b *stackRebaseBranch, parentKept, tipOnly bool, tipBase string) (bool, error) {
+// every unpublished one below the parent tip ships onto, at its local head.
+func stackKeepsAncestor(ctx context.Context, dir render.Dir, pin string, b *stackRebaseBranch, parentKept, tipOnly bool, tip *stackRebaseBranch) (bool, error) {
 	if b.Remote == "" {
-		if tipOnly && b.Name == tipBase {
+		if tipOnly && b.Name == tip.Parent {
 			return false, fmt.Errorf("stack rebase: --tip-only ships onto %s's published head, and the remote has none — push it first, or pass --landed %s if it just landed", b.Name, b.Name)
 		}
 		return tipOnly, nil
