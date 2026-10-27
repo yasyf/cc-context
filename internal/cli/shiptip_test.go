@@ -371,8 +371,11 @@ func TestShipBranchTipOnlyPushesTheParkedBaseWithTheBranch(t *testing.T) {
 	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature"); got != head {
 		t.Errorf("origin feature = %s, want its local head %s", got, head)
 	}
-	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "graphite-base/101"); got != base {
-		t.Errorf("origin graphite-base/101 = %s, want it at feature's base %s so Graphite moves the pull request back", got, base)
+	if parked := api.parkedPRs(); len(parked) != 0 {
+		t.Errorf("Graphite still parks %v, want feature moved back off graphite-base/101 once it sat at feature's base", parked)
+	}
+	if refs := gitAt(t, f.Env(), f.RemoteDir, "for-each-ref", "refs/heads/graphite-base/"); refs != "" {
+		t.Errorf("origin graphite-base refs = %q, want graphite-base/101 deleted once Graphite moved the pull request back", refs)
 	}
 }
 
