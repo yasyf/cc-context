@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -174,7 +175,24 @@ func (g *GitHub) poll(ctx context.Context, req Want, prev map[int]PR) (poll, err
 			return poll{}, err
 		}
 	}
+	if len(p.out.missing) == 0 {
+		return p.out, nil
+	}
+	confirmed, err := g.restPass(ctx, p.out.missing, prev, p.out.trunk.Name)
+	if err != nil {
+		return poll{}, fmt.Errorf("prstate: confirm over REST that %s are gone: %w", prNumbers(p.out.missing), err)
+	}
+	maps.Copy(p.out.prs, confirmed.prs)
+	p.out.missing = confirmed.missing
 	return p.out, nil
+}
+
+func prNumbers(numbers []int) string {
+	refs := make([]string, 0, len(numbers))
+	for _, n := range numbers {
+		refs = append(refs, fmt.Sprintf("#%d", n))
+	}
+	return strings.Join(refs, " ")
 }
 
 type pass struct {

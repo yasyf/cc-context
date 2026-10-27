@@ -392,7 +392,6 @@ func TestPRStatusRefuses(t *testing.T) {
 	}{
 		{"not a number", []string{"--repo", "Forge-AI/monorepo", "abc"}, `"abc" is not a pull request number`},
 		{"malformed repository", []string{"--repo", "monorepo", "25121"}, `malformed repository name "monorepo"`},
-		{"graphite has no record", []string{"--repo", "Forge-AI/monorepo", "25121", "99999"}, "graphite has no record of Forge-AI/monorepo#99999"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -402,6 +401,27 @@ func TestPRStatusRefuses(t *testing.T) {
 				t.Errorf("err = %v, want it to contain %q", err, tt.want)
 			}
 		})
+	}
+}
+
+// TestPRStatusFailsTheRowItCannotReadAndReportsTheRest is a landing pass over
+// 85 pull requests that failed whole on five it could not read, so it settled
+// none of the other 80.
+func TestPRStatusFailsTheRowItCannotReadAndReportsTheRest(t *testing.T) {
+	_, client := stubPRInfo(t, prInfoQueued)
+	stubPRState(t, prPoll(`"p0":`+prNode(25121, "OPEN", prComments()), `"p1":`+prNode(99999, "OPEN", prComments())))
+
+	out, err := runPRStatusCmd(t, client, "--repo", "Forge-AI/monorepo", "25121", "99999")
+	if err != nil {
+		t.Fatalf("pr status: %v", err)
+	}
+	want := "#25121  queued · enqueued b103a576 into dev · ci none · approved · queued\n" +
+		"#99999  unread · graphite has no record of Forge-AI/monorepo#99999\n"
+	if out != want {
+		t.Errorf("report =\n%s\nwant\n%s", out, want)
+	}
+	if _, err := runPRStatusCmd(t, client, "--repo", "Forge-AI/monorepo", "99999"); err == nil || !strings.Contains(err.Error(), "pr status: read none of the 1 pull requests") {
+		t.Errorf("pr status over the unread row alone = %v, want it to fail", err)
 	}
 }
 

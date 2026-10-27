@@ -52,7 +52,10 @@ const (
 	prNoReview         prApprovalState = "none"
 )
 
-const prVerdictLandable = "landable"
+const (
+	prVerdictLandable = "landable"
+	prVerdictUnread   = "unread"
+)
 
 const (
 	gtMergeabilityCheck  = "Graphite / mergeability_check"
@@ -92,6 +95,7 @@ type prStatusReport struct {
 	Mergeability string           `json:"mergeability,omitempty"`
 	Downstack    int              `json:"downstack,omitempty"`
 	Verdict      string           `json:"verdict"`
+	Unread       string           `json:"unread,omitempty"`
 }
 
 type prCIReport struct {
@@ -344,15 +348,19 @@ func runVcsPRStatus(cmd *cobra.Command, args []string, o vcsPRStatusOpts) error 
 			return fmt.Errorf("pr status: marshal report: %w", err)
 		}
 		cmd.Println(string(data))
-		return nil
+	} else {
+		cmd.Print(renderPRQueue(reports))
 	}
-	cmd.Print(renderPRQueue(reports))
+	if !slices.ContainsFunc(reports, func(r prStatusReport) bool { return r.Unread == "" }) {
+		return fmt.Errorf("pr status: read none of the %d pull requests", len(reports))
+	}
 	return nil
 }
 
 func collectPRQueue(ctx context.Context, repo string, numbers []int, warn io.Writer) ([]prStatusReport, error) {
 	st, limited, err := readPRQueue(ctx, repo, numbers, warn, prStatusRateLimitWait)
-	if err != nil {
+	missing := &prstate.MissingError{}
+	if err != nil && !errors.As(err, &missing) {
 		return nil, fmt.Errorf("pr status: %w", err)
 	}
 	warn = &lockedWriter{w: warn}
@@ -361,9 +369,16 @@ func collectPRQueue(ctx context.Context, repo string, numbers []int, warn io.Wri
 	group.SetLimit(prStatusWorkers)
 	for i, number := range numbers {
 		group.Go(func() error {
+			if slices.Contains(missing.PRs, number) {
+				reports[i] = prUnread(number, fmt.Sprintf("%s has no pull request #%d", missing.Repo, number))
+				return nil
+			}
 			report, err := prStatusOf(gctx, warn, repo, number, st.PRs[number], limited)
+			if err != nil {
+				report = prUnread(number, strings.TrimPrefix(err.Error(), "pr status: "))
+			}
 			reports[i] = report
-			return err
+			return nil
 		})
 	}
 	if err := group.Wait(); err != nil {
@@ -406,6 +421,10 @@ func prStatusOf(ctx context.Context, warn io.Writer, repo string, number int, pr
 	r.Stale = staleAt(limited, pr.PolledAt)
 	r.Source = pr.Source
 	return newPRStatusReport(ctx, warn, repo, r, pr, info.DependentPRNumber), nil
+}
+
+func prUnread(number int, reason string) prStatusReport {
+	return prStatusReport{prQueueReport: prQueueReport{Number: number, Queue: prQueueUnknown}, Verdict: prVerdictUnread, Unread: reason}
 }
 
 type lockedWriter struct {
@@ -646,6 +665,10 @@ func classifyPRQueue(info gtapi.PullRequestInfo, mergeability, landedOn, activit
 func renderPRQueue(reports []prStatusReport) string {
 	var b strings.Builder
 	for _, r := range reports {
+		if r.Unread != "" {
+			fmt.Fprintf(&b, "#%d  %s · %s\n", r.Number, r.Verdict, r.Unread)
+			continue
+		}
 		fmt.Fprintf(&b, "#%d  %s", r.Number, r.Queue)
 		switch r.Queue {
 		case prQueueLanded:

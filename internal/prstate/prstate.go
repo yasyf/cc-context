@@ -256,11 +256,7 @@ type MissingError struct {
 }
 
 func (e *MissingError) Error() string {
-	refs := make([]string, 0, len(e.PRs))
-	for _, n := range e.PRs {
-		refs = append(refs, fmt.Sprintf("#%d", n))
-	}
-	return fmt.Sprintf("%s has no pull request %s", e.Repo, strings.Join(refs, " "))
+	return fmt.Sprintf("%s has no pull request %s", e.Repo, prNumbers(e.PRs))
 }
 
 // Store is one repository's shared view on disk and the source that polls it.
