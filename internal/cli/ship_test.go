@@ -5929,6 +5929,7 @@ func TestShipGTRefusals(t *testing.T) {
 			gtCommonDirArgv,
 			gtRealRefsArgv(t, f),
 			{"git", "branch", "--show-current"},
+			{"git", "rev-parse", "--verify", "refs/heads/feature"},
 			{"git", "rev-parse", "--verify", "--quiet", "refs/heads/nope"},
 			{"gt", "track", "feature", "--parent", "nope", "--no-interactive"},
 		})
