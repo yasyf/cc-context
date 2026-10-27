@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ccx vcs ship` watches each CI run with `gh run watch --interval 60` instead of gh's 3-second default. A ship's 15-minute watch now costs about 30 GitHub reads per run, down from about 600, and reports a finished run at most a minute late.
 - **`ccx vcs ship` outside the graphite lane bases a new pull request on the
   branch it was cut from, even after that branch moved on.** A branch cut from
   an open pull request's head opened its pull request against trunk once the
