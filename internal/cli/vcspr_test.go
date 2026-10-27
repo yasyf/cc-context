@@ -431,7 +431,8 @@ func TestPRStatusRefuses(t *testing.T) {
 // none of the other 80.
 func TestPRStatusFailsTheRowItCannotReadAndReportsTheRest(t *testing.T) {
 	_, client := stubPRInfo(t, prInfoQueued)
-	stubPRState(t, prPoll(`"p0":`+prNode(25121, "OPEN", prComments()), `"p1":`+prNode(25130, "OPEN", prComments()), `"p2":null`))
+	github := stubPRState(t, prPoll(`"p0":`+prNode(25121, "OPEN", prComments()), `"p1":`+prNode(25130, "OPEN", prComments()), `"p2":null`))
+	github.gone = []string{"/repos/Forge-AI/monorepo/pulls/99999"}
 
 	out, err := runPRStatusCmd(t, client, "--repo", "Forge-AI/monorepo", "25121", "25130", "99999")
 	if err != nil {
@@ -443,7 +444,7 @@ func TestPRStatusFailsTheRowItCannotReadAndReportsTheRest(t *testing.T) {
 	if out != want {
 		t.Errorf("report =\n%s\nwant\n%s", out, want)
 	}
-	stubPRState(t, prPoll(`"p0":null`))
+	stubPRState(t, prPoll(`"p0":null`)).gone = []string{"/repos/Forge-AI/monorepo/pulls/99999"}
 	if _, err := runPRStatusCmd(t, client, "--repo", "Forge-AI/monorepo", "99999"); err == nil || !strings.Contains(err.Error(), "pr status: read none of the 1 pull requests") {
 		t.Errorf("pr status over the unread row alone = %v, want it to fail", err)
 	}

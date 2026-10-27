@@ -349,6 +349,7 @@ type watchGitHub struct {
 	vars      []map[string]any
 	queries   []string
 	pulls     map[string][]string
+	gone      []string
 	reads     []string
 	overlap   time.Duration
 	limitREST bool
@@ -389,6 +390,10 @@ func (g *watchGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if slices.Contains(g.gone, r.URL.Path) {
+		http.NotFound(w, r)
+		return
+	}
 	if bodies, ok := g.pulls[r.URL.Path]; ok && r.Method == http.MethodGet {
 		g.reads = append(g.reads, r.URL.Path)
 		n := 0
