@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A refused `ccx vcs ship --parent` puts the branch back.** Ship moves the
+  branch onto `--parent` before the stack rebase plans the push. When that
+  plan refused, for instance on a landed ancestor holding commits past its
+  landing, the branch stayed replayed onto the parent's local head, and gt
+  recorded it there. The refusal now resets the branch, its working copy, and
+  its gt record to where they were before the move. A commit ship made on top
+  of the moved branch stays, and the refusal names the head the branch had
+  before the move.
+
 - **`ccx vcs ship` opens a rate-limited pull request over GraphQL.** GitHub
   meters REST writes apart from GraphQL, so a secondary rate limit can refuse
   the REST create while GraphQL has room. Ship used to wait the limit out and

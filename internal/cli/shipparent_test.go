@@ -407,3 +407,41 @@ func TestShipGTAdoptsOntoTheRemoteTrunkNotALocalTrunkLeftBehindIt(t *testing.T) 
 		t.Errorf("b carries %q above the remote trunk, want its own commits alone", subjects)
 	}
 }
+
+// TestShipGTParentPutsTheBranchBackWhenTheStackRebaseRefuses is a --tip-only
+// ship onto a parent whose landed ancestor holds commits past its landing: the
+// stack rebase refused after the move had already replayed the branch onto the
+// parent's local head, and the refusal left it there.
+func TestShipGTParentPutsTheBranchBackWhenTheStackRebaseRefuses(t *testing.T) {
+	f := shipGTRepo(t)
+	shipGTStack(t, f, "base")
+	landedAt := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
+	stackCommit(t, f, "later.txt")
+	shipGTStack(t, f, "p")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "p")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
+	shipGTStack(t, f, "c")
+	stubStackPRs(t, f, map[string]*stackPR{
+		"base": {Number: 5, Title: "base", State: "CLOSED", Head: landedAt, Landed: true},
+		"p":    {Number: 6, Title: "p", State: "OPEN", Base: "base"},
+	})
+	before := gitAt(t, f.Env(), f.Dir, "rev-parse", "c")
+	shipResetLog(t, f)
+
+	_, err := runShipCmd(f.Context(), t, "--no-commit", "--no-watch", "--tip-only", "--parent", "p")
+	if err == nil || !strings.Contains(err.Error(), "holds commits past it") {
+		t.Fatalf("ship = %v, want the stack rebase's refusal", err)
+	}
+	if want := "put c back at " + before[:12] + " on main, where it was before the move onto p"; !strings.Contains(err.Error(), want) {
+		t.Errorf("ship = %v, want it to carry %q", err, want)
+	}
+	if after := gitAt(t, f.Env(), f.Dir, "rev-parse", "c"); after != before {
+		t.Errorf("c moved from %s to %s on a refusal", before, after)
+	}
+	if parent := shipParentOf(t, f, "c"); parent != "main" {
+		t.Errorf("c's parent = %s, want it left on main", parent)
+	}
+	if status := gitAt(t, f.Env(), f.Dir, "status", "--porcelain"); status != "" {
+		t.Errorf("working copy = %q, want it back on c's head", status)
+	}
+}
