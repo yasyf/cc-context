@@ -1238,7 +1238,7 @@ func shipCommitGit(ctx context.Context, dir render.Dir, o shipOpts, sel *shipSel
 func shipDescribe(ctx context.Context, dir render.Dir, kind vcs.Kind) (short, subject string, err error) {
 	switch kind {
 	case vcs.Git:
-		return gitDescribe(ctx, dir, "HEAD")
+		return gitDescribe(ctx, dir, "")
 	case vcs.JJ:
 		out, rerr := render.RunCLI(ctx, dir, "jj", []string{"--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", jjDescribeTemplate})
 		if rerr != nil {
@@ -1251,7 +1251,11 @@ func shipDescribe(ctx context.Context, dir render.Dir, kind vcs.Kind) (short, su
 }
 
 func gitDescribe(ctx context.Context, dir render.Dir, rev string) (short, subject string, err error) {
-	out, err := render.RunCLI(ctx, dir, "git", []string{"log", "-1", "--format=%h%x00%s", rev, "--"})
+	argv := []string{"log", "-1", "--format=%h%x00%s"}
+	if rev != "" {
+		argv = append(argv, rev, "--")
+	}
+	out, err := render.RunCLI(ctx, dir, "git", argv)
 	if err != nil {
 		return "", "", fmt.Errorf("ship: git log: %w", err)
 	}
