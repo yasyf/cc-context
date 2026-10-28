@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -210,15 +212,17 @@ func TestShipGTParentNamesARebaseInProgressBeforeTheReplay(t *testing.T) {
 	before := gitAt(t, f.Env(), f.Dir, "rev-parse", "c")
 	shipGTReady(t, f)
 
-	if _, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push", "--parent", "p"); err == nil || !strings.Contains(err.Error(), "c's own commits do not replay onto p cleanly") {
-		t.Fatalf("ship with no rebase in progress = %v, want the replay refusal", err)
-	}
 	mustRun(t, f.Env(), f.Dir, "git", "update-ref", "REBASE_HEAD", before)
+	if _, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push", "--parent", "p"); err == nil || !strings.Contains(err.Error(), "c's own commits do not replay onto p cleanly") {
+		t.Fatalf("ship with only a stale REBASE_HEAD = %v, want the replay refusal", err)
+	}
+	if err := os.Mkdir(filepath.Join(f.Dir, ".git", "rebase-merge"), 0o750); err != nil {
+		t.Fatal(err)
+	}
 
 	_, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push", "--parent", "p")
-	want := "ship: a rebase is in progress in " + f.Dir + ": finish it with ccx vcs stack continue or drop it with git rebase --abort, then ship again"
-	if err == nil || err.Error() != want {
-		t.Fatalf("ship with REBASE_HEAD set = %v, want %q", err, want)
+	if err == nil || !strings.Contains(err.Error(), "rebase is in progress in "+f.Dir) {
+		t.Fatalf("ship with a rebase-merge dir = %v, want the rebase in progress named", err)
 	}
 	if after := gitAt(t, f.Env(), f.Dir, "rev-parse", "c"); after != before {
 		t.Errorf("c moved from %s to %s on a refusal", before, after)
