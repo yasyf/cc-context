@@ -41,6 +41,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A restarted or upgraded cleanup daemon inspects again a job an earlier
+  one gave up on.** A job blocked on a transient inspection retries on its
+  own six times, then waits for `ccx vcs cleanup retry`. That count spanned
+  the job's whole history, so a job that ran out of retries under an older
+  daemon stayed blocked after the upgrade that fixed the failing inspection.
+  Jobs blocked on a system daemon's descriptor the kernel would not resolve,
+  fixed in 0.78.23, never retried. The count now starts when the daemon
+  loads its journal, so a new daemon retries each such job and the queue
+  drains once any pause or hold lifts.
+
 - **`ccx vcs ship` refuses a commit onto a queued branch before committing.**
   On a branch whose pull request sat in Graphite's merge queue, ship cut the
   commit first and only then refused to push it, leaving an unpushed commit on

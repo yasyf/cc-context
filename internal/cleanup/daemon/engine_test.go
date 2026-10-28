@@ -1820,6 +1820,25 @@ func TestTransientBlockageWaitsForAnOperatorPastTheRetryLimit(t *testing.T) {
 	})
 }
 
+func TestARestartedDaemonRetriesATransientBlockageAnEarlierOneGaveUpOn(t *testing.T) {
+	tuning := paced()
+	tuning.RetryLimit = 2
+	bubble(t, tuning, func(t *testing.T, h *harness) {
+		job := h.seed("a", 1, cleanup.PhasePrepared, func(job *cleanup.Job) {
+			first := h.clock.Now().Add(-time.Hour)
+			for i := range tuning.RetryLimit + 1 {
+				job.Block(first.Add(time.Duration(i)*time.Minute), "activity", "could not verify that the tree is idle: native: inspect pid 98135 (intelligenceflowd): locate its descriptor 3: permission denied")
+			}
+		})
+		h.start()
+		h.expectEvents("advance:a@prepared", "sample", "admit:a", "open:a")
+		h.expectTimers()
+		if got := h.status(job.ID).Phase; got != cleanup.PhaseDone {
+			t.Errorf("job phase = %s, want done once a new daemon inspected it again", got)
+		}
+	})
+}
+
 func TestWaitFollowsATransientBlockageThroughItsRetry(t *testing.T) {
 	bubble(t, paced(), func(t *testing.T, h *harness) {
 		job := h.seed("a", 1, cleanup.PhasePrepared)
