@@ -55,8 +55,8 @@ func TestShipAmendOfAMidStackBranchCarriesItsChildren(t *testing.T) {
 }
 
 // TestShipLeavesTheDraftStateOfResubmittedChildrenAlone pins that a ship
-// carrying its children converts only its own pull request: an explicit draft
-// false on a child's update published a held draft above it.
+// naming neither --draft nor --publish converts no pull request: an explicit
+// draft false on an update published a held draft.
 func TestShipLeavesTheDraftStateOfResubmittedChildrenAlone(t *testing.T) {
 	f := shipGTRepo(t)
 	api := stubGTAPI(t)
@@ -83,8 +83,8 @@ func TestShipLeavesTheDraftStateOfResubmittedChildrenAlone(t *testing.T) {
 	tip, _ := api.lastEntry("p")
 	child, _ := api.lastEntry("c")
 	api.mu.Unlock()
-	if tip.Action != gtapi.SubmitUpdate || tip.Draft == nil || *tip.Draft {
-		t.Errorf("p submitted as %s with draft %v, want an update publishing it", tip.Action, tip.Draft)
+	if tip.Action != gtapi.SubmitUpdate || tip.Draft != nil {
+		t.Errorf("p submitted as %s with draft %v, want an update omitting draft", tip.Action, tip.Draft)
 	}
 	if child.Action != gtapi.SubmitUpdate || child.Draft != nil {
 		t.Errorf("c submitted as %s with draft %v, want an update omitting draft", child.Action, child.Draft)
