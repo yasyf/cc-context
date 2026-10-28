@@ -467,7 +467,7 @@ func newStackAbortCmd() *cobra.Command {
 
 func runStackRebase(cmd *cobra.Command, o stackRebaseOpts) error {
 	ctx := cmd.Context()
-	l, err := resolveLane(ctx, stackRebasePrefix, workingDir(ctx), false)
+	l, err := resolveWriteLane(ctx, stackRebasePrefix, workingDir(ctx), false)
 	if err != nil {
 		return err
 	}
@@ -3915,6 +3915,9 @@ func runStackContinue(cmd *cobra.Command, stack string) error {
 		return stackContinueStranded(ctx, cmd)
 	}
 	if err != nil {
+		return err
+	}
+	if err := refuseSharedBranch(ctx, stackRebasePrefix, l.checkout); err != nil {
 		return err
 	}
 	if run.Conflict == nil {

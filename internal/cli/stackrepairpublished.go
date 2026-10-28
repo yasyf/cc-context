@@ -34,7 +34,7 @@ branch's merge base with the remote trunk, are all that change.`,
 
 func runStackRepairPublishedChild(cmd *cobra.Command, parent string) error {
 	ctx := cmd.Context()
-	l, err := resolveLane(ctx, "stack repair-published-child", workingDir(ctx), false)
+	l, err := resolveWriteLane(ctx, "stack repair-published-child", workingDir(ctx), false)
 	if err != nil {
 		return err
 	}

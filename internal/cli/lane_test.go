@@ -801,3 +801,51 @@ func TestResolveLaneGTMissingFromContext(t *testing.T) {
 		t.Fatalf("resolveLane error = %v, want %q", err, want)
 	}
 }
+
+// TestStackWritesRefuseABranchAnotherWorkingCopyHolds replays the publish that
+// went out from one lane while a second working copy, holding the same branch
+// past worktree add --force, had moved it: every write verb refuses before it
+// pushes anything, naming both holders.
+func TestStackWritesRefuseABranchAnotherWorkingCopyHolds(t *testing.T) {
+	for name, write := range map[string]func(*vcstest.Fixture) error{
+		"ship": func(f *vcstest.Fixture) error {
+			writeShipFile(t, f.Dir, "mine.txt", "mine\n")
+			_, err := runShipCmd(f.Context(), t, "-m", "test: 🧪 mine")
+			return err
+		},
+		"push": func(f *vcstest.Fixture) error {
+			_, err := runVcsPushCmd(f.Context(), t)
+			return err
+		},
+		"stack submit": func(f *vcstest.Fixture) error {
+			_, _, err := runStackCmd(t, f, "submit")
+			return err
+		},
+		"restack": func(f *vcstest.Fixture) error {
+			_, _, err := runRestackCmd(t, f)
+			return err
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := shipRepo(t, vcstest.Remote())
+			mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "feature")
+			published := pushCommit(t, f, "feature.txt", "feature\n", "test: 🧪 feature")
+			mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "feature")
+			other := filepath.Join(t.TempDir(), "other")
+			mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", "--force", other, "feature")
+			mustRun(t, f.Env(), other, "git", "commit", "-q", "--allow-empty", "-m", "test: 🧪 theirs")
+			shipResetLog(t, f)
+
+			err := write(f)
+			if err == nil || !strings.Contains(err.Error(), "2 working copies hold feature") || !strings.Contains(err.Error(), "/other)") {
+				t.Fatalf("%s error = %v, want a refusal naming both holders of feature", name, err)
+			}
+			if n := pushCount(t, f); n != 0 {
+				t.Errorf("%s ran %d pushes, want none", name, n)
+			}
+			if remote := shipRemoteTip(t, f, "origin", "feature"); remote != published {
+				t.Errorf("origin feature = %s, want the untouched %s", remote, published)
+			}
+		})
+	}
+}
