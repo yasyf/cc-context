@@ -2254,6 +2254,18 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 		return nil, entries, nil
 	}
 
+	if s.publication == nil || !s.publication.Pushed {
+		pushed := gtPushedHeads(plan)
+		var children []pushChild
+		for _, b := range plan {
+			if pushed[b.base] == "" {
+				children = append(children, pushChild{branch: b.name, head: b.head, parent: b.base})
+			}
+		}
+		if err := refuseOffParentPush(ctx, l.dir(), s.prefix, "origin", tr.Name(), children); err != nil {
+			return nil, nil, err
+		}
+	}
 	if err := gtRetargetMergingPushes(ctx, errW, l.dir(), client, owner, name, s, tr, plan, known); err != nil {
 		return nil, nil, err
 	}

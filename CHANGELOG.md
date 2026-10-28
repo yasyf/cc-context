@@ -41,6 +41,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs ship`, `ccx vcs stack submit`, and `ccx vcs push` refuse to
+  push a stacked branch off its parent's current head.** When another lane
+  rebased and pushed a parent, a child pushed on the parent's old head opened
+  a pull request carrying the parent's replaced commits, and a review bot that
+  grades a stacked pull request against its parent parked it waiting for a
+  restack. Before pushing, each branch whose parent has an open pull request
+  must now hold that parent's head: the one the same push moves it to, or else
+  the one the remote holds, read with `git ls-remote`. A branch off it is
+  refused, naming the parent's pull request and head and `ccx vcs stack
+  rebase`, which replays it. `--tip-only` refuses the same case it used to
+  push as "kept <tip> on <base> though <parent> moved"; `--tip-only
+  --restack` replays the tip onto that head.
+
 - **`ccx vcs pr status` says what the review bot did instead of "review
   required".** A review bot that holds a pull request concludes its
   `ai-review` check run neutral and posts no approving review, so GitHub's

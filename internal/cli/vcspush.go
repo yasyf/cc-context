@@ -49,6 +49,11 @@ a server-side restack of this branch's own commits, and a replay of a commit
 trunk landed as a squash titled with its subject and a pull request number, as
 the merge queue leaves beneath a child after its parent lands, are forced over.
 
+A branch whose gt parent has an open pull request must hold the head the
+remote holds for that parent. A branch off it is refused before anything moves,
+naming the parent's pull request and head, since the branch's own pull request
+would sit on the parent's old commits; ccx vcs stack rebase replays it.
+
 Push moves one branch and nothing else. A graphite stack's bases live in
 Graphite's own record, which only ccx vcs stack submit writes. A branch a stack
 submit published carries a publication receipt, and push rewrites it to the head
@@ -103,6 +108,9 @@ func runVcsPush(cmd *cobra.Command, o vcsPushOpts) error {
 	}
 	retracked, err := vcsPushRetrack(ctx, ck, dir, remote, branch, head)
 	if err != nil {
+		return err
+	}
+	if err := vcsPushRefuseOffParent(ctx, ck, dir, remote, branch, head); err != nil {
 		return err
 	}
 	receipt, prior, err := vcsPushPublication(ctx, dir, remote, branch, head, detached)
@@ -224,6 +232,27 @@ func vcsPushRetrack(ctx context.Context, ck vcs.Checkout, dir render.Dir, remote
 		return "", fmt.Errorf("push: re-record %s onto %s at %s: %w", branch, parent, shortOID(fork), err)
 	}
 	return fmt.Sprintf(" · re-tracked %s onto %s at %s", branch, parent, shortOID(fork)), nil
+}
+
+func vcsPushRefuseOffParent(ctx context.Context, ck vcs.Checkout, dir render.Dir, remote, branch, head string) error {
+	graphite, err := vcs.GraphiteRepo(ck)
+	if err != nil || !graphite {
+		return err
+	}
+	state, err := gtStateQuery(ctx, dir, "push")
+	if err != nil {
+		return err
+	}
+	s, tracked := state[branch]
+	if !tracked || s.Trunk {
+		return nil
+	}
+	trunk, err := gtTrunkBranch("push", state)
+	if err != nil {
+		return err
+	}
+	child := pushChild{branch: branch, head: head, parent: s.Parents[0].Ref}
+	return refuseOffParentPush(ctx, dir, "push", remote, trunk, []pushChild{child})
 }
 
 func vcsPushParentHeld(ctx context.Context, dir render.Dir, remote string, state gtState, parent, head string) (string, error) {
