@@ -382,7 +382,7 @@ func stackPushPublication(ctx context.Context, dir render.Dir, s gtSubmit, plan 
 				return errors.Join(gtPushFailure(s, plan, err), readErr)
 			}
 			if !matched {
-				if err := stackRepushOverEquivalent(ctx, dir, s, run.Pin, plan, err); err != nil {
+				if err := stackRepushOverEquivalent(ctx, dir, s, run, plan, err); err != nil {
 					return err
 				}
 			}
@@ -407,13 +407,16 @@ func stackPushPublication(ctx context.Context, dir render.Dir, s gtSubmit, plan 
 // branch the remote moved now holds the same patches this run publishes on
 // whatever base, as Graphite's own restack of a landed parent's children onto
 // a newer trunk leaves them, and re-leases the graphite-base branches that
-// restack moved or deleted.
-func stackRepushOverEquivalent(ctx context.Context, dir render.Dir, s gtSubmit, pin string, plan []gtSubmitBranch, pushErr error) error {
+// restack moved or deleted. A remote head on this run's base with this run's
+// tree is adopted rather than overwritten: the run publishes it as the
+// branch's head, and a push that would only swap one equivalent commit for
+// another, cancelling the CI the remote's head already started, is skipped.
+func stackRepushOverEquivalent(ctx context.Context, dir render.Dir, s gtSubmit, run *stackRebaseRun, plan []gtSubmitBranch, pushErr error) error {
 	names := make([]string, len(plan))
 	for i, b := range plan {
 		names[i] = b.name
 	}
-	heads, err := stackRemoteHeads(ctx, dir, stackRebasePrefix, "origin", names, pin)
+	heads, err := stackRemoteHeads(ctx, dir, stackRebasePrefix, "origin", names, run.Pin)
 	if err != nil {
 		return errors.Join(gtPushFailure(s, plan, pushErr), err)
 	}
@@ -437,14 +440,47 @@ func stackRepushOverEquivalent(ctx context.Context, dir render.Dir, s gtSubmit, 
 			return stackMovedElsewhere(s, plan, b, "moved it to "+shortOID(remote)+", which carries other patches", pushErr)
 		}
 		plan[i].lease, plan[i].leaseSet = remote, true
+		adopt, err := stackAdoptsRemote(ctx, dir, run, b, onto, remote)
+		if err != nil {
+			return err
+		}
+		if adopt {
+			if _, err := render.RunCLI(ctx, dir, "git", []string{"update-ref", stackPublicationPin(run, b.name), remote}); err != nil {
+				return fmt.Errorf("stack publication: pin the adopted head of %s: %w", b.name, err)
+			}
+			plan[i].head = remote
+			run.branch(b.name).NewHead = remote
+		}
 	}
-	if err := gtLeaseParked(ctx, dir, plan, pin); err != nil {
+	run.PushTargets = stackPublicationTargets(plan)
+	if err := stackSaveRun(run); err != nil {
+		return err
+	}
+	if !slices.ContainsFunc(plan, func(b gtSubmitBranch) bool { return b.head != b.lease || b.parkedOn != "" }) {
+		return nil
+	}
+	if err := gtLeaseParked(ctx, dir, plan, run.Pin); err != nil {
 		return err
 	}
 	if err := gtRunPush(ctx, dir, s, plan); err != nil {
 		return gtPushFailure(s, plan, err)
 	}
 	return nil
+}
+
+// stackAdoptsRemote reports whether remote, an equivalent of b's head, can
+// stand in for it: replayed onto b's own base with b's tree, and no branch of
+// the run built on b's head, which adopting would strand on the old commit.
+func stackAdoptsRemote(ctx context.Context, dir render.Dir, run *stackRebaseRun, b gtSubmitBranch, onto, remote string) (bool, error) {
+	if onto != b.baseSha || slices.ContainsFunc(run.Branches, func(child stackRebaseBranch) bool { return child.Landed == "" && child.NewBase == b.head }) {
+		return false, nil
+	}
+	trees, err := render.RunCLI(ctx, dir, "git", []string{"rev-parse", remote + "^{tree}", b.head + "^{tree}"})
+	if err != nil {
+		return false, fmt.Errorf("%s: git rev-parse %.12s^{tree} %.12s^{tree}: %w", stackRebasePrefix, remote, b.head, err)
+	}
+	both := strings.Fields(trees)
+	return len(both) == 2 && both[0] == both[1], nil
 }
 
 func stackMovedElsewhere(s gtSubmit, plan []gtSubmitBranch, b gtSubmitBranch, moved string, pushErr error) error {

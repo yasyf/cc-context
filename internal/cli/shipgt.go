@@ -2281,6 +2281,10 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 		if err := stackPushPublication(ctx, l.dir(), s, plan); err != nil {
 			return nil, nil, err
 		}
+		pushed := gtPushedHeads(plan)
+		for i := range posted {
+			posted[i].head = pushed[posted[i].name]
+		}
 	} else if err := gtPushStack(ctx, l.dir(), s, plan); err != nil {
 		return nil, nil, err
 	}
