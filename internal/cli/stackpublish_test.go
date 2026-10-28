@@ -487,6 +487,59 @@ func TestStackSubmitAdoptsGraphitesRestackAfterALanding(t *testing.T) {
 	}
 }
 
+// TestStackSubmitAdoptsAnEquivalentRestackThatLandsMidPush replays the race
+// behind a cancelled build: Graphite restacks the branch onto the same base
+// between the plan and the push, so the lease is stale and the remote already
+// holds this run's tree. The run adopts that head instead of force-pushing its
+// own equivalent over it.
+func TestStackSubmitAdoptsAnEquivalentRestackThatLandsMidPush(t *testing.T) {
+	f, run, plan := prepareStackPublication(t)
+	dir := render.Dir(f.Dir)
+	common := filepath.Join(f.Dir, ".git")
+	ours := plan[0].head
+	author := strings.Split(gitAt(t, f.Env(), f.Dir, "log", "-1", "--format=%an%x00%ae%x00%ad%x00%B", "--date=raw", ours), "\x00")
+	env := append(f.Env(), "GIT_AUTHOR_NAME="+author[0], "GIT_AUTHOR_EMAIL="+author[1], "GIT_AUTHOR_DATE="+author[2], "GIT_COMMITTER_NAME=graphite-app", "GIT_COMMITTER_EMAIL=g@g.g", "GIT_COMMITTER_DATE=2000000000 +0000")
+	theirs := gitAt(t, env, f.Dir, "commit-tree", ours+"^{tree}", "-p", plan[0].baseSha, "-m", author[3])
+	if theirs == ours {
+		t.Fatal("fixture: the restack is the run's own commit")
+	}
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-qf", "origin", theirs+":refs/heads/feature")
+	shipResetLog(t, f)
+
+	if err := stackPushPublication(f.Context(), dir, gtSubmit{prefix: "test", publication: run}, plan); err != nil {
+		t.Fatal(err)
+	}
+	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature"); got != theirs {
+		t.Fatalf("origin feature = %s, want the equivalent restack %s kept", got, theirs)
+	}
+	if n := stackPublicationPushes(t, f); n != 1 {
+		t.Fatalf("pushes = %d, want only the attempt the stale lease refused", n)
+	}
+	if plan[0].head != theirs || run.branch("feature").NewHead != theirs {
+		t.Fatalf("plan head %s, run head %s, want both adopted as %s", plan[0].head, run.branch("feature").NewHead, theirs)
+	}
+	if err := stackRecordPublication(f.Context(), dir, run, plan); err != nil {
+		t.Fatal(err)
+	}
+	if receipt, err := stackReadPublication(f.Context(), dir, "feature"); err != nil || receipt == nil || receipt.Head != theirs {
+		t.Fatalf("receipt = %+v, %v, want head %s", receipt, err, theirs)
+	}
+	l, err := resolveLane(f.Context(), "stack", f.Dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, err := stackOnlyTestRun(common)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stackMovePublishedSources(f.Context(), l, common, saved); err != nil {
+		t.Fatal(err)
+	}
+	if got := shipHead(t, f); got != theirs {
+		t.Fatalf("feature = %s, want it moved onto the adopted head %s", got, theirs)
+	}
+}
+
 func TestStackPublicationFinishesMovingSourcesAfterAnInterruptedMove(t *testing.T) {
 	f, run, plan := prepareStackPublication(t)
 	dir := render.Dir(f.Dir)

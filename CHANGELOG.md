@@ -41,6 +41,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs stack submit` adopts an equivalent restack that lands mid-push
+  instead of force-pushing over it.** When Graphite restacked a branch onto the
+  same base between the plan and the push, the stale-lease retry pushed the
+  run's own commit back over the remote's, an identical tree that cancelled the
+  CI build the remote head had started. A remote head on the run's base with
+  the run's tree now becomes the branch's published head: the receipt, the
+  Graphite submit, and the local branch all move to it, and nothing is pushed.
 - **`ccx vcs ship` on the graphite lane no longer reads a stale `REBASE_HEAD`
   as a rebase in progress.** Git leaves `REBASE_HEAD` behind after a finished
   `git rebase --onto`, so ship refused with "a rebase is in progress". The
