@@ -85,7 +85,7 @@ func ReadTrunkState(ctx context.Context, dir render.Dir, trunk Trunk, holder str
 // keeps one entry per branch, and `git worktree add --force` permits several —
 // a caller about to move the ref has to see all of them.
 func TrunkHolders(ctx context.Context, c Checkout, trunk Trunk) ([]string, error) {
-	list, err := Worktrees(ctx, c)
+	list, err := Holdings(ctx, c)
 	if err != nil {
 		return nil, err
 	}

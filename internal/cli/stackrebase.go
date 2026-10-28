@@ -2504,7 +2504,9 @@ func stackFetchRemoteHeads(ctx context.Context, dir render.Dir, prefix, remote s
 // stackSnapshot takes a remote that equals the branch's last submitted head
 // as ours even when local no longer contains it: every rewrite a rebase or
 // restack makes diverges from the head it last pushed. A branch the run reads
-// at its published head is taken at that head, its local one never compared.
+// at its published head is taken at that head, its local one never compared,
+// and stays live when that head carries commits past its landed pull request:
+// the run moves none of it, so the commits are its lane's to settle.
 func stackSnapshot(ctx context.Context, dir render.Dir, tr vcs.Trunk, s gtBranchState, name, remote, submitted string, pr *stackPR, declared bool, pin string, dropCommits, published bool) (stackRebaseBranch, error) {
 	b := stackRebaseBranch{
 		Name: name, WasParent: s.Parents[0].Ref, Local: s.Head, Remote: remote,
@@ -2600,6 +2602,9 @@ func stackSnapshot(ctx context.Context, dir render.Dir, tr vcs.Trunk, s gtBranch
 					return b, err
 				}
 				within = past == 0
+			}
+			if !within && published {
+				return b, nil
 			}
 			if !within {
 				return b, fmt.Errorf("stack rebase: %s's pull request #%d landed at %.12s, but the branch holds commits past it (%.12s) — move them to a new branch, or pass --landed %s to drop them too", name, pr.Number, pr.Head, b.Head, name)
@@ -3592,7 +3597,7 @@ func stackRequireGit(ctx context.Context, dir render.Dir, prefix string) error {
 }
 
 func stackFreeWorkspace(ctx context.Context, l lane, name string) (string, error) {
-	worktrees, err := vcs.Worktrees(ctx, l.checkout)
+	worktrees, err := vcs.Holdings(ctx, l.checkout)
 	if err != nil {
 		return "", fmt.Errorf("stack rebase: %w", err)
 	}
@@ -3607,7 +3612,7 @@ func stackFreeWorkspace(ctx context.Context, l lane, name string) (string, error
 		}
 		_, err = os.Lstat(ws)
 		switch {
-		case err == nil, slices.ContainsFunc(worktrees, func(w vcs.Worktree) bool { return w.Path == ws }):
+		case err == nil, slices.ContainsFunc(worktrees, func(w vcs.Holding) bool { return w.Path == ws }):
 		case errors.Is(err, fs.ErrNotExist):
 			return ws, nil
 		default:

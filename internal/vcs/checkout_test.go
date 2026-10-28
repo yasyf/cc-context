@@ -636,23 +636,27 @@ func TestBranchHolders(t *testing.T) {
 }
 
 // TestBranchHoldersBare covers the repository shape whose main checkout is no
-// checkout at all: the bare record carries neither branch nor HEAD, so it adds
-// no entry while the linked worktree beside it does.
+// checkout at all: the bare main repository holds no branch, whether or not its
+// directory is named .git, while the linked worktree beside it does.
 func TestBranchHoldersBare(t *testing.T) {
-	f := vcstest.Repo(t, vcstest.Trunk("trunk"))
-	seed := f.Dir
-	bare := filepath.Join(t.TempDir(), "bare.git")
-	runGit(t, f, seed, "clone", "-q", "--bare", seed, bare)
-	linked := filepath.Join(t.TempDir(), "linked")
-	runGit(t, f, bare, "worktree", "add", "-q", linked, "trunk")
+	for _, name := range []string{"bare.git", ".git"} {
+		t.Run(name, func(t *testing.T) {
+			f := vcstest.Repo(t, vcstest.Trunk("trunk"))
+			seed := f.Dir
+			bare := filepath.Join(t.TempDir(), name)
+			runGit(t, f, seed, "clone", "-q", "--bare", seed, bare)
+			linked := filepath.Join(t.TempDir(), "linked")
+			runGit(t, f, bare, "worktree", "add", "-q", linked, "trunk")
 
-	got, err := BranchHolders(f.Context(), Checkout{CommonDir: canon(t, bare)})
-	if err != nil {
-		t.Fatalf("BranchHolders: %v", err)
-	}
-	want := map[string]string{"trunk": canon(t, linked)}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("BranchHolders =\n\t%+v\nwant\n\t%+v", got, want)
+			got, err := BranchHolders(f.Context(), Checkout{CommonDir: canon(t, bare)})
+			if err != nil {
+				t.Fatalf("BranchHolders: %v", err)
+			}
+			want := map[string]string{"trunk": canon(t, linked)}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("BranchHolders =\n\t%+v\nwant\n\t%+v", got, want)
+			}
+		})
 	}
 }
 
