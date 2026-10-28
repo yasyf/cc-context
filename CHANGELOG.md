@@ -41,6 +41,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs ship` on the graphite lane no longer reads a stale `REBASE_HEAD`
+  as a rebase in progress.** Git leaves `REBASE_HEAD` behind after a finished
+  `git rebase --onto`, so ship refused with "a rebase is in progress". The
+  check now keys on the `rebase-merge` or `rebase-apply` directory, as the git
+  lane's already did.
 - **`ccx vcs ship`, `push`, `restack`, and the stack write verbs refuse a
   branch a second working copy also holds**, naming every holder. A branch
   checked out twice past `git worktree add --force` let a write from one copy
