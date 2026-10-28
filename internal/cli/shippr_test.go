@@ -936,6 +936,7 @@ func TestShipPRGTBothFlags(t *testing.T) {
 		{"git", "branch", "--show-current"},
 		gtRefsArgv(),
 		{"git", "merge-base", "--is-ancestor", gtRemoteTrunk("main"), vcstest.GraphiteLeafSHA},
+		gtQueueGateInv("feature"),
 		{"git", "log", "-1", "--format=%h%x00%s"},
 	}, gtShipSubmitInv("main", vcstest.GraphiteLeafSHA), [][]string{
 		gtCherryInv("main", vcstest.GraphiteLeafSHA, fakeTrunkSHA),
@@ -999,6 +1000,7 @@ func TestShipPRGTAlreadyCommitted(t *testing.T) {
 				{"git", "rev-list", "--count", "main..HEAD"},
 				{"git", "branch", "--show-current"},
 				{"git", "merge-base", "--is-ancestor", gtRemoteTrunk("main"), vcstest.GraphiteLeafSHA},
+				gtQueueGateInv("feature"),
 				{"git", "log", "-1", "--format=%h%x00%s"},
 				// No second refs read: this ship cuts no commit, so nothing
 				// invalidates the state the preflight already cached.

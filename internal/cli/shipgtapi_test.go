@@ -600,6 +600,13 @@ func gtPushInv(refs ...gtPushRef) []string {
 
 var gitRecordPushArgv = []string{"git", "update-ref", "-m", "update by push", "--stdin"}
 
+// gtQueueGateInv is the second receipt probe of a ship that commits: the
+// queue check before the commit asks whether branch was ever published, and
+// gtDropTrunkInv drops only the first of the two identical probes.
+func gtQueueGateInv(branch string) []string {
+	return []string{"git", "rev-parse", "--verify", "--quiet", stackPublicationRef(branch, "receipt")}
+}
+
 // gtReceiptInv is what a plain submit records after its push: the pushed
 // heads in their remote-tracking refs, then the publication receipt, per
 // branch the prior read, the receipt blob, and the read stackReceiptTx makes,

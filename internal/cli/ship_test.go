@@ -4279,6 +4279,7 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 				{"git", "branch", "--show-current"},
 				gtRefsArgv(),
 				{"git", "merge-base", "--is-ancestor", gtRemoteTrunk("main"), vcstest.GraphiteLeafSHA},
+				gtQueueGateInv(tt.branch),
 				{"git", "log", "-1", "--format=%h%x00%s"},
 			}
 			want = append(want, tt.submitInv...)
