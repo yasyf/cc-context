@@ -62,14 +62,14 @@ func writeLane(c Checkout, id string) error {
 }
 
 // ForeignBranchHolders is BranchHolders less the working copies of c's lane,
-// c included. A pruned working copy has no admin dir left to name its lane, so
-// it stays another lane's.
+// c included. A working copy whose directory is gone has no admin dir left to
+// name its lane, so it stays another lane's.
 func ForeignBranchHolders(ctx context.Context, c Checkout) (map[string]string, error) {
 	lane, err := Lane(c)
 	if err != nil {
 		return nil, err
 	}
-	list, err := Worktrees(ctx, c)
+	list, err := Holdings(ctx, c)
 	if err != nil {
 		return nil, err
 	}
@@ -78,7 +78,7 @@ func ForeignBranchHolders(ctx context.Context, c Checkout) (map[string]string, e
 		if wt.Branch == "" {
 			continue
 		}
-		if wt.Prunable == "" {
+		if _, err := os.Stat(filepath.Join(wt.Path, ".git")); err == nil {
 			holder, err := ResolveCheckout(wt.Path)
 			if err != nil {
 				return nil, err

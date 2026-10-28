@@ -1,6 +1,7 @@
 package vcs
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -357,24 +358,129 @@ func Worktrees(ctx context.Context, c Checkout) ([]Worktree, error) {
 	return list, nil
 }
 
+// Holding is a working copy registered against a repository and the branch its
+// HEAD names, empty when that HEAD is detached.
+type Holding struct {
+	Path   string
+	Branch string
+}
+
+// Holdings lists the working copies git's worktree list names, with the branch
+// each holds, read straight from the admin dir every checkout keeps under the
+// common dir rather than through git worktree list, which resolves every HEAD
+// to an object id and takes minutes over thousands of worktrees. A bare main
+// repository holds nothing, and a main checkout whose common dir is not
+// <root>/.git is named by the common dir, as git names it. A reftable
+// repository keeps no symbolic HEAD in its admin dirs, so its list still comes
+// from git.
+func Holdings(ctx context.Context, c Checkout) ([]Holding, error) {
+	if _, err := os.Stat(filepath.Join(c.CommonDir, "reftable")); err == nil {
+		list, err := Worktrees(ctx, c)
+		if err != nil {
+			return nil, err
+		}
+		holdings := make([]Holding, 0, len(list))
+		for _, wt := range list {
+			holdings = append(holdings, Holding{Path: wt.Path, Branch: wt.Branch})
+		}
+		return holdings, nil
+	}
+	var holdings []Holding
+	bare, err := bareRepository(ctx, c.CommonDir)
+	if err != nil {
+		return nil, err
+	}
+	if !bare {
+		branch, err := headBranch(c.CommonDir)
+		if err != nil {
+			return nil, err
+		}
+		holdings = append(holdings, Holding{Path: cmp.Or(mainRootOf(c.CommonDir), c.CommonDir), Branch: branch})
+	}
+	admins, err := os.ReadDir(filepath.Join(c.CommonDir, "worktrees"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return holdings, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("list the worktrees of %q: %w", c.CommonDir, err)
+	}
+	for _, admin := range admins {
+		dir := filepath.Join(c.CommonDir, "worktrees", admin.Name())
+		pointer, err := os.ReadFile(filepath.Join(dir, "gitdir")) //nolint:gosec // git's own admin file under the repository's common dir
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read the gitdir of worktree %q: %w", dir, err)
+		}
+		path := strings.TrimSuffix(strings.TrimSpace(string(pointer)), "/.git")
+		if path == "" {
+			continue
+		}
+		if !filepath.IsAbs(path) {
+			path = resolveAgainst(dir, path)
+		}
+		branch, err := headBranch(dir)
+		if err != nil {
+			return nil, err
+		}
+		holdings = append(holdings, Holding{Path: path, Branch: branch})
+	}
+	return holdings, nil
+}
+
+// headBranch reads the branch an admin dir's HEAD names symbolically, the empty
+// string for a detached HEAD or none at all, which git lists without a branch.
+func headBranch(admin string) (string, error) {
+	head, err := os.ReadFile(filepath.Join(admin, "HEAD")) //nolint:gosec // git's own admin file under the repository's common dir
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read the HEAD of %q: %w", admin, err)
+	}
+	ref, symbolic := strings.CutPrefix(strings.TrimSpace(string(head)), "ref: refs/heads/")
+	if !symbolic {
+		return "", nil
+	}
+	return ref, nil
+}
+
+// bareRepository reads core.bare, the setting git's worktree list reads to keep
+// a bare main repository's HEAD from naming a branch anyone holds.
+func bareRepository(ctx context.Context, common string) (bool, error) {
+	out, code, stderr, err := render.RunCLIExitCode(ctx, render.Dir(common), "git", []string{"--git-dir", common, "config", "--bool", "core.bare"})
+	if err != nil {
+		return false, fmt.Errorf("git config core.bare: %w", err)
+	}
+	switch code {
+	case 0:
+		return strings.TrimSpace(out) == "true", nil
+	case 1:
+		return false, nil
+	default:
+		return false, fmt.Errorf("git config core.bare: exit %d: %s", code, strings.TrimSpace(stderr))
+	}
+}
+
 // BranchHolders maps a branch to the working copy that currently has it checked
-// out, derived from the same worktree list Worktrees reads: a checkout's branch
-// line is a full refs/heads ref, which names the branch exactly, where a
-// short-form ref query would hand back a spelling git itself re-lengthens
-// differently once a ref of the same name exists elsewhere. The map is not total
-// over the repository's branches: only a checkout holding a branch contributes
-// an entry, so a bare or detached checkout adds none and a branch nobody holds —
-// including one a pruned worktree left behind — is simply absent, which never
-// means the branch does not exist.
+// out, derived from Holdings: a checkout's HEAD names its branch as a full
+// refs/heads ref, which names the branch exactly, where a short-form ref query
+// would hand back a spelling git itself re-lengthens differently once a ref of
+// the same name exists elsewhere. The map is not total over the repository's
+// branches: only a checkout holding a branch contributes an entry, so a bare or
+// detached checkout adds none and a branch nobody holds — including one a pruned
+// worktree left behind — is simply absent, which never means the branch does
+// not exist.
 func BranchHolders(ctx context.Context, c Checkout) (map[string]string, error) {
-	list, err := Worktrees(ctx, c)
+	list, err := Holdings(ctx, c)
 	if err != nil {
 		return nil, err
 	}
 	holders := make(map[string]string)
-	for _, wt := range list {
-		if wt.Branch != "" {
-			holders[wt.Branch] = wt.Path
+	for _, h := range list {
+		if h.Branch != "" {
+			holders[h.Branch] = h.Path
 		}
 	}
 	return holders, nil

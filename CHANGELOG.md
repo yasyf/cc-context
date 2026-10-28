@@ -41,6 +41,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs ship` and the stack verbs no longer stall on a repository with
+  thousands of worktrees.** Finding which working copy holds a
+  branch ran `git worktree list`, which resolves every checkout's HEAD and took
+  over 20 seconds per call on a repository with 2,700 worktrees, several times
+  per ship. The holders are now read from each worktree's admin dir under the
+  common dir, which takes a fraction of a second.
+- **`ccx vcs ship --tip-only` ships over an ancestor whose landed pull request
+  is followed by newer commits.** The ship moves no ancestor, yet it refused
+  over one far below the tip that another lane kept committing to after its
+  pull request landed. Such an ancestor now stays live at its published head,
+  and the tip ships onto its parent.
 - **`ccx vcs ship`, `ccx vcs stack submit`, and `ccx vcs push` refuse to
   push a stacked branch off its parent's current head.** When another lane
   rebased and pushed a parent, a child pushed on the parent's old head opened

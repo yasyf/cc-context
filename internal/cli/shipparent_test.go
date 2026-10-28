@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -409,21 +410,20 @@ func TestShipGTAdoptsOntoTheRemoteTrunkNotALocalTrunkLeftBehindIt(t *testing.T) 
 }
 
 // TestShipGTParentPutsTheBranchBackWhenTheStackRebaseRefuses is a --tip-only
-// ship onto a parent whose landed ancestor holds commits past its landing: the
+// ship of a branch whose own pull request landed before its latest commit: the
 // stack rebase refused after the move had already replayed the branch onto the
 // parent's local head, and the refusal left it there.
 func TestShipGTParentPutsTheBranchBackWhenTheStackRebaseRefuses(t *testing.T) {
 	f := shipGTRepo(t)
-	shipGTStack(t, f, "base")
-	landedAt := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
-	stackCommit(t, f, "later.txt")
-	shipGTStack(t, f, "p")
+	shipGTStack(t, f, "base", "p")
 	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "p")
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
 	shipGTStack(t, f, "c")
+	landedAt := gitAt(t, f.Env(), f.Dir, "rev-parse", "c")
+	stackCommit(t, f, "later.txt")
 	stubStackPRs(t, f, map[string]*stackPR{
-		"base": {Number: 5, Title: "base", State: "CLOSED", Head: landedAt, Landed: true},
-		"p":    {Number: 6, Title: "p", State: "OPEN", Base: "base"},
+		"p": {Number: 6, Title: "p", State: "OPEN", Base: "base"},
+		"c": {Number: 7, Title: "c", State: "CLOSED", Head: landedAt, Landed: true},
 	})
 	before := gitAt(t, f.Env(), f.Dir, "rev-parse", "c")
 	shipResetLog(t, f)
@@ -443,5 +443,68 @@ func TestShipGTParentPutsTheBranchBackWhenTheStackRebaseRefuses(t *testing.T) {
 	}
 	if status := gitAt(t, f.Env(), f.Dir, "status", "--porcelain"); status != "" {
 		t.Errorf("working copy = %q, want it back on c's head", status)
+	}
+}
+
+// TestShipGTTipOnlyLeavesALandedAncestorWithLaterCommitsToItsLane is a
+// --tip-only ship over an ancestor another lane kept committing to after its
+// pull request landed: the ship moves none of that ancestor, so it ships the tip
+// onto its parent's published head instead of refusing over the ancestor, and
+// it names the branch holders without a git worktree list.
+func TestShipGTTipOnlyLeavesALandedAncestorWithLaterCommitsToItsLane(t *testing.T) {
+	f := shipGTRepo(t)
+	shipGTStack(t, f, "base")
+	landedAt := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
+	stackCommit(t, f, "later.txt")
+	shipGTStack(t, f, "p")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "p")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
+	shipGTStack(t, f, "c")
+	stubStackPRs(t, f, map[string]*stackPR{
+		"base": {Number: 5, Title: "base", State: "CLOSED", Head: landedAt, Landed: true},
+		"p":    {Number: 6, Title: "p", State: "OPEN", Base: "base"},
+	})
+	base := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
+	shipResetLog(t, f)
+
+	if _, err := runShipCmd(f.Context(), t, "--no-commit", "--no-watch", "--tip-only", "--parent", "p"); err != nil {
+		t.Fatalf("ship = %v, want c shipped onto p", err)
+	}
+	if parent := shipParentOf(t, f, "c"); parent != "p" {
+		t.Errorf("c's parent = %s, want p", parent)
+	}
+	if after := gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); after != base {
+		t.Errorf("base moved from %s to %s, want it left to its lane", base, after)
+	}
+	for _, inv := range shipInvocationsOf(vcstest.Invocations(t, f.ArgvLog), "git") {
+		if i := slices.Index(inv, "worktree"); i >= 0 && i+1 < len(inv) && inv[i+1] == "list" {
+			t.Errorf("ship ran %v, want the holders read without git worktree list", inv)
+		}
+	}
+}
+
+// TestShipGTTipOnlyRefusesToRehomeOntoAReusedLandedAncestor is a --tip-only
+// ship whose landed parent would re-home the tip onto an ancestor another lane
+// kept committing to after its own pull request landed: the tip never held
+// those commits, so the ship refuses rather than replay it onto them.
+func TestShipGTTipOnlyRefusesToRehomeOntoAReusedLandedAncestor(t *testing.T) {
+	f := shipGTRepo(t)
+	shipGTStack(t, f, "base")
+	landedAt := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
+	shipGTStack(t, f, "mid", "c")
+	mid := gitAt(t, f.Env(), f.Dir, "rev-parse", "mid")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "base")
+	stackCommit(t, f, "later.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "mid")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "c")
+	stubStackPRs(t, f, map[string]*stackPR{
+		"base": {Number: 5, Title: "base", State: "CLOSED", Head: landedAt, Landed: true},
+		"mid":  {Number: 6, Title: "mid", State: "CLOSED", Head: mid, Landed: true},
+	})
+	shipResetLog(t, f)
+
+	_, err := runShipCmd(f.Context(), t, "--no-commit", "--no-watch", "--tip-only")
+	if err == nil || !strings.Contains(err.Error(), "holds commits past it") {
+		t.Fatalf("ship = %v, want the refusal to re-home c onto base's later commits", err)
 	}
 }

@@ -582,7 +582,7 @@ func stackFinishSourceMoves(ctx context.Context, cmd *cobra.Command, l lane, com
 }
 
 func stackMovePublishedSources(ctx context.Context, l lane, commonDir string, run *stackRebaseRun) (string, error) {
-	worktrees, err := vcs.Worktrees(ctx, l.checkout)
+	worktrees, err := vcs.Holdings(ctx, l.checkout)
 	if err != nil {
 		return "", fmt.Errorf("%s: %w", stackRebasePrefix, err)
 	}
@@ -743,7 +743,7 @@ func stackCheckPendingHolders(ctx context.Context, holders map[string]string, pe
 	return gtRestackRefuseClobbers(ctx, stackRebasePrefix, holders, pending)
 }
 
-func stackSourceHolders(worktrees []vcs.Worktree) (map[string]string, map[string]bool) {
+func stackSourceHolders(worktrees []vcs.Holding) (map[string]string, map[string]bool) {
 	holders := map[string]string{}
 	shared := map[string]bool{}
 	for _, wt := range worktrees {
