@@ -1531,11 +1531,12 @@ func captureSlog(t *testing.T) *bytes.Buffer {
 }
 
 // holderLookups counts the holder lookups a ship made, the measure of how lazy
-// the tiebreak is: every one is a subprocess the common path must not spawn.
+// the tiebreak is: every one reads core.bare in a subprocess the common path
+// must not spawn.
 func holderLookups(invocations [][]string) int {
 	n := 0
 	for _, inv := range invocations {
-		if inv[0] == "git" && len(inv) > 3 && inv[3] == "worktree" {
+		if inv[0] == "git" && slices.Contains(inv, "core.bare") {
 			n++
 		}
 	}

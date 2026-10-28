@@ -2929,7 +2929,7 @@ func TestShipJJMultipleNearestBookmarksFails(t *testing.T) {
 	assertInvocations(t, invocations, [][]string{
 		{"jj", "--ignore-working-copy", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
 		{"jj", "--ignore-working-copy", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
-		{"git", "--git-dir", filepath.Join(f.Dir, ".git"), "worktree", "list", "--porcelain", "-z", "--end-of-options"},
+		{"git", "--git-dir", filepath.Join(f.Dir, ".git"), "config", "--bool", "core.bare"},
 	})
 	assertNoShipMutation(t, invocations)
 	if subject := jjAt(t, f.Env(), f.Dir, "@-", "description.first_line()"); subject != "wip" {
