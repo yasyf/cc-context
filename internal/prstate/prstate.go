@@ -151,6 +151,7 @@ type Rollup struct {
 type Context struct {
 	Typename   string    `json:"__typename"`
 	Name       string    `json:"name,omitempty"`
+	Title      string    `json:"title,omitempty"`
 	Conclusion string    `json:"conclusion,omitempty"`
 	Status     string    `json:"status,omitempty"`
 	StartedAt  time.Time `json:"startedAt,omitzero"`

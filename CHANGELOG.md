@@ -41,6 +41,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs pr status` says what the review bot did instead of "review
+  required".** A review bot that holds a pull request concludes its
+  `ai-review` check run neutral and posts no approving review, so GitHub's
+  decision stays review required, which read as the bot still reviewing. The
+  approval column now reads the bot's newest run on the head: `bot held: 2
+  blocking; security: high`, `bot waiting for restack`, `bot reviewing`, or
+  `bot not run`. The run's title rides on the poll the cache already makes, so
+  nothing new is fetched.
+
 - **A restarted or upgraded cleanup daemon inspects again a job an earlier
   one gave up on.** A job blocked on a transient inspection retries on its
   own six times, then waits for `ccx vcs cleanup retry`. That count spanned

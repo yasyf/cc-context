@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
@@ -64,6 +65,8 @@ const (
 	gtWaitingOnDownstack = "WAITING_ON_DOWNSTACK"
 )
 
+const reviewBotCheck = "ai-review"
+
 const (
 	prNamedFailures = 3
 	prStatusWorkers = 8
@@ -110,6 +113,7 @@ type prApprovalReport struct {
 	State            prApprovalState `json:"state"`
 	Approvers        []string        `json:"approvers,omitempty"`
 	ChangesRequested []string        `json:"changes_requested_by,omitempty"`
+	Bot              string          `json:"bot,omitempty"`
 }
 
 // prStale marks a record the cache served while GitHub's rate limit refused a
@@ -183,7 +187,9 @@ stack. A landed pull request reports no CI: the queue graded it before landing,
 and checks that finish or cancel after the queue closes it grade nothing.
 Approval is GitHub's reviewDecision, which counts the reviews the base
 branch's protection counts, bot approvals included, followed by who approved or
-requested changes. The verdict is landed, queued, landable for an open pull
+requested changes. While it reads review required, the newest ai-review check
+run on the head says why in its place: bot held: and what the bot blocks on,
+bot waiting for restack, bot reviewing, or bot not run. The verdict is landed, queued, landable for an open pull
 request that is green, approved, not a draft, and not conflicting, and
 otherwise blocked: followed by every cause, such as blocked:conflict,ci-pending.
 Conflicting is GitHub's mergeable answer. While the cache holds it UNKNOWN, or
@@ -539,7 +545,7 @@ func prApprovalOf(pr prstate.PR) prApprovalReport {
 	case pr.ReviewDecision == "CHANGES_REQUESTED":
 		r.State = prChangesRequested
 	case pr.ReviewDecision == "REVIEW_REQUIRED":
-		r.State = prReviewRequired
+		r.State, r.Bot = prReviewRequired, prReviewBot(pr.Rollup)
 	case len(r.ChangesRequested) > 0:
 		r.State = prChangesRequested
 	case len(r.Approvers) > 0:
@@ -548,6 +554,38 @@ func prApprovalOf(pr prstate.PR) prApprovalReport {
 		r.State = prNoReview
 	}
 	return r
+}
+
+// prReviewBot reads the review bot's newest check run on the head: a run that
+// held the pull request, one waiting for a restack, one still reviewing, or
+// none at all, each of which leaves GitHub's decision at review required. A
+// rollup GitHub cut short of the run says nothing.
+func prReviewBot(rollup *prstate.Rollup) string {
+	if rollup == nil {
+		return "bot not run"
+	}
+	nodes := rollup.Contexts.Nodes
+	i := slices.IndexFunc(nodes, func(c prstate.Context) bool { return c.Typename == "CheckRun" && c.Name == reviewBotCheck })
+	switch {
+	case i < 0 && rollup.Contexts.TotalCount > len(nodes):
+		return ""
+	case i < 0:
+		return "bot not run"
+	}
+	run := nodes[i]
+	title := strings.TrimLeftFunc(run.Title, func(r rune) bool { return r > unicode.MaxASCII || !unicode.IsLetter(r) })
+	held, isHeld := strings.CutPrefix(title, "Held — ")
+	switch {
+	case run.Status != "COMPLETED":
+		return "bot reviewing"
+	case isHeld:
+		return "bot held: " + strings.ReplaceAll(held, " blocking open", " blocking")
+	case strings.HasPrefix(title, "Waiting for restack"):
+		return "bot waiting for restack"
+	case title != "":
+		return "bot: " + title
+	}
+	return "bot " + strings.ToLower(run.Conclusion)
 }
 
 func prVerdict(r prStatusReport, pr prstate.PR) string {
@@ -743,10 +781,14 @@ func prApprovalValue(a prApprovalReport) string {
 	case prChangesRequested:
 		return "changes requested by " + strings.Join(a.ChangesRequested, ", ")
 	case prReviewRequired:
-		if len(a.Approvers) == 0 {
-			return "review required"
+		required := "review required"
+		if a.Bot != "" {
+			required = a.Bot
 		}
-		return "review required, approved by " + strings.Join(a.Approvers, ", ")
+		if len(a.Approvers) == 0 {
+			return required
+		}
+		return required + ", approved by " + strings.Join(a.Approvers, ", ")
 	}
 	return "no review"
 }

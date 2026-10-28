@@ -62,6 +62,9 @@ type restCheckRuns struct {
 		Status     string    `json:"status"`
 		Conclusion string    `json:"conclusion"`
 		StartedAt  time.Time `json:"started_at"`
+		Output     struct {
+			Title string `json:"title"`
+		} `json:"output"`
 	} `json:"check_runs"`
 }
 
@@ -303,6 +306,7 @@ func restRollup(runs restCheckRuns, status restStatus) (*Rollup, string) {
 		rollup.Contexts.Nodes = append(rollup.Contexts.Nodes, Context{
 			Typename:   "CheckRun",
 			Name:       run.Name,
+			Title:      run.Output.Title,
 			Status:     strings.ToUpper(run.Status),
 			Conclusion: strings.ToUpper(run.Conclusion),
 			StartedAt:  run.StartedAt,
