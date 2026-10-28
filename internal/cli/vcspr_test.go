@@ -810,7 +810,7 @@ func TestPRApprovalOf(t *testing.T) {
 			"one approval short",
 			"REVIEW_REQUIRED",
 			[]prstate.Review{{Author: "poetic-svc", State: "APPROVED"}},
-			prReviewRequired, "review required, approved by poetic-svc",
+			prReviewRequired, "bot not run, approved by poetic-svc",
 		},
 		{"changes requested", "CHANGES_REQUESTED", []prstate.Review{{Author: "yasyf", State: "CHANGES_REQUESTED"}}, prChangesRequested, "changes requested by yasyf"},
 		{"a base requiring no review", "", []prstate.Review{{Author: "yasyf", State: "APPROVED"}}, prApproved, "approved by yasyf"},
@@ -823,6 +823,36 @@ func TestPRApprovalOf(t *testing.T) {
 			if got.State != tt.want {
 				t.Errorf("prApprovalOf = %+v, want %s", got, tt.want)
 			}
+			if line := prApprovalValue(got); line != tt.line {
+				t.Errorf("prApprovalValue = %q, want %q", line, tt.line)
+			}
+		})
+	}
+}
+
+func TestPRApprovalNamesTheReviewBotsRunOnTheHead(t *testing.T) {
+	t.Parallel()
+	run := func(status, conclusion, title string) prstate.Context {
+		return prstate.Context{Typename: "CheckRun", Name: reviewBotCheck, Status: status, Conclusion: conclusion, Title: title}
+	}
+	tests := []struct {
+		name  string
+		nodes []prstate.Context
+		total int
+		line  string
+	}{
+		{"held", []prstate.Context{{Typename: "CheckRun", Name: "test", Status: "COMPLETED", Conclusion: "SUCCESS"}, run("COMPLETED", "NEUTRAL", "🛑 Held — 2 blocking open; security: high")}, 2, "bot held: 2 blocking; security: high"},
+		{"waiting for restack", []prstate.Context{run("COMPLETED", "NEUTRAL", "ℹ️ Waiting for restack — push or comment @forge-pr-reviewer review")}, 1, "bot waiting for restack"},
+		{"reviewing", []prstate.Context{run("IN_PROGRESS", "", "Reviewing…")}, 1, "bot reviewing"},
+		{"not run on the head", []prstate.Context{{Typename: "CheckRun", Name: "test", Status: "COMPLETED", Conclusion: "SUCCESS"}}, 1, "bot not run"},
+		{"a rollup cut short of the run", []prstate.Context{{Typename: "CheckRun", Name: "test", Status: "COMPLETED", Conclusion: "SUCCESS"}}, 150, "review required"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			rollup := &prstate.Rollup{State: "SUCCESS"}
+			rollup.Contexts.TotalCount, rollup.Contexts.Nodes = tt.total, tt.nodes
+			got := prApprovalOf(prstate.PR{ReviewDecision: "REVIEW_REQUIRED", Rollup: rollup})
 			if line := prApprovalValue(got); line != tt.line {
 				t.Errorf("prApprovalValue = %q, want %q", line, tt.line)
 			}
