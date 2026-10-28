@@ -482,3 +482,29 @@ func TestShipGTTipOnlyLeavesALandedAncestorWithLaterCommitsToItsLane(t *testing.
 		}
 	}
 }
+
+// TestShipGTTipOnlyRefusesToRehomeOntoAReusedLandedAncestor is a --tip-only
+// ship whose landed parent would re-home the tip onto an ancestor another lane
+// kept committing to after its own pull request landed: the tip never held
+// those commits, so the ship refuses rather than replay it onto them.
+func TestShipGTTipOnlyRefusesToRehomeOntoAReusedLandedAncestor(t *testing.T) {
+	f := shipGTRepo(t)
+	shipGTStack(t, f, "base")
+	landedAt := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
+	shipGTStack(t, f, "mid", "c")
+	mid := gitAt(t, f.Env(), f.Dir, "rev-parse", "mid")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "base")
+	stackCommit(t, f, "later.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "mid")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "c")
+	stubStackPRs(t, f, map[string]*stackPR{
+		"base": {Number: 5, Title: "base", State: "CLOSED", Head: landedAt, Landed: true},
+		"mid":  {Number: 6, Title: "mid", State: "CLOSED", Head: mid, Landed: true},
+	})
+	shipResetLog(t, f)
+
+	_, err := runShipCmd(f.Context(), t, "--no-commit", "--no-watch", "--tip-only")
+	if err == nil || !strings.Contains(err.Error(), "holds commits past it") {
+		t.Fatalf("ship = %v, want the refusal to re-home c onto base's later commits", err)
+	}
+}

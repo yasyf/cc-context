@@ -1,6 +1,7 @@
 package vcs
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -368,8 +369,10 @@ type Holding struct {
 // each holds, read straight from the admin dir every checkout keeps under the
 // common dir rather than through git worktree list, which resolves every HEAD
 // to an object id and takes minutes over thousands of worktrees. A bare main
-// repository holds nothing. A reftable repository keeps no symbolic HEAD in its
-// admin dirs, so its list still comes from git.
+// repository holds nothing, and a main checkout whose common dir is not
+// <root>/.git is named by the common dir, as git names it. A reftable
+// repository keeps no symbolic HEAD in its admin dirs, so its list still comes
+// from git.
 func Holdings(ctx context.Context, c Checkout) ([]Holding, error) {
 	if _, err := os.Stat(filepath.Join(c.CommonDir, "reftable")); err == nil {
 		list, err := Worktrees(ctx, c)
@@ -383,18 +386,16 @@ func Holdings(ctx context.Context, c Checkout) ([]Holding, error) {
 		return holdings, nil
 	}
 	var holdings []Holding
-	if root := mainRootOf(c.CommonDir); root != "" {
-		bare, err := bareRepository(ctx, c.CommonDir)
+	bare, err := bareRepository(ctx, c.CommonDir)
+	if err != nil {
+		return nil, err
+	}
+	if !bare {
+		branch, err := headBranch(c.CommonDir)
 		if err != nil {
 			return nil, err
 		}
-		if !bare {
-			branch, err := headBranch(c.CommonDir)
-			if err != nil {
-				return nil, err
-			}
-			holdings = append(holdings, Holding{Path: root, Branch: branch})
-		}
+		holdings = append(holdings, Holding{Path: cmp.Or(mainRootOf(c.CommonDir), c.CommonDir), Branch: branch})
 	}
 	admins, err := os.ReadDir(filepath.Join(c.CommonDir, "worktrees"))
 	if errors.Is(err, fs.ErrNotExist) {

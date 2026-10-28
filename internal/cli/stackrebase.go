@@ -1351,6 +1351,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 		return nil, fmt.Errorf("stack rebase: %w", err)
 	}
 	outside := map[string]bool{}
+	landedPast := map[string]error{}
 	byName := map[string]*stackRebaseBranch{}
 	for _, name := range members {
 		if parent := retargeted[name].Parents[0].Ref; outside[parent] {
@@ -1416,6 +1417,9 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 			}
 		}
 		b, err := stackSnapshot(ctx, l.dir(), tr, effective, name, remotes[name], ours, prs[name], slices.Contains(o.landed, name), pin, o.dropCommits, published)
+		if errors.As(err, new(stackLandedPastError)) && stackReadsPublished(o, name) {
+			landedPast[name], err = err, nil
+		}
 		if err != nil && len(own) > 0 && !own[name] {
 			outside[name] = true
 			run.left = append(run.left, stackLeft{branch: name, why: strings.TrimPrefix(err.Error(), stackRebasePrefix+": ")})
@@ -1476,12 +1480,16 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 		}
 	}
 	for _, b := range byName {
+		from := b.Parent
 		for seen := map[string]bool{}; b.Parent != trunk && byName[b.Parent].Landed != ""; {
 			if seen[b.Parent] {
 				return nil, fmt.Errorf("stack rebase: the parents of %s cycle", b.Name)
 			}
 			seen[b.Parent] = true
 			b.Parent = byName[b.Parent].Parent
+		}
+		if err := landedPast[b.Parent]; err != nil && b.Parent != from {
+			return nil, err
 		}
 	}
 	for name, b := range byName {
@@ -2504,9 +2512,7 @@ func stackFetchRemoteHeads(ctx context.Context, dir render.Dir, prefix, remote s
 // stackSnapshot takes a remote that equals the branch's last submitted head
 // as ours even when local no longer contains it: every rewrite a rebase or
 // restack makes diverges from the head it last pushed. A branch the run reads
-// at its published head is taken at that head, its local one never compared,
-// and stays live when that head carries commits past its landed pull request:
-// the run moves none of it, so the commits are its lane's to settle.
+// at its published head is taken at that head, its local one never compared.
 func stackSnapshot(ctx context.Context, dir render.Dir, tr vcs.Trunk, s gtBranchState, name, remote, submitted string, pr *stackPR, declared bool, pin string, dropCommits, published bool) (stackRebaseBranch, error) {
 	b := stackRebaseBranch{
 		Name: name, WasParent: s.Parents[0].Ref, Local: s.Head, Remote: remote,
@@ -2603,11 +2609,8 @@ func stackSnapshot(ctx context.Context, dir render.Dir, tr vcs.Trunk, s gtBranch
 				}
 				within = past == 0
 			}
-			if !within && published {
-				return b, nil
-			}
 			if !within {
-				return b, fmt.Errorf("stack rebase: %s's pull request #%d landed at %.12s, but the branch holds commits past it (%.12s) — move them to a new branch, or pass --landed %s to drop them too", name, pr.Number, pr.Head, b.Head, name)
+				return b, stackLandedPastError{fmt.Errorf("stack rebase: %s's pull request #%d landed at %.12s, but the branch holds commits past it (%.12s) — move them to a new branch, or pass --landed %s to drop them too", name, pr.Number, pr.Head, b.Head, name)}
 			}
 		}
 		b.Landed = fmt.Sprintf("#%d landed", pr.Number)
@@ -2685,6 +2688,12 @@ func stackRefuseDroppedCommits(ctx context.Context, dir render.Dir, tr vcs.Trunk
 }
 
 type stackDivergedError struct{ error }
+
+// stackLandedPastError is a branch whose pull request landed while the branch
+// went on to hold commits past it. A branch the run only reads at its published
+// head stays live, since those commits are its lane's to settle, unless a child
+// would be re-homed onto it past a landed parent.
+type stackLandedPastError struct{ error }
 
 func stackTipOnlyHint(o stackRebaseOpts, name string, err error) error {
 	var diverged stackDivergedError
