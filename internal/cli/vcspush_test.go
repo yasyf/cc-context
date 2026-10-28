@@ -573,3 +573,28 @@ func TestVcsPushMovesTheTrackingRefOfATrunkOnlyClone(t *testing.T) {
 		})
 	}
 }
+
+// TestVcsPushRefusesAChildOffItsParentsPushedHead is the stacked push that left
+// eight pull requests waiting for a restack: the parent was rebased and pushed
+// from another lane, and the child went out on the parent's old head.
+func TestVcsPushRefusesAChildOffItsParentsPushedHead(t *testing.T) {
+	f := stackRebaseRepo(t, "base", "feature")
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("stack submit: %v", err)
+	}
+	if branch := gitAt(t, f.Env(), f.Dir, "rev-parse", "--abbrev-ref", "HEAD"); branch != "feature" {
+		t.Fatalf("checked out %s, want feature", branch)
+	}
+	stackForeignPush(t, f, "base", "rebased.txt", true)
+	moved := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
+	published := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature")
+	pushCommit(t, f, "local.txt", "local\n", "local")
+
+	_, err := runVcsPushCmd(f.Context(), t)
+	if err == nil || !strings.Contains(err.Error(), "feature lacks base's head "+shortOID(moved)) {
+		t.Fatalf("vcs push = %v, want feature refused off base's pushed head %s", err, shortOID(moved))
+	}
+	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature"); got != published {
+		t.Errorf("origin feature moved from %s to %s, want the refused push left out", published, got)
+	}
+}

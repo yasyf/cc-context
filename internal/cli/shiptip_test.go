@@ -561,7 +561,7 @@ func TestShipTipOnlyPublishesATipCutOnAnEmptyBase(t *testing.T) {
 	}
 }
 
-func TestShipTipOnlyMovesNoAncestorWhenItsParentsPublishedHeadMoves(t *testing.T) {
+func TestShipTipOnlyMovesNoAncestorAndRefusesATipOffItsParentsAdvancedHead(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		file    string
@@ -592,7 +592,16 @@ func TestShipTipOnlyMovesNoAncestorWhenItsParentsPublishedHeadMoves(t *testing.T
 			if tc.restack {
 				args = append(args, "--restack")
 			}
-			out, errStr, err := runShipCmdFull(f.Context(), t, args...)
+			_, errStr, err := runShipCmdFull(f.Context(), t, args...)
+			if !tc.rewrite && !tc.restack {
+				if err == nil || !strings.Contains(err.Error(), "feature lacks base's head "+shortOID(base)+", the one its pull request #100 carries") {
+					t.Fatalf("ship %v = %v, want the tip refused off base's advanced head", args, err)
+				}
+				if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature"); got != published {
+					t.Errorf("origin feature moved from %s to %s, want the refused tip left unpushed", published, got)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("ship %v = %v (stderr=%q)", args, err, errStr)
 			}
@@ -618,17 +627,8 @@ func TestShipTipOnlyMovesNoAncestorWhenItsParentsPublishedHeadMoves(t *testing.T
 				}
 				return
 			}
-			if tc.restack {
-				if !stackOnto(t, f, base, feature) {
-					t.Errorf("origin feature %s, want it replayed onto base's advanced head %.12s", feature, base)
-				}
-				return
-			}
-			if !stackOnto(t, f, cut, feature) || stackOnto(t, f, base, feature) {
-				t.Errorf("origin feature %s, want the new commit pushed on %.12s without a replay onto base's moved head %.12s", feature, cut, base)
-			}
-			if !strings.Contains(out, "kept feature on") || !strings.Contains(out, "--tip-only --restack replays it") {
-				t.Errorf("summary = %q, want it to name the kept base and the --tip-only --restack that replays it", out)
+			if !stackOnto(t, f, base, feature) {
+				t.Errorf("origin feature %s, want it replayed onto base's advanced head %.12s", feature, base)
 			}
 		})
 	}
