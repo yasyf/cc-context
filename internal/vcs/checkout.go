@@ -397,15 +397,26 @@ func Holdings(ctx context.Context, c Checkout) ([]Holding, error) {
 		}
 		holdings = append(holdings, Holding{Path: cmp.Or(mainRootOf(c.CommonDir), c.CommonDir), Branch: branch})
 	}
-	admins, err := os.ReadDir(filepath.Join(c.CommonDir, "worktrees"))
+	linked, err := linkedHoldings(c.CommonDir)
+	if err != nil {
+		return nil, err
+	}
+	return append(holdings, linked...), nil
+}
+
+// linkedHoldings reads the linked working copies registered under common, each
+// from its own admin dir.
+func linkedHoldings(common string) ([]Holding, error) {
+	admins, err := os.ReadDir(filepath.Join(common, "worktrees"))
 	if errors.Is(err, fs.ErrNotExist) {
-		return holdings, nil
+		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("list the worktrees of %q: %w", c.CommonDir, err)
+		return nil, fmt.Errorf("list the worktrees of %q: %w", common, err)
 	}
+	var holdings []Holding
 	for _, admin := range admins {
-		dir := filepath.Join(c.CommonDir, "worktrees", admin.Name())
+		dir := filepath.Join(common, "worktrees", admin.Name())
 		pointer, err := os.ReadFile(filepath.Join(dir, "gitdir")) //nolint:gosec // git's own admin file under the repository's common dir
 		if errors.Is(err, fs.ErrNotExist) {
 			continue
@@ -427,6 +438,66 @@ func Holdings(ctx context.Context, c Checkout) ([]Holding, error) {
 		holdings = append(holdings, Holding{Path: path, Branch: branch})
 	}
 	return holdings, nil
+}
+
+// CoHolders names the branch c has checked out and every working copy holding
+// it, c first. It reads admin files alone, spawning git only for a reftable
+// repository or when c is linked and the main checkout's HEAD names the same
+// branch, where core.bare decides whether that main checkout holds it. A
+// detached c holds no branch and names no holder.
+func CoHolders(ctx context.Context, c Checkout) (string, []string, error) {
+	if _, err := os.Stat(filepath.Join(c.CommonDir, "reftable")); err == nil {
+		list, err := Holdings(ctx, c)
+		if err != nil {
+			return "", nil, err
+		}
+		return coHolders(c, list)
+	}
+	branch, err := headBranch(c.GitDir)
+	if err != nil || branch == "" {
+		return "", nil, err
+	}
+	list, err := linkedHoldings(c.CommonDir)
+	if err != nil {
+		return "", nil, err
+	}
+	main, err := headBranch(c.CommonDir)
+	if err != nil {
+		return "", nil, err
+	}
+	if main == branch {
+		holds := c.GitDir == c.CommonDir
+		if !holds {
+			bare, err := bareRepository(ctx, c.CommonDir)
+			if err != nil {
+				return "", nil, err
+			}
+			holds = !bare
+		}
+		if holds {
+			list = append(list, Holding{Path: cmp.Or(mainRootOf(c.CommonDir), c.CommonDir), Branch: main})
+		}
+	}
+	return coHolders(c, list)
+}
+
+func coHolders(c Checkout, list []Holding) (string, []string, error) {
+	var branch string
+	var others []string
+	for _, h := range list {
+		if canonical(h.Path) == c.Root {
+			branch = h.Branch
+		}
+	}
+	if branch == "" {
+		return "", nil, nil
+	}
+	for _, h := range list {
+		if h.Branch == branch && canonical(h.Path) != c.Root {
+			others = append(others, h.Path)
+		}
+	}
+	return branch, append([]string{c.Root}, others...), nil
 }
 
 // headBranch reads the branch an admin dir's HEAD names symbolically, the empty

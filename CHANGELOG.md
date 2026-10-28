@@ -41,6 +41,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs ship`, `push`, `restack`, and the stack write verbs refuse a
+  branch a second working copy also holds**, naming every holder. A branch
+  checked out twice past `git worktree add --force` let a write from one copy
+  publish the head the other had moved it to.
 - **`ccx vcs ship` and the stack verbs no longer stall on a repository with
   thousands of worktrees.** Finding which working copy holds a
   branch ran `git worktree list`, which resolves every checkout's HEAD and took

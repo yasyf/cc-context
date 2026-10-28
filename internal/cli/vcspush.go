@@ -93,6 +93,9 @@ func runVcsPush(cmd *cobra.Command, o vcsPushOpts) error {
 	case vcs.JJ:
 		return errors.New("push: jj git push already moves a rewritten bookmark under a lease of its own — run ccx vcs ship")
 	}
+	if err := refuseSharedBranch(ctx, "push", ck); err != nil {
+		return err
+	}
 	dir := render.Dir(ck.Root)
 	branch, detached, err := vcsPushBranch(ctx, dir, o.branch)
 	if err != nil {

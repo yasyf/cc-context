@@ -293,7 +293,7 @@ func runShip(cmd *cobra.Command, o shipOpts) (err error) {
 	if err := resolveBranchFlags(cmd, &o); err != nil {
 		return err
 	}
-	l, err := resolveLane(ctx, "ship", workingDir(ctx), o.noGT)
+	l, err := resolveWriteLane(ctx, "ship", workingDir(ctx), o.noGT)
 	if err != nil {
 		return err
 	}

@@ -72,7 +72,7 @@ head the push observed, and the pull request is retargeted onto <branch>.`,
 
 func runRestack(cmd *cobra.Command, o restackOpts) error {
 	ctx := cmd.Context()
-	l, err := resolveLane(ctx, "restack", workingDir(ctx), o.noGT)
+	l, err := resolveWriteLane(ctx, "restack", workingDir(ctx), o.noGT)
 	if err != nil {
 		return err
 	}

@@ -145,6 +145,38 @@ func resolveLane(ctx context.Context, name, dir string, noGT bool) (lane, error)
 	return resolveLaneRefresh(ctx, name, dir, noGT, false)
 }
 
+// resolveWriteLane is resolveLane for a command that moves or publishes the
+// branch it runs on.
+func resolveWriteLane(ctx context.Context, name, dir string, noGT bool) (lane, error) {
+	l, err := resolveLane(ctx, name, dir, noGT)
+	if err != nil {
+		return lane{}, err
+	}
+	if err := refuseSharedBranch(ctx, name, l.checkout); err != nil {
+		return lane{}, err
+	}
+	return l, nil
+}
+
+// refuseSharedBranch refuses a write from a branch a second working copy also
+// holds, which git allows past worktree add --force or switch
+// --ignore-other-worktrees: either copy can move the ref under the other, so a
+// write from one publishes whatever head the other last left it at.
+func refuseSharedBranch(ctx context.Context, name string, ck vcs.Checkout) error {
+	if ck.Kind != vcs.Git {
+		return nil
+	}
+	branch, holders, err := vcs.CoHolders(ctx, ck)
+	if err != nil {
+		return fmt.Errorf("%s: %w", name, err)
+	}
+	if len(holders) < 2 {
+		return nil
+	}
+	return fmt.Errorf("%s: %d working copies hold %s (%s) — a write from one publishes whatever head the others last moved it to; detach all but one first (git switch --detach)",
+		name, len(holders), branch, strings.Join(holders, ", "))
+}
+
 // resolveLaneRefresh is resolveLane with refresh refetching the inputs the gates
 // weigh — the repository's GitHub metadata and gt's reachability verdict — so a
 // caller that reports the lane can re-probe the verdict it turns on rather than

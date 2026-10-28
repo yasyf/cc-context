@@ -484,7 +484,7 @@ func stackListLine(branch, holder, root string, state gtBranchState, unrecorded 
 func runStackSubmit(cmd *cobra.Command, o shipOpts, include []string, to string) (err error) {
 	since := time.Now()
 	ctx := cmd.Context()
-	l, err := resolveLane(ctx, "stack submit", workingDir(ctx), false)
+	l, err := resolveWriteLane(ctx, "stack submit", workingDir(ctx), false)
 	if err != nil {
 		return err
 	}
