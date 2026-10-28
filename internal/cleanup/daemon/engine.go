@@ -69,8 +69,8 @@ type Tuning struct {
 	Recheck time.Duration
 	// RetryAfter is the first retry of a job blocked on a transient
 	// inspection; each consecutive transient block doubles it up to
-	// RetryCeiling. After RetryLimit consecutive transient blocks the job waits
-	// for Retry.
+	// RetryCeiling. After RetryLimit consecutive transient blocks since the
+	// daemon loaded its journal the job waits for Retry.
 	RetryAfter   time.Duration
 	RetryCeiling time.Duration
 	RetryLimit   int
@@ -196,6 +196,7 @@ type Engine struct {
 	damaged  []cleanup.Damaged
 	paused   bool
 	hold     *cleanup.Hold
+	booted   time.Time
 	governed cleanup.Governor
 	changed  chan struct{}
 
@@ -601,7 +602,7 @@ func (e *Engine) load() error {
 		e.seq = max(e.seq, job.Seq)
 	}
 	slices.SortFunc(e.order, func(a, b seqKey) int { return cmp.Compare(a.seq, b.seq) })
-	e.damaged, e.paused, e.hold = damaged, sw.Paused, sw.Hold
+	e.damaged, e.paused, e.hold, e.booted = damaged, sw.Paused, sw.Hold, e.clock.Now()
 	close(e.loaded)
 	return nil
 }
@@ -772,7 +773,9 @@ func (e *Engine) logicalDue(now time.Time) (cleanup.Job, bool) {
 // or watcher read that failed, a git read that timed out, or a holder that may
 // leave — retries on its own: RetryAfter past the first block, doubling per
 // consecutive transient block up to RetryCeiling, for RetryLimit blocks in a
-// row. Any other blockage, and the one after the limit, waits for Retry.
+// row since the daemon loaded its journal, so a restarted or upgraded daemon
+// inspects again a job an earlier one gave up on. Any other blockage, and the
+// one after the limit, waits for Retry.
 func (e *Engine) retryAt(job cleanup.Job) (time.Time, bool) {
 	if job.Blocked == nil || !transient(job.Blocked.Reason) {
 		return time.Time{}, false
@@ -780,7 +783,7 @@ func (e *Engine) retryAt(job cleanup.Job) (time.Time, bool) {
 	streak := 0
 	for i := len(job.Errors) - 1; i >= 0; i-- {
 		reason, _, _ := strings.Cut(job.Errors[i].Message, ": ")
-		if !transient(reason) {
+		if !transient(reason) || job.Errors[i].At.Before(e.booted) {
 			break
 		}
 		streak++
