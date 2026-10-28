@@ -16,23 +16,26 @@ func TestShipExpectedRemoteValidation(t *testing.T) {
 		opts     shipOpts
 		kind     vcs.Kind
 		graphite bool
-		valid    bool
+		refusal  string
 	}{
-		{name: "sha1", opts: shipOpts{noCommit: true, expectRemote: strings.Repeat("a", 40)}, kind: vcs.Git, valid: true},
-		{name: "sha256", opts: shipOpts{noCommit: true, expectRemote: strings.Repeat("b", 64)}, kind: vcs.Git, valid: true},
-		{name: "abbreviated", opts: shipOpts{noCommit: true, expectRemote: "abcdef0"}, kind: vcs.Git},
-		{name: "symbolic", opts: shipOpts{noCommit: true, expectRemote: "origin/feature"}, kind: vcs.Git},
-		{name: "nonhex", opts: shipOpts{noCommit: true, expectRemote: strings.Repeat("z", 40)}, kind: vcs.Git},
-		{name: "empty", opts: shipOpts{noCommit: true}, kind: vcs.Git},
-		{name: "commit", opts: shipOpts{expectRemote: strings.Repeat("a", 40)}, kind: vcs.Git},
-		{name: "no push", opts: shipOpts{noCommit: true, noPush: true, expectRemote: strings.Repeat("a", 40)}, kind: vcs.Git},
-		{name: "jj", opts: shipOpts{noCommit: true, expectRemote: strings.Repeat("a", 40)}, kind: vcs.JJ},
-		{name: "graphite", opts: shipOpts{noCommit: true, expectRemote: strings.Repeat("a", 40)}, kind: vcs.Git, graphite: true},
+		{name: "sha1", opts: shipOpts{noCommit: true, expectRemote: strings.Repeat("a", 40)}, kind: vcs.Git},
+		{name: "sha256", opts: shipOpts{noCommit: true, expectRemote: strings.Repeat("b", 64)}, kind: vcs.Git},
+		{name: "abbreviated", opts: shipOpts{noCommit: true, expectRemote: "abcdef0"}, kind: vcs.Git, refusal: "full 40- or 64-character"},
+		{name: "symbolic", opts: shipOpts{noCommit: true, expectRemote: "origin/feature"}, kind: vcs.Git, refusal: "full 40- or 64-character"},
+		{name: "nonhex", opts: shipOpts{noCommit: true, expectRemote: strings.Repeat("z", 40)}, kind: vcs.Git, refusal: "hexadecimal"},
+		{name: "empty", opts: shipOpts{noCommit: true}, kind: vcs.Git, refusal: "full 40- or 64-character"},
+		{name: "commit", opts: shipOpts{expectRemote: strings.Repeat("a", 40)}, kind: vcs.Git, refusal: "pass --no-commit"},
+		{name: "no push", opts: shipOpts{noCommit: true, noPush: true, expectRemote: strings.Repeat("a", 40)}, kind: vcs.Git, refusal: "--no-push skips the push"},
+		{name: "jj", opts: shipOpts{noCommit: true, expectRemote: strings.Repeat("a", 40)}, kind: vcs.JJ, refusal: "this is a jj checkout"},
+		{name: "graphite", opts: shipOpts{noCommit: true, expectRemote: strings.Repeat("a", 40)}, kind: vcs.Git, graphite: true, refusal: "on the graphite lane — pass --no-gt"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			err := validateShipExpectedRemote(test.opts, test.kind, test.graphite)
-			if (err == nil) != test.valid {
-				t.Fatalf("validation error = %v, valid = %v", err, test.valid)
+			if test.refusal == "" && err != nil {
+				t.Fatalf("validation error = %v, want none", err)
+			}
+			if test.refusal != "" && (err == nil || !strings.Contains(err.Error(), test.refusal)) {
+				t.Fatalf("validation error = %v, want one naming %q", err, test.refusal)
 			}
 		})
 	}
@@ -164,7 +167,7 @@ func TestShipExpectedRemoteRefusesBeforeCommit(t *testing.T) {
 	f := shipRepo(t, vcstest.Remote(), vcstest.Dirty())
 	before := shipHead(t, f)
 	_, err := runShipCmd(f.Context(), t, "--expect-remote", before, "-m", "must not commit")
-	if err == nil || !strings.Contains(err.Error(), "requires --no-commit") {
+	if err == nil || !strings.Contains(err.Error(), "pass --no-commit") {
 		t.Fatalf("expected mode refusal, got %v", err)
 	}
 	assertNoShipMutation(t, vcstest.Invocations(t, f.ArgvLog))

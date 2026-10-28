@@ -41,6 +41,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs ship --branch` adopts a head origin moved to that the branch
+  already holds.** After a raw force-push by URL left `refs/remotes` behind,
+  ship refused with "origin's <branch> is at X, not the Y this repository last
+  saw". When the local branch holds origin's head, ship now takes that head as
+  the lease and prints what it adopted. A head with commits the branch lacks is
+  still refused.
+- **`ccx vcs ship --expect-remote` names the condition it is missing.** One
+  message covered a missing `--no-commit`, `--no-push`, a jj checkout, and the
+  graphite lane, so a `--no-commit` run on the graphite lane read as if
+  `--no-commit` were absent. Each case now has its own message; the graphite
+  one says to pass `--no-gt`.
 - **`ccx vcs stack submit` adopts an equivalent restack that lands mid-push
   instead of force-pushing over it.** When Graphite restacked a branch onto the
   same base between the plan and the push, the stale-lease retry pushed the
