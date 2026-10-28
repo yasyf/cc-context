@@ -623,9 +623,10 @@ type gtSubmit struct {
 }
 
 type shipTarget struct {
-	branch string
-	head   string
-	remote string
+	branch  string
+	head    string
+	remote  string
+	adopted string
 }
 
 func shipReadTarget(ctx context.Context, dir render.Dir, branch string) (shipTarget, error) {
@@ -649,14 +650,33 @@ func shipReadTarget(ctx context.Context, dir render.Dir, branch string) (shipTar
 	return t, nil
 }
 
-func (t shipTarget) moved(head, remote string) error {
-	switch {
-	case head != t.head:
+func (t *shipTarget) held(head string) error {
+	if head != t.head {
 		return refuse("ship: %s moved from %.12s to %.12s while ship read it — ship again once the working copy holding it is done with it", t.branch, t.head, head)
-	case remote != t.remote:
-		return refuse("ship: origin's %s is at %.12s, not the %.12s this repository last saw — fetch it and fold in what it added, then ship again", t.branch, cmp.Or(remote, "nothing"), cmp.Or(t.remote, "nothing"))
 	}
 	return nil
+}
+
+// settle checks the target against origin's live head. A head origin moved
+// to that the local branch already holds, as a raw force-push of this branch
+// leaves it before any fetch, becomes the lease in place of the one this
+// repository last saw; a head carrying commits the branch lacks is refused.
+func (t *shipTarget) settle(ctx context.Context, dir render.Dir, head, remote string) error {
+	if err := t.held(head); err != nil || remote == t.remote {
+		return err
+	}
+	if remote != "" {
+		holds, err := gitIsAncestor(ctx, dir, "ship", remote, head)
+		if err != nil {
+			return err
+		}
+		if holds {
+			t.adopted = fmt.Sprintf("ship: adopted origin's %s at %.12s as the lease in place of the %.12s this repository last saw; %s already holds it", t.branch, remote, cmp.Or(t.remote, "nothing"), t.branch)
+			t.remote = remote
+			return nil
+		}
+	}
+	return refuse("ship: origin's %s is at %.12s, not the %.12s this repository last saw, and holds commits %s lacks — fetch it and fold in what it added, then ship again", t.branch, cmp.Or(remote, "nothing"), cmp.Or(t.remote, "nothing"), t.branch)
 }
 
 func gtPinTarget(s gtSubmit, plan []gtSubmitBranch) error {
@@ -665,7 +685,7 @@ func gtPinTarget(s gtSubmit, plan []gtSubmitBranch) error {
 		case b.name != s.target.branch:
 			return refuse("%s: --branch %s pushes only %s, and this submit would push %s too — ship it from a working copy holding it", s.prefix, s.target.branch, s.target.branch, b.name)
 		case s.publication == nil:
-			if err := s.target.moved(b.head, s.target.remote); err != nil {
+			if err := s.target.held(b.head); err != nil {
 				return err
 			}
 		}
@@ -2200,6 +2220,20 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 	}
 	if err := gtParkedBases(ctx, l.dir(), plan, known, s.trunkHead); err != nil {
 		return nil, nil, err
+	}
+	if s.target.branch != "" && s.publication == nil {
+		live, err := stackRemoteHeads(ctx, l.dir(), s.prefix, "origin", []string{s.target.branch}, s.trunkHead)
+		if err != nil {
+			return nil, nil, err
+		}
+		if err := s.target.settle(ctx, l.dir(), s.target.head, live[s.target.branch]); err != nil {
+			return nil, nil, err
+		}
+		if s.target.adopted != "" {
+			if _, err := fmt.Fprintln(errW, s.target.adopted); err != nil {
+				return nil, nil, err
+			}
+		}
 	}
 	if s.target.branch != "" {
 		if err := gtPinTarget(s, plan); err != nil {

@@ -331,6 +331,49 @@ func TestShipBranchTipOnlyShipsABranchAnotherWorktreeHolds(t *testing.T) {
 	}
 }
 
+// TestShipBranchTipOnlyAdoptsARawForcePushItAlreadyHolds covers a raw
+// force-push that left refs/remotes behind origin: the head
+// origin moved to is one feature already holds, so ship takes it as the lease
+// and says so, while a head carrying a commit feature lacks is still refused.
+func TestShipBranchTipOnlyAdoptsARawForcePushItAlreadyHolds(t *testing.T) {
+	for _, foreign := range []bool{false, true} {
+		t.Run(map[bool]string{false: "held", true: "foreign"}[foreign], func(t *testing.T) {
+			f, _, _ := stackMergeableBase(t, "MERGEABLE")
+			stackCommit(t, f, "tip.txt")
+			head := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")
+			last := gitAt(t, f.Env(), f.Dir, "rev-parse", "refs/remotes/origin/feature")
+			pushed := head
+			if foreign {
+				pushed = gitAt(t, f.Env(), f.Dir, "commit-tree", head+"^{tree}", "-p", head, "-m", "theirs")
+			}
+			mustRun(t, f.Env(), f.Dir, "git", "push", "-qf", "origin", pushed+":refs/heads/feature")
+			mustRun(t, f.Env(), f.Dir, "git", "update-ref", "refs/remotes/origin/feature", last)
+			mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
+			shipResetLog(t, f)
+
+			_, errStr, err := runShipCmdFull(f.Context(), t, "--branch", "feature", "--tip-only", "--no-commit", "--no-watch")
+			if foreign {
+				if err == nil || !strings.Contains(err.Error(), "holds commits feature lacks") {
+					t.Fatalf("ship over a foreign head = %v, want the refusal", err)
+				}
+				if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature"); got != pushed {
+					t.Errorf("origin feature = %s, want the foreign %s kept", got, pushed)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ship --branch feature = %v (stderr=%q)", err, errStr)
+			}
+			if want := "adopted origin's feature at " + head[:12]; !strings.Contains(errStr, want) {
+				t.Errorf("stderr = %q, want %q", errStr, want)
+			}
+			if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature"); got != head {
+				t.Errorf("origin feature = %s, want %s", got, head)
+			}
+		})
+	}
+}
+
 func TestShipBranchTipOnlyMovesNoOtherWorktreesCheckout(t *testing.T) {
 	f := shipGTRepo(t)
 	shipGTStack(t, f, "base", "feature")
