@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`ccx vcs stack repair-published-child --parent <trunk>`** records trunk
+  as the checked-out branch's gt parent when its recorded parent is gone and
+  its open pull request is already based on trunk. It needs no publication
+  receipt, refuses a pull request based elsewhere or a local head that is not
+  the published one, and pushes nothing.
 - **`ccx vcs stack rebase --above <branch>`** replays only the branches
   stacked above `<branch>` onto its head. `<branch>` and every branch below it
   stay at their published heads, so a stack whose bottom Graphite moved after
