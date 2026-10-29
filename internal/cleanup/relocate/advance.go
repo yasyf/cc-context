@@ -256,6 +256,9 @@ func (r *Relocator) release(ctx context.Context, job *cleanup.Job, vetted *bool)
 	if !seen.original.exists {
 		return r.vanished(ctx, job)
 	}
+	if proceed, err := r.devices(ctx, job, seen); err != nil || !proceed {
+		return proceed, err
+	}
 	if !seen.original.is(job.Tree) || !seen.admin.is(job.Admin) {
 		return r.block(ctx, job, "identity", seen.describe(job))
 	}
@@ -286,6 +289,15 @@ func (r *Relocator) promote(ctx context.Context, job *cleanup.Job, _ *bool) (boo
 		return r.block(ctx, job, refused.Reason, refused.Detail)
 	case err != nil:
 		return r.block(ctx, job, gitReason(err), err.Error())
+	}
+	seen := observation{
+		original: sighting{id: current.Tree, dir: true, exists: true},
+		admin:    sighting{id: current.Admin, dir: true, exists: true},
+	}
+	if proceed, err := r.devices(ctx, job, seen); err != nil || !proceed {
+		return proceed, err
+	}
+	switch {
 	case registrationOf(current) != registrationOf(*job):
 		return r.block(ctx, job, "identity", replaced(job.Original, registrationOf(current), registrationOf(*job)))
 	case current.Links != job.Links:
@@ -332,6 +344,9 @@ func (r *Relocator) relocate(ctx context.Context, job *cleanup.Job, vetted *bool
 	seen, err := observe(job, false)
 	if err != nil {
 		return r.block(ctx, job, "reconcile", err.Error())
+	}
+	if proceed, err := r.devices(ctx, job, seen); err != nil || !proceed {
+		return proceed, err
 	}
 	if seen.untouched(job) {
 		if drift := linkDrift(job.Original, job.AdminDir, job.Links); drift != "" {
@@ -479,6 +494,9 @@ func (r *Relocator) detach(ctx context.Context, job *cleanup.Job, vetted *bool) 
 	if err != nil {
 		return r.block(ctx, job, "reconcile", err.Error())
 	}
+	if proceed, err := r.devices(ctx, job, seen); err != nil || !proceed {
+		return proceed, err
+	}
 	if !seen.registered.exists && seen.payload.is(job.Tree) {
 		return r.enter(job, cleanup.PhaseDetached)
 	}
@@ -536,6 +554,9 @@ func (r *Relocator) unregister(ctx context.Context, job *cleanup.Job, _ *bool) (
 	seen, err := observe(job, true)
 	if err != nil {
 		return r.block(ctx, job, "reconcile", err.Error())
+	}
+	if proceed, err := r.devices(ctx, job, seen); err != nil || !proceed {
+		return proceed, err
 	}
 	if seen.registered.exists || !seen.payload.is(job.Tree) {
 		return r.block(ctx, job, "reconcile", seen.describe(job))

@@ -139,9 +139,9 @@ type JobError struct {
 	Message string    `json:"message"`
 }
 
-// Job is the durable record of one removal. Every field that identifies what
-// the removal may touch is captured before the first mutation and never
-// rewritten, so a restart acts only on the tree the record names.
+// Job is the durable record of one removal. Its authorizing evidence is
+// captured before the first mutation. Device numbers may be refreshed only
+// after the captured inodes, committed HEAD, and Git links are revalidated.
 type Job struct {
 	Schema int    `json:"schema"`
 	ID     string `json:"id"`
