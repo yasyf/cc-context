@@ -617,12 +617,11 @@ func gtRestackSegment(r gtRestackResult) string {
 	return segment
 }
 
-// gtUpstack lists the branches above branch, breadth-first, so a parent always
-// precedes its children — the order gtRestackChain has to be driven in. branch
-// itself is not in it. It is gt state's parent map read backwards, which is the
-// only way to reach the branches above this one when each sits in a working copy
-// of its own.
 func gtUpstack(prefix string, state gtState, branch string) ([]string, error) {
+	return gtUpstackFromChildren(prefix, gtChildren(state), branch)
+}
+
+func gtChildren(state gtState) map[string][]string {
 	children := make(map[string][]string, len(state))
 	for name, s := range state {
 		if len(s.Parents) > 0 {
@@ -632,6 +631,10 @@ func gtUpstack(prefix string, state gtState, branch string) ([]string, error) {
 	for _, kids := range children {
 		slices.Sort(kids)
 	}
+	return children
+}
+
+func gtUpstackFromChildren(prefix string, children map[string][]string, branch string) ([]string, error) {
 	var up []string
 	seen := map[string]bool{branch: true}
 	for queue := []string{branch}; len(queue) > 0; {

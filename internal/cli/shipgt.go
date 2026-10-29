@@ -137,6 +137,10 @@ func gtStateAtFocused(ctx context.Context, commonDir, prefix, branch, parent str
 			return nil, fmt.Errorf("%s: %w", prefix, err)
 		}
 	}
+	return gtBranchStates(tracked), nil
+}
+
+func gtBranchStates(tracked gtmeta.State) gtState {
 	state := make(gtState, len(tracked))
 	for branch, s := range tracked {
 		entry := gtBranchState{Trunk: s.Trunk, NeedsRestack: s.NeedsRestack, Head: s.Head, State: s.State}
@@ -145,7 +149,7 @@ func gtStateAtFocused(ctx context.Context, commonDir, prefix, branch, parent str
 		}
 		state[branch] = entry
 	}
-	return state, nil
+	return state
 }
 
 func gtRelatedOrphans(ctx context.Context, commonDir, prefix string, tracked gtmeta.State, orphans []gtmeta.Orphan, branch, parent string) ([]gtmeta.Orphan, error) {
