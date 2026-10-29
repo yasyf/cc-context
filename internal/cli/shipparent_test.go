@@ -512,3 +512,44 @@ func TestShipGTTipOnlyRefusesToRehomeOntoAReusedLandedAncestor(t *testing.T) {
 		t.Fatalf("ship = %v, want the refusal to re-home c onto base's later commits", err)
 	}
 }
+
+// TestShipGTTipOnlyReparentsAMidStackBranchOntoTrunkWithItsOwnCommitsAlone is
+// port-serve-s6's #44730: --parent main --tip-only --restack on a branch above
+// two published parents with open pull requests replayed every commit above
+// trunk as the branch's own, so its pull request carried both parents' work,
+// and left the lane's working copy on the old tree.
+func TestShipGTTipOnlyReparentsAMidStackBranchOntoTrunkWithItsOwnCommitsAlone(t *testing.T) {
+	f := shipGTRepo(t)
+	shipGTStack(t, f, "a", "b", "c")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "a", "b", "c")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
+	lane := f.WorktreePath("lane")
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", lane, "c")
+	stubStackPRs(t, f, map[string]*stackPR{
+		"a": {Number: 5, Title: "a", State: "OPEN", Base: "main"},
+		"b": {Number: 6, Title: "b", State: "OPEN", Base: "a"},
+		"c": {Number: 7, Title: "c", State: "OPEN", Base: "b"},
+	})
+	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	shipResetLog(t, f)
+
+	got, errStr, err := runShipCmdFull(f.ContextIn(lane), t, "--no-commit", "--no-watch", "--parent", "main", "--tip-only", "--restack")
+	if err != nil {
+		t.Fatalf("ship = %v (stderr=%q), want c moved onto main", err, errStr)
+	}
+	if want := "reparented c from b onto main (replayed its 1 own commit(s))"; !strings.Contains(got, want) {
+		t.Errorf("summary = %q, want it to carry %q", got, want)
+	}
+	if parent := shipParentOf(t, f, "c"); parent != "main" {
+		t.Errorf("c's parent = %s, want main", parent)
+	}
+	if subjects := gitAt(t, f.Env(), f.Dir, "log", "--format=%s", "origin/main..c"); subjects != "c" {
+		t.Errorf("c carries %q above trunk, want its own commit alone", subjects)
+	}
+	if subjects := gitAt(t, f.Env(), f.RemoteDir, "log", "--format=%s", "main..c"); subjects != "c" {
+		t.Errorf("origin c carries %q above trunk, want its own commit alone", subjects)
+	}
+	if status := gitAt(t, f.Env(), lane, "status", "--porcelain"); status != "" {
+		t.Errorf("lane = %q, want it clean at c's new head", status)
+	}
+}
