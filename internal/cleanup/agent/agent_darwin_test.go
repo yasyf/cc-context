@@ -21,7 +21,7 @@ func TestSpec(t *testing.T) {
 		LogPath:       root + "/daemon.log",
 		Env:           map[string]string{"PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"},
 		RestartPolicy: launchd.RestartOnFailure,
-		ProcessType:   launchd.ProcessTypeStandard,
+		ProcessType:   launchd.ProcessTypeBackground,
 	}
 
 	got := Spec(cleanup.Layout{Root: root})
@@ -36,7 +36,7 @@ func TestSpec(t *testing.T) {
 		"<string>" + root + "/bin/ccx</string>",
 		"<key>RunAtLoad</key>",
 		"<key>SuccessfulExit</key>",
-		"<string>Standard</string>",
+		"<string>Background</string>",
 	} {
 		if !bytes.Contains(plist, []byte(fragment)) {
 			t.Errorf("plist lacks %q:\n%s", fragment, plist)

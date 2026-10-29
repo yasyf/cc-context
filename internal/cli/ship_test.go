@@ -1807,6 +1807,7 @@ func TestShipGitRebase(t *testing.T) {
 				[]string{"git", "config", "--get", "branch.main.remote"},
 				[]string{"git", "ls-remote", "origin", "refs/heads/main"},
 				gitForEachRefStdinArgv,
+				[]string{"git", "rev-parse", "--path-format=absolute", "--git-path", "objects"},
 				shipFetchArgv("origin", "main"),
 				[]string{"git", "merge-base", "--is-ancestor", remoteRef, "HEAD"},
 				rewriteProbe("main"),
@@ -1828,6 +1829,7 @@ func TestShipGitRebase(t *testing.T) {
 				[]string{"git", "config", "--get", "branch.main.remote"},
 				[]string{"git", "ls-remote", "origin", "refs/heads/main"},
 				gitForEachRefStdinArgv,
+				[]string{"git", "rev-parse", "--path-format=absolute", "--git-path", "objects"},
 				shipFetchArgv("origin", "main"),
 				[]string{"git", "merge-base", "--is-ancestor", remoteRef, "HEAD"},
 				rewriteProbe("main"),
@@ -2044,6 +2046,7 @@ func TestShipGitPushRetry(t *testing.T) {
 	rebasingAttempt := [][]string{
 		{"git", "ls-remote", "origin", "refs/heads/main"},
 		gitForEachRefStdinArgv,
+		{"git", "rev-parse", "--path-format=absolute", "--git-path", "objects"},
 		shipFetchArgv("origin", "main"),
 		{"git", "merge-base", "--is-ancestor", remoteRef, "HEAD"},
 		rewriteProbe("main"),
@@ -2091,6 +2094,7 @@ func TestShipGitPushRetry(t *testing.T) {
 			want: slices.Concat(plan, attempt, [][]string{
 				{"git", "ls-remote", "origin", "refs/heads/main"},
 				gitForEachRefStdinArgv,
+				{"git", "rev-parse", "--path-format=absolute", "--git-path", "objects"},
 				shipFetchArgv("origin", "main"),
 				{"git", "merge-base", "--is-ancestor", remoteRef, "HEAD"},
 				rewriteProbe("main"),
@@ -7070,7 +7074,7 @@ func TestGTTrackLeavesTheParentToGTWithoutARemoteTrunk(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := newGTCache(lane{root: checkout.Root, checkout: checkout}, "ship")
+	c := newGTCache(render.Dir(checkout.Root), "ship", checkout)
 	var errW bytes.Buffer
 	_, seg, err := gtTrack(t.Context(), &errW, lane{}, shipOpts{}, "feature", c)
 	if err != nil {

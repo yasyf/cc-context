@@ -1931,3 +1931,39 @@ func TestParentCommand(t *testing.T) {
 		t.Errorf("ParentCommand(self) = %d, %q, %v; want pid %d and its arguments", parent, command, err, os.Getppid())
 	}
 }
+
+func TestLowPriority(t *testing.T) {
+	const env = "CCX_NATIVE_HELPER_LOW_PRIORITY"
+	if os.Getenv(env) != "" {
+		if err := LowPriority(); err != nil {
+			t.Fatalf("LowPriority: %v", err)
+		}
+		var states []string
+		for _, step := range []func() error{Band{}.Background, Band{}.Foreground, Band{}.Background} {
+			if err := step(); err != nil {
+				t.Fatalf("switch band: %v", err)
+			}
+			states = append(states, scheduling(t))
+		}
+		fmt.Printf("%s%s\n", helperPrefix, strings.Join(states, " | "))
+		return
+	}
+	before := scheduling(t)
+	want := "background=1 disk=3 nice=19 | background=0 disk=0 nice=19 | background=1 disk=3 nice=19"
+	if got := runHelper(t, "TestLowPriority", env+"=1"); got != want {
+		t.Errorf("LowPriority across band switches = %s, want %s", got, want)
+	}
+	if after := scheduling(t); after != before {
+		t.Errorf("the test process changed: %s, was %s", after, before)
+	}
+}
+
+func TestSetPriorityError(t *testing.T) {
+	before := scheduling(t)
+	if err := setPriority(-1, 19); !errors.Is(err, unix.EINVAL) {
+		t.Errorf("setPriority invalid class = %v, want EINVAL", err)
+	}
+	if after := scheduling(t); after != before {
+		t.Errorf("the test process changed: %s, was %s", after, before)
+	}
+}

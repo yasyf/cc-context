@@ -372,7 +372,7 @@ func runShip(cmd *cobra.Command, o shipOpts) (err error) {
 		if err := stackRequireGit(ctx, dir, "ship"); err != nil {
 			return err
 		}
-		gtc = newGTCache(l, "ship")
+		gtc = newGTCache(dir, "ship", l.checkout)
 	}
 	if o.dryRun {
 		return runShipDryRun(ctx, cmd, l, o, gtc)

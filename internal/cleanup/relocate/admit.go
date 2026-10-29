@@ -10,8 +10,8 @@ import (
 // Admit proves afresh that job's payload may be deleted: it is the captured
 // tree, nothing sits at the registered path, no worktree registration names
 // the job folder or anything inside it, the job folder is unwatched, and no
-// live process holds the payload. A payload that is already gone admits
-// without further proof, since nothing is left to delete. A failed proof
+// live process holds the payload or its retired admin directory. Both targets
+// must be gone to admit without further proof. A failed proof
 // blocks the job; a cancelled ctx returns ctx's error, blocks nothing, and
 // admits nothing, even when every proof had already passed.
 func (r *Relocator) Admit(ctx context.Context, job *cleanup.Job) error {
@@ -31,10 +31,18 @@ func (r *Relocator) admission(ctx context.Context, job *cleanup.Job) (reason, de
 	if err != nil {
 		return "identity", err.Error()
 	}
-	if !payload.exists {
+	retired := cleanup.RetiredGitDirFor(job.Repo, job.ID)
+	admin, err := sight(retired)
+	if err != nil {
+		return "identity", err.Error()
+	}
+	if admin.exists && !admin.is(job.Admin) {
+		return "identity", fmt.Sprintf("retired admin %s is %s, the job captured admin %s", retired, admin, label(job.Admin))
+	}
+	if !payload.exists && !admin.exists {
 		return "", ""
 	}
-	if !payload.is(job.Tree) {
+	if payload.exists && !payload.is(job.Tree) {
 		return "identity", fmt.Sprintf("payload %s is %s, the job captured tree %s", job.Payload, payload, label(job.Tree))
 	}
 	squatter, err := sight(job.Registered)
@@ -54,8 +62,15 @@ func (r *Relocator) admission(ctx context.Context, job *cleanup.Job) (reason, de
 	if err := r.cfg.Watchers.CheckQuarantine(ctx, r.cfg.Journal.Layout().JobDir(job.ID)); err != nil {
 		return "quarantine", err.Error()
 	}
-	if holders := r.held(ctx, job, job.Payload); holders != "" {
-		return "activity", holders
+	for _, target := range []struct {
+		path   string
+		exists bool
+	}{{job.Payload, payload.exists}, {retired, admin.exists}} {
+		if target.exists {
+			if holders := r.held(ctx, job, target.path); holders != "" {
+				return "activity", holders
+			}
+		}
 	}
 	return "", ""
 }
