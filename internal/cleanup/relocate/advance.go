@@ -208,6 +208,10 @@ func (r *Relocator) Advance(ctx context.Context, job *cleanup.Job) error {
 			step = r.release
 		case cleanup.PhasePending:
 			step = r.promote
+		case cleanup.PhaseRetiring:
+			step = r.resume
+		case cleanup.PhaseRetired:
+			step = r.reclaim
 		case cleanup.PhasePrepared:
 			step = r.relocate
 			if job.Adopted {
