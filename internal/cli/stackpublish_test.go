@@ -563,17 +563,17 @@ func TestStackPublicationMovesAWorktreeGitDoesNotList(t *testing.T) {
 				t.Fatal(err)
 			}
 			retired := filepath.Join(common, "retired-worktrees", "wt")
-			if err := os.MkdirAll(filepath.Dir(retired), 0o755); err != nil {
+			if err := os.MkdirAll(filepath.Dir(retired), 0o750); err != nil {
 				t.Fatal(err)
 			}
 			if err := os.Rename(filepath.Join(common, "worktrees", "wt"), retired); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(filepath.Join(wt, ".git"), []byte("gitdir: "+retired+"\n"), 0o644); err != nil {
+			if err := os.WriteFile(filepath.Join(wt, ".git"), []byte("gitdir: "+retired+"\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			if dirty {
-				if err := os.WriteFile(filepath.Join(wt, "scratch.txt"), []byte("mine\n"), 0o644); err != nil {
+				if err := os.WriteFile(filepath.Join(wt, "scratch.txt"), []byte("mine\n"), 0o600); err != nil {
 					t.Fatal(err)
 				}
 			}
