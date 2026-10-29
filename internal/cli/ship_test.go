@@ -7071,7 +7071,11 @@ func TestGTTrackLeavesTheParentToGTWithoutARemoteTrunk(t *testing.T) {
 		`"feature":{"parents":[{"ref":"junk","sha":"beadfeed"}]}}`)
 	t.Setenv("GIT_NO_REMOTE_TRUNK", "1")
 
-	c := newGTCache(render.Dir(workingDir(t.Context())), "ship")
+	checkout, err := vcs.ResolveCheckout(workingDir(t.Context()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := newGTCache(lane{root: checkout.Root, checkout: checkout}, "ship")
 	var errW bytes.Buffer
 	_, seg, err := gtTrack(t.Context(), &errW, lane{}, shipOpts{}, "feature", c)
 	if err != nil {
