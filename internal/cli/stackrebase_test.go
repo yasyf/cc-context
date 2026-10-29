@@ -3371,7 +3371,9 @@ func stackContinueWhilePaused(t *testing.T, untracked bool) (*vcstest.Fixture, *
 	if states, _ := filepath.Glob(filepath.Join(f.Dir, ".git", stackRebaseStateDir, "*", stackRebaseState)); len(states) != 0 {
 		t.Errorf("continue left run state behind: %q", states)
 	}
-	sparseAssertWorkspace(t, f, ws, true)
+	if _, err := os.Stat(ws); err != nil {
+		t.Errorf("paused workspace must remain on disk: %v", err)
+	}
 	if removals := stackRemovals(t, f); len(removals) != 0 {
 		t.Errorf("continue removed worktrees itself: %q", removals)
 	}
@@ -3384,11 +3386,11 @@ func TestStackContinuePublishesAndQueuesItsWorkspaceWhileCleanupIsPaused(t *test
 	if len(jobs) != 1 {
 		t.Fatalf("journaled jobs = %v, want the one pending removal of %s", jobs, ws)
 	}
-	if queued := "queued " + ws + " for removal as cleanup job " + jobs[0] + ", pending until ccx vcs cleanup resume"; !strings.Contains(out, queued) {
+	if queued := "handed " + ws + " to cleanup job " + jobs[0] + ", queued"; !strings.Contains(out, queued) {
 		t.Errorf("continue output = %q, want %q", out, queued)
 	}
-	if job := cleanupJob(t, f, h, jobs[0]); job.Phase != cleanup.PhasePending || job.Blocked != nil {
-		t.Errorf("job %s = phase %s, blockage %+v; want pending while paused", jobs[0], job.Phase, job.Blocked)
+	if job := cleanupJob(t, f, h, jobs[0]); job.Phase != cleanup.PhaseQueued || job.Blocked != nil {
+		t.Errorf("job %s = phase %s, blockage %+v; want queued while paused", jobs[0], job.Phase, job.Blocked)
 	}
 	if err := h.engine.Resume(f.Context()); err != nil {
 		t.Fatalf("resume: %v", err)
@@ -3399,13 +3401,14 @@ func TestStackContinuePublishesAndQueuesItsWorkspaceWhileCleanupIsPaused(t *test
 	assertGone(t, ws)
 }
 
-func TestStackContinuePublishesWhenThePausedQueueRefusesItsWorkspace(t *testing.T) {
+func TestStackContinueQueuesItsOwnedWorkspaceWithUntrackedFilesWhilePaused(t *testing.T) {
 	_, h, ws, out := stackContinueWhilePaused(t, true)
-	if left := "left " + ws + " in place, since the paused cleanup queue refused its removal"; !strings.Contains(out, left) {
-		t.Errorf("continue output = %q, want %q", out, left)
+	jobs := journaledJobs(t, h)
+	if len(jobs) != 1 {
+		t.Fatalf("journaled jobs = %v, want one Expected-bound deferral", jobs)
 	}
-	if jobs := journaledJobs(t, h); len(jobs) != 0 {
-		t.Errorf("journaled jobs = %v, want none for a refused removal", jobs)
+	if handed := "handed " + ws + " to cleanup job " + jobs[0]; !strings.Contains(out, handed) {
+		t.Errorf("continue output = %q, want %q", out, handed)
 	}
 }
 

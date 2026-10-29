@@ -804,19 +804,26 @@ func TestRemoveSurvivesADisconnectedClient(t *testing.T) {
 	gated.gate <- struct{}{}
 }
 
-func TestServeHoldsRemovalsAndRefusesDeferralsWhilePaused(t *testing.T) {
+func TestServeRetiresRemovalsInPlaceAndRefusesAdoptionWhilePaused(t *testing.T) {
 	ctx := context.Background()
-	f := serveFixture(t, queuePaused)
+	retiring := make(chan struct{})
+	f := serveFixture(t, func(h *harness) {
+		queuePaused(h)
+		h.relocator.gates["retire:a"] = retiring
+	})
 	client := strconv.Itoa(os.Getpid())
 	pending, err := f.client.Remove(ctx, f.h.request("a"))
 	if err != nil || pending.State != cleanup.State(cleanup.PhasePending) || pending.Original != f.h.tree("a") {
 		t.Fatalf("Remove() over the socket while paused = %+v, %v; want a pending", pending, err)
 	}
+	if entered := <-f.h.relocator.entered; entered != "retire:a" {
+		t.Fatalf("the paused queue entered %q, want a retired in place", entered)
+	}
+	close(retiring)
 	tests := []struct {
 		name string
 		ask  func() error
 	}{
-		{"defer", func() error { _, err := f.client.Defer(ctx, f.h.deferral("d")); return err }},
 		{"adopt", func() error { _, err := f.client.Adopt(ctx, f.h.adoption("q")); return err }},
 	}
 	for _, tt := range tests {
@@ -827,27 +834,55 @@ func TestServeHoldsRemovalsAndRefusesDeferralsWhilePaused(t *testing.T) {
 			}
 		})
 	}
-	deferral, err := json.Marshal(f.h.deferral("e"))
+	adoption, err := json.Marshal(f.h.adoption("e"))
 	if err != nil {
 		t.Fatalf("marshal a deferral: %v", err)
 	}
-	raw := f.raw(fmt.Sprintf(`{"protocol":%d,"version":"v9","op":"defer","defer":%s}`, cleanup.Protocol, deferral))
+	raw := f.raw(fmt.Sprintf(`{"protocol":%d,"version":"v9","op":"adopt","adopt":%s}`, cleanup.Protocol, adoption))
 	if raw.Error == nil || raw.Error.Kind != kindPaused || raw.Error.Message != cleanup.ErrPaused.Error() {
 		t.Errorf("raw defer reply = %+v, want a %s error carrying ErrPaused's message", raw, kindPaused)
 	}
-	if events := f.h.rec.take(); !slices.Equal(events, []string{"pend:a"}) {
-		t.Errorf("paused requests executed %q, want only a pended", events)
+	if events := f.h.rec.take(); !slices.Equal(events, []string{"pend:a", "retire:a@pending"}) {
+		t.Errorf("paused requests executed %q, want a pended, then retired in place", events)
 	}
-	if got, want := f.h.relocator.takeServed(), []string{"pend:a=" + client}; !slices.Equal(got, want) {
+	if got, want := f.h.relocator.takeServed(), []string{"pend:a=" + client, "retire:a=" + client}; !slices.Equal(got, want) {
 		t.Errorf("paused requests reached the relocator as %q, want %q", got, want)
 	}
 	jobs, damaged, err := f.h.journal.Load()
-	if err != nil || len(damaged) != 0 || len(jobs) != 1 || jobs[0].Phase != cleanup.PhasePending {
-		t.Errorf("Load() = %+v, damaged %v, %v; want a pending alone", jobs, damaged, err)
+	if err != nil || len(damaged) != 0 || len(jobs) != 1 || jobs[0].Phase != cleanup.PhaseRetired {
+		t.Errorf("Load() = %+v, damaged %v, %v; want a retired in place alone", jobs, damaged, err)
 	}
 	report, err := f.client.Status(ctx, cleanup.Query{})
 	if err != nil || !report.Paused || len(report.Jobs) != 1 || report.Jobs[0].Phase != cleanup.PhasePending {
-		t.Errorf("Status() = paused %t, jobs %+v, %v; want paused with a pending", report.Paused, report.Jobs, err)
+		t.Errorf("Status() = paused %t, jobs %+v, %v; want paused with a reported pending", report.Paused, report.Jobs, err)
+	}
+	conn, err := net.Dial("unix", f.socket)
+	if err != nil {
+		t.Fatalf("dial %s: %v", f.socket, err)
+	}
+	line, err := exchange(conn, fmt.Appendf(nil, `{"protocol":%d,"version":"v0.87.7","op":"status","query":{}}`+"\n", cleanup.Protocol))
+	_ = conn.Close()
+	if err != nil {
+		t.Fatalf("exchange: %v", err)
+	}
+	var fields struct {
+		Report struct {
+			Jobs []map[string]json.RawMessage `json:"jobs"`
+		} `json:"report"`
+	}
+	if err := json.Unmarshal(line, &fields); err != nil || len(fields.Report.Jobs) != 1 {
+		t.Fatalf("decode %s: %v", line, err)
+	}
+	if job := fields.Report.Jobs[0]; string(job["phase"]) != `"pending"` || job["retired"] != nil {
+		t.Errorf("status reply job = %s, want phase pending and no retired field", line)
+	}
+	var old struct {
+		Report *cleanup.Report `json:"report"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(line))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&old); err != nil || old.Report == nil || len(old.Report.Jobs) != 1 || old.Report.Jobs[0].Validate() != nil {
+		t.Errorf("an older client's strict decode of %s = %+v, %v; want a report whose job validates", line, old.Report, err)
 	}
 
 	if err := f.client.Resume(ctx); err != nil {

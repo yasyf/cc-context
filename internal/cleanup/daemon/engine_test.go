@@ -408,7 +408,7 @@ func TestProgressIsJournaledAtMostOnceAMinute(t *testing.T) {
 	})
 }
 
-func TestQueuePauseRestsEveryJobAndHoldsNewRemovals(t *testing.T) {
+func TestQueuePauseRestsEveryTreeAndRetiresUntouchedRemovalsInPlace(t *testing.T) {
 	bubble(t, paced(), func(t *testing.T, h *harness) {
 		ctx := context.Background()
 		job := h.seed("a", 1, cleanup.PhaseUnregistered)
@@ -426,7 +426,7 @@ func TestQueuePauseRestsEveryJobAndHoldsNewRemovals(t *testing.T) {
 			t.Fatalf("Pause() = %v", err)
 		}
 		h.expectEvents("close:a")
-		h.expectTimers()
+		h.expectTimers(30 * time.Second)
 		sw, err := h.journal.LoadSwitch()
 		if err != nil || !sw.Paused {
 			t.Fatalf("LoadSwitch() = %+v, %v; want paused", sw, err)
@@ -435,41 +435,43 @@ func TestQueuePauseRestsEveryJobAndHoldsNewRemovals(t *testing.T) {
 			t.Errorf("journaled removed = %d, want 100", got)
 		}
 		h.clock.Advance(time.Hour)
-		h.expectEvents()
+		h.expectEvents("retire:w@waiting")
 		h.expectTimers()
+		h.relocator.script("w", nil)
 
 		pending, err := h.engine.Remove(ctx, h.request("b"))
 		if err != nil || pending.State != cleanup.State(cleanup.PhasePending) || pending.Original != h.tree("b") {
 			t.Fatalf("Remove() under a queue pause = %+v, %v; want b pending", pending, err)
 		}
+		h.expectEvents("pend:b", "retire:b@pending")
+		h.expectTimers()
 		again, err := h.engine.Remove(ctx, h.request("b"))
-		if err != nil || again != pending {
-			t.Errorf("a repeated Remove() under the pause = %+v, %v; want the pending receipt %+v", again, err, pending)
+		if err != nil || again.JobID != pending.JobID || again.State != cleanup.State(cleanup.PhasePending) {
+			t.Errorf("a repeated Remove() under the pause = %+v, %v; want job %s, retired in place and reported pending", again, err, pending.JobID)
 		}
 		for _, tt := range []struct {
 			name string
 			ask  func() error
 		}{
-			{"defer", func() error { _, err := h.engine.Defer(ctx, h.deferral("d")); return err }},
 			{"adopt", func() error { _, err := h.engine.Adopt(ctx, h.adoption("q")); return err }},
 		} {
 			if err := tt.ask(); !errors.Is(err, cleanup.ErrPaused) {
 				t.Errorf("%s under a queue pause = %v, want ErrPaused", tt.name, err)
 			}
 		}
-		h.expectEvents("pend:b")
+		h.expectEvents()
 		h.expectTimers()
 		jobs, damaged, err := h.journal.Load()
 		if err != nil || len(damaged) != 0 || len(jobs) != 4 {
-			t.Fatalf("Load() = %d jobs, damaged %v, %v; want the three seeded and b pending", len(jobs), damaged, err)
+			t.Fatalf("Load() = %d jobs, damaged %v, %v; want the three seeded and b", len(jobs), damaged, err)
 		}
-		if got := h.journaled(pending.JobID); got.Phase != cleanup.PhasePending || got.Blocked != nil {
-			t.Errorf("b rests at %s, blockage %+v; want pending", got.Phase, got.Blocked)
-		}
-		for _, seeded := range []cleanup.Job{waiting, retrying} {
-			if got := h.journaled(seeded.ID); got.Phase != seeded.Phase || (got.Blocked == nil) != (seeded.Blocked == nil) {
-				t.Errorf("%s rests at %s, blocked %t; want %s, blocked %t", h.rec.name(seeded.ID), got.Phase, got.Blocked != nil, seeded.Phase, seeded.Blocked != nil)
+		for _, id := range []string{pending.JobID, waiting.ID} {
+			if got := h.journaled(id); got.Phase != cleanup.PhaseRetired || got.Blocked != nil {
+				t.Errorf("%s rests at %s, blockage %+v; want retired in place", h.rec.name(id), got.Phase, got.Blocked)
 			}
+		}
+		if got := h.journaled(retrying.ID); got.Phase != cleanup.PhasePrepared || got.Blocked == nil {
+			t.Errorf("r rests at %s, blockage %+v; want prepared and still blocked", got.Phase, got.Blocked)
 		}
 		report, err := h.engine.Status(ctx, cleanup.Query{})
 		if err != nil || !report.Paused {
@@ -479,10 +481,10 @@ func TestQueuePauseRestsEveryJobAndHoldsNewRemovals(t *testing.T) {
 		if err := h.engine.Resume(ctx); err != nil {
 			t.Fatalf("Resume() = %v", err)
 		}
-		h.expectEvents("advance:w@waiting", "advance:r@prepared", "advance:b@pending", "sample", "admit:a", "open:a", "step:a")
+		h.expectEvents("advance:w@retired", "advance:r@prepared", "advance:b@retired", "sample", "admit:a", "open:a", "step:a")
 		h.expectTimers(400 * time.Millisecond)
 		if got := h.journaled(pending.JobID); got.Phase != cleanup.PhaseUnregistered {
-			t.Errorf("b after the resume = %s, want it promoted and unregistered", got.Phase)
+			t.Errorf("b after the resume = %s, want it reclaimed and unregistered", got.Phase)
 		}
 		if sw, err := h.journal.LoadSwitch(); err != nil || sw.Paused {
 			t.Errorf("LoadSwitch() after resume = %+v, %v; want unpaused", sw, err)
@@ -502,6 +504,86 @@ func TestQueuePauseRestsEveryJobAndHoldsNewRemovals(t *testing.T) {
 		}
 		h.expectEvents("accept:c", "advance:c@prepared")
 	})
+}
+
+func TestPausedQueueRetiresTheUntouchedBacklogInPlaceAndMovesNothing(t *testing.T) {
+	resume := func(ctx context.Context, h *harness) error { return h.engine.Resume(ctx) }
+	tests := []struct {
+		name  string
+		sw    cleanup.Switch
+		lifts []func(ctx context.Context, h *harness) error
+	}{
+		{"paused", cleanup.Switch{Paused: true}, []func(context.Context, *harness) error{resume}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bubble(t, paced(), func(t *testing.T, h *harness) {
+				ctx := context.Background()
+				deleting := h.seed("a", 1, cleanup.PhaseUnregistered)
+				h.deleter.put("a", &payload{entries: 300})
+				queued := h.seed("q", 2, cleanup.PhaseQueued)
+				waiting := h.seed("w", 3, cleanup.PhaseWaiting)
+				pending := h.seed("p", 4, cleanup.PhasePending)
+				drifted := h.seed("d", 5, cleanup.PhasePending)
+				h.relocator.script("retire:d", blockWith(h.clock, "identity", "HEAD changed"))
+				moved := h.seed("m", 6, cleanup.PhaseMoved)
+				interrupted := h.seed("r", 7, cleanup.PhaseRetiring)
+				stuck := h.seed("s", 8, cleanup.PhaseRetiring, func(job *cleanup.Job) {
+					job.Blocked = &cleanup.Blockage{Reason: "reconcile", Detail: "retired git dir s is occupied", At: h.clock.Now()}
+				})
+				if err := h.journal.SaveSwitch(tt.sw); err != nil {
+					t.Fatal(err)
+				}
+				h.start()
+				h.expectEvents("retire:q@queued", "retire:w@waiting", "retire:p@pending", "retire:d@pending", "retire:r@retiring")
+				h.expectTimers()
+				h.clock.Advance(24 * time.Hour)
+				h.expectEvents()
+				h.expectTimers()
+
+				for _, job := range []cleanup.Job{queued, waiting, pending, interrupted} {
+					if got := h.journaled(job.ID); got.Phase != cleanup.PhaseRetired || got.Blocked != nil {
+						t.Errorf("%s while halted = phase %s, blockage %+v; want retired in place", h.rec.name(job.ID), got.Phase, got.Blocked)
+					}
+				}
+				if got := h.journaled(drifted.ID); got.Phase != cleanup.PhasePending || got.Blocked == nil || got.Blocked.Reason != "identity" {
+					t.Errorf("d while halted = phase %s, blockage %+v; want pending, blocked identity", got.Phase, got.Blocked)
+				}
+				if got := h.journaled(moved.ID); got.Phase != cleanup.PhaseMoved || got.Blocked != nil {
+					t.Errorf("m while halted = phase %s, blockage %+v; want it resting moved", got.Phase, got.Blocked)
+				}
+				if got := h.journaled(stuck.ID); got.Phase != cleanup.PhaseRetiring || got.Blocked == nil || got.Blocked.Reason != "reconcile" {
+					t.Errorf("s while halted = phase %s, blockage %+v; want it resting retiring, blocked reconcile", got.Phase, got.Blocked)
+				}
+				if got := h.journaled(deleting.ID); got.Phase != cleanup.PhaseUnregistered || got.Removed != 0 {
+					t.Errorf("a while halted = phase %s, removed %d; want it unopened", got.Phase, got.Removed)
+				}
+
+				for i, lift := range tt.lifts {
+					if err := lift(ctx, h); err != nil {
+						t.Fatalf("lift %d = %v", i, err)
+					}
+					if i < len(tt.lifts)-1 {
+						h.expectEvents()
+						h.expectTimers()
+					}
+				}
+				h.expectEvents("advance:q@retired", "advance:w@retired", "advance:p@retired", "advance:m@moved", "advance:r@retired", "sample", "admit:a", "open:a", "step:a")
+				h.expectTimers(400 * time.Millisecond)
+				for _, job := range []cleanup.Job{queued, waiting, pending, moved, interrupted} {
+					if got := h.journaled(job.ID); got.Phase != cleanup.PhaseUnregistered || got.Blocked != nil {
+						t.Errorf("%s once running = phase %s, blockage %+v; want it unregistered", h.rec.name(job.ID), got.Phase, got.Blocked)
+					}
+				}
+				if got := h.journaled(drifted.ID); got.Phase != cleanup.PhasePending || got.Blocked == nil || got.Blocked.Reason != "identity" {
+					t.Errorf("d once running = phase %s, blockage %+v; want it still blocked for an operator", got.Phase, got.Blocked)
+				}
+				if got := h.journaled(stuck.ID); got.Phase != cleanup.PhaseRetiring || got.Blocked == nil || got.Blocked.Reason != "reconcile" {
+					t.Errorf("s once running = phase %s, blockage %+v; want it still blocked for an operator", got.Phase, got.Blocked)
+				}
+			})
+		})
+	}
 }
 
 func TestWaitingJobIsRecheckedWhileLaterJobsProceed(t *testing.T) {
@@ -1994,6 +2076,7 @@ func TestMaintenanceHoldRestsTheQueueAcrossARestartUntilItsHolderReleasesIt(t *t
 		if err != nil || pending.State != cleanup.State(cleanup.PhasePending) {
 			t.Fatalf("Remove() under the hold = %+v, %v; want b pending", pending, err)
 		}
+		h.expectEvents("pend:b")
 		for _, tt := range []struct {
 			name string
 			ask  func() error
@@ -2005,7 +2088,7 @@ func TestMaintenanceHoldRestsTheQueueAcrossARestartUntilItsHolderReleasesIt(t *t
 				t.Errorf("%s under the hold = %v, want ErrPaused", tt.name, err)
 			}
 		}
-		h.expectEvents("pend:b")
+		h.expectEvents()
 		h.expectTimers()
 		sw, err := h.journal.LoadSwitch()
 		if err != nil || sw.Paused || sw.Hold == nil || !sameHold(*sw.Hold, want) {
@@ -2120,4 +2203,42 @@ func TestReleaseLiftsTheHoldAndLeavesAnOrdinaryPause(t *testing.T) {
 			})
 		})
 	}
+}
+
+func TestRetiredAdminUsesGovernedSlicesAndPauseReadmission(t *testing.T) {
+	bubble(t, paced(), func(t *testing.T, h *harness) {
+		ctx := context.Background()
+		job := h.seed("a", 1, cleanup.PhaseUnregistered)
+		retired := cleanup.RetiredGitDirFor(job.Repo, job.ID)
+		if err := os.MkdirAll(retired, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		h.deleter.put("a-admin", &payload{entries: 200})
+		h.deleter.put("a", &payload{entries: 50})
+		h.start()
+		h.expectEvents("sample", "admit:a", "open:a-admin", "step:a-admin")
+		h.expectTimers(400 * time.Millisecond)
+		if got := h.deleter.wants("a-admin"); !slices.Equal(got, []cleanup.FileID{job.Admin}) {
+			t.Fatalf("metadata identities = %v, want %v", got, job.Admin)
+		}
+		if err := h.engine.Pause(ctx); err != nil {
+			t.Fatal(err)
+		}
+		h.expectEvents("close:a-admin")
+		h.clock.Advance(time.Hour)
+		h.expectEvents()
+		if err := h.engine.Resume(ctx); err != nil {
+			t.Fatal(err)
+		}
+		h.expectEvents("sample", "admit:a", "open:a-admin", "step:a-admin")
+		h.expectTimers(400 * time.Millisecond)
+		if got := h.status(job.ID); got.Phase != cleanup.PhaseDeleting || got.Removed != 200 {
+			t.Fatalf("after metadata: phase %s, removed %d; want deleting, 200", got.Phase, got.Removed)
+		}
+		h.clock.Advance(400 * time.Millisecond)
+		h.expectEvents("admit:a", "open:a", "step:a")
+		if got := h.status(job.ID); got.Phase != cleanup.PhaseDone || got.Removed != 250 {
+			t.Fatalf("after payload: phase %s, removed %d; want done, 250", got.Phase, got.Removed)
+		}
+	})
 }
