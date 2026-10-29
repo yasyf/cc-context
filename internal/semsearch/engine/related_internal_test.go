@@ -4,6 +4,7 @@ import (
 	"context"
 	"math"
 	"math/rand"
+	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -134,11 +135,16 @@ func (relatedLimitEmbedder) Encode(_ context.Context, texts []string) ([][]float
 
 func TestRelatedHugeK(t *testing.T) {
 	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
-	root, err := filepath.Abs(filepath.Join("testdata", "repo"))
-	if err != nil {
-		t.Fatal(err)
+	root := t.TempDir()
+	for name, content := range map[string]string{
+		"alpha.go": "package fixture\n\nfunc Alpha() string { return \"alpha\" }\n",
+		"beta.go":  "package fixture\n\nfunc Beta() string { return \"beta\" }\n",
+	} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
-	args := backend.Args{Query: "auth/login.go:4", Path: root, K: 1000}
+	args := backend.Args{Query: "alpha.go:3", Path: root, K: 1000}
 	want, err := Related(t.Context(), relatedLimitEmbedder{}, args)
 	if err != nil || len(want) == 0 {
 		t.Fatalf("Related reference = %v, %v; want nonempty results", want, err)
