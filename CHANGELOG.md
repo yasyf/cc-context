@@ -41,6 +41,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A stack rebase that settles while the cleanup queue is paused queues its
+  conflict workspace's removal.** `stack continue` and `stack abort` used to
+  leave the workspace in place and drop the run that named it, so nothing
+  removed it after `resume`, and the next conflict on the same branch opened
+  `conflict-<branch>-2`. They now record a `pending` removal, as
+  `worktree rm` does, and `resume` removes the workspace.
 - **`ccx vcs ship --branch` adopts a head origin moved to that the branch
   already holds.** After a raw force-push by URL left `refs/remotes` behind,
   ship refused with "origin's <branch> is at X, not the Y this repository last

@@ -3328,7 +3328,8 @@ func TestStackContinueDiscardsInlineOnlyWhereCleanupIsUnsupported(t *testing.T) 
 	}
 }
 
-func TestStackContinuePublishesAndLeavesItsWorkspaceWhileCleanupIsPaused(t *testing.T) {
+func TestStackContinuePublishesAndQueuesItsWorkspaceWhileCleanupIsPaused(t *testing.T) {
+	requireCleanupDaemon(t)
 	f := shipGTRepo(t, vcstest.GTStack("base"))
 	api := stubGTAPI(t)
 	f.Decorate(api.ctx)
@@ -3354,8 +3355,13 @@ func TestStackContinuePublishesAndLeavesItsWorkspaceWhileCleanupIsPaused(t *test
 	if err != nil {
 		t.Fatalf("continue while paused: %v", err)
 	}
-	if !strings.Contains(out, stackPausedLine(ws)) || !strings.Contains(out, "published 2 branches") {
-		t.Errorf("continue output = %q, want the stack published and %s left in place", out, ws)
+	jobs := journaledJobs(t, h)
+	if len(jobs) != 1 {
+		t.Fatalf("journaled jobs = %v, want the one pending removal of %s", jobs, ws)
+	}
+	queued := "queued " + ws + " for removal as cleanup job " + jobs[0] + ", pending until ccx vcs cleanup resume"
+	if !strings.Contains(out, queued) || !strings.Contains(out, "published 2 branches") {
+		t.Errorf("continue output = %q, want the stack published and %q", out, queued)
 	}
 	for _, branch := range []string{"base", "feature"} {
 		stackAssertRebasePublication(t, f, sources[branch])
@@ -3367,12 +3373,19 @@ func TestStackContinuePublishesAndLeavesItsWorkspaceWhileCleanupIsPaused(t *test
 		t.Errorf("continue left run state behind: %q", states)
 	}
 	sparseAssertWorkspace(t, f, ws, true)
-	if jobs := journaledJobs(t, h); len(jobs) != 0 {
-		t.Errorf("journaled jobs = %v, want none while paused", jobs)
+	if job := cleanupJob(t, f, h, jobs[0]); job.Phase != cleanup.PhasePending || job.Blocked != nil {
+		t.Errorf("job %s = phase %s, blockage %+v; want pending while paused", jobs[0], job.Phase, job.Blocked)
 	}
 	if removals := stackRemovals(t, f); len(removals) != 0 {
 		t.Errorf("continue removed worktrees itself: %q", removals)
 	}
+	if err := h.engine.Resume(f.Context()); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if _, err := h.engine.Wait(f.Context(), jobs[0]); err != nil {
+		t.Fatalf("wait for job %s after resume: %v", jobs[0], err)
+	}
+	assertGone(t, ws)
 }
 
 func stackVerdictEvents(t *testing.T, events string) context.Context {

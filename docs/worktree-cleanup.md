@@ -85,8 +85,9 @@ again in queue order. It blocks any job that preflight refuses or whose tree
 changed, and removes the rest at the queue's pace.
 
 A stack rebase, `stack continue`, or `stack abort` that meets a paused queue
-still finishes and leaves its conflict workspace in place, naming the
-`ccx vcs worktree rm` that queues its removal until resume.
+still finishes and queues its conflict workspace's removal as `worktree rm`
+does: the workspace stays at its path as a `pending` job, and `resume`
+removes it.
 
 The daemon logs every `pause` and `resume` to `daemon.log` with the
 requesting process ID, its ccx version, and its parent's process ID and
