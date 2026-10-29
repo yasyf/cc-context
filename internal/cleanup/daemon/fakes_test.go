@@ -353,24 +353,33 @@ func (f *fakeDeleter) wants(name string) []cleanup.FileID {
 
 func (f *fakeDeleter) Open(dir, name string, want cleanup.FileID) (cleanup.Deletion, error) {
 	job := f.h.rec.name(filepath.Base(dir))
+	metadata := filepath.Base(dir) == "retired-worktrees"
+	if metadata {
+		job = f.h.rec.name(name) + "-admin"
+	}
 	f.h.rec.add("open:" + job)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	p := f.payloads[job]
-	if name != cleanup.PayloadName || p == nil || p.entries == 0 {
+	if (!metadata && name != cleanup.PayloadName) || p == nil || p.entries == 0 {
 		return nil, fmt.Errorf("open %s: %w", filepath.Join(dir, name), fs.ErrNotExist)
 	}
 	p.wants = append(p.wants, want)
 	if p.openErr != nil {
 		return nil, p.openErr
 	}
-	return &fakeDeletion{deleter: f, job: job, payload: p}, nil
+	deletion := &fakeDeletion{deleter: f, job: job, payload: p}
+	if metadata {
+		deletion.directory = filepath.Join(dir, name)
+	}
+	return deletion, nil
 }
 
 type fakeDeletion struct {
-	deleter *fakeDeleter
-	job     string
-	payload *payload
+	deleter   *fakeDeleter
+	job       string
+	payload   *payload
+	directory string
 }
 
 func (d *fakeDeletion) Step(limit int, _ time.Duration) (int, bool, error) {
@@ -397,6 +406,11 @@ func (d *fakeDeletion) Step(limit int, _ time.Duration) (int, bool, error) {
 	}
 	removed := min(limit, d.payload.entries)
 	d.payload.entries -= removed
+	if d.payload.entries == 0 && d.directory != "" {
+		if err := os.Remove(d.directory); err != nil {
+			return removed, false, err
+		}
+	}
 	return removed, d.payload.entries == 0, nil
 }
 

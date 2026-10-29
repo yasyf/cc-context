@@ -99,7 +99,7 @@ func (f *fixture) alone(job *cleanup.Job) {
 	if err != nil {
 		f.t.Fatalf("read the retired admin directories: %v", err)
 	}
-	var names []string
+	names := make([]string, 0, len(entries))
 	for _, entry := range entries {
 		names = append(names, entry.Name())
 	}
@@ -526,7 +526,9 @@ func TestReclaimMovesARetiredTreeToItsPayload(t *testing.T) {
 
 	f.finished(&job)
 	f.absent(f.worktree)
-	f.absent(cleanup.RetiredGitDirFor(job.Repo, job.ID))
+	if got := f.id(cleanup.RetiredGitDirFor(job.Repo, job.ID)); got != job.Admin {
+		t.Errorf("retired admin identity = %v, want %v before physical deletion", got, job.Admin)
+	}
 	if got := f.id(job.Payload); got != tree {
 		t.Errorf("payload identity = %v, want the tree %v", got, tree)
 	}
@@ -669,7 +671,11 @@ func TestReclaimSettlesATreeThatLeftItsPath(t *testing.T) {
 				t.Fatalf("job = phase %s, blockage %+v; want %s", job.Phase, job.Blocked, tt.phase)
 			}
 			f.stored(&job)
-			f.absent(gitDir)
+			if tt.phase == cleanup.PhaseDone {
+				f.absent(gitDir)
+			} else if got := f.id(gitDir); got != job.Admin {
+				t.Errorf("retired admin identity = %v, want %v", got, job.Admin)
+			}
 		})
 	}
 }

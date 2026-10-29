@@ -80,7 +80,8 @@ type Relocator interface {
 	// From PhasePending it runs Accept's whole preflight again, and blocks the
 	// job unless that passes for the tree the job captured. From PhaseRetired it
 	// re-proves the retirement and the tree's identity and idleness, moves the
-	// tree from Original to Payload, and removes the retired admin directory.
+	// tree from Original to Payload. Physical deletion removes its retired admin
+	// directory through the same governed slices as the payload.
 	//
 	// It returns nil with job at PhaseUnregistered on success, nil with job at
 	// PhaseWaiting when a deferred job's tree is still held, and nil with

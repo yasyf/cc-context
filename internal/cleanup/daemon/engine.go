@@ -160,6 +160,7 @@ func (f *fatalError) Unwrap() error { return f.err }
 
 type activeDeletion struct {
 	id       string
+	metadata bool
 	deletion cleanup.Deletion
 	unsaved  bool
 	savedAt  time.Time
@@ -924,7 +925,12 @@ func (e *Engine) slice(ctx context.Context, job cleanup.Job) error {
 		e.active = nil
 		return e.block(job, err)
 	case done:
+		metadata := e.active.metadata
 		e.active = nil
+		if metadata {
+			job.Updated = end
+			return e.save(job)
+		}
 		return e.finish(job)
 	case end.Sub(e.active.savedAt) >= progressEvery:
 		job.Updated = end
@@ -959,6 +965,17 @@ func (e *Engine) open(ctx context.Context, job *cleanup.Job) error {
 	e.put(*job)
 	if job.Blocked != nil {
 		return nil
+	}
+	retired := cleanup.RetiredGitDirFor(job.Repo, job.ID)
+	if _, err := os.Lstat(retired); err == nil {
+		deletion, err := e.deleter.Open(filepath.Dir(retired), filepath.Base(retired), job.Admin)
+		if err != nil {
+			return e.block(*job, err)
+		}
+		e.active = &activeDeletion{id: job.ID, metadata: true, deletion: deletion, savedAt: e.clock.Now()}
+		return nil
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return e.block(*job, err)
 	}
 	deletion, err := e.deleter.Open(e.layout.JobDir(job.ID), cleanup.PayloadName, job.Tree)
 	if errors.Is(err, fs.ErrNotExist) {

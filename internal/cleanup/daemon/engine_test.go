@@ -2211,3 +2211,41 @@ func TestReleaseLiftsTheHoldAndLeavesAnOrdinaryPause(t *testing.T) {
 		})
 	}
 }
+
+func TestRetiredAdminUsesGovernedSlicesAndPauseReadmission(t *testing.T) {
+	bubble(t, paced(), func(t *testing.T, h *harness) {
+		ctx := context.Background()
+		job := h.seed("a", 1, cleanup.PhaseUnregistered)
+		retired := cleanup.RetiredGitDirFor(job.Repo, job.ID)
+		if err := os.MkdirAll(retired, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		h.deleter.put("a-admin", &payload{entries: 200})
+		h.deleter.put("a", &payload{entries: 50})
+		h.start()
+		h.expectEvents("sample", "admit:a", "open:a-admin", "step:a-admin")
+		h.expectTimers(400 * time.Millisecond)
+		if got := h.deleter.wants("a-admin"); !slices.Equal(got, []cleanup.FileID{job.Admin}) {
+			t.Fatalf("metadata identities = %v, want %v", got, job.Admin)
+		}
+		if err := h.engine.Pause(ctx); err != nil {
+			t.Fatal(err)
+		}
+		h.expectEvents("close:a-admin")
+		h.clock.Advance(time.Hour)
+		h.expectEvents()
+		if err := h.engine.Resume(ctx); err != nil {
+			t.Fatal(err)
+		}
+		h.expectEvents("sample", "admit:a", "open:a-admin", "step:a-admin")
+		h.expectTimers(400 * time.Millisecond)
+		if got := h.status(job.ID); got.Phase != cleanup.PhaseDeleting || got.Removed != 200 {
+			t.Fatalf("after metadata: phase %s, removed %d; want deleting, 200", got.Phase, got.Removed)
+		}
+		h.clock.Advance(400 * time.Millisecond)
+		h.expectEvents("admit:a", "open:a", "step:a")
+		if got := h.status(job.ID); got.Phase != cleanup.PhaseDone || got.Removed != 250 {
+			t.Fatalf("after payload: phase %s, removed %d; want done, 250", got.Phase, got.Removed)
+		}
+	})
+}

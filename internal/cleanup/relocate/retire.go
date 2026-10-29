@@ -8,15 +8,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/yasyf/daemonkit/durable"
 
 	"github.com/yasyf/cc-context/internal/cleanup"
-	"github.com/yasyf/cc-context/internal/cleanup/rmtree"
 )
 
-const disposeStep = 4096
 
 type retirementStage int
 
@@ -482,8 +479,10 @@ func (r *Relocator) reclaim(ctx context.Context, job *cleanup.Job, vetted *bool)
 	if reason, detail := r.unlisted(ctx, job, vetted, "quarantine", r.cfg.Watchers.CheckQuarantine(ctx, r.cfg.Journal.Layout().JobDir(job.ID))); reason != "" {
 		return r.block(ctx, job, reason, detail)
 	}
-	if holders := r.held(ctx, job, job.Original); holders != "" {
-		return r.block(ctx, job, "activity", holders)
+	for _, path := range []string{job.Original, retired} {
+		if holders := r.held(ctx, job, path); holders != "" {
+			return r.block(ctx, job, "activity", holders)
+		}
 	}
 	if reason, detail := r.vet(ctx, job, job.Original, vetted); reason != "" {
 		return r.block(ctx, job, reason, detail)
@@ -512,8 +511,13 @@ func (r *Relocator) landed(ctx context.Context, job *cleanup.Job) (bool, error) 
 	case err != nil:
 		return r.block(ctx, job, "reconcile", err.Error())
 	case payload.is(job.Tree):
-		if d := dispose(job); d != "" {
-			return r.block(ctx, job, "reconcile", d)
+		retired := cleanup.RetiredGitDirFor(job.Repo, job.ID)
+		seen, err := sight(retired)
+		if err != nil {
+			return r.block(ctx, job, "reconcile", err.Error())
+		}
+		if seen.exists && !seen.is(job.Admin) {
+			return r.block(ctx, job, "reconcile", fmt.Sprintf("%s is %s, the job captured admin %s", retired, seen, label(job.Admin)))
 		}
 		return r.enter(job, cleanup.PhaseUnregistered)
 	case payload.exists:
@@ -524,28 +528,4 @@ func (r *Relocator) landed(ctx context.Context, job *cleanup.Job) (bool, error) 
 		return r.block(ctx, job, "identity", fmt.Sprintf("%s is gone, but %s; whatever moved the tree may still use it, so remove it by hand, then ccx vcs cleanup retry finishes the job", job.Original, d))
 	}
 	return r.enter(job, cleanup.PhaseDone)
-}
-
-func dispose(job *cleanup.Job) string {
-	retired := cleanup.RetiredGitDirFor(job.Repo, job.ID)
-	seen, err := sight(retired)
-	switch {
-	case err != nil:
-		return err.Error()
-	case !seen.exists:
-		return ""
-	}
-	deletion, err := rmtree.Deleter{}.Open(filepath.Dir(retired), job.ID, job.Admin)
-	if err != nil {
-		return fmt.Sprintf("remove the retired admin directory %s: %v", retired, err)
-	}
-	for {
-		_, done, err := deletion.Step(disposeStep, time.Second)
-		switch {
-		case err != nil:
-			return fmt.Sprintf("remove the retired admin directory %s: %v", retired, err)
-		case done:
-			return ""
-		}
-	}
 }
