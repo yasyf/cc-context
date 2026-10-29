@@ -112,7 +112,7 @@ func referenceRead(a backend.Args) (string, error) {
 			}
 		}
 	}
-	served := lines[start-1:end]
+	served := lines[start-1 : end]
 	span := anchor.FormatRange(start, end, anchor.Of(served[0]))
 	if start == end {
 		span = anchor.Format(start, anchor.Of(served[0]))
