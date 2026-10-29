@@ -14,7 +14,6 @@ import (
 	"github.com/yasyf/cc-context/internal/cleanup"
 )
 
-
 type retirementStage int
 
 const (
