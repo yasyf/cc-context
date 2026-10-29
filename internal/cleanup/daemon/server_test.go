@@ -834,6 +834,20 @@ func TestServeHoldsRemovalsAndRefusesAdoptionWhilePaused(t *testing.T) {
 	if raw.Error == nil || raw.Error.Kind != kindPaused || raw.Error.Message != cleanup.ErrPaused.Error() {
 		t.Errorf("raw defer reply = %+v, want a %s error carrying ErrPaused's message", raw, kindPaused)
 	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		report, err := f.client.Status(ctx, cleanup.Query{JobID: pending.JobID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(report.Jobs) == 1 && report.Jobs[0].Retirement == cleanup.RetirementComplete {
+			break
+		}
+		if !time.Now().Before(deadline) {
+			t.Fatalf("pending registration did not retire: %+v", report)
+		}
+		time.Sleep(time.Millisecond)
+	}
 	if events := f.h.rec.take(); !slices.Equal(events, []string{"pend:a", "retire:a@pending"}) {
 		t.Errorf("paused requests executed %q, want only a pended", events)
 	}
