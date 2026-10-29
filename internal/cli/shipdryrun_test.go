@@ -293,7 +293,7 @@ func TestShipDryRunNamesTheDerivedTitles(t *testing.T) {
 	writeShipFile(t, f.Dir, "c.txt", "moved on\n")
 	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "c moves on", "c.txt")
 
-	report := dryRunReport(t, f, "-m", "fix: frobnicate", "--pr-body-file", writePRBody(t, "body.md", "why\n"))
+	report := dryRunReport(t, f, "-m", "fix: frobnicate")
 
 	creates := dryRunValues(report, "pr new")
 	want := []string{
@@ -304,7 +304,7 @@ func TestShipDryRunNamesTheDerivedTitles(t *testing.T) {
 		t.Fatalf("pr new lines = %v, want %v", creates, want)
 	}
 	for i, line := range creates {
-		if !strings.HasPrefix(line, want[i]) {
+		if line != want[i] {
 			t.Errorf("pr new line %d = %q, want %q", i, line, want[i])
 		}
 	}
@@ -315,6 +315,7 @@ func TestShipDryRunRefusesANewPullRequestWithNoBody(t *testing.T) {
 	stub := stubGTAPI(t)
 	f.Decorate(stub.ctx)
 	stub.prs["b"] = 22285
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-q", "--amend", "-m", "c")
 
 	report := dryRunReport(t, f, "-m", "fix: frobnicate")
 
@@ -333,10 +334,10 @@ func TestShipDryRunDropsALandedBranch(t *testing.T) {
 	f.Decorate(stub.ctx)
 	stub.prs["b"] = 22285
 
-	report := dryRunReport(t, f, "-m", "fix: frobnicate", "--landed", "a", "--pr-body-file", writePRBody(t, "body.md", "why\n"))
+	report := dryRunReport(t, f, "-m", "fix: frobnicate", "--landed", "a")
 
 	creates := dryRunValues(report, "pr new")
-	if want := "c" + shipSep + `opens a pull request titled "c"`; len(creates) != 1 || !strings.HasPrefix(creates[0], want) {
+	if want := []string{"c" + shipSep + `opens a pull request titled "c"`}; !slices.Equal(creates, want) {
 		t.Errorf("pr new lines = %v, want %v", creates, want)
 	}
 	if notes := strings.Join(dryRunValues(report, "note"), " | "); !strings.Contains(notes, "a is dropped as landed (--landed)") {

@@ -4358,6 +4358,7 @@ func TestShipGTBodylessPR(t *testing.T) {
 
 	t.Run("a new pull request with no body is refused before the push", func(t *testing.T) {
 		_, gt := setupShipGT(t, true)
+		t.Setenv("GIT_LOG_BODY", "")
 
 		_, err := runShipCmd(gt.ctx(context.Background()), t, "-m", "fix: frobnicate", "--no-watch")
 		if err == nil || !strings.Contains(err.Error(), "feature has no pull request, and ship opens none without a body — pass --pr-body-file <body.md>") {
@@ -4370,6 +4371,7 @@ func TestShipGTBodylessPR(t *testing.T) {
 
 	t.Run("a body file opens the new pull request", func(t *testing.T) {
 		_, gt := setupShipGT(t, true)
+		t.Setenv("GIT_LOG_BODY", "")
 		body := writePRBody(t, "body.md", "why this change\n")
 
 		got, err := runShipCmd(gt.ctx(context.Background()), t, "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", body)
@@ -6597,7 +6599,7 @@ func TestShipGTGHMissing(t *testing.T) {
 		t.Fatalf("ship error = %v", err)
 	}
 	want := `committed a1b2c3d "fix: frobnicate" · submitted feature → PR #100 ` + gtStubPRURL(100) +
-		` · bodyless PR #100 feature · CI gh-missing`
+		` · CI gh-missing`
 	if got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
