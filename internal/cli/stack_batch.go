@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"maps"
 	"path/filepath"
 
 	"github.com/spf13/cobra"
@@ -91,7 +90,7 @@ func (b *stackBatch) list(ctx context.Context, path string) (*stackListReport, e
 		return nil, err
 	}
 	report := &stackListReport{Root: l.checkout.Root, Branches: make([]stackListEntry, 0, len(stack))}
-	holders, err := store.holdersFor(ctx, common, l.checkout, branch)
+	holders, err := store.holdersFor(ctx, common, l.checkout)
 	if err != nil {
 		return nil, err
 	}
@@ -124,7 +123,14 @@ func (b *stackBatch) store(ctx context.Context, common string) (*stackBatchStore
 	return store, nil
 }
 
-func (s *stackBatchStore) holdersFor(ctx context.Context, common string, checkout vcs.Checkout, branch string) (map[string]string, error) {
+func (s *stackBatchStore) holdersFor(ctx context.Context, common string, checkout vcs.Checkout) (map[string]string, error) {
+	if checkout.GitDir != checkout.CommonDir && filepath.Dir(checkout.GitDir) != filepath.Join(checkout.CommonDir, "worktrees") {
+		holders, err := vcs.BranchHolders(ctx, checkout)
+		if err != nil {
+			return nil, fmt.Errorf("stack list: %w", err)
+		}
+		return holders, nil
+	}
 	if s.holders == nil {
 		registered := checkout
 		registered.GitDir = common
@@ -134,17 +140,7 @@ func (s *stackBatchStore) holdersFor(ctx context.Context, common string, checkou
 			return nil, fmt.Errorf("stack list: %w", err)
 		}
 	}
-	if checkout.GitDir == checkout.CommonDir || filepath.Dir(checkout.GitDir) == filepath.Join(checkout.CommonDir, "worktrees") {
-		return s.holders, nil
-	}
-	for _, path := range s.holders {
-		if path == checkout.Root {
-			return s.holders, nil
-		}
-	}
-	holders := maps.Clone(s.holders)
-	holders[branch] = checkout.Root
-	return holders, nil
+	return s.holders, nil
 }
 
 func (s *stackBatchStore) reload(ctx context.Context, common string) error {
