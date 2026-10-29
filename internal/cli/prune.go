@@ -2,8 +2,12 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"maps"
+	"os"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -107,7 +111,7 @@ func runPrune(cmd *cobra.Command, o pruneOpts) error {
 }
 
 func prunePlanFor(ctx context.Context, dir render.Dir, l lane, trunk vcs.Trunk, commonDir string) (prunePlan, error) {
-	held, err := pruneHeldBranches(ctx, dir)
+	held, err := pruneHeldBranches(ctx, dir, commonDir)
 	if err != nil {
 		return prunePlan{}, err
 	}
@@ -241,8 +245,10 @@ func pruneSurvivor(parents map[string]string, forgotten map[string]bool, trunk, 
 
 // pruneHeldBranches names every branch a worktree has checked out, including
 // this one: git refuses to delete them, and a prune that tried would fail
-// partway rather than report the exclusion.
-func pruneHeldBranches(ctx context.Context, dir render.Dir) (map[string]bool, error) {
+// partway rather than report the exclusion. A worktree whose administrative
+// directory was moved out of git's registry, while its .git file still points
+// at it, holds its branch too, though git no longer refuses that delete.
+func pruneHeldBranches(ctx context.Context, dir render.Dir, commonDir string) (map[string]bool, error) {
 	out, err := render.RunCLI(ctx, dir, "git", []string{"worktree", "list", "--porcelain"})
 	if err != nil {
 		return nil, fmt.Errorf("prune: git worktree list: %w", err)
@@ -253,7 +259,65 @@ func pruneHeldBranches(ctx context.Context, dir render.Dir) (map[string]bool, er
 			held[strings.TrimSpace(name)] = true
 		}
 	}
+	groups, err := os.ReadDir(commonDir)
+	if err != nil {
+		return nil, fmt.Errorf("prune: %w", err)
+	}
+	for _, group := range groups {
+		if !group.IsDir() {
+			continue
+		}
+		admins, err := os.ReadDir(filepath.Join(commonDir, group.Name()))
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("prune: %w", err)
+		}
+		for _, admin := range admins {
+			if name, ok := pruneUnregisteredHolder(filepath.Join(commonDir, group.Name(), admin.Name())); ok {
+				held[name] = true
+			}
+		}
+	}
 	return held, nil
+}
+
+// pruneUnregisteredHolder reads the branch an administrative directory has
+// checked out when a worktree's .git file still points back at it.
+func pruneUnregisteredHolder(admin string) (string, bool) {
+	link, err := os.ReadFile(filepath.Join(admin, "gitdir")) //nolint:gosec // admin is a directory under the repository's own git common dir
+	if err != nil {
+		return "", false
+	}
+	dotGit := strings.TrimRight(string(link), "\r\n")
+	if !filepath.IsAbs(dotGit) {
+		dotGit = filepath.Join(admin, dotGit)
+	}
+	pointer, err := os.ReadFile(dotGit) //nolint:gosec // the worktree .git file git itself recorded in admin/gitdir
+	if err != nil {
+		return "", false
+	}
+	target, ok := strings.CutPrefix(strings.TrimRight(string(pointer), "\r\n"), "gitdir: ")
+	if !ok {
+		return "", false
+	}
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(filepath.Dir(dotGit), target)
+	}
+	want, err := os.Stat(admin)
+	if err != nil {
+		return "", false
+	}
+	got, err := os.Stat(target) //nolint:gosec // only compared against admin, never read
+	if err != nil || !os.SameFile(want, got) {
+		return "", false
+	}
+	head, err := os.ReadFile(filepath.Join(admin, "HEAD")) //nolint:gosec // admin is a directory under the repository's own git common dir
+	if err != nil {
+		return "", false
+	}
+	return strings.CutPrefix(strings.TrimSpace(string(head)), "ref: refs/heads/")
 }
 
 func pruneMergedBranches(ctx context.Context, dir render.Dir, trunk vcs.Trunk) ([]string, error) {
@@ -384,26 +448,29 @@ func pruneMergedHead(pr gtapi.PullRequestInfo) string {
 // checkout and the branch keeps its commits. A squash-landed branch never
 // reached trunk, so git branch -d would refuse it; it goes in one git update-ref
 // transaction that deletes each ref only at the head its merged pull request
-// carried, and refuses them all if one moved. update-ref, unlike git branch,
-// deletes a branch a worktree has out, so the holders are read again first.
+// carried, and refuses them all if one moved. update-ref deletes a branch a
+// worktree has out, and git branch -d does too when git no longer registers
+// that worktree, so the holders are read again first.
 func pruneApply(ctx context.Context, dir render.Dir, l lane, plan prunePlan, commonDir string) error {
+	squashed := pruneSquashedNames(plan)
+	if len(plan.merged)+len(squashed) > 0 {
+		held, err := pruneHeldBranches(ctx, dir, commonDir)
+		if err != nil {
+			return err
+		}
+		for _, branch := range slices.Concat(plan.merged, squashed) {
+			if held[branch] {
+				return fmt.Errorf("prune: a worktree checked out %s after the plan; re-run prune", branch)
+			}
+		}
+	}
 	for _, batch := range pruneBatches(plan.merged, 200) {
 		argv := append([]string{"branch", "-d"}, batch...)
 		if _, err := render.RunCLI(ctx, dir, "git", argv); err != nil {
 			return fmt.Errorf("prune: git branch -d: %w", err)
 		}
 	}
-	squashed := pruneSquashedNames(plan)
 	if len(squashed) > 0 {
-		held, err := pruneHeldBranches(ctx, dir)
-		if err != nil {
-			return err
-		}
-		for _, branch := range squashed {
-			if held[branch] {
-				return fmt.Errorf("prune: a worktree checked out %s after the plan; re-run prune", branch)
-			}
-		}
 		var tx strings.Builder
 		for _, branch := range squashed {
 			fmt.Fprintf(&tx, "delete refs/heads/%s %s\n", branch, plan.squashed[branch])

@@ -41,6 +41,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs prune` keeps a branch an unregistered worktree still has out.**
+  A worktree whose administrative directory was moved out of
+  `.git/worktrees`, with its `.git` file pointing at the new place, is gone
+  from `git worktree list`, so git no longer refuses to delete its branch and
+  prune deleted it when it was merged, leaving the worktree on an unborn
+  branch. Prune now reads every administrative directory under the common dir
+  whose worktree points back at it and names its branch as held.
 - **A stack rebase that settles while the cleanup queue is paused queues its
   conflict workspace's removal.** `stack continue` and `stack abort` used to
   leave the workspace in place and drop the run that named it, so nothing
