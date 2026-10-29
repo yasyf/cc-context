@@ -43,6 +43,7 @@ func newStackCmd() *cobra.Command {
 		newStackNewCmd(),
 		newStackRepairPublishedChildCmd(),
 		newStackListCmd(),
+		newStackListBatchCmd(),
 		newRestackCmd(),
 		newStackSubmitCmd(),
 		newStackDropCmd(),
@@ -408,26 +409,37 @@ func gtStackAll(ctx context.Context, dir render.Dir, prefix string) ([]string, g
 	if err != nil {
 		return nil, nil, err
 	}
-	trunk, err := gtTrunkBranch(prefix, state)
+	stack, err := gtStackFromState(ctx, dir, prefix, state, branch, nil)
 	if err != nil {
 		return nil, nil, err
 	}
+	return stack, state, nil
+}
+
+func gtStackFromState(ctx context.Context, dir render.Dir, prefix string, state gtState, branch string, children map[string][]string) ([]string, error) {
+	trunk, err := gtTrunkBranch(prefix, state)
+	if err != nil {
+		return nil, err
+	}
 	if branch == trunk {
-		return nil, nil, fmt.Errorf("%s: %s is trunk, and every stack in the repository sits on it — check out a branch of the one you mean", prefix, trunk)
+		return nil, fmt.Errorf("%s: %s is trunk, and every stack in the repository sits on it — check out a branch of the one you mean", prefix, trunk)
 	}
 	stack, err := gtDownstack(prefix, state, branch, trunk)
 	if untracked := (*errGTUntracked)(nil); errors.As(err, &untracked) {
-		return nil, nil, gtUntrackedRefusal(ctx, dir, prefix, state, trunk, branch)
+		return nil, gtUntrackedRefusal(ctx, dir, prefix, state, trunk, branch)
 	}
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	slices.Reverse(stack)
-	up, err := gtUpstack(prefix, state, branch)
-	if err != nil {
-		return nil, nil, err
+	if children == nil {
+		children = gtChildren(state)
 	}
-	return append(stack, up...), state, nil
+	up, err := gtUpstackFromChildren(prefix, children, branch)
+	if err != nil {
+		return nil, err
+	}
+	return append(stack, up...), nil
 }
 
 // gtUntrackedRefusal names the repair for a branch gt never tracked: the
