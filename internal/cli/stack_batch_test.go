@@ -184,3 +184,40 @@ func TestStackListBatchPreservesRetiredHolderSymlinkSpelling(t *testing.T) {
 		t.Fatalf("fixture did not preserve raw retired holder alias: %+v", want.Branches[0])
 	}
 }
+
+func TestStackListBatchSharesUnlandedParentChecks(t *testing.T) {
+	for _, conflict := range []bool{false, true} {
+		name := "clean"
+		if conflict {
+			name = "conflict"
+		}
+		t.Run(name, func(t *testing.T) {
+			f := shipGTRepo(t, vcstest.GTStack("parent", "left"))
+			mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "parent")
+			shipGTStack(t, f, "right")
+			left := filepath.Join(t.TempDir(), "left")
+			mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", left, "left")
+			if conflict {
+				restackAdvanceRemote(t, f, "main", "parent.txt", "conflicting trunk content\n")
+				mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
+			}
+			mustRun(t, f.Env(), f.Dir, "git", "branch", "-D", "parent")
+			shipResetLog(t, f)
+			results := stackBatchReports(t, f, left, f.Dir, left, f.Dir)
+			for i, result := range results {
+				if !strings.Contains(result.Error, "gt state has no parent for") || result.Listing != nil {
+					t.Errorf("result %d = %+v, want unlanded orphan refusal", i, result)
+				}
+			}
+			var merges int
+			for _, invocation := range vcstest.Invocations(t, f.ArgvLog) {
+				if slices.Contains(invocation, "merge-tree") {
+					merges++
+				}
+			}
+			if merges != 1 {
+				t.Errorf("shared parent merge evaluations = %d, want 1 for %d focused listings", merges, len(results))
+			}
+		})
+	}
+}
