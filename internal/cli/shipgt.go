@@ -491,7 +491,12 @@ func gtNeedsRestack(state gtState, branch, trunk string) (bool, error) {
 // is adopted onto --parent, a tracked one re-parented onto it. It runs after
 // every other preflight refusal, and returns the record a later refusal puts
 // the branch back from.
-func gtMoveOntoParent(ctx context.Context, errW io.Writer, l lane, o shipOpts, c *gtCache) (string, bool, *gtMoveUndo, error) {
+func gtMoveOntoParent(ctx context.Context, errW io.Writer, l lane, o shipOpts, c *gtCache, fetch *gtTrunkFetch) (string, bool, *gtMoveUndo, error) {
+	if fetch != nil {
+		if _, err := fetch.join(); err != nil {
+			return "", false, nil, err
+		}
+	}
 	branch, err := shipBranch(ctx, l.dir(), o)
 	if err != nil {
 		return "", false, nil, err
@@ -889,13 +894,17 @@ func gtTrack(ctx context.Context, errW io.Writer, l lane, o shipOpts, branch str
 		if err := gtAdoptRefusal(ctx, l, o, state, branch, o.parent, c); err != nil {
 			return nil, "", err
 		}
+		trunk, err := gtTrunkBranch("ship", state)
+		if err != nil {
+			return nil, "", err
+		}
 		replaying, err := gtReplayable(ctx, c.dir, state, o.parent)
 		if err != nil {
 			return nil, "", err
 		}
 		if replaying {
 			var onto string
-			if replayed, onto, _, err = gtOnto(ctx, l, o, branch, o.parent, state[o.parent].Trunk, gtRef{}); err != nil {
+			if replayed, onto, _, err = gtOnto(ctx, l, o, branch, o.parent, trunk, gtRef{}); err != nil {
 				return nil, "", err
 			}
 			if o.tipOnly {
@@ -905,10 +914,6 @@ func gtTrack(ctx context.Context, errW io.Writer, l lane, o shipOpts, branch str
 			}
 		}
 		if !o.amend {
-			trunk, err := gtTrunkBranch("ship", state)
-			if err != nil {
-				return nil, "", err
-			}
 			if o.parent == trunk {
 				head, base, root, err := gtRootBase(ctx, l.dir(), branch, trunk)
 				if err != nil {
@@ -1280,7 +1285,11 @@ func gtAdoptRefusal(ctx context.Context, l lane, o shipOpts, state gtState, bran
 	if err := gtRefuseLandedParent(ctx, c.dir, state, branch, parent); err != nil {
 		return err
 	}
-	_, err = gtOntoPlan(ctx, l, o, branch, parent, state[parent].Trunk, gtRef{})
+	trunk, err := gtTrunkBranch("ship", state)
+	if err != nil {
+		return err
+	}
+	_, err = gtOntoPlan(ctx, l, o, branch, parent, trunk, gtRef{})
 	return err
 }
 
@@ -1312,7 +1321,11 @@ func gtReparentRefusal(ctx context.Context, l lane, o shipOpts, state gtState, b
 	if err := gtRefuseLandedParent(ctx, c.dir, state, branch, parent); err != nil {
 		return gtOntoMove{}, err
 	}
-	return gtOntoPlan(ctx, l, o, branch, parent, state[parent].Trunk, gtStackedParent(state, branch))
+	trunk, err := gtTrunkBranch("ship", state)
+	if err != nil {
+		return gtOntoMove{}, err
+	}
+	return gtOntoPlan(ctx, l, o, branch, parent, trunk, gtStackedParent(state, branch))
 }
 
 // gtReparent moves a tracked branch onto the parent --parent names, which gt
@@ -1332,8 +1345,12 @@ func gtReparent(ctx context.Context, l lane, o shipOpts, branch, parent string, 
 	if err != nil {
 		return nil, "", err
 	}
+	trunk, err := gtTrunkBranch("ship", state)
+	if err != nil {
+		return nil, "", err
+	}
 	was := state[branch].Parents[0].Ref
-	replayed, onto, moved, ontoErr := gtOnto(ctx, l, o, branch, parent, state[parent].Trunk, gtStackedParent(state, branch))
+	replayed, onto, moved, ontoErr := gtOnto(ctx, l, o, branch, parent, trunk, gtStackedParent(state, branch))
 	if ontoErr != nil && !moved {
 		return nil, "", ontoErr
 	}
@@ -1382,7 +1399,7 @@ type gtOntoMove struct {
 // work where the branch is held. Only the commits parent has no patch of, the
 // branch's own, are replayed; a branch moving off the stacked parent from names
 // none of from's commits as its own either.
-func gtOntoPlan(ctx context.Context, l lane, o shipOpts, branch, parent string, trunk bool, from gtRef) (gtOntoMove, error) {
+func gtOntoPlan(ctx context.Context, l lane, o shipOpts, branch, parent, trunk string, from gtRef) (gtOntoMove, error) {
 	if stackRebasing(ctx, l.dir()) {
 		return gtOntoMove{}, refuse("ship: a rebase is in progress in %s: finish it with ccx vcs stack continue or drop it with git rebase --abort, then ship again", l.root)
 	}
@@ -1395,16 +1412,20 @@ func gtOntoPlan(ctx context.Context, l lane, o shipOpts, branch, parent string, 
 		return gtOntoMove{onto: onto}, err
 	}
 	upstream := gtRestackRef(parent)
-	if trunk {
-		if upstream, onto, err = gtRemoteTrunkOnto(ctx, l.dir(), parent, upstream, onto); err != nil {
-			return gtOntoMove{}, err
-		}
+	var offTrunk map[string]bool
+	if parent == trunk {
+		upstream, onto, err = gtRemoteTrunkOnto(ctx, l.dir(), parent, upstream, onto)
+	} else {
+		offTrunk, err = gtOffTrunk(ctx, l.dir(), trunk, branch)
+	}
+	if err != nil {
+		return gtOntoMove{}, err
 	}
 	above, err := gtOwnAbove(ctx, l.dir(), branch, from)
 	if err != nil {
 		return gtOntoMove{}, err
 	}
-	fork, own, err := gtOwnFork(ctx, l.dir(), o, branch, parent, upstream, above)
+	fork, own, err := gtOwnFork(ctx, l.dir(), o, branch, parent, upstream, above, offTrunk)
 	if err != nil {
 		return gtOntoMove{}, err
 	}
@@ -1488,7 +1509,7 @@ func gtCommitBeforeMove(ctx context.Context, l lane, o shipOpts, plan branchPlan
 // moving the ref and the working copy holding it by the replay gtOntoPlan
 // computes. It returns the report segment, the parent head the branch now sits
 // on, and whether the branch ref moved.
-func gtOnto(ctx context.Context, l lane, o shipOpts, branch, parent string, trunk bool, from gtRef) (string, string, bool, error) {
+func gtOnto(ctx context.Context, l lane, o shipOpts, branch, parent, trunk string, from gtRef) (string, string, bool, error) {
 	m, err := gtOntoPlan(ctx, l, o, branch, parent, trunk, from)
 	if err != nil || m.head == "" {
 		return "", m.onto, false, err
@@ -1547,6 +1568,26 @@ func gtRemoteTrunkOnto(ctx context.Context, dir render.Dir, trunk, local, head s
 	return string(tr.Ref()), remote, err
 }
 
+func gtOffTrunk(ctx context.Context, dir render.Dir, trunk, branch string) (map[string]bool, error) {
+	tr, err := gtTrunkRefOffline(ctx, dir, "ship", trunk)
+	if errors.Is(err, vcs.ErrNoTrunk) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	span := string(tr.Ref()) + ".." + gtRestackRef(branch)
+	out, err := render.RunCLI(ctx, dir, "git", []string{"rev-list", span})
+	if err != nil {
+		return nil, fmt.Errorf("ship: git rev-list %s: %w", span, err)
+	}
+	off := map[string]bool{}
+	for _, sha := range strings.Fields(out) {
+		off[sha] = true
+	}
+	return off, nil
+}
+
 // gtOwnAbove is the set of branch's commits above the stacked parent from, by
 // its recorded base and by patch against from's head, so a copy of a commit
 // from was rewritten under counts as from's; nil when from is unset, which
@@ -1585,7 +1626,7 @@ func gtOwnAbove(ctx context.Context, dir render.Dir, branch string, from gtRef) 
 // A branch with no work of its own forks at its head when the ship is about to
 // commit some, and is refused otherwise, as is one whose own commits have a
 // copy of parent's among them, which no single replay range can leave out.
-func gtOwnFork(ctx context.Context, dir render.Dir, o shipOpts, branch, parent, upstream string, above map[string]bool) (string, int, error) {
+func gtOwnFork(ctx context.Context, dir render.Dir, o shipOpts, branch, parent, upstream string, above, offTrunk map[string]bool) (string, int, error) {
 	marks, err := gtCherryMarks(ctx, "ship", dir, upstream, gtRestackRef(branch))
 	if err != nil {
 		return "", 0, err
@@ -1595,7 +1636,8 @@ func gtOwnFork(ctx context.Context, dir render.Dir, o shipOpts, branch, parent, 
 			marks[i].own = marks[i].own && above[marks[i].sha]
 		}
 	}
-	first := slices.IndexFunc(marks, func(m gtCherryMark) bool { return m.own })
+	onTrunk := func(m gtCherryMark) bool { return offTrunk != nil && !offTrunk[m.sha] }
+	first := slices.IndexFunc(marks, func(m gtCherryMark) bool { return m.own && !onTrunk(m) })
 	if first < 0 {
 		pending, err := gtCommitsPending(ctx, dir, o)
 		if err != nil {
@@ -1605,13 +1647,20 @@ func gtOwnFork(ctx context.Context, dir render.Dir, o shipOpts, branch, parent, 
 			head, err := gtRestackHead(ctx, "ship", dir, branch)
 			return head, 0, err
 		}
-		return "", 0, refuse("ship: %s holds no commit of its own above %s — every commit on it is already on %s under another sha", branch, parent, parent)
+		return "", 0, refuse("ship: %s holds no commit of its own above %s — every commit on it is already on %s under another sha, or on the remote trunk", branch, parent, parent)
 	}
-	var copies []string
+	var copies, landed []string
 	for _, m := range marks[first:] {
-		if !m.own {
+		switch {
+		case !m.own:
 			copies = append(copies, shortSHA(m.sha))
+		case onTrunk(m):
+			landed = append(landed, shortSHA(m.sha))
 		}
+	}
+	if len(landed) > 0 {
+		return "", 0, refuse("ship: %s carries commits the remote trunk already holds (%s) among its own above %s, so no replay onto %s leaves them out — rebase it onto %s by hand with git rebase -i %s, then ship again",
+			branch, strings.Join(landed, ", "), parent, parent, parent, parent)
 	}
 	if len(copies) > 0 {
 		receipt, err := stackReadPublication(ctx, dir, parent)
@@ -2941,7 +2990,8 @@ func gitFetch(ctx context.Context, dir render.Dir, args ...string) error {
 
 // gtTrunkFetch is one gtTrunkRef in flight, so the round trip runs under the
 // staging and the commit rather than after them: it reads nothing they produce,
-// and past the preflight nothing before the submit reads the ref it moves.
+// and past the preflight only a move onto --parent, which joins it first, reads
+// the ref it moves before the submit does.
 type gtTrunkFetch struct {
 	done   chan struct{}
 	cancel context.CancelFunc
