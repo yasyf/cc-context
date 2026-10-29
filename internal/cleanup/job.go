@@ -77,7 +77,9 @@ func (p Phase) Physical() bool { return p == PhaseUnregistered || p == PhaseDele
 type Retirement string
 
 const (
-	RetirementIntent   Retirement = "intent"
+	// RetirementIntent marks a registration update that must finish before relocation.
+	RetirementIntent Retirement = "intent"
+	// RetirementComplete marks an unregistered checkout retained for physical deletion.
 	RetirementComplete Retirement = "retired"
 )
 

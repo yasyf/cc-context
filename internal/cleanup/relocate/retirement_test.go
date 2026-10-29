@@ -165,7 +165,7 @@ func TestPausedRetirementRefusesActiveOrReplacedTrees(t *testing.T) {
 				f.run(f.repo, "worktree", "move", f.worktree, filepath.Join(f.root, "kept"))
 				f.run(f.repo, "worktree", "add", "-q", "--detach", f.worktree)
 			} else {
-				f.holdAt(f.worktree)
+				_ = f.holdAt(f.worktree)
 			}
 			before := f.run(f.repo, "worktree", "list", "--porcelain")
 			retireFixture(t, f, &job)
