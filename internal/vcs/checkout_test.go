@@ -643,7 +643,7 @@ func TestBranchHolders(t *testing.T) {
 func TestBranchHoldersRetired(t *testing.T) {
 	f := vcstest.Repo(t, vcstest.Trunk("trunk"))
 	main := f.Dir
-	retired := filepath.Join(t.TempDir(), "retired")
+	retired := filepath.Join(t.TempDir(), "watcher")
 	runGit(t, f, main, "worktree", "add", "-q", "-b", "watcher", retired)
 	common := canon(t, filepath.Join(main, ".git"))
 	admin := filepath.Join(common, "retired-worktrees", "watcher")
