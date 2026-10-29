@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -146,5 +147,39 @@ func TestStackListBatchPreservesTrunkAndDetachedErrors(t *testing.T) {
 	results := stackBatchReports(t, f, trunk, detached, f.Dir)
 	if !strings.Contains(results[0].Error, "main is trunk") || !strings.Contains(results[1].Error, "detached HEAD") || results[2].Error != "" {
 		t.Fatalf("batch errors = %+v", results)
+	}
+}
+
+func TestStackListBatchPreservesRetiredHolderSymlinkSpelling(t *testing.T) {
+	f := shipGTRepo(t, vcstest.GTStack("base", "child"))
+	path := filepath.Join(t.TempDir(), "base")
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", path, "base")
+	path = gitAt(t, f.Env(), path, "rev-parse", "--show-toplevel")
+	common := gitAt(t, f.Env(), f.Dir, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	admin := gitAt(t, f.Env(), path, "rev-parse", "--absolute-git-dir")
+	retired := filepath.Join(common, "retired", filepath.Base(admin))
+	if err := os.MkdirAll(filepath.Dir(retired), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(admin, retired); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(path, ".git"), []byte("gitdir: "+retired+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(path, alias); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(retired, "gitdir"), []byte(filepath.Join(alias, ".git")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	want := stackSingleReport(t, f, path)
+	got := stackBatchReports(t, f, path)
+	if got[0].Error != "" || got[0].Listing == nil || !reflect.DeepEqual(*got[0].Listing, want) {
+		t.Fatalf("retired batch = %+v, want %+v", got[0], want)
+	}
+	if want.Branches[0].Path != alias || want.Branches[0].Current {
+		t.Fatalf("fixture did not preserve raw retired holder alias: %+v", want.Branches[0])
 	}
 }
