@@ -418,3 +418,31 @@ func TestShipGTNoPRPushesWithoutSubmitting(t *testing.T) {
 		})
 	}
 }
+
+func TestShipKeepsAnOpenPullRequestsDraftStateUnlessAsked(t *testing.T) {
+	plan := []gtSubmitBranch{{name: "tip", pr: 7}, {name: "below", pr: 6}, {name: "fresh"}}
+	tests := []struct {
+		name   string
+		opts   shipOpts
+		update *bool
+		create bool
+	}{
+		{name: "neither flag", opts: shipOpts{}, update: nil, create: false},
+		{name: "publish", opts: shipOpts{publish: true}, update: new(false), create: false},
+		{name: "draft", opts: shipOpts{draft: true}, update: new(true), create: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := gtSubmit{draft: shipDraft(tt.opts), draftAll: tt.opts.draft || tt.opts.publish}
+			prs := gtSubmitPRs(plan, s.createDraft(), s.updateDraft("tip"))
+			for _, pr := range prs[:2] {
+				if (pr.Draft == nil) != (tt.update == nil) || (pr.Draft != nil && *pr.Draft != *tt.update) {
+					t.Errorf("update of %s carried draft %v, want %v", pr.Head, pr.Draft, tt.update)
+				}
+			}
+			if fresh := prs[2]; fresh.Draft == nil || *fresh.Draft != tt.create {
+				t.Errorf("create of fresh carried draft %v, want %t", fresh.Draft, tt.create)
+			}
+		})
+	}
+}

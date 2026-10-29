@@ -574,6 +574,9 @@ func gtResumeCmd(o shipOpts) string {
 	if o.draft {
 		argv = append(argv, "--draft")
 	}
+	if o.publish {
+		argv = append(argv, "--publish")
+	}
 	for _, value := range o.prTitle {
 		argv = append(argv, "--pr-title "+strconv.Quote(value))
 	}
@@ -604,8 +607,8 @@ func gtStuckSuffix(o shipOpts) string {
 // command is speaking, what its refusals append about the work already done,
 // and the two switches gt's own --draft and --no-verify flags map to. draft
 // sets the state of every pull request the submit opens and converts the tip's
-// open one, or every open one under draftAll; a nil draft leaves every pull
-// request's draft state as it stands.
+// open one, or every open one under draftAll; a nil draft opens pull requests
+// published and leaves every open one's draft state as it stands.
 type gtSubmit struct {
 	prefix      string
 	suffix      string
@@ -692,6 +695,20 @@ func gtPinTarget(s gtSubmit, plan []gtSubmitBranch) error {
 		plan[i].lease, plan[i].leaseSet = s.target.remote, true
 	}
 	return nil
+}
+
+func shipDraft(o shipOpts) *bool {
+	if !o.draft && !o.publish {
+		return nil
+	}
+	return &o.draft
+}
+
+func (s gtSubmit) createDraft() *bool {
+	if s.draft == nil {
+		return new(false)
+	}
+	return s.draft
 }
 
 func (s gtSubmit) updateDraft(tip string) func(branch string) *bool {
@@ -2022,7 +2039,7 @@ func shipPushGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, meta ma
 	if err != nil {
 		return "", nil, nil, err
 	}
-	sub := gtSubmit{prefix: "ship", suffix: suffix, draft: &o.draft, draftAll: o.draft || o.publish, noVerify: o.noVerify, shipTip: branch, prepared: prepared, noPR: o.noPR, target: target}
+	sub := gtSubmit{prefix: "ship", suffix: suffix, draft: shipDraft(o), draftAll: o.draft || o.publish, noVerify: o.noVerify, shipTip: branch, prepared: prepared, noPR: o.noPR, target: target}
 	if c.restack != nil {
 		sub.publication = c.restack
 		sub.trunkHead = c.restack.Pin
@@ -2342,7 +2359,7 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 	var submitted, recorded []gtSubmitBranch
 	var unrecordable []string
 	defer func() { gtClaimPosted(ctx, errW, l.dir(), s.prefix, owner+"/"+name, submitted, entries) }()
-	for i, pr := range gtSubmitPRs(posted, s.draft, s.updateDraft(tip)) {
+	for i, pr := range gtSubmitPRs(posted, s.createDraft(), s.updateDraft(tip)) {
 		out, err := client.SubmitPullRequests(ctx, gtapi.SubmitRequest{
 			RepoOwner:       owner,
 			RepoName:        name,
