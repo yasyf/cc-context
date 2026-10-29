@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"syscall"
 	"time"
 )
@@ -39,6 +40,15 @@ const (
 	// tree's identity is captured, no live process has been looked for, and
 	// nothing is mutated.
 	PhasePending Phase = "pending"
+	// PhaseRetiring is journaled before the first mutation of an in-place
+	// retirement, which a halted queue runs: from here the tree's .git may name
+	// RetiredGitDirFor, and the admin directory may have moved there, out of
+	// git's registry.
+	PhaseRetiring Phase = "retiring"
+	// PhaseRetired means git no longer registers the tree, which still sits at
+	// Original and reaches its repository through its admin directory, now at
+	// RetiredGitDirFor. Nothing moves it until the queue runs again.
+	PhaseRetired Phase = "retired"
 	// PhasePrepared is journaled before the first mutation: from here watchers
 	// may be retired, the recovery ref written, and git's move attempted.
 	PhasePrepared Phase = "prepared"
@@ -61,12 +71,14 @@ var phaseRank = map[Phase]int{
 	PhaseQueued:       0,
 	PhaseWaiting:      1,
 	PhasePending:      2,
-	PhasePrepared:     3,
-	PhaseMoved:        4,
-	PhaseDetached:     5,
-	PhaseUnregistered: 6,
-	PhaseDeleting:     7,
-	PhaseDone:         8,
+	PhaseRetiring:     3,
+	PhaseRetired:      4,
+	PhasePrepared:     5,
+	PhaseMoved:        6,
+	PhaseDetached:     7,
+	PhaseUnregistered: 8,
+	PhaseDeleting:     9,
+	PhaseDone:         10,
 }
 
 // Logical reports whether the phase still belongs to the logical half: the
@@ -75,6 +87,13 @@ func (p Phase) Logical() bool { return phaseRank[p] < phaseRank[PhaseUnregistere
 
 // Physical reports whether only the payload's deletion remains.
 func (p Phase) Physical() bool { return p == PhaseUnregistered || p == PhaseDeleting }
+
+// Untouched reports whether the phase has mutated nothing.
+func (p Phase) Untouched() bool { return p == PhaseQueued || p == PhaseWaiting || p == PhasePending }
+
+// Retirable reports whether a halted queue retires the phase's registration in
+// place: nothing is mutated yet, or a retirement is under way.
+func (p Phase) Retirable() bool { return p.Untouched() || p == PhaseRetiring }
 
 // State is a job's phase as an observer reads it, with a blockage layered over
 // the phase the job stopped in.
@@ -209,12 +228,42 @@ func MintID(now time.Time) string {
 // RecoveryRefFor is the ref that pins the committed HEAD of job id.
 func RecoveryRefFor(id string) string { return RecoveryRefPrefix + id }
 
+// RetiredGitDirFor is where job id's in-place retirement moves the tree's
+// admin directory, out of repo's registry: the same depth below repo as
+// repo/worktrees/<name>, so a relative commondir still names repo.
+func RetiredGitDirFor(repo, id string) string {
+	return filepath.Join(repo, "retired-worktrees", id)
+}
+
 // State is the job's phase as an observer reads it.
 func (j Job) State() State {
 	if j.Blocked != nil {
 		return StateBlocked
 	}
 	return State(j.Phase)
+}
+
+// Reported is the job as the daemon's API hands it out, in the shape every
+// client on this protocol decodes: a job retiring or retired in place reads as
+// the untouched phase it left, pending for a removal and queued for a
+// deferral, in its error history too.
+func (j Job) Reported() Job {
+	j.Phase = j.Phase.reported(j.Deferred)
+	j.Errors = slices.Clone(j.Errors)
+	for i := range j.Errors {
+		j.Errors[i].Phase = j.Errors[i].Phase.reported(j.Deferred)
+	}
+	return j
+}
+
+func (p Phase) reported(deferred bool) Phase {
+	switch {
+	case p != PhaseRetiring && p != PhaseRetired:
+		return p
+	case deferred:
+		return PhaseQueued
+	}
+	return PhasePending
 }
 
 // Note appends message to the bounded error history, dropping the oldest entry
@@ -323,7 +372,8 @@ func (j Job) validateAdopted() error {
 	if j.Deferred {
 		return errors.New("an adopted job cannot be deferred")
 	}
-	if j.Phase == PhasePending || j.Phase == PhaseMoved || j.Phase == PhaseDetached {
+	switch j.Phase {
+	case PhasePending, PhaseRetiring, PhaseRetired, PhaseMoved, PhaseDetached:
 		return fmt.Errorf("phase %q belongs to a registered worktree, not an adopted tree", j.Phase)
 	}
 	if !cleanAbs(j.Source) {
