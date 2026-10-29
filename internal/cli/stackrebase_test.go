@@ -3178,6 +3178,36 @@ func stackLostTail(ws string) string {
 	return "read the receipt: connection reset by peer — the cleanup daemon may already hold " + ws
 }
 
+func TestStackReleaseUnderAPausedQueue(t *testing.T) {
+	t.Parallel()
+	for _, verb := range []string{"continue", "abort"} {
+		t.Run(verb, func(t *testing.T) {
+			t.Parallel()
+			f, ws := stackResolvedConflict(t)
+			svc := stackDeferTo(t, f, cleanup.Receipt{}, fmt.Errorf("cleanup daemon: defer: %w", cleanup.ErrPaused))
+			registration := stackRunConflict(t, f).Registration
+
+			out, _, err := runStackCmd(t, f, verb)
+			if err != nil {
+				t.Fatalf("%s under a paused queue: %v", verb, err)
+			}
+			if want := stackPausedLine(ws); !strings.Contains(out, want) {
+				t.Errorf("%s output = %q, want %q", verb, out, want)
+			}
+			if got, want := svc.asked(), []cleanup.DeferRequest{stackWantDefer(t, f, ws, registration, verb == "abort")}; !slices.Equal(got, want) {
+				t.Errorf("defer requests = %+v, want %+v", got, want)
+			}
+			if states, _ := filepath.Glob(filepath.Join(f.Dir, ".git", stackRebaseStateDir, "*", stackRebaseState)); len(states) != 0 {
+				t.Errorf("%s left run state behind: %q", verb, states)
+			}
+			sparseAssertWorkspace(t, f, ws, true)
+			if removals := stackRemovals(t, f); len(removals) != 0 {
+				t.Errorf("%s removed worktrees itself: %q", verb, removals)
+			}
+		})
+	}
+}
+
 // TestStackReleaseOfAVanishedWorkspace pins what continue and abort do when
 // the conflict workspace is already gone from disk: where the daemon runs they
 // finish without asking it, pruning nothing and promising nothing, and say the
