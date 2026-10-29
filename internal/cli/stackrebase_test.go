@@ -3371,9 +3371,7 @@ func stackContinueWhilePaused(t *testing.T, untracked bool) (*vcstest.Fixture, *
 	if states, _ := filepath.Glob(filepath.Join(f.Dir, ".git", stackRebaseStateDir, "*", stackRebaseState)); len(states) != 0 {
 		t.Errorf("continue left run state behind: %q", states)
 	}
-	if _, err := os.Stat(ws); err != nil {
-		t.Errorf("paused workspace must remain on disk: %v", err)
-	}
+	sparseAssertWorkspace(t, f, ws, true)
 	if removals := stackRemovals(t, f); len(removals) != 0 {
 		t.Errorf("continue removed worktrees itself: %q", removals)
 	}
