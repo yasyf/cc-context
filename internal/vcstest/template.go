@@ -309,7 +309,7 @@ func buildGTStack(t *testing.T, cfg baseConfig, dir string, env []string, gtBin 
 		}
 		writeFile(t, filepath.Join(dir, file), name+"\n")
 		git("add", file)
-		git("commit", "-qm", name)
+		git("commit", "-q", "-m", name, "-m", "why "+name)
 		if cfg.stack.parented {
 			run(t, dir, env, gtBin, "track", "--parent", parent, "--no-interactive")
 		} else {

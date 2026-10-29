@@ -275,7 +275,7 @@ func TestShipNewBranchOnAnOpenParentReadsTheQueue(t *testing.T) {
 	published := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "p")
 	shipGTReady(t, f)
 
-	if _, errStr, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--new-branch=bench", "f.txt"); err != nil {
+	if _, errStr, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--new-branch=bench", "--pr-body-file", writePRBody(t, "body.md", "why\n"), "f.txt"); err != nil {
 		t.Fatalf("ship --new-branch=bench = %v (stderr=%q)", err, errStr)
 	}
 	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "p"); got != published {
@@ -342,7 +342,7 @@ func TestShipTipOnlyOpensAChildOfAQueuedBranch(t *testing.T) {
 	stackCommit(t, f, "child.txt")
 	mustRun(t, f.Env(), f.Dir, "gt", "track", "--parent", "base", "--no-interactive")
 
-	_, errStr, err := runShipCmdFull(f.Context(), t, "--no-commit", "--no-watch", "--tip-only", "--pr-title", "child: ✨ the child")
+	_, errStr, err := runShipCmdFull(f.Context(), t, "--no-commit", "--no-watch", "--tip-only", "--pr-title", "child: ✨ the child", "--pr-body-file", writePRBody(t, "body.md", "why\n"))
 	if err != nil {
 		t.Fatalf("ship --tip-only of a queued branch's child = %v (stderr=%q)", err, errStr)
 	}
@@ -375,7 +375,7 @@ func TestShipTakesTheCommitsAboveARewoundParent(t *testing.T) {
 			mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "child")
 			mustRun(t, f.Env(), f.Dir, "gt", "track", "--parent", "base", "--no-interactive")
 			mustRun(t, f.Env(), f.Dir, "git", "branch", "-f", "base", published)
-			args := []string{"--no-commit", "--no-watch", "--pr-title", "child: ✨ the child"}
+			args := []string{"--no-commit", "--no-watch", "--pr-title", "child: ✨ the child", "--pr-body-file", writePRBody(t, "body.md", "why the child\n")}
 			if landed {
 				stubStackPRs(t, f, map[string]*stackPR{"base": {Number: 41, Title: "base", State: "MERGED", Landed: true, Head: published}})
 				restackSquashRemote(t, f, "main", "base (#41)", "base")

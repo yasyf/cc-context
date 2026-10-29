@@ -2388,6 +2388,11 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 	}
 	submit, unchanged := gtDropUnchanged(plan, last, known, unrecorded, tip, s.updateDraft(tip))
 	posted, unopened := gtHoldUnopened(submit, s)
+	if slices.ContainsFunc(posted, func(b gtSubmitBranch) bool {
+		return b.pr == 0 && b.name == s.shipTip && strings.TrimSpace(b.body) == ""
+	}) {
+		return nil, nil, errors.New(gtStuck(s.prefix, s.shipTip+" has no pull request, and ship opens none without a body — pass --pr-body-file <body.md>", s.suffix))
+	}
 	if err := gtAnnounceUnchanged(errW, s.prefix, unchanged); err != nil {
 		return nil, nil, err
 	}

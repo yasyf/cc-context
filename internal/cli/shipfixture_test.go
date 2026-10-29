@@ -259,7 +259,7 @@ func shipGTStack(t *testing.T, f *vcstest.Fixture, names ...string) {
 		mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", name)
 		writeShipFile(t, f.Dir, name+".txt", name+"\n")
 		mustRun(t, f.Env(), f.Dir, "git", "add", name+".txt")
-		mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", name)
+		mustRun(t, f.Env(), f.Dir, "git", "commit", "-q", "-m", name, "-m", "why "+name)
 		mustRun(t, f.Env(), f.Dir, "gt", "track", "-f", "--no-interactive")
 	}
 }
@@ -279,7 +279,7 @@ func shipGTUntracked(t *testing.T, f *vcstest.Fixture, name string) {
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", name)
 	writeShipFile(t, f.Dir, name+".txt", name+"\n")
 	mustRun(t, f.Env(), f.Dir, "git", "add", name+".txt")
-	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", name)
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-q", "-m", name, "-m", "why "+name)
 }
 
 // shipDetachHook installs a post-commit hook that leaves HEAD detached, the
@@ -824,7 +824,7 @@ exit 0
 	gitIdxMark := "if [ -n \"$GIT_INDEX_FILE\" ]; then printf '%s\\0' idx \"${GIT_INDEX_FILE##*/}\" '' >> \"$SHIP_LOG\"; fi\n"
 	git := "#!/bin/sh\n" + gitIdxMark + log("git") + `case "$1 $2" in
   "log -1") printf '%s\0%s' 'a1b2c3d' 'fix: frobnicate' ;;
-  "log --reverse") printf '%s\0%s\0\n' "${GIT_LOG_SUBJECT-fix: frobnicate}" "$GIT_LOG_BODY" ;;
+  "log --reverse") printf '%s\0%s\0\n' "${GIT_LOG_SUBJECT-fix: frobnicate}" "${GIT_LOG_BODY-why}" ;;
   "branch --show-current")
     if [ -n "$GIT_BRANCH_SHOW_FAIL" ]; then printf 'fatal: not a git repository\n' >&2; exit 128; fi
     branch=${GIT_BRANCH-main}

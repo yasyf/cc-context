@@ -25,7 +25,7 @@ func TestShipTipOnlyTracksABranchCutFromAStackOntoItWhenLocalTrunkMovedOn(t *tes
 	mustRun(t, f.Env(), f.Dir, "git", "branch", "-f", "main", "origin/main")
 	shipResetLog(t, f)
 
-	out, errStr, err := runShipCmdFull(f.Context(), t, "--no-commit", "--no-watch", "--tip-only")
+	out, errStr, err := runShipCmdFull(f.Context(), t, "--no-commit", "--no-watch", "--tip-only", "--pr-body-file", writePRBody(t, "body.md", "why\n"))
 	if err != nil {
 		t.Fatalf("ship --tip-only = %v (stderr=%q)", err, errStr)
 	}

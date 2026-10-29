@@ -41,6 +41,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs ship` never opens a pull request with no body.** On the
+  graphite lane, a shipped branch with no pull request yet opened one with an
+  empty description when its first commit carried no body and no
+  `--pr-body-file` was given. Ship now refuses before the push, naming
+  `--pr-body-file`, and `--dry-run` reports the same refusal. Updating an
+  existing pull request without a body flag still goes through.
 - **`ccx vcs ship --parent` replays only the branch's own commits.** A branch
   cut from a newer trunk than its new parent's base carried trunk commits the
   parent lacks, and ship counted them as the branch's own and replayed them

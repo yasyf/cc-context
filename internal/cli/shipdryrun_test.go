@@ -310,6 +310,24 @@ func TestShipDryRunNamesTheDerivedTitles(t *testing.T) {
 	}
 }
 
+func TestShipDryRunRefusesANewPullRequestWithNoBody(t *testing.T) {
+	f := dryRunFixture(t)
+	stub := stubGTAPI(t)
+	f.Decorate(stub.ctx)
+	stub.prs["b"] = 22285
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-q", "--amend", "-m", "c")
+
+	report := dryRunReport(t, f, "-m", "fix: frobnicate")
+
+	refusals := dryRunValues(report, "refuses")
+	if want := "ship: c has no pull request, and ship opens none without a body — pass --pr-body-file <body.md>"; !slices.Contains(refusals, want) {
+		t.Errorf("refuses = %q, want %q", refusals, want)
+	}
+	if creates := strings.Join(dryRunValues(report, "pr new"), "\n"); strings.Contains(creates, "c"+shipSep+"opens") {
+		t.Errorf("pr new = %q, want c left unopened", creates)
+	}
+}
+
 func TestShipDryRunDropsALandedBranch(t *testing.T) {
 	f := dryRunFixture(t)
 	stub := stubGTAPI(t)
