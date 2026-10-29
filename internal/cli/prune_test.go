@@ -303,7 +303,7 @@ func TestPruneKeepsABranchAnUnregisteredWorktreeHolds(t *testing.T) {
 	tree := filepath.Join(t.TempDir(), "mirror")
 	gitAt(t, f.Env(), f.Dir, "worktree", "add", "-q", tree, "mirror")
 	admin := filepath.Join(commonDir, "retired-worktrees", "mirror")
-	if err := os.MkdirAll(filepath.Dir(admin), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(admin), 0o750); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Rename(filepath.Join(commonDir, "worktrees", "mirror"), admin); err != nil {

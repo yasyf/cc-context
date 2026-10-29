@@ -272,12 +272,12 @@ func pruneHeldBranches(ctx context.Context, dir render.Dir, commonDir string) (m
 // pruneUnregisteredHolder reads the branch an administrative directory has
 // checked out when a worktree's .git file still points back at it.
 func pruneUnregisteredHolder(admin string) (string, bool) {
-	link, err := os.ReadFile(filepath.Join(admin, "gitdir"))
+	link, err := os.ReadFile(filepath.Join(admin, "gitdir")) //nolint:gosec // admin is a directory under the repository's own git common dir
 	if err != nil {
 		return "", false
 	}
 	dotGit := strings.TrimSpace(string(link))
-	pointer, err := os.ReadFile(dotGit)
+	pointer, err := os.ReadFile(dotGit) //nolint:gosec // the worktree .git file git itself recorded in admin/gitdir
 	if err != nil {
 		return "", false
 	}
@@ -292,11 +292,11 @@ func pruneUnregisteredHolder(admin string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	got, err := os.Stat(target)
+	got, err := os.Stat(target) //nolint:gosec // only compared against admin, never read
 	if err != nil || !os.SameFile(want, got) {
 		return "", false
 	}
-	head, err := os.ReadFile(filepath.Join(admin, "HEAD"))
+	head, err := os.ReadFile(filepath.Join(admin, "HEAD")) //nolint:gosec // admin is a directory under the repository's own git common dir
 	if err != nil {
 		return "", false
 	}
