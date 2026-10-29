@@ -1218,6 +1218,7 @@ func setGTState(t *testing.T, stateJSON string) {
 	dir := t.TempDir()
 	vcstest.WriteGraphiteMeta(t, dir, stateJSON)
 	t.Setenv("GT_META_DIR", dir)
+	t.Setenv("GIT_COMMON_DIR", dir)
 }
 
 // setGTStateAfterCreate stages the state that takes over once the fake gt has

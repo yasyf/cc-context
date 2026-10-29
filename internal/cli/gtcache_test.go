@@ -16,7 +16,7 @@ import (
 func TestGTCacheReusesResolvedCheckout(t *testing.T) {
 	f := vcstest.Repo(t, vcstest.Worktree("lane"))
 	nested := filepath.Join(f.WorktreePath("lane"), "nested", "dir")
-	if err := os.MkdirAll(nested, 0o755); err != nil {
+	if err := os.MkdirAll(nested, 0o750); err != nil {
 		t.Fatal(err)
 	}
 	for _, root := range []string{f.Dir, f.WorktreePath("lane"), nested} {

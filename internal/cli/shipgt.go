@@ -267,6 +267,7 @@ type gtCache struct {
 	state     gtState
 
 	checkoutCommonDir string
+
 	restack   *stackRebaseRun
 	focus     string
 	parent    string
