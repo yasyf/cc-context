@@ -310,6 +310,36 @@ func TestWorktreeAddChecksOutExistingBranch(t *testing.T) {
 	}
 }
 
+// TestWorktreeAddRefusesABranchAnUnregisteredWorktreeHolds moves a holder's
+// admin dir out of .git/worktrees, where git's own checked-out check no longer
+// sees it, and wants add to name that holder instead of a second checkout.
+func TestWorktreeAddRefusesABranchAnUnregisteredWorktreeHolds(t *testing.T) {
+	f := vcstest.Repo(t)
+	f.Isolate(t)
+	mustRun(t, f.Env(), f.Dir, "git", "branch", "feat")
+	tree := filepath.Join(t.TempDir(), "mirror")
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", tree, "feat")
+	common := gitAt(t, f.Env(), f.Dir, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	admin := filepath.Join(common, "retired-worktrees", "mirror")
+	if err := os.MkdirAll(filepath.Dir(admin), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(filepath.Join(common, "worktrees", "mirror"), admin); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tree, ".git"), []byte("gitdir: "+admin+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := runWorktreeCmd(t, f, "add", "feat")
+	if err == nil || !strings.Contains(err.Error(), "already holds feat") || !strings.Contains(err.Error(), "mirror") {
+		t.Fatalf("add error = %v, want a refusal naming the holder", err)
+	}
+	if listing := mustRun(t, f.Env(), f.Dir, "git", "worktree", "list", "--porcelain"); strings.Contains(listing, "refs/heads/feat") {
+		t.Errorf("add checked feat out a second time:\n%s", listing)
+	}
+}
+
 // TestWorktreeAddReclaimsAnInterruptedAdd leaves the registration of an add
 // killed mid-checkout: git's initializing lock, with the partial tree or
 // without it.
