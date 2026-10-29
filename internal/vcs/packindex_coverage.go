@@ -8,12 +8,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
 )
 
-func coveredPackIndexes(ctx context.Context, objectDir string) (map[string]struct{}, error) {
+func coveredPackIndexes(ctx context.Context, objectDir string) (covered map[string]struct{}, err error) {
 	packDir := filepath.Join(objectDir, "pack")
 	names, err := readMIDXFile(ctx, filepath.Join(packDir, "multi-pack-index"))
 	if err == nil {
@@ -23,15 +24,15 @@ func coveredPackIndexes(ctx context.Context, objectDir string) (map[string]struc
 		return nil, err
 	}
 	chainDir := filepath.Join(packDir, "multi-pack-index.d")
-	chain, err := os.Open(filepath.Join(chainDir, "multi-pack-index-chain"))
+	chain, err := os.Open(filepath.Join(chainDir, "multi-pack-index-chain")) //nolint:gosec // fixed metadata path in the caller-owned Git object directory
 	if errors.Is(err, os.ErrNotExist) {
 		return map[string]struct{}{}, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("open multi-pack index chain: %w", err)
 	}
-	defer chain.Close()
-	covered := make(map[string]struct{})
+	defer func() { err = errors.Join(err, chain.Close()) }()
+	covered = make(map[string]struct{})
 	scanner := bufio.NewScanner(chain)
 	for scanner.Scan() {
 		if err := ctx.Err(); err != nil {
@@ -66,12 +67,12 @@ func packNameSet(names []string) map[string]struct{} {
 	return set
 }
 
-func readMIDXFile(ctx context.Context, path string) ([]string, error) {
-	f, err := os.Open(path)
+func readMIDXFile(ctx context.Context, path string) (names []string, err error) {
+	f, err := os.Open(path) //nolint:gosec // fixed metadata path in the caller-owned Git object directory
 	if err != nil {
 		return nil, fmt.Errorf("open multi-pack index: %w", err)
 	}
-	defer f.Close()
+	defer func() { err = errors.Join(err, f.Close()) }()
 	info, err := f.Stat()
 	if err != nil {
 		return nil, fmt.Errorf("stat multi-pack index: %w", err)
@@ -104,15 +105,19 @@ func readMIDXPackNames(ctx context.Context, r io.ReaderAt, size int64) ([]string
 	for i := range chunks {
 		entry := table[i*12:]
 		id := binary.BigEndian.Uint32(entry)
-		offset := binary.BigEndian.Uint64(entry[4:])
-		next := binary.BigEndian.Uint64(entry[16:])
+		unsignedOffset := binary.BigEndian.Uint64(entry[4:])
+		unsignedNext := binary.BigEndian.Uint64(entry[16:])
+		if unsignedOffset > math.MaxInt64 || unsignedNext > math.MaxInt64 {
+			return nil, errors.New("multi-pack index chunk exceeds file offset range")
+		}
+		offset, next := int64(unsignedOffset), int64(unsignedNext)
 		_, duplicate := seen[id]
-		if id == 0 || duplicate || offset < uint64(12+len(table)) || offset%4 != 0 || next < offset || size < hashSize || next > uint64(size-hashSize) {
+		if id == 0 || duplicate || offset < int64(12+len(table)) || offset%4 != 0 || next < offset || size < hashSize || next > size-hashSize {
 			return nil, errors.New("invalid multi-pack index chunk table")
 		}
 		seen[id] = struct{}{}
 		if id == 0x504e414d {
-			start, length = int64(offset), int64(next-offset)
+			start, length = offset, next-offset
 		}
 	}
 	if binary.BigEndian.Uint32(table[chunks*12:]) != 0 || start == 0 {

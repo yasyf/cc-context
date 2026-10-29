@@ -59,7 +59,7 @@ func relatedFixture(n int, r *rand.Rand) *index.Index {
 
 func TestRelatedTopKMatchesFullSort(t *testing.T) {
 	t.Parallel()
-	r := rand.New(rand.NewSource(517))
+	r := rand.New(rand.NewSource(517)) //nolint:gosec // deterministic test vectors, not security
 	for _, n := range []int{1, 2, 17, 128, 4096} {
 		idx := relatedFixture(n, r)
 		for range 12 {
@@ -104,7 +104,7 @@ func TestRelatedTopKTiesAndSelfExclusion(t *testing.T) {
 func TestRelatedTopKStorageDoesNotGrowWithCorpus(t *testing.T) {
 	const k = 5
 	for _, n := range []int{64, 4096} {
-		idx := relatedFixture(n, rand.New(rand.NewSource(518)))
+		idx := relatedFixture(n, rand.New(rand.NewSource(518))) //nolint:gosec // deterministic test vectors, not security
 		allocations := testing.AllocsPerRun(3, func() {
 			hits := relatedTopK(idx, 0, k)
 			if cap(hits) > k+1 {

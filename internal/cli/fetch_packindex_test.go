@@ -61,9 +61,7 @@ multi-pack-index)
 esac
 exit 99
 `
-			if err := os.WriteFile(filepath.Join(bin, "git"), []byte(script), 0o700); err != nil {
-				t.Fatal(err)
-			}
+			writeExecutable(t, filepath.Join(bin, "git"), script)
 			for key, value := range map[string]string{
 				"CCX_GIT":              filepath.Join(bin, "git"),
 				"CCX_TEST_REAL_GIT":    filepath.Join(f.ShimBin, "git"),

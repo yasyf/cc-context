@@ -31,7 +31,7 @@ func TestGTRecordedDescendantsMatchesFirstParentWalk(t *testing.T) {
 }
 
 func TestGTRecordedDescendantsRandomGraphs(t *testing.T) {
-	rng := rand.New(rand.NewPCG(17, 29))
+	rng := rand.New(rand.NewPCG(17, 29)) //nolint:gosec // deterministic test vectors, not security
 	const n = 64
 	for graph := 0; graph < 32; graph++ {
 		state := make(gtState, n)

@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -16,7 +17,11 @@ import (
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
-func midxFixture(version, hash byte, names ...string) []byte {
+func midxFixture(t *testing.T, version, hash byte, names ...string) []byte {
+	t.Helper()
+	if len(names) > math.MaxUint32 {
+		t.Fatal("pack count exceeds the MIDX field range")
+	}
 	pnam := []byte(strings.Join(names, "\x00"))
 	if len(names) > 0 {
 		pnam = append(pnam, 0)
@@ -68,8 +73,11 @@ func TestMIDXPackNamesReadOnlyMetadata(t *testing.T) {
 				if version == 2 {
 					slices.Reverse(want)
 				}
-				data := midxFixture(version, hash, want...)
-				end := int64(binary.BigEndian.Uint64(data[28:]))
+				data := midxFixture(t, version, hash, want...)
+				end := int64(len(data) - 1024 - 20)
+				if hash == 2 {
+					end -= 12
+				}
 				r := &midxMetadataReader{data: data, end: end}
 				got, err := readMIDXPackNames(t.Context(), r, int64(len(data)))
 				if err != nil || !slices.Equal(got, want) {
@@ -105,14 +113,14 @@ func TestMIDXPackNamesRejectMalformedMetadata(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			b := tt.edit(midxFixture(1, 1, "pack-a.idx"))
+			b := tt.edit(midxFixture(t, 1, 1, "pack-a.idx"))
 			if _, err := readMIDXPackNames(t.Context(), bytes.NewReader(b), int64(len(b))); err == nil {
 				t.Fatal("malformed metadata accepted")
 			}
 		})
 	}
 	for _, names := range [][]string{{"pack-b.idx", "pack-a.idx"}, {"pack-a.idx", "pack-a.idx"}, {"../pack-a.idx"}, {"pack-a.pack"}} {
-		b := midxFixture(1, 1, names...)
+		b := midxFixture(t, 1, 1, names...)
 		if _, err := readMIDXPackNames(t.Context(), bytes.NewReader(b), int64(len(b))); err == nil {
 			t.Fatalf("invalid names accepted: %q", names)
 		}
@@ -129,7 +137,7 @@ func writeMIDXFixture(t *testing.T, path string, names ...string) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, midxFixture(1, 1, names...), 0o600); err != nil {
+	if err := os.WriteFile(path, midxFixture(t, 1, 1, names...), 0o600); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yasyf/cc-context/internal/execstub"
 	"github.com/yasyf/cc-context/internal/render"
 )
 
@@ -41,9 +42,7 @@ func TestPackIndexPublisherCommandBoundary(t *testing.T) {
 			binDir := t.TempDir()
 			argsPath := filepath.Join(t.TempDir(), "args")
 			script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$CCX_TEST_PACK_ARGS\"\nexit \"$CCX_TEST_PACK_EXIT\"\n"
-			if err := os.WriteFile(filepath.Join(binDir, "git"), []byte(script), 0o700); err != nil {
-				t.Fatal(err)
-			}
+			execstub.Write(t, filepath.Join(binDir, "git"), script)
 			ctx := render.WithEnv(t.Context(), "PATH="+binDir, "CCX_GIT="+filepath.Join(binDir, "git"), "CCX_TEST_PACK_ARGS="+argsPath, "CCX_TEST_PACK_EXIT="+tt.exit)
 			err := snapshot.Publish(ctx, render.Dir(objectDir))
 			if (err != nil) != tt.wantErr {
