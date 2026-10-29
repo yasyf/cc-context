@@ -361,7 +361,7 @@ func TestPruneSeesSquashLandings(t *testing.T) {
 		t.Errorf("diverged = %v, want [diverged]", plan.diverged)
 	}
 	want := "would delete 0 branches merged into main · would delete 1 branches whose pull request squash-landed: landed · " +
-		"1 merged branches held by a worktree · 1 diverged, left alone — gt track or gt untrack each"
+		"1 merged branches held by a worktree, left alone: held · 1 diverged, left alone — gt track or gt untrack each"
 	if got := prunePlanReport(plan, trunk, true); got != want {
 		t.Errorf("dry-run report = %q, want %q", got, want)
 	}
