@@ -7070,7 +7070,7 @@ func TestGTTrackLeavesTheParentToGTWithoutARemoteTrunk(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := newGTCache(lane{root: checkout.Root, checkout: checkout}, "ship")
+	c := newGTCache(render.Dir(checkout.Root), "ship", checkout)
 	var errW bytes.Buffer
 	_, seg, err := gtTrack(t.Context(), &errW, lane{}, shipOpts{}, "feature", c)
 	if err != nil {

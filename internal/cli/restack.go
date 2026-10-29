@@ -280,7 +280,7 @@ func restackGit(ctx context.Context, cmd *cobra.Command, l lane, parent string) 
 		return "", err
 	}
 	run.Retarget = retarget
-	commonDir, err := gtCommonDir(ctx, dir, "restack")
+	commonDir, err := newGTCache(dir, "restack", l.checkout).common(ctx)
 	if err != nil {
 		return "", err
 	}
