@@ -128,7 +128,8 @@ func gtStateAtFocused(ctx context.Context, commonDir, prefix, branch, parent str
 			return nil, err
 		}
 	}
-	adopted, err := gtAdoptOrphans(ctx, commonDir, prefix, tracked, orphans)
+	var landed gtLandedChecks
+	adopted, err := landed.adoptOrphans(ctx, commonDir, prefix, tracked, orphans)
 	if err != nil {
 		return nil, err
 	}
@@ -191,11 +192,17 @@ func gtRelatedOrphans(ctx context.Context, commonDir, prefix string, tracked gtm
 	return relevant, nil
 }
 
-// gtAdoptOrphans re-records onto trunk each branch whose parent's ref was
-// deleted after the parent landed, the equivalent of gt track -p <trunk>. A
-// parent revision the remote trunk holds, as an ancestor or as the content a
-// squash carried, is one that landed; any other orphan is left as it is.
-func gtAdoptOrphans(ctx context.Context, commonDir, prefix string, tracked gtmeta.State, orphans []gtmeta.Orphan) (bool, error) {
+type gtLandedPair struct {
+	rev   string
+	trunk string
+}
+
+type gtLandedChecks struct {
+	results map[gtLandedPair]bool
+	trees   map[string]string
+}
+
+func (c *gtLandedChecks) adoptOrphans(ctx context.Context, commonDir, prefix string, tracked gtmeta.State, orphans []gtmeta.Orphan) (bool, error) {
 	if len(orphans) == 0 {
 		return false, nil
 	}
@@ -206,14 +213,13 @@ func gtAdoptOrphans(ctx context.Context, commonDir, prefix string, tracked gtmet
 		}
 	}
 	dir := render.Dir(commonDir)
-	remote := "refs/remotes/origin/" + trunk
-	present, err := gitRefExists(ctx, dir, prefix, remote)
-	if err != nil || !present {
+	remote, err := gitRefValue(ctx, dir, prefix, "refs/remotes/origin/"+trunk)
+	if err != nil || remote == "" {
 		return false, err
 	}
 	moves := map[string]string{}
 	for _, o := range orphans {
-		landed, err := gtLandedIn(ctx, dir, prefix, o.ParentRevision, remote)
+		landed, err := c.landedIn(ctx, dir, prefix, o.ParentRevision, remote)
 		if err != nil {
 			return false, err
 		}
@@ -227,28 +233,56 @@ func gtAdoptOrphans(ctx context.Context, commonDir, prefix string, tracked gtmet
 	return len(moves) > 0, nil
 }
 
-// gtLandedIn reports whether trunk already holds rev: as an ancestor, or as a
-// squash whose merge into trunk changes nothing.
-func gtLandedIn(ctx context.Context, dir render.Dir, prefix, rev, trunk string) (bool, error) {
+func (c *gtLandedChecks) landedIn(ctx context.Context, dir render.Dir, prefix, rev, trunk string) (bool, error) {
 	if rev == "" {
 		return false, nil
 	}
-	if _, err := render.RunCLI(ctx, dir, "git", []string{"cat-file", "-e", rev + "^{commit}"}); err != nil {
+	if thinIsOID(rev) {
+		if landed, ok := c.results[gtLandedPair{rev: rev, trunk: trunk}]; ok {
+			return landed, nil
+		}
+	}
+	commit, err := render.RunCLI(ctx, dir, "git", []string{"rev-parse", "--verify", "--quiet", rev + "^{commit}"})
+	if err != nil {
 		return false, nil
 	}
+	rev = strings.TrimSpace(commit)
+	pair := gtLandedPair{rev: rev, trunk: trunk}
+	if landed, ok := c.results[pair]; ok {
+		return landed, nil
+	}
+	if c.results == nil {
+		c.results = make(map[gtLandedPair]bool)
+	}
 	held, err := gitIsAncestor(ctx, dir, prefix, rev, trunk)
-	if err != nil || held {
-		return held, err
+	if err != nil {
+		return false, err
+	}
+	if held {
+		c.results[pair] = true
+		return true, nil
 	}
 	merged, code, _, err := render.RunCLIExitCode(ctx, dir, "git", []string{"merge-tree", "--write-tree", trunk, rev})
 	if err != nil || code != 0 {
+		if err == nil && code == 1 {
+			c.results[pair] = false
+		}
 		return false, err
 	}
-	tree, err := render.RunCLI(ctx, dir, "git", []string{"rev-parse", trunk + "^{tree}"})
-	if err != nil {
-		return false, fmt.Errorf("%s: git rev-parse %s^{tree}: %w", prefix, trunk, err)
+	tree, ok := c.trees[trunk]
+	if !ok {
+		tree, err = gitRevParse(ctx, dir, prefix, trunk+"^{tree}")
+		if err != nil {
+			return false, err
+		}
+		if c.trees == nil {
+			c.trees = make(map[string]string)
+		}
+		c.trees[trunk] = tree
 	}
-	return strings.TrimSpace(strings.SplitN(merged, "\n", 2)[0]) == strings.TrimSpace(tree), nil
+	landed := strings.TrimSpace(strings.SplitN(merged, "\n", 2)[0]) == tree
+	c.results[pair] = landed
+	return landed, nil
 }
 
 func gtCommonDir(ctx context.Context, dir render.Dir, prefix string) (string, error) {

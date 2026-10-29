@@ -25,6 +25,7 @@ type stackBatchStore struct {
 	children   map[string][]string
 	holders    map[string]string
 	unrecorded map[string]bool
+	landed     gtLandedChecks
 }
 
 type stackBatch struct {
@@ -161,7 +162,7 @@ func (s *stackBatchStore) focus(ctx context.Context, common, branch string) erro
 	if err != nil {
 		return err
 	}
-	adopted, err := gtAdoptOrphans(ctx, common, "stack list", s.tracked, orphans)
+	adopted, err := s.landed.adoptOrphans(ctx, common, "stack list", s.tracked, orphans)
 	if err != nil {
 		return err
 	}

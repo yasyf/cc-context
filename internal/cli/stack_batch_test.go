@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -219,5 +220,68 @@ func TestStackListBatchSharesUnlandedParentChecks(t *testing.T) {
 				t.Errorf("shared parent merge evaluations = %d, want 1 for %d focused listings", merges, len(results))
 			}
 		})
+	}
+}
+
+func TestStackListBatchRefreshesChangedTrunkForOrphans(t *testing.T) {
+	f := shipGTRepo(t, vcstest.GTStack("parent", "child"))
+	parent := gitAt(t, f.Env(), f.Dir, "rev-parse", "parent")
+	mustRun(t, f.Env(), f.Dir, "git", "branch", "-D", "parent")
+	batch := stackBatch{stores: make(map[string]*stackBatchStore)}
+	if _, err := batch.list(f.Context(), f.Dir); err == nil {
+		t.Fatal("unlanded parent was adopted")
+	}
+	mustRun(t, f.Env(), f.Dir, "git", "update-ref", "refs/remotes/origin/main", parent)
+	listing, err := batch.list(f.Context(), f.Dir)
+	if err != nil || listing == nil || len(listing.Branches) != 1 || listing.Branches[0].Branch != "child" {
+		t.Fatalf("listing after trunk changed = %+v, %v", listing, err)
+	}
+	if got := pruneParentOf(t, filepath.Join(f.Dir, ".git"), "child"); got != "main" {
+		t.Errorf("parent after trunk changed = %s, want main", got)
+	}
+}
+
+func TestStackListBatchDoesNotRetainMissingParentObject(t *testing.T) {
+	f := shipGTRepo(t, vcstest.GTStack("parent", "child"))
+	parent := gitAt(t, f.Env(), f.Dir, "rev-parse", "parent")
+	mustRun(t, f.Env(), f.Dir, "git", "branch", "-D", "parent")
+	object := filepath.Join(f.Dir, ".git", "objects", parent[:2], parent[2:])
+	saved := filepath.Join(t.TempDir(), "parent-object")
+	if err := os.Rename(object, saved); err != nil {
+		t.Fatal(err)
+	}
+	batch := stackBatch{stores: make(map[string]*stackBatchStore)}
+	if _, err := batch.list(f.Context(), f.Dir); err == nil {
+		t.Fatal("missing parent was adopted")
+	}
+	if err := os.Rename(saved, object); err != nil {
+		t.Fatal(err)
+	}
+	shipResetLog(t, f)
+	if _, err := batch.list(f.Context(), f.Dir); err == nil {
+		t.Fatal("restored unlanded parent was adopted")
+	}
+	var merges int
+	for _, invocation := range vcstest.Invocations(t, f.ArgvLog) {
+		if slices.Contains(invocation, "merge-tree") {
+			merges++
+		}
+	}
+	if merges != 1 {
+		t.Errorf("restored object merge evaluations = %d, want 1", merges)
+	}
+}
+
+func TestStackListBatchPreservesContextCancellation(t *testing.T) {
+	f := shipGTRepo(t, vcstest.GTStack("parent", "child"))
+	mustRun(t, f.Env(), f.Dir, "git", "branch", "-D", "parent")
+	batch := stackBatch{stores: make(map[string]*stackBatchStore)}
+	if _, err := batch.list(f.Context(), f.Dir); err == nil {
+		t.Fatal("unlanded parent was adopted")
+	}
+	ctx, cancel := context.WithCancel(f.Context())
+	cancel()
+	if _, err := batch.list(ctx, f.Dir); err == nil {
+		t.Fatal("cancelled listing returned without an error")
 	}
 }

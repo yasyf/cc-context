@@ -2282,20 +2282,23 @@ func gitLogLine(ctx context.Context, dir render.Dir, prefix, revRange string) ([
 	return lines, nil
 }
 
-// gitRefExists reports whether ref resolves (git rev-parse --verify --quiet: exit
-// 0 present, exit 1 missing). Any other exit is an error naming the code.
 func gitRefExists(ctx context.Context, dir render.Dir, prefix, ref string) (bool, error) {
-	_, code, stderr, err := render.RunCLIExitCode(ctx, dir, "git", []string{"rev-parse", "--verify", "--quiet", ref})
+	value, err := gitRefValue(ctx, dir, prefix, ref)
+	return value != "", err
+}
+
+func gitRefValue(ctx context.Context, dir render.Dir, prefix, ref string) (string, error) {
+	out, code, stderr, err := render.RunCLIExitCode(ctx, dir, "git", []string{"rev-parse", "--verify", "--quiet", ref})
 	if err != nil {
-		return false, fmt.Errorf("%s: git rev-parse %s: %w", prefix, ref, err)
+		return "", fmt.Errorf("%s: git rev-parse %s: %w", prefix, ref, err)
 	}
 	switch code {
 	case 0:
-		return true, nil
+		return strings.TrimSpace(out), nil
 	case 1:
-		return false, nil
+		return "", nil
 	default:
-		return false, fmt.Errorf("%s: git rev-parse %s: exit %d: %s", prefix, ref, code, strings.TrimSpace(stderr))
+		return "", fmt.Errorf("%s: git rev-parse %s: exit %d: %s", prefix, ref, code, strings.TrimSpace(stderr))
 	}
 }
 
