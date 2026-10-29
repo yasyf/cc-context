@@ -27,9 +27,9 @@ func (c *passClock) Now() time.Time {
 
 func (c *passClock) After(d time.Duration) <-chan time.Time { return time.After(d) }
 
-func (f *gitFixture) startPaused(engine *Engine, clock *passClock) <-chan error {
+func (f *gitFixture) startMaintained(engine *Engine, clock *passClock) <-chan error {
 	f.t.Helper()
-	return f.startStopped(engine, clock, cleanup.Switch{Paused: true})
+	return f.startStopped(engine, clock, cleanup.Switch{Paused: true, Hold: &cleanup.Hold{ID: "repair", Reason: "registration repair", Since: time.Now()}})
 }
 
 func (f *gitFixture) startStopped(engine *Engine, clock *passClock, sw cleanup.Switch) <-chan error {
@@ -82,7 +82,7 @@ func (f *gitFixture) resumed(engine *Engine, running <-chan error, id string) cl
 	return done
 }
 
-func TestQueuePauseRestsJournaledJobsAtTheirPhaseUntilResume(t *testing.T) {
+func TestMaintenanceHoldRestsJournaledJobsAtTheirPhaseUntilRelease(t *testing.T) {
 	seedMoved := func(f *gitFixture) cleanup.Job {
 		job := f.accept()
 		f.park(&job, "rev-parse", cleanup.PhaseMoved, "identity")
@@ -108,7 +108,7 @@ func TestQueuePauseRestsJournaledJobsAtTheirPhaseUntilResume(t *testing.T) {
 			clock := newPassClock()
 			f.clock = clock
 			engine := f.engine()
-			running := f.startPaused(engine, clock)
+			running := f.startMaintained(engine, clock)
 
 			f.refusedWhilePaused(engine)
 			if got := f.gitCalls(); got != before {
@@ -130,18 +130,21 @@ func TestQueuePauseRestsJournaledJobsAtTheirPhaseUntilResume(t *testing.T) {
 				t.Errorf("Status() = paused %t, %d jobs, %v; want paused with the one job", report.Paused, len(report.Jobs), err)
 			}
 
+			if err := engine.Release(context.Background(), "repair"); err != nil {
+				t.Fatal(err)
+			}
 			f.finished(f.resumed(engine, running, job.ID))
 		})
 	}
 }
 
-func TestQueuePauseHoldsANewRemovalPendingUntilResume(t *testing.T) {
+func TestMaintenanceHoldKeepsANewRemovalPendingUntilRelease(t *testing.T) {
 	f := newGitFixture(t)
 	tree, listing := f.id(f.worktree), f.listing()
 	clock := newPassClock()
 	f.clock = clock
 	engine := f.engine()
-	running := f.startPaused(engine, clock)
+	running := f.startMaintained(engine, clock)
 
 	f.refusedWhilePaused(engine)
 	if got := f.gitCalls(); got != "" {
@@ -173,6 +176,9 @@ func TestQueuePauseHoldsANewRemovalPendingUntilResume(t *testing.T) {
 		t.Errorf("recovery refs = %q, want none", refs)
 	}
 
+	if err := engine.Release(context.Background(), "repair"); err != nil {
+		t.Fatal(err)
+	}
 	f.finished(f.resumed(engine, running, receipt.JobID))
 }
 

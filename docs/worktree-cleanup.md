@@ -61,33 +61,46 @@ their publication rules. The public command group is `ccx vcs cleanup`.
 | --- | --- |
 | `ccx vcs cleanup status [job-id] --json` | Report the queue, or one job, with progress and any blockage |
 | `ccx vcs cleanup wait <job-id>` | Wait for one job to finish; report a blockage if it cannot proceed |
-| `ccx vcs cleanup pause` | Stop preparation, relocation, and deletion; queue new `worktree rm` removals as pending |
+| `ccx vcs cleanup pause` | Stop physical relocation and deletion, retire inactive queued linked-worktree registrations in place, and queue new `worktree rm` removals as pending |
 | `ccx vcs cleanup resume` | Resume the queue; refused while a maintenance hold stands |
-| `ccx vcs cleanup hold acquire --id <id> --reason <text>` | Stop the queue as `pause` does, under a hold that `resume` cannot lift |
+| `ccx vcs cleanup hold acquire --id <id> --reason <text>` | Block worktree-registration retirement, checkout relocation, and payload deletion under a hold that `resume` cannot lift |
 | `ccx vcs cleanup hold release --id <id>` | Lift the hold `<id>` names, leaving any ordinary pause in place |
 | `ccx vcs cleanup hold status [--json]` | Report the hold, if any, and the ordinary pause apart from it |
 | `ccx vcs cleanup retry <job-id>` | Retry a blocked job from its recorded phase after its cause is addressed |
 | `ccx vcs cleanup watchers --json` | Inspect watcher roots and consumers without retiring them |
 
-`pause` holds queued jobs at their recorded phases until `resume`, with no
-retries or inactivity checks. The pause survives daemon restarts. While
-paused, the daemon rejects `cleanup adopt` and deferred workspace releases
-before any preparation or Git work. The error names `ccx vcs cleanup resume`.
+`pause` stops physical relocation and deletion while keeping queued jobs at
+their recorded phases and retaining their directories and content in place.
+During an ordinary pause, the daemon still checks inactivity and unregisters
+inactive queued linked worktrees in place; live activity or unknown ownership
+blocks logical retirement. While paused, the daemon accepts Expected-bound
+deferred workspace releases and rejects `cleanup adopt` on legacy trees, naming
+`ccx vcs cleanup resume`. A maintenance hold (`hold acquire`) blocks
+worktree-registration retirement, checkout relocation, and payload deletion,
+while `worktree rm` still journals `pending` queue intents and deferred
+releases and `cleanup adopt` are refused, until `hold release` is called with
+the matching `--id`, which leaves any ordinary pause intact. Both pause and hold
+survive daemon restarts. Acquire a maintenance hold before running
+registration-changing maintenance on an affected worktree entry (`repair`,
+`move`, `lock`, `unlock`, `prune`, or `remove`) so it does not overlap logical
+retirement; maintenance on unrelated entries and adding a new unique worktree
+are unaffected.
 
-A `worktree rm` during a pause runs the main-working-copy, trunk, lock,
-submodule, nesting, volume, and dirty-tree refusals, and skips the live-process
-and watcher checks. It then records a `pending` job and moves nothing.
-`cleanup status` lists the job as `pending`, and the receipt reads
-`queue paused until ccx vcs cleanup resume`. `worktree rm --wait` and
-`cleanup wait` fail at once while the queue is paused, naming
-`ccx vcs cleanup resume`, instead of waiting for a resume nobody may run. On `resume`, the daemon runs each pending job's whole preflight
-again in queue order. It blocks any job that preflight refuses or whose tree
-changed, and removes the rest at the queue's pace.
+A `worktree rm` during a pause runs the initial main-working-copy, trunk, lock,
+submodule, nesting, volume, and dirty-tree refusals, then records a `pending`
+job without moving or deleting the directory; inactivity is checked later
+before logical retirement in place. `cleanup status` lists the job as `pending`,
+and the receipt reads `queue paused until ccx vcs cleanup resume`.
+`worktree rm --wait` and `cleanup wait` fail at once while the queue is paused,
+naming `ccx vcs cleanup resume`, instead of waiting for a resume nobody may
+run. On `resume`, the daemon repeats full preflight, identity, and activity
+checks in queue order before relocation and physical deletion, blocking any job
+that fails checks or whose tree changed.
 
 A stack rebase, `stack continue`, or `stack abort` that meets a paused queue
-still finishes and queues its conflict workspace's removal as `worktree rm`
-does: the workspace stays at its path as a `pending` job, and `resume`
-removes it.
+still finishes and records its conflict workspace as a `pending` retained
+directory: while paused, the daemon may retire the workspace's registration in
+place once inactive, and `resume` finishes physical relocation and deletion.
 
 The daemon logs every `pause` and `resume` to `daemon.log` with the
 requesting process ID, its ccx version, and its parent's process ID and

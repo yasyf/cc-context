@@ -408,7 +408,7 @@ func TestProgressIsJournaledAtMostOnceAMinute(t *testing.T) {
 	})
 }
 
-func TestQueuePauseRestsEveryJobAndHoldsNewRemovals(t *testing.T) {
+func TestMaintenanceHoldRestsEveryJobAndHoldsNewRemovals(t *testing.T) {
 	bubble(t, paced(), func(t *testing.T, h *harness) {
 		ctx := context.Background()
 		job := h.seed("a", 1, cleanup.PhaseUnregistered)
@@ -422,13 +422,13 @@ func TestQueuePauseRestsEveryJobAndHoldsNewRemovals(t *testing.T) {
 		h.expectEvents("advance:w@waiting", "sample", "admit:a", "open:a", "step:a")
 		h.expectTimers(400 * time.Millisecond)
 
-		if err := h.engine.Pause(ctx); err != nil {
+		if _, err := h.engine.Hold(ctx, cleanup.HoldRequest{ID: "repair", Reason: "registration repair"}); err != nil {
 			t.Fatalf("Pause() = %v", err)
 		}
 		h.expectEvents("close:a")
 		h.expectTimers()
 		sw, err := h.journal.LoadSwitch()
-		if err != nil || !sw.Paused {
+		if err != nil || sw.Hold == nil || sw.Hold.ID != "repair" {
 			t.Fatalf("LoadSwitch() = %+v, %v; want paused", sw, err)
 		}
 		if got := h.journaled(job.ID).Removed; got != 100 {
@@ -475,7 +475,7 @@ func TestQueuePauseRestsEveryJobAndHoldsNewRemovals(t *testing.T) {
 			t.Fatalf("Status() paused = %t, %v; want true", report.Paused, err)
 		}
 
-		if err := h.engine.Resume(ctx); err != nil {
+		if err := h.engine.Release(ctx, "repair"); err != nil {
 			t.Fatalf("Resume() = %v", err)
 		}
 		h.expectEvents("advance:w@waiting", "advance:r@prepared", "advance:b@pending", "sample", "admit:a", "open:a", "step:a")

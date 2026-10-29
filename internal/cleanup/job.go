@@ -29,15 +29,12 @@ const (
 type Phase string
 
 const (
-	// PhaseQueued is a deferred removal nobody has examined yet. Nothing is
-	// mutated.
+	// PhaseQueued is a deferred removal awaiting normal relocation.
 	PhaseQueued Phase = "queued"
-	// PhaseWaiting is a deferred removal whose tree a live process still holds.
-	// Nothing is mutated.
+	// PhaseWaiting is a deferred removal that last awaited inactivity.
 	PhaseWaiting Phase = "waiting"
-	// PhasePending is a removal asked for while the queue was paused: its
-	// tree's identity is captured, no live process has been looked for, and
-	// nothing is mutated.
+	// PhasePending is a paused removal with a captured registration that has
+	// not passed the full relocation preflight.
 	PhasePending Phase = "pending"
 	// PhasePrepared is journaled before the first mutation: from here watchers
 	// may be retired, the recovery ref written, and git's move attempted.
@@ -75,6 +72,16 @@ func (p Phase) Logical() bool { return phaseRank[p] < phaseRank[PhaseUnregistere
 
 // Physical reports whether only the payload's deletion remains.
 func (p Phase) Physical() bool { return p == PhaseUnregistered || p == PhaseDeleting }
+
+// Retirement records whether a retained checkout's Git backlink is being hidden or is hidden.
+type Retirement string
+
+const (
+	// RetirementIntent marks a registration update that must finish before relocation.
+	RetirementIntent Retirement = "intent"
+	// RetirementComplete marks an unregistered checkout retained for physical deletion.
+	RetirementComplete Retirement = "retired"
+)
 
 // State is a job's phase as an observer reads it, with a blockage layered over
 // the phase the job stopped in.
@@ -150,7 +157,8 @@ type Job struct {
 	Phase Phase  `json:"phase"`
 	// Deferred marks a removal its owner recorded while the tree was still
 	// occupied: it waits for inactivity instead of refusing.
-	Deferred bool `json:"deferred,omitempty"`
+	Deferred   bool       `json:"deferred,omitempty"`
+	Retirement Retirement `json:"retirement,omitempty"`
 	// Adopted marks a tree the retired janitor had already unregistered and
 	// parked at Source in its quarantine. It has no admin directory and no
 	// links to capture: the job takes the tree from Source straight to Payload.
@@ -254,6 +262,15 @@ func (j Job) Validate() error {
 	}
 	if j.Deferred && j.Phase == PhasePending {
 		return fmt.Errorf("phase %q belongs to a removal, not a deferred job", j.Phase)
+	}
+	switch j.Retirement {
+	case "":
+	case RetirementIntent, RetirementComplete:
+		if j.Adopted || !j.Phase.Logical() {
+			return fmt.Errorf("retirement %q belongs to a retained linked worktree", j.Retirement)
+		}
+	default:
+		return fmt.Errorf("unknown retirement %q", j.Retirement)
 	}
 	for name, path := range map[string]string{
 		"repo": j.Repo, "original": j.Original, "registered": j.Registered, "payload": j.Payload, "git": j.Git,

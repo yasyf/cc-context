@@ -442,12 +442,10 @@ func (e *Engine) Wait(ctx context.Context, jobID string) (cleanup.Job, error) {
 	}
 }
 
-// Pause stops the queue: the deletion it interrupts is closed and its progress
-// journaled before Pause returns, every other job rests at its journaled phase
-// with no recheck or retry, Remove journals new removals pending, and Defer
-// journals Expected-bound workspaces. Adopt is refused with cleanup.ErrPaused.
-// The switch is journaled, so a
-// restarted daemon stays paused.
+// Pause stops physical deletion, closes its active payload, and journals progress
+// before returning. Inactive linked worktrees may still have their registrations
+// retired in place. Hold excludes that logical maintenance as well. Remove and
+// Defer journal retained workspaces; Adopt is refused. The pause survives restart.
 func (e *Engine) Pause(ctx context.Context) error {
 	_, err := call(ctx, e, func(context.Context) (struct{}, error) { return struct{}{}, e.pause(true) })
 	return err
@@ -729,8 +727,11 @@ func (e *Engine) wake(physical bool) (time.Time, bool) {
 		}
 	}
 	for job := range e.ordered() {
-		if e.halted() {
+		if e.hold != nil {
 			break
+		}
+		if e.paused && !e.retirementDue(job) {
+			continue
 		}
 		if job.Phase == cleanup.PhaseWaiting && job.Blocked == nil {
 			consider(e.checked[job.ID].Add(e.tuning.Recheck))
@@ -748,12 +749,16 @@ func (e *Engine) wake(physical bool) (time.Time, bool) {
 	return wake, timed
 }
 
+func (e *Engine) retirementDue(job cleanup.Job) bool {
+	return job.Phase.Logical() && !job.Adopted && job.Retirement != cleanup.RetirementComplete
+}
+
 func (e *Engine) logicalDue(now time.Time) (cleanup.Job, bool) {
-	if e.halted() {
+	if e.hold != nil {
 		return cleanup.Job{}, false
 	}
 	for job := range e.ordered() {
-		if !job.Phase.Logical() {
+		if !job.Phase.Logical() || (e.paused && !e.retirementDue(job)) {
 			continue
 		}
 		if job.Blocked != nil {
@@ -857,7 +862,11 @@ func (e *Engine) advance(ctx context.Context, job cleanup.Job) (cleanup.Job, err
 	if _, named := cleanup.RequesterFrom(ctx); !named && job.Requester != (cleanup.ProcessID{}) {
 		ctx = cleanup.WithRequester(ctx, job.Requester)
 	}
-	err := e.relocator.Advance(ctx, &job)
+	step := e.relocator.Advance
+	if e.paused {
+		step = e.relocator.Retire
+	}
+	err := step(ctx, &job)
 	if err != nil && !cancelled(ctx, err) {
 		return job, &fatalError{fmt.Errorf("cleanup daemon: advance job %s: %w", job.ID, err)}
 	}
@@ -868,7 +877,7 @@ func (e *Engine) advance(ctx context.Context, job cleanup.Job) (cleanup.Job, err
 	case job.Phase == cleanup.PhaseDone:
 		delete(e.checked, job.ID)
 		return job, e.finish(job)
-	case job.Blocked != nil, !job.Phase.Logical():
+	case job.Blocked != nil, !job.Phase.Logical(), e.paused && job.Retirement == cleanup.RetirementComplete:
 		delete(e.checked, job.ID)
 	case job.Phase == cleanup.PhaseWaiting:
 		e.checked[job.ID] = e.clock.Now()

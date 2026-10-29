@@ -264,7 +264,30 @@ func (f *fakeRelocator) Advance(ctx context.Context, job *cleanup.Job) error {
 	if step == nil {
 		step = func(job *cleanup.Job) { job.Phase = cleanup.PhaseUnregistered }
 	}
+	job.Retirement = ""
 	step(job)
+	job.Updated = f.h.clock.Now()
+	return f.h.journal.Save(*job)
+}
+
+func (f *fakeRelocator) Retire(ctx context.Context, job *cleanup.Job) error {
+	name := f.h.rec.name(job.ID)
+	f.h.rec.add(fmt.Sprintf("retire:%s@%s", name, job.Phase))
+	f.serve(ctx, "retire", name)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	f.mu.Lock()
+	step, holders := f.scripts["retire:"+name], f.held[name]
+	f.mu.Unlock()
+	switch {
+	case step != nil:
+		step(job)
+	case holders != "":
+		job.Block(f.h.clock.Now(), "activity", holders)
+	default:
+		job.Retirement = cleanup.RetirementComplete
+	}
 	job.Updated = f.h.clock.Now()
 	return f.h.journal.Save(*job)
 }

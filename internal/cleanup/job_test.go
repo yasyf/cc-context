@@ -335,3 +335,28 @@ func TestPhaseHalves(t *testing.T) {
 		t.Errorf("table covers %d phases, phaseRank has %d", len(tests), len(phaseRank))
 	}
 }
+
+func TestRetirementRequiresALogicalLinkedJob(t *testing.T) {
+	layout := Layout{Root: "/state"}
+	for _, retirement := range []Retirement{RetirementIntent, RetirementComplete} {
+		job := validJob(layout, testID, 1)
+		job.Retirement = retirement
+		if err := job.Validate(); err != nil {
+			t.Fatalf("valid retirement %q: %v", retirement, err)
+		}
+		job.Phase = PhaseUnregistered
+		if err := job.Validate(); err == nil {
+			t.Fatalf("physical phase accepted retirement %q", retirement)
+		}
+		job = adoptedJob(layout, testID, 1)
+		job.Retirement = retirement
+		if err := job.Validate(); err == nil {
+			t.Fatalf("adopted job accepted retirement %q", retirement)
+		}
+	}
+	job := validJob(layout, testID, 1)
+	job.Retirement = "unknown"
+	if err := job.Validate(); err == nil {
+		t.Fatal("unknown retirement accepted")
+	}
+}
