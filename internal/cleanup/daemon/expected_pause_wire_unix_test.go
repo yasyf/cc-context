@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -94,11 +95,10 @@ func TestPausedDeferPreservesExpectedRegistrationOverTheWire(t *testing.T) {
 	}
 }
 
-func TestPausedDeferQueuesOnlyItsExpectedRegistrationOverTheWire(t *testing.T) {
+func TestPausedDeferRetiresOnlyItsExpectedRegistrationOverTheWire(t *testing.T) {
 	f := newGitFixture(t)
 	request := f.deferral()
 	marker := filepath.Join(f.worktree, "feature.txt")
-	listing := f.listing()
 	client := serveExpectedGitFixture(t, f, cleanup.Switch{Paused: true})
 
 	receipt, err := client.Defer(context.Background(), request)
@@ -115,11 +115,12 @@ func TestPausedDeferQueuesOnlyItsExpectedRegistrationOverTheWire(t *testing.T) {
 	if got, err := os.ReadFile(marker); err != nil || string(got) != "feature\n" {
 		t.Errorf("checkout contents = %q, %v; want feature preserved", got, err)
 	}
-	if got, err := relocate.Observe(f.worktree); err != nil || got != request.Expected {
-		t.Errorf("checkout registration = %+v, %v; want %+v", got, err, request.Expected)
+	deadline := time.Now().Add(time.Second)
+	for strings.Contains(f.listing(), f.worktree) && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
 	}
-	if got, want := f.listing(), listing; got != want {
-		t.Errorf("registrations = %q, want %q", got, want)
+	if got := f.listing(); strings.Contains(got, f.worktree) {
+		t.Errorf("paused queue still registers inactive checkout: %s", got)
 	}
 	report, err := client.Status(context.Background(), cleanup.Query{JobID: receipt.JobID})
 	if err != nil || !report.Paused || len(report.Jobs) != 1 || report.Jobs[0].Blocked != nil {
