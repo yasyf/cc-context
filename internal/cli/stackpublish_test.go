@@ -540,6 +540,71 @@ func TestStackSubmitAdoptsAnEquivalentRestackThatLandsMidPush(t *testing.T) {
 	}
 }
 
+func TestStackPublicationMovesAWorktreeGitDoesNotList(t *testing.T) {
+	for _, dirty := range []bool{false, true} {
+		t.Run(fmt.Sprintf("dirty=%v", dirty), func(t *testing.T) {
+			f, run, plan := prepareStackPublication(t)
+			dir := render.Dir(f.Dir)
+			if err := stackPushPublication(f.Context(), dir, gtSubmit{prefix: "test", publication: run}, plan); err != nil {
+				t.Fatal(err)
+			}
+			if err := stackRecordPublication(f.Context(), dir, run, plan); err != nil {
+				t.Fatal(err)
+			}
+			common, err := filepath.EvalSymlinks(filepath.Join(f.Dir, ".git"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			source := run.branch("feature").Local
+			mustRun(t, f.Env(), f.Dir, "git", "checkout", "-q", "--detach")
+			wt := filepath.Join(t.TempDir(), "wt")
+			mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", wt, "feature")
+			if wt, err = filepath.EvalSymlinks(wt); err != nil {
+				t.Fatal(err)
+			}
+			retired := filepath.Join(common, "retired-worktrees", "wt")
+			if err := os.MkdirAll(filepath.Dir(retired), 0o750); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Rename(filepath.Join(common, "worktrees", "wt"), retired); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(wt, ".git"), []byte("gitdir: "+retired+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if dirty {
+				if err := os.WriteFile(filepath.Join(wt, "scratch.txt"), []byte("mine\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			l, err := resolveLane(f.Context(), "stack", wt, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			saved, err := stackOnlyTestRun(common)
+			if err != nil {
+				t.Fatal(err)
+			}
+			saved.Origin = wt
+			report, err := stackMovePublishedSources(f.Context(), l, common, saved)
+			if err != nil {
+				t.Fatal(err)
+			}
+			head := gitAt(t, f.Env(), wt, "rev-parse", "HEAD")
+			status := gitAt(t, f.Env(), wt, "status", "--porcelain")
+			if dirty {
+				if !strings.Contains(report, "kept local feature") || !strings.Contains(report, "uncommitted work in "+wt) || head != source || status != "?? scratch.txt" {
+					t.Fatalf("report %q, head %s, status %q, want feature left at %s with scratch.txt kept", report, head, status, source)
+				}
+				return
+			}
+			if report != "moved feature onto the published heads" || head != plan[0].head || status != "" {
+				t.Fatalf("report %q, head %s, status %q, want feature and its checkout moved onto %s", report, head, status, plan[0].head)
+			}
+		})
+	}
+}
+
 func TestStackPublicationFinishesMovingSourcesAfterAnInterruptedMove(t *testing.T) {
 	f, run, plan := prepareStackPublication(t)
 	dir := render.Dir(f.Dir)

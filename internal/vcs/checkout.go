@@ -372,8 +372,25 @@ type Holding struct {
 // repository holds nothing, and a main checkout whose common dir is not
 // <root>/.git is named by the common dir, as git names it. A reftable
 // repository keeps no symbolic HEAD in its admin dirs, so its list still comes
-// from git.
+// from git. A linked c whose admin dir sits outside <common>/worktrees, which
+// git's own list never names, is listed too: it is still the working copy
+// holding its branch, and a caller that moves the branch must move it as well.
 func Holdings(ctx context.Context, c Checkout) ([]Holding, error) {
+	holdings, err := registeredHoldings(ctx, c)
+	if err != nil || c.GitDir == c.CommonDir || filepath.Dir(c.GitDir) == filepath.Join(c.CommonDir, "worktrees") {
+		return holdings, err
+	}
+	out, code, stderr, err := render.RunCLIExitCode(ctx, render.Dir(c.Root), "git", []string{"symbolic-ref", "--quiet", "HEAD"})
+	if err != nil {
+		return nil, fmt.Errorf("git symbolic-ref HEAD in %q: %w", c.Root, err)
+	}
+	if code > 1 {
+		return nil, fmt.Errorf("git symbolic-ref HEAD in %q: exit %d: %s", c.Root, code, strings.TrimSpace(stderr))
+	}
+	return append(holdings, Holding{Path: c.Root, Branch: strings.TrimPrefix(strings.TrimSpace(out), "refs/heads/")}), nil
+}
+
+func registeredHoldings(ctx context.Context, c Checkout) ([]Holding, error) {
 	if _, err := os.Stat(filepath.Join(c.CommonDir, "reftable")); err == nil {
 		list, err := Worktrees(ctx, c)
 		if err != nil {
