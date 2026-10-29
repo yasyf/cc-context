@@ -46,7 +46,8 @@ func TestStackListBatchSharesGraphAndPreservesForks(t *testing.T) {
 	f := shipGTRepo(t, vcstest.GTStack("base", "left"))
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "base")
 	shipGTStack(t, f, "right")
-	paths := []string{filepath.Join(t.TempDir(), "base"), filepath.Join(t.TempDir(), "left"), f.Dir}
+	paths := make([]string, 0, 4)
+	paths = append(paths, filepath.Join(t.TempDir(), "base"), filepath.Join(t.TempDir(), "left"), f.Dir)
 	for i, branch := range []string{"base", "left"} {
 		mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", paths[i], branch)
 		paths[i] = gitAt(t, f.Env(), paths[i], "rev-parse", "--show-toplevel")
