@@ -464,9 +464,10 @@ func newCleanupPauseCmd() *cobra.Command {
 Physical deletion stops and every job mid-removal rests at its phase. A new
 "worktree rm" runs only the checks that look for no live process, then is
 journaled pending with nothing moved; "resume" runs its whole preflight again
-and removes it at the queue's pace. A stack workspace release or "cleanup
-adopt" is refused before anything is inspected, journaled, or moved. The switch
-is durable: a restarted daemon stays paused until "resume".`,
+and removes it at the queue's pace. A stack workspace release journals its
+captured registration without moving or removing it. "cleanup adopt" is refused
+before anything is inspected, journaled, or moved. The switch is durable: a
+restarted daemon stays paused until "resume".`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()

@@ -21,9 +21,8 @@ var (
 	ErrUnsupported = errors.New("cleanup: the deletion daemon runs on macOS only")
 	// ErrUnknownJob reports a job id the journal does not hold.
 	ErrUnknownJob = errors.New("cleanup: no such job")
-	// ErrPaused reports a paused queue, which refuses every new deferral or
-	// adoption before any preflight, journal record, git call, or filesystem
-	// change.
+	// ErrPaused reports an adoption refused while paused or held, or a
+	// deferral refused under a maintenance hold, before preflight or mutation.
 	ErrPaused = errors.New("cleanup: the queue is paused and takes no new deferral or adoption until ccx vcs cleanup resume")
 	// ErrIdentity reports a file that is not the one a job captured.
 	ErrIdentity = errors.New("cleanup: identity mismatch")
@@ -414,8 +413,8 @@ type Service interface {
 	// blocks.
 	Wait(ctx context.Context, jobID string) (Job, error)
 	// Pause stops the queue: every job rests at its journaled phase, Remove
-	// journals a new removal as pending, and Defer and Adopt return ErrPaused
-	// until Resume, across restarts.
+	// journals a new removal as pending, admits Expected-bound deferrals, and
+	// refuses adoption until Resume, across restarts.
 	Pause(ctx context.Context) error
 	// Resume lets the queue run again, rested and pending jobs and new
 	// removals alike. While a maintenance hold stands it is a *HeldError and

@@ -804,7 +804,7 @@ func TestRemoveSurvivesADisconnectedClient(t *testing.T) {
 	gated.gate <- struct{}{}
 }
 
-func TestServeHoldsRemovalsAndRefusesDeferralsWhilePaused(t *testing.T) {
+func TestServeHoldsRemovalsAndRefusesAdoptionWhilePaused(t *testing.T) {
 	ctx := context.Background()
 	f := serveFixture(t, queuePaused)
 	client := strconv.Itoa(os.Getpid())
@@ -816,7 +816,6 @@ func TestServeHoldsRemovalsAndRefusesDeferralsWhilePaused(t *testing.T) {
 		name string
 		ask  func() error
 	}{
-		{"defer", func() error { _, err := f.client.Defer(ctx, f.h.deferral("d")); return err }},
 		{"adopt", func() error { _, err := f.client.Adopt(ctx, f.h.adoption("q")); return err }},
 	}
 	for _, tt := range tests {
@@ -827,11 +826,11 @@ func TestServeHoldsRemovalsAndRefusesDeferralsWhilePaused(t *testing.T) {
 			}
 		})
 	}
-	deferral, err := json.Marshal(f.h.deferral("e"))
+	adoption, err := json.Marshal(f.h.adoption("e"))
 	if err != nil {
 		t.Fatalf("marshal a deferral: %v", err)
 	}
-	raw := f.raw(fmt.Sprintf(`{"protocol":%d,"version":"v9","op":"defer","defer":%s}`, cleanup.Protocol, deferral))
+	raw := f.raw(fmt.Sprintf(`{"protocol":%d,"version":"v9","op":"adopt","adopt":%s}`, cleanup.Protocol, adoption))
 	if raw.Error == nil || raw.Error.Kind != kindPaused || raw.Error.Message != cleanup.ErrPaused.Error() {
 		t.Errorf("raw defer reply = %+v, want a %s error carrying ErrPaused's message", raw, kindPaused)
 	}

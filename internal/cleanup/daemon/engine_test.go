@@ -450,7 +450,6 @@ func TestQueuePauseRestsEveryJobAndHoldsNewRemovals(t *testing.T) {
 			name string
 			ask  func() error
 		}{
-			{"defer", func() error { _, err := h.engine.Defer(ctx, h.deferral("d")); return err }},
 			{"adopt", func() error { _, err := h.engine.Adopt(ctx, h.adoption("q")); return err }},
 		} {
 			if err := tt.ask(); !errors.Is(err, cleanup.ErrPaused) {
