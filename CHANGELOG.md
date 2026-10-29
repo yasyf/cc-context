@@ -34,6 +34,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A paused or held cleanup queue still unregisters unmoved worktree removals
+  in place.** While halted by `ccx vcs cleanup pause` or
+  `ccx vcs cleanup hold acquire`, mid-move jobs and deletions rest at their
+  phases. Once proven unchanged and idle, `queued`, `waiting`, and `pending`
+  removals are still unregistered in place: the daemon points the checkout's
+  `.git` at `<common dir>/retired-worktrees/<id>` and renames the admin
+  directory there.
+  Only metadata moves, so `git worktree list` drops the worktree while the
+  checkout keeps working at its path; nothing is copied or pinned, so `git gc`
+  no longer counts that checkout's `HEAD`, index, or reflogs. A replaced admin
+  directory or rewritten `.git` blocks the job on `reconcile` without binding
+  the checkout to another directory. On `resume` with no hold, the daemon
+  re-proves each tree, records `refs/ccx/cleanup/<id>`, moves and deletes the
+  tree, and removes its retired admin directory; the daemon protocol is
+  unchanged and `cleanup status` reports such jobs as `pending`, or `queued`
+  for a deferral.
 - **`ccx vcs pr status` and `pr state` read through REST when GraphQL is
   rate-limited.** They used to serve the cached record marked stale until
   the next probe. They now read the stale pull requests through REST, and

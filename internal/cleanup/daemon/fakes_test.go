@@ -269,6 +269,30 @@ func (f *fakeRelocator) Advance(ctx context.Context, job *cleanup.Job) error {
 	return f.h.journal.Save(*job)
 }
 
+func (f *fakeRelocator) Retire(ctx context.Context, job *cleanup.Job) error {
+	name := f.h.rec.name(job.ID)
+	f.h.rec.add(fmt.Sprintf("retire:%s@%s", name, job.Phase))
+	f.serve(ctx, "retire", name)
+	f.mu.Lock()
+	step, gate := f.scripts["retire:"+name], f.gates["retire:"+name]
+	f.mu.Unlock()
+	if gate != nil {
+		f.entered <- "retire:" + name
+		<-gate
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("check activity in %s: %w", name, err)
+	}
+	if step == nil {
+		step = retireInPlace
+	}
+	step(job)
+	job.Updated = f.h.clock.Now()
+	return f.h.journal.Save(*job)
+}
+
+func retireInPlace(job *cleanup.Job) { job.Phase = cleanup.PhaseRetired }
+
 func (f *fakeRelocator) Admit(ctx context.Context, job *cleanup.Job) error {
 	name := f.h.rec.name(job.ID)
 	f.h.rec.add("admit:" + name)
@@ -329,24 +353,33 @@ func (f *fakeDeleter) wants(name string) []cleanup.FileID {
 
 func (f *fakeDeleter) Open(dir, name string, want cleanup.FileID) (cleanup.Deletion, error) {
 	job := f.h.rec.name(filepath.Base(dir))
+	metadata := filepath.Base(dir) == "retired-worktrees"
+	if metadata {
+		job = f.h.rec.name(name) + "-admin"
+	}
 	f.h.rec.add("open:" + job)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	p := f.payloads[job]
-	if name != cleanup.PayloadName || p == nil || p.entries == 0 {
+	if (!metadata && name != cleanup.PayloadName) || p == nil || p.entries == 0 {
 		return nil, fmt.Errorf("open %s: %w", filepath.Join(dir, name), fs.ErrNotExist)
 	}
 	p.wants = append(p.wants, want)
 	if p.openErr != nil {
 		return nil, p.openErr
 	}
-	return &fakeDeletion{deleter: f, job: job, payload: p}, nil
+	deletion := &fakeDeletion{deleter: f, job: job, payload: p}
+	if metadata {
+		deletion.directory = filepath.Join(dir, name)
+	}
+	return deletion, nil
 }
 
 type fakeDeletion struct {
-	deleter *fakeDeleter
-	job     string
-	payload *payload
+	deleter   *fakeDeleter
+	job       string
+	payload   *payload
+	directory string
 }
 
 func (d *fakeDeletion) Step(limit int, _ time.Duration) (int, bool, error) {
@@ -373,6 +406,11 @@ func (d *fakeDeletion) Step(limit int, _ time.Duration) (int, bool, error) {
 	}
 	removed := min(limit, d.payload.entries)
 	d.payload.entries -= removed
+	if d.payload.entries == 0 && d.directory != "" {
+		if err := os.Remove(d.directory); err != nil {
+			return removed, false, err
+		}
+	}
 	return removed, d.payload.entries == 0, nil
 }
 
