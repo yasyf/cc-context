@@ -4341,7 +4341,7 @@ func stackReleaseWorkspace(ctx context.Context, l lane, commonDir string, c *sta
 	case errors.Is(err, cleanup.ErrUnsupported):
 		return stackReleaseInline(ctx, l, c)
 	case errors.Is(err, cleanup.ErrPaused):
-		return stackPausedLine(ws), nil
+		return stackQueueRemoval(ctx, c, force)
 	case err != nil:
 		var refused *cleanup.RefusedError
 		switch {
@@ -4399,8 +4399,23 @@ func stackOccupied(ctx context.Context, ws string) (bool, error) {
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)), nil
 }
 
-func stackPausedLine(ws string) string {
-	return "left " + ws + " in place, since the cleanup queue is paused — ccx vcs worktree rm --path " + ws + " queues its removal until ccx vcs cleanup resume"
+func stackQueueRemoval(ctx context.Context, c *stackConflict, force bool) (string, error) {
+	state, err := stackWorkspaceAt(stackRebasePrefix, c)
+	if err != nil {
+		return "", err
+	}
+	if state == stackWorkspaceMismatched {
+		return stackMismatchLine(c.Workspace), nil
+	}
+	receipt, err := queueGitWorktreeRemoval(ctx, c.Workspace, worktreeRmOptions{force: force})
+	var refused *cleanup.RefusedError
+	switch {
+	case errors.As(err, &refused):
+		return fmt.Sprintf("left %s in place, since the paused cleanup queue refused its removal: %v", c.Workspace, err), nil
+	case err != nil:
+		return "", fmt.Errorf("stack rebase: %w — the cleanup daemon may already hold %s", err, c.Workspace)
+	}
+	return fmt.Sprintf("queued %s for removal as cleanup job %s, %s until ccx vcs cleanup resume", c.Workspace, receipt.JobID, receipt.State), nil
 }
 
 func stackKeptLine(ws string) string {
