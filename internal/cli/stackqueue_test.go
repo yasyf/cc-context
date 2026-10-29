@@ -109,6 +109,38 @@ func TestStackSubmitNeverPushesAQueuedBranch(t *testing.T) {
 	}
 }
 
+// TestStackRebaseDryRunSaysWhyAQueuedBaseKeepsALaggingChainOffTrunk is
+// port-kv-xchat-2's chain: its base sat in the merge queue on a trunk that had
+// moved, and the plan kept it at its published head without a word, so the
+// chain above it read as a rebase that forgot trunk.
+func TestStackRebaseDryRunSaysWhyAQueuedBaseKeepsALaggingChainOffTrunk(t *testing.T) {
+	f := stackRebaseRepo(t, "base", "feature")
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("stack submit: %v", err)
+	}
+	api.prs["base"], api.prs["feature"] = 100, 101
+	api.queued["base"] = true
+	stubPRState(t, prPoll(`"p0":`+prNode(100, "OPEN", prComments())))
+	stubStackPRs(t, f, map[string]*stackPR{
+		"base":    {Number: 100, Title: "base", State: "OPEN", Base: "main"},
+		"feature": {Number: 101, Title: "feature", State: "OPEN", Base: "base"},
+	})
+	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	queued := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
+	pin := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "main")
+
+	out, _, err := runStackCmd(t, f, "rebase", "--dry-run")
+	if err != nil {
+		t.Fatalf("stack rebase --dry-run: %v", err)
+	}
+	want := "base · kept at its published head " + queued[:12] + " · in the merge queue, so a move would evict it · lacks main@" + pin[:12]
+	if !strings.Contains(out, want) {
+		t.Errorf("plan = %q, want it to carry %q", out, want)
+	}
+}
+
 // TestStackSubmitNeverPushesAPullRequestInFailureHandling is #31667 in
 // Forge-AI/monorepo: Graphite dropped its queue flag while it retested the
 // pull request alone after its batch failed CI.
