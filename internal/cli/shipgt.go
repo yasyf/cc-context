@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"maps"
 	"os"
 	"path/filepath"
@@ -2870,10 +2871,22 @@ const gitFetchAttempts = 6
 // shared clone holds the lock on a ref this one updates: that fetch moves the
 // same ref, so the retry finds it free.
 func gitFetch(ctx context.Context, dir render.Dir, args ...string) error {
+	packs, captureErr := vcs.CapturePackIndexes(ctx, dir)
+	if captureErr != nil {
+		slog.DebugContext(ctx, "capture fetch pack indexes", "error", captureErr)
+	}
 	delay := 100 * time.Millisecond
 	for attempt := 1; ; attempt++ {
 		_, err := render.RunCLI(ctx, dir, "git", append([]string{"fetch"}, args...))
-		if err == nil || attempt == gitFetchAttempts || !strings.Contains(err.Error(), "cannot lock ref") {
+		if err == nil {
+			if captureErr == nil {
+				if err := packs.Publish(ctx, dir); err != nil {
+					slog.DebugContext(ctx, "publish fetch pack index", "error", err)
+				}
+			}
+			return nil
+		}
+		if attempt == gitFetchAttempts || !strings.Contains(err.Error(), "cannot lock ref") {
 			return err
 		}
 		select {
