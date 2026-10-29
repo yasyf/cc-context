@@ -265,13 +265,27 @@ type gtCache struct {
 	prefix    string
 	commonDir string
 	state     gtState
+
+	checkoutCommonDir string
 	restack   *stackRebaseRun
 	focus     string
 	parent    string
 }
 
-func newGTCache(dir render.Dir, prefix string) *gtCache {
-	return &gtCache{dir: dir, prefix: prefix}
+func newGTCache(l lane, prefix string) *gtCache {
+	return &gtCache{dir: l.dir(), prefix: prefix, checkoutCommonDir: l.checkout.CommonDir}
+}
+
+func gitCommonDirOverridden(ctx context.Context) bool {
+	if _, set := os.LookupEnv("GIT_COMMON_DIR"); set {
+		return true
+	}
+	for _, entry := range render.EnvFrom(ctx) {
+		if strings.HasPrefix(entry, "GIT_DIR=") || strings.HasPrefix(entry, "GIT_COMMON_DIR=") {
+			return true
+		}
+	}
+	return false
 }
 
 // common resolves the git common dir on the first read that needs one, rather
@@ -280,9 +294,16 @@ func newGTCache(dir render.Dir, prefix string) *gtCache {
 // lookup whose failure names the more useful command.
 func (c *gtCache) common(ctx context.Context) (string, error) {
 	if c.commonDir == "" {
-		commonDir, err := gtCommonDir(ctx, c.dir, c.prefix)
-		if err != nil {
-			return "", err
+		commonDir := c.checkoutCommonDir
+		if gitCommonDirOverridden(ctx) {
+			commonDir = ""
+		}
+		if commonDir == "" {
+			var err error
+			commonDir, err = gtCommonDir(ctx, c.dir, c.prefix)
+			if err != nil {
+				return "", err
+			}
 		}
 		c.commonDir = commonDir
 	}
