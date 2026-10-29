@@ -49,13 +49,10 @@ func (f *gitFixture) startStopped(engine *Engine, clock *passClock, sw cleanup.S
 func (f *gitFixture) refusedWhilePaused(engine *Engine) {
 	f.t.Helper()
 	ctx := context.Background()
-	unobserved := cleanup.Registration{Tree: cleanup.FileID{Dev: 1, Ino: 1}, AdminDir: f.adminDir, Admin: cleanup.FileID{Dev: 1, Ino: 1}}
-	deferral := cleanup.DeferRequest{Worktree: f.worktree, CommonDir: f.common, Owner: "stack", Expected: unobserved, Git: f.wrapper}
 	tests := []struct {
 		name string
 		ask  func() error
 	}{
-		{"defer", func() error { _, err := engine.Defer(ctx, deferral); return err }},
 		{"adopt", func() error { _, err := engine.Adopt(ctx, f.adoption()); return err }},
 	}
 	for _, tt := range tests {

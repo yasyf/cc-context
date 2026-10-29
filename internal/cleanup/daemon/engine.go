@@ -444,8 +444,9 @@ func (e *Engine) Wait(ctx context.Context, jobID string) (cleanup.Job, error) {
 
 // Pause stops the queue: the deletion it interrupts is closed and its progress
 // journaled before Pause returns, every other job rests at its journaled phase
-// with no recheck or retry, Remove journals new removals pending, and Defer and
-// Adopt are refused with cleanup.ErrPaused. The switch is journaled, so a
+// with no recheck or retry, Remove journals new removals pending, and Defer
+// journals Expected-bound workspaces. Adopt is refused with cleanup.ErrPaused.
+// The switch is journaled, so a
 // restarted daemon stays paused.
 func (e *Engine) Pause(ctx context.Context) error {
 	_, err := call(ctx, e, func(context.Context) (struct{}, error) { return struct{}{}, e.pause(true) })
@@ -1062,7 +1063,7 @@ func (e *Engine) relocate(ctx context.Context, job cleanup.Job) (cleanup.Receipt
 }
 
 func (e *Engine) intend(ctx context.Context, r cleanup.DeferRequest) (cleanup.Receipt, error) {
-	if e.halted() {
+	if e.hold != nil {
 		return cleanup.Receipt{}, cleanup.ErrPaused
 	}
 	job, found, err := e.revive(boundTo(r))
