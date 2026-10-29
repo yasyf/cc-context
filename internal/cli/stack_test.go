@@ -107,6 +107,27 @@ func TestStackListNamesTheWorkingCopyHoldingEachBranch(t *testing.T) {
 	}
 }
 
+func TestStackListAvoidsRepeatedDiscovery(t *testing.T) {
+	f := shipGTRepo(t, vcstest.GTStack("base"))
+	f.RotateLog(t)
+	out, _, err := runStackCmd(t, f, "list")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "base" + shipSep + "here"; out != want {
+		t.Fatalf("stack list = %q, want %q", out, want)
+	}
+	discoveries := 0
+	for _, call := range vcstest.Invocations(t, f.ArgvLog) {
+		if slices.Equal(call, gtCommonDirArgv) {
+			discoveries++
+		}
+	}
+	if discoveries != 1 {
+		t.Fatalf("stack list common-dir discoveries = %d, want one", discoveries)
+	}
+}
+
 func TestStackListNamesTheParentToTrackAnUntrackedBranchOnto(t *testing.T) {
 	f := shipGTRepo(t, vcstest.GTStack("base"))
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "loose", "base")

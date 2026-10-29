@@ -141,7 +141,7 @@ func runStackDropBranch(cmd *cobra.Command, l lane, branch string, dryRun bool) 
 	if err := stackRequireGit(ctx, l.dir(), dropPrefix); err != nil {
 		return err
 	}
-	commonDir, err := gtCommonDir(ctx, l.dir(), dropPrefix)
+	commonDir, err := newGTCache(l.dir(), dropPrefix, l.checkout).common(ctx)
 	if err != nil {
 		return err
 	}
