@@ -11,7 +11,6 @@ import (
 	"log/slog"
 	"path/filepath"
 	"runtime/debug"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -97,42 +96,9 @@ func Related(ctx context.Context, emb index.Embedder, a backend.Args) ([]semsear
 		return nil, fmt.Errorf("semsearch: no indexed chunk contains %s:%d", file, line)
 	}
 
-	targetLang := index.DetectLanguage(idx.Chunks[srcIdx].Path)
-	queryVec := idx.Vectors[srcIdx]
-
-	type scored struct {
-		idx   int
-		score float64
-	}
-	var hits []scored
-	for i, c := range idx.Chunks {
-		if targetLang != "" && index.DetectLanguage(c.Path) != targetLang {
-			continue // find_related's same-language selector
-		}
-		hits = append(hits, scored{idx: i, score: rank.Cosine(queryVec, idx.Vectors[i])})
-	}
-	// Score desc, then (start_line, path, corpus index) ascending — rank's
-	// canonical tie-break, total even when two chunks share path+start_line.
-	sort.Slice(hits, func(i, j int) bool {
-		if hits[i].score != hits[j].score {
-			return hits[i].score > hits[j].score
-		}
-		ci, cj := idx.Chunks[hits[i].idx], idx.Chunks[hits[j].idx]
-		if ci.StartLine != cj.StartLine {
-			return ci.StartLine < cj.StartLine
-		}
-		if ci.Path != cj.Path {
-			return ci.Path < cj.Path
-		}
-		return hits[i].idx < hits[j].idx
-	})
-
 	k := topK(a.K)
-	// Over-fetch by one so removing the source itself still leaves k results.
-	if len(hits) > k+1 {
-		hits = hits[:k+1]
-	}
-	out := make([]semsearch.Result, 0, k)
+	hits := relatedTopK(idx, srcIdx, k)
+	out := make([]semsearch.Result, 0, min(k, len(hits)))
 	for _, h := range hits {
 		if h.idx == srcIdx {
 			continue
