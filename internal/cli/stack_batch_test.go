@@ -205,7 +205,7 @@ func TestStackListBatchSharesUnlandedParentChecks(t *testing.T) {
 			shipResetLog(t, f)
 			results := stackBatchReports(t, f, left, f.Dir, left, f.Dir)
 			for i, result := range results {
-				if !strings.Contains(result.Error, "gt state has no parent for") || result.Listing != nil {
+				if !strings.Contains(result.Error, "is not tracked by Graphite, so it sits on no stack") || result.Listing != nil {
 					t.Errorf("result %d = %+v, want unlanded orphan refusal", i, result)
 				}
 			}
