@@ -2,7 +2,9 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"maps"
 	"os"
 	"path/filepath"
@@ -257,13 +259,25 @@ func pruneHeldBranches(ctx context.Context, dir render.Dir, commonDir string) (m
 			held[strings.TrimSpace(name)] = true
 		}
 	}
-	links, err := filepath.Glob(filepath.Join(commonDir, "*", "*", "gitdir"))
+	groups, err := os.ReadDir(commonDir)
 	if err != nil {
 		return nil, fmt.Errorf("prune: %w", err)
 	}
-	for _, link := range links {
-		if name, ok := pruneUnregisteredHolder(filepath.Dir(link)); ok {
-			held[name] = true
+	for _, group := range groups {
+		if !group.IsDir() {
+			continue
+		}
+		admins, err := os.ReadDir(filepath.Join(commonDir, group.Name()))
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("prune: %w", err)
+		}
+		for _, admin := range admins {
+			if name, ok := pruneUnregisteredHolder(filepath.Join(commonDir, group.Name(), admin.Name())); ok {
+				held[name] = true
+			}
 		}
 	}
 	return held, nil
@@ -276,12 +290,15 @@ func pruneUnregisteredHolder(admin string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	dotGit := strings.TrimSpace(string(link))
+	dotGit := strings.TrimRight(string(link), "\r\n")
+	if !filepath.IsAbs(dotGit) {
+		dotGit = filepath.Join(admin, dotGit)
+	}
 	pointer, err := os.ReadFile(dotGit) //nolint:gosec // the worktree .git file git itself recorded in admin/gitdir
 	if err != nil {
 		return "", false
 	}
-	target, ok := strings.CutPrefix(strings.TrimSpace(string(pointer)), "gitdir: ")
+	target, ok := strings.CutPrefix(strings.TrimRight(string(pointer), "\r\n"), "gitdir: ")
 	if !ok {
 		return "", false
 	}
@@ -431,26 +448,29 @@ func pruneMergedHead(pr gtapi.PullRequestInfo) string {
 // checkout and the branch keeps its commits. A squash-landed branch never
 // reached trunk, so git branch -d would refuse it; it goes in one git update-ref
 // transaction that deletes each ref only at the head its merged pull request
-// carried, and refuses them all if one moved. update-ref, unlike git branch,
-// deletes a branch a worktree has out, so the holders are read again first.
+// carried, and refuses them all if one moved. update-ref deletes a branch a
+// worktree has out, and git branch -d does too when git no longer registers
+// that worktree, so the holders are read again first.
 func pruneApply(ctx context.Context, dir render.Dir, l lane, plan prunePlan, commonDir string) error {
+	squashed := pruneSquashedNames(plan)
+	if len(plan.merged)+len(squashed) > 0 {
+		held, err := pruneHeldBranches(ctx, dir, commonDir)
+		if err != nil {
+			return err
+		}
+		for _, branch := range slices.Concat(plan.merged, squashed) {
+			if held[branch] {
+				return fmt.Errorf("prune: a worktree checked out %s after the plan; re-run prune", branch)
+			}
+		}
+	}
 	for _, batch := range pruneBatches(plan.merged, 200) {
 		argv := append([]string{"branch", "-d"}, batch...)
 		if _, err := render.RunCLI(ctx, dir, "git", argv); err != nil {
 			return fmt.Errorf("prune: git branch -d: %w", err)
 		}
 	}
-	squashed := pruneSquashedNames(plan)
 	if len(squashed) > 0 {
-		held, err := pruneHeldBranches(ctx, dir, commonDir)
-		if err != nil {
-			return err
-		}
-		for _, branch := range squashed {
-			if held[branch] {
-				return fmt.Errorf("prune: a worktree checked out %s after the plan; re-run prune", branch)
-			}
-		}
 		var tx strings.Builder
 		for _, branch := range squashed {
 			fmt.Fprintf(&tx, "delete refs/heads/%s %s\n", branch, plan.squashed[branch])
