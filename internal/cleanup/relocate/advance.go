@@ -197,6 +197,11 @@ func (r *Relocator) enter(job *cleanup.Job, phase cleanup.Phase) (bool, error) {
 // expired its own budget, as a mutation can past the cancellation; then it
 // journals a timeout blockage and returns nil.
 func (r *Relocator) Advance(ctx context.Context, job *cleanup.Job) error {
+	if job.Retirement != "" {
+		if proceed, err := r.restoreRegistration(ctx, job); err != nil || !proceed {
+			return err
+		}
+	}
 	vetted := false
 	for {
 		if err := ctx.Err(); err != nil {

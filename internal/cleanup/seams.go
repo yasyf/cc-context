@@ -55,9 +55,9 @@ type Relocator interface {
 	// nothing mutated.
 	Accept(ctx context.Context, seq uint64, r Request) (Job, error)
 	// Pend journals a removal asked for while the queue is paused at
-	// PhasePending under seq. It runs Accept's preflight short of the watchers
-	// and the guard, so a refusal is a *RefusedError with nothing journaled,
-	// and mutates nothing else.
+	// PhasePending under seq. It captures the registration without consulting
+	// watchers or activity; later Retire checks inactivity before hiding it.
+	// Pend changes only the journal.
 	Pend(ctx context.Context, seq uint64, r Request) (Job, error)
 	// Intend journals a deferred removal under seq, capturing the tree's
 	// identity and mutating nothing else: at PhaseQueued when the guard finds
@@ -89,6 +89,9 @@ type Relocator interface {
 	// expires its budget; a git step that expired its own budget journals a
 	// timeout blockage and returns nil, cancelled or not.
 	Advance(ctx context.Context, job *Job) error
+	// Retire hides an inactive worktree's registration while retaining its checkout in place.
+	// Registration-rebinding maintenance must not overlap retirement; a maintenance hold excludes it.
+	Retire(ctx context.Context, job *Job) error
 	// Admit is the gate every physical deletion passes each time its payload is
 	// opened: first, after a restart, and after any pause. It proves afresh
 	// that the payload is the captured tree, that no git registration names

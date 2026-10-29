@@ -69,9 +69,9 @@ func (r *Relocator) Accept(ctx context.Context, seq uint64, req cleanup.Request)
 }
 
 // Pend journals a removal asked for while the queue is paused at PhasePending.
-// It runs Accept's preflight short of the watchers and the guard, so nothing
-// looks for a live process until Advance runs the whole preflight again. The
-// journal record is its only durable effect.
+// It captures the registration without checking watchers or activity. Retire
+// checks inactivity before hiding its registration; Advance repeats the full
+// removal preflight before relocation. Pend itself only journals the job.
 func (r *Relocator) Pend(ctx context.Context, seq uint64, req cleanup.Request) (cleanup.Job, error) {
 	job, err := r.inspect(ctx, req)
 	if err != nil {

@@ -834,10 +834,10 @@ func TestServeHoldsRemovalsAndRefusesAdoptionWhilePaused(t *testing.T) {
 	if raw.Error == nil || raw.Error.Kind != kindPaused || raw.Error.Message != cleanup.ErrPaused.Error() {
 		t.Errorf("raw defer reply = %+v, want a %s error carrying ErrPaused's message", raw, kindPaused)
 	}
-	if events := f.h.rec.take(); !slices.Equal(events, []string{"pend:a"}) {
+	if events := f.h.rec.take(); !slices.Equal(events, []string{"pend:a", "retire:a@pending"}) {
 		t.Errorf("paused requests executed %q, want only a pended", events)
 	}
-	if got, want := f.h.relocator.takeServed(), []string{"pend:a=" + client}; !slices.Equal(got, want) {
+	if got, want := f.h.relocator.takeServed(), []string{"pend:a=" + client, "retire:a=" + client}; !slices.Equal(got, want) {
 		t.Errorf("paused requests reached the relocator as %q, want %q", got, want)
 	}
 	jobs, damaged, err := f.h.journal.Load()
