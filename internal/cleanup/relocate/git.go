@@ -182,7 +182,11 @@ func eachRecord(r io.Reader, delim byte, visit func(head []byte)) error {
 }
 
 func (r *Relocator) head(ctx context.Context, git, tree string) (string, error) {
-	out, err := r.git(ctx, git, "-C", tree, "rev-parse", "--verify", "--quiet", "HEAD^{commit}")
+	return r.resolveHead(ctx, git, "-C", tree)
+}
+
+func (r *Relocator) resolveHead(ctx context.Context, git string, location ...string) (string, error) {
+	out, err := r.git(ctx, git, append(location, "rev-parse", "--verify", "--quiet", "HEAD^{commit}")...)
 	if quietMiss(err, out) {
 		return "", nil
 	}
@@ -193,7 +197,11 @@ func (r *Relocator) head(ctx context.Context, git, tree string) (string, error) 
 }
 
 func (r *Relocator) branch(ctx context.Context, git, tree string) (string, error) {
-	out, err := r.git(ctx, git, "-C", tree, "symbolic-ref", "--quiet", "--short", "HEAD")
+	return r.resolveBranch(ctx, git, "-C", tree)
+}
+
+func (r *Relocator) resolveBranch(ctx context.Context, git string, location ...string) (string, error) {
+	out, err := r.git(ctx, git, append(location, "symbolic-ref", "--quiet", "--short", "HEAD")...)
 	if quietMiss(err, out) {
 		return "", nil
 	}

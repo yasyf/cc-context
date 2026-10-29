@@ -1,6 +1,7 @@
 package relocate
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -91,6 +92,8 @@ func TestMountDeviceChangeRequiresCompleteCapturedProof(t *testing.T) {
 		{"missing head", func(_ *fixture, job *cleanup.Job) { job.Head, job.RecoveryRef = "", "" }},
 		{"dotgit", func(_ *fixture, job *cleanup.Job) { job.Links.DotGit += "changed\n" }},
 		{"backlink", func(_ *fixture, job *cleanup.Job) { job.Links.AdminGitdir += "changed\n" }},
+		{"branch at the same commit", func(f *fixture, _ *cleanup.Job) { f.run(f.worktree, "switch", "-qc", "another") }},
+		{"detached at the same commit", func(f *fixture, _ *cleanup.Job) { f.run(f.worktree, "checkout", "--detach", "--quiet") }},
 		{"common directory", func(f *fixture, _ *cleanup.Job) {
 			other := newFixture(f.t)
 			f.write(filepath.Join(f.adminDir, "commondir"), other.common+"\n")
@@ -157,5 +160,84 @@ func TestMountRevalidationNeverReadsReleasedOriginal(t *testing.T) {
 	f.finished(&job)
 	if got := f.read(f.worktree); got != "replacement" {
 		t.Errorf("released original = %q, want replacement untouched", got)
+	}
+}
+
+func TestMountDevicesAreDurableBeforeRelocation(t *testing.T) {
+	f := newFixture(t)
+	job := f.accept()
+	job.Tree.Dev++
+	job.Admin.Dev++
+	job = reloadMountJob(t, f, job)
+	tree, admin := job.Tree, job.Admin
+	record := f.layout.RecordPath(job.ID)
+	before := f.read(record)
+	if err := os.Rename(record, record+".before"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(record, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	err := f.relocator.Advance(t.Context(), &job)
+
+	if err == nil {
+		t.Fatal("Advance through an unwritable journal record succeeded")
+	}
+	if job.Tree != tree || job.Admin != admin {
+		t.Errorf("failed journal write changed identities to %v/%v", job.Tree, job.Admin)
+	}
+	if len(f.watchers.retired) != 0 {
+		t.Errorf("retired watchers before durable identities: %v", f.watchers.retired)
+	}
+	if got := f.read(record + ".before"); got != before {
+		t.Errorf("captured journal changed from %q to %q", before, got)
+	}
+	if got := f.read(filepath.Join(f.worktree, "feature.txt")); got != "feature\n" {
+		t.Errorf("original contents = %q", got)
+	}
+	f.absent(job.Registered)
+	f.absent(job.Payload)
+}
+
+func TestMountRevalidationPreservesTornMoveRecovery(t *testing.T) {
+	for _, relative := range []bool{false, true} {
+		for _, rewritten := range []string{"neither", "dotgit", "backlink"} {
+			t.Run(fmt.Sprintf("relative=%t/%s", relative, rewritten), func(t *testing.T) {
+				f := newFixture(t)
+				if relative {
+					dotgit, err := filepath.Rel(f.worktree, f.adminDir)
+					if err != nil {
+						t.Fatal(err)
+					}
+					backlink, err := filepath.Rel(f.adminDir, filepath.Join(f.worktree, ".git"))
+					if err != nil {
+						t.Fatal(err)
+					}
+					f.write(filepath.Join(f.worktree, ".git"), "gitdir: "+dotgit+"\n")
+					f.write(filepath.Join(f.adminDir, "gitdir"), backlink+"\n")
+				}
+				job := f.accept()
+				if err := os.Rename(f.worktree, job.Registered); err != nil {
+					t.Fatal(err)
+				}
+				if rewritten == "dotgit" {
+					f.write(filepath.Join(job.Registered, ".git"), expectedDotGit(job))
+				}
+				if rewritten == "backlink" {
+					f.write(filepath.Join(f.adminDir, "gitdir"), expectedAdminGitdir(job))
+				}
+				job.Tree.Dev++
+				job.Admin.Dev++
+				job = reloadMountJob(t, f, job)
+
+				f.advance(&job)
+
+				f.finished(&job)
+				if got := f.read(filepath.Join(job.Payload, "feature.txt")); got != "feature\n" {
+					t.Errorf("payload = %q, want original contents", got)
+				}
+			})
+		}
 	}
 }

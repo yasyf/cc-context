@@ -703,7 +703,9 @@ func TestIntendRefusesAnotherRegistration(t *testing.T) {
 		expect func(r *cleanup.Registration)
 	}{
 		{"another tree", func(r *cleanup.Registration) { r.Tree.Ino++ }},
+		{"tree device without captured head and links", func(r *cleanup.Registration) { r.Tree.Dev++ }},
 		{"another admin identity", func(r *cleanup.Registration) { r.Admin.Ino++ }},
+		{"admin device without captured head and links", func(r *cleanup.Registration) { r.Admin.Dev++ }},
 		{"another admin directory", func(r *cleanup.Registration) { r.AdminDir += "-moved" }},
 	}
 	for _, tt := range tests {
