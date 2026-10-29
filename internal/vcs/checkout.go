@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/yasyf/cc-context/internal/render"
@@ -372,13 +373,17 @@ type Holding struct {
 // repository holds nothing, and a main checkout whose common dir is not
 // <root>/.git is named by the common dir, as git names it. A reftable
 // repository keeps no symbolic HEAD in its admin dirs, so its list still comes
-// from git. A linked c whose admin dir sits outside <common>/worktrees, which
-// git's own list never names, is listed too: it is still the working copy
-// holding its branch, and a caller that moves the branch must move it as well.
+// from git. A linked working copy whose admin dir sits outside
+// <common>/worktrees, which git's own list never names, is listed too: it is
+// still the working copy holding its branch, git branch -d no longer refuses to
+// delete that branch, and a caller that moves the branch must move it as well.
 func Holdings(ctx context.Context, c Checkout) ([]Holding, error) {
 	holdings, err := registeredHoldings(ctx, c)
 	if err != nil || c.GitDir == c.CommonDir || filepath.Dir(c.GitDir) == filepath.Join(c.CommonDir, "worktrees") {
 		return holdings, err
+	}
+	if slices.ContainsFunc(holdings, func(h Holding) bool { return canonical(h.Path) == c.Root }) {
+		return holdings, nil
 	}
 	out, code, stderr, err := render.RunCLIExitCode(ctx, render.Dir(c.Root), "git", []string{"symbolic-ref", "--quiet", "HEAD"})
 	if err != nil {
@@ -414,11 +419,25 @@ func registeredHoldings(ctx context.Context, c Checkout) ([]Holding, error) {
 		}
 		holdings = append(holdings, Holding{Path: cmp.Or(mainRootOf(c.CommonDir), c.CommonDir), Branch: branch})
 	}
-	linked, err := linkedHoldings(c.CommonDir)
+	linked, err := adminHoldings(c.CommonDir)
 	if err != nil {
 		return nil, err
 	}
 	return append(holdings, linked...), nil
+}
+
+// adminHoldings reads every linked working copy from its own admin dir: the
+// ones registered under common/worktrees and the ones moved out of it.
+func adminHoldings(common string) ([]Holding, error) {
+	linked, err := linkedHoldings(common)
+	if err != nil {
+		return nil, err
+	}
+	retired, err := retiredHoldings(common)
+	if err != nil {
+		return nil, err
+	}
+	return append(linked, retired...), nil
 }
 
 // linkedHoldings reads the linked working copies registered under common, each
@@ -457,6 +476,79 @@ func linkedHoldings(common string) ([]Holding, error) {
 	return holdings, nil
 }
 
+// retiredHoldings reads the linked working copies whose admin dir was moved
+// out of common/worktrees into another directory under common, with the
+// working copy's .git file rewritten to follow it. Only an admin dir its
+// working copy points back at counts, so a stale copy left behind holds nothing.
+func retiredHoldings(common string) ([]Holding, error) {
+	groups, err := os.ReadDir(common)
+	if err != nil {
+		return nil, fmt.Errorf("list the common dir %q: %w", common, err)
+	}
+	var holdings []Holding
+	for _, group := range groups {
+		if !group.IsDir() || group.Name() == "worktrees" {
+			continue
+		}
+		admins, err := os.ReadDir(filepath.Join(common, group.Name()))
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("list %q: %w", filepath.Join(common, group.Name()), err)
+		}
+		for _, admin := range admins {
+			if !admin.IsDir() {
+				continue
+			}
+			dir := filepath.Join(common, group.Name(), admin.Name())
+			path, ok := retiredWorktree(dir)
+			if !ok {
+				continue
+			}
+			branch, err := headBranch(dir)
+			if err != nil {
+				return nil, err
+			}
+			holdings = append(holdings, Holding{Path: path, Branch: branch})
+		}
+	}
+	return holdings, nil
+}
+
+// retiredWorktree names the working copy admin belongs to when admin's gitdir
+// names a .git file that points straight back at admin.
+func retiredWorktree(admin string) (string, bool) {
+	link, err := os.ReadFile(filepath.Join(admin, "gitdir")) //nolint:gosec // an admin file under the repository's common dir
+	if err != nil {
+		return "", false
+	}
+	dotGit := strings.TrimSpace(string(link))
+	if !filepath.IsAbs(dotGit) {
+		dotGit = filepath.Join(admin, dotGit)
+	}
+	pointer, err := os.ReadFile(dotGit) //nolint:gosec // the worktree .git file git recorded in admin/gitdir
+	if err != nil {
+		return "", false
+	}
+	target, ok := strings.CutPrefix(strings.TrimSpace(string(pointer)), gitdirPrefix)
+	if !ok {
+		return "", false
+	}
+	want, err := os.Stat(admin)
+	if err != nil {
+		return "", false
+	}
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(filepath.Dir(dotGit), target)
+	}
+	got, err := os.Stat(target) //nolint:gosec // only compared against admin, never read
+	if err != nil || !os.SameFile(want, got) {
+		return "", false
+	}
+	return filepath.Dir(dotGit), true
+}
+
 // CoHolders names the branch c has checked out and every working copy holding
 // it, c first. It reads admin files alone, spawning git only for a reftable
 // repository or when c is linked and the main checkout's HEAD names the same
@@ -474,7 +566,7 @@ func CoHolders(ctx context.Context, c Checkout) (string, []string, error) {
 	if err != nil || branch == "" {
 		return "", nil, err
 	}
-	list, err := linkedHoldings(c.CommonDir)
+	list, err := adminHoldings(c.CommonDir)
 	if err != nil {
 		return "", nil, err
 	}

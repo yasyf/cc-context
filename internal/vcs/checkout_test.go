@@ -635,6 +635,42 @@ func TestBranchHolders(t *testing.T) {
 	}
 }
 
+// TestBranchHoldersRetired pins the holder git's worktree list stops naming: a
+// worktree whose admin dir was moved out of .git/worktrees, its .git file
+// rewritten to follow, still holds its branch, which git branch -d would
+// otherwise delete out from under it, while a copy of an admin dir its
+// worktree no longer points at holds nothing.
+func TestBranchHoldersRetired(t *testing.T) {
+	f := vcstest.Repo(t, vcstest.Trunk("trunk"))
+	main := f.Dir
+	retired := filepath.Join(t.TempDir(), "retired")
+	runGit(t, f, main, "worktree", "add", "-q", "-b", "watcher", retired)
+	common := canon(t, filepath.Join(main, ".git"))
+	admin := filepath.Join(common, "retired-worktrees", "watcher")
+	mustMkdir(t, filepath.Dir(admin))
+	if err := os.Rename(filepath.Join(common, "worktrees", "watcher"), admin); err != nil {
+		t.Fatal(err)
+	}
+	mustWriteFile(t, filepath.Join(retired, ".git"), gitdirPrefix+admin+"\n")
+	stale := filepath.Join(common, "retired-worktrees", "stale")
+	mustMkdir(t, stale)
+	mustWriteFile(t, filepath.Join(stale, "gitdir"), filepath.Join(retired, ".git")+"\n")
+	mustWriteFile(t, filepath.Join(stale, "HEAD"), "ref: refs/heads/stale\n")
+
+	c, err := ResolveCheckout(main)
+	if err != nil {
+		t.Fatalf("ResolveCheckout(%q): %v", main, err)
+	}
+	got, err := BranchHolders(f.Context(), c)
+	if err != nil {
+		t.Fatalf("BranchHolders: %v", err)
+	}
+	want := map[string]string{"trunk": canon(t, main), "watcher": canon(t, retired)}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("BranchHolders =\n\t%+v\nwant\n\t%+v", got, want)
+	}
+}
+
 // TestBranchHoldersBare covers the repository shape whose main checkout is no
 // checkout at all: the bare main repository holds no branch, whether or not its
 // directory is named .git, while the linked worktree beside it does.

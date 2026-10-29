@@ -41,6 +41,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Every branch delete and move sees a worktree moved out of git's
+  registry.** Some worktrees have their administrative directory outside
+  `.git/worktrees`, with the `.git` file pointing at the new place. Each one
+  now holds its branch everywhere ccx reads holders, not only in
+  `ccx vcs prune`. `ccx vcs stack drop` refuses to delete such a branch,
+  the shared-branch check sees it, and prune's report names each merged
+  branch it kept because a worktree has it checked out.
 - **`ccx vcs ship` never opens a pull request with no body.** On the
   graphite lane, a shipped branch with no pull request yet opened one with an
   empty description when its first commit carried no body and no
