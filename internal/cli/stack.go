@@ -356,7 +356,7 @@ func runStackList(cmd *cobra.Command, asJSON bool) error {
 	if err != nil {
 		return fmt.Errorf("stack list: %w", err)
 	}
-	commonDir, err := gtCommonDir(ctx, l.dir(), "stack list")
+	commonDir, err := newGTCache(l.dir(), "stack list", l.checkout).common(ctx)
 	if err != nil {
 		return err
 	}

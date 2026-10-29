@@ -87,7 +87,7 @@ func runPrune(cmd *cobra.Command, o pruneOpts) error {
 	if err != nil {
 		return fmt.Errorf("prune: %w", err)
 	}
-	commonDir, err := gtCommonDir(ctx, dir, "prune")
+	commonDir, err := newGTCache(dir, "prune", l.checkout).common(ctx)
 	if err != nil {
 		return err
 	}

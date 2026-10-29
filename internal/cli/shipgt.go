@@ -273,8 +273,8 @@ type gtCache struct {
 	parent  string
 }
 
-func newGTCache(l lane, prefix string) *gtCache {
-	return &gtCache{dir: l.dir(), prefix: prefix, checkoutCommonDir: l.checkout.CommonDir}
+func newGTCache(dir render.Dir, prefix string, checkout vcs.Checkout) *gtCache {
+	return &gtCache{dir: dir, prefix: prefix, checkoutCommonDir: checkout.CommonDir}
 }
 
 func gitCommonDirOverridden(ctx context.Context) bool {

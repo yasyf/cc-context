@@ -27,7 +27,7 @@ func TestGTCacheReusesResolvedCheckout(t *testing.T) {
 			}
 			want := strings.TrimSpace(f.Out(t, "git", "-C", root, "rev-parse", "--path-format=absolute", "--git-common-dir"))
 			f.RotateLog(t)
-			cache := newGTCache(lane{root: checkout.Root, checkout: checkout}, "ship")
+			cache := newGTCache(render.Dir(checkout.Root), "ship", checkout)
 			for range 2 {
 				got, err := cache.common(f.ContextIn(root))
 				if err != nil {
@@ -85,7 +85,7 @@ func TestGTCacheHonorsRepositoryOverrides(t *testing.T) {
 				t.Fatalf("git common = %q, want %q", want, otherCheckout.CommonDir)
 			}
 			f.RotateLog(t)
-			cache := newGTCache(lane{root: checkout.Root, checkout: checkout}, "ship")
+			cache := newGTCache(render.Dir(checkout.Root), "ship", checkout)
 			for range 2 {
 				got, err := cache.common(ctx())
 				if err != nil {
@@ -99,5 +99,43 @@ func TestGTCacheHonorsRepositoryOverrides(t *testing.T) {
 				t.Fatalf("repository override spawned %v, want one query", calls)
 			}
 		})
+	}
+}
+
+func TestGTCacheKeepsRelativeRepositoryOverrideFrame(t *testing.T) {
+	f := vcstest.Repo(t)
+	other := vcstest.Repo(t)
+	checkout, err := vcs.ResolveCheckout(f.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherCheckout, err := vcs.ResolveCheckout(other.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nested := filepath.Join(f.Dir, "nested", "dir")
+	if err := os.MkdirAll(nested, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	relative, err := filepath.Rel(nested, otherCheckout.CommonDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := strings.TrimSpace(f.Out(t, "git", "-C", nested, "--git-dir="+relative, "rev-parse", "--path-format=absolute", "--git-common-dir"))
+	if want != otherCheckout.CommonDir {
+		t.Fatalf("git common = %q, want %q", want, otherCheckout.CommonDir)
+	}
+	f.RotateLog(t)
+	ctx := render.WithEnv(f.ContextIn(nested), "GIT_DIR="+relative)
+	cache := newGTCache(render.Dir(nested), "ship", checkout)
+	got, err := cache.common(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("common = %q, want %q", got, want)
+	}
+	if calls := vcstest.Invocations(t, f.ArgvLog); len(calls) != 1 {
+		t.Fatalf("relative repository override spawned %v, want one query", calls)
 	}
 }

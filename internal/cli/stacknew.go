@@ -149,7 +149,7 @@ func runStackNew(cmd *cobra.Command, name string, options stackNewOpts) error {
 	case adopted != nil:
 		start = adopted.Head
 	case options.published:
-		common, err = gtCommonDir(ctx, l.dir(), "stack new")
+		common, err = newGTCache(l.dir(), "stack new", l.checkout).common(ctx)
 		if err != nil {
 			return err
 		}
