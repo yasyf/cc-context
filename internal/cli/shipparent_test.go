@@ -136,6 +136,47 @@ func TestShipGTParentRefusesInterleavedCopies(t *testing.T) {
 	}
 }
 
+func TestShipGTParentReplaysNoTrunkCommitTheParentLacks(t *testing.T) {
+	tests := []struct {
+		name string
+		onto string
+		want string
+	}{
+		{name: "untracked", want: "tracked c onto p (replayed its 1 own commit(s))"},
+		{name: "tracked onto trunk", onto: "main", want: "reparented c from main onto p (replayed its 1 own commit(s))"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := shipGTRepo(t)
+			shipGTStack(t, f, "p")
+			mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
+			writeShipFile(t, f.Dir, "trunk.txt", "trunk\n")
+			mustRun(t, f.Env(), f.Dir, "git", "add", "trunk.txt")
+			mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "trunk")
+			mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "main")
+			shipGTUntracked(t, f, "c")
+			if tt.onto != "" {
+				mustRun(t, f.Env(), f.Dir, "gt", "track", "c", "--parent", tt.onto, "--no-interactive")
+			}
+			shipGTReady(t, f)
+
+			got, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push", "--parent", "p")
+			if err != nil {
+				t.Fatalf("ship error = %v", err)
+			}
+			if !strings.Contains(got, tt.want) {
+				t.Errorf("summary = %q, want it to carry %q", got, tt.want)
+			}
+			if parent := shipParentOf(t, f, "c"); parent != "p" {
+				t.Errorf("c's parent = %s, want p", parent)
+			}
+			if subjects := gitAt(t, f.Env(), f.Dir, "log", "--format=%s", "p..c"); subjects != "fix: frobnicate\nc" {
+				t.Errorf("c carries %q above p, want its own commits alone", subjects)
+			}
+		})
+	}
+}
+
 // TestShipDryRunMirrorsTheReparent pins the dry run to the decision the real
 // run makes: it used to report the tracked parent and derive the pull request's
 // title from the parent's commit, which is the title #24579 opened with.

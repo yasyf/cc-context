@@ -41,6 +41,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs ship --parent` replays only the branch's own commits.** A branch
+  cut from a newer trunk than its new parent's base carried trunk commits the
+  parent lacks, and ship counted them as the branch's own and replayed them
+  onto the parent. The replay now leaves out every commit the remote trunk
+  holds, joining a pushing ship's trunk fetch first, and refuses, naming them,
+  when such commits sit among the branch's own.
 - **`ccx vcs prune` keeps a branch an unregistered worktree still has out.**
   A worktree whose administrative directory was moved out of
   `.git/worktrees`, with its `.git` file pointing at the new place, is gone
