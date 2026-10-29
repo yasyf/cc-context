@@ -188,6 +188,8 @@ func vcsPushSubmitted(ctx context.Context, dir render.Dir, receipt stackPublicat
 // revision gt holds for it, the state gt calls diverged and refuses to stack a
 // branch on: the same parent when a head it held here, on the remote, or in its
 // reflog is still in the branch's history, otherwise the nearest tracked branch.
+// The parent's remote head is read from the remote itself, since another
+// lane or Graphite may have replayed the parent past the tracking ref here.
 func vcsPushRetrack(ctx context.Context, ck vcs.Checkout, dir render.Dir, remote, branch, head string) (string, error) {
 	graphite, err := vcs.GraphiteRepo(ck)
 	if err != nil || !graphite {
@@ -263,17 +265,13 @@ func vcsPushParentHeld(ctx context.Context, dir render.Dir, remote string, state
 	if !tracked {
 		return "", nil
 	}
-	held := []string{p.Head}
-	published := "refs/remotes/" + remote + "/" + parent
-	present, err := gitRefExists(ctx, dir, "push", published)
+	published, err := stackRemoteHeads(ctx, dir, "push", remote, []string{parent}, "")
 	if err != nil {
 		return "", err
 	}
-	if present {
-		if published, err = gitRevParse(ctx, dir, "push", published); err != nil {
-			return "", err
-		}
-		held = append(held, published)
+	held := []string{p.Head}
+	if head, ok := published[parent]; ok {
+		held = append(held, head)
 	}
 	former, err := gtReflogHeads(ctx, dir, "push", []string{parent})
 	if err != nil {
