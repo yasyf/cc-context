@@ -120,7 +120,8 @@ jj workspace, and "colocate" is impossible — jj refuses to create a colocated
 repo inside a git worktree. Without --jj, a jj workspace mints another workspace
 and everything else mints a git worktree.
 
-A git worktree checks out an existing local branch <name> as it stands. If only
+A git worktree checks out an existing local branch <name> as it stands, and
+refuses, naming the holder, when another working copy already holds it. If only
 the remote holds <name>, ccx fetches it and checks it out at the remote head
 without setting an upstream. This lets a removed lane resume at its published
 head. In a Graphite repository a remote branch Graphite does not track is
@@ -500,6 +501,9 @@ func runWorktreeAdd(cmd *cobra.Command, name, requested string) error {
 		if reclaimed, err = worktreeReclaimInterrupted(ctx, l, path); err != nil {
 			return err
 		}
+		if err := refuseHeldBranch(ctx, l, name); err != nil {
+			return err
+		}
 		if base, err = worktreeGitBase(ctx, l.dir(), name); err != nil {
 			return err
 		}
@@ -547,6 +551,20 @@ func worktreeReclaimInterrupted(ctx context.Context, l lane, path string) ([]str
 		return nil, fmt.Errorf("worktree add: clear the interrupted add at %s: %w", path, err)
 	}
 	return []string{"cleared an interrupted add"}, nil
+}
+
+// refuseHeldBranch refuses to check out a branch another working copy holds,
+// including one whose admin dir moved out of .git/worktrees, which git's own
+// check misses: two copies of one branch make every later write refuse.
+func refuseHeldBranch(ctx context.Context, l lane, name string) error {
+	holders, err := vcs.BranchHolders(ctx, l.checkout)
+	if err != nil {
+		return fmt.Errorf("worktree add: %w", err)
+	}
+	if holder, held := holders[name]; held {
+		return fmt.Errorf("worktree add: %s already holds %s; work there, or detach it first (git -C %s switch --detach)", holder, name, holder)
+	}
+	return nil
 }
 
 // worktreeJoinLane puts the working copy checked out on branch at path into
