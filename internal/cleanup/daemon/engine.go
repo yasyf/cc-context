@@ -160,6 +160,7 @@ func (f *fatalError) Unwrap() error { return f.err }
 
 type activeDeletion struct {
 	id       string
+	metadata bool
 	deletion cleanup.Deletion
 	unsaved  bool
 	savedAt  time.Time
@@ -378,7 +379,7 @@ func (e *Engine) Status(ctx context.Context, q cleanup.Query) (cleanup.Report, e
 	var unfinished, finished []cleanup.Job
 	for _, job := range e.jobs {
 		if job.Phase == cleanup.PhaseDone {
-			finished = append(finished, clone(job))
+			finished = append(finished, clone(job).Reported())
 			continue
 		}
 		unfinished = append(unfinished, e.reported(job))
@@ -442,18 +443,20 @@ func (e *Engine) Wait(ctx context.Context, jobID string) (cleanup.Job, error) {
 	}
 }
 
-// Pause stops the queue: the deletion it interrupts is closed and its progress
-// journaled before Pause returns, every other job rests at its journaled phase
-// with no recheck or retry, Remove journals new removals pending, and Defer and
-// Adopt are refused with cleanup.ErrPaused. The switch is journaled, so a
-// restarted daemon stays paused.
+// Pause stops the queue from moving or deleting any tree: the deletion it
+// interrupts is closed and its progress journaled before Pause returns, Remove
+// journals new removals pending, and Defer and Adopt are refused with
+// cleanup.ErrPaused. Queued, waiting, and pending removals are still retired
+// in place, git's registration dropped and the tree left where it is. The
+// switch is journaled, so a restarted daemon stays paused.
 func (e *Engine) Pause(ctx context.Context) error {
 	_, err := call(ctx, e, func(context.Context) (struct{}, error) { return struct{}{}, e.pause(true) })
 	return err
 }
 
 // Resume lets the queue run again: rested jobs go on from their phase, pending
-// removals are preflighted afresh in queue order, new removals are taken, and
+// removals are preflighted afresh in queue order, trees retired in place are
+// re-proved and moved to their payloads, new removals are taken, and
 // a payload is admitted and reopened, and so re-verified, before another entry
 // goes. While a maintenance hold stands it is a *cleanup.HeldError and changes
 // nothing.
@@ -655,7 +658,11 @@ func (e *Engine) work(ctx context.Context) error {
 					return err
 				}
 			}
-			if _, err := e.advance(ctx, job); isFatal(err) {
+			step := e.advance
+			if e.halted() {
+				step = e.retire
+			}
+			if _, err := step(ctx, job); isFatal(err) {
 				return err
 			}
 			continue
@@ -728,8 +735,8 @@ func (e *Engine) wake(physical bool) (time.Time, bool) {
 		}
 	}
 	for job := range e.ordered() {
-		if e.halted() {
-			break
+		if e.halted() && !job.Phase.Retirable() {
+			continue
 		}
 		if job.Phase == cleanup.PhaseWaiting && job.Blocked == nil {
 			consider(e.checked[job.ID].Add(e.tuning.Recheck))
@@ -748,11 +755,9 @@ func (e *Engine) wake(physical bool) (time.Time, bool) {
 }
 
 func (e *Engine) logicalDue(now time.Time) (cleanup.Job, bool) {
-	if e.halted() {
-		return cleanup.Job{}, false
-	}
+	halted := e.halted()
 	for job := range e.ordered() {
-		if !job.Phase.Logical() {
+		if !job.Phase.Logical() || halted && !job.Phase.Retirable() {
 			continue
 		}
 		if job.Blocked != nil {
@@ -804,7 +809,7 @@ func (e *Engine) retryAt(job cleanup.Job) (time.Time, bool) {
 // reported is the copy of a job the daemon hands out, its blockage carrying
 // when the daemon retries it on its own.
 func (e *Engine) reported(job cleanup.Job) cleanup.Job {
-	job = clone(job)
+	job = clone(job).Reported()
 	if at, ok := e.retryAt(job); ok {
 		job.Blocked.RetryAt = &at
 	}
@@ -877,6 +882,31 @@ func (e *Engine) advance(ctx context.Context, job cleanup.Job) (cleanup.Job, err
 	return job, nil
 }
 
+func (e *Engine) retire(ctx context.Context, job cleanup.Job) (cleanup.Job, error) {
+	if _, named := cleanup.RequesterFrom(ctx); !named && job.Requester != (cleanup.ProcessID{}) {
+		ctx = cleanup.WithRequester(ctx, job.Requester)
+	}
+	err := e.relocator.Retire(ctx, &job)
+	if err != nil && !cancelled(ctx, err) {
+		return job, &fatalError{fmt.Errorf("cleanup daemon: retire job %s: %w", job.ID, err)}
+	}
+	e.put(job)
+	switch {
+	case err != nil:
+		return job, fmt.Errorf("%w: job %s rests at %s: %w", ErrStopped, job.ID, job.Phase, err)
+	case job.Phase == cleanup.PhaseDone:
+		delete(e.checked, job.ID)
+		return job, e.finish(job)
+	case job.Blocked != nil, job.Phase == cleanup.PhaseRetired:
+		delete(e.checked, job.ID)
+	case job.Phase == cleanup.PhaseWaiting:
+		e.checked[job.ID] = e.clock.Now()
+	default:
+		return job, &fatalError{fmt.Errorf("cleanup daemon: the relocator left job %s retirable at %s", job.ID, job.Phase)}
+	}
+	return job, nil
+}
+
 func (e *Engine) slice(ctx context.Context, job cleanup.Job) error {
 	if e.active == nil {
 		if err := e.open(ctx, &job); err != nil || e.active == nil {
@@ -895,7 +925,12 @@ func (e *Engine) slice(ctx context.Context, job cleanup.Job) error {
 		e.active = nil
 		return e.block(job, err)
 	case done:
+		metadata := e.active.metadata
 		e.active = nil
+		if metadata {
+			job.Updated = end
+			return e.save(job)
+		}
 		return e.finish(job)
 	case end.Sub(e.active.savedAt) >= progressEvery:
 		job.Updated = end
@@ -930,6 +965,17 @@ func (e *Engine) open(ctx context.Context, job *cleanup.Job) error {
 	e.put(*job)
 	if job.Blocked != nil {
 		return nil
+	}
+	retired := cleanup.RetiredGitDirFor(job.Repo, job.ID)
+	if _, err := os.Lstat(retired); err == nil {
+		deletion, err := e.deleter.Open(filepath.Dir(retired), filepath.Base(retired), job.Admin)
+		if err != nil {
+			return e.block(*job, err)
+		}
+		e.active = &activeDeletion{id: job.ID, metadata: true, deletion: deletion, savedAt: e.clock.Now()}
+		return nil
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return e.block(*job, err)
 	}
 	deletion, err := e.deleter.Open(e.layout.JobDir(job.ID), cleanup.PayloadName, job.Tree)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -1120,9 +1166,9 @@ type rejoinable func(job cleanup.Job) bool
 func registeredAt(worktree string, force bool) rejoinable {
 	resolved, _ := filepath.EvalSymlinks(worktree)
 	return func(job cleanup.Job) bool {
-		untouched := job.Phase == cleanup.PhaseQueued || job.Phase == cleanup.PhaseWaiting || job.Phase == cleanup.PhasePending || job.Phase == cleanup.PhasePrepared
+		unmoved := job.Phase.Retirable() || job.Phase == cleanup.PhaseRetired || job.Phase == cleanup.PhasePrepared
 		authorized := force || !job.Force
-		return untouched && authorized && !job.Adopted && (job.Original == worktree || job.Original == resolved)
+		return unmoved && authorized && !job.Adopted && (job.Original == worktree || job.Original == resolved)
 	}
 }
 
@@ -1176,9 +1222,10 @@ func (e *Engine) retry(jobID string) (cleanup.Job, error) {
 		return cleanup.Job{}, cleanup.ErrUnknownJob
 	}
 	if job.Blocked == nil {
-		return clone(job), nil
+		return clone(job).Reported(), nil
 	}
-	return e.unblock(clone(job))
+	job, err := e.unblock(clone(job))
+	return job.Reported(), err
 }
 
 func (e *Engine) announce(event string, pid int, version string, details ...any) {
@@ -1317,7 +1364,7 @@ func byFinish(a, b cleanup.Job) int {
 }
 
 func receiptOf(job cleanup.Job) cleanup.Receipt {
-	receipt := cleanup.ReceiptOf(job)
+	receipt := cleanup.ReceiptOf(job.Reported())
 	if job.Phase == cleanup.PhaseWaiting && len(job.Errors) > 0 {
 		receipt.Detail = job.Errors[len(job.Errors)-1].Message
 	}

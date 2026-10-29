@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"maps"
 	"os"
 	"path/filepath"
@@ -273,8 +274,8 @@ type gtCache struct {
 	parent  string
 }
 
-func newGTCache(l lane, prefix string) *gtCache {
-	return &gtCache{dir: l.dir(), prefix: prefix, checkoutCommonDir: l.checkout.CommonDir}
+func newGTCache(dir render.Dir, prefix string, checkout vcs.Checkout) *gtCache {
+	return &gtCache{dir: dir, prefix: prefix, checkoutCommonDir: checkout.CommonDir}
 }
 
 func gitCommonDirOverridden(ctx context.Context) bool {
@@ -1146,9 +1147,10 @@ func gtNearestTracked(ctx context.Context, dir render.Dir, state gtState, trunk,
 }
 
 func gtNearestTrackedAt(ctx context.Context, dir render.Dir, state gtState, trunk, branch, tip string) (string, error) {
+	above := gtRecordedDescendants(state, branch)
 	var candidates []string
 	for name := range state {
-		if name != branch && name != trunk && !gtRecordedAbove(state, name, branch) {
+		if name != branch && name != trunk && !above[name] {
 			candidates = append(candidates, name)
 		}
 	}
@@ -1194,8 +1196,12 @@ func gtNearestTrackedAt(ctx context.Context, dir render.Dir, state gtState, trun
 	for _, head := range strings.Fields(out) {
 		contained[head] = true
 	}
+	if len(contained) == 0 {
+		return trunk, nil
+	}
 	present := slices.DeleteFunc(slices.Clone(candidates), func(name string) bool { return heads[name] == "" })
-	former, err := gtReflogHeads(ctx, dir, "ship", present)
+	rewritten := slices.DeleteFunc(slices.Clone(present), func(name string) bool { return contained[heads[name]] })
+	former, err := gtReflogHeads(ctx, dir, "ship", rewritten)
 	if err != nil {
 		return "", err
 	}
@@ -1251,20 +1257,26 @@ func gtReflogHeads(ctx context.Context, dir render.Dir, prefix string, branches 
 	return former, nil
 }
 
-// gtRecordedAbove reports whether gt records name as stacked, at any depth, on
-// branch, which makes it no candidate for branch's parent.
-func gtRecordedAbove(state gtState, name, branch string) bool {
-	for seen := map[string]bool{}; !seen[name]; {
-		seen[name] = true
-		s, tracked := state[name]
-		if !tracked || len(s.Parents) == 0 {
-			return false
-		}
-		if name = s.Parents[0].Ref; name == branch {
-			return true
+func gtRecordedDescendants(state gtState, branch string) map[string]bool {
+	children := make(map[string][]string, len(state))
+	for name, s := range state {
+		if len(s.Parents) > 0 {
+			parent := s.Parents[0].Ref
+			children[parent] = append(children[parent], name)
 		}
 	}
-	return false
+	above := make(map[string]bool, len(state))
+	queue := make([]string, 1, len(state)+1)
+	queue[0] = branch
+	for i := 0; i < len(queue); i++ {
+		for _, child := range children[queue[i]] {
+			if !above[child] {
+				above[child] = true
+				queue = append(queue, child)
+			}
+		}
+	}
+	return above
 }
 
 // gtAdoptRefusal is every refusal adopting an untracked branch onto parent
@@ -2870,10 +2882,22 @@ const gitFetchAttempts = 6
 // shared clone holds the lock on a ref this one updates: that fetch moves the
 // same ref, so the retry finds it free.
 func gitFetch(ctx context.Context, dir render.Dir, args ...string) error {
+	packs, captureErr := vcs.CapturePackIndexes(ctx, dir)
+	if captureErr != nil {
+		slog.DebugContext(ctx, "capture fetch pack indexes", "error", captureErr)
+	}
 	delay := 100 * time.Millisecond
 	for attempt := 1; ; attempt++ {
 		_, err := render.RunCLI(ctx, dir, "git", append([]string{"fetch"}, args...))
-		if err == nil || attempt == gitFetchAttempts || !strings.Contains(err.Error(), "cannot lock ref") {
+		if err == nil {
+			if captureErr == nil {
+				if err := packs.Publish(ctx, dir); err != nil {
+					slog.DebugContext(ctx, "publish fetch pack index", "error", err)
+				}
+			}
+			return nil
+		}
+		if attempt == gitFetchAttempts || !strings.Contains(err.Error(), "cannot lock ref") {
 			return err
 		}
 		select {

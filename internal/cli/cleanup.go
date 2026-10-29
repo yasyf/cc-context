@@ -197,7 +197,8 @@ naming the daemon, its deletion governor, and whether deletion is paused. The
 report is bounded by --limit and says how many jobs it omitted; it never scans
 a tree for a total or estimates time remaining. While deletion is paused, a job
 waiting only on physical deletion reads "paused", and a "worktree rm" queued
-during the pause reads "pending" until "resume" preflights it.
+during the pause reads "pending" until "resume" moves and deletes it, also once
+git no longer registers it.
 
 ` + cleanupReadNote,
 		Args: cobra.MatchAll(cobra.MaximumNArgs(1), cleanupJobIDArg),
@@ -461,12 +462,17 @@ func newCleanupPauseCmd() *cobra.Command {
 		Short: "Pause the deletion queue",
 		Long: `Pause the deletion queue.
 
-Physical deletion stops and every job mid-removal rests at its phase. A new
-"worktree rm" runs only the checks that look for no live process, then is
-journaled pending with nothing moved; "resume" runs its whole preflight again
-and removes it at the queue's pace. A stack workspace release or "cleanup
-adopt" is refused before anything is inspected, journaled, or moved. The switch
-is durable: a restarted daemon stays paused until "resume".`,
+No tree moves or is deleted: physical deletion stops and every job mid-move
+rests at its phase. Queued and pending removals are still unregistered in place
+once the daemon proves the tree idle and unchanged: the worktree's admin
+directory moves out of git's registry, the checkout's .git follows it, and the
+tree stays at its path as a working checkout. Nothing pins what only that
+checkout held, so git gc no longer counts its HEAD, index, or reflogs. A new
+"worktree rm" is journaled pending after the checks that need no process scan,
+then unregistered the same way; "resume" proves each tree afresh and removes it
+and its admin directory at the queue's pace. A stack workspace release or
+"cleanup adopt" is refused before anything is inspected, journaled, or moved.
+The switch is durable: a restarted daemon stays paused until "resume".`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
@@ -537,10 +543,11 @@ func newCleanupHoldAcquireCmd() *cobra.Command {
 		Long: `Hold the deletion queue for maintenance.
 
 It returns once the deletion in flight has stopped and its progress is
-journaled. Acquiring again with the same --id changes nothing and reports the
-standing hold; another --id fails naming the holder. The daemon logs every
-acquire, release, and refusal with the requesting process, its ccx version,
-and its parent.`,
+journaled. As under "pause", no tree moves or is deleted while the hold stands,
+and queued and pending removals are still unregistered in place. Acquiring
+again with the same --id changes nothing and reports the standing hold; another
+--id fails naming the holder. The daemon logs every acquire, release, and
+refusal with the requesting process, its ccx version, and its parent.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()

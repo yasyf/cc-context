@@ -48,7 +48,7 @@ func runStackRepairPublishedChild(cmd *cobra.Command, parent string) error {
 	if child == "" || child == parent {
 		return errors.New("stack repair-published-child: run from the published child's worktree")
 	}
-	common, err := gtCommonDir(ctx, l.dir(), "stack repair-published-child")
+	common, err := newGTCache(l.dir(), "stack repair-published-child", l.checkout).common(ctx)
 	if err != nil {
 		return err
 	}

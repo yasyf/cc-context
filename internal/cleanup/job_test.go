@@ -75,6 +75,10 @@ func TestJobValidate(t *testing.T) {
 		{"valid deferred queued", func(j *Job) { j.Deferred, j.Phase = true, PhaseQueued }, ""},
 		{"valid deferred waiting", func(j *Job) { j.Deferred, j.Phase = true, PhaseWaiting }, ""},
 		{"valid pending", func(j *Job) { j.Phase = PhasePending }, ""},
+		{"valid retiring", func(j *Job) { j.Phase = PhaseRetiring }, ""},
+		{"valid retired", func(j *Job) { j.Phase = PhaseRetired }, ""},
+		{"valid deferred retiring", func(j *Job) { j.Deferred, j.Phase = true, PhaseRetiring }, ""},
+		{"valid deferred retired", func(j *Job) { j.Deferred, j.Phase = true, PhaseRetired }, ""},
 		{"valid unborn head", func(j *Job) { j.Head, j.RecoveryRef = "", "" }, ""},
 		{"valid sha256 head", func(j *Job) { j.Head = strings.Repeat("ab", 32) }, ""},
 		{"valid blocked", func(j *Job) { j.Block(testCreated, "git", "move failed") }, ""},
@@ -158,6 +162,51 @@ func TestJobState(t *testing.T) {
 	}
 }
 
+func TestJobReported(t *testing.T) {
+	layout := Layout{Root: "/state"}
+	tests := []struct {
+		name     string
+		phase    Phase
+		deferred bool
+		want     Phase
+	}{
+		{"retired removal", PhaseRetired, false, PhasePending},
+		{"retired deferral", PhaseRetired, true, PhaseQueued},
+		{"retiring removal", PhaseRetiring, false, PhasePending},
+		{"retiring deferral", PhaseRetiring, true, PhaseQueued},
+		{"reclaimed", PhaseUnregistered, false, PhaseUnregistered},
+		{"deleting", PhaseDeleting, false, PhaseDeleting},
+		{"pending", PhasePending, false, PhasePending},
+		{"waiting", PhaseWaiting, true, PhaseWaiting},
+		{"prepared", PhasePrepared, false, PhasePrepared},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			job := validJob(layout, testID, 1)
+			job.Phase, job.Deferred = tt.phase, tt.deferred
+			job.Errors = []JobError{
+				{At: testCreated, Phase: PhaseRetiring, Message: "reconcile: admin moved"},
+				{At: testCreated, Phase: PhaseRetired, Message: "identity: HEAD changed"},
+				{At: testCreated, Phase: PhaseMoved, Message: "activity: held"},
+			}
+			got := job.Reported()
+			if got.Phase != tt.want {
+				t.Errorf("Reported() = phase %s, want %s", got.Phase, tt.want)
+			}
+			untouched := PhasePending
+			if tt.deferred {
+				untouched = PhaseQueued
+			}
+			if want := []Phase{untouched, untouched, PhaseMoved}; got.Errors[0].Phase != want[0] || got.Errors[1].Phase != want[1] || got.Errors[2].Phase != want[2] {
+				t.Errorf("Reported() errors = %+v, want phases %v", got.Errors, want)
+			}
+			if job.Phase != tt.phase || job.Errors[0].Phase != PhaseRetiring {
+				t.Errorf("Reported() changed the job it reports: phase %s, errors %+v", job.Phase, job.Errors)
+			}
+		})
+	}
+}
+
 func TestJobValidateAdopted(t *testing.T) {
 	layout := Layout{Root: "/state"}
 	tests := []struct {
@@ -178,6 +227,8 @@ func TestJobValidateAdopted(t *testing.T) {
 		{"pending", func(j *Job) { j.Phase = PhasePending }, `phase "pending" belongs to a registered worktree, not an adopted tree`},
 		{"moved", func(j *Job) { j.Phase = PhaseMoved }, `phase "moved" belongs to a registered worktree, not an adopted tree`},
 		{"detached", func(j *Job) { j.Phase = PhaseDetached }, `phase "detached" belongs to a registered worktree, not an adopted tree`},
+		{"retiring", func(j *Job) { j.Phase = PhaseRetiring }, `phase "retiring" belongs to a registered worktree, not an adopted tree`},
+		{"retired", func(j *Job) { j.Phase = PhaseRetired }, `phase "retired" belongs to a registered worktree, not an adopted tree`},
 		{"empty source", func(j *Job) { j.Source = "" }, `source "" is not a clean absolute path`},
 		{"relative source", func(j *Job) { j.Source = "codex-worktree-trash-20260928/" + testLegacyID + "-feature" }, `source "codex-worktree-trash-20260928/` + testLegacyID + `-feature" is not a clean absolute path`},
 		{"unclean source", func(j *Job) { j.Source += "/" }, `source "` + testSource + `/" is not a clean absolute path`},
@@ -307,19 +358,23 @@ func TestMintIDOrdersByCreation(t *testing.T) {
 
 func TestPhaseHalves(t *testing.T) {
 	tests := []struct {
-		phase    Phase
-		logical  bool
-		physical bool
+		phase     Phase
+		logical   bool
+		physical  bool
+		untouched bool
+		retirable bool
 	}{
-		{PhaseQueued, true, false},
-		{PhaseWaiting, true, false},
-		{PhasePending, true, false},
-		{PhasePrepared, true, false},
-		{PhaseMoved, true, false},
-		{PhaseDetached, true, false},
-		{PhaseUnregistered, false, true},
-		{PhaseDeleting, false, true},
-		{PhaseDone, false, false},
+		{PhaseQueued, true, false, true, true},
+		{PhaseWaiting, true, false, true, true},
+		{PhasePending, true, false, true, true},
+		{PhaseRetiring, true, false, false, true},
+		{PhaseRetired, true, false, false, false},
+		{PhasePrepared, true, false, false, false},
+		{PhaseMoved, true, false, false, false},
+		{PhaseDetached, true, false, false, false},
+		{PhaseUnregistered, false, true, false, false},
+		{PhaseDeleting, false, true, false, false},
+		{PhaseDone, false, false, false, false},
 	}
 	for _, tt := range tests {
 		t.Run(string(tt.phase), func(t *testing.T) {
@@ -328,6 +383,12 @@ func TestPhaseHalves(t *testing.T) {
 			}
 			if got := tt.phase.Physical(); got != tt.physical {
 				t.Errorf("Physical() = %v, want %v", got, tt.physical)
+			}
+			if got := tt.phase.Untouched(); got != tt.untouched {
+				t.Errorf("Untouched() = %v, want %v", got, tt.untouched)
+			}
+			if got := tt.phase.Retirable(); got != tt.retirable {
+				t.Errorf("Retirable() = %v, want %v", got, tt.retirable)
 			}
 		})
 	}

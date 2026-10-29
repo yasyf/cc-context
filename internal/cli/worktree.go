@@ -1186,7 +1186,7 @@ func reportGitWorktreeRemoval(ctx context.Context, cmd *cobra.Command, name, sha
 	}
 	held := receipt.State != cleanup.StateBlocked && cleanup.Phase(receipt.State).Logical()
 	if held {
-		cmd.Println(strings.Join([]string{"queued " + name, shape, path, string(receipt.State) + " " + receipt.JobID, "queue paused until ccx vcs cleanup resume"}, shipSep))
+		cmd.Println(strings.Join([]string{"queued " + name, shape, path, string(receipt.State) + " " + receipt.JobID, "queue paused: git unregisters it in place, and the tree stays until ccx vcs cleanup resume"}, shipSep))
 	}
 	if !wait {
 		if !held {

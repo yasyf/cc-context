@@ -24,6 +24,11 @@ type Band struct{}
 
 var _ cleanup.Band = Band{}
 
+// LowPriority keeps daemon CPU scheduling below interactive work across band switches.
+func LowPriority() error {
+	return setPriority(unix.PRIO_PROCESS, 19)
+}
+
 // Background enters the darwin background band and throttles disk I/O, so
 // deletion never competes with the work a user is waiting on.
 func (Band) Background() error {
@@ -41,11 +46,18 @@ func band(prio int, iopolicy uintptr) error {
 	if err != nil {
 		return err
 	}
-	if err := unix.Setpriority(prioDarwinProcess, 0, prio); err != nil {
-		return fmt.Errorf("native: set the darwin band to %#x: %w", prio, err)
+	if err := setPriority(prioDarwinProcess, prio); err != nil {
+		return err
 	}
 	if rc, errno := call(lib.setIOPolicy, iopolTypeDisk, iopolScopeProcess, iopolicy); rc != 0 {
 		return fmt.Errorf("native: set the disk io policy to %d: %w", iopolicy, errno)
+	}
+	return nil
+}
+
+func setPriority(which, priority int) error {
+	if err := unix.Setpriority(which, 0, priority); err != nil {
+		return fmt.Errorf("native: set priority class %d to %d: %w", which, priority, err)
 	}
 	return nil
 }
