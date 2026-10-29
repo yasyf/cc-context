@@ -5359,7 +5359,6 @@ func TestShipGTHunkScoped(t *testing.T) {
 		{"git", "show", "--end-of-options", "HEAD:f.txt"},
 		gitVersionProbe,
 		{"git", "branch", "--show-current"},
-		gtCommonDirArgv,
 		gtRealRefsArgv(t, f),
 		{"git", "read-tree", "HEAD"},
 		{"git", "ls-tree", "--full-tree", "-z", "--end-of-options", "HEAD", "--", "f.txt"},
