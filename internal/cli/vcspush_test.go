@@ -541,6 +541,38 @@ func TestVcsPushKeepsAParentGraphiteRestackedOnTheRemote(t *testing.T) {
 	}
 }
 
+// TestVcsPushKeepsAParentReplayedPastItsStaleTrackingRef is #44843 in
+// Forge-AI/monorepo: Graphite replayed the parent on the remote, the branch was
+// pushed onto that head, and this clone's tracking ref for the parent still held
+// the old one, so push re-tracked the branch off its live parent.
+func TestVcsPushKeepsAParentReplayedPastItsStaleTrackingRef(t *testing.T) {
+	f := shipGTRepo(t)
+	shipGTStack(t, f, "a", "b", "c")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "a", "b", "c")
+	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
+	server := f.WorktreePath("server")
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", "--detach", server, "b")
+	writeShipFile(t, server, "b.txt", "restacked b\n")
+	mustRun(t, f.Env(), server, "git", "commit", "-qa", "--amend", "--no-edit")
+	restacked := gitAt(t, f.Env(), server, "rev-parse", "HEAD")
+	mustRun(t, f.Env(), server, "git", "cherry-pick", "c")
+	mustRun(t, f.Env(), server, "git", "push", "-qf", "origin", "HEAD:refs/heads/c", restacked+":refs/heads/b")
+	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin", "+refs/heads/c:refs/remotes/origin/c")
+	mustRun(t, f.Env(), f.Dir, "git", "reset", "-q", "--hard", "origin/c")
+	pushCommit(t, f, "c2.txt", "c2\n", "test: 🧪 c2")
+
+	got, err := runVcsPushCmd(f.Context(), t)
+	if err != nil {
+		t.Fatalf("push error = %v", err)
+	}
+	if want := " · re-tracked c onto b at " + shortOID(restacked); !strings.HasSuffix(got, want) {
+		t.Errorf("summary = %q, want it to end %q", got, want)
+	}
+	if parent := stackParent(t, f, "c"); parent != "b" {
+		t.Errorf("gt parent of c = %s, want b kept", parent)
+	}
+}
+
 func TestVcsPushMovesTheTrackingRefOfATrunkOnlyClone(t *testing.T) {
 	for _, move := range []string{"create", "fast-forward", "rewrite"} {
 		t.Run(move, func(t *testing.T) {
