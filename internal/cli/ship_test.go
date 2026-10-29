@@ -5175,7 +5175,7 @@ func TestShipGTAdoptsEmptyRootOntoAdvancedRemoteTrunk(t *testing.T) {
 	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin", "main")
 	shipGTReady(t, f)
 
-	got, _, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--parent", "main", "--tip-only", "--no-watch")
+	got, _, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--parent", "main", "--tip-only", "--no-watch", "--pr-body-file", writePRBody(t, "body.md", "why\n"))
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
