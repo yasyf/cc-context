@@ -181,7 +181,7 @@ func childEnv(ctx context.Context, dir Dir, extraEnv []string) ([]string, lookpa
 	env := os.Environ()
 	if dir != Ambient {
 		env = slices.DeleteFunc(env, func(kv string) bool {
-			return strings.HasPrefix(kv, "GIT_DIR=") || strings.HasPrefix(kv, "GIT_WORK_TREE=")
+			return strings.HasPrefix(kv, "GIT_DIR=") || strings.HasPrefix(kv, "GIT_WORK_TREE=") || strings.HasPrefix(kv, "GH_REPO=")
 		})
 	}
 	env = slices.Concat(env, EnvFrom(ctx))
