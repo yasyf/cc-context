@@ -342,7 +342,30 @@ func TestCleanupWorktreeRmQueuesDeletion(t *testing.T) {
 	mustRun(t, f.Env(), f.Dir, "git", "rev-parse", "--verify", "refs/heads/feat")
 }
 
-func TestCleanupWorktreeRmQueuesPendingWhilePaused(t *testing.T) {
+func settledCleanupJob(t *testing.T, h *cleanupHarness, id string, settled func(cleanup.Job) bool) cleanup.Job {
+	t.Helper()
+	deadline := time.Now().Add(cleanupHandoffTimeout)
+	for {
+		jobs, damaged, err := h.config.Journal.Load()
+		if err != nil || len(damaged) != 0 {
+			t.Fatalf("load the journal: damaged %v, %v", damaged, err)
+		}
+		i := slices.IndexFunc(jobs, func(job cleanup.Job) bool { return job.ID == id })
+		if i < 0 {
+			t.Fatalf("the journal holds no job %s", id)
+		}
+		job := jobs[i]
+		if settled(job) {
+			return job
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("job %s = phase %s, blockage %+v after %s; it never settled", id, job.Phase, job.Blocked, cleanupHandoffTimeout)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestCleanupWorktreeRmRetiresInPlaceWhilePaused(t *testing.T) {
 	requireCleanupDaemon(t)
 	f := vcstest.Repo(t)
 	f.Isolate(t)
@@ -350,9 +373,11 @@ func TestCleanupWorktreeRmQueuesPendingWhilePaused(t *testing.T) {
 	svc := &rmWaitService{Service: h.engine, t: t}
 	f.Decorate(func(ctx context.Context) context.Context { return withCleanup(ctx, svc) })
 	path := addPoolWorktree(t, f, "feat")
+	head := strings.TrimSpace(mustRun(t, f.Env(), path, "git", "rev-parse", "HEAD"))
 	if err := h.engine.Pause(f.Context()); err != nil {
 		t.Fatalf("pause: %v", err)
 	}
+	h.active.Store(true)
 
 	out, err := runWorktreeCmd(t, f, "rm", "feat")
 	if err != nil {
@@ -363,42 +388,73 @@ func TestCleanupWorktreeRmQueuesPendingWhilePaused(t *testing.T) {
 		t.Fatalf("journaled jobs = %v, want the one pending removal", jobs)
 	}
 	id := jobs[0]
-	queued := "queued feat · git worktree · " + path + " · pending " + id + " · "
-	if want := queued + "queue paused until ccx vcs cleanup resume\n"; out != want {
-		t.Errorf("rm while paused = %q, want %q", out, want)
+	queued := "queued feat · git worktree · " + path + " · pending " + id + " · queue paused: git unregisters it in place, and the tree stays until ccx vcs cleanup resume\n"
+	if out != queued {
+		t.Errorf("rm while paused = %q, want %q", out, queued)
 	}
-	if job := cleanupJob(t, f, h, id); job.Phase != cleanup.PhasePending || job.Blocked != nil {
-		t.Errorf("job %s = phase %s, blockage %+v; want pending", id, job.Phase, job.Blocked)
+	held := settledCleanupJob(t, h, id, func(job cleanup.Job) bool { return job.Blocked != nil })
+	if held.Phase != cleanup.PhasePending || held.Blocked.Reason != "activity" {
+		t.Errorf("job %s under a live holder = phase %s, blockage %+v; want pending, blocked on activity", id, held.Phase, held.Blocked)
 	}
 	assertIntact(t, f, path)
-	if refs := recoveryRefs(t, f); refs != "" {
-		t.Errorf("recovery refs = %q, want none", refs)
-	}
-	if out, err := runWorktreeCmd(t, f, "rm", "feat"); err != nil || out != queued+"queue paused until ccx vcs cleanup resume\n" {
-		t.Errorf("a repeated rm while paused = %q, %v; want the same pending job", out, err)
-	}
-	if got := journaledJobs(t, h); !slices.Equal(got, jobs) {
-		t.Errorf("journaled jobs = %v, want only %v", got, jobs)
-	}
-	if len(svc.queries) != 0 {
-		t.Errorf("status requests = %+v, want none without --wait", svc.queries)
-	}
 
 	out, err = runWorktreeCmd(t, f, "rm", "feat", "--wait")
 	want := "worktree rm: queued " + path + ", pending " + id + "; wait: job " + id + " rests pending: " + errCleanupPaused.Error()
 	if !errors.Is(err, errCleanupPaused) || err.Error() != want {
 		t.Errorf("rm --wait while paused = %v, want %q at once", err, want)
 	}
-	if out != queued+"queue paused until ccx vcs cleanup resume\n" {
+	if out != queued {
 		t.Errorf("rm --wait while paused printed %q, want only the queued line", out)
 	}
 	if want := []cleanup.Query{{JobID: id, Await: true}}; !slices.Equal(svc.queries, want) {
 		t.Errorf("status requests = %+v, want the one poll that saw the pause", svc.queries)
 	}
-	if job := cleanupJob(t, f, h, id); job.Phase != cleanup.PhasePending {
-		t.Errorf("job %s = phase %s, want still pending", id, job.Phase)
+	if got := journaledJobs(t, h); !slices.Equal(got, jobs) {
+		t.Errorf("journaled jobs = %v, want only %v", got, jobs)
 	}
-	assertIntact(t, f, path)
+
+	h.active.Store(false)
+	if _, err := h.engine.Retry(f.Context(), id); err != nil {
+		t.Fatalf("retry %s: %v", id, err)
+	}
+	retired := settledCleanupJob(t, h, id, func(job cleanup.Job) bool { return job.Phase == cleanup.PhaseRetired })
+	if retired.Blocked != nil {
+		t.Fatalf("job %s once idle = blockage %+v; want retired in place", id, retired.Blocked)
+	}
+	gitDir := cleanup.RetiredGitDirFor(retired.Repo, id)
+	if got := readFileStr(t, filepath.Join(path, "f.txt")); got == "" {
+		t.Errorf("%s/f.txt is empty, want the checkout left where it was", path)
+	}
+	if worktreeRegistered(t, f.Env(), f.Dir, path) {
+		t.Errorf("git still registers %s, want the registration retired", path)
+	}
+	if got := strings.TrimSpace(mustRun(t, f.Env(), path, "git", "rev-parse", "HEAD")); got != head {
+		t.Errorf("HEAD in the retired checkout = %s, want %s", got, head)
+	}
+	if got := strings.TrimSpace(mustRun(t, f.Env(), path, "git", "rev-parse", "--absolute-git-dir")); got != gitDir {
+		t.Errorf("git dir of the retired checkout = %s, want its admin directory moved to %s", got, gitDir)
+	}
+	if refs := recoveryRefs(t, f); refs != "" {
+		t.Errorf("recovery refs while paused = %q, want none until the tree moves", refs)
+	}
+	if _, err := runWorktreeCmd(t, f, "rm", "feat"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("rm of the retired checkout = %v, want ErrNotFound once git no longer registers it", err)
+	}
+
+	if err := h.engine.Resume(f.Context()); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(f.Context(), cleanupHandoffTimeout)
+	defer cancel()
+	if job, err := h.engine.Wait(ctx, id); err != nil || job.Phase != cleanup.PhaseDone {
+		t.Fatalf("wait %s after the resume = phase %s, %v; want it done", id, job.Phase, err)
+	}
+	assertGone(t, path)
+	assertGone(t, gitDir)
+	if got, want := recoveryRefs(t, f), cleanup.RecoveryRefFor(id)+" "+head; got != want {
+		t.Errorf("recovery refs after the resume = %q, want %q", got, want)
+	}
+	mustRun(t, f.Env(), f.Dir, "git", "rev-parse", "--verify", "refs/heads/feat")
 }
 
 func TestCleanupWorktreeRmWait(t *testing.T) {
@@ -1176,9 +1232,12 @@ func TestCleanupQueueCommands(t *testing.T) {
 		t.Fatalf("remove %s while paused = %+v, %v; want it pending", third, pending, err)
 	}
 	pendingID := pending.JobID
-	assertIntact(t, f, third)
+	settledCleanupJob(t, h, pendingID, func(job cleanup.Job) bool { return job.Phase == cleanup.PhaseRetired })
+	if got := readFileStr(t, filepath.Join(third, "f.txt")); got == "" || worktreeRegistered(t, f.Env(), f.Dir, third) {
+		t.Errorf("%s while paused = f.txt %q, registered %t; want the tree in place and its registration retired", third, got, worktreeRegistered(t, f.Env(), f.Dir, third))
+	}
 	if got := journaledJobs(t, h); len(got) != 3 {
-		t.Errorf("journaled jobs = %v, want the two seeded before the pause and the pending one", got)
+		t.Errorf("journaled jobs = %v, want the two seeded before the pause and the retired one", got)
 	}
 
 	out, err := runCleanupCmd(t, f, "status")
@@ -1207,7 +1266,7 @@ func TestCleanupQueueCommands(t *testing.T) {
 		t.Fatalf("unmarshal report: %v\n%s", err, out)
 	}
 	if !report.Paused || report.Version != "test" || len(report.Jobs) != 3 || report.Jobs[0].ID != firstID || report.Jobs[0].Phase != cleanup.PhaseUnregistered || report.Jobs[2].Phase != cleanup.PhasePending {
-		t.Errorf("report = %+v, want paused with job %s unregistered first and %s pending last", report, firstID, pendingID)
+		t.Errorf("report = %+v, want paused with job %s unregistered first and %s, retired in place, reported pending last", report, firstID, pendingID)
 	}
 
 	assertIntact(t, f, second)

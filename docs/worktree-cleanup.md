@@ -61,7 +61,7 @@ their publication rules. The public command group is `ccx vcs cleanup`.
 | --- | --- |
 | `ccx vcs cleanup status [job-id] --json` | Report the queue, or one job, with progress and any blockage |
 | `ccx vcs cleanup wait <job-id>` | Wait for one job to finish; report a blockage if it cannot proceed |
-| `ccx vcs cleanup pause` | Stop preparation, relocation, and deletion; queue new `worktree rm` removals as pending |
+| `ccx vcs cleanup pause` | Stop relocation and deletion; unregister unmoved removals in place and queue new `worktree rm` removals as pending |
 | `ccx vcs cleanup resume` | Resume the queue; refused while a maintenance hold stands |
 | `ccx vcs cleanup hold acquire --id <id> --reason <text>` | Stop the queue as `pause` does, under a hold that `resume` cannot lift |
 | `ccx vcs cleanup hold release --id <id>` | Lift the hold `<id>` names, leaving any ordinary pause in place |
@@ -69,20 +69,84 @@ their publication rules. The public command group is `ccx vcs cleanup`.
 | `ccx vcs cleanup retry <job-id>` | Retry a blocked job from its recorded phase after its cause is addressed |
 | `ccx vcs cleanup watchers --json` | Inspect watcher roots and consumers without retiring them |
 
-`pause` holds queued jobs at their recorded phases until `resume`, with no
-retries or inactivity checks. The pause survives daemon restarts. While
-paused, the daemon rejects `cleanup adopt` and deferred workspace releases
-before any preparation or Git work. The error names `ccx vcs cleanup resume`.
+`pause` (`ccx vcs cleanup pause`) and holds (`ccx vcs cleanup hold acquire`)
+stop tree relocation and physical deletion until `resume` runs and the hold is
+released. Jobs already mid-move (`prepared`, `moved`, `detached`) and every
+physical deletion rest at their phases, and pause and hold state survive daemon
+restarts. While paused, the daemon rejects `cleanup adopt` and deferred
+workspace releases before any preparation or Git work, naming
+`ccx vcs cleanup resume`. A paused `worktree rm` runs the main-working-copy,
+trunk, lock, submodule, nesting, volume, and dirty-tree refusals, skips the
+live-process and watcher checks, and records a `pending` job whose receipt
+reads
+`queue paused: git unregisters it in place, and the tree stays until ccx vcs cleanup resume`.
+`worktree rm --wait` and `cleanup wait` fail at once while paused, naming
+`ccx vcs cleanup resume`.
 
-A `worktree rm` during a pause runs the main-working-copy, trunk, lock,
-submodule, nesting, volume, and dirty-tree refusals, and skips the live-process
-and watcher checks. It then records a `pending` job and moves nothing.
-`cleanup status` lists the job as `pending`, and the receipt reads
-`queue paused until ccx vcs cleanup resume`. `worktree rm --wait` and
-`cleanup wait` fail at once while the queue is paused, naming
-`ccx vcs cleanup resume`, instead of waiting for a resume nobody may run. On `resume`, the daemon runs each pending job's whole preflight
-again in queue order. It blocks any job that preflight refuses or whose tree
-changed, and removes the rest at the queue's pace.
+While paused or held, the daemon unregisters in place every `queued` or
+`waiting` workspace deferral and `pending` `worktree rm` removal. It first
+proves that the tree's identity, registration, `.git` and admin links, `HEAD`,
+and branch match what the job captured, and applies the lock, submodule,
+nesting, and volume refusals. It then checks that no live process holds the
+tree or its admin directory, discounting watchers without stopping them. A held
+deferral returns to `waiting` and is rechecked, a held removal blocks on
+`activity` for backoff retry, and a changed tree blocks on `identity`.
+
+To unregister a checkout, the daemon journals the job as `retiring`, rewrites
+the checkout's `.git` file to point at `<common dir>/retired-worktrees/<id>`,
+and renames the admin directory `<common dir>/worktrees/<name>` to that path.
+The new path sits at the same depth below `<common dir>`, so a relative
+`commondir` entry still resolves. Only metadata moves; nothing is copied, no
+ref is written, and the index, `HEAD`, reflogs, and any merge or rebase state
+in the admin directory move with it unchanged. The checkout keeps working at
+its path and `git worktree list` no longer shows it. Because `git gc`,
+`git worktree prune`, and git's checked-out-branch check read only
+`<common dir>/worktrees`, nothing protects objects reachable only from that
+checkout's `HEAD`, index, or reflogs, and another worktree may check out its
+branch. Branch refs still keep the commits they name.
+
+Right before rewriting `.git`, the daemon re-checks the tree's identity, the
+`.git` regular file and its captured contents, the admin directory's identity
+and `gitdir` back-link, its `commondir` resolving to the repository, and the
+absent retired path. Right before the rename, it re-checks the tree, the new
+pointer in `.git`, the admin directory, and the absent retired path. A failed
+check before the rename restores the old `.git` contents, though only while the
+captured admin directory remains at its path. Otherwise, `.git` keeps naming the
+empty retired path, which binds no directory, and the job blocks on `reconcile`.
+If the rename carried a different directory that had taken the admin directory's
+place, the daemon moves it back to the admin path, or into `<common
+dir>/retired-worktrees/.<id>.foreign-*` when that path is taken, and blocks on
+`reconcile`. After the rename, git must resolve the checkout through the retired
+path and the repository, `HEAD` must match, and no registration may reach the
+tree before the job enters `retired`.
+
+A daemon that stops mid-retirement resumes from what the file system shows.
+With only `.git` rewritten, it restores the old contents under the same checks,
+proves the tree unchanged and idle again, and starts over. With the admin
+directory already moved, it verifies the result and finishes. Any other layout
+blocks on `reconcile`. A halted or resumed queue never retries a `reconcile`
+or `identity` block on its own; `ccx vcs cleanup retry` does. An `activity`
+block backs off and retries as usual.
+
+For compatibility, `cleanup status` reports a `retiring` or `retired` job as
+`pending`, or `queued` for a deferral, including in its error history, so every
+client of the daemon protocol keeps decoding the report. The protocol version
+is unchanged.
+
+When the queue resumes with no hold standing, the daemon proves each retired
+tree afresh. It checks the tree's identity, the `.git` pointer to the retired
+path, and the retired admin directory's identity, `gitdir` back-link, and
+`commondir`. No registration may reach the path, `HEAD` and branch must match,
+and the lock, submodule, nesting, and volume refusals apply again.
+
+Once those hold, the daemon stops the tree's watchers, checks the job folder's
+quarantine, live processes, and uncommitted changes, and records
+`refs/ccx/cleanup/<id>` at `HEAD` as an ordinary removal does. It then moves the
+tree into its job folder, removes the retired admin directory as `git worktree
+remove` does on the ordinary path, and deletes the tree at the queue's pace. A
+tree found already in its job folder finishes the same way. A tree gone from its
+path whose retired admin directory remains blocks on `identity`, so whatever
+moved the tree keeps its git dir. Any other change blocks the job.
 
 A stack rebase, `stack continue`, or `stack abort` that meets a paused queue
 still finishes and leaves its conflict workspace in place, naming the

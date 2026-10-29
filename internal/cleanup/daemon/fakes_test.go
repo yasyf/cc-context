@@ -269,6 +269,30 @@ func (f *fakeRelocator) Advance(ctx context.Context, job *cleanup.Job) error {
 	return f.h.journal.Save(*job)
 }
 
+func (f *fakeRelocator) Retire(ctx context.Context, job *cleanup.Job) error {
+	name := f.h.rec.name(job.ID)
+	f.h.rec.add(fmt.Sprintf("retire:%s@%s", name, job.Phase))
+	f.serve(ctx, "retire", name)
+	f.mu.Lock()
+	step, gate := f.scripts["retire:"+name], f.gates["retire:"+name]
+	f.mu.Unlock()
+	if gate != nil {
+		f.entered <- "retire:" + name
+		<-gate
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("check activity in %s: %w", name, err)
+	}
+	if step == nil {
+		step = retireInPlace
+	}
+	step(job)
+	job.Updated = f.h.clock.Now()
+	return f.h.journal.Save(*job)
+}
+
+func retireInPlace(job *cleanup.Job) { job.Phase = cleanup.PhaseRetired }
+
 func (f *fakeRelocator) Admit(ctx context.Context, job *cleanup.Job) error {
 	name := f.h.rec.name(job.ID)
 	f.h.rec.add("admit:" + name)

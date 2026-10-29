@@ -78,7 +78,9 @@ type Relocator interface {
 	// crash interrupted and the retry of one an operator unblocked.
 	//
 	// From PhasePending it runs Accept's whole preflight again, and blocks the
-	// job unless that passes for the tree the job captured.
+	// job unless that passes for the tree the job captured. From PhaseRetired it
+	// re-proves the retirement and the tree's identity and idleness, moves the
+	// tree from Original to Payload, and removes the retired admin directory.
 	//
 	// It returns nil with job at PhaseUnregistered on success, nil with job at
 	// PhaseWaiting when a deferred job's tree is still held, and nil with
@@ -89,6 +91,13 @@ type Relocator interface {
 	// expires its budget; a git step that expired its own budget journals a
 	// timeout blockage and returns nil, cancelled or not.
 	Advance(ctx context.Context, job *Job) error
+	// Retire is the daemon's only step while the queue is halted: it takes a
+	// job at a Retirable phase to PhaseRetired, unregistering its tree from
+	// git in place by moving only the admin directory out of git's registry,
+	// and never moving or deleting the tree. Its fences and errors are
+	// Advance's; it also returns nil with job at PhaseWaiting, or at PhaseDone
+	// when the tree and registration are already gone.
+	Retire(ctx context.Context, job *Job) error
 	// Admit is the gate every physical deletion passes each time its payload is
 	// opened: first, after a restart, and after any pause. It proves afresh
 	// that the payload is the captured tree, that no git registration names

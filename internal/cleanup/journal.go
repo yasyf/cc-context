@@ -27,7 +27,8 @@ type Damaged struct {
 
 // Switch is the queue-wide setting an operator controls.
 type Switch struct {
-	// Paused stops physical deletion of every job.
+	// Paused stops every tree's move and deletion; registrations are still
+	// retired in place.
 	Paused bool `json:"paused"`
 	// Hold is the maintenance hold, which stops the queue as Paused does
 	// whatever Paused says. Unset, the record is the shape older daemons wrote.
