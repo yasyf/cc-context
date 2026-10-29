@@ -352,3 +352,31 @@ func TestAdmitReturnsTheContextErrorWithoutBlocking(t *testing.T) {
 		})
 	}
 }
+
+func TestAdmitGuardsBothRetiredTargetsAfterCrash(t *testing.T) {
+	for _, target := range []string{"payload", "admin"} {
+		t.Run(target, func(t *testing.T) {
+			f := newFixture(t)
+			job := f.pend()
+			f.retire(&job)
+			if err := os.Rename(job.Original, job.Payload); err != nil {
+				t.Fatal(err)
+			}
+			f.advance(&job)
+			retired := cleanup.RetiredGitDirFor(job.Repo, job.ID)
+			held := job.Payload
+			if target == "admin" {
+				held = retired
+			}
+			active := f.holdAt(held)
+			f.admit(&job)
+			f.stuck(&job, cleanup.PhaseUnregistered, "activity", active.Error())
+			if got := f.id(retired); got != job.Admin {
+				t.Errorf("retired admin = %v, want %v", got, job.Admin)
+			}
+			if got := f.id(job.Payload); got != job.Tree {
+				t.Errorf("payload = %v, want %v", got, job.Tree)
+			}
+		})
+	}
+}

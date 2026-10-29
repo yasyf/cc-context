@@ -403,7 +403,8 @@ type Service interface {
 	// *ActiveError with nothing journaled; a removal that stopped part-way is a
 	// *BlockedError. While the queue is paused it journals the removal at
 	// PhasePending after the preflight's checks that look for no live process,
-	// and returns with nothing moved; Resume runs the whole preflight again.
+	// and returns with nothing moved; the daemon then retires the registration
+	// in place, and Resume moves and deletes the tree.
 	Remove(ctx context.Context, r Request) (Receipt, error)
 	// Defer journals a removal that waits for inactivity and returns without
 	// moving anything.
@@ -413,9 +414,9 @@ type Service interface {
 	// Wait returns once the job is done, or with a *BlockedError once it
 	// blocks.
 	Wait(ctx context.Context, jobID string) (Job, error)
-	// Pause stops the queue: every job rests at its journaled phase, Remove
-	// journals a new removal as pending, and Defer and Adopt return ErrPaused
-	// until Resume, across restarts.
+	// Pause stops the queue from moving or deleting any tree, Remove journals a
+	// new removal as pending, and Defer and Adopt return ErrPaused until
+	// Resume, across restarts. Untouched removals are still retired in place.
 	Pause(ctx context.Context) error
 	// Resume lets the queue run again, rested and pending jobs and new
 	// removals alike. While a maintenance hold stands it is a *HeldError and
