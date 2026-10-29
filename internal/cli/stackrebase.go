@@ -149,6 +149,7 @@ type stackRebaseBranch struct {
 	Landed      string            `json:"landed,omitempty"`
 	Held        string            `json:"held,omitempty"`
 	Kept        bool              `json:"kept,omitempty"`
+	KeptFor     string            `json:"kept_for,omitempty"`
 	Stays       bool              `json:"stays,omitempty"`
 	Conflicts   []string          `json:"conflicts,omitempty"`
 	Pinned      bool              `json:"pinned,omitempty"`
@@ -1542,12 +1543,24 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 			if !stackPinPublished(b) {
 				unpushed = append(unpushed, name)
 			}
-			b.Kept, b.Pinned = true, true
+			b.Kept, b.Pinned, b.KeptFor = true, true, "another lane's branch"
 		case queued || (moving != nil && !moving[name] && !inherits[name]) || o.noPush && heldBelow[name].holder != "":
 			b.Kept = o.noPush || stackPinPublished(b)
+			switch {
+			case queued:
+				b.KeptFor = "in the merge queue, so a move would evict it"
+			case o.noPush && heldBelow[name].holder != "":
+				b.KeptFor = "checked out in " + heldBelow[name].holder
+			default:
+				b.KeptFor = "below the branches the run moves"
+			}
 		case o.tip != "" && name != o.tip && (o.tipOnly || !o.restack && !inherits[name]):
 			if b.Kept, err = stackKeepsAncestor(ctx, l.dir(), pin, b, kept[b.Parent], o.tipOnly, byName[o.tip]); err != nil {
 				return nil, err
+			}
+			b.KeptFor = "its open pull request merges as it stands"
+			if o.tipOnly {
+				b.KeptFor = "--tip-only moves no ancestor"
 			}
 		}
 		kept[name] = b.Kept
@@ -3448,10 +3461,18 @@ func stackPlanLines(run *stackRebaseRun) []string {
 			fields = append(fields, "drop ("+b.Landed+")")
 		case b.Held != "":
 			fields = append(fields, "left alone ("+b.Held+")")
-		case b.Kept && run.NoPush:
-			fields = append(fields, fmt.Sprintf("kept at its local head %.12s", b.Head))
 		case b.Kept:
-			fields = append(fields, fmt.Sprintf("kept at its published head %.12s", b.Head))
+			head := "published"
+			if run.NoPush {
+				head = "local"
+			}
+			fields = append(fields, fmt.Sprintf("kept at its %s head %.12s", head, b.Head))
+			if b.KeptFor != "" {
+				fields = append(fields, b.KeptFor)
+			}
+			if b.Parent == run.Trunk && b.OldBase != run.Pin {
+				fields = append(fields, fmt.Sprintf("lacks %s@%.12s", run.Trunk, run.Pin))
+			}
 		case b.Stays && b.Parent != run.Trunk:
 			fields = append(fields, fmt.Sprintf("stays on %.12s", b.OldBase), fmt.Sprintf("lacks %s@%.12s", b.Parent, run.branch(b.Parent).Head), "--tip-only keeps a base its parent still holds")
 		case b.Stays:
