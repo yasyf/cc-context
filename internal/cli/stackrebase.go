@@ -4408,8 +4408,12 @@ func stackQueueRemoval(ctx context.Context, c *stackConflict, force bool) (strin
 		return stackMismatchLine(c.Workspace), nil
 	}
 	receipt, err := queueGitWorktreeRemoval(ctx, c.Workspace, worktreeRmOptions{force: force})
-	if err != nil {
-		return "", fmt.Errorf("stack rebase: %w — nothing was removed, and %s is left where it is", err, c.Workspace)
+	var refused *cleanup.RefusedError
+	switch {
+	case errors.As(err, &refused):
+		return fmt.Sprintf("left %s in place, since the paused cleanup queue refused its removal: %v", c.Workspace, err), nil
+	case err != nil:
+		return "", fmt.Errorf("stack rebase: %w — the cleanup daemon may already hold %s", err, c.Workspace)
 	}
 	return fmt.Sprintf("queued %s for removal as cleanup job %s, %s until ccx vcs cleanup resume", c.Workspace, receipt.JobID, receipt.State), nil
 }
