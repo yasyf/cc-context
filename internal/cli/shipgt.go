@@ -1151,9 +1151,10 @@ func gtNearestTracked(ctx context.Context, dir render.Dir, state gtState, trunk,
 }
 
 func gtNearestTrackedAt(ctx context.Context, dir render.Dir, state gtState, trunk, branch, tip string) (string, error) {
+	above := gtRecordedDescendants(state, branch)
 	var candidates []string
 	for name := range state {
-		if name != branch && name != trunk && !gtRecordedAbove(state, name, branch) {
+		if name != branch && name != trunk && !above[name] {
 			candidates = append(candidates, name)
 		}
 	}
@@ -1199,8 +1200,12 @@ func gtNearestTrackedAt(ctx context.Context, dir render.Dir, state gtState, trun
 	for _, head := range strings.Fields(out) {
 		contained[head] = true
 	}
+	if len(contained) == 0 {
+		return trunk, nil
+	}
 	present := slices.DeleteFunc(slices.Clone(candidates), func(name string) bool { return heads[name] == "" })
-	former, err := gtReflogHeads(ctx, dir, "ship", present)
+	rewritten := slices.DeleteFunc(slices.Clone(present), func(name string) bool { return contained[heads[name]] })
+	former, err := gtReflogHeads(ctx, dir, "ship", rewritten)
 	if err != nil {
 		return "", err
 	}
@@ -1256,20 +1261,26 @@ func gtReflogHeads(ctx context.Context, dir render.Dir, prefix string, branches 
 	return former, nil
 }
 
-// gtRecordedAbove reports whether gt records name as stacked, at any depth, on
-// branch, which makes it no candidate for branch's parent.
-func gtRecordedAbove(state gtState, name, branch string) bool {
-	for seen := map[string]bool{}; !seen[name]; {
-		seen[name] = true
-		s, tracked := state[name]
-		if !tracked || len(s.Parents) == 0 {
-			return false
-		}
-		if name = s.Parents[0].Ref; name == branch {
-			return true
+func gtRecordedDescendants(state gtState, branch string) map[string]bool {
+	children := make(map[string][]string, len(state))
+	for name, s := range state {
+		if len(s.Parents) > 0 {
+			parent := s.Parents[0].Ref
+			children[parent] = append(children[parent], name)
 		}
 	}
-	return false
+	above := make(map[string]bool, len(state))
+	queue := make([]string, 1, len(state)+1)
+	queue[0] = branch
+	for i := 0; i < len(queue); i++ {
+		for _, child := range children[queue[i]] {
+			if !above[child] {
+				above[child] = true
+				queue = append(queue, child)
+			}
+		}
+	}
+	return above
 }
 
 // gtAdoptRefusal is every refusal adopting an untracked branch onto parent
