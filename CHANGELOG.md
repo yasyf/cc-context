@@ -41,6 +41,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs stack continue`, `abort`, and `rebase` finish while the cleanup
+  queue is paused.** They used to fail handing the conflict workspace to the
+  paused queue, leaving the run stuck. They now finish the run, leave the
+  workspace on disk, and say in one line that `ccx vcs worktree rm --path`
+  queues its removal for `ccx vcs cleanup resume`.
 - **Every branch delete and move sees a worktree moved out of git's
   registry.** Some worktrees have their administrative directory outside
   `.git/worktrees`, with the `.git` file pointing at the new place. Each one

@@ -4361,6 +4361,8 @@ func stackReleaseWorkspace(ctx context.Context, l lane, commonDir string, c *sta
 	switch {
 	case errors.Is(err, cleanup.ErrUnsupported):
 		return stackReleaseInline(ctx, l, c)
+	case errors.Is(err, cleanup.ErrPaused):
+		return stackPausedLine(ws), nil
 	case err != nil:
 		var refused *cleanup.RefusedError
 		switch {
@@ -4416,6 +4418,10 @@ func stackOccupied(ctx context.Context, ws string) (bool, error) {
 		return false, fmt.Errorf("stack rebase: %w", err)
 	}
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)), nil
+}
+
+func stackPausedLine(ws string) string {
+	return "left " + ws + " in place, since the cleanup queue is paused — ccx vcs worktree rm --path " + ws + " queues its removal for ccx vcs cleanup resume"
 }
 
 func stackKeptLine(ws string) string {
