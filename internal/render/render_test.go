@@ -578,7 +578,7 @@ func TestCapNoNewlineFallsBackToHardCut(t *testing.T) {
 	}
 }
 
-func TestPinnedRunDropsGitLocation(t *testing.T) {
+func TestPinnedRunDropsRepoLocation(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("uses /bin/sh to read the environment")
 	}
@@ -589,13 +589,14 @@ func TestPinnedRunDropsGitLocation(t *testing.T) {
 	t.Setenv("GIT_DIR", "/tmp/wrong/.git")
 	t.Setenv("GIT_WORK_TREE", "/tmp/wrong")
 	t.Setenv("GIT_INDEX_FILE", "/tmp/wrong/index")
+	t.Setenv("GH_REPO", "wrong/repo")
 
-	script := `printf 'GIT_DIR=%s GIT_WORK_TREE=%s GIT_INDEX_FILE=%s cwd=%s' "${GIT_DIR-<unset>}" "${GIT_WORK_TREE-<unset>}" "${GIT_INDEX_FILE-<unset>}" "$(pwd)"`
+	script := `printf 'GIT_DIR=%s GIT_WORK_TREE=%s GIT_INDEX_FILE=%s GH_REPO=%s cwd=%s' "${GIT_DIR-<unset>}" "${GIT_WORK_TREE-<unset>}" "${GIT_INDEX_FILE-<unset>}" "${GH_REPO-<unset>}" "$(pwd)"`
 	got, err := RunCLI(context.Background(), Dir(dir), "/bin/sh", []string{"-c", script})
 	if err != nil {
 		t.Fatalf("RunCLI err = %v", err)
 	}
-	want := "GIT_DIR=<unset> GIT_WORK_TREE=<unset> GIT_INDEX_FILE=/tmp/wrong/index cwd=" + dir
+	want := "GIT_DIR=<unset> GIT_WORK_TREE=<unset> GIT_INDEX_FILE=/tmp/wrong/index GH_REPO=<unset> cwd=" + dir
 	if got != want {
 		t.Errorf("pinned child env = %q, want %q", got, want)
 	}
@@ -604,7 +605,7 @@ func TestPinnedRunDropsGitLocation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunCLI err = %v", err)
 	}
-	if !strings.HasPrefix(got, "GIT_DIR=/tmp/wrong/.git GIT_WORK_TREE=/tmp/wrong ") {
-		t.Errorf("ambient child env = %q, want the inherited GIT_DIR and GIT_WORK_TREE", got)
+	if !strings.HasPrefix(got, "GIT_DIR=/tmp/wrong/.git GIT_WORK_TREE=/tmp/wrong GIT_INDEX_FILE=/tmp/wrong/index GH_REPO=wrong/repo ") {
+		t.Errorf("ambient child env = %q, want the inherited GIT_DIR, GIT_WORK_TREE, and GH_REPO", got)
 	}
 }

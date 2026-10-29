@@ -23,7 +23,7 @@ var ErrNoGitHub = errors.New("github metadata unavailable")
 
 // githubSchema is the on-disk format version of the cached repo record; a
 // mismatch reads as a miss.
-const githubSchema = 1
+const githubSchema = 2
 
 // githubTTL bounds how long a cached record is served before a refetch.
 const githubTTL = 24 * time.Hour
