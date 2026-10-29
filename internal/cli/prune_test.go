@@ -292,6 +292,43 @@ func TestPruneDeletesMergedBranchesFromADetachedHead(t *testing.T) {
 	}
 }
 
+// TestPruneKeepsABranchAnUnregisteredWorktreeHolds pins the holder git no
+// longer lists: a worktree whose administrative directory was moved out of
+// .git/worktrees, its .git file pointing at the new place, keeps its merged
+// branch, which git branch -d would otherwise delete out from under it.
+func TestPruneKeepsABranchAnUnregisteredWorktreeHolds(t *testing.T) {
+	t.Parallel()
+	f, dir, trunk, commonDir := pruneSquashFixture(t)
+	gitAt(t, f.Env(), f.Dir, "branch", "mirror", "main")
+	tree := filepath.Join(t.TempDir(), "mirror")
+	gitAt(t, f.Env(), f.Dir, "worktree", "add", "-q", tree, "mirror")
+	admin := filepath.Join(commonDir, "retired-worktrees", "mirror")
+	if err := os.MkdirAll(filepath.Dir(admin), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(filepath.Join(commonDir, "worktrees", "mirror"), admin); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tree, ".git"), []byte("gitdir: "+admin+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	api := stubGTAPI(t)
+
+	plan, err := prunePlanFor(api.ctx(t.Context()), dir, pruneGTLane, trunk, commonDir)
+	if err != nil {
+		t.Fatalf("prunePlanFor: %v", err)
+	}
+	if !slices.Equal(plan.held, []string{"mirror"}) || slices.Contains(plan.merged, "mirror") {
+		t.Fatalf("held = %q, merged = %q, want mirror held", plan.held, plan.merged)
+	}
+	if err := pruneApply(api.ctx(t.Context()), dir, pruneGTLane, plan, commonDir); err != nil {
+		t.Fatalf("pruneApply: %v", err)
+	}
+	if !gitBranchExists(t, f.Env(), f.Dir, "mirror") {
+		t.Error("mirror was deleted out from under its unregistered worktree")
+	}
+}
+
 // TestPruneSeesSquashLandings pins the landing git branch --merged cannot see:
 // a pull request Graphite reports MERGED at the branch's own head is deleted,
 // while one whose branch moved past the merged head, one a worktree holds, one

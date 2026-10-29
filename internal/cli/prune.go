@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"os"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -107,7 +109,7 @@ func runPrune(cmd *cobra.Command, o pruneOpts) error {
 }
 
 func prunePlanFor(ctx context.Context, dir render.Dir, l lane, trunk vcs.Trunk, commonDir string) (prunePlan, error) {
-	held, err := pruneHeldBranches(ctx, dir)
+	held, err := pruneHeldBranches(ctx, dir, commonDir)
 	if err != nil {
 		return prunePlan{}, err
 	}
@@ -241,8 +243,10 @@ func pruneSurvivor(parents map[string]string, forgotten map[string]bool, trunk, 
 
 // pruneHeldBranches names every branch a worktree has checked out, including
 // this one: git refuses to delete them, and a prune that tried would fail
-// partway rather than report the exclusion.
-func pruneHeldBranches(ctx context.Context, dir render.Dir) (map[string]bool, error) {
+// partway rather than report the exclusion. A worktree whose administrative
+// directory was moved out of git's registry, while its .git file still points
+// at it, holds its branch too, though git no longer refuses that delete.
+func pruneHeldBranches(ctx context.Context, dir render.Dir, commonDir string) (map[string]bool, error) {
 	out, err := render.RunCLI(ctx, dir, "git", []string{"worktree", "list", "--porcelain"})
 	if err != nil {
 		return nil, fmt.Errorf("prune: git worktree list: %w", err)
@@ -253,7 +257,50 @@ func pruneHeldBranches(ctx context.Context, dir render.Dir) (map[string]bool, er
 			held[strings.TrimSpace(name)] = true
 		}
 	}
+	links, err := filepath.Glob(filepath.Join(commonDir, "*", "*", "gitdir"))
+	if err != nil {
+		return nil, fmt.Errorf("prune: %w", err)
+	}
+	for _, link := range links {
+		if name, ok := pruneUnregisteredHolder(filepath.Dir(link)); ok {
+			held[name] = true
+		}
+	}
 	return held, nil
+}
+
+// pruneUnregisteredHolder reads the branch an administrative directory has
+// checked out when a worktree's .git file still points back at it.
+func pruneUnregisteredHolder(admin string) (string, bool) {
+	link, err := os.ReadFile(filepath.Join(admin, "gitdir"))
+	if err != nil {
+		return "", false
+	}
+	dotGit := strings.TrimSpace(string(link))
+	pointer, err := os.ReadFile(dotGit)
+	if err != nil {
+		return "", false
+	}
+	target, ok := strings.CutPrefix(strings.TrimSpace(string(pointer)), "gitdir: ")
+	if !ok {
+		return "", false
+	}
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(filepath.Dir(dotGit), target)
+	}
+	want, err := os.Stat(admin)
+	if err != nil {
+		return "", false
+	}
+	got, err := os.Stat(target)
+	if err != nil || !os.SameFile(want, got) {
+		return "", false
+	}
+	head, err := os.ReadFile(filepath.Join(admin, "HEAD"))
+	if err != nil {
+		return "", false
+	}
+	return strings.CutPrefix(strings.TrimSpace(string(head)), "ref: refs/heads/")
 }
 
 func pruneMergedBranches(ctx context.Context, dir render.Dir, trunk vcs.Trunk) ([]string, error) {
@@ -395,7 +442,7 @@ func pruneApply(ctx context.Context, dir render.Dir, l lane, plan prunePlan, com
 	}
 	squashed := pruneSquashedNames(plan)
 	if len(squashed) > 0 {
-		held, err := pruneHeldBranches(ctx, dir)
+		held, err := pruneHeldBranches(ctx, dir, commonDir)
 		if err != nil {
 			return err
 		}
