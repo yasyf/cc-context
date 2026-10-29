@@ -268,9 +268,9 @@ type gtCache struct {
 
 	checkoutCommonDir string
 
-	restack   *stackRebaseRun
-	focus     string
-	parent    string
+	restack *stackRebaseRun
+	focus   string
+	parent  string
 }
 
 func newGTCache(l lane, prefix string) *gtCache {
