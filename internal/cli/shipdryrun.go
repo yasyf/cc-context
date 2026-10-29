@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -686,13 +687,21 @@ func dryRunCreates(ctx context.Context, l lane, o shipOpts, state gtState, chain
 			r.creates = append(r.creates, branch+shipSep+"pushed, not submitted: no pull request opens without a prepared title and body")
 			continue
 		}
-		title := meta.title
-		if title == "" {
-			title, _, err = gtCreateMeta(ctx, l.dir(), "ship", branch, branch, from, base)
+		title, prBody := meta.title, text
+		if title == "" || meta.bodyPath == "" {
+			derivedTitle, derivedBody, err := gtCreateMeta(ctx, l.dir(), "ship", branch, branch, from, base)
 			if err != nil {
 				r.notes = append(r.notes, err.Error())
 				continue
 			}
+			title = cmp.Or(title, derivedTitle)
+			if meta.bodyPath == "" {
+				prBody = derivedBody
+			}
+		}
+		if branch == r.branch && strings.TrimSpace(prBody) == "" {
+			r.refusals = append(r.refusals, "ship: "+branch+" has no pull request, and ship opens none without a body — pass --pr-body-file <body.md>")
+			continue
 		}
 		created := branch + shipSep + "opens a pull request titled " + strconv.Quote(title)
 		if meta.bodyPath != "" {

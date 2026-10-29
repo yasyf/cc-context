@@ -293,7 +293,7 @@ func TestShipDryRunNamesTheDerivedTitles(t *testing.T) {
 	writeShipFile(t, f.Dir, "c.txt", "moved on\n")
 	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "c moves on", "c.txt")
 
-	report := dryRunReport(t, f, "-m", "fix: frobnicate")
+	report := dryRunReport(t, f, "-m", "fix: frobnicate", "--pr-body-file", writePRBody(t, "body.md", "why\n"))
 
 	creates := dryRunValues(report, "pr new")
 	want := []string{
@@ -304,9 +304,26 @@ func TestShipDryRunNamesTheDerivedTitles(t *testing.T) {
 		t.Fatalf("pr new lines = %v, want %v", creates, want)
 	}
 	for i, line := range creates {
-		if line != want[i] {
+		if !strings.HasPrefix(line, want[i]) {
 			t.Errorf("pr new line %d = %q, want %q", i, line, want[i])
 		}
+	}
+}
+
+func TestShipDryRunRefusesANewPullRequestWithNoBody(t *testing.T) {
+	f := dryRunFixture(t)
+	stub := stubGTAPI(t)
+	f.Decorate(stub.ctx)
+	stub.prs["b"] = 22285
+
+	report := dryRunReport(t, f, "-m", "fix: frobnicate")
+
+	refusals := dryRunValues(report, "refuses")
+	if want := "ship: c has no pull request, and ship opens none without a body — pass --pr-body-file <body.md>"; !slices.Contains(refusals, want) {
+		t.Errorf("refuses = %q, want %q", refusals, want)
+	}
+	if creates := strings.Join(dryRunValues(report, "pr new"), "\n"); strings.Contains(creates, "c"+shipSep+"opens") {
+		t.Errorf("pr new = %q, want c left unopened", creates)
 	}
 }
 
@@ -316,10 +333,10 @@ func TestShipDryRunDropsALandedBranch(t *testing.T) {
 	f.Decorate(stub.ctx)
 	stub.prs["b"] = 22285
 
-	report := dryRunReport(t, f, "-m", "fix: frobnicate", "--landed", "a")
+	report := dryRunReport(t, f, "-m", "fix: frobnicate", "--landed", "a", "--pr-body-file", writePRBody(t, "body.md", "why\n"))
 
 	creates := dryRunValues(report, "pr new")
-	if want := []string{"c" + shipSep + `opens a pull request titled "c"`}; !slices.Equal(creates, want) {
+	if want := "c" + shipSep + `opens a pull request titled "c"`; len(creates) != 1 || !strings.HasPrefix(creates[0], want) {
 		t.Errorf("pr new lines = %v, want %v", creates, want)
 	}
 	if notes := strings.Join(dryRunValues(report, "note"), " | "); !strings.Contains(notes, "a is dropped as landed (--landed)") {

@@ -4356,6 +4356,31 @@ func TestShipGTBodylessPR(t *testing.T) {
 		}
 	})
 
+	t.Run("a new pull request with no body is refused before the push", func(t *testing.T) {
+		_, gt := setupShipGT(t, true)
+
+		_, err := runShipCmd(gt.ctx(context.Background()), t, "-m", "fix: frobnicate", "--no-watch")
+		if err == nil || !strings.Contains(err.Error(), "feature has no pull request, and ship opens none without a body — pass --pr-body-file <body.md>") {
+			t.Fatalf("error = %v, want the refusal naming --pr-body-file", err)
+		}
+		if bodies := gt.submitBodies(); len(bodies) != 0 {
+			t.Errorf("submit posts = %d, want none", len(bodies))
+		}
+	})
+
+	t.Run("a body file opens the new pull request", func(t *testing.T) {
+		_, gt := setupShipGT(t, true)
+		body := writePRBody(t, "body.md", "why this change\n")
+
+		got, err := runShipCmd(gt.ctx(context.Background()), t, "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", body)
+		if err != nil {
+			t.Fatalf("ship error = %v", err)
+		}
+		if !strings.Contains(got, "submitted feature → PR #") || strings.Contains(got, "bodyless") {
+			t.Errorf("summary = %q, want feature's new pull request opened with its body", got)
+		}
+	})
+
 	t.Run("a body this ship writes settles it", func(t *testing.T) {
 		_, gt := setupShipGT(t, true)
 		gt.prs["feature"] = 7

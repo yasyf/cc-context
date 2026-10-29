@@ -195,7 +195,7 @@ func TestShipDryRunMirrorsTheReparent(t *testing.T) {
 			shipParentRewritten(t, f, tt.onto)
 			refs := dryRunRefs(t, f)
 
-			report := dryRunReport(t, f, "--no-commit", "--parent", "p")
+			report := dryRunReport(t, f, "--no-commit", "--parent", "p", "--pr-body-file", writePRBody(t, "body.md", "why\n"))
 			if got := dryRunValues(report, "parent"); len(got) != 1 || got[0] != "p"+shipSep+tt.because {
 				t.Errorf("parent = %q, want %q", got, "p"+shipSep+tt.because)
 			}
