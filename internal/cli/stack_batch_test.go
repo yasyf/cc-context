@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
@@ -185,39 +186,69 @@ func TestStackListBatchPreservesRetiredHolderSymlinkSpelling(t *testing.T) {
 	}
 }
 
-func TestStackListBatchSharesUnlandedParentChecks(t *testing.T) {
-	for _, conflict := range []bool{false, true} {
-		name := "clean"
-		if conflict {
-			name = "conflict"
+func TestStackLandedCheckUsesAncestryWithoutAnExistenceProbe(t *testing.T) {
+	f := shipGTRepo(t, vcstest.GTStack("parent"))
+	parent := gitAt(t, f.Env(), f.Dir, "rev-parse", "parent")
+	shipResetLog(t, f)
+	landed, err := gtLandedIn(f.Context(), render.Dir(f.Dir), "stack list", parent, "refs/remotes/origin/main")
+	if err != nil || landed {
+		t.Fatalf("unlanded parent = %v, %v", landed, err)
+	}
+	var probes, merges int
+	for _, invocation := range vcstest.Invocations(t, f.ArgvLog) {
+		if slices.Equal(invocation, []string{"git", "cat-file", "-e", parent + "^{commit}"}) {
+			probes++
 		}
-		t.Run(name, func(t *testing.T) {
-			f := shipGTRepo(t, vcstest.GTStack("parent", "left"))
-			mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "parent")
-			shipGTStack(t, f, "right")
-			left := filepath.Join(t.TempDir(), "left")
-			mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", left, "left")
-			if conflict {
-				restackAdvanceRemote(t, f, "main", "parent.txt", "conflicting trunk content\n")
-				mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
-			}
-			mustRun(t, f.Env(), f.Dir, "git", "branch", "-D", "parent")
-			shipResetLog(t, f)
-			results := stackBatchReports(t, f, left, f.Dir, left, f.Dir)
-			for i, result := range results {
-				if !strings.Contains(result.Error, "is not tracked by Graphite, so it sits on no stack") || result.Listing != nil {
-					t.Errorf("result %d = %+v, want unlanded orphan refusal", i, result)
-				}
-			}
-			var merges int
-			for _, invocation := range vcstest.Invocations(t, f.ArgvLog) {
-				if slices.Contains(invocation, "merge-tree") {
-					merges++
-				}
-			}
-			if merges != 1 {
-				t.Errorf("shared parent merge evaluations = %d, want 1 for %d focused listings", merges, len(results))
+		if slices.Contains(invocation, "merge-tree") {
+			merges++
+		}
+	}
+	if probes != 0 || merges != 1 {
+		t.Errorf("healthy orphan check used %d existence probes and %d merges, want 0 and 1", probes, merges)
+	}
+}
+
+func TestStackLandedCheckPreservesMissingObjectAndTrunkErrors(t *testing.T) {
+	f := shipGTRepo(t, vcstest.GTStack("parent"))
+	parent := gitAt(t, f.Env(), f.Dir, "rev-parse", "parent")
+	tree := gitAt(t, f.Env(), f.Dir, "rev-parse", "parent^{tree}")
+	for _, tc := range []struct {
+		name      string
+		rev       string
+		trunk     string
+		wantError bool
+	}{
+		{name: "missing parent", rev: strings.Repeat("f", 40), trunk: "refs/remotes/origin/main"},
+		{name: "noncommit parent", rev: tree, trunk: "refs/remotes/origin/main"},
+		{name: "missing trunk", rev: parent, trunk: strings.Repeat("f", 40), wantError: true},
+		{name: "both missing", rev: strings.Repeat("e", 40), trunk: strings.Repeat("f", 40)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			landed, err := gtLandedIn(f.Context(), render.Dir(f.Dir), "stack list", tc.rev, tc.trunk)
+			if landed || (err != nil) != tc.wantError {
+				t.Fatalf("landed = %v, err = %v, want false and error=%v", landed, err, tc.wantError)
 			}
 		})
+	}
+}
+
+func TestStackListBatchObservesChangedReplacement(t *testing.T) {
+	f := shipGTRepo(t, vcstest.GTStack("parent", "child"))
+	parent := gitAt(t, f.Env(), f.Dir, "rev-parse", "parent")
+	restackAdvanceRemote(t, f, "main", "trunk.txt", "trunk content\n")
+	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
+	trunk := gitAt(t, f.Env(), f.Dir, "rev-parse", "refs/remotes/origin/main")
+	mustRun(t, f.Env(), f.Dir, "git", "branch", "-D", "parent")
+	batch := stackBatch{stores: make(map[string]*stackBatchStore)}
+	if _, err := batch.list(f.Context(), f.Dir); err == nil {
+		t.Fatal("unlanded parent was adopted before replacement")
+	}
+	mustRun(t, f.Env(), f.Dir, "git", "replace", trunk, parent)
+	listing, err := batch.list(f.Context(), f.Dir)
+	if err != nil || listing == nil {
+		t.Fatalf("listing after replacement = %+v, %v", listing, err)
+	}
+	if got := pruneParentOf(t, filepath.Join(f.Dir, ".git"), "child"); got != "main" {
+		t.Errorf("parent after replacement = %s, want main", got)
 	}
 }
