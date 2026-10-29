@@ -233,12 +233,15 @@ func gtLandedIn(ctx context.Context, dir render.Dir, prefix, rev, trunk string) 
 	if rev == "" {
 		return false, nil
 	}
-	if _, err := render.RunCLI(ctx, dir, "git", []string{"cat-file", "-e", rev + "^{commit}"}); err != nil {
-		return false, nil
-	}
 	held, err := gitIsAncestor(ctx, dir, prefix, rev, trunk)
-	if err != nil || held {
-		return held, err
+	if err != nil {
+		if _, missing := render.RunCLI(ctx, dir, "git", []string{"cat-file", "-e", rev + "^{commit}"}); missing != nil {
+			return false, nil
+		}
+		return false, err
+	}
+	if held {
+		return true, nil
 	}
 	merged, code, _, err := render.RunCLIExitCode(ctx, dir, "git", []string{"merge-tree", "--write-tree", trunk, rev})
 	if err != nil || code != 0 {
