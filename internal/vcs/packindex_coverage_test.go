@@ -30,7 +30,7 @@ func midxFixture(t *testing.T, version, hash byte, names ...string) []byte {
 		pnam = append(pnam, 0)
 	}
 	header := []byte{'M', 'I', 'D', 'X', version, hash, 4, 0}
-	header = binary.BigEndian.AppendUint32(header, uint32(len(names)))
+	header = binary.BigEndian.AppendUint32(header, uint32(len(names))) //nolint:gosec // pack count is bounded by MaxUint32 above; gosec does not model t.Fatal as terminating
 	offset := uint64(12 + 5*12)
 	for i, id := range []uint32{0x504e414d, 0x4f494446, 0x4f49444c, 0x4f4f4646, 0} {
 		header = binary.BigEndian.AppendUint32(header, id)
