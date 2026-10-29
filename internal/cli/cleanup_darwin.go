@@ -80,6 +80,9 @@ func previewCleanup(ctx context.Context, r cleanup.Request) (cleanup.Job, error)
 }
 
 func runCleanupServe(ctx context.Context) error {
+	if err := native.LowPriority(); err != nil {
+		return fmt.Errorf("cleanup serve: lower CPU priority: %w", err)
+	}
 	band := native.Band{}
 	if err := band.Background(); err != nil {
 		return fmt.Errorf("cleanup serve: demote to background priority: %w", err)
