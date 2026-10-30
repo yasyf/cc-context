@@ -752,3 +752,17 @@ func TestRegenGeneratorOwnsEverythingBelowADeclaredDirectory(t *testing.T) {
 		}
 	}
 }
+
+func TestRegenerationAcceptsSharedCanonicalQueueConfiguration(t *testing.T) {
+	const raw = "[vcs]\nqueue = \"trunk\"\n[trunk]\nssm_parameter = \"/shared/queue\"\naws_profile = \"platform\"\naws_region = \"us-east-1\"\n[[generated]]\npaths = [\"gen/*.txt\"]\nrun = \"printf generated\"\n"
+	generators, err := regenParse(raw, regenFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(generators) != 1 || generators[0].Run != "printf generated" || !generators[0].owns("gen/out.txt") || generators[0].owns(".claude/gen/out.txt") {
+		t.Fatalf("generators=%+v", generators)
+	}
+	if _, err := regenParse(raw+"\n[trunk.typo]\nvalue = true\n", regenFile); err == nil || !strings.Contains(err.Error(), "unknown keys") {
+		t.Fatalf("unknown nested configuration error=%v", err)
+	}
+}

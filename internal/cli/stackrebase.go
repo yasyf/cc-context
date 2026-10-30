@@ -388,7 +388,7 @@ with the index.lock it held removed.
 A stopped run whose branches have moved since, or that has waited two hours,
 is reclaimed by the next rebase or ship that overlaps it, which removes its
 workspace and says so.
-A conflict in a file .ccx.toml lists under [[generated]] stops like any other;
+A conflict in a file .claude/ccx.toml lists under [[generated]] stops like any other;
 ccx vcs stack regenerate reruns its generator in the workspace.
 
 After the rewrite, gt's parents are recorded, the stack is force-pushed under
