@@ -212,25 +212,8 @@ func (r *Relocator) screen(ctx context.Context, job cleanup.Job) error {
 		return fmt.Errorf("cleanup: inspect %s: %w", job.Original, err)
 	}
 
-	modules, err := os.ReadDir(filepath.Join(job.AdminDir, "modules"))
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("cleanup: inspect %s: %w", job.Original, err)
-	}
-	if len(modules) > 0 {
-		return refuse(job.Original, "submodules", "worktree has initialized submodules under %s", filepath.Join(job.AdminDir, "modules"))
-	}
-	_, err = os.Lstat(filepath.Join(job.Original, ".gitmodules"))
-	switch {
-	case err == nil:
-		submodule, err := r.checkedOutSubmodule(ctx, job.Git, job.Original)
-		if err != nil {
-			return fmt.Errorf("cleanup: inspect %s: %w", job.Original, err)
-		}
-		if submodule != "" {
-			return refuse(job.Original, "submodules", "worktree has a submodule checked out at %s; git cannot move it", submodule)
-		}
-	case !errors.Is(err, fs.ErrNotExist):
-		return fmt.Errorf("cleanup: inspect %s: %w", job.Original, err)
+	if err := r.submodules(ctx, job.Git, job.AdminDir, job.Original, "-C", job.Original); err != nil {
+		return err
 	}
 
 	nested, err := nestedWorktree(job.Repo, job.AdminDir, job.Original)
@@ -362,4 +345,29 @@ func (r *Relocator) inspect(ctx context.Context, req cleanup.Request) (cleanup.J
 		return cleanup.Job{}, err
 	}
 	return job, nil
+}
+
+func (r *Relocator) submodules(ctx context.Context, git, admin, tree string, location ...string) error {
+	modules, err := os.ReadDir(filepath.Join(admin, "modules"))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("cleanup: inspect %s: %w", tree, err)
+	}
+	if len(modules) > 0 {
+		return refuse(tree, "submodules", "worktree has initialized submodules under %s", filepath.Join(admin, "modules"))
+	}
+	_, err = os.Lstat(filepath.Join(tree, ".gitmodules"))
+	switch {
+	case err == nil:
+		submodule, err := r.checkedOutSubmoduleAt(ctx, git, tree, location...)
+		if err != nil {
+			return fmt.Errorf("cleanup: inspect %s: %w", tree, err)
+		}
+		if submodule != "" {
+			return refuse(tree, "submodules", "worktree has a submodule checked out at %s; git cannot move it", submodule)
+		}
+	case !errors.Is(err, fs.ErrNotExist):
+		return fmt.Errorf("cleanup: inspect %s: %w", tree, err)
+	}
+
+	return nil
 }

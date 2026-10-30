@@ -143,6 +143,8 @@ func TestJobState(t *testing.T) {
 		{"pending", PhasePending, nil, State("pending")},
 		{"running", PhaseMoved, nil, State("moved")},
 		{"deleting", PhaseDeleting, nil, State("deleting")},
+		{"deleting admin", PhaseDeletingAdmin, nil, State("deleting_admin")},
+		{"deleting retired payload", PhaseDeletingRetiredPayload, nil, State("deleting_retired_payload")},
 		{"done", PhaseDone, nil, State("done")},
 		{"blocked", PhaseDetached, blocked, StateBlocked},
 		{"blocked deleting", PhaseDeleting, blocked, StateBlocked},
@@ -319,6 +321,8 @@ func TestPhaseHalves(t *testing.T) {
 		{PhaseDetached, true, false},
 		{PhaseUnregistered, false, true},
 		{PhaseDeleting, false, true},
+		{PhaseDeletingAdmin, false, true},
+		{PhaseDeletingRetiredPayload, false, true},
 		{PhaseDone, false, false},
 	}
 	for _, tt := range tests {
@@ -358,5 +362,30 @@ func TestRetirementRequiresALogicalLinkedJob(t *testing.T) {
 	job.Retirement = "unknown"
 	if err := job.Validate(); err == nil {
 		t.Fatal("unknown retirement accepted")
+	}
+}
+
+func TestRetiredDeletionStagesRequireCapturedLinkedIdentity(t *testing.T) {
+	for _, phase := range []Phase{PhaseDeletingAdmin, PhaseDeletingRetiredPayload} {
+		t.Run(string(phase), func(t *testing.T) {
+			job := validJob(Layout{Root: "/state"}, testID, 1)
+			job.Phase = phase
+			if err := job.Validate(); err != nil {
+				t.Fatal(err)
+			}
+			job.Retirement = RetirementComplete
+			if err := job.Validate(); err == nil {
+				t.Fatal("physical deletion accepted a logical retirement state")
+			}
+			job.Retirement, job.Head, job.RecoveryRef = "", "", ""
+			if err := job.Validate(); err == nil {
+				t.Fatal("retired deletion accepted an uncaptured HEAD")
+			}
+			job = adoptedJob(Layout{Root: "/state"}, testID, 1)
+			job.Phase = phase
+			if err := job.Validate(); err == nil {
+				t.Fatal("legacy adoption accepted an external admin deletion stage")
+			}
+		})
 	}
 }

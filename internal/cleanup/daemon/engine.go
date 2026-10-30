@@ -933,7 +933,9 @@ func (e *Engine) slice(ctx context.Context, job cleanup.Job) error {
 	start := e.clock.Now()
 	removed, done, err := e.active.deletion.Step(e.tuning.SliceEntries, e.tuning.SliceBudget)
 	end := e.clock.Now()
-	job.Removed += uint64(removed) //nolint:gosec // a step never removes a negative count
+	if job.Phase != cleanup.PhaseDeletingAdmin {
+		job.Removed += uint64(removed) //nolint:gosec // a step never removes a negative count
+	}
 	e.gov.sliced(end.Sub(start))
 	e.publishGovernor()
 	e.paceUntil = start.Add(e.rest(removed, end.Sub(start)))
@@ -943,6 +945,10 @@ func (e *Engine) slice(ctx context.Context, job cleanup.Job) error {
 		return e.block(job, err)
 	case done:
 		e.active = nil
+		if job.Phase == cleanup.PhaseDeletingAdmin {
+			job.Phase, job.Updated = cleanup.PhaseDeletingRetiredPayload, e.clock.Now()
+			return e.save(job)
+		}
 		return e.finish(job)
 	case end.Sub(e.active.savedAt) >= progressEvery:
 		job.Updated = end
@@ -968,7 +974,8 @@ func (e *Engine) open(ctx context.Context, job *cleanup.Job) error {
 			return err
 		}
 	}
-	if err := e.relocator.Admit(ctx, job); err != nil {
+	root, err := e.relocator.Admit(ctx, job)
+	if err != nil {
 		if cancelled(ctx, err) {
 			return nil
 		}
@@ -978,8 +985,8 @@ func (e *Engine) open(ctx context.Context, job *cleanup.Job) error {
 	if job.Blocked != nil {
 		return nil
 	}
-	deletion, err := e.deleter.Open(e.layout.JobDir(job.ID), cleanup.PayloadName, job.Tree)
-	if errors.Is(err, fs.ErrNotExist) {
+	deletion, err := e.deleter.Open(root.Dir, root.Name, root.ID)
+	if errors.Is(err, fs.ErrNotExist) && job.Phase != cleanup.PhaseDeletingAdmin {
 		return e.finish(*job)
 	}
 	if err != nil {

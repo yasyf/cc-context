@@ -22,7 +22,7 @@ func (f *fixture) unregistered() cleanup.Job {
 
 func (f *fixture) admit(job *cleanup.Job) {
 	f.t.Helper()
-	if err := f.relocator.Admit(context.Background(), job); err != nil {
+	if _, err := f.relocator.Admit(context.Background(), job); err != nil {
 		f.t.Fatalf("Admit() error = %v", err)
 	}
 }
@@ -90,7 +90,7 @@ func TestAdmitPassesAPushedPayloadPastAFailedProbe(t *testing.T) {
 			job := f.unregistered()
 			f.guard = func(context.Context, string) error { return errArgumentsUnread }
 
-			if err := f.relocator.Admit(context.Background(), &job); err != nil {
+			if _, err := f.relocator.Admit(context.Background(), &job); err != nil {
 				t.Fatalf("Admit() error = %v", err)
 			}
 
@@ -335,7 +335,7 @@ func TestAdmitReturnsTheContextErrorWithoutBlocking(t *testing.T) {
 			record := f.read(f.layout.RecordPath(job.ID))
 			want := job
 
-			err := f.relocator.Admit(ctx, &job)
+			_, err := f.relocator.Admit(ctx, &job)
 
 			if !errors.Is(err, context.Canceled) {
 				t.Fatalf("Admit() error = %v, want context.Canceled", err)

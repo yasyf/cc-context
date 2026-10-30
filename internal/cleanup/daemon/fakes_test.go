@@ -292,7 +292,7 @@ func (f *fakeRelocator) Retire(ctx context.Context, job *cleanup.Job) error {
 	return f.h.journal.Save(*job)
 }
 
-func (f *fakeRelocator) Admit(ctx context.Context, job *cleanup.Job) error {
+func (f *fakeRelocator) Admit(ctx context.Context, job *cleanup.Job) (cleanup.DeletionRoot, error) {
 	name := f.h.rec.name(job.ID)
 	f.h.rec.add("admit:" + name)
 	f.mu.Lock()
@@ -304,14 +304,16 @@ func (f *fakeRelocator) Admit(ctx context.Context, job *cleanup.Job) error {
 		<-gate
 	}
 	if err := ctx.Err(); err != nil {
-		return fmt.Errorf("check activity in the payload of %s: %w", name, err)
+		return cleanup.DeletionRoot{}, fmt.Errorf("check activity in the payload of %s: %w", name, err)
 	}
-	if verdict == nil {
-		return nil
+	if verdict != nil {
+		verdict(job)
+		job.Updated = f.h.clock.Now()
+		if err := f.h.journal.Save(*job); err != nil {
+			return cleanup.DeletionRoot{}, err
+		}
 	}
-	verdict(job)
-	job.Updated = f.h.clock.Now()
-	return f.h.journal.Save(*job)
+	return cleanup.DeletionRoot{Dir: filepath.Dir(job.Payload), Name: filepath.Base(job.Payload), ID: job.Tree}, nil
 }
 
 func blockWith(clock *manualClock, reason, detail string) func(job *cleanup.Job) {
