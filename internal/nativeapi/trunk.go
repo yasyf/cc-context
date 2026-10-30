@@ -117,7 +117,7 @@ func (c *Client) trunkQueueStatuses(ctx context.Context, owner, repo string, num
 	if len(numbers) == 0 {
 		return states, nil
 	}
-	if _, err := c.queueToken(); err != nil {
+	if _, err := c.trunkToken(ctx); err != nil {
 		return c.trunkCommentStatuses(ctx, owner, repo, numbers, err)
 	}
 	repository, err := c.queueRepository(ctx, owner, repo)
