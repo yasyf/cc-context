@@ -860,7 +860,7 @@ func stackReclaimConflict(ctx context.Context, cmd *cobra.Command, l lane, commo
 		return err
 	}
 	reclaimed := fmt.Sprintf("the stack rebase of %s that opened this workspace was reclaimed %s by a run from %s: it stopped on a conflict %s ago, %s", strings.Join(run.Roots, ", "), time.Now().Format(time.Kitchen), l.root, stackAge(time.Since(run.saved)), why)
-	if err := os.WriteFile(stackReclaimedPath(commonDir, ws), []byte(reclaimed+"\n"), 0o644); err != nil {
+	if err := os.WriteFile(stackReclaimedPath(commonDir, ws), []byte(reclaimed+"\n"), 0o600); err != nil {
 		return fmt.Errorf("stack rebase: %w", err)
 	}
 	note, err := stackReleaseWorkspace(ctx, l, commonDir, run.Conflict, true)
