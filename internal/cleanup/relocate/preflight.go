@@ -249,10 +249,10 @@ func (r *Relocator) colocated(tree string, id cleanup.FileID) error {
 	return nil
 }
 
-func (r *Relocator) retiring(ctx context.Context, tree string) ([]cleanup.ProcessID, error) {
+func (r *Relocator) retiring(ctx context.Context, tree string) (cleanup.WatcherProcesses, error) {
 	watchers, err := r.cfg.Watchers.Retiring(ctx, tree)
 	if err != nil {
-		return nil, fmt.Errorf("name the watchers of %s: %w", tree, err)
+		return cleanup.WatcherProcesses{}, fmt.Errorf("name the watchers of %s: %w", tree, err)
 	}
 	return watchers, nil
 }
@@ -265,8 +265,8 @@ func (r *Relocator) unretired(ctx context.Context, job *cleanup.Job) error {
 	case err != nil:
 		return err
 	}
-	guarded, ignored := cleanup.WithIgnored(cleanup.WithRetiring(ctx, watchers))
-	err = r.cfg.Guard(guarded, job.Original)
+	guarded, ignored := cleanup.WithIgnored(ctx)
+	_, err = r.cfg.Guard(guarded, cleanup.GuardRoot{Path: job.Original, Retiring: watchers.Retiring})
 	job.Ignored = *ignored
 	if err != nil && r.excused(ctx, job, job.Original, err) {
 		return nil
@@ -282,7 +282,8 @@ func (r *Relocator) unserved(ctx context.Context, tree string) error {
 	case err != nil:
 		return fmt.Errorf("name the watchman server: %w", err)
 	}
-	return r.cfg.Guard(cleanup.WithRetiring(ctx, server), tree)
+	_, err = r.cfg.Guard(ctx, cleanup.GuardRoot{Path: tree, Retiring: server})
+	return err
 }
 
 func idle(tree string, err error) error {

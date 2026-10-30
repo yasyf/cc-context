@@ -22,7 +22,10 @@ func (*FSEventsSampler) Sample(_ context.Context) (time.Duration, error) {
 }
 
 // Guard reports cleanup.ErrUnsupported, which authorizes nothing.
-func Guard(_ context.Context, _ string) error { return cleanup.ErrUnsupported }
+func Guard(ctx context.Context, path string) error {
+	_, err := GuardRoots(ctx, cleanup.GuardRoot{Path: path, Retiring: cleanup.RetiringFrom(ctx)})
+	return err
+}
 
 // Band has no darwin band to switch off darwin.
 type Band struct{}
@@ -48,3 +51,7 @@ func Identify(int) (cleanup.ProcessID, error) { return cleanup.ProcessID{}, clea
 // ParentCommand reports cleanup.ErrUnsupported: no process is inspected off
 // darwin.
 func ParentCommand(int) (int, []string, error) { return 0, nil, cleanup.ErrUnsupported }
+
+func GuardRoots(_ context.Context, first cleanup.GuardRoot, _ ...cleanup.GuardRoot) (string, error) {
+	return first.Path, cleanup.ErrUnsupported
+}

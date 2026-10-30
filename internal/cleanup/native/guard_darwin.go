@@ -66,33 +66,8 @@ import (
 // that exits before the scan reaches it. A removed directory or file sits in
 // no tree and holds nothing.
 func Guard(ctx context.Context, worktree string) error {
-	lib, err := loadLibSystem()
-	if err != nil {
-		return err
-	}
-	scan, err := newScan(ctx, lib, worktree)
-	if err != nil {
-		return err
-	}
-	pids, err := lib.listPIDs(procUIDOnly, os.Getuid())
-	if err != nil {
-		return err
-	}
-	var holders []cleanup.Holder
-	for _, pid := range pids {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		holder, held, err := scan.inspect(int(pid))
-		if err != nil {
-			return err
-		}
-		if held {
-			holders = append(holders, holder)
-		}
-	}
-	cleanup.NoteIgnored(ctx, scan.ignored...)
-	return active(worktree, holders)
+	_, err := GuardRoots(ctx, cleanup.GuardRoot{Path: worktree, Retiring: cleanup.RetiringFrom(ctx)})
+	return err
 }
 
 func newScan(ctx context.Context, lib *libSystem, worktree string) (*scan, error) {
@@ -212,65 +187,12 @@ type scan struct {
 	ignored   []cleanup.Ignored
 }
 
-func (s *scan) inspect(pid int) (cleanup.Holder, bool, error) {
-	bsd, err := pidInfo[procBSDInfo](s.lib, pid, flavorBSDInfo)
-	if errors.Is(err, unix.ESRCH) || err != nil && s.exited(pid) {
-		return cleanup.Holder{}, false, nil
-	}
-	if err != nil {
-		return cleanup.Holder{}, false, fmt.Errorf("native: identify pid %d: %w", pid, err)
-	}
-	if int(bsd.ppid) == s.self {
-		return cleanup.Holder{}, false, nil
-	}
-	name := unix.ByteSliceToString(bsd.name[:])
-	if name == "" {
-		name = unix.ByteSliceToString(bsd.comm[:])
-	}
-	evidence, path, err := s.evidence(cleanup.ProcessID{PID: pid, Start: int64(bsd.start)}, name, bsd.flags&flagThreadCwd != 0) //nolint:gosec // seconds since the epoch fit int64
-	if err != nil && s.exited(pid) {
-		return cleanup.Holder{}, false, nil
-	}
-	if err != nil {
-		return cleanup.Holder{}, false, fmt.Errorf("native: inspect pid %d (%s): %w", pid, name, err)
-	}
-	if path == "" {
-		return cleanup.Holder{}, false, nil
-	}
-	return cleanup.Holder{PID: pid, Name: name, TTY: bsd.tdev != noDevice, Evidence: evidence, Path: path}, true, nil
-}
-
 func (s *scan) exited(pid int) bool {
 	bsd, err := pidInfo[procBSDInfo](s.lib, pid, flavorBSDInfo)
 	if err != nil {
 		return errors.Is(err, unix.ESRCH)
 	}
 	return bsd.status == statusZombie || bsd.flags&flagInExit != 0
-}
-
-func (s *scan) evidence(process cleanup.ProcessID, name string, threaded bool) (kind, path string, err error) {
-	pid := process.PID
-	if path, err = s.cwd(pid, threaded); err != nil || path != "" {
-		return cleanup.EvidenceCwd, path, err
-	}
-	if pid == s.self {
-		return "", "", nil
-	}
-	retiring := slices.Contains(s.retiring, process)
-	if !retiring {
-		if path, err = s.descriptor(process, name); err != nil || path != "" {
-			return cleanup.EvidenceFD, path, err
-		}
-	}
-	if !s.named || process != s.requester {
-		if path = s.argument(pid, slices.Contains(s.launchers, process)); path != "" {
-			return cleanup.EvidenceArgv, path, nil
-		}
-	}
-	if retiring {
-		return "", "", s.unchanged(process)
-	}
-	return "", "", nil
 }
 
 func alive(lib *libSystem, process cleanup.ProcessID) bool {
@@ -289,53 +211,6 @@ func (s *scan) unchanged(process cleanup.ProcessID) error {
 	return nil
 }
 
-func (s *scan) held(node *vnodeInfoPath) (string, error) {
-	path, linked, err := s.lib.locate(node)
-	if err != nil || !linked || !within(s.root, path) {
-		return "", err
-	}
-	return path, nil
-}
-
-func (s *scan) cwd(pid int, threaded bool) (string, error) {
-	vnodes, err := pidInfo[procVnodePathInfo](s.lib, pid, flavorVnodePathInfo)
-	if err != nil {
-		return "", fmt.Errorf("read its working directory: %w", err)
-	}
-	path, err := s.held(&vnodes.cdir)
-	if err != nil {
-		return "", fmt.Errorf("locate its working directory: %w", err)
-	}
-	if path != "" || !threaded {
-		return path, nil
-	}
-	return s.threadCwd(pid)
-}
-
-func (s *scan) threadCwd(pid int) (string, error) {
-	threads, err := s.lib.listThreads(pid)
-	if err != nil {
-		return "", fmt.Errorf("list its threads: %w", err)
-	}
-	for _, thread := range threads {
-		paths, err := pidInfoOf[procThreadPathInfo](s.lib, pid, flavorThreadPathInfo, thread)
-		if errors.Is(err, unix.ESRCH) {
-			continue
-		}
-		if err != nil {
-			return "", fmt.Errorf("read the working directory of its thread %#x: %w", thread, err)
-		}
-		path, err := s.held(&paths.cdir)
-		if err != nil {
-			return "", fmt.Errorf("locate the working directory of its thread %#x: %w", thread, err)
-		}
-		if path != "" {
-			return path, nil
-		}
-	}
-	return "", nil
-}
-
 type descriptorPass struct {
 	*scan
 	process  cleanup.ProcessID
@@ -343,50 +218,7 @@ type descriptorPass struct {
 	approval *approval
 }
 
-func (s *scan) descriptor(process cleanup.ProcessID, name string) (string, error) {
-	fds, err := s.lib.listFDs(process.PID)
-	if err != nil {
-		return "", fmt.Errorf("list its descriptors: %w", err)
-	}
-	pass := &descriptorPass{scan: s, process: process, name: name}
-	for _, fd := range fds {
-		if fd.kind != fdTypeVnode {
-			continue
-		}
-		path, err := pass.place(fd.fd)
-		if err != nil || path != "" {
-			return path, err
-		}
-	}
-	return "", pass.confirm()
-}
-
-func (p *descriptorPass) place(fd int32) (string, error) {
-	node, err := p.lib.vnodeOfFD(p.process.PID, fd)
-	if errors.Is(err, unix.EBADF) || errors.Is(err, unix.ENOENT) {
-		return "", nil
-	}
-	if denied(err) {
-		return p.refused(fd, fmt.Errorf("read its descriptor %d: %w", fd, err))
-	}
-	if err != nil {
-		return "", fmt.Errorf("read its descriptor %d: %w", fd, err)
-	}
-	path, err := p.held(node)
-	if denied(err) {
-		return p.refused(fd, fmt.Errorf("locate its descriptor %d: %w", fd, err))
-	}
-	if err != nil {
-		return "", fmt.Errorf("locate its descriptor %d: %w", fd, err)
-	}
-	return path, nil
-}
-
-func (s *scan) argument(pid int, launcher bool) string {
-	args, err := processArguments(pid)
-	if err != nil {
-		return ""
-	}
+func (s *scan) argument(args []string, launcher bool) string {
 	if launcher && endsWith(args, s.tail) {
 		args = args[:len(args)-len(s.tail)]
 	}

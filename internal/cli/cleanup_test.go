@@ -53,8 +53,17 @@ func (h *cleanupHarness) guard(_ context.Context, worktree string) error {
 	}}
 }
 
-func (h *cleanupHarness) Retiring(context.Context, string) ([]cleanup.ProcessID, error) {
-	return nil, nil
+func (h *cleanupHarness) guardRoots(ctx context.Context, first cleanup.GuardRoot, additional ...cleanup.GuardRoot) (string, error) {
+	for _, target := range append([]cleanup.GuardRoot{first}, additional...) {
+		if err := h.guard(cleanup.WithRetiring(ctx, target.Retiring), target.Path); err != nil {
+			return target.Path, err
+		}
+	}
+	return "", nil
+}
+
+func (h *cleanupHarness) Retiring(context.Context, string) (cleanup.WatcherProcesses, error) {
+	return cleanup.WatcherProcesses{}, nil
 }
 
 func (h *cleanupHarness) Retire(context.Context, string) error {
@@ -111,7 +120,7 @@ func newCleanupConfig(t *testing.T, f *vcstest.Fixture) *cleanupHarness {
 	if err != nil {
 		t.Fatalf("open cleanup journal: %v", err)
 	}
-	h.config = relocate.Config{Journal: journal, Guard: h.guard, Watchers: h, GitEnv: f.Env(), Now: time.Now}
+	h.config = relocate.Config{Journal: journal, Guard: h.guardRoots, Watchers: h, GitEnv: f.Env(), Now: time.Now}
 	return h
 }
 

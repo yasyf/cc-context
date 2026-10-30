@@ -33,7 +33,9 @@ func (idleCPU) Sample(context.Context) (time.Duration, error) { return 0, nil }
 
 type idleWatchers struct{}
 
-func (idleWatchers) Retiring(context.Context, string) ([]cleanup.ProcessID, error) { return nil, nil }
+func (idleWatchers) Retiring(context.Context, string) (cleanup.WatcherProcesses, error) {
+	return cleanup.WatcherProcesses{}, nil
+}
 
 func (idleWatchers) Retire(context.Context, string) error { return nil }
 
@@ -181,7 +183,7 @@ func (f *gitFixture) ran(subcommand string) bool {
 func (f *gitFixture) relocator() *relocate.Relocator {
 	return relocate.New(relocate.Config{
 		Journal:   f.journal,
-		Guard:     func(context.Context, string) error { return nil },
+		Guard:     func(context.Context, cleanup.GuardRoot, ...cleanup.GuardRoot) (string, error) { return "", nil },
 		Watchers:  idleWatchers{},
 		GitEnv:    f.env,
 		GitBudget: drainBudget,

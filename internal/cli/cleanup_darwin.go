@@ -39,7 +39,7 @@ func previewCleanup(ctx context.Context, r cleanup.Request) (cleanup.Job, error)
 	}
 	return relocate.New(relocate.Config{
 		Journal:  journal,
-		Guard:    native.Guard,
+		Guard:    native.GuardRoots,
 		Watchers: newCleanupWatchers(native.Guard),
 		GitEnv:   slices.Concat(os.Environ(), render.EnvFrom(ctx)),
 		Now:      time.Now,
@@ -63,7 +63,7 @@ func runCleanupServe(ctx context.Context) error {
 		Journal: journal,
 		Relocator: relocate.New(relocate.Config{
 			Journal:  journal,
-			Guard:    native.Guard,
+			Guard:    native.GuardRoots,
 			Watchers: newCleanupWatchers(native.Guard),
 			GitEnv:   os.Environ(),
 			Now:      time.Now,

@@ -208,15 +208,19 @@ func (r *Relocator) verifyDisplaced(ctx context.Context, job *cleanup.Job, files
 	return r.proveDisplaced(ctx, job, files, content)
 }
 
-func (r *Relocator) strictIdle(ctx context.Context, job *cleanup.Job, tree string) error {
-	watchers, err := r.cfg.Watchers.Server(ctx)
+func (r *Relocator) strictIdle(ctx context.Context, job *cleanup.Job, first string, additional ...string) (string, error) {
+	server, err := r.cfg.Watchers.Server(ctx)
 	if err != nil {
-		return fmt.Errorf("name the watchman server: %w", err)
+		return first, fmt.Errorf("name the watchman server: %w", err)
 	}
-	guarded, ignored := cleanup.WithIgnored(cleanup.WithRetiring(ctx, watchers))
-	err = r.cfg.Guard(guarded, tree)
+	guarded, ignored := cleanup.WithIgnored(ctx)
+	roots := make([]cleanup.GuardRoot, len(additional))
+	for i, tree := range additional {
+		roots[i] = cleanup.GuardRoot{Path: tree, Retiring: server}
+	}
+	failed, err := r.cfg.Guard(guarded, cleanup.GuardRoot{Path: first, Retiring: server}, roots...)
 	job.Ignored = append(job.Ignored, (*ignored)...)
-	return err
+	return failed, err
 }
 
 func writePointer(files *retirementFiles, job *cleanup.Job) error {
@@ -382,11 +386,9 @@ func (r *Relocator) resumeDisplaced(ctx context.Context, job *cleanup.Job) (bool
 		_, err = r.block(ctx, job, "quarantine", err.Error())
 		return true, err
 	}
-	for _, tree := range []string{files.tree, files.admin} {
-		if err := r.strictIdle(ctx, job, tree); err != nil {
-			_, err = r.block(ctx, job, "activity", unclear(tree, err))
-			return true, err
-		}
+	if failed, err := r.strictIdle(ctx, job, files.tree, files.admin); err != nil {
+		_, err = r.block(ctx, job, "activity", unclear(failed, err))
+		return true, err
 	}
 	if err := displacedClaims(job, files.tree); err != nil {
 		_, err = r.block(ctx, job, "reconcile", err.Error())
@@ -532,10 +534,8 @@ func (r *Relocator) admitAdmin(ctx context.Context, job *cleanup.Job) (cleanup.D
 		}
 	}
 	job.Ignored = nil
-	for _, tree := range trees {
-		if err := r.strictIdle(ctx, job, tree); err != nil {
-			return r.rejectRoot(ctx, job, "activity", errors.New(unclear(tree, err)))
-		}
+	if failed, err := r.strictIdle(ctx, job, trees[0], trees[1:]...); err != nil {
+		return r.rejectRoot(ctx, job, "activity", errors.New(unclear(failed, err)))
 	}
 	if !seen.exists {
 		if err := syncAbsentAdmin(ctx, job, admin, dotGit); err != nil {

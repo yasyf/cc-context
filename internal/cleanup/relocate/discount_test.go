@@ -269,8 +269,8 @@ func TestGuardDiscountsTheWatchmanServerThatKeptTheTreeOpen(t *testing.T) {
 	t.Run("an unnamed server authorizes nothing", func(t *testing.T) {
 		f := newFixture(t)
 		refused := errors.New("watchman server pid 1417 does not hold its socket")
-		f.watchers.server = func(context.Context) ([]cleanup.ProcessID, error) { return nil, refused }
 		job := f.accept()
+		f.watchers.server = func(context.Context) ([]cleanup.ProcessID, error) { return nil, refused }
 
 		f.advance(&job)
 

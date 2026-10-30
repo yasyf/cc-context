@@ -28,9 +28,17 @@ type fakeWatchers struct {
 	checked    []string
 }
 
-func (w *fakeWatchers) Retiring(ctx context.Context, worktree string) ([]cleanup.ProcessID, error) {
+func (w *fakeWatchers) Retiring(ctx context.Context, worktree string) (cleanup.WatcherProcesses, error) {
 	w.named = append(w.named, worktree)
-	return w.retiring(ctx, worktree)
+	retiring, err := w.retiring(ctx, worktree)
+	if err != nil {
+		return cleanup.WatcherProcesses{}, err
+	}
+	server, err := w.server(ctx)
+	if err != nil {
+		return cleanup.WatcherProcesses{}, err
+	}
+	return cleanup.WatcherProcesses{Retiring: retiring, Server: server}, nil
 }
 
 func (w *fakeWatchers) Retire(ctx context.Context, worktree string) error {
@@ -51,23 +59,24 @@ func (w *fakeWatchers) CheckQuarantine(ctx context.Context, jobDir string) error
 var gitBinary = sync.OnceValues(func() (string, error) { return exec.LookPath("git") })
 
 type fixture struct {
-	t         *testing.T
-	root      string
-	git       string
-	env       []string
-	repo      string
-	common    string
-	worktree  string
-	adminDir  string
-	layout    cleanup.Layout
-	journal   *cleanup.Journal
-	guard     func(ctx context.Context, worktree string) error
-	guarded   []string
-	discounts [][]cleanup.ProcessID
-	watchers  *fakeWatchers
-	clock     time.Time
-	budget    time.Duration
-	relocator *Relocator
+	t             *testing.T
+	root          string
+	git           string
+	env           []string
+	repo          string
+	common        string
+	worktree      string
+	adminDir      string
+	layout        cleanup.Layout
+	journal       *cleanup.Journal
+	guard         func(ctx context.Context, worktree string) error
+	guarded       []string
+	guardRequests [][]cleanup.GuardRoot
+	discounts     [][]cleanup.ProcessID
+	watchers      *fakeWatchers
+	clock         time.Time
+	budget        time.Duration
+	relocator     *Relocator
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -148,10 +157,18 @@ func (f *fixture) over(journal *cleanup.Journal) {
 	f.layout, f.journal = journal.Layout(), journal
 	f.relocator = New(Config{
 		Journal: f.journal,
-		Guard: func(ctx context.Context, worktree string) error {
-			f.guarded = append(f.guarded, worktree)
-			f.discounts = append(f.discounts, cleanup.RetiringFrom(ctx))
-			return f.guard(ctx, worktree)
+		Guard: func(ctx context.Context, first cleanup.GuardRoot, additional ...cleanup.GuardRoot) (string, error) {
+			targets := append([]cleanup.GuardRoot{first}, additional...)
+			f.guardRequests = append(f.guardRequests, targets)
+			for _, target := range targets {
+				guarded := cleanup.WithRetiring(ctx, target.Retiring)
+				f.guarded = append(f.guarded, target.Path)
+				f.discounts = append(f.discounts, cleanup.RetiringFrom(guarded))
+				if err := f.guard(guarded, target.Path); err != nil {
+					return target.Path, err
+				}
+			}
+			return "", nil
 		},
 		Watchers:  f.watchers,
 		GitEnv:    f.env,

@@ -26,7 +26,6 @@ type birth struct {
 }
 
 type approval struct {
-	fd      int32
 	refusal error
 	born    birth
 	reason  string
@@ -88,26 +87,23 @@ func denied(err error) bool {
 	return errors.Is(err, unix.EPERM) || errors.Is(err, unix.EACCES)
 }
 
-func (p *descriptorPass) refused(fd int32, refusal error) (string, error) {
+func (p *descriptorPass) refused(refusal error, observation *descriptorObservation) (string, error) {
 	if p.approval == nil {
 		born, reason, err := p.bystander(p.process)
 		if err != nil {
 			return "", fmt.Errorf("%w; its owner may be a process this user started: %w", refusal, err)
 		}
-		p.approval = &approval{fd: fd, refusal: refusal, born: born, reason: reason}
+		p.approval = &approval{refusal: refusal, born: born, reason: reason}
 	}
-	node, err := p.lib.vnodeIdentityOfFD(p.process.PID, fd)
-	if denied(err) || errors.Is(err, unix.EBADF) || errors.Is(err, unix.ENOENT) {
+	path, err := observation.identify()
+	if err != nil {
+		return "", err
+	}
+	if !within(p.root, path) {
 		return "", nil
 	}
-	if err != nil {
-		return "", fmt.Errorf("identify its descriptor %d: %w", fd, err)
-	}
-	path, err := p.heldByID(node)
-	if err != nil {
-		return "", fmt.Errorf("locate its descriptor %d: %w", fd, err)
-	}
 	return path, nil
+
 }
 
 func (p *descriptorPass) confirm() error {
@@ -124,21 +120,4 @@ func (p *descriptorPass) confirm() error {
 	}
 	p.ignored = append(p.ignored, cleanup.Ignored{PID: p.process.PID, Name: p.name, Reason: first.reason})
 	return nil
-}
-
-func (s *scan) heldByID(node *vnodeInfo) (string, error) {
-	if node.kind == vnodeNone {
-		return "", nil
-	}
-	path, err := s.lib.pathByID(node.fsid, node.ino)
-	if denied(err) || errors.Is(err, unix.ENOENT) {
-		return "", nil
-	}
-	if err != nil {
-		return "", fmt.Errorf("resolve inode %d of filesystem %d: %w", node.ino, node.fsid[0], err)
-	}
-	if !within(s.root, path) {
-		return "", nil
-	}
-	return path, nil
 }
