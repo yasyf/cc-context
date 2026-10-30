@@ -47,6 +47,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs ship` derives a title above a rewound parent.** A branch cut
+  while its parent held the branch's commit, after the parent was reset and
+  force-pushed below it, refused with "holds no commit above <parent>": the
+  direct submit read gt's recorded parent revision, the branch's own head.
+  The submit now takes the commits above the parent's live head, as
+  `stack rebase` already did, and says so.
 - **`ccx vcs stack continue`, `abort`, and `rebase` finish while the cleanup
   queue is paused.** They used to fail handing the conflict workspace to the
   paused queue, leaving the run stuck. They now finish the run, leave the

@@ -322,6 +322,35 @@ func TestShipNewBranchOnAnOpenParentReadsTheQueue(t *testing.T) {
 	}
 }
 
+// TestShipDerivesATitleAboveARewoundParent is oncall-false-alarm-one-post's
+// ship on 2026-10-29: cut while its parent held its commit, then the parent was
+// force-pushed back below it, and the submit read the commits above gt's
+// recorded parent revision, the branch's own head, finding none to title.
+func TestShipDerivesATitleAboveARewoundParent(t *testing.T) {
+	f := shipGTRepo(t)
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	shipGTStack(t, f, "base")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base")
+	published := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
+	stackCommit(t, f, "readback.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "child")
+	mustRun(t, f.Env(), f.Dir, "gt", "track", "--parent", "base", "--no-interactive")
+	mustRun(t, f.Env(), f.Dir, "git", "branch", "-f", "base", published)
+
+	_, errStr, err := runShipCmdFull(f.Context(), t, "--no-commit", "--no-watch", "--pr-body-file", writePRBody(t, "body.md", "why the child\n"))
+	if err != nil {
+		t.Fatalf("ship of a child above a rewound parent = %v (stderr=%q)", err, errStr)
+	}
+	entry := api.submitEntry("child")
+	if entry.Base != "base" || entry.BaseSha != published {
+		t.Errorf("child submitted onto %s at %s, want base at its live head %s", entry.Base, entry.BaseSha, published)
+	}
+	if entry.Title == nil || *entry.Title != "readback.txt" {
+		t.Errorf("child title = %v, want the readback commit's subject", entry.Title)
+	}
+}
+
 // stackQueuedBase submits base, then has Graphite and GitHub report its pull
 // request #100 in the merge queue.
 func stackQueuedBase(t *testing.T) (*vcstest.Fixture, *gtAPIStub) {
