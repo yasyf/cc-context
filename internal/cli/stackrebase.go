@@ -1498,6 +1498,11 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 			return nil, fmt.Errorf("stack rebase: %s was published onto %s and gt records it on %s, and neither is in this run — re-record it with gt track --parent <branch> %s, or name it with ccx vcs stack rebase --parent %s=<branch>", name, b.WasParent, state[name].Parents[0].Ref, name, name)
 		}
 	}
+	for name, b := range byName {
+		if p := byName[b.Parent]; p != nil && p.Landed == "" && p.Held == "" && p.Remote == "" && slices.Contains(o.pinned, p.Name) && b.PR != nil && b.PR.State == "OPEN" && b.PR.Base != p.Name {
+			p.Landed = fmt.Sprintf("%s's pull request #%d bases on %s, not on it", name, b.PR.Number, b.PR.Base)
+		}
+	}
 	for _, b := range byName {
 		from := b.Parent
 		for seen := map[string]bool{}; b.Parent != trunk && byName[b.Parent].Landed != ""; {
