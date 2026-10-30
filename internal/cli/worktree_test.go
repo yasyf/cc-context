@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -670,6 +671,41 @@ func orphanRmArgs(path string, extra ...string) []string {
 		args = append(args, "--force")
 	}
 	return args
+}
+
+// TestWorktreeRmPathReregistersARetiredWorktree retires a live worktree the
+// way the Oct 29 host-pressure pass did, admin dir moved under
+// retired-worktrees and the checkout's .git pointed at it, and wants rm --path
+// to remove it instead of reporting that nothing registers it.
+func TestWorktreeRmPathReregistersARetiredWorktree(t *testing.T) {
+	f := vcstest.Repo(t)
+	f.Isolate(t)
+	path := addPoolWorktree(t, f, "feat")
+	common := gitAt(t, f.Env(), f.Dir, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	admin := gitAt(t, f.Env(), path, "rev-parse", "--absolute-git-dir")
+	retired := filepath.Join(common, "retired-worktrees", "3060614063-simple-1793263343411306000")
+	if err := os.MkdirAll(filepath.Dir(retired), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(admin, retired); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(path, ".git"), []byte("gitdir: "+retired+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if worktreeRegistered(t, f.Env(), f.Dir, path) {
+		t.Fatalf("git still registers %s after retiring it", path)
+	}
+
+	if _, err := runWorktreeCmd(t, f, "rm", "--path", path); err != nil {
+		t.Fatalf("rm --path error = %v, want the retired worktree removed", err)
+	}
+	if worktreeRegistered(t, f.Env(), f.Dir, path) {
+		t.Errorf("git still registers %s after rm --path, want it deregistered", path)
+	}
+	if _, err := os.Stat(retired); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("stat %s = %v, want the retired admin dir moved back and removed", retired, err)
+	}
 }
 
 func TestWorktreeRmPathOrphanMovesToTrash(t *testing.T) {
