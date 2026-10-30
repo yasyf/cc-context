@@ -1,1 +1,1 @@
-{"v":1,"lamport":3,"ops":[{"kind":"set_branch","branch":"yasyf/cleanup-no-implicit-restart"}]}
+{"v":1,"lamport":4,"ops":[{"kind":"link_commit","sha":"d99b287efe66a1ae83c4a69be4c9181cf67cf2d7"}]}
