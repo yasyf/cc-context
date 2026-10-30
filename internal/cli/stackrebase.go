@@ -1166,7 +1166,8 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	if err != nil {
 		return nil, err
 	}
-	if err := gtmeta.Convert(ctx, commonDir, current); err != nil {
+	live := slices.DeleteFunc(slices.Clone(o.members), func(name string) bool { return slices.Contains(o.landed, name) })
+	if err := gtmeta.Convert(ctx, commonDir, append([]string{current}, live...)...); err != nil {
 		return nil, fmt.Errorf("%s: %w", prefix, err)
 	}
 	state, err := gtStateAtFocused(ctx, commonDir, prefix, o.tip, "")
@@ -1242,6 +1243,11 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 			_, tracked := retargeted[name]
 			return !tracked && slices.Contains(o.landed, name)
 		})
+		for _, name := range members {
+			if len(retargeted[name].Parents) == 0 {
+				return nil, fmt.Errorf("%s: the stack metadata this lane reads does not track %s, a branch of this run — a Graphite branch on a native one converts with git config ccx.stack github; otherwise record its parent with ccx vcs ship --parent <branch> from its working copy, then re-run", prefix, name)
+			}
+		}
 	}
 	submitted, err := gtmeta.LastSubmitted(ctx, commonDir)
 	if err != nil {
