@@ -651,11 +651,6 @@ func gtTrunkInv(trunk string) [][]string {
 	}
 }
 
-// gtDropTrunkInv takes the trunk resolution out of got so the calls around it
-// stay an exact sequence. Ship resolves the trunk on a goroutine overlapping the
-// commit, so its calls land where nothing fixes them, and CI has recorded logs
-// carrying only some of them. The capture and fetch are required; a second
-// occurrence of any call stays in the result for the caller's exact comparison.
 func gtDropTrunkInv(t *testing.T, got [][]string, trunk string, branches ...string) [][]string {
 	t.Helper()
 	resolution := gtTrunkInv(trunk)
