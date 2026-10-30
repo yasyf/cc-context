@@ -270,7 +270,10 @@ func TestGuardDiscountsTheWatchmanServerThatKeptTheTreeOpen(t *testing.T) {
 		f := newFixture(t)
 		refused := errors.New("watchman server pid 1417 does not hold its socket")
 		job := f.accept()
-		f.watchers.server = func(context.Context) ([]cleanup.ProcessID, error) { return nil, refused }
+		f.watchers.retire = func(context.Context, string) error {
+			f.watchers.server = func(context.Context) ([]cleanup.ProcessID, error) { return nil, refused }
+			return nil
+		}
 
 		f.advance(&job)
 
