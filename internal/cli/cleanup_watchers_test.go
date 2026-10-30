@@ -798,3 +798,21 @@ func TestCleanupWatchersCmd(t *testing.T) {
 		})
 	}
 }
+
+func TestCleanupWatchersRetireDoesNotPrepareTwice(t *testing.T) {
+	world := newWatcherWorld(t)
+	if err := (cleanupWatchers{deps: world.deps(world.guard)}).Retire(t.Context(), world.wt); err != nil {
+		t.Fatal(err)
+	}
+	world.mu.Lock()
+	defer world.mu.Unlock()
+	calls := 0
+	for _, call := range world.calls {
+		if call == "watchman --no-spawn --no-pretty debug-status" {
+			calls++
+		}
+	}
+	if calls != 2 {
+		t.Fatalf("global Watchman diagnostics = %d, want 2: one plan and one final consumer check", calls)
+	}
+}
