@@ -1463,6 +1463,13 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 			if superseded {
 				b.Publication = receipt
 				b.WasParent = cmp.Or(publishedOn, b.WasParent)
+				if !retracked && b.Local == b.Remote && receipt.Parent == source.Parents[0].Ref {
+					base, err := stackReplayedOnto(ctx, l.dir(), b.Head, receipt.Base, receipt.Head)
+					if err != nil {
+						return nil, err
+					}
+					b.OldBase, b.SourceBase = base, base
+				}
 			} else if retracked {
 				b.Publication = receipt
 			} else if err := stackUsePublication(ctx, l.dir(), &b, receipt, pin, published, own[name] && name != current); err != nil {
