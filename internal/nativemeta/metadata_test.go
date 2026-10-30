@@ -153,7 +153,7 @@ func TestNativeAdoptRefusesToMintATrunkFromAnUntrackedParent(t *testing.T) {
 	}
 }
 
-func TestNativeWritesLeaveAStackOnAnotherTrunkAlone(t *testing.T) {
+func TestNativeWritesDropAStackOnAStrayRoot(t *testing.T) {
 	dir := repo(t)
 	common := filepath.Join(dir, ".git")
 	main := git(t, dir, "rev-parse", "main")
@@ -161,18 +161,24 @@ func TestNativeWritesLeaveAStackOnAnotherTrunkAlone(t *testing.T) {
 		git(t, dir, "branch", branch)
 	}
 	writeCatalog(t, common, catalog{SchemaVersion: 1, Stacks: []stack{{Trunk: branchRef{Branch: "main", Head: main}, Branches: []branchRef{{Branch: "feature", Base: main}}}, {Trunk: branchRef{Branch: "base", Head: main}, Branches: []branchRef{{Branch: "child", Base: main}}}}})
-	if err := AdoptRoot(t.Context(), common, "child", "main", main, main); err == nil || !strings.Contains(err.Error(), "child belongs to the native stack on base") {
-		t.Fatalf("adopt across trunks = %v", err)
+	if err := writeJSON(common, "ccx-stack-receipts.json", receipts{Frozen: map[string]bool{"child": true}, Submitted: map[string]Version{"child": {HeadSha: main}, "feature": {HeadSha: main}}}); err != nil {
+		t.Fatal(err)
 	}
-	if err := Reparent(t.Context(), common, map[string]string{"feature": "child"}); err == nil || !strings.Contains(err.Error(), "child belongs to the native stack on base") {
-		t.Fatalf("reparent onto another trunk = %v", err)
+	if err := RecordSubmitted(t.Context(), common, map[string]Version{"feature": {HeadSha: main, BaseSha: main, BaseName: "main"}}); err != nil {
+		t.Fatal(err)
 	}
-	state, err := ReadPlanned(t.Context(), common)
+	c, r, err := load(common)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := state["child"]; ok || !state["main"].Trunk || state["base"].Trunk {
-		t.Fatalf("planned state = %+v", state)
+	if len(c.Stacks) != 1 || c.Stacks[0].Trunk.Branch != "main" {
+		t.Fatalf("catalog after write = %+v; want only the stack on main", c.Stacks)
+	}
+	if _, ok := r.Submitted["child"]; ok || r.Frozen["child"] || r.Submitted["feature"].BaseName != "main" {
+		t.Fatalf("receipts after write = %+v; want child's dropped and feature's recorded", r)
+	}
+	if err := AdoptRoot(t.Context(), common, "child", "feature", main, main); err != nil {
+		t.Fatalf("adopt the dropped branch onto its real parent = %v", err)
 	}
 }
 

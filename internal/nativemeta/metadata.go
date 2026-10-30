@@ -439,10 +439,15 @@ func mutate(ctx context.Context, commonDir string, change func(*catalog, *receip
 	if err != nil {
 		return err
 	}
+	healed, err := dropStrayRoots(ctx, commonDir, &c, &r)
+	if err != nil {
+		return err
+	}
 	catalogChanged, receiptsChanged, err := change(&c, &r)
 	if err != nil {
 		return err
 	}
+	catalogChanged, receiptsChanged = catalogChanged || healed, receiptsChanged || healed
 	if receiptsChanged {
 		if err := writeJSON(commonDir, "ccx-stack-receipts.json", r); err != nil {
 			return err
@@ -452,6 +457,41 @@ func mutate(ctx context.Context, commonDir string, change func(*catalog, *receip
 		return writeJSON(commonDir, "gh-stack", c)
 	}
 	return nil
+}
+
+func dropStrayRoots(ctx context.Context, commonDir string, c *catalog, r *receipts) (bool, error) {
+	all, err := rows(*c)
+	if err != nil {
+		return false, err
+	}
+	roots := 0
+	for _, row := range all {
+		if row.parent == "" {
+			roots++
+		}
+	}
+	if roots < 2 {
+		return false, nil
+	}
+	trunk, err := trunkOf(ctx, commonDir, all)
+	if err != nil {
+		return false, err
+	}
+	byName := index(all)
+	kept := c.Stacks[:0]
+	for _, s := range c.Stacks {
+		if rootOf(byName, s.Trunk.Branch) == trunk {
+			kept = append(kept, s)
+			continue
+		}
+		for _, b := range s.Branches {
+			delete(r.Frozen, b.Branch)
+			delete(r.Submitted, b.Branch)
+		}
+	}
+	healed := len(kept) != len(c.Stacks)
+	c.Stacks = kept
+	return healed, nil
 }
 
 func lockCatalog(ctx context.Context, commonDir, name string) (*os.File, error) {

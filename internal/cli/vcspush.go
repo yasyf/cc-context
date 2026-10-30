@@ -273,7 +273,7 @@ func vcsPushRefuseOffParent(ctx context.Context, ck vcs.Checkout, dir render.Dir
 	}
 	ctx = withStackProvider(ctx, provider == gtmeta.ProviderGitHub)
 
-	state, err := gtStateQuery(ctx, dir, "push")
+	state, err := gtStateQueryFocused(ctx, dir, "push", branch)
 	if err != nil {
 		return err
 	}

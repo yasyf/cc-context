@@ -124,6 +124,60 @@ func TestSubmitCreatesNativeGitHubStackFromPublishedParent(t *testing.T) {
 	}
 }
 
+func TestSubmitLinksAnUnstackedGraphiteChainIntoOneNativeStack(t *testing.T) {
+	var created, added []int
+	stacked := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if publishedHeadFixture(t, w, r, "tip-head") {
+			return
+		}
+		reply := func(body string) {
+			if _, err := fmt.Fprint(w, body); err != nil {
+				t.Errorf("write fixture response: %v", err)
+			}
+		}
+		switch r.Method + " " + r.URL.Path + "?" + r.URL.Query().Get("head") {
+		case "GET /repos/org/repo/pulls/3?":
+			reply(`{"number":3,"state":"open","head":{"repo":{"full_name":"org/repo"},"ref":"tip","sha":"tip-head"},"base":{"ref":"middle"}}`)
+		case "GET /repos/org/repo/pulls?org:middle":
+			reply(`[{"number":2,"state":"open","head":{"repo":{"full_name":"org/repo"},"ref":"middle"},"base":{"ref":"bottom"}}]`)
+		case "GET /repos/org/repo/pulls?org:bottom":
+			reply(`[{"number":1,"state":"open","head":{"repo":{"full_name":"org/repo"},"ref":"bottom"},"base":{"ref":"dev"}}]`)
+		case "POST /repos/org/repo/stacks?":
+			if err := json.NewDecoder(r.Body).Decode(&struct {
+				PullRequests *[]int `json:"pull_requests"`
+			}{&created}); err != nil {
+				t.Error(err)
+			}
+			stacked = true
+			reply(`{"number":7}`)
+		case "GET /repos/org/repo/pulls/2?":
+			if !stacked {
+				t.Error("read the middle PR's stack before creating it")
+			}
+			reply(`{"number":2,"state":"open","head":{"repo":{"full_name":"org/repo"},"ref":"middle"},"base":{"ref":"bottom"},"stack":{"number":7,"position":2,"base":{"ref":"dev"}}}`)
+		case "POST /repos/org/repo/stacks/7/add?":
+			if err := json.NewDecoder(r.Body).Decode(&struct {
+				PullRequests *[]int `json:"pull_requests"`
+			}{&added}); err != nil {
+				t.Error(err)
+			}
+			reply(`{"number":7}`)
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL)
+			http.Error(w, "unexpected", 500)
+		}
+	}))
+	defer srv.Close()
+	got, err := NewWithToken(srv.URL, "key").SubmitPullRequests(context.Background(), SubmitRequest{RepoOwner: "org", RepoName: "repo", TrunkBranchName: "dev", PRs: []SubmitPR{{Action: SubmitUpdate, PRNumber: 3, Head: "tip", HeadSha: "tip-head", Base: "middle"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].StackNumber != 7 || !reflect.DeepEqual(created, []int{1, 2}) || !reflect.DeepEqual(added, []int{3}) {
+		t.Fatalf("got=%+v created=%v added=%v", got, created, added)
+	}
+}
+
 func TestSubmitExtendsExistingNativeStack(t *testing.T) {
 	var added []int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -571,8 +625,21 @@ func TestTrunkTokenReadsTheKeychainItemWhenTheVariableIsUnset(t *testing.T) {
 	t.Setenv("TRUNK_MERGE_API_KEY", "")
 	keychain := keychainTrunkKey
 	t.Cleanup(func() { keychainTrunkKey = keychain })
-	keychainTrunkKey = func() string { return "keychain-key" }
+	keychainTrunkKey = func() (string, error) { return "keychain-key", nil }
 	if token, err := NewWithToken("http://invalid.local", "github-key").trunkToken(context.Background()); err != nil || token != "keychain-key" {
 		t.Fatalf("trunkToken = %q, %v; want the Keychain item", token, err)
+	}
+}
+
+func TestTrunkTokenReportsAKeychainFailureInsteadOfAMissingKey(t *testing.T) {
+	t.Setenv("TRUNK_MERGE_API_KEY", "")
+	keychain := keychainTrunkKey
+	t.Cleanup(func() { keychainTrunkKey = keychain })
+	keychainTrunkKey = func() (string, error) {
+		return "", errors.New("read the trunk-merge-api-key Keychain item: security exited 36: user interaction is not allowed")
+	}
+	_, err := NewWithToken("http://invalid.local", "github-key").trunkToken(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "security exited 36") || !strings.Contains(err.Error(), "requires TRUNK_MERGE_API_KEY") {
+		t.Fatalf("trunkToken error = %v; want the Keychain failure alongside the missing-credential refusal", err)
 	}
 }

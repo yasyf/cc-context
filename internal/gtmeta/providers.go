@@ -111,7 +111,7 @@ func NativeMembership(commonDir, branch string) (bool, error) {
 	return nativemeta.Membership(commonDir, branch)
 }
 
-// Provider preserves existing branch ownership before considering explicit mode or the native default.
+// Provider prefers native membership, then an explicit ccx.stack=github, then existing Graphite ownership, then the native default.
 func Provider(ctx context.Context, commonDir, branch string) (string, error) {
 	native, err := NativeMembership(commonDir, branch)
 	if err != nil {
@@ -120,36 +120,35 @@ func Provider(ctx context.Context, commonDir, branch string) (string, error) {
 	if native {
 		return ProviderGitHub, nil
 	}
-	legacy, err := present(filepath.Join(commonDir, repoConfig))
+	mode, err := configuredProvider(ctx, commonDir)
 	if err != nil {
 		return "", err
 	}
-	if legacy {
-		trunk, err := graphiteReadTrunk(commonDir)
+	if mode != ProviderGitHub {
+		tracked, err := graphiteTracks(ctx, commonDir, branch)
 		if err != nil {
 			return "", err
 		}
-		if branch != trunk {
-			rows, err := readRows(ctx, filepath.Join(commonDir, metadataDB))
-			if err != nil {
-				return "", err
-			}
-			for _, row := range rows {
-				if row.branch == branch {
-					return ProviderGraphite, nil
-				}
-			}
+		if tracked {
+			return ProviderGraphite, nil
 		}
 	}
 	if provider := contextProvider(ctx); provider != "" {
 		return provider, nil
 	}
+	if mode == "" {
+		return ProviderGitHub, nil
+	}
+	return mode, nil
+}
+
+func configuredProvider(ctx context.Context, commonDir string) (string, error) {
 	mode, code, stderr, err := render.RunCLIExitCode(ctx, render.Dir(commonDir), "git", []string{"--git-dir=" + commonDir, "config", "--get", "ccx.stack"})
 	if err != nil {
 		return "", fmt.Errorf("read stack provider: %w", err)
 	}
 	if code == 1 {
-		return ProviderGitHub, nil
+		return "", nil
 	}
 	if code != 0 {
 		return "", fmt.Errorf("read stack provider: git config exited %d: %s", code, strings.TrimSpace(stderr))
@@ -160,6 +159,92 @@ func Provider(ctx context.Context, commonDir, branch string) (string, error) {
 	default:
 		return "", fmt.Errorf("ccx.stack %q is unsupported; choose github or graphite", mode)
 	}
+}
+
+func graphiteTracks(ctx context.Context, commonDir, branch string) (bool, error) {
+	legacy, err := present(filepath.Join(commonDir, repoConfig))
+	if err != nil || !legacy {
+		return false, err
+	}
+	trunk, err := graphiteReadTrunk(commonDir)
+	if err != nil || branch == trunk {
+		return false, err
+	}
+	rows, err := queryRows(ctx, filepath.Join(commonDir, metadataDB), branchColumns+" FROM branch_metadata WHERE branch_name = ?", branch)
+	return len(rows) > 0, err
+}
+
+// Convert records each branch's Graphite downstack in the native catalog when ccx.stack=github, so the next submit links it server-side.
+func Convert(ctx context.Context, commonDir string, branches ...string) error {
+	if contextProvider(ctx) == ProviderGraphite {
+		return nil
+	}
+	return convert(ctx, commonDir, branches, false)
+}
+
+func convert(ctx context.Context, commonDir string, branches []string, explicit bool) error {
+	legacy, err := present(filepath.Join(commonDir, repoConfig))
+	if err != nil || !legacy {
+		return err
+	}
+	trunk, err := graphiteReadTrunk(commonDir)
+	if err != nil {
+		return err
+	}
+	names, err := nativemeta.BranchNames(commonDir)
+	if err != nil {
+		return err
+	}
+	converted := map[string]bool{trunk: true, "": true}
+	for _, name := range names {
+		converted[name] = true
+	}
+	branches = slices.DeleteFunc(slices.Clone(branches), func(b string) bool { return converted[b] })
+	if len(branches) == 0 {
+		return nil
+	}
+	if !explicit {
+		mode, err := configuredProvider(ctx, commonDir)
+		if err != nil || mode != ProviderGitHub {
+			return err
+		}
+	}
+	state, _, err := readSelectedStateOrphans(ctx, commonDir, false, branches)
+	if err != nil {
+		return err
+	}
+	for _, branch := range branches {
+		var chain []string
+		for name := branch; !converted[name]; name = state[name].Parents[0].Ref {
+			if slices.Contains(chain, name) {
+				return fmt.Errorf("convert %s: its Graphite parents cycle at %s", branch, name)
+			}
+			if len(state[name].Parents) == 0 {
+				tracked, err := graphiteTracks(ctx, commonDir, name)
+				if err != nil {
+					return err
+				}
+				if tracked {
+					return fmt.Errorf("convert %s: Graphite tracks %s with no live, valid parent to convert it onto; ship it onto its parent with ccx vcs ship --parent <branch> first", branch, name)
+				}
+				chain = nil
+				break
+			}
+			chain = append(chain, name)
+		}
+		for _, name := range slices.Backward(chain) {
+			s := state[name]
+			adopt := nativemeta.AdoptRoot
+			if s.State == StateFrozen {
+				adopt = nativemeta.AdoptFrozen
+			}
+			if err := adopt(ctx, commonDir, name, s.Parents[0].Ref, s.Parents[0].SHA, s.Head); err != nil {
+				return fmt.Errorf("convert Graphite branch %s to a native stack: %w", name, err)
+			}
+			converted[name] = true
+		}
+	}
+	return nil
 }
 
 // Init initializes native metadata only when its trunk agrees with existing Graphite configuration.
@@ -404,7 +489,7 @@ func Rows(ctx context.Context, commonDir string) ([]Row, error) {
 	return out, nil
 }
 
-// AdoptRoot records a branch in its owning provider and rejects implicit cross-provider conversion.
+// AdoptRoot records a branch in its owning provider, converting Graphite ownership only when ccx.stack=github.
 func AdoptRoot(ctx context.Context, commonDir, branch, trunk, base, head string) error {
 	return adoptProvider(ctx, commonDir, branch, trunk, base, head, false)
 }
@@ -420,18 +505,37 @@ func adoptProvider(ctx context.Context, commonDir, branch, parent, base, head st
 		return err
 	}
 	provider := contextProvider(ctx)
+	legacyBranch, legacyParent := o.graphite[branch] && !o.native[branch], o.graphite[parent] && !o.native[parent]
+	converting := false
+	if provider != ProviderGraphite && (legacyBranch || legacyParent) {
+		mode, err := configuredProvider(ctx, commonDir)
+		if err != nil {
+			return err
+		}
+		converting = mode == ProviderGitHub
+	}
+	if converting && legacyParent {
+		if err := convert(ctx, commonDir, []string{parent}, true); err != nil {
+			return err
+		}
+		if o, err = owners(ctx, commonDir); err != nil {
+			return err
+		}
+	}
 	switch {
 	case o.native[branch]:
 		if provider == ProviderGraphite {
 			return fmt.Errorf("branch %s is native; explicit conversion is required before a Graphite write", branch)
 		}
 		provider = ProviderGitHub
-	case o.graphite[branch]:
+	case o.graphite[branch] && !converting:
 		if provider == ProviderGitHub {
-			return fmt.Errorf("branch %s is Graphite; explicit conversion is required before a native write", branch)
+			return fmt.Errorf("branch %s is Graphite; explicit conversion (git config ccx.stack github) is required before a native write", branch)
 		}
 		provider = ProviderGraphite
 	case provider != "":
+	case converting:
+		provider = ProviderGitHub
 	case o.nativeStore:
 		provider = ProviderGitHub
 	case o.graphiteStore:
