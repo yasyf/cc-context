@@ -47,6 +47,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A Trunk queue read works without `TRUNK_MERGE_API_KEY`.** With
+  `ccx.queue = trunk` and no key, `stack rebase`, `stack submit`, and `ship`
+  refused every push with "trunk queue status requires TRUNK_MERGE_API_KEY".
+  They now read the comment Trunk keeps on each pull request: one whose
+  submit checkbox is still unchecked, or that Trunk never commented on, is
+  not queued. One Trunk shows submitted or in any other state, or that
+  carries a `/trunk merge` command, still refuses and names the key.
 - **`ccx vcs ship` derives a title above a rewound parent.** A branch cut
   while its parent held the branch's commit, after the parent was reset and
   force-pushed below it, refused with "holds no commit above <parent>": the
