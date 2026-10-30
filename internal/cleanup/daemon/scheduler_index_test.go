@@ -21,7 +21,7 @@ func TestSchedulerIndexesExcludeParkedJobs(t *testing.T) {
 			if _, ok := e.logicalDue(now); ok {
 				t.Fatal("checked waiting job ran early")
 			}
-			if job, ok := e.logicalDue(now.Add(e.tuning.Recheck)); !ok || job.Seq != uint64(n-3) {
+			if job, ok := e.logicalDue(now.Add(e.tuning.Recheck)); !ok || job.ID != fmt.Sprintf("job-%d", n-3) {
 				t.Fatalf("due job = %v, %v; want seq %d", job, ok, n-3)
 			}
 		})

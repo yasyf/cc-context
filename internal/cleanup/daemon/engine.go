@@ -200,16 +200,16 @@ type Engine struct {
 	governed cleanup.Governor
 	changed  chan struct{}
 
-	seq          uint64
-	order        []seqKey
-	logicalOrder []seqKey
+	seq             uint64
+	order           []seqKey
+	logicalOrder    []seqKey
 	retirementOrder []seqKey
-	wakeOrder    []seqKey
-	gov          *governor
-	checked      map[string]time.Time
-	active       *activeDeletion
-	paceUntil    time.Time
-	loud         bool
+	wakeOrder       []seqKey
+	gov             *governor
+	checked         map[string]time.Time
+	active          *activeDeletion
+	paceUntil       time.Time
+	loud            bool
 }
 
 var (
