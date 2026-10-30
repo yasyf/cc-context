@@ -22,6 +22,8 @@ const (
 	mqAdded     = "added this pull request to the "
 	mqDetected  = "was detected. This PR will be added"
 	mqRemoved   = "removed this pull request due to "
+	mqDropped   = "was removed from the "
+	mqBecause   = " because "
 	mqFailed    = "couldn't merge this PR because "
 	mqDequeued  = "Removed this pull request from the "
 	mqRunningCI = "CI is running for this pull request on a draft pull request"
@@ -147,7 +149,7 @@ func mqPhaseOf(in mqInput) *statusQueue {
 		switch {
 		case strings.Contains(bullet, mqMerged):
 			q.Phase, q.Detail = mqPhaseMerged, bullet
-		case strings.Contains(bullet, mqRemoved), strings.Contains(bullet, mqFailed):
+		case strings.Contains(bullet, mqRemoved), strings.Contains(bullet, mqFailed), strings.Contains(bullet, mqDropped):
 			q.Phase, q.Detail, q.DraftPR = mqPhaseRejected, bullet, 0
 		case strings.Contains(bullet, mqDequeued):
 			q.Phase, q.Detail, q.DraftPR = mqPhaseWithdrawn, bullet, 0
@@ -312,6 +314,9 @@ func mqLastExit(activity string) (mqExit, bool) {
 			exit, out = mqExit{Reason: reason, At: b.At}, true
 		case strings.Contains(b.Text, mqDequeued):
 			exit, out = mqExit{At: b.At}, true
+		case strings.Contains(b.Text, mqDropped):
+			_, reason, _ := strings.Cut(b.Text, mqBecause)
+			exit, out = mqExit{Reason: reason, At: b.At}, true
 		case strings.Contains(b.Text, mqAdded), strings.Contains(b.Text, mqRunningCI), strings.Contains(b.Text, mqDetected):
 			out = false
 		}

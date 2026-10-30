@@ -205,7 +205,9 @@ itself shows merged still reads landed.
 The answer comes from Graphite's own record of the pull request, the one gt
 reads, and its mergeability status, so a pull request enqueued from the
 Graphite web UI reads queued even though it carries no merge label. A status
-of QUEUED_TO_MERGE, WAITING_TO_MERGE, or FAILURE_HANDLING reads queued
+of QUEUED_TO_MERGE or WAITING_TO_MERGE reads queued unless the merge
+activity removed the pull request after its last admission, as a batch timeout
+does while that status lingers; FAILURE_HANDLING reads queued
 outright. During failure handling, while the queue retests a pull request whose
 batch failed CI, Graphite's record drops its queue flag; the line reads
 "queued (failure handling)". A merge label is not the answer either way:
@@ -693,7 +695,7 @@ func classifyPRQueue(info gtapi.PullRequestInfo, mergeability, landedOn, activit
 	}
 	exit, out := mqLastExit(activity)
 	switch {
-	case gtapi.QueuedMergeability(mergeability), !out && gtapi.InMergeQueue(&info, ""):
+	case mergeability == gtapi.MergeabilityFailureHandling, !out && gtapi.InMergeQueue(&info, mergeability):
 		r.Queue = prQueueQueued
 		if info.MergeQueueStatus != nil {
 			r.Enqueued = info.MergeQueueStatus.EnqueuedCommit
