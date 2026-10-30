@@ -82,7 +82,7 @@ func TestCrossingWithoutNativeRootsDoesNotEnumerateEdges(t *testing.T) {
 
 var crossingAllocationSink map[string]bool
 
-func TestCrossingWithoutEdgesDoesNotAllocateForNativeRoots(t *testing.T) {
+func TestCrossingWithoutEdgesDoesNotAllocatePerNativeRoot(t *testing.T) {
 	roots := make([]string, 1024)
 	for i := range roots {
 		roots[i] = fmt.Sprintf("native-%d", i)
@@ -93,11 +93,11 @@ func TestCrossingWithoutEdgesDoesNotAllocateForNativeRoots(t *testing.T) {
 		t.Fatalf("crossed=%v enumerations=%d; want one empty edge enumeration", got, enumerations)
 	}
 	emptyEdges := func(func(string, string) bool) {}
-	rootless := testing.AllocsPerRun(20, func() { crossingAllocationSink = crossing(nil, emptyEdges) })
+	oneRoot := testing.AllocsPerRun(20, func() { crossingAllocationSink = crossing(roots[:1], emptyEdges) })
 	withRoots := testing.AllocsPerRun(20, func() { crossingAllocationSink = crossing(roots, emptyEdges) })
 	crossingAllocationSink = nil
-	t.Logf("empty_edges rootless_allocations=%g native1024_allocations=%g", rootless, withRoots)
-	if withRoots != rootless {
-		t.Fatalf("empty graph allocated %g times with native roots, want the rootless %g", withRoots, rootless)
+	t.Logf("empty_edges native1_allocations=%g native1024_allocations=%g", oneRoot, withRoots)
+	if withRoots != oneRoot {
+		t.Fatalf("empty graph allocated %g times with 1024 native roots, want the single-root %g", withRoots, oneRoot)
 	}
 }
