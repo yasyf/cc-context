@@ -1,1 +1,1 @@
-{"v":1,"lamport":3,"ops":[{"kind":"add_comment","body":"Exact reviewed head e342fe4e9000c8148398a1e316fddc40adc099e7 passed full PR CI41052143144 and Guides41052143934, merged PR563 as 98e42f59f7a8c0bc904c8c8daf8dc938d3025493. Both platform reference-model and actual .36-engine baseline comparisons passed. Waiting merged main CI and independent .37 release before selecting next unused official tag; local install remains root-gated."}]}
+{"v":1,"lamport":4,"ops":[{"kind":"set_assignee","assignee":"/root/ccx_queue_release_install"}]}
