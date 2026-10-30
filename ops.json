@@ -1,1 +1,1 @@
-{"v":1,"lamport":4,"ops":[{"kind":"set_assignee","assignee":"/root/ccx_queue_release_install"}]}
+{"v":1,"lamport":5,"ops":[{"kind":"add_comment","body":"Sole release/install owner acknowledged: /root/ccx_queue_release_install. Main CI41053343838 pending; Guides41053344140 passed. Prior .37 descriptor committed/uploaded and its post-release checks still pending. Fresh tag check found .38 already exists; checking provenance before selecting any tag. Public release and local installation criteria remain pending."}]}
