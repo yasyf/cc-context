@@ -1920,6 +1920,29 @@ func TestStackSubmitRefusesToStackOnAnUnpublishedBranchAnotherLaneHolds(t *testi
 	}
 }
 
+// TestStackSubmitDropsAnotherLanesUnpushedParentItsChildsPullRequestLeft is
+// stack-prep-4's #207534: ssql-signal-3 landed long ago and its branch left
+// origin, gt still recorded the next branch on it, and submit refused it as
+// another lane's unpushed branch although the child's pull request bases on
+// trunk.
+func TestStackSubmitDropsAnotherLanesUnpushedParentItsChildsPullRequestLeft(t *testing.T) {
+	f := shipGTRepo(t)
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	shipGTStack(t, f, "base", "feature")
+	lane := restackSiblingPath(t, "lane")
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", lane, "base")
+	stubStackPRs(t, f, map[string]*stackPR{"feature": {Number: 7, Title: "feature", State: "OPEN", Base: "main"}})
+	shipResetLog(t, f)
+
+	if _, errStr, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("stack submit = %v (stderr=%q), want feature submitted onto main", err, errStr)
+	}
+	if !gitBranchExists(t, f.Env(), f.RemoteDir, "feature") || gitBranchExists(t, f.Env(), f.RemoteDir, "base") {
+		t.Error("origin should carry feature and not base")
+	}
+}
+
 // stackHeldMidWithFix publishes base, mid and top, checks mid out in a working
 // copy of its own, and commits an unpublished fix to mid there; restack replays
 // top onto that fix. It returns the published heads of mid and top.
