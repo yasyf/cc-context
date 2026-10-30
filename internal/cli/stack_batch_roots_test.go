@@ -86,6 +86,17 @@ func TestStackListBatchKeepsNativeAndLegacyTrunksSeparate(t *testing.T) {
 		paths[i] = filepath.Join(t.TempDir(), branch)
 		f.Out(t, "git", "worktree", "add", "-q", paths[i], branch)
 	}
+	otherRoot := filepath.Join(t.TempDir(), "other-root")
+	f.Out(t, "git", "worktree", "add", "-q", otherRoot, "other")
+	for _, root := range []struct{ branch, path string }{{"main", f.Dir}, {"other", otherRoot}} {
+		for range 64 {
+			info := vcsInfo{Branch: root.branch}
+			infoGTStack(f.Context(), lane{root: root.path}, &info)
+			if info.Trunk != root.branch || info.Graphite.StackError != "" || len(info.Downstack) != 0 {
+				t.Fatalf("requested trunk %s: info=%+v", root.branch, info)
+			}
+		}
+	}
 	results := stackBatchReports(t, f, paths...)
 	for i, result := range results {
 		branch := fmt.Sprintf("legacy-%d", i)
