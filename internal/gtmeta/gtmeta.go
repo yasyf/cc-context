@@ -65,21 +65,30 @@ type BranchState struct {
 type State map[string]BranchState
 
 func readStateOrphans(ctx context.Context, commonDir string, remoteTrunk bool) (State, []Orphan, error) {
-	return readSelectedStateOrphans(ctx, commonDir, remoteTrunk, nil)
+	return readStateRows(ctx, commonDir, remoteTrunk, func(ctx context.Context, path, _ string) ([]branchRow, error) {
+		return readRows(ctx, path)
+	})
 }
 
 func readSelectedStateOrphans(ctx context.Context, commonDir string, remoteTrunk bool, branches []string) (State, []Orphan, error) {
+	return readStateRows(ctx, commonDir, remoteTrunk, func(ctx context.Context, path, trunk string) ([]branchRow, error) {
+		return readSelectedRows(ctx, path, branches, trunk)
+	})
+}
+
+func readAncestorStateOrphans(ctx context.Context, commonDir string, remoteTrunk bool, branches []string) (State, []Orphan, error) {
+	return readStateRows(ctx, commonDir, remoteTrunk, func(ctx context.Context, path, trunk string) ([]branchRow, error) {
+		query, args := ancestorRowsQuery(branches, trunk)
+		return queryRows(ctx, path, query, args...)
+	})
+}
+
+func readStateRows(ctx context.Context, commonDir string, remoteTrunk bool, read func(context.Context, string, string) ([]branchRow, error)) (State, []Orphan, error) {
 	trunk, err := graphiteReadTrunk(commonDir)
 	if err != nil {
 		return nil, nil, err
 	}
-	path := filepath.Join(commonDir, metadataDB)
-	var rows []branchRow
-	if branches == nil {
-		rows, err = readRows(ctx, path)
-	} else {
-		rows, err = readSelectedRows(ctx, path, branches, trunk)
-	}
+	rows, err := read(ctx, filepath.Join(commonDir, metadataDB), trunk)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -152,21 +161,37 @@ const branchColumns = `SELECT branch_name,
 	COALESCE(state, '')`
 
 func readSelectedRows(ctx context.Context, path string, branches []string, trunk string) ([]branchRow, error) {
+	query, args := selectedRowsQuery(branches, trunk)
+	return queryRows(ctx, path, query, args...)
+}
+
+func requestedAncestorsQuery(branches []string) (string, []any) {
 	values := make([]string, len(branches))
 	args := make([]any, 0, len(branches)+2)
 	for i, branch := range branches {
 		values[i] = "(?)"
 		args = append(args, branch)
 	}
-	args = append(args, trunk, trunk)
-	query := `WITH RECURSIVE requested(branch) AS (VALUES ` + strings.Join(values, ",") + `),
+	return `WITH RECURSIVE requested(branch) AS (VALUES ` + strings.Join(values, ",") + `),
 	ancestors(branch) AS (
 		SELECT branch FROM requested
 		UNION
 		SELECT m.parent_branch_name FROM branch_metadata m
 		JOIN ancestors a ON m.branch_name = a.branch
 		WHERE m.parent_branch_name IS NOT NULL AND m.parent_branch_name != ''
-	),
+	)
+	`, args
+}
+
+func ancestorRowsQuery(branches []string, trunk string) (string, []any) {
+	query, args := requestedAncestorsQuery(branches)
+	query += branchColumns + ` FROM branch_metadata WHERE branch_name IN (SELECT branch FROM ancestors UNION SELECT ?)`
+	return query, append(args, trunk)
+}
+
+func selectedRowsQuery(branches []string, trunk string) (string, []any) {
+	query, args := requestedAncestorsQuery(branches)
+	query += `,
 	descendants(branch) AS (
 		SELECT branch FROM requested WHERE branch != ?
 		UNION
@@ -178,8 +203,9 @@ func readSelectedRows(ctx context.Context, path string, branches []string, trunk
 		UNION SELECT branch FROM descendants
 		UNION SELECT ?
 	)
-	` + branchColumns + ` FROM branch_metadata WHERE branch_name IN (SELECT branch FROM selected)`
-	return queryRows(ctx, path, query, args...)
+	`
+	query += branchColumns + ` FROM branch_metadata WHERE branch_name IN (SELECT branch FROM selected)`
+	return query, append(args, trunk, trunk)
 }
 
 func queryRows(ctx context.Context, path, query string, args ...any) ([]branchRow, error) {

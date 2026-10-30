@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -54,4 +55,47 @@ func TestSelectedRowsPreserveOnlyRequestedStackTopology(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSelectedRowsUsesMetadataIndexes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "graphite.sqlite")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	for _, statement := range []string{
+		`CREATE TABLE branch_metadata(branch_name TEXT PRIMARY KEY,parent_branch_name TEXT,parent_branch_revision TEXT,validation_result TEXT,state TEXT)`,
+		`CREATE INDEX idx_branch_metadata_parent ON branch_metadata(parent_branch_name)`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	query, args := selectedRowsQuery([]string{"selected"}, "main")
+	rows, err := db.Query("EXPLAIN QUERY PLAN "+query, args...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rows.Close() }()
+	var details []string
+	for rows.Next() {
+		var id, parent, unused int
+		var detail string
+		if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+			t.Fatal(err)
+		}
+		details = append(details, detail)
+		if strings.Contains(detail, "SCAN m") || strings.Contains(detail, "SCAN branch_metadata") {
+			t.Fatalf("metadata query scans unrelated rows: %s", detail)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	plan := strings.Join(details, "\n")
+	if !strings.Contains(plan, "USING INDEX idx_branch_metadata_parent") || !strings.Contains(plan, "USING INDEX sqlite_autoindex_branch_metadata_1") {
+		t.Fatalf("metadata query does not use parent and branch indexes:\n%s", plan)
+	}
+	t.Log(plan)
 }
