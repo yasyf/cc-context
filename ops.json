@@ -1,1 +1,1 @@
-{"v":1,"lamport":3,"ops":[{"kind":"set_branch","branch":"yasyf/trunk-repository-auth-priority"}]}
+{"v":1,"lamport":4,"ops":[{"kind":"link_commit","sha":"95abb949c9129a9d777f926e131c82a9da35f5e3"}]}
