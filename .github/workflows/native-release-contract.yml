@@ -1,0 +1,37 @@
+name: Native release contract
+on:
+  pull_request:
+    paths:
+      - .github/workflows/ci.yml
+      - .github/workflows/release.yml
+      - .github/workflows/native-release-contract.yml
+      - .github/scripts/test-native-release-gates.py
+permissions:
+  contents: read
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    outputs:
+      commit: ${{ steps.commit.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - id: commit
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+  native-ci:
+    needs: source
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+    with:
+      commit: ${{ needs.source.outputs.commit }}
+  native-guides:
+    needs: source
+    permissions:
+      contents: write
+    uses: yasyf/cc-guides/.github/workflows/guides.yml@dd3ec882c1589a0ced9ced85ff5469fc56209889
+    with:
+      commit: ${{ needs.source.outputs.commit }}
+      parallel_commits: true
+    secrets: inherit

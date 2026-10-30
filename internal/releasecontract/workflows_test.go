@@ -36,22 +36,33 @@ func TestPostreleaseWorkflows(t *testing.T) {
 			}
 		}
 	}
-	if full, ubuntu := strings.Count(ci, `'["ubuntu-latest", "macos-latest"]'`), strings.Count(ci, "(github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch') && '[\"ubuntu-latest\"]'"); full != ubuntu {
-		t.Errorf("CI runs %d of its %d macOS matrices on the post-release dispatch, which waits behind every PR for a macOS runner; want none", full-ubuntu, full)
+	if full, ubuntu := strings.Count(ci, `'["ubuntu-latest", "macos-latest"]'`), strings.Count(ci, "(github.event_name == 'pull_request' || inputs.commit != '') && '[\"ubuntu-latest\"]'"); full != ubuntu {
+		t.Errorf("CI runs %d of its %d macOS matrices on explicit-commit validation; want none", full-ubuntu, full)
 	}
 	if checkouts, refs := strings.Count(ci, "uses: actions/checkout@v7"), strings.Count(ci, "ref: ${{ inputs.commit || github.sha }}"); checkouts != refs {
 		t.Errorf("CI exact checkout refs = %d, want %d", refs, checkouts)
 	}
 	for _, required := range []string{
-		"actions: write",
 		`echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"`,
-		"for workflow in ci.yml guides.yml",
-		"X-GitHub-Api-Version: 2026-03-10",
-		"gh run watch",
-		`wait "$pid" || status=1`,
+		"commit: ${{ steps.commit.outputs.sha }}",
+		"post-release-ci:",
+		"post-release-guides:",
+		"uses: ./.github/workflows/ci.yml",
+		"parallel_commits: true",
 	} {
 		if !strings.Contains(release, required) {
 			t.Errorf("Release workflow missing %q", required)
+		}
+	}
+	if got := strings.Count(release, "needs: descriptor"); got != 2 {
+		t.Errorf("native descriptor dependencies = %d, want 2", got)
+	}
+	if got := strings.Count(release, "commit: ${{ needs.descriptor.outputs.commit }}"); got != 2 {
+		t.Errorf("native exact-commit inputs = %d, want 2", got)
+	}
+	for _, forbidden := range []string{"actions: write", "gh run watch", "/dispatches"} {
+		if strings.Contains(release, forbidden) {
+			t.Errorf("Release workflow retains %q", forbidden)
 		}
 	}
 }
