@@ -1169,32 +1169,54 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	if err := gtmeta.Convert(ctx, commonDir, current); err != nil {
 		return nil, fmt.Errorf("%s: %w", prefix, err)
 	}
-	state, err := gtStateAtFocused(ctx, commonDir, prefix, o.tip, "")
+	var state gtState
+	if o.allLanes {
+		state, err = gtStateAt(ctx, commonDir, prefix)
+	} else {
+		state, err = gtStateAtFocused(ctx, commonDir, prefix, o.tip, "")
+	}
 	if err != nil {
 		return nil, err
 	}
-	trunk, err := gtTrunkBranch(prefix, state)
+	trunk, err := gtTrunkForBranch(prefix, state, o.tip)
 	if err != nil {
 		return nil, err
 	}
-	rewound, err := stackClaimRewound(ctx, l.dir(), state)
+	rewound, err := stackClaimRewound(ctx, l.dir(), state, slices.Sorted(maps.Keys(state)))
 	if err != nil {
 		return nil, err
+	}
+	topology := &stackTopology{ctx: ctx, dir: l.dir(), commonDir: commonDir, state: state, rewound: rewound, complete: o.allLanes || o.tip == "", expanded: map[string]bool{o.tip: true}, queried: map[string]bool{}}
+	if !o.allLanes {
+		if err := topology.include(stackRequestedNames(o)...); err != nil {
+			return nil, err
+		}
 	}
 	overrides, err := stackOverrides(o, state)
 	if err != nil {
 		return nil, err
+	}
+	if err := topology.include(current); err != nil {
+		return nil, err
+	}
+	if current != trunk {
+		if err := topology.expand(current); err != nil {
+			return nil, err
+		}
 	}
 	if o.above != "" {
 		if err := stackAboveOverrides(state, trunk, current, o.above, overrides); err != nil {
 			return nil, err
 		}
 	}
+	if err := topology.expand(slices.Concat(slices.Sorted(maps.Keys(overrides)), o.landed)...); err != nil {
+		return nil, err
+	}
 	tr, err := gtTrunkRef(ctx, l.dir(), prefix, trunk)
 	if err != nil {
 		return nil, err
 	}
-	parents, err := stackAdoptUntrackedParents(ctx, l.dir(), commonDir, tr, state, overrides)
+	parents, err := stackAdoptUntrackedParents(ctx, l.dir(), tr, state, overrides, topology.infer)
 	if err != nil {
 		return nil, err
 	}
@@ -1213,6 +1235,8 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 		parentOverrides[child] = r.branch
 	}
 	retargeted := stackRetargeted(state, parentOverrides)
+	topology.retargeted = retargeted
+	topology.overrides = parentOverrides
 	seeds := slices.Sorted(maps.Keys(overrides))
 	for _, name := range o.landed {
 		if _, tracked := retargeted[name]; tracked || o.replayed == nil {
@@ -1249,7 +1273,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	}
 	if !o.noPush {
 		planned := members
-		if members, roots, err = stackWithPublishedParents(ctx, l.dir(), retargeted, submitted, trunk, members, roots, parentOverrides); err != nil {
+		if members, roots, err = stackWithPublishedParents(ctx, l.dir(), retargeted, submitted, trunk, members, roots, parentOverrides, topology.include); err != nil {
 			return nil, err
 		}
 		if o.submit && !o.otherLanes {
@@ -1312,7 +1336,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	}
 	stackMarkParked(prs, submitted)
 	rebased := slices.DeleteFunc(slices.Clone(members), func(name string) bool { return tipOnlyAncestor(o.tipOnly, o.tip, name) })
-	found, err := stackFetchRecordedParents(ctx, l.dir(), tr, retargeted, rebased, parentOverrides, prs)
+	found, err := stackFetchRecordedParents(ctx, l.dir(), tr, retargeted, rebased, parentOverrides, prs, topology.include)
 	if err != nil {
 		return nil, err
 	}
@@ -1733,9 +1757,9 @@ func stackKept(ctx context.Context, dir render.Dir, state gtState, tr vcs.Trunk,
 // reads as empty only because its parent was reset below the commit it was
 // cut at: the commits between are on no other branch, so they are the
 // branch's own, as gt track --parent would record them.
-func stackClaimRewound(ctx context.Context, dir render.Dir, state gtState) (map[string]string, error) {
+func stackClaimRewound(ctx context.Context, dir render.Dir, state gtState, names []string) (map[string]string, error) {
 	claimed := map[string]string{}
-	for _, name := range slices.Sorted(maps.Keys(state)) {
+	for _, name := range names {
 		s := state[name]
 		if s.Trunk || len(s.Parents) == 0 || s.Head != s.Parents[0].SHA {
 			continue
@@ -2040,7 +2064,7 @@ func stackAdoptUntracked(ctx context.Context, dir render.Dir, tr vcs.Trunk, stat
 	return adopted, nil
 }
 
-func stackAdoptUntrackedParents(ctx context.Context, dir render.Dir, commonDir string, tr vcs.Trunk, state gtState, overrides map[string]string) (gtState, error) {
+func stackAdoptUntrackedParents(ctx context.Context, dir render.Dir, tr vcs.Trunk, state gtState, overrides map[string]string, infer func(string) (string, error)) (gtState, error) {
 	adopted := gtState{}
 	for _, child := range slices.Sorted(maps.Keys(overrides)) {
 		parent := overrides[child]
@@ -2054,7 +2078,7 @@ func stackAdoptUntrackedParents(ctx context.Context, dir render.Dir, commonDir s
 		if !present {
 			return nil, fmt.Errorf("stack rebase: --parent %s=%s names a branch with no local copy: git fetch %s refs/heads/%s:refs/heads/%s, then re-run", child, parent, tr.Remote(), parent, parent)
 		}
-		below, err := gtInferParent(ctx, &gtCache{dir: dir, prefix: stackRebasePrefix, commonDir: commonDir, state: state}, parent)
+		below, err := infer(parent)
 		if err != nil {
 			return nil, err
 		}
@@ -2081,7 +2105,7 @@ type stackRecordedParent struct {
 	pr, closed     int
 }
 
-func stackFetchRecordedParents(ctx context.Context, dir render.Dir, tr vcs.Trunk, state gtState, members []string, overrides map[string]string, prs map[string]*stackPR) (map[string]stackRecordedParent, error) {
+func stackFetchRecordedParents(ctx context.Context, dir render.Dir, tr vcs.Trunk, state gtState, members []string, overrides map[string]string, prs map[string]*stackPR, hydrate func(...string) error) (map[string]stackRecordedParent, error) {
 	bases := map[string]string{}
 	for _, name := range members {
 		pr := prs[name]
@@ -2089,10 +2113,18 @@ func stackFetchRecordedParents(ctx context.Context, dir render.Dir, tr vcs.Trunk
 			continue
 		}
 		base := pr.base()
-		if _, tracked := state[base]; tracked || base == "" || base == state[name].Parents[0].Ref || strings.HasPrefix(base, "graphite-base/") || strings.HasPrefix(base, gtSegmentPrefix) {
+		if base == "" || base == state[name].Parents[0].Ref || strings.HasPrefix(base, "graphite-base/") || strings.HasPrefix(base, gtSegmentPrefix) {
 			continue
 		}
 		bases[name] = base
+	}
+	if err := hydrate(slices.Collect(maps.Values(bases))...); err != nil {
+		return nil, err
+	}
+	for name, base := range bases {
+		if _, tracked := state[base]; tracked {
+			delete(bases, name)
+		}
 	}
 	if len(bases) == 0 {
 		return nil, nil
@@ -2122,6 +2154,9 @@ func stackFetchRecordedParents(ctx context.Context, dir render.Dir, tr vcs.Trunk
 		if !on {
 			return nil, fmt.Errorf("stack rebase: Graphite stacks %s's pull request #%d on %s, which gt does not track here, and %s's published head does not hold %s's — name the parent with ccx vcs stack rebase --parent %s=<branch> after fetching it, then re-run",
 				child, prs[child].Number, base, child, base, child)
+		}
+		if err := hydrate(pr.base()); err != nil {
+			return nil, err
 		}
 		if _, tracked := state[pr.base()]; !tracked {
 			return nil, fmt.Errorf("stack rebase: Graphite stacks %s's pull request #%d on %s and %s on %s, and this clone has no branch for either — fetch each with git fetch %s refs/heads/<branch>:refs/heads/<branch>, track them bottom-up with gt track <branch> --parent <parent>, then re-run",
@@ -2339,7 +2374,7 @@ func stackPinPublishedParents(ctx context.Context, l lane, planned, members, inc
 // onto when the run left it out, by --parent or because gt records another
 // parent: gt state keeps the old parent until the source checkout moves, and
 // the publication is what gets replayed.
-func stackWithPublishedParents(ctx context.Context, dir render.Dir, state gtState, submitted map[string]gtmeta.Version, trunk string, members, roots []string, overrides map[string]string) ([]string, []string, error) {
+func stackWithPublishedParents(ctx context.Context, dir render.Dir, state gtState, submitted map[string]gtmeta.Version, trunk string, members, roots []string, overrides map[string]string, hydrate func(...string) error) ([]string, []string, error) {
 	for {
 		receipts := map[string]*stackPublication{}
 		var outran []string
@@ -2366,9 +2401,16 @@ func stackWithPublishedParents(ctx context.Context, dir render.Dir, state gtStat
 				return nil, nil, err
 			}
 		}
+		parents := map[string]string{}
+		for name, receipt := range receipts {
+			parents[name] = stackPublishedParent(receipt, remotes[name], submitted[name])
+		}
+		if err := hydrate(slices.Collect(maps.Values(parents))...); err != nil {
+			return nil, nil, err
+		}
 		var missing []string
 		for _, name := range slices.Sorted(maps.Keys(receipts)) {
-			parent := stackPublishedParent(receipts[name], remotes[name], submitted[name])
+			parent := parents[name]
 			if parent == trunk || slices.Contains(members, parent) || slices.Contains(missing, parent) {
 				continue
 			}

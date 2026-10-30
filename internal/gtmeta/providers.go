@@ -293,6 +293,15 @@ func ReadOriginOrphans(ctx context.Context, commonDir string) (State, []Orphan, 
 
 // ReadOriginOrphansForBranches resolves requested Graphite topology with a coherent native ownership snapshot.
 func ReadOriginOrphansForBranches(ctx context.Context, commonDir string, branches []string) (State, []Orphan, error) {
+	return readRequestedOriginOrphans(ctx, commonDir, branches, readSelectedStateOrphans)
+}
+
+// ReadOriginOrphansForAncestors resolves requested Graphite ancestry with a coherent native ownership snapshot.
+func ReadOriginOrphansForAncestors(ctx context.Context, commonDir string, branches []string) (State, []Orphan, error) {
+	return readRequestedOriginOrphans(ctx, commonDir, branches, readAncestorStateOrphans)
+}
+
+func readRequestedOriginOrphans(ctx context.Context, commonDir string, branches []string, read func(context.Context, string, bool, []string) (State, []Orphan, error)) (State, []Orphan, error) {
 	if len(branches) == 0 {
 		panic("stack topology requires a branch")
 	}
@@ -300,11 +309,11 @@ func ReadOriginOrphansForBranches(ctx context.Context, commonDir string, branche
 		if provider != ProviderGraphite {
 			return readProviders(ctx, commonDir, true)
 		}
-		native, err := nativemeta.BranchNames(commonDir)
+		state, orphans, err := read(ctx, commonDir, true, branches)
 		if err != nil {
 			return nil, nil, err
 		}
-		state, orphans, err := readSelectedStateOrphans(ctx, commonDir, true, branches)
+		native, err := nativemeta.BranchNames(commonDir)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -315,7 +324,7 @@ func ReadOriginOrphansForBranches(ctx context.Context, commonDir string, branche
 		return nil, nil, err
 	}
 	if !native {
-		return readSelectedStateOrphans(ctx, commonDir, true, branches)
+		return read(ctx, commonDir, true, branches)
 	}
 	if legacy {
 		if _, err := ReadTrunk(ctx, commonDir); err != nil {
@@ -330,7 +339,7 @@ func ReadOriginOrphansForBranches(ctx context.Context, commonDir string, branche
 	var orphans []Orphan
 	if legacy {
 		selected := append(slices.Clone(branches), names...)
-		state, orphans, err = readSelectedStateOrphans(ctx, commonDir, true, selected)
+		state, orphans, err = read(ctx, commonDir, true, selected)
 		if err != nil {
 			return nil, nil, err
 		}

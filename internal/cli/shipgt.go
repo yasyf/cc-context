@@ -136,7 +136,8 @@ func gtStateAtFocused(ctx context.Context, commonDir, prefix, branch, parent str
 			return gtmeta.ReadOriginOrphansForBranches(ctx, commonDir, branches)
 		}
 	}
-	tracked, orphans, err := read(ctx, commonDir)	if err != nil {
+	tracked, orphans, err := read(ctx, commonDir)
+	if err != nil {
 		return nil, fmt.Errorf("%s: %w", prefix, err)
 	}
 	if branch != "" {
@@ -166,6 +167,40 @@ func gtStateAtFocused(ctx context.Context, commonDir, prefix, branch, parent str
 	_, parentTracked := tracked[parent]
 	if !full && (!branchTracked || (parent != "" && !parentTracked)) {
 		if tracked, _, err = gtmeta.ReadOriginOrphans(ctx, commonDir); err != nil {
+			return nil, fmt.Errorf("%s: %w", prefix, err)
+		}
+	}
+	return gtBranchStates(tracked), nil
+}
+
+func gtRequestedState(ctx context.Context, commonDir, prefix string, branches []string, read func(context.Context, string, []string) (gtmeta.State, []gtmeta.Orphan, error)) (gtState, error) {
+	tracked, orphans, err := read(ctx, commonDir, branches)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", prefix, err)
+	}
+	selected := map[string]gtmeta.Orphan{}
+	for _, branch := range branches {
+		if _, known := tracked[branch]; !known && !slices.ContainsFunc(orphans, func(o gtmeta.Orphan) bool { return o.Branch == branch }) {
+			continue
+		}
+		related, err := gtRelatedOrphans(ctx, commonDir, prefix, tracked, orphans, branch, "")
+		if err != nil {
+			return nil, err
+		}
+		for _, orphan := range related {
+			selected[orphan.Branch] = orphan
+		}
+	}
+	var related []gtmeta.Orphan
+	for _, branch := range slices.Sorted(maps.Keys(selected)) {
+		related = append(related, selected[branch])
+	}
+	adopted, err := gtAdoptOrphans(ctx, commonDir, prefix, tracked, related)
+	if err != nil {
+		return nil, err
+	}
+	if adopted {
+		if tracked, _, err = read(ctx, commonDir, branches); err != nil {
 			return nil, fmt.Errorf("%s: %w", prefix, err)
 		}
 	}
@@ -2430,7 +2465,7 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 	trunk := state[tr.Name()]
 	trunk.Head = s.trunkHead
 	state[tr.Name()] = trunk
-	rewound, err := stackClaimRewound(ctx, l.dir(), state)
+	rewound, err := stackClaimRewound(ctx, l.dir(), state, slices.Sorted(maps.Keys(state)))
 	if err != nil {
 		return nil, nil, err
 	}
