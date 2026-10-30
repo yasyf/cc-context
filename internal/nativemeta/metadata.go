@@ -204,15 +204,41 @@ func ReadOriginOrphans(ctx context.Context, commonDir string) (State, []Orphan, 
 	return readState(ctx, commonDir, true)
 }
 
+// ReadOriginOrphansWithMembers binds live native state and catalog ownership to one metadata read.
+func ReadOriginOrphansWithMembers(ctx context.Context, commonDir string) (State, []Orphan, []string, error) {
+	r, receipts, err := loadRows(commonDir)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	names := make([]string, 0, len(r))
+	for _, row := range r {
+		if row.parent != "" {
+			names = append(names, row.branch)
+		}
+	}
+	slices.Sort(names)
+	state, orphans, err := readRowsState(ctx, commonDir, true, r, receipts)
+	return state, orphans, names, err
+}
+
 func readState(ctx context.Context, commonDir string, remote bool) (State, []Orphan, error) {
-	c, receipts, err := load(commonDir)
+	r, receipts, err := loadRows(commonDir)
 	if err != nil {
 		return nil, nil, err
 	}
-	r, err := rows(c)
+	return readRowsState(ctx, commonDir, remote, r, receipts)
+}
+
+func loadRows(commonDir string) ([]branchRow, receipts, error) {
+	c, r, err := load(commonDir)
 	if err != nil {
-		return nil, nil, err
+		return nil, r, err
 	}
+	rows, err := rows(c)
+	return rows, r, err
+}
+
+func readRowsState(ctx context.Context, commonDir string, remote bool, r []branchRow, receipts receipts) (State, []Orphan, error) {
 	if len(r) == 0 {
 		trunk, err := ReadTrunk(ctx, commonDir)
 		if err != nil {

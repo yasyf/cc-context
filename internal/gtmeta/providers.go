@@ -206,6 +206,48 @@ func ReadOriginOrphans(ctx context.Context, commonDir string) (State, []Orphan, 
 	return readProviders(ctx, commonDir, true)
 }
 
+// ReadOriginOrphansForBranches resolves requested Graphite topology with a coherent native ownership snapshot.
+func ReadOriginOrphansForBranches(ctx context.Context, commonDir string, branches []string) (State, []Orphan, error) {
+	if len(branches) == 0 {
+		panic("stack topology requires a branch")
+	}
+	if provider := contextProvider(ctx); provider != "" {
+		return readProviders(ctx, commonDir, true)
+	}
+	native, legacy, err := stores(commonDir)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !native {
+		return readSelectedStateOrphans(ctx, commonDir, true, branches)
+	}
+	if legacy {
+		if _, err := ReadTrunk(ctx, commonDir); err != nil {
+			return nil, nil, err
+		}
+	}
+	ns, no, names, err := nativemeta.ReadOriginOrphansWithMembers(ctx, commonDir)
+	if err != nil {
+		return nil, nil, err
+	}
+	state := State{}
+	var orphans []Orphan
+	if legacy {
+		selected := append(slices.Clone(branches), names...)
+		state, orphans, err = readSelectedStateOrphans(ctx, commonDir, true, selected)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	for _, branch := range names {
+		delete(state, branch)
+	}
+	orphans = slices.DeleteFunc(orphans, func(o Orphan) bool { return slices.Contains(names, o.Branch) })
+	converted, missing := fromNative(ns, no)
+	maps.Copy(state, converted)
+	return state, append(orphans, missing...), nil
+}
+
 func readProviders(ctx context.Context, commonDir string, remote bool) (State, []Orphan, error) {
 	if provider := contextProvider(ctx); provider != "" {
 		if provider == ProviderGraphite {
