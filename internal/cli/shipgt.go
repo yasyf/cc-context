@@ -121,11 +121,31 @@ func gtStateAt(ctx context.Context, commonDir, prefix string) (gtState, error) {
 }
 
 func gtStateAtFocused(ctx context.Context, commonDir, prefix, branch, parent string) (gtState, error) {
-	tracked, orphans, err := gtmeta.ReadOriginOrphans(ctx, commonDir)
+	read := gtmeta.ReadOriginOrphans
+	full := true
+	if branch != "" {
+		full = false
+		branches := []string{branch}
+		if parent != "" {
+			branches = append(branches, parent)
+		}
+		read = func(ctx context.Context, commonDir string) (gtmeta.State, []gtmeta.Orphan, error) {
+			return gtmeta.ReadOriginOrphansForBranches(ctx, commonDir, branches)
+		}
+	}
+	tracked, orphans, err := read(ctx, commonDir)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", prefix, err)
 	}
 	if branch != "" {
+		if _, known := tracked[branch]; !known && !slices.ContainsFunc(orphans, func(o gtmeta.Orphan) bool { return o.Branch == branch }) {
+			full = true
+			read = gtmeta.ReadOriginOrphans
+			tracked, orphans, err = read(ctx, commonDir)
+			if err != nil {
+				return nil, fmt.Errorf("%s: %w", prefix, err)
+			}
+		}
 		orphans, err = gtRelatedOrphans(ctx, commonDir, prefix, tracked, orphans, branch, parent)
 		if err != nil {
 			return nil, err
@@ -136,7 +156,14 @@ func gtStateAtFocused(ctx context.Context, commonDir, prefix, branch, parent str
 		return nil, err
 	}
 	if adopted {
-		if tracked, err = gtmeta.ReadOrigin(ctx, commonDir); err != nil {
+		if tracked, _, err = read(ctx, commonDir); err != nil {
+			return nil, fmt.Errorf("%s: %w", prefix, err)
+		}
+	}
+	_, branchTracked := tracked[branch]
+	_, parentTracked := tracked[parent]
+	if !full && (!branchTracked || (parent != "" && !parentTracked)) {
+		if tracked, _, err = gtmeta.ReadOriginOrphans(ctx, commonDir); err != nil {
 			return nil, fmt.Errorf("%s: %w", prefix, err)
 		}
 	}
