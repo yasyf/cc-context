@@ -26,9 +26,9 @@ func TestSelectedRowsPreserveOnlyRequestedStackTopology(t *testing.T) {
 		}
 	}
 	for _, tc := range []struct {
-		name string
+		name     string
 		branches []string
-		want []string
+		want     []string
 	}{
 		{"selected", []string{"selected"}, []string{"base", "child", "main", "selected"}},
 		{"trunk", []string{"main"}, []string{"main"}},
