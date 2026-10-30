@@ -327,14 +327,19 @@ func TestQueueReadRetriesAStackReadThatOutlivesItsDeadline(t *testing.T) {
 	queueReadDeadline, queueReadBackoff = 200*time.Millisecond, []time.Duration{time.Millisecond}
 	t.Cleanup(func() { queueReadDeadline, queueReadBackoff = deadline, backoff })
 	var calls atomic.Int32
+	release := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if calls.Add(1) == 1 {
-			<-r.Context().Done()
+			select {
+			case <-r.Context().Done():
+			case <-release:
+			}
 			return
 		}
 		_, _ = fmt.Fprint(w, `{"data":{"repository":{"p0":{"number":42,"state":"OPEN","headRefName":"feature","headRefOid":"head","baseRefName":"main"}}}}`)
 	}))
 	defer server.Close()
+	defer close(release)
 	source := &GitHub{gt: gtapi.NewNativeWithToken(server.URL, "stub"), owner: "org", name: "repo", warn: io.Discard}
 	infos, _ := source.queueRecords(t.Context(), []int{42})
 	if infos[42] == nil {
