@@ -1009,23 +1009,22 @@ func gtRetrackDiverged(ctx context.Context, errW io.Writer, c *gtCache, parent s
 	if err != nil {
 		return "", err
 	}
-	rows, err := gtmeta.Rows(ctx, commonDir)
+	recorded, diverged, err := gtmeta.Diverged(ctx, commonDir, parent)
 	if err != nil {
 		return "", fmt.Errorf("ship: %w", err)
 	}
-	i := slices.IndexFunc(rows, func(row gtmeta.Row) bool { return row.Branch == parent })
-	if i < 0 || !rows[i].Diverged || rows[i].Parent == "" {
+	if !diverged || recorded == "" {
 		return "", nil
 	}
-	r, runErr := gtRun(ctx, c.dir, []string{"track", parent, "--parent", rows[i].Parent, "--no-interactive"}, errW)
+	r, runErr := gtRun(ctx, c.dir, []string{"track", parent, "--parent", recorded, "--no-interactive"}, errW)
 	c.forget()
 	if err := gtReport(ctx, errW, r); err != nil {
 		return "", err
 	}
 	if runErr != nil {
-		return "", &gtAdvice{advice: fmt.Sprintf("ship: %s has diverged from Graphite's record and gt track could not re-track it onto %s — rebase %s onto %s, then ship again", parent, rows[i].Parent, parent, rows[i].Parent), cause: runErr}
+		return "", &gtAdvice{advice: fmt.Sprintf("ship: %s has diverged from Graphite's record and gt track could not re-track it onto %s — rebase %s onto %s, then ship again", parent, recorded, parent, recorded), cause: runErr}
 	}
-	return "re-tracked " + parent + " onto " + rows[i].Parent + ", which had diverged from Graphite's record" + shipSep, nil
+	return "re-tracked " + parent + " onto " + recorded + ", which had diverged from Graphite's record" + shipSep, nil
 }
 
 type gtRecordedParent struct {

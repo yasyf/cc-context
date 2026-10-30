@@ -643,7 +643,11 @@ func TestShipGTTipOnlyRetracksAParentGraphiteCallsDiverged(t *testing.T) {
 	stubStackPRs(t, f, map[string]*stackPR{"p": {Number: 6, Title: "p", State: "OPEN", Base: "main"}})
 	shipResetLog(t, f)
 
-	got, errStr, err := runShipCmdFull(f.Context(), t, "--no-commit", "--no-watch", "--tip-only", "--parent", "p")
+	body := filepath.Join(t.TempDir(), "body.md")
+	if err := os.WriteFile(body, []byte("## Summary\n\nn on p.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, errStr, err := runShipCmdFull(f.Context(), t, "--no-commit", "--no-watch", "--tip-only", "--parent", "p", "--pr-body-file", body)
 	if err != nil {
 		t.Fatalf("ship = %v (stderr=%q), want n shipped onto p", err, errStr)
 	}
