@@ -1,4 +1,4 @@
-name: Exact ref IO diagnostic
+name: Fetch connectivity diagnostic
 on:
   workflow_dispatch:
     inputs:
@@ -36,11 +36,11 @@ jobs:
           PREFIX: ${{ steps.git.outputs.prefix }}
         run: echo "$PREFIX/bin" >> "$GITHUB_PATH"
       - run: sudo apt-get update -qq && sudo apt-get install -y strace
-      - run: python3 scripts/exact-ref-io-probe.py
+      - run: python3 scripts/fetch-connectivity-probe.py
         env:
-          PROBE_OUTPUT: ${{ runner.temp }}/exact-ref-io
+          PROBE_OUTPUT: ${{ runner.temp }}/fetch-connectivity
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: exact-ref-io
-          path: ${{ runner.temp }}/exact-ref-io
+          name: fetch-connectivity
+          path: ${{ runner.temp }}/fetch-connectivity
