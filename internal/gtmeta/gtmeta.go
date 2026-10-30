@@ -152,6 +152,11 @@ const branchColumns = `SELECT branch_name,
 	COALESCE(state, '')`
 
 func readSelectedRows(ctx context.Context, path string, branches []string, trunk string) ([]branchRow, error) {
+	query, args := selectedRowsQuery(branches, trunk)
+	return queryRows(ctx, path, query, args...)
+}
+
+func selectedRowsQuery(branches []string, trunk string) (string, []any) {
 	values := make([]string, len(branches))
 	args := make([]any, 0, len(branches)+2)
 	for i, branch := range branches {
@@ -178,8 +183,9 @@ func readSelectedRows(ctx context.Context, path string, branches []string, trunk
 		UNION SELECT branch FROM descendants
 		UNION SELECT ?
 	)
-	` + branchColumns + ` FROM branch_metadata WHERE branch_name IN (SELECT branch FROM selected)`
-	return queryRows(ctx, path, query, args...)
+	`
+	query += branchColumns + ` FROM branch_metadata WHERE branch_name IN (SELECT branch FROM selected)`
+	return query, args
 }
 
 func queryRows(ctx context.Context, path, query string, args ...any) ([]branchRow, error) {
