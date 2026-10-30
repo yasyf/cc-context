@@ -1184,3 +1184,25 @@ func TestClientBlockersRefuseAnyClientPlacedOnATarget(t *testing.T) {
 		t.Errorf("blockers = %q, want %q", blockers, want)
 	}
 }
+
+func TestRetireCurrentRefusesFreshConsumersBeforeMutation(t *testing.T) {
+	for _, kind := range []string{"subscription", "query", "unaccounted client"} {
+		t.Run(kind, func(t *testing.T) {
+			f := newFixture(t)
+			switch kind {
+			case "subscription":
+				f.w.subscribe(f.wt, fakeSub{Name: "live", PID: 601, Client: 3})
+			case "query":
+				f.w.roots[f.wt].Queries = []map[string]any{{"state": "Generating", "client-pid": 602}}
+			case "unaccounted client":
+				f.w.client(603, "watchman", "watchman query")
+			}
+			if _, err := RetireCurrent(t.Context(), f.w.deps(), f.wt); !errors.Is(err, ErrRefused) {
+				t.Fatalf("RetireCurrent() = %v, want refusal", err)
+			}
+			if got := f.mutations(); len(got) != 0 {
+				t.Fatalf("RetireCurrent() mutated a busy tree: %v", got)
+			}
+		})
+	}
+}

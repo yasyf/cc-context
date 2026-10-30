@@ -656,7 +656,7 @@ func TestCleanupWatchersRetire(t *testing.T) {
 			name:    "a missing worktree fails to plan",
 			missing: true,
 			wantErr: fs.ErrNotExist,
-			wantMsg: "plan the watcher retirement of <base>/wt/gone: ",
+			wantMsg: "retire the watchers of <base>/wt/gone: ",
 		},
 	}
 	for _, tt := range tests {
