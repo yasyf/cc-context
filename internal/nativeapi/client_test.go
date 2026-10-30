@@ -761,3 +761,44 @@ func TestTrunkEmptyQueueReadDoesNotResolveCredentials(t *testing.T) {
 		t.Fatalf("empty queue read executed AWS: %v", err)
 	}
 }
+
+func TestBranchHistoryReadsOriginPresenceAndPullRequestHeads(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/org/repo", "/repos/org/repo/branches/release", "/repos/org/repo/branches/feature":
+			if _, err := fmt.Fprint(w, `{"name":"x"}`); err != nil {
+				t.Errorf("write fixture response: %v", err)
+			}
+		case "/repos/org/repo/pulls":
+			if r.URL.Query().Get("state") != "all" {
+				t.Errorf("state=%s; want all", r.URL.Query().Get("state"))
+			}
+			body := `[]`
+			if r.URL.Query().Get("head") == "org:feature" {
+				body = `[{"number":4}]`
+			}
+			if _, err := fmt.Fprint(w, body); err != nil {
+				t.Errorf("write fixture response: %v", err)
+			}
+		case "/repos/org/repo/branches/gone":
+			http.Error(w, `{"message":"Branch not found"}`, http.StatusNotFound)
+		default:
+			http.Error(w, `{"message":"boom"}`, http.StatusBadGateway)
+		}
+	}))
+	defer srv.Close()
+	client := NewWithToken(srv.URL, "key")
+	for branch, want := range map[string][2]bool{"release": {true, false}, "feature": {true, true}, "gone": {false, false}} {
+		onOrigin, headed, err := client.BranchHistory(context.Background(), "org", "repo", branch)
+		if err != nil || onOrigin != want[0] || headed != want[1] {
+			t.Fatalf("BranchHistory(%s) = %v, %v, %v; want %v", branch, onOrigin, headed, err, want)
+		}
+	}
+	var status *StatusError
+	if _, _, err := client.BranchHistory(context.Background(), "org", "repo", "flaky"); !errors.As(err, &status) || status.Status != http.StatusBadGateway {
+		t.Fatalf("BranchHistory(flaky) error = %v; want the 502", err)
+	}
+	if _, _, err := client.BranchHistory(context.Background(), "org", "hidden", "release"); !errors.As(err, &status) || status.Status != http.StatusBadGateway {
+		t.Fatalf("BranchHistory on an unreadable repository = %v; want its error, never a missing branch", err)
+	}
+}
