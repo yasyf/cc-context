@@ -22,6 +22,10 @@ linters:
     - unused
   exclusions:
     rules:
+      - path: scheduler_index_test\.go
+        text: G404
+        linters:
+          - gosec
       # G304 (file inclusion via variable) targets production code handling
       # untrusted input, not test helpers reading fixtures from testdata/.
       - path: _test\.go

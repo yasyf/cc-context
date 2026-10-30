@@ -200,13 +200,16 @@ type Engine struct {
 	governed cleanup.Governor
 	changed  chan struct{}
 
-	seq       uint64
-	order     []seqKey
-	gov       *governor
-	checked   map[string]time.Time
-	active    *activeDeletion
-	paceUntil time.Time
-	loud      bool
+	seq             uint64
+	order           []seqKey
+	logicalOrder    []seqKey
+	retirementOrder []seqKey
+	wakeOrder       []seqKey
+	gov             *governor
+	checked         map[string]time.Time
+	active          *activeDeletion
+	paceUntil       time.Time
+	loud            bool
 }
 
 var (
@@ -605,6 +608,18 @@ func (e *Engine) load() error {
 	}
 	slices.SortFunc(e.order, func(a, b seqKey) int { return cmp.Compare(a.seq, b.seq) })
 	e.damaged, e.paused, e.hold, e.booted = damaged, sw.Paused, sw.Hold, e.clock.Now()
+	for _, key := range e.order {
+		logical, retirement, wake := e.scheduled(e.jobs[key.id])
+		if logical {
+			e.logicalOrder = append(e.logicalOrder, key)
+		}
+		if retirement {
+			e.retirementOrder = append(e.retirementOrder, key)
+		}
+		if wake {
+			e.wakeOrder = append(e.wakeOrder, key)
+		}
+	}
 	close(e.loaded)
 	return nil
 }
@@ -729,7 +744,11 @@ func (e *Engine) wake(physical bool) (time.Time, bool) {
 			wake, timed = at, true
 		}
 	}
-	for job := range e.ordered() {
+	order := e.wakeOrder
+	if e.paused {
+		order = e.retirementOrder
+	}
+	for job := range e.orderedKeys(order) {
 		if e.hold != nil {
 			break
 		}
@@ -760,7 +779,11 @@ func (e *Engine) logicalDue(now time.Time) (cleanup.Job, bool) {
 	if e.hold != nil {
 		return cleanup.Job{}, false
 	}
-	for job := range e.ordered() {
+	order := e.logicalOrder
+	if e.paused {
+		order = e.retirementOrder
+	}
+	for job := range e.orderedKeys(order) {
 		if !job.Phase.Logical() || (e.paused && !e.retirementDue(job)) {
 			continue
 		}
@@ -1282,6 +1305,7 @@ func (e *Engine) put(job cleanup.Job) {
 		e.order = slices.Insert(e.order, at, seqKey{seq: job.Seq, id: job.ID})
 	}
 	e.jobs[job.ID] = clone(job)
+	e.schedule(job)
 	e.broadcast()
 	e.mu.Unlock()
 }
@@ -1292,6 +1316,9 @@ func (e *Engine) dequeue(job cleanup.Job) {
 		panic(fmt.Sprintf("cleanup daemon: job %s at seq %d is missing from the queue order", job.ID, job.Seq))
 	}
 	e.order = slices.Delete(e.order, at, at+1)
+	e.logicalOrder = scheduleKey(e.logicalOrder, e.order, job, false)
+	e.retirementOrder = scheduleKey(e.retirementOrder, e.order, job, false)
+	e.wakeOrder = scheduleKey(e.wakeOrder, e.order, job, false)
 }
 
 func (e *Engine) broadcast() {
@@ -1310,9 +1337,52 @@ func (e *Engine) publishGovernor() {
 	e.mu.Unlock()
 }
 
+func (e *Engine) scheduled(job cleanup.Job) (bool, bool, bool) {
+	_, retries := e.retryAt(job)
+	logical := job.Phase.Logical() && (job.Blocked == nil || retries)
+	return logical, logical && e.retirementDue(job), (job.Phase == cleanup.PhaseWaiting && job.Blocked == nil) || retries
+}
+
+func (e *Engine) schedule(job cleanup.Job) {
+	logical, retirement, wake := e.scheduled(job)
+	e.logicalOrder = scheduleKey(e.logicalOrder, e.order, job, logical)
+	e.retirementOrder = scheduleKey(e.retirementOrder, e.order, job, retirement)
+	e.wakeOrder = scheduleKey(e.wakeOrder, e.order, job, wake)
+}
+
+func scheduleKey(order, all []seqKey, job cleanup.Job, eligible bool) []seqKey {
+	first, _ := slices.BinarySearchFunc(order, job.Seq, bySeqKey)
+	for at := first; at < len(order) && order[at].seq == job.Seq; at++ {
+		if order[at].id == job.ID {
+			if !eligible {
+				return slices.Delete(order, at, at+1)
+			}
+			return order
+		}
+	}
+	if !eligible {
+		return order
+	}
+	at := first
+	start, _ := slices.BinarySearchFunc(all, job.Seq, bySeqKey)
+	for _, key := range all[start:] {
+		if key.id == job.ID {
+			break
+		}
+		if at < len(order) && order[at] == key {
+			at++
+		}
+	}
+	return slices.Insert(order, at, seqKey{seq: job.Seq, id: job.ID})
+}
+
 func (e *Engine) ordered() iter.Seq[cleanup.Job] {
+	return e.orderedKeys(e.order)
+}
+
+func (e *Engine) orderedKeys(order []seqKey) iter.Seq[cleanup.Job] {
 	return func(yield func(cleanup.Job) bool) {
-		for _, key := range e.order {
+		for _, key := range order {
 			if !yield(e.jobs[key.id]) {
 				return
 			}

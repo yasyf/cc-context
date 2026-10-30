@@ -27,6 +27,39 @@ env:
   HEAVY_PKGS: internal/web|internal/semsearch/chunk|internal/semsearch/embed|internal/gtmeta
 
 jobs:
+  scheduler-performance:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.commit || github.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          check-latest: true
+          cache: true
+      - uses: ./.github/actions/wasm
+      - name: Indexed scheduler reference model and scaling
+        run: |
+          go test -race -run '^TestSchedulerIndexes' -v ./internal/cleanup/daemon
+          go test -run '^$' -bench '^BenchmarkSchedulerParkedQueue$' -benchtime=200ms -count=3 ./internal/cleanup/daemon | tee scheduler-indexed.txt
+      - name: Released scheduler baseline on the same fixture
+        run: |
+          cp internal/cleanup/daemon/engine.go "$RUNNER_TEMP/indexed-engine.go"
+          mv internal/cleanup/daemon/scheduler_index_test.go "$RUNNER_TEMP/scheduler_index_test.go"
+          trap 'cp "$RUNNER_TEMP/indexed-engine.go" internal/cleanup/daemon/engine.go; mv "$RUNNER_TEMP/scheduler_index_test.go" internal/cleanup/daemon/scheduler_index_test.go' EXIT
+          git show a88f5b8fe37b26d7f290a2fa46349ac0f6c76e66:internal/cleanup/daemon/engine.go > internal/cleanup/daemon/engine.go
+          go test -run '^$' -bench '^BenchmarkSchedulerParkedQueue$' -benchtime=200ms -count=3 ./internal/cleanup/daemon | tee scheduler-released.txt
+      - uses: actions/upload-artifact@v7
+        with:
+          name: scheduler-performance-${{ matrix.os }}
+          path: scheduler-*.txt
+
   testbin:
     runs-on: ${{ matrix.os }}
     strategy:
