@@ -31,7 +31,12 @@ func retirementMarker(job *cleanup.Job) string { return retirementPrefix + job.I
 // queue is paused: git no longer lists the worktree, and its tree waits at
 // its path for the queue.
 func RetiringJob(adminDir string) (string, bool) {
-	data, err := os.ReadFile(filepath.Join(adminDir, "locked"))
+	root, err := os.OpenRoot(adminDir)
+	if err != nil {
+		return "", false
+	}
+	defer func() { _ = root.Close() }()
+	data, err := root.ReadFile("locked")
 	id, ok := strings.CutPrefix(strings.TrimSpace(string(data)), retirementPrefix)
 	return id, err == nil && ok && id != ""
 }
