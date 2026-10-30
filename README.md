@@ -207,7 +207,7 @@ git config ccx.stack github
 git config ccx.queue trunk
 ```
 
-Set `git config ccx.stack` to `github` or `graphite`, and set `git config ccx.queue` to `trunk`, `github`, or `none` (legacy stacks default to Graphite). Trunk queue queries use `TRUNK_MERGE_API_KEY`; native metadata inspection needs no Trunk key. Native stacks use the GitHub API and local catalog rather than a `gh` executable, require actual server stack membership without synthetic head bumps, share lightweight isolated replay and tip-only unchanged-parent protection, and never fall back on auth or network errors.
+Set `git config ccx.stack` to `github` or `graphite`, and set `git config ccx.queue` to `trunk`, `github`, or `none` (legacy stacks default to Graphite). Trunk queue queries use `TRUNK_MERGE_API_KEY`, else the key printed by the argv in `api_key_command` of `~/.config/ccx/trunk.toml`, such as an `aws ssm get-parameter` call; native metadata inspection needs no Trunk key. Native stacks use the GitHub API and local catalog rather than a `gh` executable, require actual server stack membership without synthetic head bumps, share lightweight isolated replay and tip-only unchanged-parent protection, and never fall back on auth or network errors.
 
 ## Configuration
 

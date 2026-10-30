@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -265,6 +267,7 @@ func TestTrunkQueueReadsBatchAndPaginate(t *testing.T) {
 
 func TestMissingTrunkCredentialFailsQueueRead(t *testing.T) {
 	t.Setenv("TRUNK_MERGE_API_KEY", "")
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	_, err := NewWithToken("http://invalid.local", "github-key").WithQueueProvider("trunk").MergeabilityStatuses(context.Background(), "org", "repo", []int{1})
 	if err == nil || !strings.Contains(err.Error(), "TRUNK_MERGE_API_KEY") {
 		t.Fatalf("err=%v", err)
@@ -292,6 +295,7 @@ func TestStatusErrorPreservesUnauthorizedAndDiagnostic(t *testing.T) {
 
 func TestQueueProviderDoesNotFallBackFromTrunkCredentialError(t *testing.T) {
 	t.Setenv("TRUNK_MERGE_API_KEY", "")
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	calls := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		calls++
@@ -564,5 +568,24 @@ func TestChangedBasePreservesValidationDetails(t *testing.T) {
 	var status *StatusError
 	if !errors.As(err, &status) || status.Status != http.StatusUnprocessableEntity || !strings.Contains(status.Message, "Validation Failed") || !strings.Contains(status.Message, `"field":"base"`) || !strings.Contains(status.Message, `"code":"invalid"`) || patches != 1 || refs != 1 {
 		t.Fatalf("err=%v status=%+v patches=%d refs=%d", err, status, patches, refs)
+	}
+}
+
+func TestTrunkKeyComesFromConfiguredCommandUnlessEnvironmentSetsIt(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	if err := os.MkdirAll(filepath.Join(dir, "ccx"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "ccx", "trunk.toml"), []byte(`api_key_command = ["printf", " ssm-key\n"]`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TRUNK_MERGE_API_KEY", "")
+	if key, err := resolveTrunkKey(); err != nil || key != "ssm-key" {
+		t.Fatalf("key=%q err=%v", key, err)
+	}
+	t.Setenv("TRUNK_MERGE_API_KEY", "env-key")
+	if key, err := resolveTrunkKey(); err != nil || key != "env-key" {
+		t.Fatalf("key=%q err=%v", key, err)
 	}
 }

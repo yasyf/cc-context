@@ -99,6 +99,7 @@ func TestExplicitQueueOverrideClearsLegacyQueueButKeepsVersions(t *testing.T) {
 
 func TestExplicitTrunkQueueFailureNeverCallsGraphite(t *testing.T) {
 	t.Setenv("TRUNK_MERGE_API_KEY", "")
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	calls := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		calls++
