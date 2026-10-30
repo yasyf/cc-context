@@ -80,7 +80,10 @@ def query(repo, tree, parent, label, target, no_replace=False, expected=None):
     if expected is not None:
         assert result.returncode == expected, row
         if expected:
-            assert target in row["stderr"], row
+            if target == parent:
+                assert row["stderr"] == f"fatal: Failed to traverse parents of commit {wanted}\n", row
+            else:
+                assert f"missing blob object '{target}'" in row["stderr"], row
     return row
 
 
