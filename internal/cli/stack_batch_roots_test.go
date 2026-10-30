@@ -67,7 +67,7 @@ func TestStackListBatchKeepsNativeAndLegacyTrunksSeparate(t *testing.T) {
 		t.Fatal(err)
 	}
 	catalog["stacks"] = append(catalog["stacks"].([]any), map[string]any{
-		"trunk": map[string]string{"branch": "other", "head": head},
+		"trunk":    map[string]string{"branch": "other", "head": head},
 		"branches": []map[string]string{{"branch": "native-other", "head": head, "base": head}},
 	})
 	nativeData, err = json.Marshal(catalog)
