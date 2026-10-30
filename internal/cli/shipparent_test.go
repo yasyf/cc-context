@@ -690,6 +690,40 @@ func TestShipGTTipOnlyRetracksADivergedParentOntoTrunkOnceItsRecordedParentLeftI
 	}
 }
 
+func TestShipGTTipOnlyMovesOntoTheParentsPublishedHeadWhenItsTrackingRefIsStale(t *testing.T) {
+	f := shipGTRepo(t)
+	shipGTStack(t, f, "p")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "p")
+	stale := strings.TrimSpace(mustRun(t, f.Env(), f.Dir, "git", "rev-parse", "p"))
+	edit := func(content, message string) {
+		if err := os.WriteFile(filepath.Join(f.Dir, "x.txt"), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		mustRun(t, f.Env(), f.Dir, "git", "add", "x.txt")
+		mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", message)
+	}
+	edit("one\n", "p: x")
+	published := strings.TrimSpace(mustRun(t, f.Env(), f.Dir, "git", "rev-parse", "p"))
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "p")
+	mustRun(t, f.Env(), f.Dir, "git", "update-ref", "refs/remotes/origin/p", stale)
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "n")
+	edit("two\n", "n: x")
+	stubStackPRs(t, f, map[string]*stackPR{"p": {Number: 6, Title: "p", State: "OPEN", Base: "main"}})
+	shipResetLog(t, f)
+
+	body := filepath.Join(t.TempDir(), "body.md")
+	if err := os.WriteFile(body, []byte("## Summary\n\nn on p.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, errStr, err := runShipCmdFull(f.Context(), t, "--no-commit", "--no-watch", "--tip-only", "--parent", "p", "--pr-body-file", body); err != nil {
+		t.Fatalf("ship = %v (stderr=%q), want n shipped onto p's published head", err, errStr)
+	}
+	if parent := shipParentOf(t, f, "n"); parent != "p" {
+		t.Errorf("n's parent = %s, want p", parent)
+	}
+	mustRun(t, f.Env(), f.Dir, "git", "merge-base", "--is-ancestor", published, "n")
+}
+
 // TestShipDryRunUnderTipOnlyPublishesAnUntrackedBranchAlone is the dry run
 // behind #207148, which told p8a-step7 an untracked branch shipped with
 // --tip-only would publish its parent's whole downstack.
