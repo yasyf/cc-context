@@ -23,6 +23,17 @@ cc-context/
 └── README.md         # Project overview
 ```
 
+## Stack providers
+
+`ccx vcs stack`, `ccx vcs ship`, `ccx vcs status`, and `ccx vcs reviews` support native GitHub stacks and legacy Graphite stacks. Branch membership in the git common directory `gh-stack` catalog takes precedence, while an existing tracked Graphite branch stays on legacy Graphite until converted. New stacks created with `ccx vcs stack new` prefer native GitHub by default. Running `ccx vcs ship` without stack metadata or explicit config stays on the plain git lane, and `--no-stack` or `--no-gt` bypasses stack lanes.
+
+```sh
+git config ccx.stack github
+git config ccx.queue trunk
+```
+
+Set `git config ccx.stack` to `github` or `graphite` to configure the stack provider, and `git config ccx.queue` to `trunk`, `github`, or `none` to select the merge queue (legacy Graphite defaults to Graphite). Trunk queue queries read `TRUNK_MERGE_API_KEY`, while native metadata inspection needs no Trunk key. Native stacks use the GitHub API and local catalog directly without a `gh` executable, require actual server stack membership without synthetic head bumps, share lightweight isolated replay and tip-only unchanged-parent protection, and never fall back on auth or network failures.
+
 ## Stack workspaces and cleanup
 
 Stack replay requires Git 2.56 or newer. Internal conflict and rehearsal
