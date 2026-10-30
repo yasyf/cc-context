@@ -2,6 +2,7 @@ package nativeapi
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -75,14 +76,15 @@ func (s *trunkSSMSource) get(ctx context.Context) (string, error) {
 	if s.token != "" {
 		return s.token, nil
 	}
-	cmd := exec.CommandContext(ctx, "aws", "ssm", "get-parameter", "--name", s.config.SSMParameter, "--with-decryption", "--profile", s.config.AWSProfile, "--region", s.config.AWSRegion, "--query", "Parameter.Value", "--output", "text")
+	cmd := exec.CommandContext(ctx, "aws", "ssm", "get-parameter", "--name", s.config.SSMParameter, "--with-decryption", "--profile", s.config.AWSProfile, "--region", s.config.AWSRegion, "--query", "Parameter.Value", "--output", "text") //nolint:gosec // fixed aws subcommand and flags; validated config values occupy separate argv entries without a shell
 	cmd.Stderr = io.Discard
 	output, err := cmd.Output()
 	if err != nil {
 		if err := ctx.Err(); err != nil {
 			return "", fmt.Errorf("trunk credential lookup canceled: %w", err)
 		}
-		if failure, ok := err.(*exec.ExitError); ok {
+		var failure *exec.ExitError
+		if errors.As(err, &failure) {
 			return "", fmt.Errorf("trunk credential lookup: aws ssm get-parameter failed with exit code %d; check the configured AWS profile, region, and parameter access", failure.ExitCode())
 		}
 		return "", fmt.Errorf("trunk credential lookup: unable to execute aws CLI")

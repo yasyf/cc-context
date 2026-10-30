@@ -12,15 +12,15 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/yasyf/cc-context/internal/execstub"
 )
 
 func fakeTrunkAWS(t *testing.T, script string) (TrunkSSMConfig, string) {
 	t.Helper()
 	dir := t.TempDir()
 	calls := filepath.Join(dir, "calls")
-	if err := os.WriteFile(filepath.Join(dir, "aws"), []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" >> \"$CCX_FAKE_AWS_CALLS\"\n"+script+"\n"), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	execstub.Write(t, filepath.Join(dir, "aws"), "#!/bin/sh\nprintf '%s\\n' \"$@\" >> \"$CCX_FAKE_AWS_CALLS\"\n"+script+"\n")
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("CCX_FAKE_AWS_CALLS", calls)
 	t.Setenv("TRUNK_MERGE_API_KEY", "")

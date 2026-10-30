@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/BurntSushi/toml"
 
@@ -21,8 +20,12 @@ type repositoryVCSConfig struct {
 
 func readRepositoryVCSConfig(root string) (repositoryVCSConfig, error) {
 	var config repositoryVCSConfig
-	path := filepath.Join(root, regenFile)
-	raw, err := os.ReadFile(path)
+	directory, err := os.OpenRoot(root)
+	if err != nil {
+		return config, fmt.Errorf("open repository configuration root: %w", err)
+	}
+	defer func() { _ = directory.Close() }()
+	raw, err := directory.ReadFile(regenFile)
 	if errors.Is(err, os.ErrNotExist) {
 		return config, nil
 	}
