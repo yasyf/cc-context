@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"path/filepath"
 
 	"github.com/spf13/cobra"
 
@@ -23,7 +22,7 @@ type stackBatchStore struct {
 	orphans    []gtmeta.Orphan
 	state      gtState
 	children   map[string][]string
-	holders    map[string]string
+	holders    *vcs.HoldingCensus
 	unrecorded map[string]bool
 }
 
@@ -123,23 +122,20 @@ func (b *stackBatch) store(ctx context.Context, common string) (*stackBatchStore
 }
 
 func (s *stackBatchStore) holdersFor(ctx context.Context, common string, checkout vcs.Checkout) (map[string]string, error) {
-	if checkout.GitDir != checkout.CommonDir && filepath.Dir(checkout.GitDir) != filepath.Join(checkout.CommonDir, "worktrees") {
-		holders, err := vcs.BranchHolders(ctx, checkout)
-		if err != nil {
-			return nil, fmt.Errorf("stack list: %w", err)
-		}
-		return holders, nil
-	}
 	if s.holders == nil {
 		registered := checkout
 		registered.GitDir = common
 		var err error
-		s.holders, err = vcs.BranchHolders(ctx, registered)
+		s.holders, err = vcs.CaptureHoldings(ctx, registered)
 		if err != nil {
 			return nil, fmt.Errorf("stack list: %w", err)
 		}
 	}
-	return s.holders, nil
+	holders, err := s.holders.BranchHolders(ctx, checkout)
+	if err != nil {
+		return nil, fmt.Errorf("stack list: %w", err)
+	}
+	return holders, nil
 }
 
 func (s *stackBatchStore) reload(ctx context.Context, common string) error {

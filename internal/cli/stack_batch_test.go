@@ -186,6 +186,69 @@ func TestStackListBatchPreservesRetiredHolderSymlinkSpelling(t *testing.T) {
 	}
 }
 
+func TestStackListBatchSharesRetiredAndExternalHoldingCensus(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		retired bool
+	}{
+		{"retired", true},
+		{"external", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := shipGTRepo(t, vcstest.GTStack("base", "one", "two", "three"))
+			common := gitAt(t, f.Env(), f.Dir, "rev-parse", "--path-format=absolute", "--git-common-dir")
+			admins := filepath.Join(t.TempDir(), "admins")
+			if tc.retired {
+				admins = filepath.Join(common, "retired")
+			}
+			if err := os.MkdirAll(admins, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			paths := make([]string, 0, 4)
+			for _, branch := range []string{"base", "one", "two"} {
+				path := filepath.Join(t.TempDir(), branch)
+				mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", path, branch)
+				path = gitAt(t, f.Env(), path, "rev-parse", "--show-toplevel")
+				admin := gitAt(t, f.Env(), path, "rev-parse", "--absolute-git-dir")
+				moved := filepath.Join(admins, filepath.Base(admin))
+				if err := os.Rename(admin, moved); err != nil {
+					t.Fatal(err)
+				}
+				for name, content := range map[string]string{
+					filepath.Join(path, ".git"):       "gitdir: " + moved + "\n",
+					filepath.Join(moved, "commondir"): common + "\n",
+				} {
+					if err := os.WriteFile(name, []byte(content), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				paths = append(paths, path)
+			}
+			paths = append(paths, f.Dir)
+			want := make([]stackListReport, len(paths))
+			for i, path := range paths {
+				want[i] = stackSingleReport(t, f, path)
+			}
+			shipResetLog(t, f)
+			got := stackBatchReports(t, f, paths...)
+			for i, result := range got {
+				if result.Error != "" || result.Listing == nil || !reflect.DeepEqual(*result.Listing, want[i]) {
+					t.Errorf("result %d = %+v, want %+v", i, result, want[i])
+				}
+			}
+			var reads int
+			for _, invocation := range vcstest.Invocations(t, f.ArgvLog) {
+				if slices.Equal(invocation, []string{"git", "--git-dir", common, "config", "--bool", "core.bare"}) {
+					reads++
+				}
+			}
+			if reads != 1 {
+				t.Errorf("holding censuses = %d, want 1 for %d queries", reads, len(paths))
+			}
+		})
+	}
+}
+
 func TestStackLandedCheckUsesAncestryWithoutAnExistenceProbe(t *testing.T) {
 	f := shipGTRepo(t, vcstest.GTStack("parent"))
 	parent := gitAt(t, f.Env(), f.Dir, "rev-parse", "parent")
