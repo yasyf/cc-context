@@ -1162,6 +1162,13 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	requested := o
 	requested.pinned = slices.Clone(o.pinned)
 	prefix := stackRebasePrefix
+	current, err := stackCenter(ctx, l.dir(), prefix, o)
+	if err != nil {
+		return nil, err
+	}
+	if err := gtmeta.Convert(ctx, commonDir, current); err != nil {
+		return nil, fmt.Errorf("%s: %w", prefix, err)
+	}
 	state, err := gtStateAtFocused(ctx, commonDir, prefix, o.tip, "")
 	if err != nil {
 		return nil, err
@@ -1175,10 +1182,6 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 		return nil, err
 	}
 	overrides, err := stackOverrides(o, state)
-	if err != nil {
-		return nil, err
-	}
-	current, err := stackCenter(ctx, l.dir(), prefix, o)
 	if err != nil {
 		return nil, err
 	}

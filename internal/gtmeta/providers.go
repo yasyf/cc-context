@@ -216,7 +216,17 @@ func convert(ctx context.Context, commonDir string, branches []string, explicit 
 	for _, branch := range branches {
 		var chain []string
 		for name := branch; !converted[name]; name = state[name].Parents[0].Ref {
-			if len(state[name].Parents) == 0 || slices.Contains(chain, name) {
+			if slices.Contains(chain, name) {
+				return fmt.Errorf("convert %s: its Graphite parents cycle at %s", branch, name)
+			}
+			if len(state[name].Parents) == 0 {
+				tracked, err := graphiteTracks(ctx, commonDir, name)
+				if err != nil {
+					return err
+				}
+				if tracked {
+					return fmt.Errorf("convert %s: Graphite tracks %s with no live, valid parent to convert it onto; ship it onto its parent with ccx vcs ship --parent <branch> first", branch, name)
+				}
 				chain = nil
 				break
 			}

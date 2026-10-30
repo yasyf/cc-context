@@ -327,3 +327,23 @@ func TestConvertMovesOnlyTheRequestedDownstackAndLeavesGraphiteUntouched(t *test
 		t.Fatalf("ccx.stack=graphite converted middle: %v, %v", got, err)
 	}
 }
+
+func TestConvertRefusesAGraphiteChainWithNoLiveParent(t *testing.T) {
+	f, common, _ := mixedStackFixture(t)
+	f.Out(t, "git", "branch", "-D", "bottom")
+	before, err := os.ReadFile(filepath.Join(common, "gh-stack"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = gtmeta.Convert(f.Context(), common, "middle")
+	if err == nil || !strings.Contains(err.Error(), "Graphite tracks middle with no live, valid parent") {
+		t.Fatalf("Convert(middle on deleted bottom) = %v; want a refusal naming middle", err)
+	}
+	after, err := os.ReadFile(filepath.Join(common, "gh-stack"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatal("refused conversion wrote the native catalog")
+	}
+}
