@@ -73,7 +73,7 @@ func TestSelectedRowsUsesMetadataIndexes(t *testing.T) {
 		}
 	}
 	query, args := selectedRowsQuery([]string{"selected"}, "main")
-	rows, err := db.Query("EXPLAIN QUERY PLAN " + query, args...)
+	rows, err := db.Query("EXPLAIN QUERY PLAN "+query, args...)
 	if err != nil {
 		t.Fatal(err)
 	}

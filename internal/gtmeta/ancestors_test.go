@@ -41,7 +41,7 @@ func TestAncestorRowsDoNotReadPublicationParentsDescendants(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				var names []string
+				names := make([]string, 0, len(rows))
 				for _, row := range rows {
 					names = append(names, row.branch)
 					if row.branch == "publication" && (row.state != "frozen" || row.parentRevision != "b") {
