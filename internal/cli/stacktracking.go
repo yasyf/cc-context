@@ -74,6 +74,7 @@ func (u stackUntracked) bare() bool { return !u.stranded() && len(u.Bare) > 0 }
 func (u stackUntracked) pending() bool { return !u.repairable() && !u.stranded() && !u.bare() }
 
 type stackTracking struct {
+	native    bool
 	trunk     string
 	untracked []stackUntracked
 	err       error
@@ -88,6 +89,7 @@ func withStackTracking(ctx context.Context, t *stackTracking) context.Context {
 func recordStackTracking(ctx context.Context, trunk string, untracked []stackUntracked, err error) {
 	if t, ok := ctx.Value(stackTrackingKey{}).(*stackTracking); ok {
 		t.trunk, t.untracked, t.err = trunk, untracked, err
+		t.native, _ = ctx.Value(stackProviderKey{}).(bool)
 	}
 }
 
@@ -161,6 +163,15 @@ func stackTrackingBare(bare []stackUntracked) error {
 }
 
 func (t *stackTracking) settled(cmd *cobra.Command) error {
+	if t.native {
+		if t.err != nil {
+			return fmt.Errorf("native GitHub stack tracking: %w", t.err)
+		}
+		if len(t.untracked) > 0 {
+			return fmt.Errorf("native GitHub stack registration incomplete: %s", strings.Join(stackUntrackedBranches(t.untracked), ", "))
+		}
+		return nil
+	}
 	if t.err != nil {
 		return t.unread()
 	}
@@ -188,6 +199,9 @@ func stackSettleTracking(cmd *cobra.Command, run func() error) error {
 }
 
 func stackReadTracking(ctx context.Context, l lane, run *stackRebaseRun, live []string, prs map[string]*stackPR) ([]stackUntracked, error) {
+	if l.native {
+		return nativeReadTracking(ctx, l, run, live, prs)
+	}
 	var numbers []int
 	branchOf := map[int]string{}
 	for _, name := range live {

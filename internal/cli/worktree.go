@@ -19,6 +19,7 @@ import (
 
 	"github.com/yasyf/cc-context/internal/cleanup"
 	"github.com/yasyf/cc-context/internal/cleanup/native"
+	"github.com/yasyf/cc-context/internal/gtmeta"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcs"
 )
@@ -515,6 +516,25 @@ func runWorktreeAdd(cmd *cobra.Command, name, requested string) error {
 				return err
 			}
 		}
+		trackingContext := ctx
+		if present, err := stackMetadataPresent(l.checkout); err != nil {
+			return fmt.Errorf("worktree add: %w", err)
+		} else if present {
+			providerBranch := base.parent
+			if len(chain) > 0 {
+				providerBranch = chain[0].parent
+			} else if base.rev == "" || base.existing {
+				providerBranch = name
+			}
+			if providerBranch != "" {
+				provider, err := gtmeta.Provider(ctx, l.checkout.CommonDir, providerBranch)
+				if err != nil {
+					return fmt.Errorf("worktree add: %w", err)
+				}
+				trackingContext = withStackProvider(ctx, provider == gtmeta.ProviderGitHub)
+			}
+		}
+
 		args := []string{"worktree", "add", path, name}
 		if base.rev != "" {
 			args = []string{"worktree", "add", "-b", name, path, base.rev}
@@ -522,14 +542,15 @@ func runWorktreeAdd(cmd *cobra.Command, name, requested string) error {
 		if _, err := render.RunCLI(ctx, l.dir(), "git", args); err != nil {
 			return fmt.Errorf("worktree add: git worktree add %s: %w", path, err)
 		}
-		if tracked, err = gtAdoptChain(ctx, l.dir(), "worktree add", chain); err != nil {
+		if tracked, err = gtAdoptChain(trackingContext, l.dir(), "worktree add", chain); err != nil {
 			return err
 		}
+
 		if base.rev == "" || base.existing {
-			if err := worktreeJoinLane(ctx, l, name, path); err != nil {
+			if err := worktreeJoinLane(trackingContext, l, name, path); err != nil {
 				return err
 			}
-		} else if err := worktreeTrack(ctx, cmd.ErrOrStderr(), l, base.parent, path); err != nil {
+		} else if err := worktreeTrack(trackingContext, cmd.ErrOrStderr(), l, base.parent, path); err != nil {
 			return err
 		}
 	}
@@ -572,13 +593,19 @@ func refuseHeldBranch(ctx context.Context, l lane, name string) error {
 // worktreeJoinLane puts the working copy checked out on branch at path into
 // l's lane when branch shares the gt stack of the branch l has checked out.
 func worktreeJoinLane(ctx context.Context, l lane, branch, path string) error {
-	graphite, err := vcs.GraphiteRepo(l.checkout)
+	tracked, err := stackMetadataPresent(l.checkout)
 	if err != nil {
 		return fmt.Errorf("worktree add: %w", err)
 	}
-	if !graphite {
+	if !tracked {
 		return nil
 	}
+	provider, err := gtmeta.Provider(ctx, l.checkout.CommonDir, branch)
+	if err != nil {
+		return fmt.Errorf("worktree add: %w", err)
+	}
+	ctx = withStackProvider(ctx, provider == gtmeta.ProviderGitHub)
+
 	current, err := gitCurrentBranch(ctx, l.dir(), "worktree add")
 	if err != nil || current == "" {
 		return err
@@ -598,13 +625,21 @@ func worktreeJoinLane(ctx context.Context, l lane, branch, path string) error {
 }
 
 func worktreeUntrackedChain(ctx context.Context, l lane, name, tip string) ([]gtChainLink, error) {
-	graphite, err := vcs.GraphiteRepo(l.checkout)
+	tracked, err := stackMetadataPresent(l.checkout)
 	if err != nil {
 		return nil, fmt.Errorf("worktree add: %w", err)
 	}
-	if !graphite {
+	if !tracked {
 		return nil, nil
 	}
+	native, err := gtmeta.NativeMembership(l.checkout.CommonDir, name)
+	if err != nil {
+		return nil, fmt.Errorf("worktree add: %w", err)
+	}
+	if native {
+		ctx = withStackProvider(ctx, true)
+	}
+
 	state, err := gtStateQuery(ctx, l.dir(), "worktree add")
 	if err != nil {
 		return nil, err
@@ -623,16 +658,20 @@ func worktreeUntrackedChain(ctx context.Context, l lane, name, tip string) ([]gt
 	return gtUntrackedChain(ctx, l.dir(), "worktree add", state, trunk, base, name, tip)
 }
 
-// worktreeTrack adopts a newly cut branch onto parent in a Graphite
-// repository, so ship and stack submit reach it without a hand-run gt track.
 func worktreeTrack(ctx context.Context, errW io.Writer, l lane, parent, path string) error {
-	graphite, err := vcs.GraphiteRepo(l.checkout)
+	tracked, err := stackMetadataPresent(l.checkout)
 	if err != nil {
 		return fmt.Errorf("worktree add: %w", err)
 	}
-	if !graphite || parent == "" {
+	if !tracked || parent == "" {
 		return nil
 	}
+	provider, err := gtmeta.Provider(ctx, l.checkout.CommonDir, parent)
+	if err != nil {
+		return fmt.Errorf("worktree add: %w", err)
+	}
+	ctx = withStackProvider(ctx, provider == gtmeta.ProviderGitHub)
+
 	return gtTrackAt(ctx, render.Dir(path), errW, "worktree add", parent)
 }
 
@@ -1408,4 +1447,18 @@ func worktreeCount(n int) string {
 		return "1 working copy"
 	}
 	return fmt.Sprintf("%d working copies", n)
+}
+
+func stackMetadataPresent(ck vcs.Checkout) (bool, error) {
+	if ck.CommonDir == "" {
+		return false, nil
+	}
+	_, err := os.Stat(filepath.Join(ck.CommonDir, "gh-stack"))
+	if err == nil {
+		return true, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return false, err
+	}
+	return vcs.GraphiteRepo(ck)
 }

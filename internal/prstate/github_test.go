@@ -298,3 +298,24 @@ func TestAPollOfAHundredPullRequestsAndFortyLanesFitsGitHubsGatewayAndSendsItsPa
 		t.Errorf("trunk %q, failure %v; want main with no failure", st.Trunk.Name, st.Failure)
 	}
 }
+
+func TestNativeMissingQueueEntryKeepsThePollUnknown(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls == 1 {
+			fmt.Fprint(w, `{"data":{"repository":{"p0":{"number":42,"state":"OPEN","headRefName":"feature","headRefOid":"head","baseRefName":"main"}}}}`)
+			return
+		}
+		fmt.Fprint(w, `{"data":{"repository":{"p0":null}}}`)
+	}))
+	defer server.Close()
+	source := &GitHub{gt: gtapi.NewNativeWithToken(server.URL, "stub"), owner: "org", name: "repo", warn: io.Discard}
+	infos, statuses := source.queueRecords(t.Context(), []int{42})
+	if infos != nil || statuses != nil {
+		t.Fatalf("missing queue entry was trusted: infos=%v statuses=%v", infos, statuses)
+	}
+	if calls != 2 {
+		t.Fatalf("reads=%d", calls)
+	}
+}

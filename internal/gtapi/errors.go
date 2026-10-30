@@ -14,7 +14,8 @@ var (
 	ErrUnauthorized = errors.New("unauthorized")
 	// ErrNoToken reports that ~/.config/graphite/auth could not be read or
 	// carries no token.
-	ErrNoToken = errors.New("no graphite token")
+	ErrNoToken      = errors.New("no graphite token")
+	ErrGraphiteOnly = errors.New("operation requires the Graphite stack provider")
 )
 
 // StatusError is a request that reached Graphite and came back non-2xx. It
@@ -61,9 +62,12 @@ type BranchSubmitError struct {
 // SubmitError reports a submit that failed for some branches; Submitted holds
 // the branches that landed anyway, so callers can report both sides exactly.
 type SubmitError struct {
+	Cause     error
 	Submitted []SubmittedPR
 	Failed    []BranchSubmitError
 }
+
+func (e *SubmitError) Unwrap() error { return e.Cause }
 
 func (e *SubmitError) Error() string {
 	texts := make([]string, 0, len(e.Failed))

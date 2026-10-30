@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -78,6 +79,7 @@ var prStatusRateLimitWait = 10 * time.Minute
 // decided it: the commit the queue admitted, the squash it wrote on the base,
 // or the reason and time it evicted the pull request.
 type prQueueReport struct {
+	Head        string       `json:"head,omitempty"`
 	Number      int          `json:"number"`
 	Queue       prQueueState `json:"queue"`
 	State       string       `json:"state"`
@@ -140,13 +142,17 @@ func staleAt(limited *prstate.Backoff, polledAt time.Time) *prStale {
 var prStateRoot = prstate.DefaultRoot
 
 func openPRState(ctx context.Context, repo string, warn io.Writer) (*prstate.Store, error) {
-	src, err := prstate.NewGitHub(reviewsAPI().ForRepo(repo), gtAPI(ctx), repo, warn)
+	client := gtAPIForRepo(ctx, repo)
+	src, err := prstate.NewGitHub(reviewsAPI().ForRepo(repo), client, repo, warn)
 	if err != nil {
 		return nil, err
 	}
 	root, err := prStateRoot()
 	if err != nil {
 		return nil, err
+	}
+	if namespace := client.CacheNamespace(); namespace != "" {
+		root = filepath.Join(root, "providers", namespace)
 	}
 	return prstate.Open(root, src)
 }
@@ -450,6 +456,7 @@ func (l *lockedWriter) Write(p []byte) (int, error) {
 }
 
 func newPRStatusReport(ctx context.Context, warn io.Writer, repo string, r prQueueReport, pr prstate.PR, downstack int) prStatusReport {
+	r.Head = pr.HeadRefOid
 	report := prStatusReport{prQueueReport: r, Approval: prApprovalOf(pr), Mergeability: pr.Mergeability, Downstack: downstack}
 	if r.Queue != prQueueLanded {
 		ci := prCIOf(pr.Rollup)

@@ -35,6 +35,7 @@ func TestMain(m *testing.M) {
 	gtAPIDefault = func() *gtapi.Client {
 		panic("cli: the graphite API was reached on a context stubGTAPI never decorated")
 	}
+	gtAPINativeDefault = gtAPIDefault
 	cleanupDefault = func(context.Context) (cleanup.Service, error) {
 		panic("cli: the cleanup daemon was reached on a context no test decorated")
 	}

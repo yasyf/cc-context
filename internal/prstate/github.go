@@ -450,7 +450,7 @@ func (g *GitHub) queueRecords(ctx context.Context, numbers []int) (map[int]*gtap
 		Callsite:   "ccx",
 	})
 	if err != nil {
-		_, _ = fmt.Fprintf(g.warn, "prstate: graphite: %v; this poll carries no queue state\n", err)
+		_, _ = fmt.Fprintf(g.warn, "prstate: %s: %v; this poll carries no queue state\n", g.gt.QueueProvider(), err)
 		return nil, nil
 	}
 	byNumber := make(map[int]*gtapi.PullRequestInfo, len(infos))
@@ -462,7 +462,18 @@ func (g *GitHub) queueRecords(ctx context.Context, numbers []int) (map[int]*gtap
 	defer cancelMerge()
 	mergeability, err := g.gt.MergeabilityStatuses(mergeCtx, g.owner, g.name, numbers)
 	if err != nil {
-		_, _ = fmt.Fprintf(g.warn, "prstate: graphite: %v; this poll carries no mergeability\n", err)
+		_, _ = fmt.Fprintf(g.warn, "prstate: %s: %v; this poll carries no mergeability\n", g.gt.QueueProvider(), err)
+		if g.gt.QueueProvider() != "graphite" {
+			return nil, nil
+		}
+	}
+	if g.gt.QueueProvider() != "graphite" {
+		for _, number := range numbers {
+			if _, known := mergeability[number]; !known {
+				_, _ = fmt.Fprintf(g.warn, "prstate: %s: queue state of #%d is unknown; this poll carries no queue state\n", g.gt.QueueProvider(), number)
+				return nil, nil
+			}
+		}
 	}
 	return byNumber, mergeability
 }

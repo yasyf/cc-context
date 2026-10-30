@@ -17,6 +17,12 @@ type CheckAuthResponse struct {
 
 // CheckAuth verifies the token against /graphite/check-auth.
 func (c *Client) CheckAuth(ctx context.Context, repoOwner, repoName string) (CheckAuthResponse, error) {
+	if c.providerErr != nil {
+		return CheckAuthResponse{}, c.providerErr
+	}
+	if c.IsNative() {
+		return CheckAuthResponse{}, fmt.Errorf("%w: CheckAuth", ErrGraphiteOnly)
+	}
 	params := struct {
 		RepoOwner string `json:"repoOwner"`
 		RepoName  string `json:"repoName"`
@@ -51,6 +57,12 @@ type RepoSync struct {
 
 // IsRepoSynced asks whether Graphite mirrors repoOwner/repoName.
 func (c *Client) IsRepoSynced(ctx context.Context, repoOwner, repoName string) (RepoSync, error) {
+	if c.providerErr != nil {
+		return RepoSync{}, c.providerErr
+	}
+	if c.IsNative() {
+		return RepoSync{}, fmt.Errorf("%w: IsRepoSynced", ErrGraphiteOnly)
+	}
 	query := url.Values{"repoOwner": {repoOwner}, "repoName": {repoName}}
 	payload, err := c.get(ctx, "/graphite/cli/is-repo-synced", query)
 	if err != nil {
@@ -91,8 +103,8 @@ const (
 	PRMerged PRState = "MERGED"
 )
 
-// MergeQueueStatus reports a PR's position in the Graphite merge queue.
 type MergeQueueStatus struct {
+	InQueue        bool   `json:"inQueue,omitempty"`
 	IsInGraphiteMq bool   `json:"isInGraphiteMq"`
 	EnqueuedCommit string `json:"enqueuedCommit"`
 }
@@ -126,11 +138,8 @@ func Restacking(status string) bool {
 	return status == MergeabilityRebasing || QueuedMergeability(status)
 }
 
-// InMergeQueue reports whether Graphite's merge queue holds a pull request,
-// by its record's flag or by its mergeability status. The flag outlives a
-// landing and an eviction, so callers settle those first.
 func InMergeQueue(info *PullRequestInfo, mergeability string) bool {
-	return QueuedMergeability(mergeability) || info != nil && info.MergeQueueStatus != nil && info.MergeQueueStatus.IsInGraphiteMq
+	return QueuedMergeability(mergeability) || info != nil && info.MergeQueueStatus != nil && (info.MergeQueueStatus.IsInGraphiteMq || info.MergeQueueStatus.InQueue)
 }
 
 // PRVersion is one submitted version of a pull request.
@@ -143,8 +152,9 @@ type PRVersion struct {
 	IsGraphiteGenerated bool   `json:"isGraphiteGenerated"`
 }
 
-// PullRequestInfo is Graphite's view of one pull request.
 type PullRequestInfo struct {
+	StackNumber           int               `json:"stackNumber,omitempty"`
+	PRID                  string            `json:"prId,omitempty"`
 	PRNumber              int               `json:"prNumber"`
 	Title                 string            `json:"title"`
 	AuthorGithubHandle    string            `json:"authorGithubHandle"`
@@ -175,8 +185,13 @@ func (p PullRequestInfo) Newest() PRVersion {
 	return newest
 }
 
-// PullRequestInfo fetches Graphite's record of the named pull requests.
 func (c *Client) PullRequestInfo(ctx context.Context, req PullRequestInfoRequest) ([]PullRequestInfo, error) {
+	if c.providerErr != nil {
+		return nil, c.providerErr
+	}
+	if c.IsNative() {
+		return c.nativePullRequestInfo(ctx, req)
+	}
 	payload, err := c.post(ctx, "/graphite/cli/pull-request-info", req)
 	if err != nil {
 		return nil, err
@@ -192,6 +207,11 @@ func (c *Client) PullRequestInfo(ctx context.Context, req PullRequestInfoRequest
 	if result.Status != "ok" {
 		return nil, &ResultError{Route: "pull-request-info", Message: result.Message}
 	}
+	if c.queue != nil {
+		for i := range result.Prs {
+			result.Prs[i].MergeQueueStatus = nil
+		}
+	}
 	return result.Prs, nil
 }
 
@@ -199,10 +219,19 @@ func (c *Client) PullRequestInfo(ctx context.Context, req PullRequestInfoRequest
 // names: Graphite answers 413 to fifty.
 const mergeabilityBatch = 40
 
-// MergeabilityStatuses fetches the merge status Graphite keeps per pull
-// request. A PR Graphite tracks no stack for has no entry, so it is absent
-// from the returned map.
 func (c *Client) MergeabilityStatuses(ctx context.Context, repoOwner, repoName string, prNumbers []int) (map[int]string, error) {
+	if c.providerErr != nil {
+		return nil, c.providerErr
+	}
+	if c.queueProvider == "graphite" && c.IsNative() {
+		return Default().MergeabilityStatuses(ctx, repoOwner, repoName, prNumbers)
+	}
+	if c.queue != nil {
+		return commonQueueStatuses(c.queue.MergeabilityStatuses(ctx, repoOwner, repoName, prNumbers))
+	}
+	if c.IsNative() {
+		return commonQueueStatuses(c.native.MergeabilityStatuses(ctx, repoOwner, repoName, prNumbers))
+	}
 	statuses := make(map[int]string, len(prNumbers))
 	for batch := range slices.Chunk(prNumbers, mergeabilityBatch) {
 		params := struct {
@@ -240,6 +269,12 @@ type PreSubmitBranch struct {
 // PreSubmitPullRequests announces an upcoming submit and returns the PR
 // numbers Graphite retargeted in response.
 func (c *Client) PreSubmitPullRequests(ctx context.Context, repoOwner, repoName string, branches []PreSubmitBranch) ([]int, error) {
+	if c.providerErr != nil {
+		return nil, c.providerErr
+	}
+	if c.IsNative() {
+		return nil, fmt.Errorf("%w: PreSubmitPullRequests", ErrGraphiteOnly)
+	}
 	params := struct {
 		RepoOwner string            `json:"repoOwner"`
 		RepoName  string            `json:"repoName"`
@@ -305,17 +340,25 @@ type SubmitRequest struct {
 
 // SubmittedPR is one branch a submit landed.
 type SubmittedPR struct {
-	Head     string   `json:"head"`
-	PRNumber int      `json:"prNumber"`
-	PRURL    string   `json:"prURL"`
-	Status   string   `json:"status"`
-	Warnings []string `json:"warnings"`
+	PRID        string   `json:"prId,omitempty"`
+	StackNumber int      `json:"stackNumber,omitempty"`
+	Head        string   `json:"head"`
+	PRNumber    int      `json:"prNumber"`
+	PRURL       string   `json:"prURL"`
+	Status      string   `json:"status"`
+	Warnings    []string `json:"warnings"`
 }
 
 // SubmitPullRequests posts the submit. Failure is per branch: when any entry
 // comes back status error the call returns *SubmitError carrying both the
 // branches that landed and the ones that did not.
 func (c *Client) SubmitPullRequests(ctx context.Context, req SubmitRequest) ([]SubmittedPR, error) {
+	if c.providerErr != nil {
+		return nil, c.providerErr
+	}
+	if c.IsNative() {
+		return c.nativeSubmitPullRequests(ctx, req)
+	}
 	payload, err := c.post(ctx, "/graphite/submit/pull-requests", req)
 	if err != nil {
 		return nil, err

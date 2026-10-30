@@ -243,6 +243,7 @@ func shipResetLog(t *testing.T, f *vcstest.Fixture) {
 func shipGTRepo(t *testing.T, opts ...vcstest.Opt) *vcstest.Fixture {
 	t.Helper()
 	f := shipRepo(t, append([]vcstest.Opt{vcstest.GT(), vcstest.Remote()}, opts...)...)
+	f.Decorate(func(ctx context.Context) context.Context { return withStackProvider(ctx, false) })
 	f.Decorate(newGTAPIStub(t).ctx)
 	stubStackPRs(t, f, nil)
 	stubStackStanding(t, f, nil)

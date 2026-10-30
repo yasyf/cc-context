@@ -477,6 +477,8 @@ func runStackRebase(cmd *cobra.Command, o stackRebaseOpts) error {
 	if err != nil {
 		return err
 	}
+	ctx = withStackProvider(ctx, l.native)
+	cmd.SetContext(ctx)
 	if !l.gt {
 		return errors.New("stack rebase: this repository is not on the graphite lane, and a stack is Graphite's — rebase the branch with ccx vcs stack restack instead")
 	}
@@ -3986,6 +3988,8 @@ func runStackContinue(cmd *cobra.Command, stack string) error {
 	if err != nil {
 		return err
 	}
+	ctx = withStackProvider(ctx, l.native)
+	cmd.SetContext(ctx)
 	if err := refuseSharedBranch(ctx, stackRebasePrefix, l.checkout); err != nil {
 		return err
 	}

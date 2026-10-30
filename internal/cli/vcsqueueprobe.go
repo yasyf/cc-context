@@ -45,6 +45,9 @@ type statusProbe struct {
 // reports what would merge and terminates without merging anything, which is
 // what makes a merge verb safe to run from a report.
 func queueProbe(ctx context.Context, l lane) *statusProbe {
+	if l.native {
+		return nativeQueueProbe(ctx, l)
+	}
 	probeCtx, cancel := context.WithTimeout(ctx, mqProbeTimeout)
 	defer cancel()
 	stdout, code, stderr, err := render.RunCLIProbe(probeCtx, l.dir(), "gt",

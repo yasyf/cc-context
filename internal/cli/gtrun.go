@@ -295,6 +295,9 @@ func (e *gtAdvice) Unwrap() error { return e.cause }
 // the child's environment for a verb that needs an env-only variable (gt shells
 // out to git, which honors GIT_INDEX_FILE).
 func gtRun(ctx context.Context, dir render.Dir, argv []string, errW io.Writer, extraEnv ...string) (gtResult, error) {
+	if native, _ := ctx.Value(stackProviderKey{}).(bool); native {
+		return nativeStackRun(ctx, dir, argv, errW, extraEnv...)
+	}
 	var out, errBuf bytes.Buffer
 	outW, stderrW := io.Writer(&out), io.Writer(&errBuf)
 	var quiet *gtQuietWriter

@@ -1,0 +1,345 @@
+package nativeapi
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"reflect"
+	"strconv"
+	"strings"
+	"testing"
+)
+
+func TestPullRequestInfoBatchesGitHubReadsInInputOrder(t *testing.T) {
+	var queries []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/graphql" || r.Header.Get("Authorization") != "Bearer github-key" {
+			t.Errorf("unexpected request %s %s", r.URL, r.Header.Get("Authorization"))
+		}
+		var body struct{ Query string }
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		queries = append(queries, body.Query)
+		fmt.Fprint(w, `{"data":{"repository":{"p0":{"number":3,"state":"OPEN","headRefName":"feature","headRefOid":"new-head","baseRefName":"parent","baseRefOid":"base-head","updatedAt":"2026-10-30T12:00:00Z","author":{"login":"author"},"stackEntry":{"position":2},"stack":{"number":8,"baseRefName":"dev","entries":{"nodes":[{"position":1,"pullRequest":{"number":2}},{"position":2,"pullRequest":{"number":3}}],"pageInfo":{"hasNextPage":false}}},"p1":{"number":1,"state":"MERGED","mergeCommit":{"oid":"landed"},"updatedAt":"2026-10-29T12:00:00Z"}}}}`)
+	}))
+	defer srv.Close()
+	infos, err := NewWithToken(srv.URL, "github-key").PullRequestInfo(context.Background(), PullRequestInfoRequest{RepoOwner: "org", RepoName: "repo", PRNumbers: []int{3, 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(queries) != 1 || len(infos) != 2 || infos[0].PRNumber != 3 || infos[1].PRNumber != 1 {
+		t.Fatalf("queries=%d infos=%+v", len(queries), infos)
+	}
+	if infos[0].DependentPRNumber != 2 || infos[0].CliTrunk != "dev" || infos[0].Newest().HeadSha != "new-head" || infos[1].MergeCommitSha != "landed" {
+		t.Fatalf("infos=%+v", infos)
+	}
+	if strings.Contains(queries[0], "graphite") {
+		t.Fatal(queries[0])
+	}
+}
+
+func TestPullRequestInfoSelectsOpenBeforeNewestClosedHead(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"data":{"repository":{"h0":{"nodes":[{"number":3,"state":"OPEN","headRefName":"feature"}]},"c0":{"nodes":[{"number":4,"state":"CLOSED","headRefName":"feature"}]}}}}`)
+	}))
+	defer srv.Close()
+	infos, err := NewWithToken(srv.URL, "key").PullRequestInfo(context.Background(), PullRequestInfoRequest{RepoOwner: "org", RepoName: "repo", PRHeadRefNames: []string{"feature"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(infos) != 1 || infos[0].PRNumber != 3 {
+		t.Fatalf("infos=%+v", infos)
+	}
+}
+
+func TestGraphQLFailureDoesNotBecomeMissingPullRequest(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"errors":[{"message":"rate limited"}],"data":null}`)
+	}))
+	defer srv.Close()
+	_, err := NewWithToken(srv.URL, "key").PullRequestInfo(context.Background(), PullRequestInfoRequest{RepoOwner: "org", RepoName: "repo", PRNumbers: []int{1}})
+	var result *ResultError
+	if !errors.As(err, &result) || !strings.Contains(err.Error(), "rate limited") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestSubmitCreatesNativeGitHubStackFromPublishedParent(t *testing.T) {
+	var paths []string
+	var stack []int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.Method+" "+r.URL.Path)
+		switch r.Method + " " + r.URL.Path {
+		case "POST /repos/org/repo/pulls":
+			fmt.Fprint(w, `{"number":2,"node_id":"PR2","html_url":"https://github.com/org/repo/pull/2","state":"open","head":{"ref":"child","sha":"child-head"},"base":{"ref":"parent"}}`)
+		case "GET /repos/org/repo/pulls":
+			if r.URL.Query().Get("head") != "org:parent" {
+				t.Errorf("head=%s", r.URL.Query().Get("head"))
+			}
+			fmt.Fprint(w, `[{"number":1,"state":"open","head":{"ref":"parent"},"base":{"ref":"dev"}}]`)
+		case "POST /repos/org/repo/stacks":
+			var body struct {
+				PullRequests []int `json:"pull_requests"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Error(err)
+			}
+			stack = body.PullRequests
+			fmt.Fprint(w, `{"number":7}`)
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL)
+			http.Error(w, "unexpected", 500)
+		}
+	}))
+	defer srv.Close()
+	got, err := NewWithToken(srv.URL, "key").SubmitPullRequests(context.Background(), SubmitRequest{RepoOwner: "org", RepoName: "repo", TrunkBranchName: "dev", PRs: []SubmitPR{{Action: SubmitCreate, Head: "child", HeadSha: "child-head", Base: "parent", Title: "child"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].PRNumber != 2 || !reflect.DeepEqual(stack, []int{1, 2}) {
+		t.Fatalf("got=%+v stack=%v paths=%v", got, stack, paths)
+	}
+}
+
+func TestSubmitExtendsExistingNativeStack(t *testing.T) {
+	var added []int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method + " " + r.URL.Path {
+		case "POST /repos/org/repo/pulls":
+			fmt.Fprint(w, `{"number":3,"state":"open","head":{"ref":"child","sha":"head"},"base":{"ref":"parent"}}`)
+		case "GET /repos/org/repo/pulls":
+			fmt.Fprint(w, `[{"number":2,"state":"open","head":{"ref":"parent"},"base":{"ref":"bottom"},"stack":{"number":7,"position":2,"base":{"ref":"dev"}}}]`)
+		case "POST /repos/org/repo/stacks/7/add":
+			var body struct {
+				PullRequests []int `json:"pull_requests"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Error(err)
+			}
+			added = body.PullRequests
+			fmt.Fprint(w, `{"number":7}`)
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL)
+			http.Error(w, "unexpected", 500)
+		}
+	}))
+	defer srv.Close()
+	_, err := NewWithToken(srv.URL, "key").SubmitPullRequests(context.Background(), SubmitRequest{RepoOwner: "org", RepoName: "repo", TrunkBranchName: "dev", PRs: []SubmitPR{{Action: SubmitCreate, Head: "child", HeadSha: "head", Base: "parent"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(added, []int{3}) {
+		t.Fatalf("added=%v", added)
+	}
+}
+
+func TestSubmitRefusesChangedRemoteHeadBeforePatch(t *testing.T) {
+	var methods []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		methods = append(methods, r.Method)
+		fmt.Fprint(w, `{"number":3,"state":"open","head":{"ref":"child","sha":"other-head"},"base":{"ref":"dev"}}`)
+	}))
+	defer srv.Close()
+	_, err := NewWithToken(srv.URL, "key").SubmitPullRequests(context.Background(), SubmitRequest{RepoOwner: "org", RepoName: "repo", TrunkBranchName: "dev", PRs: []SubmitPR{{Action: SubmitUpdate, PRNumber: 3, Head: "child", HeadSha: "published-head", Base: "dev"}}})
+	if err == nil || !strings.Contains(err.Error(), "moved to other-head") || !reflect.DeepEqual(methods, []string{"GET"}) {
+		t.Fatalf("err=%v methods=%v", err, methods)
+	}
+}
+
+func TestNativeStackRegistrationFailureReportsCreatedPullRequest(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			fmt.Fprint(w, `{"number":2,"head":{"ref":"child","sha":"head"},"base":{"ref":"parent"}}`)
+			return
+		}
+		fmt.Fprint(w, `[]`)
+	}))
+	defer srv.Close()
+	_, err := NewWithToken(srv.URL, "key").SubmitPullRequests(context.Background(), SubmitRequest{RepoOwner: "org", RepoName: "repo", TrunkBranchName: "dev", PRs: []SubmitPR{{Action: SubmitCreate, Head: "child", HeadSha: "head", Base: "parent"}}})
+	var partial *SubmitError
+	if !errors.As(err, &partial) || len(partial.Submitted) != 1 || partial.Submitted[0].PRNumber != 2 || len(partial.Failed) != 1 {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestTrunkQueueReadsBatchAndPaginate(t *testing.T) {
+	var batches []string
+	var pages []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer trunk-key" {
+			t.Errorf("authorization=%q", r.Header.Get("Authorization"))
+		}
+		if r.URL.Path == "/v2/repositories" {
+			fmt.Fprint(w, `{"data":[{"id":"repo-id"}],"hasMore":false,"nextCursor":null}`)
+			return
+		}
+		if r.URL.Path != "/v2/pull-requests" {
+			t.Errorf("path=%s", r.URL.Path)
+		}
+		numbers := r.URL.Query().Get("number")
+		cursor := r.URL.Query().Get("cursor")
+		batches = append(batches, numbers)
+		pages = append(pages, cursor)
+		first, _ := strconv.Atoi(strings.Split(numbers, ",")[0])
+		if first == 1 && cursor == "" {
+			fmt.Fprint(w, `{"data":[{"number":1,"isCurrentlySubmittedToQueue":true,"queueEntry":{"state":"testing"}}],"hasMore":true,"nextCursor":"more"}`)
+			return
+		}
+		if cursor == "more" {
+			fmt.Fprint(w, `{"data":[{"number":2,"isCurrentlySubmittedToQueue":true,"queueEntry":{"state":"futureActiveState"}}],"hasMore":false,"nextCursor":null}`)
+			return
+		}
+		fmt.Fprint(w, `{"data":[{"number":51,"isCurrentlySubmittedToQueue":false,"queueEntry":{"state":"failed"}}],"hasMore":false,"nextCursor":null}`)
+	}))
+	defer srv.Close()
+	client := NewWithToken(srv.URL, "github-key").WithQueueProvider("trunk")
+	client.queueBase = srv.URL
+	client.queueToken = func() (string, error) { return "trunk-key", nil }
+	numbers := make([]int, 51)
+	for i := range numbers {
+		numbers[i] = i + 1
+	}
+	states, err := client.MergeabilityStatuses(context.Background(), "org", "repo", numbers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(batches) != 3 || len(strings.Split(batches[0], ",")) != 50 || pages[1] != "more" || batches[2] != "51" {
+		t.Fatalf("batches=%v pages=%v", batches, pages)
+	}
+	if states[1] != "testing" || !QueuedMergeability(states[2]) || states[51] != "failed" {
+		t.Fatalf("states=%v", states)
+	}
+}
+
+func TestMissingTrunkCredentialFailsQueueRead(t *testing.T) {
+	t.Setenv("TRUNK_MERGE_API_KEY", "")
+	_, err := NewWithToken("http://invalid.local", "github-key").WithQueueProvider("trunk").MergeabilityStatuses(context.Background(), "org", "repo", []int{1})
+	if err == nil || !strings.Contains(err.Error(), "TRUNK_MERGE_API_KEY") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestGitHubTokenEnvironmentPrecedence(t *testing.T) {
+	t.Setenv("GH_TOKEN", "gh-token")
+	t.Setenv("GITHUB_TOKEN", "github-token")
+	token, err := resolveToken()
+	if err != nil || token != "gh-token" {
+		t.Fatalf("token=%q err=%v", token, err)
+	}
+}
+
+func TestStatusErrorPreservesUnauthorizedAndDiagnostic(t *testing.T) {
+	err := statusError("GET", "https://api.github.com/repos/org/repo", http.StatusUnauthorized, []byte(`{"message":"Bad credentials"}`))
+	if !errors.Is(err, ErrUnauthorized) || !strings.Contains(err.Error(), "Bad credentials") {
+		t.Fatal(err)
+	}
+	if got := statusMessage([]byte(strings.Repeat("x", 1000))); len(got) > statusBodyCap+3 {
+		t.Fatalf("unbounded diagnostic %d", len(got))
+	}
+}
+
+func TestQueueProviderDoesNotFallBackFromTrunkCredentialError(t *testing.T) {
+	t.Setenv("TRUNK_MERGE_API_KEY", "")
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		fmt.Fprint(w, `{"data":{"repository":{"p0":{"mergeQueueEntry":{"state":"LOCKED"}}}}}`)
+	}))
+	defer srv.Close()
+	client := NewWithToken(srv.URL, "github-key")
+	states, err := client.MergeabilityStatuses(context.Background(), "org", "repo", []int{9})
+	if err != nil || !QueuedMergeability(states[9]) || calls != 1 {
+		t.Fatalf("states=%v calls=%d err=%v", states, calls, err)
+	}
+	_, err = client.WithQueueProvider("trunk").MergeabilityStatuses(context.Background(), "org", "repo", []int{9})
+	if err == nil || calls != 1 {
+		t.Fatalf("Trunk credential error fell back: calls=%d err=%v", calls, err)
+	}
+	_, err = client.WithQueueProvider("invalid").MergeabilityStatuses(context.Background(), "org", "repo", []int{9})
+	if err == nil {
+		t.Fatal("invalid provider accepted")
+	}
+}
+
+func TestGitHubQueueSnapshotIsNotCurrentPullRequestHead(t *testing.T) {
+	pull := githubPull{Number: 7, HeadRefOid: "new-head"}
+	pull.MergeQueueEntry = &struct {
+		State      string
+		HeadCommit *struct{ Oid string }
+	}{State: "AWAITING_CHECKS", HeadCommit: &struct{ Oid string }{Oid: "queued-head"}}
+	info, err := pull.info()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.MergeQueueStatus == nil || !info.MergeQueueStatus.InQueue || info.MergeQueueStatus.EnqueuedCommit != "queued-head" || info.Newest().HeadSha != "new-head" {
+		t.Fatalf("info=%+v", info)
+	}
+	pull.MergeQueueEntry.HeadCommit = nil
+	info, err = pull.info()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.MergeQueueStatus.EnqueuedCommit != "" {
+		t.Fatal("unknown snapshot replaced with current head")
+	}
+}
+
+func TestSubmitReportsCreatedPullWhenReviewerRequestFails(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/org/repo/pulls":
+			fmt.Fprint(w, `{"number":2,"node_id":"PR_2","html_url":"https://github.com/org/repo/pull/2","state":"open","head":{"ref":"feature","sha":"head"},"base":{"ref":"main"}}`)
+		case "/repos/org/repo/pulls/2/requested_reviewers":
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			fmt.Fprint(w, `{"message":"reviewer does not have access"}`)
+		default:
+			t.Errorf("unexpected request %s", r.URL)
+			http.Error(w, "unexpected", 500)
+		}
+	}))
+	defer srv.Close()
+	_, err := NewWithToken(srv.URL, "key").SubmitPullRequests(context.Background(), SubmitRequest{RepoOwner: "org", RepoName: "repo", TrunkBranchName: "main", PRs: []SubmitPR{{Action: SubmitCreate, Head: "feature", HeadSha: "head", Base: "main", Reviewers: []string{"reviewer"}}}})
+	var partial *SubmitError
+	var status *StatusError
+	if !errors.As(err, &partial) || len(partial.Submitted) != 1 || partial.Submitted[0].PRID != "PR_2" || partial.Submitted[0].PRNumber != 2 || len(partial.Failed) != 1 || !errors.As(err, &status) || status.Status != http.StatusUnprocessableEntity {
+		t.Fatalf("err=%v partial=%+v", err, partial)
+	}
+}
+
+func TestPostCreateHeadMismatchStillReportsCreatedPullIdentity(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"number":2,"node_id":"PR_2","head":{"ref":"feature","sha":"raced-head"},"base":{"ref":"main"}}`)
+	}))
+	defer srv.Close()
+	_, err := NewWithToken(srv.URL, "key").SubmitPullRequests(context.Background(), SubmitRequest{RepoOwner: "org", RepoName: "repo", TrunkBranchName: "main", PRs: []SubmitPR{{Action: SubmitCreate, Head: "feature", HeadSha: "published-head", Base: "main"}}})
+	var partial *SubmitError
+	if !errors.As(err, &partial) || len(partial.Submitted) != 1 || partial.Submitted[0].PRID != "PR_2" || !strings.Contains(err.Error(), "raced-head") {
+		t.Fatalf("err=%v partial=%+v", err, partial)
+	}
+}
+
+func TestHeadLookupRefusesAmbiguousPullRequestsInsteadOfChoosingFirst(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"data":{"repository":{"h0":{"totalCount":2,"nodes":[{"number":2,"state":"OPEN","headRefName":"feature"}]},"c0":{"nodes":[]}}}}`)
+	}))
+	defer srv.Close()
+	_, err := NewWithToken(srv.URL, "key").PullRequestInfo(context.Background(), PullRequestInfoRequest{RepoOwner: "org", RepoName: "repo", PRHeadRefNames: []string{"feature"}})
+	if err == nil || !strings.Contains(err.Error(), "2 open pull requests") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestHeadLookupDoesNotTreatForkBranchAsLocalStackBranch(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"data":{"repository":{"h0":{"totalCount":1,"nodes":[{"number":2,"state":"OPEN","headRefName":"feature","isCrossRepository":true}]},"c0":{"nodes":[]}}}}`)
+	}))
+	defer srv.Close()
+	_, err := NewWithToken(srv.URL, "key").PullRequestInfo(context.Background(), PullRequestInfoRequest{RepoOwner: "org", RepoName: "repo", PRHeadRefNames: []string{"feature"}})
+	if err == nil || !strings.Contains(err.Error(), "cross-repository PR #2") {
+		t.Fatalf("err=%v", err)
+	}
+}

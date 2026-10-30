@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/yasyf/cc-context/internal/cache"
+	"github.com/yasyf/cc-context/internal/gtmeta"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcs"
 )
@@ -101,6 +102,7 @@ type lane struct {
 	checkout vcs.Checkout
 	broken   *vcs.BrokenCheckout
 	gt       bool
+	native   bool
 	// note explains a graphite lane that was available but declined — for the
 	// report line and ccx vcs info's lane_reason.
 	note string
@@ -209,8 +211,45 @@ func resolveLaneRefresh(ctx context.Context, name, dir string, noGT, refresh boo
 	if err != nil {
 		return lane{}, fmt.Errorf("%s: %w", name, err)
 	}
-	if !graphite {
+	nativeCatalog, statErr := os.Stat(filepath.Join(ck.CommonDir, "gh-stack"))
+	if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+		return lane{}, fmt.Errorf("%s: read native stack catalog: %w", name, statErr)
+	}
+	if !graphite && nativeCatalog == nil {
+		configured, code, stderr, err := render.RunCLIExitCode(ctx, render.Dir(root), "git", []string{"config", "--get", "ccx.stack"})
+		if err != nil {
+			return lane{}, fmt.Errorf("%s: read ccx.stack: %w", name, err)
+		}
+		if code != 0 && code != 1 {
+			return lane{}, fmt.Errorf("%s: read ccx.stack: exit %d: %s", name, code, strings.TrimSpace(stderr))
+		}
+		if strings.TrimSpace(configured) == "" && name != "stack new" {
+			return l, nil
+		}
+	}
+	branch, err := gitCurrentBranch(ctx, render.Dir(root), name)
+	if err != nil {
+		return lane{}, err
+	}
+	provider, err := gtmeta.Provider(ctx, ck.CommonDir, branch)
+	if err != nil {
+		return lane{}, fmt.Errorf("%s: %w", name, err)
+	}
+	if provider == "github" {
+		repo, err := vcs.LookupRepo(ctx, render.Dir(root), refresh)
+		if err != nil {
+			return lane{}, fmt.Errorf("%s: %w", name, err)
+		}
+		l.repo = &repo
+		if !repo.Mine() {
+			l.note = fmt.Sprintf("%s is public and you have %s access", repo.NameWithOwner, strings.ToLower(repo.ViewerPermission))
+			return l, nil
+		}
+		l.gt, l.native, l.verdict = true, true, gtVerdictOK
 		return l, nil
+	}
+	if !graphite {
+		return lane{}, fmt.Errorf("%s: Graphite selected without a Graphite repository configuration", name)
 	}
 	if gtDisabled(ctx, render.Dir(root)) {
 		l.note = gtDisabledNote

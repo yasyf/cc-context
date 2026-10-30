@@ -6,6 +6,12 @@ stack. Clean replay writes Git objects without checking out files, changing an
 index, or running hooks. Merge commits are linearized, as with
 `git rebase --no-rebase-merges`.
 
+## Provider selection
+
+`ccx vcs stack rebase`, `ccx vcs stack restack`, and `ccx vcs stack submit` share lightweight isolated replay and tip-only unchanged-parent protection across native GitHub stacks and legacy Graphite stacks. Native stacks talk directly to the GitHub API and local `gh-stack` catalog rather than a `gh` executable, and never fall back to another provider when authentication or network calls fail.
+
+A native stacked pull request requires actual GitHub server stack membership; branch base links alone are not enough, and native stacks never use synthetic head bumps to repair tracking. The parked-base and head-bump repair workflows later in this guide apply only to legacy Graphite stacks. See the [README stack provider contract](../README.md#stack-providers) for provider precedence, `git config ccx.stack`, and `git config ccx.queue`.
+
 From a checkout of the stack, preview the branches and parents:
 
 ```sh

@@ -55,6 +55,7 @@ refuses to delete them.`,
 	}
 	cmd.Flags().BoolVar(&o.dryRun, "dry-run", false, "print what would be deleted and delete nothing")
 	cmd.Flags().BoolVar(&o.noGT, "no-gt", false, "ignore a live graphite config and leave its metadata alone")
+	cmd.Flags().BoolVar(&o.noGT, "no-stack", false, "use plain jj/git operations without stack management")
 	return cmd
 }
 

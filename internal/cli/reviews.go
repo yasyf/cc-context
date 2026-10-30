@@ -417,10 +417,11 @@ func resolveStackReviewTargets(ctx context.Context, w io.Writer, since time.Time
 	}
 	if !l.gt {
 		if l.note != "" {
-			return reviewsClient{}, nil, fmt.Errorf("reviews: --stack declined the graphite lane: %s", l.note)
+			return reviewsClient{}, nil, fmt.Errorf("reviews: --stack declined the stack lane: %s", l.note)
 		}
-		return reviewsClient{}, nil, errors.New("reviews: --stack requires a graphite repo")
+		return reviewsClient{}, nil, errors.New("reviews: --stack requires a stack-managed repo")
 	}
+	ctx = withStackProvider(ctx, l.native)
 	branches, err := stackBranches(ctx, newGTCache(l, "reviews"))
 	if err != nil {
 		return reviewsClient{}, nil, err

@@ -45,6 +45,8 @@ func runStackNew(cmd *cobra.Command, name string, options stackNewOpts) error {
 	if err != nil {
 		return err
 	}
+	ctx = withStackProvider(ctx, src.native)
+	cmd.SetContext(ctx)
 	current, err := gitCurrentBranch(ctx, src.dir(), "stack new")
 	if err != nil {
 		return err
@@ -67,7 +69,7 @@ func runStackNew(cmd *cobra.Command, name string, options stackNewOpts) error {
 	thin := storage == storageThin && !inStore
 	sparseLane := options.sparse || (storage == storageThin || inStore) && !options.noCheckout
 	if options.published && !src.gt {
-		return errors.New("stack new: --published-parent requires the graphite lane")
+		return errors.New("stack new: --published-parent requires a stack-managed lane")
 	}
 	if (options.sparse || options.noCheckout || storage == storageThin) && src.checkout.Kind != vcs.Git {
 		return errors.New("stack new: sparse, no-checkout, and thin creation require a Git checkout")

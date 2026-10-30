@@ -38,6 +38,7 @@ type vcsInfo struct {
 	Dirty         bool          `json:"dirty"`
 	DirtyFiles    int           `json:"dirty_files"`
 	Graphite      graphiteInfo  `json:"graphite"`
+	NativeStack   *graphiteInfo `json:"github_stack,omitempty"`
 	GitHub        *vcs.Repo     `json:"github"`
 	GitHubError   string        `json:"github_error,omitempty"`
 	Downstack     []stackEntry  `json:"downstack,omitempty"`
@@ -108,6 +109,7 @@ func newVcsInfoCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&o.json, "json", false, "emit the report as JSON")
 	cmd.Flags().BoolVar(&o.refresh, "refresh", false, "refetch the cached GitHub metadata and graphite reachability")
 	cmd.Flags().BoolVar(&o.noGT, "no-gt", false, "ignore a live graphite config and fall back to the jj/git detection")
+	cmd.Flags().BoolVar(&o.noGT, "no-stack", false, "use plain jj/git operations without stack management")
 	return cmd
 }
 
@@ -117,6 +119,8 @@ func runVcsInfo(cmd *cobra.Command, o vcsInfoOpts) error {
 	if err != nil {
 		return err
 	}
+	ctx = withStackProvider(ctx, l.native)
+	cmd.SetContext(ctx)
 	info, err := collectVcsInfo(ctx, l, o)
 	if err != nil {
 		return err
@@ -142,6 +146,9 @@ func collectVcsInfo(ctx context.Context, l lane, o vcsInfoOpts) (vcsInfo, error)
 	}
 	if l.gt {
 		info.Lane = "gt"
+		if l.native {
+			info.Lane = "github-stack"
+		}
 	}
 	if l.note != "" {
 		info.LaneReason = infoDeclinedPrefix + l.note
@@ -177,6 +184,11 @@ func collectVcsInfo(ctx context.Context, l lane, o vcsInfoOpts) (vcsInfo, error)
 	if err := infoGitHub(ctx, l, o, &info); err != nil {
 		return vcsInfo{}, err
 	}
+	if l.native {
+		native := info.Graphite
+		info.NativeStack = &native
+		info.Graphite = graphiteInfo{}
+	}
 	return info, nil
 }
 
@@ -187,6 +199,9 @@ func collectVcsInfo(ctx context.Context, l lane, o vcsInfoOpts) (vcsInfo, error)
 // else's repo — is probed here instead: what graphite has available is worth
 // reporting even where the lane refused to use it.
 func infoGraphite(ctx context.Context, l lane, o vcsInfoOpts) (graphiteInfo, error) {
+	if l.native {
+		return graphiteInfo{Config: true, CLI: true, Reachable: string(gtVerdictOK)}, nil
+	}
 	config, err := vcs.GraphiteRepo(l.checkout)
 	if err != nil {
 		return graphiteInfo{}, fmt.Errorf("info: %w", err)
@@ -562,6 +577,16 @@ func renderVcsInfo(info vcsInfo) string {
 		line("trunk-held", info.TrunkHolder)
 	}
 	line("dirty", infoDirtyValue(info))
+	if info.NativeStack != nil {
+		value := "native GitHub API"
+		if info.NativeStack.Untracked {
+			value += " · branch untracked (ship with --parent " + info.Trunk + ")"
+		}
+		line("stack-mode", value)
+		if info.NativeStack.StackError != "" {
+			line("stack", info.NativeStack.StackError)
+		}
+	}
 	if info.Graphite.Config {
 		line("graphite", infoGraphiteValue(info.Graphite, info.Branch, info.Trunk))
 	}

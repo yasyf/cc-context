@@ -65,35 +65,8 @@ type BranchState struct {
 // State maps a branch name to its tracked state.
 type State map[string]BranchState
 
-// Read returns the tracked state of every branch in the Graphite repository
-// whose git common dir is commonDir — what `gt state` answers, for one SQLite
-// query and one for-each-ref instead of the six seconds gt spends walking
-// every ref in a large repository.
-//
-// A branch is tracked only when its row is valid and both it and its parent
-// still have a live ref: gt's metadata outlives the branches it describes.
-func Read(ctx context.Context, commonDir string) (State, error) {
-	return readState(ctx, commonDir, false)
-}
-
-// ReadOrigin evaluates tracked branches against the fetched origin trunk without moving the local trunk.
-func ReadOrigin(ctx context.Context, commonDir string) (State, error) {
-	state, _, err := ReadOriginOrphans(ctx, commonDir)
-	return state, err
-}
-
-// ReadOriginOrphans is ReadOrigin plus the orphans it drops, from one read.
-func ReadOriginOrphans(ctx context.Context, commonDir string) (State, []Orphan, error) {
-	return readStateOrphans(ctx, commonDir, true)
-}
-
-func readState(ctx context.Context, commonDir string, remoteTrunk bool) (State, error) {
-	state, _, err := readStateOrphans(ctx, commonDir, remoteTrunk)
-	return state, err
-}
-
 func readStateOrphans(ctx context.Context, commonDir string, remoteTrunk bool) (State, []Orphan, error) {
-	trunk, err := ReadTrunk(commonDir)
+	trunk, err := graphiteReadTrunk(commonDir)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -199,7 +172,7 @@ func dsn(path string) string {
 // ReadTrunk returns the trunk named in the repo config of the Graphite
 // repository whose git common dir is commonDir, without starting gt or touching
 // its metadata.
-func ReadTrunk(commonDir string) (string, error) {
+func graphiteReadTrunk(commonDir string) (string, error) {
 	path := filepath.Join(commonDir, repoConfig)
 	payload, err := os.ReadFile(path) //nolint:gosec // path is the caller's own git common dir
 	if err != nil {
@@ -283,7 +256,7 @@ type Orphan struct {
 }
 
 // Rows reports every branch gt tracks, including the ones Read drops.
-func Rows(ctx context.Context, commonDir string) ([]Row, error) {
+func graphiteRows(ctx context.Context, commonDir string) ([]Row, error) {
 	rows, err := readRows(ctx, filepath.Join(commonDir, metadataDB))
 	if err != nil {
 		return nil, err
@@ -305,7 +278,7 @@ func Rows(ctx context.Context, commonDir string) ([]Row, error) {
 // The branch row and trunk's child list commit together so readers see one stack.
 // A row the branch already has, one gt could not resolve or one written after
 // the caller read the state, is rewritten in place and leaves its old parent.
-func AdoptRoot(ctx context.Context, commonDir, branch, trunk, base, head string) error {
+func graphiteAdoptRoot(ctx context.Context, commonDir, branch, trunk, base, head string) error {
 	return adoptRoot(ctx, commonDir, branch, trunk, base, head, "none")
 }
 
@@ -313,7 +286,7 @@ func AdoptRoot(ctx context.Context, commonDir, branch, trunk, base, head string)
 // gt freeze puts a branch under: a restack leaves it where it is and a submit
 // never pushes it, so a branch another repository owns can carry lanes here
 // without any of them rewriting it.
-func AdoptFrozen(ctx context.Context, commonDir, branch, trunk, base, head string) error {
+func graphiteAdoptFrozen(ctx context.Context, commonDir, branch, trunk, base, head string) error {
 	return adoptRoot(ctx, commonDir, branch, trunk, base, head, StateFrozen)
 }
 
@@ -377,7 +350,7 @@ func adoptRoot(ctx context.Context, commonDir, branch, trunk, base, head, state 
 // a time for a whole gt startup each. The delete is two-sided like Reparent's
 // move: a name left in the parent's children column is one gt still walks into
 // and finds no row for, so each branch is disowned by its parent first.
-func Forget(ctx context.Context, commonDir string, branches []string) error {
+func graphiteForget(ctx context.Context, commonDir string, branches []string) error {
 	if len(branches) == 0 {
 		return nil
 	}
@@ -423,7 +396,7 @@ func Forget(ctx context.Context, commonDir string, branches []string) error {
 // missing from its new parent's children vanishes from gt log even though gt
 // state reports the move. The parent revision stays put, so a moved branch
 // reads as needing the restack it does need.
-func Reparent(ctx context.Context, commonDir string, moves map[string]string) error {
+func graphiteReparent(ctx context.Context, commonDir string, moves map[string]string) error {
 	if len(moves) == 0 {
 		return nil
 	}
@@ -545,7 +518,7 @@ type PublishedChildState struct {
 }
 
 // ReadPublishedChild reads a child's recorded identity even when Graphite marks its parent invalid.
-func ReadPublishedChild(ctx context.Context, commonDir, branch string) (PublishedChildState, error) {
+func graphiteReadPublishedChild(ctx context.Context, commonDir, branch string) (PublishedChildState, error) {
 	path := filepath.Join(commonDir, metadataDB)
 	db, err := sql.Open("sqlite", dsn(path))
 	if err != nil {
@@ -566,7 +539,7 @@ func ReadPublishedChild(ctx context.Context, commonDir, branch string) (Publishe
 
 // LastSubmitted reads every branch's last submitted version out of the
 // metadata database, skipping branches never submitted.
-func LastSubmitted(ctx context.Context, commonDir string) (map[string]Version, error) {
+func graphiteLastSubmitted(ctx context.Context, commonDir string) (map[string]Version, error) {
 	path := filepath.Join(commonDir, metadataDB)
 	db, err := sql.Open("sqlite", dsn(path))
 	if err != nil {
@@ -606,7 +579,7 @@ func LastSubmitted(ctx context.Context, commonDir string) (map[string]Version, e
 // next force-with-lease may replace. One transaction, matching the atomic push
 // it records. A branch without a row is an error: only a tracked branch can
 // have been submitted.
-func RecordSubmitted(ctx context.Context, commonDir string, versions map[string]Version) error {
+func graphiteRecordSubmitted(ctx context.Context, commonDir string, versions map[string]Version) error {
 	if len(versions) == 0 {
 		return nil
 	}
@@ -651,7 +624,7 @@ func RecordSubmitted(ctx context.Context, commonDir string, versions map[string]
 // Nothing else about a restacked branch changes: its parent's name is the same,
 // and its row stays valid. A branch without a row is an error, since only a
 // tracked branch can have been restacked.
-func RecordRestacked(ctx context.Context, commonDir string, revisions map[string]string) error {
+func graphiteRecordRestacked(ctx context.Context, commonDir string, revisions map[string]string) error {
 	if len(revisions) == 0 {
 		return nil
 	}

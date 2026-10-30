@@ -350,6 +350,8 @@ func runStackList(cmd *cobra.Command, asJSON bool) error {
 	if err != nil {
 		return err
 	}
+	ctx = withStackProvider(ctx, l.native)
+	cmd.SetContext(ctx)
 	stack, state, err := gtStackAll(ctx, l.dir(), "stack list")
 	if err != nil {
 		return err
@@ -666,6 +668,9 @@ func stackAdoptChain(cmd *cobra.Command, dir render.Dir) error {
 }
 
 func stackRepairTracking(cmd *cobra.Command, l lane, opts stackRebaseOpts, tracking *stackTracking) error {
+	if l.native {
+		return tracking.settled(cmd)
+	}
 	if tracking.err != nil {
 		return tracking.unread()
 	}

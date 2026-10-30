@@ -59,6 +59,9 @@ func gtRetargetMergingPushes(ctx context.Context, errW io.Writer, dir render.Dir
 				PRNumber: b.pr,
 			}},
 		})
+		if client.IsNative() && err != nil {
+			return gtSubmitFailure(err, s)
+		}
 		var refused *gtapi.SubmitError
 		switch {
 		case errors.As(err, &refused):
