@@ -109,6 +109,40 @@ func TestStackSubmitNeverPushesAQueuedBranch(t *testing.T) {
 	}
 }
 
+// TestStackSubmitEvictQueuedMovesABranchGraphiteStillListsAsQueued is #45381
+// in Forge-AI/monorepo: with Graphite down, its stale queue flag kept the
+// branch at its published head, so the lane merging it directly could not
+// rebase it onto the trunk head first.
+func TestStackSubmitEvictQueuedMovesABranchGraphiteStillListsAsQueued(t *testing.T) {
+	f := stackRebaseRepo(t, "base", "feature")
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("stack submit: %v", err)
+	}
+	api.prs["base"], api.prs["feature"] = 100, 101
+	api.queued["base"] = true
+	stubPRState(t, prPoll(`"p0":`+prNode(100, "OPEN", prComments())))
+	stubStackPRs(t, f, map[string]*stackPR{
+		"base":    {Number: 100, Title: "base", State: "OPEN", Base: "main"},
+		"feature": {Number: 101, Title: "feature", State: "OPEN", Base: "base"},
+	})
+	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	queued := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
+	pin := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "main")
+
+	if _, _, err := runStackCmd(t, f, "submit", "--restack", "--evict-queued"); err != nil {
+		t.Fatalf("stack submit --restack --evict-queued: %v", err)
+	}
+	moved := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
+	if moved == queued {
+		t.Fatalf("origin base stayed at its queued head %s", queued)
+	}
+	if !stackOnto(t, f, pin, moved) {
+		t.Errorf("origin base %s does not sit on main@%s", moved, pin)
+	}
+}
+
 // TestStackRebaseDryRunSaysWhyAQueuedBaseKeepsALaggingChainOffTrunk is
 // port-kv-xchat-2's chain: its base sat in the merge queue on a trunk that had
 // moved, and the plan kept it at its published head without a word, so the

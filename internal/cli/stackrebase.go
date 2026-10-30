@@ -269,6 +269,7 @@ type stackRebaseOpts struct {
 	tip         string
 	tipOnly     bool
 	dropCommits bool
+	evictQueued bool
 	restack     bool
 	stayClean   bool
 	allLanes    bool
@@ -281,6 +282,8 @@ type stackRebaseOpts struct {
 	recorded    map[string]stackRecordedParent
 	target      *shipTarget
 }
+
+const stackEvictQueuedUsage = "move a branch Graphite still lists in its merge queue, evicting it: for a queue that is down or a pull request merged outside it"
 
 const stackDropCommitsUsage = "publish a branch whose local head drops commits its published head carries"
 
@@ -417,6 +420,7 @@ branch with a pull request sits on is refused before anything moves.`,
 	cmd.Flags().BoolVar(&o.dryRun, "dry-run", false, "print the plan and move nothing")
 	cmd.Flags().BoolVar(&o.noPush, "no-push", false, "rewrite the local stack and gt's record, but push nothing")
 	cmd.Flags().BoolVar(&o.dropCommits, "drop-commits", false, stackDropCommitsUsage)
+	cmd.Flags().BoolVar(&o.evictQueued, "evict-queued", false, stackEvictQueuedUsage)
 	cmd.Flags().BoolVar(&o.allLanes, "all-lanes", false, "rebase every branch gt tracks, not only this lane's")
 	cmd.Flags().StringArrayVar(&o.include, "include", nil, "take this branch of another lane into the run instead of keeping it at its published head (repeatable)")
 	cmd.Flags().StringVar(&o.to, "to", "", stackToUsage)
@@ -1510,7 +1514,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	if err != nil {
 		return nil, err
 	}
-	queue, err := stackQueueStates(ctx, l, o.noPush, byName)
+	queue, err := stackQueueStates(ctx, l, o.noPush || o.evictQueued, byName)
 	if err != nil {
 		return nil, err
 	}

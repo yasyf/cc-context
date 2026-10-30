@@ -165,6 +165,7 @@ type shipOpts struct {
 	restack     bool
 	dropCommits bool
 	allLanes    bool
+	evictQueued bool
 }
 
 type ciRun struct {
