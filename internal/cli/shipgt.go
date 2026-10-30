@@ -2268,6 +2268,18 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 	trunk := state[tr.Name()]
 	trunk.Head = s.trunkHead
 	state[tr.Name()] = trunk
+	rewound, err := stackClaimRewound(ctx, l.dir(), state)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, name := range slices.Sorted(maps.Keys(rewound)) {
+		if !slices.Contains(branches, name) {
+			continue
+		}
+		if _, err := fmt.Fprintf(errW, "%s: took the commits of %s above %s as its own — gt recorded its parent revision at its own head, and %s was since reset below it\n", s.prefix, name, rewound[name], rewound[name]); err != nil {
+			return nil, nil, err
+		}
+	}
 	branches, contained, err := gtDropContained(ctx, l.dir(), s.prefix, tr, state, branches)
 	if err != nil {
 		return nil, nil, err
