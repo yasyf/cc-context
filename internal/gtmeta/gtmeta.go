@@ -282,6 +282,22 @@ type Orphan struct {
 	ParentRevision string
 }
 
+// Diverged reports the parent gt records for branch and whether gt could not
+// resolve the branch's row, which gt calls diverged and refuses to track any
+// branch onto. It reads the metadata alone, running no git command.
+func Diverged(ctx context.Context, commonDir, branch string) (string, bool, error) {
+	rows, err := readRows(ctx, filepath.Join(commonDir, metadataDB))
+	if err != nil {
+		return "", false, err
+	}
+	for _, row := range rows {
+		if row.branch == branch {
+			return row.parent, row.validation != validationValid && row.validation != validationTrunk, nil
+		}
+	}
+	return "", false, nil
+}
+
 // Rows reports every branch gt tracks, including the ones Read drops.
 func Rows(ctx context.Context, commonDir string) ([]Row, error) {
 	rows, err := readRows(ctx, filepath.Join(commonDir, metadataDB))
