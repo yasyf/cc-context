@@ -1,1 +1,1 @@
-{"v":1,"lamport":5,"ops":[{"kind":"add_comment","body":"Published PR593 at54f768082fbc1b4111ad87f5629a0e4905e41348; scoped hooks passed, independent exact-public-pin review requested, CI41107225488 pending. Root source approvedf6e8bc29; both owned fullfile hashes match freeze. No local tests. Official52 is unchanged and does not contain this candidate."}]}
+{"v":1,"lamport":6,"ops":[{"kind":"set_criterion_status","id":"fbf2820b0c5c5e840d8f1698839d0732","status":"met"}]}
