@@ -897,11 +897,14 @@ func gtTrack(ctx context.Context, errW io.Writer, l lane, o shipOpts, branch str
 		if adopted, err = gtAdoptRecordedParent(ctx, errW, l, c, state, o.parent); err != nil {
 			return nil, "", err
 		}
-		retracked, err := gtRetrackDiverged(ctx, errW, c, o.parent)
-		if err != nil {
-			return nil, "", err
+		if !l.native {
+			retracked, err := gtRetrackDiverged(ctx, errW, c, o.parent)
+			if err != nil {
+				return nil, "", err
+			}
+			adopted += retracked
 		}
-		if adopted += retracked; adopted != "" {
+		if adopted != "" {
 			if state, err = c.at(ctx); err != nil {
 				return nil, "", err
 			}
