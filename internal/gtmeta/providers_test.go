@@ -184,6 +184,29 @@ func TestExplicitNativeContextDoesNotConvertTrackedGraphiteBranch(t *testing.T) 
 	}
 }
 
+func TestNativeForestLeavesOutOnlyTheStacksOnAnotherTrunk(t *testing.T) {
+	f, common, main := providerFixture(t)
+	f.Out(t, "git", "branch", "elsewhere")
+	f.Out(t, "git", "branch", "rooted")
+	f.Out(t, "git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+	if err := nativemeta.AdoptRoot(f.Context(), common, "rooted", "elsewhere", main, main); err != nil {
+		t.Fatal(err)
+	}
+	native := gtmeta.WithProvider(f.Context(), "github")
+	state, err := gtmeta.Read(native, common)
+	if err != nil {
+		t.Fatalf("read refused a forest with one stack on another trunk: %v", err)
+	}
+	if _, ok := state["native"]; !ok {
+		t.Fatalf("read dropped native, a stack on the repository's trunk: %v", state)
+	}
+	for _, branch := range []string{"elsewhere", "rooted"} {
+		if _, ok := state[branch]; ok {
+			t.Fatalf("read kept %s, from the stack on another trunk: %v", branch, state)
+		}
+	}
+}
+
 func TestLegacyForestLeavesOutOnlyTheStackOnANativeParent(t *testing.T) {
 	f, common, main := providerFixture(t)
 	f.Out(t, "git", "branch", "stranded")

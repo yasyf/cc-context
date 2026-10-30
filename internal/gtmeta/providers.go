@@ -275,8 +275,31 @@ func readProviders(ctx context.Context, commonDir string, remote bool) (State, [
 			}
 		}
 		if len(trunks) > 1 {
-			slices.Sort(trunks)
-			return nil, nil, fmt.Errorf("native stacks target multiple trunks (%s); the shared stack planner requires one common trunk", strings.Join(trunks, ", "))
+			trunk, err := nativemeta.ReadTrunk(ctx, commonDir)
+			if err != nil {
+				slices.Sort(trunks)
+				return nil, nil, fmt.Errorf("native stacks target multiple trunks (%s) and none is the repository's trunk: %w", strings.Join(trunks, ", "), err)
+			}
+			others := slices.DeleteFunc(trunks, func(t string) bool { return t == trunk })
+			crossed := crossing(others, func(yield func(branch, parent string) bool) {
+				for branch, b := range native {
+					for _, parent := range b.Parents {
+						if !yield(branch, parent.Ref) {
+							return
+						}
+					}
+				}
+				for _, o := range orphans {
+					if !yield(o.Branch, o.Parent) {
+						return
+					}
+				}
+			})
+			for _, t := range others {
+				crossed[t] = true
+			}
+			maps.DeleteFunc(native, func(branch string, _ nativemeta.BranchState) bool { return crossed[branch] })
+			orphans = slices.DeleteFunc(orphans, func(o nativemeta.Orphan) bool { return crossed[o.Branch] })
 		}
 
 		converted, missing := fromNative(native, orphans)
