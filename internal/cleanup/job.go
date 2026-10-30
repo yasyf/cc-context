@@ -50,28 +50,36 @@ const (
 	PhaseUnregistered Phase = "unregistered"
 	// PhaseDeleting means physical deletion of the payload has begun.
 	PhaseDeleting Phase = "deleting"
-	// PhaseDone means the payload is gone.
+	// PhaseDeletingAdmin preserves the payload locator while its captured external admin is deleted.
+	PhaseDeletingAdmin Phase = "deleting_admin"
+	// PhaseDeletingRetiredPayload records durable admin removal before deleting its retained payload.
+	PhaseDeletingRetiredPayload Phase = "deleting_retired_payload"
+	// PhaseDone means every owned deletion root is gone.
 	PhaseDone Phase = "done"
 )
 
 var phaseRank = map[Phase]int{
-	PhaseQueued:       0,
-	PhaseWaiting:      1,
-	PhasePending:      2,
-	PhasePrepared:     3,
-	PhaseMoved:        4,
-	PhaseDetached:     5,
-	PhaseUnregistered: 6,
-	PhaseDeleting:     7,
-	PhaseDone:         8,
+	PhaseQueued:                 0,
+	PhaseWaiting:                1,
+	PhasePending:                2,
+	PhasePrepared:               3,
+	PhaseMoved:                  4,
+	PhaseDetached:               5,
+	PhaseUnregistered:           6,
+	PhaseDeleting:               7,
+	PhaseDeletingAdmin:          8,
+	PhaseDeletingRetiredPayload: 9,
+	PhaseDone:                   10,
 }
 
 // Logical reports whether the phase still belongs to the logical half: the
 // tree is not yet both relocated and unregistered.
 func (p Phase) Logical() bool { return phaseRank[p] < phaseRank[PhaseUnregistered] }
 
-// Physical reports whether only the payload's deletion remains.
-func (p Phase) Physical() bool { return p == PhaseUnregistered || p == PhaseDeleting }
+// Physical reports whether a captured deletion root remains.
+func (p Phase) Physical() bool {
+	return p == PhaseUnregistered || p == PhaseDeleting || p == PhaseDeletingAdmin || p == PhaseDeletingRetiredPayload
+}
 
 // Retirement records whether a retained checkout's Git backlink is being hidden or is hidden.
 type Retirement string
@@ -312,6 +320,9 @@ func (j Job) Validate() error {
 }
 
 func (j Job) validateLinked() error {
+	if (j.Phase == PhaseDeletingAdmin || j.Phase == PhaseDeletingRetiredPayload) && j.Head == "" {
+		return errors.New("retired deletion carries no captured HEAD")
+	}
 	if j.Source != "" {
 		return fmt.Errorf("source %q set on a job that adopted nothing", j.Source)
 	}
@@ -340,7 +351,7 @@ func (j Job) validateAdopted() error {
 	if j.Deferred {
 		return errors.New("an adopted job cannot be deferred")
 	}
-	if j.Phase == PhasePending || j.Phase == PhaseMoved || j.Phase == PhaseDetached {
+	if j.Phase == PhasePending || j.Phase == PhaseMoved || j.Phase == PhaseDetached || j.Phase == PhaseDeletingAdmin || j.Phase == PhaseDeletingRetiredPayload {
 		return fmt.Errorf("phase %q belongs to a registered worktree, not an adopted tree", j.Phase)
 	}
 	if !cleanAbs(j.Source) {

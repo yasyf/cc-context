@@ -18,6 +18,8 @@ type retirementFiles struct {
 	root            *os.Root
 	back            *os.File
 	tree            string
+	admin           string
+	displaced       bool
 	want            cleanup.Links
 	treeID, adminID cleanup.FileID
 }
@@ -108,6 +110,32 @@ func publishMarker(root *os.Root, job *cleanup.Job) error {
 }
 
 func (r *Relocator) retirementFiles(ctx context.Context, job *cleanup.Job) (*retirementFiles, error) {
+	captured, err := sight(job.AdminDir)
+	if err != nil {
+		return nil, err
+	}
+	if !captured.exists {
+		return r.displacedFiles(ctx, job)
+	}
+	if !captured.is(job.Admin) && job.Retirement != "" {
+		payload, err := sight(job.Payload)
+		if err != nil {
+			return nil, err
+		}
+		if payload.is(job.Tree) {
+			admin, _, err := displacedPointer(job.Payload)
+			if err != nil {
+				return nil, err
+			}
+			admin, err = filepath.EvalSymlinks(admin)
+			if err != nil {
+				return nil, err
+			}
+			if admin != job.AdminDir {
+				return r.displacedFiles(ctx, job)
+			}
+		}
+	}
 	seen, err := observe(job, job.Phase == cleanup.PhaseMoved || job.Phase == cleanup.PhaseDetached)
 	if err != nil {
 		return nil, err
@@ -155,7 +183,7 @@ func (r *Relocator) retirementFiles(ctx context.Context, job *cleanup.Job) (*ret
 		_ = root.Close()
 		return nil, err
 	}
-	files := &retirementFiles{root: root, back: back, tree: tree, want: want, treeID: held.id, adminID: seen.admin.id}
+	files := &retirementFiles{root: root, back: back, tree: tree, admin: job.AdminDir, want: want, treeID: held.id, adminID: seen.admin.id}
 	valid := content == want.AdminGitdir || job.Phase == cleanup.PhasePrepared && moved && content == job.Links.AdminGitdir
 	if job.Retirement != "" && content == "" {
 		valid = true
@@ -229,12 +257,24 @@ func (f *retirementFiles) unchanged(job *cleanup.Job) error {
 	if !tree.is(f.treeID) {
 		return errors.New("retiring tree changed")
 	}
-	admin, err := sight(job.AdminDir)
+	admin, err := sight(f.admin)
 	if err != nil {
 		return fmt.Errorf("retiring registration changed: %w", err)
 	}
 	if !admin.is(f.adminID) {
 		return errors.New("retiring registration changed")
+	}
+	if f.displaced {
+		captured, err := sight(job.AdminDir)
+		if err != nil {
+			return err
+		}
+		if captured.exists && (f.tree != job.Payload || job.Retirement == "" || captured.is(job.Admin)) {
+			return errors.New("captured registration path is occupied")
+		}
+		if got, err := readLinkage(filepath.Join(f.tree, ".git")); err != nil || got != f.want.DotGit {
+			return errors.New("retiring tree pointer changed")
+		}
 	}
 	held, err := f.back.Stat()
 	if err != nil {
@@ -287,8 +327,10 @@ func (r *Relocator) Retire(ctx context.Context, job *cleanup.Job) error {
 		return err
 	}
 	defer files.close()
-	if err := r.retirementDevices(job, files); err != nil {
-		return err
+	if !files.displaced {
+		if err := r.retirementDevices(job, files); err != nil {
+			return err
+		}
 	}
 	owned, err := ownMarker(files.root, job)
 	if err != nil || job.Retirement == "" && owned {
@@ -301,6 +343,12 @@ func (r *Relocator) Retire(ctx context.Context, job *cleanup.Job) error {
 	if err := r.retirementIdle(ctx, job, files.tree); err != nil {
 		_, err = r.block(ctx, job, "activity", unclear(files.tree, err))
 		return err
+	}
+	if files.displaced {
+		if err := r.strictIdle(ctx, job, files.admin); err != nil {
+			_, err = r.block(ctx, job, "activity", unclear(files.admin, err))
+			return err
+		}
 	}
 	if job.Retirement == "" {
 		if err := r.retirementState(job, cleanup.RetirementIntent); err != nil {
@@ -327,13 +375,29 @@ func (r *Relocator) Retire(ctx context.Context, job *cleanup.Job) error {
 		_, err = r.block(ctx, job, "watchers", err.Error())
 		return err
 	}
-	if err := r.unserved(ctx, files.tree); err != nil {
+	check := r.unserved
+	if files.displaced {
+		check = func(ctx context.Context, tree string) error { return r.strictIdle(ctx, job, tree) }
+	}
+	if err := check(ctx, files.tree); err != nil {
 		_, err = r.block(ctx, job, "activity", unclear(files.tree, err))
 		return err
+	}
+	if files.displaced {
+		if err := r.strictIdle(ctx, job, files.admin); err != nil {
+			_, err = r.block(ctx, job, "activity", unclear(files.admin, err))
+			return err
+		}
 	}
 	if err := files.unchanged(job); err != nil {
 		_, err = r.block(ctx, job, "identity", err.Error())
 		return err
+	}
+	if files.displaced {
+		if err := r.verifyDisplaced(ctx, job, files); err != nil {
+			_, err = r.block(ctx, job, "identity", err.Error())
+			return err
+		}
 	}
 	if err := ctx.Err(); err != nil {
 		return err
@@ -359,6 +423,9 @@ func (r *Relocator) restoreRegistration(ctx context.Context, job *cleanup.Job) (
 		return r.retirementBlocked(ctx, job, err)
 	}
 	defer files.close()
+	if files.displaced {
+		return r.block(ctx, job, "identity", "registration moved during native restoration")
+	}
 	if err := r.retirementDevices(job, files); err != nil {
 		return false, err
 	}

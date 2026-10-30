@@ -211,7 +211,7 @@ func (r *Relocator) resolveBranch(ctx context.Context, git string, location ...s
 	return strings.TrimSpace(out), nil
 }
 
-func (r *Relocator) checkedOutSubmodule(ctx context.Context, git, tree string) (string, error) {
+func (r *Relocator) checkedOutSubmoduleAt(ctx context.Context, git, tree string, location ...string) (string, error) {
 	var found string
 	var inspect error
 	err := r.stream(ctx, git, 0, func(head []byte) {
@@ -227,7 +227,7 @@ func (r *Relocator) checkedOutSubmodule(ctx context.Context, git, tree string) (
 		case !errors.Is(err, fs.ErrNotExist) && !errors.Is(err, syscall.ENOTDIR):
 			inspect = err
 		}
-	}, "-C", tree, "ls-files", "--stage", "-z")
+	}, append(location, "ls-files", "--stage", "-z")...)
 	return found, errors.Join(err, inspect)
 }
 
@@ -266,6 +266,10 @@ func (r *Relocator) pushed(ctx context.Context, git, repo, branch, head string) 
 const dirtyShown = 5
 
 func (r *Relocator) dirt(ctx context.Context, git, tree string) (string, error) {
+	return r.dirtAt(ctx, git, "-C", tree)
+}
+
+func (r *Relocator) dirtAt(ctx context.Context, git string, location ...string) (string, error) {
 	var (
 		shown    []string
 		total    int
@@ -288,7 +292,7 @@ func (r *Relocator) dirt(ctx context.Context, git, tree string) (string, error) 
 		if len(shown) < dirtyShown {
 			shown = append(shown, string(name))
 		}
-	}, "-C", tree, "status", "--porcelain=v1", "-z", "--untracked-files=normal", "--ignore-submodules=none")
+	}, append(location, "status", "--porcelain=v1", "-z", "--untracked-files=normal", "--ignore-submodules=none")...)
 	if err != nil || total == 0 {
 		return "", err
 	}

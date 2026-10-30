@@ -62,6 +62,25 @@ func TestOpenJournalRejectsRoot(t *testing.T) {
 	}
 }
 
+func TestJournalRoundTripsRetiredDeletionStages(t *testing.T) {
+	j, layout := openJournal(t)
+	job := validJob(layout, testID, 1)
+	job.Phase = PhaseDeletingAdmin
+	if err := j.Create(job); err != nil {
+		t.Fatal(err)
+	}
+	for _, phase := range []Phase{PhaseDeletingAdmin, PhaseDeletingRetiredPayload} {
+		job.Phase = phase
+		if err := j.Save(job); err != nil {
+			t.Fatal(err)
+		}
+		jobs, damaged, err := j.Load()
+		if err != nil || len(damaged) != 0 || len(jobs) != 1 || !reflect.DeepEqual(jobs[0], job) {
+			t.Fatalf("Load() = %+v, %+v, %v; want %+v", jobs, damaged, err, job)
+		}
+	}
+}
+
 func TestViewJournalRejectsRoot(t *testing.T) {
 	_, err := ViewJournal(Layout{Root: "state"})
 	if want := `cleanup: layout root "state" is not a clean absolute path`; err == nil || err.Error() != want {

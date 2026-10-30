@@ -219,6 +219,34 @@ func TestRetiredRegistrationRevalidatesDeviceOnlyChanges(t *testing.T) {
 	f.stored(&job)
 }
 
+func TestRetiredNativePayloadKeepsItsDeviceOnlyRefresh(t *testing.T) {
+	f := newFixture(t)
+	job := f.accept()
+	f.run(f.repo, "worktree", "move", job.Original, job.Registered)
+	if err := os.Rename(job.Registered, job.Payload); err != nil {
+		t.Fatal(err)
+	}
+	job.Phase = cleanup.PhaseDetached
+	if err := f.journal.Save(job); err != nil {
+		t.Fatal(err)
+	}
+	retireFixture(t, f, &job)
+	if job.Blocked != nil {
+		t.Fatal(job.Blocked)
+	}
+	want := job.Admin
+	job.Admin.Dev++
+	if err := f.journal.Save(job); err != nil {
+		t.Fatal(err)
+	}
+	retireFixture(t, f, &job)
+	if job.Blocked != nil || job.Admin != want || job.Phase != cleanup.PhaseDetached {
+		t.Fatalf("native device refresh = %+v, want captured native admin %+v", job, want)
+	}
+	f.advance(&job)
+	f.finished(&job)
+}
+
 func TestPausedRetirementIgnoresAnInterruptedMarkerTemporary(t *testing.T) {
 	f := newFixture(t)
 	job := f.intend()
