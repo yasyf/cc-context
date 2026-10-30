@@ -1622,8 +1622,9 @@ func gtOnto(ctx context.Context, l lane, o shipOpts, branch, parent, trunk strin
 }
 
 // gtOntoHead is the parent head a branch moves onto: under --tip-only, which
-// pushes no ancestor, the parent's published head when it has one, else its
-// local head.
+// pushes no ancestor, the parent's published head when it has one, read from
+// the remote and fetched, since a clone whose fetch refspec names only trunk
+// never refreshes the parent's tracking ref; else its local head.
 func gtOntoHead(ctx context.Context, dir render.Dir, o shipOpts, parent string) (string, error) {
 	if !o.tipOnly {
 		return gtRestackHead(ctx, "ship", dir, parent)
@@ -1632,19 +1633,19 @@ func gtOntoHead(ctx context.Context, dir render.Dir, o shipOpts, parent string) 
 	if err != nil {
 		return "", fmt.Errorf("ship: %w", err)
 	}
-	published := "refs/remotes/" + remote + "/" + parent
-	out, code, stderr, err := render.RunCLIExitCode(ctx, dir, "git", []string{"rev-parse", "--verify", "--quiet", published})
+	ref := "refs/heads/" + parent
+	out, err := render.RunCLI(ctx, dir, "git", []string{"ls-remote", remote, ref})
 	if err != nil {
-		return "", fmt.Errorf("ship: git rev-parse %s: %w", published, err)
+		return "", fmt.Errorf("ship: git ls-remote %s %s: %w", remote, ref, err)
 	}
-	switch code {
-	case 0:
-		return strings.TrimSpace(out), nil
-	case 1:
+	tip, _, _ := strings.Cut(strings.TrimSpace(out), "\t")
+	if tip == "" {
 		return gtRestackHead(ctx, "ship", dir, parent)
-	default:
-		return "", fmt.Errorf("ship: git rev-parse %s: exit %d: %s", published, code, strings.TrimSpace(stderr))
 	}
+	if err := gitFetch(ctx, dir, "--no-tags", remote, "+"+ref+":refs/remotes/"+remote+"/"+parent); err != nil {
+		return "", fmt.Errorf("ship: fetch %s's published head: %w", parent, err)
+	}
+	return tip, nil
 }
 
 // gtRemoteTrunkOnto is the ref a replay onto trunk measures the branch's own
