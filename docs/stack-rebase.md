@@ -155,11 +155,11 @@ cleanup does not stop the session holding it.
 
 ## Regenerate conflicted output explicitly
 
-A conflict in a path declared under `[[generated]]` in `.ccx.toml` stops for
+A conflict in a path declared under `[[generated]]` in `.claude/ccx.toml` stops for
 manual action. Rebase and continue do not run generators automatically.
 
 1. Resolve and stage every conflict outside the declared generated paths.
-   If `.ccx.toml` conflicts, resolve and stage it too; regeneration reads the
+   If `.claude/ccx.toml` conflicts, resolve and stage it too; regeneration reads the
    declarations from the workspace's index.
 2. Materialize the directories needed for dependency setup with
    `git sparse-checkout add`, or use `git sparse-checkout disable` for the full
@@ -183,7 +183,7 @@ ccx vcs stack regenerate --full
 `--include` and `--full` are mutually exclusive. Regeneration runs the declared
 generators for conflicted generated files and generated files touched by the
 stopped commit, then stages their output. It does not install dependencies.
-Keep dependency installation out of generator commands in `.ccx.toml`.
+Keep dependency installation out of generator commands in `.claude/ccx.toml`.
 
 Shared download and compiler caches can remain shared. Keep mutable
 `node_modules`, package-manager install state, and build outputs private to

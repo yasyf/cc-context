@@ -209,7 +209,7 @@ git config ccx.queue trunk
 
 Set `git config ccx.stack` to `github` or `graphite`, and set `git config ccx.queue` to `trunk`, `github`, or `none` (legacy stacks default to Graphite). Native stacks use the GitHub API and local catalog rather than a `gh` executable, require actual server stack membership without synthetic head bumps, share lightweight isolated replay and tip-only unchanged-parent protection, and never fall back on auth or network errors.
 
-A tracked `.ccx.toml` at the repository root configures the default merge queue under `[vcs]` and AWS Systems Manager Parameter Store lookup settings under `[trunk]`. An explicit `ccx.queue` Git config value overrides `vcs.queue`, and omitting `.ccx.toml` falls back to the provider default; an explicit `TRUNK_MERGE_API_KEY` environment variable overrides SSM lookup. Only Trunk queue operations lazily fetch the scoped API key via the installed AWS CLI using existing profile authentication, keeping the token in process memory without modifying shell exports or global credentials, while native metadata and info commands never trigger retrieval.
+A tracked `.claude/ccx.toml` at the repository root configures the default merge queue under `[vcs]` and AWS Systems Manager Parameter Store lookup settings under `[trunk]`. An explicit `ccx.queue` Git config value overrides `vcs.queue`, and omitting `.claude/ccx.toml` falls back to the provider default; an explicit `TRUNK_MERGE_API_KEY` environment variable overrides SSM lookup. Only Trunk queue operations lazily fetch the scoped API key via the installed AWS CLI using existing profile authentication, keeping the token in process memory without modifying shell exports or global credentials, while native metadata and info commands never trigger retrieval.
 
 ```toml
 [vcs]
@@ -223,7 +223,7 @@ aws_region = "us-east-1"
 
 ## Configuration
 
-`.ccx.toml` declares generated paths and their commands under `[[generated]]`.
+`.claude/ccx.toml` declares generated paths and their commands under `[[generated]]`.
 [Stack regeneration](docs/stack-rebase.md#regenerate-conflicted-output-explicitly)
 reads those declarations from the conflict workspace's index. Other behavior is
 tuned through environment variables:

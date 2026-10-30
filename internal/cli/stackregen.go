@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	regenFile      = ".ccx.toml"
+	regenFile      = ".claude/ccx.toml"
 	regenTailLines = 20
 )
 
@@ -31,7 +31,7 @@ var regenScrubbed = []string{
 	"GIT_REPLACE_REF_BASE", "GIT_PREFIX", "GIT_SHALLOW_FILE", "GIT_COMMON_DIR",
 }
 
-// regenGenerator is one [[generated]] entry of .ccx.toml: the files a command
+// regenGenerator is one [[generated]] entry of .claude/ccx.toml: the files a command
 // rewrites, as repository-relative doublestar patterns, and the command sh runs
 // from the repository root to rewrite them.
 type regenGenerator struct {
@@ -79,9 +79,7 @@ func regenStaged(ctx context.Context, dir render.Dir) ([]regenGenerator, error) 
 }
 
 func regenParse(raw, where string) ([]regenGenerator, error) {
-	var cfg struct {
-		Generated []regenGenerator `toml:"generated"`
-	}
+	var cfg repositoryVCSConfig
 	md, err := toml.Decode(raw, &cfg)
 	if err != nil {
 		return nil, fmt.Errorf("stack rebase: %s: %w", where, err)
@@ -372,7 +370,7 @@ func newStackRegenerateCmd() *cobra.Command {
 		Short: "Rerun the declared generators in a stopped stack rebase's conflict workspace",
 		Long: `Rerun the declared generators in a stopped stack rebase's conflict workspace.
 
-A stack rebase never regenerates on its own: a conflict in a file .ccx.toml lists
+A stack rebase never regenerates on its own: a conflict in a file .claude/ccx.toml lists
 under [[generated]] stops like any other. Once every other conflicted file is
 resolved and added, regenerate runs, once each, the generators owning the
 conflicted generated files and every generated file the stopped commit touches,

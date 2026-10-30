@@ -28,10 +28,9 @@ func TestTrackedQueueSelectionRespectsRepositoryAndExplicitOverride(t *testing.T
 		t.Run(tt.name, func(t *testing.T) {
 			f := shipRepo(t, vcstest.Remote())
 			mustRun(t, f.Env(), f.Dir, "git", "remote", "set-url", "origin", "git@github.com:org/local.git")
+			writeShipFile(t, f.Dir, ".ccx.toml", "legacy root must not be read by the canonical loader")
 			if tt.file != "" {
-				if err := os.WriteFile(filepath.Join(f.Dir, ".ccx.toml"), []byte(tt.file), 0o600); err != nil {
-					t.Fatal(err)
-				}
+				writeShipFile(t, f.Dir, regenFile, tt.file)
 			}
 			if tt.override {
 				mustRun(t, f.Env(), f.Dir, "git", "config", "ccx.queue", tt.git)
