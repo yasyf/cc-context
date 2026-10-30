@@ -2,7 +2,9 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -55,7 +57,24 @@ func TestStackListBatchKeepsNativeAndLegacyTrunksSeparate(t *testing.T) {
 	if err := nativemeta.Init(f.Context(), common, "main"); err != nil {
 		t.Fatal(err)
 	}
-	if err := nativemeta.AdoptRoot(f.Context(), common, "native-other", "other", head, head); err != nil {
+	nativePath := filepath.Join(common, "gh-stack")
+	nativeData, err := os.ReadFile(nativePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var catalog map[string]any
+	if err := json.Unmarshal(nativeData, &catalog); err != nil {
+		t.Fatal(err)
+	}
+	catalog["stacks"] = append(catalog["stacks"].([]any), map[string]any{
+		"trunk": map[string]string{"branch": "other", "head": head},
+		"branches": []map[string]string{{"branch": "native-other", "head": head, "base": head}},
+	})
+	nativeData, err = json.Marshal(catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(nativePath, nativeData, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	paths := make([]string, 13)
