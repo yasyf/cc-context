@@ -2,32 +2,41 @@ package gtapi
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
+	"strings"
 
 	"github.com/yasyf/cc-context/internal/nativeapi"
 )
 
+// NewNative uses GitHub stack metadata with the default GitHub queue.
 func NewNative() *Client {
 	c := New(baseURLProd)
 	c.native = nativeapi.Default()
 	return c
 }
 
+// NewNativeWithToken directs native requests to an authenticated endpoint.
 func NewNativeWithToken(baseURL, token string) *Client {
 	c := New(baseURLProd)
 	c.native = nativeapi.NewWithToken(baseURL, token)
 	return c
 }
 
+// WithProviderError preserves a configuration failure for every request.
 func (c *Client) WithProviderError(err error) *Client {
 	selected := *c
 	selected.providerErr = err
 	return &selected
 }
 
+// IsNative reports whether GitHub supplies stack metadata.
 func (c *Client) IsNative() bool { return c.native != nil }
 
+// QueueProvider identifies the explicit queue or the default ownership-based queue.
 func (c *Client) QueueProvider() string {
 	if c.providerErr != nil {
 		return "invalid"
@@ -35,12 +44,16 @@ func (c *Client) QueueProvider() string {
 	if c.queueProvider != "" {
 		return c.queueProvider
 	}
+	if c.legacy != nil {
+		return "mixed"
+	}
 	if c.IsNative() {
 		return "github"
 	}
 	return "graphite"
 }
 
+// CacheNamespace separates snapshots whose metadata or queue ownership differs.
 func (c *Client) CacheNamespace() string {
 	if c.providerErr != nil {
 		return "invalid"
@@ -53,9 +66,18 @@ func (c *Client) CacheNamespace() string {
 	if c.IsNative() {
 		stack = "github-stack"
 	}
+	if c.legacy != nil {
+		ownership := make([]string, 0, 2*len(c.branchProviders))
+		for _, branch := range slices.Sorted(maps.Keys(c.branchProviders)) {
+			ownership = append(ownership, branch, c.branchProviders[branch])
+		}
+		fingerprint := sha256.Sum256([]byte(strings.Join(ownership, "\x00")))
+		return fmt.Sprintf("mixed-stack--%s--%x", queue, fingerprint)
+	}
 	return stack + "--" + queue
 }
 
+// WithQueueProvider selects one queue without changing stack metadata ownership.
 func (c *Client) WithQueueProvider(provider string) *Client {
 	selected := *c
 	switch provider {

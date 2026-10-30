@@ -37,7 +37,13 @@ func TestNativeFacadeMapsActualStackAndQueueSnapshot(t *testing.T) {
 		if r.URL.Path != "/graphql" || r.Header.Get("Authorization") != "Bearer github-token" {
 			t.Errorf("unexpected native request %s %s", r.URL, r.Header.Get("Authorization"))
 		}
-		fmt.Fprint(w, `{"data":{"repository":{"p0":{"id":"PR_2","number":2,"state":"OPEN","headRefName":"child","headRefOid":"current-head","baseRefName":"parent","baseRefOid":"parent-head","updatedAt":"2026-10-30T12:00:00Z","mergeQueueEntry":{"state":"AWAITING_CHECKS","headCommit":{"oid":"queued-head"}},"stackEntry":{"position":2},"stack":{"number":7,"baseRefName":"main","entries":{"nodes":[{"position":1,"pullRequest":{"number":1}},{"position":2,"pullRequest":{"number":2}}],"pageInfo":{"hasNextPage":false}}}}}}`)
+		response := map[string]any{"data": map[string]any{"repository": map[string]any{"p0": map[string]any{
+			"id": "PR_2", "number": 2, "state": "OPEN", "headRefName": "child", "headRefOid": "current-head", "baseRefName": "parent", "baseRefOid": "parent-head", "updatedAt": "2026-10-30T12:00:00Z", "mergeQueueEntry": map[string]any{"state": "AWAITING_CHECKS", "headCommit": map[string]any{"oid": "queued-head"}}, "stackEntry": map[string]any{"position": 2},
+			"stack": map[string]any{"number": 7, "baseRefName": "main", "entries": map[string]any{"nodes": []map[string]any{{"position": 1, "pullRequest": map[string]any{"number": 1}}, {"position": 2, "pullRequest": map[string]any{"number": 2}}}, "pageInfo": map[string]any{"hasNextPage": false}}},
+		}}}}
+		if err := json.NewEncoder(w).Encode(response); err != nil {
+			t.Errorf("write fixture response: %v", err)
+		}
 	}))
 	defer srv.Close()
 	client := NewNativeWithToken(srv.URL, "github-token")
@@ -68,7 +74,9 @@ func TestExplicitQueueOverrideClearsLegacyQueueButKeepsVersions(t *testing.T) {
 		if r.URL.Path != "/graphite/cli/pull-request-info" || r.Header.Get("Authorization") != "token graphite-token" {
 			t.Errorf("legacy protocol changed: %s %s", r.URL, r.Header.Get("Authorization"))
 		}
-		fmt.Fprint(w, `{"result":{"status":"ok","prs":[{"prNumber":2,"headRefName":"feature","mergeQueueStatus":{"isInGraphiteMq":true,"enqueuedCommit":"old-queue-head"},"versions":[{"headSha":"published","baseSha":"fork-point","baseName":"parent","createdAt":"2026-10-30T12:00:00Z"}]}]}}`)
+		if _, err := fmt.Fprint(w, `{"result":{"status":"ok","prs":[{"prNumber":2,"headRefName":"feature","mergeQueueStatus":{"isInGraphiteMq":true,"enqueuedCommit":"old-queue-head"},"versions":[{"headSha":"published","baseSha":"fork-point","baseName":"parent","createdAt":"2026-10-30T12:00:00Z"}]}]}}`); err != nil {
+			t.Errorf("write fixture response: %v", err)
+		}
 	}))
 	defer srv.Close()
 	client := NewWithToken(srv.URL, "graphite-token")
@@ -94,7 +102,9 @@ func TestExplicitTrunkQueueFailureNeverCallsGraphite(t *testing.T) {
 	calls := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
-		fmt.Fprint(w, `{"mergeabilityStatuses":[{"prNumber":2,"mergeabilityStatus":"QUEUED_TO_MERGE"}]}`)
+		if _, err := fmt.Fprint(w, `{"mergeabilityStatuses":[{"prNumber":2,"mergeabilityStatus":"QUEUED_TO_MERGE"}]}`); err != nil {
+			t.Errorf("write fixture response: %v", err)
+		}
 	}))
 	defer srv.Close()
 	_, err := NewWithToken(srv.URL, "graphite-token").WithQueueProvider("trunk").MergeabilityStatuses(context.Background(), "org", "repo", []int{2})
@@ -111,7 +121,9 @@ func TestNativeFacadeReturnsTypedPartialSubmitWithoutFallback(t *testing.T) {
 			t.Errorf("native operation called Graphite: %s", r.URL)
 		}
 		w.WriteHeader(http.StatusUnauthorized)
-		fmt.Fprint(w, `{"message":"Bad credentials"}`)
+		if _, err := fmt.Fprint(w, `{"message":"Bad credentials"}`); err != nil {
+			t.Errorf("write fixture response: %v", err)
+		}
 	}))
 	defer srv.Close()
 	_, err := NewNativeWithToken(srv.URL, "github-token").SubmitPullRequests(context.Background(), SubmitRequest{RepoOwner: "org", RepoName: "repo", TrunkBranchName: "main", PRs: []SubmitPR{{Action: SubmitCreate, Head: "feature", HeadSha: "head", Base: "main", Title: "feature"}}})
@@ -125,10 +137,18 @@ func TestNativeFacadeReturnsTypedPartialSubmitWithoutFallback(t *testing.T) {
 func TestNativeFacadePublishesActualStackIdentity(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method + " " + r.URL.Path {
+		case "GET /repos/org/repo/git/ref/heads/child":
+			if err := json.NewEncoder(w).Encode(map[string]any{"object": map[string]any{"sha": "head"}}); err != nil {
+				t.Error(err)
+			}
 		case "POST /repos/org/repo/pulls":
-			fmt.Fprint(w, `{"number":2,"node_id":"PR_2","html_url":"https://github.com/org/repo/pull/2","state":"open","head":{"ref":"child","sha":"head"},"base":{"ref":"parent"}}`)
+			if _, err := fmt.Fprint(w, `{"number":2,"node_id":"PR_2","html_url":"https://github.com/org/repo/pull/2","state":"open","head":{"repo":{"full_name":"org/repo"},"ref":"child","sha":"head"},"base":{"ref":"parent"}}`); err != nil {
+				t.Errorf("write fixture response: %v", err)
+			}
 		case "GET /repos/org/repo/pulls":
-			fmt.Fprint(w, `[{"number":1,"state":"open","head":{"ref":"parent"},"base":{"ref":"main"}}]`)
+			if _, err := fmt.Fprint(w, `[{"number":1,"state":"open","head":{"repo":{"full_name":"org/repo"},"ref":"parent"},"base":{"ref":"main"}}]`); err != nil {
+				t.Errorf("write fixture response: %v", err)
+			}
 		case "POST /repos/org/repo/stacks":
 			var body struct {
 				PullRequests []int `json:"pull_requests"`
@@ -139,7 +159,9 @@ func TestNativeFacadePublishesActualStackIdentity(t *testing.T) {
 			if !reflect.DeepEqual(body.PullRequests, []int{1, 2}) {
 				t.Errorf("native membership=%v", body.PullRequests)
 			}
-			fmt.Fprint(w, `{"number":7}`)
+			if _, err := fmt.Fprint(w, `{"number":7}`); err != nil {
+				t.Errorf("write fixture response: %v", err)
+			}
 		default:
 			t.Errorf("unexpected %s %s", r.Method, r.URL)
 			http.Error(w, "unexpected", 500)

@@ -304,10 +304,10 @@ func TestNativeMissingQueueEntryKeepsThePollUnknown(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
 		if calls == 1 {
-			fmt.Fprint(w, `{"data":{"repository":{"p0":{"number":42,"state":"OPEN","headRefName":"feature","headRefOid":"head","baseRefName":"main"}}}}`)
+			_, _ = fmt.Fprint(w, `{"data":{"repository":{"p0":{"number":42,"state":"OPEN","headRefName":"feature","headRefOid":"head","baseRefName":"main"}}}}`)
 			return
 		}
-		fmt.Fprint(w, `{"data":{"repository":{"p0":null}}}`)
+		_, _ = fmt.Fprint(w, `{"data":{"repository":{"p0":null}}}`)
 	}))
 	defer server.Close()
 	source := &GitHub{gt: gtapi.NewNativeWithToken(server.URL, "stub"), owner: "org", name: "repo", warn: io.Discard}

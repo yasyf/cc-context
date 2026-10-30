@@ -41,6 +41,9 @@ type stackSparse struct {
 
 func runStackNew(cmd *cobra.Command, name string, options stackNewOpts) error {
 	ctx := cmd.Context()
+	if options.parent != "" {
+		ctx = context.WithValue(ctx, stackParentKey{}, options.parent)
+	}
 	src, err := resolveLane(ctx, "stack new", workingDir(ctx), false)
 	if err != nil {
 		return err

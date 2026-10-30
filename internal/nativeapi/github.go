@@ -76,6 +76,7 @@ func (p githubPull) info() (PullRequestInfo, error) {
 	return out, nil
 }
 
+// PullRequestInfo batches current GitHub metadata and preserves the requested lookup order.
 func (c *Client) PullRequestInfo(ctx context.Context, req PullRequestInfoRequest) ([]PullRequestInfo, error) {
 	out := make([]PullRequestInfo, 0, len(req.PRNumbers)+len(req.PRHeadRefNames))
 	type lookup struct {
@@ -157,6 +158,9 @@ type restPull struct {
 	State   string `json:"state"`
 	Draft   bool   `json:"draft"`
 	Head    struct {
+		Repo struct {
+			FullName string `json:"full_name"`
+		} `json:"repo"`
 		Ref string `json:"ref"`
 		Sha string `json:"sha"`
 	} `json:"head"`
@@ -183,6 +187,7 @@ func (c *Client) readPull(ctx context.Context, owner, repo string, n int) (restP
 	return pull, err
 }
 
+// SubmitPullRequests publishes PR metadata and registers actual native stack membership.
 func (c *Client) SubmitPullRequests(ctx context.Context, req SubmitRequest) ([]SubmittedPR, error) {
 	if req.MergeWhenReady {
 		return nil, fmt.Errorf("GitHub stack submission does not enqueue: submit the reviewed stack through Trunk")
@@ -205,8 +210,31 @@ func (c *Client) SubmitPullRequests(ctx context.Context, req SubmitRequest) ([]S
 			return nil, &SubmitError{Cause: err, Submitted: result, Failed: []BranchSubmitError{{Head: entry.Head, Message: err.Error()}}}
 		}
 		result[len(result)-1].StackNumber = stackNumber
+		if err := c.requirePublishedHead(ctx, req.RepoOwner, req.RepoName, entry); err != nil {
+			return nil, &SubmitError{Cause: err, Submitted: result, Failed: []BranchSubmitError{{Head: entry.Head, Message: err.Error()}}}
+		}
 	}
 	return result, nil
+}
+
+func (c *Client) requirePublishedHead(ctx context.Context, owner, repo string, entry SubmitPR) error {
+	path := fmt.Sprintf("/repos/%s/%s/git/ref/heads/%s", url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(entry.Head))
+	payload, err := c.get(ctx, path, nil)
+	if err != nil {
+		return err
+	}
+	var ref struct {
+		Object struct {
+			Sha string `json:"sha"`
+		} `json:"object"`
+	}
+	if err := json.Unmarshal(payload, &ref); err != nil {
+		return err
+	}
+	if ref.Object.Sha != entry.HeadSha {
+		return fmt.Errorf("git ref %s reports commit %s instead of published %s", entry.Head, ref.Object.Sha, entry.HeadSha)
+	}
+	return nil
 }
 
 func (c *Client) submitPull(ctx context.Context, owner, repo string, entry SubmitPR) (restPull, error) {
@@ -224,8 +252,8 @@ func (c *Client) submitPull(ctx context.Context, owner, repo string, entry Submi
 		if err != nil {
 			return restPull{}, err
 		}
-		if current.Head.Sha != entry.HeadSha {
-			return restPull{}, fmt.Errorf("PR #%d serves head %s instead of published %s", entry.PRNumber, current.Head.Sha, entry.HeadSha)
+		if current.Head.Ref != entry.Head || !strings.EqualFold(current.Head.Repo.FullName, owner+"/"+repo) {
+			return restPull{}, fmt.Errorf("PR #%d uses head %s:%s instead of %s/%s:%s", entry.PRNumber, current.Head.Repo.FullName, current.Head.Ref, owner, repo, entry.Head)
 		}
 		if current.State != "open" {
 			return restPull{}, fmt.Errorf("PR #%d is %s", entry.PRNumber, current.State)
@@ -241,6 +269,9 @@ func (c *Client) submitPull(ctx context.Context, owner, repo string, entry Submi
 	default:
 		return restPull{}, fmt.Errorf("unknown submit action %q", entry.Action)
 	}
+	if err := c.requirePublishedHead(ctx, owner, repo, entry); err != nil {
+		return restPull{}, err
+	}
 	payload, err := c.send(ctx, method, path, values)
 	if err != nil {
 		return restPull{}, err
@@ -249,8 +280,11 @@ func (c *Client) submitPull(ctx context.Context, owner, repo string, entry Submi
 	if err := json.Unmarshal(payload, &pull); err != nil {
 		return restPull{}, err
 	}
-	if pull.Head.Sha != entry.HeadSha {
-		return pull, fmt.Errorf("PR #%d serves %s instead of published head %s", pull.Number, pull.Head.Sha, entry.HeadSha)
+	if pull.Head.Ref != entry.Head || !strings.EqualFold(pull.Head.Repo.FullName, owner+"/"+repo) {
+		return pull, fmt.Errorf("PR #%d uses head %s:%s instead of %s/%s:%s", pull.Number, pull.Head.Repo.FullName, pull.Head.Ref, owner, repo, entry.Head)
+	}
+	if pull.State != "open" {
+		return pull, fmt.Errorf("PR #%d is %s after metadata update", pull.Number, pull.State)
 	}
 	if entry.Draft != nil && pull.Draft != *entry.Draft {
 		mutation := "markPullRequestReadyForReview"

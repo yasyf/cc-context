@@ -186,7 +186,7 @@ func TestLegacyForestRefusesNativeParentBeforePlanning(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	if _, err := db.Exec(`INSERT INTO branch_metadata(branch_name,parent_branch_name,parent_branch_revision,validation_result,children) VALUES('stranded','shared',?,'VALID','[]')`, main); err != nil {
 		t.Fatal(err)
 	}

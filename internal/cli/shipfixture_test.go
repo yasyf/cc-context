@@ -76,7 +76,9 @@ func shipRepo(t *testing.T, opts ...vcstest.Opt) *vcstest.Fixture {
 	t.Helper()
 	f := vcstest.Repo(t, opts...)
 	seedLaneRecords(f.Context(), t, f.Dir, laneSeed{})
-	f.Decorate(func(ctx context.Context) context.Context { return withCleanup(ctx, unsupportedCleanup{}) })
+	f.Decorate(func(ctx context.Context) context.Context {
+		return withStackProvider(withCleanup(ctx, unsupportedCleanup{}), false)
+	})
 	return f
 }
 
@@ -243,7 +245,6 @@ func shipResetLog(t *testing.T, f *vcstest.Fixture) {
 func shipGTRepo(t *testing.T, opts ...vcstest.Opt) *vcstest.Fixture {
 	t.Helper()
 	f := shipRepo(t, append([]vcstest.Opt{vcstest.GT(), vcstest.Remote()}, opts...)...)
-	f.Decorate(func(ctx context.Context) context.Context { return withStackProvider(ctx, false) })
 	f.Decorate(newGTAPIStub(t).ctx)
 	stubStackPRs(t, f, nil)
 	stubStackStanding(t, f, nil)
@@ -877,6 +878,7 @@ exit 0
     printf '%s' "$names" | while IFS= read -r line || [ -n "$line" ]; do printf '%s\0' "$line"; done ;;
   "config --get")
     case "$3" in
+      ccx.stack) if [ -n "$GIT_CONFIG_CCX_STACK" ]; then printf '%s\n' "$GIT_CONFIG_CCX_STACK"; else exit 1; fi ;;
       ccx.nogt) if [ -n "$GIT_CONFIG_CCX_NOGT" ]; then printf '%s\n' "$GIT_CONFIG_CCX_NOGT"; else exit 1; fi ;;
       branch.*.remote) if [ -n "$GIT_BRANCH_REMOTE" ]; then printf '%s\n' "$GIT_BRANCH_REMOTE"; else exit 1; fi ;;
       *) printf 'fake git: unmatched config key: %s\n' "$3" >&2; exit 2 ;;
@@ -952,6 +954,7 @@ exit 0
     # The equals form, which gtmeta uses; the case below is the space form.
     dir=${1#--git-dir=}
     case "$2" in
+      config) if [ "$3 $4" = "--get ccx.stack" ]; then if [ -n "$GIT_CONFIG_CCX_STACK" ]; then printf '%s\n' "$GIT_CONFIG_CCX_STACK"; else exit 1; fi; else printf 'fake git: unmatched config key: %s\n' "$4" >&2; exit 2; fi ;;
       for-each-ref) while IFS= read -r line; do printf '%s\n' "$line"; done < "$dir/` + vcstest.GraphiteRefsFile + `" ;;
       *) printf 'fake git: unmatched --git-dir= argv: %s\n' "$*" >&2; exit 2 ;;
     esac ;;
@@ -1208,9 +1211,8 @@ func setupShip(t *testing.T, marker string, withGh bool) string {
 func setupShipGT(t *testing.T, withGh bool) (string, *gtAPIStub) {
 	t.Helper()
 	log := setupShip(t, ".git", withGh)
-	if err := os.WriteFile(filepath.Join(".git", ".graphite_repo_config"), []byte("{}"), 0o644); err != nil { //nolint:gosec // test fixture file
-		t.Fatalf("write .graphite_repo_config: %v", err)
-	}
+	vcstest.WriteGraphiteMeta(t, ".git", `{"main":{"trunk":true},"feature":{"parents":[{"ref":"main","sha":"deadbeef"}]}}`)
+	t.Setenv("GIT_CONFIG_CCX_STACK", "graphite")
 	t.Setenv("GIT_BRANCH", "feature")
 	setGTState(t, `{"main":{"trunk":true},"feature":{"parents":[{"ref":"main","sha":"deadbeef"}]}}`)
 	seedLaneRecords(context.Background(), t, ".", laneSeed{})
@@ -1260,6 +1262,9 @@ func gtRealRefsArgv(t *testing.T, f *vcstest.Fixture) []string {
 
 func runShipCmd(ctx context.Context, t *testing.T, args ...string) (string, error) {
 	t.Helper()
+	if os.Getenv("SHIP_FAKE_ROOT") != "" {
+		ctx = withStackProvider(ctx, false)
+	}
 	cmd := newShipCmd() //nolint:contextcheck // ExecuteContext(ctx) below is what sets cmd's context; contextcheck cannot see through cobra's two-step wiring
 	var out, errBuf bytes.Buffer
 	cmd.SetOut(&out)
@@ -1279,6 +1284,9 @@ func runShipCmd(ctx context.Context, t *testing.T, args ...string) (string, erro
 // captured stdout (summary plus every report line) can be asserted verbatim.
 func runShipCmdFull(ctx context.Context, t *testing.T, args ...string) (string, string, error) {
 	t.Helper()
+	if os.Getenv("SHIP_FAKE_ROOT") != "" {
+		ctx = withStackProvider(ctx, false)
+	}
 	cmd := newShipCmd() //nolint:contextcheck // ExecuteContext(ctx) below is what sets cmd's context; contextcheck cannot see through cobra's two-step wiring
 	cmd.SilenceUsage = true
 	cmd.SilenceErrors = true

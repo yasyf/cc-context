@@ -189,6 +189,9 @@ func (c *Client) PullRequestInfo(ctx context.Context, req PullRequestInfoRequest
 	if c.providerErr != nil {
 		return nil, c.providerErr
 	}
+	if c.legacy != nil {
+		return c.mixedPullRequestInfo(ctx, req)
+	}
 	if c.IsNative() {
 		return c.nativePullRequestInfo(ctx, req)
 	}
@@ -223,7 +226,17 @@ func (c *Client) MergeabilityStatuses(ctx context.Context, repoOwner, repoName s
 	if c.providerErr != nil {
 		return nil, c.providerErr
 	}
+	if c.legacy != nil && c.queueProvider == "" {
+		infos, err := c.PullRequestInfo(ctx, PullRequestInfoRequest{RepoOwner: repoOwner, RepoName: repoName, PRNumbers: prNumbers})
+		if err != nil {
+			return nil, err
+		}
+		return c.MergeabilityFor(ctx, repoOwner, repoName, infos, prNumbers)
+	}
 	if c.queueProvider == "graphite" && c.IsNative() {
+		if c.legacy != nil {
+			return c.legacy.MergeabilityStatuses(ctx, repoOwner, repoName, prNumbers)
+		}
 		return Default().MergeabilityStatuses(ctx, repoOwner, repoName, prNumbers)
 	}
 	if c.queue != nil {

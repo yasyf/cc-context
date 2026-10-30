@@ -383,7 +383,7 @@ func (p *pass) record(node prNode, t target, i int, resp response) (PR, error) {
 		Activity:         last.Activity,
 		Graphite:         p.infos[t.number],
 		Mergeability:     p.mergeability[t.number],
-		QueueUnknown:     p.queueUnknown(),
+		QueueUnknown:     p.queueUnknown(t.number),
 	}
 	if node.Author != nil {
 		pr.Author = node.Author.Login
@@ -434,7 +434,9 @@ func (p *pass) record(node prNode, t target, i int, resp response) (PR, error) {
 	return pr, nil
 }
 
-func (p *pass) queueUnknown() bool { return p.gt != nil && p.infos == nil }
+func (p *pass) queueUnknown(number int) bool {
+	return p.gt != nil && (p.infos == nil || p.infos[number] == nil && p.gt.QueueRequiresStatus(gtapi.PullRequestInfo{}))
+}
 
 func (g *GitHub) queueRecords(ctx context.Context, numbers []int) (map[int]*gtapi.PullRequestInfo, map[int]string) {
 	if len(numbers) == 0 || g.gt == nil {
@@ -460,21 +462,21 @@ func (g *GitHub) queueRecords(ctx context.Context, numbers []int) (map[int]*gtap
 	}
 	mergeCtx, cancelMerge := context.WithTimeout(ctx, graphiteDeadline)
 	defer cancelMerge()
-	mergeability, err := g.gt.MergeabilityStatuses(mergeCtx, g.owner, g.name, numbers)
+	mergeability, err := g.gt.MergeabilityFor(mergeCtx, g.owner, g.name, infos, numbers)
 	if err != nil {
 		_, _ = fmt.Fprintf(g.warn, "prstate: %s: %v; this poll carries no mergeability\n", g.gt.QueueProvider(), err)
-		if g.gt.QueueProvider() != "graphite" {
-			return nil, nil
+	}
+	for _, number := range numbers {
+		info := byNumber[number]
+		if info == nil || !g.gt.QueueRequiresStatus(*info) {
+			continue
+		}
+		if _, known := mergeability[number]; !known {
+			_, _ = fmt.Fprintf(g.warn, "prstate: %s: queue state of #%d is unknown; this poll carries no queue state\n", g.gt.QueueProvider(), number)
+			delete(byNumber, number)
 		}
 	}
-	if g.gt.QueueProvider() != "graphite" {
-		for _, number := range numbers {
-			if _, known := mergeability[number]; !known {
-				_, _ = fmt.Fprintf(g.warn, "prstate: %s: queue state of #%d is unknown; this poll carries no queue state\n", g.gt.QueueProvider(), number)
-				return nil, nil
-			}
-		}
-	}
+
 	return byNumber, mergeability
 }
 

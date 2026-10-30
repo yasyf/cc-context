@@ -36,6 +36,8 @@ func infoRepo(t *testing.T, opts ...vcstest.Opt) *vcstest.Fixture {
 func infoGTRepo(t *testing.T, branches ...string) *vcstest.Fixture {
 	t.Helper()
 	f := vcstest.Repo(t, vcstest.GT(), vcstest.Remote(), vcstest.GTParentStack(branches...))
+	runTool(t, f, "git", "config", "ccx.stack", "graphite")
+	f.Decorate(func(ctx context.Context) context.Context { return withStackProvider(ctx, false) })
 	f.Isolate(t)
 	seedLaneRecords(f.Context(), t, f.Dir, laneSeed{})
 	return f

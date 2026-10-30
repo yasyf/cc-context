@@ -14,7 +14,10 @@ import (
 	"github.com/yasyf/cc-context/internal/vcs"
 )
 
-type stackProviderKey struct{}
+type (
+	stackProviderKey struct{}
+	stackParentKey   struct{}
+)
 
 func withStackProvider(ctx context.Context, native bool) context.Context {
 	provider := "graphite"
@@ -65,7 +68,7 @@ func nativeStackRun(ctx context.Context, dir render.Dir, argv []string, errW io.
 	if argv[0] == "init" {
 		return gtResult{}, nativemeta.Init(ctx, common, value("--trunk"))
 	}
-	trunk, err := nativemeta.ReadTrunk(common)
+	trunk, err := nativemeta.ReadTrunk(ctx, common)
 	if err != nil {
 		return gtResult{}, err
 	}
@@ -110,9 +113,7 @@ func nativeStackRun(ctx context.Context, dir render.Dir, argv []string, errW io.
 	if err != nil {
 		return gtResult{Output: output.String()}, err
 	}
-	if err = nativemeta.AdoptRoot(ctx, common, branch, trunk, base, head); err == nil && parent != trunk {
-		err = nativemeta.Reparent(ctx, common, map[string]string{branch: parent})
-	}
+	err = nativemeta.AdoptRoot(ctx, common, branch, parent, base, head)
 	return gtResult{Output: output.String()}, err
 }
 
@@ -154,7 +155,23 @@ func gtAPIForRepo(ctx context.Context, repo string) *gtapi.Client {
 	if err == nil {
 		canonical, parseErr := thinCanonicalRemote(strings.TrimSpace(remote))
 		if parseErr == nil && strings.EqualFold(canonical, "github.com/"+repo) {
-			return gtAPI(ctx)
+			client := gtAPI(ctx)
+			checkout, err := vcs.ResolveCheckout(workingDir(ctx))
+			if err != nil {
+				return client.WithProviderError(err)
+			}
+			legacy, err := vcs.GraphiteRepo(checkout)
+			if err != nil {
+				return client.WithProviderError(err)
+			}
+			if !legacy {
+				return client
+			}
+			owners, err := gtmeta.BranchProviders(ctx, checkout.CommonDir)
+			if err != nil {
+				return client.WithProviderError(err)
+			}
+			return client.WithBranchProviders(owners)
 		}
 	}
 	return gtAPINativeDefault()
@@ -227,6 +244,13 @@ func nativeQueueProbe(ctx context.Context, l lane) *statusProbe {
 	var numbers []int
 	for _, info := range infos {
 		if info.State == gtapi.PRMerged {
+			head, err := gitRevParse(probeCtx, l.dir(), "queue status", "HEAD")
+			if err != nil {
+				return &statusProbe{Verdict: queueUnknown, Detail: err.Error()}
+			}
+			if info.Newest().HeadSha != head {
+				return &statusProbe{Verdict: queueUnknown, Detail: fmt.Sprintf("merged PR #%d describes an earlier head of %s", info.PRNumber, branch)}
+			}
 			return &statusProbe{Verdict: queueMerged}
 		}
 		if info.State == gtapi.PROpen {

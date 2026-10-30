@@ -2629,7 +2629,7 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 				publishedRefs[created.Head] = nativemeta.PullRequest{Number: created.PRNumber, ID: created.PRID, URL: created.PRURL, StackNumber: created.StackNumber}
 			}
 			if err := nativemeta.RecordPullRequests(ctx, commonDir, publishedRefs); err != nil {
-				return nil, nil, fmt.Errorf("%s: record native stack PR references: %w", s.prefix, err)
+				return nil, nil, gtSubmitFailure(gtSubmitPartial(fmt.Errorf("record native stack PR references: %w", err), pr.Head, append(landed, out...)), s)
 			}
 		}
 		if !client.IsNative() {
@@ -3592,7 +3592,7 @@ func gtSubmitFailure(err error, s gtSubmit) error {
 		}
 		var partial *gtapi.SubmitError
 		if errors.As(err, &partial) {
-			return &gtAdvice{advice: gtStuck(s.prefix, gtSubmitSplit(partial, "GitHub"), s.suffix), cause: err}
+			return &gtAdvice{advice: gtStuck(s.prefix, gtSubmitSplit(partial, true), s.suffix), cause: err}
 		}
 		return fmt.Errorf("%s: native GitHub stack submission: %w", s.prefix, err)
 	}
@@ -3601,7 +3601,7 @@ func gtSubmitFailure(err error, s gtSubmit) error {
 	case errors.Is(err, gtapi.ErrUnauthorized) || errors.Is(err, gtapi.ErrNoToken):
 		return &gtAdvice{advice: gtStuck(s.prefix, "graphite auth required — run gt auth", s.suffix), cause: err}
 	case errors.As(err, &submitErr):
-		return &gtAdvice{advice: gtStuck(s.prefix, gtSubmitSplit(submitErr, "graphite"), s.suffix), cause: err}
+		return &gtAdvice{advice: gtStuck(s.prefix, gtSubmitSplit(submitErr, false), s.suffix), cause: err}
 	default:
 		return fmt.Errorf("%s: %w", s.prefix, err)
 	}
@@ -3632,8 +3632,12 @@ func gtSubmitSplitFailed(e *gtapi.SubmitError) string {
 	return strings.Join(failed, ", ")
 }
 
-func gtSubmitSplit(e *gtapi.SubmitError, provider string) string {
-	problem := provider + " refused " + gtSubmitSplitFailed(e) + "; every branch is already pushed"
+func gtSubmitSplit(e *gtapi.SubmitError, native bool) string {
+	failure := "graphite refused "
+	if native {
+		failure = "native stack submission failed for "
+	}
+	problem := failure + gtSubmitSplitFailed(e) + "; every branch is already pushed"
 	if len(e.Submitted) == 0 {
 		return problem
 	}
@@ -3641,7 +3645,7 @@ func gtSubmitSplit(e *gtapi.SubmitError, provider string) string {
 	for _, s := range e.Submitted {
 		landed = append(landed, fmt.Sprintf("%s → PR #%d", s.Head, s.PRNumber))
 	}
-	if provider == "GitHub" {
+	if native {
 		return problem + "; published " + strings.Join(landed, ", ")
 	}
 	return problem + "; landed " + strings.Join(landed, ", ")

@@ -1,10 +1,8 @@
 package nativeapi
 
-import (
-	"encoding/json"
-	"strings"
-)
+import "strings"
 
+// PullRequestInfoRequest identifies the repository and PR numbers or head branches to inspect.
 type PullRequestInfoRequest struct {
 	RepoOwner        string   `json:"repoOwner"`
 	RepoName         string   `json:"repoName"`
@@ -15,36 +13,37 @@ type PullRequestInfoRequest struct {
 	Callsite         string   `json:"callsite,omitempty"`
 }
 
-func (r PullRequestInfoRequest) MarshalJSON() ([]byte, error) {
-	type wire PullRequestInfoRequest
-	w := wire(r)
-	if w.PRNumbers == nil {
-		w.PRNumbers = []int{}
-	}
-	return json.Marshal(w)
-}
-
+// PRState preserves the lifecycle state GitHub reports for a pull request.
 type PRState string
 
 const (
-	PROpen   PRState = "OPEN"
+	// PROpen identifies a pull request that remains available for review.
+	PROpen PRState = "OPEN"
+	// PRClosed identifies a pull request closed without a merge.
 	PRClosed PRState = "CLOSED"
+	// PRMerged identifies a pull request GitHub records as merged.
 	PRMerged PRState = "MERGED"
 )
 
+// MergeQueueStatus records admission and the commit held by the selected queue.
 type MergeQueueStatus struct {
 	InQueue        bool   `json:"inQueue"`
 	EnqueuedCommit string `json:"enqueuedCommit"`
 }
 
 const (
-	MergeabilityQueued          = "testing"
-	MergeabilityWaiting         = "pending"
+	// MergeabilityQueued identifies an active verification run.
+	MergeabilityQueued = "testing"
+	// MergeabilityWaiting identifies an admitted PR awaiting a testing slot.
+	MergeabilityWaiting = "pending"
+	// MergeabilityFailureHandling identifies a failed dependency awaiting verification.
 	MergeabilityFailureHandling = "pendingFailure"
 )
 
+// MergeabilityRebasing identifies a parent replay that may move the published head.
 const MergeabilityRebasing = "rebasing"
 
+// QueuedMergeability recognizes active states, including newly introduced queued states.
 func QueuedMergeability(status string) bool {
 	switch status {
 	case "notReady", MergeabilityQueued, MergeabilityWaiting, "testsPassed", MergeabilityFailureHandling:
@@ -53,6 +52,7 @@ func QueuedMergeability(status string) bool {
 	return strings.HasPrefix(status, "queued:")
 }
 
+// PRVersion records the head and target observed in one GitHub metadata read.
 type PRVersion struct {
 	HeadSha            string `json:"headSha"`
 	BaseSha            string `json:"baseSha"`
@@ -61,6 +61,7 @@ type PRVersion struct {
 	AuthorGithubHandle string `json:"authorGithubHandle"`
 }
 
+// PullRequestInfo combines review state, native stack membership, and queue evidence.
 type PullRequestInfo struct {
 	PRID               string            `json:"prId,omitempty"`
 	StackNumber        int               `json:"stackNumber"`
@@ -81,23 +82,17 @@ type PullRequestInfo struct {
 	CliTrunk           string            `json:"cliTrunk"`
 }
 
-func (p PullRequestInfo) Newest() PRVersion {
-	newest := PRVersion{}
-	for _, v := range p.Versions {
-		if v.CreatedAt >= newest.CreatedAt {
-			newest = v
-		}
-	}
-	return newest
-}
-
+// SubmitAction distinguishes opening a PR from changing its existing metadata.
 type SubmitAction string
 
 const (
+	// SubmitCreate opens a PR from an already published branch.
 	SubmitCreate SubmitAction = "create"
+	// SubmitUpdate changes an existing PR while preserving fields not restated.
 	SubmitUpdate SubmitAction = "update"
 )
 
+// SubmitPR describes a published branch and the PR metadata its submission may change.
 type SubmitPR struct {
 	Action           SubmitAction `json:"action"`
 	Head             string       `json:"head"`
@@ -114,6 +109,7 @@ type SubmitPR struct {
 	MaintainRetarget bool         `json:"maintainRetarget,omitempty"`
 }
 
+// SubmitRequest groups branch submissions under one repository and stack trunk.
 type SubmitRequest struct {
 	RepoOwner             string     `json:"repoOwner"`
 	RepoName              string     `json:"repoName"`
@@ -124,6 +120,7 @@ type SubmitRequest struct {
 	PRs                   []SubmitPR `json:"prs"`
 }
 
+// SubmittedPR records an actual PR identity and its native stack after submission.
 type SubmittedPR struct {
 	PRID        string   `json:"prId"`
 	StackNumber int      `json:"stackNumber"`

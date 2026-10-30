@@ -23,13 +23,15 @@ const baseURLProd = "https://api.graphite.com/v1"
 const requestTimeout = 30 * time.Second
 
 type Client struct {
-	base          string
-	http          *http.Client
-	tokens        *tokenSource
-	native        *nativeapi.Client
-	queue         *nativeapi.Client
-	queueProvider string
-	providerErr   error
+	base            string
+	http            *http.Client
+	tokens          *tokenSource
+	native          *nativeapi.Client
+	queue           *nativeapi.Client
+	queueProvider   string
+	providerErr     error
+	branchProviders map[string]string
+	legacy          *Client
 }
 
 var defaultClient = sync.OnceValue(func() *Client { return New(baseURLProd) })

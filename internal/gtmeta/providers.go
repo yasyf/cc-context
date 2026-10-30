@@ -15,12 +15,15 @@ import (
 )
 
 const (
-	ProviderGitHub   = "github"
+	// ProviderGitHub selects GitHub native catalog and stack APIs.
+	ProviderGitHub = "github"
+	// ProviderGraphite retains Graphite metadata and submission behavior.
 	ProviderGraphite = "graphite"
 )
 
 type providerKey struct{}
 
+// WithProvider binds a resolved backend so one planner cannot combine two provider forests.
 func WithProvider(ctx context.Context, provider string) context.Context {
 	if provider != ProviderGitHub && provider != ProviderGraphite {
 		panic("invalid stack provider " + provider)
@@ -87,10 +90,28 @@ func owners(ctx context.Context, commonDir string) (ownership, error) {
 	return o, nil
 }
 
+// BranchProviders reads actual branch ownership with native catalog membership taking priority.
+func BranchProviders(ctx context.Context, commonDir string) (map[string]string, error) {
+	o, err := owners(ctx, commonDir)
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[string]string, len(o.graphite)+len(o.native))
+	for branch := range o.graphite {
+		result[branch] = ProviderGraphite
+	}
+	for branch := range o.native {
+		result[branch] = ProviderGitHub
+	}
+	return result, nil
+}
+
+// NativeMembership reports actual native branch ownership, excluding trunk entries.
 func NativeMembership(commonDir, branch string) (bool, error) {
 	return nativemeta.Membership(commonDir, branch)
 }
 
+// Provider preserves existing branch ownership before considering explicit mode or the native default.
 func Provider(ctx context.Context, commonDir, branch string) (string, error) {
 	native, err := NativeMembership(commonDir, branch)
 	if err != nil {
@@ -141,6 +162,7 @@ func Provider(ctx context.Context, commonDir, branch string) (string, error) {
 	}
 }
 
+// Init initializes native metadata only when its trunk agrees with existing Graphite configuration.
 func Init(ctx context.Context, commonDir, trunk string) error {
 	legacy, err := present(filepath.Join(commonDir, repoConfig))
 	if err != nil {
@@ -167,16 +189,19 @@ func stores(commonDir string) (native, legacy bool, err error) {
 	return
 }
 
+// Read isolates an explicitly selected provider or merges actual stores for generic inspection.
 func Read(ctx context.Context, commonDir string) (State, error) {
 	state, _, err := readProviders(ctx, commonDir, false)
 	return state, err
 }
 
+// ReadOrigin evaluates the selected forest against fetched trunk heads without moving local refs.
 func ReadOrigin(ctx context.Context, commonDir string) (State, error) {
 	state, _, err := readProviders(ctx, commonDir, true)
 	return state, err
 }
 
+// ReadOriginOrphans retains missing-parent evidence for the selected provider forest.
 func ReadOriginOrphans(ctx context.Context, commonDir string) (State, []Orphan, error) {
 	return readProviders(ctx, commonDir, true)
 }
@@ -223,7 +248,7 @@ func readProviders(ctx context.Context, commonDir string, remote bool) (State, [
 		return readStateOrphans(ctx, commonDir, remote)
 	}
 	if legacy {
-		if _, err := ReadTrunk(commonDir); err != nil {
+		if _, err := ReadTrunk(ctx, commonDir); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -260,7 +285,8 @@ func readProviders(ctx context.Context, commonDir string, remote bool) (State, [
 	return state, orphans, nil
 }
 
-func ReadTrunk(commonDir string) (string, error) {
+// ReadTrunk resolves the common trunk and rejects disagreement between installed providers.
+func ReadTrunk(ctx context.Context, commonDir string) (string, error) {
 	native, legacy, err := stores(commonDir)
 	if err != nil {
 		return "", err
@@ -268,7 +294,7 @@ func ReadTrunk(commonDir string) (string, error) {
 	if !native {
 		return graphiteReadTrunk(commonDir)
 	}
-	trunk, err := nativemeta.ReadTrunk(commonDir)
+	trunk, err := nativemeta.ReadTrunk(ctx, commonDir)
 	if err != nil {
 		return "", err
 	}
@@ -284,6 +310,7 @@ func ReadTrunk(commonDir string) (string, error) {
 	return trunk, nil
 }
 
+// Rows lists provider-owned pruning candidates without exposing native branches to a Graphite operation.
 func Rows(ctx context.Context, commonDir string) ([]Row, error) {
 	if contextProvider(ctx) == ProviderGraphite {
 		rows, err := graphiteRows(ctx, commonDir)
@@ -344,10 +371,12 @@ func Rows(ctx context.Context, commonDir string) ([]Row, error) {
 	return out, nil
 }
 
+// AdoptRoot records a branch in its owning provider and rejects implicit cross-provider conversion.
 func AdoptRoot(ctx context.Context, commonDir, branch, trunk, base, head string) error {
 	return adoptProvider(ctx, commonDir, branch, trunk, base, head, false)
 }
 
+// AdoptFrozen records a held branch without changing the ownership of existing metadata.
 func AdoptFrozen(ctx context.Context, commonDir, branch, trunk, base, head string) error {
 	return adoptProvider(ctx, commonDir, branch, trunk, base, head, true)
 }
@@ -431,6 +460,7 @@ func partition(o ownership, branches []string, requireTracked bool) (native, leg
 	return
 }
 
+// Forget removes each branch only from its owning metadata store, leaving Git refs untouched.
 func Forget(ctx context.Context, commonDir string, branches []string) error {
 	if len(branches) == 0 {
 		return nil
@@ -449,6 +479,7 @@ func Forget(ctx context.Context, commonDir string, branches []string) error {
 	return nativemeta.Forget(ctx, commonDir, native)
 }
 
+// Reparent partitions relationship changes by ownership and refuses cross-provider parent edges.
 func Reparent(ctx context.Context, commonDir string, moves map[string]string) error {
 	if len(moves) == 0 {
 		return nil
@@ -482,6 +513,7 @@ func Reparent(ctx context.Context, commonDir string, moves map[string]string) er
 	return nativemeta.Reparent(ctx, commonDir, nativeMoves)
 }
 
+// ReadPublishedChild reads a child from its selected owner for publication-receipt comparison.
 func ReadPublishedChild(ctx context.Context, commonDir, branch string) (PublishedChildState, error) {
 	if contextProvider(ctx) == ProviderGraphite {
 		native, err := NativeMembership(commonDir, branch)
@@ -508,6 +540,7 @@ func ReadPublishedChild(ctx context.Context, commonDir, branch string) (Publishe
 	return PublishedChildState(row), err
 }
 
+// LastSubmitted isolates or merges publication receipts with native ownership taking precedence.
 func LastSubmitted(ctx context.Context, commonDir string) (map[string]Version, error) {
 	if contextProvider(ctx) == ProviderGraphite {
 		recorded, err := graphiteLastSubmitted(ctx, commonDir)
@@ -565,6 +598,7 @@ func LastSubmitted(ctx context.Context, commonDir string) (map[string]Version, e
 	return out, nil
 }
 
+// RecordSubmitted partitions publication receipts without migrating branches between providers.
 func RecordSubmitted(ctx context.Context, commonDir string, versions map[string]Version) error {
 	if len(versions) == 0 {
 		return nil
@@ -590,6 +624,7 @@ func RecordSubmitted(ctx context.Context, commonDir string, versions map[string]
 	return nativemeta.RecordSubmitted(ctx, commonDir, n)
 }
 
+// RecordRestacked updates fork points only in the providers that own the replayed branches.
 func RecordRestacked(ctx context.Context, commonDir string, revisions map[string]string) error {
 	if len(revisions) == 0 {
 		return nil

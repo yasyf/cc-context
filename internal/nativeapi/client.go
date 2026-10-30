@@ -1,3 +1,4 @@
+// Package nativeapi publishes native GitHub stacks and reads GitHub or Trunk queue state.
 package nativeapi
 
 import (
@@ -21,6 +22,7 @@ const (
 	requestTimeout = 30 * time.Second
 )
 
+// Client publishes GitHub PRs and reads the explicitly selected merge queue.
 type Client struct {
 	base          string
 	http          *http.Client
@@ -32,24 +34,28 @@ type Client struct {
 
 var defaultClient = sync.OnceValue(func() *Client { return New(baseURLProd) })
 
+// Default shares GitHub authentication and HTTP connections within this process.
 func Default() *Client { return defaultClient() }
 
+// New binds publication and metadata reads to a GitHub API root.
 func New(baseURL string) *Client {
 	return &Client{base: strings.TrimSuffix(baseURL, "/"), http: &http.Client{}, tokens: &tokenSource{resolve: resolveToken}, queueBase: "https://api.trunk.io", queueToken: func() (string, error) {
 		token := os.Getenv("TRUNK_MERGE_API_KEY")
 		if token == "" {
-			return "", fmt.Errorf("Trunk queue status requires TRUNK_MERGE_API_KEY with a scoped v2 API key")
+			return "", fmt.Errorf("trunk queue status requires TRUNK_MERGE_API_KEY with a scoped v2 API key")
 		}
 		return token, nil
 	}}
 }
 
+// WithQueueProvider selects queue reads without changing publication credentials.
 func (c *Client) WithQueueProvider(provider string) *Client {
 	selected := *c
 	selected.queueProvider = provider
 	return &selected
 }
 
+// NewWithToken uses the supplied GitHub credential for an isolated API endpoint.
 func NewWithToken(baseURL, token string) *Client {
 	c := New(baseURL)
 	c.tokens.resolve = func() (string, error) { return token, nil }

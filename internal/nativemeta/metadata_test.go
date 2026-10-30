@@ -196,11 +196,11 @@ func TestNoCatalogReadsNativeRemoteTrunk(t *testing.T) {
 func TestCatalogMutationHonorsNativeOperationLock(t *testing.T) {
 	dir := repo(t)
 	common := filepath.Join(dir, ".git")
-	held, err := lockCatalog(t.Context(), filepath.Join(common, "gh-stack-operation.lock"))
+	held, err := lockCatalog(t.Context(), common, "gh-stack-operation.lock")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer held.Close()
+	defer func() { _ = held.Close() }()
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Millisecond)
 	defer cancel()
 	if err := Init(ctx, common, "main"); err == nil {
@@ -222,7 +222,7 @@ func repo(t *testing.T) string {
 
 func git(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command("git", args...)
+	cmd := exec.Command("git", args...) // #nosec G204 -- arguments are authored by repository fixtures, never external input.
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	if err != nil {

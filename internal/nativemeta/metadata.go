@@ -1,3 +1,4 @@
+// Package nativemeta maintains GitHub native stack catalogs and publication receipts.
 package nativemeta
 
 import (
@@ -15,12 +16,16 @@ import (
 	"github.com/yasyf/cc-context/internal/render"
 )
 
+// StateFrozen marks branches that stack replay and publication must leave untouched.
 const StateFrozen = "frozen"
 
+// Ref captures the parent revision a branch was last based on.
 type Ref struct {
 	Ref string
 	SHA string
 }
+
+// BranchState combines live Git identity with recorded replay and hold information.
 type BranchState struct {
 	Trunk        bool
 	NeedsRestack bool
@@ -28,24 +33,33 @@ type BranchState struct {
 	State        string
 	Parents      []Ref
 }
+
+// State indexes tracked branches and their trunks by branch name.
 type State map[string]BranchState
 
+// Row identifies stale or unresolved catalog entries for pruning.
 type Row struct {
 	Branch   string
 	Parent   string
 	Stale    bool
 	Diverged bool
 }
+
+// Orphan retains a live child whose recorded parent ref disappeared.
 type Orphan struct {
 	Branch         string
 	Parent         string
 	ParentRevision string
 }
+
+// Version records the head and base observed at a successful publication.
 type Version struct {
 	HeadSha  string `json:"headSha"`
 	BaseSha  string `json:"baseSha"`
 	BaseName string `json:"baseName"`
 }
+
+// PublishedChildState exposes the recorded identity needed to compare a child with a publication receipt.
 type PublishedChildState struct {
 	Parent             string
 	ParentRevision     string
@@ -95,7 +109,7 @@ type branchRow struct {
 
 func readCatalog(commonDir string) (catalog, error) {
 	c := catalog{SchemaVersion: 1, Stacks: []stack{}}
-	if err := readJSON(filepath.Join(commonDir, "gh-stack"), &c); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := readJSON(commonDir, "gh-stack", &c); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return c, err
 	}
 	if c.SchemaVersion != 1 {
@@ -110,19 +124,24 @@ func load(commonDir string) (catalog, receipts, error) {
 		return c, receipts{}, err
 	}
 	r := receipts{Frozen: map[string]bool{}, Submitted: map[string]Version{}}
-	if err := readJSON(filepath.Join(commonDir, "ccx-stack-receipts.json"), &r); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := readJSON(commonDir, "ccx-stack-receipts.json", &r); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return c, r, err
 	}
 	return c, r, nil
 }
 
-func readJSON(path string, value any) error {
-	data, err := os.ReadFile(path)
+func readJSON(commonDir, name string, value any) error {
+	root, err := os.OpenRoot(commonDir)
 	if err != nil {
-		return fmt.Errorf("read %s: %w", path, err)
+		return fmt.Errorf("open metadata directory %s: %w", commonDir, err)
+	}
+	defer func() { _ = root.Close() }()
+	data, err := root.ReadFile(name)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", filepath.Join(commonDir, name), err)
 	}
 	if err := json.Unmarshal(data, value); err != nil {
-		return fmt.Errorf("parse %s: %w", path, err)
+		return fmt.Errorf("parse %s: %w", filepath.Join(commonDir, name), err)
 	}
 	return nil
 }
@@ -151,6 +170,7 @@ func rows(c catalog) ([]branchRow, error) {
 	return out, nil
 }
 
+// Init registers a trunk without replacing existing native stacks.
 func Init(ctx context.Context, commonDir, trunk string) error {
 	return mutate(ctx, commonDir, func(c *catalog, _ *receipts) (bool, bool, error) {
 		for _, s := range c.Stacks {
@@ -167,16 +187,19 @@ func Init(ctx context.Context, commonDir, trunk string) error {
 	})
 }
 
+// Read combines the native catalog with current local branch heads.
 func Read(ctx context.Context, commonDir string) (State, error) {
 	s, _, err := readState(ctx, commonDir, false)
 	return s, err
 }
 
+// ReadOrigin compares branch bases with the fetched origin trunk while leaving local trunk refs unchanged.
 func ReadOrigin(ctx context.Context, commonDir string) (State, error) {
 	s, _, err := ReadOriginOrphans(ctx, commonDir)
 	return s, err
 }
 
+// ReadOriginOrphans also preserves children whose recorded parents no longer have refs.
 func ReadOriginOrphans(ctx context.Context, commonDir string) (State, []Orphan, error) {
 	return readState(ctx, commonDir, true)
 }
@@ -191,7 +214,7 @@ func readState(ctx context.Context, commonDir string, remote bool) (State, []Orp
 		return nil, nil, err
 	}
 	if len(r) == 0 {
-		trunk, err := ReadTrunk(commonDir)
+		trunk, err := ReadTrunk(ctx, commonDir)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -267,7 +290,8 @@ func readHeads(ctx context.Context, commonDir string, rows []branchRow, remote b
 	return heads, nil
 }
 
-func ReadTrunk(commonDir string) (string, error) {
+// ReadTrunk resolves a catalog trunk or the repository default before native initialization.
+func ReadTrunk(ctx context.Context, commonDir string) (string, error) {
 	c, _, err := load(commonDir)
 	if err != nil {
 		return "", err
@@ -288,7 +312,7 @@ func ReadTrunk(commonDir string) (string, error) {
 			return trunk, nil
 		}
 	}
-	out, err := render.RunCLI(context.Background(), render.Dir(commonDir), "git", []string{"--git-dir=" + commonDir, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"})
+	out, err := render.RunCLI(ctx, render.Dir(commonDir), "git", []string{"--git-dir=" + commonDir, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"})
 	if err == nil {
 		trunk := strings.TrimPrefix(strings.TrimSpace(out), "origin/")
 		if len(trunks) == 0 || trunks[trunk] {
@@ -298,6 +322,7 @@ func ReadTrunk(commonDir string) (string, error) {
 	return "", fmt.Errorf("native stack catalog has no unambiguous trunk; initialize it with gh stack init --base <branch>")
 }
 
+// Rows includes stale catalog entries that normal state reads omit.
 func Rows(ctx context.Context, commonDir string) ([]Row, error) {
 	c, _, err := load(commonDir)
 	if err != nil {
@@ -321,16 +346,16 @@ func Rows(ctx context.Context, commonDir string) ([]Row, error) {
 func mutate(ctx context.Context, commonDir string, change func(*catalog, *receipts) (bool, bool, error)) error {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	operation, err := lockCatalog(ctx, filepath.Join(commonDir, "gh-stack-operation.lock"))
+	operation, err := lockCatalog(ctx, commonDir, "gh-stack-operation.lock")
 	if err != nil {
 		return err
 	}
-	defer operation.Close()
-	lock, err := lockCatalog(ctx, filepath.Join(commonDir, "gh-stack.lock"))
+	defer func() { _ = operation.Close() }()
+	lock, err := lockCatalog(ctx, commonDir, "gh-stack.lock")
 	if err != nil {
 		return err
 	}
-	defer lock.Close()
+	defer func() { _ = lock.Close() }()
 	c, r, err := load(commonDir)
 	if err != nil {
 		return err
@@ -350,8 +375,13 @@ func mutate(ctx context.Context, commonDir string, change func(*catalog, *receip
 	return nil
 }
 
-func lockCatalog(ctx context.Context, path string) (*os.File, error) {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+func lockCatalog(ctx context.Context, commonDir, name string) (*os.File, error) {
+	root, err := os.OpenRoot(commonDir)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = root.Close() }()
+	f, err := root.OpenFile(name, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, err
 	}
@@ -371,7 +401,7 @@ func writeJSON(commonDir, name string, value any) error {
 	if err != nil {
 		return err
 	}
-	defer os.Remove(f.Name())
+	defer func() { _ = os.Remove(f.Name()) }()
 	if _, err := f.Write(append(data, '\n')); err != nil {
 		_ = f.Close()
 		return err
@@ -382,10 +412,12 @@ func writeJSON(commonDir, name string, value any) error {
 	return os.Rename(f.Name(), filepath.Join(commonDir, name))
 }
 
+// AdoptRoot records a branch under its actual parent and rejects a non-linear native stack.
 func AdoptRoot(ctx context.Context, commonDir, branch, trunk, base, head string) error {
 	return adoptRoot(ctx, commonDir, branch, trunk, base, head, false)
 }
 
+// AdoptFrozen records the same native relationship under a hold that prevents replay or publication.
 func AdoptFrozen(ctx context.Context, commonDir, branch, trunk, base, head string) error {
 	return adoptRoot(ctx, commonDir, branch, trunk, base, head, true)
 }
@@ -429,6 +461,7 @@ func adoptRoot(ctx context.Context, commonDir, branch, parent, base, head string
 	})
 }
 
+// Forget removes catalog entries and their receipts without deleting Git refs.
 func Forget(ctx context.Context, commonDir string, branches []string) error {
 	if len(branches) == 0 {
 		return nil
@@ -447,6 +480,7 @@ func Forget(ctx context.Context, commonDir string, branches []string) error {
 	})
 }
 
+// Reparent moves catalog relationships while retaining the fork points that still require replay.
 func Reparent(ctx context.Context, commonDir string, moves map[string]string) error {
 	if len(moves) == 0 {
 		return nil
@@ -535,11 +569,13 @@ func rebuild(c *catalog, rows map[string]branchRow) error {
 	return nil
 }
 
+// LastSubmitted returns the publication receipts retained independently of the native catalog.
 func LastSubmitted(_ context.Context, commonDir string) (map[string]Version, error) {
 	_, r, err := load(commonDir)
 	return r.Submitted, err
 }
 
+// RecordSubmitted updates a batch of publication receipts only when every branch is tracked.
 func RecordSubmitted(ctx context.Context, commonDir string, versions map[string]Version) error {
 	if len(versions) == 0 {
 		return nil
@@ -563,6 +599,7 @@ func RecordSubmitted(ctx context.Context, commonDir string, versions map[string]
 	})
 }
 
+// RecordRestacked advances recorded fork points after successful replay.
 func RecordRestacked(ctx context.Context, commonDir string, revisions map[string]string) error {
 	if len(revisions) == 0 {
 		return nil
@@ -585,6 +622,7 @@ func RecordRestacked(ctx context.Context, commonDir string, revisions map[string
 	})
 }
 
+// ReadPublishedChild combines a catalog relationship with its local head and publication receipt.
 func ReadPublishedChild(ctx context.Context, commonDir, branch string) (PublishedChildState, error) {
 	c, r, err := load(commonDir)
 	if err != nil {
@@ -629,6 +667,7 @@ func ReadPublishedChild(ctx context.Context, commonDir, branch string) (Publishe
 	return out, nil
 }
 
+// PullRequest carries server identities to retain after successful native registration.
 type PullRequest struct {
 	Number      int
 	ID          string
@@ -636,6 +675,7 @@ type PullRequest struct {
 	StackNumber int
 }
 
+// RecordPullRequests attaches published PR identities to their existing native catalog branches.
 func RecordPullRequests(ctx context.Context, commonDir string, published map[string]PullRequest) error {
 	return mutate(ctx, commonDir, func(c *catalog, _ *receipts) (bool, bool, error) {
 		found := map[string]bool{}
@@ -660,6 +700,7 @@ func RecordPullRequests(ctx context.Context, commonDir string, published map[str
 	})
 }
 
+// BranchNames lists actual native catalog members without treating trunks as owned branches.
 func BranchNames(commonDir string) ([]string, error) {
 	c, err := readCatalog(commonDir)
 	if err != nil {
@@ -679,6 +720,7 @@ func BranchNames(commonDir string) ([]string, error) {
 	return names, nil
 }
 
+// Membership reports catalog ownership independently of live refs or supplemental receipts.
 func Membership(commonDir, branch string) (bool, error) {
 	names, err := BranchNames(commonDir)
 	return slices.Contains(names, branch), err

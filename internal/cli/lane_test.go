@@ -635,6 +635,8 @@ func TestGTReachabilityLocksProbe(t *testing.T) {
 func TestShipGateRespectsNoGTConfig(t *testing.T) {
 	t.Parallel()
 	f := vcstest.Repo(t, vcstest.GT(), vcstest.Remote())
+	runTool(t, f, "git", "config", "ccx.stack", "graphite")
+	f.Decorate(func(ctx context.Context) context.Context { return withStackProvider(ctx, false) })
 	seedLaneRecords(f.Context(), t, f.Dir, laneSeed{})
 	runTool(t, f, "git", "config", nogtKey, "true")
 	resetArgvLog(t, f)
@@ -776,7 +778,7 @@ func TestReviewsStackDeclinesForeignRepo(t *testing.T) {
 	head := shipHead(t, f)
 
 	_, err := runReviewsCmdIn(t, f, "--stack")
-	wantErr := "reviews: --stack declined the graphite lane: " + foreignNote
+	wantErr := "reviews: --stack declined the stack lane: " + foreignNote
 	if err == nil || err.Error() != wantErr {
 		t.Fatalf("reviews --stack error = %v, want %q", err, wantErr)
 	}
@@ -790,6 +792,8 @@ func TestReviewsStackDeclinesForeignRepo(t *testing.T) {
 func TestResolveLaneGTMissingFromContext(t *testing.T) {
 	t.Parallel()
 	f := vcstest.Repo(t, vcstest.Remote(), vcstest.GT())
+	runTool(t, f, "git", "config", "ccx.stack", "graphite")
+	f.Decorate(func(ctx context.Context) context.Context { return withStackProvider(ctx, false) })
 	f.OnlyShimPATH(t)
 	if err := os.Remove(filepath.Join(f.ShimBin, "gt")); err != nil {
 		t.Fatalf("remove gt shim: %v", err)

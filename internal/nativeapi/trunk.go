@@ -53,16 +53,17 @@ func (c *Client) queueRepository(ctx context.Context, owner, repo string) (strin
 			break
 		}
 		if page.NextCursor == nil || *page.NextCursor == "" {
-			return "", fmt.Errorf("Trunk repository response advertises another page without a cursor")
+			return "", fmt.Errorf("trunk repository response advertises another page without a cursor")
 		}
 		query.Set("cursor", *page.NextCursor)
 	}
 	if len(ids) != 1 {
-		return "", fmt.Errorf("Trunk resolved %s/%s to %d repositories, expected one", owner, repo, len(ids))
+		return "", fmt.Errorf("trunk resolved %s/%s to %d repositories, expected one", owner, repo, len(ids))
 	}
 	return ids[0], nil
 }
 
+// MergeabilityStatuses reads the selected queue and leaves unindexed PRs absent.
 func (c *Client) MergeabilityStatuses(ctx context.Context, owner, repo string, numbers []int) (map[int]string, error) {
 	switch c.queueProvider {
 	case "", "github":
@@ -133,11 +134,11 @@ func (c *Client) trunkQueueStatuses(ctx context.Context, owner, repo string, num
 			}
 			for _, pr := range page.Data {
 				if !slices.Contains(batch, pr.Number) {
-					return nil, fmt.Errorf("Trunk returned unrequested pull request #%d", pr.Number)
+					return nil, fmt.Errorf("trunk returned unrequested pull request #%d", pr.Number)
 				}
 				if pr.QueueEntry == nil {
 					if pr.CurrentlySubmitted {
-						return nil, fmt.Errorf("Trunk reports PR #%d submitted without a queue entry", pr.Number)
+						return nil, fmt.Errorf("trunk reports PR #%d submitted without a queue entry", pr.Number)
 					}
 					states[pr.Number] = "notQueued"
 					continue
@@ -147,7 +148,7 @@ func (c *Client) trunkQueueStatuses(ctx context.Context, owner, repo string, num
 					state = "queued:" + state
 				}
 				if !pr.CurrentlySubmitted && QueuedMergeability(state) {
-					return nil, fmt.Errorf("Trunk reports PR #%d outside the queue with active state %q", pr.Number, state)
+					return nil, fmt.Errorf("trunk reports PR #%d outside the queue with active state %q", pr.Number, state)
 				}
 				states[pr.Number] = state
 			}
@@ -155,7 +156,7 @@ func (c *Client) trunkQueueStatuses(ctx context.Context, owner, repo string, num
 				break
 			}
 			if page.NextCursor == nil || *page.NextCursor == "" {
-				return nil, fmt.Errorf("Trunk pull request response advertises another page without a cursor")
+				return nil, fmt.Errorf("trunk pull request response advertises another page without a cursor")
 			}
 			query.Set("cursor", *page.NextCursor)
 		}

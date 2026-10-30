@@ -102,7 +102,7 @@ func thinSourceOf(ctx context.Context, src lane) (thinSource, error) {
 		return thinSource{}, fmt.Errorf("stack new: %w", err)
 	}
 	if src.gt {
-		s.trunk, err = gtmeta.ReadTrunk(src.checkout.CommonDir)
+		s.trunk, err = gtmeta.ReadTrunk(ctx, src.checkout.CommonDir)
 	} else {
 		var tr vcs.Trunk
 		if tr, err = vcs.ResolveTrunk(ctx, src.dir(), remote); err == nil {

@@ -2,13 +2,18 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/yasyf/cc-context/internal/gtapi"
+	"github.com/yasyf/cc-context/internal/gtmeta"
+	"github.com/yasyf/cc-context/internal/nativemeta"
+	"github.com/yasyf/cc-context/internal/vcs"
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
@@ -74,7 +79,7 @@ func TestNativePublicationRequiresKnownUnqueuedStateForChanges(t *testing.T) {
 			calls := 0
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				calls++
-				fmt.Fprintf(w, `{"data":{"repository":{"p0":%s}}}`, tt.queue)
+				_, _ = fmt.Fprintf(w, `{"data":{"repository":{"p0":%s}}}`, tt.queue)
 			}))
 			defer server.Close()
 			client := gtapi.NewNativeWithToken(server.URL, "stub")
@@ -95,5 +100,69 @@ func TestNativePublicationRequiresKnownUnqueuedStateForChanges(t *testing.T) {
 				t.Fatalf("unchanged published head polled queue: %d", calls)
 			}
 		})
+	}
+}
+
+func TestNativeQueueProbeDoesNotLandAReusedBranchByName(t *testing.T) {
+	f := shipRepo(t)
+	current := f.Out(t, "git", "rev-parse", "HEAD")
+	for _, tt := range []struct {
+		name, head string
+		want       queueVerdict
+	}{
+		{"same published head", current, queueMerged},
+		{"earlier branch history", "earlier-head", queueUnknown},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body := map[string]any{"data": map[string]any{"repository": map[string]any{
+					"h0": map[string]any{"totalCount": 0, "nodes": []any{}},
+					"c0": map[string]any{"nodes": []any{map[string]any{"number": 42, "state": "MERGED", "headRefOid": tt.head, "headRefName": "main", "baseRefName": "main"}}},
+				}}}
+				if err := json.NewEncoder(w).Encode(body); err != nil {
+					t.Error(err)
+				}
+			}))
+			defer server.Close()
+			client := gtapi.NewNativeWithToken(server.URL, "stub")
+			got := nativeQueueProbe(withGTAPI(f.Context(), client), lane{kind: vcs.Git, root: f.Dir, native: true, repo: &vcs.Repo{NameWithOwner: "org/repo"}})
+			if got.Verdict != tt.want {
+				t.Fatalf("probe=%+v want %s", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestStackNewInheritsExplicitLegacyParentFromNativeCheckout(t *testing.T) {
+	f := shipGTRepo(t)
+	shipGTStack(t, f, "legacy-parent")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-c", "native-current", "main")
+	writeShipFile(t, f.Dir, "native.txt", "native change\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "native.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-m", "native change")
+	base := f.Out(t, "git", "rev-parse", "main")
+	head := f.Out(t, "git", "rev-parse", "HEAD")
+	common := filepath.Join(f.Dir, ".git")
+	if err := nativemeta.AdoptRoot(f.Context(), common, "native-current", "main", base, head); err != nil {
+		t.Fatal(err)
+	}
+	child := filepath.Join(t.TempDir(), "legacy-child")
+	if _, _, err := runStackCmd(t, f, "new", "legacy-child", "--parent", "legacy-parent", "--full-history", "--path", child); err != nil {
+		t.Fatal(err)
+	}
+	provider, err := gtmeta.Provider(f.Context(), common, "legacy-child")
+	if err != nil || provider != gtmeta.ProviderGraphite {
+		t.Fatalf("child provider=%s error=%v", provider, err)
+	}
+	if native, err := gtmeta.NativeMembership(common, "legacy-child"); err != nil || native {
+		t.Fatalf("legacy child adopted as native: %v %v", native, err)
+	}
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "legacy-parent")
+	nativeChild := filepath.Join(t.TempDir(), "native-child")
+	if _, _, err := runStackCmd(t, f, "new", "native-child", "--parent", "native-current", "--full-history", "--path", nativeChild); err != nil {
+		t.Fatal(err)
+	}
+	if native, err := gtmeta.NativeMembership(common, "native-child"); err != nil || !native {
+		t.Fatalf("native parent produced nonnative child: %v %v", native, err)
 	}
 }

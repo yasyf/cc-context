@@ -24,7 +24,13 @@ func TestPullRequestInfoBatchesGitHubReadsInInputOrder(t *testing.T) {
 			t.Error(err)
 		}
 		queries = append(queries, body.Query)
-		fmt.Fprint(w, `{"data":{"repository":{"p0":{"number":3,"state":"OPEN","headRefName":"feature","headRefOid":"new-head","baseRefName":"parent","baseRefOid":"base-head","updatedAt":"2026-10-30T12:00:00Z","author":{"login":"author"},"stackEntry":{"position":2},"stack":{"number":8,"baseRefName":"dev","entries":{"nodes":[{"position":1,"pullRequest":{"number":2}},{"position":2,"pullRequest":{"number":3}}],"pageInfo":{"hasNextPage":false}}},"p1":{"number":1,"state":"MERGED","mergeCommit":{"oid":"landed"},"updatedAt":"2026-10-29T12:00:00Z"}}}}`)
+		response := map[string]any{"data": map[string]any{"repository": map[string]any{
+			"p0": map[string]any{"number": 3, "state": "OPEN", "headRefName": "feature", "headRefOid": "new-head", "baseRefName": "parent", "baseRefOid": "base-head", "updatedAt": "2026-10-30T12:00:00Z", "author": map[string]any{"login": "author"}, "stackEntry": map[string]any{"position": 2}, "stack": map[string]any{"number": 8, "baseRefName": "dev", "entries": map[string]any{"nodes": []map[string]any{{"position": 1, "pullRequest": map[string]any{"number": 2}}, {"position": 2, "pullRequest": map[string]any{"number": 3}}}, "pageInfo": map[string]any{"hasNextPage": false}}}},
+			"p1": map[string]any{"number": 1, "state": "MERGED", "mergeCommit": map[string]any{"oid": "landed"}, "updatedAt": "2026-10-29T12:00:00Z"},
+		}}}
+		if err := json.NewEncoder(w).Encode(response); err != nil {
+			t.Errorf("write fixture response: %v", err)
+		}
 	}))
 	defer srv.Close()
 	infos, err := NewWithToken(srv.URL, "github-key").PullRequestInfo(context.Background(), PullRequestInfoRequest{RepoOwner: "org", RepoName: "repo", PRNumbers: []int{3, 1}})
@@ -34,7 +40,7 @@ func TestPullRequestInfoBatchesGitHubReadsInInputOrder(t *testing.T) {
 	if len(queries) != 1 || len(infos) != 2 || infos[0].PRNumber != 3 || infos[1].PRNumber != 1 {
 		t.Fatalf("queries=%d infos=%+v", len(queries), infos)
 	}
-	if infos[0].DependentPRNumber != 2 || infos[0].CliTrunk != "dev" || infos[0].Newest().HeadSha != "new-head" || infos[1].MergeCommitSha != "landed" {
+	if infos[0].DependentPRNumber != 2 || infos[0].CliTrunk != "dev" || infos[0].Versions[0].HeadSha != "new-head" || infos[1].MergeCommitSha != "landed" {
 		t.Fatalf("infos=%+v", infos)
 	}
 	if strings.Contains(queries[0], "graphite") {
@@ -44,7 +50,9 @@ func TestPullRequestInfoBatchesGitHubReadsInInputOrder(t *testing.T) {
 
 func TestPullRequestInfoSelectsOpenBeforeNewestClosedHead(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `{"data":{"repository":{"h0":{"nodes":[{"number":3,"state":"OPEN","headRefName":"feature"}]},"c0":{"nodes":[{"number":4,"state":"CLOSED","headRefName":"feature"}]}}}}`)
+		if _, err := fmt.Fprint(w, `{"data":{"repository":{"h0":{"nodes":[{"number":3,"state":"OPEN","headRefName":"feature"}]},"c0":{"nodes":[{"number":4,"state":"CLOSED","headRefName":"feature"}]}}}}`); err != nil {
+			t.Errorf("write fixture response: %v", err)
+		}
 	}))
 	defer srv.Close()
 	infos, err := NewWithToken(srv.URL, "key").PullRequestInfo(context.Background(), PullRequestInfoRequest{RepoOwner: "org", RepoName: "repo", PRHeadRefNames: []string{"feature"}})
@@ -58,7 +66,9 @@ func TestPullRequestInfoSelectsOpenBeforeNewestClosedHead(t *testing.T) {
 
 func TestGraphQLFailureDoesNotBecomeMissingPullRequest(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `{"errors":[{"message":"rate limited"}],"data":null}`)
+		if _, err := fmt.Fprint(w, `{"errors":[{"message":"rate limited"}],"data":null}`); err != nil {
+			t.Errorf("write fixture response: %v", err)
+		}
 	}))
 	defer srv.Close()
 	_, err := NewWithToken(srv.URL, "key").PullRequestInfo(context.Background(), PullRequestInfoRequest{RepoOwner: "org", RepoName: "repo", PRNumbers: []int{1}})
@@ -72,15 +82,22 @@ func TestSubmitCreatesNativeGitHubStackFromPublishedParent(t *testing.T) {
 	var paths []string
 	var stack []int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if publishedHeadFixture(t, w, r, "child-head") {
+			return
+		}
 		paths = append(paths, r.Method+" "+r.URL.Path)
 		switch r.Method + " " + r.URL.Path {
 		case "POST /repos/org/repo/pulls":
-			fmt.Fprint(w, `{"number":2,"node_id":"PR2","html_url":"https://github.com/org/repo/pull/2","state":"open","head":{"ref":"child","sha":"child-head"},"base":{"ref":"parent"}}`)
+			if _, err := fmt.Fprint(w, `{"number":2,"node_id":"PR2","html_url":"https://github.com/org/repo/pull/2","state":"open","head":{"repo":{"full_name":"org/repo"},"ref":"child","sha":"child-head"},"base":{"ref":"parent"}}`); err != nil {
+				t.Errorf("write fixture response: %v", err)
+			}
 		case "GET /repos/org/repo/pulls":
 			if r.URL.Query().Get("head") != "org:parent" {
 				t.Errorf("head=%s", r.URL.Query().Get("head"))
 			}
-			fmt.Fprint(w, `[{"number":1,"state":"open","head":{"ref":"parent"},"base":{"ref":"dev"}}]`)
+			if _, err := fmt.Fprint(w, `[{"number":1,"state":"open","head":{"repo":{"full_name":"org/repo"},"ref":"parent"},"base":{"ref":"dev"}}]`); err != nil {
+				t.Errorf("write fixture response: %v", err)
+			}
 		case "POST /repos/org/repo/stacks":
 			var body struct {
 				PullRequests []int `json:"pull_requests"`
@@ -89,7 +106,9 @@ func TestSubmitCreatesNativeGitHubStackFromPublishedParent(t *testing.T) {
 				t.Error(err)
 			}
 			stack = body.PullRequests
-			fmt.Fprint(w, `{"number":7}`)
+			if _, err := fmt.Fprint(w, `{"number":7}`); err != nil {
+				t.Errorf("write fixture response: %v", err)
+			}
 		default:
 			t.Errorf("unexpected %s %s", r.Method, r.URL)
 			http.Error(w, "unexpected", 500)
@@ -108,11 +127,18 @@ func TestSubmitCreatesNativeGitHubStackFromPublishedParent(t *testing.T) {
 func TestSubmitExtendsExistingNativeStack(t *testing.T) {
 	var added []int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if publishedHeadFixture(t, w, r, "head") {
+			return
+		}
 		switch r.Method + " " + r.URL.Path {
 		case "POST /repos/org/repo/pulls":
-			fmt.Fprint(w, `{"number":3,"state":"open","head":{"ref":"child","sha":"head"},"base":{"ref":"parent"}}`)
+			if _, err := fmt.Fprint(w, `{"number":3,"state":"open","head":{"repo":{"full_name":"org/repo"},"ref":"child","sha":"head"},"base":{"ref":"parent"}}`); err != nil {
+				t.Errorf("write fixture response: %v", err)
+			}
 		case "GET /repos/org/repo/pulls":
-			fmt.Fprint(w, `[{"number":2,"state":"open","head":{"ref":"parent"},"base":{"ref":"bottom"},"stack":{"number":7,"position":2,"base":{"ref":"dev"}}}]`)
+			if _, err := fmt.Fprint(w, `[{"number":2,"state":"open","head":{"repo":{"full_name":"org/repo"},"ref":"parent"},"base":{"ref":"bottom"},"stack":{"number":7,"position":2,"base":{"ref":"dev"}}}]`); err != nil {
+				t.Errorf("write fixture response: %v", err)
+			}
 		case "POST /repos/org/repo/stacks/7/add":
 			var body struct {
 				PullRequests []int `json:"pull_requests"`
@@ -121,7 +147,9 @@ func TestSubmitExtendsExistingNativeStack(t *testing.T) {
 				t.Error(err)
 			}
 			added = body.PullRequests
-			fmt.Fprint(w, `{"number":7}`)
+			if _, err := fmt.Fprint(w, `{"number":7}`); err != nil {
+				t.Errorf("write fixture response: %v", err)
+			}
 		default:
 			t.Errorf("unexpected %s %s", r.Method, r.URL)
 			http.Error(w, "unexpected", 500)
@@ -140,23 +168,35 @@ func TestSubmitExtendsExistingNativeStack(t *testing.T) {
 func TestSubmitRefusesChangedRemoteHeadBeforePatch(t *testing.T) {
 	var methods []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if publishedHeadFixture(t, w, r, "other-head") {
+			return
+		}
 		methods = append(methods, r.Method)
-		fmt.Fprint(w, `{"number":3,"state":"open","head":{"ref":"child","sha":"other-head"},"base":{"ref":"dev"}}`)
+		if _, err := fmt.Fprint(w, `{"number":3,"state":"open","head":{"repo":{"full_name":"org/repo"},"ref":"child","sha":"other-head"},"base":{"ref":"dev"}}`); err != nil {
+			t.Errorf("write fixture response: %v", err)
+		}
 	}))
 	defer srv.Close()
 	_, err := NewWithToken(srv.URL, "key").SubmitPullRequests(context.Background(), SubmitRequest{RepoOwner: "org", RepoName: "repo", TrunkBranchName: "dev", PRs: []SubmitPR{{Action: SubmitUpdate, PRNumber: 3, Head: "child", HeadSha: "published-head", Base: "dev"}}})
-	if err == nil || !strings.Contains(err.Error(), "moved to other-head") || !reflect.DeepEqual(methods, []string{"GET"}) {
+	if err == nil || !strings.Contains(err.Error(), "reports commit other-head") || !reflect.DeepEqual(methods, []string{"GET"}) {
 		t.Fatalf("err=%v methods=%v", err, methods)
 	}
 }
 
 func TestNativeStackRegistrationFailureReportsCreatedPullRequest(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost {
-			fmt.Fprint(w, `{"number":2,"head":{"ref":"child","sha":"head"},"base":{"ref":"parent"}}`)
+		if publishedHeadFixture(t, w, r, "head") {
 			return
 		}
-		fmt.Fprint(w, `[]`)
+		if r.Method == http.MethodPost {
+			if _, err := fmt.Fprint(w, `{"number":2,"head":{"repo":{"full_name":"org/repo"},"ref":"child","sha":"head"},"base":{"ref":"parent"},"state":"open"}`); err != nil {
+				t.Errorf("write fixture response: %v", err)
+			}
+			return
+		}
+		if _, err := fmt.Fprint(w, `[]`); err != nil {
+			t.Errorf("write fixture response: %v", err)
+		}
 	}))
 	defer srv.Close()
 	_, err := NewWithToken(srv.URL, "key").SubmitPullRequests(context.Background(), SubmitRequest{RepoOwner: "org", RepoName: "repo", TrunkBranchName: "dev", PRs: []SubmitPR{{Action: SubmitCreate, Head: "child", HeadSha: "head", Base: "parent"}}})
@@ -174,7 +214,9 @@ func TestTrunkQueueReadsBatchAndPaginate(t *testing.T) {
 			t.Errorf("authorization=%q", r.Header.Get("Authorization"))
 		}
 		if r.URL.Path == "/v2/repositories" {
-			fmt.Fprint(w, `{"data":[{"id":"repo-id"}],"hasMore":false,"nextCursor":null}`)
+			if _, err := fmt.Fprint(w, `{"data":[{"id":"repo-id"}],"hasMore":false,"nextCursor":null}`); err != nil {
+				t.Errorf("write fixture response: %v", err)
+			}
 			return
 		}
 		if r.URL.Path != "/v2/pull-requests" {
@@ -186,14 +228,20 @@ func TestTrunkQueueReadsBatchAndPaginate(t *testing.T) {
 		pages = append(pages, cursor)
 		first, _ := strconv.Atoi(strings.Split(numbers, ",")[0])
 		if first == 1 && cursor == "" {
-			fmt.Fprint(w, `{"data":[{"number":1,"isCurrentlySubmittedToQueue":true,"queueEntry":{"state":"testing"}}],"hasMore":true,"nextCursor":"more"}`)
+			if _, err := fmt.Fprint(w, `{"data":[{"number":1,"isCurrentlySubmittedToQueue":true,"queueEntry":{"state":"testing"}}],"hasMore":true,"nextCursor":"more"}`); err != nil {
+				t.Errorf("write fixture response: %v", err)
+			}
 			return
 		}
 		if cursor == "more" {
-			fmt.Fprint(w, `{"data":[{"number":2,"isCurrentlySubmittedToQueue":true,"queueEntry":{"state":"futureActiveState"}}],"hasMore":false,"nextCursor":null}`)
+			if _, err := fmt.Fprint(w, `{"data":[{"number":2,"isCurrentlySubmittedToQueue":true,"queueEntry":{"state":"futureActiveState"}}],"hasMore":false,"nextCursor":null}`); err != nil {
+				t.Errorf("write fixture response: %v", err)
+			}
 			return
 		}
-		fmt.Fprint(w, `{"data":[{"number":51,"isCurrentlySubmittedToQueue":false,"queueEntry":{"state":"failed"}}],"hasMore":false,"nextCursor":null}`)
+		if _, err := fmt.Fprint(w, `{"data":[{"number":51,"isCurrentlySubmittedToQueue":false,"queueEntry":{"state":"failed"}}],"hasMore":false,"nextCursor":null}`); err != nil {
+			t.Errorf("write fixture response: %v", err)
+		}
 	}))
 	defer srv.Close()
 	client := NewWithToken(srv.URL, "github-key").WithQueueProvider("trunk")
@@ -247,7 +295,9 @@ func TestQueueProviderDoesNotFallBackFromTrunkCredentialError(t *testing.T) {
 	calls := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
-		fmt.Fprint(w, `{"data":{"repository":{"p0":{"mergeQueueEntry":{"state":"LOCKED"}}}}}`)
+		if _, err := fmt.Fprint(w, `{"data":{"repository":{"p0":{"mergeQueueEntry":{"state":"LOCKED"}}}}}`); err != nil {
+			t.Errorf("write fixture response: %v", err)
+		}
 	}))
 	defer srv.Close()
 	client := NewWithToken(srv.URL, "github-key")
@@ -275,7 +325,7 @@ func TestGitHubQueueSnapshotIsNotCurrentPullRequestHead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.MergeQueueStatus == nil || !info.MergeQueueStatus.InQueue || info.MergeQueueStatus.EnqueuedCommit != "queued-head" || info.Newest().HeadSha != "new-head" {
+	if info.MergeQueueStatus == nil || !info.MergeQueueStatus.InQueue || info.MergeQueueStatus.EnqueuedCommit != "queued-head" || info.Versions[0].HeadSha != "new-head" {
 		t.Fatalf("info=%+v", info)
 	}
 	pull.MergeQueueEntry.HeadCommit = nil
@@ -290,12 +340,19 @@ func TestGitHubQueueSnapshotIsNotCurrentPullRequestHead(t *testing.T) {
 
 func TestSubmitReportsCreatedPullWhenReviewerRequestFails(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if publishedHeadFixture(t, w, r, "head") {
+			return
+		}
 		switch r.URL.Path {
 		case "/repos/org/repo/pulls":
-			fmt.Fprint(w, `{"number":2,"node_id":"PR_2","html_url":"https://github.com/org/repo/pull/2","state":"open","head":{"ref":"feature","sha":"head"},"base":{"ref":"main"}}`)
+			if _, err := fmt.Fprint(w, `{"number":2,"node_id":"PR_2","html_url":"https://github.com/org/repo/pull/2","state":"open","head":{"repo":{"full_name":"org/repo"},"ref":"feature","sha":"head"},"base":{"ref":"main"}}`); err != nil {
+				t.Errorf("write fixture response: %v", err)
+			}
 		case "/repos/org/repo/pulls/2/requested_reviewers":
 			w.WriteHeader(http.StatusUnprocessableEntity)
-			fmt.Fprint(w, `{"message":"reviewer does not have access"}`)
+			if _, err := fmt.Fprint(w, `{"message":"reviewer does not have access"}`); err != nil {
+				t.Errorf("write fixture response: %v", err)
+			}
 		default:
 			t.Errorf("unexpected request %s", r.URL)
 			http.Error(w, "unexpected", 500)
@@ -310,21 +367,27 @@ func TestSubmitReportsCreatedPullWhenReviewerRequestFails(t *testing.T) {
 	}
 }
 
-func TestPostCreateHeadMismatchStillReportsCreatedPullIdentity(t *testing.T) {
+func TestStaleCreateSnapshotUsesPublishedRefFence(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `{"number":2,"node_id":"PR_2","head":{"ref":"feature","sha":"raced-head"},"base":{"ref":"main"}}`)
+		if publishedHeadFixture(t, w, r, "published-head") {
+			return
+		}
+		if _, err := fmt.Fprint(w, `{"number":2,"node_id":"PR_2","head":{"repo":{"full_name":"org/repo"},"ref":"feature","sha":"stale-head"},"base":{"ref":"main"},"state":"open"}`); err != nil {
+			t.Error(err)
+		}
 	}))
 	defer srv.Close()
-	_, err := NewWithToken(srv.URL, "key").SubmitPullRequests(context.Background(), SubmitRequest{RepoOwner: "org", RepoName: "repo", TrunkBranchName: "main", PRs: []SubmitPR{{Action: SubmitCreate, Head: "feature", HeadSha: "published-head", Base: "main"}}})
-	var partial *SubmitError
-	if !errors.As(err, &partial) || len(partial.Submitted) != 1 || partial.Submitted[0].PRID != "PR_2" || !strings.Contains(err.Error(), "raced-head") {
-		t.Fatalf("err=%v partial=%+v", err, partial)
+	submitted, err := NewWithToken(srv.URL, "key").SubmitPullRequests(context.Background(), SubmitRequest{RepoOwner: "org", RepoName: "repo", TrunkBranchName: "main", PRs: []SubmitPR{{Action: SubmitCreate, Head: "feature", HeadSha: "published-head", Base: "main"}}})
+	if err != nil || len(submitted) != 1 || submitted[0].PRID != "PR_2" {
+		t.Fatalf("err=%v submitted=%+v", err, submitted)
 	}
 }
 
 func TestHeadLookupRefusesAmbiguousPullRequestsInsteadOfChoosingFirst(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `{"data":{"repository":{"h0":{"totalCount":2,"nodes":[{"number":2,"state":"OPEN","headRefName":"feature"}]},"c0":{"nodes":[]}}}}`)
+		if _, err := fmt.Fprint(w, `{"data":{"repository":{"h0":{"totalCount":2,"nodes":[{"number":2,"state":"OPEN","headRefName":"feature"}]},"c0":{"nodes":[]}}}}`); err != nil {
+			t.Errorf("write fixture response: %v", err)
+		}
 	}))
 	defer srv.Close()
 	_, err := NewWithToken(srv.URL, "key").PullRequestInfo(context.Background(), PullRequestInfoRequest{RepoOwner: "org", RepoName: "repo", PRHeadRefNames: []string{"feature"}})
@@ -335,11 +398,90 @@ func TestHeadLookupRefusesAmbiguousPullRequestsInsteadOfChoosingFirst(t *testing
 
 func TestHeadLookupDoesNotTreatForkBranchAsLocalStackBranch(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `{"data":{"repository":{"h0":{"totalCount":1,"nodes":[{"number":2,"state":"OPEN","headRefName":"feature","isCrossRepository":true}]},"c0":{"nodes":[]}}}}`)
+		if _, err := fmt.Fprint(w, `{"data":{"repository":{"h0":{"totalCount":1,"nodes":[{"number":2,"state":"OPEN","headRefName":"feature","isCrossRepository":true}]},"c0":{"nodes":[]}}}}`); err != nil {
+			t.Errorf("write fixture response: %v", err)
+		}
 	}))
 	defer srv.Close()
 	_, err := NewWithToken(srv.URL, "key").PullRequestInfo(context.Background(), PullRequestInfoRequest{RepoOwner: "org", RepoName: "repo", PRHeadRefNames: []string{"feature"}})
 	if err == nil || !strings.Contains(err.Error(), "cross-repository PR #2") {
 		t.Fatalf("err=%v", err)
+	}
+}
+
+func publishedHeadFixture(t *testing.T, w http.ResponseWriter, r *http.Request, sha string) bool {
+	t.Helper()
+	if !strings.Contains(r.URL.Path, "/git/ref/heads/") {
+		return false
+	}
+	if r.Method != http.MethodGet {
+		t.Errorf("git ref method=%s", r.Method)
+	}
+	if err := json.NewEncoder(w).Encode(map[string]any{"object": map[string]any{"sha": sha}}); err != nil {
+		t.Errorf("write fixture ref: %v", err)
+	}
+	return true
+}
+
+func TestStaleUpdateSnapshotUsesPublishedRefFence(t *testing.T) {
+	patches := 0
+	refs := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if publishedHeadFixture(t, w, r, "published-head") {
+			refs++
+			return
+		}
+		if r.Method == http.MethodPatch {
+			patches++
+		}
+		if _, err := fmt.Fprint(w, `{"number":2,"node_id":"PR_2","state":"open","head":{"repo":{"full_name":"org/repo"},"ref":"feature","sha":"stale-head"},"base":{"ref":"main"}}`); err != nil {
+			t.Error(err)
+		}
+	}))
+	defer srv.Close()
+	submitted, err := NewWithToken(srv.URL, "key").SubmitPullRequests(context.Background(), SubmitRequest{RepoOwner: "org", RepoName: "repo", TrunkBranchName: "main", PRs: []SubmitPR{{Action: SubmitUpdate, PRNumber: 2, Head: "feature", HeadSha: "published-head", Base: "main"}}})
+	if err != nil || len(submitted) != 1 || patches != 1 || refs != 2 {
+		t.Fatalf("err=%v submitted=%+v patches=%d refs=%d", err, submitted, patches, refs)
+	}
+}
+
+func TestRefChangeDuringCreateReturnsPartialFailure(t *testing.T) {
+	refs := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/git/ref/heads/") {
+			refs++
+			sha := "published-head"
+			if refs > 1 {
+				sha = "concurrent-head"
+			}
+			publishedHeadFixture(t, w, r, sha)
+			return
+		}
+		if _, err := fmt.Fprint(w, `{"number":2,"node_id":"PR_2","head":{"repo":{"full_name":"org/repo"},"ref":"feature","sha":"published-head"},"base":{"ref":"main"},"state":"open"}`); err != nil {
+			t.Error(err)
+		}
+	}))
+	defer srv.Close()
+	_, err := NewWithToken(srv.URL, "key").SubmitPullRequests(context.Background(), SubmitRequest{RepoOwner: "org", RepoName: "repo", TrunkBranchName: "main", PRs: []SubmitPR{{Action: SubmitCreate, Head: "feature", HeadSha: "published-head", Base: "main"}}})
+	var partial *SubmitError
+	if !errors.As(err, &partial) || !strings.Contains(err.Error(), "reports commit concurrent-head") || len(partial.Submitted) != 1 || partial.Submitted[0].PRID != "PR_2" || refs != 2 {
+		t.Fatalf("err=%v partial=%+v refs=%d", err, partial, refs)
+	}
+}
+
+func TestClosedMutationResponseIsPartialFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if publishedHeadFixture(t, w, r, "published-head") {
+			return
+		}
+		if _, err := fmt.Fprint(w, `{"number":2,"node_id":"PR_2","state":"closed","head":{"repo":{"full_name":"org/repo"},"ref":"feature","sha":"published-head"},"base":{"ref":"main"}}`); err != nil {
+			t.Error(err)
+		}
+	}))
+	defer srv.Close()
+	_, err := NewWithToken(srv.URL, "key").SubmitPullRequests(context.Background(), SubmitRequest{RepoOwner: "org", RepoName: "repo", TrunkBranchName: "main", PRs: []SubmitPR{{Action: SubmitCreate, Head: "feature", HeadSha: "published-head", Base: "main"}}})
+	var partial *SubmitError
+	if !errors.As(err, &partial) || len(partial.Submitted) != 1 || partial.Submitted[0].PRID != "PR_2" || !strings.Contains(err.Error(), "is closed after metadata update") {
+		t.Fatalf("err=%v partial=%+v", err, partial)
 	}
 }

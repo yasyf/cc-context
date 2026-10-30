@@ -204,7 +204,7 @@ func resolveLaneRefresh(ctx context.Context, name, dir string, noGT, refresh boo
 	}
 	root := ck.Root
 	l := lane{kind: ck.Kind, root: root, checkout: ck}
-	if noGT {
+	if noGT || ck.CommonDir == "" {
 		return l, nil
 	}
 	graphite, err := vcs.GraphiteRepo(ck)
@@ -215,25 +215,38 @@ func resolveLaneRefresh(ctx context.Context, name, dir string, noGT, refresh boo
 	if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
 		return lane{}, fmt.Errorf("%s: read native stack catalog: %w", name, statErr)
 	}
-	if !graphite && nativeCatalog == nil {
-		configured, code, stderr, err := render.RunCLIExitCode(ctx, render.Dir(root), "git", []string{"config", "--get", "ccx.stack"})
-		if err != nil {
-			return lane{}, fmt.Errorf("%s: read ccx.stack: %w", name, err)
-		}
-		if code != 0 && code != 1 {
-			return lane{}, fmt.Errorf("%s: read ccx.stack: exit %d: %s", name, code, strings.TrimSpace(stderr))
-		}
-		if strings.TrimSpace(configured) == "" && name != "stack new" {
+	native, bound := ctx.Value(stackProviderKey{}).(bool)
+	provider := "graphite"
+	if bound && nativeCatalog == nil {
+		if native {
+			provider = "github"
+		} else if !graphite {
 			return l, nil
 		}
-	}
-	branch, err := gitCurrentBranch(ctx, render.Dir(root), name)
-	if err != nil {
-		return lane{}, err
-	}
-	provider, err := gtmeta.Provider(ctx, ck.CommonDir, branch)
-	if err != nil {
-		return lane{}, fmt.Errorf("%s: %w", name, err)
+	} else {
+		if !graphite && nativeCatalog == nil {
+			configured, code, stderr, err := render.RunCLIExitCode(ctx, render.Dir(root), "git", []string{"config", "--get", "ccx.stack"})
+			if err != nil {
+				return lane{}, fmt.Errorf("%s: read ccx.stack: %w", name, err)
+			}
+			if code != 0 && code != 1 {
+				return lane{}, fmt.Errorf("%s: read ccx.stack: exit %d: %s", name, code, strings.TrimSpace(stderr))
+			}
+			if strings.TrimSpace(configured) == "" && name != "stack new" {
+				return l, nil
+			}
+		}
+		branch, _ := ctx.Value(stackParentKey{}).(string)
+		if branch == "" {
+			branch, err = gitCurrentBranch(ctx, render.Dir(root), name)
+			if err != nil {
+				return lane{}, err
+			}
+		}
+		provider, err = gtmeta.Provider(ctx, ck.CommonDir, branch)
+		if err != nil {
+			return lane{}, fmt.Errorf("%s: %w", name, err)
+		}
 	}
 	if provider == "github" {
 		repo, err := vcs.LookupRepo(ctx, render.Dir(root), refresh)

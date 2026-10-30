@@ -1,5 +1,4 @@
-// Package gtmeta reads a Graphite repository's tracked branch state straight
-// from the SQLite database gt keeps in the git common dir.
+// Package gtmeta provides provider-owned stack state for GitHub and Graphite.
 package gtmeta
 
 import (

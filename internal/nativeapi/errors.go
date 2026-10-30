@@ -9,10 +9,13 @@ import (
 )
 
 var (
+	// ErrUnauthorized identifies a rejected authentication credential.
 	ErrUnauthorized = errors.New("unauthorized")
-	ErrNoToken      = errors.New("no GitHub token")
+	// ErrNoToken identifies missing GitHub authentication.
+	ErrNoToken = errors.New("no GitHub token")
 )
 
+// StatusError retains the refused HTTP operation and the server diagnostic.
 type StatusError struct {
 	Method  string
 	URL     string
@@ -20,6 +23,7 @@ type StatusError struct {
 	Message string
 }
 
+// Error includes the refused operation and the server diagnostic.
 func (e *StatusError) Error() string {
 	message := e.Message
 	if message == "" {
@@ -28,6 +32,7 @@ func (e *StatusError) Error() string {
 	return fmt.Sprintf("github-stack: %s %s: %d %s", e.Method, e.URL, e.Status, message)
 }
 
+// Unwrap preserves authentication checks through errors.Is.
 func (e *StatusError) Unwrap() error {
 	if e.Status == http.StatusUnauthorized {
 		return ErrUnauthorized
@@ -35,28 +40,34 @@ func (e *StatusError) Unwrap() error {
 	return nil
 }
 
+// ResultError reports a GraphQL failure returned inside a successful HTTP response.
 type ResultError struct {
 	Route   string
 	Message string
 }
 
+// Error names the GraphQL operation and its failure diagnostic.
 func (e *ResultError) Error() string {
 	return fmt.Sprintf("github-stack: %s: %s", e.Route, e.Message)
 }
 
+// BranchSubmitError identifies the branch whose submission could not finish.
 type BranchSubmitError struct {
 	Head    string
 	Message string
 }
 
+// SubmitError retains both actual PR identities and unfinished branch submissions.
 type SubmitError struct {
 	Cause     error
 	Submitted []SubmittedPR
 	Failed    []BranchSubmitError
 }
 
+// Unwrap keeps the request failure reachable through a partial submission.
 func (e *SubmitError) Unwrap() error { return e.Cause }
 
+// Error names unfinished branches and summarizes partial submission results.
 func (e *SubmitError) Error() string {
 	texts := make([]string, 0, len(e.Failed))
 	for _, f := range e.Failed {
