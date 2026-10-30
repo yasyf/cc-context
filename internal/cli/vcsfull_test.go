@@ -9,12 +9,21 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/yasyf/cc-context/internal/execstub"
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
 func TestVCSFullInlinesCommitHunks(t *testing.T) {
 	t.Parallel()
 	f := vcstest.Repo(t)
+	bin := t.TempDir()
+	execstub.Write(t, filepath.Join(bin, "ast-grep"), `#!/bin/sh
+if [ "$1" = "--version" ]; then echo "ast-grep 0.44.0"; exit 0; fi
+cat <<'EOF'
+{"path":"sample.go","language":"Go","items":[{"symbolType":"function","name":"Value","signature":"func Value() int {","isExported":true,"range":{"start":{"line":2},"end":{"line":4}},"members":[]}]}
+EOF
+`)
+	f.PrependPATH(bin)
 	path := filepath.Join(f.Dir, "sample.go")
 	if err := os.WriteFile(path, []byte("package sample\n\nfunc Value() int {\n\treturn 1\n}\n"), 0o600); err != nil {
 		t.Fatal(err)
