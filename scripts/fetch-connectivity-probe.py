@@ -40,7 +40,7 @@ def ledger_repo(n):
             text += f"from :{n + 1}\n"
         parts.append(text + "\n")
     marks = ROOT / f"marks-{n}"
-    run(repo, ["fast-import", "--quiet", f"--export-marks={marks}"], "".join(parts).encode())
+    run(repo, ["-c", "fastimport.unpackLimit=0", "fast-import", "--quiet", f"--export-marks={marks}"], "".join(parts).encode())
     mapping = dict(line.split() for line in marks.read_text().splitlines())
     wanted = mapping[f":{n + 2}"]
     ledger = {mapping[f":{i + 1}"] for i in range(n)}
