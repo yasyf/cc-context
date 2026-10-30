@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"sync"
 	"unicode"
@@ -54,11 +55,25 @@ func (c *Client) trunkToken(ctx context.Context) (string, error) {
 	if token := os.Getenv("TRUNK_MERGE_API_KEY"); token != "" {
 		return token, nil
 	}
+	if token := keychainTrunkKey(); token != "" {
+		return token, nil
+	}
 	if c.trunkSSM == nil || c.trunkSSM.config == (TrunkSSMConfig{}) {
-		return "", fmt.Errorf("trunk queue status requires TRUNK_MERGE_API_KEY or [trunk] ssm_parameter, aws_profile, and aws_region")
+		return "", fmt.Errorf("trunk queue status requires TRUNK_MERGE_API_KEY, the trunk-merge-api-key Keychain item, or [trunk] ssm_parameter, aws_profile, and aws_region")
 	}
 	return c.trunkSSM.get(ctx)
 }
+
+var keychainTrunkKey = sync.OnceValue(func() string {
+	if runtime.GOOS != "darwin" {
+		return ""
+	}
+	out, err := exec.Command("security", "find-generic-password", "-s", "trunk-merge-api-key", "-w").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+})
 
 func (s *trunkSSMSource) get(ctx context.Context) (string, error) {
 	if s.configErr != nil {

@@ -603,3 +603,13 @@ func TestChangedBasePreservesValidationDetails(t *testing.T) {
 		t.Fatalf("err=%v status=%+v patches=%d refs=%d", err, status, patches, refs)
 	}
 }
+
+func TestTrunkTokenReadsTheKeychainItemWhenTheVariableIsUnset(t *testing.T) {
+	t.Setenv("TRUNK_MERGE_API_KEY", "")
+	keychain := keychainTrunkKey
+	t.Cleanup(func() { keychainTrunkKey = keychain })
+	keychainTrunkKey = func() string { return "keychain-key" }
+	if token, err := NewWithToken("http://invalid.local", "github-key").trunkToken(context.Background()); err != nil || token != "keychain-key" {
+		t.Fatalf("trunkToken = %q, %v; want the Keychain item", token, err)
+	}
+}
