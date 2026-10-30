@@ -103,6 +103,7 @@ const (
 	PRMerged PRState = "MERGED"
 )
 
+// MergeQueueStatus records queue admission and the commit held by the queue.
 type MergeQueueStatus struct {
 	InQueue        bool   `json:"inQueue,omitempty"`
 	IsInGraphiteMq bool   `json:"isInGraphiteMq"`
@@ -138,6 +139,7 @@ func Restacking(status string) bool {
 	return status == MergeabilityRebasing || QueuedMergeability(status)
 }
 
+// InMergeQueue combines queue status with the provider admission snapshot.
 func InMergeQueue(info *PullRequestInfo, mergeability string) bool {
 	return QueuedMergeability(mergeability) || info != nil && info.MergeQueueStatus != nil && (info.MergeQueueStatus.IsInGraphiteMq || info.MergeQueueStatus.InQueue)
 }
@@ -152,6 +154,7 @@ type PRVersion struct {
 	IsGraphiteGenerated bool   `json:"isGraphiteGenerated"`
 }
 
+// PullRequestInfo retains stack identity, review state, and published version evidence.
 type PullRequestInfo struct {
 	StackNumber           int               `json:"stackNumber,omitempty"`
 	PRID                  string            `json:"prId,omitempty"`
@@ -185,6 +188,7 @@ func (p PullRequestInfo) Newest() PRVersion {
 	return newest
 }
 
+// PullRequestInfo batches metadata reads through the selected stack providers.
 func (c *Client) PullRequestInfo(ctx context.Context, req PullRequestInfoRequest) ([]PullRequestInfo, error) {
 	if c.providerErr != nil {
 		return nil, c.providerErr
@@ -222,6 +226,7 @@ func (c *Client) PullRequestInfo(ctx context.Context, req PullRequestInfoRequest
 // names: Graphite answers 413 to fifty.
 const mergeabilityBatch = 40
 
+// MergeabilityStatuses indexes the selected queue provider states by pull request number.
 func (c *Client) MergeabilityStatuses(ctx context.Context, repoOwner, repoName string, prNumbers []int) (map[int]string, error) {
 	if c.providerErr != nil {
 		return nil, c.providerErr

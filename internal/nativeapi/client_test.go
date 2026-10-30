@@ -49,7 +49,7 @@ func TestPullRequestInfoBatchesGitHubReadsInInputOrder(t *testing.T) {
 }
 
 func TestPullRequestInfoSelectsOpenBeforeNewestClosedHead(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		if _, err := fmt.Fprint(w, `{"data":{"repository":{"h0":{"nodes":[{"number":3,"state":"OPEN","headRefName":"feature"}]},"c0":{"nodes":[{"number":4,"state":"CLOSED","headRefName":"feature"}]}}}}`); err != nil {
 			t.Errorf("write fixture response: %v", err)
 		}
@@ -65,7 +65,7 @@ func TestPullRequestInfoSelectsOpenBeforeNewestClosedHead(t *testing.T) {
 }
 
 func TestGraphQLFailureDoesNotBecomeMissingPullRequest(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		if _, err := fmt.Fprint(w, `{"errors":[{"message":"rate limited"}],"data":null}`); err != nil {
 			t.Errorf("write fixture response: %v", err)
 		}
@@ -293,7 +293,7 @@ func TestStatusErrorPreservesUnauthorizedAndDiagnostic(t *testing.T) {
 func TestQueueProviderDoesNotFallBackFromTrunkCredentialError(t *testing.T) {
 	t.Setenv("TRUNK_MERGE_API_KEY", "")
 	calls := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		calls++
 		if _, err := fmt.Fprint(w, `{"data":{"repository":{"p0":{"mergeQueueEntry":{"state":"LOCKED"}}}}}`); err != nil {
 			t.Errorf("write fixture response: %v", err)

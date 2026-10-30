@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"fmt"
-	"io"
 	"slices"
 	"strings"
 
@@ -46,7 +45,7 @@ func nativeProvider(ctx context.Context, dir render.Dir) (bool, error) {
 	return provider == "github", err
 }
 
-func nativeStackRun(ctx context.Context, dir render.Dir, argv []string, errW io.Writer, extraEnv ...string) (gtResult, error) {
+func nativeStackRun(ctx context.Context, dir render.Dir, argv []string, extraEnv ...string) (gtResult, error) {
 	var output strings.Builder
 	run := func(args ...string) (string, error) {
 		out, err := render.RunCLIEnv(ctx, dir, "git", args, extraEnv)

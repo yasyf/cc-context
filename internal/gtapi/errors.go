@@ -14,7 +14,8 @@ var (
 	ErrUnauthorized = errors.New("unauthorized")
 	// ErrNoToken reports that ~/.config/graphite/auth could not be read or
 	// carries no token.
-	ErrNoToken      = errors.New("no graphite token")
+	ErrNoToken = errors.New("no graphite token")
+	// ErrGraphiteOnly rejects operations that native stacks do not use.
 	ErrGraphiteOnly = errors.New("operation requires the Graphite stack provider")
 )
 

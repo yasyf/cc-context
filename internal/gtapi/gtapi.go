@@ -22,6 +22,7 @@ const baseURLProd = "https://api.graphite.com/v1"
 
 const requestTimeout = 30 * time.Second
 
+// Client routes stack metadata and publication through the selected providers.
 type Client struct {
 	base            string
 	http            *http.Client
