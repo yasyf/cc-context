@@ -45,10 +45,16 @@ func TestProviderPrefersActualMembershipOverExplicitDefault(t *testing.T) {
 		}
 	}
 	f.Out(t, "git", "config", "ccx.stack", "github")
-	if got, err := gtmeta.Provider(f.Context(), common, "legacy"); err != nil || got != "graphite" {
-		t.Fatalf("native default silently converted existing legacy branch: %q, %v", got, err)
+	if got, err := gtmeta.Provider(f.Context(), common, "legacy"); err != nil || got != "github" {
+		t.Fatalf("Provider(legacy) = %q, %v; want explicit ccx.stack=github over the Graphite row", got, err)
+	}
+	if got, err := gtmeta.Provider(gtmeta.WithProvider(f.Context(), "graphite"), common, "legacy"); err != nil || got != "graphite" {
+		t.Fatalf("Provider(legacy) in a Graphite-bound lane = %q, %v; want graphite", got, err)
 	}
 	f.Out(t, "git", "config", "--unset", "ccx.stack")
+	if got, err := gtmeta.Provider(f.Context(), common, "legacy"); err != nil || got != "graphite" {
+		t.Fatalf("Provider(legacy) without ccx.stack = %q, %v; want the Graphite row to keep it", got, err)
+	}
 	if got, err := gtmeta.Provider(f.Context(), common, "main"); err != nil || got != "github" {
 		t.Fatalf("legacy trunk forced new stack away from native default: %q, %v", got, err)
 	}
@@ -252,5 +258,72 @@ func TestForcedNativePlannerReadsOnlyTheCommonTrunkForest(t *testing.T) {
 	}
 	if !state["main"].Trunk || !state["release"].Trunk || state["fix"].Parents[0].Ref != "release" {
 		t.Fatalf("generic inspection lost actual trunks: %+v", state)
+	}
+}
+
+func mixedStackFixture(t *testing.T) (*vcstest.Fixture, string, map[string]string) {
+	t.Helper()
+	f := vcstest.Repo(t, vcstest.Remote())
+	common := filepath.Join(f.Dir, ".git")
+	heads := map[string]string{"main": strings.TrimSpace(f.Out(t, "git", "rev-parse", "main"))}
+	for _, branch := range []string{"bottom", "middle", "tip"} {
+		f.Out(t, "git", "checkout", "-q", "-b", branch)
+		f.Out(t, "git", "commit", "-q", "--allow-empty", "-m", branch)
+		heads[branch] = strings.TrimSpace(f.Out(t, "git", "rev-parse", branch))
+	}
+	f.Out(t, "git", "checkout", "-q", "main")
+	vcstest.WriteGraphiteMeta(t, common, fmt.Sprintf(`{"main":{"trunk":true},"bottom":{"parents":[{"ref":"main","sha":%q}]},"middle":{"parents":[{"ref":"bottom","sha":%q}]}}`, heads["main"], heads["bottom"]))
+	if err := nativemeta.Init(f.Context(), common, "main"); err != nil {
+		t.Fatal(err)
+	}
+	f.Out(t, "git", "config", "ccx.stack", "github")
+	return f, common, heads
+}
+
+func TestExplicitGitHubStackConvertsAGraphiteParentChainOnAdopt(t *testing.T) {
+	f, common, heads := mixedStackFixture(t)
+	native := gtmeta.WithProvider(f.Context(), "github")
+	if err := gtmeta.AdoptRoot(native, common, "tip", "middle", heads["middle"], heads["tip"]); err != nil {
+		t.Fatalf("AdoptRoot(tip onto Graphite middle) = %v; want the Graphite chain converted", err)
+	}
+	state, err := gtmeta.Read(native, common)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for branch, parent := range map[string]string{"bottom": "main", "middle": "bottom", "tip": "middle"} {
+		got := state[branch]
+		if len(got.Parents) != 1 || got.Parents[0].Ref != parent || got.Parents[0].SHA != heads[parent] || got.Head != heads[branch] || got.NeedsRestack {
+			t.Fatalf("native %s = %+v; want on %s at %s", branch, got, parent, heads[parent])
+		}
+	}
+}
+
+func TestConvertMovesOnlyTheRequestedDownstackAndLeavesGraphiteUntouched(t *testing.T) {
+	f, common, _ := mixedStackFixture(t)
+	legacyBefore, err := os.ReadFile(filepath.Join(common, ".graphite_metadata.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := gtmeta.Convert(f.Context(), common, "bottom", "tip"); err != nil {
+		t.Fatal(err)
+	}
+	for branch, want := range map[string]bool{"bottom": true, "middle": false, "tip": false} {
+		if got, err := gtmeta.NativeMembership(common, branch); err != nil || got != want {
+			t.Fatalf("native membership of %s = %v, %v; want %v", branch, got, err, want)
+		}
+	}
+	legacyAfter, err := os.ReadFile(filepath.Join(common, ".graphite_metadata.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(legacyAfter) != string(legacyBefore) {
+		t.Fatal("conversion wrote Graphite metadata")
+	}
+	f.Out(t, "git", "config", "ccx.stack", "graphite")
+	if err := gtmeta.Convert(f.Context(), common, "middle"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := gtmeta.NativeMembership(common, "middle"); err != nil || got {
+		t.Fatalf("ccx.stack=graphite converted middle: %v, %v", got, err)
 	}
 }

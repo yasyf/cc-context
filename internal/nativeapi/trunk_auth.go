@@ -55,24 +55,38 @@ func (c *Client) trunkToken(ctx context.Context) (string, error) {
 	if token := os.Getenv("TRUNK_MERGE_API_KEY"); token != "" {
 		return token, nil
 	}
-	if token := keychainTrunkKey(); token != "" {
+	token, keychainErr := keychainTrunkKey()
+	if token != "" {
 		return token, nil
 	}
 	if c.trunkSSM == nil || c.trunkSSM.config == (TrunkSSMConfig{}) {
-		return "", fmt.Errorf("trunk queue status requires TRUNK_MERGE_API_KEY, the trunk-merge-api-key Keychain item, or [trunk] ssm_parameter, aws_profile, and aws_region")
+		return "", errors.Join(keychainErr, fmt.Errorf("trunk queue status requires TRUNK_MERGE_API_KEY, the trunk-merge-api-key Keychain item, or [trunk] ssm_parameter, aws_profile, and aws_region"))
 	}
-	return c.trunkSSM.get(ctx)
+	token, err := c.trunkSSM.get(ctx)
+	if err != nil {
+		return "", errors.Join(keychainErr, err)
+	}
+	return token, nil
 }
 
-var keychainTrunkKey = sync.OnceValue(func() string {
+const keychainItemNotFound = 44
+
+var keychainTrunkKey = sync.OnceValues(func() (string, error) {
 	if runtime.GOOS != "darwin" {
-		return ""
+		return "", nil
 	}
 	out, err := exec.Command("security", "find-generic-password", "-s", "trunk-merge-api-key", "-w").Output()
-	if err != nil {
-		return ""
+	var failure *exec.ExitError
+	if errors.As(err, &failure) && failure.ExitCode() == keychainItemNotFound {
+		return "", nil
 	}
-	return strings.TrimSpace(string(out))
+	if errors.As(err, &failure) {
+		return "", fmt.Errorf("read the trunk-merge-api-key Keychain item: security exited %d: %s", failure.ExitCode(), strings.TrimSpace(string(failure.Stderr)))
+	}
+	if err != nil {
+		return "", fmt.Errorf("read the trunk-merge-api-key Keychain item: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
 })
 
 func (s *trunkSSMSource) get(ctx context.Context) (string, error) {
