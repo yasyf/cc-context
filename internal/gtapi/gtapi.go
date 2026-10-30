@@ -30,6 +30,7 @@ type Client struct {
 	native          *nativeapi.Client
 	queue           *nativeapi.Client
 	queueProvider   string
+	trunkSSM        TrunkSSMConfig
 	providerErr     error
 	branchProviders map[string]string
 	legacy          *Client

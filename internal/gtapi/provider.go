@@ -26,6 +26,22 @@ func NewNativeWithToken(baseURL, token string) *Client {
 	return c
 }
 
+// TrunkSSMConfig locates a scoped Trunk queue credential in AWS Parameter Store.
+type TrunkSSMConfig = nativeapi.TrunkSSMConfig
+
+// WithTrunkSSM supplies developer credential lookup without changing queue selection.
+func (c *Client) WithTrunkSSM(config TrunkSSMConfig) *Client {
+	selected := *c
+	selected.trunkSSM = config
+	if selected.native != nil {
+		selected.native = selected.native.WithTrunkSSM(config)
+	}
+	if selected.queue != nil {
+		selected.queue = selected.queue.WithTrunkSSM(config)
+	}
+	return &selected
+}
+
 // WithProviderError preserves a configuration failure for every request.
 func (c *Client) WithProviderError(err error) *Client {
 	selected := *c
@@ -95,7 +111,7 @@ func (c *Client) WithQueueProvider(provider string) *Client {
 	if queue == nil {
 		queue = nativeapi.Default()
 	}
-	selected.queue = queue.WithQueueProvider(provider)
+	selected.queue = queue.WithTrunkSSM(c.trunkSSM).WithQueueProvider(provider)
 	return &selected
 }
 

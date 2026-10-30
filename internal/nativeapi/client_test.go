@@ -246,7 +246,7 @@ func TestTrunkQueueReadsBatchAndPaginate(t *testing.T) {
 	defer srv.Close()
 	client := NewWithToken(srv.URL, "github-key").WithQueueProvider("trunk")
 	client.queueBase = srv.URL
-	client.queueToken = func() (string, error) { return "trunk-key", nil }
+	t.Setenv("TRUNK_MERGE_API_KEY", "trunk-key")
 	numbers := make([]int, 51)
 	for i := range numbers {
 		numbers[i] = i + 1

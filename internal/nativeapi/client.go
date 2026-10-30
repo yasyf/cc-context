@@ -9,7 +9,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -28,7 +27,7 @@ type Client struct {
 	http          *http.Client
 	tokens        *tokenSource
 	queueBase     string
-	queueToken    func() (string, error)
+	trunkSSM      *trunkSSMSource
 	queueProvider string
 }
 
@@ -39,13 +38,7 @@ func Default() *Client { return defaultClient() }
 
 // New binds publication and metadata reads to a GitHub API root.
 func New(baseURL string) *Client {
-	return &Client{base: strings.TrimSuffix(baseURL, "/"), http: &http.Client{}, tokens: &tokenSource{resolve: resolveToken}, queueBase: "https://api.trunk.io", queueToken: func() (string, error) {
-		token := os.Getenv("TRUNK_MERGE_API_KEY")
-		if token == "" {
-			return "", fmt.Errorf("trunk queue status requires TRUNK_MERGE_API_KEY with a scoped v2 API key")
-		}
-		return token, nil
-	}}
+	return &Client{base: strings.TrimSuffix(baseURL, "/"), http: &http.Client{}, tokens: &tokenSource{resolve: resolveToken}, queueBase: "https://api.trunk.io"}
 }
 
 // WithQueueProvider selects queue reads without changing publication credentials.

@@ -25,7 +25,7 @@ type trunkPull struct {
 }
 
 func (c *Client) queueGet(ctx context.Context, path string, query url.Values, out any) error {
-	token, err := c.queueToken()
+	token, err := c.trunkToken(ctx)
 	if err != nil {
 		return err
 	}

@@ -2194,13 +2194,26 @@ func gtAPI(ctx context.Context) *gtapi.Client {
 	if err != nil {
 		return client.WithProviderError(err)
 	}
-	if code == 1 && stderr == "" {
-		return client
-	}
-	if code != 0 {
+	if code == 0 {
+		client = client.WithQueueProvider(strings.TrimSpace(provider))
+		if client.QueueProvider() != "trunk" {
+			return client
+		}
+	} else if code != 1 || stderr != "" {
 		return client.WithProviderError(fmt.Errorf("read ccx.queue: exit %d: %s", code, strings.TrimSpace(stderr)))
 	}
-	return client.WithQueueProvider(strings.TrimSpace(provider))
+	checkout, err := vcs.ResolveCheckout(workingDir(ctx))
+	if err != nil {
+		return client.WithProviderError(err)
+	}
+	config, err := readRepositoryVCSConfig(checkout.Root)
+	if err != nil {
+		return client.WithProviderError(err)
+	}
+	if code == 1 {
+		client = client.WithQueueProvider(strings.TrimSpace(config.VCS.Queue))
+	}
+	return client.WithTrunkSSM(config.Trunk)
 }
 
 // shipPushGT submits the downstack of the branch the commit landed on, over
