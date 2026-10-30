@@ -1,4 +1,4 @@
-name: Promisor graph discovery diagnostic
+name: Promisor context semantics diagnostic
 on:
   workflow_dispatch:
     inputs:
@@ -36,11 +36,11 @@ jobs:
           PREFIX: ${{ steps.git.outputs.prefix }}
         run: echo "$PREFIX/bin" >> "$GITHUB_PATH"
       - run: sudo apt-get update -qq && sudo apt-get install -y strace
-      - run: python3 scripts/promisor-graph-probe.py
+      - run: python3 scripts/promisor-context-probe.py
         env:
-          PROBE_OUTPUT: ${{ runner.temp }}/promisor-graph
+          PROBE_OUTPUT: ${{ runner.temp }}/promisor-context
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: promisor-graph
-          path: ${{ runner.temp }}/promisor-graph
+          name: promisor-context
+          path: ${{ runner.temp }}/promisor-context
