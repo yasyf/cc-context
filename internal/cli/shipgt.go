@@ -371,12 +371,13 @@ func gtTrunkForBranch(prefix string, state gtState, branch string) (string, erro
 }
 
 // gtDownstack walks branch to trunk via each entry's first parent, returning
-// every branch visited (branch first), excluding trunk.
+// every branch visited (branch first), excluding trunk. Any entry gt marks
+// trunk ends the walk.
 func gtDownstack(prefix string, state gtState, branch, trunk string) ([]string, error) {
 	var chain []string
 	seen := make(map[string]bool)
 	cur := branch
-	for cur != trunk {
+	for cur != trunk && !state[cur].Trunk {
 		if seen[cur] {
 			return nil, fmt.Errorf("%s: gt state parent chain cycles at %s", prefix, cur)
 		}
