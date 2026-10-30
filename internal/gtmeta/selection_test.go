@@ -37,7 +37,7 @@ func TestSelectedRowsPreserveOnlyRequestedStackTopology(t *testing.T) {
 		{"shared ancestors", []string{"selected", "sibling", "selected"}, []string{"base", "child", "main", "selected", "sibling"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			rows, err := readSelectedRows(context.Background(), path, tc.branches, "main")
+			rows, err := readSelectedRows(context.Background(), path, tc.branches, "main", nil)
 			if err != nil {
 				t.Fatal(err)
 			}

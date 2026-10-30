@@ -65,10 +65,10 @@ type BranchState struct {
 type State map[string]BranchState
 
 func readStateOrphans(ctx context.Context, commonDir string, remoteTrunk bool) (State, []Orphan, error) {
-	return readSelectedStateOrphans(ctx, commonDir, remoteTrunk, nil)
+	return readSelectedStateOrphans(ctx, commonDir, remoteTrunk, nil, nil)
 }
 
-func readSelectedStateOrphans(ctx context.Context, commonDir string, remoteTrunk bool, branches []string) (State, []Orphan, error) {
+func readSelectedStateOrphans(ctx context.Context, commonDir string, remoteTrunk bool, branches, nativeBranches []string) (State, []Orphan, error) {
 	trunk, err := graphiteReadTrunk(commonDir)
 	if err != nil {
 		return nil, nil, err
@@ -78,7 +78,7 @@ func readSelectedStateOrphans(ctx context.Context, commonDir string, remoteTrunk
 	if branches == nil {
 		rows, err = readRows(ctx, path)
 	} else {
-		rows, err = readSelectedRows(ctx, path, branches, trunk)
+		rows, err = readSelectedRows(ctx, path, branches, trunk, nativeBranches)
 	}
 	if err != nil {
 		return nil, nil, err
@@ -151,7 +151,7 @@ const branchColumns = `SELECT branch_name,
 	COALESCE(validation_result, ''),
 	COALESCE(state, '')`
 
-func readSelectedRows(ctx context.Context, path string, branches []string, trunk string) ([]branchRow, error) {
+func readSelectedRows(ctx context.Context, path string, branches []string, trunk string, nativeBranches []string) ([]branchRow, error) {
 	values := make([]string, len(branches))
 	args := make([]any, 0, len(branches)+2)
 	for i, branch := range branches {
@@ -178,7 +178,19 @@ func readSelectedRows(ctx context.Context, path string, branches []string, trunk
 		UNION SELECT branch FROM descendants
 		UNION SELECT ?
 	)
-	` + branchColumns + ` FROM branch_metadata WHERE branch_name IN (SELECT branch FROM selected)`
+	`
+	if len(nativeBranches) > 0 {
+		values = make([]string, len(nativeBranches))
+		for i, branch := range nativeBranches {
+			values[i] = "(?)"
+			args = append(args, branch)
+		}
+		query += `, native(branch) AS (VALUES ` + strings.Join(values, ",") + `) `
+	}
+	query += branchColumns + ` FROM branch_metadata WHERE branch_name IN (SELECT branch FROM selected)`
+	if len(nativeBranches) > 0 {
+		query += ` OR (parent_branch_name IN (SELECT branch FROM native) AND branch_name NOT IN (SELECT branch FROM native))`
+	}
 	return queryRows(ctx, path, query, args...)
 }
 

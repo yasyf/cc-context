@@ -496,6 +496,7 @@ func runShip(cmd *cobra.Command, o shipOpts) (err error) {
 		}
 	}
 	if gtLane && !o.noCommit {
+		gtc.focus = branch
 		gtc.forget()
 	}
 
