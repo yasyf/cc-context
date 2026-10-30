@@ -152,6 +152,8 @@ func (c *Client) PullRequestInfo(ctx context.Context, req PullRequestInfoRequest
 }
 
 type restPull struct {
+	Title   string `json:"title"`
+	Body    string `json:"body"`
 	Number  int    `json:"number"`
 	NodeID  string `json:"node_id"`
 	HTMLURL string `json:"html_url"`
@@ -239,10 +241,12 @@ func (c *Client) requirePublishedHead(ctx context.Context, owner, repo string, e
 
 func (c *Client) submitPull(ctx context.Context, owner, repo string, entry SubmitPR) (restPull, error) {
 	path := fmt.Sprintf("/repos/%s/%s/pulls", url.PathEscape(owner), url.PathEscape(repo))
-	values := map[string]any{"base": entry.Base}
+	values := map[string]any{}
+	var pull restPull
 	method := http.MethodPost
 	switch entry.Action {
 	case SubmitCreate:
+		values["base"] = entry.Base
 		values["head"], values["title"], values["body"] = entry.Head, entry.Title, entry.Body
 		if entry.Draft != nil {
 			values["draft"] = *entry.Draft
@@ -258,12 +262,16 @@ func (c *Client) submitPull(ctx context.Context, owner, repo string, entry Submi
 		if current.State != "open" {
 			return restPull{}, fmt.Errorf("PR #%d is %s", entry.PRNumber, current.State)
 		}
+		pull = current
+		if entry.Base != "" && entry.Base != current.Base.Ref {
+			values["base"] = entry.Base
+		}
 		path += "/" + strconv.Itoa(entry.PRNumber)
 		method = http.MethodPatch
-		if entry.Title != "" {
+		if entry.Title != "" && entry.Title != current.Title {
 			values["title"] = entry.Title
 		}
-		if entry.Body != "" {
+		if entry.Body != "" && entry.Body != current.Body {
 			values["body"] = entry.Body
 		}
 	default:
@@ -272,13 +280,14 @@ func (c *Client) submitPull(ctx context.Context, owner, repo string, entry Submi
 	if err := c.requirePublishedHead(ctx, owner, repo, entry); err != nil {
 		return restPull{}, err
 	}
-	payload, err := c.send(ctx, method, path, values)
-	if err != nil {
-		return restPull{}, err
-	}
-	var pull restPull
-	if err := json.Unmarshal(payload, &pull); err != nil {
-		return restPull{}, err
+	if len(values) > 0 {
+		payload, err := c.send(ctx, method, path, values)
+		if err != nil {
+			return restPull{}, err
+		}
+		if err := json.Unmarshal(payload, &pull); err != nil {
+			return restPull{}, err
+		}
 	}
 	if pull.Head.Ref != entry.Head || !strings.EqualFold(pull.Head.Repo.FullName, owner+"/"+repo) {
 		return pull, fmt.Errorf("PR #%d uses head %s:%s instead of %s/%s:%s", pull.Number, pull.Head.Repo.FullName, pull.Head.Ref, owner, repo, entry.Head)

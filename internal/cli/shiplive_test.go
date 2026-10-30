@@ -842,6 +842,7 @@ func setupLiveGTRepo(t *testing.T, base string) string {
 	mustRun(t, nil, dir, "git", "add", "f.txt")
 	mustRun(t, nil, dir, "git", "commit", "-qm", "init")
 	mustRun(t, nil, dir, "gt", "init", "--trunk", "main", "--no-interactive")
+	mustRun(t, nil, dir, "git", "config", "ccx.stack", "graphite")
 	t.Chdir(dir)
 	// The lane gate's reachability probe asks Graphite whether the repo is
 	// submittable, and requireLiveGT deliberately clears GRAPHITE_AUTH_TOKEN;

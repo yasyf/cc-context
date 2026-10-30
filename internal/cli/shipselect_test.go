@@ -69,6 +69,7 @@ func gitHunkRepo(t *testing.T, base, current string) *vcstest.Fixture {
 	mustRun(t, f.Env(), f.Dir, "git", "add", "staged.txt")
 	writeRepoFile(t, f.Dir, "f.txt", current)
 	f.Isolate(t)
+	f.Decorate(func(ctx context.Context) context.Context { return withStackProvider(ctx, false) })
 	return f
 }
 
@@ -83,6 +84,7 @@ func jjHunkRepo(t *testing.T, base, current string) *vcstest.Fixture {
 	mustRun(t, f.Env(), f.Dir, "jj", "commit", "-m", "base")
 	writeRepoFile(t, f.Dir, "f.txt", current)
 	f.Isolate(t)
+	f.Decorate(func(ctx context.Context) context.Context { return withStackProvider(ctx, false) })
 	return f
 }
 

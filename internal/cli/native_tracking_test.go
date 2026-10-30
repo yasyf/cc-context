@@ -77,7 +77,7 @@ func TestNativePublicationRequiresKnownUnqueuedStateForChanges(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			calls := 0
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				calls++
 				_, _ = fmt.Fprintf(w, `{"data":{"repository":{"p0":%s}}}`, tt.queue)
 			}))
@@ -105,7 +105,7 @@ func TestNativePublicationRequiresKnownUnqueuedStateForChanges(t *testing.T) {
 
 func TestNativeQueueProbeDoesNotLandAReusedBranchByName(t *testing.T) {
 	f := shipRepo(t)
-	current := f.Out(t, "git", "rev-parse", "HEAD")
+	current := strings.TrimSpace(f.Out(t, "git", "rev-parse", "HEAD"))
 	for _, tt := range []struct {
 		name, head string
 		want       queueVerdict
@@ -140,8 +140,8 @@ func TestStackNewInheritsExplicitLegacyParentFromNativeCheckout(t *testing.T) {
 	writeShipFile(t, f.Dir, "native.txt", "native change\n")
 	mustRun(t, f.Env(), f.Dir, "git", "add", "native.txt")
 	mustRun(t, f.Env(), f.Dir, "git", "commit", "-m", "native change")
-	base := f.Out(t, "git", "rev-parse", "main")
-	head := f.Out(t, "git", "rev-parse", "HEAD")
+	base := strings.TrimSpace(f.Out(t, "git", "rev-parse", "main"))
+	head := strings.TrimSpace(f.Out(t, "git", "rev-parse", "HEAD"))
 	common := filepath.Join(f.Dir, ".git")
 	if err := nativemeta.AdoptRoot(f.Context(), common, "native-current", "main", base, head); err != nil {
 		t.Fatal(err)
@@ -165,4 +165,21 @@ func TestStackNewInheritsExplicitLegacyParentFromNativeCheckout(t *testing.T) {
 	if native, err := gtmeta.NativeMembership(common, "native-child"); err != nil || !native {
 		t.Fatalf("native parent produced nonnative child: %v %v", native, err)
 	}
+}
+
+func TestStackNewPrefersNativeForGitHubOriginWithoutCatalog(t *testing.T) {
+	f := vcstest.Repo(t, vcstest.Remote())
+	seedLaneRecords(f.Context(), t, f.Dir, laneSeed{})
+	origin := "https://github.com/yasyf/cc-context.git"
+	mustRun(t, f.Env(), f.Dir, "git", "config", "url."+f.RemoteDir+".insteadOf", origin)
+	mustRun(t, f.Env(), f.Dir, "git", "remote", "set-url", "origin", origin)
+	child := filepath.Join(t.TempDir(), "native-first")
+	if _, _, err := runStackCmd(t, f, "new", "native-first", "--full-history", "--path", child); err != nil {
+		t.Fatal(err)
+	}
+	native, err := gtmeta.NativeMembership(filepath.Join(f.Dir, ".git"), "native-first")
+	if err != nil || !native {
+		t.Fatalf("new GitHub stack native=%v error=%v", native, err)
+	}
+	assertNoGT(t, vcstest.Invocations(t, f.ArgvLog))
 }

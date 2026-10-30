@@ -160,6 +160,10 @@ func TestNativeReadBeforeInitializationDoesNotTouchLegacyMetadata(t *testing.T) 
 	if len(state) != 1 || !state["main"].Trunk {
 		t.Fatalf("pre-init native state = %+v", state)
 	}
+	trunk, err := gtmeta.ReadTrunk(gtmeta.WithProvider(f.Context(), "github"), common)
+	if err != nil || trunk != "main" {
+		t.Fatalf("pre-init trunk=%q error=%v", trunk, err)
+	}
 	for _, path := range []string{"gh-stack", ".graphite_repo_config", ".graphite_metadata.db"} {
 		if _, err := os.Stat(filepath.Join(common, path)); !os.IsNotExist(err) {
 			t.Fatalf("read created %s: %v", path, err)

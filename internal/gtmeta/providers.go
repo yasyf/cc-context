@@ -291,7 +291,7 @@ func ReadTrunk(ctx context.Context, commonDir string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if !native {
+	if !native && contextProvider(ctx) != ProviderGitHub {
 		return graphiteReadTrunk(commonDir)
 	}
 	trunk, err := nativemeta.ReadTrunk(ctx, commonDir)

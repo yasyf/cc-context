@@ -100,7 +100,7 @@ func TestExplicitQueueOverrideClearsLegacyQueueButKeepsVersions(t *testing.T) {
 func TestExplicitTrunkQueueFailureNeverCallsGraphite(t *testing.T) {
 	t.Setenv("TRUNK_MERGE_API_KEY", "")
 	calls := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		calls++
 		if _, err := fmt.Fprint(w, `{"mergeabilityStatuses":[{"prNumber":2,"mergeabilityStatus":"QUEUED_TO_MERGE"}]}`); err != nil {
 			t.Errorf("write fixture response: %v", err)
@@ -211,7 +211,7 @@ func TestNativeQueueStatesRetainCommonSafetyDomain(t *testing.T) {
 
 func TestProviderSelectionErrorStopsEveryRouteWithoutFallback(t *testing.T) {
 	calls := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls++; http.Error(w, "must not call", 500) }))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { calls++; http.Error(w, "must not call", 500) }))
 	defer srv.Close()
 	selection := errors.New("native stack catalog is unreadable")
 	original := NewWithToken(srv.URL, "graphite-token")
@@ -274,7 +274,7 @@ func TestQueueProviderAndCacheNamespaceUseEffectiveProviderPair(t *testing.T) {
 
 func TestInvalidQueueProviderFailsBeforeAnyNetworkReadOrMutation(t *testing.T) {
 	calls := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls++; http.Error(w, "must not call", 500) }))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { calls++; http.Error(w, "must not call", 500) }))
 	defer srv.Close()
 	original := NewWithToken(srv.URL, "graphite-token")
 	selected := original.WithQueueProvider("../../trunk")

@@ -91,13 +91,21 @@ func statusMessage(payload []byte) string {
 		Errors  json.RawMessage `json:"errors"`
 	}
 	if err := json.Unmarshal(payload, &body); err == nil {
+		var message string
 		for _, named := range []string{body.Message, body.Error, body.Detail} {
 			if named != "" {
-				return named
+				message = named
+				break
 			}
 		}
 		if len(body.Errors) > 0 && string(body.Errors) != "null" {
-			return statusQuote(body.Errors)
+			if message != "" {
+				message += ": "
+			}
+			message += string(body.Errors)
+		}
+		if message != "" {
+			return statusQuote([]byte(message))
 		}
 	}
 	return statusQuote(payload)

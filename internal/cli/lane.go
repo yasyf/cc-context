@@ -232,8 +232,24 @@ func resolveLaneRefresh(ctx context.Context, name, dir string, noGT, refresh boo
 			if code != 0 && code != 1 {
 				return lane{}, fmt.Errorf("%s: read ccx.stack: exit %d: %s", name, code, strings.TrimSpace(stderr))
 			}
-			if strings.TrimSpace(configured) == "" && name != "stack new" {
-				return l, nil
+			if strings.TrimSpace(configured) == "" {
+				if name != "stack new" {
+					return l, nil
+				}
+				remote, code, stderr, err := render.RunCLIExitCode(ctx, render.Dir(root), "git", []string{"config", "--get", "remote.origin.url"})
+				if err != nil {
+					return lane{}, fmt.Errorf("%s: read origin: %w", name, err)
+				}
+				if code == 1 {
+					return l, nil
+				}
+				if code != 0 {
+					return lane{}, fmt.Errorf("%s: read origin: exit %d: %s", name, code, strings.TrimSpace(stderr))
+				}
+				canonical, err := thinCanonicalRemote(strings.TrimSpace(remote))
+				if err != nil || !strings.HasPrefix(strings.ToLower(canonical), "github.com/") {
+					return l, nil
+				}
 			}
 		}
 		branch, _ := ctx.Value(stackParentKey{}).(string)

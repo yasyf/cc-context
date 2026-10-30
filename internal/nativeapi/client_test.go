@@ -384,7 +384,7 @@ func TestStaleCreateSnapshotUsesPublishedRefFence(t *testing.T) {
 }
 
 func TestHeadLookupRefusesAmbiguousPullRequestsInsteadOfChoosingFirst(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		if _, err := fmt.Fprint(w, `{"data":{"repository":{"h0":{"totalCount":2,"nodes":[{"number":2,"state":"OPEN","headRefName":"feature"}]},"c0":{"nodes":[]}}}}`); err != nil {
 			t.Errorf("write fixture response: %v", err)
 		}
@@ -397,7 +397,7 @@ func TestHeadLookupRefusesAmbiguousPullRequestsInsteadOfChoosingFirst(t *testing
 }
 
 func TestHeadLookupDoesNotTreatForkBranchAsLocalStackBranch(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		if _, err := fmt.Fprint(w, `{"data":{"repository":{"h0":{"totalCount":1,"nodes":[{"number":2,"state":"OPEN","headRefName":"feature","isCrossRepository":true}]},"c0":{"nodes":[]}}}}`); err != nil {
 			t.Errorf("write fixture response: %v", err)
 		}
@@ -440,7 +440,7 @@ func TestStaleUpdateSnapshotUsesPublishedRefFence(t *testing.T) {
 	}))
 	defer srv.Close()
 	submitted, err := NewWithToken(srv.URL, "key").SubmitPullRequests(context.Background(), SubmitRequest{RepoOwner: "org", RepoName: "repo", TrunkBranchName: "main", PRs: []SubmitPR{{Action: SubmitUpdate, PRNumber: 2, Head: "feature", HeadSha: "published-head", Base: "main"}}})
-	if err != nil || len(submitted) != 1 || patches != 1 || refs != 2 {
+	if err != nil || len(submitted) != 1 || patches != 0 || refs != 2 {
 		t.Fatalf("err=%v submitted=%+v patches=%d refs=%d", err, submitted, patches, refs)
 	}
 }
@@ -483,5 +483,86 @@ func TestClosedMutationResponseIsPartialFailure(t *testing.T) {
 	var partial *SubmitError
 	if !errors.As(err, &partial) || len(partial.Submitted) != 1 || partial.Submitted[0].PRID != "PR_2" || !strings.Contains(err.Error(), "is closed after metadata update") {
 		t.Fatalf("err=%v partial=%+v", err, partial)
+	}
+}
+
+func TestSubmitUpdatesOnlyChangedMetadata(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		title string
+		body  string
+		want  map[string]string
+	}{
+		{name: "identical", title: "current title", body: "current body"},
+		{name: "empty preserves current"},
+		{name: "changed title", title: "new title", body: "current body", want: map[string]string{"title": "new title"}},
+		{name: "changed body", title: "current title", body: "new body", want: map[string]string{"body": "new body"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			refs, patches := 0, 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if publishedHeadFixture(t, w, r, "published-head") {
+					refs++
+					return
+				}
+				if r.Method == http.MethodPatch {
+					patches++
+					var values map[string]string
+					if err := json.NewDecoder(r.Body).Decode(&values); err != nil {
+						t.Error(err)
+					}
+					if _, exists := values["base"]; exists {
+						http.Error(w, `{"message":"Validation Failed","errors":[{"field":"base","code":"unchanged"}]}`, http.StatusUnprocessableEntity)
+						return
+					}
+					if !reflect.DeepEqual(values, tc.want) {
+						t.Errorf("patch=%v want=%v", values, tc.want)
+					}
+				}
+				if _, err := fmt.Fprint(w, `{"number":2,"node_id":"PR_2","state":"open","title":"current title","body":"current body","head":{"repo":{"full_name":"org/repo"},"ref":"feature","sha":"stale-head"},"base":{"ref":"main"}}`); err != nil {
+					t.Error(err)
+				}
+			}))
+			defer srv.Close()
+			submitted, err := NewWithToken(srv.URL, "key").SubmitPullRequests(context.Background(), SubmitRequest{RepoOwner: "org", RepoName: "repo", TrunkBranchName: "main", PRs: []SubmitPR{{Action: SubmitUpdate, PRNumber: 2, Head: "feature", HeadSha: "published-head", Base: "main", Title: tc.title, Body: tc.body}}})
+			wantPatches := 0
+			if tc.want != nil {
+				wantPatches = 1
+			}
+			if err != nil || len(submitted) != 1 || patches != wantPatches || refs != 2 {
+				t.Fatalf("err=%v submitted=%+v patches=%d refs=%d", err, submitted, patches, refs)
+			}
+		})
+	}
+}
+
+func TestChangedBasePreservesValidationDetails(t *testing.T) {
+	refs, patches := 0, 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if publishedHeadFixture(t, w, r, "published-head") {
+			refs++
+			return
+		}
+		if r.Method == http.MethodPatch {
+			patches++
+			var values map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&values); err != nil {
+				t.Error(err)
+			}
+			if !reflect.DeepEqual(values, map[string]string{"base": "new-parent"}) {
+				t.Errorf("patch=%v", values)
+			}
+			http.Error(w, `{"message":"Validation Failed","errors":[{"resource":"PullRequest","field":"base","code":"invalid"}]}`, http.StatusUnprocessableEntity)
+			return
+		}
+		if _, err := fmt.Fprint(w, `{"number":2,"node_id":"PR_2","state":"open","head":{"repo":{"full_name":"org/repo"},"ref":"feature","sha":"published-head"},"base":{"ref":"main"}}`); err != nil {
+			t.Error(err)
+		}
+	}))
+	defer srv.Close()
+	_, err := NewWithToken(srv.URL, "key").SubmitPullRequests(context.Background(), SubmitRequest{RepoOwner: "org", RepoName: "repo", TrunkBranchName: "main", PRs: []SubmitPR{{Action: SubmitUpdate, PRNumber: 2, Head: "feature", HeadSha: "published-head", Base: "new-parent"}}})
+	var status *StatusError
+	if !errors.As(err, &status) || status.Status != http.StatusUnprocessableEntity || !strings.Contains(status.Message, "Validation Failed") || !strings.Contains(status.Message, `"field":"base"`) || !strings.Contains(status.Message, `"code":"invalid"`) || patches != 1 || refs != 1 {
+		t.Fatalf("err=%v status=%+v patches=%d refs=%d", err, status, patches, refs)
 	}
 }
