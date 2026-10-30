@@ -594,3 +594,34 @@ func TestShipGTTipOnlyReparentsAMidStackBranchOntoTrunkWithItsOwnCommitsAlone(t 
 		t.Errorf("lane = %q, want it clean at c's new head", status)
 	}
 }
+
+// TestShipGTReparentOntoAParentBelowTheOldOneDropsTheOldParentsCommits is
+// Forge-AI/monorepo#45419: --parent onto a branch the old parent was stacked
+// on found the new parent already in the branch's history, moved nothing, and
+// reported the reparent, so the pull request kept the old parent's commit.
+func TestShipGTReparentOntoAParentBelowTheOldOneDropsTheOldParentsCommits(t *testing.T) {
+	f := shipGTRepo(t)
+	shipGTStack(t, f, "a", "b", "c")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "a", "b", "c")
+	stubStackPRs(t, f, map[string]*stackPR{
+		"a": {Number: 5, Title: "a", State: "OPEN", Base: "main"},
+		"b": {Number: 6, Title: "b", State: "OPEN", Base: "a"},
+		"c": {Number: 7, Title: "c", State: "OPEN", Base: "b"},
+	})
+	was := gitAt(t, f.Env(), f.Dir, "rev-parse", "c")
+	shipResetLog(t, f)
+
+	got, errStr, err := runShipCmdFull(f.Context(), t, "--no-commit", "--no-watch", "--parent", "a", "--tip-only")
+	if err != nil {
+		t.Fatalf("ship = %v (stderr=%q), want c moved onto a", err, errStr)
+	}
+	if want := "reparented c from b onto a (replayed its 1 own commit(s))"; !strings.Contains(got, want) {
+		t.Errorf("summary = %q, want it to carry %q", got, want)
+	}
+	if now := gitAt(t, f.Env(), f.Dir, "rev-parse", "c"); now == was {
+		t.Errorf("c stayed at %s, want its own commit replayed onto a", was)
+	}
+	if subjects := gitAt(t, f.Env(), f.Dir, "log", "--format=%s", "a..c"); subjects != "c" {
+		t.Errorf("c carries %q above a, want its own commit alone", subjects)
+	}
+}

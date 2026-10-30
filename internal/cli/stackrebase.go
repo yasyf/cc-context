@@ -2613,7 +2613,11 @@ func stackSnapshot(ctx context.Context, dir render.Dir, tr vcs.Trunk, s gtBranch
 			if returned {
 				return b, stackDivergedError{fmt.Errorf("stack rebase: %s's local head %.12s is one it held before its published head %s/%s (%.12s) — a reset onto an older head; git reset --keep %s/%s to take the published head, or pass --drop-commits to publish the local head anyway", name, s.Head, tr.Remote(), name, remote, tr.Remote(), name)}
 			}
-			if err := stackRefuseDroppedCommits(ctx, dir, tr, name, s.Head, remote, pin); err != nil {
+			left, err := stackLeftBase(ctx, dir, tr, s, pr)
+			if err != nil {
+				return b, err
+			}
+			if err := stackRefuseDroppedCommits(ctx, dir, tr, name, s.Head, remote, pin, left); err != nil {
 				return b, stackDivergedError{err}
 			}
 		}
@@ -2669,9 +2673,13 @@ func (b *stackRebaseBranch) reopens() bool {
 // force-push over the pull request's work. A published commit trunk already
 // landed as a squash, as the merge queue's replay of a landed parent leaves
 // one, is no work to lose.
-func stackRefuseDroppedCommits(ctx context.Context, dir render.Dir, tr vcs.Trunk, name, local, remote, pin string) error {
+func stackRefuseDroppedCommits(ctx context.Context, dir render.Dir, tr vcs.Trunk, name, local, remote, pin, left string) error {
 	commits := func(head string) ([]string, []string, error) {
-		out, err := render.RunCLI(ctx, dir, "git", []string{"log", "--no-merges", "--format=%H %s", head, "^" + pin})
+		args := []string{"log", "--no-merges", "--format=%H %s", head, "^" + pin}
+		if left != "" {
+			args = append(args, "^"+left)
+		}
+		out, err := render.RunCLI(ctx, dir, "git", args)
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s: git log %.12s: %w", stackRebasePrefix, head, err)
 		}
@@ -2719,6 +2727,22 @@ func stackRefuseDroppedCommits(ctx context.Context, dir render.Dir, tr vcs.Trunk
 	}
 	return fmt.Errorf("stack rebase: %s's local head %.12s drops %d commit(s) its published head %s/%s (%.12s) carries: %s — restore them, or pass --drop-commits to publish the local head anyway",
 		name, local, len(dropped), tr.Remote(), name, remote, strings.Join(dropped, ", "))
+}
+
+// stackLeftBase is the published head of the base a branch's pull request
+// sits on when gt now stacks the branch on another parent: a move such as
+// ship --parent leaves that base's commits behind on purpose, so they are not
+// the branch's own to drop. It is empty while the branch keeps its base.
+func stackLeftBase(ctx context.Context, dir render.Dir, tr vcs.Trunk, s gtBranchState, pr *stackPR) (string, error) {
+	if pr == nil || pr.Base == "" || pr.Base == s.Parents[0].Ref {
+		return "", nil
+	}
+	ref := tr.Remote() + "/" + pr.Base
+	exists, err := gitRefExists(ctx, dir, stackRebasePrefix, ref)
+	if err != nil || !exists {
+		return "", err
+	}
+	return ref, nil
 }
 
 type stackDivergedError struct{ error }
