@@ -1,1 +1,1 @@
-{"v":1,"lamport":3,"ops":[{"kind":"set_branch","branch":"repro/cleanup-status-allocations"}]}
+{"v":1,"lamport":4,"ops":[{"kind":"set_criterion_status","id":"d7b17f57bbdf335a294f821e83da8a47","status":"met","note":"Baseline CI41009824526 Linux123912941991: same50returned, allocations158 vs18019 for6000. Fixed candidateCI41009863261 all21PASS; daemoncosttestpasses. Rawreceipts in host-pressure FE/ccx-status-window-delivery.json."}]}
