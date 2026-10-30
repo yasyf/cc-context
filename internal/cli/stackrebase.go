@@ -2919,6 +2919,9 @@ func stackQueueOf(ctx context.Context, owner, name string, infos []gtapi.PullReq
 	for _, info := range infos {
 		numbers = append(numbers, info.PRNumber)
 	}
+	if len(numbers) == 0 {
+		return map[string]prQueueState{}, nil
+	}
 	mergeability, err := gtAPI(ctx).MergeabilityStatuses(ctx, owner, name, numbers)
 	if errors.Is(err, gtapi.ErrNoQueueKey) {
 		noteNoQueueKey("stack rebase")

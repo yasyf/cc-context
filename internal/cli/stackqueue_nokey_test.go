@@ -22,3 +22,12 @@ func TestStackQueueOfSkipsATrunkQueueThisMachineHasNoKeyFor(t *testing.T) {
 		t.Fatalf("states = %v, want a's state read with no queue entry", states)
 	}
 }
+
+// TestStackQueueOfReadsNoQueueForAStackWithNoPullRequest is root #211345: a
+// plain ship of a branch that has no pull request yet never needs the queue.
+func TestStackQueueOfReadsNoQueueForAStackWithNoPullRequest(t *testing.T) {
+	ctx := context.WithValue(context.Background(), gtAPIKey{}, gtapi.NewWithToken("http://invalid.local", "graphite-token").WithQueueProvider("unread"))
+	if states, err := stackQueueOf(ctx, "org", "repo", nil, nil); err != nil || len(states) != 0 {
+		t.Fatalf("stackQueueOf = %v, %v; want no queue read", states, err)
+	}
+}

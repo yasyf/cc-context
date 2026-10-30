@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -40,13 +42,28 @@ func Default() *Client { return defaultClient() }
 // New binds publication and metadata reads to a GitHub API root.
 func New(baseURL string) *Client {
 	return &Client{base: strings.TrimSuffix(baseURL, "/"), http: &http.Client{}, tokens: &tokenSource{resolve: resolveToken}, queueBase: "https://api.trunk.io", queueToken: func() (string, error) {
-		token := os.Getenv("TRUNK_MERGE_API_KEY")
-		if token == "" {
-			return "", ErrNoQueueKey
+		if token := os.Getenv("TRUNK_MERGE_API_KEY"); token != "" {
+			return token, nil
 		}
-		return token, nil
+		if token := keychainQueueKey(); token != "" {
+			return token, nil
+		}
+		return "", ErrNoQueueKey
 	}}
 }
+
+// keychainQueueKey reads the Trunk key from the macOS Keychain item the owner
+// keeps it in, once per process; empty off macOS or without the item.
+var keychainQueueKey = sync.OnceValue(func() string {
+	if runtime.GOOS != "darwin" {
+		return ""
+	}
+	out, err := exec.Command("security", "find-generic-password", "-s", "trunk-merge-api-key", "-w").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+})
 
 // WithQueueProvider selects queue reads without changing publication credentials.
 func (c *Client) WithQueueProvider(provider string) *Client {
