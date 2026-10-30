@@ -114,7 +114,7 @@ func TestNativeQueueProbeDoesNotLandAReusedBranchByName(t *testing.T) {
 		{"earlier branch history", "earlier-head", queueUnknown},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				body := map[string]any{"data": map[string]any{"repository": map[string]any{
 					"h0": map[string]any{"totalCount": 0, "nodes": []any{}},
 					"c0": map[string]any{"nodes": []any{map[string]any{"number": 42, "state": "MERGED", "headRefOid": tt.head, "headRefName": "main", "baseRefName": "main"}}},
