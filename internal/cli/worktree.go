@@ -158,7 +158,9 @@ func newWorktreeRmCmd() *cobra.Command {
 <name> is the working copy "add" minted under the repository's pool — rm
 removes only what add created, so a worktree ccx never minted by name is
 refused and left to --path. --path names any linked worktree this repository
-registers, by its absolute path. Removing the checkout
+registers, by its absolute path; a checkout whose admin dir was parked under
+<git common dir>/retired-worktrees is moved back into the registry first, even
+under --dry-run, and then removed like any other. Removing the checkout
 that holds trunk is refused, since the branch it pins is the one every restack
 rebases onto, and so is the repository's own working copy. A tree holding
 uncommitted changes is refused unless --force discards them; --force overrides
@@ -911,6 +913,11 @@ func runWorktreeRmPath(cmd *cobra.Command, opts worktreeRmOptions) error {
 	if err != nil {
 		return err
 	}
+	if filepath.Dir(target.GitDir) == filepath.Join(target.CommonDir, "retired-worktrees") {
+		if err := reregisterRetiredWorktree(path, target); err != nil {
+			return err
+		}
+	}
 	list, err := vcs.Worktrees(ctx, l.checkout)
 	if err != nil {
 		return fmt.Errorf("worktree rm: %w", err)
@@ -921,6 +928,31 @@ func runWorktreeRmPath(cmd *cobra.Command, opts worktreeRmOptions) error {
 		}
 	}
 	return fmt.Errorf("worktree rm: this repository registers no worktree at %s: %w", path, ErrNotFound)
+}
+
+// reregisterRetiredWorktree moves a live checkout's admin dir back from
+// <common>/retired-worktrees to <common>/worktrees/<name>, the move that makes
+// git list it again, so rm removes it through the registry.
+func reregisterRetiredWorktree(path string, target vcs.Checkout) error {
+	admin := filepath.Join(target.CommonDir, "worktrees", filepath.Base(path))
+	if _, err := os.Lstat(admin); err == nil {
+		return fmt.Errorf("worktree rm: %s is retired at %s, and %s already registers another worktree — move one of them aside, then run rm again", path, target.GitDir, admin)
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("worktree rm: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(admin), 0o750); err != nil {
+		return fmt.Errorf("worktree rm: %w", err)
+	}
+	if err := os.Rename(target.GitDir, admin); err != nil {
+		return fmt.Errorf("worktree rm: re-register %s: %w", path, err)
+	}
+	if err := os.WriteFile(filepath.Join(admin, "gitdir"), []byte(filepath.Join(path, ".git")+"\n"), 0o600); err != nil {
+		return fmt.Errorf("worktree rm: re-register %s: %w", path, err)
+	}
+	if err := os.WriteFile(filepath.Join(path, ".git"), []byte("gitdir: "+admin+"\n"), 0o600); err != nil {
+		return fmt.Errorf("worktree rm: re-register %s: %w", path, err)
+	}
+	return nil
 }
 
 func worktreeRmLaneOf(ctx context.Context, target vcs.Checkout) (lane, error) {
