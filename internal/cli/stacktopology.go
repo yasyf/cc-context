@@ -20,6 +20,7 @@ type stackTopology struct {
 	rewound      map[string]string
 	nearestState gtState
 	complete     bool
+	native       bool
 	expanded     map[string]bool
 	queried      map[string]bool
 }
@@ -29,7 +30,7 @@ func (t *stackTopology) include(names ...string) error {
 }
 
 func (t *stackTopology) load(read func(context.Context, string, []string) (gtmeta.State, []gtmeta.Orphan, error), names []string) error {
-	if t.complete {
+	if t.complete && !t.native {
 		return nil
 	}
 	var missing []string

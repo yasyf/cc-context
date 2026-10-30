@@ -209,7 +209,7 @@ func convert(ctx context.Context, commonDir string, branches []string, explicit 
 			return err
 		}
 	}
-	state, _, err := readSelectedStateOrphans(ctx, commonDir, false, branches)
+	state, _, err := readAncestorStateOrphans(ctx, commonDir, false, branches)
 	if err != nil {
 		return err
 	}

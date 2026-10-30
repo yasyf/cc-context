@@ -174,6 +174,9 @@ func gtStateAtFocused(ctx context.Context, commonDir, prefix, branch, parent str
 }
 
 func gtRequestedState(ctx context.Context, commonDir, prefix string, branches []string, read func(context.Context, string, []string) (gtmeta.State, []gtmeta.Orphan, error)) (gtState, error) {
+	if err := gtmeta.Convert(ctx, commonDir, branches...); err != nil {
+		return nil, fmt.Errorf("%s: %w", prefix, err)
+	}
 	tracked, orphans, err := read(ctx, commonDir, branches)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", prefix, err)

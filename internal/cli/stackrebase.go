@@ -1186,11 +1186,9 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	if err != nil {
 		return nil, err
 	}
-	topology := &stackTopology{ctx: ctx, dir: l.dir(), commonDir: commonDir, state: state, rewound: rewound, complete: o.allLanes || o.tip == "", expanded: map[string]bool{o.tip: true}, queried: map[string]bool{}}
-	if !o.allLanes {
-		if err := topology.include(stackRequestedNames(o)...); err != nil {
-			return nil, err
-		}
+	topology := &stackTopology{ctx: ctx, dir: l.dir(), commonDir: commonDir, state: state, rewound: rewound, complete: o.allLanes || o.tip == "", native: l.native, expanded: map[string]bool{o.tip: true}, queried: map[string]bool{}}
+	if err := topology.include(stackRequestedNames(o)...); err != nil {
+		return nil, err
 	}
 	overrides, err := stackOverrides(o, state)
 	if err != nil {

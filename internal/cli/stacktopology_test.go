@@ -2,13 +2,17 @@ package cli
 
 import (
 	"context"
+	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/yasyf/cc-context/internal/gtmeta"
+	"github.com/yasyf/cc-context/internal/nativemeta"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
@@ -66,5 +70,53 @@ func TestStackTopologyNormalizesOnlyNewEntriesAgainstExistingParents(t *testing.
 	}
 	if state["new"].Parents[0].SHA != base || topology.rewound["new"] != "parent" || state["edited"].Parents[0].SHA != head || len(topology.rewound) != 1 {
 		t.Fatalf("hydrated state=%+v rewound=%v", state, topology.rewound)
+	}
+}
+
+func TestCompleteNativePlanConvertsOnlyRequestedGraphiteAncestry(t *testing.T) {
+	f := vcstest.Repo(t, vcstest.Remote())
+	common := filepath.Join(f.Dir, ".git")
+	head := strings.TrimSpace(f.Out(t, "git", "rev-parse", "main"))
+	for _, branch := range []string{"native-anchor", "base", "publication", "publication-child", "unrelated"} {
+		f.Out(t, "git", "branch", branch)
+	}
+	vcstest.WriteGraphiteMeta(t, common, fmt.Sprintf(`{"main":{"trunk":true},"base":{"parents":[{"ref":"main","sha":%q}]},"publication":{"parents":[{"ref":"base","sha":%q}]},"publication-child":{"parents":[{"ref":"publication","sha":%q}]},"unrelated":{"parents":[{"ref":"main","sha":%q}]}}`, head, head, head, head))
+	if err := nativemeta.Init(f.Context(), common, "main"); err != nil {
+		t.Fatal(err)
+	}
+	if err := nativemeta.AdoptRoot(f.Context(), common, "native-anchor", "main", head, head); err != nil {
+		t.Fatal(err)
+	}
+	f.Out(t, "git", "config", "ccx.stack", "github")
+	ctx := gtmeta.WithProvider(f.Context(), gtmeta.ProviderGitHub)
+	state, err := gtStateAt(ctx, common, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, present := state["publication"]; present {
+		t.Fatal("publication was converted before it was requested")
+	}
+	before, err := os.ReadFile(filepath.Join(common, ".graphite_metadata.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	topology := &stackTopology{ctx: ctx, dir: render.Dir(f.Dir), commonDir: common, state: state, retargeted: maps.Clone(state), rewound: map[string]string{}, queried: map[string]bool{}, expanded: map[string]bool{}, complete: true, native: true}
+	if err := topology.include("publication"); err != nil {
+		t.Fatal(err)
+	}
+	entry := state["publication"]
+	if entry.Head != head || len(entry.Parents) != 1 || entry.Parents[0].Ref != "base" || topology.retargeted["publication"].Head != head {
+		t.Fatalf("requested native ancestry = %+v", state)
+	}
+	names, err := nativemeta.BranchNames(common)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(names, []string{"base", "native-anchor", "publication"}) {
+		t.Fatalf("converted native branches = %v", names)
+	}
+	after, err := os.ReadFile(filepath.Join(common, ".graphite_metadata.db"))
+	if err != nil || !slices.Equal(before, after) {
+		t.Fatalf("conversion changed Graphite source metadata: %v", err)
 	}
 }
