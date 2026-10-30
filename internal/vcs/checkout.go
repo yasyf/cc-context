@@ -461,7 +461,7 @@ func linkedHoldings(common string) ([]Holding, error) {
 	var holdings []Holding
 	for _, admin := range admins {
 		dir := filepath.Join(common, "worktrees", admin.Name())
-		pointer, err := os.ReadFile(filepath.Join(dir, "gitdir")) //nolint:gosec // git's own admin file under the repository's common dir
+		pointer, err := readGitMetadata(filepath.Join(dir, "gitdir"))
 		if errors.Is(err, fs.ErrNotExist) {
 			continue
 		}
@@ -527,7 +527,7 @@ func retiredHoldings(common string) ([]Holding, error) {
 // retiredWorktree names the working copy admin belongs to when admin's gitdir
 // names a .git file that points straight back at admin.
 func retiredWorktree(admin string) (string, bool) {
-	link, err := os.ReadFile(filepath.Join(admin, "gitdir")) //nolint:gosec // an admin file under the repository's common dir
+	link, err := readGitMetadata(filepath.Join(admin, "gitdir"))
 	if err != nil {
 		return "", false
 	}
@@ -535,7 +535,7 @@ func retiredWorktree(admin string) (string, bool) {
 	if !filepath.IsAbs(dotGit) {
 		dotGit = filepath.Join(admin, dotGit)
 	}
-	pointer, err := os.ReadFile(dotGit) //nolint:gosec // the worktree .git file git recorded in admin/gitdir
+	pointer, err := readGitMetadata(dotGit)
 	if err != nil {
 		return "", false
 	}
@@ -620,7 +620,7 @@ func coHolders(c Checkout, list []Holding) (string, []string, error) {
 // headBranch reads the branch an admin dir's HEAD names symbolically, the empty
 // string for a detached HEAD or none at all, which git lists without a branch.
 func headBranch(admin string) (string, error) {
-	head, err := os.ReadFile(filepath.Join(admin, "HEAD")) //nolint:gosec // git's own admin file under the repository's common dir
+	head, err := readGitMetadata(filepath.Join(admin, "HEAD"))
 	if errors.Is(err, fs.ErrNotExist) {
 		return "", nil
 	}
