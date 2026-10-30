@@ -859,6 +859,10 @@ func stackReclaimConflict(ctx context.Context, cmd *cobra.Command, l lane, commo
 	if err := stackReclaim(ctx, l, commonDir, run); err != nil {
 		return err
 	}
+	reclaimed := fmt.Sprintf("the stack rebase of %s that opened this workspace was reclaimed %s by a run from %s: it stopped on a conflict %s ago, %s", strings.Join(run.Roots, ", "), time.Now().Format(time.Kitchen), l.root, stackAge(time.Since(run.saved)), why)
+	if err := os.WriteFile(stackReclaimedPath(commonDir, ws), []byte(reclaimed+"\n"), 0o600); err != nil {
+		return fmt.Errorf("stack rebase: %w", err)
+	}
 	note, err := stackReleaseWorkspace(ctx, l, commonDir, run.Conflict, true)
 	if err != nil {
 		return fmt.Errorf("%w — the stale run of %s is reclaimed", err, strings.Join(run.Roots, ", "))
@@ -869,6 +873,10 @@ func stackReclaimConflict(ctx context.Context, cmd *cobra.Command, l lane, commo
 	}
 	cmd.Println(line)
 	return nil
+}
+
+func stackReclaimedPath(commonDir, ws string) string {
+	return filepath.Join(commonDir, stackRebaseStateDir, filepath.Base(ws)+".reclaimed")
 }
 
 func stackAge(d time.Duration) string {
@@ -4596,6 +4604,9 @@ func stackResolveRun(ctx context.Context, w io.Writer, stack string) (lane, stri
 	}
 	run, err := stackRunFor(runs, stack, l.root, current)
 	if err != nil {
+		if said, readErr := os.ReadFile(stackReclaimedPath(commonDir, l.root)); readErr == nil {
+			return lane{}, "", nil, fmt.Errorf("stack rebase: %s, so the resolution here is void; restack from the branch's own worktree with ccx vcs stack submit", strings.TrimSpace(string(said)))
+		}
 		return lane{}, "", nil, err
 	}
 	host, err := os.Hostname()
