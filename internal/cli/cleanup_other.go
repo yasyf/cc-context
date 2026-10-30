@@ -10,10 +10,6 @@ import (
 
 const cleanupDaemonized = false
 
-func connectCleanup(context.Context) (cleanup.Service, error) {
-	return nil, cleanup.ErrUnsupported
-}
-
 func reachCleanup(context.Context) (cleanup.Service, error) {
 	return nil, cleanup.ErrUnsupported
 }

@@ -208,7 +208,7 @@ func (s starter) reach(ctx context.Context) (cleanup.Control, error) {
 	ctl, info, err := s.greet(ctx, socket, cleanup.Control.Hello)
 	switch {
 	case errors.Is(err, errNoDaemon):
-		return nil, fmt.Errorf("%w; launchd starts one at login, and the next ccx command that queues or steers deletion, such as worktree rm or cleanup pause, installs and starts it", err)
+		return nil, fmt.Errorf("%w; start it explicitly with ccx vcs cleanup serve", err)
 	case err != nil:
 		return nil, err
 	case info.Protocol > cleanup.Protocol:

@@ -63,7 +63,7 @@ func withCleanup(ctx context.Context, svc cleanup.Service) context.Context {
 	return context.WithValue(ctx, cleanupKey{}, svc)
 }
 
-var cleanupDefault = connectCleanup
+var cleanupDefault = reachCleanup
 
 func cleanupService(ctx context.Context) (cleanup.Service, error) {
 	if svc, ok := ctx.Value(cleanupKey{}).(cleanup.Service); ok {
