@@ -156,7 +156,7 @@ func TestSubmitLinksAnUnstackedGraphiteChainIntoOneNativeStack(t *testing.T) {
 			if !stacked {
 				t.Error("read the middle PR's stack before creating it")
 			}
-			reply(`{"number":2,"state":"open","head":{"repo":{"full_name":"org/repo"},"ref":"middle"},"base":{"ref":"bottom"},"stack":{"number":7,"position":2,"base":{"ref":"dev"}}}`)
+			reply(`{"number":2,"state":"open","head":{"repo":{"full_name":"org/repo"},"ref":"middle"},"base":{"ref":"bottom"},"stack":{"number":7,"position":2,"size":2,"base":{"ref":"dev"}}}`)
 		case "POST /repos/org/repo/stacks/7/add?":
 			if err := json.NewDecoder(r.Body).Decode(&struct {
 				PullRequests *[]int `json:"pull_requests"`
@@ -191,7 +191,7 @@ func TestSubmitExtendsExistingNativeStack(t *testing.T) {
 				t.Errorf("write fixture response: %v", err)
 			}
 		case "GET /repos/org/repo/pulls":
-			if _, err := fmt.Fprint(w, `[{"number":2,"state":"open","head":{"repo":{"full_name":"org/repo"},"ref":"parent"},"base":{"ref":"bottom"},"stack":{"number":7,"position":2,"base":{"ref":"dev"}}}]`); err != nil {
+			if _, err := fmt.Fprint(w, `[{"number":2,"state":"open","head":{"repo":{"full_name":"org/repo"},"ref":"parent"},"base":{"ref":"bottom"},"stack":{"number":7,"position":2,"size":2,"base":{"ref":"dev"}}}]`); err != nil {
 				t.Errorf("write fixture response: %v", err)
 			}
 		case "POST /repos/org/repo/stacks/7/add":
@@ -217,6 +217,48 @@ func TestSubmitExtendsExistingNativeStack(t *testing.T) {
 	}
 	if !reflect.DeepEqual(added, []int{3}) {
 		t.Fatalf("added=%v", added)
+	}
+}
+
+func TestSubmitOpensASecondChildChainAsItsOwnNativeStackOnTheSharedParent(t *testing.T) {
+	var created []int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if publishedHeadFixture(t, w, r, "tip-head") {
+			return
+		}
+		reply := func(body string) {
+			if _, err := fmt.Fprint(w, body); err != nil {
+				t.Errorf("write fixture response: %v", err)
+			}
+		}
+		switch r.Method + " " + r.URL.Path + "?" + r.URL.Query().Get("head") {
+		case "POST /repos/org/repo/pulls?":
+			reply(`{"number":5,"state":"open","head":{"repo":{"full_name":"org/repo"},"ref":"fork-tip","sha":"tip-head"},"base":{"ref":"fork"}}`)
+		case "GET /repos/org/repo/pulls?org:fork":
+			reply(`[{"number":4,"state":"open","head":{"repo":{"full_name":"org/repo"},"ref":"fork"},"base":{"ref":"parent"}}]`)
+		case "GET /repos/org/repo/pulls?org:parent":
+			reply(`[{"number":2,"state":"open","head":{"repo":{"full_name":"org/repo"},"ref":"parent"},"base":{"ref":"dev"},"stack":{"number":7,"position":1,"size":2,"base":{"ref":"dev"}}}]`)
+		case "GET /repos/org/repo/pulls/4?":
+			reply(`{"number":4,"state":"open","head":{"repo":{"full_name":"org/repo"},"ref":"fork"},"base":{"ref":"parent"}}`)
+		case "POST /repos/org/repo/stacks?":
+			if err := json.NewDecoder(r.Body).Decode(&struct {
+				PullRequests *[]int `json:"pull_requests"`
+			}{&created}); err != nil {
+				t.Error(err)
+			}
+			reply(`{"number":9}`)
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL)
+			http.Error(w, "unexpected", 500)
+		}
+	}))
+	defer srv.Close()
+	got, err := NewWithToken(srv.URL, "key").SubmitPullRequests(context.Background(), SubmitRequest{RepoOwner: "org", RepoName: "repo", TrunkBranchName: "dev", PRs: []SubmitPR{{Action: SubmitCreate, Head: "fork-tip", HeadSha: "tip-head", Base: "fork", Title: "fork tip"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].StackNumber != 9 || !reflect.DeepEqual(created, []int{4, 5}) {
+		t.Fatalf("got=%+v created=%v", got, created)
 	}
 }
 

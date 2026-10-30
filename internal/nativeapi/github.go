@@ -173,6 +173,7 @@ type restPull struct {
 	Stack *struct {
 		Number   int `json:"number"`
 		Position int `json:"position"`
+		Size     int `json:"size"`
 		Base     struct {
 			Ref string `json:"ref"`
 		} `json:"base"`
@@ -314,10 +315,7 @@ func (c *Client) submitPull(ctx context.Context, owner, repo string, entry Submi
 }
 
 func (c *Client) linkPull(ctx context.Context, owner, repo, trunk string, pull restPull) (int, error) {
-	if pull.Stack != nil && pull.Stack.Base.Ref != trunk {
-		return 0, fmt.Errorf("native GitHub stack #%d targets %s instead of %s", pull.Stack.Number, pull.Stack.Base.Ref, trunk)
-	}
-	if pull.Base.Ref == trunk {
+	if pull.Base.Ref == trunk || pull.Stack != nil && pull.Stack.Position == 1 {
 		if pull.Stack != nil {
 			return pull.Stack.Number, nil
 		}
@@ -336,9 +334,6 @@ func (c *Client) linkPull(ctx context.Context, owner, repo, trunk string, pull r
 		return 0, fmt.Errorf("PR #%d parent branch %s has %d open pull requests; native stack registration requires one", pull.Number, pull.Base.Ref, len(parents))
 	}
 	parent := parents[0]
-	if parent.Stack != nil && parent.Stack.Base.Ref != trunk {
-		return 0, fmt.Errorf("parent PR #%d belongs to native GitHub stack #%d targeting %s instead of %s", parent.Number, parent.Stack.Number, parent.Stack.Base.Ref, trunk)
-	}
 	if pull.Stack != nil {
 		if parent.Stack == nil || parent.Stack.Number != pull.Stack.Number || pull.Stack.Position != parent.Stack.Position+1 {
 			return 0, fmt.Errorf("PR #%d and parent #%d belong to different native GitHub stacks", pull.Number, parent.Number)
@@ -353,13 +348,13 @@ func (c *Client) linkPull(ctx context.Context, owner, repo, trunk string, pull r
 		if err != nil {
 			return 0, err
 		}
-		if parent.Stack == nil {
-			return 0, fmt.Errorf("GitHub did not register parent PR #%d in a native stack", parent.Number)
-		}
 	}
-	if parent.Stack != nil {
+	if parent.Stack != nil && parent.Stack.Position == parent.Stack.Size {
 		_, err = c.post(ctx, fmt.Sprintf("%s/stacks/%d/add", path, parent.Stack.Number), map[string]any{"pull_requests": []int{pull.Number}})
 		return parent.Stack.Number, err
+	}
+	if parent.Stack != nil {
+		return 0, nil
 	}
 	payload, err = c.post(ctx, path+"/stacks", map[string]any{"pull_requests": []int{parent.Number, pull.Number}})
 	if err != nil {
