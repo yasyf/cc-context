@@ -625,3 +625,42 @@ func TestShipGTReparentOntoAParentBelowTheOldOneDropsTheOldParentsCommits(t *tes
 		t.Errorf("c carries %q above a, want its own commit alone", subjects)
 	}
 }
+
+// TestShipGTTipOnlyRetracksAParentGraphiteCallsDiverged is p8a-step7's
+// #207148: the landing runner rebased the parent in the shared clone, so
+// Graphite's record of it named a base its history no longer held, and gt
+// refused to track the new branch onto a diverged branch. --tip-only re-tracks
+// the parent with gt's own remedy, then ships the branch onto it alone.
+func TestShipGTTipOnlyRetracksAParentGraphiteCallsDiverged(t *testing.T) {
+	f := shipGTRepo(t)
+	stackCommit(t, f, "m1.txt")
+	shipGTStack(t, f, "p")
+	mustRun(t, f.Env(), f.Dir, "git", "rebase", "-q", "--onto", "main~1", "main", "p")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "-f", "origin", "p")
+	mustRun(t, f.Env(), f.Dir, "gt", "log", "short", "--no-interactive")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "n")
+	stackCommit(t, f, "n.txt")
+	stubStackPRs(t, f, map[string]*stackPR{"p": {Number: 6, Title: "p", State: "OPEN", Base: "main"}})
+	shipResetLog(t, f)
+
+	got, errStr, err := runShipCmdFull(f.Context(), t, "--no-commit", "--no-watch", "--tip-only", "--parent", "p")
+	if err != nil {
+		t.Fatalf("ship = %v (stderr=%q), want n shipped onto p", err, errStr)
+	}
+	if parent := shipParentOf(t, f, "n"); parent != "p" {
+		t.Errorf("n's parent = %s, want p", parent)
+	}
+	if !strings.Contains(got, "re-tracked p onto main") {
+		t.Errorf("ship output = %q, want it to name the re-track of p", got)
+	}
+}
+
+// TestShipDryRunUnderTipOnlyPublishesAnUntrackedBranchAlone is the dry run
+// behind #207148, which told p8a-step7 an untracked branch shipped with
+// --tip-only would publish its parent's whole downstack.
+func TestShipDryRunUnderTipOnlyPublishesAnUntrackedBranchAlone(t *testing.T) {
+	r := &shipDryRun{branch: "n", parent: "p", trunk: "main"}
+	if anchor := dryRunAnchor(gtState{}, true, r); anchor != "" || !slices.Equal(r.notes, []string{"n is untracked; --tip-only records it on p's published head and publishes it alone"}) {
+		t.Errorf("anchor = %q, notes = %q, want n published alone", anchor, r.notes)
+	}
+}

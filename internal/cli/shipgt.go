@@ -894,7 +894,11 @@ func gtTrack(ctx context.Context, errW io.Writer, l lane, o shipOpts, branch str
 		if adopted, err = gtAdoptRecordedParent(ctx, errW, l, c, state, o.parent); err != nil {
 			return nil, "", err
 		}
-		if adopted != "" {
+		retracked, err := gtRetrackDiverged(ctx, errW, c, o.parent)
+		if err != nil {
+			return nil, "", err
+		}
+		if adopted += retracked; adopted != "" {
 			if state, err = c.at(ctx); err != nil {
 				return nil, "", err
 			}
@@ -993,6 +997,35 @@ func gtAdoptOntoPublished(ctx context.Context, c *gtCache, state gtState, branch
 	}
 	c.forget()
 	return c.at(ctx)
+}
+
+// gtRetrackDiverged runs gt's own remedy, gt track onto the parent it records,
+// on a parent Graphite calls diverged, which happens when another lane or the
+// landing runner rewrote it under this clone; gt refuses to track any branch
+// onto a diverged parent. It returns the segment naming the re-track, empty when
+// the parent was not diverged.
+func gtRetrackDiverged(ctx context.Context, errW io.Writer, c *gtCache, parent string) (string, error) {
+	commonDir, err := c.common(ctx)
+	if err != nil {
+		return "", err
+	}
+	rows, err := gtmeta.Rows(ctx, commonDir)
+	if err != nil {
+		return "", fmt.Errorf("ship: %w", err)
+	}
+	i := slices.IndexFunc(rows, func(row gtmeta.Row) bool { return row.Branch == parent })
+	if i < 0 || !rows[i].Diverged || rows[i].Parent == "" {
+		return "", nil
+	}
+	r, runErr := gtRun(ctx, c.dir, []string{"track", parent, "--parent", rows[i].Parent, "--no-interactive"}, errW)
+	c.forget()
+	if err := gtReport(ctx, errW, r); err != nil {
+		return "", err
+	}
+	if runErr != nil {
+		return "", &gtAdvice{advice: fmt.Sprintf("ship: %s has diverged from Graphite's record and gt track could not re-track it onto %s — rebase %s onto %s, then ship again", parent, rows[i].Parent, parent, rows[i].Parent), cause: runErr}
+	}
+	return "re-tracked " + parent + " onto " + rows[i].Parent + ", which had diverged from Graphite's record" + shipSep, nil
 }
 
 type gtRecordedParent struct {

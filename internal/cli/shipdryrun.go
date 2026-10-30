@@ -426,7 +426,7 @@ func dryRunStack(ctx context.Context, l lane, o shipOpts, c *gtCache, r *shipDry
 	if state, err = dryRunPlanned(ctx, l, state, r); err != nil {
 		return err
 	}
-	anchor := dryRunAnchor(state, r)
+	anchor := dryRunAnchor(state, o.tipOnly, r)
 	if anchor == "" {
 		return nil
 	}
@@ -462,9 +462,13 @@ func dryRunStack(ctx context.Context, l lane, o shipOpts, c *gtCache, r *shipDry
 // answer is the parent a track would adopt it onto — whose whole downstack the
 // submit then publishes, which is the surprise the report exists to end. Empty
 // means there is no stack to read.
-func dryRunAnchor(state gtState, r *shipDryRun) string {
+func dryRunAnchor(state gtState, tipOnly bool, r *shipDryRun) string {
 	if _, tracked := state[r.branch]; tracked {
 		return r.branch
+	}
+	if tipOnly && r.parent != "" && r.parent != r.trunk {
+		r.notes = append(r.notes, r.branch+" is untracked; --tip-only records it on "+r.parent+"'s published head and publishes it alone")
+		return ""
 	}
 	if r.parent == "" || r.parent == r.trunk {
 		r.notes = append(r.notes, r.branch+" is untracked and would be adopted onto trunk, so the submit publishes it alone")
