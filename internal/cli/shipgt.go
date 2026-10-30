@@ -1427,6 +1427,9 @@ func gtOntoPlan(ctx context.Context, l lane, o shipOpts, branch, parent, trunk s
 		return gtOntoMove{}, err
 	}
 	on, err := gitIsAncestor(ctx, l.dir(), "ship", onto, gtRestackRef(branch))
+	if err == nil && on && from.Ref != "" && from.Ref != parent {
+		on, err = gitIsAncestor(ctx, l.dir(), "ship", from.SHA, onto)
+	}
 	if err != nil || on {
 		return gtOntoMove{onto: onto}, err
 	}
