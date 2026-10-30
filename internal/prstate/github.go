@@ -17,6 +17,11 @@ import (
 	"github.com/yasyf/cc-context/internal/gtapi"
 )
 
+var (
+	queueReadDeadline = 30 * time.Second
+	queueReadBackoff  = []time.Duration{time.Second, 3 * time.Second}
+)
+
 const (
 	pageSize         = 20
 	pollWorkers      = 4
@@ -438,19 +443,33 @@ func (p *pass) queueUnknown(number int) bool {
 	return p.gt != nil && (p.infos == nil || p.infos[number] == nil && p.gt.QueueRequiresStatus(gtapi.PullRequestInfo{}))
 }
 
+func (g *GitHub) queueInfos(ctx context.Context, numbers []int) ([]gtapi.PullRequestInfo, error) {
+	for attempt := 0; ; attempt++ {
+		infoCtx, cancel := context.WithTimeout(ctx, queueReadDeadline)
+		infos, err := g.gt.PullRequestInfo(infoCtx, gtapi.PullRequestInfoRequest{
+			RepoOwner:  g.owner,
+			RepoName:   g.name,
+			PRNumbers:  numbers,
+			Consistent: true,
+			Callsite:   "ccx",
+		})
+		cancel()
+		if !errors.Is(err, context.DeadlineExceeded) || attempt == len(queueReadBackoff) {
+			return infos, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, err
+		case <-time.After(queueReadBackoff[attempt]):
+		}
+	}
+}
+
 func (g *GitHub) queueRecords(ctx context.Context, numbers []int) (map[int]*gtapi.PullRequestInfo, map[int]string) {
 	if len(numbers) == 0 || g.gt == nil {
 		return nil, nil
 	}
-	infoCtx, cancel := context.WithTimeout(ctx, graphiteDeadline)
-	defer cancel()
-	infos, err := g.gt.PullRequestInfo(infoCtx, gtapi.PullRequestInfoRequest{
-		RepoOwner:  g.owner,
-		RepoName:   g.name,
-		PRNumbers:  numbers,
-		Consistent: true,
-		Callsite:   "ccx",
-	})
+	infos, err := g.queueInfos(ctx, numbers)
 	if err != nil {
 		_, _ = fmt.Fprintf(g.warn, "prstate: %s: %v; this poll carries no queue state\n", g.gt.QueueProvider(), err)
 		return nil, nil

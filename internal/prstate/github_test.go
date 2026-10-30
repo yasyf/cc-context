@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -318,5 +319,30 @@ func TestNativeMissingQueueEntryKeepsThePollUnknown(t *testing.T) {
 	}
 	if calls != 2 {
 		t.Fatalf("reads=%d", calls)
+	}
+}
+
+func TestQueueReadRetriesAStackReadThatOutlivesItsDeadline(t *testing.T) {
+	deadline, backoff := queueReadDeadline, queueReadBackoff
+	queueReadDeadline, queueReadBackoff = 200*time.Millisecond, []time.Duration{time.Millisecond}
+	t.Cleanup(func() { queueReadDeadline, queueReadBackoff = deadline, backoff })
+	var calls atomic.Int32
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 1 {
+			select {
+			case <-r.Context().Done():
+			case <-release:
+			}
+			return
+		}
+		_, _ = fmt.Fprint(w, `{"data":{"repository":{"p0":{"number":42,"state":"OPEN","headRefName":"feature","headRefOid":"head","baseRefName":"main"}}}}`)
+	}))
+	defer server.Close()
+	defer close(release)
+	source := &GitHub{gt: gtapi.NewNativeWithToken(server.URL, "stub"), owner: "org", name: "repo", warn: io.Discard}
+	infos, _ := source.queueRecords(t.Context(), []int{42})
+	if infos[42] == nil {
+		t.Fatalf("a stack read that timed out once left the poll without queue state: infos=%v", infos)
 	}
 }
