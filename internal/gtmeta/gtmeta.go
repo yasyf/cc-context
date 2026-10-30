@@ -65,11 +65,21 @@ type BranchState struct {
 type State map[string]BranchState
 
 func readStateOrphans(ctx context.Context, commonDir string, remoteTrunk bool) (State, []Orphan, error) {
+	return readSelectedStateOrphans(ctx, commonDir, remoteTrunk, nil)
+}
+
+func readSelectedStateOrphans(ctx context.Context, commonDir string, remoteTrunk bool, branches []string) (State, []Orphan, error) {
 	trunk, err := graphiteReadTrunk(commonDir)
 	if err != nil {
 		return nil, nil, err
 	}
-	rows, err := readRows(ctx, filepath.Join(commonDir, metadataDB))
+	path := filepath.Join(commonDir, metadataDB)
+	var rows []branchRow
+	if branches == nil {
+		rows, err = readRows(ctx, path)
+	} else {
+		rows, err = readSelectedRows(ctx, path, branches, trunk)
+	}
 	if err != nil {
 		return nil, nil, err
 	}
@@ -132,19 +142,54 @@ type branchRow struct {
 // readRows opens the database read-only so a concurrent gt is never blocked,
 // and waits out a writer's lock rather than failing on it.
 func readRows(ctx context.Context, path string) ([]branchRow, error) {
+	return queryRows(ctx, path, branchColumns+" FROM branch_metadata")
+}
+
+const branchColumns = `SELECT branch_name,
+	COALESCE(parent_branch_name, ''),
+	COALESCE(parent_branch_revision, ''),
+	COALESCE(validation_result, ''),
+	COALESCE(state, '')`
+
+func readSelectedRows(ctx context.Context, path string, branches []string, trunk string) ([]branchRow, error) {
+	values := make([]string, len(branches))
+	args := make([]any, 0, len(branches)+2)
+	for i, branch := range branches {
+		values[i] = "(?)"
+		args = append(args, branch)
+	}
+	args = append(args, trunk, trunk)
+	query := `WITH RECURSIVE requested(branch) AS (VALUES ` + strings.Join(values, ",") + `),
+	ancestors(branch) AS (
+		SELECT branch FROM requested
+		UNION
+		SELECT m.parent_branch_name FROM branch_metadata m
+		JOIN ancestors a ON m.branch_name = a.branch
+		WHERE m.parent_branch_name IS NOT NULL AND m.parent_branch_name != ''
+	),
+	descendants(branch) AS (
+		SELECT branch FROM requested WHERE branch != ?
+		UNION
+		SELECT m.branch_name FROM branch_metadata m
+		JOIN descendants d ON m.parent_branch_name = d.branch
+	),
+	selected(branch) AS (
+		SELECT branch FROM ancestors
+		UNION SELECT branch FROM descendants
+		UNION SELECT ?
+	)
+	` + branchColumns + ` FROM branch_metadata WHERE branch_name IN (SELECT branch FROM selected)`
+	return queryRows(ctx, path, query, args...)
+}
+
+func queryRows(ctx context.Context, path, query string, args ...any) ([]branchRow, error) {
 	db, err := sql.Open("sqlite", dsn(path))
 	if err != nil {
 		return nil, fmt.Errorf("gtmeta: open %q: %w", path, err)
 	}
 	defer func() { _ = db.Close() }()
 
-	cursor, err := db.QueryContext(ctx, `
-		SELECT branch_name,
-		       COALESCE(parent_branch_name, ''),
-		       COALESCE(parent_branch_revision, ''),
-		       COALESCE(validation_result, ''),
-		       COALESCE(state, '')
-		FROM branch_metadata`)
+	cursor, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("gtmeta: query %q: %w", path, err)
 	}
