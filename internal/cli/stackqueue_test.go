@@ -104,8 +104,44 @@ func TestStackSubmitNeverPushesAQueuedBranch(t *testing.T) {
 	}
 
 	_, _, err = runStackCmd(t, f, "rebase", "--parent", "base=main")
-	if err == nil || !strings.Contains(err.Error(), "base is in the merge queue") {
-		t.Fatalf("stack rebase --parent base=main of a queued base = %v, want a refusal", err)
+	if err == nil || !strings.Contains(err.Error(), "base is in the merge queue") || !strings.Contains(err.Error(), "--evict-queued") {
+		t.Fatalf("stack rebase --parent base=main of a queued base = %v, want a refusal naming --evict-queued", err)
+	}
+}
+
+// TestStackSubmitEvictQueuedMovesAQueuedBranch is the Graphite queue outage of
+// 2026-10-29: with the queue ruled out, a lane had no way to rebase a queued
+// pull request onto trunk short of a raw rebase and force-push.
+func TestStackSubmitEvictQueuedMovesAQueuedBranch(t *testing.T) {
+	f := stackRebaseRepo(t, "base", "feature")
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("stack submit: %v", err)
+	}
+	api.prs["base"], api.prs["feature"] = 100, 101
+	api.queued["base"] = true
+	stubPRState(t, prPoll(`"p0":`+prNode(100, "OPEN", prComments())))
+	stubStackPRs(t, f, map[string]*stackPR{
+		"base":    {Number: 100, Title: "base", State: "OPEN", Base: "main"},
+		"feature": {Number: 101, Title: "feature", State: "OPEN", Base: "base"},
+	})
+	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	queued := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
+
+	out, _, err := runStackCmd(t, f, "submit", "--restack", "--evict-queued")
+	if err != nil {
+		t.Fatalf("stack submit --evict-queued: %v", err)
+	}
+	if !strings.Contains(out, "base · onto main") || !strings.Contains(out, "evicted from the merge queue") {
+		t.Errorf("report = %q, want the queued base moved onto main and named evicted", out)
+	}
+	moved := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
+	if moved == queued {
+		t.Fatalf("origin base still at its queued head %s", queued)
+	}
+	if !stackOnto(t, f, gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "main"), moved) {
+		t.Error("origin base does not sit on the advanced main")
 	}
 }
 
@@ -135,7 +171,7 @@ func TestStackRebaseDryRunSaysWhyAQueuedBaseKeepsALaggingChainOffTrunk(t *testin
 	if err != nil {
 		t.Fatalf("stack rebase --dry-run: %v", err)
 	}
-	want := "base · kept at its published head " + queued[:12] + " · in the merge queue, so a move would evict it · lacks main@" + pin[:12]
+	want := "base · kept at its published head " + queued[:12] + " · in the merge queue, so a move would evict it; --evict-queued moves it · lacks main@" + pin[:12]
 	if !strings.Contains(out, want) {
 		t.Errorf("plan = %q, want it to carry %q", out, want)
 	}
@@ -316,7 +352,7 @@ func TestShipRefusesACommitOntoAQueuedBranchBeforeCommitting(t *testing.T) {
 	if err == nil {
 		t.Fatalf("ship committed onto a queued branch (stderr=%q)", errStr)
 	}
-	for _, want := range []string{"base is in the merge queue as #100", "nothing was committed"} {
+	for _, want := range []string{"base is in the merge queue as #100", "nothing was committed", "--evict-queued"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("refusal = %q, want it to say %q", err, want)
 		}

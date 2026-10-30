@@ -1801,7 +1801,7 @@ func gtRefuseQueuedCommit(ctx context.Context, l lane, o shipOpts, selected bool
 			return err
 		}
 	}
-	return fmt.Errorf("ship: %s is in the merge queue as #%d, and pushing a commit onto it would evict it, so nothing was committed — take it out of the queue first, or commit the change onto a branch stacked on it with ccx vcs ship --new-branch <name>", plan.name, infos[0].PRNumber)
+	return fmt.Errorf("ship: %s is in the merge queue as #%d, and pushing a commit onto it would evict it, so nothing was committed — take it out of the queue first, pass --evict-queued to push it anyway, or commit the change onto a branch stacked on it with ccx vcs ship --new-branch <name>", plan.name, infos[0].PRNumber)
 }
 
 func gtCherryMarks(ctx context.Context, prefix string, dir render.Dir, parent, head string) ([]gtCherryMark, error) {
