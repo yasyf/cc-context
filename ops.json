@@ -1,1 +1,1 @@
-{"v":1,"lamport":5,"ops":[{"kind":"remove_criterion","id":"c3344680f24d8d786ff5967e61acbe56"}]}
+{"v":1,"lamport":6,"ops":[{"kind":"add_criterion","id":"dd2ce87abff1f38a37d401d01e44127d","text":"Missing or incompatible daemons fail visibly; explicit cleanup serve startup remains unchanged and ordinary requests perform no lifecycle action.","script":""}]}
