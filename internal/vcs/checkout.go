@@ -385,14 +385,22 @@ func Holdings(ctx context.Context, c Checkout) ([]Holding, error) {
 	if slices.ContainsFunc(holdings, func(h Holding) bool { return canonical(h.Path) == c.Root }) {
 		return holdings, nil
 	}
+	branch, err := unlistedBranch(ctx, c)
+	if err != nil {
+		return nil, err
+	}
+	return append(holdings, Holding{Path: c.Root, Branch: branch}), nil
+}
+
+func unlistedBranch(ctx context.Context, c Checkout) (string, error) {
 	out, code, stderr, err := render.RunCLIExitCode(ctx, render.Dir(c.Root), "git", []string{"symbolic-ref", "--quiet", "HEAD"})
 	if err != nil {
-		return nil, fmt.Errorf("git symbolic-ref HEAD in %q: %w", c.Root, err)
+		return "", fmt.Errorf("git symbolic-ref HEAD in %q: %w", c.Root, err)
 	}
 	if code > 1 {
-		return nil, fmt.Errorf("git symbolic-ref HEAD in %q: exit %d: %s", c.Root, code, strings.TrimSpace(stderr))
+		return "", fmt.Errorf("git symbolic-ref HEAD in %q: exit %d: %s", c.Root, code, strings.TrimSpace(stderr))
 	}
-	return append(holdings, Holding{Path: c.Root, Branch: strings.TrimPrefix(strings.TrimSpace(out), "refs/heads/")}), nil
+	return strings.TrimPrefix(strings.TrimSpace(out), "refs/heads/"), nil
 }
 
 func registeredHoldings(ctx context.Context, c Checkout) ([]Holding, error) {
