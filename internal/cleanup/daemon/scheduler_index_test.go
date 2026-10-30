@@ -84,6 +84,7 @@ func TestSchedulerIndexesMatchFullScanAcrossTransitions(t *testing.T) {
 func TestSchedulerIndexesLoadAndDequeue(t *testing.T) {
 	h := newHarness(t, paced())
 	for i, seq := range []uint64{9, 2, 5, 5} {
+		h.clock.Advance(time.Nanosecond)
 		h.seed(fmt.Sprintf("t%d-%d", seq, i), seq, cleanup.PhaseWaiting)
 	}
 	e := h.build()
