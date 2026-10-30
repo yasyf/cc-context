@@ -13,6 +13,7 @@ func readGitMetadata(path string) ([]byte, error) {
 	defer func() { _ = file.Close() }()
 
 	var contents bytes.Buffer
+	contents.Grow(1024)
 	_, err = contents.ReadFrom(file)
 	return contents.Bytes(), err
 }
