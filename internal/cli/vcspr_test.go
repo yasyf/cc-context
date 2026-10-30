@@ -43,6 +43,13 @@ const (
 		"* **Sep 28, 3:32 PM UTC**: The [Graphite merge queue](https://app.graphite.com/merges?org=Forge-AI&repo=monorepo) couldn't merge this PR because **it had merge conflicts**."
 )
 
+// #45147 in Forge-AI/monorepo on 2026-10-30: Graphite timed its batch out and
+// removed it, while mergeability-status still read WAITING_TO_MERGE.
+const prActivityTimedOut = "### Merge activity\n\n" +
+	"* **Oct 30, 1:37 AM UTC**: `yasyf` added this pull request to the [Graphite merge queue](https://app.graphite.com/merges?org=Forge-AI&repo=monorepo).\n" +
+	"* **Oct 30, 1:43 AM UTC**: CI is running for this pull request on a draft pull request ([#45373](https://app.graphite.com/github/pr/Forge-AI/monorepo/45373)) due to your merge queue CI optimization settings.\n" +
+	"* **Oct 30, 1:58 AM UTC**: This pull request was removed from the [Graphite merge queue](https://app.graphite.com/merges?org=Forge-AI&repo=monorepo) because the batch it was included in timed out. Please re-enqueue the PR to retry merge."
+
 func decodePRInfo(t *testing.T, body string) gtapi.PullRequestInfo {
 	t.Helper()
 	var info gtapi.PullRequestInfo
@@ -127,6 +134,11 @@ func TestClassifyPRQueueByMergeability(t *testing.T) {
 			prQueueReport{Number: 31667, Queue: prQueueQueued, State: "OPEN", Base: "dev"},
 		},
 		{"waiting to merge", prInfoOpen, gtapi.MergeabilityWaiting, "", "", prQueueReport{Number: 25131, Queue: prQueueQueued, State: "OPEN", Base: "dev"}},
+		{
+			"a stale waiting status after the batch timed out",
+			prInfoOpen, gtapi.MergeabilityWaiting, "", prActivityTimedOut,
+			prQueueReport{Number: 25131, Queue: prQueueEvicted, State: "OPEN", Base: "dev", Evicted: "the batch it was included in timed out. Please re-enqueue the PR to retry merge", EvictedAt: "Oct 30, 1:58 AM UTC"},
+		},
 		{
 			"queued to merge keeps the admitted commit",
 			prInfoQueued, gtapi.MergeabilityQueued, "", "",
