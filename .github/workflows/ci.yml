@@ -28,7 +28,10 @@ jobs:
       - uses: ./.github/actions/wasm
       - uses: ./.github/actions/cli-test-env
       - name: Actual baseline stack ref reads
-        run: go test -race -run '^TestStackListBatchRefReadsFollowRequestedTopology$' -v ./internal/cli 2>&1 | tee ref-topology-baseline.txt
+        shell: bash
+        run: |
+          set -o pipefail
+          go test -race -run '^TestStackListBatchRefReadsFollowRequestedTopology$' -v ./internal/cli 2>&1 | tee ref-topology-baseline.txt
       - uses: actions/upload-artifact@v7
         if: always()
         with:
