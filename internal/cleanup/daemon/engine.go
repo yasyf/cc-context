@@ -601,13 +601,13 @@ func (e *Engine) load() error {
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.damaged, e.paused, e.hold, e.booted = damaged, sw.Paused, sw.Hold, e.clock.Now()
 	for _, job := range jobs {
 		e.jobs[job.ID] = job
 		e.order = append(e.order, seqKey{seq: job.Seq, id: job.ID})
 		e.seq = max(e.seq, job.Seq)
 	}
 	slices.SortFunc(e.order, func(a, b seqKey) int { return cmp.Compare(a.seq, b.seq) })
+	e.damaged, e.paused, e.hold, e.booted = damaged, sw.Paused, sw.Hold, e.clock.Now()
 	for _, key := range e.order {
 		logical, retirement, wake := e.scheduled(e.jobs[key.id])
 		if logical {
