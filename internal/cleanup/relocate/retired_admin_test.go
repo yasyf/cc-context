@@ -390,8 +390,8 @@ func TestMovedCapturedAdminCrashRecoveryDeletesAdminBeforePayload(t *testing.T) 
 			}
 			job = jobs[0]
 			root, err = f.relocator.Admit(context.Background(), &job)
-			if err != nil || job.Blocked != nil || job.Phase != cleanup.PhaseDeletingRetiredPayload {
-				t.Fatalf("absent admin recovery = %+v, %v", job, err)
+			if err != nil || job.Blocked != nil || job.Phase != cleanup.PhaseDeletingRetiredPayload || root.ID != job.Tree {
+				t.Fatalf("absent admin recovery = %+v, %+v, %v", job, root, err)
 			}
 			f.stored(&job)
 			if err := os.Remove(filepath.Join(job.Payload, ".git")); err != nil {
