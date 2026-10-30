@@ -21,6 +21,7 @@ func newDiffCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringArrayVarP(&a.Globs, "glob", "g", nil, "restrict to files matching this glob (repeatable, ordered; ! excludes)")
+	cmd.Flags().BoolVar(&a.Full, "full", false, "inline per-file hunks")
 	cmd.Flags().BoolVar(&a.RevealSecrets, "reveal-secrets", false, "print detected secrets raw instead of masked")
 	cmd.Flags().IntVar(&a.Budget, "budget", 0, "token budget for the output")
 	return cmd
