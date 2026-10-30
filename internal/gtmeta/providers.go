@@ -297,7 +297,18 @@ func ReadOriginOrphansForBranches(ctx context.Context, commonDir string, branche
 		panic("stack topology requires a branch")
 	}
 	if provider := contextProvider(ctx); provider != "" {
-		return readProviders(ctx, commonDir, true)
+		if provider != ProviderGraphite {
+			return readProviders(ctx, commonDir, true)
+		}
+		native, err := nativemeta.BranchNames(commonDir)
+		if err != nil {
+			return nil, nil, err
+		}
+		state, orphans, err := readSelectedStateOrphans(ctx, commonDir, true, branches)
+		if err != nil {
+			return nil, nil, err
+		}
+		return graphiteForest(state, orphans, native)
 	}
 	native, legacy, err := stores(commonDir)
 	if err != nil {
@@ -340,7 +351,11 @@ func readProviders(ctx context.Context, commonDir string, remote bool) (State, [
 			if err != nil {
 				return nil, nil, err
 			}
-			return graphiteForest(commonDir, state, orphans)
+			native, err := nativemeta.BranchNames(commonDir)
+			if err != nil {
+				return nil, nil, err
+			}
+			return graphiteForest(state, orphans, native)
 		}
 		var native nativemeta.State
 		var orphans []nativemeta.Orphan
@@ -803,11 +818,7 @@ func fromNative(native nativemeta.State, orphans []nativemeta.Orphan) (State, []
 	return state, converted
 }
 
-func graphiteForest(commonDir string, state State, orphans []Orphan) (State, []Orphan, error) {
-	native, err := nativemeta.BranchNames(commonDir)
-	if err != nil {
-		return nil, nil, err
-	}
+func graphiteForest(state State, orphans []Orphan, native []string) (State, []Orphan, error) {
 	for _, branch := range native {
 		delete(state, branch)
 	}
