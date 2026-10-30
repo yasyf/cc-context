@@ -261,24 +261,13 @@ func readProviders(ctx context.Context, commonDir string, remote bool) (State, [
 		var orphans []nativemeta.Orphan
 		var err error
 		if remote {
-			native, orphans, err = nativemeta.ReadOriginOrphans(ctx, commonDir)
+			native, orphans, err = nativemeta.ReadOriginPlannedOrphans(ctx, commonDir)
 		} else {
-			native, err = nativemeta.Read(ctx, commonDir)
+			native, err = nativemeta.ReadPlanned(ctx, commonDir)
 		}
 		if err != nil {
 			return nil, nil, err
 		}
-		var trunks []string
-		for branch, state := range native {
-			if state.Trunk {
-				trunks = append(trunks, branch)
-			}
-		}
-		if len(trunks) > 1 {
-			slices.Sort(trunks)
-			return nil, nil, fmt.Errorf("native stacks target multiple trunks (%s); the shared stack planner requires one common trunk", strings.Join(trunks, ", "))
-		}
-
 		converted, missing := fromNative(native, orphans)
 		return converted, missing, nil
 	}
