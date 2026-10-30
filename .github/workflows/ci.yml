@@ -1,6 +1,12 @@
 name: CI
 
 on:
+  workflow_call:
+    inputs:
+      commit:
+        description: Exact commit to validate
+        required: true
+        type: string
   push:
     branches: [main]
   pull_request:
@@ -15,7 +21,7 @@ on:
 
 concurrency:
   group: ci-${{ inputs.commit || github.ref }}
-  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
+  cancel-in-progress: ${{ !inputs.commit && github.event_name != 'workflow_dispatch' }}
 
 permissions:
   contents: read
@@ -27,15 +33,18 @@ env:
   HEAVY_PKGS: internal/web|internal/semsearch/chunk|internal/semsearch/embed|internal/gtmeta
 
 jobs:
-  release-observer:
+  release-gates:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.commit || github.sha }}
-      - name: Post-release observation outcomes and dispatch identity
-        run: python3 .github/scripts/test-release-observer.py
+      - name: Validate native workflow contracts
+        run: |
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.12/scripts/download-actionlint.bash) 1.7.12 "$RUNNER_TEMP"
+          "$RUNNER_TEMP/actionlint" -color
+          python3 .github/scripts/test-native-release-gates.py
 
   scheduler-performance:
     runs-on: ${{ matrix.os }}
@@ -75,7 +84,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON((github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch') && '["ubuntu-latest"]' || '["ubuntu-latest", "macos-latest"]') }}
+        os: ${{ fromJSON((github.event_name == 'pull_request' || inputs.commit != '') && '["ubuntu-latest"]' || '["ubuntu-latest", "macos-latest"]') }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -108,7 +117,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON((github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch') && '["ubuntu-latest"]' || '["ubuntu-latest", "macos-latest"]') }}
+        os: ${{ fromJSON((github.event_name == 'pull_request' || inputs.commit != '') && '["ubuntu-latest"]' || '["ubuntu-latest", "macos-latest"]') }}
         shard: [0, 1, 2, 3, 4, 5, 6, 7]
     steps:
       - uses: actions/checkout@v7
@@ -199,7 +208,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON((github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch') && '["ubuntu-latest"]' || '["ubuntu-latest", "macos-latest"]') }}
+        os: ${{ fromJSON((github.event_name == 'pull_request' || inputs.commit != '') && '["ubuntu-latest"]' || '["ubuntu-latest", "macos-latest"]') }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -213,7 +222,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON((github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch') && '["ubuntu-latest"]' || '["ubuntu-latest", "macos-latest"]') }}
+        os: ${{ fromJSON((github.event_name == 'pull_request' || inputs.commit != '') && '["ubuntu-latest"]' || '["ubuntu-latest", "macos-latest"]') }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -232,7 +241,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON((github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch') && '["ubuntu-latest"]' || '["ubuntu-latest", "macos-latest"]') }}
+        os: ${{ fromJSON((github.event_name == 'pull_request' || inputs.commit != '') && '["ubuntu-latest"]' || '["ubuntu-latest", "macos-latest"]') }}
     steps:
       - uses: actions/checkout@v7
         with:

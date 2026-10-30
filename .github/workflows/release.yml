@@ -71,8 +71,9 @@ jobs:
   descriptor:
     needs: release
     runs-on: ubuntu-latest
+    outputs:
+      commit: ${{ steps.commit.outputs.sha }}
     permissions:
-      actions: write
       contents: write
     steps:
       - uses: actions/checkout@v7
@@ -116,48 +117,21 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release upload "${GITHUB_REF_NAME}" plugin/bin/ccx.binrun --repo "${GITHUB_REPOSITORY}" --clobber
-      - name: Dispatch and wait for post-release checks
-        env:
-          COMMIT: ${{ steps.commit.outputs.sha }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          wait_for_run() {
-            local run_id=$1
-            if gh run watch "$run_id" --repo "$GITHUB_REPOSITORY" --exit-status; then
-              return 0
-            fi
-            local outcome
-            if ! outcome="$(gh run view "$run_id" --repo "$GITHUB_REPOSITORY" \
-              --json status,conclusion --jq '[.status, .conclusion] | @tsv')"; then
-              echo "::error::Post-release CI run $run_id outcome UNKNOWN: observation unavailable" >&2
-              return 1
-            fi
-            case "$outcome" in
-              $'completed\tsuccess') return 0 ;;
-              completed$'\t'?*)
-                echo "::error::Post-release CI run $run_id completed with ${outcome#*$'\t'}" >&2
-                ;;
-              *)
-                echo "::error::Post-release CI run $run_id outcome UNKNOWN: $outcome" >&2
-                ;;
-            esac
-            return 1
-          }
-          pids=()
-          for workflow in ci.yml guides.yml; do
-            response="$(
-              jq -n --arg commit "$COMMIT" '{ref: "main", inputs: {commit: $commit}}' |
-                gh api --method POST \
-                  -H "X-GitHub-Api-Version: 2026-03-10" \
-                  "repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow}/dispatches" \
-                  --input -
-            )"
-            run_id="$(jq -er '.workflow_run_id' <<<"$response")"
-            wait_for_run "$run_id" &
-            pids+=("$!")
-          done
-          status=0
-          for pid in "${pids[@]}"; do
-            wait "$pid" || status=1
-          done
-          exit "$status"
+
+  post-release-ci:
+    needs: descriptor
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+    with:
+      commit: ${{ needs.descriptor.outputs.commit }}
+
+  post-release-guides:
+    needs: descriptor
+    permissions:
+      contents: write
+    uses: yasyf/cc-guides/.github/workflows/guides.yml@dd3ec882c1589a0ced9ced85ff5469fc56209889
+    with:
+      commit: ${{ needs.descriptor.outputs.commit }}
+      parallel_commits: true
+    secrets: inherit
