@@ -246,6 +246,27 @@ func TestNativeWritesRefuseWhenGitHubCannotJudgeARoot(t *testing.T) {
 	}
 }
 
+func TestGitHubRepoParsesOnlyGitHubOrigins(t *testing.T) {
+	for origin, want := range map[string]string{
+		"https://github.com/org/repo.git":        "org/repo",
+		"git@github.com:org/repo.git":            "org/repo",
+		"ssh://git@github.com:22/org/repo.git":   "org/repo",
+		"https://GitHub.com/org/repo/":           "org/repo",
+		"git@github.company.com:org/repo.git":    "",
+		"https://gitlab.com/github.com/repo.git": "",
+		"https://github.com/org/repo/extra":      "",
+	} {
+		owner, name, err := githubRepo(origin)
+		got := ""
+		if err == nil {
+			got = owner + "/" + name
+		}
+		if got != want {
+			t.Fatalf("githubRepo(%s) = %q, %v; want %q", origin, got, err, want)
+		}
+	}
+}
+
 func TestSubmissionReceiptsAreAllOrNothing(t *testing.T) {
 	dir := repo(t)
 	common := filepath.Join(dir, ".git")

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -511,12 +512,27 @@ var branchHistory = func(ctx context.Context, commonDir, branch string) (onOrigi
 	if err != nil {
 		return false, false, fmt.Errorf("read origin: %w", err)
 	}
-	_, path, found := strings.Cut(strings.TrimSpace(origin), "github.com")
-	owner, name, slashed := strings.Cut(strings.TrimSuffix(strings.Trim(path, ":/"), ".git"), "/")
-	if !found || !slashed {
-		return false, false, fmt.Errorf("origin %s is not a github.com repository", strings.TrimSpace(origin))
+	owner, name, err := githubRepo(strings.TrimSpace(origin))
+	if err != nil {
+		return false, false, err
 	}
 	return nativeapi.Default().BranchHistory(ctx, owner, name, branch)
+}
+
+func githubRepo(origin string) (owner, name string, err error) {
+	host, path, scp := strings.Cut(origin, ":")
+	if u, parseErr := url.Parse(origin); parseErr == nil && u.Scheme != "" && u.Host != "" {
+		host, path = u.Hostname(), u.Path
+	} else if scp {
+		if _, after, found := strings.Cut(host, "@"); found {
+			host = after
+		}
+	}
+	owner, name, found := strings.Cut(strings.TrimSuffix(strings.Trim(path, "/"), ".git"), "/")
+	if !strings.EqualFold(host, "github.com") || !found || owner == "" || name == "" || strings.Contains(name, "/") {
+		return "", "", fmt.Errorf("origin %s is not a github.com repository", origin)
+	}
+	return owner, name, nil
 }
 
 func lockCatalog(ctx context.Context, commonDir, name string) (*os.File, error) {

@@ -378,9 +378,12 @@ func (c *Client) linkPull(ctx context.Context, owner, repo, trunk string, pull r
 	return created.Number, nil
 }
 
-// BranchHistory reports whether branch exists on GitHub and whether any pull request ever used it as its head.
+// BranchHistory reports whether branch exists on GitHub and whether any pull request ever used it as its head; it reads the repository first, so a 404 from a token without access is an error rather than a missing branch.
 func (c *Client) BranchHistory(ctx context.Context, owner, repo, branch string) (onOrigin, headed bool, err error) {
 	path := fmt.Sprintf("/repos/%s/%s", url.PathEscape(owner), url.PathEscape(repo))
+	if _, err := c.get(ctx, path, nil); err != nil {
+		return false, false, err
+	}
 	if _, err := c.get(ctx, path+"/branches/"+url.PathEscape(branch), nil); err != nil {
 		var status *StatusError
 		if errors.As(err, &status) && status.Status == http.StatusNotFound {

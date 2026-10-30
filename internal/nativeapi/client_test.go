@@ -723,7 +723,7 @@ func TestTrunkEmptyQueueReadDoesNotResolveCredentials(t *testing.T) {
 func TestBranchHistoryReadsOriginPresenceAndPullRequestHeads(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/repos/org/repo/branches/release", "/repos/org/repo/branches/feature":
+		case "/repos/org/repo", "/repos/org/repo/branches/release", "/repos/org/repo/branches/feature":
 			if _, err := fmt.Fprint(w, `{"name":"x"}`); err != nil {
 				t.Errorf("write fixture response: %v", err)
 			}
@@ -755,5 +755,8 @@ func TestBranchHistoryReadsOriginPresenceAndPullRequestHeads(t *testing.T) {
 	var status *StatusError
 	if _, _, err := client.BranchHistory(context.Background(), "org", "repo", "flaky"); !errors.As(err, &status) || status.Status != http.StatusBadGateway {
 		t.Fatalf("BranchHistory(flaky) error = %v; want the 502", err)
+	}
+	if _, _, err := client.BranchHistory(context.Background(), "org", "hidden", "release"); !errors.As(err, &status) || status.Status != http.StatusBadGateway {
+		t.Fatalf("BranchHistory on an unreadable repository = %v; want its error, never a missing branch", err)
 	}
 }
