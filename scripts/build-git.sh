@@ -18,6 +18,8 @@ curl --fail --silent --show-error --location --retry 3 --proto '=https' --tlsv1.
 	-o "$tarball" "https://kernel.org/pub/software/scm/git/git-$version.tar.xz"
 echo "$sha256  $tarball" | shasum -a 256 -c -
 tar -xJf "$tarball" -C "$work"
+patch -d "$work/git-$version" -p1 < scripts/git-native-ref-batch.patch
+echo "7bd95d1d227151046a161380806baeb87ed403c8f76e646919778b3a99599eae  $work/git-$version/builtin/refs.c" | shasum -a 256 -c -
 
 # NO_HOMEBREW/NO_DARWIN_PORTS/NO_FINK keep macOS from linking Homebrew, MacPorts,
 # or Fink libraries a cache-restored binary cannot count on.

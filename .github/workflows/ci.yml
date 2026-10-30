@@ -1,4 +1,4 @@
-name: Exact ref IO diagnostic
+name: Native exact ref API prototype
 on:
   workflow_dispatch:
     inputs:
@@ -15,6 +15,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.commit }}
+      - run: sudo apt-get update -qq && sudo apt-get install -y strace patch
       - id: git
         run: |
           version="$(sed -n 's/^version=//p' scripts/build-git.sh)"
@@ -27,7 +28,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ${{ steps.git.outputs.prefix }}
-          key: git-${{ steps.git.outputs.version }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.git.outputs.toolchain }}-${{ hashFiles('scripts/build-git.sh') }}
+          key: git-${{ steps.git.outputs.version }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.git.outputs.toolchain }}-${{ hashFiles('scripts/build-git.sh', 'scripts/git-native-ref-batch.patch') }}
       - if: steps.git-cache.outputs.cache-hit != 'true'
         env:
           PREFIX: ${{ steps.git.outputs.prefix }}
@@ -35,7 +36,6 @@ jobs:
       - env:
           PREFIX: ${{ steps.git.outputs.prefix }}
         run: echo "$PREFIX/bin" >> "$GITHUB_PATH"
-      - run: sudo apt-get update -qq && sudo apt-get install -y strace
       - run: python3 scripts/exact-ref-io-probe.py
         env:
           PROBE_OUTPUT: ${{ runner.temp }}/exact-ref-io

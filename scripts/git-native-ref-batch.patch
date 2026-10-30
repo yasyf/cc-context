@@ -1,0 +1,76 @@
+--- a/builtin/refs.c
++++ b/builtin/refs.c
+@@ -1,6 +1,7 @@
+ #include "builtin.h"
+ #include "config.h"
+ #include "fsck.h"
++#include "hex.h"
+ #include "pack-refs.h"
+ #include "parse-options.h"
+ #include "refs.h"
+@@ -32,6 +33,49 @@
+ 
+ #define REFS_RENAME_USAGE \
+ 	N_("git refs rename [--message=<reason>] <old-ref> <new-ref>")
++
++static int cmd_refs_read(int argc, const char **argv, const char *prefix,
++                         struct repository *repo)
++{
++	const char * const read_usage[] = {
++		N_("git refs read --stdin"),
++		NULL,
++	};
++	int use_stdin = 0;
++	struct option options[] = {
++		OPT_BOOL(0, "stdin", &use_stdin,
++			 N_("read exact reference names from standard input")),
++		OPT_END(),
++	};
++	struct strbuf line = STRBUF_INIT;
++	struct ref_store *refs;
++
++	argc = parse_options(argc, argv, prefix, options, read_usage, 0);
++	if (argc || !use_stdin)
++		usage_with_options(read_usage, options);
++	repo_config(repo, git_default_config, NULL);
++	refs = get_main_ref_store(repo);
++	while (strbuf_getline(&line, stdin) != EOF) {
++		struct object_id oid;
++		int flags;
++		int found;
++
++		if (strlen(line.buf) != line.len ||
++		    !starts_with(line.buf, "refs/") ||
++		    check_refname_format(line.buf, 0))
++			die(_("invalid full reference name"));
++		found = !refs_read_ref_full(refs, line.buf, RESOLVE_REF_READING,
++					   &oid, &flags);
++		if (found && !is_null_oid(&oid))
++			printf("%s %s\n", line.buf, oid_to_hex(&oid));
++		else if (found || (flags & (REF_ISBROKEN | REF_ISSYMREF)))
++			warning(_("ignoring broken ref %s"), line.buf);
++	}
++	if (ferror(stdin))
++		die_errno(_("could not read reference names"));
++	strbuf_release(&line);
++	return 0;
++}
+ 
+ static int cmd_refs_migrate(int argc, const char **argv, const char *prefix,
+ 			    struct repository *repo)
+@@ -380,6 +424,7 @@
+ 	     struct repository *repo)
+ {
+ 	const char * const refs_usage[] = {
++		N_("git refs read --stdin"),
+ 		REFS_MIGRATE_USAGE,
+ 		REFS_VERIFY_USAGE,
+ 		"git refs list " COMMON_USAGE_FOR_EACH_REF,
+@@ -393,6 +438,7 @@
+ 	};
+ 	parse_opt_subcommand_fn *fn = NULL;
+ 	struct option opts[] = {
++		OPT_SUBCOMMAND("read", &fn, cmd_refs_read),
+ 		OPT_SUBCOMMAND("migrate", &fn, cmd_refs_migrate),
+ 		OPT_SUBCOMMAND("verify", &fn, cmd_refs_verify),
+ 		OPT_SUBCOMMAND("list", &fn, cmd_refs_list),

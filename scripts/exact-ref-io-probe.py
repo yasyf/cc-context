@@ -43,49 +43,73 @@ def trace(repo, label, argv, payload):
     return {'label': label, 'argv': cmd, 'exit': p.returncode, 'stdout': p.stdout.decode(), 'stderr': p.stderr.decode(), 'counts': counts, 'trace': raw.name}
 
 
-report = {'git_version': run(['git', '--version']).stdout.decode().strip(), 'strace_version': run(['strace', '--version']).stdout.decode().splitlines()[0], 'cases': [], 'limits': ['Filesystem syscall/read bytes, not physical disk or host recovery proof', 'System Git version recorded; production resolver selection needs separate semantic review', 'No product build or execution']}
-with tempfile.TemporaryDirectory(prefix='ccx-exact-refs-') as tmp:
-    for n in (32, 4096, 10000):
-        repo = pathlib.Path(tmp) / f'loose-{n}'
-        run(['git', 'init', '--bare', '--object-format=sha1', str(repo)])
+report = {'git_version': run(['git', '--version']).stdout.decode().strip(), 'strace_version': run(['strace', '--version']).stdout.decode().splitlines()[0], 'cases': [], 'limits': ['Prototype only; no product dependency or global installation', 'Filesystem syscall/read bytes, not physical disk throughput', 'Exact valid full-ref lookup; no prefix-pattern API contract']}
+
+
+def compare(repo, label, wanted, expected):
+    payload = ''.join(name + '\n' for name in wanted).encode()
+    records = [
+        trace(repo, 'for-each-' + label, ['for-each-ref', '--format=%(refname) %(objectname)', '--stdin'], payload),
+        trace(repo, 'native-' + label, ['refs', 'read', '--stdin'], payload),
+    ]
+    for record in records:
+        assert record['exit'] == 0, record
+        rows = dict(line.split(' ', 1) for line in record['stdout'].splitlines())
+        assert rows == expected, record
+    return records
+
+
+fixtures = [('sha1', 'loose', n) for n in (32, 4096, 10000)]
+fixtures += [(fmt, layout, 32) for fmt in ('sha1', 'sha256') for layout in ('loose', 'packed', 'reftable') if (fmt, layout) != ('sha1', 'loose')]
+with tempfile.TemporaryDirectory(prefix='ccx-native-refs-') as tmp:
+    for object_format, layout, n in fixtures:
+        repo = pathlib.Path(tmp) / f'{object_format}-{layout}-{n}'
+        ref_format = 'reftable' if layout == 'reftable' else 'files'
+        run(['git', 'init', '--bare', '--object-format=' + object_format, '--ref-format=' + ref_format, str(repo)])
         base = ['git', '--git-dir=' + str(repo)]
-        tree = run([*base, 'mktree'], b'').stdout.strip()
-        oid = run([*base, 'commit-tree', tree.decode()], b'probe\n').stdout.strip().decode()
+        tree = run([*base, 'mktree'], b'').stdout.strip().decode()
+        oid = run([*base, 'commit-tree', tree], b'probe\n').stdout.strip().decode()
         names = [f'refs/heads/b{i:05d}' for i in range(n)]
         run([*base, 'update-ref', '--stdin'], ''.join(f'create {name} {oid}\n' for name in names).encode())
-        assert not (repo / 'packed-refs').exists()
-        assert sum(p.is_file() for p in (repo / 'refs/heads').iterdir()) == n
+        if layout == 'packed':
+            run([*base, 'pack-refs', '--all'])
+            assert (repo / 'packed-refs').is_file()
+        elif layout == 'loose':
+            assert not (repo / 'packed-refs').exists()
+            assert sum(p.is_file() for p in (repo / 'refs/heads').iterdir()) == n
+        else:
+            assert (repo / 'reftable').is_dir()
         selected = names[:12]
-        missing = ['refs/heads/missing-a', 'refs/heads/missing-b']
-        payload = ''.join(name + '\n' for name in selected).encode()
-        existing = [
-            trace(repo, 'for-each-existing', ['for-each-ref', '--format=%(refname) %(objectname)', '--stdin'], payload),
-            trace(repo, 'show-ref-existing', ['show-ref', '--verify', '--hash', '--', *selected], None),
-            trace(repo, 'cat-file-existing', ['cat-file', '--batch-check=%(objectname) %(rest)'], ''.join(name + ' ' + name + '\n' for name in selected).encode()),
-        ]
-        assert existing[0]['exit'] == 0 and existing[0]['stdout'].splitlines() == [name + ' ' + oid for name in selected]
-        assert existing[1]['exit'] == 0 and existing[1]['stdout'].splitlines() == [oid] * len(selected)
-        assert existing[2]['exit'] == 0 and existing[2]['stdout'].splitlines() == [oid + ' ' + name for name in selected]
-        mixed = [selected[0], missing[0], selected[1], missing[1], selected[2]]
-        cases = existing + [
-            trace(repo, 'for-each-missing', ['for-each-ref', '--format=%(refname) %(objectname)', '--stdin'], ''.join(name + '\n' for name in mixed).encode()),
-            trace(repo, 'show-ref-missing', ['show-ref', '--verify', '--hash', '--', *mixed], None),
-            trace(repo, 'cat-file-missing', ['cat-file', '--batch-check=%(objectname) %(rest)'], ''.join(name + ' ' + name + '\n' for name in mixed).encode()),
-        ]
-        assert cases[3]['exit'] == 0 and cases[3]['stdout'].splitlines() == [name + ' ' + oid for name in selected[:3]]
-        assert cases[4]['exit'] != 0 and cases[4]['stdout'].splitlines() == [oid]
-        assert cases[5]['exit'] == 0 and len(cases[5]['stdout'].splitlines()) == len(mixed)
-        if n == 32:
-            run([*base, 'symbolic-ref', 'refs/heads/symbolic', selected[0]])
+        records = compare(repo, 'existing', selected, {name: oid for name in selected})
+        native = records[1]
+        if layout == 'loose':
+            assert native['counts']['distinct_head_paths_read'] == 12, native
+            assert native['counts']['head_read_bytes'] == 12 * (len(oid) + 1), native
+        wanted = [selected[0], 'refs/heads/missing-a', selected[1], 'refs/heads/missing-b', selected[2]]
+        records += compare(repo, 'missing', wanted, {name: oid for name in selected[:3]})
+        run([*base, 'symbolic-ref', 'refs/heads/symbolic', selected[0]])
+        records += compare(repo, 'symbolic', ['refs/heads/symbolic'], {'refs/heads/symbolic': oid})
+        run([*base, 'symbolic-ref', 'refs/heads/dangling-symbolic', 'refs/heads/missing-target'])
+        records += compare(repo, 'dangling-symbolic', ['refs/heads/dangling-symbolic'], {})
+        dangling = run([*base, 'commit-tree', tree], b'dangling-object\n').stdout.strip().decode()
+        run([*base, 'update-ref', 'refs/heads/dangling-object', dangling])
+        if layout == 'packed':
+            run([*base, 'pack-refs', '--all'])
+        object_path = repo / 'objects' / dangling[:2] / dangling[2:]
+        assert object_path.is_file()
+        object_path.unlink()
+        records += compare(repo, 'dangling-object', ['refs/heads/dangling-object'], {'refs/heads/dangling-object': dangling})
+        if layout != 'reftable':
+            (repo / 'refs/heads').mkdir(parents=True, exist_ok=True)
             (repo / 'refs/heads/broken').write_text('not-an-oid\n')
-            (repo / 'refs/heads/dangling-object').write_text('f' * 40 + '\n')
-            for kind, ref in [('symbolic', 'refs/heads/symbolic'), ('broken', 'refs/heads/broken'), ('dangling-object', 'refs/heads/dangling-object')]:
-                cases.extend([
-                    trace(repo, 'for-each-' + kind, ['for-each-ref', '--format=%(refname) %(objectname)', '--stdin'], (ref + '\n').encode()),
-                    trace(repo, 'show-ref-' + kind, ['show-ref', '--verify', '--hash', '--', ref], None),
-                    trace(repo, 'cat-file-' + kind, ['cat-file', '--batch-check=%(objectname) %(rest)'], (ref + ' ' + ref + '\n').encode()),
-                ])
-        report['cases'].append({'n': n, 'oid': oid, 'requested_existing': len(selected), 'records': cases})
+            (repo / 'refs/heads/zero').write_text('0' * len(oid) + '\n')
+            records += compare(repo, 'broken', ['refs/heads/broken'], {})
+            records += compare(repo, 'zero', ['refs/heads/zero'], {})
+        for label, payload in [('nul', b'refs/heads/b00000\0suffix\n'), ('escape', b'refs/../config\n'), ('root-ref', b'HEAD\n')]:
+            bad = trace(repo, 'native-reject-' + label, ['refs', 'read', '--stdin'], payload)
+            assert bad['exit'] != 0 and not bad['stdout'], bad
+            records.append(bad)
+        report['cases'].append({'n': n, 'object_format': object_format, 'layout': layout, 'oid': oid, 'requested_existing': len(selected), 'records': records})
+        (outdir / 'report.json').write_text(json.dumps(report, indent=2) + '\n')
         shutil.rmtree(repo)
-(outdir / 'report.json').write_text(json.dumps(report, indent=2) + '\n')
 print(json.dumps(report, indent=2))
