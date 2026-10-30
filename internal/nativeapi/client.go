@@ -42,7 +42,7 @@ func New(baseURL string) *Client {
 	return &Client{base: strings.TrimSuffix(baseURL, "/"), http: &http.Client{}, tokens: &tokenSource{resolve: resolveToken}, queueBase: "https://api.trunk.io", queueToken: func() (string, error) {
 		token := os.Getenv("TRUNK_MERGE_API_KEY")
 		if token == "" {
-			return "", fmt.Errorf("trunk queue status requires TRUNK_MERGE_API_KEY with a scoped v2 API key")
+			return "", ErrNoQueueKey
 		}
 		return token, nil
 	}}

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+
+	"github.com/yasyf/cc-context/internal/nativeapi"
 )
 
 var (
@@ -15,6 +17,9 @@ var (
 	// ErrNoToken reports that ~/.config/graphite/auth could not be read or
 	// carries no token.
 	ErrNoToken = errors.New("no graphite token")
+	// ErrNoQueueKey reports a Trunk queue read on a machine with no
+	// TRUNK_MERGE_API_KEY.
+	ErrNoQueueKey = nativeapi.ErrNoQueueKey
 	// ErrGraphiteOnly rejects operations that native stacks do not use.
 	ErrGraphiteOnly = errors.New("operation requires the Graphite stack provider")
 )

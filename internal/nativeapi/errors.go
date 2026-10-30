@@ -13,6 +13,8 @@ var (
 	ErrUnauthorized = errors.New("unauthorized")
 	// ErrNoToken identifies missing GitHub authentication.
 	ErrNoToken = errors.New("no GitHub token")
+	// ErrNoQueueKey is a Trunk queue read without TRUNK_MERGE_API_KEY.
+	ErrNoQueueKey = errors.New("trunk queue status requires TRUNK_MERGE_API_KEY with a scoped v2 API key")
 )
 
 // StatusError retains the refused HTTP operation and the server diagnostic.

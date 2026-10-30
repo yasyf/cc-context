@@ -2920,6 +2920,10 @@ func stackQueueOf(ctx context.Context, owner, name string, infos []gtapi.PullReq
 		numbers = append(numbers, info.PRNumber)
 	}
 	mergeability, err := gtAPI(ctx).MergeabilityStatuses(ctx, owner, name, numbers)
+	if errors.Is(err, gtapi.ErrNoQueueKey) {
+		noteNoQueueKey("stack rebase")
+		mergeability, err = map[int]string{}, nil
+	}
 	if err != nil {
 		return nil, fmt.Errorf("stack rebase: read the merge queue before pushing: %w", err)
 	}
@@ -5523,4 +5527,11 @@ func stackCheckClean(ctx context.Context, movers []string, holders map[string]st
 func gitUncommitted(ctx context.Context, worktree string) (bool, error) {
 	status, err := render.RunCLI(ctx, render.Dir(worktree), "git", []string{"status", "--porcelain", "--untracked-files=normal"})
 	return status != "", err
+}
+
+// noteNoQueueKey says on stderr that a Trunk queue read was skipped because
+// this machine holds no TRUNK_MERGE_API_KEY, so the step pushes without
+// knowing which pull requests Trunk has queued.
+func noteNoQueueKey(prefix string) {
+	fmt.Fprintf(os.Stderr, "ccx: %s: ccx.queue is trunk and TRUNK_MERGE_API_KEY is unset, so this run skips the queue read and pushes without knowing what Trunk has queued\n", prefix)
 }
