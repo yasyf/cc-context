@@ -659,6 +659,37 @@ func TestShipGTTipOnlyRetracksAParentGraphiteCallsDiverged(t *testing.T) {
 	}
 }
 
+// TestShipGTTipOnlyRetracksADivergedParentOntoTrunkOnceItsRecordedParentLeftItsHistory
+// is p8a-step7's #210347: dar-p8a-step7-stream-relay was rebased off the
+// durable-v3/ssql-signal-5 branch Graphite still recorded as its parent, and gt
+// refused to re-track it onto a branch no longer in its history.
+func TestShipGTTipOnlyRetracksADivergedParentOntoTrunkOnceItsRecordedParentLeftItsHistory(t *testing.T) {
+	f := shipGTRepo(t)
+	shipGTStack(t, f, "q", "p")
+	mustRun(t, f.Env(), f.Dir, "git", "rebase", "-q", "--onto", "main", "q", "p")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "-f", "origin", "p")
+	mustRun(t, f.Env(), f.Dir, "gt", "log", "short", "--no-interactive")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "n")
+	stackCommit(t, f, "n.txt")
+	stubStackPRs(t, f, map[string]*stackPR{"p": {Number: 6, Title: "p", State: "OPEN", Base: "main"}})
+	shipResetLog(t, f)
+
+	body := filepath.Join(t.TempDir(), "body.md")
+	if err := os.WriteFile(body, []byte("## Summary\n\nn on p.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, errStr, err := runShipCmdFull(f.Context(), t, "--no-commit", "--no-watch", "--tip-only", "--parent", "p", "--pr-body-file", body)
+	if err != nil {
+		t.Fatalf("ship = %v (stderr=%q), want n shipped onto p", err, errStr)
+	}
+	if parent := shipParentOf(t, f, "n"); parent != "p" {
+		t.Errorf("n's parent = %s, want p", parent)
+	}
+	if !strings.Contains(got, "re-tracked p onto main, since its recorded parent q is no longer in its history") {
+		t.Errorf("ship output = %q, want it to name the re-track of p onto main", got)
+	}
+}
+
 // TestShipDryRunUnderTipOnlyPublishesAnUntrackedBranchAlone is the dry run
 // behind #207148, which told p8a-step7 an untracked branch shipped with
 // --tip-only would publish its parent's whole downstack.
