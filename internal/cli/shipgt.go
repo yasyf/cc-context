@@ -2244,7 +2244,7 @@ func gtAPI(ctx context.Context) *gtapi.Client {
 	if err != nil {
 		return client.WithProviderError(err)
 	}
-	config, err := readRepositoryVCSConfig(checkout.Root)
+	config, err := readRepositoryVCSConfig(ctx, checkout.Root)
 	if err != nil {
 		return client.WithProviderError(err)
 	}

@@ -18,8 +18,9 @@ import (
 )
 
 const (
-	regenFile      = ".claude/ccx.toml"
-	regenTailLines = 20
+	regenFile       = ".claude/ccx.toml"
+	legacyRegenFile = ".ccx.toml"
+	regenTailLines  = 20
 )
 
 // regenScrubbed is what git rev-parse --local-env-vars names: a hook or
@@ -46,36 +47,42 @@ func (g regenGenerator) owns(path string) bool {
 }
 
 func regenLoad(ctx context.Context, dir render.Dir, rev string) ([]regenGenerator, error) {
-	listed, err := render.RunCLI(ctx, dir, "git", []string{"ls-tree", "--full-tree", "--name-only", rev, "--", regenFile})
-	if err != nil {
-		return nil, fmt.Errorf("stack rebase: look for %s at %.12s: %w", regenFile, rev, err)
+	for _, path := range []string{regenFile, legacyRegenFile} {
+		listed, err := render.RunCLI(ctx, dir, "git", []string{"ls-tree", "--full-tree", "--name-only", rev, "--", path})
+		if err != nil {
+			return nil, fmt.Errorf("stack rebase: look for %s at %.12s: %w", path, rev, err)
+		}
+		if strings.TrimSpace(listed) == "" {
+			continue
+		}
+		raw, err := render.RunCLI(ctx, dir, "git", []string{"show", rev + ":" + path})
+		if err != nil {
+			return nil, fmt.Errorf("stack rebase: read %s at %.12s: %w", path, rev, err)
+		}
+		return regenParse(raw, fmt.Sprintf("%s at %.12s", path, rev))
 	}
-	if strings.TrimSpace(listed) == "" {
-		return nil, nil
-	}
-	raw, err := render.RunCLI(ctx, dir, "git", []string{"show", rev + ":" + regenFile})
-	if err != nil {
-		return nil, fmt.Errorf("stack rebase: read %s at %.12s: %w", regenFile, rev, err)
-	}
-	return regenParse(raw, fmt.Sprintf("%s at %.12s", regenFile, rev))
+	return nil, nil
 }
 
 func regenStaged(ctx context.Context, dir render.Dir) ([]regenGenerator, error) {
-	staged, err := render.RunCLI(ctx, dir, "git", []string{"--literal-pathspecs", "ls-files", "-s", "--", regenFile})
-	if err != nil {
-		return nil, fmt.Errorf("stack rebase: look for %s in the index: %w", regenFile, err)
+	for _, path := range []string{regenFile, legacyRegenFile} {
+		staged, err := render.RunCLI(ctx, dir, "git", []string{"--literal-pathspecs", "ls-files", "-s", "--", path})
+		if err != nil {
+			return nil, fmt.Errorf("stack rebase: look for %s in the index: %w", path, err)
+		}
+		if strings.TrimSpace(staged) == "" {
+			continue
+		}
+		if meta, _, _ := strings.Cut(staged, "\t"); !strings.HasSuffix(meta, " 0") {
+			return nil, fmt.Errorf("stack rebase: %s is itself conflicted; resolve and git add it first", path)
+		}
+		raw, err := render.RunCLI(ctx, dir, "git", []string{"show", ":" + path})
+		if err != nil {
+			return nil, fmt.Errorf("stack rebase: read %s from the index: %w", path, err)
+		}
+		return regenParse(raw, path+" in the index")
 	}
-	if strings.TrimSpace(staged) == "" {
-		return nil, nil
-	}
-	if meta, _, _ := strings.Cut(staged, "\t"); !strings.HasSuffix(meta, " 0") {
-		return nil, fmt.Errorf("stack rebase: %s is itself conflicted; resolve and git add it first", regenFile)
-	}
-	raw, err := render.RunCLI(ctx, dir, "git", []string{"show", ":" + regenFile})
-	if err != nil {
-		return nil, fmt.Errorf("stack rebase: read %s from the index: %w", regenFile, err)
-	}
-	return regenParse(raw, regenFile+" in the index")
+	return nil, nil
 }
 
 func regenParse(raw, where string) ([]regenGenerator, error) {
