@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"testing"
 
 	"github.com/yasyf/cc-context/internal/gtmeta"
@@ -118,7 +119,7 @@ func TestFocusedGraphiteReadPreservesStackLocalProviderPruning(t *testing.T) {
 						wantOrphans = append(wantOrphans, orphan)
 					}
 				}
-				if !reflect.DeepEqual(state, want) || !reflect.DeepEqual(orphans, wantOrphans) {
+				if !reflect.DeepEqual(state, want) || !slices.Equal(orphans, wantOrphans) {
 					t.Fatalf("requested %s: state=%+v orphans=%+v, want state=%+v orphans=%+v", requested, state, orphans, want, wantOrphans)
 				}
 			}
