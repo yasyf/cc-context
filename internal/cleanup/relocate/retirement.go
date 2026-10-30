@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/yasyf/cc-context/internal/cleanup"
@@ -21,7 +22,19 @@ type retirementFiles struct {
 	treeID, adminID cleanup.FileID
 }
 
-func retirementMarker(job *cleanup.Job) string { return "ccx cleanup " + job.ID + "\n" }
+const retirementPrefix = "ccx cleanup "
+
+func retirementMarker(job *cleanup.Job) string { return retirementPrefix + job.ID + "\n" }
+
+// RetiringJob names the cleanup job whose marker locks the worktree
+// registration at adminDir, the state a removal leaves while the deletion
+// queue is paused: git no longer lists the worktree, and its tree waits at
+// its path for the queue.
+func RetiringJob(adminDir string) (string, bool) {
+	data, err := os.ReadFile(filepath.Join(adminDir, "locked"))
+	id, ok := strings.CutPrefix(strings.TrimSpace(string(data)), retirementPrefix)
+	return id, err == nil && ok && id != ""
+}
 
 func (f *retirementFiles) close() {
 	_ = f.back.Close()
