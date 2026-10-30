@@ -180,3 +180,32 @@ func TestTrunkSSMCancelsWaitingResolver(t *testing.T) {
 		t.Fatalf("waiting resolver executed AWS: %v", err)
 	}
 }
+
+func TestTrunkSSMFailureDoesNotInferQueueAbsenceFromComments(t *testing.T) {
+	for _, comments := range []string{`[]`, `[{"author":{"login":"trunk-io"},"body":"<!-- Trunk Merge -->\n- [ ] <!-- End PR Submit Checkbox -->"}]`} {
+		t.Run(comments, func(t *testing.T) {
+			config, _ := fakeTrunkAWS(t, "printf 'credential-output-must-not-escape\\n'; exit 42")
+			githubReads, queueReads := 0, 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/graphql" {
+					githubReads++
+					if _, err := fmt.Fprintf(w, `{"data":{"repository":{"p0":{"first":{"nodes":%s},"last":{"nodes":%s}}}}}`, comments, comments); err != nil {
+						t.Error(err)
+					}
+					return
+				}
+				queueReads++
+				if _, err := fmt.Fprint(w, `{"data":[{"number":1,"isCurrentlySubmittedToQueue":true,"queueEntry":{"state":"MERGING"}}]}`); err != nil {
+					t.Error(err)
+				}
+			}))
+			defer srv.Close()
+			client := NewWithToken(srv.URL, "github-key").WithTrunkSSM(config).WithQueueProvider("trunk")
+			client.queueBase = srv.URL
+			states, err := client.MergeabilityStatuses(context.Background(), "org", "repo", []int{1})
+			if err == nil || !strings.Contains(err.Error(), "exit code 42") || strings.Contains(err.Error(), "credential-output") || len(states) != 0 || githubReads != 0 || queueReads != 0 {
+				t.Fatalf("states=%v error=%v github reads=%d queue reads=%d", states, err, githubReads, queueReads)
+			}
+		})
+	}
+}

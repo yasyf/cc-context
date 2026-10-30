@@ -100,22 +100,14 @@ func TestExplicitQueueOverrideClearsLegacyQueueButKeepsVersions(t *testing.T) {
 func TestExplicitTrunkQueueFailureNeverCallsGraphite(t *testing.T) {
 	t.Setenv("TRUNK_MERGE_API_KEY", "")
 	calls := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/graphql" {
-			if _, err := fmt.Fprint(w, `{"data":{"repository":{"p0":{"first":{"nodes":[{"author":{"login":"trunk-io"},"body":"<!-- Trunk Merge -->\nThis pull request is being tested."}]},"last":{"nodes":[]}}}}}`); err != nil {
-				t.Errorf("write fixture response: %v", err)
-			}
-			return
-		}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		calls++
 		if _, err := fmt.Fprint(w, `{"mergeabilityStatuses":[{"prNumber":2,"mergeabilityStatus":"QUEUED_TO_MERGE"}]}`); err != nil {
 			t.Errorf("write fixture response: %v", err)
 		}
 	}))
 	defer srv.Close()
-	client := NewWithToken(srv.URL, "graphite-token")
-	client.native = nativeapi.NewWithToken(srv.URL, "github-token")
-	_, err := client.WithQueueProvider("trunk").MergeabilityStatuses(context.Background(), "org", "repo", []int{2})
+	_, err := NewWithToken(srv.URL, "graphite-token").WithQueueProvider("trunk").MergeabilityStatuses(context.Background(), "org", "repo", []int{2})
 	if err == nil || !strings.Contains(err.Error(), "TRUNK_MERGE_API_KEY") || calls != 0 {
 		t.Fatalf("error=%v legacy calls=%d", err, calls)
 	}
