@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"reflect"
 	"strconv"
 	"strings"
@@ -638,8 +639,83 @@ func TestTrunkTokenReportsAKeychainFailureInsteadOfAMissingKey(t *testing.T) {
 	keychainTrunkKey = func() (string, error) {
 		return "", errors.New("read the trunk-merge-api-key Keychain item: security exited 36: user interaction is not allowed")
 	}
-	_, err := NewWithToken("http://invalid.local", "github-key").trunkToken(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "security exited 36") || !strings.Contains(err.Error(), "requires TRUNK_MERGE_API_KEY") {
-		t.Fatalf("trunkToken error = %v; want the Keychain failure alongside the missing-credential refusal", err)
+	token, err := NewWithToken("http://invalid.local", "github-key").trunkToken(context.Background())
+	if err == nil || token != "" || !strings.Contains(err.Error(), "security exited 36") {
+		t.Fatalf("trunkToken = %q, %v; want the Keychain failure", token, err)
+	}
+}
+
+func TestTrunkRepositorySSMPrecedesImplicitKeychain(t *testing.T) {
+	for _, tc := range []struct {
+		name, script, env, want, failure string
+		invalid, aws                     bool
+	}{
+		{name: "repository credential", script: "printf 'repository-fixture-key\\n'", want: "repository-fixture-key", aws: true},
+		{name: "invalid repository config", script: "exit 99", invalid: true, failure: "requires a valid aws_profile"},
+		{name: "repository lookup failure", script: "printf 'fixture-output\\n'; printf 'fixture-error\\n' >&2; exit 42", failure: "exit code 42", aws: true},
+		{name: "environment overrides both", script: "exit 99", env: "explicit-fixture-key", want: "explicit-fixture-key"},
+		{name: "environment overrides invalid repository config", script: "exit 99", env: "explicit-fixture-key", want: "explicit-fixture-key", invalid: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config, calls := fakeTrunkAWS(t, tc.script)
+			if tc.invalid {
+				config.AWSProfile = ""
+			}
+			t.Setenv("TRUNK_MERGE_API_KEY", tc.env)
+			keychain := keychainTrunkKey
+			t.Cleanup(func() { keychainTrunkKey = keychain })
+			keychainCalls := 0
+			keychainTrunkKey = func() (string, error) {
+				keychainCalls++
+				return "implicit-keychain-fixture-key", nil
+			}
+			token, err := NewWithToken("https://unused.invalid", "github-fixture-key").WithTrunkSSM(config).trunkToken(context.Background())
+			if tc.failure != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.failure) || token != "" {
+					t.Fatalf("expected repository failure %q, got token=%q error=%v", tc.failure, token, err)
+				}
+				if strings.Contains(err.Error(), "fixture-output") || strings.Contains(err.Error(), "fixture-error") {
+					t.Fatalf("repository failure exposed command output: %v", err)
+				}
+			} else if err != nil || token != tc.want {
+				t.Fatalf("token=%q error=%v want=%q", token, err, tc.want)
+			}
+			if keychainCalls != 0 {
+				t.Fatalf("repository configuration unexpectedly queried Keychain %d times", keychainCalls)
+			}
+			_, statErr := os.Stat(calls)
+			if tc.aws && statErr != nil || !tc.aws && !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("AWS execution=%v, invocation receipt error=%v", tc.aws, statErr)
+			}
+		})
+	}
+}
+
+func TestTrunkEmptyRepositoryConfigurationStillUsesKeychain(t *testing.T) {
+	t.Setenv("TRUNK_MERGE_API_KEY", "")
+	keychain := keychainTrunkKey
+	t.Cleanup(func() { keychainTrunkKey = keychain })
+	keychainTrunkKey = func() (string, error) { return "keychain-fixture-key", nil }
+	token, err := NewWithToken("https://unused.invalid", "github-fixture-key").WithTrunkSSM(TrunkSSMConfig{}).trunkToken(context.Background())
+	if err != nil || token != "keychain-fixture-key" {
+		t.Fatalf("token=%q error=%v", token, err)
+	}
+}
+
+func TestTrunkEmptyQueueReadDoesNotResolveCredentials(t *testing.T) {
+	config, calls := fakeTrunkAWS(t, "exit 99")
+	keychain := keychainTrunkKey
+	t.Cleanup(func() { keychainTrunkKey = keychain })
+	keychainCalls := 0
+	keychainTrunkKey = func() (string, error) {
+		keychainCalls++
+		return "keychain-fixture-key", nil
+	}
+	states, err := NewWithToken("https://unused.invalid", "github-fixture-key").WithQueueProvider("trunk").WithTrunkSSM(config).MergeabilityStatuses(context.Background(), "org", "repo", nil)
+	if err != nil || len(states) != 0 || keychainCalls != 0 {
+		t.Fatalf("states=%v error=%v Keychain calls=%d", states, err, keychainCalls)
+	}
+	if _, err := os.Stat(calls); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("empty queue read executed AWS: %v", err)
 	}
 }
