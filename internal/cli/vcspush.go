@@ -101,6 +101,17 @@ func runVcsPush(cmd *cobra.Command, o vcsPushOpts) error {
 	if err != nil {
 		return err
 	}
+	if present, err := stackMetadataPresent(ck); err != nil {
+		return fmt.Errorf("push: %w", err)
+	} else if present {
+		provider, err := gtmeta.Provider(ctx, ck.CommonDir, branch)
+		if err != nil {
+			return fmt.Errorf("push: %w", err)
+		}
+		ctx = withStackProvider(ctx, provider == gtmeta.ProviderGitHub)
+		cmd.SetContext(ctx)
+	}
+
 	remote, err := vcs.GitRemoteFor(ctx, dir, branch)
 	if err != nil {
 		return fmt.Errorf("push: %w", err)
@@ -170,6 +181,12 @@ func vcsPushSubmitted(ctx context.Context, dir render.Dir, receipt stackPublicat
 	if err != nil {
 		return err
 	}
+	provider, err := gtmeta.Provider(ctx, commonDir, receipt.Branch)
+	if err != nil {
+		return fmt.Errorf("push: %w", err)
+	}
+	ctx = withStackProvider(ctx, provider == gtmeta.ProviderGitHub)
+
 	submitted, err := gtmeta.LastSubmitted(ctx, commonDir)
 	if err != nil {
 		return fmt.Errorf("push: %w", err)
@@ -191,10 +208,16 @@ func vcsPushSubmitted(ctx context.Context, dir render.Dir, receipt stackPublicat
 // The parent's remote head is read from the remote itself, since another
 // lane or Graphite may have replayed the parent past the tracking ref here.
 func vcsPushRetrack(ctx context.Context, ck vcs.Checkout, dir render.Dir, remote, branch, head string) (string, error) {
-	graphite, err := vcs.GraphiteRepo(ck)
-	if err != nil || !graphite {
+	tracked, err := stackMetadataPresent(ck)
+	if err != nil || !tracked {
 		return "", err
 	}
+	provider, err := gtmeta.Provider(ctx, ck.CommonDir, branch)
+	if err != nil {
+		return "", err
+	}
+	ctx = withStackProvider(ctx, provider == gtmeta.ProviderGitHub)
+
 	commonDir, err := gtCommonDir(ctx, dir, "push")
 	if err != nil {
 		return "", err
@@ -240,10 +263,16 @@ func vcsPushRetrack(ctx context.Context, ck vcs.Checkout, dir render.Dir, remote
 }
 
 func vcsPushRefuseOffParent(ctx context.Context, ck vcs.Checkout, dir render.Dir, remote, branch, head string) error {
-	graphite, err := vcs.GraphiteRepo(ck)
-	if err != nil || !graphite {
+	tracked, err := stackMetadataPresent(ck)
+	if err != nil || !tracked {
 		return err
 	}
+	provider, err := gtmeta.Provider(ctx, ck.CommonDir, branch)
+	if err != nil {
+		return err
+	}
+	ctx = withStackProvider(ctx, provider == gtmeta.ProviderGitHub)
+
 	state, err := gtStateQuery(ctx, dir, "push")
 	if err != nil {
 		return err

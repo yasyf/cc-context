@@ -250,6 +250,7 @@ Ship owns the pull request in every lane. --pr-title and --pr-body-file are repe
 	cmd.Flags().BoolVar(&o.draft, "draft", false, "open new PRs as drafts, and convert an existing one to a draft")
 	cmd.Flags().BoolVar(&o.publish, "publish", false, "publish new PRs, and mark an existing draft ready (new PRs publish when neither is passed; an open PR keeps its draft state)")
 	cmd.Flags().BoolVar(&o.noGT, "no-gt", false, "ignore a live graphite config and fall back to the jj/git detection")
+	cmd.Flags().BoolVar(&o.noGT, "no-stack", false, "use plain jj/git operations without stack management")
 	cmd.Flags().BoolVar(&o.reviews, "reviews", false, "after the CI watch, keep streaming new PR review comments until every submitted PR is merged or closed")
 	cmd.Flags().StringArrayVar(&o.prTitle, "pr-title", nil, "set the pull request title; repeatable as <branch>=<title>, bare applies to the tip")
 	cmd.Flags().StringArrayVar(&o.prBodyFile, "pr-body-file", nil, `set the pull request body from a file; repeatable as <branch>=<path>, bare applies to the tip ("-" reads stdin)`)
@@ -299,6 +300,8 @@ func runShip(cmd *cobra.Command, o shipOpts) (err error) {
 	if err != nil {
 		return err
 	}
+	ctx = withStackProvider(ctx, l.native)
+	cmd.SetContext(ctx)
 	dir, gtLane := l.dir(), l.gt
 	kind := l.kind
 	if gtLane {

@@ -502,3 +502,86 @@ func bumpRepoSchema(t *testing.T, root string) {
 		t.Fatalf("write bumped record: %v", err)
 	}
 }
+
+func TestInstallationTokenReadsRepositoryWithoutHumanIdentity(t *testing.T) {
+	f := vcstest.Repo(t)
+	f.Isolate(t)
+	f.Setenv("GH_TOKEN", "ghs_installation")
+	f.Setenv("GITHUB_TOKEN", "github_pat_ignored")
+	log := ghReplay(t, f, map[string][]string{ghRepoVerb: {"repo-api-own"}})
+	repo, err := fetchRepo(f.Context(), render.Dir(f.Dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !repo.Installation || repo.ViewerLogin != "" || repo.Personal() || !repo.Mine() {
+		t.Fatalf("repo=%+v", repo)
+	}
+	if len(ghCalls(t, log)) != 1 {
+		t.Fatalf("installation performed human lookup: %v", ghCalls(t, log))
+	}
+}
+
+func TestHumanTokenKeepsUserLookupDespiteLowerPriorityInstallationToken(t *testing.T) {
+	f := vcstest.Repo(t)
+	f.Isolate(t)
+	f.Setenv("GH_TOKEN", "github_pat_human")
+	f.Setenv("GITHUB_TOKEN", "ghs_ignored")
+	ghReplay(t, f, map[string][]string{ghRepoVerb: {"repo-api-own"}, "api user": {"user-api-own"}})
+	repo, err := fetchRepo(f.Context(), render.Dir(f.Dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repo.Installation || repo.ViewerLogin != "yasyf" || !repo.Personal() {
+		t.Fatalf("repo=%+v", repo)
+	}
+}
+
+func TestInstallationRepositoryCacheIsSeparateWithoutStoringTokenIdentity(t *testing.T) {
+	f := vcstest.Repo(t)
+	f.Isolate(t)
+	human := render.WithEnv(f.Context(), "GH_TOKEN=", "GITHUB_TOKEN=")
+	first := render.WithEnv(human, "GH_TOKEN=ghs_first_installation")
+	second := render.WithEnv(human, "GITHUB_TOKEN=ghs_second_installation")
+	humanPath, err := RepoCachePath(human, f.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstPath, err := RepoCachePath(first, f.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondPath, err := RepoCachePath(second, f.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstPath == humanPath || firstPath != secondPath {
+		t.Fatalf("human=%s first=%s second=%s", humanPath, firstPath, secondPath)
+	}
+	if strings.Contains(firstPath, "ghs_") {
+		t.Fatalf("cache path contains token: %s", firstPath)
+	}
+}
+
+func TestHumanLookupDiscardsInstallationRecordAtOriginalCachePath(t *testing.T) {
+	f := vcstest.Repo(t)
+	f.Isolate(t)
+	f.Setenv("GH_TOKEN", "")
+	f.Setenv("GITHUB_TOKEN", "")
+	ghReplay(t, f, map[string][]string{ghRepoVerb: {"repo-api-own"}, "api user": {"user-api-own"}})
+	ctx := f.Context()
+	path, err := RepoCachePath(ctx, f.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = storeRecord(path, repoRecord{Schema: githubSchema, Repo: Repo{NameWithOwner: "yasyf/cc-context", Owner: "yasyf", Installation: true, FetchedAt: time.Now()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo, err := LookupRepo(ctx, render.Dir(f.Dir), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repo.Installation || repo.ViewerLogin != "yasyf" {
+		t.Fatalf("cached installation leaked to human context: %+v", repo)
+	}
+}

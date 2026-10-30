@@ -96,6 +96,8 @@ func runStackDrop(cmd *cobra.Command, args []string, o dropOpts) error {
 	if err != nil {
 		return err
 	}
+	ctx = withStackProvider(ctx, l.native)
+	cmd.SetContext(ctx)
 	if !l.gt {
 		return fmt.Errorf("%s: this repository is not on the graphite lane, and a stack is Graphite's — delete the branch with git branch -d", dropPrefix)
 	}

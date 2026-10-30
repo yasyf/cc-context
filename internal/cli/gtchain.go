@@ -130,7 +130,7 @@ func gtAdoptChain(ctx context.Context, dir render.Dir, prefix string, chain []gt
 	if err != nil {
 		return nil, err
 	}
-	trunk, err := gtmeta.ReadTrunk(commonDir)
+	trunk, err := gtmeta.ReadTrunk(ctx, commonDir)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", prefix, err)
 	}

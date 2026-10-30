@@ -102,7 +102,7 @@ func thinSourceOf(ctx context.Context, src lane) (thinSource, error) {
 		return thinSource{}, fmt.Errorf("stack new: %w", err)
 	}
 	if src.gt {
-		s.trunk, err = gtmeta.ReadTrunk(src.checkout.CommonDir)
+		s.trunk, err = gtmeta.ReadTrunk(ctx, src.checkout.CommonDir)
 	} else {
 		var tr vcs.Trunk
 		if tr, err = vcs.ResolveTrunk(ctx, src.dir(), remote); err == nil {
@@ -291,7 +291,7 @@ func thinEnsureStore(ctx context.Context, errW io.Writer, src lane, s thinSource
 	if err != nil {
 		return lane{}, false, fmt.Errorf("stack new: %w", err)
 	}
-	store := lane{kind: vcs.Git, root: ck.Root, checkout: ck, gt: src.gt, note: src.note, repo: src.repo, verdict: src.verdict}
+	store := lane{kind: vcs.Git, root: ck.Root, checkout: ck, gt: src.gt, native: src.native, note: src.note, repo: src.repo, verdict: src.verdict}
 	if src.gt {
 		if err := thinInitGraphite(ctx, errW, store, s.trunk); err != nil {
 			return lane{}, false, err

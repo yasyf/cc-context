@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/yasyf/cc-context/internal/cache"
+	"github.com/yasyf/cc-context/internal/gtmeta"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcs"
 )
@@ -101,6 +102,7 @@ type lane struct {
 	checkout vcs.Checkout
 	broken   *vcs.BrokenCheckout
 	gt       bool
+	native   bool
 	// note explains a graphite lane that was available but declined — for the
 	// report line and ccx vcs info's lane_reason.
 	note string
@@ -202,15 +204,81 @@ func resolveLaneRefresh(ctx context.Context, name, dir string, noGT, refresh boo
 	}
 	root := ck.Root
 	l := lane{kind: ck.Kind, root: root, checkout: ck}
-	if noGT {
+	if noGT || ck.CommonDir == "" {
 		return l, nil
 	}
 	graphite, err := vcs.GraphiteRepo(ck)
 	if err != nil {
 		return lane{}, fmt.Errorf("%s: %w", name, err)
 	}
-	if !graphite {
+	nativeCatalog, statErr := os.Stat(filepath.Join(ck.CommonDir, "gh-stack"))
+	if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+		return lane{}, fmt.Errorf("%s: read native stack catalog: %w", name, statErr)
+	}
+	native, bound := ctx.Value(stackProviderKey{}).(bool)
+	provider := "graphite"
+	if bound && nativeCatalog == nil {
+		if native {
+			provider = "github"
+		} else if !graphite {
+			return l, nil
+		}
+	} else {
+		if !graphite && nativeCatalog == nil {
+			configured, code, stderr, err := render.RunCLIExitCode(ctx, render.Dir(root), "git", []string{"config", "--get", "ccx.stack"})
+			if err != nil {
+				return lane{}, fmt.Errorf("%s: read ccx.stack: %w", name, err)
+			}
+			if code != 0 && code != 1 {
+				return lane{}, fmt.Errorf("%s: read ccx.stack: exit %d: %s", name, code, strings.TrimSpace(stderr))
+			}
+			if strings.TrimSpace(configured) == "" {
+				if name != "stack new" {
+					return l, nil
+				}
+				remote, code, stderr, err := render.RunCLIExitCode(ctx, render.Dir(root), "git", []string{"config", "--get", "remote.origin.url"})
+				if err != nil {
+					return lane{}, fmt.Errorf("%s: read origin: %w", name, err)
+				}
+				if code == 1 {
+					return l, nil
+				}
+				if code != 0 {
+					return lane{}, fmt.Errorf("%s: read origin: exit %d: %s", name, code, strings.TrimSpace(stderr))
+				}
+				canonical, err := thinCanonicalRemote(strings.TrimSpace(remote))
+				if err != nil || !strings.HasPrefix(strings.ToLower(canonical), "github.com/") {
+					return l, nil
+				}
+			}
+		}
+		branch, _ := ctx.Value(stackParentKey{}).(string)
+		if branch == "" {
+			branch, err = gitCurrentBranch(ctx, render.Dir(root), name)
+			if err != nil {
+				return lane{}, err
+			}
+		}
+		provider, err = gtmeta.Provider(ctx, ck.CommonDir, branch)
+		if err != nil {
+			return lane{}, fmt.Errorf("%s: %w", name, err)
+		}
+	}
+	if provider == "github" {
+		repo, err := vcs.LookupRepo(ctx, render.Dir(root), refresh)
+		if err != nil {
+			return lane{}, fmt.Errorf("%s: %w", name, err)
+		}
+		l.repo = &repo
+		if !repo.Mine() {
+			l.note = fmt.Sprintf("%s is public and you have %s access", repo.NameWithOwner, strings.ToLower(repo.ViewerPermission))
+			return l, nil
+		}
+		l.gt, l.native, l.verdict = true, true, gtVerdictOK
 		return l, nil
+	}
+	if !graphite {
+		return lane{}, fmt.Errorf("%s: Graphite selected without a Graphite repository configuration", name)
 	}
 	if gtDisabled(ctx, render.Dir(root)) {
 		l.note = gtDisabledNote

@@ -5,6 +5,12 @@ with bounded history in a separate ccx-owned store. A child of a non-trunk
 branch this checkout holds is the exception: it is cut in this checkout's
 clone, beside its parent. An unset `CCX_STACK_NEW` keeps the existing jj
 behavior.
+## Provider selection
+
+`ccx vcs stack new`, `ccx vcs stack rebase`, `ccx vcs stack submit`, and `ccx vcs ship` share thin-lane storage, lightweight isolated replay, and tip-only unchanged-parent protection across native GitHub stacks and legacy Graphite stacks. New stacks cut with `ccx vcs stack new` prefer native GitHub unless configured otherwise, while existing tracked Graphite branches stay on legacy Graphite.
+
+Native lanes record stack state in the store's `gh-stack` catalog and talk to the GitHub API directly without a `gh` executable. Stacked pull requests require actual GitHub server stack membership, never use synthetic head bumps, and never fall back across providers on authentication or network errors. See the [README stack provider contract](../README.md#stack-providers) for `git config ccx.stack` and `git config ccx.queue`.
+
 
 ## Create a thin lane
 

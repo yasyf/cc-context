@@ -65,6 +65,7 @@ head the push observed, and the pull request is retargeted onto <branch>.`,
 		},
 	}
 	cmd.Flags().BoolVar(&o.noGT, "no-gt", false, "ignore a live graphite config and fall back to the jj/git detection")
+	cmd.Flags().BoolVar(&o.noGT, "no-stack", false, "use plain jj/git operations without stack management")
 	cmd.Flags().StringVar(&o.to, "to", "", stackToUsage+" (gt lane only)")
 	cmd.Flags().StringVar(&o.parent, "parent", "", "move the branch onto this branch, then push it and retarget its open pull request there (git lane only)")
 	return cmd
@@ -76,6 +77,8 @@ func runRestack(cmd *cobra.Command, o restackOpts) error {
 	if err != nil {
 		return err
 	}
+	ctx = withStackProvider(ctx, l.native)
+	cmd.SetContext(ctx)
 	if l.gt && o.parent != "" {
 		return errors.New("restack: --parent on the graphite lane is ccx vcs stack rebase --parent <branch>=<parent>")
 	}

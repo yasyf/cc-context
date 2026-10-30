@@ -81,6 +81,9 @@ func runShipDryRun(ctx context.Context, cmd *cobra.Command, l lane, o shipOpts, 
 	r := shipDryRun{lane: kindLabel(l.kind), root: l.root}
 	if l.gt {
 		r.lane = "gt"
+		if l.native {
+			r.lane = "github-stack"
+		}
 	}
 	if err := dryRunPosition(ctx, l, o, c, &r); err != nil {
 		return err
@@ -172,6 +175,9 @@ func dryRunPositionGT(ctx context.Context, l lane, o shipOpts, c *gtCache, r *sh
 		return dryRunReparent(ctx, l, o, state, s.Parents[0].Ref, r)
 	}
 	r.parent, r.because = s.Parents[0].Ref, "graphite already tracks "+branch+" on it"
+	if l.native {
+		r.because = "native GitHub stack records " + branch + " on it"
+	}
 	return nil
 }
 
@@ -511,6 +517,9 @@ func dryRunMoves(state gtState, chain []string, holders map[string]string, o shi
 		why := "its parent moves under it"
 		if state[branch].NeedsRestack {
 			why = "graphite reads it as off its parent"
+			if r.lane == "github-stack" {
+				why = "native stack base differs from its parent"
+			}
 		}
 		r.moves = append(r.moves, dryRunMove{
 			branch: branch,

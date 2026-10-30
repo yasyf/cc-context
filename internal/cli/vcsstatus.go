@@ -172,6 +172,7 @@ the work is the tell.`,
 	cmd.Flags().BoolVar(&o.json, "json", false, "emit the report as JSON")
 	cmd.Flags().BoolVar(&o.refresh, "refresh", false, "refetch the cached GitHub metadata and graphite reachability")
 	cmd.Flags().BoolVar(&o.noGT, "no-gt", false, "ignore a live graphite config and report the current branch alone")
+	cmd.Flags().BoolVar(&o.noGT, "no-stack", false, "use plain jj/git operations without stack management")
 	cmd.Flags().BoolVar(&o.noProbe, "no-queue-probe", false, "skip the gt merge --dry-run probe of the merge queue")
 	cmd.Flags().IntVar(&o.budget, "budget", statusBudget, "token budget for the human report (0 = uncapped)")
 	return cmd
@@ -200,9 +201,13 @@ func runVcsStatus(cmd *cobra.Command, o vcsStatusOpts) error {
 }
 
 func collectVcsStatus(ctx context.Context, l lane, o vcsStatusOpts) (vcsStatus, error) {
+	ctx = withStackProvider(ctx, l.native)
 	st := vcsStatus{Lane: kindLabel(l.kind), Root: l.root}
 	if l.gt {
 		st.Lane = "gt"
+		if l.native {
+			st.Lane = "github-stack"
+		}
 	}
 	if l.broken != nil {
 		return st, nil

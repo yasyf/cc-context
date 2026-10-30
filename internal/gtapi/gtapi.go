@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yasyf/cc-context/internal/nativeapi"
 	"github.com/yasyf/cc-context/internal/version"
 )
 
@@ -21,11 +22,17 @@ const baseURLProd = "https://api.graphite.com/v1"
 
 const requestTimeout = 30 * time.Second
 
-// Client issues authenticated Graphite API requests against one API root.
+// Client routes stack metadata and publication through the selected providers.
 type Client struct {
-	base   string
-	http   *http.Client
-	tokens *tokenSource
+	base            string
+	http            *http.Client
+	tokens          *tokenSource
+	native          *nativeapi.Client
+	queue           *nativeapi.Client
+	queueProvider   string
+	providerErr     error
+	branchProviders map[string]string
+	legacy          *Client
 }
 
 var defaultClient = sync.OnceValue(func() *Client { return New(baseURLProd) })

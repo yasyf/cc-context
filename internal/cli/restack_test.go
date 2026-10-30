@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -1048,6 +1049,8 @@ func TestRestackRefusalsCarryRestackPrefix(t *testing.T) {
 func restackGTRepo(t *testing.T, names ...string) *vcstest.Fixture {
 	t.Helper()
 	f := vcstest.Repo(t, vcstest.Remote(), vcstest.GT(), vcstest.GTStack(names...))
+	runTool(t, f, "git", "config", "ccx.stack", "graphite")
+	f.Decorate(func(ctx context.Context) context.Context { return withStackProvider(ctx, false) })
 	f.Isolate(t)
 	seedLaneRecords(f.Context(), t, f.Dir, laneSeed{})
 	f.Decorate(newGTAPIStub(t).ctx)

@@ -209,9 +209,13 @@ type reviewsClient struct {
 var reviewsAPI = ghapi.Default
 
 func resolveReviewsClient(ctx context.Context) (reviewsClient, error) {
-	l, err := resolveLane(ctx, "reviews", workingDir(ctx), false)
+	l, err := resolveLane(ctx, "reviews", workingDir(ctx), true)
 	if err != nil {
 		return reviewsClient{}, err
+	}
+	graphite, err := vcs.GraphiteRepo(l.checkout)
+	if err != nil {
+		return reviewsClient{}, fmt.Errorf("reviews: %w", err)
 	}
 	repo, err := vcs.LookupRepo(ctx, l.dir(), false)
 	if err != nil {
@@ -221,7 +225,7 @@ func resolveReviewsClient(ctx context.Context) (reviewsClient, error) {
 	if !ok {
 		return reviewsClient{}, fmt.Errorf("reviews: %q is not owner/name", repo.NameWithOwner)
 	}
-	return reviewsClient{api: reviewsAPI().ForRepo(repo.NameWithOwner), owner: owner, repo: name, gt: l.gt, dir: l.dir()}, nil
+	return reviewsClient{api: reviewsAPI().ForRepo(repo.NameWithOwner), owner: owner, repo: name, gt: graphite, dir: l.dir()}, nil
 }
 
 // reviewsAlias names one target's field in a batched query. A GraphQL alias
@@ -417,10 +421,11 @@ func resolveStackReviewTargets(ctx context.Context, w io.Writer, since time.Time
 	}
 	if !l.gt {
 		if l.note != "" {
-			return reviewsClient{}, nil, fmt.Errorf("reviews: --stack declined the graphite lane: %s", l.note)
+			return reviewsClient{}, nil, fmt.Errorf("reviews: --stack declined the stack lane: %s", l.note)
 		}
-		return reviewsClient{}, nil, errors.New("reviews: --stack requires a graphite repo")
+		return reviewsClient{}, nil, errors.New("reviews: --stack requires a stack-managed repo")
 	}
+	ctx = withStackProvider(ctx, l.native)
 	branches, err := stackBranches(ctx, newGTCache(l, "reviews"))
 	if err != nil {
 		return reviewsClient{}, nil, err

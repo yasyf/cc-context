@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/sync/errgroup"
@@ -22,6 +23,7 @@ import (
 	"github.com/yasyf/cc-context/internal/cache"
 	"github.com/yasyf/cc-context/internal/gtapi"
 	"github.com/yasyf/cc-context/internal/gtmeta"
+	"github.com/yasyf/cc-context/internal/nativemeta"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcs"
 )
@@ -645,6 +647,7 @@ func gtStuckSuffix(o shipOpts) string {
 // open one, or every open one under draftAll; a nil draft opens pull requests
 // published and leaves every open one's draft state as it stands.
 type gtSubmit struct {
+	native      bool
 	prefix      string
 	suffix      string
 	draft       *bool
@@ -2168,15 +2171,36 @@ func withGTAPI(ctx context.Context, client *gtapi.Client) context.Context {
 // gtAPIDefault is the client a context carrying none falls back to. Only
 // TestMain replaces it, before any test runs, so that a test reaching the real
 // api.graphite.com panics instead of submitting with the developer's token.
-var gtAPIDefault = gtapi.Default
+var (
+	gtAPIDefault       = gtapi.Default
+	gtAPINativeDefault = sync.OnceValue(gtapi.NewNative)
+)
 
-// gtAPI returns the Graphite API client ctx carries, falling back to the
-// process-wide one against api.graphite.com.
 func gtAPI(ctx context.Context) *gtapi.Client {
 	if client, ok := ctx.Value(gtAPIKey{}).(*gtapi.Client); ok {
 		return client
 	}
-	return gtAPIDefault()
+	native, err := nativeProvider(ctx, render.Dir(workingDir(ctx)))
+	if err != nil {
+		return gtAPINativeDefault().WithProviderError(err)
+	}
+	var client *gtapi.Client
+	if native {
+		client = gtAPINativeDefault()
+	} else {
+		client = gtAPIDefault()
+	}
+	provider, code, stderr, err := render.RunCLIExitCode(ctx, render.Dir(workingDir(ctx)), "git", []string{"config", "--get", "ccx.queue"})
+	if err != nil {
+		return client.WithProviderError(err)
+	}
+	if code == 1 && stderr == "" {
+		return client
+	}
+	if code != 0 {
+		return client.WithProviderError(fmt.Errorf("read ccx.queue: exit %d: %s", code, strings.TrimSpace(stderr)))
+	}
+	return client.WithQueueProvider(strings.TrimSpace(provider))
 }
 
 // shipPushGT submits the downstack of the branch the commit landed on, over
@@ -2292,6 +2316,7 @@ type gtSubmitBranch struct {
 // Every branch's pull request comes back as Graphite answered for it, so the
 // report step never asks GitHub the same question again.
 func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, commonDir string, state gtState, tr vcs.Trunk, branches []string, tip string) ([]string, map[string]stackEntry, error) {
+	s.native = l.native
 	if s.trunkHead == "" {
 		pin, err := gtTrunkHead(ctx, l.dir(), s.prefix, tr)
 		if err != nil {
@@ -2354,6 +2379,10 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 	var infoErr error
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() (err error) {
+		if client.IsNative() {
+			synced = gtapi.RepoSync{Status: gtapi.RepoSynced}
+			return nil
+		}
 		synced, err = gtRepoSynced(gctx, client, l.root, owner, name)
 		return err
 	})
@@ -2419,15 +2448,21 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 			plan[i].lease, plan[i].leaseSet = lease, true
 		}
 	}
-	tracked, err := gtTrackedOf(commonDir, known)
-	if err != nil {
-		return nil, nil, fmt.Errorf("%s: %w", s.prefix, err)
-	}
-	if err := gtRefuseQueueRestack(ctx, l.dir(), client, owner, name, s.prefix, tr, plan, tracked); err != nil {
-		return nil, nil, err
-	}
-	if err := gtParkedBases(ctx, l.dir(), plan, known, s.trunkHead); err != nil {
-		return nil, nil, err
+	if client.IsNative() {
+		if err := nativeRefuseQueuedChanges(ctx, client, owner, name, s.prefix, plan, known); err != nil {
+			return nil, nil, err
+		}
+	} else {
+		tracked, err := gtTrackedOf(commonDir, known)
+		if err != nil {
+			return nil, nil, fmt.Errorf("%s: %w", s.prefix, err)
+		}
+		if err := gtRefuseQueueRestack(ctx, l.dir(), client, owner, name, s.prefix, tr, plan, tracked); err != nil {
+			return nil, nil, err
+		}
+		if err := gtParkedBases(ctx, l.dir(), plan, known, s.trunkHead); err != nil {
+			return nil, nil, err
+		}
 	}
 	if s.target.branch != "" && s.publication == nil {
 		live, err := stackRemoteHeads(ctx, l.dir(), s.prefix, "origin", []string{s.target.branch}, s.trunkHead)
@@ -2448,11 +2483,14 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 			return nil, nil, err
 		}
 	}
-	unrecorded, err := gtUnrecordedOf(commonDir, plan)
-	if err != nil {
-		return nil, nil, fmt.Errorf("%s: %w", s.prefix, err)
+	var unrecorded map[string]bool
+	if !client.IsNative() {
+		unrecorded, err = gtUnrecordedOf(commonDir, plan)
+		if err != nil {
+			return nil, nil, fmt.Errorf("%s: %w", s.prefix, err)
+		}
 	}
-	submit, unchanged := gtDropUnchanged(plan, last, known, unrecorded, tip, s.updateDraft(tip))
+	submit, unchanged := gtDropUnchanged(plan, last, known, unrecorded, tip, s.updateDraft(tip), client.IsNative())
 	posted, unopened := gtHoldUnopened(submit, s)
 	if slices.ContainsFunc(posted, func(b gtSubmitBranch) bool {
 		return b.pr == 0 && b.name == s.shipTip && strings.TrimSpace(b.body) == ""
@@ -2517,7 +2555,7 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 	for _, b := range posted {
 		pre = append(pre, gtapi.PreSubmitBranch{HeadRefName: b.name, PRNumber: b.pr})
 	}
-	if len(pre) > 0 {
+	if len(pre) > 0 && !client.IsNative() {
 		if _, err := client.PreSubmitPullRequests(ctx, owner, name, pre); err != nil {
 			return nil, nil, gtSubmitFailure(err, s)
 		}
@@ -2562,6 +2600,9 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 			TrunkBranchName: tr.Name(),
 			PRs:             []gtapi.SubmitPR{pr},
 		})
+		if client.IsNative() && err != nil {
+			return nil, nil, gtSubmitFailure(gtSubmitPartial(err, pr.Head, landed), s)
+		}
 		segmented := posted[i]
 		var submitErr *gtapi.SubmitError
 		if err != nil && errors.As(err, &submitErr) && gtStackCapped(submitErr) {
@@ -2614,12 +2655,23 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 			submitted = append(submitted, posted[i])
 			continue
 		}
-		if err := gtClearUnrecorded(commonDir, posted[i].name); err != nil {
-			return nil, nil, err
+		if client.IsNative() {
+			publishedRefs := make(map[string]nativemeta.PullRequest, len(out))
+			for _, created := range out {
+				publishedRefs[created.Head] = nativemeta.PullRequest{Number: created.PRNumber, ID: created.PRID, URL: created.PRURL, StackNumber: created.StackNumber}
+			}
+			if err := nativemeta.RecordPullRequests(ctx, commonDir, publishedRefs); err != nil {
+				return nil, nil, gtSubmitFailure(gtSubmitPartial(fmt.Errorf("record native stack PR references: %w", err), pr.Head, append(landed, out...)), s)
+			}
 		}
-		if segmented.base != gtSegmentBase(pr.Head) {
-			if err := gtDropSegment(ctx, errW, l.dir(), s.prefix, owner+"/"+name, posted[i]); err != nil {
+		if !client.IsNative() {
+			if err := gtClearUnrecorded(commonDir, posted[i].name); err != nil {
 				return nil, nil, err
+			}
+			if segmented.base != gtSegmentBase(pr.Head) {
+				if err := gtDropSegment(ctx, errW, l.dir(), s.prefix, owner+"/"+name, posted[i]); err != nil {
+					return nil, nil, err
+				}
 			}
 		}
 		recorded = append(recorded, segmented)
@@ -2632,8 +2684,10 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 			entries[created.Head] = stackEntry{Branch: created.Head, PR: created.PRNumber, URL: created.PRURL, HasBody: strings.TrimSpace(posted[i].body) != "", State: string(gtapi.PROpen), metaApplied: posted[i].prepared}
 		}
 	}
-	if err := gtConfirmVersions(ctx, client, owner, name, tr.Name(), recorded, s.updateDraft(tip)); err != nil {
-		return nil, nil, gtSubmitFailure(err, s)
+	if !client.IsNative() {
+		if err := gtConfirmVersions(ctx, client, owner, name, tr.Name(), recorded, s.updateDraft(tip)); err != nil {
+			return nil, nil, gtSubmitFailure(err, s)
+		}
 	}
 	gtRecordPushed(ctx, errW, owner+"/"+name, posted, entries)
 	if len(unrecordable) > 0 {
@@ -2804,7 +2858,7 @@ func gtTipOnlyPlan(plan []gtSubmitBranch, run *stackRebaseRun) ([]gtSubmitBranch
 // parent, unless its parent is resubmitted: Graphite's pre-submit
 // moves every open child of a submitted branch that the submit leaves out onto
 // a graphite-base branch.
-func gtDropUnchanged(plan []gtSubmitBranch, last map[string]gtmeta.Version, known map[string]gtapi.PullRequestInfo, unrecorded map[string]bool, tip string, update func(branch string) *bool) (submit []gtSubmitBranch, unchanged []string) {
+func gtDropUnchanged(plan []gtSubmitBranch, last map[string]gtmeta.Version, known map[string]gtapi.PullRequestInfo, unrecorded map[string]bool, tip string, update func(branch string) *bool, native bool) (submit []gtSubmitBranch, unchanged []string) {
 	resubmitted := map[string]bool{}
 	for _, b := range plan {
 		now := gtmeta.Version{HeadSha: b.head, BaseSha: b.baseSha, BaseName: b.base}
@@ -2812,10 +2866,10 @@ func gtDropUnchanged(plan []gtSubmitBranch, last map[string]gtmeta.Version, know
 		newest := pr.Newest()
 		draft := update(b.name)
 		base := b.base
-		if pr.BaseRefName == gtSegmentBase(b.name) && !unrecorded[b.name] {
+		if !native && pr.BaseRefName == gtSegmentBase(b.name) && !unrecorded[b.name] {
 			base = pr.BaseRefName
 		}
-		if b.name != tip && !resubmitted[b.base] && b.pr != 0 && open && (draft == nil || pr.IsDraft == *draft) && last[b.name] == now && pr.BaseRefName == base && newest.BaseName == base && newest.HeadSha == b.head && newest.BaseSha == b.baseSha {
+		if b.name != tip && (native || !resubmitted[b.base]) && b.pr != 0 && open && (draft == nil || pr.IsDraft == *draft) && last[b.name] == now && pr.BaseRefName == base && newest.BaseName == base && newest.HeadSha == b.head && newest.BaseSha == b.baseSha {
 			unchanged = append(unchanged, b.name)
 			continue
 		}
@@ -3564,12 +3618,22 @@ func gtSubmitPRs(plan []gtSubmitBranch, create *bool, update func(branch string)
 // both the branches that landed and the ones that did not, so a partial submit
 // is reported exactly.
 func gtSubmitFailure(err error, s gtSubmit) error {
+	if s.native {
+		if errors.Is(err, gtapi.ErrUnauthorized) || errors.Is(err, gtapi.ErrNoToken) {
+			return &gtAdvice{advice: gtStuck(s.prefix, "GitHub authentication required — run gh auth login", s.suffix), cause: err}
+		}
+		var partial *gtapi.SubmitError
+		if errors.As(err, &partial) {
+			return &gtAdvice{advice: gtStuck(s.prefix, gtSubmitSplit(partial, true), s.suffix), cause: err}
+		}
+		return fmt.Errorf("%s: native GitHub stack submission: %w", s.prefix, err)
+	}
 	var submitErr *gtapi.SubmitError
 	switch {
 	case errors.Is(err, gtapi.ErrUnauthorized) || errors.Is(err, gtapi.ErrNoToken):
 		return &gtAdvice{advice: gtStuck(s.prefix, "graphite auth required — run gt auth", s.suffix), cause: err}
 	case errors.As(err, &submitErr):
-		return &gtAdvice{advice: gtStuck(s.prefix, gtSubmitSplit(submitErr), s.suffix), cause: err}
+		return &gtAdvice{advice: gtStuck(s.prefix, gtSubmitSplit(submitErr, false), s.suffix), cause: err}
 	default:
 		return fmt.Errorf("%s: %w", s.prefix, err)
 	}
@@ -3586,7 +3650,7 @@ func gtSubmitPartial(err error, head string, landed []gtapi.SubmittedPR) error {
 	case errors.Is(err, gtapi.ErrUnauthorized) || errors.Is(err, gtapi.ErrNoToken):
 		return err
 	case errors.As(err, &submitErr):
-		return &gtapi.SubmitError{Submitted: append(landed, submitErr.Submitted...), Failed: submitErr.Failed}
+		return &gtapi.SubmitError{Cause: submitErr.Cause, Submitted: append(landed, submitErr.Submitted...), Failed: submitErr.Failed}
 	default:
 		return &gtapi.SubmitError{Submitted: landed, Failed: []gtapi.BranchSubmitError{{Head: head, Message: err.Error()}}}
 	}
@@ -3600,14 +3664,21 @@ func gtSubmitSplitFailed(e *gtapi.SubmitError) string {
 	return strings.Join(failed, ", ")
 }
 
-func gtSubmitSplit(e *gtapi.SubmitError) string {
-	problem := "graphite refused " + gtSubmitSplitFailed(e) + "; every branch is already pushed"
+func gtSubmitSplit(e *gtapi.SubmitError, native bool) string {
+	failure := "graphite refused "
+	if native {
+		failure = "native stack submission failed for "
+	}
+	problem := failure + gtSubmitSplitFailed(e) + "; every branch is already pushed"
 	if len(e.Submitted) == 0 {
 		return problem
 	}
 	landed := make([]string, 0, len(e.Submitted))
 	for _, s := range e.Submitted {
 		landed = append(landed, fmt.Sprintf("%s → PR #%d", s.Head, s.PRNumber))
+	}
+	if native {
+		return problem + "; published " + strings.Join(landed, ", ")
 	}
 	return problem + "; landed " + strings.Join(landed, ", ")
 }

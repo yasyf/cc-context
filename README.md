@@ -198,6 +198,17 @@ registers it; physical deletion continues in the per-user queue. Linux keeps
 synchronous removal. An occupied completed conflict workspace stays in place
 until inactive while stack completion succeeds.
 
+## Stack providers
+
+`ccx vcs stack`, `ccx vcs ship`, `ccx vcs status`, and `ccx vcs reviews` support native GitHub stacks and legacy Graphite stacks. Branch membership in the git common directory `gh-stack` catalog wins first, while an existing tracked Graphite branch stays on Graphite until converted. New stacks from `ccx vcs stack new` prefer native GitHub. Running `ccx vcs ship` without stack metadata or explicit config stays on the plain git lane, and `--no-stack` or `--no-gt` bypasses stacks.
+
+```sh
+git config ccx.stack github
+git config ccx.queue trunk
+```
+
+Set `git config ccx.stack` to `github` or `graphite`, and set `git config ccx.queue` to `trunk`, `github`, or `none` (legacy stacks default to Graphite). Trunk queue queries use `TRUNK_MERGE_API_KEY`; native metadata inspection needs no Trunk key. Native stacks use the GitHub API and local catalog rather than a `gh` executable, require actual server stack membership without synthetic head bumps, share lightweight isolated replay and tip-only unchanged-parent protection, and never fall back on auth or network errors.
+
 ## Configuration
 
 `.ccx.toml` declares generated paths and their commands under `[[generated]]`.

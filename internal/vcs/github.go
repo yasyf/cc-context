@@ -43,6 +43,7 @@ type Repo struct {
 	ViewerLogin      string    `json:"viewer_login"`
 	ViewerPermission string    `json:"viewer_permission"`
 	Affiliated       bool      `json:"affiliated"`
+	Installation     bool      `json:"installation,omitempty"`
 	FetchedAt        time.Time `json:"fetched_at"`
 }
 
@@ -74,7 +75,7 @@ func (r Repo) Writable() bool {
 // workflow on: any private repo they can read, one they administer or maintain,
 // or one owned by them or an organization they belong to.
 func (r Repo) Mine() bool {
-	return r.IsPrivate || r.Writable() || r.Affiliated
+	return r.Installation || r.IsPrivate || r.Writable() || r.Affiliated
 }
 
 // AffiliationKnown reports whether Affiliated answers the membership question.
@@ -100,7 +101,7 @@ func LookupRepo(ctx context.Context, root render.Dir, refresh bool) (Repo, error
 		return Repo{}, err
 	}
 	if !refresh {
-		if repo, ok := readRepo(path); ok {
+		if repo, ok := readRepo(path); ok && repo.Installation == installationToken(ctx) {
 			return repo, nil
 		}
 	}
@@ -111,7 +112,7 @@ func LookupRepo(ctx context.Context, root render.Dir, refresh bool) (Repo, error
 	var repo Repo
 	err = cache.WithLock(ctx, filepath.Dir(path), "repo", func() error {
 		if !refresh {
-			if cached, ok := readRepo(path); ok {
+			if cached, ok := readRepo(path); ok && cached.Installation == installationToken(ctx) {
 				repo = cached
 				return nil
 			}
@@ -139,12 +140,24 @@ func RepoCachePath(ctx context.Context, root string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	sum := sha256.Sum256([]byte(c.RepoKey()))
+	key := c.RepoKey()
+	if installationToken(ctx) {
+		key += "\x00installation"
+	}
+	sum := sha256.Sum256([]byte(key))
 	dir, err := cache.Dir(ctx, "github", hex.EncodeToString(sum[:]))
 	if err != nil {
 		return "", err
 	}
 	return filepath.Join(dir, "repo.json"), nil
+}
+
+func installationToken(ctx context.Context) bool {
+	token := render.Getenv(ctx, "GH_TOKEN")
+	if token == "" {
+		token = render.Getenv(ctx, "GITHUB_TOKEN")
+	}
+	return strings.HasPrefix(token, "ghs_")
 }
 
 func fetchRepo(ctx context.Context, root render.Dir) (Repo, error) {
@@ -171,6 +184,10 @@ func fetchRepo(ctx context.Context, root render.Dir) (Repo, error) {
 		IsPrivate:        payload.Private,
 		ViewerPermission: payload.Permissions.role(),
 		FetchedAt:        time.Now(),
+	}
+	if installationToken(ctx) {
+		repo.Installation = true
+		return repo, nil
 	}
 	var v viewer
 	if repo.AffiliationKnown() && payload.Owner.Type == "Organization" {
