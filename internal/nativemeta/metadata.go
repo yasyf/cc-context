@@ -189,7 +189,7 @@ func Init(ctx context.Context, commonDir, trunk string) error {
 
 // Read combines the native catalog with current local branch heads.
 func Read(ctx context.Context, commonDir string) (State, error) {
-	s, _, err := readState(ctx, commonDir, false)
+	s, _, err := readState(ctx, commonDir, false, false)
 	return s, err
 }
 
@@ -201,7 +201,18 @@ func ReadOrigin(ctx context.Context, commonDir string) (State, error) {
 
 // ReadOriginOrphans also preserves children whose recorded parents no longer have refs.
 func ReadOriginOrphans(ctx context.Context, commonDir string) (State, []Orphan, error) {
-	return readState(ctx, commonDir, true)
+	return readState(ctx, commonDir, true, false)
+}
+
+// ReadPlanned narrows Read to the stacks on the common trunk, the one forest a stack planner works.
+func ReadPlanned(ctx context.Context, commonDir string) (State, error) {
+	s, _, err := readState(ctx, commonDir, false, true)
+	return s, err
+}
+
+// ReadOriginPlannedOrphans narrows ReadOriginOrphans to the stacks on the common trunk.
+func ReadOriginPlannedOrphans(ctx context.Context, commonDir string) (State, []Orphan, error) {
+	return readState(ctx, commonDir, true, true)
 }
 
 // ReadOriginOrphansWithMembers binds live native state and catalog ownership to one metadata read.
@@ -217,16 +228,16 @@ func ReadOriginOrphansWithMembers(ctx context.Context, commonDir string) (State,
 		}
 	}
 	slices.Sort(names)
-	state, orphans, err := readRowsState(ctx, commonDir, true, r, receipts)
+	state, orphans, err := readRowsState(ctx, commonDir, true, false, r, receipts)
 	return state, orphans, names, err
 }
 
-func readState(ctx context.Context, commonDir string, remote bool) (State, []Orphan, error) {
+func readState(ctx context.Context, commonDir string, remote, planned bool) (State, []Orphan, error) {
 	r, receipts, err := loadRows(commonDir)
 	if err != nil {
 		return nil, nil, err
 	}
-	return readRowsState(ctx, commonDir, remote, r, receipts)
+	return readRowsState(ctx, commonDir, remote, planned, r, receipts)
 }
 
 func loadRows(commonDir string) ([]branchRow, receipts, error) {
@@ -238,13 +249,17 @@ func loadRows(commonDir string) ([]branchRow, receipts, error) {
 	return rows, r, err
 }
 
-func readRowsState(ctx context.Context, commonDir string, remote bool, r []branchRow, receipts receipts) (State, []Orphan, error) {
-	if len(r) == 0 {
-		trunk, err := ReadTrunk(ctx, commonDir)
+func readRowsState(ctx context.Context, commonDir string, remote, planned bool, r []branchRow, receipts receipts) (State, []Orphan, error) {
+	if planned || len(r) == 0 {
+		trunk, err := trunkOf(ctx, commonDir, r)
 		if err != nil {
 			return nil, nil, err
 		}
-		r = []branchRow{{branch: trunk, owner: -1}}
+		byName := index(r)
+		r = slices.DeleteFunc(slices.Clone(r), func(row branchRow) bool { return rootOf(byName, row.branch) != trunk })
+		if len(r) == 0 {
+			r = []branchRow{{branch: trunk, owner: -1}}
+		}
 	}
 	heads, err := readHeads(ctx, commonDir, r, remote)
 	if err != nil {
@@ -318,34 +333,72 @@ func readHeads(ctx context.Context, commonDir string, rows []branchRow, remote b
 
 // ReadTrunk resolves a catalog trunk or the repository default before native initialization.
 func ReadTrunk(ctx context.Context, commonDir string) (string, error) {
-	c, _, err := load(commonDir)
+	r, _, err := loadRows(commonDir)
 	if err != nil {
 		return "", err
 	}
-	trunks := map[string]bool{}
-	branches := map[string]bool{}
-	for _, s := range c.Stacks {
-		trunks[s.Trunk.Branch] = true
-		for _, b := range s.Branches {
-			branches[b.Branch] = true
+	return trunkOf(ctx, commonDir, r)
+}
+
+func trunkOf(ctx context.Context, commonDir string, r []branchRow) (string, error) {
+	var roots []string
+	for _, row := range r {
+		if row.parent == "" {
+			roots = append(roots, row.branch)
 		}
 	}
-	for b := range branches {
-		delete(trunks, b)
-	}
-	if len(trunks) == 1 {
-		for trunk := range trunks {
-			return trunk, nil
-		}
+	if len(roots) == 1 {
+		return roots[0], nil
 	}
 	out, err := render.RunCLI(ctx, render.Dir(commonDir), "git", []string{"--git-dir=" + commonDir, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"})
 	if err == nil {
 		trunk := strings.TrimPrefix(strings.TrimSpace(out), "origin/")
-		if len(trunks) == 0 || trunks[trunk] {
+		if len(roots) == 0 || slices.Contains(roots, trunk) {
 			return trunk, nil
 		}
 	}
 	return "", fmt.Errorf("native stack catalog has no unambiguous trunk; initialize it with gh stack init --base <branch>")
+}
+
+func index(r []branchRow) map[string]branchRow {
+	byName := make(map[string]branchRow, len(r))
+	for _, row := range r {
+		byName[row.branch] = row
+	}
+	return byName
+}
+
+func rootOf(byName map[string]branchRow, branch string) string {
+	for range len(byName) {
+		parent := byName[branch].parent
+		if parent == "" {
+			return branch
+		}
+		branch = parent
+	}
+	return ""
+}
+
+func plannedOn(ctx context.Context, commonDir string, byName map[string]branchRow, branches ...string) error {
+	if len(byName) == 0 {
+		return nil
+	}
+	trunk, err := trunkOf(ctx, commonDir, slices.Collect(maps.Values(byName)))
+	if err != nil {
+		return err
+	}
+	for _, branch := range branches {
+		if _, tracked := byName[branch]; !tracked {
+			if branch == trunk {
+				continue
+			}
+			return fmt.Errorf("%s is in no native stack on %s; ship it onto its own parent first with ccx vcs ship --parent <branch>", branch, trunk)
+		}
+		if root := rootOf(byName, branch); root != trunk {
+			return fmt.Errorf("%s belongs to the native stack on %s, and ccx plans only stacks on %s", branch, root, trunk)
+		}
+	}
+	return nil
 }
 
 // Rows includes stale catalog entries that normal state reads omit.
@@ -454,13 +507,17 @@ func adoptRoot(ctx context.Context, commonDir, branch, parent, base, head string
 		if err != nil {
 			return false, false, err
 		}
-		byName := map[string]branchRow{}
-		for _, row := range all {
-			byName[row.branch] = row
-		}
+		byName := index(all)
 		row, exists := byName[branch]
 		if exists && row.parent == "" {
 			return false, false, fmt.Errorf("cannot adopt native stack trunk %s", branch)
+		}
+		planned := []string{parent}
+		if exists {
+			planned = append(planned, branch)
+		}
+		if err := plannedOn(ctx, commonDir, byName, planned...); err != nil {
+			return false, false, err
 		}
 		row.branch = branch
 		row.parent = parent
@@ -516,10 +573,7 @@ func Reparent(ctx context.Context, commonDir string, moves map[string]string) er
 		if err != nil {
 			return false, false, err
 		}
-		byName := map[string]branchRow{}
-		for _, row := range all {
-			byName[row.branch] = row
-		}
+		byName := index(all)
 		for branch, parent := range moves {
 			row, ok := byName[branch]
 			if !ok || row.parent == "" {
@@ -527,6 +581,9 @@ func Reparent(ctx context.Context, commonDir string, moves map[string]string) er
 			}
 			if _, ok := byName[parent]; !ok {
 				return false, false, fmt.Errorf("native stack does not track parent %s", parent)
+			}
+			if err := plannedOn(ctx, commonDir, byName, branch, parent); err != nil {
+				return false, false, err
 			}
 			row.parent = parent
 			byName[branch] = row

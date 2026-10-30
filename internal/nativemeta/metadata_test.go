@@ -125,6 +125,57 @@ func TestNativeReparentMovesAChainAndRetainsRecordedBase(t *testing.T) {
 	}
 }
 
+func TestNativeAdoptRefusesToMintATrunkFromAnUntrackedParent(t *testing.T) {
+	dir := repo(t)
+	common := filepath.Join(dir, ".git")
+	main := git(t, dir, "rev-parse", "main")
+	for _, branch := range []string{"feature", "untracked", "child"} {
+		git(t, dir, "branch", branch)
+	}
+	writeCatalog(t, common, catalog{SchemaVersion: 1, Stacks: []stack{{Trunk: branchRef{Branch: "main", Head: main}, Branches: []branchRef{{Branch: "feature", Base: main}}}}})
+	before, err := os.ReadFile(filepath.Join(common, "gh-stack"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = AdoptRoot(t.Context(), common, "child", "untracked", main, main)
+	if err == nil || !strings.Contains(err.Error(), "untracked is in no native stack on main") {
+		t.Fatalf("adopt onto untracked parent = %v", err)
+	}
+	after, err := os.ReadFile(filepath.Join(common, "gh-stack"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatal("refused adoption changed native catalog")
+	}
+	if err := AdoptRoot(t.Context(), common, "child", "feature", main, main); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestNativeWritesLeaveAStackOnAnotherTrunkAlone(t *testing.T) {
+	dir := repo(t)
+	common := filepath.Join(dir, ".git")
+	main := git(t, dir, "rev-parse", "main")
+	for _, branch := range []string{"feature", "base", "child"} {
+		git(t, dir, "branch", branch)
+	}
+	writeCatalog(t, common, catalog{SchemaVersion: 1, Stacks: []stack{{Trunk: branchRef{Branch: "main", Head: main}, Branches: []branchRef{{Branch: "feature", Base: main}}}, {Trunk: branchRef{Branch: "base", Head: main}, Branches: []branchRef{{Branch: "child", Base: main}}}}})
+	if err := AdoptRoot(t.Context(), common, "child", "main", main, main); err == nil || !strings.Contains(err.Error(), "child belongs to the native stack on base") {
+		t.Fatalf("adopt across trunks = %v", err)
+	}
+	if err := Reparent(t.Context(), common, map[string]string{"feature": "child"}); err == nil || !strings.Contains(err.Error(), "child belongs to the native stack on base") {
+		t.Fatalf("reparent onto another trunk = %v", err)
+	}
+	state, err := ReadPlanned(t.Context(), common)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := state["child"]; ok || !state["main"].Trunk || state["base"].Trunk {
+		t.Fatalf("planned state = %+v", state)
+	}
+}
+
 func TestSubmissionReceiptsAreAllOrNothing(t *testing.T) {
 	dir := repo(t)
 	common := filepath.Join(dir, ".git")

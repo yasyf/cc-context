@@ -222,34 +222,35 @@ func TestLegacyForestLeavesOutOnlyTheStackOnANativeParent(t *testing.T) {
 	}
 }
 
-func TestForcedNativePlannerRefusesMultipleTrunksWithoutMutation(t *testing.T) {
+func TestForcedNativePlannerReadsOnlyTheCommonTrunkForest(t *testing.T) {
 	f := vcstest.Repo(t, vcstest.Remote())
 	common := filepath.Join(f.Dir, ".git")
-	f.Out(t, "git", "branch", "release")
-	for _, trunk := range []string{"main", "release"} {
-		if err := nativemeta.Init(f.Context(), common, trunk); err != nil {
-			t.Fatal(err)
-		}
+	main := strings.TrimSpace(f.Out(t, "git", "rev-parse", "main"))
+	for _, branch := range []string{"release", "feature", "fix"} {
+		f.Out(t, "git", "branch", branch)
 	}
-	before, err := os.ReadFile(filepath.Join(common, "gh-stack"))
+	catalog := fmt.Sprintf(`{"schemaVersion":1,"stacks":[{"trunk":{"branch":"main"},"branches":[{"branch":"feature","base":%[1]q}]},{"trunk":{"branch":"release"},"branches":[{"branch":"fix","base":%[1]q}]}]}`, main)
+	if err := os.WriteFile(filepath.Join(common, "gh-stack"), []byte(catalog), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	state, err := gtmeta.Read(gtmeta.WithProvider(f.Context(), "github"), common)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := gtmeta.Read(gtmeta.WithProvider(f.Context(), "github"), common); err == nil || !strings.Contains(err.Error(), "main, release") {
-		t.Fatalf("multiple-trunk planning = %v", err)
+	if !state["main"].Trunk || state["feature"].Parents[0].Ref != "main" {
+		t.Fatalf("planner lost the common trunk's stack: %+v", state)
 	}
-	after, err := os.ReadFile(filepath.Join(common, "gh-stack"))
+	if _, ok := state["release"]; ok {
+		t.Fatalf("planner read a second trunk: %+v", state)
+	}
+	if _, ok := state["fix"]; ok {
+		t.Fatalf("planner read a stack on another trunk: %+v", state)
+	}
+	state, err = gtmeta.Read(f.Context(), common)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(after) != string(before) {
-		t.Fatal("refused multi-trunk read changed catalog")
-	}
-	state, err := gtmeta.Read(f.Context(), common)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !state["main"].Trunk || !state["release"].Trunk {
+	if !state["main"].Trunk || !state["release"].Trunk || state["fix"].Parents[0].Ref != "release" {
 		t.Fatalf("generic inspection lost actual trunks: %+v", state)
 	}
 }
