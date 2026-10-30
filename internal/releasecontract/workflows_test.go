@@ -36,6 +36,9 @@ func TestPostreleaseWorkflows(t *testing.T) {
 			}
 		}
 	}
+	if full, ubuntu := strings.Count(ci, `'["ubuntu-latest", "macos-latest"]'`), strings.Count(ci, "(github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch') && '[\"ubuntu-latest\"]'"); full != ubuntu {
+		t.Errorf("CI runs %d of its %d macOS matrices on the post-release dispatch, which waits behind every PR for a macOS runner; want none", full-ubuntu, full)
+	}
 	if checkouts, refs := strings.Count(ci, "uses: actions/checkout@v7"), strings.Count(ci, "ref: ${{ inputs.commit || github.sha }}"); checkouts != refs {
 		t.Errorf("CI exact checkout refs = %d, want %d", refs, checkouts)
 	}
