@@ -615,6 +615,30 @@ func TestCleanupWorktreeRmPathTargets(t *testing.T) {
 	}
 }
 
+func TestCleanupWorktreeRmPathReportsATreeAlreadyQueuedForDeletion(t *testing.T) {
+	f := vcstest.Repo(t)
+	f.Isolate(t)
+	fixtureCleanup(t, f)
+	tree := filepath.Join(filepath.Dir(f.Dir), "checkouts", "retiring")
+	addLinkedWorktree(t, f.Env(), f.Dir, tree, "")
+	admin := strings.TrimSpace(strings.TrimPrefix(readFileStr(t, filepath.Join(tree, ".git")), "gitdir:"))
+	for name, body := range map[string]string{"locked": "ccx cleanup job-7\n", "gitdir": ""} {
+		if err := os.WriteFile(filepath.Join(admin, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	out, err := runWorktreeCmd(t, f, "rm", "--path", tree)
+
+	want := "worktree rm: " + tree + " is already queued for deletion as cleanup job job-7: git no longer lists it, and its tree goes when the deletion queue runs; `ccx vcs cleanup status job-7` shows where it stands\n"
+	if err != nil || out != want {
+		t.Fatalf("rm --path = %q, %v; want %q", out, err, want)
+	}
+	if readFileStr(t, filepath.Join(tree, "f.txt")) == "" {
+		t.Errorf("%s/f.txt is empty, want the queued tree left for the deletion queue", tree)
+	}
+}
+
 func TestCleanupWorktreeRmPathRemovesAWorkingCopyOfAnotherRepository(t *testing.T) {
 	for _, tt := range []struct {
 		name    string

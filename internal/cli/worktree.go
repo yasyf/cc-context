@@ -19,6 +19,7 @@ import (
 
 	"github.com/yasyf/cc-context/internal/cleanup"
 	"github.com/yasyf/cc-context/internal/cleanup/native"
+	"github.com/yasyf/cc-context/internal/cleanup/relocate"
 	"github.com/yasyf/cc-context/internal/gtmeta"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcs"
@@ -965,6 +966,10 @@ func runWorktreeRmPath(cmd *cobra.Command, opts worktreeRmOptions) error {
 		if wt.Path == path {
 			return removeGitWorktree(ctx, cmd, l, list[i], opts)
 		}
+	}
+	if job, ok := relocate.RetiringJob(target.GitDir); ok {
+		_, err := fmt.Fprintf(cmd.OutOrStdout(), "worktree rm: %s is already queued for deletion as cleanup job %s: git no longer lists it, and its tree goes when the deletion queue runs; `ccx vcs cleanup status %s` shows where it stands\n", path, job, job)
+		return err
 	}
 	return fmt.Errorf("worktree rm: this repository registers no worktree at %s: %w", path, ErrNotFound)
 }
