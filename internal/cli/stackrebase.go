@@ -157,6 +157,7 @@ type stackRebaseBranch struct {
 	LocalOnly   bool              `json:"local_only,omitempty"`
 	Moved       bool              `json:"moved,omitempty"`
 	Bump        bool              `json:"bump,omitempty"`
+	Evicts      bool              `json:"evicts,omitempty"`
 	PR          *stackPR          `json:"pr,omitempty"`
 	NewBase     string            `json:"new_base,omitempty"`
 	NewHead     string            `json:"new_head,omitempty"`
@@ -278,11 +279,14 @@ type stackRebaseOpts struct {
 	above       string
 	bump        []string
 	keepHeld    bool
+	evictQueued bool
 	recorded    map[string]stackRecordedParent
 	target      *shipTarget
 }
 
 const stackDropCommitsUsage = "publish a branch whose local head drops commits its published head carries"
+
+const stackEvictQueuedUsage = "move and push a branch whose pull request sits in the merge queue, evicting it from the queue, instead of keeping it at its published head"
 
 const stackToUsage = "stop at this branch: leave every branch stacked above it out of the run"
 
@@ -417,6 +421,7 @@ branch with a pull request sits on is refused before anything moves.`,
 	cmd.Flags().BoolVar(&o.dryRun, "dry-run", false, "print the plan and move nothing")
 	cmd.Flags().BoolVar(&o.noPush, "no-push", false, "rewrite the local stack and gt's record, but push nothing")
 	cmd.Flags().BoolVar(&o.dropCommits, "drop-commits", false, stackDropCommitsUsage)
+	cmd.Flags().BoolVar(&o.evictQueued, "evict-queued", false, stackEvictQueuedUsage)
 	cmd.Flags().BoolVar(&o.allLanes, "all-lanes", false, "rebase every branch gt tracks, not only this lane's")
 	cmd.Flags().StringArrayVar(&o.include, "include", nil, "take this branch of another lane into the run instead of keeping it at its published head (repeatable)")
 	cmd.Flags().StringVar(&o.to, "to", "", stackToUsage)
@@ -1535,10 +1540,12 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 				return nil, err
 			}
 		}
+		evicts := queued && o.evictQueued
+		queued = queued && !evicts
 		_, named := overrides[name]
 		switch {
 		case queued && (named || (name == o.tip && b.Local != b.Remote)):
-			return nil, fmt.Errorf("stack rebase: %s is in the merge queue as %s, and moving it would evict it — take it out of the queue first", name, b.PR)
+			return nil, fmt.Errorf("stack rebase: %s is in the merge queue as %s, and moving it would evict it — take it out of the queue first, or pass --evict-queued to move it anyway", name, b.PR)
 		case slices.Contains(o.pinned, name):
 			if !stackPinPublished(b) {
 				unpushed = append(unpushed, name)
@@ -1548,7 +1555,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 			b.Kept = o.noPush || stackPinPublished(b)
 			switch {
 			case queued:
-				b.KeptFor = "in the merge queue, so a move would evict it"
+				b.KeptFor = "in the merge queue, so a move would evict it; --evict-queued moves it"
 			case o.noPush && heldBelow[name].holder != "":
 				b.KeptFor = "checked out in " + heldBelow[name].holder
 			default:
@@ -1564,6 +1571,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 			}
 		}
 		kept[name] = b.Kept
+		b.Evicts = evicts && !b.Kept
 	}
 	ordered := make([]*stackRebaseBranch, len(order))
 	for i, name := range order {
@@ -3492,6 +3500,9 @@ func stackPlanLines(run *stackRebaseRun) []string {
 			}
 			if b.reopens() && !run.NoPush {
 				fields = append(fields, "reopen (base "+b.PR.Base+" deleted)")
+			}
+			if b.Evicts && !run.NoPush {
+				fields = append(fields, "evicted from the merge queue")
 			}
 		}
 		if b.PR != nil {

@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`--evict-queued` on `ccx vcs stack submit`, `stack rebase`, and `ship`**
+  moves and pushes a branch whose pull request sits in Graphite's merge
+  queue, evicting it, where the run would otherwise keep it at its published
+  head or refuse. The plan names each such branch "evicted from the merge
+  queue", and every queue refusal and kept line names the flag. Use it when
+  the queue is down or ruled out.
 - **`ccx vcs stack repair-published-child --parent <trunk>`** records trunk
   as the checked-out branch's gt parent when its recorded parent is gone and
   its open pull request is already based on trunk. It needs no publication
