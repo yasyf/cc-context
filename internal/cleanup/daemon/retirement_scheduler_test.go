@@ -2,7 +2,10 @@ package daemon
 
 import (
 	"context"
+	"errors"
+	"slices"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/yasyf/cc-context/internal/cleanup"
@@ -65,4 +68,157 @@ func TestMaintenanceHoldExcludesRetirementUntilReleasedIntoPause(t *testing.T) {
 			t.Fatalf("hold state = %+v, %v; want ordinary pause", state, err)
 		}
 	})
+}
+
+func TestPausedRetirementUsesDefaultBandAndRestoresBackground(t *testing.T) {
+	for _, blocked := range []bool{false, true} {
+		name := "retired"
+		if blocked {
+			name = "blocked"
+		}
+		t.Run(name, func(t *testing.T) {
+			bubble(t, paced(), func(t *testing.T, h *harness) {
+				job := h.seed("q", 1, cleanup.PhaseQueued)
+				h.relocator.scripts["retire:q"] = func(job *cleanup.Job) {
+					if !h.band.inForeground() {
+						t.Error("paused retirement ran in the background band")
+					}
+					if blocked {
+						job.Block(h.clock.Now(), "activity", "active session")
+					} else {
+						job.Retirement = cleanup.RetirementComplete
+					}
+				}
+				if err := h.journal.SaveSwitch(cleanup.Switch{Paused: true}); err != nil {
+					t.Fatal(err)
+				}
+				h.start()
+				h.expectEvents("retire:q@queued")
+				if h.band.inForeground() {
+					t.Error("retirement left the worker in the default band")
+				}
+				if got, want := h.band.takeSwitches(), []string{"foreground", "background"}; !slices.Equal(got, want) {
+					t.Errorf("band switches = %v, want %v", got, want)
+				}
+				got := h.status(job.ID)
+				if got.Phase != cleanup.PhaseQueued || (got.Blocked != nil) != blocked {
+					t.Errorf("retired job = %+v, want queued with blocked=%t", got, blocked)
+				}
+				if state, err := h.engine.HoldState(context.Background()); err != nil || !state.Paused {
+					t.Errorf("hold state = %+v, %v; want still paused", state, err)
+				}
+			})
+		})
+	}
+}
+
+func TestResumeAfterPausedRetirementDeletesInBackground(t *testing.T) {
+	bubble(t, paced(), func(t *testing.T, h *harness) {
+		h.seed("q", 1, cleanup.PhaseQueued)
+		h.seed("p", 2, cleanup.PhaseUnregistered)
+		h.relocator.scripts["retire:q"] = blockWith(h.clock, "activity", "active session")
+		gate, entered := make(chan struct{}), make(chan struct{}, 1)
+		h.deleter.put("p", &payload{entries: 200, gate: gate, entered: entered})
+		if err := h.journal.SaveSwitch(cleanup.Switch{Paused: true}); err != nil {
+			t.Fatal(err)
+		}
+		h.start()
+		h.expectEvents("retire:q@queued")
+		if got, want := h.band.takeSwitches(), []string{"foreground", "background"}; !slices.Equal(got, want) {
+			t.Errorf("retirement switches = %v, want %v", got, want)
+		}
+		if err := h.engine.Resume(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		<-entered
+		if h.band.inForeground() {
+			t.Error("physical deletion after retirement ran in the default band")
+		}
+		gate <- struct{}{}
+		synctest.Wait()
+		h.expectEvents("sample", "admit:p", "open:p", "step:p")
+		if got, want := h.band.takeSwitches(), []string{"foreground", "background"}; !slices.Equal(got, want) {
+			t.Errorf("resume switches = %v, want %v", got, want)
+		}
+	})
+}
+
+type retirementFunc struct {
+	cleanup.Relocator
+	run func(context.Context, *cleanup.Job) error
+}
+
+func (r retirementFunc) Retire(ctx context.Context, job *cleanup.Job) error {
+	return r.run(ctx, job)
+}
+
+func TestPausedRetirementBandFailuresStopBeforePhysicalDeletion(t *testing.T) {
+	for _, failure := range []string{"leave", "retire", "restore", "cancel", "cancel-restore"} {
+		t.Run(failure, func(t *testing.T) {
+			bubble(t, paced(), func(t *testing.T, h *harness) {
+				h.seed("q", 1, cleanup.PhaseQueued)
+				h.seed("p", 2, cleanup.PhaseUnregistered)
+				h.deleter.put("p", &payload{entries: 100})
+				if err := h.journal.SaveSwitch(cleanup.Switch{Paused: true}); err != nil {
+					t.Fatal(err)
+				}
+				boom := errors.New("band or retirement failure")
+				if failure == "leave" {
+					h.band.refuseLeave = boom
+				}
+				if failure == "restore" || failure == "cancel-restore" {
+					h.band.refuseReturn = boom
+				}
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				engine := h.build()
+				called := false
+				engine.relocator = retirementFunc{Relocator: h.relocator, run: func(ctx context.Context, job *cleanup.Job) error {
+					called = true
+					if failure == "cancel" || failure == "cancel-restore" {
+						cancel()
+						return ctx.Err()
+					}
+					if failure == "retire" {
+						return boom
+					}
+					return h.relocator.Retire(ctx, job)
+				}}
+				running := make(chan error, 1)
+				go func() { running <- engine.Run(ctx) }()
+				err := <-running
+				if failure == "cancel" {
+					if err != nil {
+						t.Errorf("cancelled Run() = %v, want nil", err)
+					}
+				} else if !errors.Is(err, boom) {
+					t.Errorf("Run() = %v, want %v", err, boom)
+				}
+				if failure == "cancel-restore" && !errors.Is(err, context.Canceled) {
+					t.Errorf("Run() = %v, want the cancellation retained with the restoration error", err)
+				}
+				if called != (failure != "leave") {
+					t.Errorf("Retire called = %t for failure %s", called, failure)
+				}
+				if h.band.inForeground() != (failure == "restore" || failure == "cancel-restore") {
+					t.Errorf("foreground = %t for failure %s", h.band.inForeground(), failure)
+				}
+				want := []string{"foreground", "background"}
+				switch failure {
+				case "leave":
+					want = nil
+				case "restore", "cancel-restore":
+					want = []string{"foreground"}
+				}
+				if got := h.band.takeSwitches(); !slices.Equal(got, want) {
+					t.Errorf("band switches = %v, want %v", got, want)
+				}
+				if failure == "restore" {
+					h.expectEvents("retire:q@queued")
+				} else {
+					h.expectEvents()
+				}
+			})
+		})
+	}
 }

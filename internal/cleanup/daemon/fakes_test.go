@@ -508,10 +508,11 @@ type fakeParent struct {
 }
 
 type fakeBand struct {
-	mu          sync.Mutex
-	foreground  bool
-	switches    []string
-	refuseLeave error
+	mu           sync.Mutex
+	foreground   bool
+	switches     []string
+	refuseLeave  error
+	refuseReturn error
 }
 
 func (b *fakeBand) Foreground() error {
@@ -528,6 +529,9 @@ func (b *fakeBand) Foreground() error {
 func (b *fakeBand) Background() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.refuseReturn != nil {
+		return b.refuseReturn
+	}
 	b.foreground = false
 	b.switches = append(b.switches, "background")
 	return nil

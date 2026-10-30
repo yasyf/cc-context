@@ -131,8 +131,8 @@ type Config struct {
 	Relocator cleanup.Relocator
 	Deleter   cleanup.Deleter
 	CPU       cleanup.CPUSampler
-	// Band runs each command in the default band and the worker's own passes
-	// in the background band.
+	// Band runs commands and paused registration retirement in the default
+	// band, and physical deletion in the background band.
 	Band    cleanup.Band
 	Version string
 	// Parent names a client's parent process and its arguments, logged with
@@ -864,10 +864,10 @@ func (e *Engine) advance(ctx context.Context, job cleanup.Job) (cleanup.Job, err
 	}
 	step := e.relocator.Advance
 	if e.paused {
-		step = e.relocator.Retire
+		step = e.retire
 	}
 	err := step(ctx, &job)
-	if err != nil && !cancelled(ctx, err) {
+	if err != nil && (isFatal(err) || !cancelled(ctx, err)) {
 		return job, &fatalError{fmt.Errorf("cleanup daemon: advance job %s: %w", job.ID, err)}
 	}
 	e.put(job)
@@ -885,6 +885,17 @@ func (e *Engine) advance(ctx context.Context, job cleanup.Job) (cleanup.Job, err
 		return job, &fatalError{fmt.Errorf("cleanup daemon: the relocator left job %s runnable at %s", job.ID, job.Phase)}
 	}
 	return job, nil
+}
+
+func (e *Engine) retire(ctx context.Context, job *cleanup.Job) error {
+	if err := e.band.Foreground(); err != nil {
+		return fmt.Errorf("cleanup daemon: leave the background band for retirement: %w", err)
+	}
+	err := e.relocator.Retire(ctx, job)
+	if bandErr := e.band.Background(); bandErr != nil {
+		return &fatalError{errors.Join(err, fmt.Errorf("cleanup daemon: restore the background band after retirement: %w", bandErr))}
+	}
+	return err
 }
 
 func (e *Engine) slice(ctx context.Context, job cleanup.Job) error {

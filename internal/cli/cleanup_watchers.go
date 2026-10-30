@@ -184,11 +184,7 @@ func (w cleanupWatchers) watchman(ctx context.Context, command string) (watchman
 }
 
 func (w cleanupWatchers) Retire(ctx context.Context, worktree string) error {
-	plan, err := cleanupwatch.Plan(ctx, w.deps, worktree)
-	if err != nil {
-		return fmt.Errorf("plan the watcher retirement of %s: %w", worktree, err)
-	}
-	out, err := cleanupwatch.Retire(ctx, w.deps, plan)
+	out, err := cleanupwatch.RetireCurrent(ctx, w.deps, worktree)
 	done := retired(out)
 	switch {
 	case err != nil && done != "":

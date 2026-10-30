@@ -165,7 +165,26 @@ func Retire(ctx context.Context, d Deps, p Retirement) (Outcome, error) {
 	if drift := planDrift(p, fresh); len(drift) > 0 {
 		return Outcome{}, refused(drift)
 	}
-	pin := identity{Path: p.Worktree, Dev: p.Dev, Ino: p.Ino}
+	return retire(ctx, d, fresh)
+}
+
+// RetireCurrent plans and retires one exact worktree without retaining a plan.
+func RetireCurrent(ctx context.Context, d Deps, worktree string) (Outcome, error) {
+	if d.Guard == nil {
+		return Outcome{}, ErrNoGuard
+	}
+	fresh, err := Plan(ctx, d, worktree)
+	if err != nil {
+		return Outcome{}, err
+	}
+	return retire(ctx, d, fresh)
+}
+
+func retire(ctx context.Context, d Deps, fresh Retirement) (Outcome, error) {
+	if fresh.Refused() {
+		return Outcome{}, refused(fresh.Blockers)
+	}
+	pin := identity{Path: fresh.Worktree, Dev: fresh.Dev, Ino: fresh.Ino}
 	targets := rootPaths(fresh.Roots)
 	var out Outcome
 	for _, root := range fresh.Roots {
@@ -182,7 +201,7 @@ func Retire(ctx context.Context, d Deps, p Retirement) (Outcome, error) {
 		return out, err
 	}
 	out.Stopped = stopped
-	if err := d.verifyNoRootsWithin(ctx, p.Worktree); err != nil {
+	if err := d.verifyNoRootsWithin(ctx, fresh.Worktree); err != nil {
 		return out, err
 	}
 	return out, nil

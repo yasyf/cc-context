@@ -656,7 +656,7 @@ func TestCleanupWatchersRetire(t *testing.T) {
 			name:    "a missing worktree fails to plan",
 			missing: true,
 			wantErr: fs.ErrNotExist,
-			wantMsg: "plan the watcher retirement of <base>/wt/gone: ",
+			wantMsg: "retire the watchers of <base>/wt/gone: ",
 		},
 	}
 	for _, tt := range tests {
@@ -796,5 +796,23 @@ func TestCleanupWatchersCmd(t *testing.T) {
 				t.Errorf("watchers %q deleted %q and stopped %d times, want %q and the fsmonitor owner untouched", tt.args, deleted, stops, roots)
 			}
 		})
+	}
+}
+
+func TestCleanupWatchersRetireDoesNotPrepareTwice(t *testing.T) {
+	world := newWatcherWorld(t)
+	if err := (cleanupWatchers{deps: world.deps(world.guard)}).Retire(t.Context(), world.wt); err != nil {
+		t.Fatal(err)
+	}
+	world.mu.Lock()
+	defer world.mu.Unlock()
+	calls := 0
+	for _, call := range world.calls {
+		if call == "watchman --no-spawn --no-pretty debug-status" {
+			calls++
+		}
+	}
+	if calls != 2 {
+		t.Fatalf("global Watchman diagnostics = %d, want 2: one plan and one final consumer check", calls)
 	}
 }
