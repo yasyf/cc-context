@@ -1019,15 +1019,53 @@ func gtRetrackDiverged(ctx context.Context, errW io.Writer, c *gtCache, parent s
 	if !diverged || recorded == "" {
 		return "", nil
 	}
-	r, runErr := gtRun(ctx, c.dir, []string{"track", parent, "--parent", recorded, "--no-interactive"}, errW)
+	onto, err := gtTrackableParent(ctx, c, commonDir, parent, recorded)
+	if err != nil {
+		return "", err
+	}
+	r, runErr := gtRun(ctx, c.dir, []string{"track", parent, "--parent", onto, "--no-interactive"}, errW)
 	c.forget()
 	if err := gtReport(ctx, errW, r); err != nil {
 		return "", err
 	}
 	if runErr != nil {
-		return "", &gtAdvice{advice: fmt.Sprintf("ship: %s has diverged from Graphite's record and gt track could not re-track it onto %s — rebase %s onto %s, then ship again", parent, recorded, parent, recorded), cause: runErr}
+		return "", &gtAdvice{advice: fmt.Sprintf("ship: %s has diverged from Graphite's record and gt track could not re-track it onto %s — rebase %s onto %s, then ship again", parent, onto, parent, onto), cause: runErr}
+	}
+	if onto != recorded {
+		return "re-tracked " + parent + " onto " + onto + ", since its recorded parent " + recorded + " is no longer in its history" + shipSep, nil
 	}
 	return "re-tracked " + parent + " onto " + recorded + ", which had diverged from Graphite's record" + shipSep, nil
+}
+
+// gtTrackableParent walks up the parents Graphite records from recorded to the
+// first branch still in branch's history, ending at trunk, which gt tracks onto
+// whatever the history; gt refuses any other parent that is not an ancestor.
+func gtTrackableParent(ctx context.Context, c *gtCache, commonDir, branch, recorded string) (string, error) {
+	trunk, err := gtmeta.ReadTrunk(ctx, commonDir)
+	if err != nil {
+		return "", fmt.Errorf("ship: %w", err)
+	}
+	seen := map[string]bool{}
+	for onto := recorded; onto != trunk && !seen[onto]; {
+		seen[onto] = true
+		exists, err := gitRefExists(ctx, c.dir, "ship", gtRestackRef(onto))
+		if err != nil {
+			return "", err
+		}
+		if exists {
+			held, err := gitIsAncestor(ctx, c.dir, "ship", gtRestackRef(onto), gtRestackRef(branch))
+			if err != nil || held {
+				return onto, err
+			}
+		}
+		if onto, _, err = gtmeta.Diverged(ctx, commonDir, onto); err != nil {
+			return "", fmt.Errorf("ship: %w", err)
+		}
+		if onto == "" {
+			return trunk, nil
+		}
+	}
+	return trunk, nil
 }
 
 type gtRecordedParent struct {
