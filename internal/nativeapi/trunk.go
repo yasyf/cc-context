@@ -117,9 +117,6 @@ func (c *Client) trunkQueueStatuses(ctx context.Context, owner, repo string, num
 	if len(numbers) == 0 {
 		return states, nil
 	}
-	if _, err := c.trunkToken(ctx); err != nil {
-		return c.trunkCommentStatuses(ctx, owner, repo, numbers, err)
-	}
 	repository, err := c.queueRepository(ctx, owner, repo)
 	if err != nil {
 		return nil, err
@@ -165,60 +162,4 @@ func (c *Client) trunkQueueStatuses(ctx context.Context, owner, repo string, num
 		}
 	}
 	return states, nil
-}
-
-type trunkComment struct {
-	Author *struct{ Login string }
-	Body   string
-}
-
-func (c *Client) trunkCommentStatuses(ctx context.Context, owner, repo string, numbers []int, keyErr error) (map[int]string, error) {
-	states := make(map[int]string, len(numbers))
-	var acting []string
-	for batch := range slices.Chunk(numbers, 40) {
-		var fields strings.Builder
-		for i, n := range batch {
-			fmt.Fprintf(&fields, "p%d:pullRequest(number:%d){first:comments(first:100){nodes{author{login} body}} last:comments(last:100){nodes{author{login} body}}} ", i, n)
-		}
-		query := fmt.Sprintf("{repository(owner:%s,name:%s){%s}}", strconv.Quote(owner), strconv.Quote(repo), fields.String())
-		var response struct {
-			Repository map[string]*struct {
-				First, Last struct{ Nodes []trunkComment }
-			}
-		}
-		if err := c.graphql(ctx, query, &response); err != nil {
-			return nil, fmt.Errorf("%w; reading Trunk's pull request comments instead: %w", keyErr, err)
-		}
-		if response.Repository == nil {
-			return nil, fmt.Errorf("%w; GitHub repository %s/%s is not accessible", keyErr, owner, repo)
-		}
-		for i, n := range batch {
-			pr := response.Repository[fmt.Sprintf("p%d", i)]
-			if pr == nil {
-				continue
-			}
-			if trunkCommentsActing(slices.Concat(pr.First.Nodes, pr.Last.Nodes)) {
-				acting = append(acting, fmt.Sprintf("#%d", n))
-				continue
-			}
-			states[n] = "notQueued"
-		}
-	}
-	if len(acting) > 0 {
-		return nil, fmt.Errorf("%w; Trunk's comments on %s show it submitted to the merge queue, and only the Trunk API can say whether it is still there", keyErr, strings.Join(acting, ", "))
-	}
-	return states, nil
-}
-
-func trunkCommentsActing(comments []trunkComment) bool {
-	for _, comment := range comments {
-		body := strings.TrimSpace(comment.Body)
-		if strings.HasPrefix(body, "/trunk merge") {
-			return true
-		}
-		if comment.Author != nil && comment.Author.Login == "trunk-io" && strings.HasPrefix(body, "<!-- Trunk Merge -->") && !strings.Contains(body, "- [ ] <!-- End PR Submit Checkbox -->") {
-			return true
-		}
-	}
-	return false
 }

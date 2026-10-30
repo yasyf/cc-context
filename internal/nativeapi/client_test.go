@@ -263,47 +263,10 @@ func TestTrunkQueueReadsBatchAndPaginate(t *testing.T) {
 	}
 }
 
-func TestMissingTrunkCredentialReadsTrunksPullRequestComment(t *testing.T) {
+func TestMissingTrunkCredentialFailsQueueRead(t *testing.T) {
 	t.Setenv("TRUNK_MERGE_API_KEY", "")
-	const unsubmitted = "<!-- Trunk Merge -->\nMerging to `dev` in this repository is managed by Trunk.\n\n<!-- Start PR Submit Checkbox -->\n- [ ] <!-- End PR Submit Checkbox -->To merge this pull request, check the box to the left or comment `/trunk merge` below."
-	const inQueue = "<!-- Trunk Merge -->\nThis pull request is being tested in the merge queue."
-	comments := map[int][]map[string]any{
-		1: {{"author": map[string]any{"login": "trunk-io"}, "body": unsubmitted}, {"author": map[string]any{"login": "reviewer"}, "body": "looks good"}},
-		2: {{"author": map[string]any{"login": "trunk-io"}, "body": inQueue}},
-		3: {{"author": map[string]any{"login": "trunk-io"}, "body": unsubmitted}, {"author": map[string]any{"login": "author"}, "body": "/trunk merge"}},
-		4: {},
-		5: {{"author": map[string]any{"login": "author"}, "body": inQueue}},
-	}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/graphql" {
-			t.Errorf("unexpected request %s", r.URL)
-		}
-		var body struct{ Query string }
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Error(err)
-		}
-		repository := map[string]any{}
-		for i := 0; strings.Contains(body.Query, fmt.Sprintf("p%d:", i)); i++ {
-			field := strings.SplitN(body.Query, fmt.Sprintf("p%d:pullRequest(number:", i), 2)[1]
-			n, err := strconv.Atoi(strings.SplitN(field, ")", 2)[0])
-			if err != nil {
-				t.Error(err)
-			}
-			nodes := map[string]any{"nodes": comments[n]}
-			repository[fmt.Sprintf("p%d", i)] = map[string]any{"first": nodes, "last": nodes}
-		}
-		if err := json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"repository": repository}}); err != nil {
-			t.Error(err)
-		}
-	}))
-	defer srv.Close()
-	client := NewWithToken(srv.URL, "github-key").WithQueueProvider("trunk")
-	states, err := client.MergeabilityStatuses(context.Background(), "org", "repo", []int{1, 4, 5})
-	if err != nil || len(states) != 3 || states[1] != "notQueued" || states[4] != "notQueued" || states[5] != "notQueued" {
-		t.Fatalf("states=%v err=%v", states, err)
-	}
-	_, err = client.MergeabilityStatuses(context.Background(), "org", "repo", []int{1, 2, 3})
-	if err == nil || !strings.Contains(err.Error(), "TRUNK_MERGE_API_KEY") || !strings.Contains(err.Error(), "#2, #3") || strings.Contains(err.Error(), "#1") {
+	_, err := NewWithToken("http://invalid.local", "github-key").WithQueueProvider("trunk").MergeabilityStatuses(context.Background(), "org", "repo", []int{1})
+	if err == nil || !strings.Contains(err.Error(), "TRUNK_MERGE_API_KEY") {
 		t.Fatalf("err=%v", err)
 	}
 }
@@ -342,9 +305,9 @@ func TestQueueProviderDoesNotFallBackFromTrunkCredentialError(t *testing.T) {
 	if err != nil || !QueuedMergeability(states[9]) || calls != 1 {
 		t.Fatalf("states=%v calls=%d err=%v", states, calls, err)
 	}
-	states, err = client.WithQueueProvider("trunk").MergeabilityStatuses(context.Background(), "org", "repo", []int{9})
-	if err != nil || states[9] != "notQueued" || calls != 2 {
-		t.Fatalf("Trunk credential error fell back to GitHub's merge queue: states=%v calls=%d err=%v", states, calls, err)
+	_, err = client.WithQueueProvider("trunk").MergeabilityStatuses(context.Background(), "org", "repo", []int{9})
+	if err == nil || calls != 1 {
+		t.Fatalf("Trunk credential error fell back: calls=%d err=%v", calls, err)
 	}
 	_, err = client.WithQueueProvider("invalid").MergeabilityStatuses(context.Background(), "org", "repo", []int{9})
 	if err == nil {
