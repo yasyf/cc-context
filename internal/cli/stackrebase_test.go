@@ -3095,6 +3095,10 @@ func TestStackAbortAndReclaimForceTheDeferredRemoval(t *testing.T) {
 		if !stackOnto(t, f, "origin/main", "base") {
 			t.Error("base is not on the new trunk")
 		}
+		_, _, err = runStackCmdIn(t, f, ws, "continue")
+		if err == nil || !strings.Contains(err.Error(), "the stack rebase of base that opened this workspace was reclaimed") || !strings.Contains(err.Error(), "since its branches moved, so the resolution here is void") {
+			t.Errorf("continue from the reclaimed workspace = %v, want it to name the reclaim", err)
+		}
 	})
 }
 
