@@ -39,7 +39,7 @@ func TestFocusedStateRefReadsFollowRequestedTopology(t *testing.T) {
 			audit := filepath.Join(t.TempDir(), "all-requested-refs")
 			script := "#!/bin/sh\ncase \" $* \" in\n*for-each-ref*--stdin*)\n/bin/cat > " + shQuote(input) + "\nprintf '%s\\n' BEGIN >> " + shQuote(audit) + "\n/bin/cat " + shQuote(input) + " >> " + shQuote(audit) + "\nexec " + shQuote(original) + " \"$@\" < " + shQuote(input) + "\n;;\nesac\nexec " + shQuote(original) + " \"$@\"\n"
 			execstub.Write(t, filepath.Join(f.ShimBin, "git"), script)
-			state, err := gtStateAtFocused(f.Context(), common, "test", "requested", "")
+			state, err := gtStateAtFocused(withStackProvider(f.Context(), false), common, "test", "requested", "")
 			if err != nil {
 				t.Fatal(err)
 			}

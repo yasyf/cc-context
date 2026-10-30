@@ -31,7 +31,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          go test -race -run '^TestFocusedStateRefReadsFollowRequestedTopology$' -v ./internal/cli 2>&1 | tee focused-ref-baseline.txt
+          go test -race -run '^TestFocused(State|GraphiteRead)' -v ./internal/cli ./internal/gtmeta 2>&1 | tee focused-ref-baseline.txt
       - uses: actions/upload-artifact@v7
         if: always()
         with:
