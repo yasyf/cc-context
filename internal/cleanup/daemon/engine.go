@@ -867,7 +867,7 @@ func (e *Engine) advance(ctx context.Context, job cleanup.Job) (cleanup.Job, err
 		step = e.retire
 	}
 	err := step(ctx, &job)
-	if err != nil && !cancelled(ctx, err) {
+	if err != nil && (isFatal(err) || !cancelled(ctx, err)) {
 		return job, &fatalError{fmt.Errorf("cleanup daemon: advance job %s: %w", job.ID, err)}
 	}
 	e.put(job)
@@ -893,7 +893,7 @@ func (e *Engine) retire(ctx context.Context, job *cleanup.Job) error {
 	}
 	err := e.relocator.Retire(ctx, job)
 	if bandErr := e.band.Background(); bandErr != nil {
-		return errors.Join(err, fmt.Errorf("cleanup daemon: restore the background band after retirement: %w", bandErr))
+		return &fatalError{errors.Join(err, fmt.Errorf("cleanup daemon: restore the background band after retirement: %w", bandErr))}
 	}
 	return err
 }

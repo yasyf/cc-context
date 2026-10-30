@@ -153,7 +153,7 @@ func (r retirementFunc) Retire(ctx context.Context, job *cleanup.Job) error {
 }
 
 func TestPausedRetirementBandFailuresStopBeforePhysicalDeletion(t *testing.T) {
-	for _, failure := range []string{"leave", "retire", "restore", "cancel"} {
+	for _, failure := range []string{"leave", "retire", "restore", "cancel", "cancel-restore"} {
 		t.Run(failure, func(t *testing.T) {
 			bubble(t, paced(), func(t *testing.T, h *harness) {
 				h.seed("q", 1, cleanup.PhaseQueued)
@@ -166,7 +166,7 @@ func TestPausedRetirementBandFailuresStopBeforePhysicalDeletion(t *testing.T) {
 				if failure == "leave" {
 					h.band.refuseLeave = boom
 				}
-				if failure == "restore" {
+				if failure == "restore" || failure == "cancel-restore" {
 					h.band.refuseReturn = boom
 				}
 				ctx, cancel := context.WithCancel(context.Background())
@@ -175,7 +175,7 @@ func TestPausedRetirementBandFailuresStopBeforePhysicalDeletion(t *testing.T) {
 				called := false
 				engine.relocator = retirementFunc{Relocator: h.relocator, run: func(ctx context.Context, job *cleanup.Job) error {
 					called = true
-					if failure == "cancel" {
+					if failure == "cancel" || failure == "cancel-restore" {
 						cancel()
 						return ctx.Err()
 					}
@@ -194,17 +194,20 @@ func TestPausedRetirementBandFailuresStopBeforePhysicalDeletion(t *testing.T) {
 				} else if !errors.Is(err, boom) {
 					t.Errorf("Run() = %v, want %v", err, boom)
 				}
+				if failure == "cancel-restore" && !errors.Is(err, context.Canceled) {
+					t.Errorf("Run() = %v, want the cancellation retained with the restoration error", err)
+				}
 				if called != (failure != "leave") {
 					t.Errorf("Retire called = %t for failure %s", called, failure)
 				}
-				if h.band.inForeground() != (failure == "restore") {
+				if h.band.inForeground() != (failure == "restore" || failure == "cancel-restore") {
 					t.Errorf("foreground = %t for failure %s", h.band.inForeground(), failure)
 				}
 				want := []string{"foreground", "background"}
 				switch failure {
 				case "leave":
 					want = nil
-				case "restore":
+				case "restore", "cancel-restore":
 					want = []string{"foreground"}
 				}
 				if got := h.band.takeSwitches(); !slices.Equal(got, want) {
