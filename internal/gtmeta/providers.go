@@ -740,9 +740,16 @@ func graphiteForest(commonDir string, state State, orphans []Orphan) (State, []O
 }
 
 func crossing(native []string, edges func(yield func(branch, parent string) bool)) map[string]bool {
+	crossed := map[string]bool{}
+	if len(native) == 0 {
+		return crossed
+	}
 	children := map[string][]string{}
 	for branch, parent := range edges {
 		children[parent] = append(children[parent], branch)
+	}
+	if len(children) == 0 {
+		return crossed
 	}
 	queue := make([]string, 0, len(native))
 	queued := map[string]bool{}
@@ -752,7 +759,6 @@ func crossing(native []string, edges func(yield func(branch, parent string) bool
 			queue = append(queue, branch)
 		}
 	}
-	crossed := map[string]bool{}
 	for i := 0; i < len(queue); i++ {
 		for _, branch := range children[queue[i]] {
 			crossed[branch] = true

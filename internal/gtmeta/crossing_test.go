@@ -63,3 +63,41 @@ func TestCrossingPreservesReachability(t *testing.T) {
 		})
 	}
 }
+
+func TestCrossingWithoutNativeRootsDoesNotEnumerateEdges(t *testing.T) {
+	enumerations, visits := 0, 0
+	got := crossing(nil, func(yield func(string, string) bool) {
+		enumerations++
+		for i := 0; i < 512; i++ {
+			visits++
+			if !yield(fmt.Sprintf("legacy-%d", i), "main") {
+				return
+			}
+		}
+	})
+	if len(got) != 0 || enumerations != 0 || visits != 0 {
+		t.Fatalf("crossed=%v enumerations=%d edge_visits=%d; want no traversal", got, enumerations, visits)
+	}
+}
+
+var crossingAllocationSink map[string]bool
+
+func TestCrossingWithoutEdgesDoesNotAllocateForNativeRoots(t *testing.T) {
+	roots := make([]string, 1024)
+	for i := range roots {
+		roots[i] = fmt.Sprintf("native-%d", i)
+	}
+	enumerations := 0
+	got := crossing(roots, func(func(string, string) bool) { enumerations++ })
+	if len(got) != 0 || enumerations != 1 {
+		t.Fatalf("crossed=%v enumerations=%d; want one empty edge enumeration", got, enumerations)
+	}
+	emptyEdges := func(func(string, string) bool) {}
+	rootless := testing.AllocsPerRun(20, func() { crossingAllocationSink = crossing(nil, emptyEdges) })
+	withRoots := testing.AllocsPerRun(20, func() { crossingAllocationSink = crossing(roots, emptyEdges) })
+	crossingAllocationSink = nil
+	t.Logf("empty_edges rootless_allocations=%g native1024_allocations=%g", rootless, withRoots)
+	if withRoots != rootless {
+		t.Fatalf("empty graph allocated %g times with native roots, want the rootless %g", withRoots, rootless)
+	}
+}
