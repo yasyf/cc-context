@@ -80,28 +80,74 @@ func TestNativeRestackRecordsForkpointAndPreservesPRIdentity(t *testing.T) {
 	}
 }
 
-func TestNativeReparentRejectsForkWithoutWriting(t *testing.T) {
+func TestNativeAdoptOpensASecondChildChainAsItsOwnStackOnTheSharedParent(t *testing.T) {
+	dir := repo(t)
+	common := filepath.Join(dir, ".git")
+	main := git(t, dir, "rev-parse", "main")
+	for _, branch := range []string{"base", "child", "fork", "fork-tip"} {
+		git(t, dir, "branch", branch)
+	}
+	writeCatalog(t, common, catalog{SchemaVersion: 1, Stacks: []stack{{ID: "S_7", Number: 7, Trunk: branchRef{Branch: "main", Head: main}, Branches: []branchRef{{Branch: "base", Base: main, Head: main}, {Branch: "child", Base: main}}}}})
+	if err := AdoptRoot(t.Context(), common, "fork", "base", main, main); err != nil {
+		t.Fatal(err)
+	}
+	if err := AdoptRoot(t.Context(), common, "fork-tip", "fork", main, main); err != nil {
+		t.Fatal(err)
+	}
+	c, _, err := load(common)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []stack{
+		{ID: "S_7", Number: 7, Trunk: branchRef{Branch: "main", Head: main}, Branches: []branchRef{{Branch: "base", Base: main, Head: main}, {Branch: "child", Base: main}}},
+		{Trunk: branchRef{Branch: "base", Head: main}, Branches: []branchRef{{Branch: "fork", Base: main, Head: main}, {Branch: "fork-tip", Base: main, Head: main}}},
+	}
+	if !reflect.DeepEqual(c.Stacks, want) {
+		t.Fatalf("stacks = %+v, want %+v", c.Stacks, want)
+	}
+	state, err := Read(t.Context(), common)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state["child"].Parents[0].Ref != "base" || state["fork"].Parents[0].Ref != "base" || state["fork-tip"].Parents[0].Ref != "fork" {
+		t.Fatalf("state = %+v", state)
+	}
+	if err := Forget(t.Context(), common, []string{"base"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := RecordSubmitted(t.Context(), common, map[string]Version{"fork-tip": {HeadSha: main}}); err != nil {
+		t.Fatal(err)
+	}
+	state, err = Read(t.Context(), common)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state["child"].Parents[0].Ref != "main" || state["fork"].Parents[0].Ref != "main" || state["fork-tip"].Parents[0].Ref != "fork" {
+		t.Fatalf("state after the shared parent lands = %+v", state)
+	}
+}
+
+func TestNativeReparentOntoAStackedBranchOpensAForkStack(t *testing.T) {
 	dir := repo(t)
 	common := filepath.Join(dir, ".git")
 	main := git(t, dir, "rev-parse", "main")
 	for _, branch := range []string{"base", "child", "other"} {
 		git(t, dir, "branch", branch)
 	}
-	writeCatalog(t, common, catalog{SchemaVersion: 1, Stacks: []stack{{Trunk: branchRef{Branch: "main", Head: main}, Branches: []branchRef{{Branch: "base", Base: main}, {Branch: "child", Base: main}}}, {Trunk: branchRef{Branch: "main", Head: main}, Branches: []branchRef{{Branch: "other", Base: main}}}}})
-	before, err := os.ReadFile(filepath.Join(common, "gh-stack"))
+	writeCatalog(t, common, catalog{SchemaVersion: 1, Stacks: []stack{{ID: "base-stack", Trunk: branchRef{Branch: "main", Head: main}, Branches: []branchRef{{Branch: "base", Base: main}, {Branch: "child", Base: main}}}, {ID: "other-stack", Trunk: branchRef{Branch: "main", Head: main}, Branches: []branchRef{{Branch: "other", Base: main}}}}})
+	if err := Reparent(t.Context(), common, map[string]string{"other": "base"}); err != nil {
+		t.Fatal(err)
+	}
+	c, _, err := load(common)
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = Reparent(t.Context(), common, map[string]string{"other": "base"})
-	if err == nil || !strings.Contains(err.Error(), "linear") {
-		t.Fatalf("fork error = %v", err)
+	want := []stack{
+		{ID: "base-stack", Trunk: branchRef{Branch: "main", Head: main}, Branches: []branchRef{{Branch: "base", Base: main}, {Branch: "child", Base: main}}},
+		{ID: "other-stack", Trunk: branchRef{Branch: "base"}, Branches: []branchRef{{Branch: "other", Base: main}}},
 	}
-	after, err := os.ReadFile(filepath.Join(common, "gh-stack"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(after) != string(before) {
-		t.Fatal("rejected fork changed native catalog")
+	if !reflect.DeepEqual(c.Stacks, want) {
+		t.Fatalf("stacks = %+v, want %+v", c.Stacks, want)
 	}
 }
 

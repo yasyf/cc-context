@@ -531,7 +531,7 @@ func writeJSON(commonDir, name string, value any) error {
 	return os.Rename(f.Name(), filepath.Join(commonDir, name))
 }
 
-// AdoptRoot records a branch under its actual parent and rejects a non-linear native stack.
+// AdoptRoot records a branch under its actual parent, opening a native stack on that parent when it already has a stacked child.
 func AdoptRoot(ctx context.Context, commonDir, branch, trunk, base, head string) error {
 	return adoptRoot(ctx, commonDir, branch, trunk, base, head, false)
 }
@@ -590,6 +590,11 @@ func Forget(ctx context.Context, commonDir string, branches []string) error {
 		return nil
 	}
 	return mutate(ctx, commonDir, func(c *catalog, r *receipts) (bool, bool, error) {
+		all, err := rows(*c)
+		if err != nil {
+			return false, false, err
+		}
+		byName := index(all)
 		drop := map[string]bool{}
 		for _, b := range branches {
 			drop[b] = true
@@ -597,6 +602,13 @@ func Forget(ctx context.Context, commonDir string, branches []string) error {
 			delete(r.Submitted, b)
 		}
 		for i := range c.Stacks {
+			base := c.Stacks[i].Trunk.Branch
+			for drop[base] {
+				base = byName[base].parent
+			}
+			if base != c.Stacks[i].Trunk.Branch {
+				c.Stacks[i].Trunk = trunkRef(byName[base])
+			}
 			c.Stacks[i].Branches = slices.DeleteFunc(c.Stacks[i].Branches, func(b branchRef) bool { return drop[b.Branch] })
 		}
 		return true, true, nil
@@ -642,46 +654,54 @@ func rebuild(c *catalog, rows map[string]branchRow) error {
 			children[row.parent] = append(children[row.parent], name)
 		}
 	}
-	for parent, child := range children {
-		if rows[parent].parent != "" && len(child) > 1 {
-			return fmt.Errorf("native GitHub stacks are linear: %s would have multiple children", parent)
-		}
+	for _, names := range children {
+		slices.Sort(names)
 	}
+	type start struct {
+		trunk branchRef
+		first string
+	}
+	var starts []start
 	var stacks []stack
-	seen := map[string]bool{}
-	identities := map[int]bool{}
 	for _, trunk := range slices.Sorted(maps.Keys(rows)) {
 		if rows[trunk].parent != "" {
 			continue
 		}
-		firsts := slices.Clone(children[trunk])
-		slices.Sort(firsts)
-		if len(firsts) == 0 {
+		if len(children[trunk]) == 0 {
 			stacks = append(stacks, stack{Trunk: rows[trunk].ref, Branches: []branchRef{}})
 		}
-		for _, first := range firsts {
-			s := stack{Trunk: rows[trunk].ref, Branches: []branchRef{}}
-			owner := rows[first].owner
-			if owner >= 0 && !identities[owner] {
-				s.ID = c.Stacks[owner].ID
-				s.Number = c.Stacks[owner].Number
-				identities[owner] = true
-			}
-			for name := first; name != ""; {
-				if seen[name] {
-					return fmt.Errorf("native stack contains cycle at %s", name)
-				}
-				seen[name] = true
-				row := rows[name]
-				row.ref.Base = row.parentRevision
-				s.Branches = append(s.Branches, row.ref)
-				name = ""
-				if child := children[row.branch]; len(child) > 0 {
-					name = child[0]
-				}
-			}
-			stacks = append(stacks, s)
+		for _, first := range children[trunk] {
+			starts = append(starts, start{trunk: rows[trunk].ref, first: first})
 		}
+	}
+	seen := map[string]bool{}
+	identities := map[int]bool{}
+	for len(starts) > 0 {
+		next := starts[0]
+		starts = starts[1:]
+		s := stack{Trunk: next.trunk, Branches: []branchRef{}}
+		owner := rows[next.first].owner
+		if owner >= 0 && !identities[owner] {
+			s.ID = c.Stacks[owner].ID
+			s.Number = c.Stacks[owner].Number
+			identities[owner] = true
+		}
+		for name := next.first; name != ""; {
+			if seen[name] {
+				return fmt.Errorf("native stack contains cycle at %s", name)
+			}
+			seen[name] = true
+			row := rows[name]
+			row.ref.Base = row.parentRevision
+			s.Branches = append(s.Branches, row.ref)
+			name = continuation(c, rows, row, children[row.branch])
+			for _, kid := range children[row.branch] {
+				if kid != name {
+					starts = append(starts, start{trunk: trunkRef(row), first: kid})
+				}
+			}
+		}
+		stacks = append(stacks, s)
 	}
 	for name, row := range rows {
 		if row.parent != "" && !seen[name] {
@@ -690,6 +710,27 @@ func rebuild(c *catalog, rows map[string]branchRow) error {
 	}
 	c.Stacks = stacks
 	return nil
+}
+
+func continuation(c *catalog, rows map[string]branchRow, parent branchRow, kids []string) string {
+	next := ""
+	for _, kid := range kids {
+		owner := rows[kid].owner
+		if owner >= 0 && owner == parent.owner {
+			return kid
+		}
+		if next == "" && (owner < 0 || c.Stacks[owner].Trunk.Branch != parent.branch) {
+			next = kid
+		}
+	}
+	return next
+}
+
+func trunkRef(row branchRow) branchRef {
+	if row.parent == "" {
+		return row.ref
+	}
+	return branchRef{Branch: row.branch, Head: row.ref.Head}
 }
 
 // LastSubmitted returns the publication receipts retained independently of the native catalog.
