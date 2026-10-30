@@ -14,19 +14,18 @@ import (
 )
 
 func TestStackFromStateUsesTheRequestedBranchTrunk(t *testing.T) {
-	state := gtState{
-		"dev": {Trunk: true},
-		"other": {Trunk: true},
-		"legacy": {Parents: []gtRef{{Ref: "dev"}}},
-		"child": {Parents: []gtRef{{Ref: "legacy"}}},
-		"native": {Parents: []gtRef{{Ref: "other"}}},
-	}
+	state := gtState{}
+	state["dev"] = gtBranchState{Trunk: true}
+	state["other"] = gtBranchState{Trunk: true}
+	state["legacy"] = gtBranchState{Parents: []gtRef{{Ref: "dev"}}}
+	state["child"] = gtBranchState{Parents: []gtRef{{Ref: "legacy"}}}
+	state["native"] = gtBranchState{Parents: []gtRef{{Ref: "other"}}}
 	for range 128 {
-		for branch, want := range map[string][]string{
-			"legacy": {"legacy", "child"},
-			"child": {"legacy", "child"},
-			"native": {"native"},
-		} {
+		for _, branch := range []string{"legacy", "child", "native"} {
+			want := []string{branch}
+			if branch != "native" {
+				want = []string{"legacy", "child"}
+			}
 			got, err := gtStackFromState(context.Background(), render.Dir("."), "stack list", state, branch, nil)
 			if err != nil || !reflect.DeepEqual(got, want) {
 				t.Fatalf("branch %s: stack=%v error=%v; want %v", branch, got, err, want)
