@@ -245,7 +245,7 @@ func TestLegacyForestLeavesOutOnlyTheStackOnANativeParent(t *testing.T) {
 	}
 }
 
-func TestForcedNativePlannerRefusesMultipleTrunksWithoutMutation(t *testing.T) {
+func TestForcedNativeReadKeepsOnlyTheRepositoryTrunkWithoutMutation(t *testing.T) {
 	f := vcstest.Repo(t, vcstest.Remote())
 	common := filepath.Join(f.Dir, ".git")
 	f.Out(t, "git", "branch", "release")
@@ -258,15 +258,19 @@ func TestForcedNativePlannerRefusesMultipleTrunksWithoutMutation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := gtmeta.Read(gtmeta.WithProvider(f.Context(), "github"), common); err == nil || !strings.Contains(err.Error(), "main, release") {
-		t.Fatalf("multiple-trunk planning = %v", err)
+	forced, err := gtmeta.Read(gtmeta.WithProvider(f.Context(), "github"), common)
+	if err != nil || !forced["main"].Trunk {
+		t.Fatalf("multiple-trunk read = %+v, %v; want main's stacks", forced, err)
+	}
+	if _, ok := forced["release"]; ok {
+		t.Fatalf("multiple-trunk read kept release, which is not the repository's trunk: %+v", forced)
 	}
 	after, err := os.ReadFile(filepath.Join(common, "gh-stack"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if string(after) != string(before) {
-		t.Fatal("refused multi-trunk read changed catalog")
+		t.Fatal("multi-trunk read changed catalog")
 	}
 	state, err := gtmeta.Read(f.Context(), common)
 	if err != nil {
