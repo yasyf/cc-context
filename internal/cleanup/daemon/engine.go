@@ -375,24 +375,27 @@ func (e *Engine) Status(ctx context.Context, q cleanup.Query) (cleanup.Report, e
 		report.Jobs = append(report.Jobs, e.reported(job))
 		return report, nil
 	}
-	var unfinished, finished []cleanup.Job
-	for _, job := range e.jobs {
-		if job.Phase == cleanup.PhaseDone {
-			finished = append(finished, clone(job))
-			continue
-		}
-		unfinished = append(unfinished, e.reported(job))
-	}
-	slices.SortFunc(unfinished, bySeq)
-	slices.SortFunc(finished, func(a, b cleanup.Job) int { return byFinish(b, a) })
-	report.Jobs = append(append(report.Jobs, unfinished...), finished...)
 	limit := q.Limit
 	if limit <= 0 {
 		limit = e.tuning.StatusLimit
 	}
-	if over := len(report.Jobs) - limit; over > 0 {
-		report.Jobs, report.Omitted = report.Jobs[:limit], over
+	var finished []cleanup.Job
+	for job := range e.ordered() {
+		if job.Phase == cleanup.PhaseDone {
+			finished = append(finished, job)
+			continue
+		}
+		report.Jobs = append(report.Jobs, e.reported(job))
+		if len(report.Jobs) == limit {
+			report.Omitted = len(e.jobs) - len(report.Jobs)
+			return report, nil
+		}
 	}
+	slices.SortFunc(finished, func(a, b cleanup.Job) int { return byFinish(b, a) })
+	for _, job := range finished[:min(len(finished), limit-len(report.Jobs))] {
+		report.Jobs = append(report.Jobs, clone(job))
+	}
+	report.Omitted = len(e.jobs) - len(report.Jobs)
 	return report, nil
 }
 
