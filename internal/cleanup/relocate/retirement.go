@@ -327,10 +327,8 @@ func (r *Relocator) Retire(ctx context.Context, job *cleanup.Job) error {
 		return err
 	}
 	defer files.close()
-	if !files.displaced {
-		if err := r.retirementDevices(job, files); err != nil {
-			return err
-		}
+	if err := r.retirementDevices(job, files); err != nil {
+		return err
 	}
 	owned, err := ownMarker(files.root, job)
 	if err != nil || job.Retirement == "" && owned {
