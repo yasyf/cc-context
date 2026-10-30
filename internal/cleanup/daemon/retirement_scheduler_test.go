@@ -2,9 +2,10 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"slices"
-	"testing/synctest"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/yasyf/cc-context/internal/cleanup"
@@ -140,4 +141,81 @@ func TestResumeAfterPausedRetirementDeletesInBackground(t *testing.T) {
 			t.Errorf("resume switches = %v, want %v", got, want)
 		}
 	})
+}
+
+type retirementFunc struct {
+	cleanup.Relocator
+	run func(context.Context, *cleanup.Job) error
+}
+
+func (r retirementFunc) Retire(ctx context.Context, job *cleanup.Job) error {
+	return r.run(ctx, job)
+}
+
+func TestPausedRetirementBandFailuresStopBeforePhysicalDeletion(t *testing.T) {
+	for _, failure := range []string{"leave", "retire", "restore", "cancel"} {
+		t.Run(failure, func(t *testing.T) {
+			bubble(t, paced(), func(t *testing.T, h *harness) {
+				h.seed("q", 1, cleanup.PhaseQueued)
+				h.seed("p", 2, cleanup.PhaseUnregistered)
+				h.deleter.put("p", &payload{entries: 100})
+				if err := h.journal.SaveSwitch(cleanup.Switch{Paused: true}); err != nil {
+					t.Fatal(err)
+				}
+				boom := errors.New("band or retirement failure")
+				if failure == "leave" {
+					h.band.refuseLeave = boom
+				}
+				if failure == "restore" {
+					h.band.refuseReturn = boom
+				}
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				engine := h.build()
+				called := false
+				engine.relocator = retirementFunc{Relocator: h.relocator, run: func(ctx context.Context, job *cleanup.Job) error {
+					called = true
+					if failure == "cancel" {
+						cancel()
+						return ctx.Err()
+					}
+					if failure == "retire" {
+						return boom
+					}
+					return h.relocator.Retire(ctx, job)
+				}}
+				running := make(chan error, 1)
+				go func() { running <- engine.Run(ctx) }()
+				err := <-running
+				if failure == "cancel" {
+					if err != nil {
+						t.Errorf("cancelled Run() = %v, want nil", err)
+					}
+				} else if !errors.Is(err, boom) {
+					t.Errorf("Run() = %v, want %v", err, boom)
+				}
+				if called != (failure != "leave") {
+					t.Errorf("Retire called = %t for failure %s", called, failure)
+				}
+				if h.band.inForeground() != (failure == "restore") {
+					t.Errorf("foreground = %t for failure %s", h.band.inForeground(), failure)
+				}
+				want := []string{"foreground", "background"}
+				switch failure {
+				case "leave":
+					want = nil
+				case "restore":
+					want = []string{"foreground"}
+				}
+				if got := h.band.takeSwitches(); !slices.Equal(got, want) {
+					t.Errorf("band switches = %v, want %v", got, want)
+				}
+				if failure == "restore" {
+					h.expectEvents("retire:q@queued")
+				} else {
+					h.expectEvents()
+				}
+			})
+		})
+	}
 }
