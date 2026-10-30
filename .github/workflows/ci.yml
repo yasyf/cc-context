@@ -1,4 +1,4 @@
-name: Fetch connectivity diagnostic
+name: Promisor MIDX duplicate diagnostic
 on:
   workflow_dispatch:
     inputs:
@@ -36,11 +36,11 @@ jobs:
           PREFIX: ${{ steps.git.outputs.prefix }}
         run: echo "$PREFIX/bin" >> "$GITHUB_PATH"
       - run: sudo apt-get update -qq && sudo apt-get install -y strace
-      - run: python3 scripts/fetch-connectivity-probe.py
+      - run: python3 scripts/promisor-midx-probe.py
         env:
-          PROBE_OUTPUT: ${{ runner.temp }}/fetch-connectivity
+          PROBE_OUTPUT: ${{ runner.temp }}/promisor-midx
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: fetch-connectivity
-          path: ${{ runner.temp }}/fetch-connectivity
+          name: promisor-midx
+          path: ${{ runner.temp }}/promisor-midx
