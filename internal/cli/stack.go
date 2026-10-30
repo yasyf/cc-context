@@ -350,8 +350,6 @@ func runStackList(cmd *cobra.Command, asJSON bool) error {
 	if err != nil {
 		return err
 	}
-	ctx = withStackProvider(ctx, l.native)
-	cmd.SetContext(ctx)
 	stack, state, err := gtStackAll(ctx, l.dir(), "stack list")
 	if err != nil {
 		return err
