@@ -3,6 +3,7 @@ package nativeapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -375,4 +376,25 @@ func (c *Client) linkPull(ctx context.Context, owner, repo, trunk string, pull r
 		return 0, fmt.Errorf("GitHub created a native stack without its stack number")
 	}
 	return created.Number, nil
+}
+
+// BranchHistory reports whether branch exists on GitHub and whether any pull request ever used it as its head.
+func (c *Client) BranchHistory(ctx context.Context, owner, repo, branch string) (onOrigin, headed bool, err error) {
+	path := fmt.Sprintf("/repos/%s/%s", url.PathEscape(owner), url.PathEscape(repo))
+	if _, err := c.get(ctx, path+"/branches/"+url.PathEscape(branch), nil); err != nil {
+		var status *StatusError
+		if errors.As(err, &status) && status.Status == http.StatusNotFound {
+			return false, false, nil
+		}
+		return false, false, err
+	}
+	payload, err := c.get(ctx, path+"/pulls", url.Values{"head": {owner + ":" + branch}, "state": {"all"}, "per_page": {"1"}})
+	if err != nil {
+		return true, false, err
+	}
+	var pulls []json.RawMessage
+	if err := json.Unmarshal(payload, &pulls); err != nil {
+		return true, false, err
+	}
+	return true, len(pulls) > 0, nil
 }

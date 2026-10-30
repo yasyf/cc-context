@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yasyf/cc-context/internal/nativeapi"
 	"github.com/yasyf/cc-context/internal/render"
 )
 
@@ -464,23 +465,34 @@ func dropStrayRoots(ctx context.Context, commonDir string, c *catalog, r *receip
 	if err != nil {
 		return false, err
 	}
-	roots := 0
+	var roots []string
 	for _, row := range all {
 		if row.parent == "" {
-			roots++
+			roots = append(roots, row.branch)
 		}
 	}
-	if roots < 2 {
+	if len(roots) < 2 {
 		return false, nil
 	}
 	trunk, err := trunkOf(ctx, commonDir, all)
 	if err != nil {
 		return false, err
 	}
+	stray := map[string]bool{}
+	for _, root := range roots {
+		if root == trunk {
+			continue
+		}
+		onOrigin, headed, err := branchHistory(ctx, commonDir, root)
+		if err != nil {
+			return false, fmt.Errorf("decide whether native stack root %s is a trunk: %w", root, err)
+		}
+		stray[root] = !onOrigin || headed
+	}
 	byName := index(all)
 	kept := c.Stacks[:0]
 	for _, s := range c.Stacks {
-		if rootOf(byName, s.Trunk.Branch) == trunk {
+		if !stray[rootOf(byName, s.Trunk.Branch)] {
 			kept = append(kept, s)
 			continue
 		}
@@ -492,6 +504,19 @@ func dropStrayRoots(ctx context.Context, commonDir string, c *catalog, r *receip
 	healed := len(kept) != len(c.Stacks)
 	c.Stacks = kept
 	return healed, nil
+}
+
+var branchHistory = func(ctx context.Context, commonDir, branch string) (onOrigin, headed bool, err error) {
+	origin, err := render.RunCLI(ctx, render.Dir(commonDir), "git", []string{"--git-dir=" + commonDir, "config", "--get", "remote.origin.url"})
+	if err != nil {
+		return false, false, fmt.Errorf("read origin: %w", err)
+	}
+	_, path, found := strings.Cut(strings.TrimSpace(origin), "github.com")
+	owner, name, slashed := strings.Cut(strings.TrimSuffix(strings.Trim(path, ":/"), ".git"), "/")
+	if !found || !slashed {
+		return false, false, fmt.Errorf("origin %s is not a github.com repository", strings.TrimSpace(origin))
+	}
+	return nativeapi.Default().BranchHistory(ctx, owner, name, branch)
 }
 
 func lockCatalog(ctx context.Context, commonDir, name string) (*os.File, error) {

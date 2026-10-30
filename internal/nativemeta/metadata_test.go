@@ -2,6 +2,7 @@ package nativemeta
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -153,17 +154,45 @@ func TestNativeAdoptRefusesToMintATrunkFromAnUntrackedParent(t *testing.T) {
 	}
 }
 
-func TestNativeWritesDropAStackOnAStrayRoot(t *testing.T) {
+func strayRootFixture(t *testing.T, history func(context.Context, string, string) (bool, bool, error)) (string, string) {
+	t.Helper()
 	dir := repo(t)
 	common := filepath.Join(dir, ".git")
 	main := git(t, dir, "rev-parse", "main")
-	for _, branch := range []string{"feature", "base", "child"} {
+	for _, branch := range []string{"feature", "other", "child"} {
 		git(t, dir, "branch", branch)
 	}
-	writeCatalog(t, common, catalog{SchemaVersion: 1, Stacks: []stack{{Trunk: branchRef{Branch: "main", Head: main}, Branches: []branchRef{{Branch: "feature", Base: main}}}, {Trunk: branchRef{Branch: "base", Head: main}, Branches: []branchRef{{Branch: "child", Base: main}}}}})
-	if err := writeJSON(common, "ccx-stack-receipts.json", receipts{Frozen: map[string]bool{"child": true}, Submitted: map[string]Version{"child": {HeadSha: main}, "feature": {HeadSha: main}}}); err != nil {
+	writeCatalog(t, common, catalog{SchemaVersion: 1, Stacks: []stack{{Trunk: branchRef{Branch: "main", Head: main}, Branches: []branchRef{{Branch: "feature", Base: main}}}, {Trunk: branchRef{Branch: "other", Head: main}, Branches: []branchRef{{Branch: "child", Base: main}}}}})
+	if err := writeJSON(common, "ccx-stack-receipts.json", receipts{Frozen: map[string]bool{"child": true}, Submitted: map[string]Version{"child": {HeadSha: main}}}); err != nil {
 		t.Fatal(err)
 	}
+	judged := branchHistory
+	t.Cleanup(func() { branchHistory = judged })
+	branchHistory = func(ctx context.Context, commonDir, branch string) (bool, bool, error) {
+		if branch != "other" {
+			t.Errorf("judged root %s; want only the non-origin/HEAD root other", branch)
+		}
+		return history(ctx, commonDir, branch)
+	}
+	return common, main
+}
+
+func TestNativeWritesKeepARootThatIsARealTrunk(t *testing.T) {
+	common, main := strayRootFixture(t, func(context.Context, string, string) (bool, bool, error) { return true, false, nil })
+	if err := RecordSubmitted(t.Context(), common, map[string]Version{"feature": {HeadSha: main, BaseSha: main, BaseName: "main"}}); err != nil {
+		t.Fatal(err)
+	}
+	c, r, err := load(common)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Stacks) != 2 || c.Stacks[1].Trunk.Branch != "other" || !r.Frozen["child"] {
+		t.Fatalf("catalog=%+v receipts=%+v; want the release-style trunk and its receipts kept", c.Stacks, r)
+	}
+}
+
+func TestNativeWritesDropARootThatWasAPullRequestHead(t *testing.T) {
+	common, main := strayRootFixture(t, func(context.Context, string, string) (bool, bool, error) { return true, true, nil })
 	if err := RecordSubmitted(t.Context(), common, map[string]Version{"feature": {HeadSha: main, BaseSha: main, BaseName: "main"}}); err != nil {
 		t.Fatal(err)
 	}
@@ -172,13 +201,48 @@ func TestNativeWritesDropAStackOnAStrayRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(c.Stacks) != 1 || c.Stacks[0].Trunk.Branch != "main" {
-		t.Fatalf("catalog after write = %+v; want only the stack on main", c.Stacks)
+		t.Fatalf("catalog = %+v; want only the stack on main", c.Stacks)
 	}
 	if _, ok := r.Submitted["child"]; ok || r.Frozen["child"] || r.Submitted["feature"].BaseName != "main" {
-		t.Fatalf("receipts after write = %+v; want child's dropped and feature's recorded", r)
+		t.Fatalf("receipts = %+v; want child's dropped and feature's recorded", r)
 	}
 	if err := AdoptRoot(t.Context(), common, "child", "feature", main, main); err != nil {
 		t.Fatalf("adopt the dropped branch onto its real parent = %v", err)
+	}
+}
+
+func TestNativeWritesDropARootMissingFromOrigin(t *testing.T) {
+	common, main := strayRootFixture(t, func(context.Context, string, string) (bool, bool, error) { return false, false, nil })
+	if err := RecordSubmitted(t.Context(), common, map[string]Version{"feature": {HeadSha: main, BaseSha: main, BaseName: "main"}}); err != nil {
+		t.Fatal(err)
+	}
+	c, _, err := load(common)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Stacks) != 1 || c.Stacks[0].Trunk.Branch != "main" {
+		t.Fatalf("catalog = %+v; want only the stack on main", c.Stacks)
+	}
+}
+
+func TestNativeWritesRefuseWhenGitHubCannotJudgeARoot(t *testing.T) {
+	common, main := strayRootFixture(t, func(context.Context, string, string) (bool, bool, error) {
+		return false, false, errors.New("GET /repos/owner/repo/branches/other: 502")
+	})
+	before, err := os.ReadFile(filepath.Join(common, "gh-stack"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = RecordSubmitted(t.Context(), common, map[string]Version{"feature": {HeadSha: main, BaseSha: main, BaseName: "main"}})
+	if err == nil || !strings.Contains(err.Error(), "native stack root other") || !strings.Contains(err.Error(), "502") {
+		t.Fatalf("write with an unjudgeable root = %v; want the GitHub failure", err)
+	}
+	after, err := os.ReadFile(filepath.Join(common, "gh-stack"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatal("refused write changed the native catalog")
 	}
 }
 
