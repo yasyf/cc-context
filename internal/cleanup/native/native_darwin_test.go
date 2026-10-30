@@ -856,7 +856,6 @@ func TestKernelDescribesItsOwnProcess(t *testing.T) {
 	if node.dev != want.dev || node.ino != want.ino || node.fsid != want.fsid || node.kind == vnodeNone {
 		t.Errorf("vnodeIdentityOfFD = dev %d, inode %d, filesystem %v, type %d; want dev %d, inode %d, filesystem %v, and a type", node.dev, node.ino, node.fsid, node.kind, want.dev, want.ino, want.fsid)
 	}
-	s := &scan{lib: lib, root: f.real, given: f.tree}
 	if path, err := lib.pathByID(node.fsid, node.ino); path != f.real+"/file" || err != nil {
 		t.Errorf("heldByID = %q, %v; want %q", path, err, f.real+"/file")
 	}

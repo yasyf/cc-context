@@ -52,6 +52,7 @@ func Identify(int) (cleanup.ProcessID, error) { return cleanup.ProcessID{}, clea
 // darwin.
 func ParentCommand(int) (int, []string, error) { return 0, nil, cleanup.ErrUnsupported }
 
+// GuardRoots reports that native activity inspection is unavailable on this platform.
 func GuardRoots(_ context.Context, first cleanup.GuardRoot, _ ...cleanup.GuardRoot) (string, error) {
 	return first.Path, cleanup.ErrUnsupported
 }

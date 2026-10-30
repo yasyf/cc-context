@@ -38,8 +38,8 @@ func TestDisplacedActivityProbeCallCountsCI(t *testing.T) {
 	f.guarded, f.discounts, f.guardRequests = nil, nil, nil
 	f.advance(&job)
 	adminStage(t, f, &job)
-	resumeRoots := append(logicalRoots, job.Original, admin)
-	resumeDiscounts := append(logicalDiscounts, server, server)
+	resumeRoots := []string{job.Original, admin, job.Original, admin, job.Original, admin}
+	resumeDiscounts := [][]cleanup.ProcessID{retiring, server, server, server, server, server}
 	if !reflect.DeepEqual(f.guarded, resumeRoots) || !reflect.DeepEqual(f.discounts, resumeDiscounts) {
 		t.Fatalf("resume guards = %v/%v, want %v/%v", f.guarded, f.discounts, resumeRoots, resumeDiscounts)
 	}
