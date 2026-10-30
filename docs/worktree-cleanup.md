@@ -114,9 +114,8 @@ lock, and both fail if no daemon is running.
 
 `worktree rm --wait` uses the same read-only wait after removal, with a 5s
 hello. Both wait commands poll status with a 10s limit per request and back
-off up to 1s between polls. A poll that finds the socket missing or refusing,
-as it is while another ccx replaces an outdated daemon, polls again for up to
-a minute before it fails; `worktree rm` following a blocked job's automatic
+off up to 1s between polls. A poll that finds the socket missing or refusing
+polls again for up to a minute before it fails; `worktree rm` following a blocked job's automatic
 retry does the same. They succeed only when a poll shows the job
 `done`, after its payload is gone; `worktree rm --wait` then reports
 `deleted`. A blockage fails the wait with its reason.
@@ -141,46 +140,9 @@ record was lost. `worktree rm --wait` counts its removal receipt as seeing
 the job. Only a job `cleanup wait` has never seen is "not found" (exit 3).
 `cleanup status`, `cleanup wait`, and `cleanup retry` reject an empty job ID.
 
-`launchd` starts the daemon at login; queue-changing commands that reach the
-daemon (`ccx vcs worktree rm`, `ccx vcs cleanup pause`/`resume`/`retry`/`adopt`,
-`ccx vcs cleanup hold acquire`/`release`,
-and deferred removals) install and start or replace it. Under the start
-lock, they read and keep the kernel peer process and user IDs and the
-process's kernel unique ID on the hello connection, before sending hello.
-On macOS, this is `p_uniqueid`, read through the existing `proc_pidinfo`
-helper. The reply proves the saved identity belongs to the process that
-answered.
+Ordinary `ccx` cleanup queue-changing commands, including `worktree rm`, `cleanup pause`, `resume`, `retry`, `adopt`, `hold`, and deferred stack workspace removals, send one bounded hello to the already-running cleanup daemon. They accept any daemon with the same protocol version and never install, start, stop, or replace the daemon or apply a `LaunchAgent`. A missing daemon or an incompatible protocol version produces a visible failure before the cleanup request is sent.
 
-They re-check the identity on the shutdown connection before sending the
-stop. The kernel peer must match the saved process ID and the client's user
-ID, with the same kernel unique ID.
-
-The kernel never reuses that unique ID within a boot. Neither a reused process
-ID nor a clock step, even one that repeats the old start time, can make a
-different process match. No start time or clock is compared. They send
-nothing on other connections and never retry the stop on a new one. This
-works with older daemons without a wire protocol change.
-
-After a verified stop, the socket wait also ends if a different process
-answers; they still confirm the outdated daemon's exit before replacing
-its program copy. They take the serve lock, which every daemon version
-holds for its whole life, before installing the program or applying the
-`LaunchAgent`, and hold it until apply returns. Apply has a 15s agent
-timeout; a starting daemon waits up to 30s for the serve lock, so its wait
-outlasts the apply that launches it.
-
-If another daemon takes over the socket before the stop or takes the serve
-lock first, the command installs and applies nothing and stops nothing.
-It waits up to the agent timeout for that daemon to answer, uses it if it
-is current, and otherwise reports an error saying it was left running. When
-the unique ID or peer credentials cannot be read, including on hosts other
-than macOS, or the hello's process ID differs from the kernel's, the command
-reports that the daemon could not be verified. It leaves the daemon running
-and stops, installs, and applies nothing. If a daemon accepts and closes
-without replying, never sends its hello, or holds its serve lock behind a
-refusing or missing socket, the command probes again under the start lock.
-If it still does not answer, the command reports an error before any install
-or apply.
+An already-installed `LaunchAgent` can start the daemon at sign-in, and manual startup uses `ccx vcs cleanup serve` as an explicitly authorized service action. A software upgrade alone does not authorize restarting the daemon, and existing tasks remain with their running daemon.
 
 Shutdown cancels the worker's current step. Git reads stop; an `update-ref`,
 `worktree move`, or `worktree remove` already running finishes or reaches its

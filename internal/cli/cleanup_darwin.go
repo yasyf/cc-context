@@ -4,11 +4,8 @@ package cli
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"slices"
 	"time"
 
@@ -27,42 +24,12 @@ const (
 	cleanupReachTimeout = 5 * time.Second
 )
 
-func connectCleanup(ctx context.Context) (cleanup.Service, error) {
-	exe, err := os.Executable()
-	if err != nil {
-		return nil, fmt.Errorf("cleanup: locate the ccx executable: %w", err)
-	}
-	if exe, err = filepath.EvalSymlinks(exe); err != nil {
-		return nil, fmt.Errorf("cleanup: resolve the ccx executable: %w", err)
-	}
-	control, err := agent.Connect(ctx, agent.Options{
-		Layout:    cleanup.DefaultLayout(),
-		Version:   version.String(),
-		Source:    exe,
-		Dial:      func(socket string) cleanup.Control { return daemon.Dial(socket) },
-		Launchctl: runLaunchctl,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("cleanup: reach the deletion daemon: %w", err)
-	}
-	return control, nil
-}
-
 func reachCleanup(ctx context.Context) (cleanup.Service, error) {
 	control, err := agent.Reach(ctx, cleanup.DefaultLayout(), func(socket string) cleanup.Control { return daemon.Dial(socket) }, cleanupReachTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("cleanup: read the deletion daemon: %w", err)
 	}
 	return control, nil
-}
-
-func runLaunchctl(ctx context.Context, path string, args ...string) (string, int, error) {
-	out, err := exec.CommandContext(ctx, path, args...).CombinedOutput() //nolint:gosec // path is daemonkit's fixed launchctl binary and args are the verbs it authors
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) && exitErr.ExitCode() > 0 {
-		return string(out), exitErr.ExitCode(), nil
-	}
-	return string(out), 0, err
 }
 
 func previewCleanup(ctx context.Context, r cleanup.Request) (cleanup.Job, error) {

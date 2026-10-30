@@ -1192,13 +1192,13 @@ func TestReach(t *testing.T) {
 			name:       "missing socket names what starts the daemon",
 			helloErr:   errMissing,
 			wantErr:    errNoDaemon,
-			wantText:   "such as worktree rm or cleanup pause, installs and starts it",
+			wantText:   "start it explicitly with ccx vcs cleanup serve",
 			wantEvents: []string{"hello", "held serve.lock"},
 		},
 		{
 			name:       "refused socket names what starts the daemon",
 			wantErr:    errNoDaemon,
-			wantText:   "launchd starts one at login",
+			wantText:   "start it explicitly with ccx vcs cleanup serve",
 			wantEvents: []string{"hello", "held serve.lock"},
 		},
 		{
