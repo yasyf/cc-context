@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -183,29 +184,41 @@ func TestExplicitNativeContextDoesNotConvertTrackedGraphiteBranch(t *testing.T) 
 	}
 }
 
-func TestLegacyForestRefusesNativeParentBeforePlanning(t *testing.T) {
+func TestLegacyForestLeavesOutOnlyTheStackOnANativeParent(t *testing.T) {
 	f, common, main := providerFixture(t)
 	f.Out(t, "git", "branch", "stranded")
+	f.Out(t, "git", "branch", "above")
 	db, err := sql.Open("sqlite", filepath.Join(common, ".graphite_metadata.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = db.Close() }()
-	if _, err := db.Exec(`INSERT INTO branch_metadata(branch_name,parent_branch_name,parent_branch_revision,validation_result,children) VALUES('stranded','shared',?,'VALID','[]')`, main); err != nil {
+	if _, err := db.Exec(`INSERT INTO branch_metadata(branch_name,parent_branch_name,parent_branch_revision,validation_result,children) VALUES('stranded','shared',?,'VALID','["above"]'),('above','stranded',?,'VALID','[]')`, main, main); err != nil {
 		t.Fatal(err)
 	}
 	legacy := gtmeta.WithProvider(f.Context(), "graphite")
-	for name, read := range map[string]func() error{
-		"read":        func() error { _, err := gtmeta.Read(legacy, common); return err },
-		"read origin": func() error { _, _, err := gtmeta.ReadOriginOrphans(legacy, common); return err },
-		"prune rows":  func() error { _, err := gtmeta.Rows(legacy, common); return err },
-	} {
-		if err := read(); err == nil || !strings.Contains(err.Error(), "cross-provider topology") {
-			t.Fatalf("%s accepted mixed-provider parent: %v", name, err)
-		}
+	state, err := gtmeta.Read(legacy, common)
+	if err != nil {
+		t.Fatalf("read refused a forest with one stack on a native parent: %v", err)
+	}
+	if _, ok := state["legacy"]; !ok {
+		t.Fatalf("read dropped legacy, a stack with no native parent: %v", state)
+	}
+	if _, ok := state["stranded"]; ok {
+		t.Fatalf("read kept stranded, which sits on native shared: %v", state)
+	}
+	if _, ok := state["above"]; ok {
+		t.Fatalf("read kept above, stacked on stranded: %v", state)
+	}
+	if _, orphans, err := gtmeta.ReadOriginOrphans(legacy, common); err != nil || slices.ContainsFunc(orphans, func(o gtmeta.Orphan) bool { return o.Branch == "stranded" || o.Branch == "above" }) {
+		t.Fatalf("read origin = %v, %v; want the crossed stack left out", orphans, err)
+	}
+	rows, err := gtmeta.Rows(legacy, common)
+	if err != nil || slices.ContainsFunc(rows, func(row gtmeta.Row) bool { return row.Branch == "stranded" || row.Branch == "above" }) {
+		t.Fatalf("prune rows = %v, %v; want the crossed stack left out", rows, err)
 	}
 	if got, err := gtmeta.Provider(f.Context(), common, "stranded"); err != nil || got != "graphite" {
-		t.Fatalf("refused topology changed existing ownership: %q, %v", got, err)
+		t.Fatalf("reading the forest changed existing ownership: %q, %v", got, err)
 	}
 }
 

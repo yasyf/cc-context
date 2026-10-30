@@ -364,12 +364,14 @@ func Rows(ctx context.Context, commonDir string) ([]Row, error) {
 			return nil, err
 		}
 		rows = slices.DeleteFunc(rows, func(row Row) bool { return slices.Contains(names, row.Branch) })
-		for _, row := range rows {
-			if slices.Contains(names, row.Parent) {
-				return nil, fmt.Errorf("cross-provider topology: Graphite branch %s depends on native branch %s; explicit stack conversion is required", row.Branch, row.Parent)
+		crossed := crossing(names, func(yield func(branch, parent string) bool) {
+			for _, row := range rows {
+				if !yield(row.Branch, row.Parent) {
+					return
+				}
 			}
-		}
-		return rows, nil
+		})
+		return slices.DeleteFunc(rows, func(row Row) bool { return crossed[row.Branch] }), nil
 	}
 	if contextProvider(ctx) == ProviderGitHub {
 		native, err := nativemeta.Rows(ctx, commonDir)
@@ -717,17 +719,35 @@ func graphiteForest(commonDir string, state State, orphans []Orphan) (State, []O
 		delete(state, branch)
 	}
 	orphans = slices.DeleteFunc(orphans, func(o Orphan) bool { return slices.Contains(native, o.Branch) })
-	for branch, b := range state {
-		for _, parent := range b.Parents {
-			if slices.Contains(native, parent.Ref) {
-				return nil, nil, fmt.Errorf("cross-provider topology: Graphite branch %s depends on native branch %s; explicit stack conversion is required", branch, parent.Ref)
+	crossed := crossing(native, func(yield func(branch, parent string) bool) {
+		for branch, b := range state {
+			for _, parent := range b.Parents {
+				if !yield(branch, parent.Ref) {
+					return
+				}
+			}
+		}
+		for _, o := range orphans {
+			if !yield(o.Branch, o.Parent) {
+				return
+			}
+		}
+	})
+	for branch := range crossed {
+		delete(state, branch)
+	}
+	return state, slices.DeleteFunc(orphans, func(o Orphan) bool { return crossed[o.Branch] }), nil
+}
+
+func crossing(native []string, edges func(yield func(branch, parent string) bool)) map[string]bool {
+	crossed := map[string]bool{}
+	for grew := true; grew; {
+		grew = false
+		for branch, parent := range edges {
+			if !crossed[branch] && (slices.Contains(native, parent) || crossed[parent]) {
+				crossed[branch], grew = true, true
 			}
 		}
 	}
-	for _, o := range orphans {
-		if slices.Contains(native, o.Parent) {
-			return nil, nil, fmt.Errorf("cross-provider topology: Graphite branch %s depends on native branch %s; explicit stack conversion is required", o.Branch, o.Parent)
-		}
-	}
-	return state, orphans, nil
+	return crossed
 }
