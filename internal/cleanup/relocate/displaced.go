@@ -28,7 +28,7 @@ func displacedTree(job *cleanup.Job) (string, error) {
 		return "", err
 	}
 	if payload.exists {
-		if !payload.is(job.Tree) || job.Retirement == "" {
+		if !payload.dir || payload.id.Ino != job.Tree.Ino || job.Retirement == "" {
 			return "", errors.New("displaced retirement has an unexpected payload")
 		}
 		return job.Payload, nil
@@ -37,7 +37,7 @@ func displacedTree(job *cleanup.Job) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if !original.is(job.Tree) {
+	if !original.dir || original.id.Ino != job.Tree.Ino {
 		return "", fmt.Errorf("%s is %s, the job captured tree %s", job.Original, original, label(job.Tree))
 	}
 	return job.Original, nil
@@ -101,8 +101,15 @@ func (r *Relocator) displacedFiles(ctx context.Context, job *cleanup.Job) (*reti
 	if err != nil {
 		return nil, err
 	}
-	if !seen.is(job.Admin) {
+	if !seen.dir || seen.id.Ino != job.Admin.Ino {
 		return nil, fmt.Errorf("%s is %s, the job captured admin %s", admin, seen, label(job.Admin))
+	}
+	treeSeen, err := sight(tree)
+	if err != nil {
+		return nil, err
+	}
+	if !treeSeen.dir || treeSeen.id.Ino != job.Tree.Ino {
+		return nil, errors.New("displaced retirement lost the captured tree inode")
 	}
 	if err := displacedClaims(job, tree); err != nil {
 		return nil, err
@@ -112,7 +119,7 @@ func (r *Relocator) displacedFiles(ctx context.Context, job *cleanup.Job) (*reti
 		return nil, err
 	}
 	info, err := root.Stat(".")
-	if err != nil || cleanup.IDOf(info) != job.Admin {
+	if err != nil || cleanup.IDOf(info) != seen.id {
 		_ = root.Close()
 		return nil, errors.New("displaced registration changed while opening")
 	}
@@ -121,7 +128,7 @@ func (r *Relocator) displacedFiles(ctx context.Context, job *cleanup.Job) (*reti
 		_ = root.Close()
 		return nil, err
 	}
-	files := &retirementFiles{root: root, back: back, tree: tree, admin: admin, displaced: true, want: cleanup.Links{DotGit: dotGit, AdminGitdir: job.Links.AdminGitdir}, treeID: job.Tree, adminID: job.Admin}
+	files := &retirementFiles{root: root, back: back, tree: tree, admin: admin, displaced: true, want: cleanup.Links{DotGit: dotGit, AdminGitdir: job.Links.AdminGitdir}, treeID: treeSeen.id, adminID: seen.id}
 	if err := r.proveDisplaced(ctx, job, files, content); err != nil {
 		files.close()
 		return nil, err

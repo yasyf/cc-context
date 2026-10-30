@@ -408,7 +408,7 @@ func TestMovedCapturedAdminCrashRecoveryDeletesAdminBeforePayload(t *testing.T) 
 	}
 }
 
-func TestMovedCapturedAdminRefusesDeviceChanges(t *testing.T) {
+func TestMovedCapturedAdminRefreshesOnlyDeviceNumbers(t *testing.T) {
 	for _, tree := range []bool{false, true} {
 		name := "admin"
 		if tree {
@@ -417,6 +417,7 @@ func TestMovedCapturedAdminRefusesDeviceChanges(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			f := newFixture(t)
 			job := f.intend()
+			originalTree, originalAdmin := job.Tree, job.Admin
 			retired := moveCapturedAdmin(t, f, job)
 			if tree {
 				job.Tree.Dev++
@@ -427,13 +428,12 @@ func TestMovedCapturedAdminRefusesDeviceChanges(t *testing.T) {
 				t.Fatal(err)
 			}
 			retireFixture(t, f, &job)
-			if job.Blocked == nil || job.Blocked.Reason != "identity" || job.Retirement != "" {
-				t.Fatalf("Retire() = %+v, want device mismatch refusal", job)
+			if job.Blocked != nil || job.Retirement != cleanup.RetirementComplete || job.Tree != originalTree || job.Admin != originalAdmin {
+				t.Fatalf("Retire() = %+v, want refreshed devices and logical retirement", job)
 			}
-			if got := f.read(filepath.Join(retired, "gitdir")); got != job.Links.AdminGitdir {
-				t.Errorf("device refusal changed backlink to %q", got)
+			if got := f.read(filepath.Join(retired, "gitdir")); got != "" {
+				t.Errorf("retired backlink = %q, want empty", got)
 			}
-			f.absent(filepath.Join(retired, "locked"))
 			f.stored(&job)
 		})
 	}
@@ -477,22 +477,39 @@ func TestMovedCapturedAdminRejectsChangedCapturedGitIdentity(t *testing.T) {
 		}},
 	}
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			f := newFixture(t)
-			job := f.intend()
-			admin := moveCapturedAdmin(t, f, job)
-			tt.change(f, job, admin)
-			backlink := f.read(filepath.Join(admin, "gitdir"))
-			retireFixture(t, f, &job)
-			if job.Blocked == nil || job.Blocked.Reason != "identity" || job.Retirement != "" {
-				t.Fatalf("Retire() = %+v, want captured identity refusal", job)
+		for _, refresh := range []bool{false, true} {
+			name := tt.name
+			if refresh {
+				name += " device-only"
 			}
-			if got := f.read(filepath.Join(admin, "gitdir")); got != backlink {
-				t.Errorf("refusal changed backlink to %q", got)
-			}
-			f.absent(filepath.Join(admin, "locked"))
-			f.stored(&job)
-		})
+			t.Run(name, func(t *testing.T) {
+				f := newFixture(t)
+				job := f.intend()
+				admin := moveCapturedAdmin(t, f, job)
+				if refresh {
+					job.Tree.Dev++
+					job.Admin.Dev++
+					if err := f.journal.Save(job); err != nil {
+						t.Fatal(err)
+					}
+				}
+				capturedTree, capturedAdmin := job.Tree, job.Admin
+				tt.change(f, job, admin)
+				backlink := f.read(filepath.Join(admin, "gitdir"))
+				retireFixture(t, f, &job)
+				if job.Blocked == nil || job.Blocked.Reason != "identity" || job.Retirement != "" {
+					t.Fatalf("Retire() = %+v, want captured identity refusal", job)
+				}
+				if got := f.read(filepath.Join(admin, "gitdir")); got != backlink {
+					t.Errorf("refusal changed backlink to %q", got)
+				}
+				f.absent(filepath.Join(admin, "locked"))
+				if job.Tree != capturedTree || job.Admin != capturedAdmin {
+					t.Fatal("unproved identity refreshed captured devices")
+				}
+				f.stored(&job)
+			})
+		}
 	}
 }
 
