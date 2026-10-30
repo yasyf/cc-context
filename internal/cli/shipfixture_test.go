@@ -849,7 +849,12 @@ exit 0
     : > "$SHIP_LOG.git-committed" ;;
   "rev-parse HEAD") printf '%s' '` + fakeHeadSHA + `' ;;
   "rev-parse --show-toplevel") printf '%s' "$SHIP_FAKE_ROOT" ;;
-  "rev-parse --path-format=absolute") printf '%s\n' "$GT_META_DIR" ;;
+  "rev-parse --path-format=absolute")
+    if [ "$3 $4" = "--git-path objects" ]; then
+      printf '%s/objects\n' "${GT_META_DIR:-$SHIP_FAKE_ROOT/.git}"
+    else
+      printf '%s\n' "$GT_META_DIR"
+    fi ;;
   "show --end-of-options") printf '%s' "$GIT_FILE_SHOW_BASE" ;;
   "ls-tree --full-tree") printf '100644 blob 1111111111111111111111111111111111111111\t%s\n' "$5" ;;
   "hash-object -w") printf '%s' '2222222222222222222222222222222222222222' ;;

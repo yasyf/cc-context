@@ -645,29 +645,31 @@ func gtTrunkInv(trunk string) [][]string {
 	return [][]string{
 		{"git", "config", "--get", "branch.HEAD.remote"},
 		{"git", "show-ref", "--verify", "--quiet", ref},
+		{"git", "rev-parse", "--path-format=absolute", "--git-path", "objects"},
 		{"git", "fetch", "--no-tags", "--no-write-fetch-head", "--negotiation-tip=" + ref, "origin", trunk},
 		{"git", "show-ref", "--verify", "--quiet", ref},
 	}
 }
 
-// gtDropTrunkInv takes the trunk resolution out of got so the calls around it
-// stay an exact sequence. Ship resolves the trunk on a goroutine overlapping the
-// commit, so its calls land where nothing fixes them, and CI has recorded logs
-// carrying only some of them. Only the fetch is required; a second occurrence of
-// any call stays in the result for the caller's exact comparison.
 func gtDropTrunkInv(t *testing.T, got [][]string, trunk string, branches ...string) [][]string {
 	t.Helper()
 	resolution := gtTrunkInv(trunk)
 	for _, branch := range branches {
 		resolution = append(resolution, []string{"git", "rev-parse", "--verify", "--quiet", stackPublicationRef(branch, "receipt")})
 	}
-	const fetch = 2
+	const (
+		capture = 2
+		fetch   = 3
+	)
 	dropped := make([]bool, len(resolution))
 	rest := make([][]string, 0, len(got))
 	for _, inv := range got {
 		matched := false
 		for i, call := range resolution {
 			if !dropped[i] && slices.Equal(inv, call) {
+				if i == fetch && !dropped[capture] {
+					t.Error("trunk fetch preceded pack index capture")
+				}
 				dropped[i] = true
 				matched = true
 				break
@@ -683,8 +685,10 @@ func gtDropTrunkInv(t *testing.T, got [][]string, trunk string, branches ...stri
 			t.Errorf("publication receipt lookup missing: %v", resolution[i])
 		}
 	}
-	if !dropped[fetch] {
-		t.Errorf("trunk resolution: no %v in the log\n%v", resolution[fetch], got)
+	for _, i := range []int{capture, fetch} {
+		if !dropped[i] {
+			t.Errorf("trunk resolution: no %v in the log\n%v", resolution[i], got)
+		}
 	}
 	return rest
 }
