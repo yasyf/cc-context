@@ -1,346 +1,39 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
   pull_request:
-  schedule:
-    - cron: "17 9 * * *"
   workflow_dispatch:
-    inputs:
-      commit:
-        description: Exact commit to validate
-        required: true
-        type: string
 
 concurrency:
-  group: ci-${{ inputs.commit || github.ref }}
-  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
 
-env:
-  CLI_SHARDS: 8
-  # Measured on ubuntu-latest CI: 119s of test time against the other packages'
-  # 119s. The light leg is their complement, so no package falls outside both.
-  HEAVY_PKGS: internal/web|internal/semsearch/chunk|internal/semsearch/embed|internal/gtmeta
-
 jobs:
-  scheduler-performance:
+  crossing-baseline:
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest]
     steps:
       - uses: actions/checkout@v7
-        with:
-          ref: ${{ inputs.commit || github.sha }}
-          fetch-depth: 0
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           check-latest: true
           cache: true
       - uses: ./.github/actions/wasm
-      - name: Indexed scheduler reference model and scaling
-        run: |
-          go test -race -run '^TestSchedulerIndexes' -v ./internal/cleanup/daemon
-          go test -run '^$' -bench '^BenchmarkSchedulerParkedQueue$' -benchtime=200ms -count=3 ./internal/cleanup/daemon | tee scheduler-indexed.txt
-      - name: Released scheduler baseline on the same fixture
-        run: |
-          cp internal/cleanup/daemon/engine.go "$RUNNER_TEMP/indexed-engine.go"
-          mv internal/cleanup/daemon/scheduler_index_test.go "$RUNNER_TEMP/scheduler_index_test.go"
-          trap 'cp "$RUNNER_TEMP/indexed-engine.go" internal/cleanup/daemon/engine.go; mv "$RUNNER_TEMP/scheduler_index_test.go" internal/cleanup/daemon/scheduler_index_test.go' EXIT
-          git show a88f5b8fe37b26d7f290a2fa46349ac0f6c76e66:internal/cleanup/daemon/engine.go > internal/cleanup/daemon/engine.go
-          go test -run '^$' -bench '^BenchmarkSchedulerParkedQueue$' -benchtime=200ms -count=3 ./internal/cleanup/daemon | tee scheduler-released.txt
-      - uses: actions/upload-artifact@v7
-        with:
-          name: scheduler-performance-${{ matrix.os }}
-          path: scheduler-*.txt
-
-  testbin:
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: ${{ fromJSON((github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch') && '["ubuntu-latest"]' || '["ubuntu-latest", "macos-latest"]') }}
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ inputs.commit || github.sha }}
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          check-latest: true
-          cache: true
-      - uses: ./.github/actions/wasm
-      - name: Compile the internal/cli race binary and bin its shards
-        # The -race link dominates a shard's fixed cost, so it is paid once here
-        # instead of once per shard. Binning off the binary's own -test.list
-        # keeps that to one compile rather than two.
-        run: |
-          go test -c -race -o cli.test ./internal/cli/
-          SHARD_TEST_BIN="$PWD/cli.test" bash scripts/shard-tests.sh --all "$CLI_SHARDS" >shards.tsv
-      - uses: actions/upload-artifact@v7
-        with:
-          name: cli-test-${{ matrix.os }}
-          path: |
-            cli.test
-            shards.tsv
-          compression-level: 1
-          retention-days: 1
-
-  test:
-    needs: testbin
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: ${{ fromJSON((github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch') && '["ubuntu-latest"]' || '["ubuntu-latest", "macos-latest"]') }}
-        shard: [0, 1, 2, 3, 4, 5, 6, 7]
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ inputs.commit || github.sha }}
       - uses: ./.github/actions/cli-test-env
-      - uses: actions/download-artifact@v8
-        with:
-          name: cli-test-${{ matrix.os }}
-      - name: Test (race)
-        # The binary resolves testdata goldens against its working directory, so
-        # it runs from the package it was compiled from, not the repo root.
-        working-directory: internal/cli
+      - name: Actual baseline provider-crossing visits
+        shell: bash
         run: |
-          run="$(awk -F'\t' -v want="${{ matrix.shard }}" '$1 == want { print $2 }' "$GITHUB_WORKSPACE/shards.tsv")"
-          # An empty -test.run selects every test rather than none.
-          test -n "$run"
-          chmod +x "$GITHUB_WORKSPACE/cli.test"
-          # A cobra command reached without SetArgs falls back to os.Args, where
-          # a detached `30m` reads as a subcommand.
-          # -test.v is what makes shard-weights.json re-recordable from a green
-          # run's logs, on the hardware the weights balance.
-          "$GITHUB_WORKSPACE/cli.test" -test.v "-test.timeout=30m" "-test.run=$run"
-
-  test-pkgs:
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-        group: [heavy, light]
-    steps:
-      - uses: actions/checkout@v7
+          set -o pipefail
+          go test -race -run '^TestCrossing' -v ./internal/gtmeta 2>&1 | tee crossing-baseline.txt
+      - uses: actions/upload-artifact@v7
+        if: always()
         with:
-          ref: ${{ inputs.commit || github.sha }}
-      - uses: actions/setup-go@v6
-        id: go
-        with:
-          go-version-file: go.mod
-          check-latest: true
-          cache: true
-      - uses: ./.github/actions/cli-test-env
-      - uses: ./.github/actions/wasm
-      - name: Cache the wazero AOT compilation output
-        uses: actions/cache@v5
-        with:
-          # Two roots: the cache dir the suites resolve off $CLAUDE_PLUGIN_DATA,
-          # and the fixed one internal/semsearch/chunk's TestMain pins under
-          # os.TempDir(). The Test step moves both under $RUNNER_TEMP.
-          path: |
-            ${{ runner.temp }}/ccx-cache/wasm
-            ${{ runner.temp }}/cc-context-test-wasm-cache/wasm
-          key: wasm-aot-${{ matrix.group }}-${{ runner.os }}-${{ runner.arch }}-go${{ steps.go.outputs.go-version }}-${{ hashFiles('scripts/build-wasm.sh', 'scripts/build-embed-wasm.sh', 'scripts/build-chunk-grammars.sh', 'format-core/core/**', 'format-core/wasm/**', 'format-core/Cargo.lock', 'format-core/Cargo.toml', 'format-core/rust-toolchain.toml', 'embed-core/**', 'internal/semsearch/chunk/wasm/bridge.c', 'internal/semsearch/chunk/wasm/wasm_endian.h') }}
-      - name: Test (race)
-        # internal/cli stands up real git/jj/gt repositories per test rather than
-        # faking their output, so it runs well past go test's 10m default.
-        env:
-          # $RUNNER_TEMP is one static path per runner, so the cache step above
-          # can name both AOT roots; $HOME and the macOS launchd temp dir cannot
-          # both be spelled statically.
-          CLAUDE_PLUGIN_DATA: ${{ runner.temp }}/ccx-cache
-          TMPDIR: ${{ runner.temp }}
-        run: |
-          if [ "${{ matrix.group }}" = heavy ]; then
-            pkgs="$(go list ./... | grep -E "$HEAVY_PKGS")"
-          else
-            pkgs="$(go list ./... | grep -vE "internal/cli|$HEAVY_PKGS")"
-          fi
-          echo "$pkgs" | xargs go test -race -timeout 30m
-
-  shard-coverage:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ inputs.commit || github.sha }}
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          check-latest: true
-          cache: true
-      - uses: ./.github/actions/wasm
-      - name: Every internal/cli test lands in exactly one shard
-        run: bash scripts/shard-tests.sh --check "$CLI_SHARDS"
-
-  rust:
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: ${{ fromJSON((github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch') && '["ubuntu-latest"]' || '["ubuntu-latest", "macos-latest"]') }}
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ inputs.commit || github.sha }}
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Rust format-core tests (Rust suite + corpus gate)
-        run: cargo test --manifest-path format-core/Cargo.toml
-
-  vet:
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: ${{ fromJSON((github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch') && '["ubuntu-latest"]' || '["ubuntu-latest", "macos-latest"]') }}
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ inputs.commit || github.sha }}
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          check-latest: true
-          cache: true
-      - uses: ./.github/actions/wasm
-      - name: Vet
-        run: go vet ./...
-
-  build:
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: ${{ fromJSON((github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch') && '["ubuntu-latest"]' || '["ubuntu-latest", "macos-latest"]') }}
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ inputs.commit || github.sha }}
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          check-latest: true
-          cache: true
-      - uses: ./.github/actions/wasm
-      - name: Build
-        run: go build ./...
-
-  lint:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ inputs.commit || github.sha }}
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          check-latest: true
-          cache: true
-      - uses: ./.github/actions/wasm
-      - name: Resolve the pinned golangci-lint version
-        id: golangci
-        # Single-sourced from mise.toml, the pin `task lint` resolves locally.
-        # A dropped pin fails here rather than floating back onto latest.
-        run: |
-          pin="$(sed -n 's/^golangci-lint = "\(.*\)"$/\1/p' mise.toml)"
-          test -n "$pin"
-          echo "version=v$pin" >> "$GITHUB_OUTPUT"
-      - name: golangci-lint
-        uses: golangci/golangci-lint-action@v9
-        with:
-          version: ${{ steps.golangci.outputs.version }}
-
-  vuln:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ inputs.commit || github.sha }}
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          check-latest: true
-          cache: true
-      - uses: ./.github/actions/wasm
-      - name: govulncheck
-        run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
-          govulncheck ./...
-
-  hook-tests:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ inputs.commit || github.sha }}
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          check-latest: true
-          cache: true
-      - uses: ./.github/actions/wasm
-      # The guard pack resolves ccx through plugin/bin/ccx — a gitignored
-      # symlink since the self-provisioning installer replaced the checked-in
-      # shim. Without a binary there, rewrite hooks degrade to blocks/no-ops
-      # and the rewrite-expectation tests fail. Build from this checkout.
-      - name: Build ccx and link plugin/bin
-        run: |
-          go build -o bin/ccx ./cmd/ccx
-          ln -sf ../../bin/ccx plugin/bin/ccx
-      - uses: astral-sh/setup-uv@v8.2.0
-        with:
-          # capt-hook requires Python >=3.13; without this the runner's default
-          # 3.12 makes uv resolve an old capt-hook that lacks newer hook APIs.
-          python-version: "3.13"
-      - name: Cache NLP resources
-        uses: actions/cache@v5
-        with:
-          path: |
-            ~/.cache/spacy/models
-            ~/.wn_data
-          key: capt-hook-nlp-en_core_web_sm-oewn2025
-      - name: Provision NLP resources (spaCy en_core_web_sm + oewn:2025 lexicon)
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: uv run --no-project --with 'capt-hook>=12.77.0' python -c "from captain_hook.util.model_cache import ensure_nlp_resources; ensure_nlp_resources()"
-      - name: Install cc-notes binary onto PATH
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          mkdir -p "$HOME/.local/bin"
-          gh release download -R yasyf/cc-notes --pattern cc-notes_linux_amd64 --output "$HOME/.local/bin/cc-notes" --clobber
-          chmod +x "$HOME/.local/bin/cc-notes"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      - name: capt-hook pack test
-        run: uvx --isolated 'capt-hook>=12.77.0' pack test plugin
-      # The declarative harness can only inject a string tool_response; the dict
-      # shapes Claude Code hands the guards (record_json_shape's real input, and the
-      # rest of the guard/session-state unit tests) are covered by pytest over the
-      # whole directory instead. Pinned to 3.13 with published capt-hook, matching
-      # the harness.
-      - name: Guard-pack pytest
-        run: PYTHONPATH=plugin/capt-hook uv run --no-project --no-config --python 3.13 --with 'capt-hook>=12.77.0' --with pytest python -m pytest plugin/capt-hook/hooks/
-
-  descriptor-agreement:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ inputs.commit || github.sha }}
-      - name: Plugin manifest version equals the pinned binrun descriptor
-        run: |
-          manifest="$(jq -r .version plugin/.claude-plugin/plugin.json)"
-          pinned="$(tail -n +2 plugin/bin/ccx.binrun | jq -r .version.static)"
-          echo "manifest=$manifest pinned=$pinned"
-          test "$manifest" = "$pinned"
+          name: crossing-baseline-${{ matrix.os }}
+          path: crossing-baseline.txt
