@@ -418,7 +418,7 @@ func gtStackAll(ctx context.Context, dir render.Dir, prefix string) ([]string, g
 }
 
 func gtStackFromState(ctx context.Context, dir render.Dir, prefix string, state gtState, branch string, children map[string][]string) ([]string, error) {
-	trunk, err := gtTrunkBranch(prefix, state)
+	trunk, err := gtTrunkForBranch(prefix, state, branch)
 	if err != nil {
 		return nil, err
 	}

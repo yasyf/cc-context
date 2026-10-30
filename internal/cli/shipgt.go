@@ -353,6 +353,23 @@ func gtTrunkBranch(prefix string, state gtState) (string, error) {
 	return "", fmt.Errorf("%s: gt state named no trunk branch", prefix)
 }
 
+func gtTrunkForBranch(prefix string, state gtState, branch string) (string, error) {
+	for range len(state) {
+		entry, known := state[branch]
+		if !known {
+			break
+		}
+		if entry.Trunk {
+			return branch, nil
+		}
+		if len(entry.Parents) == 0 {
+			break
+		}
+		branch = entry.Parents[0].Ref
+	}
+	return gtTrunkBranch(prefix, state)
+}
+
 // gtDownstack walks branch to trunk via each entry's first parent, returning
 // every branch visited (branch first), excluding trunk.
 func gtDownstack(prefix string, state gtState, branch, trunk string) ([]string, error) {

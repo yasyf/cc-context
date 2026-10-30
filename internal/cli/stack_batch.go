@@ -128,7 +128,7 @@ func (b *stackBatch) listQuery(ctx context.Context, query stackBatchQuery) (*sta
 	if err := store.focus(ctx, common, branch); err != nil {
 		return nil, err
 	}
-	trunk, err := gtTrunkBranch("stack list", store.state)
+	trunk, err := gtTrunkForBranch("stack list", store.state, branch)
 	if err != nil {
 		return nil, err
 	}
