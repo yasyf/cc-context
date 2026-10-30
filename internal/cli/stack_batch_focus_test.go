@@ -43,7 +43,8 @@ func TestStackListBatchRefReadsFollowRequestedTopology(t *testing.T) {
 				t.Fatal(err)
 			}
 			input := filepath.Join(t.TempDir(), "requested-refs")
-			script := "#!/bin/sh\ncase \" $* \" in\n*for-each-ref*--stdin*)\n/bin/cat > " + shQuote(input) + "\nexec " + shQuote(original) + " \"$@\" < " + shQuote(input) + "\n;;\nesac\nexec " + shQuote(original) + " \"$@\"\n"
+			audit := filepath.Join(t.TempDir(), "all-requested-refs")
+			script := "#!/bin/sh\ncase \" $* \" in\n*for-each-ref*--stdin*)\n/bin/cat > " + shQuote(input) + "\nprintf '%s\\n' BEGIN >> " + shQuote(audit) + "\n/bin/cat " + shQuote(input) + " >> " + shQuote(audit) + "\nexec " + shQuote(original) + " \"$@\" < " + shQuote(input) + "\n;;\nesac\nexec " + shQuote(original) + " \"$@\"\n"
 			execstub.Write(t, filepath.Join(f.ShimBin, "git"), script)
 			results := stackBatchReports(t, f, paths...)
 			for i, result := range results {
@@ -51,14 +52,21 @@ func TestStackListBatchRefReadsFollowRequestedTopology(t *testing.T) {
 					t.Fatalf("result %d = %+v", i, result)
 				}
 			}
-			payload, err := os.ReadFile(input)
+			payload, err := os.ReadFile(audit)
 			if err != nil {
 				t.Fatal(err)
 			}
-			requested := strings.Fields(string(payload))
-			t.Logf("unrelated=%d requested_worktrees=12 resolved_refs=%d", unrelated, len(requested))
-			if len(requested) != 14 || strings.Contains(string(payload), "unrelated-") {
-				t.Fatalf("resolved %d refs for 12 worktrees: %s", len(requested), payload)
+			var calls, resolved int
+			for _, entry := range strings.Fields(string(payload)) {
+				if entry == "BEGIN" {
+					calls++
+				} else {
+					resolved++
+				}
+			}
+			t.Logf("unrelated=%d requested_worktrees=12 ref_calls=%d resolved_refs=%d", unrelated, calls, resolved)
+			if calls != 1 || resolved != 14 || strings.Contains(string(payload), "unrelated-") {
+				t.Fatalf("resolved %d refs across %d calls for 12 worktrees: %s", resolved, calls, payload)
 			}
 		})
 	}

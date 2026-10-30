@@ -206,29 +206,9 @@ func ReadOriginOrphans(ctx context.Context, commonDir string) (State, []Orphan, 
 
 // ReadOriginOrphansWithMembers binds live native state and catalog ownership to one metadata read.
 func ReadOriginOrphansWithMembers(ctx context.Context, commonDir string) (State, []Orphan, []string, error) {
-	return readStateWithMembers(ctx, commonDir, true)
-}
-
-func readState(ctx context.Context, commonDir string, remote bool) (State, []Orphan, error) {
-	state, orphans, _, err := readStateWithMembers(ctx, commonDir, remote)
-	return state, orphans, err
-}
-
-func readStateWithMembers(ctx context.Context, commonDir string, remote bool) (State, []Orphan, []string, error) {
-	c, receipts, err := load(commonDir)
+	r, receipts, err := loadRows(commonDir)
 	if err != nil {
 		return nil, nil, nil, err
-	}
-	r, err := rows(c)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	if len(r) == 0 {
-		trunk, err := ReadTrunk(ctx, commonDir)
-		if err != nil {
-			return nil, nil, nil, err
-		}
-		r = []branchRow{{branch: trunk, owner: -1}}
 	}
 	names := make([]string, 0, len(r))
 	for _, row := range r {
@@ -237,9 +217,38 @@ func readStateWithMembers(ctx context.Context, commonDir string, remote bool) (S
 		}
 	}
 	slices.Sort(names)
+	state, orphans, err := readRowsState(ctx, commonDir, true, r, receipts)
+	return state, orphans, names, err
+}
+
+func readState(ctx context.Context, commonDir string, remote bool) (State, []Orphan, error) {
+	r, receipts, err := loadRows(commonDir)
+	if err != nil {
+		return nil, nil, err
+	}
+	return readRowsState(ctx, commonDir, remote, r, receipts)
+}
+
+func loadRows(commonDir string) ([]branchRow, receipts, error) {
+	c, r, err := load(commonDir)
+	if err != nil {
+		return nil, r, err
+	}
+	rows, err := rows(c)
+	return rows, r, err
+}
+
+func readRowsState(ctx context.Context, commonDir string, remote bool, r []branchRow, receipts receipts) (State, []Orphan, error) {
+	if len(r) == 0 {
+		trunk, err := ReadTrunk(ctx, commonDir)
+		if err != nil {
+			return nil, nil, err
+		}
+		r = []branchRow{{branch: trunk, owner: -1}}
+	}
 	heads, err := readHeads(ctx, commonDir, r, remote)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 	state := State{}
 	var orphans []Orphan
@@ -263,7 +272,7 @@ func readStateWithMembers(ctx context.Context, commonDir string, remote bool) (S
 		}
 		state[row.branch] = BranchState{Head: head, State: held, NeedsRestack: row.parentRevision != parentHead, Parents: []Ref{{Ref: row.parent, SHA: row.parentRevision}}}
 	}
-	return state, orphans, names, nil
+	return state, orphans, nil
 }
 
 func readHeads(ctx context.Context, commonDir string, rows []branchRow, remote bool) (map[string]string, error) {
