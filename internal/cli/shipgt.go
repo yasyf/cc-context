@@ -956,6 +956,13 @@ func gtOffParent(branch, held string) string {
 func gtTrack(ctx context.Context, errW io.Writer, l lane, o shipOpts, branch string, c *gtCache) (gtState, string, error) {
 	chained := ""
 	if o.parent == "" {
+		recorded, err := gtNativeTrackParent(ctx, l, branch)
+		if err != nil {
+			return nil, "", err
+		}
+		o.parent = recorded.base
+	}
+	if o.parent == "" {
 		parent, stacked, err := gtTrunkParent(ctx, l, c, branch)
 		if err != nil {
 			return nil, "", err
@@ -1214,6 +1221,46 @@ func gtAdoptRecordedParent(ctx context.Context, errW io.Writer, l lane, c *gtCac
 		segs = append(segs, fmt.Sprintf("tracked %s onto %s from Graphite's record of #%d", b.name, b.base, b.pr)+shipSep)
 	}
 	return strings.Join(segs, ""), nil
+}
+
+// gtNativeTrackParent is the parent an untracked branch is tracked onto on the
+// native lane when no --parent names one: the base of its open pull request
+// when that is not trunk. A branch cut from another lane's push carries no
+// commit of a branch this checkout tracks, so history alone reads it as cut
+// from trunk and a restack replays the other lane's commits into it.
+func gtNativeTrackParent(ctx context.Context, l lane, branch string) (gtRecordedParent, error) {
+	if !l.native {
+		return gtRecordedParent{}, nil
+	}
+	owner, repo, err := gtRepoOwnerName(ctx, l, "ship")
+	if err != nil {
+		return gtRecordedParent{}, err
+	}
+	infos, err := gtAPI(ctx).PullRequestInfo(ctx, gtapi.PullRequestInfoRequest{RepoOwner: owner, RepoName: repo, PRHeadRefNames: []string{branch}, Callsite: "ccx"})
+	if err != nil {
+		return gtRecordedParent{}, fmt.Errorf("ship: read the pull request of %s: %w", branch, err)
+	}
+	var recorded gtRecordedParent
+	for _, info := range infos {
+		if info.State == gtapi.PROpen && info.HeadRefName == branch {
+			recorded = gtRecordedParent{name: branch, base: info.BaseRefName, pr: info.PRNumber}
+		}
+	}
+	if recorded.base == "" {
+		return gtRecordedParent{}, nil
+	}
+	trunk, err := nativemeta.ReadTrunk(ctx, l.checkout.CommonDir)
+	if err != nil || recorded.base == trunk {
+		return gtRecordedParent{}, err
+	}
+	local, err := gitRefExists(ctx, l.dir(), "ship", gtRestackRef(recorded.base))
+	if err != nil {
+		return gtRecordedParent{}, err
+	}
+	if !local {
+		return gtRecordedParent{}, refuse("ship: %s, the base of %s's open #%d, is no local branch — fetch it with git fetch origin %s:%s, then ship again", recorded.base, branch, recorded.pr, recorded.base, recorded.base)
+	}
+	return recorded, nil
 }
 
 func gtRecordedBase(ctx context.Context, l lane, branch string) (gtRecordedParent, error) {

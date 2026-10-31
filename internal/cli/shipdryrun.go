@@ -276,6 +276,20 @@ func dryRunOnto(ctx context.Context, l lane, o shipOpts, r *shipDryRun, from gtR
 // ship drops -f when --parent is given: the two spellings resolve to different
 // branches, and only one of them was asked for.
 func dryRunTrack(ctx context.Context, l lane, o shipOpts, state gtState, r *shipDryRun) error {
+	recorded := gtRecordedParent{}
+	if o.parent == "" {
+		var err error
+		recorded, err = gtNativeTrackParent(ctx, l, r.branch)
+		var refusal *shipRefusal
+		if errors.As(err, &refusal) {
+			r.refusals = append(r.refusals, refusal.Error())
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		o.parent = recorded.base
+	}
 	if o.parent != "" {
 		r.parent = o.parent
 		replay := ""
@@ -286,6 +300,9 @@ func dryRunTrack(ctx context.Context, l lane, o shipOpts, state gtState, r *ship
 			}
 		}
 		r.because = "untracked, so gt track --parent records it (ship drops -f, which would outrank it)" + replay
+		if recorded.base != "" {
+			r.because = fmt.Sprintf("untracked, so ship tracks it on the base of its open #%d", recorded.pr) + replay
+		}
 		if o.parent == r.trunk && !o.amend {
 			head, base, root, err := gtRootBase(ctx, l.dir(), r.branch, r.trunk)
 			if err != nil {

@@ -176,3 +176,68 @@ func TestShipNewBranchStacksOnTheBranchItWasCutFrom(t *testing.T) {
 		})
 	}
 }
+
+// TestShipTracksABranchCutFromAnotherLaneOnItsPullRequestBase ships mine, cut
+// from theirs, another lane's pushed branch that this checkout never tracked,
+// with mine's pull request open on theirs outside any native stack. No commit
+// above trunk named a tracked branch, so ship recorded mine on main and the
+// restack and submit replayed theirs into it and retargeted it onto main.
+func TestShipTracksABranchCutFromAnotherLaneOnItsPullRequestBase(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		local bool
+	}{
+		{name: "theirs is a local branch", local: true},
+		{name: "theirs is only on origin", local: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := shipRepo(t, vcstest.Remote())
+			f.Decorate(func(ctx context.Context) context.Context { return withStackProvider(ctx, true) })
+			mustRun(t, f.Env(), f.Dir, "git", "config", "ccx.stack", "github")
+			shipGTUntracked(t, f, "theirs")
+			mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "theirs")
+			shipGTUntracked(t, f, "mine")
+			mine := gitAt(t, f.Env(), f.Dir, "rev-parse", "mine")
+			if !tt.local {
+				mustRun(t, f.Env(), f.Dir, "git", "branch", "-qD", "theirs")
+			}
+			if err := nativemeta.Init(f.Context(), filepath.Join(f.Dir, ".git"), "main"); err != nil {
+				t.Fatal(err)
+			}
+			api := stubGTAPI(t)
+			api.openPRs("theirs", "mine")
+			api.bases["theirs"], api.bases["mine"] = "main", "theirs"
+			api.recorded["theirs"], api.recorded["mine"] = "main", "theirs"
+			f.Decorate(api.ctx)
+			stubStackPRs(t, f, nil)
+			stubStackStanding(t, f, nil)
+			shipGTReady(t, f)
+
+			_, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push")
+			state, stateErr := gtStateQuery(f.Context(), render.Dir(f.Dir), "test")
+			if stateErr != nil {
+				t.Fatal(stateErr)
+			}
+			if !tt.local {
+				if err == nil || !strings.Contains(err.Error(), "theirs, the base of mine's open #") {
+					t.Fatalf("ship error = %v, want a refusal naming theirs as mine's base to fetch", err)
+				}
+				if s, tracked := state["mine"]; tracked {
+					t.Errorf("mine = %+v, want it left untracked rather than recorded on main", s)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ship: %v", err)
+			}
+			if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "mine~1"); got != mine {
+				t.Errorf("mine was replayed: its commit before the new one is %s, want %s", got, mine)
+			}
+			for branch, parent := range map[string]string{"theirs": "main", "mine": "theirs"} {
+				if s := state[branch]; len(s.Parents) != 1 || s.Parents[0].Ref != parent || s.NeedsRestack {
+					t.Errorf("%s = %+v, want it recorded on %s with nothing to restack", branch, s, parent)
+				}
+			}
+		})
+	}
+}
