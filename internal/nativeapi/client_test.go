@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestPullRequestInfoBatchesGitHubReadsInInputOrder(t *testing.T) {
@@ -800,5 +801,42 @@ func TestBranchHistoryReadsOriginPresenceAndPullRequestHeads(t *testing.T) {
 	}
 	if _, _, err := client.BranchHistory(context.Background(), "org", "hidden", "release"); !errors.As(err, &status) || status.Status != http.StatusBadGateway {
 		t.Fatalf("BranchHistory on an unreadable repository = %v; want its error, never a missing branch", err)
+	}
+}
+
+func TestASecondaryRateLimitIsRetriedAndAPrimaryOneOrAPermissionRefusalIsNot(t *testing.T) {
+	secondaryLimitWaits = []time.Duration{time.Millisecond, time.Millisecond}
+	t.Cleanup(func() { secondaryLimitWaits = []time.Duration{time.Minute, 2 * time.Minute} })
+	cases := []struct {
+		name      string
+		remaining string
+		message   string
+		calls     int
+		created   bool
+	}{
+		{"secondary", "3297", "API rate limit exceeded for user ID 709645.", 2, true},
+		{"primary", "0", "API rate limit exceeded for user ID 709645.", 1, false},
+		{"permission", "4000", "Resource not accessible by integration", 1, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				calls++
+				if calls == 1 {
+					w.Header().Set("X-RateLimit-Remaining", tc.remaining)
+					w.WriteHeader(http.StatusForbidden)
+					_, _ = w.Write([]byte(`{"message":"` + tc.message + `"}`))
+					return
+				}
+				w.WriteHeader(http.StatusCreated)
+				_, _ = w.Write([]byte(`{"number":46512}`))
+			}))
+			defer srv.Close()
+			_, err := NewWithToken(srv.URL, "github-key").post(context.Background(), "/repos/org/repo/pulls", map[string]any{"head": "feature"})
+			if calls != tc.calls || (err == nil) != tc.created {
+				t.Fatalf("calls=%d err=%v, want calls=%d created=%v", calls, err, tc.calls, tc.created)
+			}
+		})
 	}
 }

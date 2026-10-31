@@ -5,10 +5,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -20,6 +22,8 @@ const (
 	baseURLProd    = "https://api.github.com"
 	requestTimeout = 30 * time.Second
 )
+
+var secondaryLimitWaits = []time.Duration{time.Minute, 2 * time.Minute}
 
 // Client publishes GitHub PRs and reads the explicitly selected merge queue.
 type Client struct {
@@ -83,11 +87,27 @@ func (c *Client) do(ctx context.Context, method, path string, body []byte) ([]by
 }
 
 func (c *Client) request(ctx context.Context, base, token, method, path string, body []byte) ([]byte, error) {
+	for _, wait := range secondaryLimitWaits {
+		payload, retryAfter, err := c.attempt(ctx, base, token, method, path, body)
+		if retryAfter < 0 {
+			return payload, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, errors.Join(err, ctx.Err())
+		case <-time.After(max(wait, retryAfter)):
+		}
+	}
+	payload, _, err := c.attempt(ctx, base, token, method, path, body)
+	return payload, err
+}
+
+func (c *Client) attempt(ctx context.Context, base, token, method, path string, body []byte) ([]byte, time.Duration, error) {
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, method, base+path, bytes.NewReader(body))
 	if err != nil {
-		return nil, err
+		return nil, -1, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("User-Agent", "ccx-github-stack/"+version.String())
@@ -98,17 +118,30 @@ func (c *Client) request(ctx context.Context, base, token, method, path string, 
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("github-stack: %s %s: %w", method, req.URL, err)
+		return nil, -1, fmt.Errorf("github-stack: %s %s: %w", method, req.URL, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	payload, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, err
+		return nil, -1, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return nil, statusError(method, req.URL.String(), resp.StatusCode, payload)
+		return nil, secondaryLimit(resp, payload), statusError(method, req.URL.String(), resp.StatusCode, payload)
 	}
-	return payload, nil
+	return payload, -1, nil
+}
+
+func secondaryLimit(resp *http.Response, payload []byte) time.Duration {
+	if resp.StatusCode != http.StatusForbidden && resp.StatusCode != http.StatusTooManyRequests {
+		return -1
+	}
+	if seconds, err := strconv.Atoi(resp.Header.Get("Retry-After")); err == nil {
+		return time.Duration(seconds) * time.Second
+	}
+	if remaining := resp.Header.Get("X-RateLimit-Remaining"); remaining != "0" && strings.Contains(strings.ToLower(statusMessage(payload)), "rate limit") {
+		return 0
+	}
+	return -1
 }
 
 func (c *Client) graphql(ctx context.Context, query string, out any) error {
