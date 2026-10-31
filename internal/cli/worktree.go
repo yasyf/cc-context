@@ -175,12 +175,11 @@ A tree a live process is working in, holding open, or was started on is
 refused. --wait then polls that job until its tree is deleted, as
 "ccx vcs cleanup wait" does, and the daemon deletes the awaited tree ahead of
 every job nobody awaits, at the pace its governor allows;
-"ccx vcs cleanup status" reports the queue. While "ccx vcs cleanup pause" holds
-the queue, rm runs only the checks that look for no live process, then queues
-the removal pending and moves nothing: "ccx vcs cleanup resume" runs the whole
-preflight again and removes the tree at the queue's pace. --wait fails at once
-while the queue is paused, whether rm queued the removal pending or the pause
-came after it.
+"ccx vcs cleanup status" reports the queue. While physical deletion is paused,
+rm queues registration retirement. The daemon rechecks the captured identity
+and activity before unregistering an inactive worktree, keeping its checkout
+directory in place. --wait fails at once while physical deletion is paused,
+whether rm queued the removal during the pause or the pause came after it.
 --dry-run runs the daemon's whole preflight in process, so it refuses whatever
 rm would.
 
@@ -1280,7 +1279,7 @@ func reportGitWorktreeRemoval(ctx context.Context, cmd *cobra.Command, name, sha
 	}
 	held := receipt.State != cleanup.StateBlocked && cleanup.Phase(receipt.State).Logical()
 	if held {
-		cmd.Println(strings.Join([]string{"queued " + name, shape, path, string(receipt.State) + " " + receipt.JobID, "queue paused until ccx vcs cleanup resume"}, shipSep))
+		cmd.Println(strings.Join([]string{"queued " + name, shape, path, string(receipt.State) + " " + receipt.JobID, "physical deletion paused; inspect registration retirement with ccx vcs cleanup status"}, shipSep))
 	}
 	if !wait {
 		if !held {

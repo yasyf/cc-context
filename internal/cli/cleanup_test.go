@@ -373,7 +373,7 @@ func TestCleanupWorktreeRmQueuesPendingWhilePaused(t *testing.T) {
 	}
 	id := jobs[0]
 	queued := "queued feat · git worktree · " + path + " · pending " + id + " · "
-	if want := queued + "queue paused until ccx vcs cleanup resume\n"; out != want {
+	if want := queued + "physical deletion paused; inspect registration retirement with ccx vcs cleanup status\n"; out != want {
 		t.Errorf("rm while paused = %q, want %q", out, want)
 	}
 	if job := cleanupJob(t, f, h, id); job.Phase != cleanup.PhasePending || job.Blocked != nil {
@@ -383,7 +383,7 @@ func TestCleanupWorktreeRmQueuesPendingWhilePaused(t *testing.T) {
 	if refs := recoveryRefs(t, f); refs != "" {
 		t.Errorf("recovery refs = %q, want none", refs)
 	}
-	if out, err := runWorktreeCmd(t, f, "rm", "feat"); err != nil || out != queued+"queue paused until ccx vcs cleanup resume\n" {
+	if out, err := runWorktreeCmd(t, f, "rm", "feat"); err != nil || out != queued+"physical deletion paused; inspect registration retirement with ccx vcs cleanup status\n" {
 		t.Errorf("a repeated rm while paused = %q, %v; want the same pending job", out, err)
 	}
 	if got := journaledJobs(t, h); !slices.Equal(got, jobs) {
@@ -398,7 +398,7 @@ func TestCleanupWorktreeRmQueuesPendingWhilePaused(t *testing.T) {
 	if !errors.Is(err, errCleanupPaused) || err.Error() != want {
 		t.Errorf("rm --wait while paused = %v, want %q at once", err, want)
 	}
-	if out != queued+"queue paused until ccx vcs cleanup resume\n" {
+	if out != queued+"physical deletion paused; inspect registration retirement with ccx vcs cleanup status\n" {
 		t.Errorf("rm --wait while paused printed %q, want only the queued line", out)
 	}
 	if want := []cleanup.Query{{JobID: id, Await: true}}; !slices.Equal(svc.queries, want) {

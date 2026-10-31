@@ -196,8 +196,8 @@ jobs first in queue order, then the most recently finished, under a header
 naming the daemon, its deletion governor, and whether deletion is paused. The
 report is bounded by --limit and says how many jobs it omitted; it never scans
 a tree for a total or estimates time remaining. While deletion is paused, a job
-waiting only on physical deletion reads "paused", and a "worktree rm" queued
-during the pause reads "pending" until "resume" preflights it.
+waiting only on physical deletion reads "paused". Registration retirement
+continues after identity and activity checks while physical deletion stays paused.
 
 ` + cleanupReadNote,
 		Args: cobra.MatchAll(cobra.MaximumNArgs(1), cleanupJobIDArg),
@@ -283,7 +283,7 @@ func waitCleanupReceipt(ctx context.Context, receipt cleanup.Receipt) error {
 	return err
 }
 
-var errCleanupPaused = errors.New("the deletion queue is paused until ccx vcs cleanup resume")
+var errCleanupPaused = errors.New("physical deletion is paused; inspect registration retirement with ccx vcs cleanup status")
 
 func waitCleanupJob(ctx context.Context, svc cleanup.Service, id string, seen cleanup.Phase) (cleanup.Job, error) {
 	for delay := cleanupWaitPollFloor; ; delay = min(2*delay, cleanupWaitPollCeiling) {
@@ -430,8 +430,8 @@ func newCleanupWaitCmd() *cobra.Command {
 		Long: `Wait until one job's tree is deleted.
 
 It returns once the job is done, and fails with the blockage when the job stops
-for an operator instead. It fails at once while "ccx vcs cleanup pause" holds the
-queue, naming "ccx vcs cleanup resume". While it waits, the daemon deletes the job ahead of
+for an operator instead. It fails at once while physical deletion is paused.
+Registration retirement can continue during the pause. While it waits, the daemon deletes the job ahead of
 every job nobody awaits, at the pace its governor allows. It
 polls the job's status until then, and fails when the daemon leaves any one poll unanswered for ` + cleanupStatusTimeout.String() + `. A socket that is
 missing or refuses, as it does while another ccx replaces the daemon, is polled
@@ -461,13 +461,12 @@ func newCleanupPauseCmd() *cobra.Command {
 		Short: "Pause the deletion queue",
 		Long: `Pause the deletion queue.
 
-Physical deletion stops and every job mid-removal rests at its phase. A new
-"worktree rm" runs only the checks that look for no live process, then is
-journaled pending with nothing moved; "resume" runs its whole preflight again
-and removes it at the queue's pace. A stack workspace release journals its
-captured registration without moving or removing it. "cleanup adopt" is refused
-before anything is inspected, journaled, or moved. The switch is durable: a
-restarted daemon stays paused until "resume".`,
+Physical deletion stops. Inactive worktree registrations still retire after
+identity and activity checks; their checkout directories remain in place.
+A new "worktree rm" queues that registration retirement. A stack workspace
+release journals its captured registration for the same checks. "cleanup adopt"
+is refused before anything is inspected, journaled, or moved. The switch is
+durable: a restarted daemon keeps physical deletion paused.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
