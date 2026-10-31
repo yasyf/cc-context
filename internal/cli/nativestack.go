@@ -408,9 +408,13 @@ func stackNativeAdopt(ctx context.Context, l lane, tr vcs.Trunk, state gtState, 
 		return state, adopted, nil
 	}
 	if _, tracked := state[current]; !tracked {
-		base, pr, err := stackOpenPRBase(ctx, l, current)
-		if err != nil || base == "" {
+		pr, err := stackOpenPR(ctx, l, current)
+		if err != nil || pr.PRNumber == 0 {
 			return state, adopted, err
+		}
+		base := pr.BaseRefName
+		if pr.StackNumber != 0 {
+			base = tr.Name()
 		}
 		floor := string(tr.Ref())
 		if base != tr.Name() {
@@ -419,7 +423,7 @@ func stackNativeAdopt(ctx context.Context, l lane, tr vcs.Trunk, state gtState, 
 				return nil, nil, err
 			}
 			if !exists {
-				return nil, nil, refuse("%s: %s, the base of %s's open #%d, is no local branch — fetch it with git fetch %s %s:%s, then re-run", stackRebasePrefix, base, current, pr, tr.Remote(), base, base)
+				return nil, nil, refuse("%s: %s, the base of %s's open #%d, is no local branch — fetch it with git fetch %s %s:%s, then re-run", stackRebasePrefix, base, current, pr.PRNumber, tr.Remote(), base, base)
 			}
 			floor = gtRestackRef(base)
 		}
@@ -447,21 +451,21 @@ func stackNativeAdopt(ctx context.Context, l lane, tr vcs.Trunk, state gtState, 
 	return planned, adopted, nil
 }
 
-func stackOpenPRBase(ctx context.Context, l lane, branch string) (string, int, error) {
+func stackOpenPR(ctx context.Context, l lane, branch string) (gtapi.PullRequestInfo, error) {
 	owner, repo, err := gtRepoOwnerName(ctx, l, stackRebasePrefix)
 	if err != nil {
-		return "", 0, err
+		return gtapi.PullRequestInfo{}, err
 	}
 	infos, err := gtAPI(ctx).PullRequestInfo(ctx, gtapi.PullRequestInfoRequest{RepoOwner: owner, RepoName: repo, PRHeadRefNames: []string{branch}, Callsite: "ccx"})
 	if err != nil {
-		return "", 0, fmt.Errorf("%s: read the pull request of %s: %w", stackRebasePrefix, branch, err)
+		return gtapi.PullRequestInfo{}, fmt.Errorf("%s: read the pull request of %s: %w", stackRebasePrefix, branch, err)
 	}
 	for _, info := range infos {
 		if info.State == gtapi.PROpen && info.HeadRefName == branch {
-			return info.BaseRefName, info.PRNumber, nil
+			return info, nil
 		}
 	}
-	return "", 0, nil
+	return gtapi.PullRequestInfo{}, nil
 }
 
 // nativeStackFrom is the branch whose downstack a ship reads the native stack
