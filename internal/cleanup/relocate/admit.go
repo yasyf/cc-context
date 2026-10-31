@@ -58,8 +58,8 @@ func (r *Relocator) admission(ctx context.Context, job *cleanup.Job) (reason, de
 	}
 	if job.Phase == cleanup.PhaseDeletingRetiredPayload {
 		job.Ignored = nil
-		if err := r.strictIdle(ctx, job, job.Payload); err != nil {
-			return "activity", unclear(job.Payload, err)
+		if failed, err := r.strictIdle(ctx, job, job.Payload); err != nil {
+			return "activity", unclear(failed, err)
 		}
 		return "", ""
 	}

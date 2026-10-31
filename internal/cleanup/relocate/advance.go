@@ -429,7 +429,7 @@ func (r *Relocator) retire(ctx context.Context, tree string) error {
 	if err != nil {
 		return err
 	}
-	return r.cfg.Watchers.Retire(cleanup.WithRetiring(ctx, watchers), tree)
+	return r.cfg.Watchers.Retire(cleanup.WithRetiring(ctx, watchers.Retiring), tree)
 }
 
 func (r *Relocator) unlisted(ctx context.Context, job *cleanup.Job, vetted *bool, reason string, err error) (string, string) {

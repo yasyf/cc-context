@@ -327,7 +327,7 @@ func TestArgumentNeverReadsTheEnvironment(t *testing.T) {
 		t.Errorf("arguments = %q, %v; want %q", args, err, want)
 	}
 	s := &scan{root: f.real, given: f.tree}
-	if path := s.argument(unnamed.Process.Pid, false); path != "" {
+	if path := s.argument(args, false); path != "" {
 		t.Errorf("argument = %q, want no evidence from the environment", path)
 	}
 }
@@ -543,7 +543,7 @@ func TestDescriptor(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			kernel := &staged{open: tt.open, denied: tt.denied}
 			s := &scan{lib: kernel.lib(t), root: f.real, given: f.tree}
-			path, err := s.descriptor(cleanup.ProcessID{PID: 4242}, "staged")
+			path, err := descriptorOne(s, cleanup.ProcessID{PID: 4242}, "staged")
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("descriptor = %q, %v; want %v", path, err, tt.wantErr)
 			}
@@ -569,7 +569,7 @@ func TestDescriptorsThatCannotBeListed(t *testing.T) {
 		t.Errorf("listFDs = %+v, %v; want none and EPERM", fds, err)
 	}
 	s := &scan{lib: refused, root: "/tree", given: "/tree"}
-	if path, err := s.descriptor(cleanup.ProcessID{PID: 4242}, "staged"); !errors.Is(err, unix.EPERM) || path != "" {
+	if path, err := descriptorOne(s, cleanup.ProcessID{PID: 4242}, "staged"); !errors.Is(err, unix.EPERM) || path != "" {
 		t.Errorf("descriptor = %q, %v; want no path and EPERM", path, err)
 	}
 }
@@ -629,7 +629,7 @@ func TestInspectSelectsEvidence(t *testing.T) {
 			}
 			s := tt.scan
 			s.lib, s.root, s.given = kernel.lib(t), f.real, f.tree
-			got, held, err := s.inspect(tt.pid)
+			got, held, err := inspectOne(&s, tt.pid)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("inspect = %+v, %t, %v; want an error: %t", got, held, err, tt.wantErr)
 			}
@@ -661,7 +661,7 @@ func TestSystemDaemons(t *testing.T) {
 			if want := (birth{seconds: started, micros: 250}); err != nil || born != want || reason != "a system daemon at "+program {
 				t.Errorf("bystander = %+v, %q, %v; want %+v, %q", born, reason, err, want, "a system daemon at "+program)
 			}
-			if path, err := s.descriptor(cleanup.ProcessID{PID: 4242, Start: started}, "daemon"); path != "" || err != nil {
+			if path, err := descriptorOne(&s, cleanup.ProcessID{PID: 4242, Start: started}, "daemon"); path != "" || err != nil {
 				t.Errorf("descriptor = %q, %v; want its refused descriptor skipped", path, err)
 			}
 			want := []cleanup.Ignored{{PID: 4242, Name: "daemon", Reason: "a system daemon at " + program}}
@@ -707,7 +707,7 @@ func TestInspectIgnoresOnlyBystanders(t *testing.T) {
 			kernel := agent(tt.program, started)
 			tt.stage(&kernel)
 			s := scan{lib: kernel.lib(t), root: f.real, given: f.tree}
-			_, held, err := s.inspect(sleeper)
+			_, held, err := inspectOne(&s, sleeper)
 			if !errors.Is(err, tt.wantErr) || held != tt.holder {
 				t.Fatalf("inspect = %t, %v; want %t, %v", held, err, tt.holder, tt.wantErr)
 			}
@@ -814,7 +814,7 @@ func TestInspectBystanders(t *testing.T) {
 			kernel := agent(lsd, started)
 			tt.stage(&kernel)
 			s := scan{lib: kernel.lib(t), root: f.real, given: f.tree}
-			got, held, err := s.inspect(tt.pid)
+			got, held, err := inspectOne(&s, tt.pid)
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("inspect = %+v, %t, %v; want %v", got, held, err, tt.wantErr)
 			}
@@ -856,8 +856,7 @@ func TestKernelDescribesItsOwnProcess(t *testing.T) {
 	if node.dev != want.dev || node.ino != want.ino || node.fsid != want.fsid || node.kind == vnodeNone {
 		t.Errorf("vnodeIdentityOfFD = dev %d, inode %d, filesystem %v, type %d; want dev %d, inode %d, filesystem %v, and a type", node.dev, node.ino, node.fsid, node.kind, want.dev, want.ino, want.fsid)
 	}
-	s := &scan{lib: lib, root: f.real, given: f.tree}
-	if path, err := s.heldByID(node); path != f.real+"/file" || err != nil {
+	if path, err := lib.pathByID(node.fsid, node.ino); path != f.real+"/file" || err != nil {
 		t.Errorf("heldByID = %q, %v; want %q", path, err, f.real+"/file")
 	}
 
@@ -1018,7 +1017,7 @@ func surveyed(ctx context.Context, t *testing.T, tree string, refusal error) (ve
 	}
 	var held []cleanup.Holder
 	for _, pid := range pids {
-		holder, holds, err := s.inspect(int(pid))
+		holder, holds, err := inspectOne(s, int(pid))
 		switch {
 		case err == nil && holds:
 			held = append(held, holder)
@@ -1930,4 +1929,22 @@ func TestParentCommand(t *testing.T) {
 	if err != nil || parent != os.Getppid() || len(command) == 0 {
 		t.Errorf("ParentCommand(self) = %d, %q, %v; want pid %d and its arguments", parent, command, err, os.Getppid())
 	}
+}
+
+func inspectOne(s *scan, pid int) (cleanup.Holder, bool, error) {
+	roots := []rootWalk{{scan: s}}
+	walkProcess(roots, pid)
+	if roots[0].failure != nil {
+		return cleanup.Holder{}, false, roots[0].failure
+	}
+	if len(roots[0].holders) == 0 {
+		return cleanup.Holder{}, false, nil
+	}
+	return roots[0].holders[0], true, nil
+}
+
+func descriptorOne(s *scan, process cleanup.ProcessID, name string) (string, error) {
+	roots := []rootWalk{{scan: s}}
+	descriptorEvidence(roots, process, name)
+	return roots[0].current.path, roots[0].current.err
 }

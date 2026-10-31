@@ -493,8 +493,23 @@ func TestCleanupWatchersRetiring(t *testing.T) {
 			if want := strings.ReplaceAll(tt.wantMsg, "<base>", filepath.Dir(world.wt)); err != nil && !strings.Contains(err.Error(), want) {
 				t.Errorf("Retiring error = %q, want it to contain %q", err, want)
 			}
-			if !slices.Equal(got, tt.want) {
-				t.Errorf("Retiring = %+v, want %+v", got, tt.want)
+			if !slices.Equal(got.Retiring, tt.want) {
+				t.Errorf("Retiring = %+v, want %+v", got.Retiring, tt.want)
+			}
+			serverID := watcherServer
+			serverID.PID = world.server.PID
+			var server []cleanup.ProcessID
+			if slices.Contains(tt.want, serverID) {
+				server = []cleanup.ProcessID{serverID}
+			}
+			if !slices.Equal(got.Server, server) {
+				t.Errorf("Server = %+v, want %+v", got.Server, server)
+			}
+			if len(got.Retiring) > 0 && len(got.Server) > 0 {
+				got.Retiring[slices.Index(tt.want, serverID)] = cleanup.ProcessID{PID: 9999, Start: 9999}
+				if !slices.Equal(got.Server, server) {
+					t.Fatal("retiring watcher storage aliases server allowances")
+				}
 			}
 			deleted, stops := world.mutated()
 			if len(world.guarded) != 0 || len(deleted) != 0 || stops != 0 || !slices.Equal(world.roots, roots) {
@@ -576,7 +591,7 @@ func TestCleanupWatchersRetireUnderTheDiscount(t *testing.T) {
 				if err != nil {
 					t.Fatalf("Retiring: %v", err)
 				}
-				ctx = cleanup.WithRetiring(ctx, ids)
+				ctx = cleanup.WithRetiring(ctx, ids.Retiring)
 			}
 			if tt.hook != nil {
 				world.hook = tt.hook(world)

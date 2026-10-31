@@ -30,38 +30,39 @@ type cleanupWatchers struct {
 
 var _ cleanup.Watchers = cleanupWatchers{}
 
-func newCleanupWatchers(guard cleanup.Guard) cleanupWatchers {
-	return cleanupWatchers{deps: cleanupwatch.NewDeps(cleanupwatch.ActivityGuard(guard))}
+func newCleanupWatchers(guard cleanupwatch.ActivityGuard) cleanupWatchers {
+	return cleanupWatchers{deps: cleanupwatch.NewDeps(guard)}
 }
 
-func (w cleanupWatchers) Retiring(ctx context.Context, worktree string) ([]cleanup.ProcessID, error) {
+func (w cleanupWatchers) Retiring(ctx context.Context, worktree string) (cleanup.WatcherProcesses, error) {
 	plan, err := cleanupwatch.Plan(ctx, w.deps, worktree)
 	if err != nil {
-		return nil, fmt.Errorf("plan the watcher retirement of %s: %w", worktree, err)
+		return cleanup.WatcherProcesses{}, fmt.Errorf("plan the watcher retirement of %s: %w", worktree, err)
 	}
 	if plan.Refused() {
-		return nil, fmt.Errorf("name the watchers of %s: %w: %s", worktree, cleanupwatch.ErrRefused, strings.Join(plan.Blockers, "; "))
+		return cleanup.WatcherProcesses{}, fmt.Errorf("name the watchers of %s: %w: %s", worktree, cleanupwatch.ErrRefused, strings.Join(plan.Blockers, "; "))
 	}
-	ids, err := w.Server(ctx)
+	server, err := w.Server(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("name the watchers of %s: %w", worktree, err)
+		return cleanup.WatcherProcesses{}, fmt.Errorf("name the watchers of %s: %w", worktree, err)
 	}
+	ids := slices.Clone(server)
 	if plan.FSMonitor != nil {
 		owner, err := w.process(ctx, plan.FSMonitor.PID)
 		if err != nil {
-			return nil, fmt.Errorf("name the watchers of %s: %w", worktree, err)
+			return cleanup.WatcherProcesses{}, fmt.Errorf("name the watchers of %s: %w", worktree, err)
 		}
 		if owner.Start != plan.FSMonitor.Start {
-			return nil, fmt.Errorf("name the watchers of %s: %w: fsmonitor owner pid %d restarted since planning", worktree, cleanupwatch.ErrRefused, owner.PID)
+			return cleanup.WatcherProcesses{}, fmt.Errorf("name the watchers of %s: %w: fsmonitor owner pid %d restarted since planning", worktree, cleanupwatch.ErrRefused, owner.PID)
 		}
 		id, err := processID(owner)
 		if err != nil {
-			return nil, fmt.Errorf("name the watchers of %s: %w", worktree, err)
+			return cleanup.WatcherProcesses{}, fmt.Errorf("name the watchers of %s: %w", worktree, err)
 		}
 		ids = append(ids, id)
 	}
 	slices.SortFunc(ids, func(a, b cleanup.ProcessID) int { return a.PID - b.PID })
-	return ids, nil
+	return cleanup.WatcherProcesses{Retiring: ids, Server: server}, nil
 }
 
 func (w cleanupWatchers) Server(ctx context.Context) ([]cleanup.ProcessID, error) {

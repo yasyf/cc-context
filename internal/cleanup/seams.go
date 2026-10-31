@@ -5,23 +5,30 @@ import (
 	"time"
 )
 
-// Guard is the fresh activity check that authorizes a mutation of worktree. It
-// returns nil only when no live process holds the tree, an *ActiveError when
-// one does, and any other error when it could not tell — which authorizes
-// nothing. Holding is a working directory, an open file, or an argument at or
-// below the tree. The only discounts are the ones ctx names: the requester,
-// for naming the tree in its own arguments, and the watchers about to be
-// retired or that never let go, for the descriptors they hold.
-type Guard func(ctx context.Context, worktree string) error
+// GuardRoot names a directory and the retiring watchers whose descriptors are excluded.
+type GuardRoot struct {
+	Path     string
+	Retiring []ProcessID
+}
+
+// Guard authorizes mutation only when every root has no live holder. The first
+// blocking root and its activity or inspection error are returned in input order.
+// Watcher allowances belong to each root; requester allowances remain in ctx.
+type Guard func(ctx context.Context, first GuardRoot, additional ...GuardRoot) (failedPath string, err error)
+
+// WatcherProcesses separates the server from all watchers retiring with a tree.
+type WatcherProcesses struct {
+	Retiring []ProcessID
+	Server   []ProcessID
+}
 
 // Watchers retires the filesystem watchers of an exact worktree before it is
 // relocated, and vouches that a job folder is unwatched. Any error blocks the
 // job; nothing is retried.
 type Watchers interface {
-	// Retiring names, changing nothing, the running Watchman server and the
-	// fsmonitor daemon Retire would stop. Both hold descriptors in worktree,
-	// so a guard asked before retirement discounts exactly these.
-	Retiring(ctx context.Context, worktree string) ([]ProcessID, error)
+	// Retiring names the server separately from all watchers whose descriptors
+	// retirement discounts. Both sets come from the same read-only census.
+	Retiring(ctx context.Context, worktree string) (WatcherProcesses, error)
 	// Server names, changing nothing, the running Watchman server, or nothing
 	// when none runs. It keeps a tree's directories open after their roots are
 	// deleted, and the open directory follows the tree wherever it is moved,

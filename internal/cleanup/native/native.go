@@ -7,6 +7,6 @@ package native
 import "github.com/yasyf/cc-context/internal/cleanup"
 
 var (
-	_ cleanup.Guard      = Guard
+	_ cleanup.Guard      = GuardRoots
 	_ cleanup.CPUSampler = (*FSEventsSampler)(nil)
 )

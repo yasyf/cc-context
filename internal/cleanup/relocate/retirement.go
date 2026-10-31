@@ -290,15 +290,20 @@ func (f *retirementFiles) unchanged(job *cleanup.Job) error {
 	return nil
 }
 
-func (r *Relocator) retirementIdle(ctx context.Context, job *cleanup.Job, tree string) error {
-	watchers, err := r.retiring(ctx, tree)
+func (r *Relocator) retirementIdle(ctx context.Context, job *cleanup.Job, files *retirementFiles) (string, error) {
+	watchers, err := r.retiring(ctx, files.tree)
 	if err != nil {
-		return err
+		return files.tree, err
 	}
-	guarded, ignored := cleanup.WithIgnored(cleanup.WithRetiring(ctx, watchers))
-	err = r.cfg.Guard(guarded, tree)
+	guarded, ignored := cleanup.WithIgnored(ctx)
+	first := cleanup.GuardRoot{Path: files.tree, Retiring: watchers.Retiring}
+	var additional []cleanup.GuardRoot
+	if files.displaced {
+		additional = []cleanup.GuardRoot{{Path: files.admin, Retiring: watchers.Server}}
+	}
+	failed, err := r.cfg.Guard(guarded, first, additional...)
 	job.Ignored = *ignored
-	return err
+	return failed, err
 }
 
 func (r *Relocator) retirementState(job *cleanup.Job, state cleanup.Retirement) error {
@@ -338,16 +343,11 @@ func (r *Relocator) Retire(ctx context.Context, job *cleanup.Job) error {
 		_, err = r.block(ctx, job, "identity", err.Error())
 		return err
 	}
-	if err := r.retirementIdle(ctx, job, files.tree); err != nil {
-		_, err = r.block(ctx, job, "activity", unclear(files.tree, err))
+	if failed, err := r.retirementIdle(ctx, job, files); err != nil {
+		_, err = r.block(ctx, job, "activity", unclear(failed, err))
 		return err
 	}
-	if files.displaced {
-		if err := r.strictIdle(ctx, job, files.admin); err != nil {
-			_, err = r.block(ctx, job, "activity", unclear(files.admin, err))
-			return err
-		}
-	}
+
 	if job.Retirement == "" {
 		if err := r.retirementState(job, cleanup.RetirementIntent); err != nil {
 			return err
@@ -373,20 +373,17 @@ func (r *Relocator) Retire(ctx context.Context, job *cleanup.Job) error {
 		_, err = r.block(ctx, job, "watchers", err.Error())
 		return err
 	}
-	check := r.unserved
+	failed := files.tree
 	if files.displaced {
-		check = func(ctx context.Context, tree string) error { return r.strictIdle(ctx, job, tree) }
+		failed, err = r.strictIdle(ctx, job, files.tree, files.admin)
+	} else {
+		err = r.unserved(ctx, files.tree)
 	}
-	if err := check(ctx, files.tree); err != nil {
-		_, err = r.block(ctx, job, "activity", unclear(files.tree, err))
+	if err != nil {
+		_, err = r.block(ctx, job, "activity", unclear(failed, err))
 		return err
 	}
-	if files.displaced {
-		if err := r.strictIdle(ctx, job, files.admin); err != nil {
-			_, err = r.block(ctx, job, "activity", unclear(files.admin, err))
-			return err
-		}
-	}
+
 	if err := files.unchanged(job); err != nil {
 		_, err = r.block(ctx, job, "identity", err.Error())
 		return err
