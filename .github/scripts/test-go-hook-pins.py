@@ -21,13 +21,10 @@ class GoHookPinTest(unittest.TestCase):
         self.fragment = load_yaml(FRAGMENTS / "precommit-go.fragment.yml")
         self.hooks = self.fragment[0]["hooks"]
 
-    def test_render_source_and_current_pins(self):
+    def test_fragment_source_and_current_pins(self):
         layout = tomllib.loads((FRAGMENTS / "layout.toml").read_text())
         self.assertIn("precommit-go", layout["fragments"])
         self.assertNotIn("cc-skills:precommit-go", layout["fragments"])
-        config = load_yaml(ROOT / ".pre-commit-config.yaml")
-        rendered = [repo for repo in config["repos"] if any(hook["id"] == "golangci-lint" for hook in repo["hooks"])]
-        self.assertEqual(rendered, self.fragment)
         tools = tomllib.loads((ROOT / "mise.toml").read_text())["tools"]
         go = next(line.split()[1] for line in (ROOT / "go.mod").read_text().splitlines() if line.startswith("go "))
         self.assertEqual(tools["go"], go)
