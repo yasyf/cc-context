@@ -56,16 +56,14 @@ jobs:
           CCX_COHOLDER_STRACE: fixed
           CCX_COHOLDER_STRACE_OUTPUT: ${{ runner.temp }}/coholder-path-cost
         run: go test -count=1 -v -run '^TestCoHoldersPayloadNamespaceCost$' ./internal/vcs
-      - uses: actions/checkout@v7
-        with:
-          ref: 59bbfcbd3cf30240f41f4b360638b13a92ef8810
-          path: .ci-coholder-baseline
-          persist-credentials: false
       - name: Immutable whole-namespace baseline
         env:
           CCX_COHOLDER_STRACE: before
           CCX_COHOLDER_STRACE_OUTPUT: ${{ runner.temp }}/coholder-path-cost
         run: |
+          git init .ci-coholder-baseline
+          git -C .ci-coholder-baseline fetch --no-tags --depth=1 "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" 59bbfcbd3cf30240f41f4b360638b13a92ef8810
+          git -C .ci-coholder-baseline checkout --detach FETCH_HEAD
           test "$(git -C .ci-coholder-baseline rev-parse HEAD)" = 59bbfcbd3cf30240f41f4b360638b13a92ef8810
           cp internal/vcs/coholders_cost_test.go .ci-coholder-baseline/internal/vcs/coholders_cost_test.go
           cd .ci-coholder-baseline

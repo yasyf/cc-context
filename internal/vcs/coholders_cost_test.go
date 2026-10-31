@@ -42,8 +42,7 @@ func TestCoHoldersPayloadNamespaceCost(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Fatal("CCX_COHOLDER_STRACE requires Linux")
 	}
-	strace, err := exec.LookPath("strace")
-	if err != nil {
+	if _, err := exec.LookPath("strace"); err != nil {
 		t.Fatalf("CCX_COHOLDER_STRACE requires strace: %v", err)
 	}
 	binary, err := os.Executable()
@@ -62,7 +61,7 @@ func TestCoHoldersPayloadNamespaceCost(t *testing.T) {
 			fixture.Result = filepath.Join(output, "result.json")
 			tracePath := filepath.Join(output, "namespace.strace")
 			writeCoHoldersCostJSON(t, fixturePath, fixture)
-			command := exec.CommandContext(t.Context(), strace, "-f", "-qq", "-s", "0", "-e", "trace=newfstatat,readlink", "-o", tracePath, binary, "-test.run=^TestCoHoldersNamespaceWalkHelper$", "-test.count=1")
+			command := exec.CommandContext(t.Context(), "strace", "-f", "-qq", "-s", "0", "-e", "trace=newfstatat,readlink", "-o", tracePath, binary, "-test.run=^TestCoHoldersNamespaceWalkHelper$", "-test.count=1")
 			command.Env = append(os.Environ(), "CCX_COHOLDER_STRACE_FIXTURE="+fixturePath, "PATH="+t.TempDir())
 			outputText, err := command.CombinedOutput()
 			if err != nil {
@@ -294,7 +293,11 @@ func readCoHoldersNamespaceCalls(t *testing.T, path string) (map[string]int, []i
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer file.Close()
+	defer func() {
+		if err := file.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	calls := map[string]int{}
 	pids := map[int]bool{}
 	scanner := bufio.NewScanner(file)
