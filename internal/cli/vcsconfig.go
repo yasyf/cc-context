@@ -17,6 +17,7 @@ import (
 type repositoryVCSConfig struct {
 	VCS struct {
 		Queue string `toml:"queue"`
+		Stack string `toml:"stack"`
 	} `toml:"vcs"`
 	Trunk     gtapi.TrunkSSMConfig `toml:"trunk"`
 	Generated []regenGenerator     `toml:"generated"`

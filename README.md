@@ -200,7 +200,7 @@ until inactive while stack completion succeeds.
 
 ## Stack providers
 
-`ccx vcs stack`, `ccx vcs ship`, `ccx vcs status`, and `ccx vcs reviews` support native GitHub stacks and legacy Graphite stacks. Branch membership in the git common directory `gh-stack` catalog wins first. An existing tracked Graphite branch stays on Graphite unless `git config ccx.stack github` is set. With that setting, the first stack command on the branch moves it and its Graphite downstack into the catalog under their Graphite parents, and the next submit links their pull requests into one GitHub stack. When the catalog holds more than one root, every catalog write asks GitHub about each root other than `origin/HEAD`'s branch. A root that is missing from origin, or that ever served as a pull request's head, was never a trunk, so its stack and receipts are dropped. A root that exists on origin and never headed a pull request stays as a second trunk. If GitHub cannot answer, the write is refused. New stacks from `ccx vcs stack new` prefer native GitHub. Running `ccx vcs ship` without stack metadata or explicit config stays on the plain git lane, and `--no-stack` or `--no-gt` bypasses stacks.
+`ccx vcs stack`, `ccx vcs ship`, `ccx vcs status`, and `ccx vcs reviews` support native GitHub stacks and legacy Graphite stacks. Branch membership in the git common directory `gh-stack` catalog wins first. An existing tracked Graphite branch stays on Graphite unless `git config ccx.stack github` is set. With that setting, the first stack command on the branch moves it and its Graphite downstack into the catalog under their Graphite parents, and the next submit links their pull requests into one GitHub stack. When the catalog holds more than one root, every catalog write asks GitHub about each root other than `origin/HEAD`'s branch. A root that is missing from origin, or that ever served as a pull request's head, was never a trunk, so its stack and receipts are dropped. A root that exists on origin and never headed a pull request stays as a second trunk. If GitHub cannot answer, the write is refused. New stacks from `ccx vcs stack new` prefer native GitHub. Running `ccx vcs ship` without stack metadata, explicit config, or a tracked `vcs.stack` stays on the plain git lane, and `--no-stack` or `--no-gt` bypasses stacks.
 
 ```sh
 git config ccx.stack github
@@ -209,11 +209,12 @@ git config ccx.queue trunk
 
 Set `git config ccx.stack` to `github` or `graphite`, and set `git config ccx.queue` to `trunk`, `github`, or `none` (legacy stacks default to Graphite). Native stacks use the GitHub API and local catalog rather than a `gh` executable, require actual server stack membership without synthetic head bumps, share lightweight isolated replay and tip-only unchanged-parent protection, and never fall back on auth or network errors.
 
-A tracked `.claude/ccx.toml` at the repository root configures the default merge queue under `[vcs]` and AWS Systems Manager Parameter Store lookup settings under `[trunk]`. An explicit `ccx.queue` Git config value overrides `vcs.queue`, and omitting `.claude/ccx.toml` falls back to the provider default; an explicit `TRUNK_MERGE_API_KEY` environment variable overrides SSM lookup. Only Trunk queue operations lazily fetch the scoped API key via the installed AWS CLI using existing profile authentication, keeping the token in process memory without modifying shell exports or global credentials, while native metadata and info commands never trigger retrieval.
+A tracked `.claude/ccx.toml` at the repository root configures the default merge queue and stack under `[vcs]` and AWS Systems Manager Parameter Store lookup settings under `[trunk]`. An explicit `ccx.queue` Git config value overrides `vcs.queue`, and `ccx.stack` overrides `vcs.stack`, whose only value is `github`, so a fresh clone ships native stacks without local Git config. Omitting `.claude/ccx.toml` falls back to the provider default; an explicit `TRUNK_MERGE_API_KEY` environment variable overrides SSM lookup. Only Trunk queue operations lazily fetch the scoped API key via the installed AWS CLI using existing profile authentication, keeping the token in process memory without modifying shell exports or global credentials, while native metadata and info commands never trigger retrieval.
 
 ```toml
 [vcs]
 queue = "trunk"
+stack = "github"
 
 [trunk]
 ssm_parameter = "/shared/trunk-queue-key"

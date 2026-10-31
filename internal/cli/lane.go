@@ -233,6 +233,17 @@ func resolveLaneRefresh(ctx context.Context, name, dir string, noGT, refresh boo
 				return lane{}, fmt.Errorf("%s: read ccx.stack: exit %d: %s", name, code, strings.TrimSpace(stderr))
 			}
 			if strings.TrimSpace(configured) == "" {
+				config, err := readRepositoryVCSConfig(ctx, root)
+				if err != nil {
+					return lane{}, fmt.Errorf("%s: %w", name, err)
+				}
+				switch configured = strings.TrimSpace(config.VCS.Stack); configured {
+				case "", "github":
+				default:
+					return lane{}, fmt.Errorf("%s: .claude/ccx.toml [vcs] stack %q is unsupported; the only tracked stack is github", name, configured)
+				}
+			}
+			if configured == "" {
 				if name != "stack new" {
 					return l, nil
 				}
