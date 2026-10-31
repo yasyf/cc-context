@@ -116,3 +116,63 @@ func TestShipRecordsTheNativeStackParentBeforeRestacking(t *testing.T) {
 		})
 	}
 }
+
+// TestShipNewBranchStacksOnTheBranchItWasCutFrom cuts child with --new-branch
+// off parent, a branch with an open pull request on main, tracked here or
+// checked out from another lane's push. The native create recorded child on
+// main at its merge base, so the restack and submit carried parent's commit
+// into child's pull request against main.
+func TestShipNewBranchStacksOnTheBranchItWasCutFrom(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		tracked bool
+	}{
+		{name: "parent tracked here", tracked: true},
+		{name: "parent cut by another lane", tracked: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := shipRepo(t, vcstest.Remote())
+			f.Decorate(func(ctx context.Context) context.Context { return withStackProvider(ctx, true) })
+			mustRun(t, f.Env(), f.Dir, "git", "config", "ccx.stack", "github")
+			trunk := shipHead(t, f)
+			shipGTUntracked(t, f, "parent")
+			parent := gitAt(t, f.Env(), f.Dir, "rev-parse", "parent")
+			mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "parent")
+			common := filepath.Join(f.Dir, ".git")
+			if err := nativemeta.Init(f.Context(), common, "main"); err != nil {
+				t.Fatal(err)
+			}
+			if tt.tracked {
+				if err := nativemeta.AdoptRoot(f.Context(), common, "parent", "main", trunk, parent); err != nil {
+					t.Fatal(err)
+				}
+			}
+			api := stubGTAPI(t)
+			api.openPRs("parent")
+			api.bases["parent"], api.stacks["parent"] = "main", 47
+			f.Decorate(api.ctx)
+			stubStackPRs(t, f, nil)
+			stubStackStanding(t, f, nil)
+			shipGTReady(t, f)
+
+			if _, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--new-branch=child", "--no-push"); err != nil {
+				t.Fatalf("ship: %v", err)
+			}
+			if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "parent"); got != parent {
+				t.Errorf("parent moved from %s to %s", parent, got)
+			}
+			if got := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", "parent..child"); got != "1" {
+				t.Errorf("child carries %s commits above parent, want only its own", got)
+			}
+			state, err := gtStateQuery(f.Context(), render.Dir(f.Dir), "test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			for branch, want := range map[string]string{"parent": "main", "child": "parent"} {
+				if s := state[branch]; len(s.Parents) != 1 || s.Parents[0].Ref != want || s.NeedsRestack {
+					t.Errorf("%s = %+v, want it recorded on %s with nothing to restack", branch, s, want)
+				}
+			}
+		})
+	}
+}

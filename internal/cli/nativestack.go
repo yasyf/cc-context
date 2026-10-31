@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"maps"
@@ -79,8 +80,8 @@ func nativeStackRun(ctx context.Context, dir render.Dir, argv []string, extraEnv
 	parent := value("--parent")
 	switch argv[0] {
 	case "create":
+		parent = cmp.Or(value("--onto"), branch)
 		branch = argv[1]
-		parent = value("--onto")
 		args := []string{"switch", "-c", branch}
 		if parent != "" {
 			args = append(args, parent)

@@ -54,6 +54,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   trunk, carrying every file its real parent changed. Ship now records the
   branch on its stack base first, adopting a base this checkout never tracked,
   and `--dry-run` plans from the same read and names each record it overrules.
+- **`ccx vcs ship --new-branch` on the native GitHub stack lane stacks the new
+  branch on the branch it was cut from.** The native create recorded it on
+  trunk at its merge base, so the next restack and submit carried the parent's
+  commits into the new pull request and opened it against trunk.
 - **`ccx vcs ship` derives a title above a rewound parent.** A branch cut
   while its parent held the branch's commit, after the parent was reset and
   force-pushed below it, refused with "holds no commit above <parent>": the
