@@ -730,9 +730,9 @@ func TestChangedBasePreservesValidationDetails(t *testing.T) {
 func TestSubmitRetargetsAPullRequestOutOfADeadNativeStack(t *testing.T) {
 	for _, tc := range []struct {
 		name, sibling string
-		unstacks      bool
+		dead          bool
 	}{
-		{name: "every other member closed", sibling: `"state":"closed","merged_at":"2026-10-31T10:00:00Z"`, unstacks: true},
+		{name: "every other member closed", sibling: `"state":"closed","merged_at":"2026-10-31T10:00:00Z"`, dead: true},
 		{name: "another member open", sibling: `"state":"open","merged_at":null`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -755,7 +755,7 @@ func TestSubmitRetargetsAPullRequestOutOfADeadNativeStack(t *testing.T) {
 					if stacked {
 						stack = `,"stack":{"number":8,"position":2,"size":2,"base":{"ref":"dev"}}`
 					}
-					reply(`{"number":5,"state":"open","head":{"repo":{"full_name":"org/repo"},"ref":"tip","sha":"head"},"base":{"ref":"gone"}` + stack + `}`)
+					reply(`{"number":5,"state":"open","head":{"repo":{"full_name":"org/repo"},"ref":"tip","sha":"head"},"base":{"ref":"lower"}` + stack + `}`)
 				case "GET /repos/org/repo/stacks/8":
 					reply(`{"number":8,"pull_requests":[{"number":4,` + tc.sibling + `},{"number":5,"state":"open","merged_at":null}]}`)
 				case "POST /repos/org/repo/stacks/8/unstack":
@@ -767,6 +767,8 @@ func TestSubmitRetargetsAPullRequestOutOfADeadNativeStack(t *testing.T) {
 						return
 					}
 					reply(`{"number":5,"state":"open","head":{"repo":{"full_name":"org/repo"},"ref":"tip","sha":"head"},"base":{"ref":"dev"}}`)
+				case "GET /repos/org/repo/pulls":
+					reply(`[{"number":4,"state":"open","head":{"repo":{"full_name":"org/repo"},"ref":"lower"},"base":{"ref":"dev"},"stack":{"number":8,"position":1,"size":2,"base":{"ref":"dev"}}}]`)
 				default:
 					t.Errorf("unexpected %s %s", r.Method, r.URL)
 					http.Error(w, "unexpected", 500)
@@ -774,16 +776,18 @@ func TestSubmitRetargetsAPullRequestOutOfADeadNativeStack(t *testing.T) {
 			}))
 			defer srv.Close()
 			got, err := NewWithToken(srv.URL, "key").SubmitPullRequests(context.Background(), SubmitRequest{RepoOwner: "org", RepoName: "repo", TrunkBranchName: "dev", PRs: []SubmitPR{{Action: SubmitUpdate, PRNumber: 5, Head: "tip", HeadSha: "head", Base: "dev"}}})
+			if err != nil || len(got) != 1 {
+				t.Fatalf("got=%+v err=%v calls=%v", got, err, calls)
+			}
 			unstacked := slices.Contains(calls, "POST /repos/org/repo/stacks/8/unstack")
-			if !tc.unstacks {
-				var status *StatusError
-				if !errors.As(err, &status) || status.Status != http.StatusUnprocessableEntity || unstacked {
-					t.Fatalf("err=%v unstacked=%v calls=%v, want the live stack kept and GitHub's refusal returned", err, unstacked, calls)
+			if tc.dead {
+				if !unstacked || got[0].StackNumber != 0 || len(got[0].Warnings) != 0 {
+					t.Fatalf("got=%+v calls=%v, want the dead stack unstacked and the pull request moved onto dev", got, calls)
 				}
 				return
 			}
-			if err != nil || len(got) != 1 || got[0].StackNumber != 0 || !unstacked {
-				t.Fatalf("got=%+v err=%v calls=%v, want the dead stack unstacked and the pull request on dev", got, err, calls)
+			if unstacked || slices.Contains(calls, "PATCH /repos/org/repo/pulls/5") || got[0].StackNumber != 8 || len(got[0].Warnings) != 1 || !strings.Contains(got[0].Warnings[0], "kept PR #5 on lower, not dev") {
+				t.Fatalf("got=%+v calls=%v, want the live stack kept, its base left alone, and a warning naming it", got, calls)
 			}
 		})
 	}

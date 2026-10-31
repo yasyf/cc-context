@@ -81,8 +81,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Cannot change the base branch because the pull request is part of a
   stack`, and the stack had to be unstacked by hand. When every other pull
   request in that stack is closed, merged or not, the submit now unstacks it
-  before changing the base. A stack with another open pull request is left
-  alone, and GitHub's refusal is reported as before.
+  before changing the base. A stack that still holds another open pull
+  request sets the base itself, so the submit leaves the base where the
+  stack has it, updates the rest, and prints a warning naming the base it
+  kept, instead of failing the submit after the push.
 
 - **A stack write moves the calling worktree's checkout with its branch when
   git no longer lists that worktree.** A removal the deletion queue has not
