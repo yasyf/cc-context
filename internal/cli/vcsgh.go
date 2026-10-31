@@ -78,7 +78,7 @@ fresh one.`,
 		Example: "  ccx vcs gh -- pr checks 123\n  ccx vcs gh --max-age 5m -- pr view 123 --json state\n" +
 			"  GH_REPO=o/r ccx vcs gh --max-age 1m -- api graphql -f query='{ repository(owner: \"o\", name: \"r\") { name } }'\n" +
 			"  ccx vcs gh -- run watch 456 --exit-status",
-		Args: func(cmd *cobra.Command, args []string) error {
+		Args: func(_ *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return errors.New("name the gh command: ccx vcs gh -- pr checks 123")
 			}
