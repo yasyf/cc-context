@@ -2120,3 +2120,28 @@ func TestReleaseLiftsTheHoldAndLeavesAnOrdinaryPause(t *testing.T) {
 		})
 	}
 }
+
+func TestFreshRemoveStillRejoinsOwnedRetirementAndNonidentityBlocks(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		reason     string
+		retirement cleanup.Retirement
+	}{
+		{"activity", "activity", ""},
+		{"watchers", "watchers", ""},
+		{"retirement intent", "identity", cleanup.RetirementIntent},
+		{"retirement complete", "identity", cleanup.RetirementComplete},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			path := t.TempDir()
+			id, _, err := cleanup.LstatID(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			job := cleanup.Job{Original: path, Tree: id, Phase: cleanup.PhasePending, Retirement: tt.retirement, Blocked: &cleanup.Blockage{Reason: tt.reason}}
+			if !sittingAt(path, false)(job) {
+				t.Fatalf("fresh request did not rejoin existing %s job", tt.name)
+			}
+		})
+	}
+}

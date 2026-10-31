@@ -5,6 +5,9 @@ package daemon
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -223,4 +226,91 @@ func TestMaintenanceHoldRestsAJournaledJobUntilItsHolderReleasesIt(t *testing.T)
 		t.Errorf("Run() = %v", err)
 	}
 	f.finished(done)
+}
+
+func TestFreshPausedRemoveCapturesCurrentHeadAfterUntouchedIdentityBlock(t *testing.T) {
+	f := newGitFixture(t)
+	relocator := f.relocator()
+	original, err := relocator.Pend(context.Background(), 1, f.request())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree := f.id(f.worktree)
+	f.write(filepath.Join(f.worktree, "feature.txt"), "current feature\n")
+	f.run(f.worktree, "add", "feature.txt")
+	f.run(f.worktree, "commit", "-q", "-m", "current feature")
+	head := f.run(f.worktree, "rev-parse", "HEAD")
+	if head == original.Head {
+		t.Fatal("fixture did not change HEAD")
+	}
+	if err := relocator.Retire(context.Background(), &original); err != nil {
+		t.Fatal(err)
+	}
+	if original.Blocked == nil || original.Blocked.Reason != "identity" || original.Retirement != "" {
+		t.Fatalf("original retirement = %+v, want untouched identity block", original)
+	}
+	before := f.journaled(original.ID)
+	clock := newPassClock()
+	f.clock = clock
+	engine := f.engine()
+	running := f.startMaintained(engine, clock)
+	ctx, cancel := context.WithTimeout(context.Background(), drainWait)
+	defer cancel()
+	type outcome struct {
+		receipt cleanup.Receipt
+		err     error
+	}
+	results := make(chan outcome, 2)
+	for range 2 {
+		go func() {
+			receipt, err := engine.Remove(ctx, f.request())
+			results <- outcome{receipt, err}
+		}()
+	}
+	first, second := <-results, <-results
+	if first.err != nil || second.err != nil {
+		t.Fatalf("concurrent fresh removals = %v, %v", first.err, second.err)
+	}
+	if first.receipt.JobID != second.receipt.JobID {
+		t.Fatalf("concurrent requests created different jobs: %+v, %+v", first.receipt, second.receipt)
+	}
+	receipt := first.receipt
+	if receipt.JobID == original.ID {
+		t.Fatal("fresh removal rejoined the stale captured HEAD")
+	}
+	current := f.journaled(receipt.JobID)
+	if current.Head != head || current.Tree != tree || current.Phase != cleanup.PhasePending || current.Retirement != "" {
+		t.Fatalf("fresh removal = %+v, want current captured HEAD and original payload", current)
+	}
+	if got := f.journaled(original.ID); !reflect.DeepEqual(got, before) {
+		t.Fatalf("fresh request rewrote immutable old job: %+v", got)
+	}
+	if err := f.await(f.stop(engine), "Stop()"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.await(running, "Run()"); err != nil {
+		t.Fatal(err)
+	}
+	if !engine.paused {
+		t.Fatal("fresh removal resumed physical deletion")
+	}
+	if err := relocator.Retire(context.Background(), &current); err != nil {
+		t.Fatal(err)
+	}
+	if current.Blocked != nil || current.Retirement != cleanup.RetirementComplete {
+		t.Fatalf("fresh registration retirement = %+v", current)
+	}
+	if got := f.listing(); got != f.mainEntry() {
+		t.Errorf("retired registration remains listed: %s", got)
+	}
+	if got := f.id(f.worktree); got != tree {
+		t.Errorf("fresh retirement changed payload identity %+v", got)
+	}
+	body, err := os.ReadFile(filepath.Join(f.worktree, "feature.txt"))
+	if err != nil || string(body) != "current feature\n" {
+		t.Errorf("retained current payload = %q, %v", body, err)
+	}
+	if got := f.journaled(original.ID); !reflect.DeepEqual(got, before) {
+		t.Errorf("retirement rewrote immutable old job: %+v", got)
+	}
 }

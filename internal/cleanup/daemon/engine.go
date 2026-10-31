@@ -1182,7 +1182,12 @@ func registeredAt(worktree string, force bool) rejoinable {
 
 func sittingAt(worktree string, force bool) rejoinable {
 	registered := registeredAt(worktree, force)
-	return func(job cleanup.Job) bool { return registered(job) && holds(job.Original, job.Tree) }
+	return func(job cleanup.Job) bool {
+		if job.Blocked != nil && job.Blocked.Reason == "identity" && job.Retirement == "" {
+			return false
+		}
+		return registered(job) && holds(job.Original, job.Tree)
+	}
 }
 
 func boundTo(r cleanup.DeferRequest) rejoinable {
