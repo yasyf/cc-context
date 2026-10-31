@@ -402,6 +402,68 @@ func nativeStackParents(ctx context.Context, l lane, state gtState, from string)
 	return moves, planned, nil
 }
 
+func stackNativeAdopt(ctx context.Context, l lane, tr vcs.Trunk, state gtState, current string) (gtState, gtState, error) {
+	adopted := gtState{}
+	if !l.native || current == "" || current == tr.Name() {
+		return state, adopted, nil
+	}
+	if _, tracked := state[current]; !tracked {
+		base, pr, err := stackOpenPRBase(ctx, l, current)
+		if err != nil || base == "" {
+			return state, adopted, err
+		}
+		floor := string(tr.Ref())
+		if base != tr.Name() {
+			exists, err := gitRefExists(ctx, l.dir(), stackRebasePrefix, gtRestackRef(base))
+			if err != nil {
+				return nil, nil, err
+			}
+			if !exists {
+				return nil, nil, refuse("%s: %s, the base of %s's open #%d, is no local branch — fetch it with git fetch %s %s:%s, then re-run", stackRebasePrefix, base, current, pr, tr.Remote(), base, base)
+			}
+			floor = gtRestackRef(base)
+		}
+		head, err := gtRestackHead(ctx, stackRebasePrefix, l.dir(), current)
+		if err != nil {
+			return nil, nil, err
+		}
+		fork, err := stackMergeBase(ctx, l.dir(), head, floor)
+		if err != nil {
+			return nil, nil, err
+		}
+		state = maps.Clone(state)
+		state[current] = gtBranchState{Head: head, Parents: []gtRef{{Ref: base, SHA: fork}}}
+		adopted[current] = state[current]
+	}
+	moves, planned, err := nativeStackParents(ctx, l, state, current)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, m := range moves {
+		if planned[m.branch].State == "" {
+			adopted[m.branch] = planned[m.branch]
+		}
+	}
+	return planned, adopted, nil
+}
+
+func stackOpenPRBase(ctx context.Context, l lane, branch string) (string, int, error) {
+	owner, repo, err := gtRepoOwnerName(ctx, l, stackRebasePrefix)
+	if err != nil {
+		return "", 0, err
+	}
+	infos, err := gtAPI(ctx).PullRequestInfo(ctx, gtapi.PullRequestInfoRequest{RepoOwner: owner, RepoName: repo, PRHeadRefNames: []string{branch}, Callsite: "ccx"})
+	if err != nil {
+		return "", 0, fmt.Errorf("%s: read the pull request of %s: %w", stackRebasePrefix, branch, err)
+	}
+	for _, info := range infos {
+		if info.State == gtapi.PROpen && info.HeadRefName == branch {
+			return info.BaseRefName, info.PRNumber, nil
+		}
+	}
+	return "", 0, nil
+}
+
 // nativeStackFrom is the branch whose downstack a ship reads the native stack
 // of: the --parent it moves onto when one is named, since that move outranks
 // the branch's own pull request, and otherwise the branch once it is tracked.
