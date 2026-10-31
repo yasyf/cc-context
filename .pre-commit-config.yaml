@@ -41,14 +41,19 @@ repos:
         pass_filenames: false
         types: [go]
 
-# Go: gofumpt + goimports formatting and the golangci-lint suite, both driven
-# by the repo's .golangci.yml. Continues the `repos:` list precommit-base opens.
-  - repo: https://github.com/golangci/golangci-lint
-    rev: v2.12.2
+  - repo: local
     hooks:
-      # prek pins GOTOOLCHAIN=local, so an unpinned hook takes the ambient
-      # `go`. Keep >= the highest go.mod `go` in any consuming repo.
       - id: golangci-lint-fmt
-        language_version: '1.26.6'
+        name: golangci-lint-fmt
+        entry: mise exec -- golangci-lint fmt
+        language: system
+        types: [go]
+        require_serial: true
+        pass_filenames: false
       - id: golangci-lint
-        language_version: '1.26.6'
+        name: golangci-lint
+        entry: mise exec -- golangci-lint run --new-from-rev HEAD --fix
+        language: system
+        types: [go]
+        require_serial: true
+        pass_filenames: false

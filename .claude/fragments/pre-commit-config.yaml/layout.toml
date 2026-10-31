@@ -3,7 +3,7 @@ target = ".pre-commit-config.yaml"
 fragments = [
   "cc-skills:precommit-base",
   "precommit-wasm",
-  "cc-skills:precommit-go",
+  "precommit-go",
 ]
 
 [sources.cc-skills]
