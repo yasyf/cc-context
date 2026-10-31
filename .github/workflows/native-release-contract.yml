@@ -1,6 +1,7 @@
 name: Native release contract
 on:
   pull_request:
+    branches: [main]
     paths:
       - .github/workflows/ci.yml
       - .github/workflows/release.yml
