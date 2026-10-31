@@ -11,8 +11,10 @@ OUT = Path(os.environ["PROBE_OUTPUT"])
 OUT.mkdir(parents=True, exist_ok=True)
 ROOT = Path(tempfile.mkdtemp(prefix="promisor-midx-"))
 GIT = shutil.which("git")
+EXPECTED_NONPROMISOR_CHILDREN = int(os.environ["EXPECTED_NONPROMISOR_CHILDREN"])
+assert EXPECTED_NONPROMISOR_CHILDREN in {0, 1}
 ENV = dict(os.environ, GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL="/dev/null", GIT_NO_LAZY_FETCH="1", GIT_TERMINAL_PROMPT="0", GIT_AUTHOR_NAME="Probe", GIT_AUTHOR_EMAIL="probe@example.invalid", GIT_COMMITTER_NAME="Probe", GIT_COMMITTER_EMAIL="probe@example.invalid", GIT_AUTHOR_DATE="1700000000 +0000", GIT_COMMITTER_DATE="1700000000 +0000")
-REPORT = {"git": subprocess.check_output([GIT, "version"], env=ENV, text=True).strip(), "rows": [], "limits": ["StockGit diagnostic only; no .promisor relabeling or production changes", "Fetch child counts establish algorithm path, not physical savings", "MIDX is removed only in private synthetic fixture when changing preferred-copy policy; pack/idx/marker bytes stay unchanged"]}
+REPORT = {"git": subprocess.check_output([GIT, "version"], env=ENV, text=True).strip(), "git_executable": GIT, "git_sha256": hashlib.sha256(Path(GIT).read_bytes()).hexdigest(), "expected_nonpromisor_children": EXPECTED_NONPROMISOR_CHILDREN, "rows": [], "limits": ["Private stock/patched Git CI only; no .promisor relabeling or production changes", "Fetch child and pack-access entry counts establish algorithm path, not physical savings or exact decompression", "MIDX is removed only in private synthetic fixture when changing preferred-copy policy; pack/idx/marker bytes stay unchanged"]}
 assert REPORT["git"] == "git version 2.56.0"
 
 
@@ -24,11 +26,13 @@ def run(repo, args, data=None, env=None):
 
 def traced_fetch(repo, label, core_midx=True, expected=None):
     trace = OUT / f"{label}.trace2.jsonl"
+    access = OUT / f"{label}.fetch.pack-access"
+    access.write_bytes(b"")
     args = ["-c", f"core.multiPackIndex={'true' if core_midx else 'false'}", "-c", "maintenance.auto=false", "fetch", "--no-auto-maintenance", "--no-tags", "--no-write-fetch-head", "origin", "refs/heads/main:refs/remotes/origin/main"]
-    run(repo, args, env={"GIT_TRACE2_EVENT": str(trace)})
+    run(repo, args, env={"GIT_TRACE2_EVENT": str(trace), "GIT_TRACE_PACK_ACCESS": str(access)})
     events = [json.loads(line) for line in trace.read_text().splitlines()]
     children = [event["argv"] for event in events if event.get("event") == "child_start" and "rev-list" in event.get("argv", []) and "--exclude-hidden=fetch" in event["argv"]]
-    row = {"label": label, "core_multiPackIndex": core_midx, "exit": 0, "connectivity_children": children, "tracking_oid": run(repo, ["rev-parse", "refs/remotes/origin/main"]).strip().decode(), "trace_sha256": hashlib.sha256(trace.read_bytes()).hexdigest()}
+    row = {"label": label, "core_multiPackIndex": core_midx, "exit": 0, "connectivity_children": children, "tracking_oid": run(repo, ["rev-parse", "refs/remotes/origin/main"]).strip().decode(), "trace_sha256": hashlib.sha256(trace.read_bytes()).hexdigest(), "pack_access_entries": len(access.read_bytes().splitlines()), "pack_access_sha256": hashlib.sha256(access.read_bytes()).hexdigest()}
     REPORT["rows"].append(row)
     (OUT / "report.json").write_text(json.dumps(REPORT, indent=2) + "\n")
     if expected is not None:
@@ -93,7 +97,9 @@ for fmt in ["sha1", "sha256"]:
         run(client, ["multi-pack-index", "write", f"--preferred-pack={nonpromisor.name}"])
         run(client, ["multi-pack-index", "verify"])
         n_selected = selected_copy(client, base, f"{label}-preferred-nonpromisor", nonpromisor.name)
-        n_row = traced_fetch(client, f"{label}-preferred-nonpromisor")
+        n_row = traced_fetch(client, f"{label}-preferred-nonpromisor", expected=EXPECTED_NONPROMISOR_CHILDREN)
+        if EXPECTED_NONPROMISOR_CHILDREN == 0:
+            assert n_row["pack_access_entries"] <= 4, n_row
         traced_fetch(client, f"{label}-same-files-midx-disabled", core_midx=False, expected=0)
         midx = client / ".git/objects/pack/multi-pack-index"
         assert midx.is_file()

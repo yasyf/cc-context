@@ -1,0 +1,19 @@
+--- a/odb/source-packed.c
++++ b/odb/source-packed.c
+@@ -348,14 +348,14 @@
+ 	store->skip_mru_updates = true;
+ 
+ 	m = get_multi_pack_index(store);
+-	if (m) {
++	if (m && !(opts->flags & ODB_FOR_EACH_OBJECT_PROMISOR_ONLY)) {
+ 		ret = for_each_prefixed_object_in_midx(store, m, opts, data);
+ 		if (ret)
+ 			goto out;
+ 	}
+ 
+ 	for (e = packfile_store_get_packs(store); e; e = e->next) {
+-		if (e->pack->multi_pack_index)
++		if (e->pack->multi_pack_index && !(opts->flags & ODB_FOR_EACH_OBJECT_PROMISOR_ONLY))
+ 			continue;
+ 		if (should_exclude_pack(e->pack, opts->flags))
+ 			continue;

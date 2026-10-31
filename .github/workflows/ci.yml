@@ -1,4 +1,4 @@
-name: Promisor MIDX duplicate diagnostic
+name: Promisor MIDX native routing regression
 on:
   workflow_dispatch:
     inputs:
@@ -35,12 +35,27 @@ jobs:
       - env:
           PREFIX: ${{ steps.git.outputs.prefix }}
         run: echo "$PREFIX/bin" >> "$GITHUB_PATH"
-      - run: sudo apt-get update -qq && sudo apt-get install -y strace
-      - run: python3 scripts/promisor-midx-probe.py
+      - name: Stock Git regression and context controls
         env:
-          PROBE_OUTPUT: ${{ runner.temp }}/promisor-midx
+          EXPECTED_NONPROMISOR_CHILDREN: "1"
+        run: |
+          PROBE_OUTPUT="$RUNNER_TEMP/promisor-midx-native/stock" python3 scripts/promisor-midx-probe.py
+          PROBE_OUTPUT="$RUNNER_TEMP/promisor-midx-native/context-stock" python3 scripts/promisor-context-probe.py
+      - name: Build exact native routing fix
+        env:
+          PREFIX: ${{ runner.temp }}/git-promisor-fixed
+        run: |
+          bash scripts/build-git-promisor-fixed.sh "$PREFIX"
+          echo "$PREFIX/bin" >> "$GITHUB_PATH"
+      - name: Fixed Git regression and context controls
+        env:
+          EXPECTED_NONPROMISOR_CHILDREN: "0"
+        run: |
+          PROBE_OUTPUT="$RUNNER_TEMP/promisor-midx-native/fixed" python3 scripts/promisor-midx-probe.py
+          PROBE_OUTPUT="$RUNNER_TEMP/promisor-midx-native/context-fixed" python3 scripts/promisor-context-probe.py
+          python3 scripts/promisor-context-parity.py "$RUNNER_TEMP/promisor-midx-native/context-stock/report.json" "$RUNNER_TEMP/promisor-midx-native/context-fixed/report.json" "$RUNNER_TEMP/promisor-midx-native/context-parity.json"
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: promisor-midx
-          path: ${{ runner.temp }}/promisor-midx
+          name: promisor-midx-native
+          path: ${{ runner.temp }}/promisor-midx-native
