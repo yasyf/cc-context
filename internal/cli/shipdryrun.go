@@ -88,6 +88,9 @@ func runShipDryRun(ctx context.Context, cmd *cobra.Command, l lane, o shipOpts, 
 	if err := dryRunPosition(ctx, l, o, c, &r); err != nil {
 		return err
 	}
+	if err := dryRunNativeStack(ctx, l, o, c, &r); err != nil {
+		return err
+	}
 	meta, err := resolvePRMeta(cmd, o, r.branch)
 	if err != nil {
 		return err
@@ -181,6 +184,41 @@ func dryRunPositionGT(ctx context.Context, l lane, o shipOpts, c *gtCache, r *sh
 	return nil
 }
 
+// dryRunNativeStack plans from the parents the native GitHub stack records,
+// through the same read the real run records them with, and names each branch
+// whose local record it overrules. The overruled state replaces the run's
+// memo, so every later read of the report plans the stack the submit publishes.
+func dryRunNativeStack(ctx context.Context, l lane, o shipOpts, c *gtCache, r *shipDryRun) error {
+	if !l.native || r.branch == "" || r.branch == r.trunk || len(r.refusals) > 0 {
+		return nil
+	}
+	state, err := c.at(ctx)
+	if err != nil {
+		return err
+	}
+	from := nativeStackFrom(state, r.branch, o.parent)
+	if _, tracked := state[r.branch]; !tracked && o.parent == "" {
+		from = nativeStackFrom(state, r.parent, "")
+	}
+	moves, planned, err := nativeStackParents(ctx, l, state, from)
+	var refusal *shipRefusal
+	if errors.As(err, &refusal) {
+		r.refusals = append(r.refusals, refusal.Error())
+		return nil
+	}
+	if err != nil || len(moves) == 0 {
+		return err
+	}
+	c.state = planned
+	for _, m := range moves {
+		r.notes = append(r.notes, "ship records "+m.String())
+		if m.branch == r.branch && o.parent == "" {
+			r.parent, r.because = m.parent, fmt.Sprintf("native GitHub stack #%d bases #%d on it", m.stack, m.pr)
+		}
+	}
+	return nil
+}
+
 // dryRunReparent reports the move ship makes for --parent on a branch graphite
 // tracks elsewhere, and the refusal it makes when the move cannot be made.
 func dryRunReparent(ctx context.Context, l lane, o shipOpts, state gtState, was string, r *shipDryRun) error {
@@ -238,6 +276,20 @@ func dryRunOnto(ctx context.Context, l lane, o shipOpts, r *shipDryRun, from gtR
 // ship drops -f when --parent is given: the two spellings resolve to different
 // branches, and only one of them was asked for.
 func dryRunTrack(ctx context.Context, l lane, o shipOpts, state gtState, r *shipDryRun) error {
+	recorded := gtRecordedParent{}
+	if o.parent == "" {
+		var err error
+		recorded, err = gtNativeTrackParent(ctx, l, r.branch)
+		var refusal *shipRefusal
+		if errors.As(err, &refusal) {
+			r.refusals = append(r.refusals, refusal.Error())
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		o.parent = recorded.base
+	}
 	if o.parent != "" {
 		r.parent = o.parent
 		replay := ""
@@ -248,6 +300,9 @@ func dryRunTrack(ctx context.Context, l lane, o shipOpts, state gtState, r *ship
 			}
 		}
 		r.because = "untracked, so gt track --parent records it (ship drops -f, which would outrank it)" + replay
+		if recorded.base != "" {
+			r.because = fmt.Sprintf("untracked, so ship tracks it on the base of its open #%d", recorded.pr) + replay
+		}
 		if o.parent == r.trunk && !o.amend {
 			head, base, root, err := gtRootBase(ctx, l.dir(), r.branch, r.trunk)
 			if err != nil {

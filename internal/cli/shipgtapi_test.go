@@ -54,6 +54,7 @@ type gtAPIStub struct {
 	parked     map[string]string
 	remote     func(args ...string) string
 	bases      map[string]string
+	stacks     map[string]int
 	recorded   map[string]string
 	onSubmit   func(entry gtStubSubmitEntry)
 	refuseOnce map[string]string
@@ -173,6 +174,7 @@ func newGTAPIStub(t *testing.T) *gtAPIStub {
 		untracked:    map[int]gtStubUntracked{},
 		parked:       map[string]string{},
 		bases:        map[string]string{},
+		stacks:       map[string]int{},
 		recorded:     map[string]string{},
 		refuseOnce:   map[string]string{},
 		unrecorded:   map[string]int{},
@@ -263,6 +265,9 @@ func (s *gtAPIStub) serve(w http.ResponseWriter, r *http.Request) {
 				}
 				if base := s.bases[branch]; base != "" {
 					pr["baseRefName"] = base
+				}
+				if stack := s.stacks[branch]; stack != 0 {
+					pr["stackNumber"] = stack
 				}
 				if base := s.parked[branch]; base != "" {
 					pr["baseRefName"], pr["isBaseRefGraphiteBase"] = base, true
