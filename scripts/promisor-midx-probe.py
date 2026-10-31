@@ -64,9 +64,12 @@ for fmt in ["sha1", "sha256"]:
             parts.append(text + "\n")
         run(remote, ["-c", "fastimport.unpackLimit=0", "fast-import", "--quiet"], "".join(parts).encode())
         client = ROOT / f"client-{label}"
-        subprocess.run([GIT, "clone", "--quiet", "--no-checkout", "--filter=blob:none", remote.as_uri(), str(client)], env=ENV, check=True, timeout=120)
+        clone_trace = OUT / f"{label}-clone.trace2.jsonl"
+        subprocess.run([GIT, "clone", "--quiet", "--no-checkout", "--filter=blob:none", remote.as_uri(), str(client)], env=ENV | {"GIT_TRACE2_EVENT": str(clone_trace)}, check=True, timeout=120)
         packs = list((client / ".git/objects/pack").glob("*.pack"))
-        assert len(packs) == 1
+        layout = {"pack_files": sorted(path.name for path in (client / ".git/objects/pack").iterdir()), "count_objects": run(client, ["count-objects", "-v"]).decode(), "object_format": run(client, ["rev-parse", "--show-object-format"]).decode().strip()}
+        (OUT / f"{label}-clone-layout.json").write_text(json.dumps(layout, indent=2) + "\n")
+        assert len(packs) == 1, layout
         promisor = packs[0]
         assert promisor.with_suffix(".promisor").is_file()
         base = run(client, ["rev-parse", "refs/remotes/origin/main"]).strip().decode()
