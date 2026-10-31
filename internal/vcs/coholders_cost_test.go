@@ -13,6 +13,8 @@ import (
 	"slices"
 	"strconv"
 	"testing"
+
+	"github.com/yasyf/cc-context/internal/render"
 )
 
 type coHoldersCostFixture struct {
@@ -42,7 +44,8 @@ func TestCoHoldersPayloadNamespaceCost(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Fatal("CCX_COHOLDER_STRACE requires Linux")
 	}
-	if _, err := exec.LookPath("strace"); err != nil {
+	strace, err := exec.LookPath("strace")
+	if err != nil {
 		t.Fatalf("CCX_COHOLDER_STRACE requires strace: %v", err)
 	}
 	binary, err := os.Executable()
@@ -61,11 +64,11 @@ func TestCoHoldersPayloadNamespaceCost(t *testing.T) {
 			fixture.Result = filepath.Join(output, "result.json")
 			tracePath := filepath.Join(output, "namespace.strace")
 			writeCoHoldersCostJSON(t, fixturePath, fixture)
-			command := exec.CommandContext(t.Context(), "strace", "-f", "-qq", "-s", "0", "-e", "trace=newfstatat,readlink", "-o", tracePath, binary, "-test.run=^TestCoHoldersNamespaceWalkHelper$", "-test.count=1")
-			command.Env = append(os.Environ(), "CCX_COHOLDER_STRACE_FIXTURE="+fixturePath, "PATH="+t.TempDir())
-			outputText, err := command.CombinedOutput()
-			if err != nil {
-				t.Fatalf("trace CoHolders: %v\n%s", err, outputText)
+			argv := []string{"-f", "-qq", "-s", "0", "-e", "trace=newfstatat,readlink", "-o", tracePath, binary, "-test.run=^TestCoHoldersNamespaceWalkHelper$", "-test.count=1"}
+			env := []string{"CCX_COHOLDER_STRACE_FIXTURE=" + fixturePath, "PATH=" + t.TempDir()}
+			stdout, code, stderr, err := render.RunCLIExitCodeEnv(t.Context(), render.Ambient, strace, argv, env)
+			if err != nil || code != 0 {
+				t.Fatalf("trace CoHolders: code=%d error=%v\n%s%s", code, err, stdout, stderr)
 			}
 			var result coHoldersCostResult
 			readCoHoldersCostJSON(t, fixture.Result, &result)
