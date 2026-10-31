@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -8,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/yasyf/cc-context/internal/gtmeta"
+	"github.com/yasyf/cc-context/internal/nativemeta"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
@@ -34,7 +36,7 @@ type dropGH struct {
 func installDropGH(t *testing.T, f *vcstest.Fixture, seeds map[string]dropSeed) *dropGH {
 	t.Helper()
 	gh := &dropGH{t: t, dir: t.TempDir()}
-	for _, sub := range []string{"pr", "branch", "deleted", "events"} {
+	for _, sub := range []string{"pr", "branch", "deleted", "events", "stacks"} {
 		if err := os.MkdirAll(filepath.Join(gh.dir, sub), 0o750); err != nil {
 			t.Fatalf("mkdir %s: %v", sub, err)
 		}
@@ -76,21 +78,52 @@ func (g *dropGH) closedByBaseDeletion(number int) {
 	g.write(filepath.Join("events", fmt.Sprint(number)), "base_ref_deleted 2026-10-05T06:34:19Z\nclosed 2026-10-05T06:34:19Z")
 }
 
+// stack seeds native stack number with prs, bottom to top.
+func (g *dropGH) stack(number int, prs ...int) {
+	g.t.Helper()
+	members := make([]string, len(prs))
+	for i, n := range prs {
+		members[i] = fmt.Sprint(n)
+	}
+	g.write(filepath.Join("stacks", fmt.Sprint(number)), strings.Join(members, " "))
+}
+
+// stacks reads every native stack back as its members, one stack per line.
+func (g *dropGH) stacks() string {
+	g.t.Helper()
+	entries, err := os.ReadDir(filepath.Join(g.dir, "stacks"))
+	if err != nil {
+		g.t.Fatalf("read stacks: %v", err)
+	}
+	stacks := make([]string, 0, len(entries))
+	for _, e := range entries {
+		data, err := os.ReadFile(filepath.Join(g.dir, "stacks", e.Name()))
+		if err != nil {
+			g.t.Fatalf("read stack %s: %v", e.Name(), err)
+		}
+		stacks = append(stacks, strings.TrimSpace(string(data)))
+	}
+	return strings.Join(stacks, "\n")
+}
+
 func (g *dropGH) markDeleted(ref string) {
 	g.t.Helper()
 	g.write(filepath.Join("deleted", ref), "")
 }
 
-// dropGHBody answers the five REST calls a drop issues out of the state
-// directory, and refuses the two things GitHub itself refuses: changing a
-// closed pull request's base, and reopening one whose base ref is gone.
+// dropGHBody answers the REST calls a drop issues out of the state directory,
+// and refuses what GitHub itself refuses: changing the base of a closed pull
+// request or of a native stack member, reopening one whose base ref is gone,
+// and a stack whose members are already stacked or do not chain.
 const dropGHBody = `S=$DROP_GH
 field() { key=$1; shift; while [ $# -gt 0 ]; do case "$1" in "$key"=*) printf '%s' "${1#*=}"; return 0 ;; esac; shift; done; }
+head_of() { for b in "$S"/branch/*; do read -r m < "$b"; if [ "$m" = "$1" ]; then printf '%s' "${b##*/}"; fi; done; }
+stacked() { for s in "$S"/stacks/*; do [ -r "$s" ] || continue; read -r ms < "$s"; for m in $ms; do if [ "$m" = "$1" ]; then printf '%s' "${s##*/}"; return 0; fi; done; done; return 1; }
 render() {
   read -r st bs < "$S/pr/$1"
   case "$st" in OPEN) rest=open ;; *) rest=closed ;; esac
   merged=null; if [ "$st" = MERGED ]; then merged='"2026-09-01T00:00:00Z"'; fi
-  hd=; for b in "$S"/branch/*; do read -r m < "$b"; if [ "$m" = "$1" ]; then hd=${b##*/}; fi; done
+  hd=$(head_of "$1")
   printf '{"number":%s,"html_url":"https://github.com/yasyf/cc-context/pull/%s","state":"%s","merged_at":%s,"base":{"ref":"%s"},"head":{"ref":"%s"}}' "$1" "$1" "$rest" "$merged" "$bs" "$hd"
 }
 if [ "$1" != api ]; then printf 'fake gh: unmatched argv: %s\n' "$*" >&2; exit 2; fi
@@ -134,6 +167,10 @@ case "$method $path" in
         printf 'gh: Cannot change the base branch of a closed pull request. (HTTP 422)\n' >&2
         exit 1
       fi
+      if stacked "$n" >/dev/null; then
+        printf 'gh: Validation Failed (HTTP 422)\nCannot change the base branch because the pull request is part of a stack.\n' >&2
+        exit 1
+      fi
       if [ -z "$DROP_GH_EDIT_NOOP" ]; then printf '%s %s\n' "$st" "$base" > "$S/pr/$n"; fi
     fi
     if [ "$(field state "$@")" = open ]; then
@@ -143,6 +180,33 @@ case "$method $path" in
       fi
       printf 'OPEN %s\n' "$bs" > "$S/pr/$n"
     fi ;;
+  "GET "*/stacks)
+    if ! num=$(stacked "$(field pull_request "$@")"); then printf '[]'; exit 0; fi
+    read -r ms < "$S/stacks/$num"
+    printf '[{"number":%s,"pull_requests":[' "$num"; sep=
+    for m in $ms; do
+      read -r st bs < "$S/pr/$m"
+      case "$st" in OPEN) rest=open ;; *) rest=closed ;; esac
+      printf '%s{"number":%s,"state":"%s"}' "$sep" "$m" "$rest"; sep=,
+    done
+    printf ']}]' ;;
+  "POST "*/stacks/*/unstack)
+    n=${path%/unstack}; n=${n##*/}
+    rm -f "$S/stacks/$n" ;;
+  "POST "*/stacks)
+    ms= prev=
+    for a in "$@"; do
+      case "$a" in
+        'pull_requests[]='*)
+          m=${a#*=}
+          if stacked "$m" >/dev/null; then printf 'gh: Pull request #%s is already part of a stack. (HTTP 422)\n' "$m" >&2; exit 1; fi
+          read -r st bs < "$S/pr/$m"
+          if [ -n "$prev" ] && [ "$bs" != "$(head_of "$prev")" ]; then printf 'gh: Pull request #%s does not build on #%s. (HTTP 422)\n' "$m" "$prev" >&2; exit 1; fi
+          ms="$ms $m"; prev=$m ;;
+      esac
+    done
+    n=$(( $(ls "$S/stacks" | wc -l) + 90 ))
+    printf '%s\n' "${ms# }" > "$S/stacks/$n" ;;
   *) printf 'fake gh: unmatched argv: %s\n' "$*" >&2; exit 2 ;;
 esac
 exit 0
@@ -207,6 +271,32 @@ func dropStack(t *testing.T, names ...string) *vcstest.Fixture {
 	return f
 }
 
+// dropNativeFixture is dropStack on the native GitHub stack lane: each branch
+// recorded on the one before it, the first on main.
+func dropNativeFixture(t *testing.T, names ...string) *vcstest.Fixture {
+	t.Helper()
+	f := shipRepo(t, vcstest.Remote())
+	f.Decorate(func(ctx context.Context) context.Context { return withStackProvider(ctx, true) })
+	mustRun(t, f.Env(), f.Dir, "git", "config", "ccx.stack", "github")
+	common := filepath.Join(f.Dir, ".git")
+	if err := nativemeta.Init(f.Context(), common, "main"); err != nil {
+		t.Fatal(err)
+	}
+	parent := "main"
+	for _, name := range names {
+		fork := shipHead(t, f)
+		shipGTUntracked(t, f, name)
+		if err := nativemeta.AdoptRoot(f.Context(), common, name, parent, fork, shipHead(t, f)); err != nil {
+			t.Fatal(err)
+		}
+		parent = name
+	}
+	mustRun(t, f.Env(), f.Dir, "git", append([]string{"push", "-q", "origin"}, names...)...)
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", names[0])
+	shipResetLog(t, f)
+	return f
+}
+
 func dropGTParent(t *testing.T, f *vcstest.Fixture, branch string) string {
 	t.Helper()
 	state, err := gtStateQuery(t.Context(), render.Dir(f.Dir), "test")
@@ -259,6 +349,44 @@ func TestStackDropRetargetsEveryChildBeforeDeletingTheBranch(t *testing.T) {
 	}
 	if !strings.Contains(out, "retargeted 1 onto base") {
 		t.Errorf("report = %q, want it to name the retarget", out)
+	}
+}
+
+// TestStackDropUnstacksANativeStackToRetargetItsMembers drops mid out of native
+// stack #46, base then mid then top. GitHub refuses to change the base of a
+// stack member, so the drop failed on top's retarget with HTTP 422. It now
+// unstacks #46, retargets top onto base, and links base and top into a new
+// stack, all before mid is deleted.
+func TestStackDropUnstacksANativeStackToRetargetItsMembers(t *testing.T) {
+	f := dropNativeFixture(t, "base", "mid", "top")
+	gh := installDropGH(t, f, map[string]dropSeed{
+		"base": {number: 1, state: "OPEN", base: "main"},
+		"mid":  {number: 2, state: "OPEN", base: "base"},
+		"top":  {number: 3, state: "OPEN", base: "mid"},
+	})
+	gh.stack(46, 1, 2, 3)
+
+	out, _, err := runStackCmd(t, f, "drop", "mid")
+	if err != nil {
+		t.Fatalf("stack drop: %v", err)
+	}
+
+	invocations := shipGTInvocations(t, f)
+	unstack := dropStep(t, invocations, "gh", "api", "POST", "repos/yasyf/cc-context/stacks/46/unstack")
+	retarget := dropStep(t, invocations, "gh", "api", "PATCH", "repos/yasyf/cc-context/pulls/3", "base=base")
+	relink := dropStep(t, invocations, "gh", "api", "POST", "repos/yasyf/cc-context/stacks", "pull_requests[]=1", "pull_requests[]=3")
+	deleted := dropStep(t, invocations, "git", "push", "--delete", "mid")
+	if unstack > retarget || retarget > relink || relink > deleted {
+		t.Errorf("unstack at step %d, retarget at %d, relink at %d, delete at %d; want them in that order", unstack, retarget, relink, deleted)
+	}
+	if got := gh.pr(3); got != "OPEN base" {
+		t.Errorf("top's PR = %q, want %q", got, "OPEN base")
+	}
+	if got := gh.stacks(); got != "1 3" {
+		t.Errorf("native stacks = %q, want base and top alone in one", got)
+	}
+	if want := "unstacked native stack #46 and relinked #1 > #3"; !strings.Contains(out, want) {
+		t.Errorf("report = %q, want %q", out, want)
 	}
 }
 

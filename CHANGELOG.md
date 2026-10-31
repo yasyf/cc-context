@@ -111,6 +111,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on trunk, and the restack and submit replayed the other lane's commits into
   it and retargeted its pull request onto trunk. A base that is not a local
   branch now refuses with the fetch that fixes it, in `--dry-run` too.
+- **`ccx vcs stack drop` on the native GitHub stack lane drops a branch out of
+  a native stack.** GitHub refuses to change the base of a stack member, so the
+  first retarget failed with HTTP 422. Drop now unstacks each native stack
+  holding a pull request it moves or closes, retargets, links the members that
+  stay open into a new stack, and only then deletes the branch.
 - **`ccx vcs ship --new-branch` on the native GitHub stack lane stacks the new
   branch on the branch it was cut from.** The native create recorded it on
   trunk at its merge base, so the next restack and submit carried the parent's
