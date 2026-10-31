@@ -45,14 +45,14 @@ repos:
     hooks:
       - id: golangci-lint-fmt
         name: golangci-lint-fmt
-        entry: mise exec -- golangci-lint fmt
+        entry: mise exec golangci-lint -- golangci-lint fmt
         language: system
         types: [go]
         require_serial: true
         pass_filenames: false
       - id: golangci-lint
         name: golangci-lint
-        entry: mise exec -- golangci-lint run --new-from-rev HEAD --fix
+        entry: mise exec golangci-lint -- golangci-lint run --new-from-rev HEAD --fix
         language: system
         types: [go]
         require_serial: true

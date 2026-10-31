@@ -32,7 +32,7 @@ class GoHookPinTest(unittest.TestCase):
         go = next(line.split()[1] for line in (ROOT / "go.mod").read_text().splitlines() if line.startswith("go "))
         self.assertEqual(tools["go"], go)
         self.assertTrue(tools["golangci-lint"])
-        self.assertIn("mise exec -- golangci-lint run", (ROOT / "Taskfile.yml").read_text())
+        self.assertIn("mise exec golangci-lint -- golangci-lint run", (ROOT / "Taskfile.yml").read_text())
         ci = load_yaml(ROOT / ".github/workflows/ci.yml")
         steps = ci["jobs"]["lint"]["steps"]
         self.assertTrue(any('golangci-lint = ' in step.get("run", "") and "mise.toml" in step["run"] for step in steps))
@@ -41,8 +41,8 @@ class GoHookPinTest(unittest.TestCase):
     def test_whole_module_new_issue_fix_contract(self):
         self.assertEqual([hook["id"] for hook in self.hooks], ["golangci-lint-fmt", "golangci-lint"])
         self.assertEqual([shlex.split(hook["entry"]) for hook in self.hooks], [
-            ["mise", "exec", "--", "golangci-lint", "fmt"],
-            ["mise", "exec", "--", "golangci-lint", "run", "--new-from-rev", "HEAD", "--fix"],
+            ["mise", "exec", "golangci-lint", "--", "golangci-lint", "fmt"],
+            ["mise", "exec", "golangci-lint", "--", "golangci-lint", "run", "--new-from-rev", "HEAD", "--fix"],
         ])
         for hook in self.hooks:
             self.assertEqual(hook["language"], "system")
