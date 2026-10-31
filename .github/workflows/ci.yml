@@ -56,6 +56,11 @@ jobs:
           CCX_COHOLDER_STRACE: fixed
           CCX_COHOLDER_STRACE_OUTPUT: ${{ runner.temp }}/coholder-path-cost
         run: go test -count=1 -v -run '^TestCoHoldersPayloadNamespaceCost$' ./internal/vcs
+      - name: Selected retired-holder pointer cost and branch/error semantics
+        env:
+          CCX_RETIRED_CENSUS_STRACE: fixed
+          CCX_RETIRED_CENSUS_STRACE_OUTPUT: ${{ runner.temp }}/coholder-path-cost/retired
+        run: go test -count=1 -v -run '^Test(CoHoldersRetired.*|RetiredHoldingsRetainsUnrelatedBranches|ParseRetiredCensusCall)$' ./internal/vcs
       - uses: actions/checkout@v7
         with:
           ref: 59bbfcbd3cf30240f41f4b360638b13a92ef8810
@@ -65,11 +70,15 @@ jobs:
         env:
           CCX_COHOLDER_STRACE: before
           CCX_COHOLDER_STRACE_OUTPUT: ${{ runner.temp }}/coholder-path-cost
+          CCX_RETIRED_CENSUS_STRACE: before
+          CCX_RETIRED_CENSUS_STRACE_OUTPUT: ${{ runner.temp }}/coholder-path-cost/retired
         run: |
           test "$(git -C .ci-coholder-baseline rev-parse HEAD)" = 59bbfcbd3cf30240f41f4b360638b13a92ef8810
           cp internal/vcs/coholders_cost_test.go .ci-coholder-baseline/internal/vcs/coholders_cost_test.go
+          cp internal/vcs/coholders_retired_cost_test.go internal/vcs/coholders_retired_empty_cost_test.go internal/vcs/coholders_retired_branch_test.go .ci-coholder-baseline/internal/vcs/
           cd .ci-coholder-baseline
           go test -count=1 -v -run '^TestCoHoldersPayloadNamespaceCost$' ./internal/vcs
+          go test -count=1 -v -run '^Test(CoHoldersRetired.*|RetiredHoldingsRetainsUnrelatedBranches|ParseRetiredCensusCall)$' ./internal/vcs
       - uses: actions/upload-artifact@v7
         if: always()
         with:

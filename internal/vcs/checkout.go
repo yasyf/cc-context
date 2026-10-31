@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"iter"
 	"os"
 	"path/filepath"
 	"slices"
@@ -492,44 +493,91 @@ func linkedHoldings(common string) ([]Holding, error) {
 // working copy's .git file rewritten to follow it. Only an admin dir its
 // working copy points back at counts, so a stale copy left behind holds nothing.
 func retiredHoldings(common string) ([]Holding, error) {
-	groups, err := os.ReadDir(common)
-	if err != nil {
-		return nil, fmt.Errorf("list the common dir %q: %w", common, err)
-	}
 	var holdings []Holding
-	for _, group := range groups {
-		if !group.IsDir() || group.Name() == "worktrees" {
-			continue
-		}
-		admins, err := os.ReadDir(filepath.Join(common, group.Name()))
-		if errors.Is(err, fs.ErrNotExist) {
-			continue
-		}
+	for dir, err := range retiredAdminDirs(common) {
 		if err != nil {
-			return nil, fmt.Errorf("list %q: %w", filepath.Join(common, group.Name()), err)
+			return nil, err
 		}
-		for _, admin := range admins {
-			if !admin.IsDir() {
-				continue
-			}
-			dir := filepath.Join(common, group.Name(), admin.Name())
-			path, ok := retiredWorktree(dir)
-			if !ok {
-				continue
-			}
-			branch, err := headBranch(dir)
-			if err != nil {
-				return nil, err
-			}
-			holdings = append(holdings, Holding{Path: path, Branch: branch})
+		path, ok := retiredWorktree(dir)
+		if !ok {
+			continue
 		}
+		branch, err := headBranch(dir)
+		if err != nil {
+			return nil, err
+		}
+		holdings = append(holdings, Holding{Path: path, Branch: branch})
 	}
 	return holdings, nil
+}
+
+func retiredAdminDirs(common string) iter.Seq2[string, error] {
+	return func(yield func(string, error) bool) {
+		groups, err := os.ReadDir(common)
+		if err != nil {
+			yield("", fmt.Errorf("list the common dir %q: %w", common, err))
+			return
+		}
+		for _, group := range groups {
+			if !group.IsDir() || group.Name() == "worktrees" {
+				continue
+			}
+			admins, err := os.ReadDir(filepath.Join(common, group.Name()))
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			if err != nil {
+				yield("", fmt.Errorf("list %q: %w", filepath.Join(common, group.Name()), err))
+				return
+			}
+			for _, admin := range admins {
+				if admin.IsDir() && !yield(filepath.Join(common, group.Name(), admin.Name()), nil) {
+					return
+				}
+			}
+		}
+	}
+}
+
+type retiredHolder struct {
+	admin   string
+	gitFile string
+	branch  string
+}
+
+func retiredHolderCensus(common string) ([]retiredHolder, error) {
+	var holders []retiredHolder
+	for admin, err := range retiredAdminDirs(common) {
+		if err != nil {
+			return nil, err
+		}
+		gitFile, ok := retiredGitFile(admin)
+		if !ok || gitFile == admin {
+			continue
+		}
+		branch, err := headBranch(admin)
+		if err != nil {
+			if _, valid := retiredWorktreeAt(admin, gitFile); valid {
+				return nil, err
+			}
+			continue
+		}
+		holders = append(holders, retiredHolder{admin: admin, gitFile: gitFile, branch: branch})
+	}
+	return holders, nil
 }
 
 // retiredWorktree names the working copy admin belongs to when admin's gitdir
 // names a .git file that points straight back at admin.
 func retiredWorktree(admin string) (string, bool) {
+	dotGit, ok := retiredGitFile(admin)
+	if !ok {
+		return "", false
+	}
+	return retiredWorktreeAt(admin, dotGit)
+}
+
+func retiredGitFile(admin string) (string, bool) {
 	link, err := os.ReadFile(filepath.Join(admin, "gitdir")) //nolint:gosec // an admin file under the repository's common dir
 	if err != nil {
 		return "", false
@@ -538,6 +586,10 @@ func retiredWorktree(admin string) (string, bool) {
 	if !filepath.IsAbs(dotGit) {
 		dotGit = filepath.Join(admin, dotGit)
 	}
+	return dotGit, true
+}
+
+func retiredWorktreeAt(admin, dotGit string) (string, bool) {
 	pointer, err := os.ReadFile(dotGit) //nolint:gosec // the worktree .git file git recorded in admin/gitdir
 	if err != nil {
 		return "", false
@@ -577,13 +629,33 @@ func CoHolders(ctx context.Context, c Checkout) (string, []string, error) {
 	if err != nil || branch == "" {
 		return "", nil, err
 	}
-	list, err := adminHoldings(c.CommonDir)
+	list, err := linkedHoldings(c.CommonDir)
+	if err != nil {
+		return "", nil, err
+	}
+	retired, err := retiredHolderCensus(c.CommonDir)
 	if err != nil {
 		return "", nil, err
 	}
 	branch, err = headBranch(c.GitDir)
 	if err != nil || branch == "" {
 		return "", nil, err
+	}
+	for _, holder := range retired {
+		if holder.branch != branch {
+			continue
+		}
+		path, valid := retiredWorktreeAt(holder.admin, holder.gitFile)
+		if !valid {
+			continue
+		}
+		current, err := headBranch(holder.admin)
+		if err != nil {
+			return "", nil, err
+		}
+		if current == branch {
+			list = append(list, Holding{Path: path, Branch: current})
+		}
 	}
 	main, err := headBranch(c.CommonDir)
 	if err != nil {
