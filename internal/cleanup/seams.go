@@ -80,7 +80,7 @@ type Relocator interface {
 	// From PhasePending it runs Accept's whole preflight again, and blocks the
 	// job unless that passes for the tree the job captured.
 	//
-	// It returns nil with job at PhaseUnregistered on success, nil with job at
+	// It returns nil with job at PhaseUnregistered or PhaseDeletingAdmin on success, nil with job at
 	// PhaseWaiting when a deferred job's tree is still held, and nil with
 	// job.Blocked set when the job needs an operator. The error is the journal's
 	// when it could not be written, and ctx's when ctx was cancelled, leaving
@@ -92,17 +92,21 @@ type Relocator interface {
 	// Retire hides an inactive worktree's registration while retaining its checkout in place.
 	// Registration-rebinding maintenance must not overlap retirement; a maintenance hold excludes it.
 	Retire(ctx context.Context, job *Job) error
-	// Admit is the gate every physical deletion passes each time its payload is
-	// opened: first, after a restart, and after any pause. It proves afresh
-	// that the payload is the captured tree, that no git registration names
-	// the payload or anything inside the job folder, that the job folder is
-	// unwatched, and that no live process holds the payload. A failed proof
-	// blocks the job and returns nil; the error is non-nil only when the
-	// journal could not be written or ctx was cancelled.
-	Admit(ctx context.Context, job *Job) error
+	// Admit supplies the captured root to open after proving its ownership,
+	// registration, watcher and activity constraints afresh. External admin
+	// completion is journaled before its payload can be admitted. A failed
+	// proof blocks the job; errors report journal failure or cancellation.
+	Admit(ctx context.Context, job *Job) (DeletionRoot, error)
 }
 
-// Deleter opens the physical deletion of one relocated payload.
+// DeletionRoot names one captured directory admitted for descriptor-safe deletion.
+type DeletionRoot struct {
+	Dir  string
+	Name string
+	ID   FileID
+}
+
+// Deleter opens the physical deletion of one captured root.
 type Deleter interface {
 	// Open starts deleting the directory name inside dir, following no symlink
 	// on the way. The error wraps fs.ErrNotExist when nothing is there and
@@ -110,7 +114,7 @@ type Deleter interface {
 	Open(dir, name string, want FileID) (Deletion, error)
 }
 
-// Deletion is one payload's deletion in progress. It holds its place in the
+// Deletion is one captured root's deletion in progress. It holds its place in the
 // tree between steps, so a step never rescans what an earlier one covered.
 type Deletion interface {
 	// Step removes at most limit entries, stopping early once budget has

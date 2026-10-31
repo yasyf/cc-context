@@ -3,27 +3,29 @@ package relocate
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 
 	"github.com/yasyf/cc-context/internal/cleanup"
 )
 
-// Admit proves afresh that job's payload may be deleted: it is the captured
-// tree, nothing sits at the registered path, no worktree registration names
-// the job folder or anything inside it, the job folder is unwatched, and no
-// live process holds the payload. A payload that is already gone admits
-// without further proof, since nothing is left to delete. A failed proof
-// blocks the job; a cancelled ctx returns ctx's error, blocks nothing, and
-// admits nothing, even when every proof had already passed.
-func (r *Relocator) Admit(ctx context.Context, job *cleanup.Job) error {
+// Admit returns the captured root whose physical deletion may proceed.
+// External admin deletion requires its intact payload locator; retired payload
+// deletion requires the durable admin-complete phase. Both stages require
+// strict activity proof. Native payload admission retains its existing rules.
+// A failed proof blocks the job; cancellation admits nothing and blocks nothing.
+func (r *Relocator) Admit(ctx context.Context, job *cleanup.Job) (cleanup.DeletionRoot, error) {
 	if err := ctx.Err(); err != nil {
-		return err
+		return cleanup.DeletionRoot{}, err
+	}
+	if job.Phase == cleanup.PhaseDeletingAdmin {
+		return r.admitAdmin(ctx, job)
 	}
 	reason, detail := r.admission(ctx, job)
 	if reason == "" {
-		return ctx.Err()
+		return cleanup.DeletionRoot{Dir: filepath.Dir(job.Payload), Name: filepath.Base(job.Payload), ID: job.Tree}, ctx.Err()
 	}
 	_, err := r.block(ctx, job, reason, detail)
-	return err
+	return cleanup.DeletionRoot{}, err
 }
 
 func (r *Relocator) admission(ctx context.Context, job *cleanup.Job) (reason, detail string) {
@@ -53,6 +55,13 @@ func (r *Relocator) admission(ctx context.Context, job *cleanup.Job) (reason, de
 	}
 	if err := r.cfg.Watchers.CheckQuarantine(ctx, r.cfg.Journal.Layout().JobDir(job.ID)); err != nil {
 		return "quarantine", err.Error()
+	}
+	if job.Phase == cleanup.PhaseDeletingRetiredPayload {
+		job.Ignored = nil
+		if err := r.strictIdle(ctx, job, job.Payload); err != nil {
+			return "activity", unclear(job.Payload, err)
+		}
+		return "", ""
 	}
 	if holders := r.held(ctx, job, job.Payload); holders != "" {
 		return "activity", holders

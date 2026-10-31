@@ -198,6 +198,9 @@ func (r *Relocator) enter(job *cleanup.Job, phase cleanup.Phase) (bool, error) {
 // journals a timeout blockage and returns nil.
 func (r *Relocator) Advance(ctx context.Context, job *cleanup.Job) error {
 	if job.Retirement != "" {
+		if handled, err := r.resumeDisplaced(ctx, job); handled || err != nil {
+			return err
+		}
 		if proceed, err := r.restoreRegistration(ctx, job); err != nil || !proceed {
 			return err
 		}

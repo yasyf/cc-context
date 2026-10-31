@@ -29,7 +29,7 @@ func TestSchedulerIndexesExcludeParkedJobs(t *testing.T) {
 }
 
 func TestSchedulerIndexesMatchFullScanAcrossTransitions(t *testing.T) {
-	phases := []cleanup.Phase{cleanup.PhaseQueued, cleanup.PhaseWaiting, cleanup.PhasePending, cleanup.PhasePrepared, cleanup.PhaseMoved, cleanup.PhaseDetached, cleanup.PhaseUnregistered, cleanup.PhaseDeleting, cleanup.PhaseDone}
+	phases := []cleanup.Phase{cleanup.PhaseQueued, cleanup.PhaseWaiting, cleanup.PhasePending, cleanup.PhasePrepared, cleanup.PhaseMoved, cleanup.PhaseDetached, cleanup.PhaseUnregistered, cleanup.PhaseDeleting, cleanup.PhaseDeletingAdmin, cleanup.PhaseDeletingRetiredPayload, cleanup.PhaseDone}
 	for _, n := range []int{32, 4096, 65536} {
 		t.Run(fmt.Sprintf("N%d", n), func(t *testing.T) {
 			e, now := schedulerFixture(n)

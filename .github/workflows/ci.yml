@@ -73,6 +73,14 @@ jobs:
           mv internal/cleanup/daemon/scheduler_index_test.go "$RUNNER_TEMP/scheduler_index_test.go"
           trap 'cp "$RUNNER_TEMP/indexed-engine.go" internal/cleanup/daemon/engine.go; mv "$RUNNER_TEMP/scheduler_index_test.go" internal/cleanup/daemon/scheduler_index_test.go' EXIT
           git show a88f5b8fe37b26d7f290a2fa46349ac0f6c76e66:internal/cleanup/daemon/engine.go > internal/cleanup/daemon/engine.go
+          python3 - <<'PYTHON'
+          from pathlib import Path
+          path = Path("internal/cleanup/daemon/engine.go")
+          source = path.read_text()
+          before = "if err := e.relocator.Admit(ctx, job); err != nil {"
+          assert source.count(before) == 1
+          path.write_text(source.replace(before, "if _, err := e.relocator.Admit(ctx, job); err != nil {"))
+          PYTHON
           go test -run '^$' -bench '^BenchmarkSchedulerParkedQueue$' -benchtime=200ms -count=3 ./internal/cleanup/daemon | tee scheduler-released.txt
       - uses: actions/upload-artifact@v7
         with:
