@@ -496,15 +496,17 @@ func TestCleanupWatchersRetiring(t *testing.T) {
 			if !slices.Equal(got.Retiring, tt.want) {
 				t.Errorf("Retiring = %+v, want %+v", got.Retiring, tt.want)
 			}
+			serverID := watcherServer
+			serverID.PID = world.server.PID
 			var server []cleanup.ProcessID
-			if slices.Contains(tt.want, watcherServer) {
-				server = []cleanup.ProcessID{watcherServer}
+			if slices.Contains(tt.want, serverID) {
+				server = []cleanup.ProcessID{serverID}
 			}
 			if !slices.Equal(got.Server, server) {
 				t.Errorf("Server = %+v, want %+v", got.Server, server)
 			}
 			if len(got.Retiring) > 0 && len(got.Server) > 0 {
-				got.Retiring[0] = cleanup.ProcessID{PID: 9999, Start: 9999}
+				got.Retiring[slices.Index(tt.want, serverID)] = cleanup.ProcessID{PID: 9999, Start: 9999}
 				if !slices.Equal(got.Server, server) {
 					t.Fatal("retiring watcher storage aliases server allowances")
 				}
