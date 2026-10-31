@@ -75,6 +75,49 @@ func TestStackRebaseAboveMovesOnlyTheBranchesAboveIt(t *testing.T) {
 	}
 }
 
+func TestStackRebaseAboveReadsADivergedBranchBelowItAtItsPublishedHead(t *testing.T) {
+	f := shipGTRepo(t)
+	shipGTStack(t, f, "a", "b", "c", "d")
+	stubOpenPRs(t, f, nil, "a", "b", "c", "d")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "a", "b", "c", "d")
+	stale := gitAt(t, f.Env(), f.Dir, "rev-parse", "a")
+	clone := filepath.Join(t.TempDir(), "other-lane")
+	mustRun(t, f.Env(), filepath.Dir(clone), "git", "clone", "-q", f.RemoteDir, clone)
+	mustRun(t, f.Env(), clone, "git", "config", "user.email", "t@t.t")
+	mustRun(t, f.Env(), clone, "git", "config", "user.name", "t")
+	mustRun(t, f.Env(), clone, "git", "switch", "-q", "a")
+	writeShipFile(t, clone, "a.txt", "another lane's a\n")
+	mustRun(t, f.Env(), clone, "git", "commit", "-qa", "--amend", "--no-edit")
+	mustRun(t, f.Env(), clone, "git", "switch", "-q", "b")
+	mustRun(t, f.Env(), clone, "git", "rebase", "-q", "--onto", "a", stale, "b")
+	mustRun(t, f.Env(), clone, "git", "push", "-qf", "origin", "a", "b")
+	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
+	mustRun(t, f.Env(), f.Dir, "git", "branch", "-f", "b", "origin/b")
+	heads := map[string]string{}
+	for _, name := range []string{"a", "b"} {
+		heads[name] = gitAt(t, f.Env(), f.RemoteDir, "rev-parse", name)
+	}
+
+	out, errOut, err := runStackCmd(t, f, "rebase", "--above", "b")
+	if err != nil {
+		t.Fatalf("stack rebase --above b with a stale local a: %v\n%s%s", err, out, errOut)
+	}
+	for name, head := range heads {
+		if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", name); got != head {
+			t.Errorf("origin %s = %.12s, want it left at %.12s", name, got, head)
+		}
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "a"); got != stale {
+		t.Errorf("local a = %.12s, want it left at %.12s", got, stale)
+	}
+	if !strings.Contains(out, "kept local a at "+stale[:12]) {
+		t.Errorf("report lacks a kept local:\n%s", out)
+	}
+	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "c^"); got != heads["b"] {
+		t.Errorf("origin c sits on %.12s, want b's published head %.12s", got, heads["b"])
+	}
+}
+
 func TestStackRebaseAboveRefusesABranchOutsideTheStack(t *testing.T) {
 	f := stackBottomMovedByGraphite(t)
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "other", "main")

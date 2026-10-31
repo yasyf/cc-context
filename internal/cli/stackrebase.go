@@ -1402,6 +1402,10 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	if err != nil {
 		return nil, fmt.Errorf("stack rebase: %w", err)
 	}
+	moving, err := stackMovingBranches(retargeted, o, overrides)
+	if err != nil {
+		return nil, err
+	}
 	outside := map[string]bool{}
 	landedPast := map[string]error{}
 	byName := map[string]*stackRebaseBranch{}
@@ -1459,7 +1463,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 			}
 			effective.Head = prepared.NewHead
 		}
-		published := stackReadsPublished(o, name)
+		published := stackReadsPublished(o, name) || !o.noPush && moving != nil && !moving[name]
 		if holder := holders[name]; !published && holder != "" && holder != l.checkout.Root {
 			if published, err = stackHeldSuperseded(ctx, l.dir(), tr, name, source.Head, remotes[name]); err != nil {
 				return nil, err
@@ -1569,10 +1573,6 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 		return nil, err
 	}
 	queue, err := stackQueueStates(ctx, l, o.noPush, byName)
-	if err != nil {
-		return nil, err
-	}
-	moving, err := stackMovingBranches(retargeted, o, overrides)
 	if err != nil {
 		return nil, err
 	}

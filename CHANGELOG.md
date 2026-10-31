@@ -87,6 +87,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs stack rebase --above <branch>` ignores a stale local copy of a
+  branch it does not move.** A pushing `--above`, `--parent` or
+  `--linearize` run keeps the named parent and every branch below it at
+  their published heads. It still compared each one's local head against
+  its remote first, so a stale local copy that another lane had since
+  rewritten on the remote failed the run with `<branch> has diverged from
+  origin/<branch>`, and the branches above had to be moved with a raw
+  rebase and force-push. The run now reads every branch it does not move at
+  its published head without comparing the local one, the way it already
+  reads another lane's branch. Such a branch's local ref, when no working
+  copy holds it, is moved onto its published head only when that is a
+  fast-forward or a replay of the local commits; otherwise it is kept and
+  named in the report, so a local commit the remote never had stays on it.
+
 - **A stack submit retargets a pull request out of a dead native GitHub
   stack.** GitHub refuses to change the base of a pull request that sits in a
   native stack, so a restack that moved a pull request onto trunk after the
