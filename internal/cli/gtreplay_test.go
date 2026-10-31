@@ -79,7 +79,7 @@ func TestGTReplayMatchesRebasePolicy(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if want := "--attr-source=" + onto + " replay --ref-action=print --linearize --ref=refs/heads/branch --onto=" + onto + " " + from + ".." + head + "\n"; string(ran) != want {
+			if want := strings.Join(replayPromisorArgv[1:], " ") + "\n--attr-source=" + onto + " replay --ref-action=print --linearize --ref=refs/heads/branch --onto=" + onto + " " + from + ".." + head + "\n"; string(ran) != want {
 				t.Errorf("git ran %q, want exactly %q", ran, want)
 			}
 			if after := stackReplayRefs(t, f); after != refs {

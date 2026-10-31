@@ -2354,6 +2354,7 @@ func gitRebaseOnto(ctx context.Context, dir render.Dir, prefix, remote, branch s
 	if err != nil {
 		return 0, err
 	}
+	replayPrefetch(ctx, dir, prefix, remoteRef, remoteRef, "HEAD")
 	if _, err := render.RunCLI(ctx, dir, "git", []string{"rebase", remoteRef}); err != nil {
 		return 0, errors.Join(gitRebaseFailure(ctx, dir, prefix, remote, branch, err), held.restore(ctx, dir, prefix))
 	}
