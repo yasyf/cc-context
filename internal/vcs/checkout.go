@@ -377,12 +377,15 @@ type Holding struct {
 // <common>/worktrees, which git's own list never names, is listed too: it is
 // still the working copy holding its branch, git branch -d no longer refuses to
 // delete that branch, and a caller that moves the branch must move it as well.
+// The calling working copy is always listed, even when its own admin dir under
+// <common>/worktrees no longer names it, as a removal the deletion queue has
+// not yet run leaves it.
 func Holdings(ctx context.Context, c Checkout) ([]Holding, error) {
 	holdings, err := registeredHoldings(ctx, c)
-	if err != nil || c.GitDir == c.CommonDir || filepath.Dir(c.GitDir) == filepath.Join(c.CommonDir, "worktrees") {
+	if err != nil || c.GitDir == c.CommonDir {
 		return holdings, err
 	}
-	if slices.ContainsFunc(holdings, func(h Holding) bool { return canonical(h.Path) == c.Root }) {
+	if slices.ContainsFunc(holdings, func(h Holding) bool { return h.Path == c.Root }) || slices.ContainsFunc(holdings, func(h Holding) bool { return canonical(h.Path) == c.Root }) {
 		return holdings, nil
 	}
 	branch, err := unlistedBranch(ctx, c)
