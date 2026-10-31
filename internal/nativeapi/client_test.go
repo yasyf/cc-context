@@ -220,6 +220,65 @@ func TestSubmitExtendsExistingNativeStack(t *testing.T) {
 	}
 }
 
+func TestSubmitRelinksANativeStackPastAClosedPullRequestAboveTheParent(t *testing.T) {
+	for _, tc := range []struct {
+		name, bottom, unstacked, want string
+		relinked                      []int
+	}{
+		{name: "dissolved", bottom: `"state":"open","merged_at":null`, unstacked: "", want: "POST /repos/org/repo/stacks", relinked: []int{1, 2, 4}},
+		{name: "kept merged bottom", bottom: `"state":"closed","merged_at":"2026-10-30T12:00:00Z"`, unstacked: `{"number":7,"pull_requests":[{"number":1,"state":"closed","merged_at":"2026-10-30T12:00:00Z"}]}`, want: "POST /repos/org/repo/stacks/7/add", relinked: []int{2, 4}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls []string
+			var relinked []int
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if publishedHeadFixture(t, w, r, "head") {
+					return
+				}
+				reply := func(body string) {
+					if _, err := fmt.Fprint(w, body); err != nil {
+						t.Errorf("write fixture response: %v", err)
+					}
+				}
+				call := r.Method + " " + r.URL.Path
+				calls = append(calls, call)
+				switch call {
+				case "POST /repos/org/repo/pulls":
+					reply(`{"number":4,"state":"open","head":{"repo":{"full_name":"org/repo"},"ref":"d","sha":"head"},"base":{"ref":"c"}}`)
+				case "GET /repos/org/repo/pulls":
+					reply(`[{"number":2,"state":"open","head":{"repo":{"full_name":"org/repo"},"ref":"c"},"base":{"ref":"b"},"stack":{"number":7,"position":2,"size":3,"base":{"ref":"dev"}}}]`)
+				case "GET /repos/org/repo/stacks/7":
+					reply(fmt.Sprintf(`{"number":7,"pull_requests":[{"number":1,%s},{"number":2,"state":"open","merged_at":null},{"number":3,"state":"closed","merged_at":null}]}`, tc.bottom))
+				case "POST /repos/org/repo/stacks/7/unstack":
+					if tc.unstacked == "" {
+						w.WriteHeader(http.StatusNoContent)
+						return
+					}
+					reply(tc.unstacked)
+				case tc.want:
+					if err := json.NewDecoder(r.Body).Decode(&struct {
+						PullRequests *[]int `json:"pull_requests"`
+					}{&relinked}); err != nil {
+						t.Error(err)
+					}
+					reply(`{"number":9}`)
+				default:
+					t.Errorf("unexpected %s %s", r.Method, r.URL)
+					http.Error(w, "unexpected", 500)
+				}
+			}))
+			defer srv.Close()
+			got, err := NewWithToken(srv.URL, "key").SubmitPullRequests(context.Background(), SubmitRequest{RepoOwner: "org", RepoName: "repo", TrunkBranchName: "dev", PRs: []SubmitPR{{Action: SubmitCreate, Head: "d", HeadSha: "head", Base: "c", Title: "d"}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != 1 || got[0].StackNumber != 9 || !reflect.DeepEqual(relinked, tc.relinked) {
+				t.Fatalf("got=%+v relinked=%v calls=%v", got, relinked, calls)
+			}
+		})
+	}
+}
+
 func TestSubmitOpensASecondChildChainAsItsOwnNativeStackOnTheSharedParent(t *testing.T) {
 	var created []int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -240,6 +299,8 @@ func TestSubmitOpensASecondChildChainAsItsOwnNativeStackOnTheSharedParent(t *tes
 			reply(`[{"number":2,"state":"open","head":{"repo":{"full_name":"org/repo"},"ref":"parent"},"base":{"ref":"dev"},"stack":{"number":7,"position":1,"size":2,"base":{"ref":"dev"}}}]`)
 		case "GET /repos/org/repo/pulls/4?":
 			reply(`{"number":4,"state":"open","head":{"repo":{"full_name":"org/repo"},"ref":"fork"},"base":{"ref":"parent"}}`)
+		case "GET /repos/org/repo/stacks/7?":
+			reply(`{"number":7,"pull_requests":[{"number":2,"state":"open"},{"number":3,"state":"open"}]}`)
 		case "POST /repos/org/repo/stacks?":
 			if err := json.NewDecoder(r.Body).Decode(&struct {
 				PullRequests *[]int `json:"pull_requests"`

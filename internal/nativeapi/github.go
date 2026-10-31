@@ -336,10 +336,17 @@ func (c *Client) linkPull(ctx context.Context, owner, repo, trunk string, pull r
 	}
 	parent := parents[0]
 	if pull.Stack != nil {
-		if parent.Stack == nil || parent.Stack.Number != pull.Stack.Number || pull.Stack.Position != parent.Stack.Position+1 {
+		if parent.Stack == nil || parent.Stack.Number != pull.Stack.Number {
 			return 0, fmt.Errorf("PR #%d and parent #%d belong to different native GitHub stacks", pull.Number, parent.Number)
 		}
-		return pull.Stack.Number, nil
+		if pull.Stack.Position == parent.Stack.Position+1 {
+			return pull.Stack.Number, nil
+		}
+		number, relinked, err := c.relinkPastClosed(ctx, owner, repo, pull.Stack.Number, parent.Number, pull.Number)
+		if err == nil && !relinked {
+			err = fmt.Errorf("PR #%d sits in native GitHub stack #%d with open pull requests between it and parent #%d", pull.Number, pull.Stack.Number, parent.Number)
+		}
+		return number, err
 	}
 	if parent.Stack == nil && parent.Base.Ref != trunk {
 		if _, err := c.linkPull(ctx, owner, repo, trunk, parent); err != nil {
@@ -355,7 +362,8 @@ func (c *Client) linkPull(ctx context.Context, owner, repo, trunk string, pull r
 		return parent.Stack.Number, err
 	}
 	if parent.Stack != nil {
-		return 0, nil
+		number, _, err := c.relinkPastClosed(ctx, owner, repo, parent.Stack.Number, parent.Number, pull.Number)
+		return number, err
 	}
 	payload, err = c.post(ctx, path+"/stacks", map[string]any{"pull_requests": []int{parent.Number, pull.Number}})
 	if err != nil {
@@ -371,6 +379,89 @@ func (c *Client) linkPull(ctx context.Context, owner, repo, trunk string, pull r
 		return 0, fmt.Errorf("GitHub created a native stack without its stack number")
 	}
 	return created.Number, nil
+}
+
+type nativeStack struct {
+	Number       int `json:"number"`
+	PullRequests []struct {
+		Number   int    `json:"number"`
+		State    string `json:"state"`
+		MergedAt string `json:"merged_at"`
+	} `json:"pull_requests"`
+}
+
+func (s nativeStack) numbers() []int {
+	numbers := make([]int, len(s.PullRequests))
+	for i, pr := range s.PullRequests {
+		numbers[i] = pr.Number
+	}
+	return numbers
+}
+
+func (c *Client) relinkPastClosed(ctx context.Context, owner, repo string, stackNumber, parent, pull int) (int, bool, error) {
+	stacks := fmt.Sprintf("/repos/%s/%s/stacks", url.PathEscape(owner), url.PathEscape(repo))
+	path := fmt.Sprintf("%s/%d", stacks, stackNumber)
+	payload, err := c.get(ctx, path, nil)
+	if err != nil {
+		return 0, false, err
+	}
+	var stack nativeStack
+	if err := json.Unmarshal(payload, &stack); err != nil {
+		return 0, false, err
+	}
+	numbers := stack.numbers()
+	parentAt, pullAt := slices.Index(numbers, parent), slices.Index(numbers, pull)
+	if pullAt < 0 {
+		pullAt = len(numbers)
+	}
+	if parentAt < 0 || pullAt <= parentAt+1 {
+		return 0, false, nil
+	}
+	abandoned := func(i int) bool {
+		return stack.PullRequests[i].State == "closed" && stack.PullRequests[i].MergedAt == ""
+	}
+	for i := parentAt + 1; i < pullAt; i++ {
+		if !abandoned(i) {
+			return 0, false, nil
+		}
+	}
+	var desired []int
+	for i, number := range numbers {
+		if !abandoned(i) {
+			desired = append(desired, number)
+		}
+		if i == parentAt && pullAt == len(numbers) {
+			desired = append(desired, pull)
+		}
+	}
+	payload, err = c.do(ctx, http.MethodPost, path+"/unstack", nil)
+	if err != nil {
+		return 0, false, fmt.Errorf("unstack native GitHub stack #%d to drop its closed pull requests: %w", stackNumber, err)
+	}
+	if len(payload) == 0 {
+		payload, err = c.post(ctx, stacks, map[string]any{"pull_requests": desired})
+	} else {
+		var remaining nativeStack
+		if err := json.Unmarshal(payload, &remaining); err != nil {
+			return 0, false, err
+		}
+		kept := remaining.numbers()
+		if !slices.Equal(kept, desired[:min(len(kept), len(desired))]) {
+			return 0, false, fmt.Errorf("unstacking native GitHub stack #%d kept %v, which does not start %v", stackNumber, kept, desired)
+		}
+		payload, err = c.post(ctx, fmt.Sprintf("%s/%d/add", stacks, remaining.Number), map[string]any{"pull_requests": desired[len(kept):]})
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("relink %v as one native GitHub stack after dropping its closed pull requests: %w", desired, err)
+	}
+	var relinked nativeStack
+	if err := json.Unmarshal(payload, &relinked); err != nil {
+		return 0, false, err
+	}
+	if relinked.Number == 0 {
+		return 0, false, fmt.Errorf("GitHub relinked %v without its stack number", desired)
+	}
+	return relinked.Number, true, nil
 }
 
 // BranchHistory reports whether branch exists on GitHub and whether any pull request ever used it as its head; it reads the repository first, so a 404 from a token without access is an error rather than a missing branch.
