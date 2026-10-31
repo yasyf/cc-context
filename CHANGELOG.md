@@ -6,6 +6,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **A stack write posts one cci HEAD record for every pull request it moved.**
+  `ccx vcs stack submit`, `restack` and `rebase`, and a Graphite-lane
+  `ccx vcs ship`, post a single `cci post --kind head` carrying one
+  `--head <repo>#<n>=<old sha>..<new sha> restack|replay|ship, range-diff
+  <summary>` per moved pull request, instead of one record per pull request.
+  Readers see one line, `HEAD <n> PRs: #<n> <short sha>, ...`, and every pull
+  request's head, replaced head and range-diff verdict stay in the record's
+  `fields.heads`. Needs cci with `--head`.
+
 ### Added
 
 - **`--evict-queued` on `ccx vcs stack submit`, `stack rebase`, and `ship`**

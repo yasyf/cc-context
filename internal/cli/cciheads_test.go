@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/yasyf/cc-context/internal/vcstest"
@@ -35,7 +36,7 @@ func paddedRangeDiff(n int) string {
 	return out
 }
 
-func TestStackSubmitPostsAHeadRecordPerMovedPullRequestInADrive(t *testing.T) {
+func TestStackSubmitPostsOneHeadRecordCarryingEveryMovedPullRequestInADrive(t *testing.T) {
 	registry := `{"session":"sess-abc","agent":"a-other","drive":"other-drive","lane":"other-lane"}` + "' '" +
 		`{"session":"sess-abc","agent":"a-lane","drive":"reg-drive","lane":"reg-lane"}`
 	for _, tc := range []struct {
@@ -73,6 +74,10 @@ func TestStackSubmitPostsAHeadRecordPerMovedPullRequestInADrive(t *testing.T) {
 				t.Fatalf("stack submit --restack = %v (stderr=%q)", err, errStr)
 			}
 			var want [][]string
+			if tc.drive != "" {
+				want = append(want, []string{"cci", "post", "--drive", tc.drive, "--lane", tc.lane, "--kind", "head", "--id", ""})
+			}
+			var keys []string
 			for _, branch := range []string{"base", "feature"} {
 				if tc.drive == "" {
 					break
@@ -85,10 +90,11 @@ func TestStackSubmitPostsAHeadRecordPerMovedPullRequestInADrive(t *testing.T) {
 				number := strconv.Itoa(api.prs[branch])
 				api.mu.Unlock()
 				pr := fakePRRepo + "#" + number
-				want = append(want, []string{
-					"cci", "post", "--drive", tc.drive, "--lane", tc.lane, "--kind", "head", "--pr", pr, "--commit", head, "--id", "head:" + pr + ":" + head,
-					"--text", "HEAD #" + number + " " + head + " (was " + was[branch] + "): restack, range-diff patch-identical (1 commit)",
-				})
+				keys = append(keys, pr+":"+head)
+				want[0] = append(want[0], "--head", pr+"="+was[branch]+".."+head+" restack, range-diff patch-identical (1 commit)")
+			}
+			if tc.drive != "" {
+				want[0][9] = "head:" + strings.Join(keys, ",")
 			}
 			var posts [][]string
 			for _, inv := range vcstest.Invocations(t, f.ArgvLog) {

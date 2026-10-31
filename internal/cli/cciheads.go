@@ -86,6 +86,7 @@ func (h *cciHeads) post(ctx context.Context, errW io.Writer, dir render.Dir, s g
 	if h == nil {
 		return
 	}
+	var heads, keys []string
 	for _, b := range plan {
 		was := h.tracked[b.name]
 		if b.lease != "" || b.leaseSet {
@@ -108,12 +109,19 @@ func (h *cciHeads) post(ctx context.Context, errW io.Writer, dir render.Dir, s g
 				verb = "restack"
 			}
 		}
-		pr := repo + "#" + strconv.Itoa(b.pr)
-		text := fmt.Sprintf("HEAD #%d %s (was %s): %s, range-diff %s", b.pr, b.head, cmp.Or(was, "none"), verb, summary)
-		argv := []string{"post", "--drive", h.drive, "--lane", h.lane, "--kind", "head", "--pr", pr, "--commit", b.head, "--id", "head:" + pr + ":" + b.head, "--text", text}
-		if _, err := render.RunCLI(ctx, dir, "cci", argv); err != nil {
-			_, _ = fmt.Fprintf(errW, "%s: cci post HEAD #%d: %v\n", s.prefix, b.pr, err)
+		pr, moved := repo+"#"+strconv.Itoa(b.pr), b.head
+		if was != "" {
+			moved = was + ".." + b.head
 		}
+		heads = append(heads, "--head", fmt.Sprintf("%s=%s %s, range-diff %s", pr, moved, verb, summary))
+		keys = append(keys, pr+":"+b.head)
+	}
+	if len(keys) == 0 {
+		return
+	}
+	argv := append([]string{"post", "--drive", h.drive, "--lane", h.lane, "--kind", "head", "--id", "head:" + strings.Join(keys, ",")}, heads...)
+	if _, err := render.RunCLI(ctx, dir, "cci", argv); err != nil {
+		_, _ = fmt.Fprintf(errW, "%s: cci post HEAD %s: %v\n", s.prefix, strings.Join(keys, ", "), err)
 	}
 }
 
