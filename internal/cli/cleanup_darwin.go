@@ -66,6 +66,7 @@ func runCleanupServe(ctx context.Context) error {
 			Guard:    native.GuardRoots,
 			Watchers: newCleanupWatchers(native.Guard),
 			GitEnv:   os.Environ(),
+			Quiet:    time.Hour,
 			Now:      time.Now,
 		}),
 		Deleter:  rmtree.Deleter{},

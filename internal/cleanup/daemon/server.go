@@ -260,6 +260,12 @@ func (s *server) execute(ctx context.Context, req request) response {
 			return failure(err)
 		}
 		return response{Job: &job}
+	case opCancel:
+		job, err := s.engine.Cancel(ctx, req.JobID)
+		if err != nil {
+			return failure(err)
+		}
+		return response{Job: &job}
 	case opHolding:
 		state, err := s.engine.HoldState(ctx)
 		if err != nil {

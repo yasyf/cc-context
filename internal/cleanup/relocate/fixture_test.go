@@ -76,6 +76,7 @@ type fixture struct {
 	watchers      *fakeWatchers
 	clock         time.Time
 	budget        time.Duration
+	quiet         time.Duration
 	relocator     *Relocator
 }
 
@@ -173,6 +174,7 @@ func (f *fixture) over(journal *cleanup.Journal) {
 		Watchers:  f.watchers,
 		GitEnv:    f.env,
 		GitBudget: f.budget,
+		Quiet:     f.quiet,
 		Now:       func() time.Time { return f.clock },
 	})
 }

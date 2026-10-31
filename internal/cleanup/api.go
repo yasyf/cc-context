@@ -435,6 +435,11 @@ type Service interface {
 	// Retry clears a job's blockage and lets it run again from the phase it
 	// stopped in.
 	Retry(ctx context.Context, jobID string) (Job, error)
+	// Cancel undoes a removal whose tree has not begun to move and drops its
+	// job: a retired registration gets its backlink back and loses the job's
+	// lock, and the recovery ref stays. A refusal is a *RefusedError and
+	// changes nothing.
+	Cancel(ctx context.Context, jobID string) (Job, error)
 }
 
 // Adopter is the operator's import path for the trees the retired janitor

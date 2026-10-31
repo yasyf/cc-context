@@ -174,6 +174,7 @@ inline and runs no daemon.`,
 		newCleanupResumeCmd(),
 		newCleanupHoldCmd(),
 		newCleanupRetryCmd(),
+		newCleanupCancelCmd(),
 		newCleanupServeCmd(),
 		newCleanupAdoptCmd(),
 		newCleanupWatchersCmd(),
@@ -417,6 +418,8 @@ func cleanupJobLine(job cleanup.Job, paused bool) string {
 	switch {
 	case job.Blocked != nil:
 		segs = append(segs, job.Blocked.Reason+": "+job.Blocked.Detail)
+	case paused && !job.RetireAfter.IsZero():
+		segs = append(segs, "retires after "+job.RetireAfter.Local().Format(time.RFC3339))
 	case job.Phase == cleanup.PhaseWaiting && len(job.Errors) > 0:
 		segs = append(segs, job.Errors[len(job.Errors)-1].Message)
 	}
@@ -676,6 +679,34 @@ names, then retry it. The job re-verifies everything it checked before.`,
 				return cleanupJobErr("cleanup retry", args[0], err)
 			}
 			cmd.Println("retried " + cleanupJobLine(job, false))
+			return nil
+		},
+	}
+}
+
+func newCleanupCancelCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "cancel <job-id>",
+		Short: "Keep a queued worktree: undo its removal and drop the job",
+		Long: `Keep a queued worktree: undo its removal and drop the job.
+
+Only a job whose tree has not begun to move can be cancelled: queued, waiting,
+or pending. A registration the paused queue retired gets its gitdir backlink
+back and loses the job's lock, so git lists the worktree again. The tree, its
+registration and its links must be the ones the job captured; its HEAD may
+have moved since. The job's recovery ref stays.`,
+		Args: cobra.MatchAll(cobra.ExactArgs(1), cleanupJobIDArg),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+			svc, err := cleanupService(ctx)
+			if err != nil {
+				return fmt.Errorf("cleanup cancel: %w", err)
+			}
+			job, err := svc.Cancel(ctx, args[0])
+			if err != nil {
+				return cleanupJobErr("cleanup cancel", args[0], err)
+			}
+			cmd.Println("cancelled " + job.ID + shipSep + job.Original)
 			return nil
 		},
 	}

@@ -426,11 +426,13 @@ func (e *Engine) Wait(ctx context.Context, jobID string) (cleanup.Job, error) {
 		e.mu.Lock()
 		job, live := e.jobs[jobID]
 		if !live {
-			job = e.kept[jobID]
+			job, live = e.kept[jobID]
 		}
 		job, changed := e.reported(job), e.changed
 		e.mu.Unlock()
 		switch {
+		case !live:
+			return cleanup.Job{}, cleanup.ErrUnknownJob
 		case job.Phase == cleanup.PhaseDone:
 			return job, nil
 		case job.Blocked != nil && job.Blocked.RetryAt == nil:
@@ -506,6 +508,13 @@ func (e *Engine) HoldState(ctx context.Context) (cleanup.HoldState, error) {
 // next pass resumes it from the phase it stopped in.
 func (e *Engine) Retry(ctx context.Context, jobID string) (cleanup.Job, error) {
 	return call(ctx, e, func(context.Context) (cleanup.Job, error) { return e.retry(jobID) })
+}
+
+// Cancel undoes a removal whose tree has not begun to move and drops its job,
+// leaving the worktree registered in place and its recovery ref kept. A
+// maintenance hold refuses it as a *HeldError.
+func (e *Engine) Cancel(ctx context.Context, jobID string) (cleanup.Job, error) {
+	return call(ctx, e, func(ctx context.Context) (cleanup.Job, error) { return e.cancel(ctx, jobID) })
 }
 
 type result[T any] struct {
@@ -758,6 +767,9 @@ func (e *Engine) wake(physical bool) (time.Time, bool) {
 		if job.Phase == cleanup.PhaseWaiting && job.Blocked == nil {
 			consider(e.checked[job.ID].Add(e.tuning.Recheck))
 		}
+		if e.paused && job.Blocked == nil && !job.RetireAfter.IsZero() {
+			consider(job.RetireAfter)
+		}
 		if at, ok := e.retryAt(job); ok {
 			consider(at)
 		}
@@ -794,6 +806,9 @@ func (e *Engine) logicalDue(now time.Time) (cleanup.Job, bool) {
 			continue
 		}
 		if at, ok := e.checked[job.ID]; ok && job.Phase == cleanup.PhaseWaiting && now.Before(at.Add(e.tuning.Recheck)) {
+			continue
+		}
+		if e.paused && now.Before(job.RetireAfter) {
 			continue
 		}
 		return clone(job), true
@@ -903,7 +918,7 @@ func (e *Engine) advance(ctx context.Context, job cleanup.Job) (cleanup.Job, err
 	case job.Phase == cleanup.PhaseDone:
 		delete(e.checked, job.ID)
 		return job, e.finish(job)
-	case job.Blocked != nil, !job.Phase.Logical(), e.paused && job.Retirement == cleanup.RetirementComplete:
+	case job.Blocked != nil, !job.Phase.Logical(), e.paused && (job.Retirement == cleanup.RetirementComplete || !job.RetireAfter.IsZero()):
 		delete(e.checked, job.ID)
 	case job.Phase == cleanup.PhaseWaiting:
 		e.checked[job.ID] = e.clock.Now()
@@ -1238,6 +1253,31 @@ func (e *Engine) retry(jobID string) (cleanup.Job, error) {
 		return clone(job), nil
 	}
 	return e.unblock(clone(job))
+}
+
+func (e *Engine) cancel(ctx context.Context, jobID string) (cleanup.Job, error) {
+	job, ok := e.jobs[jobID]
+	switch {
+	case !ok:
+		return cleanup.Job{}, cleanup.ErrUnknownJob
+	case e.hold != nil:
+		return cleanup.Job{}, &cleanup.HeldError{Hold: *e.hold}
+	}
+	job = clone(job)
+	if err := e.relocator.Cancel(ctx, &job); err != nil {
+		return cleanup.Job{}, err
+	}
+	if err := e.journal.Discard(job.ID); err != nil {
+		return cleanup.Job{}, &fatalError{fmt.Errorf("cleanup daemon: discard cancelled job %s: %w", job.ID, err)}
+	}
+	delete(e.checked, job.ID)
+	e.mu.Lock()
+	delete(e.jobs, job.ID)
+	delete(e.awaits, job.ID)
+	e.dequeue(job)
+	e.broadcast()
+	e.mu.Unlock()
+	return job, nil
 }
 
 func (e *Engine) announce(event string, pid int, version string, details ...any) {
