@@ -3184,15 +3184,31 @@ func stackOrder(trunk string, byName map[string]*stackRebaseBranch) ([]string, e
 	return order, nil
 }
 
-// stackOldBase is where a branch's own work starts: the furthest recorded parent
-// head it contains, else the furthest fork point in the parent's local and
+// stackOldBase is where a branch's own work starts: the base its state records,
+// moved up to the base it was last published on when it still holds that base
+// and trunk does not, so a parent that squash-landed and left the state
+// recording the branch on trunk never replays its commits as the branch's own.
+func stackOldBase(ctx context.Context, dir render.Dir, tr vcs.Trunk, pin string, state gtState, self *stackRebaseBranch, byName map[string]*stackRebaseBranch) (string, error) {
+	recorded, err := stackRecordedBase(ctx, dir, tr, pin, state, self, byName)
+	if err != nil || self.Publication == nil {
+		return recorded, err
+	}
+	merged, err := gitIsAncestor(ctx, dir, stackRebasePrefix, self.Publication.Base, pin)
+	if err != nil || merged {
+		return recorded, err
+	}
+	return stackFurthest(ctx, dir, self.Head, []string{recorded, self.Publication.Base})
+}
+
+// stackRecordedBase is the base a branch's state records: the furthest recorded
+// parent head it contains, else the furthest fork point in the parent's local and
 // remote-tracking reflogs. A branch staying on the parent is refused past that;
 // one leaving it takes its merge base, or trunk's when trunk holds the rest.
 // Either way it starts past the furthest head of a branch below it that it
 // holds. Unless that is its parent's, it also starts past each leading commit
 // copying one of theirs by patch or by author, date and message, as a branch
 // cut from a rewritten parent carries.
-func stackOldBase(ctx context.Context, dir render.Dir, tr vcs.Trunk, pin string, state gtState, self *stackRebaseBranch, byName map[string]*stackRebaseBranch) (string, error) {
+func stackRecordedBase(ctx context.Context, dir render.Dir, tr vcs.Trunk, pin string, state gtState, self *stackRebaseBranch, byName map[string]*stackRebaseBranch) (string, error) {
 	s := state[self.Name]
 	onTrunk, err := stackMergeBase(ctx, dir, self.Head, pin)
 	if err != nil {
