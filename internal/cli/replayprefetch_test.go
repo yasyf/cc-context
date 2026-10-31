@@ -32,13 +32,18 @@ func replayPartialClone(t *testing.T) (*vcstest.Fixture, replaySpan) {
 	onto := stackReplayCommit(t, f, "lines.txt", "A\nb\nc\nd\ne\nf\ng\nh\n", "upstream")
 	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "main", "feature", "side")
 	mustRun(t, f.Env(), f.RemoteDir, "git", "config", "uploadpack.allowFilter", "true")
+	return f, replaySpan{dir: replayClone(t, f), from: from, head: head, side: side, onto: onto}
+}
+
+func replayClone(t *testing.T, f *vcstest.Fixture) string {
+	t.Helper()
 	dir := filepath.Join(t.TempDir(), "partial")
 	mustRun(t, f.Env(), filepath.Dir(dir), "git", "clone", "-q", "--no-local", "--no-checkout", "--filter=blob:none", f.RemoteDir, dir)
 	for _, kv := range [][2]string{{"user.email", "t@t.t"}, {"user.name", "t"}, {"maintenance.auto", "false"}, {"gc.auto", "0"}} {
 		mustRun(t, f.Env(), dir, "git", "config", kv[0], kv[1])
 	}
 	mustRun(t, f.Env(), dir, "git", "branch", "side", "origin/side")
-	return f, replaySpan{dir: dir, from: from, head: head, side: side, onto: onto}
+	return dir
 }
 
 func replayNoLazy(t *testing.T, f *vcstest.Fixture, dir string, args ...string) int {

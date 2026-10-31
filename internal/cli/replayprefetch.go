@@ -22,6 +22,10 @@ func replayFetchBlobs(ctx context.Context, dir render.Dir, onto, from, head stri
 	if err != nil || remote == "" {
 		return err
 	}
+	return replayFetchRange(ctx, dir, remote, onto, from, head)
+}
+
+func replayFetchRange(ctx context.Context, dir render.Dir, remote, onto, from, head string) error {
 	commits, err := render.RunCLI(ctx, dir, "git", []string{"rev-list", from + ".." + head})
 	if err != nil {
 		return err
@@ -29,6 +33,14 @@ func replayFetchBlobs(ctx context.Context, dir render.Dir, onto, from, head stri
 	if commits == "" {
 		return nil
 	}
+	base, err := render.RunCLI(ctx, dir, "git", []string{"merge-base", from, head})
+	if err != nil {
+		return err
+	}
+	return replayFetchCommits(ctx, dir, remote, onto, strings.TrimSpace(base), commits)
+}
+
+func replayFetchCommits(ctx context.Context, dir render.Dir, remote, onto, base, commits string) error {
 	out, err := render.RunCLIStdin(ctx, dir, "git", []string{"diff-tree", "--stdin", "-r", "--root", "--no-renames", "--no-commit-id", "-z"}, []byte(commits))
 	if err != nil {
 		return err
@@ -37,11 +49,7 @@ func replayFetchBlobs(ctx context.Context, dir render.Dir, onto, from, head stri
 	if err != nil || len(touched) == 0 {
 		return err
 	}
-	base, err := render.RunCLI(ctx, dir, "git", []string{"merge-base", from, head})
-	if err != nil {
-		return err
-	}
-	out, err = render.RunCLI(ctx, dir, "git", []string{"diff-tree", "-r", "--no-renames", "-z", strings.TrimSpace(base), onto})
+	out, err = render.RunCLI(ctx, dir, "git", []string{"diff-tree", "-r", "--no-renames", "-z", base, onto})
 	if err != nil {
 		return err
 	}
