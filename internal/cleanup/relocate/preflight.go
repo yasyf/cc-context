@@ -224,7 +224,7 @@ func (r *Relocator) screen(ctx context.Context, job cleanup.Job) error {
 		return refuse(job.Original, "nested", "worktree %s is registered inside %s", nested, job.Original)
 	}
 
-	return r.colocated(job.Original, job.Tree)
+	return nil
 }
 
 func nearest(path string) (fs.FileInfo, error) {
@@ -313,6 +313,9 @@ func (r *Relocator) capture(ctx context.Context, job *cleanup.Job) error {
 func (r *Relocator) preflight(ctx context.Context, req cleanup.Request) (cleanup.Job, error) {
 	job, err := r.inspect(ctx, req)
 	if err != nil {
+		return cleanup.Job{}, err
+	}
+	if err := r.colocated(job.Original, job.Tree); err != nil {
 		return cleanup.Job{}, err
 	}
 	if err := idle(job.Original, r.unretired(ctx, &job)); err != nil {

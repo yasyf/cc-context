@@ -377,6 +377,13 @@ func (r *Relocator) relocate(ctx context.Context, job *cleanup.Job, vetted *bool
 }
 
 func (r *Relocator) move(ctx context.Context, job *cleanup.Job, vetted *bool) (reason, detail string) {
+	if err := r.colocated(job.Original, job.Tree); err != nil {
+		var refused *cleanup.RefusedError
+		if errors.As(err, &refused) {
+			return refused.Reason, refused.Detail
+		}
+		return "reconcile", err.Error()
+	}
 	nested, err := nestedWorktree(job.Repo, job.AdminDir, job.Original)
 	if err != nil {
 		return "reconcile", err.Error()
