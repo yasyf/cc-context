@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
@@ -104,5 +105,31 @@ func TestStackSubmitPostsOneHeadRecordCarryingEveryMovedPullRequestInADrive(t *t
 			}
 			assertInvocations(t, posts, want)
 		})
+	}
+}
+
+func TestStackSubmitRefusesInsteadOfWaitingOnACciWhoThatNeverAnswers(t *testing.T) {
+	prior := cciWhoTimeout
+	cciWhoTimeout = 500 * time.Millisecond
+	t.Cleanup(func() { cciWhoTimeout = prior })
+	f := shipGTRepo(t)
+	api := newGTAPIStub(t)
+	api.openPRs("base", "feature")
+	f.Decorate(api.ctx)
+	shipGTStack(t, f, "base", "feature")
+	writeShipExecutable(t, f.ShimBin, "cci", "#!/bin/sh\n[ \"$1\" = who ] && exec sleep 600\nexit 0\n")
+	f.Setenv(envCodexThreadKey, "")
+	f.Setenv(envClaudeSessionKey, "sess-abc")
+
+	start := time.Now()
+	_, errStr, err := runStackCmd(t, f, "submit")
+	if err == nil {
+		t.Fatalf("stack submit = nil, want a refusal naming the cci who that never answered (stderr=%q)", errStr)
+	}
+	if !strings.Contains(err.Error(), "cci who --session sess-abc --json: no answer in 500ms") {
+		t.Fatalf("stack submit = %v, want it to name the cci who that never answered", err)
+	}
+	if elapsed := time.Since(start); elapsed > 30*time.Second {
+		t.Fatalf("stack submit took %s, want it bounded by cciWhoTimeout", elapsed)
 	}
 }

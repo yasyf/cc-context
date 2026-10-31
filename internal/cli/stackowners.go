@@ -77,9 +77,9 @@ func stackWithClaims(holders, claims map[string]string) map[string]string {
 }
 
 func cciBranchOwner(ctx context.Context, dir render.Dir, branch, me string) (string, error) {
-	out, err := render.RunCLI(ctx, dir, "cci", []string{"who", "--ref", "branch:" + branch, "--json"})
+	out, err := cciWho(ctx, dir, "--ref", "branch:"+branch, "--json")
 	if err != nil {
-		return "", fmt.Errorf("cci who --ref branch:%s: %w", branch, err)
+		return "", err
 	}
 	for line := range strings.Lines(out) {
 		var p cciPeer

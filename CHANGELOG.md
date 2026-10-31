@@ -74,6 +74,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`cci who` can no longer hold a stack write indefinitely.** Each `cci who`
+  that `ccx vcs stack submit`, `restack`, `rebase` and a Graphite-lane
+  `ccx vcs ship` run to find their drive, lane and branch claims now gets
+  20 seconds. A lookup that does not answer in time ends the write with an
+  error naming the call, rather than waiting until someone kills the child.
+
 - **A replay in a blob-filtered partial clone fetches its blobs in one
   batch.** `ccx vcs stack rebase`, `restack`, and `submit`, a Graphite-lane
   `ccx vcs ship` restack, and ship's rebase onto a moved remote branch used

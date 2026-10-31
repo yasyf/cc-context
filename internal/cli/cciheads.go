@@ -9,10 +9,13 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/yasyf/cc-context/internal/gtapi"
 	"github.com/yasyf/cc-context/internal/render"
 )
+
+var cciWhoTimeout = 20 * time.Second
 
 const (
 	envCCIDrive = "CCI_DRIVE"
@@ -65,9 +68,9 @@ func cciDriveLane(ctx context.Context, dir render.Dir) (string, string, error) {
 	if (drive != "" && lane != "") || session == "" {
 		return drive, lane, nil
 	}
-	out, err := render.RunCLI(ctx, dir, "cci", []string{"who", "--session", session, "--json"})
+	out, err := cciWho(ctx, dir, "--session", session, "--json")
 	if err != nil {
-		return "", "", fmt.Errorf("cci who --session %s: %w", session, err)
+		return "", "", err
 	}
 	agent := render.Getenv(ctx, envCCIAgent)
 	for line := range strings.Lines(out) {
@@ -80,6 +83,20 @@ func cciDriveLane(ctx context.Context, dir render.Dir) (string, string, error) {
 		}
 	}
 	return drive, lane, nil
+}
+
+func cciWho(ctx context.Context, dir render.Dir, argv ...string) (string, error) {
+	bounded, cancel := context.WithTimeout(ctx, cciWhoTimeout)
+	defer cancel()
+	out, err := render.RunCLI(bounded, dir, "cci", append([]string{"who"}, argv...))
+	call := strings.Join(append([]string{"cci who"}, argv...), " ")
+	if bounded.Err() != nil && ctx.Err() == nil {
+		return "", fmt.Errorf("%s: no answer in %s; rerun once cci answers", call, cciWhoTimeout)
+	}
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", call, err)
+	}
+	return out, nil
 }
 
 func (h *cciHeads) post(ctx context.Context, errW io.Writer, dir render.Dir, s gtSubmit, repo string, plan []gtSubmitBranch, known map[string]gtapi.PullRequestInfo) {
