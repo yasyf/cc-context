@@ -855,8 +855,19 @@ func stackSourceStays(ctx context.Context, l lane, b stackRebaseBranch, at strin
 		return "moved since the run started", nil
 	}
 	holder := holders[b.Name]
-	if holder == "" {
+	if holder == "" && (!b.Kept || b.Resolved) {
 		return "", nil
+	}
+	if holder == "" {
+		forward, err := gitIsAncestor(ctx, l.dir(), stackRebasePrefix, b.Local, b.NewHead)
+		if err != nil || forward {
+			return "", err
+		}
+		replays, err := stackPublishedReplaysSource(ctx, l.dir(), b)
+		if err != nil || replays {
+			return "", err
+		}
+		return "its published head carries other changes", nil
 	}
 	if !b.Resolved {
 		replays, err := stackPublishedReplaysSource(ctx, l.dir(), b)

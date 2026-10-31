@@ -110,6 +110,9 @@ func TestStackRebaseAboveReadsADivergedBranchBelowItAtItsPublishedHead(t *testin
 	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "a"); got != stale {
 		t.Errorf("local a = %.12s, want it left at %.12s", got, stale)
 	}
+	if !strings.Contains(out, "kept local a at "+stale[:12]) {
+		t.Errorf("report lacks a kept local:\n%s", out)
+	}
 	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "c^"); got != heads["b"] {
 		t.Errorf("origin c sits on %.12s, want b's published head %.12s", got, heads["b"])
 	}
