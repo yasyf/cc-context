@@ -344,7 +344,10 @@ func (c *Client) linkPull(ctx context.Context, owner, repo, trunk string, pull r
 	if err := json.Unmarshal(payload, &parents); err != nil {
 		return 0, err
 	}
-	if len(parents) != 1 {
+	if len(parents) == 0 {
+		return 0, nil
+	}
+	if len(parents) > 1 {
 		return 0, fmt.Errorf("PR #%d parent branch %s has %d open pull requests; native stack registration requires one", pull.Number, pull.Base.Ref, len(parents))
 	}
 	parent := parents[0]

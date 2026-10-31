@@ -306,19 +306,21 @@ func (m nativeStackMove) String() string {
 // the branch onto. A base this checkout does not track is adopted from its own
 // pull request. Each level is one batched read, and the moves come bottom-up,
 // so applying them in order records every parent before its child.
-func nativeStackParents(ctx context.Context, l lane, state gtState, from string) ([]nativeStackMove, gtState, error) {
+func nativeStackParents(ctx context.Context, l lane, state gtState, prefix, from string) ([]nativeStackMove, gtState, error) {
 	if !l.native || from == "" {
 		return nil, state, nil
 	}
-	trunk, err := gtTrunkBranch("ship", state)
+	trunk, err := gtTrunkBranch(prefix, state)
 	if err != nil || from == trunk {
 		return nil, state, err
 	}
-	pending, err := gtDownstack("ship", state, from, trunk)
-	if err != nil {
-		return nil, nil, err
+	pending := []string{from}
+	if _, tracked := state[from]; tracked {
+		if pending, err = gtDownstack(prefix, state, from, trunk); err != nil {
+			return nil, nil, err
+		}
 	}
-	owner, repo, err := gtRepoOwnerName(ctx, l, "ship")
+	owner, repo, err := gtRepoOwnerName(ctx, l, prefix)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -331,7 +333,7 @@ func nativeStackParents(ctx context.Context, l lane, state gtState, from string)
 	for len(pending) > 0 {
 		infos, err := gtAPI(ctx).PullRequestInfo(ctx, gtapi.PullRequestInfoRequest{RepoOwner: owner, RepoName: repo, PRHeadRefNames: pending, Callsite: "ccx"})
 		if err != nil {
-			return nil, nil, fmt.Errorf("ship: read the native stack under %s: %w", from, err)
+			return nil, nil, fmt.Errorf("%s: read the native stack under %s: %w", prefix, from, err)
 		}
 		open := map[string]gtapi.PullRequestInfo{}
 		for _, info := range infos {
@@ -344,8 +346,10 @@ func nativeStackParents(ctx context.Context, l lane, state gtState, from string)
 			info, stacked := open[branch]
 			s, tracked := state[branch]
 			switch {
+			case !stacked && !tracked && branch == from:
+				return nil, state, nil
 			case !stacked && !tracked:
-				return nil, nil, refuse("ship: %s, the native stack base of %s, is untracked here and has no open pull request in a native stack — ship it onto its own parent first with ccx vcs ship --parent <branch>", branch, child[branch])
+				return nil, nil, refuse("%s: %s, the native stack base of %s, is untracked here and has no open pull request in a native stack — ship it onto its own parent first with ccx vcs ship --parent <branch>", prefix, branch, child[branch])
 			case !stacked, tracked && s.Parents[0].Ref == info.BaseRefName:
 				continue
 			}
@@ -358,7 +362,7 @@ func nativeStackParents(ctx context.Context, l lane, state gtState, from string)
 				continue
 			}
 			if _, known := state[m.parent]; known {
-				below, err := gtDownstack("ship", state, m.parent, trunk)
+				below, err := gtDownstack(prefix, state, m.parent, trunk)
 				if err != nil {
 					return nil, nil, err
 				}
@@ -370,12 +374,12 @@ func nativeStackParents(ctx context.Context, l lane, state gtState, from string)
 				}
 				continue
 			}
-			exists, err := gitRefExists(ctx, l.dir(), "ship", gtRestackRef(m.parent))
+			exists, err := gitRefExists(ctx, l.dir(), prefix, gtRestackRef(m.parent))
 			if err != nil {
 				return nil, nil, err
 			}
 			if !exists {
-				return nil, nil, refuse("ship: %s, the native stack base of %s, is no local branch — fetch it, then ship again", m.parent, branch)
+				return nil, nil, refuse("%s: %s, the native stack base of %s, is no local branch — fetch it, then rerun", prefix, m.parent, branch)
 			}
 			seen[m.parent], child[m.parent] = true, branch
 			next = append(next, m.parent)
@@ -387,12 +391,12 @@ func nativeStackParents(ctx context.Context, l lane, state gtState, from string)
 	for i, m := range moves {
 		head := state[m.branch].Head
 		if head == "" {
-			if head, err = gtRestackHead(ctx, "ship", l.dir(), m.branch); err != nil {
+			if head, err = gtRestackHead(ctx, prefix, l.dir(), m.branch); err != nil {
 				return nil, nil, err
 			}
 		}
 		parentHead := planned[m.parent].Head
-		fork, err := gtMergeBase(ctx, l.dir(), "ship", parentHead, head)
+		fork, err := gtMergeBase(ctx, l.dir(), prefix, parentHead, head)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -481,6 +485,62 @@ func nativeStackFrom(state gtState, branch, parent string) string {
 	return branch
 }
 
+func nativeAdoptFromGitHub(ctx context.Context, l lane, prefix, branch string) (string, error) {
+	if !l.native || branch == "" {
+		return "", nil
+	}
+	ctx = withStackProvider(ctx, true)
+	state, err := gtStateQuery(ctx, l.dir(), prefix)
+	if err != nil {
+		return "", err
+	}
+	if _, tracked := state[branch]; tracked {
+		return "", nil
+	}
+	moves, _, err := nativeStackParents(ctx, l, state, prefix, branch)
+	if err != nil {
+		return "", err
+	}
+	return nativeStackRecord(ctx, newGTCache(l, prefix), state, moves)
+}
+
+func nativeRetargetLandedRoot(ctx context.Context, l lane, prefix, branch string) (string, error) {
+	if !l.native || branch == "" {
+		return "", nil
+	}
+	ctx = withStackProvider(ctx, true)
+	trunk, err := gitTrunkBranch(ctx, l.dir())
+	if err != nil || trunk == "" || branch == trunk {
+		return "", err
+	}
+	state, err := gtStateQuery(ctx, l.dir(), prefix)
+	if err != nil {
+		return "", err
+	}
+	root := branch
+	for s, tracked := state[root]; tracked && !s.Trunk && len(s.Parents) > 0; s, tracked = state[root] {
+		root = s.Parents[0].Ref
+	}
+	if s, tracked := state[root]; root == trunk || !tracked || !s.Trunk {
+		return "", nil
+	}
+	owner, repo, err := gtRepoOwnerName(ctx, l, prefix)
+	if err != nil {
+		return "", err
+	}
+	infos, err := gtAPI(ctx).PullRequestInfo(ctx, gtapi.PullRequestInfoRequest{RepoOwner: owner, RepoName: repo, PRHeadRefNames: []string{root}, Callsite: "ccx"})
+	if err != nil {
+		return "", fmt.Errorf("%s: read the pull request of %s, the base of %s's native stack: %w", prefix, root, branch, err)
+	}
+	if len(infos) == 0 || infos[0].State != gtapi.PRMerged {
+		return "", nil
+	}
+	if err := nativemeta.RetargetRoot(ctx, l.checkout.CommonDir, root, trunk); err != nil {
+		return "", fmt.Errorf("%s: %w", prefix, err)
+	}
+	return fmt.Sprintf("moved the native stack of %s onto %s: its base %s landed as #%d", branch, trunk, root, infos[0].PRNumber), nil
+}
+
 // nativeStackRecord writes moves into this checkout's record, keeping a held
 // branch held, and reports each in the run's summary.
 func nativeStackRecord(ctx context.Context, c *gtCache, state gtState, moves []nativeStackMove) (string, error) {
@@ -499,7 +559,7 @@ func nativeStackRecord(ctx context.Context, c *gtCache, state gtState, moves []n
 			adopt = gtmeta.AdoptFrozen
 		}
 		if err := adopt(ctx, commonDir, m.branch, m.parent, m.fork, m.head); err != nil {
-			return strings.Join(segs, ""), fmt.Errorf("ship: record %s: %w", m, err)
+			return strings.Join(segs, ""), fmt.Errorf("%s: record %s: %w", c.prefix, m, err)
 		}
 		segs = append(segs, "recorded "+m.String()+shipSep)
 	}

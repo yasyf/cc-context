@@ -556,7 +556,7 @@ func shipPreflightGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, c 
 	if plan.commitBeforeMove, err = gtCommitBeforeMove(ctx, l, o, plan, err); err != nil {
 		return branchPlan{}, "", err
 	}
-	nativeMoves, planned, err := nativeStackParents(ctx, l, state, nativeStackFrom(state, branch, o.parent))
+	nativeMoves, planned, err := nativeStackParents(ctx, l, state, "ship", nativeStackFrom(state, branch, o.parent))
 	if err != nil {
 		return branchPlan{}, "", err
 	}

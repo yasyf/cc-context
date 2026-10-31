@@ -200,7 +200,7 @@ func dryRunNativeStack(ctx context.Context, l lane, o shipOpts, c *gtCache, r *s
 	if _, tracked := state[r.branch]; !tracked && o.parent == "" {
 		from = nativeStackFrom(state, r.parent, "")
 	}
-	moves, planned, err := nativeStackParents(ctx, l, state, from)
+	moves, planned, err := nativeStackParents(ctx, l, state, "ship", from)
 	var refusal *shipRefusal
 	if errors.As(err, &refusal) {
 		r.refusals = append(r.refusals, refusal.Error())
