@@ -74,6 +74,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A stack write moves the calling worktree's checkout with its branch when
+  git no longer lists that worktree.** A removal the deletion queue has not
+  run yet blanks the worktree's registration, so git stops listing it, but
+  the tree stays at its path and still works. `ccx vcs stack submit`,
+  `rebase` and `continue` run from such a worktree used to move the branch it
+  holds onto the published head and leave its index and files at the old
+  tree, which then read as uncommitted work. They now count the calling
+  worktree as the branch's holder and move its checkout with the branch.
+
 - **`ccx vcs ship` on the native GitHub stack lane reports why the native
   stack refused to record a branch.** When ship adopted an untracked branch,
   such as a new branch shipped with `--tip-only --parent <branch>`, and the

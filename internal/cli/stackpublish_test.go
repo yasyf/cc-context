@@ -540,9 +540,17 @@ func TestStackSubmitAdoptsAnEquivalentRestackThatLandsMidPush(t *testing.T) {
 	}
 }
 
+// TestStackPublicationMovesAWorktreeGitDoesNotList runs the move from a
+// worktree git's list no longer names: one whose admin dir was moved out of
+// .git/worktrees, and one a removal left queued for deletion, its admin dir
+// still in place but its backlink blanked under a cleanup lock. Either is the
+// working copy holding feature, so its index and files follow the branch.
 func TestStackPublicationMovesAWorktreeGitDoesNotList(t *testing.T) {
-	for _, dirty := range []bool{false, true} {
-		t.Run(fmt.Sprintf("dirty=%v", dirty), func(t *testing.T) {
+	for _, tc := range []struct {
+		retiring, dirty bool
+	}{{false, false}, {false, true}, {true, false}, {true, true}} {
+		dirty := tc.dirty
+		t.Run(fmt.Sprintf("retiring=%v,dirty=%v", tc.retiring, dirty), func(t *testing.T) {
 			f, run, plan := prepareStackPublication(t)
 			dir := render.Dir(f.Dir)
 			if err := stackPushPublication(f.Context(), dir, gtSubmit{prefix: "test", publication: run}, plan); err != nil {
@@ -562,15 +570,24 @@ func TestStackPublicationMovesAWorktreeGitDoesNotList(t *testing.T) {
 			if wt, err = filepath.EvalSymlinks(wt); err != nil {
 				t.Fatal(err)
 			}
-			retired := filepath.Join(common, "retired-worktrees", "wt")
-			if err := os.MkdirAll(filepath.Dir(retired), 0o750); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.Rename(filepath.Join(common, "worktrees", "wt"), retired); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(filepath.Join(wt, ".git"), []byte("gitdir: "+retired+"\n"), 0o600); err != nil {
-				t.Fatal(err)
+			if admin := filepath.Join(common, "worktrees", "wt"); tc.retiring {
+				if err := os.WriteFile(filepath.Join(admin, "gitdir"), nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(admin, "locked"), []byte("ccx cleanup 18e3985ee43673d8-211451\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				retired := filepath.Join(common, "retired-worktrees", "wt")
+				if err := os.MkdirAll(filepath.Dir(retired), 0o750); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Rename(admin, retired); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(wt, ".git"), []byte("gitdir: "+retired+"\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if dirty {
 				if err := os.WriteFile(filepath.Join(wt, "scratch.txt"), []byte("mine\n"), 0o600); err != nil {
