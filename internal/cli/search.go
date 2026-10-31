@@ -39,7 +39,7 @@ func newSearchCmd() *cobra.Command {
 			if explain {
 				cmd.PrintErrf("explain: query %q → %s (mode %q)\n", a.Query, kind, a.Mode)
 			}
-			if op == backend.OpStructural && a.Path != "" {
+			if (op == backend.OpStructural || op == backend.OpGrep) && a.Path != "" {
 				a.Paths = []string{a.Path}
 			}
 
