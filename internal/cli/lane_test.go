@@ -785,6 +785,45 @@ func TestReviewsStackDeclinesForeignRepo(t *testing.T) {
 	assertShipRefusedClean(t, f, head)
 }
 
+func TestResolveLaneReadsTheTrackedStackOfAFreshCheckout(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		file    string
+		git     string
+		native  bool
+		wantErr string
+	}{
+		{name: "no tracked stack keeps the plain lane"},
+		{name: "tracked github stack", file: "[vcs]\nstack = \"github\"\n", native: true},
+		{name: "explicit graphite git config wins", file: "[vcs]\nstack = \"github\"\n", git: "graphite", wantErr: "Graphite selected without a Graphite repository configuration"},
+		{name: "unsupported tracked stack", file: "[vcs]\nstack = \"graphite\"\n", wantErr: `[vcs] stack "graphite" is unsupported`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := vcstest.Repo(t, vcstest.Remote())
+			seedLaneRecords(f.Context(), t, f.Dir, laneSeed{})
+			if tt.file != "" {
+				writeShipFile(t, f.Dir, regenFile, tt.file)
+			}
+			if tt.git != "" {
+				runTool(t, f, "git", "config", "ccx.stack", tt.git)
+			}
+			l, err := resolveLane(f.Context(), "ship", f.Dir, false)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("resolveLane error = %v, want %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if l.native != tt.native {
+				t.Fatalf("resolveLane native = %t, want %t", l.native, tt.native)
+			}
+		})
+	}
+}
+
 // TestResolveLaneGTMissingFromContext pins the gt probe to the PATH the
 // context carries. The fixture's shim directory alone is that PATH and the gt
 // shim is gone from it, while the process keeps whatever gt the machine has —
