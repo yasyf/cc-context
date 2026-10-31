@@ -581,6 +581,10 @@ func CoHolders(ctx context.Context, c Checkout) (string, []string, error) {
 	if err != nil {
 		return "", nil, err
 	}
+	branch, err = headBranch(c.GitDir)
+	if err != nil || branch == "" {
+		return "", nil, err
+	}
 	main, err := headBranch(c.CommonDir)
 	if err != nil {
 		return "", nil, err
@@ -598,7 +602,17 @@ func CoHolders(ctx context.Context, c Checkout) (string, []string, error) {
 			list = append(list, Holding{Path: cmp.Or(mainRootOf(c.CommonDir), c.CommonDir), Branch: main})
 		}
 	}
-	return coHolders(c, list)
+	return coHoldersOnBranch(c, list, branch)
+}
+
+func coHoldersOnBranch(c Checkout, list []Holding, branch string) (string, []string, error) {
+	var others []string
+	for _, h := range list {
+		if h.Branch == branch && canonical(h.Path) != c.Root {
+			others = append(others, h.Path)
+		}
+	}
+	return branch, append([]string{c.Root}, others...), nil
 }
 
 func coHolders(c Checkout, list []Holding) (string, []string, error) {
