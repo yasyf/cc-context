@@ -34,6 +34,7 @@ type restackOpts struct {
 	noGT   bool
 	to     string
 	parent string
+	branch string
 }
 
 func newRestackCmd() *cobra.Command {
@@ -58,12 +59,23 @@ it.
 from the nearer of its fork points on <branch> and on its pull request's base
 onto the fetched <branch>, so the old base's newer commits stay out. With an
 open pull request it is then pushed as ccx vcs push pushes, under a lease on the
-head the push observed, and the pull request is retargeted onto <branch>.`,
+head the push observed, and the pull request is retargeted onto <branch>.
+
+--branch <name> restacks <name>'s stack from a detached HEAD, the state a
+working copy is left in when other working copies have its branches checked
+out, as if <name> were checked out here. On a branch, --branch must name that
+branch.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			ctx, err := stackStandOn(cmd.Context(), "restack", o.branch)
+			if err != nil {
+				return err
+			}
+			cmd.SetContext(ctx)
 			return runRestack(cmd, o)
 		},
 	}
+	cmd.Flags().StringVar(&o.branch, "branch", "", stackBranchUsage)
 	cmd.Flags().BoolVar(&o.noGT, "no-gt", false, "ignore a live graphite config and fall back to the jj/git detection")
 	cmd.Flags().BoolVar(&o.noGT, "no-stack", false, "use plain jj/git operations without stack management")
 	cmd.Flags().StringVar(&o.to, "to", "", stackToUsage+" (gt lane only)")
@@ -253,14 +265,17 @@ func restackGit(ctx context.Context, cmd *cobra.Command, l lane, parent string) 
 	} else {
 		retarget = nil
 	}
-	upToDate, err := gitIsAncestor(ctx, dir, "restack", string(onto.Ref()), "HEAD")
+	upToDate, err := gitIsAncestor(ctx, dir, "restack", string(onto.Ref()), "refs/heads/"+branch)
 	if err != nil {
-		return "", fmt.Errorf("restack: compare HEAD with %s: %w", onto.Ref(), err)
+		return "", fmt.Errorf("restack: compare %s with %s: %w", branch, onto.Ref(), err)
 	}
 	if upToDate && parent == "" {
 		return "fetched · already up to date", nil
 	}
 
+	if _, detached := ctx.Value(stackHereKey{}).(stackHere); detached && branch == trunk.Name() {
+		return "", fmt.Errorf("restack: %s is trunk, which restack fast-forwards in place — run it from the working copy holding %s", branch, branch)
+	}
 	if branch == trunk.Name() {
 		if _, err := render.RunCLI(ctx, dir, "git", []string{"merge", "--ff-only", string(trunk.Ref())}); err != nil {
 			return "", fmt.Errorf("restack: fast-forward %s to %s: %w — resolve manually: git fetch %s && git merge --ff-only %s", branch, trunk.Ref(), err, remote, trunk.Ref())
