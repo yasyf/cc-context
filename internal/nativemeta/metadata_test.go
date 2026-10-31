@@ -381,6 +381,34 @@ func TestNoCatalogReadsNativeRemoteTrunk(t *testing.T) {
 	}
 }
 
+func TestEmptyCatalogOnAFreshCloneSeedsTheTrunkFromTheRemoteDefaultBranch(t *testing.T) {
+	upstream := t.TempDir()
+	git(t, upstream, "init", "-q", "-b", "dev")
+	git(t, upstream, "config", "user.name", "test")
+	git(t, upstream, "config", "user.email", "test@example.com")
+	git(t, upstream, "commit", "--allow-empty", "-qm", "initial")
+	git(t, upstream, "branch", "main")
+	dir := t.TempDir()
+	git(t, dir, "init", "-q", "-b", "scratch")
+	git(t, dir, "remote", "add", "origin", upstream)
+	git(t, dir, "fetch", "-q", "origin")
+	common := filepath.Join(dir, ".git")
+
+	trunk, err := ReadTrunk(t.Context(), common)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if trunk != "dev" {
+		t.Fatalf("trunk = %q, want the remote's default branch dev", trunk)
+	}
+	if got := git(t, dir, "symbolic-ref", "refs/remotes/origin/HEAD"); got != "refs/remotes/origin/dev" {
+		t.Fatalf("origin/HEAD = %q, want it seeded to refs/remotes/origin/dev", got)
+	}
+	if _, err := os.Stat(filepath.Join(common, "gh-stack")); !os.IsNotExist(err) {
+		t.Fatalf("reading the trunk created native metadata: %v", err)
+	}
+}
+
 func TestCatalogMutationHonorsNativeOperationLock(t *testing.T) {
 	dir := repo(t)
 	common := filepath.Join(dir, ".git")
