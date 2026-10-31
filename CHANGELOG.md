@@ -87,6 +87,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs stack rebase` and `submit` adopt an untracked branch onto its
+  open pull request's base on the native GitHub stack lane.** A branch
+  checked out fresh from another lane's push, with `git worktree add -B
+  <branch> origin/<branch>`, has no parent in this checkout's record, so
+  both refused with `gt state has no parent for <branch>` and the lane fell
+  back to a raw rebase. They now read the branch's open pull request and its
+  native stack, as `ccx vcs ship` already does, put the branch and each
+  untracked or stale branch below it on their native stack bases, and record
+  them when the run starts. `--dry-run` records nothing. A branch with no
+  open pull request is still refused.
+
 - **`ccx vcs stack rebase --above <branch>` ignores a stale local copy of a
   branch it does not move.** A pushing `--above`, `--parent` or
   `--linearize` run keeps the named parent and every branch below it at

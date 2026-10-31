@@ -1183,6 +1183,16 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	if err != nil {
 		return nil, err
 	}
+	tr, err := gtTrunkRef(ctx, l.dir(), prefix, trunk)
+	if err != nil {
+		return nil, err
+	}
+	nativeAdopted := gtState{}
+	if o.ship == nil && o.replayed == nil {
+		if state, nativeAdopted, err = stackNativeAdopt(ctx, l, tr, state, current); err != nil {
+			return nil, err
+		}
+	}
 	rewound, err := stackClaimRewound(ctx, l.dir(), state, slices.Sorted(maps.Keys(state)))
 	if err != nil {
 		return nil, err
@@ -1211,10 +1221,6 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	if err := topology.expand(slices.Concat(slices.Sorted(maps.Keys(overrides)), o.landed)...); err != nil {
 		return nil, err
 	}
-	tr, err := gtTrunkRef(ctx, l.dir(), prefix, trunk)
-	if err != nil {
-		return nil, err
-	}
 	parents, err := stackAdoptUntrackedParents(ctx, l.dir(), tr, state, overrides, topology.infer)
 	if err != nil {
 		return nil, err
@@ -1224,6 +1230,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 		return nil, err
 	}
 	maps.Copy(adopted, parents)
+	maps.Copy(adopted, nativeAdopted)
 	recorded, err := stackAdoptRecordedParents(ctx, l.dir(), tr, state, o.recorded)
 	if err != nil {
 		return nil, err
