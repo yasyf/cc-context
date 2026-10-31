@@ -47,7 +47,8 @@ func TestCoHoldersRetiredBranchChangeDuringCensus(t *testing.T) {
 func TestRetiredHoldingsRetainsUnrelatedBranches(t *testing.T) {
 	fixture, _ := newRetiredCensusFixture(t, 2)
 	t.Setenv("PATH", t.TempDir())
-	want := []Holding{{Path: fixture.Holders[0], Branch: fixture.Branch}, {Path: fixture.Holders[1], Branch: fixture.Branch}}
+	want := make([]Holding, 0, 2+len(fixture.Unrelated))
+	want = append(want, Holding{Path: fixture.Holders[0], Branch: fixture.Branch}, Holding{Path: fixture.Holders[1], Branch: fixture.Branch})
 	for index, root := range fixture.Unrelated {
 		want = append(want, Holding{Path: root, Branch: fmt.Sprintf("unrelated-%04d", index)})
 	}

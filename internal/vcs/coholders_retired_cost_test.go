@@ -104,7 +104,7 @@ func TestCoHoldersRetiredCensusCost(t *testing.T) {
 				TracePIDs             []int
 				Selected              map[string]retiredCensusCalls
 				UnrelatedPointerCalls retiredCensusCalls
-				UnrelatedGitdirOpens   int
+				UnrelatedGitdirOpens  int
 				UnrelatedAdminStats   int
 				UnrelatedHeadOpens    int
 			}{mode, unrelated, result.PID, pids, selected, pointerCalls, gitdirOpens, adminStats, headOpens}

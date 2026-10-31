@@ -83,11 +83,11 @@ func TestCoHoldersRetiredIncompleteGitdirCost(t *testing.T) {
 		}
 	}
 	summary := struct {
-		Mode     string
-		ChildPID int
+		Mode      string
+		ChildPID  int
 		TracePIDs []int
-		Selected map[string]retiredCensusCalls
-		Controls map[string]retiredIncompleteCalls
+		Selected  map[string]retiredCensusCalls
+		Controls  map[string]retiredIncompleteCalls
 	}{mode, result.PID, pids, selected, controls}
 	writeCoHoldersCostJSON(t, filepath.Join(output, "summary.json"), summary)
 	t.Logf("mode=%s child_pid=%d trace_pids=%v controls=%+v trace=%s", mode, result.PID, pids, controls, tracePath)
