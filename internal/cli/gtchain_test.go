@@ -143,3 +143,41 @@ func TestStackSubmitAdoptsOntoAParentRewrittenSinceTheCut(t *testing.T) {
 		t.Errorf("gt state child parents = %v, want feature at the cut %s", s.Parents, shortOID(cut))
 	}
 }
+
+func TestStackSubmitAdoptsTheUntrackedBranchTheTipWasCutFromAtItsCommit(t *testing.T) {
+	for name, cut := range map[string][][]string{
+		"named":     {{"git", "branch", "d", "c"}, {"git", "switch", "-q", "d"}},
+		"from HEAD": {{"git", "switch", "-q", "-c", "d"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, heads := gtUntrackedChainRepo(t)
+			for _, argv := range cut {
+				mustRun(t, f.Env(), f.Dir, argv[0], argv[1:]...)
+			}
+			var out bytes.Buffer
+			cmd := &cobra.Command{}
+			cmd.SetOut(&out)
+			cmd.SetContext(f.Context())
+
+			if err := stackAdoptChain(cmd, render.Dir(f.Dir)); err != nil {
+				t.Fatalf("adopt: %v", err)
+			}
+			if want := strings.Join([]string{"tracked a onto main", "tracked b onto a", "tracked c onto b", "tracked d onto c"}, shipSep) + "\n"; out.String() != want {
+				t.Errorf("report = %q, want %q", out.String(), want)
+			}
+			assertGTChainAdopted(t, f, heads)
+		})
+	}
+}
+
+func TestStackSubmitRefusesAnUntrackedBranchAtTheTipsCommitWithNoCutRecorded(t *testing.T) {
+	f, _ := gtUntrackedChainRepo(t)
+	mustRun(t, f.Env(), f.Dir, "git", "update-ref", "refs/heads/x", "HEAD")
+	cmd := &cobra.Command{}
+	cmd.SetContext(f.Context())
+
+	err := stackAdoptChain(cmd, render.Dir(f.Dir))
+	if err == nil || !strings.Contains(err.Error(), "c sits at the same commit as untracked x") {
+		t.Fatalf("adopt = %v, want a refusal naming x", err)
+	}
+}

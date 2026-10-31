@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/yasyf/cc-context/internal/nativemeta"
+	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcs"
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
@@ -57,4 +58,31 @@ func TestNativeTrackAdoptsWithoutGraphiteDatabase(t *testing.T) {
 		t.Fatalf("native attachment created a Graphite database: %v", err)
 	}
 	assertNoGT(t, vcstest.Invocations(t, f.ArgvLog))
+}
+
+func TestNativeCreateStacksOnTheCurrentBranchWithoutOnto(t *testing.T) {
+	t.Parallel()
+	f := vcstest.Repo(t, vcstest.Remote(), vcstest.Branch("fresh"))
+	writeShipFile(t, f.Dir, "fresh.txt", "native change\n")
+	f.Out(t, "git", "add", "fresh.txt")
+	f.Out(t, "git", "commit", "-m", "native change")
+	ctx := withStackProvider(f.Context(), true)
+	if err := nativemeta.Init(ctx, filepath.Join(f.Dir, ".git"), "main"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := nativeStackRun(ctx, render.Dir(f.Dir), []string{"track", "fresh", "--parent", "main"}); err != nil {
+		t.Fatal(err)
+	}
+	writeShipFile(t, f.Dir, "child.txt", "child change\n")
+	f.Out(t, "git", "add", "child.txt")
+	if _, err := nativeStackRun(ctx, render.Dir(f.Dir), []string{"create", "child", "-m", "child change", "--no-ai", "--no-interactive"}); err != nil {
+		t.Fatal(err)
+	}
+	state, err := gtStateQuery(ctx, render.Dir(f.Dir), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if child := state["child"]; len(child.Parents) != 1 || child.Parents[0].Ref != "fresh" {
+		t.Fatalf("child parents = %+v, want fresh", child.Parents)
+	}
 }
