@@ -55,17 +55,19 @@ for fmt in ["sha1", "sha256"]:
         remote.mkdir()
         run(remote, ["init", "--bare", "--initial-branch=main", f"--object-format={fmt}"])
         run(remote, ["config", "uploadpack.allowFilter", "true"])
-        parts = []
+        parts = ["blob\nmark :1\ndata 1\nx\n"]
         for i in range(n):
             data = str(i)
-            text = f"commit refs/heads/main\nmark :{i + 1}\ncommitter Probe <probe@example.invalid> 1700000000 +0000\ndata {len(data)}\n{data}\n"
+            text = f"commit refs/heads/main\nmark :{i + 2}\ncommitter Probe <probe@example.invalid> 1700000000 +0000\ndata {len(data)}\n{data}\n"
             if i:
-                text += f"from :{i}\n"
+                text += f"from :{i + 1}\n"
+            else:
+                text += "M 100644 :1 seed\n"
             parts.append(text + "\n")
         run(remote, ["-c", "fastimport.unpackLimit=0", "fast-import", "--quiet"], "".join(parts).encode())
         client = ROOT / f"client-{label}"
         clone_trace = OUT / f"{label}-clone.trace2.jsonl"
-        subprocess.run([GIT, "clone", "--quiet", "--no-checkout", "--filter=blob:none", remote.as_uri(), str(client)], env=ENV | {"GIT_TRACE2_EVENT": str(clone_trace)}, check=True, timeout=120)
+        subprocess.run([GIT, "clone", "--quiet", "--no-checkout", "--filter=blob:limit=2048", remote.as_uri(), str(client)], env=ENV | {"GIT_TRACE2_EVENT": str(clone_trace)}, check=True, timeout=120)
         packs = list((client / ".git/objects/pack").glob("*.pack"))
         layout = {"pack_files": sorted(path.name for path in (client / ".git/objects/pack").iterdir()), "count_objects": run(client, ["count-objects", "-v"]).decode(), "object_format": run(client, ["rev-parse", "--show-object-format"]).decode().strip()}
         (OUT / f"{label}-clone-layout.json").write_text(json.dumps(layout, indent=2) + "\n")
@@ -74,11 +76,12 @@ for fmt in ["sha1", "sha256"]:
         assert promisor.with_suffix(".promisor").is_file()
         base = run(client, ["rev-parse", "refs/remotes/origin/main"]).strip().decode()
         tree = run(client, ["rev-parse", f"{base}^{{tree}}"]).strip().decode()
+        assert run(client, ["cat-file", "blob", f"{base}:seed"]) == b"x"
         p_verify = run(client, ["verify-pack", "-v", str(promisor.with_suffix(".idx"))])
         (OUT / f"{label}-promisor.verify").write_bytes(p_verify)
         traced_fetch(client, f"{label}-only-promisor", expected=0)
         objects = run(client, ["rev-list", "--objects", "--no-object-names", "refs/remotes/origin/main"]).splitlines()
-        assert len(objects) == n + 1 and base.encode() in objects
+        assert len(objects) == n + 2 and base.encode() in objects
         extra = run(client, ["hash-object", "-w", "--stdin"], b"nonpromisor duplicate pack extra").strip()
         pack_hash = run(client, ["pack-objects", str(client / ".git/objects/pack/pack")], b"\n".join(objects + [extra]) + b"\n").strip().decode()
         nonpromisor = client / ".git/objects/pack" / f"pack-{pack_hash}.pack"
