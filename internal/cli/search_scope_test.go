@@ -54,9 +54,7 @@ func TestSearchLiteralPathScope(t *testing.T) {
 				}
 			}
 			wrapper := "#!/bin/sh\nprintf '%s\\0' \"$@\" > \"$CCX_SCOPE_ARGV\"\n/bin/pwd > \"$CCX_SCOPE_CWD\"\nif [ -n \"$CCX_SCOPE_STRACE\" ]; then\nexec \"$CCX_SCOPE_STRACE\" -f -e trace=openat -o \"$CCX_SCOPE_TRACE\" \"$CCX_SCOPE_RG\" \"$@\"\nfi\nexec \"$CCX_SCOPE_RG\" \"$@\"\n"
-			if err := os.WriteFile(filepath.Join(root, "bin", "rg"), []byte(wrapper), 0o700); err != nil {
-				t.Fatal(err)
-			}
+			writeExecutable(t, filepath.Join(root, "bin", "rg"), wrapper)
 			t.Chdir(root)
 			for _, query := range []string{"tail", "prepare_graph"} {
 				for _, operand := range []string{filepath.Join(root, "target"), filepath.Join(root, "target", "evidence.py"), "target"} {
