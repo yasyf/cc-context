@@ -522,7 +522,7 @@ func runStackSubmit(cmd *cobra.Command, o shipOpts, include []string, to string)
 	if err != nil {
 		return err
 	}
-	if err := stackReconcileNative(cmd, l, "stack submit", current); err != nil {
+	if err := stackRetargetLandedRoot(cmd, l, "stack submit", current); err != nil {
 		return err
 	}
 	if err := stackAdoptChain(cmd, l.dir()); err != nil {
@@ -684,14 +684,7 @@ func stackReportSaved(cmd *cobra.Command, commonDir string, since time.Time) err
 	return nil
 }
 
-func stackReconcileNative(cmd *cobra.Command, l lane, prefix, branch string) error {
-	recorded, err := nativeAdoptFromGitHub(cmd.Context(), l, prefix, branch)
-	if recorded != "" {
-		cmd.PrintErrln(prefix + ": " + strings.TrimSuffix(recorded, shipSep))
-	}
-	if err != nil {
-		return err
-	}
+func stackRetargetLandedRoot(cmd *cobra.Command, l lane, prefix, branch string) error {
 	moved, err := nativeRetargetLandedRoot(cmd.Context(), l, prefix, branch)
 	if moved != "" {
 		cmd.PrintErrln(prefix + ": " + moved)

@@ -493,7 +493,7 @@ func runStackRebase(cmd *cobra.Command, o stackRebaseOpts) error {
 	if err != nil {
 		return err
 	}
-	if err := stackReconcileNative(cmd, l, stackRebasePrefix, current); err != nil {
+	if err := stackRetargetLandedRoot(cmd, l, stackRebasePrefix, current); err != nil {
 		return err
 	}
 	runs, err := stackRuns(cmd.ErrOrStderr(), commonDir, current)
