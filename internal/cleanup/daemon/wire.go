@@ -21,6 +21,7 @@ const (
 	opRelease  = "release"
 	opHolding  = "holding"
 	opRetry    = "retry"
+	opCancel   = "cancel"
 	opShutdown = "shutdown"
 
 	kindRefused      = "refused"
@@ -100,7 +101,7 @@ func (r request) Validate() error {
 			return errors.New("status awaits no job")
 		}
 		return nil
-	case opWait, opRetry:
+	case opWait, opRetry, opCancel:
 		if r.JobID == "" {
 			return fmt.Errorf("%s names no job", r.Op)
 		}

@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A paused cleanup queue retires a worktree only after its HEAD rests for an
+  hour.** The process scan cannot see an agent between commands, so a forced
+  `worktree rm` of a tree its lane still used retired the registration within
+  seconds and hid the tree from git while the lane kept committing. The job now
+  waits until `HEAD` and its reflog have been still for an hour; a lane that
+  commits meanwhile blocks the job as an identity change, and the registration
+  stays. `cleanup status` shows `retires after <time>`.
+
 - **A stack write posts one cci HEAD record for every pull request it moved.**
   `ccx vcs stack submit`, `restack` and `rebase`, and a Graphite-lane
   `ccx vcs ship`, post a single `cci post --kind head` carrying one
@@ -18,6 +26,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `fields.heads`. Needs cci with `--head`.
 
 ### Added
+
+- **`ccx vcs cleanup cancel <job-id>`** keeps a queued, waiting, or pending
+  worktree. It verifies the tree, registration, `.git` link and the job's own
+  lock, allows a `HEAD` that moved, writes the captured `gitdir` backlink back,
+  removes the lock, and drops the job; the recovery ref stays.
 
 - **`ccx vcs rebase [-C <dir>] [-c <name>=<value>]... -- <git rebase args>`**
   runs `git rebase` with the arguments unchanged and exits with its code. In

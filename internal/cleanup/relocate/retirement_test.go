@@ -2,10 +2,13 @@ package relocate
 
 import (
 	"context"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yasyf/cc-context/internal/cleanup"
 )
@@ -310,6 +313,120 @@ func TestPausedRetirementDoesNotMutateARegistrationReplacedDuringTheFinalGuard(t
 			}
 			if got := f.read(captured); got != job.Links.AdminGitdir {
 				t.Errorf("captured backlink = %q, want unchanged %q", got, job.Links.AdminGitdir)
+			}
+		})
+	}
+}
+
+func (f *fixture) headMovedAt(at time.Time) {
+	f.t.Helper()
+	for _, name := range []string{"HEAD", filepath.Join("logs", "HEAD")} {
+		if err := os.Chtimes(filepath.Join(f.adminDir, name), at, at); err != nil {
+			f.t.Fatal(err)
+		}
+	}
+}
+
+func (f *fixture) commitLater() {
+	f.t.Helper()
+	f.write(filepath.Join(f.worktree, "later.txt"), "later\n")
+	f.run(f.worktree, "add", "later.txt")
+	f.run(f.worktree, "commit", "-q", "-m", "later")
+}
+
+func TestPausedRetirementWaitsForTheHeadToRest(t *testing.T) {
+	f := newFixture(t)
+	f.quiet = time.Hour
+	f.over(f.journal)
+	job := f.intend()
+	moved := f.clock.Add(-10 * time.Minute)
+	f.headMovedAt(moved)
+	retireFixture(t, f, &job)
+	if job.Blocked != nil || job.Retirement != "" || !job.RetireAfter.Equal(moved.Add(time.Hour)) {
+		t.Fatalf("Retire() = %+v, want retirement deferred to %s", job, moved.Add(time.Hour))
+	}
+	if got := f.read(filepath.Join(f.adminDir, "gitdir")); got != job.Links.AdminGitdir {
+		t.Errorf("deferred backlink = %q, want %q", got, job.Links.AdminGitdir)
+	}
+	if got := f.run(f.repo, "worktree", "list", "--porcelain"); !strings.Contains(got, f.worktree) {
+		t.Errorf("deferred registration is no longer listed: %s", got)
+	}
+	f.clock = moved.Add(time.Hour)
+	retireFixture(t, f, &job)
+	if job.Blocked != nil || job.Retirement != cleanup.RetirementComplete || !job.RetireAfter.IsZero() {
+		t.Fatalf("Retire() after an hour of rest = %+v, want retired", job)
+	}
+}
+
+func TestPausedRetirementBlocksATreeWhoseLaneCommittedWhileItWaited(t *testing.T) {
+	f := newFixture(t)
+	f.quiet = time.Hour
+	f.over(f.journal)
+	job := f.intend()
+	f.headMovedAt(f.clock)
+	retireFixture(t, f, &job)
+	if job.RetireAfter.IsZero() {
+		t.Fatalf("Retire() = %+v, want a deferral", job)
+	}
+	f.commitLater()
+	f.clock = f.clock.Add(24 * time.Hour)
+	retireFixture(t, f, &job)
+	if job.Blocked == nil || job.Blocked.Reason != "identity" || job.Retirement != "" {
+		t.Fatalf("Retire() = %+v, want an identity block without retirement", job)
+	}
+	if got := f.read(filepath.Join(f.adminDir, "gitdir")); got != job.Links.AdminGitdir {
+		t.Errorf("blocked backlink = %q, want %q", got, job.Links.AdminGitdir)
+	}
+}
+
+func TestCancelRestoresARetiredRegistrationItsLaneKeptUsing(t *testing.T) {
+	f := newFixture(t)
+	job := f.intend()
+	retireFixture(t, f, &job)
+	if job.Retirement != cleanup.RetirementComplete {
+		t.Fatalf("Retire() = %+v", job)
+	}
+	f.commitLater()
+	if err := f.relocator.Cancel(context.Background(), &job); err != nil {
+		t.Fatalf("Cancel() = %v", err)
+	}
+	if got := f.read(filepath.Join(f.adminDir, "gitdir")); got != job.Links.AdminGitdir {
+		t.Errorf("restored backlink = %q, want %q", got, job.Links.AdminGitdir)
+	}
+	if _, err := os.Stat(filepath.Join(f.adminDir, "locked")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("retirement lock = %v, want removed", err)
+	}
+	if got := f.run(f.repo, "worktree", "list", "--porcelain"); !strings.Contains(got, f.worktree) {
+		t.Errorf("cancelled registration is not listed: %s", got)
+	}
+	if got := f.run(f.repo, "rev-parse", job.RecoveryRef); got != job.Head {
+		t.Errorf("recovery ref = %q, want kept at %q", got, job.Head)
+	}
+}
+
+func TestCancelRefusesWhatItCannotProveItsOwn(t *testing.T) {
+	tests := []struct {
+		name   string
+		mangle func(f *fixture, job *cleanup.Job)
+		reason string
+	}{
+		{"foreign lock", func(f *fixture, _ *cleanup.Job) { f.write(filepath.Join(f.adminDir, "locked"), "operator\n") }, "identity"},
+		{"repointed tree", func(f *fixture, _ *cleanup.Job) { f.write(filepath.Join(f.worktree, ".git"), "gitdir: /elsewhere\n") }, "identity"},
+		{"moved tree", func(_ *fixture, job *cleanup.Job) { job.Phase = cleanup.PhaseMoved }, "phase"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFixture(t)
+			job := f.intend()
+			retireFixture(t, f, &job)
+			tt.mangle(f, &job)
+			err := f.relocator.Cancel(context.Background(), &job)
+			var refused *cleanup.RefusedError
+			if !errors.As(err, &refused) || refused.Reason != tt.reason {
+				t.Fatalf("Cancel() = %v, want a %s refusal", err, tt.reason)
+			}
+			if got := f.read(filepath.Join(f.adminDir, "gitdir")); got != "" {
+				t.Errorf("refused backlink = %q, want still retired", got)
 			}
 		})
 	}

@@ -103,7 +103,6 @@ func (p *descriptorPass) refused(refusal error, observation *descriptorObservati
 		return "", nil
 	}
 	return path, nil
-
 }
 
 func (p *descriptorPass) confirm() error {

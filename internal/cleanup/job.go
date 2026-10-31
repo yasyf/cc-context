@@ -167,6 +167,9 @@ type Job struct {
 	// occupied: it waits for inactivity instead of refusing.
 	Deferred   bool       `json:"deferred,omitempty"`
 	Retirement Retirement `json:"retirement,omitempty"`
+	// RetireAfter is when a paused removal may retire its registration: its
+	// HEAD last moved too recently for the lane behind it to be done.
+	RetireAfter time.Time `json:"retire_after,omitzero"`
 	// Adopted marks a tree the retired janitor had already unregistered and
 	// parked at Source in its quarantine. It has no admin directory and no
 	// links to capture: the job takes the tree from Source straight to Payload.

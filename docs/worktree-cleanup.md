@@ -67,6 +67,7 @@ their publication rules. The public command group is `ccx vcs cleanup`.
 | `ccx vcs cleanup hold release --id <id>` | Lift the hold `<id>` names, leaving any ordinary pause in place |
 | `ccx vcs cleanup hold status [--json]` | Report the hold, if any, and the ordinary pause apart from it |
 | `ccx vcs cleanup retry <job-id>` | Retry a blocked job from its recorded phase after its cause is addressed |
+| `ccx vcs cleanup cancel <job-id>` | Keep a queued, waiting, or pending worktree: restore a retired registration in place and drop the job |
 | `ccx vcs cleanup watchers --json` | Inspect watcher roots and consumers without retiring them |
 
 `pause` stops physical relocation and deletion while keeping queued jobs at
@@ -85,6 +86,12 @@ registration-changing maintenance on an affected worktree entry (`repair`,
 `move`, `lock`, `unlock`, `prune`, or `remove`) so it does not overlap logical
 retirement; maintenance on unrelated entries and adding a new unique worktree
 are unaffected.
+
+A process scan cannot see an agent between its commands, so a paused queue
+also waits until a registration's `HEAD` and `HEAD` reflog have rested for an
+hour before retiring it. `cleanup status` shows the job's `retires after` time.
+A lane that commits meanwhile changes `HEAD`, which blocks the job before
+retirement and keeps the registration.
 
 A `worktree rm` during a pause runs the initial main-working-copy, trunk, lock,
 submodule, nesting, volume, and dirty-tree refusals, then records a `pending`
@@ -139,6 +146,14 @@ completion cannot be proven: it may have finished and been pruned, or its
 record was lost. `worktree rm --wait` counts its removal receipt as seeing
 the job. Only a job `cleanup wait` has never seen is "not found" (exit 3).
 `cleanup status`, `cleanup wait`, and `cleanup retry` reject an empty job ID.
+
+`cleanup cancel` undoes a removal whose tree has not begun to move. It checks
+that the tree, its registration, its `.git` link, and the job's own lock are
+the ones the job captured; `HEAD` may have moved. It then writes the captured
+`gitdir` backlink back, removes the lock, and drops the job, so git lists the
+worktree again. The job's recovery ref stays. A job past `pending`, an adopted
+tree, a foreign lock, or a changed link is refused with nothing changed, and a
+maintenance hold refuses it too.
 
 Ordinary `ccx` cleanup queue-changing commands, including `worktree rm`, `cleanup pause`, `resume`, `retry`, `adopt`, `hold`, and deferred stack workspace removals, send one bounded hello to the already-running cleanup daemon. They accept any daemon with the same protocol version and never install, start, stop, or replace the daemon or apply a `LaunchAgent`. A missing daemon or an incompatible protocol version produces a visible failure before the cleanup request is sent.
 
