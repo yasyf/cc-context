@@ -481,6 +481,43 @@ func nativeStackFrom(state gtState, branch, parent string) string {
 	return branch
 }
 
+func nativeRetargetLandedRoot(ctx context.Context, l lane, prefix, branch string) (string, error) {
+	if !l.native || branch == "" {
+		return "", nil
+	}
+	ctx = withStackProvider(ctx, true)
+	trunk, err := gitTrunkBranch(ctx, l.dir())
+	if err != nil || trunk == "" || branch == trunk {
+		return "", err
+	}
+	state, err := gtStateQuery(ctx, l.dir(), prefix)
+	if err != nil {
+		return "", err
+	}
+	root := branch
+	for s, tracked := state[root]; tracked && !s.Trunk && len(s.Parents) > 0; s, tracked = state[root] {
+		root = s.Parents[0].Ref
+	}
+	if s, tracked := state[root]; root == trunk || !tracked || !s.Trunk {
+		return "", nil
+	}
+	owner, repo, err := gtRepoOwnerName(ctx, l, prefix)
+	if err != nil {
+		return "", err
+	}
+	infos, err := gtAPI(ctx).PullRequestInfo(ctx, gtapi.PullRequestInfoRequest{RepoOwner: owner, RepoName: repo, PRHeadRefNames: []string{root}, Callsite: "ccx"})
+	if err != nil {
+		return "", fmt.Errorf("%s: read the pull request of %s, the base of %s's native stack: %w", prefix, root, branch, err)
+	}
+	if len(infos) == 0 || infos[0].State != gtapi.PRMerged {
+		return "", nil
+	}
+	if err := nativemeta.RetargetRoot(ctx, l.checkout.CommonDir, root, trunk); err != nil {
+		return "", fmt.Errorf("%s: %w", prefix, err)
+	}
+	return fmt.Sprintf("moved the native stack of %s onto %s: its base %s landed as #%d", branch, trunk, root, infos[0].PRNumber), nil
+}
+
 // nativeStackRecord writes moves into this checkout's record, keeping a held
 // branch held, and reports each in the run's summary.
 func nativeStackRecord(ctx context.Context, c *gtCache, state gtState, moves []nativeStackMove) (string, error) {

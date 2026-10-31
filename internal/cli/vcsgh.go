@@ -70,21 +70,24 @@ GraphQL mergePullRequest, enablePullRequestAutoMerge, enqueuePullRequest, or
 mergeBranch), and a write to a ruleset or
 branch protection, is refused before it runs: those stay on plain gh, where
 the merge hooks gate them.
+Every argument from the gh command on passes to gh untouched, so a gh flag
+such as --allow-escape-sequences needs no -- before it.
 Standard streams pass through, and ccx exits with gh's code. A read that fails
 once its token has expired, such as a watch that outlived it, runs again on a
 fresh one.`,
 		Example: "  ccx vcs gh -- pr checks 123\n  ccx vcs gh --max-age 5m -- pr view 123 --json state\n" +
 			"  GH_REPO=o/r ccx vcs gh --max-age 1m -- api graphql -f query='{ repository(owner: \"o\", name: \"r\") { name } }'\n" +
 			"  ccx vcs gh -- run watch 456 --exit-status",
-		Args: func(cmd *cobra.Command, args []string) error {
-			if cmd.ArgsLenAtDash() != 0 || len(args) == 0 {
-				return errors.New("name the gh command after --: ccx vcs gh -- pr checks 123")
+		Args: func(_ *cobra.Command, args []string) error {
+			if len(args) == 0 {
+				return errors.New("name the gh command: ccx vcs gh -- pr checks 123")
 			}
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, args []string) error { return runVcsGh(cmd, args, maxAge) },
 	}
 	cmd.Flags().DurationVar(&maxAge, "max-age", 0, "serve an identical read answered within this long from the machine-wide cache")
+	cmd.Flags().SetInterspersed(false)
 	return cmd
 }
 

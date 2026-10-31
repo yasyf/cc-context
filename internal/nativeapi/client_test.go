@@ -127,6 +127,51 @@ func TestSubmitCreatesNativeGitHubStackFromPublishedParent(t *testing.T) {
 	}
 }
 
+func TestSubmitStacksOnAParentWhoseBaseHasNoPullRequest(t *testing.T) {
+	var stack []int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if publishedHeadFixture(t, w, r, "child-head") {
+			return
+		}
+		parent := `{"number":1,"state":"open","head":{"repo":{"full_name":"org/repo"},"ref":"parent"},"base":{"ref":"main"}}`
+		var body string
+		switch r.Method + " " + r.URL.Path {
+		case "POST /repos/org/repo/pulls":
+			body = `{"number":2,"node_id":"PR2","html_url":"https://github.com/org/repo/pull/2","state":"open","head":{"repo":{"full_name":"org/repo"},"ref":"child","sha":"child-head"},"base":{"ref":"parent"}}`
+		case "GET /repos/org/repo/pulls":
+			body = map[string]string{"org:parent": "[" + parent + "]", "org:main": "[]"}[r.URL.Query().Get("head")]
+		case "GET /repos/org/repo/pulls/1":
+			body = parent
+		case "GET /repos/org/repo":
+			body = `{"default_branch":"main"}`
+		case "POST /repos/org/repo/stacks":
+			var req struct {
+				PullRequests []int `json:"pull_requests"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Error(err)
+			}
+			stack, body = req.PullRequests, `{"number":7}`
+		}
+		if body == "" {
+			t.Errorf("unexpected %s %s", r.Method, r.URL)
+			http.Error(w, "unexpected", 500)
+			return
+		}
+		if _, err := fmt.Fprint(w, body); err != nil {
+			t.Errorf("write fixture response: %v", err)
+		}
+	}))
+	defer srv.Close()
+	got, err := NewWithToken(srv.URL, "key").SubmitPullRequests(context.Background(), SubmitRequest{RepoOwner: "org", RepoName: "repo", TrunkBranchName: "landed", PRs: []SubmitPR{{Action: SubmitCreate, Head: "child", HeadSha: "child-head", Base: "parent", Title: "child"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].PRNumber != 2 || !reflect.DeepEqual(stack, []int{1, 2}) {
+		t.Fatalf("got=%+v stack=%v", got, stack)
+	}
+}
+
 func TestSubmitLinksAnUnstackedGraphiteChainIntoOneNativeStack(t *testing.T) {
 	var created, added []int
 	stacked := false
@@ -354,7 +399,11 @@ func TestNativeStackRegistrationFailureReportsCreatedPullRequest(t *testing.T) {
 			}
 			return
 		}
-		if _, err := fmt.Fprint(w, `[]`); err != nil {
+		body := `[]`
+		if r.URL.Path == "/repos/org/repo" {
+			body = `{"default_branch":"dev"}`
+		}
+		if _, err := fmt.Fprint(w, body); err != nil {
 			t.Errorf("write fixture response: %v", err)
 		}
 	}))

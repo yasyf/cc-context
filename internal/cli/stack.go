@@ -518,6 +518,13 @@ func runStackSubmit(cmd *cobra.Command, o shipOpts, include []string, to string)
 		return stackSubmitGit(cmd, l)
 	}
 	defer func() { err = errors.Join(err, stackReportSaved(cmd, l.checkout.CommonDir, since)) }()
+	current, err := gitCurrentBranch(ctx, l.dir(), "stack submit")
+	if err != nil {
+		return err
+	}
+	if err := stackRetargetLandedRoot(cmd, l, "stack submit", current); err != nil {
+		return err
+	}
 	if err := stackAdoptChain(cmd, l.dir()); err != nil {
 		return err
 	}
@@ -540,10 +547,6 @@ func runStackSubmit(cmd *cobra.Command, o shipOpts, include []string, to string)
 		return fmt.Errorf("stack submit: %w", err)
 	}
 	landed, err := stackLandedElsewhere(ctx, l, stack, stackState, holders, o.landed)
-	if err != nil {
-		return err
-	}
-	current, err := gitCurrentBranch(ctx, l.dir(), "stack submit")
 	if err != nil {
 		return err
 	}
@@ -679,6 +682,14 @@ func stackReportSaved(cmd *cobra.Command, commonDir string, since time.Time) err
 		}
 	}
 	return nil
+}
+
+func stackRetargetLandedRoot(cmd *cobra.Command, l lane, prefix, branch string) error {
+	moved, err := nativeRetargetLandedRoot(cmd.Context(), l, prefix, branch)
+	if moved != "" {
+		cmd.PrintErrln(prefix + ": " + moved)
+	}
+	return err
 }
 
 func stackAdoptChain(cmd *cobra.Command, dir render.Dir) error {

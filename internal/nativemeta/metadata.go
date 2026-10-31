@@ -656,6 +656,24 @@ func Forget(ctx context.Context, commonDir string, branches []string) error {
 	})
 }
 
+// RetargetRoot moves every native stack based on root onto trunk, keeping each bottom branch's fork point so a restack replays only its own commits.
+func RetargetRoot(ctx context.Context, commonDir, root, trunk string) error {
+	out, err := render.RunCLI(ctx, render.Dir(commonDir), "git", []string{"--git-dir=" + commonDir, "rev-parse", "--verify", "refs/heads/" + trunk})
+	if err != nil {
+		return fmt.Errorf("resolve native stack trunk %s: %w", trunk, err)
+	}
+	return mutate(ctx, commonDir, func(c *catalog, _ *receipts) (bool, bool, error) {
+		moved := false
+		for i := range c.Stacks {
+			if c.Stacks[i].Trunk.Branch == root {
+				c.Stacks[i].Trunk = branchRef{Branch: trunk, Head: strings.TrimSpace(out)}
+				moved = true
+			}
+		}
+		return moved, false, nil
+	})
+}
+
 // Reparent moves catalog relationships while retaining the fork points that still require replay.
 func Reparent(ctx context.Context, commonDir string, moves map[string]string) error {
 	if len(moves) == 0 {

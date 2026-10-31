@@ -344,6 +344,21 @@ func (c *Client) linkPull(ctx context.Context, owner, repo, trunk string, pull r
 	if err := json.Unmarshal(payload, &parents); err != nil {
 		return 0, err
 	}
+	if len(parents) == 0 {
+		payload, err := c.get(ctx, path, nil)
+		if err != nil {
+			return 0, err
+		}
+		var repository struct {
+			DefaultBranch string `json:"default_branch"`
+		}
+		if err := json.Unmarshal(payload, &repository); err != nil {
+			return 0, err
+		}
+		if repository.DefaultBranch == pull.Base.Ref {
+			return 0, nil
+		}
+	}
 	if len(parents) != 1 {
 		return 0, fmt.Errorf("PR #%d parent branch %s has %d open pull requests; native stack registration requires one", pull.Number, pull.Base.Ref, len(parents))
 	}
