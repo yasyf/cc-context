@@ -5,9 +5,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/go-git/go-git/v5/plumbing/format/gitignore"
+
+	"github.com/yasyf/cc-context/internal/gitdir"
 )
 
 // defaultIgnoredDirs is semble/index/file_walker.py _DEFAULT_IGNORED_DIRS, in
@@ -34,20 +37,56 @@ type ignoreSpec struct {
 }
 
 // WalkFiles enumerates indexable files under root (absolute, resolved) whose
-// extension is in extensions, honoring the fixed denylist plus each directory's
-// .gitignore and .sembleignore — a faithful port of semble's walk_files. It
-// returns absolute paths in directory-sorted order; symlinks are skipped.
+// extension is in extensions, honoring repository ancestor and nested ignore rules.
+// An explicitly selected ignored root remains searchable. Results are absolute
+// paths in directory-sorted order; symlinks are skipped.
 func WalkFiles(ctx context.Context, root string, extensions []string) ([]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	extSet := make(map[string]bool, len(extensions))
 	for _, e := range extensions {
 		extSet[strings.ToLower(e)] = true
 	}
 	base := &ignoreSpec{base: root, patterns: parsePatterns(defaultIgnoredDirs)}
+	ancestors, err := ancestorIgnoreSpecs(ctx, root)
+	if err != nil {
+		return nil, err
+	}
+	specs := append([]*ignoreSpec{base}, ancestors...)
 	var out []string
-	if err := walk(ctx, root, []*ignoreSpec{base}, extSet, &out); err != nil {
+	if err := walk(ctx, root, specs, extSet, &out); err != nil {
 		return nil, err
 	}
 	return out, nil
+}
+
+func ancestorIgnoreSpecs(ctx context.Context, root string) ([]*ignoreSpec, error) {
+	gitRoot := gitdir.Root(root)
+	if gitRoot == "" || gitRoot == root {
+		return nil, nil
+	}
+	var dirs []string
+	for dir := filepath.Dir(root); ; dir = filepath.Dir(dir) {
+		dirs = append(dirs, dir)
+		if dir == gitRoot {
+			break
+		}
+	}
+	slices.Reverse(dirs)
+	specs := make([]*ignoreSpec, 0, len(dirs))
+	for _, dir := range dirs {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if spec := loadIgnoreForDir(dir); spec != nil {
+			specs = append(specs, spec)
+		}
+	}
+	if ignored, _ := isIgnored(root, true, specs); ignored {
+		return nil, nil
+	}
+	return specs, nil
 }
 
 // walk recurses one directory, threading the inherited ignore specs and

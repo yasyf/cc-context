@@ -33,6 +33,52 @@ env:
   HEAVY_PKGS: internal/web|internal/semsearch/chunk|internal/semsearch/embed|internal/gtmeta
 
 jobs:
+  semantic-ancestor-scope:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GOMAXPROCS: "2"
+      GOFLAGS: -p=2
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.commit || github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: ./.github/actions/wasm
+      - name: Child-scope ancestor policy and bounded generated-entry work
+        run: |
+          set -euo pipefail
+          go test -race -count=1 -v -run '^TestWalkFilesScopedAncestor' ./internal/semsearch/index | tee "$RUNNER_TEMP/semantic-ancestor-fixed.log"
+      - uses: actions/checkout@v7
+        with:
+          ref: e39f97d38c01d78531eb8ef9c4ff71a8ae03df32
+          path: .ci-semantic-ancestor-before
+          persist-credentials: false
+      - name: Released v0.89.16 ancestor-scope negative on the same fixtures
+        run: |
+          set -euo pipefail
+          test "$(git -C .ci-semantic-ancestor-before rev-parse HEAD)" = e39f97d38c01d78531eb8ef9c4ff71a8ae03df32
+          cp internal/semsearch/index/walk_ancestor_test.go .ci-semantic-ancestor-before/internal/semsearch/index/
+          cp internal/format/formatcore.wasm .ci-semantic-ancestor-before/internal/format/
+          cp internal/semsearch/embed/embedcore.wasm .ci-semantic-ancestor-before/internal/semsearch/embed/
+          cp -R internal/semsearch/chunk/grammars .ci-semantic-ancestor-before/internal/semsearch/chunk/
+          cd .ci-semantic-ancestor-before
+          status=0
+          go test -race -count=1 -v -run '^TestWalkFilesScopedAncestor' ./internal/semsearch/index > "$RUNNER_TEMP/semantic-ancestor-before.log" 2>&1 || status=$?
+          cat "$RUNNER_TEMP/semantic-ancestor-before.log"
+          test "$status" -eq 1
+          grep -F 'SEMANTIC_ANCESTOR_RULE_MISSING' "$RUNNER_TEMP/semantic-ancestor-before.log"
+          grep -F 'SEMANTIC_ANCESTOR_WORK_GROWTH n=32 ' "$RUNNER_TEMP/semantic-ancestor-before.log"
+          grep -F 'SEMANTIC_ANCESTOR_WORK_GROWTH n=10000 ' "$RUNNER_TEMP/semantic-ancestor-before.log"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: semantic-ancestor-scope
+          path: ${{ runner.temp }}/semantic-ancestor-*.log
+
   literal-search-scope:
     runs-on: ubuntu-latest
     timeout-minutes: 15
