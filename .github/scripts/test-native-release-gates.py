@@ -5,7 +5,7 @@ import subprocess
 import unittest
 
 EXPECTED_CANCEL = "${{ inputs.commit == '' && github.event_name != 'workflow_dispatch' }}"
-EXPECTED_DYNAMIC_PROFILES = 5
+EXPECTED_DYNAMIC_PROFILES = 6
 
 
 def load_workflow(name):
