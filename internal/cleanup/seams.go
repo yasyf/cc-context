@@ -99,6 +99,10 @@ type Relocator interface {
 	// Retire hides an inactive worktree's registration while retaining its checkout in place.
 	// Registration-rebinding maintenance must not overlap retirement; a maintenance hold excludes it.
 	Retire(ctx context.Context, job *Job) error
+	// Cancel undoes a removal whose tree has not begun to move, restoring a
+	// retired registration in place; a refusal is a *RefusedError and changes
+	// nothing.
+	Cancel(ctx context.Context, job *Job) error
 	// Admit supplies the captured root to open after proving its ownership,
 	// registration, watcher and activity constraints afresh. External admin
 	// completion is journaled before its payload can be admitted. A failed

@@ -292,6 +292,11 @@ func (f *fakeRelocator) Retire(ctx context.Context, job *cleanup.Job) error {
 	return f.h.journal.Save(*job)
 }
 
+func (f *fakeRelocator) Cancel(ctx context.Context, job *cleanup.Job) error {
+	f.h.rec.add("cancel:" + f.h.rec.name(job.ID))
+	return ctx.Err()
+}
+
 func (f *fakeRelocator) Admit(ctx context.Context, job *cleanup.Job) (cleanup.DeletionRoot, error) {
 	name := f.h.rec.name(job.ID)
 	f.h.rec.add("admit:" + name)

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/yasyf/cc-context/internal/cleanup"
 )
@@ -306,6 +307,19 @@ func (r *Relocator) retirementIdle(ctx context.Context, job *cleanup.Job, files 
 	return failed, err
 }
 
+func (r *Relocator) settled(files *retirementFiles) time.Time {
+	if r.cfg.Quiet == 0 {
+		return time.Time{}
+	}
+	var moved time.Time
+	for _, name := range []string{"HEAD", filepath.Join("logs", "HEAD")} {
+		if info, err := files.root.Stat(name); err == nil && info.ModTime().After(moved) {
+			moved = info.ModTime()
+		}
+	}
+	return moved.Add(r.cfg.Quiet)
+}
+
 func (r *Relocator) retirementState(job *cleanup.Job, state cleanup.Retirement) error {
 	job.Retirement = state
 	job.Updated = r.cfg.Now()
@@ -335,6 +349,11 @@ func (r *Relocator) Retire(ctx context.Context, job *cleanup.Job) error {
 	if err := r.retirementDevices(job, files); err != nil {
 		return err
 	}
+	if until := r.settled(files); job.Retirement == "" && r.cfg.Now().Before(until) {
+		job.RetireAfter, job.Updated = until, r.cfg.Now()
+		return r.cfg.Journal.Save(*job)
+	}
+	job.RetireAfter = time.Time{}
 	owned, err := ownMarker(files.root, job)
 	if err != nil || job.Retirement == "" && owned {
 		if err == nil {
@@ -468,4 +487,85 @@ func (r *Relocator) restoreRegistration(ctx context.Context, job *cleanup.Job) (
 		}
 	}
 	return true, r.retirementState(job, "")
+}
+
+// Cancel undoes a removal that has not moved its tree, leaving the worktree
+// registered where it is: a retired registration gets its captured backlink
+// back and loses the job's lock. The committed HEAD may have moved since the
+// job captured it; the tree, its registration and its links must not have. The
+// recovery ref stays.
+func (r *Relocator) Cancel(ctx context.Context, job *cleanup.Job) error {
+	switch {
+	case job.Adopted:
+		return refuse(job.Original, "phase", "job %s adopted a tree with no registration to keep", job.ID)
+	case job.Phase != cleanup.PhaseQueued && job.Phase != cleanup.PhaseWaiting && job.Phase != cleanup.PhasePending:
+		return refuse(job.Original, "phase", "job %s is %s: its tree has begun to move", job.ID, job.Phase)
+	case job.Retirement == "":
+		return nil
+	}
+	tree, err := sight(job.Original)
+	if err != nil {
+		return err
+	}
+	if !tree.exists || !tree.dir || tree.id.Ino != job.Tree.Ino {
+		return refuse(job.Original, "identity", "%s is no longer the tree job %s captured", job.Original, job.ID)
+	}
+	if dotGit, err := readLinkage(filepath.Join(job.Original, ".git")); err != nil || dotGit != job.Links.DotGit {
+		return refuse(job.Original, "identity", "%s no longer holds its captured .git link", job.Original)
+	}
+	root, err := os.OpenRoot(job.AdminDir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = root.Close() }()
+	info, err := root.Stat(".")
+	if err != nil {
+		return err
+	}
+	if cleanup.IDOf(info).Ino != job.Admin.Ino {
+		return refuse(job.Original, "identity", "%s is no longer the registration job %s captured", job.AdminDir, job.ID)
+	}
+	common, err := readLinkage(filepath.Join(job.AdminDir, "commondir"))
+	if err != nil {
+		return err
+	}
+	named, valid := linkTarget(common, job.AdminDir)
+	if !valid {
+		return refuse(job.Original, "identity", "%s names no common directory", job.AdminDir)
+	}
+	if repo, err := filepath.EvalSymlinks(named); err != nil || repo != job.Repo {
+		return refuse(job.Original, "identity", "%s no longer belongs to %s", job.AdminDir, job.Repo)
+	}
+	back, content, err := rootLink(root, "gitdir", os.O_RDWR)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = back.Close() }()
+	owned, err := ownMarker(root, job)
+	if err != nil {
+		return refuse(job.Original, "identity", "%v", err)
+	}
+	switch {
+	case content != "" && content != job.Links.AdminGitdir:
+		return refuse(job.Original, "identity", "%s no longer holds its captured backlink", job.AdminDir)
+	case content == "" && !owned:
+		return refuse(job.Original, "identity", "empty backlink has no owned retirement marker")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if content == "" {
+		if _, err := back.WriteAt([]byte(job.Links.AdminGitdir), 0); err != nil {
+			return fmt.Errorf("restore backlink: %w", err)
+		}
+		if err := back.Sync(); err != nil {
+			return fmt.Errorf("sync restored backlink: %w", err)
+		}
+	}
+	if owned {
+		if err := root.Remove("locked"); err != nil {
+			return fmt.Errorf("remove retirement marker: %w", err)
+		}
+	}
+	return rootSync(root)
 }

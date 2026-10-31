@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A paused cleanup queue retires a worktree only after its HEAD rests for an
+  hour.** The process scan cannot see an agent between commands, so a forced
+  `worktree rm` of a tree its lane still used retired the registration within
+  seconds and hid the tree from git while the lane kept committing. The job now
+  waits until `HEAD` and its reflog have been still for an hour; a lane that
+  commits meanwhile blocks the job as an identity change, and the registration
+  stays. `cleanup status` shows `retires after <time>`.
+
 - **A stack write posts one cci HEAD record for every pull request it moved.**
   `ccx vcs stack submit`, `restack` and `rebase`, and a Graphite-lane
   `ccx vcs ship`, post a single `cci post --kind head` carrying one
@@ -18,6 +26,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `fields.heads`. Needs cci with `--head`.
 
 ### Added
+
+- **`ccx vcs cleanup cancel <job-id>`** keeps a queued, waiting, or pending
+  worktree. It verifies the tree, registration, `.git` link and the job's own
+  lock, allows a `HEAD` that moved, writes the captured `gitdir` backlink back,
+  removes the lock, and drops the job; the recovery ref stays.
 
 - **`ccx vcs rebase [-C <dir>] [-c <name>=<value>]... -- <git rebase args>`**
   runs `git rebase` with the arguments unchanged and exits with its code. In
@@ -74,6 +87,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A stack write moves the calling worktree's checkout with its branch when
+  git no longer lists that worktree.** A removal the deletion queue has not
+  run yet blanks the worktree's registration, so git stops listing it, but
+  the tree stays at its path and still works. `ccx vcs stack submit`,
+  `rebase` and `continue` run from such a worktree used to move the branch it
+  holds onto the published head and leave its index and files at the old
+  tree, which then read as uncommitted work. They now count the calling
+  worktree as the branch's holder and move its checkout with the branch.
+
 - **`ccx vcs ship` on the native GitHub stack lane reports why the native
   stack refused to record a branch.** When ship adopted an untracked branch,
   such as a new branch shipped with `--tip-only --parent <branch>`, and the
@@ -111,6 +133,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on trunk, and the restack and submit replayed the other lane's commits into
   it and retargeted its pull request onto trunk. A base that is not a local
   branch now refuses with the fetch that fixes it, in `--dry-run` too.
+- **Publishing a stack records the fork point of a branch already on its
+  published head.** A branch a rebase outside ccx had already put on its
+  parent's new head kept its old recorded fork point, because publication
+  advanced the fork point only for a branch whose ref it moved. The next
+  rebase then counted the parent's commits as the branch's own and refused
+  with "would replay N commits but owns M".
+- **`ccx vcs stack drop` on the native GitHub stack lane drops a branch out of
+  a native stack.** GitHub refuses to change the base of a stack member, so the
+  first retarget failed with HTTP 422. Drop now unstacks each native stack
+  holding a pull request it moves or closes, retargets, links the members that
+  stay open into a new stack, and only then deletes the branch.
 - **`ccx vcs ship --new-branch` on the native GitHub stack lane stacks the new
   branch on the branch it was cut from.** The native create recorded it on
   trunk at its merge base, so the next restack and submit carried the parent's

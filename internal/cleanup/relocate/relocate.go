@@ -25,7 +25,10 @@ type Config struct {
 	// GitBudget bounds each git child, read or mutation alike, and expiry
 	// blocks the job as a timeout; zero means one minute.
 	GitBudget time.Duration
-	Now       func() time.Time
+	// Quiet is how long a registration's HEAD must rest before a paused
+	// removal retires it; zero retires at once.
+	Quiet time.Duration
+	Now   func() time.Time
 }
 
 // Relocator implements cleanup.Relocator over the git binary each job names.

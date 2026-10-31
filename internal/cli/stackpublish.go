@@ -647,6 +647,16 @@ func stackMovePublishedSources(ctx context.Context, l lane, commonDir string, ru
 			reparent[b.Name] = b.Parent
 		}
 		if !b.Moved {
+			if b.Landed != "" || b.Held != "" || b.LocalOnly || b.NewHead != b.Local || b.NewBase == "" || run.leavesLocalRef(*b) {
+				continue
+			}
+			at, err := stackRevParse(ctx, l.dir(), gtRestackRef(b.Name))
+			if err != nil {
+				return "", err
+			}
+			if at == b.NewHead {
+				revisions[b.Name] = b.NewBase
+			}
 			continue
 		}
 		at, err := stackRevParse(ctx, l.dir(), gtRestackRef(b.Name))

@@ -45,6 +45,52 @@ func prepareStackPublication(t *testing.T) (*vcstest.Fixture, *stackRebaseRun, [
 	return f, run, plan
 }
 
+// TestStackPublicationRecordsTheBaseOfASourceAlreadyOnItsHead publishes
+// feature after a rebase outside ccx put it on main's new head, while gt still
+// records main's old head as its fork point. The replay leaves feature where it
+// is, and publication advanced the fork point only for a source whose ref it
+// moved, so the stale one stayed and the next rebase replayed main's commit as
+// feature's own.
+func TestStackPublicationRecordsTheBaseOfASourceAlreadyOnItsHead(t *testing.T) {
+	f := stackRebaseRepo(t, "feature")
+	stale := gitAt(t, f.Env(), f.Dir, "rev-parse", "main")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
+	writeShipFile(t, f.Dir, "upstream.txt", "upstream\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "upstream.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-q", "-m", "upstream")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "main")
+	base := shipHead(t, f)
+	mustRun(t, f.Env(), f.Dir, "git", "rebase", "-q", "main", "feature")
+	head := shipHead(t, f)
+	common := filepath.Join(f.Dir, ".git")
+	b := stackRebaseBranch{Name: "feature", Parent: "main", WasParent: "main", Local: head, Remote: head, Head: head, OldBase: base, SourceBase: base, NewBase: base, NewHead: head}
+	run := &stackRebaseRun{Trunk: "main", Pin: base, Origin: f.Dir, Roots: []string{"feature"}, Branches: []stackRebaseBranch{b}}
+	if err := stackClaim(common, run); err != nil {
+		t.Fatal(err)
+	}
+	if err := stackSaveRun(run); err != nil {
+		t.Fatal(err)
+	}
+	l, err := resolveLane(f.Context(), "stack", f.Dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := stackMovePublishedSources(f.Context(), l, common, run); err != nil {
+		t.Fatal(err)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature"); got != head {
+		t.Errorf("feature moved from %s to %s", head, got)
+	}
+	state, err := gtStateQuery(f.Context(), render.Dir(f.Dir), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := state["feature"]; len(s.Parents) != 1 || s.Parents[0].SHA != base || s.NeedsRestack {
+		t.Errorf("feature = %+v, want its fork point recorded at main's head %s, not %s", s, base, stale)
+	}
+}
+
 func TestStackPublicationRecoversAfterPushBeforeMetadata(t *testing.T) {
 	f, run, plan := prepareStackPublication(t)
 	dir := render.Dir(f.Dir)
@@ -540,9 +586,17 @@ func TestStackSubmitAdoptsAnEquivalentRestackThatLandsMidPush(t *testing.T) {
 	}
 }
 
+// TestStackPublicationMovesAWorktreeGitDoesNotList runs the move from a
+// worktree git's list no longer names: one whose admin dir was moved out of
+// .git/worktrees, and one a removal left queued for deletion, its admin dir
+// still in place but its backlink blanked under a cleanup lock. Either is the
+// working copy holding feature, so its index and files follow the branch.
 func TestStackPublicationMovesAWorktreeGitDoesNotList(t *testing.T) {
-	for _, dirty := range []bool{false, true} {
-		t.Run(fmt.Sprintf("dirty=%v", dirty), func(t *testing.T) {
+	for _, tc := range []struct {
+		retiring, dirty bool
+	}{{false, false}, {false, true}, {true, false}, {true, true}} {
+		dirty := tc.dirty
+		t.Run(fmt.Sprintf("retiring=%v,dirty=%v", tc.retiring, dirty), func(t *testing.T) {
 			f, run, plan := prepareStackPublication(t)
 			dir := render.Dir(f.Dir)
 			if err := stackPushPublication(f.Context(), dir, gtSubmit{prefix: "test", publication: run}, plan); err != nil {
@@ -562,15 +616,24 @@ func TestStackPublicationMovesAWorktreeGitDoesNotList(t *testing.T) {
 			if wt, err = filepath.EvalSymlinks(wt); err != nil {
 				t.Fatal(err)
 			}
-			retired := filepath.Join(common, "retired-worktrees", "wt")
-			if err := os.MkdirAll(filepath.Dir(retired), 0o750); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.Rename(filepath.Join(common, "worktrees", "wt"), retired); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(filepath.Join(wt, ".git"), []byte("gitdir: "+retired+"\n"), 0o600); err != nil {
-				t.Fatal(err)
+			if admin := filepath.Join(common, "worktrees", "wt"); tc.retiring {
+				if err := os.WriteFile(filepath.Join(admin, "gitdir"), nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(admin, "locked"), []byte("ccx cleanup 18e3985ee43673d8-211451\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				retired := filepath.Join(common, "retired-worktrees", "wt")
+				if err := os.MkdirAll(filepath.Dir(retired), 0o750); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Rename(admin, retired); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(wt, ".git"), []byte("gitdir: "+retired+"\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if dirty {
 				if err := os.WriteFile(filepath.Join(wt, "scratch.txt"), []byte("mine\n"), 0o600); err != nil {

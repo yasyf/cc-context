@@ -86,6 +86,7 @@ jobs:
           bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.12/scripts/download-actionlint.bash) 1.7.12 "$RUNNER_TEMP"
           "$RUNNER_TEMP/actionlint" -color
           python3 .github/scripts/test-native-release-gates.py
+          python3 .github/scripts/test-go-hook-pins.py
 
   scheduler-performance:
     runs-on: ${{ matrix.os }}

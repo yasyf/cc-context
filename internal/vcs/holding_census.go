@@ -3,7 +3,6 @@ package vcs
 import (
 	"context"
 	"maps"
-	"path/filepath"
 )
 
 // HoldingCensus shares one repository's complete holder discovery within a command invocation.
@@ -31,7 +30,7 @@ func CaptureHoldings(ctx context.Context, c Checkout) (*HoldingCensus, error) {
 
 // BranchHolders includes a checkout outside the discoverable admin directories without changing the shared census.
 func (c *HoldingCensus) BranchHolders(ctx context.Context, checkout Checkout) (map[string]string, error) {
-	if checkout.GitDir == checkout.CommonDir || filepath.Dir(checkout.GitDir) == filepath.Join(checkout.CommonDir, "worktrees") || c.contains(checkout.Root) {
+	if checkout.GitDir == checkout.CommonDir || c.contains(checkout.Root) {
 		return c.holders, nil
 	}
 	branch, err := unlistedBranch(ctx, checkout)

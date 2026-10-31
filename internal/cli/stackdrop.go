@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -122,6 +123,21 @@ type dropPlan struct {
 	chain    []string
 	moves    map[string]dropMove
 	own      dropPR
+	stacks   []dropNativeStack
+}
+
+// dropNativeStack is a native GitHub stack holding a pull request the drop
+// retargets or closes, with its open members bottom to top. GitHub refuses to
+// change the base of a stack member, and its stacks API removes no single
+// member, so the drop unstacks the whole stack before it retargets and links
+// the members that stay open into a new one afterwards.
+type dropNativeStack struct {
+	number int
+	prs    []int
+}
+
+func (s dropNativeStack) relinked(own int) []int {
+	return slices.DeleteFunc(slices.Clone(s.prs), func(n int) bool { return n == own })
 }
 
 func (p dropPlan) heads() []string {
@@ -159,12 +175,18 @@ func runStackDropBranch(cmd *cobra.Command, l lane, branch string, dryRun bool) 
 		cmd.Println(dropReport(plan, gtRestackResult{}, dropPR{}, true))
 		return nil
 	}
+	if err := dropUnstack(ctx, plan); err != nil {
+		return err
+	}
 	if err := dropRetargetChildren(ctx, plan); err != nil {
 		return err
 	}
 	// A retarget that did not take is recoverable here and a closed pull
 	// request one step later.
 	if err := dropVerifyChildren(ctx, plan, "before the delete"); err != nil {
+		return err
+	}
+	if err := dropRelink(ctx, plan); err != nil {
 		return err
 	}
 	result, err := dropLocal(ctx, l, commonDir, plan)
@@ -263,7 +285,92 @@ func dropPlanFor(ctx context.Context, l lane, state gtState, branch string) (dro
 		return dropPlan{}, err
 	}
 	_, plan.onRemote = heads[branch]
+	if l.native {
+		if plan.stacks, err = dropNativeStacks(ctx, plan); err != nil {
+			return dropPlan{}, err
+		}
+	}
 	return plan, nil
+}
+
+func dropNativeStacks(ctx context.Context, plan dropPlan) ([]dropNativeStack, error) {
+	var numbers []int
+	if plan.own.Number != 0 {
+		numbers = append(numbers, plan.own.Number)
+	}
+	for _, head := range plan.heads() {
+		numbers = append(numbers, plan.moves[head].pr.Number)
+	}
+	var stacks []dropNativeStack
+	for _, n := range numbers {
+		if slices.ContainsFunc(stacks, func(s dropNativeStack) bool { return slices.Contains(s.prs, n) }) {
+			continue
+		}
+		out, err := render.RunCLI(ctx, render.Ambient, "gh", []string{"api", "-X", "GET", "repos/" + plan.nwo + "/stacks", "-f", "pull_request=" + strconv.Itoa(n)})
+		if err != nil {
+			return nil, fmt.Errorf("%s: read the native stack of PR #%d: %w", dropPrefix, n, err)
+		}
+		var found []struct {
+			Number       int `json:"number"`
+			PullRequests []struct {
+				Number int    `json:"number"`
+				State  string `json:"state"`
+			} `json:"pull_requests"`
+		}
+		if err := json.Unmarshal([]byte(out), &found); err != nil {
+			return nil, fmt.Errorf("%s: parse the native stack of PR #%d: %w", dropPrefix, n, err)
+		}
+		for _, f := range found {
+			stack := dropNativeStack{number: f.Number}
+			for _, pr := range f.PullRequests {
+				if pr.State == "open" {
+					stack.prs = append(stack.prs, pr.Number)
+				}
+			}
+			stacks = append(stacks, stack)
+		}
+	}
+	return stacks, nil
+}
+
+func dropUnstack(ctx context.Context, plan dropPlan) error {
+	for _, s := range plan.stacks {
+		if _, err := render.RunCLI(ctx, render.Ambient, "gh", []string{"api", "-X", "POST", fmt.Sprintf("repos/%s/stacks/%d/unstack", plan.nwo, s.number), "--silent"}); err != nil {
+			return fmt.Errorf("%s: unstack native stack #%d before retargeting its pull requests: %w", dropPrefix, s.number, err)
+		}
+	}
+	return nil
+}
+
+func dropRelinkArgv(nwo string, prs []int) []string {
+	argv := make([]string, 0, 5+2*len(prs))
+	argv = append(argv, "api", "-X", "POST", "repos/"+nwo+"/stacks", "--silent")
+	for _, n := range prs {
+		argv = append(argv, "-F", "pull_requests[]="+strconv.Itoa(n))
+	}
+	return argv
+}
+
+func dropRelink(ctx context.Context, plan dropPlan) error {
+	for _, s := range plan.stacks {
+		prs := s.relinked(plan.own.Number)
+		if len(prs) < 2 {
+			continue
+		}
+		argv := dropRelinkArgv(plan.nwo, prs)
+		if _, err := render.RunCLI(ctx, render.Ambient, "gh", argv); err != nil {
+			return fmt.Errorf("%s: relink native stack #%d as %s: %w — nothing was deleted; link it with %s, then re-run", dropPrefix, s.number, dropPRChain(prs), err, ghCommand(argv))
+		}
+	}
+	return nil
+}
+
+func dropPRChain(prs []int) string {
+	names := make([]string, len(prs))
+	for i, n := range prs {
+		names[i] = "#" + strconv.Itoa(n)
+	}
+	return strings.Join(names, " > ")
 }
 
 // dropChildren names the branches gt records as sitting directly on branch —
@@ -503,6 +610,17 @@ func dropReport(plan dropPlan, result gtRestackResult, own dropPR, dryRun bool) 
 	}
 	if orphans := plan.orphans(); len(orphans) > 0 {
 		segs = append(segs, "no open PR: "+strings.Join(orphans, ", "))
+	}
+	unstacked, relinked := "unstacked", "relinked"
+	if dryRun {
+		unstacked, relinked = "would unstack", "relink"
+	}
+	for _, st := range plan.stacks {
+		seg := fmt.Sprintf("%s native stack #%d", unstacked, st.number)
+		if prs := st.relinked(plan.own.Number); len(prs) > 1 {
+			seg += " and " + relinked + " " + dropPRChain(prs)
+		}
+		segs = append(segs, seg)
 	}
 	if !dryRun {
 		segs = append(segs, gtRestackSegment(result))
