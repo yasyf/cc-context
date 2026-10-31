@@ -47,6 +47,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs ship` on the native GitHub stack lane reads each branch's parent
+  from its open pull request's base in the native stack**, not from the local
+  stack record. A record still naming trunk for a branch whose pull request
+  sits on another stack member used to plan a restack of that branch onto
+  trunk, carrying every file its real parent changed. Ship now records the
+  branch on its stack base first, adopting a base this checkout never tracked,
+  and `--dry-run` plans from the same read and names each record it overrules.
 - **`ccx vcs ship` derives a title above a rewound parent.** A branch cut
   while its parent held the branch's commit, after the parent was reset and
   force-pushed below it, refused with "holds no commit above <parent>": the

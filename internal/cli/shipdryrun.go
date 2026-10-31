@@ -88,6 +88,9 @@ func runShipDryRun(ctx context.Context, cmd *cobra.Command, l lane, o shipOpts, 
 	if err := dryRunPosition(ctx, l, o, c, &r); err != nil {
 		return err
 	}
+	if err := dryRunNativeStack(ctx, l, o, c, &r); err != nil {
+		return err
+	}
 	meta, err := resolvePRMeta(cmd, o, r.branch)
 	if err != nil {
 		return err
@@ -177,6 +180,41 @@ func dryRunPositionGT(ctx context.Context, l lane, o shipOpts, c *gtCache, r *sh
 	r.parent, r.because = s.Parents[0].Ref, "graphite already tracks "+branch+" on it"
 	if l.native {
 		r.because = "native GitHub stack records " + branch + " on it"
+	}
+	return nil
+}
+
+// dryRunNativeStack plans from the parents the native GitHub stack records,
+// through the same read the real run records them with, and names each branch
+// whose local record it overrules. The overruled state replaces the run's
+// memo, so every later read of the report plans the stack the submit publishes.
+func dryRunNativeStack(ctx context.Context, l lane, o shipOpts, c *gtCache, r *shipDryRun) error {
+	if !l.native || r.branch == "" || r.branch == r.trunk || len(r.refusals) > 0 {
+		return nil
+	}
+	state, err := c.at(ctx)
+	if err != nil {
+		return err
+	}
+	from := nativeStackFrom(state, r.branch, o.parent)
+	if _, tracked := state[r.branch]; !tracked && o.parent == "" {
+		from = nativeStackFrom(state, r.parent, "")
+	}
+	moves, planned, err := nativeStackParents(ctx, l, state, from)
+	var refusal *shipRefusal
+	if errors.As(err, &refusal) {
+		r.refusals = append(r.refusals, refusal.Error())
+		return nil
+	}
+	if err != nil || len(moves) == 0 {
+		return err
+	}
+	c.state = planned
+	for _, m := range moves {
+		r.notes = append(r.notes, "ship records "+m.String())
+		if m.branch == r.branch && o.parent == "" {
+			r.parent, r.because = m.parent, fmt.Sprintf("native GitHub stack #%d bases #%d on it", m.stack, m.pr)
+		}
 	}
 	return nil
 }
