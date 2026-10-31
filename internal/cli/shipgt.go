@@ -2863,6 +2863,11 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 			publishedRefs := make(map[string]nativemeta.PullRequest, len(out))
 			for _, created := range out {
 				publishedRefs[created.Head] = nativemeta.PullRequest{Number: created.PRNumber, ID: created.PRID, URL: created.PRURL, StackNumber: created.StackNumber}
+				for _, warning := range created.Warnings {
+					if _, err := fmt.Fprintf(errW, "%s: warning: %s\n", s.prefix, warning); err != nil {
+						return nil, nil, fmt.Errorf("%s: report %s: %w", s.prefix, created.Head, err)
+					}
+				}
 			}
 			if err := nativemeta.RecordPullRequests(ctx, commonDir, publishedRefs); err != nil {
 				return nil, nil, gtSubmitFailure(gtSubmitPartial(fmt.Errorf("record native stack PR references: %w", err), pr.Head, append(landed, out...)), s)

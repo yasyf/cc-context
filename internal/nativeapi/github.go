@@ -204,6 +204,9 @@ func (c *Client) SubmitPullRequests(ctx context.Context, req SubmitRequest) ([]S
 			if entry.Action == SubmitCreate {
 				posted.Status = "created"
 			}
+			if err == nil && entry.Base != "" && pull.Base.Ref != entry.Base && pull.Stack != nil {
+				posted.Warnings = append(posted.Warnings, fmt.Sprintf("kept PR #%d on %s, not %s: native GitHub stack #%d still holds another open pull request and sets its base", pull.Number, pull.Base.Ref, entry.Base, pull.Stack.Number))
+			}
 			result = append(result, posted)
 		}
 		if err != nil {
@@ -281,6 +284,16 @@ func (c *Client) submitPull(ctx context.Context, owner, repo string, entry Submi
 	}
 	if err := c.requirePublishedHead(ctx, owner, repo, entry); err != nil {
 		return restPull{}, err
+	}
+	if _, retarget := values["base"]; retarget && entry.Action == SubmitUpdate && pull.Stack != nil {
+		left, unstacked, err := c.leaveDeadStack(ctx, owner, repo, pull)
+		if err != nil {
+			return restPull{}, err
+		}
+		if !unstacked {
+			delete(values, "base")
+		}
+		pull = left
 	}
 	if len(values) > 0 {
 		payload, err := c.send(ctx, method, path, values)
@@ -382,12 +395,14 @@ func (c *Client) linkPull(ctx context.Context, owner, repo, trunk string, pull r
 }
 
 type nativeStack struct {
-	Number       int `json:"number"`
-	PullRequests []struct {
-		Number   int    `json:"number"`
-		State    string `json:"state"`
-		MergedAt string `json:"merged_at"`
-	} `json:"pull_requests"`
+	Number       int               `json:"number"`
+	PullRequests []nativeStackPull `json:"pull_requests"`
+}
+
+type nativeStackPull struct {
+	Number   int    `json:"number"`
+	State    string `json:"state"`
+	MergedAt string `json:"merged_at"`
 }
 
 func (s nativeStack) numbers() []int {
@@ -396,6 +411,32 @@ func (s nativeStack) numbers() []int {
 		numbers[i] = pr.Number
 	}
 	return numbers
+}
+
+func (c *Client) leaveDeadStack(ctx context.Context, owner, repo string, pull restPull) (restPull, bool, error) {
+	path := fmt.Sprintf("/repos/%s/%s/stacks/%d", url.PathEscape(owner), url.PathEscape(repo), pull.Stack.Number)
+	payload, err := c.get(ctx, path, nil)
+	if err != nil {
+		return restPull{}, false, err
+	}
+	var stack nativeStack
+	if err := json.Unmarshal(payload, &stack); err != nil {
+		return restPull{}, false, err
+	}
+	if slices.ContainsFunc(stack.PullRequests, func(pr nativeStackPull) bool { return pr.Number != pull.Number && pr.State != "closed" }) {
+		return pull, false, nil
+	}
+	if _, err := c.do(ctx, http.MethodPost, path+"/unstack", nil); err != nil {
+		return restPull{}, false, fmt.Errorf("unstack native GitHub stack #%d, whose other pull requests are all closed, to retarget PR #%d: %w", pull.Stack.Number, pull.Number, err)
+	}
+	left, err := c.readPull(ctx, owner, repo, pull.Number)
+	if err != nil {
+		return restPull{}, false, err
+	}
+	if left.Stack != nil {
+		return restPull{}, false, fmt.Errorf("PR #%d is still in native GitHub stack #%d after unstacking #%d", pull.Number, left.Stack.Number, pull.Stack.Number)
+	}
+	return left, true, nil
 }
 
 func (c *Client) relinkPastClosed(ctx context.Context, owner, repo string, stackNumber, parent, pull int) (int, bool, error) {
