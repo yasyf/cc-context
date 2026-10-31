@@ -74,6 +74,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A stack submit retargets a pull request out of a dead native GitHub
+  stack.** GitHub refuses to change the base of a pull request that sits in a
+  native stack, so a restack that moved a pull request onto trunk after the
+  rest of its stack had landed or closed failed with `422 Validation Failed:
+  Cannot change the base branch because the pull request is part of a
+  stack`, and the stack had to be unstacked by hand. When every other pull
+  request in that stack is closed, merged or not, the submit now unstacks it
+  before changing the base. A stack with another open pull request is left
+  alone, and GitHub's refusal is reported as before.
+
 - **A stack write moves the calling worktree's checkout with its branch when
   git no longer lists that worktree.** A removal the deletion queue has not
   run yet blanks the worktree's registration, so git stops listing it, but

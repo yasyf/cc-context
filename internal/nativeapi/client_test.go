@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -723,6 +724,68 @@ func TestChangedBasePreservesValidationDetails(t *testing.T) {
 	var status *StatusError
 	if !errors.As(err, &status) || status.Status != http.StatusUnprocessableEntity || !strings.Contains(status.Message, "Validation Failed") || !strings.Contains(status.Message, `"field":"base"`) || !strings.Contains(status.Message, `"code":"invalid"`) || patches != 1 || refs != 1 {
 		t.Fatalf("err=%v status=%+v patches=%d refs=%d", err, status, patches, refs)
+	}
+}
+
+func TestSubmitRetargetsAPullRequestOutOfADeadNativeStack(t *testing.T) {
+	for _, tc := range []struct {
+		name, sibling string
+		unstacks      bool
+	}{
+		{name: "every other member closed", sibling: `"state":"closed","merged_at":"2026-10-31T10:00:00Z"`, unstacks: true},
+		{name: "another member open", sibling: `"state":"open","merged_at":null`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls []string
+			stacked := true
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if publishedHeadFixture(t, w, r, "head") {
+					return
+				}
+				reply := func(body string) {
+					if _, err := fmt.Fprint(w, body); err != nil {
+						t.Errorf("write fixture response: %v", err)
+					}
+				}
+				call := r.Method + " " + r.URL.Path
+				calls = append(calls, call)
+				switch call {
+				case "GET /repos/org/repo/pulls/5":
+					stack := ""
+					if stacked {
+						stack = `,"stack":{"number":8,"position":2,"size":2,"base":{"ref":"dev"}}`
+					}
+					reply(`{"number":5,"state":"open","head":{"repo":{"full_name":"org/repo"},"ref":"tip","sha":"head"},"base":{"ref":"gone"}` + stack + `}`)
+				case "GET /repos/org/repo/stacks/8":
+					reply(`{"number":8,"pull_requests":[{"number":4,` + tc.sibling + `},{"number":5,"state":"open","merged_at":null}]}`)
+				case "POST /repos/org/repo/stacks/8/unstack":
+					stacked = false
+					w.WriteHeader(http.StatusNoContent)
+				case "PATCH /repos/org/repo/pulls/5":
+					if stacked {
+						http.Error(w, `{"message":"Validation Failed: Cannot change the base branch because the pull request is part of a stack."}`, http.StatusUnprocessableEntity)
+						return
+					}
+					reply(`{"number":5,"state":"open","head":{"repo":{"full_name":"org/repo"},"ref":"tip","sha":"head"},"base":{"ref":"dev"}}`)
+				default:
+					t.Errorf("unexpected %s %s", r.Method, r.URL)
+					http.Error(w, "unexpected", 500)
+				}
+			}))
+			defer srv.Close()
+			got, err := NewWithToken(srv.URL, "key").SubmitPullRequests(context.Background(), SubmitRequest{RepoOwner: "org", RepoName: "repo", TrunkBranchName: "dev", PRs: []SubmitPR{{Action: SubmitUpdate, PRNumber: 5, Head: "tip", HeadSha: "head", Base: "dev"}}})
+			unstacked := slices.Contains(calls, "POST /repos/org/repo/stacks/8/unstack")
+			if !tc.unstacks {
+				var status *StatusError
+				if !errors.As(err, &status) || status.Status != http.StatusUnprocessableEntity || unstacked {
+					t.Fatalf("err=%v unstacked=%v calls=%v, want the live stack kept and GitHub's refusal returned", err, unstacked, calls)
+				}
+				return
+			}
+			if err != nil || len(got) != 1 || got[0].StackNumber != 0 || !unstacked {
+				t.Fatalf("got=%+v err=%v calls=%v, want the dead stack unstacked and the pull request on dev", got, err, calls)
+			}
+		})
 	}
 }
 
