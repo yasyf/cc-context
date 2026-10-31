@@ -1366,6 +1366,8 @@ var gitTrunkArgv = []string{"git", "symbolic-ref", "--short", "refs/remotes/orig
 // ls-remote of its branch and trunk.
 var gitForEachRefStdinArgv = []string{"git", "for-each-ref", "--format=%(refname) %(objectname)", "--stdin"}
 
+var replayPromisorArgv = []string{"git", "config", "-z", "--type=bool", "--get-regexp", `^remote\..+\.promisor$`}
+
 // shipFetchArgv is the fetch of one remote branch whose tracking ref is behind.
 func shipFetchArgv(remote, branch string) []string {
 	return []string{

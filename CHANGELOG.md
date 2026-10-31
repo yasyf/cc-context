@@ -58,6 +58,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A replay in a blob-filtered partial clone fetches its blobs in one
+  batch.** `ccx vcs stack rebase`, `restack`, and `submit`, a Graphite-lane
+  `ccx vcs ship` restack, and ship's rebase onto a moved remote branch used
+  to let git fetch missing blobs as it merged each commit. That wrote one new
+  promisor pack per replayed commit. Before the replay, ccx now fetches every
+  missing blob at the paths the replayed commits touch, at each of those
+  commits and at the new base, in one fetch. A full clone skips this. A
+  prefetch that fails is logged as a warning, and the replay goes on and
+  fetches what it still needs itself.
+
 - **`ccx vcs ship` on the native GitHub stack lane reads each branch's parent
   from its open pull request's base in the native stack**, not from the local
   stack record. A record still naming trunk for a branch whose pull request

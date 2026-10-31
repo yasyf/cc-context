@@ -3673,6 +3673,7 @@ func stackReplay(ctx context.Context, dir render.Dir, run *stackRebaseRun, b *st
 		return "", err
 	}
 	span := b.OldBase + ".." + b.Head
+	replayPrefetch(ctx, dir, stackRebasePrefix, b.NewBase, b.OldBase, b.Head)
 	out, code, stderr, err := render.RunCLIExitCode(ctx, dir, "git", []string{"--attr-source=" + b.NewBase, "replay", "--ref-action=print", "--linearize", "--ref=" + pin, "--onto=" + b.NewBase, span})
 	if err != nil {
 		return "", fmt.Errorf("stack rebase: git replay: %w", err)
