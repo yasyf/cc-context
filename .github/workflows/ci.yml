@@ -33,6 +33,53 @@ env:
   HEAVY_PKGS: internal/web|internal/semsearch/chunk|internal/semsearch/embed|internal/gtmeta
 
 jobs:
+  literal-search-scope:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GOMAXPROCS: "2"
+      GOFLAGS: -p=2
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.commit || github.sha }}
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: ./.github/actions/wasm
+      - name: Install literal engine and syscall observer
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ripgrep strace
+      - name: Scoped literal output and unrelated-file opens
+        env:
+          CCX_LITERAL_SCOPE_PHASE: fixed
+          CCX_LITERAL_SCOPE_OUTPUT: ${{ runner.temp }}/literal-search-scope
+        run: go test -count=1 -v -run '^TestSearchLiteralPathScope$' ./internal/cli
+      - uses: actions/checkout@v7
+        with:
+          ref: 32e85d05194126a4b30ed2d6703592f196d98beb
+          path: .ci-literal-search-before
+          persist-credentials: false
+      - name: Released v0.89.15 scope-leak negative on the same fixture
+        env:
+          CCX_LITERAL_SCOPE_PHASE: before
+          CCX_LITERAL_SCOPE_OUTPUT: ${{ runner.temp }}/literal-search-scope
+        run: |
+          test "$(git -C .ci-literal-search-before rev-parse HEAD)" = 32e85d05194126a4b30ed2d6703592f196d98beb
+          cp internal/cli/search_scope_test.go .ci-literal-search-before/internal/cli/
+          cp internal/format/formatcore.wasm .ci-literal-search-before/internal/format/
+          cp internal/semsearch/embed/embedcore.wasm .ci-literal-search-before/internal/semsearch/embed/
+          cp -R internal/semsearch/chunk/grammars .ci-literal-search-before/internal/semsearch/chunk/
+          cd .ci-literal-search-before
+          go test -count=1 -v -run '^TestSearchLiteralPathScope$' ./internal/cli
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: literal-search-scope
+          path: ${{ runner.temp }}/literal-search-scope
+
   coholder-path-cost:
     runs-on: ubuntu-latest
     timeout-minutes: 10

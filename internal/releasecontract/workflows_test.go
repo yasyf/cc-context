@@ -77,12 +77,24 @@ const coholderBaselineCheckout = `      - uses: actions/checkout@v7
           persist-credentials: false
 `
 
+const literalSearchBaselineCheckout = `      - uses: actions/checkout@v7
+        with:
+          ref: 32e85d05194126a4b30ed2d6703592f196d98beb
+          path: .ci-literal-search-before
+          persist-credentials: false
+`
+
 func checkCISourceCheckouts(ci string) error {
 	job := regexp.MustCompile(`(?ms)^  coholder-path-cost:\n(.*?)(?:^  \S|\z)`).FindStringSubmatch(ci)
 	if len(job) != 2 || strings.Count(job[1], coholderBaselineCheckout) != 1 || strings.Count(ci, coholderBaselineCheckout) != 1 {
 		return errors.New("CI immutable coholder baseline checkout must appear exactly once in coholder-path-cost")
 	}
+	job = regexp.MustCompile(`(?ms)^  literal-search-scope:\n(.*?)(?:^  \S|\z)`).FindStringSubmatch(ci)
+	if len(job) != 2 || strings.Count(job[1], literalSearchBaselineCheckout) != 1 || strings.Count(ci, literalSearchBaselineCheckout) != 1 {
+		return errors.New("CI immutable literal-search baseline checkout must appear exactly once in literal-search-scope")
+	}
 	candidates := strings.Replace(ci, coholderBaselineCheckout, "", 1)
+	candidates = strings.Replace(candidates, literalSearchBaselineCheckout, "", 1)
 	checkouts := strings.Count(candidates, "uses: actions/checkout@v7")
 	refs := strings.Count(candidates, "ref: ${{ inputs.commit || github.sha }}")
 	if checkouts == 0 || checkouts != refs {
@@ -93,7 +105,7 @@ func checkCISourceCheckouts(ci string) error {
 
 func TestCISourceCheckoutContract(t *testing.T) {
 	candidate := "      - uses: actions/checkout@v7\n        with:\n          ref: ${{ inputs.commit || github.sha }}\n"
-	workflow := "jobs:\n  coholder-path-cost:\n" + coholderBaselineCheckout + "  release:\n" + candidate
+	workflow := "jobs:\n  coholder-path-cost:\n" + coholderBaselineCheckout + "  literal-search-scope:\n" + literalSearchBaselineCheckout + "  release:\n" + candidate
 	for _, tc := range []struct {
 		name string
 		ci   string
@@ -105,6 +117,12 @@ func TestCISourceCheckoutContract(t *testing.T) {
 		{"baseline credentials", strings.Replace(workflow, "persist-credentials: false", "persist-credentials: true", 1), "immutable coholder baseline"},
 		{"baseline wrong job", strings.Replace(workflow, "coholder-path-cost:", "another-job:", 1), "immutable coholder baseline"},
 		{"duplicate baseline", strings.Replace(workflow, coholderBaselineCheckout, coholderBaselineCheckout+coholderBaselineCheckout, 1), "immutable coholder baseline"},
+		{"missing literal baseline", strings.Replace(workflow, literalSearchBaselineCheckout, "", 1), "immutable literal-search baseline"},
+		{"mutable literal baseline", strings.Replace(workflow, "ref: 32e85d05194126a4b30ed2d6703592f196d98beb", "ref: main", 1), "immutable literal-search baseline"},
+		{"literal baseline credentials", strings.Replace(workflow, literalSearchBaselineCheckout, strings.Replace(literalSearchBaselineCheckout, "persist-credentials: false", "persist-credentials: true", 1), 1), "immutable literal-search baseline"},
+		{"literal baseline wrong job", strings.Replace(workflow, "literal-search-scope:", "another-job:", 1), "immutable literal-search baseline"},
+		{"literal baseline wrong path", strings.Replace(workflow, "path: .ci-literal-search-before", "path: .ci-other-before", 1), "immutable literal-search baseline"},
+		{"duplicate literal baseline", strings.Replace(workflow, literalSearchBaselineCheckout, literalSearchBaselineCheckout+literalSearchBaselineCheckout, 1), "immutable literal-search baseline"},
 		{"mutable candidate", strings.Replace(workflow, "ref: ${{ inputs.commit || github.sha }}", "ref: main", 1), "candidate exact checkout"},
 		{"missing candidate", strings.Replace(workflow, candidate, "", 1), "candidate exact checkout"},
 	} {
