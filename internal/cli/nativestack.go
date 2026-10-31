@@ -18,7 +18,14 @@ import (
 type (
 	stackProviderKey struct{}
 	stackParentKey   struct{}
+	stackHereKey     struct{}
 )
+
+// stackHere is the branch a stack command run from a detached HEAD stands on,
+// named by --branch, and the root of the working copy it stands in.
+type stackHere struct {
+	root, branch string
+}
 
 func withStackProvider(ctx context.Context, native bool) context.Context {
 	provider := "graphite"

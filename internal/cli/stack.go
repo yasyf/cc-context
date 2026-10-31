@@ -276,12 +276,25 @@ On plain git, submit is ccx vcs stack restack --parent for the branch checked ou
 here, which must have an open pull request: the parent is the pull request's
 base, or trunk once that base's own pull request merged, so a child of a
 squash-landed parent moves onto trunk without the parent's commits. The branch
-is force-pushed under a lease and its pull request retargeted onto the parent.`,
+is force-pushed under a lease and its pull request retargeted onto the parent.
+
+--branch <tip> submits <tip>'s stack from a detached HEAD, the state a working
+copy is left in when other working copies have every branch of the stack checked
+out: the run reads <tip> as the branch checked out here and replays without a
+checkout, moving each clean working copy holding a moved branch onto its new
+head. --all-lanes takes in the branches those working copies hold. On a branch,
+--branch must name that branch.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			ctx, err := stackStandOn(cmd.Context(), "stack submit", o.branch)
+			if err != nil {
+				return err
+			}
+			cmd.SetContext(ctx)
 			return runStackSubmit(cmd, o, include, to)
 		},
 	}
+	cmd.Flags().StringVar(&o.branch, "branch", "", stackBranchUsage)
 	cmd.Flags().BoolVar(&o.draft, "draft", false, "open new PRs as drafts")
 	cmd.Flags().StringArrayVar(&o.prTitle, "pr-title", nil, "title for a pull request: <branch>=<title>, or a bare title for the branch checked out here (repeatable)")
 	cmd.Flags().StringArrayVar(&o.prBodyFile, "pr-body-file", nil, "body file for a pull request: <branch>=<path>, or a bare path for the branch checked out here; - reads stdin (repeatable)")
@@ -561,6 +574,42 @@ func runStackSubmit(cmd *cobra.Command, o shipOpts, include []string, to string)
 		return err
 	}
 	return stackRepairTracking(cmd, l, opts, tracking)
+}
+
+const stackBranchUsage = "work this branch's stack from a detached HEAD, as if it were checked out here"
+
+// stackStandOn binds a detached working copy to the branch --branch names, so
+// the command resolves and replays that branch's stack as if it were checked
+// out here, while each working copy holding one of its branches keeps it.
+func stackStandOn(ctx context.Context, prefix, named string) (context.Context, error) {
+	if named == "" {
+		return ctx, nil
+	}
+	ck, err := vcs.ResolveCheckout(workingDir(ctx))
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", prefix, err)
+	}
+	switch ck.Kind {
+	case vcs.None:
+		return ctx, nil
+	case vcs.JJ:
+		return nil, fmt.Errorf("%s: --branch stands a detached git HEAD on a branch, and this repository is on the jj lane", prefix)
+	}
+	dir := render.Dir(ck.Root)
+	current, err := gitCurrentBranch(ctx, dir, prefix)
+	if err != nil {
+		return nil, err
+	}
+	switch {
+	case current == named:
+		return ctx, nil
+	case current != "":
+		return nil, fmt.Errorf("%s: HEAD is on %s, so --branch %s would work another branch's stack — run it from a detached HEAD or from %s", prefix, current, named, named)
+	}
+	if _, err := gitRevParse(ctx, dir, prefix, "refs/heads/"+named); err != nil {
+		return nil, fmt.Errorf("%s: --branch %s names no local branch: %w", prefix, named, err)
+	}
+	return context.WithValue(ctx, stackHereKey{}, stackHere{root: ck.Root, branch: named}), nil
 }
 
 func stackSubmitGit(cmd *cobra.Command, l lane) error {

@@ -28,6 +28,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--skip` it reads the remaining picks from the rebase's todo list. A full
   clone fetches nothing, and a failed batch is logged as a warning before git
   rebase runs.
+- **`--branch <tip>` on `ccx vcs stack submit` and `restack`** works
+  `<tip>`'s stack from a detached HEAD, the state a working copy is left in
+  when other working copies hold every branch of the stack. The run reads
+  `<tip>` as the branch checked out here, replays without a checkout, and
+  moves each clean working copy holding a moved branch onto its new head;
+  `--all-lanes` takes in the branches they hold. Leases, queue checks and
+  draft handling are unchanged. On a branch, `--branch` must name it.
 - **`--evict-queued` on `ccx vcs stack submit`, `stack rebase`, and `ship`**
   moves and pushes a branch whose pull request sits in Graphite's merge
   queue, evicting it, where the run would otherwise keep it at its published

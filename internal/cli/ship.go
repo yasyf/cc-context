@@ -1759,13 +1759,26 @@ func shipElsewhere(ctx context.Context, l lane, o shipOpts) (bool, error) {
 	return here != o.branch, err
 }
 
-// gitCurrentBranch names the checked-out branch, empty on a detached HEAD.
+// gitCurrentBranch names the checked-out branch, empty on a detached HEAD. A
+// detached working copy a stack command's --branch stands on names that branch.
 func gitCurrentBranch(ctx context.Context, dir render.Dir, prefix string) (string, error) {
 	out, err := render.RunCLI(ctx, dir, "git", []string{"branch", "--show-current"})
 	if err != nil {
 		return "", fmt.Errorf("%s: git branch --show-current: %w", prefix, err)
 	}
-	return strings.TrimSpace(out), nil
+	branch := strings.TrimSpace(out)
+	here, bound := ctx.Value(stackHereKey{}).(stackHere)
+	if branch != "" || !bound {
+		return branch, nil
+	}
+	ck, err := vcs.ResolveCheckout(string(dir))
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", prefix, err)
+	}
+	if ck.Root == here.root {
+		return here.branch, nil
+	}
+	return "", nil
 }
 
 // gitTrunkBranch reads the remote's default branch, empty when origin/HEAD does
