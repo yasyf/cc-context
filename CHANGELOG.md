@@ -120,6 +120,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on trunk, and the restack and submit replayed the other lane's commits into
   it and retargeted its pull request onto trunk. A base that is not a local
   branch now refuses with the fetch that fixes it, in `--dry-run` too.
+- **Publishing a stack records the fork point of a branch already on its
+  published head.** A branch a rebase outside ccx had already put on its
+  parent's new head kept its old recorded fork point, because publication
+  advanced the fork point only for a branch whose ref it moved. The next
+  rebase then counted the parent's commits as the branch's own and refused
+  with "would replay N commits but owns M".
 - **`ccx vcs stack drop` on the native GitHub stack lane drops a branch out of
   a native stack.** GitHub refuses to change the base of a stack member, so the
   first retarget failed with HTTP 422. Drop now unstacks each native stack

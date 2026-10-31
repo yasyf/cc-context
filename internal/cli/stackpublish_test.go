@@ -45,6 +45,52 @@ func prepareStackPublication(t *testing.T) (*vcstest.Fixture, *stackRebaseRun, [
 	return f, run, plan
 }
 
+// TestStackPublicationRecordsTheBaseOfASourceAlreadyOnItsHead publishes
+// feature after a rebase outside ccx put it on main's new head, while gt still
+// records main's old head as its fork point. The replay leaves feature where it
+// is, and publication advanced the fork point only for a source whose ref it
+// moved, so the stale one stayed and the next rebase replayed main's commit as
+// feature's own.
+func TestStackPublicationRecordsTheBaseOfASourceAlreadyOnItsHead(t *testing.T) {
+	f := stackRebaseRepo(t, "feature")
+	stale := gitAt(t, f.Env(), f.Dir, "rev-parse", "main")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
+	writeShipFile(t, f.Dir, "upstream.txt", "upstream\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "upstream.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-q", "-m", "upstream")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "main")
+	base := shipHead(t, f)
+	mustRun(t, f.Env(), f.Dir, "git", "rebase", "-q", "main", "feature")
+	head := shipHead(t, f)
+	common := filepath.Join(f.Dir, ".git")
+	b := stackRebaseBranch{Name: "feature", Parent: "main", WasParent: "main", Local: head, Remote: head, Head: head, OldBase: base, SourceBase: base, NewBase: base, NewHead: head}
+	run := &stackRebaseRun{Trunk: "main", Pin: base, Origin: f.Dir, Roots: []string{"feature"}, Branches: []stackRebaseBranch{b}}
+	if err := stackClaim(common, run); err != nil {
+		t.Fatal(err)
+	}
+	if err := stackSaveRun(run); err != nil {
+		t.Fatal(err)
+	}
+	l, err := resolveLane(f.Context(), "stack", f.Dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := stackMovePublishedSources(f.Context(), l, common, run); err != nil {
+		t.Fatal(err)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature"); got != head {
+		t.Errorf("feature moved from %s to %s", head, got)
+	}
+	state, err := gtStateQuery(f.Context(), render.Dir(f.Dir), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := state["feature"]; len(s.Parents) != 1 || s.Parents[0].SHA != base || s.NeedsRestack {
+		t.Errorf("feature = %+v, want its fork point recorded at main's head %s, not %s", s, base, stale)
+	}
+}
+
 func TestStackPublicationRecoversAfterPushBeforeMetadata(t *testing.T) {
 	f, run, plan := prepareStackPublication(t)
 	dir := render.Dir(f.Dir)
