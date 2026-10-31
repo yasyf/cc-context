@@ -58,10 +58,16 @@ func gtUntrackedChain(ctx context.Context, dir render.Dir, prefix string, state 
 	}
 	at := map[string][]string{}
 	remoteOnly := map[string]bool{}
+	var level []string
 	candidate := func(name, head string) {
-		if _, tracked := state[name]; !tracked && name != branch && head != tipHead && inRange[head] {
-			at[head] = append(at[head], name)
+		if _, tracked := state[name]; tracked || name == branch || !inRange[head] {
+			return
 		}
+		if head == tipHead {
+			level = append(level, name)
+			return
+		}
+		at[head] = append(at[head], name)
 	}
 	locals, err := render.RunCLI(ctx, dir, "git", []string{"for-each-ref", "--format=%(objectname) %(refname:lstrip=2)", "refs/heads/"})
 	if err != nil {
@@ -86,6 +92,15 @@ func gtUntrackedChain(ctx context.Context, dir render.Dir, prefix string, state 
 			}
 			remoteOnly[name] = true
 			candidate(name, head)
+		}
+	}
+	if len(level) > 0 {
+		cut, err := gtLevelParent(ctx, dir, prefix, branch, remote, level, remoteOnly)
+		if err != nil {
+			return nil, err
+		}
+		if cut != "" {
+			at[tipHead] = []string{cut}
 		}
 	}
 	position := map[string]int{}
@@ -120,6 +135,69 @@ func gtUntrackedChain(ctx context.Context, dir render.Dir, prefix string, state 
 		parent, fork = name, head
 	}
 	return append(chain, gtChainLink{name: branch, parent: parent, base: fork, head: tipHead}), nil
+}
+
+func gtLevelParent(ctx context.Context, dir render.Dir, prefix, branch, remote string, level []string, remoteOnly map[string]bool) (string, error) {
+	from, err := gtCreatedFrom(ctx, dir, prefix, branch)
+	if err != nil {
+		return "", err
+	}
+	var unknown []string
+	for _, name := range level {
+		if from == name || remote != "" && from == remote+"/"+name {
+			return name, nil
+		}
+		if remoteOnly[name] {
+			unknown = append(unknown, name)
+			continue
+		}
+		cut, err := gtCreatedFrom(ctx, dir, prefix, name)
+		if err != nil {
+			return "", err
+		}
+		if cut != branch {
+			unknown = append(unknown, name)
+		}
+	}
+	if len(unknown) == 0 {
+		return "", nil
+	}
+	slices.Sort(unknown)
+	return "", fmt.Errorf("%s: %s sits at the same commit as untracked %s, and git's reflog does not say which was cut from which — track %s onto the branch it was cut from with gt track %s --parent <branch>, then rerun", prefix, branch, strings.Join(unknown, ", "), branch, branch)
+}
+
+func gtCreatedFrom(ctx context.Context, dir render.Dir, prefix, branch string) (string, error) {
+	reflog := func(ref string) ([]string, error) {
+		out, err := render.RunCLI(ctx, dir, "git", []string{"log", "--walk-reflogs", "--ignore-missing", "--format=%gs", ref, "--"})
+		if err != nil {
+			return nil, fmt.Errorf("%s: git log --walk-reflogs %s: %w", prefix, ref, err)
+		}
+		return strings.Split(strings.TrimSpace(out), "\n"), nil
+	}
+	entries, err := reflog("refs/heads/" + branch)
+	if err != nil {
+		return "", err
+	}
+	from, created := strings.CutPrefix(entries[len(entries)-1], "branch: Created from ")
+	if !created {
+		return "", nil
+	}
+	if from != "HEAD" {
+		return from, nil
+	}
+	moves, err := reflog("HEAD")
+	if err != nil {
+		return "", err
+	}
+	from = ""
+	for _, move := range moves {
+		if moved, found := strings.CutPrefix(move, "checkout: moving from "); found {
+			if source, target, _ := strings.Cut(moved, " to "); target == branch {
+				from = source
+			}
+		}
+	}
+	return from, nil
 }
 
 func gtAdoptChain(ctx context.Context, dir render.Dir, prefix string, chain []gtChainLink) ([]string, error) {
