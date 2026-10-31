@@ -649,6 +649,23 @@ func TestShipPREditRetargetsOntoAParentBranch(t *testing.T) {
 	}
 }
 
+// TestShipPREditSendsNoBaseThePRAlreadyHas: a native-stack PR refuses any base
+// write with 422 "Cannot change the base branch because the pull request is part
+// of a stack", even an unchanged one, so ship never restates a base it already has.
+func TestShipPREditSendsNoBaseThePRAlreadyHas(t *testing.T) {
+	f := shipPRFixture(t, vcstest.Branch("feature"))
+	t.Setenv("GH_PULLS_JSON", ghStdout(t, "rest-pulls-head-open"))
+
+	if _, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--parent", "trunk"); err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	for _, inv := range vcstest.Invocations(t, f.ArgvLog) {
+		if inv[0] == "gh" && isPREdit(inv) {
+			t.Errorf("ship restated an unchanged base: %v", inv)
+		}
+	}
+}
+
 func TestShipPREditOnlyStatedFields(t *testing.T) {
 	f := shipPRFixture(t, vcstest.Branch("feature"))
 	pr := prFromListGolden(t, "rest-pulls-head-open")

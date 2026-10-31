@@ -41,6 +41,9 @@ type prState struct {
 	Number  int    `json:"number"`
 	URL     string `json:"html_url"`
 	IsDraft bool   `json:"draft"`
+	Base    struct {
+		Ref string `json:"ref"`
+	} `json:"base"`
 }
 
 // prMeta is the caller's stated pull request metadata; an unset field is never
@@ -558,6 +561,11 @@ func prCreateArgv(nwo, branch, trunk, title, bodyPath string, draft bool) []stri
 // shipPREdit restates the fields this invocation named on an existing pull
 // request. Zero stated fields means zero calls.
 func shipPREdit(ctx context.Context, nwo string, pr prState, m prMeta) (string, error) {
+	// GitHub refuses any base write to a pull request in a native stack, even
+	// one naming the base it already has, so an unchanged base is never sent.
+	if m.base == pr.Base.Ref {
+		m.base = ""
+	}
 	fields := m.stated()
 	// REST has no draft toggle, so a transition is gh pr ready's own verb — and
 	// only a real transition is worth a call.
