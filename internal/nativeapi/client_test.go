@@ -142,6 +142,8 @@ func TestSubmitStacksOnAParentWhoseBaseHasNoPullRequest(t *testing.T) {
 			body = map[string]string{"org:parent": "[" + parent + "]", "org:main": "[]"}[r.URL.Query().Get("head")]
 		case "GET /repos/org/repo/pulls/1":
 			body = parent
+		case "GET /repos/org/repo":
+			body = `{"default_branch":"main"}`
 		case "POST /repos/org/repo/stacks":
 			var req struct {
 				PullRequests []int `json:"pull_requests"`
@@ -397,7 +399,11 @@ func TestNativeStackRegistrationFailureReportsCreatedPullRequest(t *testing.T) {
 			}
 			return
 		}
-		if _, err := fmt.Fprint(w, `[]`); err != nil {
+		body := `[]`
+		if r.URL.Path == "/repos/org/repo" {
+			body = `{"default_branch":"dev"}`
+		}
+		if _, err := fmt.Fprint(w, body); err != nil {
 			t.Errorf("write fixture response: %v", err)
 		}
 	}))

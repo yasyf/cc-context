@@ -351,3 +351,37 @@ printf 'token=%s argv=%s\n' "${GH_TOKEN:-user}" "$*"
 		t.Errorf("gh printed %q, want %q", got, want)
 	}
 }
+
+func TestVcsGhPassesGhFlagsThrough(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		argv   []string
+		want   []string
+		maxAge time.Duration
+	}{
+		{name: "after --", argv: []string{"--", "api", "--allow-escape-sequences", "repos/o/r/actions/jobs/1/logs"}, want: []string{"api", "--allow-escape-sequences", "repos/o/r/actions/jobs/1/logs"}},
+		{name: "without --", argv: []string{"api", "--allow-escape-sequences", "repos/o/r/actions/jobs/1/logs"}, want: []string{"api", "--allow-escape-sequences", "repos/o/r/actions/jobs/1/logs"}},
+		{name: "max-age before the command", argv: []string{"--max-age", "5m", "run", "view", "1", "--log-failed"}, want: []string{"run", "view", "1", "--log-failed"}, maxAge: 5 * time.Minute},
+		{name: "a gh --max-age stays gh's", argv: []string{"api", "x", "--max-age", "1m"}, want: []string{"api", "x", "--max-age", "1m"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cmd := newVcsGhCmd()
+			if err := cmd.ParseFlags(tt.argv); err != nil {
+				t.Fatalf("parse %q: %v", tt.argv, err)
+			}
+			args := cmd.Flags().Args()
+			if err := cmd.Args(cmd, args); err != nil {
+				t.Fatalf("args %q: %v", args, err)
+			}
+			if !slices.Equal(args, tt.want) {
+				t.Errorf("gh args = %q, want %q", args, tt.want)
+			}
+			if got, _ := cmd.Flags().GetDuration("max-age"); got != tt.maxAge {
+				t.Errorf("max-age = %s, want %s", got, tt.maxAge)
+			}
+		})
+	}
+}
