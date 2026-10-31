@@ -110,6 +110,9 @@ func (r *Relocator) Intend(ctx context.Context, seq uint64, req cleanup.DeferReq
 	if err := r.screen(ctx, job); err != nil {
 		return cleanup.Job{}, err
 	}
+	if err := r.colocated(job.Original, job.Tree); err != nil {
+		return cleanup.Job{}, err
+	}
 	if err := r.capture(ctx, &job); err != nil {
 		return cleanup.Job{}, err
 	}

@@ -355,6 +355,15 @@ func (r *Relocator) resumeDisplaced(ctx context.Context, job *cleanup.Job) (bool
 		_, err = r.block(ctx, job, "identity", "displaced registration changed during resume")
 		return true, err
 	}
+	if err := r.colocated(files.tree, files.treeID); err != nil {
+		var refused *cleanup.RefusedError
+		if errors.As(err, &refused) {
+			_, err = r.block(ctx, job, refused.Reason, refused.Detail)
+			return true, err
+		}
+		_, err = r.block(ctx, job, "reconcile", err.Error())
+		return true, err
+	}
 	if err := r.submodules(ctx, job.Git, files.admin, files.tree, "--git-dir="+files.admin, "--work-tree="+files.tree); err != nil {
 		var refused *cleanup.RefusedError
 		if errors.As(err, &refused) {
