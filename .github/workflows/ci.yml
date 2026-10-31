@@ -51,7 +51,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: ${{ fromJSON((github.event_name == 'pull_request' || inputs.commit != '') && '["ubuntu-latest"]' || '["ubuntu-latest", "macos-latest"]') }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -157,6 +157,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
         group: [heavy, light]
+        exclude: ${{ fromJSON((github.event_name == 'pull_request' || inputs.commit != '') && '[{"os":"macos-latest","group":"heavy"}]' || '[]') }}
     steps:
       - uses: actions/checkout@v7
         with:
