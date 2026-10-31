@@ -2,6 +2,8 @@ package cli
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -239,5 +241,38 @@ func TestShipTracksABranchCutFromAnotherLaneOnItsPullRequestBase(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestShipTipOnlyParentReportsTheNativeStackRefusal(t *testing.T) {
+	f := shipRepo(t, vcstest.Remote())
+	f.Decorate(func(ctx context.Context) context.Context { return withStackProvider(ctx, true) })
+	mustRun(t, f.Env(), f.Dir, "git", "config", "ccx.stack", "github")
+	trunk := shipHead(t, f)
+	mustRun(t, f.Env(), f.Dir, "git", "branch", "release")
+	shipGTUntracked(t, f, "theirs")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "theirs", "release")
+	shipGTUntracked(t, f, "mine")
+	catalog := fmt.Sprintf(`{"schemaVersion":1,"stacks":[{"trunk":{"branch":"main"},"branches":[{"branch":"theirs","base":%q}]},{"trunk":{"branch":"release"},"branches":[]}]}`, trunk)
+	if err := os.WriteFile(filepath.Join(f.Dir, ".git", "gh-stack"), []byte(catalog), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	api := stubGTAPI(t)
+	api.openPRs("theirs")
+	api.bases["theirs"], api.stacks["theirs"] = "main", 48
+	f.Decorate(api.ctx)
+	stubStackPRs(t, f, nil)
+	stubStackStanding(t, f, nil)
+	shipGTReady(t, f)
+
+	_, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--tip-only", "--parent", "theirs", "--no-push")
+	if err == nil {
+		t.Fatal("ship succeeded, want the native catalog's refusal to record mine")
+	}
+	if !strings.Contains(err.Error(), "ship: record mine in the native stack: ") || !strings.Contains(err.Error(), "decide whether native stack root release is a trunk") {
+		t.Errorf("ship error = %q, want the native catalog's own reason", err)
+	}
+	if strings.Contains(err.Error(), "--no-gt") || strings.Contains(err.Error(), "gt track") {
+		t.Errorf("ship error = %q, want no Graphite advice on the native lane", err)
 	}
 }

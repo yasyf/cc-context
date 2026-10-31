@@ -1060,7 +1060,7 @@ func gtTrack(ctx context.Context, errW io.Writer, l lane, o shipOpts, branch str
 		return nil, "", err
 	}
 	if runErr != nil {
-		return nil, "", &gtAdvice{advice: untracked.Error(), cause: runErr}
+		return nil, "", gtTrackFailed(l, branch, untracked.Error(), runErr)
 	}
 	state, err := c.at(ctx)
 	if err != nil {
@@ -1216,11 +1216,18 @@ func gtAdoptRecordedParent(ctx context.Context, errW io.Writer, l lane, c *gtCac
 			return "", err
 		}
 		if runErr != nil {
-			return "", &gtAdvice{advice: fmt.Sprintf("ship: gt track could not adopt %s onto %s, its parent in Graphite's record of #%d — pass --no-gt to ship without graphite", b.name, b.base, b.pr), cause: runErr}
+			return "", gtTrackFailed(l, b.name, fmt.Sprintf("ship: gt track could not adopt %s onto %s, its parent in Graphite's record of #%d — pass --no-gt to ship without graphite", b.name, b.base, b.pr), runErr)
 		}
 		segs = append(segs, fmt.Sprintf("tracked %s onto %s from Graphite's record of #%d", b.name, b.base, b.pr)+shipSep)
 	}
 	return strings.Join(segs, ""), nil
+}
+
+func gtTrackFailed(l lane, branch, advice string, runErr error) error {
+	if l.native {
+		return fmt.Errorf("ship: record %s in the native stack: %w", branch, runErr)
+	}
+	return &gtAdvice{advice: advice, cause: runErr}
 }
 
 // gtNativeTrackParent is the parent an untracked branch is tracked onto on the

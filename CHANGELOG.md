@@ -74,6 +74,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs ship` on the native GitHub stack lane reports why the native
+  stack refused to record a branch.** When ship adopted an untracked branch,
+  such as a new branch shipped with `--tip-only --parent <branch>`, and the
+  native catalog refused the write, ship printed Graphite's advice, "gt track
+  could not adopt ... pass --no-gt", and dropped the catalog's own reason.
+  Ship now prints `ship: record <branch> in the native stack:` followed by
+  that reason.
+
 - **`cci who` can no longer hold a stack write indefinitely.** Each `cci who`
   that `ccx vcs stack submit`, `restack`, `rebase` and a Graphite-lane
   `ccx vcs ship` run to find their drive, lane and branch claims now gets
