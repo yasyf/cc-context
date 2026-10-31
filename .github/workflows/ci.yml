@@ -33,6 +33,49 @@ env:
   HEAVY_PKGS: internal/web|internal/semsearch/chunk|internal/semsearch/embed|internal/gtmeta
 
 jobs:
+  coholder-path-cost:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GOMAXPROCS: "2"
+      GOFLAGS: -p=2
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.commit || github.sha }}
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install syscall observer
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y strace
+      - name: Selected-branch ownership namespace cost
+        env:
+          CCX_COHOLDER_STRACE: fixed
+          CCX_COHOLDER_STRACE_OUTPUT: ${{ runner.temp }}/coholder-path-cost
+        run: go test -count=1 -v -run '^TestCoHoldersPayloadNamespaceCost$' ./internal/vcs
+      - uses: actions/checkout@v7
+        with:
+          ref: 59bbfcbd3cf30240f41f4b360638b13a92ef8810
+          path: .ci-coholder-baseline
+          persist-credentials: false
+      - name: Immutable whole-namespace baseline
+        env:
+          CCX_COHOLDER_STRACE: before
+          CCX_COHOLDER_STRACE_OUTPUT: ${{ runner.temp }}/coholder-path-cost
+        run: |
+          test "$(git -C .ci-coholder-baseline rev-parse HEAD)" = 59bbfcbd3cf30240f41f4b360638b13a92ef8810
+          cp internal/vcs/coholders_cost_test.go .ci-coholder-baseline/internal/vcs/coholders_cost_test.go
+          cd .ci-coholder-baseline
+          go test -count=1 -v -run '^TestCoHoldersPayloadNamespaceCost$' ./internal/vcs
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: coholder-path-cost
+          path: ${{ runner.temp }}/coholder-path-cost
+
   release-gates:
     runs-on: ubuntu-latest
     timeout-minutes: 5
