@@ -19,6 +19,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`ccx vcs rebase [-C <dir>] [-c <name>=<value>]... -- <git rebase args>`**
+  runs `git rebase` with the arguments unchanged and exits with its code. In
+  a partial clone whose promisor remote filters blobs, it first fetches the
+  blobs the rebase merges in one batch. Without that, git fetches them one
+  commit at a time and writes a promisor pack for each commit. It reads the
+  upstream, `--onto`, and branch from the arguments, and for `--continue` or
+  `--skip` it reads the remaining picks from the rebase's todo list. A full
+  clone fetches nothing, and a failed batch is logged as a warning before git
+  rebase runs.
 - **`--evict-queued` on `ccx vcs stack submit`, `stack rebase`, and `ship`**
   moves and pushes a branch whose pull request sits in Graphite's merge
   queue, evicting it, where the run would otherwise keep it at its published

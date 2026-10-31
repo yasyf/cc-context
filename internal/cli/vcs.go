@@ -22,6 +22,7 @@ func newVcsCmd() *cobra.Command {
 		newReviewsCmd(),
 		newShipCmd(),
 		newVcsPushCmd(),
+		newVcsRebaseCmd(),
 		newShowCmd(),
 		newHistoryCmd(),
 		newHunksCmd(),
