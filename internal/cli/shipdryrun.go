@@ -469,9 +469,16 @@ func dryRunScope(ctx context.Context, l lane, o shipOpts, r *shipDryRun) error {
 			r.staged = append(r.staged, e.Path)
 		}
 	}
-	r.sweeps = l.gt
-	if r.sweeps && len(r.staged) > 0 {
-		r.refusals = append(r.refusals, stagedBesideRefusal(r.staged).Error())
+	r.sweeps = l.gt && len(o.onlyHunks) == 0 && len(o.skipHunks) == 0
+	if !r.sweeps {
+		return nil
+	}
+	beside, err := gtStagedBeside(ctx, l.dir(), o)
+	if err != nil {
+		return err
+	}
+	if len(beside) > 0 {
+		r.refusals = append(r.refusals, stagedBesideRefusal(beside).Error())
 	}
 	return nil
 }

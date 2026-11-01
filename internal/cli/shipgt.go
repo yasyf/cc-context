@@ -2287,8 +2287,12 @@ func shipCommitGT(ctx context.Context, l lane, errW io.Writer, o shipOpts, sel *
 	if o, err = shipScopeToIndex(ctx, l.dir(), o); err != nil {
 		return "", err
 	}
-	if err := gtRefuseStagedBeside(ctx, l.dir(), o); err != nil {
+	beside, err := gtStagedBeside(ctx, l.dir(), o)
+	if err != nil {
 		return "", err
+	}
+	if len(beside) > 0 {
+		return "", stagedBesideRefusal(beside)
 	}
 	sweptSeg, err := shipGitAdd(ctx, l.dir(), o)
 	if err != nil {
@@ -2317,19 +2321,15 @@ func shipCommitGT(ctx context.Context, l lane, errW io.Writer, o shipOpts, sel *
 	return strings.Join(segs, shipSep), nil
 }
 
-func gtRefuseStagedBeside(ctx context.Context, dir render.Dir, o shipOpts) error {
-	if len(o.rootPaths) == 0 {
-		return nil
+func gtStagedBeside(ctx context.Context, dir render.Dir, o shipOpts) ([]string, error) {
+	if len(o.rootPaths) == 0 || slices.Contains(o.rootPaths, ".") || len(o.onlyHunks) > 0 || len(o.skipHunks) > 0 {
+		return nil, nil
 	}
 	argv := []string{"diff", "--cached", "--name-only", "--no-renames", "-z", "--", ":/"}
 	for _, p := range o.rootPaths {
 		argv = append(argv, ":(top,exclude,literal)"+p)
 	}
-	beside, err := gitPathsZ(ctx, dir, argv...)
-	if err != nil || len(beside) == 0 {
-		return err
-	}
-	return stagedBesideRefusal(beside)
+	return gitPathsZ(ctx, dir, argv...)
 }
 
 func stagedBesideRefusal(beside []string) error {
