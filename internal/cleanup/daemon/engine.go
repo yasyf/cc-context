@@ -804,10 +804,11 @@ func (e *Engine) logicalDue(now time.Time) (cleanup.Job, bool) {
 			}
 			continue
 		}
-		if at, ok := e.checked[job.ID]; ok && job.Phase == cleanup.PhaseWaiting && now.Before(at.Add(e.tuning.Recheck)) {
-			continue
-		}
-		if e.paused && now.Before(job.RetireAfter) {
+		if e.paused && !job.RetireAfter.IsZero() {
+			if now.Before(job.RetireAfter) {
+				continue
+			}
+		} else if at, ok := e.checked[job.ID]; ok && job.Phase == cleanup.PhaseWaiting && now.Before(at.Add(e.tuning.Recheck)) {
 			continue
 		}
 		return clone(job), true
