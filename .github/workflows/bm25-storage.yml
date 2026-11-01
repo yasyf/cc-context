@@ -1,0 +1,55 @@
+name: BM25 storage
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: bm25-storage-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  bm25-storage:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    env:
+      GOMAXPROCS: "2"
+      GOFLAGS: -p=2
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Independent term storage and ranking semantics
+        run: |
+          set -euo pipefail
+          go test -race -count=1 -v ./internal/semsearch/rank | tee "$RUNNER_TEMP/bm25-storage-fixed.log"
+      - uses: actions/checkout@v7
+        with:
+          ref: 0eae7416014533a56a5e559f2beee15dac09c3d1
+          path: .ci-bm25-storage-before
+          persist-credentials: false
+      - name: Released document-retention negative on the same fixture
+        run: |
+          set -euo pipefail
+          test "$(git -C .ci-bm25-storage-before rev-parse HEAD)" = 0eae7416014533a56a5e559f2beee15dac09c3d1
+          cp internal/semsearch/rank/bm25_storage_test.go .ci-bm25-storage-before/internal/semsearch/rank/
+          cd .ci-bm25-storage-before
+          status=0
+          go test -race -count=1 -v -run '^TestBM25TermKeysOwnStorage$' ./internal/semsearch/rank > "$RUNNER_TEMP/bm25-storage-before.log" 2>&1 || status=$?
+          cat "$RUNNER_TEMP/bm25-storage-before.log"
+          test "$status" -eq 1
+          grep -F -- '--- FAIL: TestBM25TermKeysOwnStorage (' "$RUNNER_TEMP/bm25-storage-before.log"
+          grep -F 'term key retains source backing storage' "$RUNNER_TEMP/bm25-storage-before.log"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: bm25-storage-${{ matrix.os }}
+          path: ${{ runner.temp }}/bm25-storage-*.log
