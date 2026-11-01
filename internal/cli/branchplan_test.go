@@ -135,6 +135,16 @@ func TestResolveBranchPlan(t *testing.T) {
 			want: branchPlan{action: branchCreate, name: "explicit/name", from: "feature", trunk: "main"},
 		},
 		{
+			name: "--new-branch naming the checked-out branch appends to it", lane: gitLane, repo: orgRepo,
+			o: shipOpts{message: msg, newBranch: "feature"}, current: "feature", trunk: "main",
+			want: branchPlan{action: branchAppend, name: "feature", from: "feature", trunk: "main"},
+		},
+		{
+			name: "bare --new-branch deriving the checked-out branch appends to it", lane: gtLane, repo: personalRepo,
+			o: shipOpts{message: msg, newBranch: branchNoOptDefVal}, current: "fix-frobnicate-the-widget", trunk: "main",
+			want: branchPlan{action: branchAppend, name: "fix-frobnicate-the-widget", from: "fix-frobnicate-the-widget", trunk: "main"},
+		},
+		{
 			name: "bare --new-branch on a message with no slug refuses", lane: gitLane, repo: personalRepo,
 			o: shipOpts{message: "!!!", newBranch: branchNoOptDefVal}, current: "feature", trunk: "main",
 			wantErr: `ship: cannot derive a branch name from "!!!" — pass --new-branch=<name>`,

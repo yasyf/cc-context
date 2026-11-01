@@ -110,6 +110,10 @@ func resolveBranchPlan(l lane, r vcs.Repo, o shipOpts, current, trunk string) (b
 		if err != nil {
 			return branchPlan{}, err
 		}
+		if name == current && !onTrunk {
+			plan.action = branchAppend
+			return plan, nil
+		}
 		plan.action, plan.name = branchCreate, name
 		return plan, nil
 	}
