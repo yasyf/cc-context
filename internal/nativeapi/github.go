@@ -473,42 +473,29 @@ func (c *Client) relinkPastClosed(ctx context.Context, owner, repo string, stack
 	if parentAt < 0 || pullAt <= parentAt+1 {
 		return 0, false, nil
 	}
-	abandoned := func(i int) bool {
-		return stack.PullRequests[i].State == "closed" && stack.PullRequests[i].MergedAt == ""
+	closed := func(i int) bool {
+		return stack.PullRequests[i].State == "closed"
 	}
 	for i := parentAt + 1; i < pullAt; i++ {
-		if !abandoned(i) {
+		if !closed(i) {
 			return 0, false, nil
 		}
 	}
 	var desired []int
 	for i, number := range numbers {
-		if !abandoned(i) {
+		if !closed(i) {
 			desired = append(desired, number)
 		}
 		if i == parentAt && pullAt == len(numbers) {
 			desired = append(desired, pull)
 		}
 	}
-	payload, err = c.do(ctx, http.MethodPost, path+"/unstack", nil)
-	if err != nil {
-		return 0, false, fmt.Errorf("unstack native GitHub stack #%d to drop its closed pull requests: %w", stackNumber, err)
+	if _, err := c.do(ctx, http.MethodPost, path+"/unstack", nil); err != nil {
+		return 0, false, fmt.Errorf("unstack native GitHub stack #%d to drop its merged and closed pull requests: %w", stackNumber, err)
 	}
-	if len(payload) == 0 {
-		payload, err = c.post(ctx, stacks, map[string]any{"pull_requests": desired})
-	} else {
-		var remaining nativeStack
-		if err := json.Unmarshal(payload, &remaining); err != nil {
-			return 0, false, err
-		}
-		kept := remaining.numbers()
-		if !slices.Equal(kept, desired[:min(len(kept), len(desired))]) {
-			return 0, false, fmt.Errorf("unstacking native GitHub stack #%d kept %v, which does not start %v", stackNumber, kept, desired)
-		}
-		payload, err = c.post(ctx, fmt.Sprintf("%s/%d/add", stacks, remaining.Number), map[string]any{"pull_requests": desired[len(kept):]})
-	}
+	payload, err = c.post(ctx, stacks, map[string]any{"pull_requests": desired})
 	if err != nil {
-		return 0, false, fmt.Errorf("relink %v as one native GitHub stack after dropping its closed pull requests: %w", desired, err)
+		return 0, false, fmt.Errorf("relink %v as one native GitHub stack after dropping its merged and closed pull requests: %w", desired, err)
 	}
 	var relinked nativeStack
 	if err := json.Unmarshal(payload, &relinked); err != nil {
