@@ -1,1 +1,1 @@
-{"v":1,"lamport":2,"ops":[{"kind":"claim","assignee":"/root/ccn_anchor_source_peer \u003cccn-anchor-source-peer@codex.local\u003e"}]}
+{"v":1,"lamport":3,"ops":[{"kind":"set_criterion_status","id":"ec0e23732537fd18b8df3c2cad1bb3db","status":"met","note":"Actualnegative CI124900063631 raw6624: correctproductvolume refusal of /home/runner/work/_temp worktree vs /tmp journal. Sourceproof721f58cc binds actualMac4ef3/Go12610/TMPDIR24B, officialGo12610decimaluint32suffix10, worstsocket60Mac/59Linux\u003cunchanged104."}]}
