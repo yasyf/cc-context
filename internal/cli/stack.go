@@ -164,7 +164,7 @@ flag, and Graphite state (including frozen).`,
 
 func newStackSubmitCmd() *cobra.Command {
 	var o shipOpts
-	var include []string
+	var include, parents []string
 	var to string
 	cmd := &cobra.Command{
 		Use:   "submit",
@@ -258,6 +258,10 @@ head with the old one's title, body and draft state, links it into the parent's
 native stack, and closes the old one with a comment naming the new one. Nothing
 moves a pull request without --move, since every lane pushes as one GitHub user
 and ccx cannot tell which lane owns it.
+--parent <branch>=<parent> moves <branch> and the branches above it onto
+<parent> and retargets its pull request there, as ccx vcs stack rebase --parent
+does; --parent <branch>=<trunk> takes a branch out of a stack whose base branch
+has no open pull request left.
 --to <branch> stops the run at <branch>, leaving every branch stacked above it
 out; a <branch> that is neither the one checked out here nor stacked above it
 is refused.
@@ -299,7 +303,7 @@ head. --all-lanes takes in the branches those working copies hold. On a branch,
 				return err
 			}
 			cmd.SetContext(ctx)
-			return runStackSubmit(cmd, o, include, to)
+			return runStackSubmit(cmd, o, include, parents, to)
 		},
 	}
 	cmd.Flags().StringVar(&o.branch, "branch", "", stackBranchUsage)
@@ -309,6 +313,7 @@ head. --all-lanes takes in the branches those working copies hold. On a branch,
 	cmd.Flags().StringArrayVar(&include, "include", nil, "submit this branch even though another lane's working copy has it checked out or it is another lane's; a published branch below every one named and the one checked out here stays at its published head (repeatable)")
 	cmd.Flags().BoolVar(&o.allLanes, "all-lanes", false, "submit the branches of other lanes too, a lane being the branch name before its last slash or the working copy holding the branch")
 	cmd.Flags().StringArrayVar(&o.landed, "landed", nil, "treat <branch> as landed and drop it (repeatable)")
+	cmd.Flags().StringArrayVar(&parents, "parent", nil, "submit <branch>=<parent> onto a new parent, retargeting its pull request there (repeatable)")
 	cmd.Flags().StringArrayVar(&o.newPRs, "new-pr", nil, stackNewPRUsage)
 	cmd.Flags().StringArrayVar(&o.moves, "move", nil, stackMoveUsage)
 	cmd.Flags().BoolVar(&o.dropCommits, "drop-commits", false, stackDropCommitsUsage)
@@ -516,7 +521,7 @@ func stackListLine(branch, holder, root string, state gtBranchState, unrecorded 
 	return strings.Join(fields, shipSep)
 }
 
-func runStackSubmit(cmd *cobra.Command, o shipOpts, include []string, to string) (err error) {
+func runStackSubmit(cmd *cobra.Command, o shipOpts, include, parents []string, to string) (err error) {
 	since := time.Now()
 	ctx := cmd.Context()
 	l, err := resolveWriteLane(ctx, "stack submit", workingDir(ctx), false)
@@ -584,7 +589,7 @@ func runStackSubmit(cmd *cobra.Command, o shipOpts, include []string, to string)
 	}
 	tracking := &stackTracking{}
 	cmd.SetContext(withStackTracking(ctx, tracking))
-	opts := stackRebaseOpts{members: chain, pinned: append(stackSkipNames(pinned), stackUnderNames(under)...), owners: holders, landed: o.landed, newPRs: o.newPRs, moves: o.moves, draft: &o.draft, ship: intent, submit: true, dropCommits: o.dropCommits, evictQueued: o.evictQueued, stayClean: !o.restack, restack: o.restack, to: to, include: include, otherLanes: o.allLanes}
+	opts := stackRebaseOpts{members: chain, pinned: append(stackSkipNames(pinned), stackUnderNames(under)...), owners: holders, parents: parents, landed: o.landed, newPRs: o.newPRs, moves: o.moves, draft: &o.draft, ship: intent, submit: true, dropCommits: o.dropCommits, evictQueued: o.evictQueued, stayClean: !o.restack, restack: o.restack, to: to, include: include, otherLanes: o.allLanes}
 	if err := runStackRebase(cmd, opts); err != nil {
 		return err
 	}

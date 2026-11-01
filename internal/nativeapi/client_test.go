@@ -253,6 +253,37 @@ func TestSubmitLinksAnUnstackedGraphiteChainIntoOneNativeStack(t *testing.T) {
 	}
 }
 
+func TestSubmitNamesTheMoveOntoTrunkWhenAParentBaseHasNoOpenPullRequest(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if publishedHeadFixture(t, w, r, "tip-head") {
+			return
+		}
+		reply := func(body string) {
+			if _, err := fmt.Fprint(w, body); err != nil {
+				t.Errorf("write fixture response: %v", err)
+			}
+		}
+		switch r.Method + " " + r.URL.Path + "?" + r.URL.Query().Get("head") {
+		case "GET /repos/org/repo/pulls/3?":
+			reply(`{"number":3,"state":"open","head":{"repo":{"full_name":"org/repo"},"ref":"tip","sha":"tip-head"},"base":{"ref":"middle"}}`)
+		case "GET /repos/org/repo/pulls?org:middle":
+			reply(`[{"number":2,"state":"open","head":{"repo":{"full_name":"org/repo"},"ref":"middle"},"base":{"ref":"gone"}}]`)
+		case "GET /repos/org/repo/pulls?org:gone":
+			reply(`[]`)
+		case "GET /repos/org/repo?":
+			reply(`{"default_branch":"dev"}`)
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL)
+			http.Error(w, "unexpected", 500)
+		}
+	}))
+	defer srv.Close()
+	_, err := NewWithToken(srv.URL, "key").SubmitPullRequests(context.Background(), SubmitRequest{RepoOwner: "org", RepoName: "repo", TrunkBranchName: "dev", PRs: []SubmitPR{{Action: SubmitUpdate, PRNumber: 3, Head: "tip", HeadSha: "tip-head", Base: "middle"}}})
+	if err == nil || !strings.Contains(err.Error(), "ccx vcs stack submit --parent middle=dev") {
+		t.Fatalf("submit over a parent based on a branch with no open PR = %v, want the --parent middle=dev remedy", err)
+	}
+}
+
 func TestSubmitExtendsExistingNativeStack(t *testing.T) {
 	var added []int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -371,3 +371,28 @@ func TestStackSubmitDropsALandedParentAnotherWorktreeHolds(t *testing.T) {
 	}
 	stackAssertOnTrunk(t, f, api, "b")
 }
+
+func TestStackSubmitParentMovesABranchOffAnOpenParentOntoTrunk(t *testing.T) {
+	f := shipGTRepo(t)
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	api.openPRs("a", "b")
+	shipGTStack(t, f, "a", "b")
+	stubStackPRs(t, f, map[string]*stackPR{
+		"a": {Number: 9000, Title: "a", State: "OPEN", Base: "main"},
+		"b": {Number: 9001, Title: "b", State: "OPEN", Base: "a"},
+	})
+	writeShipGH(t, f)
+	shipResetLog(t, f)
+
+	if _, _, err := runStackCmd(t, f, "submit", "--parent", "b=main"); err != nil {
+		t.Fatalf("stack submit --parent b=main: %v", err)
+	}
+	dropStep(t, shipGTInvocations(t, f), "gh", "PATCH", "repos/yasyf/cc-context/pulls/9001", "base=main")
+	if n := gitAt(t, f.Env(), f.RemoteDir, "rev-list", "--count", "main..b"); n != "1" {
+		t.Errorf("origin b holds %s commits over main, want its own 1", n)
+	}
+	if receipt, err := stackReadPublication(f.Context(), render.Dir(f.Dir), "b"); err != nil || receipt == nil || receipt.Parent != "main" {
+		t.Errorf("b publication = %+v, %v, want parent main", receipt, err)
+	}
+}

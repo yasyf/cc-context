@@ -389,6 +389,7 @@ func (c *Client) linkPull(ctx context.Context, owner, repo, trunk string, pull r
 		if repository.DefaultBranch == pull.Base.Ref {
 			return 0, nil
 		}
+		return 0, fmt.Errorf("PR #%d parent branch %s has no open pull request, so it cannot join a native stack; move it onto trunk with ccx vcs stack submit --parent %s=%s", pull.Number, pull.Base.Ref, pull.Head.Ref, trunk)
 	}
 	if len(parents) != 1 {
 		return 0, fmt.Errorf("PR #%d parent branch %s has %d open pull requests; native stack registration requires one", pull.Number, pull.Base.Ref, len(parents))
