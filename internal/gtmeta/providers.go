@@ -182,6 +182,47 @@ func Convert(ctx context.Context, commonDir string, branches ...string) error {
 	return convert(ctx, commonDir, branches, false)
 }
 
+// ConvertOnto converts branch and parent as Convert does, first re-tracking branch onto a named parent when Graphite holds it with no live, valid parent, as gt track -p does, so ccx vcs ship --parent moves a branch off a parent that was closed or deleted instead of refusing.
+func ConvertOnto(ctx context.Context, commonDir, branch, parent string) error {
+	if contextProvider(ctx) == ProviderGraphite {
+		return nil
+	}
+	if branch != "" && parent != "" {
+		if err := retrack(ctx, commonDir, branch, parent); err != nil {
+			return err
+		}
+	}
+	return Convert(ctx, commonDir, branch, parent)
+}
+
+func retrack(ctx context.Context, commonDir, branch, parent string) error {
+	tracked, err := graphiteTracks(ctx, commonDir, branch)
+	if err != nil || !tracked {
+		return err
+	}
+	native, err := nativemeta.BranchNames(commonDir)
+	if err != nil || slices.Contains(native, branch) {
+		return err
+	}
+	state, _, err := readAncestorStateOrphans(ctx, commonDir, false, []string{branch})
+	if err != nil {
+		return err
+	}
+	if len(state[branch].Parents) > 0 {
+		return nil
+	}
+	dir := render.Dir(commonDir)
+	head, err := render.RunCLI(ctx, dir, "git", []string{"rev-parse", "refs/heads/" + branch})
+	if err != nil {
+		return fmt.Errorf("re-track %s onto %s: %w", branch, parent, err)
+	}
+	base, err := render.RunCLI(ctx, dir, "git", []string{"merge-base", strings.TrimSpace(head), "refs/heads/" + parent})
+	if err != nil {
+		return fmt.Errorf("re-track %s onto %s: %w", branch, parent, err)
+	}
+	return graphiteAdoptRoot(ctx, commonDir, branch, parent, strings.TrimSpace(base), strings.TrimSpace(head))
+}
+
 func convert(ctx context.Context, commonDir string, branches []string, explicit bool) error {
 	legacy, err := present(filepath.Join(commonDir, repoConfig))
 	if err != nil || !legacy {

@@ -121,7 +121,7 @@ func gtStateAt(ctx context.Context, commonDir, prefix string) (gtState, error) {
 }
 
 func gtStateAtFocused(ctx context.Context, commonDir, prefix, branch, parent string) (gtState, error) {
-	if err := gtmeta.Convert(ctx, commonDir, branch, parent); err != nil {
+	if err := gtmeta.ConvertOnto(ctx, commonDir, branch, parent); err != nil {
 		return nil, fmt.Errorf("%s: %w", prefix, err)
 	}
 	read := gtmeta.ReadOriginOrphans
