@@ -382,10 +382,12 @@ func TestStackSubmitParentMovesABranchOffAnOpenParentOntoTrunk(t *testing.T) {
 		"a": {Number: 9000, Title: "a", State: "OPEN", Base: "main"},
 		"b": {Number: 9001, Title: "b", State: "OPEN", Base: "a"},
 	})
+	writeShipGH(t, f)
 	shipResetLog(t, f)
 
 	if _, _, err := runStackCmd(t, f, "submit", "--parent", "b=main"); err != nil {
 		t.Fatalf("stack submit --parent b=main: %v", err)
 	}
+	dropStep(t, shipGTInvocations(t, f), "gh", "PATCH", "repos/yasyf/cc-context/pulls/9001", "base=main")
 	stackAssertOnTrunk(t, f, api, "b")
 }
