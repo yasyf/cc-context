@@ -35,8 +35,9 @@ type BM25 struct {
 	ids         map[string]int32 // chunk id → insertion index
 	docLengths  []int            // insertion index → token count
 	totalDocLen int
-	postings    map[string][]posting // term → postings, in insertion order
-	positions   []int                // insertion index → doc-order position, -1 when absent
+	terms       map[string]int
+	postings    [][]posting
+	positions   []int // insertion index → doc-order position, -1 when absent
 	nDocs       int32
 	nOrder      int
 }
@@ -44,8 +45,8 @@ type BM25 struct {
 // NewBM25 creates an empty index.
 func NewBM25() *BM25 {
 	return &BM25{
-		ids:      map[string]int32{},
-		postings: map[string][]posting{},
+		ids:   map[string]int32{},
+		terms: map[string]int{},
 	}
 }
 
@@ -64,7 +65,13 @@ func (b *BM25) AddDocument(chunkID string, tokens []string) {
 		counts[t]++
 	}
 	for term, count := range counts {
-		b.postings[term] = append(b.postings[term], posting{doc: doc, tf: count})
+		id, exists := b.terms[term]
+		if !exists {
+			id = len(b.postings)
+			b.terms[strings.Clone(term)] = id
+			b.postings = append(b.postings, nil)
+		}
+		b.postings[id] = append(b.postings[id], posting{doc: doc, tf: count})
 	}
 }
 
@@ -106,10 +113,11 @@ func (b *BM25) GetScores(tokens []string) []float64 {
 	}
 	acc := make([]float32, b.nOrder)
 	for _, term := range terms {
-		docs := b.postings[term]
-		if len(docs) == 0 {
+		id, exists := b.terms[term]
+		if !exists {
 			continue
 		}
+		docs := b.postings[id]
 		qtf := queryTF[term]
 		df := len(docs)
 		idf := math.Log(1 + (float64(corpusSize)-float64(df)+0.5)/(float64(df)+0.5))
