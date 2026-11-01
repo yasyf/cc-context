@@ -3405,7 +3405,33 @@ func stackContinueWhilePaused(t *testing.T, untracked bool) (*vcstest.Fixture, *
 	if states, _ := filepath.Glob(filepath.Join(f.Dir, ".git", stackRebaseStateDir, "*", stackRebaseState)); len(states) != 0 {
 		t.Errorf("continue left run state behind: %q", states)
 	}
-	sparseAssertWorkspace(t, f, ws, true)
+	jobs := journaledJobs(t, h)
+	if len(jobs) != 1 {
+		t.Fatalf("journaled jobs = %v, want the one paused removal of %s", jobs, ws)
+	}
+	job := cleanupJob(t, f, h, jobs[0])
+	for deadline := time.Now().Add(10 * time.Second); job.Retirement != cleanup.RetirementComplete && job.Blocked == nil && time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		job = cleanupJob(t, f, h, jobs[0])
+	}
+	if job.Phase != cleanup.PhaseQueued || job.Blocked != nil || job.Retirement != cleanup.RetirementComplete {
+		t.Fatalf("job %s = phase %s, blockage %+v, retirement %s; want queued and retired while paused", job.ID, job.Phase, job.Blocked, job.Retirement)
+	}
+	info, err := os.Stat(ws)
+	if err != nil {
+		t.Fatalf("stat retained workspace: %v", err)
+	}
+	if got := cleanup.IDOf(info); got != job.Tree {
+		t.Errorf("retained workspace identity = %+v, want %+v", got, job.Tree)
+	}
+	if worktreeRegistered(t, f.Env(), f.Dir, ws) {
+		t.Errorf("git still registers retired workspace %s", ws)
+	}
+	if got := readFileStr(t, filepath.Join(ws, "c.txt")); got != "trunk\nfeature\n" {
+		t.Errorf("retained c.txt = %q, want the resolved content", got)
+	}
+	if state, err := h.engine.HoldState(f.Context()); err != nil || !state.Paused {
+		t.Errorf("hold state = %+v, %v; want still paused", state, err)
+	}
 	if removals := stackRemovals(t, f); len(removals) != 0 {
 		t.Errorf("continue removed worktrees itself: %q", removals)
 	}
@@ -3434,13 +3460,36 @@ func TestStackContinuePublishesAndQueuesItsWorkspaceWhileCleanupIsPaused(t *test
 }
 
 func TestStackContinueQueuesItsOwnedWorkspaceWithUntrackedFilesWhilePaused(t *testing.T) {
-	_, h, ws, out := stackContinueWhilePaused(t, true)
+	f, h, ws, out := stackContinueWhilePaused(t, true)
 	jobs := journaledJobs(t, h)
 	if len(jobs) != 1 {
 		t.Fatalf("journaled jobs = %v, want one Expected-bound deferral", jobs)
 	}
 	if handed := "handed " + ws + " to cleanup job " + jobs[0]; !strings.Contains(out, handed) {
 		t.Errorf("continue output = %q, want %q", out, handed)
+	}
+	job := cleanupJob(t, f, h, jobs[0])
+	if _, err := h.engine.Cancel(f.Context(), job.ID); err != nil {
+		t.Fatalf("cancel retired workspace: %v", err)
+	}
+	sparseAssertWorkspace(t, f, ws, true)
+	if got, want := observedWorkspace(t, ws), (cleanup.Registration{Tree: job.Tree, AdminDir: job.AdminDir, Admin: job.Admin}); got != want {
+		t.Errorf("restored registration = %+v, want %+v", got, want)
+	}
+	if got := gitAt(t, f.Env(), ws, "rev-parse", "HEAD"); got != job.Head {
+		t.Errorf("restored HEAD = %s, want %s", got, job.Head)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", job.RecoveryRef); got != job.Head {
+		t.Errorf("recovery HEAD after cancel = %s, want %s", got, job.Head)
+	}
+	if got := readFileStr(t, filepath.Join(ws, "build.out")); got != "output\n" {
+		t.Errorf("restored build.out = %q, want the untracked content", got)
+	}
+	if got := journaledJobs(t, h); len(got) != 0 {
+		t.Errorf("journaled jobs after cancel = %v, want none", got)
+	}
+	if state, err := h.engine.HoldState(f.Context()); err != nil || !state.Paused {
+		t.Errorf("hold state after cancel = %+v, %v; want still paused", state, err)
 	}
 }
 
