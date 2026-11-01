@@ -37,7 +37,7 @@ type BM25 struct {
 	totalDocLen int
 	terms       map[string]int
 	postings    [][]posting
-	positions   []int // insertion index → doc-order position, -1 when absent
+	positions   []int
 	nDocs       int32
 	nOrder      int
 }
