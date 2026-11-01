@@ -28,7 +28,7 @@ int cmd__promisor_object_state(int argc, const char **argv)
 		die("unexpected diagnostic mode");
 	raw = !strcmp(argv[1], "raw") || !strcmp(argv[1], "reset");
 	reset = !strcmp(argv[1], "reset");
-	setup_git_directory();
+	setup_git_directory(r);
 	if (get_oid_hex_algop(argv[2], &source, r->hash_algo) ||
 	    get_oid_hex_algop(argv[3], &target, r->hash_algo) ||
 	    get_oid_hex_algop(argv[4], &marker, r->hash_algo))

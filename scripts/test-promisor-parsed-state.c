@@ -23,7 +23,7 @@ int cmd__promisor_parsed_state(int argc, const char **argv)
 	explicit_unparse = !strcmp(argv[1], "unparsed");
 	if (!preparsed && strcmp(argv[1], "fresh"))
 		die("unexpected diagnostic mode");
-	setup_git_directory();
+	setup_git_directory(r);
 	if (get_oid_hex_algop(argv[2], &source, r->hash_algo) ||
 	    get_oid_hex_algop(argv[3], &target, r->hash_algo))
 		die("invalid diagnostic object ID");
