@@ -500,7 +500,13 @@ func stackBranches(ctx context.Context, c *gtCache) ([]string, error) {
 	return chain, err
 }
 
-func shipPreflightGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, c *gtCache) (branchPlan, string, error) {
+func shipPreflightGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, c *gtCache) (plan branchPlan, seg string, err error) {
+	var undo *gtMoveUndo
+	defer func() {
+		if err != nil && undo != nil {
+			err = undo.restore(ctx, l, c, err)
+		}
+	}()
 	branch, err := shipBranch(ctx, l.dir(), o)
 	if err != nil {
 		return branchPlan{}, "", err
@@ -523,7 +529,7 @@ func shipPreflightGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, c 
 	if err != nil {
 		return branchPlan{}, "", err
 	}
-	plan, err := resolveBranchPlan(l, repo, o, branch, trunk)
+	plan, err = resolveBranchPlan(l, repo, o, branch, trunk)
 	if err != nil {
 		return branchPlan{}, "", err
 	}
@@ -538,16 +544,27 @@ func shipPreflightGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, c 
 		return plan, "", nil
 	}
 
-	var seg string
 	moves := false
 	switch s, tracked := state[branch]; {
 	case !tracked && o.parent != "":
 		err = gtAdoptRefusal(ctx, l, o, state, branch, o.parent, c)
 		moves = true
 	case !tracked:
+		head, headErr := gtRestackHead(ctx, "ship", l.dir(), branch)
+		if headErr != nil {
+			return branchPlan{}, "", headErr
+		}
 		var adopted gtState
-		if adopted, seg, err = gtTrack(ctx, errW, l, o, branch, c); err == nil {
-			state = adopted
+		if adopted, seg, err = gtTrack(ctx, errW, l, o, branch, c); err != nil {
+			break
+		}
+		state = adopted
+		moved, movedErr := gtRestackHead(ctx, "ship", l.dir(), branch)
+		if movedErr != nil {
+			return branchPlan{}, seg, movedErr
+		}
+		if moved != head {
+			undo = &gtMoveUndo{branch: branch, parent: state[branch].Parents[0].Ref, head: head, moved: moved}
 		}
 	case plan.action != branchCreate && o.parent != "" && s.Parents[0].Ref != o.parent:
 		_, err = gtReparentRefusal(ctx, l, o, state, branch, o.parent, c)
@@ -566,6 +583,7 @@ func shipPreflightGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, c 
 		return branchPlan{}, seg, err
 	}
 	state = planned
+	plan.undo = undo
 	if moves || plan.commitBeforeMove {
 		plan.moveOntoParent = true
 		return plan, seg, nil

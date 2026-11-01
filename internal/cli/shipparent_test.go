@@ -347,6 +347,31 @@ func TestShipGTRefusesABranchWithNoCommitOfItsOwnAndNothingToCommit(t *testing.T
 	}
 }
 
+func TestShipGTAutoTrackMovesNothingWhenALaterCheckRefuses(t *testing.T) {
+	f := shipGTRepo(t)
+	shipBehindTrunk(t, f)
+	writeShipFile(t, f.Dir, "own.txt", "own\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "own.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "own")
+	before := gitAt(t, f.Env(), f.Dir, "rev-parse", "b")
+	writeShipFile(t, f.Dir, "dirty.txt", "dirty\n")
+
+	_, err := runShipCmd(f.Context(), t, "--no-commit", "--no-push")
+	if want := "ship: put b back at " + before[:12] + ", untracked as it was before the move onto main"; err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("ship over a dirty --no-commit checkout = %v, want it to carry %q", err, want)
+	}
+	if after := gitAt(t, f.Env(), f.Dir, "rev-parse", "b"); after != before {
+		t.Errorf("b moved from %s to %s on a refusal", before, after)
+	}
+	state, err := gtStateQuery(t.Context(), render.Dir(f.Dir), "test")
+	if err != nil {
+		t.Fatalf("gt state: %v", err)
+	}
+	if _, tracked := state["b"]; tracked {
+		t.Error("gt tracks b after a refused ship, want it untracked as it was")
+	}
+}
+
 func shipBehindTrunkUnder(t *testing.T, f *vcstest.Fixture, names ...string) {
 	t.Helper()
 	for _, name := range names {
