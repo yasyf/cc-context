@@ -3,46 +3,46 @@
   "schema": 1,
   "name": "ccx",
   "kind": "release-binary",
-  "version": {"static": "0.91.10"},
+  "version": {"static": "0.91.11"},
   "platforms": {
     "macos-aarch64": {
-      "size": 15996547,
+      "size": 15996563,
       "hash": "sha256",
-      "digest": "57e84d1ace510240be8d6fe11c06e0675e6b04cc0a013be881464aa7e962a689",
+      "digest": "685d6857cad10ffe8a9b9a4d6085c9a783bc0b47f5ae7e4a7e16ac456dd4e9be",
       "format": "tar.gz",
       "path": "ccx",
       "providers": [
-        {"type": "github-release", "repo": "yasyf/cc-context", "tag": "v0.91.10", "name": "ccx_0.91.10_darwin_arm64.tar.gz"}
+        {"type": "github-release", "repo": "yasyf/cc-context", "tag": "v0.91.11", "name": "ccx_0.91.11_darwin_arm64.tar.gz"}
       ]
     },
     "macos-x86_64": {
-      "size": 16919641,
+      "size": 16919645,
       "hash": "sha256",
-      "digest": "a8d7709129da5e566c344ed3d6b5e6df9c77b03cbbfe715d69b1c7a25f1a9fd3",
+      "digest": "4df3fdc9e5e940ed62271a8fc8c126b88a746b61771765950603d5a771e0f2c9",
       "format": "tar.gz",
       "path": "ccx",
       "providers": [
-        {"type": "github-release", "repo": "yasyf/cc-context", "tag": "v0.91.10", "name": "ccx_0.91.10_darwin_amd64.tar.gz"}
+        {"type": "github-release", "repo": "yasyf/cc-context", "tag": "v0.91.11", "name": "ccx_0.91.11_darwin_amd64.tar.gz"}
       ]
     },
     "linux-x86_64": {
-      "size": 16052740,
+      "size": 16052738,
       "hash": "sha256",
-      "digest": "696d131276966bfe843dcd6d7073d1d519fa47de2a7ed254e7f7339af1d98c79",
+      "digest": "b58c3c0e1b2e57165fe5fa77dd5012ea614e935ae038f243761f69ac408a0324",
       "format": "tar.gz",
       "path": "ccx",
       "providers": [
-        {"type": "github-release", "repo": "yasyf/cc-context", "tag": "v0.91.10", "name": "ccx_0.91.10_linux_amd64.tar.gz"}
+        {"type": "github-release", "repo": "yasyf/cc-context", "tag": "v0.91.11", "name": "ccx_0.91.11_linux_amd64.tar.gz"}
       ]
     },
     "linux-aarch64": {
-      "size": 15175219,
+      "size": 15175212,
       "hash": "sha256",
-      "digest": "46a5e285f3635cf45ab323882203d622079906d783315193e225b3fbbbbce93d",
+      "digest": "43fafacb2b3da725dc1558c83c3d09be431315e81a85e91536d97e074e3d9f36",
       "format": "tar.gz",
       "path": "ccx",
       "providers": [
-        {"type": "github-release", "repo": "yasyf/cc-context", "tag": "v0.91.10", "name": "ccx_0.91.10_linux_arm64.tar.gz"}
+        {"type": "github-release", "repo": "yasyf/cc-context", "tag": "v0.91.11", "name": "ccx_0.91.11_linux_arm64.tar.gz"}
       ]
     }
   }
