@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -52,7 +53,7 @@ func TestNativeTrackingAllowsAnOrdinaryRootPR(t *testing.T) {
 	}
 }
 
-func TestForeignRepositoryDoesNotInheritCheckoutQueue(t *testing.T) {
+func TestAQueueReadOutsideACheckoutOfItsRepositoryRefusesAndNamesTheFix(t *testing.T) {
 	f := shipRepo(t, vcstest.Remote())
 	mustRun(t, f.Env(), f.Dir, "git", "remote", "set-url", "origin", "git@github.com:org/local.git")
 	mustRun(t, f.Env(), f.Dir, "git", "config", "ccx.queue", "trunk")
@@ -64,8 +65,8 @@ func TestForeignRepositoryDoesNotInheritCheckoutQueue(t *testing.T) {
 	if got := gtAPIForRepo(ctx, "org/local").QueueProvider(); got != "trunk" {
 		t.Fatalf("local queue=%s", got)
 	}
-	if got := gtAPIForRepo(ctx, "org/foreign").QueueProvider(); got != "github" {
-		t.Fatalf("foreign queue inherited local setting: %s", got)
+	if _, err := openPRState(ctx, "org/foreign", io.Discard); err == nil || !strings.Contains(err.Error(), "is not a checkout of org/foreign") || !strings.Contains(err.Error(), "run this from a checkout of org/foreign") {
+		t.Fatalf("queue read of org/foreign from an org/local checkout = %v, want a refusal naming the fix instead of GitHub's merge queue", err)
 	}
 }
 

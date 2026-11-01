@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/yasyf/cc-context/internal/gtapi"
@@ -48,8 +49,8 @@ func TestTrackedQueueSelectionRespectsRepositoryAndExplicitOverride(t *testing.T
 			if got := gtAPIForRepo(ctx, "org/local").QueueProvider(); got != tt.want {
 				t.Fatalf("local queue=%s, want %s", got, tt.want)
 			}
-			if got := gtAPIForRepo(ctx, "org/foreign").QueueProvider(); got != "github" {
-				t.Fatalf("foreign queue inherited local configuration: %s", got)
+			if err := gtAPIForRepo(ctx, "org/foreign").ProviderError(); err == nil || !strings.Contains(err.Error(), "run this from a checkout of org/foreign") {
+				t.Fatalf("foreign queue inherited local configuration: %v, want a refusal naming the checkout to run from", err)
 			}
 		})
 	}
@@ -97,8 +98,8 @@ func TestOldBranchInheritsCanonicalQueuePolicyFromDefaultBranch(t *testing.T) {
 			if got := gtAPIForRepo(ctx, "org/local").QueueProvider(); got != tt.want {
 				t.Fatalf("local queue=%s, want %s", got, tt.want)
 			}
-			if got := gtAPIForRepo(ctx, "org/foreign").QueueProvider(); got != "github" {
-				t.Fatalf("foreign queue inherited default-branch policy: %s", got)
+			if err := gtAPIForRepo(ctx, "org/foreign").ProviderError(); err == nil || !strings.Contains(err.Error(), "run this from a checkout of org/foreign") {
+				t.Fatalf("foreign queue inherited default-branch policy: %v, want a refusal naming the checkout to run from", err)
 			}
 			if tt.want == "trunk" {
 				config, err := readRepositoryVCSConfig(ctx, f.Dir)

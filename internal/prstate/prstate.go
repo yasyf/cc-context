@@ -735,7 +735,7 @@ func (st State) Covers(want Want) bool {
 func (st State) fresh(want Want, now time.Time) bool {
 	for _, n := range want.PRs {
 		pr, ok := st.PRs[n]
-		if !ok || pr.PushedAt.After(pr.PolledAt) || !pr.settled() && now.Sub(pr.PolledAt) >= want.maxAge() {
+		if !ok || pr.PushedAt.After(pr.PolledAt) || pr.QueueUnknown && now.Sub(pr.PolledAt) >= MinInterval || !pr.settled() && now.Sub(pr.PolledAt) >= want.maxAge() {
 			return false
 		}
 	}
