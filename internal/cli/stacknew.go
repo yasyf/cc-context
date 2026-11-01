@@ -369,7 +369,12 @@ func stackNewPath(ctx context.Context, checkout vcs.Checkout, name, requested st
 	if err != nil {
 		return "", err
 	}
-	if requested != "" {
+	if requested == "" {
+		path, err = mintGitWorktreePath(ctx, "stack new", checkout, name)
+		if err != nil {
+			return "", err
+		}
+	} else {
 		if !filepath.IsAbs(requested) {
 			requested = filepath.Join(workingDir(ctx), requested)
 		}
@@ -377,19 +382,9 @@ func stackNewPath(ctx context.Context, checkout vcs.Checkout, name, requested st
 		if err != nil {
 			return "", err
 		}
-		ancestor := filepath.Dir(path)
-		tail := filepath.Base(path)
-		for {
-			resolved, err := filepath.EvalSymlinks(ancestor)
-			if err == nil {
-				path = filepath.Join(resolved, tail)
-				break
-			}
-			if !errors.Is(err, os.ErrNotExist) {
-				return "", err
-			}
-			tail = filepath.Join(filepath.Base(ancestor), tail)
-			ancestor = filepath.Dir(ancestor)
+		path, err = canonicalNewWorktreePath(path)
+		if err != nil {
+			return "", err
 		}
 	}
 	for _, root := range []string{checkout.Root, checkout.MainRoot, source.Root, source.MainRoot} {

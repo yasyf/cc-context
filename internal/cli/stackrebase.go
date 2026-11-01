@@ -3793,7 +3793,7 @@ func stackFreeWorkspace(ctx context.Context, l lane, name string) (string, error
 		if n > 1 {
 			candidate = name + "-" + strconv.Itoa(n)
 		}
-		ws, err := mintWorktreePath(ctx, stackRebasePrefix, l.checkout, candidate)
+		ws, err := mintGitWorktreePath(ctx, stackRebasePrefix, l.checkout, candidate)
 		if err != nil {
 			return "", err
 		}
