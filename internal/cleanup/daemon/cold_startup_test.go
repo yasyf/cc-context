@@ -132,9 +132,11 @@ func TestCleanupColdJournalReplay(t *testing.T) {
 			h := newHarness(t, paced())
 			template := h.newJob("historical", 1, cleanup.PhaseDone)
 			var bytes int64
+			var seq uint64
 			for i := range count {
 				job := template
-				job.Seq = uint64(i + 1)
+				seq++
+				job.Seq = seq
 				job.ID = fmt.Sprintf("%016x-%06x", h.clock.Now().UnixNano(), i+1)
 				job.Registered, job.Payload = h.layout.Registered(job.ID), h.layout.Payload(job.ID)
 				job.Updated = job.Updated.Add(time.Duration(i) * time.Nanosecond)
@@ -159,13 +161,13 @@ func TestCleanupColdJournalReplay(t *testing.T) {
 				t.Fatal(err)
 			}
 			load := time.Since(started)
-			if len(e.jobs) != count || len(e.order) != count || e.seq != uint64(count) || len(e.damaged) != 0 {
+			if len(e.jobs) != count || len(e.order) != count || e.seq != seq || len(e.damaged) != 0 {
 				t.Fatalf("loaded %d jobs, %d order, seq %d, %d damaged", len(e.jobs), len(e.order), e.seq, len(e.damaged))
 			}
 			started = time.Now()
 			report, err := e.Status(context.Background(), cleanup.Query{Limit: 1})
 			status := time.Since(started)
-			if err != nil || !report.Paused || len(report.Jobs) != 1 || report.Jobs[0].Seq != uint64(count) || report.Omitted != count-1 {
+			if err != nil || !report.Paused || len(report.Jobs) != 1 || report.Jobs[0].Seq != seq || report.Omitted != count-1 {
 				t.Fatalf("Status() = %+v, %v", report, err)
 			}
 			coldStartupOutput(t, fmt.Sprintf("replay-%d", count), map[string]any{"records": count, "record_bytes": bytes, "engine_load_ns": int64(load), "first_status_ns": int64(status), "returned_seq": report.Jobs[0].Seq, "omitted": report.Omitted, "os_cache_flushed": false, "historical_population_or_latency_claimed": false})
