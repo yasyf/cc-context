@@ -523,11 +523,11 @@ func runStackSubmit(cmd *cobra.Command, o shipOpts, include []string, to string)
 	if err != nil {
 		return err
 	}
+	if len(o.moves) > 0 && !l.native {
+		return refuse("stack submit: --move moves a pull request out of a native GitHub stack, and this lane does not submit native stacks")
+	}
 	if !l.gt {
 		return stackSubmitGit(cmd, l)
-	}
-	if len(o.moves) > 0 && !l.native {
-		return refuse("stack submit: --move moves a pull request out of a native GitHub stack, and this lane submits through Graphite")
 	}
 	defer func() { err = errors.Join(err, stackReportSaved(cmd, l.checkout.CommonDir, since)) }()
 	current, err := gitCurrentBranch(ctx, l.dir(), "stack submit")

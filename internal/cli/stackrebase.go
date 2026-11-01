@@ -1346,6 +1346,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 		switch pr := prs[name]; {
 		case !slices.Contains(members, name):
 			return nil, fmt.Errorf("stack rebase: --move named %s, which is not a branch of this run", name)
+		case pr != nil && pr.Landed:
 		case pr == nil || pr.State != "OPEN":
 			return nil, fmt.Errorf("stack rebase: --move named %s, which has no open pull request to move", name)
 		}
