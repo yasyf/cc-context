@@ -922,7 +922,15 @@ func shipCommit(ctx context.Context, errW io.Writer, dir render.Dir, kind vcs.Ki
 // hold another lane's work.
 func shipGitAdd(ctx context.Context, dir render.Dir, o shipOpts) (string, error) {
 	if o.indexOnly {
-		return "", gitAddPaths(ctx, dir, o.indexPaths, nil)
+		if len(o.indexPaths) == 0 {
+			return "", nil
+		}
+		argv := append([]string{"diff", "--name-only", "-z", "--"}, literalPathspecs(o.indexPaths)...)
+		paths, err := gitPathsZ(ctx, dir, argv...)
+		if err != nil {
+			return "", err
+		}
+		return "", gitAddPaths(ctx, dir, paths, nil)
 	}
 	if len(o.rootPaths) > 0 {
 		paths, err := gitUnstagedPaths(ctx, dir, o.rootPaths)
