@@ -152,14 +152,18 @@ func (c *Client) graphql(ctx context.Context, query string, out any) error {
 	var response struct {
 		Data   json.RawMessage `json:"data"`
 		Errors []struct {
+			Type    string `json:"type"`
+			Path    []any  `json:"path"`
 			Message string `json:"message"`
 		} `json:"errors"`
 	}
 	if err := json.Unmarshal(payload, &response); err != nil {
 		return err
 	}
-	if len(response.Errors) > 0 {
-		return &ResultError{Route: "graphql", Message: response.Errors[0].Message}
+	for _, failure := range response.Errors {
+		if failure.Type != "NOT_FOUND" || len(failure.Path) != 2 || failure.Path[0] != "repository" {
+			return &ResultError{Route: "graphql", Message: failure.Message}
+		}
 	}
 	if len(response.Data) == 0 || string(response.Data) == "null" {
 		return &ResultError{Route: "graphql", Message: "response contains no data"}

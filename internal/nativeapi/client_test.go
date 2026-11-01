@@ -51,6 +51,33 @@ func TestPullRequestInfoBatchesGitHubReadsInInputOrder(t *testing.T) {
 	}
 }
 
+func TestPullRequestInfoLeavesOutANumberGitHubCannotResolveAndReadsTheRest(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if _, err := fmt.Fprint(w, `{"data":{"repository":{"p0":{"number":3,"state":"OPEN","headRefName":"feature"},"p1":null}},"errors":[{"type":"NOT_FOUND","path":["repository","p1"],"message":"Could not resolve to a PullRequest with the number of 45976."}]}`); err != nil {
+			t.Errorf("write fixture response: %v", err)
+		}
+	}))
+	defer srv.Close()
+	infos, err := NewWithToken(srv.URL, "key").PullRequestInfo(context.Background(), PullRequestInfoRequest{RepoOwner: "org", RepoName: "repo", PRNumbers: []int{3, 45976}})
+	if err != nil || len(infos) != 1 || infos[0].PRNumber != 3 {
+		t.Fatalf("infos=%+v err=%v, want #3 read and #45976 left out", infos, err)
+	}
+}
+
+func TestGraphQLStillFailsWhenTheRepositoryItselfIsNotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if _, err := fmt.Fprint(w, `{"data":{"repository":null},"errors":[{"type":"NOT_FOUND","path":["repository"],"message":"Could not resolve to a Repository with the name 'org/repo'."}]}`); err != nil {
+			t.Errorf("write fixture response: %v", err)
+		}
+	}))
+	defer srv.Close()
+	_, err := NewWithToken(srv.URL, "key").PullRequestInfo(context.Background(), PullRequestInfoRequest{RepoOwner: "org", RepoName: "repo", PRNumbers: []int{3}})
+	var result *ResultError
+	if !errors.As(err, &result) || !strings.Contains(result.Message, "Could not resolve to a Repository") {
+		t.Fatalf("err=%v, want the repository's NOT_FOUND", err)
+	}
+}
+
 func TestPullRequestInfoSelectsOpenBeforeNewestClosedHead(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		if _, err := fmt.Fprint(w, `{"data":{"repository":{"h0":{"nodes":[{"number":3,"state":"OPEN","headRefName":"feature"}]},"c0":{"nodes":[{"number":4,"state":"CLOSED","headRefName":"feature"}]}}}}`); err != nil {
