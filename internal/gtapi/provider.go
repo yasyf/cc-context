@@ -49,6 +49,9 @@ func (c *Client) WithProviderError(err error) *Client {
 	return &selected
 }
 
+// ProviderError is the configuration failure every request of the client returns, or nil.
+func (c *Client) ProviderError() error { return c.providerErr }
+
 // IsNative reports whether GitHub supplies stack metadata.
 func (c *Client) IsNative() bool { return c.native != nil }
 

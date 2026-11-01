@@ -143,6 +143,9 @@ var prStateRoot = prstate.DefaultRoot
 
 func openPRState(ctx context.Context, repo string, warn io.Writer) (*prstate.Store, error) {
 	client := gtAPIForRepo(ctx, repo)
+	if err := client.ProviderError(); err != nil {
+		return nil, err
+	}
 	src, err := prstate.NewGitHub(reviewsAPI().ForRepo(repo), client, repo, warn)
 	if err != nil {
 		return nil, err

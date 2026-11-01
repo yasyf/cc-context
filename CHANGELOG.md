@@ -104,6 +104,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   they were not. Such a record now stays fresh for 30 seconds, the cache's poll
   interval, and a later read polls again.
 
+- **A queue read of a repository refuses outside a checkout of it.** `ccx vcs
+  pr status`, `pr state` and `pr watch` with `--repo` pick the merge queue from
+  the working checkout's `ccx.queue`. Run from `/`, as the landing desk ran
+  under launchd, they read GitHub's merge queue and reported a PR Trunk was
+  testing as `not queued`. They now stop with an error that names the
+  checkout to run from.
+
 - **`ccx vcs stack rebase` and `submit` adopt an untracked branch onto its
   open pull request's base on the native GitHub stack lane.** A branch
   checked out fresh from another lane's push, with `git worktree add -B
