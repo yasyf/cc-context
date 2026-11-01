@@ -1,1 +1,1 @@
-{"v":1,"lamport":2,"ops":[{"kind":"set_assignee","assignee":"/root/ccn_anchor_source_peer \u003cccn-anchor-source-peer@codex.local\u003e"}]}
+{"v":1,"lamport":3,"ops":[{"kind":"set_criterion_status","id":"a7816e5c9bdec9c8d1726dd3542f12af","status":"met","note":"Exact source and corrected immutable32/7422 Linux receipts independently read/hash-verified; source evidence6836ae35. Mechanism confirmed; no cold-historical or production-correctness claim. No new execution/probe or source edit."}]}
