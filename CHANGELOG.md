@@ -27,6 +27,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`ccx vcs stack submit --move <branch>` moves a pull request a native GitHub
+  stack holds on another base.** GitHub keeps the base of a stacked pull
+  request while another member is open, and its stacks API removes no single
+  member, so a branch whose gt parent changed stayed stranded. `--move` opens
+  a new pull request from the same head onto the gt parent with the old one's
+  title, body and draft state, links it into the parent's native stack, and
+  closes the old one with a comment naming the new one. On a native lane the
+  stray-branch refusal names the command; no run moves a pull request without
+  it.
+
 - **`ccx vcs cleanup cancel <job-id>`** keeps a queued, waiting, or pending
   worktree. It verifies the tree, registration, `.git` link and the job's own
   lock, allows a `HEAD` that moved, writes the captured `gitdir` backlink back,

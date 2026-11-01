@@ -862,10 +862,81 @@ func TestSubmitRetargetsAPullRequestOutOfADeadNativeStack(t *testing.T) {
 				}
 				return
 			}
-			if unstacked || slices.Contains(calls, "PATCH /repos/org/repo/pulls/5") || got[0].StackNumber != 8 || len(got[0].Warnings) != 1 || !strings.Contains(got[0].Warnings[0], "kept PR #5 on lower, not dev") {
+			if unstacked || slices.Contains(calls, "PATCH /repos/org/repo/pulls/5") || got[0].StackNumber != 8 || len(got[0].Warnings) != 1 || !strings.Contains(got[0].Warnings[0], "kept PR #5 on lower, not dev") || !strings.Contains(got[0].Warnings[0], "ccx vcs stack submit --move tip") {
 				t.Fatalf("got=%+v calls=%v, want the live stack kept, its base left alone, and a warning naming it", got, calls)
 			}
 		})
+	}
+}
+
+func TestSubmitMoveOpensANewPullRequestWhenALiveNativeStackHoldsTheOldOne(t *testing.T) {
+	var calls []string
+	bodies := map[string]map[string]any{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if publishedHeadFixture(t, w, r, "head") {
+			return
+		}
+		reply := func(body string) {
+			if _, err := fmt.Fprint(w, body); err != nil {
+				t.Errorf("write fixture response: %v", err)
+			}
+		}
+		call := r.Method + " " + r.URL.Path
+		calls = append(calls, call)
+		if r.Method != http.MethodGet {
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("%s: decode body: %v", call, err)
+			}
+			bodies[call] = body
+		}
+		switch call {
+		case "GET /repos/org/repo/pulls/5":
+			reply(`{"number":5,"title":"Tip","body":"tip body","state":"open","head":{"repo":{"full_name":"org/repo"},"ref":"tip","sha":"head"},"base":{"ref":"lower"},"stack":{"number":8,"position":2,"size":2,"base":{"ref":"dev"}}}`)
+		case "GET /repos/org/repo/stacks/8":
+			reply(`{"number":8,"pull_requests":[{"number":4,"state":"open","merged_at":null},{"number":5,"state":"open","merged_at":null}]}`)
+		case "POST /repos/org/repo/pulls":
+			reply(`{"number":6,"html_url":"https://github.com/org/repo/pull/6","title":"Tip","body":"tip body","state":"open","head":{"repo":{"full_name":"org/repo"},"ref":"tip","sha":"head"},"base":{"ref":"mid"}}`)
+		case "POST /repos/org/repo/issues/5/comments":
+			reply(`{"id":1}`)
+		case "PATCH /repos/org/repo/pulls/5":
+			reply(`{"number":5,"state":"closed"}`)
+		case "GET /repos/org/repo/pulls":
+			if got := r.URL.Query().Get("head"); got != "org:mid" {
+				t.Errorf("parent lookup head = %q, want org:mid", got)
+			}
+			reply(`[{"number":3,"state":"open","head":{"repo":{"full_name":"org/repo"},"ref":"mid"},"base":{"ref":"dev"},"stack":{"number":9,"position":1,"size":1,"base":{"ref":"dev"}}}]`)
+		case "POST /repos/org/repo/stacks/9/add":
+			reply(`{"number":9}`)
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL)
+			http.Error(w, "unexpected", 500)
+		}
+	}))
+	defer srv.Close()
+	got, err := NewWithToken(srv.URL, "key").SubmitPullRequests(context.Background(), SubmitRequest{RepoOwner: "org", RepoName: "repo", TrunkBranchName: "dev", PRs: []SubmitPR{{Action: SubmitUpdate, PRNumber: 5, Head: "tip", HeadSha: "head", Base: "mid", Move: true}}})
+	if err != nil || len(got) != 1 {
+		t.Fatalf("got=%+v err=%v calls=%v", got, err, calls)
+	}
+	if got[0].PRNumber != 6 || got[0].Status != "moved" || got[0].StackNumber != 9 || len(got[0].Warnings) != 0 {
+		t.Fatalf("got=%+v, want PR #6 moved into stack #9 without a warning", got[0])
+	}
+	if slices.Contains(calls, "POST /repos/org/repo/stacks/8/unstack") {
+		t.Errorf("calls=%v, want stack #8, which holds another open pull request, left alone", calls)
+	}
+	opened := bodies["POST /repos/org/repo/pulls"]
+	if opened["head"] != "tip" || opened["base"] != "mid" || opened["title"] != "Tip" || opened["body"] != "tip body" || opened["draft"] != false {
+		t.Errorf("new pull request = %v, want tip onto mid with #5's title, body and draft state", opened)
+	}
+	if note, _ := bodies["POST /repos/org/repo/issues/5/comments"]["body"].(string); !strings.Contains(note, "Moved to #6") {
+		t.Errorf("comment on #5 = %q, want it to name #6", note)
+	}
+	if closed := bodies["PATCH /repos/org/repo/pulls/5"]; closed["state"] != "closed" || len(closed) != 1 {
+		t.Errorf("PATCH #5 = %v, want it closed and nothing else changed", closed)
+	}
+	comment, closing := slices.Index(calls, "POST /repos/org/repo/issues/5/comments"), slices.Index(calls, "PATCH /repos/org/repo/pulls/5")
+	if opening := slices.Index(calls, "POST /repos/org/repo/pulls"); opening < 0 || comment < opening || closing < comment {
+		t.Errorf("calls=%v, want #6 opened, then #5 commented on, then closed", calls)
 	}
 }
 

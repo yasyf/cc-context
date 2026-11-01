@@ -129,7 +129,7 @@ func (t *stackTopology) infer(parent string) (string, error) {
 }
 
 func stackRequestedNames(o stackRebaseOpts) []string {
-	names := slices.Concat(o.members, o.linearize, o.landed, o.newPRs, o.pinned, o.include, o.bump)
+	names := slices.Concat(o.members, o.linearize, o.landed, o.newPRs, o.moves, o.pinned, o.include, o.bump)
 	names = append(names, o.tip, o.to, o.above)
 	for _, pair := range o.parents {
 		if child, parent, ok := strings.Cut(pair, "="); ok {
