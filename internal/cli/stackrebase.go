@@ -70,7 +70,6 @@ type stackPR struct {
 	BaseBack   bool     `json:"base_back,omitempty"`
 	ParkedFrom string   `json:"parked_from,omitempty"`
 	Segment    bool     `json:"segment,omitempty"`
-	Stack      int      `json:"stack,omitempty"`
 }
 
 func (p *stackPR) base() string {
@@ -1384,7 +1383,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 		}
 		return stackPlan(ctx, l, commonDir, requested)
 	}
-	members, left, passed, err := stackKept(ctx, l.dir(), state, tr, current, members, prs, parentOverrides, o.landed, o.moves)
+	members, left, passed, err := stackKept(ctx, l.dir(), state, tr, current, members, prs, parentOverrides, o.landed, o.moves, l.native)
 	if err != nil {
 		return nil, err
 	}
@@ -1706,7 +1705,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 // to another lane: gt track adopts a branch cut at the same commit as another
 // onto it, and a run that trusted that record replayed another lane's work
 // onto this stack and pushed it. Everything stacked on either goes with it.
-func stackKept(ctx context.Context, dir render.Dir, state gtState, tr vcs.Trunk, current string, members []string, prs map[string]*stackPR, overrides map[string]string, landed, moves []string) ([]string, []stackLeft, map[string]string, error) {
+func stackKept(ctx context.Context, dir render.Dir, state gtState, tr vcs.Trunk, current string, members []string, prs map[string]*stackPR, overrides map[string]string, landed, moves []string, native bool) ([]string, []stackLeft, map[string]string, error) {
 	isLanded := func(name string) bool {
 		return slices.Contains(landed, name) || (prs[name] != nil && (prs[name].Landed || prs[name].abandoned()))
 	}
@@ -1755,7 +1754,7 @@ func stackKept(ctx context.Context, dir render.Dir, state gtState, tr vcs.Trunk,
 			for effective != tr.Name() && isLanded(effective) {
 				effective = state[effective].Parents[0].Ref
 			}
-			why, err := stackStrayReason(ctx, dir, state, tr, name, parent, effective, prs[name], slices.Contains(moves, name))
+			why, err := stackStrayReason(ctx, dir, state, tr, name, parent, effective, prs[name], slices.Contains(moves, name), native)
 			if err != nil {
 				return nil, nil, nil, err
 			}
@@ -1822,7 +1821,7 @@ func stackPassThrough(passed map[string]string, parent string) string {
 // open pull request based on neither its gt parent nor the ancestor that
 // parent's landing leaves it on, unless --move names the branch, or a history
 // carrying none of the parent's own commits under any sha.
-func stackStrayReason(ctx context.Context, dir render.Dir, state gtState, tr vcs.Trunk, branch, parent, effective string, pr *stackPR, move bool) (string, error) {
+func stackStrayReason(ctx context.Context, dir render.Dir, state gtState, tr vcs.Trunk, branch, parent, effective string, pr *stackPR, move, native bool) (string, error) {
 	if !move && pr != nil && pr.State == "OPEN" && pr.Base != "" && pr.base() != parent && pr.base() != effective {
 		inserted, err := stackInsertedBelow(ctx, dir, state, tr, branch, parent, pr.base())
 		if err != nil || inserted {
@@ -1831,8 +1830,8 @@ func stackStrayReason(ctx context.Context, dir render.Dir, state gtState, tr vcs
 		if pr.parked() && pr.ParkedFrom == "" {
 			return fmt.Sprintf("gt records its parent as %s, but its pull request #%d sits on Graphite's %s and this clone never submitted it — name its real parent with ccx vcs stack rebase --parent %s=<branch>", parent, pr.Number, pr.Base, branch), nil
 		}
-		if pr.Stack != 0 {
-			return fmt.Sprintf("gt records its parent as %s, but its pull request #%d is based on %s, where native GitHub stack #%d holds it — move the pull request onto %s with ccx vcs stack submit --move %s, or re-record the branch with gt track --parent %s %s", parent, pr.Number, pr.base(), pr.Stack, parent, branch, pr.base(), branch), nil
+		if native {
+			return fmt.Sprintf("gt records its parent as %s, but its pull request #%d is based on %s — if %s is its parent, re-record it with gt track --parent %s %s; if %s is, move the pull request onto it with ccx vcs stack submit --move %s", parent, pr.Number, pr.base(), pr.base(), pr.base(), branch, parent, branch), nil
 		}
 		return fmt.Sprintf("gt records its parent as %s, but its pull request #%d is based on %s — re-record it with gt track --parent %s %s", parent, pr.Number, pr.base(), pr.base(), branch), nil
 	}

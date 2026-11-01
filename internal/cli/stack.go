@@ -249,14 +249,15 @@ Above the branch checked out here, a branch belongs to another lane when the
 rest of the record contradicts its gt parent: its open pull request is based on
 neither that parent nor the branch a landed parent leaves it on, or its history
 carries none of the parent's own commits. It and everything stacked on it are
-left alone and named on stderr with the step to re-record the parent. When a
-native GitHub stack holds that pull request on its base, the step also names
---move <branch>: GitHub keeps the base of a stacked pull request while another
-member is open, so --move opens a new pull request from the same head onto the
-gt parent with the old one's title, body and draft state, links it into the
-parent's native stack, and closes the old one with a comment naming the new
-one. Nothing moves a pull request without --move, since every lane pushes as
-one GitHub user and ccx cannot tell which lane owns it.
+left alone and named on stderr with the step to re-record the parent. On a
+native GitHub stack lane, the step also names --move <branch>, for when gt's
+parent is the right one: it takes the branch into the run and moves its pull
+request onto that parent. GitHub keeps the base of a stacked pull request while
+another member is open, so there --move opens a new pull request from the same
+head with the old one's title, body and draft state, links it into the parent's
+native stack, and closes the old one with a comment naming the new one. Nothing
+moves a pull request without --move, since every lane pushes as one GitHub user
+and ccx cannot tell which lane owns it.
 --to <branch> stops the run at <branch>, leaving every branch stacked above it
 out; a <branch> that is neither the one checked out here nor stacked above it
 is refused.

@@ -33,9 +33,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   member, so a branch whose gt parent changed stayed stranded. `--move` opens
   a new pull request from the same head onto the gt parent with the old one's
   title, body and draft state, links it into the parent's native stack, and
-  closes the old one with a comment naming the new one. The stray-branch
-  refusal names the command when a native stack holds the pull request; no run
-  moves one without it.
+  closes the old one with a comment naming the new one. On a native lane the
+  stray-branch refusal names the command; no run moves a pull request without
+  it.
 
 - **`ccx vcs cleanup cancel <job-id>`** keeps a queued, waiting, or pending
   worktree. It verifies the tree, registration, `.git` link and the job's own

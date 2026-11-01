@@ -2,57 +2,71 @@ package cli
 
 import (
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
-func strayInANativeStack(t *testing.T) *vcstest.Fixture {
+var strayOnAnotherBase = map[string]*stackPR{"stray": {Number: 42, Title: "stray", State: "OPEN", Base: "other"}}
+
+func strayOnAnotherBaseRepo(t *testing.T) *vcstest.Fixture {
 	t.Helper()
 	f := shipGTRepo(t)
 	api := stubGTAPI(t)
 	f.Decorate(api.ctx)
 	api.openPRs("b")
 	shipGTStack(t, f, "a", "b", "stray")
-	stubStackPRs(t, f, map[string]*stackPR{"stray": {Number: 42, Title: "stray", State: "OPEN", Base: "other", Stack: 7}})
+	stubStackPRs(t, f, strayOnAnotherBase)
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "a")
 	return f
 }
 
-func TestStackSubmitNamesTheMoveForAStrayWhoseNativeStackHoldsItsBase(t *testing.T) {
-	f := strayInANativeStack(t)
-	_, errOut, err := runStackCmd(t, f, "submit")
+func TestStackKeptNamesTheMoveOnANativeLaneAndKeepsTheStrayItNames(t *testing.T) {
+	f := strayOnAnotherBaseRepo(t)
+	ctx, dir := f.Context(), render.Dir(f.Dir)
+	_, state, err := gtStackAll(ctx, dir, stackRebasePrefix)
 	if err != nil {
-		t.Fatalf("stack submit: %v", err)
+		t.Fatal(err)
 	}
-	if !strings.Contains(errOut, "native GitHub stack #7 holds it") || !strings.Contains(errOut, "ccx vcs stack submit --move stray") {
-		t.Errorf("stderr = %q, want the stray refusal to name ccx vcs stack submit --move stray", errOut)
-	}
-}
-
-func TestStackPlanKeepsAStrayOnlyWhenMoveNamesIt(t *testing.T) {
-	f := strayInANativeStack(t)
-	l, err := resolveLane(f.Context(), "stack rebase", f.Dir, false)
+	tr, err := gtTrunkRef(ctx, dir, stackRebasePrefix, "main")
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {
-		moves []string
-		kept  bool
-	}{{nil, false}, {[]string{"stray"}, true}} {
-		run, err := stackPlan(f.Context(), l, filepath.Join(f.Dir, ".git"), stackRebaseOpts{members: []string{"a", "b", "stray"}, moves: tc.moves, submit: true, dryRun: true})
-		if err != nil {
-			t.Fatalf("stackPlan(moves=%v): %v", tc.moves, err)
-		}
-		if kept := run.branch("stray") != nil; kept != tc.kept {
-			t.Errorf("stackPlan(moves=%v) kept stray = %t, want %t", tc.moves, kept, tc.kept)
-		}
+		name   string
+		moves  []string
+		native bool
+		kept   bool
+		why    string
+	}{
+		{name: "graphite lane", why: "re-record it with gt track --parent other stray"},
+		{name: "native lane", native: true, why: "if b is, move the pull request onto it with ccx vcs stack submit --move stray"},
+		{name: "native lane moving it", moves: []string{"stray"}, native: true, kept: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			kept, left, _, err := stackKept(ctx, dir, state, tr, "a", []string{"a", "b", "stray"}, strayOnAnotherBase, nil, nil, tc.moves, tc.native)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if slices.Contains(kept, "stray") != tc.kept {
+				t.Fatalf("kept = %v, left = %+v, want stray kept %t", kept, left, tc.kept)
+			}
+			if tc.kept {
+				return
+			}
+			i := slices.IndexFunc(left, func(l stackLeft) bool { return l.branch == "stray" })
+			if i < 0 || !strings.Contains(left[i].why, tc.why) || tc.native != strings.Contains(left[i].why, "--move") {
+				t.Fatalf("left = %+v, want stray left naming %q", left, tc.why)
+			}
+		})
 	}
 }
 
 func TestStackPlanRefusesAMoveOfABranchOutsideTheRun(t *testing.T) {
-	f := strayInANativeStack(t)
+	f := strayOnAnotherBaseRepo(t)
 	l, err := resolveLane(f.Context(), "stack rebase", f.Dir, false)
 	if err != nil {
 		t.Fatal(err)
@@ -64,7 +78,7 @@ func TestStackPlanRefusesAMoveOfABranchOutsideTheRun(t *testing.T) {
 }
 
 func TestStackSubmitRefusesMoveOnAGraphiteLane(t *testing.T) {
-	f := strayInANativeStack(t)
+	f := strayOnAnotherBaseRepo(t)
 	_, _, err := runStackCmd(t, f, "submit", "--move", "stray")
 	if err == nil || !strings.Contains(err.Error(), "--move moves a pull request out of a native GitHub stack") {
 		t.Fatalf("stack submit --move on a Graphite lane = %v, want the native-only refusal", err)
