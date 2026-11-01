@@ -346,11 +346,80 @@ func TestViewerWithRepoScopeToken(t *testing.T) {
 	}
 }
 
-// TestLookupRepoCaches walks one repository through every reason a record is or
-// is not refetched, with the replay serving a different recorded repository on
-// each fetch: which repository comes back is the observable, so a cache that
-// stopped caching or a stale record that got served fails on the answer itself
-// rather than on a call count.
+func TestLookupRepoCachesExplicitRepositoryContext(t *testing.T) {
+	f := vcstest.Repo(t, vcstest.Worktree("feat"))
+	f.Isolate(t)
+	t.Setenv("GH_REPO", "yasyf/cc-context")
+	log := ghReplay(t, f, map[string][]string{
+		ghRepoVerb:    {"repo-api-foreign", "repo-api-own"},
+		"api graphql": {"viewer-graphql-foreign"},
+		"api user":    {"user-api-own"},
+	})
+	ctx := f.Context()
+	foreign, err := LookupRepo(ctx, render.Dir(f.Dir), false)
+	if err != nil || foreign.NameWithOwner != "cli/cli" {
+		t.Fatalf("named repository with ambient GH_REPO = %+v, %v", foreign, err)
+	}
+	forkContext := render.WithEnv(ctx, "GH_REPO=yasyf/cc-context")
+	fork, err := LookupRepo(forkContext, render.Dir(f.Dir), false)
+	if err != nil || fork.NameWithOwner != "yasyf/cc-context" {
+		t.Fatalf("explicit repository = %+v, %v", fork, err)
+	}
+	cached, err := LookupRepo(forkContext, render.Dir(f.WorktreePath("feat")), false)
+	if err != nil || withoutFetchTime(cached) != withoutFetchTime(fork) {
+		t.Fatalf("same context in linked worktree = %+v, %v", cached, err)
+	}
+	defaultRepo, err := LookupRepo(ctx, render.Dir(f.Dir), false)
+	if err != nil || withoutFetchTime(defaultRepo) != withoutFetchTime(foreign) {
+		t.Fatalf("default repository after override = %+v, %v", defaultRepo, err)
+	}
+	if got := ghVerbCount(t, log, ghRepoVerb); got != 2 {
+		t.Fatalf("repository reads = %d, want 2", got)
+	}
+}
+
+func TestLookupRepoCachesCommandScopedRouting(t *testing.T) {
+	for _, key := range []string{
+		"remote.origin.url",
+		"remote.origin.pushurl",
+		"url.https://github.com/yasyf/.insteadOf",
+		"url.https://github.com/yasyf/.pushInsteadOf",
+	} {
+		t.Run(key, func(t *testing.T) {
+			f := vcstest.Repo(t)
+			f.Isolate(t)
+			log := ghReplay(t, f, map[string][]string{
+				ghRepoVerb:    {"repo-api-foreign", "repo-api-own"},
+				"api graphql": {"viewer-graphql-foreign"},
+				"api user":    {"user-api-own"},
+			})
+			ctx := f.Context()
+			foreign, err := LookupRepo(ctx, render.Dir(f.Dir), false)
+			if err != nil || foreign.NameWithOwner != "cli/cli" {
+				t.Fatalf("default repository = %+v, %v", foreign, err)
+			}
+			scoped := render.WithEnv(ctx,
+				"GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0="+key,
+				"GIT_CONFIG_VALUE_0=https://github.com/yasyf/cc-context.git")
+			fork, err := LookupRepo(scoped, render.Dir(f.Dir), false)
+			if err != nil || fork.NameWithOwner != "yasyf/cc-context" {
+				t.Fatalf("scoped repository = %+v, %v", fork, err)
+			}
+			cached, err := LookupRepo(scoped, render.Dir(f.Dir), false)
+			if err != nil || withoutFetchTime(cached) != withoutFetchTime(fork) {
+				t.Fatalf("repeated scoped repository = %+v, %v", cached, err)
+			}
+			defaultRepo, err := LookupRepo(ctx, render.Dir(f.Dir), false)
+			if err != nil || withoutFetchTime(defaultRepo) != withoutFetchTime(foreign) {
+				t.Fatalf("default repository after scoped lookup = %+v, %v", defaultRepo, err)
+			}
+			if got := ghVerbCount(t, log, ghRepoVerb); got != 2 {
+				t.Fatalf("repository reads = %d, want 2", got)
+			}
+		})
+	}
+}
+
 func TestLookupRepoCaches(t *testing.T) {
 	f := vcstest.Repo(t)
 	f.Isolate(t)
