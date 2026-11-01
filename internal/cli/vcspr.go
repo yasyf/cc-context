@@ -205,7 +205,9 @@ Graphite's own merge state adds needs-restack (parent landed), needs-restack,
 or waiting-on-downstack #N, naming the pull request below.
 
 When Graphite does not answer the poll, the queue reads unknown and the verdict
-adds queue-unknown, so the pull request is never landable. A pull request GitHub
+adds queue-unknown, so the pull request is never landable. The cache never
+serves that unknown past the poll interval, whatever --max-age allows: a read
+that comes later polls again. A pull request GitHub
 itself shows merged still reads landed.
 
 The answer comes from Graphite's own record of the pull request, the one gt

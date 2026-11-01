@@ -97,6 +97,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs pr status` never serves a cached unknown queue state past the
+  poll interval.** A record polled while Graphite did not answer read
+  `unknown` for as long as `--max-age` allowed, so at 7:39 AM on Oct 31 a
+  five-minute-old unknown made #46614 and #46618 look held in the queue when
+  they were not. Such a record now stays fresh for 30 seconds, the cache's poll
+  interval, and a later read polls again.
+
 - **`ccx vcs stack rebase` and `submit` adopt an untracked branch onto its
   open pull request's base on the native GitHub stack lane.** A branch
   checked out fresh from another lane's push, with `git worktree add -B

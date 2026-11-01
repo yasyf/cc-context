@@ -770,6 +770,22 @@ func TestAFailedRESTFallbackNamesBothFailures(t *testing.T) {
 	}
 }
 
+func TestAQueueUnknownRecordAnswersNoReadOncePastThePollInterval(t *testing.T) {
+	t.Parallel()
+	want := Want{PRs: []int{190}, MaxAge: 5 * time.Minute}
+	st := State{PRs: map[int]PR{190: {Number: 190, State: "OPEN", PolledAt: epoch, QueueUnknown: true}}}
+	if !st.fresh(want, epoch.Add(MinInterval-time.Second)) {
+		t.Error("a queue-unknown record read stale inside the poll interval")
+	}
+	if st.fresh(want, epoch.Add(MinInterval)) {
+		t.Error("a queue-unknown record answered a five-minute read past the poll interval, the stale unknown #46614 and #46618 read as held")
+	}
+	st.PRs[190] = PR{Number: 190, State: "OPEN", PolledAt: epoch}
+	if !st.fresh(want, epoch.Add(MinInterval)) {
+		t.Error("a record Graphite answered read stale inside its max age")
+	}
+}
+
 func TestALaneIsFreshOnlyWithEveryMemberRead(t *testing.T) {
 	t.Parallel()
 	st := State{
