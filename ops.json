@@ -1,1 +1,1 @@
-{"v":1,"lamport":3,"ops":[{"kind":"set_branch","branch":"fix/scheduler-baseline-ci"}]}
+{"v":1,"lamport":4,"ops":[{"kind":"set_assignee","assignee":"/root/ccx_ws1_verify_finish \u003cccx-ws1-verify-finish@codex.local\u003e"}]}
