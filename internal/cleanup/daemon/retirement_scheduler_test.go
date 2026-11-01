@@ -265,30 +265,34 @@ func TestPausedRetirementWakeUsesTheEarliestRestDeadline(t *testing.T) {
 }
 
 func TestPausedRetirementWaitsForTheRelocatorsRestDeadline(t *testing.T) {
-	bubble(t, paced(), func(t *testing.T, h *harness) {
-		job := h.seed("q", 1, cleanup.PhasePending)
-		calls := 0
-		h.relocator.scripts["retire:q"] = func(job *cleanup.Job) {
-			calls++
-			if calls == 1 {
-				job.RetireAfter = h.clock.Now().Add(time.Hour)
-				return
-			}
-			job.RetireAfter = time.Time{}
-			job.Retirement = cleanup.RetirementComplete
-		}
-		if err := h.journal.SaveSwitch(cleanup.Switch{Paused: true}); err != nil {
-			t.Fatal(err)
-		}
-		h.start()
-		h.expectEvents("retire:q@pending")
-		h.expectTimers(time.Hour)
-		h.clock.Advance(time.Hour)
-		h.expectEvents("retire:q@pending")
-		if got := h.status(job.ID); got.Retirement != cleanup.RetirementComplete || got.Phase != cleanup.PhasePending {
-			t.Fatalf("job = %+v; want retired once its deadline passed", got)
-		}
-	})
+	for _, phase := range []cleanup.Phase{cleanup.PhasePending, cleanup.PhaseWaiting} {
+		t.Run(string(phase), func(t *testing.T) {
+			bubble(t, paced(), func(t *testing.T, h *harness) {
+				job := h.seed("q", 1, phase)
+				calls := 0
+				h.relocator.scripts["retire:q"] = func(job *cleanup.Job) {
+					calls++
+					if calls == 1 {
+						job.RetireAfter = h.clock.Now().Add(time.Hour)
+						return
+					}
+					job.RetireAfter = time.Time{}
+					job.Retirement = cleanup.RetirementComplete
+				}
+				if err := h.journal.SaveSwitch(cleanup.Switch{Paused: true}); err != nil {
+					t.Fatal(err)
+				}
+				h.start()
+				h.expectEvents("retire:q@" + string(phase))
+				h.expectTimers(time.Hour)
+				h.clock.Advance(time.Hour)
+				h.expectEvents("retire:q@" + string(phase))
+				if got := h.status(job.ID); got.Retirement != cleanup.RetirementComplete || got.Phase != phase {
+					t.Fatalf("job = %+v; want retired once its deadline passed", got)
+				}
+			})
+		})
+	}
 }
 
 func TestCancelDropsTheJobItUndid(t *testing.T) {

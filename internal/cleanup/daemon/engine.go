@@ -764,11 +764,10 @@ func (e *Engine) wake(physical bool) (time.Time, bool) {
 		if e.paused && !e.retirementDue(job) {
 			continue
 		}
-		if job.Phase == cleanup.PhaseWaiting && job.Blocked == nil {
-			consider(e.checked[job.ID].Add(e.tuning.Recheck))
-		}
 		if e.paused && job.Blocked == nil && !job.RetireAfter.IsZero() {
 			consider(job.RetireAfter)
+		} else if job.Phase == cleanup.PhaseWaiting && job.Blocked == nil {
+			consider(e.checked[job.ID].Add(e.tuning.Recheck))
 		}
 		if at, ok := e.retryAt(job); ok {
 			consider(at)
