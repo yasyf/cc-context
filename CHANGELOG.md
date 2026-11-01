@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `ccx vcs stack submit --parent <branch>=<parent>` moves a branch and the
+  branches above it onto a new parent and retargets its pull request, as
+  `stack rebase --parent` already did. A native stack submit whose parent pull
+  request is based on a branch with no open pull request left now names
+  `stack submit --parent <branch>=<trunk>` as the way out, instead of failing
+  with no remedy.
+
 ### Fixed
 
 - A pull request the Trunk queue holds no record of reads as not queued once a

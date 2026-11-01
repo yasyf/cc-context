@@ -371,3 +371,21 @@ func TestStackSubmitDropsALandedParentAnotherWorktreeHolds(t *testing.T) {
 	}
 	stackAssertOnTrunk(t, f, api, "b")
 }
+
+func TestStackSubmitParentMovesABranchOffAnOpenParentOntoTrunk(t *testing.T) {
+	f := shipGTRepo(t)
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	api.openPRs("a", "b")
+	shipGTStack(t, f, "a", "b")
+	stubStackPRs(t, f, map[string]*stackPR{
+		"a": {Number: 9000, Title: "a", State: "OPEN", Base: "main"},
+		"b": {Number: 9001, Title: "b", State: "OPEN", Base: "a"},
+	})
+	shipResetLog(t, f)
+
+	if _, _, err := runStackCmd(t, f, "submit", "--parent", "b=main"); err != nil {
+		t.Fatalf("stack submit --parent b=main: %v", err)
+	}
+	stackAssertOnTrunk(t, f, api, "b")
+}
