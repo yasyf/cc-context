@@ -273,7 +273,7 @@ func TestSubmitRelinksANativeStackPastAClosedPullRequestAboveTheParent(t *testin
 		relinked                      []int
 	}{
 		{name: "dissolved", bottom: `"state":"open","merged_at":null`, unstacked: "", want: "POST /repos/org/repo/stacks", relinked: []int{1, 2, 4}},
-		{name: "kept merged bottom", bottom: `"state":"closed","merged_at":"2026-10-30T12:00:00Z"`, unstacked: `{"number":7,"pull_requests":[{"number":1,"state":"closed","merged_at":"2026-10-30T12:00:00Z"}]}`, want: "POST /repos/org/repo/stacks/7/add", relinked: []int{2, 4}},
+		{name: "merged bottom dropped", bottom: `"state":"closed","merged_at":"2026-10-30T12:00:00Z"`, unstacked: `{"number":7,"pull_requests":[{"number":1,"state":"closed","merged_at":"2026-10-30T12:00:00Z"}]}`, want: "POST /repos/org/repo/stacks", relinked: []int{2, 4}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var calls []string
