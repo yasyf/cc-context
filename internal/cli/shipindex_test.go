@@ -114,3 +114,39 @@ func TestShipRefusesAnIndexThatLeavesATrackedEditUnstaged(t *testing.T) {
 		})
 	}
 }
+
+func TestShipWithASparseStagedMergeCommitsExactlyTheIndex(t *testing.T) {
+	f := shipRepo(t, vcstest.Remote())
+	writeShipFile(t, f.Dir, "included/file.txt", "included\n")
+	writeShipFile(t, f.Dir, "outside/file.txt", "before\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "included/file.txt", "outside/file.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "sparse base")
+	branch := gitAt(t, f.Env(), f.Dir, "branch", "--show-current")
+	base := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD")
+	mustRun(t, f.Env(), f.Dir, "git", "checkout", "-qb", "sparse-incoming")
+	writeShipFile(t, f.Dir, "outside/file.txt", "incoming\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "outside/file.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "sparse incoming")
+	incoming := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD")
+	mustRun(t, f.Env(), f.Dir, "git", "checkout", "-q", branch)
+	mustRun(t, f.Env(), f.Dir, "git", "sparse-checkout", "set", "--cone", "included")
+	mustRun(t, f.Env(), f.Dir, "git", "merge", "--no-ff", "--no-commit", "sparse-incoming")
+	tree := gitAt(t, f.Env(), f.Dir, "write-tree")
+	outside := filepath.Join(f.Dir, "outside", "file.txt")
+	if _, err := os.Lstat(outside); !os.IsNotExist(err) {
+		t.Fatalf("outside sparse entry exists before ship: %v", err)
+	}
+
+	if _, err := runShipCmd(f.Context(), t, "-m", "fix: preserve the sparse merge", "--no-push"); err != nil {
+		t.Fatalf("ship sparse merge = %v", err)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD^{tree}"); got != tree {
+		t.Errorf("committed tree = %s, want prepared %s", got, tree)
+	}
+	if got, want := gitAt(t, f.Env(), f.Dir, "show", "-s", "--format=%P", "HEAD"), base+" "+incoming; got != want {
+		t.Errorf("merge parents = %s, want %s", got, want)
+	}
+	if _, err := os.Lstat(outside); !os.IsNotExist(err) {
+		t.Errorf("outside sparse entry materialized by ship: %v", err)
+	}
+}
