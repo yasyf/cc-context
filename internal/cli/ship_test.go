@@ -1760,7 +1760,6 @@ func TestShipGitAmendFastForwardPush(t *testing.T) {
 // one aborts back to where it started, and a rebase that never begins is
 // reported as itself rather than as a conflict.
 func TestShipGitRebase(t *testing.T) {
-	t.Parallel()
 	plan := [][]string{
 		{"git", "branch", "--show-current"},
 		gitTrunkArgv,
@@ -1947,7 +1946,6 @@ func TestShipGitRebase(t *testing.T) {
 // tree, the rebase has to move it, and a restore that will not apply names the
 // commit holding it and the files in it.
 func TestShipGitRebaseNamesWorkItCannotPutBack(t *testing.T) {
-	t.Parallel()
 	f := shipRepo(t, vcstest.Remote(), vcstest.Dirty())
 	writeShipFile(t, f.Dir, "b.txt", "base\n")
 	mustRun(t, f.Env(), f.Dir, "git", "add", "b.txt")
