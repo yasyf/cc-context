@@ -17,7 +17,7 @@ import (
 
 func serveExpectedGitFixture(t *testing.T, f *gitFixture, sw cleanup.Switch) *Client {
 	t.Helper()
-	root, err := os.MkdirTemp("/tmp", "ccx-expected-")
+	root, err := os.MkdirTemp("", "ccx-expected-")
 	if err != nil {
 		t.Fatal(err)
 	}
