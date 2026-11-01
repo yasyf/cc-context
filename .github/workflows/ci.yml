@@ -33,6 +33,36 @@ env:
   HEAVY_PKGS: internal/web|internal/semsearch/chunk|internal/semsearch/embed|internal/gtmeta
 
 jobs:
+  cleanup-cold-startup:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    env:
+      GOMAXPROCS: "2"
+      GOFLAGS: -p=2
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.commit || github.sha }}
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          check-latest: true
+          cache: true
+      - uses: ./.github/actions/wasm
+      - name: Private cold journal and readiness contract
+        env:
+          CCX_COLD_STARTUP_OUTPUT: ${{ runner.temp }}/cleanup-cold-startup
+        run: go test -race -count=1 -v -run '^TestCleanupCold(StartupReadiness|JournalReplay)$' ./internal/cleanup/daemon
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: cleanup-cold-startup-${{ matrix.os }}
+          path: ${{ runner.temp }}/cleanup-cold-startup
+
   headlabel-caller:
     runs-on: ubuntu-latest
     timeout-minutes: 15
