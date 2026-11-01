@@ -389,5 +389,10 @@ func TestStackSubmitParentMovesABranchOffAnOpenParentOntoTrunk(t *testing.T) {
 		t.Fatalf("stack submit --parent b=main: %v", err)
 	}
 	dropStep(t, shipGTInvocations(t, f), "gh", "PATCH", "repos/yasyf/cc-context/pulls/9001", "base=main")
-	stackAssertOnTrunk(t, f, api, "b")
+	if n := gitAt(t, f.Env(), f.RemoteDir, "rev-list", "--count", "main..b"); n != "1" {
+		t.Errorf("origin b holds %s commits over main, want its own 1", n)
+	}
+	if receipt, err := stackReadPublication(f.Context(), render.Dir(f.Dir), "b"); err != nil || receipt == nil || receipt.Parent != "main" {
+		t.Errorf("b publication = %+v, %v, want parent main", receipt, err)
+	}
 }
