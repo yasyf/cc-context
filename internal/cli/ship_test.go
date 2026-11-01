@@ -5311,6 +5311,7 @@ func TestShipGTPathScoped(t *testing.T) {
 		gitVersionProbe,
 		{"git", "branch", "--show-current"},
 		gtRealRefsArgv(t, f),
+		{"git", "diff", "--cached", "--name-only", "--no-renames", "-z", "--", ":/", ":(top,exclude,literal)src/a.go", ":(top,exclude,literal)docs"},
 		{"git", "ls-files", "-z", "--cached", "--", ":(literal)src/a.go", ":(literal)docs"},
 		{"git", "ls-files", "-z", "--others", "--exclude-standard", "--", ":(literal)src/a.go", ":(literal)docs"},
 		{"git", "add", "--pathspec-from-file=-", "--pathspec-file-nul"},
