@@ -420,6 +420,54 @@ func TestLookupRepoCachesCommandScopedRouting(t *testing.T) {
 	}
 }
 
+func TestLookupRepoCachesCommandScopedIncludes(t *testing.T) {
+	for _, key := range []string{"include.path", "includeIf.gitdir:**.path"} {
+		t.Run(key, func(t *testing.T) {
+			f := vcstest.Repo(t, vcstest.Remote(), vcstest.Worktree("feat"))
+			f.Isolate(t)
+			f.Out(t, "git", "config", "--unset-all", "remote.origin.url")
+			log := ghReplay(t, f, map[string][]string{
+				ghRepoVerb:    {"repo-api-foreign", "repo-api-own"},
+				"api graphql": {"viewer-graphql-foreign"},
+				"api user":    {"user-api-own"},
+			})
+			replay := render.LookPath(f.Context(), "gh")
+			bin := t.TempDir()
+			execstub.Write(t, filepath.Join(bin, "gh"), "#!/bin/sh\n"+
+				`remote=$(git remote get-url origin) || exit`+"\n"+
+				`test "$remote" = "$CCX_EXPECT_REMOTE" || exit 2`+"\n"+
+				`exec `+shQuote(replay)+` "$@"`+"\n")
+			f.PrependPATH(bin)
+			ctx := f.Context()
+			contexts := make([]context.Context, 0, 2)
+			for _, owner := range []string{"cli/cli", "yasyf/cc-context"} {
+				remote := "https://github.com/" + owner + ".git"
+				include := filepath.Join(t.TempDir(), "routing.gitconfig")
+				mustWriteFile(t, include, "[remote \"origin\"]\n\turl = "+remote+"\n")
+				scoped := render.WithEnv(ctx, "GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0="+key, "GIT_CONFIG_VALUE_0="+include, "CCX_EXPECT_REMOTE="+remote)
+				effective, err := render.RunCLI(scoped, render.Dir(f.Dir), "git", []string{"remote", "get-url", "origin"})
+				if err != nil || strings.TrimSpace(effective) != remote {
+					t.Fatalf("included effective remote = %q, %v; want %q", effective, err, remote)
+				}
+				repo, err := LookupRepo(scoped, render.Dir(f.Dir), false)
+				if err != nil || repo.NameWithOwner != owner {
+					t.Fatalf("included repository = %+v, %v; want %q", repo, err, owner)
+				}
+				contexts = append(contexts, scoped)
+			}
+			for i, owner := range []string{"cli/cli", "yasyf/cc-context"} {
+				repo, err := LookupRepo(contexts[i], render.Dir(f.WorktreePath("feat")), false)
+				if err != nil || repo.NameWithOwner != owner {
+					t.Fatalf("repeated included repository in linked worktree = %+v, %v; want %q", repo, err, owner)
+				}
+			}
+			if got := ghVerbCount(t, log, ghRepoVerb); got != 2 {
+				t.Fatalf("repository reads = %d, want 2", got)
+			}
+		})
+	}
+}
+
 func TestLookupRepoCaches(t *testing.T) {
 	f := vcstest.Repo(t)
 	f.Isolate(t)
