@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A pull request the Trunk queue holds no record of reads as not queued once a
+  second read still finds none, instead of an unknown queue state that refused
+  every push to it (`merge queue state of #N is unknown`). Trunk indexes every
+  pull request it takes into its queue, so one it never indexed cannot be
+  queued. Other providers re-read an unanswered pull request once and keep it
+  unknown only when the second read is still empty.
+
 ### Changed
 
 - **A paused cleanup queue retires a worktree only after its HEAD rests for an

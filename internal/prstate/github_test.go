@@ -317,8 +317,8 @@ func TestNativeMissingQueueEntryKeepsThePollUnknown(t *testing.T) {
 	if _, present := infos[42]; present || !snapshot.queueUnknown(42) {
 		t.Fatalf("missing queue entry was trusted: infos=%v statuses=%v", infos, statuses)
 	}
-	if calls != 2 {
-		t.Fatalf("reads=%d", calls)
+	if calls != 3 {
+		t.Fatalf("reads=%d, want the info read, the queue read and one re-read", calls)
 	}
 }
 
@@ -344,5 +344,25 @@ func TestQueueReadRetriesAStackReadThatOutlivesItsDeadline(t *testing.T) {
 	infos, _ := source.queueRecords(t.Context(), []int{42})
 	if infos[42] == nil {
 		t.Fatalf("a stack read that timed out once left the poll without queue state: infos=%v", infos)
+	}
+}
+
+func TestAPRTrunkStillHasNoRecordOfAfterARereadIsNotQueuedAndOnlyThere(t *testing.T) {
+	reread := map[int]string{45492: "notQueued", 45493: "queued:testing"}
+	for _, tt := range []struct {
+		provider string
+		number   int
+		state    string
+		known    bool
+	}{
+		{"trunk", 45464, "notQueued", true},
+		{"trunk", 45493, "queued:testing", true},
+		{"github", 45464, "", false},
+		{"graphite", 45464, "", false},
+		{"github", 45492, "notQueued", true},
+	} {
+		if state, known := settledQueue(tt.provider, reread, tt.number); state != tt.state || known != tt.known {
+			t.Errorf("settledQueue(%s, #%d) = %q, %t; want %q, %t", tt.provider, tt.number, state, known, tt.state, tt.known)
+		}
 	}
 }
