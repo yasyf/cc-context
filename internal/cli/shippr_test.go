@@ -982,6 +982,7 @@ func TestShipPRGTAlreadyCommitted(t *testing.T) {
 		{
 			name: "path scoped", paths: []string{"src/a.go"}, scope: " in src/a.go",
 			add: [][]string{
+				{"git", "diff", "--cached", "--name-only", "--no-renames", "-z", "--", ":/", ":(top,exclude,literal)src/a.go"},
 				{"git", "ls-files", "-z", "--cached", "--", ":(literal)src/a.go"},
 				{"git", "ls-files", "-z", "--others", "--exclude-standard", "--", ":(literal)src/a.go"},
 				{"git", "add", "--pathspec-from-file=-", "--pathspec-file-nul"},

@@ -61,6 +61,8 @@ type branchPlan struct {
 	needsRestack     bool
 	moveOntoParent   bool
 	commitBeforeMove bool
+
+	undo *gtMoveUndo
 }
 
 // resolveBranchPlan turns the caller's stated intent and the working copy's

@@ -190,7 +190,8 @@ func repoRoutingContext(ctx context.Context, root render.Dir) (string, error) {
 		name := strings.ToLower(key)
 		remote := strings.HasPrefix(name, "remote.") && (strings.HasSuffix(name, ".url") || strings.HasSuffix(name, ".pushurl"))
 		rewrite := strings.HasPrefix(name, "url.") && (strings.HasSuffix(name, ".insteadof") || strings.HasSuffix(name, ".pushinsteadof"))
-		if remote || rewrite {
+		include := name == "include.path" || strings.HasPrefix(name, "includeif.") && strings.HasSuffix(name, ".path")
+		if remote || rewrite || include {
 			values = append(values, key, render.Getenv(ctx, "GIT_CONFIG_VALUE_"+suffix))
 		}
 	}

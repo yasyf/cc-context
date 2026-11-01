@@ -500,7 +500,13 @@ func stackBranches(ctx context.Context, c *gtCache) ([]string, error) {
 	return chain, err
 }
 
-func shipPreflightGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, c *gtCache) (branchPlan, string, error) {
+func shipPreflightGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, c *gtCache) (plan branchPlan, seg string, err error) {
+	var undo *gtMoveUndo
+	defer func() {
+		if err != nil && undo != nil {
+			err = undo.restore(ctx, l, c, err)
+		}
+	}()
 	branch, err := shipBranch(ctx, l.dir(), o)
 	if err != nil {
 		return branchPlan{}, "", err
@@ -523,7 +529,7 @@ func shipPreflightGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, c 
 	if err != nil {
 		return branchPlan{}, "", err
 	}
-	plan, err := resolveBranchPlan(l, repo, o, branch, trunk)
+	plan, err = resolveBranchPlan(l, repo, o, branch, trunk)
 	if err != nil {
 		return branchPlan{}, "", err
 	}
@@ -538,16 +544,27 @@ func shipPreflightGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, c 
 		return plan, "", nil
 	}
 
-	var seg string
 	moves := false
 	switch s, tracked := state[branch]; {
 	case !tracked && o.parent != "":
 		err = gtAdoptRefusal(ctx, l, o, state, branch, o.parent, c)
 		moves = true
 	case !tracked:
+		head, headErr := gtRestackHead(ctx, "ship", l.dir(), branch)
+		if headErr != nil {
+			return branchPlan{}, "", headErr
+		}
 		var adopted gtState
-		if adopted, seg, err = gtTrack(ctx, errW, l, o, branch, c); err == nil {
-			state = adopted
+		if adopted, seg, err = gtTrack(ctx, errW, l, o, branch, c); err != nil {
+			break
+		}
+		state = adopted
+		moved, movedErr := gtRestackHead(ctx, "ship", l.dir(), branch)
+		if movedErr != nil {
+			return branchPlan{}, seg, movedErr
+		}
+		if moved != head {
+			undo = &gtMoveUndo{branch: branch, parent: state[branch].Parents[0].Ref, head: head, moved: moved}
 		}
 	case plan.action != branchCreate && o.parent != "" && s.Parents[0].Ref != o.parent:
 		_, err = gtReparentRefusal(ctx, l, o, state, branch, o.parent, c)
@@ -566,6 +583,7 @@ func shipPreflightGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, c 
 		return branchPlan{}, seg, err
 	}
 	state = planned
+	plan.undo = undo
 	if moves || plan.commitBeforeMove {
 		plan.moveOntoParent = true
 		return plan, seg, nil
@@ -2287,6 +2305,13 @@ func shipCommitGT(ctx context.Context, l lane, errW io.Writer, o shipOpts, sel *
 	if o, err = shipScopeToIndex(ctx, l.dir(), o); err != nil {
 		return "", err
 	}
+	beside, err := gtStagedBeside(ctx, l.dir(), o)
+	if err != nil {
+		return "", err
+	}
+	if len(beside) > 0 {
+		return "", stagedBesideRefusal(beside)
+	}
 	sweptSeg, err := shipGitAdd(ctx, l.dir(), o)
 	if err != nil {
 		return "", err
@@ -2312,6 +2337,21 @@ func shipCommitGT(ctx context.Context, l lane, errW io.Writer, o shipOpts, sel *
 		}
 	}
 	return strings.Join(segs, shipSep), nil
+}
+
+func gtStagedBeside(ctx context.Context, dir render.Dir, o shipOpts) ([]string, error) {
+	if len(o.rootPaths) == 0 || slices.Contains(o.rootPaths, ".") || len(o.onlyHunks) > 0 || len(o.skipHunks) > 0 {
+		return nil, nil
+	}
+	argv := []string{"diff", "--cached", "--name-only", "--no-renames", "-z", "--", ":/"}
+	for _, p := range o.rootPaths {
+		argv = append(argv, ":(top,exclude,literal)"+p)
+	}
+	return gitPathsZ(ctx, dir, argv...)
+}
+
+func stagedBesideRefusal(beside []string) error {
+	return refuse("ship: the graphite commit takes the whole index, and the index stages %s outside the named paths — unstage them with git restore --staged, or name them to ship them too", strings.Join(beside, ", "))
 }
 
 // shipCommitGTSelect commits a hunk selection through the same throwaway-index
