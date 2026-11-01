@@ -192,13 +192,15 @@ func TestShipDryRunOrdersOnlyContainedTrackedBranches(t *testing.T) {
 }
 
 // TestShipDryRunSeparatesTheStagedIndex proves the two sets are never one
-// count. The graphite commit carries no pathspec, so a path-scoped ship takes
-// the whole index with it, and the report says which files that is.
+// count. The graphite commit carries no pathspec, so a path-scoped ship over an
+// index staging other files refuses rather than take them, the report names
+// them, and the real run refuses word for word with nothing committed.
 func TestShipDryRunSeparatesTheStagedIndex(t *testing.T) {
 	f := dryRunFixture(t)
 	writeShipFile(t, f.Dir, "named.txt", "named\n")
 	writeShipFile(t, f.Dir, "foreign.txt", "another lane\n")
 	mustRun(t, f.Env(), f.Dir, "git", "add", "foreign.txt")
+	head := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD")
 
 	report := dryRunReport(t, f, "-m", "fix: frobnicate", "named.txt")
 
@@ -206,10 +208,25 @@ func TestShipDryRunSeparatesTheStagedIndex(t *testing.T) {
 	if len(commit) != 1 {
 		t.Fatalf("commit lines = %v, want exactly one", commit)
 	}
-	for _, want := range []string{"1 file named", "named.txt", "1 staged elsewhere", "swept in", "foreign.txt"} {
+	for _, want := range []string{"1 file named", "named.txt", "1 staged elsewhere", "refused", "foreign.txt"} {
 		if !strings.Contains(commit[0], want) {
 			t.Errorf("commit = %q, want it to carry %q", commit[0], want)
 		}
+	}
+	want := "ship: the graphite commit takes the whole index, and the index stages foreign.txt outside the named paths — unstage them with git restore --staged, or name them to ship them too"
+	if refusals := dryRunValues(report, "refuses"); !slices.Equal(refusals, []string{want}) {
+		t.Errorf("refuses = %q, want %q", refusals, want)
+	}
+
+	_, _, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--no-push", "named.txt")
+	if err == nil || err.Error() != want {
+		t.Fatalf("real ship = %v, want %q", err, want)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD"); got != head {
+		t.Errorf("HEAD = %s, want %s: the refused ship committed", got, head)
+	}
+	if staged := gitAt(t, f.Env(), f.Dir, "diff", "--cached", "--name-only"); staged != "foreign.txt" {
+		t.Errorf("staged = %q, want foreign.txt alone, as the caller left it", staged)
 	}
 }
 

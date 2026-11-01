@@ -445,8 +445,8 @@ func dryRunEmptyCommit(ctx context.Context, l lane, o shipOpts, r *shipDryRun) e
 
 // dryRunScope separates what the caller named from what the index already
 // carries. The separation is the point: the graphite commit carries no
-// pathspec, so it takes the whole index whatever paths scoped the add, and the
-// staged work of a concurrent session rides out with it.
+// pathspec, so it takes the whole index whatever paths scoped the add, and a
+// path-scoped ship over another change's staged work refuses.
 func dryRunScope(ctx context.Context, l lane, o shipOpts, r *shipDryRun) error {
 	if o.noCommit {
 		r.notes = append(r.notes, "--no-commit cuts no commit, so nothing in the working copy is committed")
@@ -469,7 +469,17 @@ func dryRunScope(ctx context.Context, l lane, o shipOpts, r *shipDryRun) error {
 			r.staged = append(r.staged, e.Path)
 		}
 	}
-	r.sweeps = l.gt
+	r.sweeps = l.gt && len(o.onlyHunks) == 0 && len(o.skipHunks) == 0
+	if !r.sweeps {
+		return nil
+	}
+	beside, err := gtStagedBeside(ctx, l.dir(), o)
+	if err != nil {
+		return err
+	}
+	if len(beside) > 0 {
+		r.refusals = append(r.refusals, stagedBesideRefusal(beside).Error())
+	}
 	return nil
 }
 
@@ -838,7 +848,7 @@ func dryRunScopeValue(r shipDryRun) string {
 	if len(r.staged) > 0 {
 		verb := "left out: the commit names its own paths"
 		if r.sweeps {
-			verb = "swept in: the graphite commit takes the whole index"
+			verb = "refused: the graphite commit takes the whole index"
 		}
 		segs = append(segs, fmt.Sprintf("%d staged elsewhere (%s)", len(r.staged), verb), dryRunPathValue(r.staged))
 	}
