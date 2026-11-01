@@ -293,6 +293,9 @@ Ship owns the pull request in every lane. --pr-title and --pr-body-file are repe
 
 func runShip(cmd *cobra.Command, o shipOpts) (err error) {
 	ctx := cmd.Context()
+	if repo := render.Getenv(ctx, "GH_REPO"); repo != "" {
+		ctx = render.WithEnv(ctx, "GH_REPO="+repo)
+	}
 	o.message = strings.Join(o.messages, "\n\n")
 	if err := resolveBranchFlags(cmd, &o); err != nil {
 		return err

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -131,16 +132,22 @@ func LookupRepo(ctx context.Context, root render.Dir, refresh bool) (Repo, error
 }
 
 // RepoCachePath resolves the cached-record path for the GitHub metadata of the
-// repository root belongs to. The key is the repository, not the checkout, so
-// a repository's linked worktrees share one record rather than each paying
-// their own lookup. It is exported so tests can seed or clear the
-// record.
+// repository root belongs to. Linked worktrees share a record when their
+// repository routing context matches. It is exported so tests can seed or
+// clear the record.
 func RepoCachePath(ctx context.Context, root string) (string, error) {
 	c, err := ResolveCheckout(root)
 	if err != nil {
 		return "", err
 	}
 	key := c.RepoKey()
+	routing, err := repoRoutingContext(ctx, render.Dir(root))
+	if err != nil {
+		return "", err
+	}
+	if routing != "" {
+		key += "\x00" + routing
+	}
 	if installationToken(ctx) {
 		key += "\x00installation"
 	}
@@ -150,6 +157,47 @@ func RepoCachePath(ctx context.Context, root string) (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, "repo.json"), nil
+}
+
+func repoRoutingContext(ctx context.Context, root render.Dir) (string, error) {
+	var repo string
+	for _, kv := range render.EnvFrom(ctx) {
+		if value, ok := strings.CutPrefix(kv, "GH_REPO="); ok {
+			repo = value
+		}
+	}
+	if root == render.Ambient {
+		repo = render.Getenv(ctx, "GH_REPO")
+	}
+	var values []string
+	if repo != "" {
+		values = append(values, "GH_REPO", repo)
+	}
+	if host := render.Getenv(ctx, "GH_HOST"); host != "" {
+		values = append(values, "GH_HOST", host)
+	}
+	count := 0
+	if raw := render.Getenv(ctx, "GIT_CONFIG_COUNT"); raw != "" {
+		var err error
+		count, err = strconv.Atoi(raw)
+		if err != nil {
+			return "", fmt.Errorf("%w: invalid GIT_CONFIG_COUNT: %w", ErrNoGitHub, err)
+		}
+	}
+	for i := range count {
+		suffix := strconv.Itoa(i)
+		key := render.Getenv(ctx, "GIT_CONFIG_KEY_"+suffix)
+		name := strings.ToLower(key)
+		remote := strings.HasPrefix(name, "remote.") && (strings.HasSuffix(name, ".url") || strings.HasSuffix(name, ".pushurl"))
+		rewrite := strings.HasPrefix(name, "url.") && (strings.HasSuffix(name, ".insteadof") || strings.HasSuffix(name, ".pushinsteadof"))
+		if remote || rewrite {
+			values = append(values, key, render.Getenv(ctx, "GIT_CONFIG_VALUE_"+suffix))
+		}
+	}
+	if parameters := render.Getenv(ctx, "GIT_CONFIG_PARAMETERS"); parameters != "" {
+		values = append(values, "GIT_CONFIG_PARAMETERS", parameters)
+	}
+	return strings.Join(values, "\x00"), nil
 }
 
 func installationToken(ctx context.Context) bool {
