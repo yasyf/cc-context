@@ -328,6 +328,17 @@ func TestConvertMovesOnlyTheRequestedDownstackAndLeavesGraphiteUntouched(t *test
 	}
 }
 
+func TestConvertOntoRetracksABranchWhoseGraphiteParentIsGoneOntoTheNamedParent(t *testing.T) {
+	f, common, _ := mixedStackFixture(t)
+	f.Out(t, "git", "branch", "-D", "bottom")
+	if err := gtmeta.ConvertOnto(f.Context(), common, "middle", "main"); err != nil {
+		t.Fatalf("ConvertOnto(middle onto main after bottom was deleted) = %v; want middle re-tracked and converted", err)
+	}
+	if got, err := gtmeta.NativeMembership(common, "middle"); err != nil || !got {
+		t.Fatalf("native membership of middle = %v, %v; want true", got, err)
+	}
+}
+
 func TestConvertRefusesAGraphiteChainWithNoLiveParent(t *testing.T) {
 	f, common, _ := mixedStackFixture(t)
 	f.Out(t, "git", "branch", "-D", "bottom")
