@@ -1,1 +1,1 @@
-{"v":1,"lamport":2,"ops":[{"kind":"set_assignee","assignee":"/root/capt_post34_io_source"}]}
+{"v":1,"lamport":3,"ops":[{"kind":"set_criterion_status","id":"a52db927975651ca114ccc11a273c258","status":"met","note":"BothOS raw private diagnostic proof8f658b8a and exact source/reported5d051a freeze32/7422 paused allDone metrics; race/no-cacheflush/directStatus/original8sUNKNOWN bounds retained."}]}
