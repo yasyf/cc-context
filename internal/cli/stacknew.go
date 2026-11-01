@@ -365,16 +365,17 @@ func stackUndoNew(ctx context.Context, l lane, path, name, parent string, cause 
 }
 
 func stackNewPath(ctx context.Context, checkout vcs.Checkout, name, requested string, source vcs.Checkout) (string, error) {
-	path, err := mintWorktreePath(ctx, "stack new", checkout, name)
-	if err != nil {
-		return "", err
-	}
+	var path string
+	var err error
 	if requested == "" {
 		path, err = mintGitWorktreePath(ctx, "stack new", checkout, name)
 		if err != nil {
 			return "", err
 		}
 	} else {
+		if _, err := worktreeName("stack new", name); err != nil {
+			return "", err
+		}
 		if !filepath.IsAbs(requested) {
 			requested = filepath.Join(workingDir(ctx), requested)
 		}

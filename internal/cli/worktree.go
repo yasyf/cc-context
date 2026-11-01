@@ -844,9 +844,9 @@ func worktreeShapeOf(mode string) string {
 // symlink-free — the spelling git canonicalizes every registered path to — so a
 // minted path equals its registry entry byte for byte.
 func mintWorktreePath(ctx context.Context, prefix string, c vcs.Checkout, name string) (string, error) {
-	elements := strings.Split(name, "/")
-	if slices.ContainsFunc(elements, func(e string) bool { return e == "" || e == "." || e == ".." }) {
-		return "", fmt.Errorf("%s: %q is not a worktree name — a name has no empty, \".\", or \"..\" /-separated element", prefix, name)
+	leaf, err := worktreeName(prefix, name)
+	if err != nil {
+		return "", err
 	}
 	home, err := canonicalHome(ctx, prefix)
 	if err != nil {
@@ -857,7 +857,15 @@ func mintWorktreePath(ctx context.Context, prefix string, c vcs.Checkout, name s
 	if filepath.Dir(filepath.Dir(c.MainRoot)) == pool {
 		repo = filepath.Base(filepath.Dir(c.MainRoot))
 	}
-	return filepath.Join(pool, repo, strings.Join(elements, "-")), nil
+	return filepath.Join(pool, repo, leaf), nil
+}
+
+func worktreeName(prefix, name string) (string, error) {
+	elements := strings.Split(name, "/")
+	if slices.ContainsFunc(elements, func(e string) bool { return e == "" || e == "." || e == ".." }) {
+		return "", fmt.Errorf("%s: %q is not a worktree name — a name has no empty, \".\", or \"..\" /-separated element", prefix, name)
+	}
+	return strings.Join(elements, "-"), nil
 }
 
 func canonicalHome(ctx context.Context, prefix string) (string, error) {
