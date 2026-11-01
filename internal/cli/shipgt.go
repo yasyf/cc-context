@@ -2798,6 +2798,7 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 	var unrecordable []string
 	defer func() { gtClaimPosted(ctx, errW, l.dir(), s.prefix, owner+"/"+name, submitted, entries) }()
 	for i, pr := range gtSubmitPRs(posted, s.createDraft(), s.updateDraft(tip)) {
+		pr.Move = s.publication != nil && slices.Contains(s.publication.Moves, pr.Head)
 		out, err := client.SubmitPullRequests(ctx, gtapi.SubmitRequest{
 			RepoOwner:       owner,
 			RepoName:        name,
@@ -2887,6 +2888,16 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 		landed = append(landed, out...)
 		submitted = append(submitted, posted[i])
 		if posted[i].pr != 0 {
+			for _, moved := range out {
+				if moved.PRNumber == posted[i].pr {
+					continue
+				}
+				if _, err := fmt.Fprintf(errW, "%s: moved %s's pull request #%d out of its native GitHub stack into #%d %s on %s, and closed #%d with a comment naming it\n", s.prefix, moved.Head, posted[i].pr, moved.PRNumber, moved.PRURL, pr.Base, posted[i].pr); err != nil {
+					return nil, nil, fmt.Errorf("%s: report the moved pull request of %s: %w", s.prefix, moved.Head, err)
+				}
+				entries[moved.Head] = stackEntry{Branch: moved.Head, PR: moved.PRNumber, URL: moved.PRURL, HasBody: entries[moved.Head].HasBody, State: string(gtapi.PROpen)}
+				submitted[len(submitted)-1].pr = 0
+			}
 			continue
 		}
 		for _, created := range out {

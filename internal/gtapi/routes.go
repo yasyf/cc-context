@@ -343,6 +343,7 @@ type SubmitPR struct {
 	ShouldRetarget   bool         `json:"shouldRetarget,omitempty"`
 	RebaseOnlyChange bool         `json:"rebaseOnlyChange,omitempty"`
 	MaintainRetarget bool         `json:"maintainRetarget,omitempty"`
+	Move             bool         `json:"-"`
 }
 
 // SubmitRequest opens and updates the named PRs in one call.

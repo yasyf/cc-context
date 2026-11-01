@@ -19,7 +19,7 @@ const stackPRCandidates = 10
 
 const stackPRChunk = 40
 
-const stackPRFields = "number url title body isCrossRepository baseRefName headRefOid mergeable labels(first: 20) { nodes { name } } " + prLandingFields
+const stackPRFields = "number url title body isCrossRepository baseRefName headRefOid mergeable labels(first: 20) { nodes { name } } stack { number } " + prLandingFields
 
 type stackPRNode struct {
 	Number            int    `json:"number"`
@@ -35,6 +35,9 @@ type stackPRNode struct {
 			Name string `json:"name"`
 		} `json:"nodes"`
 	} `json:"labels"`
+	Stack *struct {
+		Number int `json:"number"`
+	} `json:"stack"`
 	prLanding
 }
 
@@ -121,6 +124,9 @@ func stackGraphQLRead(branch string, n stackPRNode) stackPRRead {
 	for _, label := range n.Labels.Nodes {
 		pr.Labels = append(pr.Labels, label.Name)
 	}
+	if n.Stack != nil {
+		pr.Stack = n.Stack.Number
+	}
 	return stackPRRead{branch: branch, pr: pr, landing: n.prLanding}
 }
 
@@ -146,6 +152,9 @@ func stackReadPRsREST(ctx context.Context, dir render.Dir, branches []string) ([
 		pr := &stackPR{
 			Number: p.Number, URL: p.HTMLURL, Title: p.Title, Body: p.Body, State: landing.State,
 			Base: p.Base.Ref, Head: p.Head.SHA, Mergeable: p.mergeable(), Labels: p.labelNames(), Segment: p.Base.Ref == gtSegmentBase(branch),
+		}
+		if p.Stack != nil {
+			pr.Stack = p.Stack.Number
 		}
 		reads = append(reads, stackPRRead{branch: branch, pr: pr, landing: landing})
 	}

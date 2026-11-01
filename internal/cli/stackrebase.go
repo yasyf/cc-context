@@ -70,6 +70,7 @@ type stackPR struct {
 	BaseBack   bool     `json:"base_back,omitempty"`
 	ParkedFrom string   `json:"parked_from,omitempty"`
 	Segment    bool     `json:"segment,omitempty"`
+	Stack      int      `json:"stack,omitempty"`
 }
 
 func (p *stackPR) base() string {
@@ -188,6 +189,7 @@ type stackRebaseRun struct {
 	To            string   `json:"to,omitempty"`
 	Reparented    []string `json:"reparented,omitempty"`
 	NewPRs        []string `json:"new_prs,omitempty"`
+	Moves         []string `json:"moves,omitempty"`
 	deferPush     bool
 	Ship          *stackShipIntent         `json:"ship,omitempty"`
 	Retarget      *restackRetarget         `json:"retarget,omitempty"`
@@ -253,6 +255,7 @@ type stackRebaseOpts struct {
 	linearize   []string
 	landed      []string
 	newPRs      []string
+	moves       []string
 	dryRun      bool
 	noPush      bool
 	members     []string
@@ -289,6 +292,8 @@ const stackDropCommitsUsage = "publish a branch whose local head drops commits i
 const stackEvictQueuedUsage = "move and push a branch whose pull request sits in the merge queue, evicting it from the queue, instead of keeping it at its published head"
 
 const stackToUsage = "stop at this branch: leave every branch stacked above it out of the run"
+
+const stackMoveUsage = "move <branch>'s open pull request onto its gt parent when a native GitHub stack holds it on another base: open a new pull request from the same head with its title and body, link it into the parent's stack, and close the old one with a comment naming the new one (repeatable)"
 
 const stackNewPRUsage = "keep <branch>, whose last pull request closed without merging, instead of dropping it; --pr-title and --pr-body-file for it open a new one (repeatable)"
 
@@ -1338,6 +1343,14 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	if err := stackSupersedeClosed(prs, members, o.newPRs, o.landed); err != nil {
 		return nil, err
 	}
+	for _, name := range o.moves {
+		switch pr := prs[name]; {
+		case !slices.Contains(members, name):
+			return nil, fmt.Errorf("stack rebase: --move named %s, which is not a branch of this run", name)
+		case pr == nil || pr.State != "OPEN":
+			return nil, fmt.Errorf("stack rebase: --move named %s, which has no open pull request to move", name)
+		}
+	}
 	locals := make(map[string]string, len(members))
 	for _, name := range members {
 		locals[name] = retargeted[name].Head
@@ -1371,7 +1384,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 		}
 		return stackPlan(ctx, l, commonDir, requested)
 	}
-	members, left, passed, err := stackKept(ctx, l.dir(), state, tr, current, members, prs, parentOverrides, o.landed)
+	members, left, passed, err := stackKept(ctx, l.dir(), state, tr, current, members, prs, parentOverrides, o.landed, o.moves)
 	if err != nil {
 		return nil, err
 	}
@@ -1397,7 +1410,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	if err != nil {
 		return nil, fmt.Errorf("stack rebase: %w", err)
 	}
-	run := &stackRebaseRun{Trunk: trunk, Pin: pin, NoPush: o.noPush, Origin: l.checkout.Root, Draft: o.draft, DraftAll: o.draftAll, NoVerify: o.noVerify, Tip: o.tip, TipOnly: o.tipOnly, DropCommits: o.dropCommits, StayClean: o.stayClean, Restack: o.restack, AllLanes: o.allLanes, To: o.to, Reparented: slices.Sorted(maps.Keys(overrides)), NewPRs: o.newPRs, deferPush: o.deferPush, Ship: o.ship, Roots: roots, Pid: os.Getpid(), Started: stackProcStart(os.Getpid()), Host: host, left: left, lanePins: lanePins, heldBelow: heldBelow, heldAbove: heldAbove, owners: o.owners, adopted: adopted, recorded: o.recorded, rewound: rewound}
+	run := &stackRebaseRun{Trunk: trunk, Pin: pin, NoPush: o.noPush, Origin: l.checkout.Root, Draft: o.draft, DraftAll: o.draftAll, NoVerify: o.noVerify, Tip: o.tip, TipOnly: o.tipOnly, DropCommits: o.dropCommits, StayClean: o.stayClean, Restack: o.restack, AllLanes: o.allLanes, To: o.to, Reparented: slices.Sorted(maps.Keys(overrides)), NewPRs: o.newPRs, Moves: o.moves, deferPush: o.deferPush, Ship: o.ship, Roots: roots, Pid: os.Getpid(), Started: stackProcStart(os.Getpid()), Host: host, left: left, lanePins: lanePins, heldBelow: heldBelow, heldAbove: heldAbove, owners: o.owners, adopted: adopted, recorded: o.recorded, rewound: rewound}
 	own := map[string]bool{}
 	if current != "" && current != trunk {
 		down, err := gtDownstack(stackRebasePrefix, retargeted, current, trunk)
@@ -1693,7 +1706,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 // to another lane: gt track adopts a branch cut at the same commit as another
 // onto it, and a run that trusted that record replayed another lane's work
 // onto this stack and pushed it. Everything stacked on either goes with it.
-func stackKept(ctx context.Context, dir render.Dir, state gtState, tr vcs.Trunk, current string, members []string, prs map[string]*stackPR, overrides map[string]string, landed []string) ([]string, []stackLeft, map[string]string, error) {
+func stackKept(ctx context.Context, dir render.Dir, state gtState, tr vcs.Trunk, current string, members []string, prs map[string]*stackPR, overrides map[string]string, landed, moves []string) ([]string, []stackLeft, map[string]string, error) {
 	isLanded := func(name string) bool {
 		return slices.Contains(landed, name) || (prs[name] != nil && (prs[name].Landed || prs[name].abandoned()))
 	}
@@ -1742,7 +1755,7 @@ func stackKept(ctx context.Context, dir render.Dir, state gtState, tr vcs.Trunk,
 			for effective != tr.Name() && isLanded(effective) {
 				effective = state[effective].Parents[0].Ref
 			}
-			why, err := stackStrayReason(ctx, dir, state, tr, name, parent, effective, prs[name])
+			why, err := stackStrayReason(ctx, dir, state, tr, name, parent, effective, prs[name], slices.Contains(moves, name))
 			if err != nil {
 				return nil, nil, nil, err
 			}
@@ -1807,16 +1820,19 @@ func stackPassThrough(passed map[string]string, parent string) string {
 
 // stackStrayReason names the evidence that branch belongs to another lane: an
 // open pull request based on neither its gt parent nor the ancestor that
-// parent's landing leaves it on, or a history carrying none of the parent's own
-// commits under any sha.
-func stackStrayReason(ctx context.Context, dir render.Dir, state gtState, tr vcs.Trunk, branch, parent, effective string, pr *stackPR) (string, error) {
-	if pr != nil && pr.State == "OPEN" && pr.Base != "" && pr.base() != parent && pr.base() != effective {
+// parent's landing leaves it on, unless --move names the branch, or a history
+// carrying none of the parent's own commits under any sha.
+func stackStrayReason(ctx context.Context, dir render.Dir, state gtState, tr vcs.Trunk, branch, parent, effective string, pr *stackPR, move bool) (string, error) {
+	if !move && pr != nil && pr.State == "OPEN" && pr.Base != "" && pr.base() != parent && pr.base() != effective {
 		inserted, err := stackInsertedBelow(ctx, dir, state, tr, branch, parent, pr.base())
 		if err != nil || inserted {
 			return "", err
 		}
 		if pr.parked() && pr.ParkedFrom == "" {
 			return fmt.Sprintf("gt records its parent as %s, but its pull request #%d sits on Graphite's %s and this clone never submitted it — name its real parent with ccx vcs stack rebase --parent %s=<branch>", parent, pr.Number, pr.Base, branch), nil
+		}
+		if pr.Stack != 0 {
+			return fmt.Sprintf("gt records its parent as %s, but its pull request #%d is based on %s, where native GitHub stack #%d holds it — move the pull request onto %s with ccx vcs stack submit --move %s, or re-record the branch with gt track --parent %s %s", parent, pr.Number, pr.base(), pr.Stack, parent, branch, pr.base(), branch), nil
 		}
 		return fmt.Sprintf("gt records its parent as %s, but its pull request #%d is based on %s — re-record it with gt track --parent %s %s", parent, pr.Number, pr.base(), pr.base(), branch), nil
 	}
@@ -4938,7 +4954,7 @@ func stackReplan(ctx context.Context, cmd *cobra.Command, l lane, commonDir stri
 	}
 	next, err := stackPlan(ctx, l, commonDir, stackRebaseOpts{
 		parents: parents, members: members, pinned: pinned, landed: landed, vetted: vetted, replayed: replayed, draft: run.Draft, draftAll: run.DraftAll, noVerify: run.NoVerify, ship: run.Ship,
-		tip: run.Tip, tipOnly: run.TipOnly, dropCommits: run.DropCommits, stayClean: run.StayClean, restack: run.Restack, allLanes: run.AllLanes, to: run.To, newPRs: run.NewPRs,
+		tip: run.Tip, tipOnly: run.TipOnly, dropCommits: run.DropCommits, stayClean: run.StayClean, restack: run.Restack, allLanes: run.AllLanes, to: run.To, newPRs: run.NewPRs, moves: run.Moves,
 	})
 	if err != nil {
 		return err

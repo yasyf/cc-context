@@ -1,6 +1,7 @@
 package nativeapi
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -204,8 +205,11 @@ func (c *Client) SubmitPullRequests(ctx context.Context, req SubmitRequest) ([]S
 			if entry.Action == SubmitCreate {
 				posted.Status = "created"
 			}
+			if entry.Action == SubmitUpdate && pull.Number != entry.PRNumber {
+				posted.Status = "moved"
+			}
 			if err == nil && entry.Base != "" && pull.Base.Ref != entry.Base && pull.Stack != nil {
-				posted.Warnings = append(posted.Warnings, fmt.Sprintf("kept PR #%d on %s, not %s: native GitHub stack #%d still holds another open pull request and sets its base", pull.Number, pull.Base.Ref, entry.Base, pull.Stack.Number))
+				posted.Warnings = append(posted.Warnings, fmt.Sprintf("kept PR #%d on %s, not %s: native GitHub stack #%d still holds another open pull request and sets its base; ccx vcs stack submit --move %s opens a new pull request for it on %s and closes #%d", pull.Number, pull.Base.Ref, entry.Base, pull.Stack.Number, entry.Head, entry.Base, pull.Number))
 			}
 			result = append(result, posted)
 		}
@@ -290,10 +294,16 @@ func (c *Client) submitPull(ctx context.Context, owner, repo string, entry Submi
 		if err != nil {
 			return restPull{}, err
 		}
-		if !unstacked {
+		pull = left
+		if !unstacked && entry.Move {
+			moved, err := c.movePull(ctx, owner, repo, pull, entry)
+			if err != nil {
+				return moved, err
+			}
+			pull, values = moved, nil
+		} else if !unstacked {
 			delete(values, "base")
 		}
-		pull = left
 	}
 	if len(values) > 0 {
 		payload, err := c.send(ctx, method, path, values)
@@ -326,6 +336,27 @@ func (c *Client) submitPull(ctx context.Context, owner, repo string, entry Submi
 		}
 	}
 	return pull, nil
+}
+
+func (c *Client) movePull(ctx context.Context, owner, repo string, pull restPull, entry SubmitPR) (restPull, error) {
+	path := fmt.Sprintf("/repos/%s/%s", url.PathEscape(owner), url.PathEscape(repo))
+	title, body := cmp.Or(entry.Title, pull.Title), cmp.Or(entry.Body, pull.Body)
+	payload, err := c.post(ctx, path+"/pulls", map[string]any{"head": entry.Head, "base": entry.Base, "title": title, "body": body, "draft": pull.Draft})
+	if err != nil {
+		return restPull{}, fmt.Errorf("open a pull request for %s on %s to move PR #%d out of native GitHub stack #%d: %w", entry.Head, entry.Base, pull.Number, pull.Stack.Number, err)
+	}
+	var moved restPull
+	if err := json.Unmarshal(payload, &moved); err != nil {
+		return restPull{}, err
+	}
+	note := fmt.Sprintf("Moved to #%d: native GitHub stack #%d holds this pull request on %s, and %s now sits on %s.", moved.Number, pull.Stack.Number, pull.Base.Ref, entry.Head, entry.Base)
+	if _, err := c.post(ctx, fmt.Sprintf("%s/issues/%d/comments", path, pull.Number), map[string]any{"body": note}); err != nil {
+		return moved, fmt.Errorf("opened PR #%d for %s on %s, but commenting on PR #%d failed, so it stays open: %w", moved.Number, entry.Head, entry.Base, pull.Number, err)
+	}
+	if _, err := c.send(ctx, http.MethodPatch, fmt.Sprintf("%s/pulls/%d", path, pull.Number), map[string]any{"state": "closed"}); err != nil {
+		return moved, fmt.Errorf("opened PR #%d for %s on %s, but closing PR #%d failed: %w", moved.Number, entry.Head, entry.Base, pull.Number, err)
+	}
+	return moved, nil
 }
 
 func (c *Client) linkPull(ctx context.Context, owner, repo, trunk string, pull restPull) (int, error) {

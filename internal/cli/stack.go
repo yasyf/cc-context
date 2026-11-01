@@ -249,7 +249,14 @@ Above the branch checked out here, a branch belongs to another lane when the
 rest of the record contradicts its gt parent: its open pull request is based on
 neither that parent nor the branch a landed parent leaves it on, or its history
 carries none of the parent's own commits. It and everything stacked on it are
-left alone and named on stderr with the step to re-record the parent.
+left alone and named on stderr with the step to re-record the parent. When a
+native GitHub stack holds that pull request on its base, the step also names
+--move <branch>: GitHub keeps the base of a stacked pull request while another
+member is open, so --move opens a new pull request from the same head onto the
+gt parent with the old one's title, body and draft state, links it into the
+parent's native stack, and closes the old one with a comment naming the new
+one. Nothing moves a pull request without --move, since every lane pushes as
+one GitHub user and ccx cannot tell which lane owns it.
 --to <branch> stops the run at <branch>, leaving every branch stacked above it
 out; a <branch> that is neither the one checked out here nor stacked above it
 is refused.
@@ -302,6 +309,7 @@ head. --all-lanes takes in the branches those working copies hold. On a branch,
 	cmd.Flags().BoolVar(&o.allLanes, "all-lanes", false, "submit the branches of other lanes too, a lane being the branch name before its last slash or the working copy holding the branch")
 	cmd.Flags().StringArrayVar(&o.landed, "landed", nil, "treat <branch> as landed and drop it (repeatable)")
 	cmd.Flags().StringArrayVar(&o.newPRs, "new-pr", nil, stackNewPRUsage)
+	cmd.Flags().StringArrayVar(&o.moves, "move", nil, stackMoveUsage)
 	cmd.Flags().BoolVar(&o.dropCommits, "drop-commits", false, stackDropCommitsUsage)
 	cmd.Flags().BoolVar(&o.restack, "restack", false, "rebase published branches onto the fetched trunk even when they merge cleanly")
 	cmd.Flags().BoolVar(&o.evictQueued, "evict-queued", false, stackEvictQueuedUsage)
@@ -517,6 +525,9 @@ func runStackSubmit(cmd *cobra.Command, o shipOpts, include []string, to string)
 	if !l.gt {
 		return stackSubmitGit(cmd, l)
 	}
+	if len(o.moves) > 0 && !l.native {
+		return refuse("stack submit: --move moves a pull request out of a native GitHub stack, and this lane submits through Graphite")
+	}
 	defer func() { err = errors.Join(err, stackReportSaved(cmd, l.checkout.CommonDir, since)) }()
 	current, err := gitCurrentBranch(ctx, l.dir(), "stack submit")
 	if err != nil {
@@ -572,7 +583,7 @@ func runStackSubmit(cmd *cobra.Command, o shipOpts, include []string, to string)
 	}
 	tracking := &stackTracking{}
 	cmd.SetContext(withStackTracking(ctx, tracking))
-	opts := stackRebaseOpts{members: chain, pinned: append(stackSkipNames(pinned), stackUnderNames(under)...), owners: holders, landed: o.landed, newPRs: o.newPRs, draft: &o.draft, ship: intent, submit: true, dropCommits: o.dropCommits, evictQueued: o.evictQueued, stayClean: !o.restack, restack: o.restack, to: to, include: include, otherLanes: o.allLanes}
+	opts := stackRebaseOpts{members: chain, pinned: append(stackSkipNames(pinned), stackUnderNames(under)...), owners: holders, landed: o.landed, newPRs: o.newPRs, moves: o.moves, draft: &o.draft, ship: intent, submit: true, dropCommits: o.dropCommits, evictQueued: o.evictQueued, stayClean: !o.restack, restack: o.restack, to: to, include: include, otherLanes: o.allLanes}
 	if err := runStackRebase(cmd, opts); err != nil {
 		return err
 	}
