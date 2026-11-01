@@ -1,4 +1,4 @@
-name: Promisor global cohort diagnostic
+name: NEVER MERGE native promisor parsed-state diagnostic
 on:
   workflow_dispatch:
     inputs:
@@ -9,53 +9,32 @@ permissions:
   contents: read
 jobs:
   probe:
+    if: github.ref == 'refs/heads/diag/promisor-native-parsed-state'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.commit }}
-      - id: git
-        run: |
-          version="$(sed -n 's/^version=//p' scripts/build-git.sh)"
-          {
-            echo "version=$version"
-            echo "prefix=$RUNNER_TOOL_CACHE/ccx-git/$version/$RUNNER_ARCH"
-            echo "toolchain=$({ echo "${ImageOS:-}"; cc --version | sed -n 1p; } | shasum -a 256 | cut -c1-16)"
-          } >> "$GITHUB_OUTPUT"
-      - id: git-cache
-        uses: actions/cache@v5
-        with:
-          path: ${{ steps.git.outputs.prefix }}
-          key: git-${{ steps.git.outputs.version }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.git.outputs.toolchain }}-${{ hashFiles('scripts/build-git.sh') }}
-      - if: steps.git-cache.outputs.cache-hit != 'true'
+      - name: Build pinned stock Git with test-only helpers
         env:
-          PREFIX: ${{ steps.git.outputs.prefix }}
-        run: bash scripts/build-git.sh "$PREFIX"
-      - env:
-          PREFIX: ${{ steps.git.outputs.prefix }}
-        run: echo "$PREFIX/bin" >> "$GITHUB_PATH"
-      - name: Stock Git regression and context controls
-        env:
-          EXPECTED_NONPROMISOR_CHILDREN: "1"
+          EXPECTED_COMMIT: ${{ inputs.commit }}
         run: |
-          PROBE_OUTPUT="$RUNNER_TEMP/promisor-midx-native/stock" python3 scripts/promisor-global-cohort-probe.py
-          PROBE_OUTPUT="$RUNNER_TEMP/promisor-midx-native/context-stock" python3 scripts/promisor-context-probe.py
-      - name: Build exact native routing fix
+          test "$GITHUB_SHA" = "$EXPECTED_COMMIT"
+          bash scripts/build-git-parsed-state.sh "$RUNNER_TEMP/git-parsed-state"
+          echo "$RUNNER_TEMP/git-parsed-state/bin" >> "$GITHUB_PATH"
+      - name: Existing native context controls
         env:
-          PREFIX: ${{ runner.temp }}/git-promisor-fixed
-        run: |
-          bash scripts/build-git-promisor-fixed.sh "$PREFIX"
-          echo "$PREFIX/bin" >> "$GITHUB_PATH"
-      - name: Fixed Git regression and context controls
+          PROBE_OUTPUT: ${{ runner.temp }}/promisor-parsed-state/context
+        run: python3 scripts/promisor-context-probe.py
+      - name: Fresh and parsed native object controls
         env:
-          EXPECTED_NONPROMISOR_CHILDREN: "0"
-        run: |
-          PROBE_OUTPUT="$RUNNER_TEMP/promisor-midx-native/fixed" python3 scripts/promisor-global-cohort-probe.py
-          PROBE_OUTPUT="$RUNNER_TEMP/promisor-midx-native/context-fixed" python3 scripts/promisor-context-probe.py
-          python3 scripts/promisor-context-parity.py "$RUNNER_TEMP/promisor-midx-native/context-stock/report.json" "$RUNNER_TEMP/promisor-midx-native/context-fixed/report.json" "$RUNNER_TEMP/promisor-midx-native/context-parity.json"
+          PROBE_OUTPUT: ${{ runner.temp }}/promisor-parsed-state/native
+        run: python3 scripts/promisor-parsed-state-probe.py
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: promisor-midx-native
-          path: ${{ runner.temp }}/promisor-midx-native
+          name: promisor-parsed-state
+          path: |
+            ${{ runner.temp }}/promisor-parsed-state
+            parsed-state-build-source.json
