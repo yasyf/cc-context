@@ -399,10 +399,17 @@ func runShip(cmd *cobra.Command, o shipOpts) (err error) {
 			}()
 		}
 	}
+	var moveUndo *gtMoveUndo
+	defer func() {
+		if err != nil && moveUndo != nil && (gtc.restack == nil || gtc.restack.dir == "") {
+			err = moveUndo.restore(ctx, l, gtc, err)
+		}
+	}()
 	plan, planSeg, err := shipResolvePlan(ctx, cmd.ErrOrStderr(), l, o, gtc)
 	if err != nil {
 		return err
 	}
+	moveUndo = plan.undo
 	// Must follow the preflight, whose landed-parent guard reads the ref this
 	// fetch moves.
 	var trunkFetch *gtTrunkFetch
@@ -447,12 +454,6 @@ func runShip(cmd *cobra.Command, o shipOpts) (err error) {
 		}
 	}
 
-	var moveUndo *gtMoveUndo
-	defer func() {
-		if err != nil && moveUndo != nil && (gtc.restack == nil || gtc.restack.dir == "") {
-			err = moveUndo.restore(ctx, l, gtc, err)
-		}
-	}()
 	if plan.moveOntoParent && !plan.commitBeforeMove {
 		if planSeg, plan.needsRestack, moveUndo, err = gtMoveOntoParent(ctx, cmd.ErrOrStderr(), l, o, gtc, trunkFetch); err != nil {
 			return err
@@ -493,6 +494,9 @@ func runShip(cmd *cobra.Command, o shipOpts) (err error) {
 		}
 	}
 
+	if plan.action == branchCreate && moveUndo == plan.undo {
+		moveUndo = nil
+	}
 	branch, healSeg := plan.name, ""
 	if !elsewhere {
 		if branch, healSeg, err = shipBranchAfterCommit(ctx, dir, l.checkout, kind, plan); err != nil {
