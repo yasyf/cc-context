@@ -485,18 +485,54 @@ func (g *GitHub) queueRecords(ctx context.Context, numbers []int) (map[int]*gtap
 	if err != nil {
 		_, _ = fmt.Fprintf(g.warn, "prstate: %s: %v; this poll carries no mergeability\n", g.gt.QueueProvider(), err)
 	}
+	var unread []int
 	for _, number := range numbers {
-		info := byNumber[number]
-		if info == nil || !g.gt.QueueRequiresStatus(*info) {
-			continue
-		}
-		if _, known := mergeability[number]; !known {
-			_, _ = fmt.Fprintf(g.warn, "prstate: %s: queue state of #%d is unknown; this poll carries no queue state\n", g.gt.QueueProvider(), number)
-			delete(byNumber, number)
+		if info := byNumber[number]; info != nil && g.gt.QueueRequiresStatus(*info) {
+			if _, known := mergeability[number]; !known {
+				unread = append(unread, number)
+			}
 		}
 	}
-
+	if len(unread) == 0 {
+		return byNumber, mergeability
+	}
+	reread := map[int]string{}
+	if err == nil {
+		reread, err = g.gt.MergeabilityFor(mergeCtx, g.owner, g.name, infos, unread)
+	}
+	if err != nil {
+		_, _ = fmt.Fprintf(g.warn, "prstate: %s: %v; this poll carries no queue state for %v\n", g.gt.QueueProvider(), err, unread)
+		for _, number := range unread {
+			delete(byNumber, number)
+		}
+		return byNumber, mergeability
+	}
+	if mergeability == nil {
+		mergeability = make(map[int]string, len(unread))
+	}
+	for _, number := range unread {
+		state, known := settledQueue(g.gt.QueueProvider(), reread, number)
+		if !known {
+			_, _ = fmt.Fprintf(g.warn, "prstate: %s: queue state of #%d is unknown after a second read; this poll carries no queue state\n", g.gt.QueueProvider(), number)
+			delete(byNumber, number)
+			continue
+		}
+		if _, read := reread[number]; !read {
+			_, _ = fmt.Fprintf(g.warn, "prstate: trunk holds no record of #%d after a second read, so its queue never took it; read as not queued\n", number)
+		}
+		mergeability[number] = state
+	}
 	return byNumber, mergeability
+}
+
+func settledQueue(provider string, reread map[int]string, number int) (string, bool) {
+	if state, read := reread[number]; read {
+		return state, true
+	}
+	if provider == "trunk" {
+		return "notQueued", true
+	}
+	return "", false
 }
 
 func dropNotFound(chunk []target, gql *ghapi.GraphQLError) ([]target, []int, bool) {
