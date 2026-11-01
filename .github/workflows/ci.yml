@@ -33,6 +33,36 @@ env:
   HEAVY_PKGS: internal/web|internal/semsearch/chunk|internal/semsearch/embed|internal/gtmeta
 
 jobs:
+  cleanup-paused-nonterminal:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    env:
+      GOMAXPROCS: "2"
+      GOFLAGS: -p=2
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.commit || github.sha }}
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          check-latest: true
+          cache: true
+      - uses: ./.github/actions/wasm
+      - name: Supported paused nonterminal journal population and replay
+        env:
+          CCX_COLD_STARTUP_OUTPUT: ${{ runner.temp }}/cleanup-paused-nonterminal
+        run: go test -race -count=1 -v -run '^TestCleanupColdPausedNonterminal$' ./internal/cleanup/daemon
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: cleanup-paused-nonterminal-${{ matrix.os }}
+          path: ${{ runner.temp }}/cleanup-paused-nonterminal
+
   cleanup-cold-startup:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
