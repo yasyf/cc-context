@@ -354,7 +354,7 @@ func TestShipGTAutoTrackMovesNothingWhenALaterCheckRefuses(t *testing.T) {
 	mustRun(t, f.Env(), f.Dir, "git", "add", "own.txt")
 	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "own")
 	before := gitAt(t, f.Env(), f.Dir, "rev-parse", "b")
-	writeShipFile(t, f.Dir, "dirty.txt", "dirty\n")
+	writeShipFile(t, f.Dir, "own.txt", "own, edited\n")
 
 	_, err := runShipCmd(f.Context(), t, "--no-commit", "--no-push")
 	if want := "ship: put b back at " + before[:12] + ", untracked as it was before the move onto main"; err == nil || !strings.Contains(err.Error(), want) {

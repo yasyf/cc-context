@@ -494,6 +494,9 @@ func runShip(cmd *cobra.Command, o shipOpts) (err error) {
 		}
 	}
 
+	if plan.action == branchCreate && moveUndo == plan.undo {
+		moveUndo = nil
+	}
 	branch, healSeg := plan.name, ""
 	if !elsewhere {
 		if branch, healSeg, err = shipBranchAfterCommit(ctx, dir, l.checkout, kind, plan); err != nil {
