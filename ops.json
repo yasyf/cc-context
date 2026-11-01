@@ -1,1 +1,1 @@
-{"v":1,"lamport":5,"ops":[{"kind":"set_criterion_status","id":"99c91c0fdb9376f95983c32966b83a37","status":"met","note":"Raw job124966312580 log c2fde620 retains failed hybrid compilation while API65e4e988 reports job success; source review8a7f92f8 independently identifies masked tee pipeline and incomplete engine overlay. Published isolated fix PR679/head8c54d720; actual benchmark rows remain pending exact-head CI41348179305."}]}
+{"v":1,"lamport":6,"ops":[{"kind":"set_assignee","assignee":"/root/ccn_anchor_source_peer \u003cccn-anchor-source-peer@codex.local\u003e"}]}
