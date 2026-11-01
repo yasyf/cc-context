@@ -30,7 +30,7 @@ if [ "$1 $2" = 'api repos/{owner}/{repo}' ]; then
   printf '%s' "${GH_REPO-<unset>}" > "$GH_CONTEXT_DUMP"
 fi
 `+shipGHBody)
-	if _, err := runShipCmd(f.Context(), t, "-m", "fix: explicit repository", "--no-watch", "--no-stack"); err != nil {
+	if _, err := runShipCmd(f.Context(), t, "-m", "fix: explicit repository", "--no-watch", "--no-stack", "--pr-title", "Explicit repository context"); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(dump)
