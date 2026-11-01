@@ -359,8 +359,15 @@ func TestCleanupWorktreeRmQueuesPendingWhilePaused(t *testing.T) {
 	svc := &rmWaitService{Service: h.engine, t: t}
 	f.Decorate(func(ctx context.Context) context.Context { return withCleanup(ctx, svc) })
 	path := addPoolWorktree(t, f, "feat")
+	registration := observedWorkspace(t, path)
+	body := readFileStr(t, filepath.Join(path, "f.txt"))
+	head := gitAt(t, f.Env(), path, "rev-parse", "HEAD")
 	if err := h.engine.Pause(f.Context()); err != nil {
 		t.Fatalf("pause: %v", err)
+	}
+	const holder = "pending-rm-admission"
+	if _, err := h.engine.Hold(f.Context(), cleanup.HoldRequest{ID: holder, Reason: "observe pending requests before retirement"}); err != nil {
+		t.Fatalf("hold pending admission: %v", err)
 	}
 
 	out, err := runWorktreeCmd(t, f, "rm", "feat")
@@ -408,6 +415,74 @@ func TestCleanupWorktreeRmQueuesPendingWhilePaused(t *testing.T) {
 		t.Errorf("job %s = phase %s, want still pending", id, job.Phase)
 	}
 	assertIntact(t, f, path)
+	if state, err := h.engine.HoldState(f.Context()); err != nil || !state.Paused || state.Hold == nil || state.Hold.ID != holder {
+		t.Fatalf("hold state = %+v, %v; want ordinary pause and our admission hold", state, err)
+	}
+	if err := h.engine.Release(f.Context(), holder); err != nil {
+		t.Fatalf("release pending admission: %v", err)
+	}
+	if state, err := h.engine.HoldState(f.Context()); err != nil || !state.Paused || state.Hold != nil {
+		t.Fatalf("hold state after release = %+v, %v; want ordinary pause alone", state, err)
+	}
+	job := cleanupJob(t, f, h, id)
+	for deadline := time.Now().Add(10 * time.Second); job.Retirement != cleanup.RetirementComplete && job.Blocked == nil && time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		job = cleanupJob(t, f, h, id)
+	}
+	if job.Phase != cleanup.PhasePending || job.Blocked != nil || job.Retirement != cleanup.RetirementComplete {
+		t.Fatalf("job = phase %s, blockage %+v, retirement %s; want pending and retired", job.Phase, job.Blocked, job.Retirement)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat retired checkout: %v", err)
+	}
+	if got := cleanup.IDOf(info); got != registration.Tree {
+		t.Errorf("retired checkout identity = %+v, want %+v", got, registration.Tree)
+	}
+	if got := readFileStr(t, filepath.Join(path, "f.txt")); got != body {
+		t.Errorf("retired checkout body = %q, want %q", got, body)
+	}
+	if worktreeRegistered(t, f.Env(), f.Dir, path) {
+		t.Error("git still registers the retired checkout")
+	}
+	wantNamed := `worktree rm: no working copy named "feat" in this repository: ` + ErrNotFound.Error()
+	if out, err := runWorktreeCmd(t, f, "rm", "feat"); !errors.Is(err, ErrNotFound) || err.Error() != wantNamed || out != "" {
+		t.Errorf("named rm after retirement = %q, %v; want %q", out, err, wantNamed)
+	}
+	wantPath := "worktree rm: " + path + " is already queued for deletion as cleanup job " + id + ": git no longer lists it, and its tree goes when the deletion queue runs; `ccx vcs cleanup status " + id + "` shows where it stands\n"
+	if out, err := runWorktreeCmd(t, f, "rm", "--path", path); err != nil || out != wantPath {
+		t.Errorf("path rm after retirement = %q, %v; want %q", out, err, wantPath)
+	}
+	if len(svc.queries) != 1 {
+		t.Errorf("status requests after retired selectors = %+v, want only the original wait poll", svc.queries)
+	}
+	if got := journaledJobs(t, h); !slices.Equal(got, jobs) {
+		t.Errorf("journaled jobs after retired selectors = %v, want only %v", got, jobs)
+	}
+	if _, err := h.engine.Cancel(f.Context(), id); err != nil {
+		t.Fatalf("cancel retired checkout: %v", err)
+	}
+	if got := observedWorkspace(t, path); got != registration {
+		t.Errorf("restored registration = %+v, want %+v", got, registration)
+	}
+	if got := gitAt(t, f.Env(), path, "rev-parse", "HEAD"); got != head {
+		t.Errorf("restored HEAD = %s, want %s", got, head)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", job.RecoveryRef); got != head {
+		t.Errorf("recovery HEAD = %s, want %s", got, head)
+	}
+	if got := readFileStr(t, filepath.Join(path, "f.txt")); got != body {
+		t.Errorf("restored checkout body = %q, want %q", got, body)
+	}
+	if out, err := runWorktreeCmd(t, f, "rm", "feat", "--dry-run"); err != nil || out != "would remove feat · git worktree · "+path+"\n" {
+		t.Errorf("named preview after cancel = %q, %v; want the restored checkout", out, err)
+	}
+	assertIntact(t, f, path)
+	if got := journaledJobs(t, h); len(got) != 0 {
+		t.Errorf("journaled jobs after cancel and preview = %v, want none", got)
+	}
+	if state, err := h.engine.HoldState(f.Context()); err != nil || !state.Paused || state.Hold != nil {
+		t.Errorf("hold state after cancel = %+v, %v; want ordinary pause alone", state, err)
+	}
 }
 
 func TestCleanupWorktreeRmWait(t *testing.T) {
