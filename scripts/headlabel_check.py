@@ -8,7 +8,7 @@ import sys
 
 DEFAULT_REPO = "/Users/yasyf/.orca/workspaces/monorepo/monorepo/amberjack"
 DEFAULT_DRIVE = "durable-agents-rebuild"
-DEFAULT_CURSOR = "/Users/yasyf/.claude/scratch/durable-agents-rebuild/drive-watchdog/headlabel.cursor"
+DEFAULT_CURSOR = "/Users/yasyf/.claude/scratch/durable-agents-rebuild/drive-watchdog/headlabel.internal-seq.cursor"
 DEFAULT_SEQUENCE = 147940
 HEAD_KEY = re.compile(r"head:(?:[\w.-]+/[\w.-]+#)?([1-9][0-9]*)", re.ASCII)
 HEAD_VALUE = re.compile(r"(?:([0-9a-f]{7,40})\.\.)?([0-9a-f]{7,40})(?: (.*))?")

@@ -118,8 +118,39 @@ class HeadlabelTest(unittest.TestCase):
         args = headlabel.arguments([])
         self.assertEqual(args.repo, "/Users/yasyf/.orca/workspaces/monorepo/monorepo/amberjack")
         self.assertEqual(args.drive, "durable-agents-rebuild")
-        self.assertEqual(str(args.cursor), "/Users/yasyf/.claude/scratch/durable-agents-rebuild/drive-watchdog/headlabel.cursor")
+        self.assertEqual(str(args.cursor), "/Users/yasyf/.claude/scratch/durable-agents-rebuild/drive-watchdog/headlabel.internal-seq.cursor")
         self.assertEqual(args.initial_seq, 147940)
+
+    def test_legacy_cursor_writers_cannot_change_internal_sequence_state(self):
+        legacy = self.root / "headlabel.cursor"
+        internal = self.root / Path(headlabel.DEFAULT_CURSOR).name
+        self.assertNotEqual(legacy, internal)
+        legacy.write_text("208445")
+        starts = []
+
+        def tail(argv, **kwargs):
+            self.assertEqual(argv[0], "cci")
+            starts.append(int(argv[argv.index("--since-seq") + 1]))
+            legacy.write_text(str(900000 + len(starts)))
+            record = {"seq": 100 + len(starts), "kind": "head", "lane": "fixture", "text": "no PR claim", "fields": {"attrs": {}}}
+            return subprocess.CompletedProcess(argv, 0, json.dumps(record), "")
+
+        with patch.object(headlabel, "DEFAULT_CURSOR", str(internal)):
+            args = headlabel.arguments(["--repo", str(self.repo), "--initial-seq", "100"])
+            self.assertEqual(args.cursor, internal)
+            with patch("subprocess.run", side_effect=tail):
+                headlabel.audit(args)
+                self.assertEqual(internal.read_text(), "101")
+                self.assertEqual(legacy.read_text(), "900001")
+                legacy.write_text("0")
+                headlabel.audit(args)
+                self.assertEqual(internal.read_text(), "102")
+                self.assertEqual(legacy.read_text(), "900002")
+                legacy.write_text("2000000")
+                headlabel.audit(args)
+                self.assertEqual(internal.read_text(), "103")
+                self.assertEqual(legacy.read_text(), "900003")
+        self.assertEqual(starts, [100, 101, 102])
 
     def test_complete_identical_and_changed_use_one_local_comparison(self):
         for new, mislabeled in [(self.new, False), (self.changed, True)]:
