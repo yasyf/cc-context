@@ -1,1 +1,1 @@
-{"v":1,"lamport":2,"ops":[{"kind":"claim","assignee":"/root/ccn_anchor_source_peer \u003cccn-anchor-source-peer@codex.local\u003e"}]}
+{"v":1,"lamport":3,"ops":[{"kind":"set_criterion_status","id":"7e7b29d24e7b4d64be6593c2236408e2","status":"met","note":"Actualmain81368 MacCLIshard5 rawb008 shows physicaldirectoryretained/registryfalse vs helperexpectedtrue. Sourcefinding85fc: Quiet0 andzeroRetireAfter/nativeRetire files unchangedc20→81368; separatepreexistingpausedregistrationcontract mismatch."}]}
