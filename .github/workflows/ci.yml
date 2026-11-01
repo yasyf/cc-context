@@ -33,6 +33,46 @@ env:
   HEAVY_PKGS: internal/web|internal/semsearch/chunk|internal/semsearch/embed|internal/gtmeta
 
 jobs:
+  headlabel-caller:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.commit || github.sha }}
+      - name: Resolve pinned Git cache
+        id: git
+        run: |
+          version="$(sed -n 's/^version=//p' scripts/build-git.sh)"
+          {
+            echo "version=$version"
+            echo "prefix=$RUNNER_TOOL_CACHE/ccx-git/$version/$RUNNER_ARCH"
+            echo "toolchain=$({ echo "${ImageOS:-}"; cc --version | sed -n 1p; } | shasum -a 256 | cut -c1-16)"
+          } >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v5
+        id: git-cache
+        with:
+          path: ${{ steps.git.outputs.prefix }}
+          key: git-${{ steps.git.outputs.version }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.git.outputs.toolchain }}-${{ hashFiles('scripts/build-git.sh') }}
+      - name: Build pinned Git
+        if: steps.git-cache.outputs.cache-hit != 'true'
+        env:
+          PREFIX: ${{ steps.git.outputs.prefix }}
+        run: bash scripts/build-git.sh "$PREFIX"
+      - name: Select pinned Git
+        env:
+          PREFIX: ${{ steps.git.outputs.prefix }}
+        run: echo "$PREFIX/bin" >> "$GITHUB_PATH"
+      - name: Native headlabel availability, record and cursor contracts
+        run: |
+          set -euo pipefail
+          python3 -I -B scripts/test_headlabel_check.py 2>&1 | tee "$RUNNER_TEMP/headlabel-caller.log"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: headlabel-caller
+          path: ${{ runner.temp }}/headlabel-caller.log
+
   semantic-ancestor-scope:
     runs-on: ubuntu-latest
     timeout-minutes: 15
