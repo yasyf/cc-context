@@ -14,12 +14,12 @@ func statusFixture(jobs []cleanup.Job, limit int) *Engine {
 	loaded := make(chan struct{})
 	close(loaded)
 	e := &Engine{
-		loaded: loaded,
-		jobs:   make(map[string]cleanup.Job, len(jobs)),
-		tuning: DefaultTuning(),
-		awaits: make(map[string]time.Time),
+		loaded:  loaded,
+		jobs:    make(map[string]cleanup.Job, len(jobs)),
+		tuning:  DefaultTuning(),
+		awaits:  make(map[string]time.Time),
 		changed: make(chan struct{}),
-		clock: &manualClock{now: time.Unix(10000, 0)},
+		clock:   &manualClock{now: time.Unix(10000, 0)},
 	}
 	e.tuning.StatusLimit = limit
 	for _, job := range jobs {

@@ -17,7 +17,7 @@ import (
 	"github.com/yasyf/cc-context/internal/cleanup"
 )
 
-func legacyStatusAtFaae356(e *Engine, ctx context.Context, q cleanup.Query) (cleanup.Report, error) {
+func legacyStatusAtFaae356(ctx context.Context, e *Engine, q cleanup.Query) (cleanup.Report, error) {
 	if err := e.ready(ctx); err != nil {
 		return cleanup.Report{}, err
 	}
@@ -196,7 +196,7 @@ func assertStatusReference(t *testing.T, e *Engine) {
 				t.Fatal("done or unknown read changed its lease")
 			}
 		}
-		want, wantErr := legacyStatusAtFaae356(e, context.Background(), query)
+		want, wantErr := legacyStatusAtFaae356(context.Background(), e, query)
 		if !reflect.DeepEqual(got, want) || !reflect.DeepEqual(gotErr, wantErr) {
 			t.Fatalf("Status(%+v) differs from immutable legacy reference: got %+v/%v, want %+v/%v", query, got, gotErr, want, wantErr)
 		}
@@ -238,7 +238,7 @@ func TestStatusReadinessCancellationMatchesLegacy(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	got, gotErr := e.Status(ctx, cleanup.Query{Limit: 1})
-	want, wantErr := legacyStatusAtFaae356(e, ctx, cleanup.Query{Limit: 1})
+	want, wantErr := legacyStatusAtFaae356(ctx, e, cleanup.Query{Limit: 1})
 	if !errors.Is(gotErr, context.Canceled) || !reflect.DeepEqual(got, want) || !reflect.DeepEqual(gotErr, wantErr) {
 		t.Fatalf("unloaded canceled Status = %+v/%v, want %+v/%v", got, gotErr, want, wantErr)
 	}
@@ -292,7 +292,7 @@ func TestStatusAcceptedEqualFinishKeysUseQueueOrder(t *testing.T) {
 			if err != nil || len(report.Jobs) != 2 || report.Jobs[0].ID != a.id || report.Jobs[1].ID != b.id {
 				t.Fatalf("equal-key Status = %+v/%v, want queue order %s/%s", report, err, a.id, b.id)
 			}
-			legacy, err := legacyStatusAtFaae356(e, context.Background(), cleanup.Query{Limit: 1})
+			legacy, err := legacyStatusAtFaae356(context.Background(), e, cleanup.Query{Limit: 1})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -356,7 +356,7 @@ func TestStatusAllocationsDoNotGrowWithOmittedHistory(t *testing.T) {
 					var report cleanup.Report
 					var err error
 					if legacy {
-						report, err = legacyStatusAtFaae356(e, context.Background(), cleanup.Query{Limit: 1})
+						report, err = legacyStatusAtFaae356(context.Background(), e, cleanup.Query{Limit: 1})
 					} else {
 						report, err = e.Status(context.Background(), cleanup.Query{Limit: 1})
 					}
@@ -386,7 +386,7 @@ func BenchmarkStatusRead(b *testing.B) {
 					for b.Loop() {
 						var err error
 						if legacy {
-							_, err = legacyStatusAtFaae356(e, context.Background(), cleanup.Query{Limit: 1})
+							_, err = legacyStatusAtFaae356(context.Background(), e, cleanup.Query{Limit: 1})
 						} else {
 							_, err = e.Status(context.Background(), cleanup.Query{Limit: 1})
 						}
