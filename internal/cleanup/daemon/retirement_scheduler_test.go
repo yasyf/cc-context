@@ -223,6 +223,47 @@ func TestPausedRetirementBandFailuresStopBeforePhysicalDeletion(t *testing.T) {
 	}
 }
 
+func TestPausedRetirementWakeUsesTheEarliestRestDeadline(t *testing.T) {
+	for _, phase := range []cleanup.Phase{cleanup.PhasePending, cleanup.PhaseWaiting} {
+		for _, checked := range []string{"missing", "stale", "current"} {
+			t.Run(string(phase)+"/"+checked, func(t *testing.T) {
+				h := newHarness(t, paced())
+				now := h.clock.Now()
+				h.seed("later", 1, phase, func(job *cleanup.Job) {
+					job.RetireAfter = now.Add(2 * time.Hour)
+				})
+				first := h.seed("first", 2, phase, func(job *cleanup.Job) {
+					job.RetireAfter = now.Add(time.Hour)
+				})
+				if err := h.journal.SaveSwitch(cleanup.Switch{Paused: true}); err != nil {
+					t.Fatal(err)
+				}
+				e := h.build()
+				if err := e.load(); err != nil {
+					t.Fatal(err)
+				}
+				for id := range e.jobs {
+					switch checked {
+					case "stale":
+						e.checked[id] = now.Add(-time.Hour)
+					case "current":
+						e.checked[id] = now
+					}
+				}
+				if got, timed := e.wake(false); !timed || !got.Equal(first.RetireAfter) {
+					t.Fatalf("wake = %s/%v; want %s", got, timed, first.RetireAfter)
+				}
+				if job, due := e.logicalDue(first.RetireAfter.Add(-time.Nanosecond)); due {
+					t.Fatalf("job %s is due before its retirement deadline", job.ID)
+				}
+				if job, due := e.logicalDue(first.RetireAfter); !due || job.ID != first.ID {
+					t.Fatalf("due job = %s/%v; want %s", job.ID, due, first.ID)
+				}
+			})
+		}
+	}
+}
+
 func TestPausedRetirementWaitsForTheRelocatorsRestDeadline(t *testing.T) {
 	bubble(t, paced(), func(t *testing.T, h *harness) {
 		job := h.seed("q", 1, cleanup.PhasePending)
