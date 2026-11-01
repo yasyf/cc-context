@@ -17,12 +17,16 @@ func statusFixture(jobs []cleanup.Job, limit int) *Engine {
 		loaded: loaded,
 		jobs:   make(map[string]cleanup.Job, len(jobs)),
 		tuning: DefaultTuning(),
+		awaits: make(map[string]time.Time),
+		changed: make(chan struct{}),
+		clock: &manualClock{now: time.Unix(10000, 0)},
 	}
 	e.tuning.StatusLimit = limit
 	for _, job := range jobs {
 		e.jobs[job.ID] = job
 		e.order = append(e.order, seqKey{seq: job.Seq, id: job.ID})
 	}
+	e.indexStatus()
 	return e
 }
 
