@@ -23,7 +23,7 @@ import (
 	"github.com/yasyf/cc-context/internal/semsearch/rank"
 )
 
-const ownedAnswerFormat = 2
+const ownedAnswerFormat = 3
 
 // OwnedAnswerDocument binds an immutable canonical text to its indexed path.
 type OwnedAnswerDocument struct {
@@ -55,48 +55,75 @@ type ownedAnswerBuild struct {
 	chunks []semsearch.Chunk
 }
 
-// LoadOwnedAnswers reads numerical metadata and query postings, materializing only new texts.
-func LoadOwnedAnswers(ctx context.Context, emb Embedder, corpus OwnedAnswerCorpus, root, query string, chunker Chunker, model string) (*Index, error) {
-	identity := fmt.Sprintf("%d %q %q docs %q %d", ownedAnswerFormat, corpus.Binding, model, chunker.ID(), emb.Dims())
-	variant := contentHash(identity)
-	dir := filepath.Join(root, "ccx", variant)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+// LoadOwnedAnswers maps one published immutable generation and builds only missing generations.
+func LoadOwnedAnswers(ctx context.Context, emb Embedder, corpus OwnedAnswerCorpus, root string, chunker Chunker, model string) (*OwnedAnswerIndex, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	var order [4]byte
+	binary.NativeEndian.PutUint32(order[:], 1)
+	identity := fmt.Sprintf("%d %q %q docs %q %d %x", ownedAnswerFormat, corpus.Binding, model, chunker.ID(), emb.Dims(), order)
+	dir := filepath.Join(root, "ccx", contentHash(identity))
+	if err := os.MkdirAll(dir, 0o700); err != nil { // #nosec G703 -- configured cache root with SHA-256 child keys, not query text
 		return nil, fmt.Errorf("create owned answer cache: %w", err)
 	}
 	path := filepath.Join(dir, "index.sqlite")
+	matrixPath := filepath.Join(dir, contentHash(corpus.Generation)+".matrix")
+	idx, found, err := mapOwnedAnswers(ctx, matrixPath, identity, corpus.Generation, len(corpus.Documents), emb.Dims())
+	if err != nil || found {
+		return idx, err
+	}
 	members := make([]ownedAnswerMember, len(corpus.Documents))
 	for i, document := range corpus.Documents {
 		members[i] = ownedAnswerMember{OwnedAnswerDocument: document, key: contentHash(document.Path + "\x00" + document.TextDigest)}
 	}
 	slices.SortFunc(members, func(a, b ownedAnswerMember) int { return strings.Compare(a.Path, b.Path) })
-	idx, found, err := readOwnedAnswers(ctx, path, identity, corpus.Generation, members, query, emb.Dims())
-	if err != nil || found {
-		return idx, err
-	}
-	reindexed := 0
 	err = cache.WithLock(ctx, dir, "build", func() error {
 		var err error
-		idx, found, err = readOwnedAnswers(ctx, path, identity, corpus.Generation, members, query, emb.Dims())
+		idx, found, err = mapOwnedAnswers(ctx, matrixPath, identity, corpus.Generation, len(members), emb.Dims())
 		if err != nil || found {
 			return err
 		}
-		reindexed, err = buildOwnedAnswers(ctx, path, identity, emb, corpus, members, chunker)
-		return err
-	})
-	if err != nil {
-		return nil, err
-	}
-	if !found {
-		idx, found, err = readOwnedAnswers(ctx, path, identity, corpus.Generation, members, query, emb.Dims())
+		materialized, found, err := readOwnedAnswers(ctx, path, identity, corpus.Generation, members, emb.Dims())
 		if err != nil {
-			return nil, err
+			return err
+		}
+		reindexed := 0
+		if !found {
+			reindexed, err = buildOwnedAnswers(ctx, path, identity, emb, corpus, members, chunker)
+			if err != nil {
+				return err
+			}
+			materialized, found, err = readOwnedAnswers(ctx, path, identity, corpus.Generation, members, emb.Dims())
+			if err != nil {
+				return err
+			}
+			if !found {
+				return fmt.Errorf("owned answer generation was not published")
+			}
+		}
+		data, err := encodeOwnedAnswers(ctx, identity, corpus.Generation, materialized, emb.Dims())
+		if err != nil {
+			return err
+		}
+		if err := cache.Store(matrixPath, data, 0o600); err != nil {
+			return err
+		}
+		idx, found, err = mapOwnedAnswers(ctx, matrixPath, identity, corpus.Generation, len(members), emb.Dims())
+		if err != nil {
+			return err
 		}
 		if !found {
-			return nil, fmt.Errorf("owned answer generation was not published")
+			return fmt.Errorf("owned answer matrix was not published")
 		}
-	}
-	idx.Reindexed = reindexed
-	return idx, nil
+		idx.Reindexed = reindexed
+		idx.Work.MaterializationSQLRows = materialized.work.MaterializationSQLRows
+		idx.Work.MaterializedChunks = len(materialized.index.Chunks)
+		idx.Work.DecodedValues = len(materialized.index.Chunks) * emb.Dims()
+		idx.Work.PublishedBytes = len(data)
+		return nil
+	})
+	return idx, err
 }
 
 func ownedAnswerDB(path, mode string) (*sql.DB, error) {
@@ -112,8 +139,8 @@ func ownedAnswerDB(path, mode string) (*sql.DB, error) {
 	return db, nil
 }
 
-func readOwnedAnswers(ctx context.Context, path, identity, generation string, members []ownedAnswerMember, query string, dims int) (*Index, bool, error) {
-	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+func readOwnedAnswers(ctx context.Context, path, identity, generation string, members []ownedAnswerMember, dims int) (*ownedAnswerMaterialization, bool, error) {
+	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) { // #nosec G703 -- fixed index.sqlite under the configured cache and SHA-256 identity directory
 		return nil, false, nil
 	} else if err != nil {
 		return nil, false, err
@@ -151,6 +178,7 @@ func readOwnedAnswers(ctx context.Context, path, identity, generation string, me
 	if err != nil {
 		return nil, false, err
 	}
+	work := OwnedAnswerWork{MaterializationSQLRows: 2}
 	i := 0
 	expectedChunks := 0
 	for rows.Next() {
@@ -166,6 +194,7 @@ func readOwnedAnswers(ctx context.Context, path, identity, generation string, me
 		}
 		expectedChunks += count
 		i++
+		work.MaterializationSQLRows++
 	}
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return nil, false, err
@@ -206,6 +235,7 @@ func readOwnedAnswers(ctx context.Context, path, identity, generation string, me
 		idx.Chunks = append(idx.Chunks, c)
 		idx.Vectors = append(idx.Vectors, vector)
 		lengths = append(lengths, length)
+		work.MaterializationSQLRows++
 	}
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return nil, false, err
@@ -213,47 +243,41 @@ func readOwnedAnswers(ctx context.Context, path, identity, generation string, me
 	if len(idx.Chunks) != expectedChunks {
 		return nil, false, fmt.Errorf("owned answer chunks incomplete")
 	}
-	terms := map[string][]rank.BM25Posting{}
-	for _, term := range rank.Tokenize(query) {
-		if _, exists := terms[term]; exists {
-			continue
-		}
-		terms[term] = nil
-		rows, err = tx.QueryContext(ctx, `SELECT t.content_key,t.ordinal,t.tf FROM chunk_term t
-			JOIN cut_member m ON m.content_key=t.content_key WHERE m.generation=? AND t.term=? ORDER BY m.ordinal,t.ordinal`, generation, term)
-		if err != nil {
-			return nil, false, err
-		}
-		for rows.Next() {
-			var key string
-			var ordinal, tf int
-			if err := rows.Scan(&key, &ordinal, &tf); err != nil {
-				_ = rows.Close()
-				return nil, false, err
-			}
-			position, ok := positions[key][ordinal]
-			if !ok {
-				_ = rows.Close()
-				return nil, false, fmt.Errorf("owned answer posting lacks chunk")
-			}
-			terms[term] = append(terms[term], rank.BM25Posting{Document: position, Frequency: tf})
-		}
-		if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-			return nil, false, err
-		}
+	if len(idx.Chunks) > math.MaxInt32 {
+		return nil, false, fmt.Errorf("rank: document count exceeds posting range")
 	}
-	idx.BM25, err = rank.BM25FromPostings(lengths, terms)
+	terms := map[string][]rank.BM25Posting{}
+	rows, err = tx.QueryContext(ctx, `SELECT t.term,t.content_key,t.ordinal,t.tf FROM chunk_term t
+		JOIN cut_member m ON m.content_key=t.content_key WHERE m.generation=? ORDER BY t.term,m.ordinal,t.ordinal`, generation)
 	if err != nil {
+		return nil, false, err
+	}
+	for rows.Next() {
+		var term, key string
+		var ordinal, tf int
+		if err := rows.Scan(&term, &key, &ordinal, &tf); err != nil {
+			_ = rows.Close()
+			return nil, false, err
+		}
+		position, ok := positions[key][ordinal]
+		if !ok || tf <= 0 || tf > math.MaxInt32 || tf > lengths[position] {
+			_ = rows.Close()
+			return nil, false, fmt.Errorf("owned answer posting invalid")
+		}
+		terms[term] = append(terms[term], rank.BM25Posting{Document: position, Frequency: tf})
+		work.MaterializationSQLRows++
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return nil, false, err
 	}
 	if len(idx.Chunks) == 0 {
 		return nil, false, fmt.Errorf("semsearch: no indexable files in answer corpus")
 	}
-	return idx, true, tx.Commit()
+	return &ownedAnswerMaterialization{index: idx, lengths: lengths, terms: terms, work: work}, true, tx.Commit()
 }
 
 func buildOwnedAnswers(ctx context.Context, path, identity string, emb Embedder, corpus OwnedAnswerCorpus, members []ownedAnswerMember, chunker Chunker) (int, error) {
-	_, statErr := os.Stat(path)
+	_, statErr := os.Stat(path) // #nosec G703 -- fixed index.sqlite under the configured cache and SHA-256 identity directory
 	fresh := errors.Is(statErr, os.ErrNotExist)
 	if statErr != nil && !fresh {
 		return 0, statErr
@@ -266,9 +290,9 @@ func buildOwnedAnswers(ctx context.Context, path, identity string, emb Embedder,
 		}
 		buildPath = f.Name()
 		defer func() {
-			_ = os.Remove(buildPath)
-			_ = os.Remove(buildPath + "-wal")
-			_ = os.Remove(buildPath + "-shm")
+			_ = os.Remove(buildPath)          // #nosec G703 -- CreateTemp staging file under the configured cache identity directory
+			_ = os.Remove(buildPath + "-wal") // #nosec G703 -- fixed SQLite sidecar of the owned CreateTemp staging file
+			_ = os.Remove(buildPath + "-shm") // #nosec G703 -- fixed SQLite sidecar of the owned CreateTemp staging file
 		}()
 		if err := f.Close(); err != nil {
 			return 0, err
@@ -370,7 +394,7 @@ func buildOwnedAnswers(ctx context.Context, path, identity string, emb Embedder,
 		return 0, err
 	}
 	if fresh {
-		if err := os.Rename(buildPath, path); err != nil {
+		if err := os.Rename(buildPath, path); err != nil { // #nosec G703 -- owned CreateTemp staging file published as fixed index.sqlite in the same cache identity directory
 			return 0, err
 		}
 	}

@@ -57,6 +57,19 @@ func ownedAnswerFixture(n int) (OwnedAnswerCorpus, *ownedAnswerTexts) {
 	return corpus, source
 }
 
+func loadOwnedAnswersTest(ctx context.Context, t *testing.T, emb Embedder, corpus OwnedAnswerCorpus, root string, chunker Chunker, model string) (*OwnedAnswerIndex, error) {
+	t.Helper()
+	idx, err := LoadOwnedAnswers(ctx, emb, corpus, root, chunker, model)
+	if err == nil {
+		t.Cleanup(func() {
+			if err := idx.Close(); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	return idx, err
+}
+
 func TestOwnedAnswersWorkCounts(t *testing.T) {
 	for _, n := range []int{32, 10000} {
 		t.Run(fmt.Sprint(n), func(t *testing.T) {
@@ -64,20 +77,46 @@ func TestOwnedAnswersWorkCounts(t *testing.T) {
 			chunker := &ownedAnswerChunker{}
 			emb := &countingEmbedder{}
 			root := t.TempDir()
+			published := map[string]bool{}
 			load := func(reads, chunks, texts int) {
 				t.Helper()
 				source.reads.Store(0)
 				chunker.calls.Store(0)
 				emb.encoded = 0
-				idx, err := LoadOwnedAnswers(t.Context(), emb, corpus, root, "alpha beta", chunker, "test-model")
+				idx, err := loadOwnedAnswersTest(t.Context(), t, emb, corpus, root, chunker, "test-model")
 				if err != nil {
 					t.Fatal(err)
 				}
 				if source.reads.Load() != int64(reads) || chunker.calls.Load() != int64(chunks) || emb.encoded != texts {
 					t.Fatalf("reads/chunks/texts=%d/%d/%d, want %d/%d/%d", source.reads.Load(), chunker.calls.Load(), emb.encoded, reads, chunks, texts)
 				}
-				t.Logf("OWNED_ANSWER_WORK n=%d generation=%s canonical_text_reads=%d chunker_inputs=%d embedded_texts=%d numeric_chunks=%d vector_values=%d", n, corpus.Generation, source.reads.Load(), chunker.calls.Load(), emb.encoded, len(idx.Chunks), len(idx.Chunks)*emb.Dims())
-				for _, c := range idx.Chunks {
+				t.Logf("OWNED_ANSWER_WORK n=%d generation=%s canonical_text_reads=%d chunker_inputs=%d embedded_texts=%d numeric_chunks=%d vector_values=%d", n, corpus.Generation, source.reads.Load(), chunker.calls.Load(), emb.encoded, idx.Len(), idx.Len()*emb.Dims())
+				if published[corpus.Generation] {
+					if idx.Work.MaterializationSQLRows != 0 || idx.Work.MaterializedChunks != 0 || idx.Work.DecodedValues != 0 || idx.Work.PublishedBytes != 0 {
+						t.Fatalf("warm mapping materialized data: %+v", idx.Work)
+					}
+				} else if idx.Work.MaterializedChunks != idx.Len() || idx.Work.DecodedValues != idx.Len()*emb.Dims() || idx.Work.MaterializationSQLRows == 0 || idx.Work.PublishedBytes == 0 {
+					t.Fatalf("generation publication work missing: %+v", idx.Work)
+				}
+				published[corpus.Generation] = true
+				files, err := filepath.Glob(filepath.Join(root, "ccx", "*", "*"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				var stored int64
+				for _, path := range files {
+					info, err := os.Stat(path)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if info.Mode().IsRegular() {
+						stored += info.Size()
+					}
+				}
+				t.Logf("OWNED_ANSWER_MATRIX_STORAGE n=%d generation=%s derived_bytes=%d", n, corpus.Generation, stored)
+				t.Logf("OWNED_ANSWER_MATRIX_WORK n=%d generation=%s materialization_sql_rows=%d materialized_chunks=%d decoded_values=%d published_bytes=%d mapped_bytes=%d dense_rows=%d dense_values=%d", n, corpus.Generation, idx.Work.MaterializationSQLRows, idx.Work.MaterializedChunks, idx.Work.DecodedValues, idx.Work.PublishedBytes, idx.Work.MappedBytes, idx.Len(), idx.Len()*emb.Dims())
+				for i := 0; i < idx.Len(); i++ {
+					c := idx.Chunk(i)
 					if c.Content != "" {
 						t.Fatal("loaded index retained body content")
 					}
@@ -118,13 +157,13 @@ func TestOwnedAnswersExactRankParity(t *testing.T) {
 	root := t.TempDir()
 	for _, query := range []string{"alpha beta alpha", "0000001", "é κόσμος", "nomatch", ""} {
 		for _, k := range []int{1, 5, 40} {
-			idx, err := LoadOwnedAnswers(t.Context(), emb, corpus, root, query, chunker, "test-model")
+			idx, err := loadOwnedAnswersTest(t.Context(), t, emb, corpus, root, chunker, "test-model")
 			if err != nil {
 				t.Fatal(err)
 			}
 			for _, qvec := range [][]float32{detVec(query, emb.Dims()), make([]float32, emb.Dims())} {
 				want := rank.Rank(query, qvec, chunks, vectors, rank.Options{TopK: k})
-				got := rank.Rank(query, qvec, idx.Chunks, idx.Vectors, rank.Options{TopK: k, BM25: idx.BM25})
+				got := rank.Answers(query, qvec, idx, k)
 				for i := range want {
 					want[i].Content = ""
 				}
@@ -143,7 +182,7 @@ func TestOwnedAnswersConcurrentCold(t *testing.T) {
 	var group errgroup.Group
 	for range 2 {
 		group.Go(func() error {
-			_, err := LoadOwnedAnswers(t.Context(), &countingEmbedder{}, corpus, root, "alpha", chunker, "test-model")
+			_, err := loadOwnedAnswersTest(t.Context(), t, &countingEmbedder{}, corpus, root, chunker, "test-model")
 			return err
 		})
 	}
@@ -159,7 +198,7 @@ func TestOwnedAnswersHeldReaderAllowsGenerationAdvance(t *testing.T) {
 	corpus, _ := ownedAnswerFixture(2)
 	root := t.TempDir()
 	chunker := &ownedAnswerChunker{}
-	if _, err := LoadOwnedAnswers(t.Context(), &countingEmbedder{}, corpus, root, "alpha", chunker, "model"); err != nil {
+	if _, err := loadOwnedAnswersTest(t.Context(), t, &countingEmbedder{}, corpus, root, chunker, "model"); err != nil {
 		t.Fatal(err)
 	}
 	paths, err := filepath.Glob(filepath.Join(root, "ccx", "*", "index.sqlite"))
@@ -185,7 +224,7 @@ func TestOwnedAnswersHeldReaderAllowsGenerationAdvance(t *testing.T) {
 		t.Fatalf("old documents=%d", documents)
 	}
 	corpus.Generation = "metadata-advance-with-held-reader"
-	if _, err := LoadOwnedAnswers(t.Context(), &countingEmbedder{}, corpus, root, "alpha", chunker, "model"); err != nil {
+	if _, err := loadOwnedAnswersTest(t.Context(), t, &countingEmbedder{}, corpus, root, chunker, "model"); err != nil {
 		var sqliteError *sqlite.Error
 		if errors.As(err, &sqliteError) && sqliteError.Code() == 5 {
 			t.Fatalf("generation advance blocked by held reader: SQLITE_BUSY (5): %v", err)
@@ -202,7 +241,7 @@ func TestOwnedAnswersHeldReaderAllowsGenerationAdvance(t *testing.T) {
 	if err := reader.Commit(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := LoadOwnedAnswers(t.Context(), &countingEmbedder{}, corpus, root, "alpha", chunker, "model"); err != nil {
+	if _, err := loadOwnedAnswersTest(t.Context(), t, &countingEmbedder{}, corpus, root, chunker, "model"); err != nil {
 		t.Fatalf("next reader did not see advanced generation: %v", err)
 	}
 }
@@ -211,7 +250,7 @@ func TestOwnedAnswersPublishedMainFileNeedsNoSidecars(t *testing.T) {
 	corpus, source := ownedAnswerFixture(2)
 	root := t.TempDir()
 	chunker := &ownedAnswerChunker{}
-	if _, err := LoadOwnedAnswers(t.Context(), &countingEmbedder{}, corpus, root, "alpha", chunker, "model"); err != nil {
+	if _, err := loadOwnedAnswersTest(t.Context(), t, &countingEmbedder{}, corpus, root, chunker, "model"); err != nil {
 		t.Fatal(err)
 	}
 	paths, err := filepath.Glob(filepath.Join(root, "ccx", "*", "index.sqlite"))
@@ -236,7 +275,7 @@ func TestOwnedAnswersPublishedMainFileNeedsNoSidecars(t *testing.T) {
 	}
 	source.err = errors.New("copied cache attempted source fallback")
 	source.reads.Store(0)
-	if _, err := LoadOwnedAnswers(t.Context(), &countingEmbedder{}, corpus, copyRoot, "alpha", chunker, "model"); err != nil {
+	if _, err := loadOwnedAnswersTest(t.Context(), t, &countingEmbedder{}, corpus, copyRoot, chunker, "model"); err != nil {
 		t.Fatalf("published main file requires missing sidecar: %v", err)
 	}
 	if source.reads.Load() != 0 {
@@ -251,7 +290,7 @@ func TestOwnedAnswersFailureAtomicityAndCorruption(t *testing.T) {
 	emb := &countingEmbedder{}
 	sentinel := errors.New("source failure")
 	source.err = sentinel
-	if _, err := LoadOwnedAnswers(t.Context(), emb, corpus, root, "alpha", chunker, "model"); !errors.Is(err, sentinel) {
+	if _, err := loadOwnedAnswersTest(t.Context(), t, emb, corpus, root, chunker, "model"); !errors.Is(err, sentinel) {
 		t.Fatalf("source failure=%v", err)
 	}
 	paths, err := filepath.Glob(filepath.Join(root, "ccx", "*", "index.sqlite"))
@@ -259,25 +298,26 @@ func TestOwnedAnswersFailureAtomicityAndCorruption(t *testing.T) {
 		t.Fatalf("partial published cache: %v %v", paths, err)
 	}
 	source.err = nil
-	if _, err := LoadOwnedAnswers(t.Context(), emb, corpus, root, "alpha", chunker, "model"); err != nil {
+	if _, err := loadOwnedAnswersTest(t.Context(), t, emb, corpus, root, chunker, "model"); err != nil {
 		t.Fatal(err)
 	}
 	paths, err = filepath.Glob(filepath.Join(root, "ccx", "*", "index.sqlite"))
 	if err != nil || len(paths) != 1 {
 		t.Fatalf("cache paths=%v %v", paths, err)
 	}
-	db, err := ownedAnswerDB(paths[0], "rw")
-	if err != nil {
+	matrices, err := filepath.Glob(filepath.Join(filepath.Dir(paths[0]), "*.matrix"))
+	if err != nil || len(matrices) != 1 {
+		t.Fatalf("matrix paths=%v %v", matrices, err)
+	}
+	if err := os.Rename(matrices[0], matrices[0]+".old"); err != nil {
 		t.Fatal(err)
 	}
-	_, err = db.Exec("UPDATE cut_member SET content_key='corrupt' WHERE ordinal=0")
-	closeErr := db.Close()
-	if err != nil || closeErr != nil {
-		t.Fatalf("corrupt cache=%v %v", err, closeErr)
+	if err := os.WriteFile(matrices[0], make([]byte, ownedMatrixHeader), 0o600); err != nil {
+		t.Fatal(err)
 	}
 	source.reads.Store(0)
-	if _, err := LoadOwnedAnswers(t.Context(), emb, corpus, root, "alpha", chunker, "model"); err == nil {
-		t.Fatal("corrupt membership accepted")
+	if _, err := loadOwnedAnswersTest(t.Context(), t, emb, corpus, root, chunker, "model"); err == nil {
+		t.Fatal("corrupt selected matrix accepted")
 	}
 	if source.reads.Load() != 0 {
 		t.Fatal("corruption triggered a source fallback")
@@ -288,7 +328,7 @@ func TestOwnedAnswersCancellation(t *testing.T) {
 	corpus, _ := ownedAnswerFixture(2)
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	if _, err := LoadOwnedAnswers(ctx, &countingEmbedder{}, corpus, t.TempDir(), "alpha", &ownedAnswerChunker{}, "model"); !errors.Is(err, context.Canceled) {
+	if _, err := loadOwnedAnswersTest(ctx, t, &countingEmbedder{}, corpus, t.TempDir(), &ownedAnswerChunker{}, "model"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancellation=%v", err)
 	}
 }
@@ -302,7 +342,7 @@ func TestOwnedAnswersSourceAndModelIdentity(t *testing.T) {
 		corpus.Binding = identity.binding
 		source.reads.Store(0)
 		emb.encoded = 0
-		if _, err := LoadOwnedAnswers(t.Context(), emb, corpus, root, "alpha", chunker, identity.model); err != nil {
+		if _, err := loadOwnedAnswersTest(t.Context(), t, emb, corpus, root, chunker, identity.model); err != nil {
 			t.Fatal(err)
 		}
 		if source.reads.Load() != 2 || emb.encoded != 2 {
@@ -316,7 +356,7 @@ func TestOwnedAnswersFailedAdvanceRetainsPublishedGeneration(t *testing.T) {
 	root := t.TempDir()
 	emb := &countingEmbedder{}
 	chunker := &ownedAnswerChunker{}
-	if _, err := LoadOwnedAnswers(t.Context(), emb, corpus, root, "alpha", chunker, "model"); err != nil {
+	if _, err := loadOwnedAnswersTest(t.Context(), t, emb, corpus, root, chunker, "model"); err != nil {
 		t.Fatal(err)
 	}
 	old := corpus
@@ -325,12 +365,12 @@ func TestOwnedAnswersFailedAdvanceRetainsPublishedGeneration(t *testing.T) {
 	corpus.Documents[0].TextDigest = contentHash("changed")
 	sentinel := errors.New("changed source failure")
 	source.err = sentinel
-	if _, err := LoadOwnedAnswers(t.Context(), emb, corpus, root, "alpha", chunker, "model"); !errors.Is(err, sentinel) {
+	if _, err := loadOwnedAnswersTest(t.Context(), t, emb, corpus, root, chunker, "model"); !errors.Is(err, sentinel) {
 		t.Fatalf("advance error=%v", err)
 	}
 	source.reads.Store(0)
 	emb.encoded = 0
-	if _, err := LoadOwnedAnswers(t.Context(), emb, old, root, "alpha", chunker, "model"); err != nil {
+	if _, err := loadOwnedAnswersTest(t.Context(), t, emb, old, root, chunker, "model"); err != nil {
 		t.Fatal(err)
 	}
 	if source.reads.Load() != 0 || emb.encoded != 0 {
@@ -359,17 +399,22 @@ func TestOwnedAnswersDefaultChunkerLegacyParity(t *testing.T) {
 	}
 	root := t.TempDir()
 	for _, query := range []string{"alpha alpha", "é κόσμος", "Heading", "absent"} {
-		owned, err := LoadOwnedAnswers(ctx, &countingEmbedder{}, corpus, root, query, DefaultChunker(), "model")
+		owned, err := loadOwnedAnswersTest(ctx, t, &countingEmbedder{}, corpus, root, DefaultChunker(), "model")
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(owned.Chunks) != len(legacy.Chunks) || !reflect.DeepEqual(owned.Vectors, legacy.Vectors) {
-			t.Fatal("default chunker/vector corpus differs from legacy")
+		if owned.Len() != len(legacy.Chunks) {
+			t.Fatal("default chunker corpus differs from legacy")
+		}
+		for i, vector := range legacy.Vectors {
+			if !reflect.DeepEqual(owned.Vector(i), vector) {
+				t.Fatal("default chunker vector differs from legacy")
+			}
 		}
 		for _, k := range []int{1, 5, 20} {
 			vector := detVec(query, 8)
 			want := rank.Rank(query, vector, legacy.Chunks, legacy.Vectors, rank.Options{TopK: k, BM25: legacy.BM25})
-			got := rank.Rank(query, vector, owned.Chunks, owned.Vectors, rank.Options{TopK: k, BM25: owned.BM25})
+			got := rank.Answers(query, vector, owned, k)
 			for i := range want {
 				want[i].Content = ""
 			}

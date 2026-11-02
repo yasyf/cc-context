@@ -1,0 +1,12 @@
+{
+  "source": "b2c1bd4ac6a4ae8d0577aa90827aa78860c04d4e",
+  "kind": "Genuine pre-mapped format2 source with current dependencies; native fake8D corpus work counter baseline",
+  "files": {
+    "go.mod": "9389705e27ce5e711e270d6a039fd0b66b42aee70aacd5bd3e3afea818b9d0e9",
+    "go.sum": "09a1cdbb52a7cf989b23cbb8763d07ffc51d1b717da865bfd389d835b1bd9b56",
+    "internal/semsearch/index/owned_answers.go": "b3277ae8d8a807fb850ca8e13ec38ec185d37d3910f034148501870ba4915fc7",
+    "internal/semsearch/index/owned_answers_test.go": "bd6093f548bfbd5d5910e6b0524c1b4b93f433f3b975adbab4b822c6da69e8d2",
+    "internal/semsearch/rank/bm25.go": "e2cad9ca2435fa00c608b8f0ba814e78771ef565f1389c2df000dec674d7c826",
+    "internal/semsearch/rank/fusion.go": "a709909fbff5f2997f759c78d681776a504363129d8af4407dc6c3bf4ae299a3"
+  }
+}
