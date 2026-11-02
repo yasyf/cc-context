@@ -17,15 +17,26 @@ require (
 	github.com/bmatcuk/doublestar/v4 v4.10.0
 	github.com/boyter/gocodewalker v1.5.1
 	github.com/ebitengine/purego v0.10.1
-	github.com/go-git/go-git/v5 v5.19.1
+	github.com/go-git/go-git/v5 v5.19.2
 	github.com/sergi/go-diff v1.4.0
-	github.com/spf13/pflag v1.0.9
+	github.com/spf13/pflag v1.0.10
 	github.com/tetratelabs/wazero v1.12.0
-	github.com/yasyf/daemonkit v0.32.3
+	github.com/yasyf/daemonkit v0.35.2
 	github.com/yuin/goldmark v1.8.2
 	golang.org/x/net v0.62.0
 	golang.org/x/sync v0.24.0
 	modernc.org/sqlite v1.57.0
+)
+
+require (
+	github.com/ProtonMail/go-crypto v1.1.6 // indirect
+	github.com/cloudflare/circl v1.6.3 // indirect
+	github.com/cyphar/filepath-securejoin v0.6.1 // indirect
+	github.com/emirpasic/gods v1.18.1 // indirect
+	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
+	github.com/pjbgf/sha1cd v0.6.0 // indirect
+	go.etcd.io/bbolt v1.5.0 // indirect
+	golang.org/x/crypto v0.58.0 // indirect
 )
 
 require (
@@ -47,6 +58,7 @@ require (
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/segmentio/asm v1.1.3 // indirect
 	github.com/segmentio/encoding v0.5.4 // indirect
+	github.com/yasyf/cc-notes v0.74.40
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	golang.org/x/oauth2 v0.35.0 // indirect
 	golang.org/x/text v0.43.0 // indirect

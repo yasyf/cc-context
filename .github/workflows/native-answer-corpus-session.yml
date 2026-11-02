@@ -1,0 +1,80 @@
+name: Native answer corpus session
+
+on:
+  pull_request:
+    paths:
+      - internal/cli/**
+      - internal/semsearch/**
+      - .github/workflows/native-answer-corpus-session.yml
+      - .github/actions/wasm/**
+      - go.mod
+      - go.sum
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-answer-corpus-session-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  native-answer-corpus-session:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    env:
+      GOMAXPROCS: "2"
+      GOFLAGS: -p=2
+      CARGO_BUILD_JOBS: "2"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: ./.github/actions/wasm
+      - name: Genuine public SDK and package graph
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/native-answer-corpus-session"
+          go mod verify
+          go list -m -json github.com/yasyf/cc-notes > "$RUNNER_TEMP/native-answer-corpus-session/sdk.json"
+          python3 - <<'PYSDK'
+          import json, os, pathlib
+          source = json.loads((pathlib.Path(os.environ["RUNNER_TEMP"]) / "native-answer-corpus-session/sdk.json").read_text())
+          assert source["Version"] == "v0.74.40", source
+          assert source["Sum"] == "h1:SgnWbAoOsCRayI1ZxCoLQcij0FIE0074c3qDpSca0Hs=", source
+          assert source["GoModSum"] == "h1:+Pyt0pF2/jrsn9l0vk9s3RI0QzUxzdsJtepOrAtlGac=", source
+          assert "Replace" not in source, source
+          PYSDK
+          go build ./...
+      - name: Finite held-cut CLI and existing top-k behavior
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test -race -count=1 -json ./internal/cli -run '^TestAnswerMatch' | tee "$RUNNER_TEMP/native-answer-corpus-session/cli.jsonl"
+          go test -race -count=1 -json ./internal/semsearch/engine -run '^TestMatchAnswers' | tee "$RUNNER_TEMP/native-answer-corpus-session/engine.jsonl"
+          python3 - <<'PYTEST'
+          import json, os, pathlib
+          root = pathlib.Path(os.environ["RUNNER_TEMP"]) / "native-answer-corpus-session"
+          required = {"cli": {"TestAnswerMatchFramesBeforeSearch", "TestAnswerMatchPreservesPythonPolicyInputs", "TestAnswerMatchSourceFailureBeforeReady", "TestAnswerMatchHeldCutOldWriter", "TestAnswerMatchNonPositiveKReachesSource"}, "engine": {"TestMatchAnswersExcludesAfterChunkTopK", "TestMatchAnswersNonPositiveKUsesExistingDefault"}}
+          for name, names in required.items():
+              events = [json.loads(line) for line in (root / (name + ".jsonl")).read_text().splitlines()]
+              passed = {event["Test"] for event in events if event["Action"] == "pass" and "Test" in event}
+              assert names <= passed, names - passed
+              assert not any(event["Action"] in {"skip", "fail"} for event in events), name
+          PYTEST
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: native-answer-corpus-session-${{ matrix.os }}
+          path: ${{ runner.temp }}/native-answer-corpus-session

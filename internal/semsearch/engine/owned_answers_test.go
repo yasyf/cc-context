@@ -51,3 +51,28 @@ func TestMatchAnswersExcludesAfterChunkTopK(t *testing.T) {
 		t.Fatalf("literal excludes got=%v want=%v", got, want)
 	}
 }
+
+func TestMatchAnswersNonPositiveKUsesExistingDefault(t *testing.T) {
+	source := matchAnswerTexts{}
+	corpus := index.OwnedAnswerCorpus{Binding: "default-k", Generation: "generation", Source: source}
+	for _, id := range []string{"aaaaaaa", "bbbbbbb", "ccccccc", "ddddddd", "eeeeeee", "fffffff"} {
+		text := "# Identical title\n\nalpha beta\n"
+		source[id] = text
+		digest := sha256.Sum256([]byte(text))
+		corpus.Documents = append(corpus.Documents, index.OwnedAnswerDocument{ID: id, Path: id + ".md", TextDigest: hex.EncodeToString(digest[:])})
+	}
+	root := t.TempDir()
+	want, err := MatchAnswers(t.Context(), matchAnswerEmbedder{}, corpus, root, "alpha", nil, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(want) != 5 {
+		t.Fatalf("default top-k got=%v", want)
+	}
+	for _, k := range []int{0, -1} {
+		got, err := MatchAnswers(t.Context(), matchAnswerEmbedder{}, corpus, root, "alpha", nil, k)
+		if err != nil || !reflect.DeepEqual(got, want) {
+			t.Fatalf("k=%d got=%v want=%v error=%v", k, got, want, err)
+		}
+	}
+}
