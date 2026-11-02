@@ -536,8 +536,8 @@ func runShip(cmd *cobra.Command, o shipOpts) (err error) {
 			return err
 		}
 		onPublished := false
-		if o.parent == "" && len(chain) > 1 {
-			if onPublished, err = shipOnPublishedParent(ctx, l.dir(), tr, o.tipOnly, state, chain[1], state[branch].Head); err != nil {
+		if shipInfersParentLine(o) && len(chain) > 1 {
+			if onPublished, err = shipOnPublishedParent(ctx, l.dir(), tr, state, chain[1], state[branch].Head); err != nil {
 				return err
 			}
 		}
@@ -746,11 +746,18 @@ func shipParentLine(fixed bool, chain []string, branch string) []string {
 	return slices.DeleteFunc(slices.Clone(chain), func(name string) bool { return name == branch })
 }
 
+// shipInfersParentLine is whether a ship reads its parent line as fixed from
+// where the branch was cut: --parent already says so, and --tip-only,
+// --restack and --all-lanes each ask for something else of the line below.
+func shipInfersParentLine(o shipOpts) bool {
+	return o.parent == "" && !o.tipOnly && !o.restack && !o.allLanes
+}
+
 // shipOnPublishedParent is whether tip sits on the published head of parent, a
 // head parent's own local branch lacks: the line this checkout records below
 // parent predates that push, so the ship keeps it where it is, as --parent does.
-func shipOnPublishedParent(ctx context.Context, dir render.Dir, tr vcs.Trunk, tipOnly bool, state gtState, parent, tip string) (bool, error) {
-	if _, tracked := state[parent]; tipOnly || !tracked || parent == tr.Name() {
+func shipOnPublishedParent(ctx context.Context, dir render.Dir, tr vcs.Trunk, state gtState, parent, tip string) (bool, error) {
+	if _, tracked := state[parent]; !tracked || parent == tr.Name() {
 		return false, nil
 	}
 	ref := "refs/remotes/" + tr.Remote() + "/" + parent

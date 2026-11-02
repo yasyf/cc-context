@@ -536,7 +536,7 @@ func dryRunStack(ctx context.Context, l lane, o shipOpts, c *gtCache, r *shipDry
 // dryRunOnPublishedParent is shipOnPublishedParent over the parent the report
 // resolved, read offline like the rest of the report.
 func dryRunOnPublishedParent(ctx context.Context, l lane, o shipOpts, state gtState, r *shipDryRun) (bool, error) {
-	if o.parent != "" || o.noPush {
+	if !shipInfersParentLine(o) || o.noPush {
 		return false, nil
 	}
 	tr, err := gtTrunkRefOffline(ctx, l.dir(), "ship", r.trunk)
@@ -546,7 +546,7 @@ func dryRunOnPublishedParent(ctx context.Context, l lane, o shipOpts, state gtSt
 	if err != nil {
 		return false, err
 	}
-	return shipOnPublishedParent(ctx, l.dir(), tr, o.tipOnly, state, r.parent, gtRestackRef(r.branch))
+	return shipOnPublishedParent(ctx, l.dir(), tr, state, r.parent, gtRestackRef(r.branch))
 }
 
 // dryRunAnchor is the branch whose stack this ship publishes. For a tracked

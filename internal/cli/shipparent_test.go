@@ -627,7 +627,9 @@ func shipCutFromPublishedParent(t *testing.T) *vcstest.Fixture {
 	mustRun(t, f.Env(), f.Dir, "git", "branch", "-f", "p", stale)
 	stackAdvanceTrunk(t, f, "trunk.txt", "trunk\n")
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "c", "origin/p")
-	stackCommit(t, f, "c.txt")
+	writeShipFile(t, f.Dir, "c.txt", "c\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "c.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-q", "-m", "c", "-m", "why c")
 	return f
 }
 
@@ -675,7 +677,7 @@ func TestShipStacksABranchCutFromAPublishedParentOnThatHead(t *testing.T) {
 		t.Error("origin carries s, want the sibling lane's branch left unpushed")
 	}
 	pushed := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "c")
-	if subjects := gitAt(t, f.Env(), f.Dir, "log", "--format=%s", heads["origin/p"]+".."+pushed); subjects != "c.txt" {
+	if subjects := gitAt(t, f.Env(), f.Dir, "log", "--format=%s", heads["origin/p"]+".."+pushed); subjects != "c" {
 		t.Errorf("origin c carries %q above p's published head, want its own commit alone", subjects)
 	}
 }
