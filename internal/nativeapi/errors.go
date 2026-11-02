@@ -21,6 +21,7 @@ type StatusError struct {
 	URL     string
 	Status  int
 	Message string
+	Payload []byte
 }
 
 // Error includes the refused operation and the server diagnostic.
@@ -80,7 +81,7 @@ func (e *SubmitError) Error() string {
 const statusBodyCap = 512
 
 func statusError(method, target string, status int, payload []byte) *StatusError {
-	return &StatusError{Method: method, URL: target, Status: status, Message: statusMessage(payload)}
+	return &StatusError{Method: method, URL: target, Status: status, Message: statusMessage(payload), Payload: payload}
 }
 
 func statusMessage(payload []byte) string {

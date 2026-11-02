@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -183,4 +184,26 @@ func TestStackNewPrefersNativeForGitHubOriginWithoutCatalog(t *testing.T) {
 		t.Fatalf("new GitHub stack native=%v error=%v", native, err)
 	}
 	assertNoGT(t, vcstest.Invocations(t, f.ArgvLog))
+}
+
+// TestStackNewRefusesAnUntrackedNativeParent is store-bounded-open: a child cut
+// on a plain pull request branch rooted cc-inbox's only native stack on it,
+// which then read as every lane's trunk.
+func TestStackNewRefusesAnUntrackedNativeParent(t *testing.T) {
+	f := shipRepo(t, vcstest.Remote())
+	f.Decorate(func(ctx context.Context) context.Context { return withStackProvider(ctx, true) })
+	mustRun(t, f.Env(), f.Dir, "git", "config", "ccx.stack", "github")
+	shipGTUntracked(t, f, "loose")
+	child := filepath.Join(t.TempDir(), "child")
+
+	_, _, err := runStackCmd(t, f, "new", "child", "--full-history", "--path", child)
+	if err == nil || !strings.Contains(err.Error(), "loose is in no native stack on main") || !strings.Contains(err.Error(), "--parent main") {
+		t.Fatalf("stack new on loose = %v, want it refused naming main", err)
+	}
+	if _, err := os.Stat(child); !os.IsNotExist(err) {
+		t.Errorf("refused stack new left %s: %v", child, err)
+	}
+	if out, _ := combinedRun(t, f.Env(), f.Dir, "git", "rev-parse", "--verify", "--quiet", "refs/heads/child"); strings.TrimSpace(out) != "" {
+		t.Errorf("refused stack new created branch child at %s", out)
+	}
 }
