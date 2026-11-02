@@ -15,7 +15,7 @@ import (
 
 func runMergeCmd(ctx context.Context, t *testing.T, args ...string) (string, error) {
 	t.Helper()
-	cmd := newVcsMergeCmd()
+	cmd := newVcsMergeCmd() //nolint:contextcheck // ExecuteContext(ctx) below is what sets cmd's context; contextcheck cannot see through cobra's two-step wiring
 	cmd.SilenceUsage = true
 	cmd.SilenceErrors = true
 	var out bytes.Buffer
