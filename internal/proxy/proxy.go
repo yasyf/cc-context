@@ -6,11 +6,19 @@ package proxy
 import (
 	"context"
 	"errors"
+	"log/slog"
+	"runtime/debug"
+	"time"
 
 	"github.com/yasyf/cc-context/anchor"
 	"github.com/yasyf/cc-context/internal/backend"
 	"github.com/yasyf/cc-context/internal/dispatch"
 	"github.com/yasyf/cc-context/internal/web"
+)
+
+const (
+	idleTTL       = 15 * time.Minute
+	sweepInterval = time.Minute
 )
 
 // Proxy fronts the op surface: every op runs in-process via internal/dispatch.
@@ -34,6 +42,40 @@ func (p *Proxy) Call(ctx context.Context, op backend.Op, a backend.Args) (string
 		return "", err
 	}
 	return note + out, nil
+}
+
+// StartIdleSweeper prunes the on-disk index cache once, then runs SweepIdle every
+// sweepInterval until ctx is cancelled. The MCP server starts it so a long-lived
+// process gives back what it has stopped using; the one-shot CLI never calls it.
+func (p *Proxy) StartIdleSweeper(ctx context.Context) {
+	go func() {
+		dispatch.PruneIndexCache(ctx)
+		t := time.NewTicker(sweepInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case now := <-t.C:
+				if err := p.SweepIdle(ctx, now.Add(-idleTTL)); err != nil {
+					slog.Warn("proxy: sweep idle engines", "err", err)
+				}
+			}
+		}
+	}()
+}
+
+// SweepIdle drops the resident indexes and releases the embedders unused since
+// cutoff, then returns the freed pages to the OS. Go's scavenger reclaims a
+// several hundred MB index only over many minutes otherwise, so the release would
+// not show up as memory relief without the explicit call.
+func (p *Proxy) SweepIdle(ctx context.Context, cutoff time.Time) error {
+	code, codeErr := dispatch.SweepIdle(ctx, cutoff)
+	page, pageErr := web.SweepIdle(ctx, cutoff)
+	if code || page {
+		debug.FreeOSMemory()
+	}
+	return errors.Join(codeErr, pageErr)
 }
 
 // Close frees the resident index cache and releases both resident embedders (the

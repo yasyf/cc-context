@@ -150,3 +150,52 @@ func TestRunGrepSlowNote(t *testing.T) {
 		})
 	}
 }
+
+type releasingEmbedder struct {
+	slowFakeEmbedder
+	lastUsed time.Time
+	cutoffs  []time.Time
+}
+
+func (e *releasingEmbedder) Encode(ctx context.Context, texts []string) ([][]float32, error) {
+	e.lastUsed = time.Now()
+	return e.slowFakeEmbedder.Encode(ctx, texts)
+}
+
+func (e *releasingEmbedder) ReleaseIdle(_ context.Context, cutoff time.Time) (bool, error) {
+	e.cutoffs = append(e.cutoffs, cutoff)
+	return e.lastUsed.Before(cutoff), nil
+}
+
+func TestSweepIdleFreesOnlyPastTheCutoff(t *testing.T) {
+	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	engine.CloseIndexCache()
+	t.Cleanup(engine.CloseIndexCache)
+
+	emb := &releasingEmbedder{}
+	restore := SetEmbedderProvider(func(context.Context) (index.Embedder, error) { return emb, nil })
+	t.Cleanup(restore)
+
+	repo := writeDispatchRepo(t)
+	if _, err := Run(context.Background(), backend.OpSearch, backend.Args{Query: "login user session", Path: repo, K: 3}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	before := time.Now().Add(-time.Hour)
+	freed, err := SweepIdle(context.Background(), before)
+	if err != nil || freed {
+		t.Fatalf("SweepIdle(an hour ago) = %v, %v; want false, nil right after a search", freed, err)
+	}
+
+	after := time.Now().Add(time.Second)
+	freed, err = SweepIdle(context.Background(), after)
+	if err != nil || !freed {
+		t.Fatalf("SweepIdle(after the search) = %v, %v; want true, nil", freed, err)
+	}
+	if engine.SweepIdle(after.Add(time.Hour)) != 0 {
+		t.Error("SweepIdle left a resident index behind")
+	}
+	if len(emb.cutoffs) != 2 || !emb.cutoffs[0].Equal(before) || !emb.cutoffs[1].Equal(after) {
+		t.Errorf("embedder saw cutoffs %v, want [%v %v]", emb.cutoffs, before, after)
+	}
+}

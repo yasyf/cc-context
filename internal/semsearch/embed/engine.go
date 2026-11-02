@@ -6,9 +6,10 @@
 //
 // Unlike internal/format's per-call instantiation, the module here is
 // resident: New instantiates it and decodes the ~30 MB of weights into its
-// linear memory exactly once, and every Encode reuses that instance. That
-// shared memory means one Engine serializes its Encode calls behind a mutex —
-// the work is memory-bound, so a caller scales with more Engine instances, not
+// linear memory, and every Encode reuses that instance until Close or
+// ReleaseIdle drops it; the next Encode then instantiates it again. That shared
+// memory means one Engine serializes its Encode calls behind a mutex — the work
+// is memory-bound, so a caller scales with more Engine instances, not
 // concurrent calls on one.
 package embed
 
@@ -53,17 +54,19 @@ const (
 const maxU32Bytes uint64 = math.MaxUint32
 
 // Engine is a resident model2vec inference engine. Construct it with New and
-// release its WASM instance with Close. Encode is safe for concurrent use;
-// calls serialize on a single shared instance.
+// release its WASM instance with Close or ReleaseIdle. Encode is safe for
+// concurrent use; calls serialize on a single shared instance.
 type Engine struct {
+	pin       ModelPin
 	module    api.Module
 	alloc     api.Function
 	dealloc   api.Function
 	loadModel api.Function
 	encode    api.Function
 
-	mu   sync.Mutex
-	dims int
+	mu       sync.Mutex
+	dims     int
+	lastUsed time.Time
 }
 
 // New resolves the pin's weights (downloading once into the cache), instantiates
@@ -71,31 +74,8 @@ type Engine struct {
 // linear memory. It returns ErrWeightsUnavailable when the weights are neither
 // cached nor downloadable.
 func New(ctx context.Context, pin ModelPin) (*Engine, error) {
-	blobs, err := resolveWeights(ctx, pin)
-	if err != nil {
-		return nil, err
-	}
-
-	c, err := defaultLoader.load(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	mod, err := c.runtime.InstantiateModule(ctx, c.compiled, wazero.NewModuleConfig().WithName(""))
-	if err != nil {
-		return nil, fmt.Errorf("instantiate embedcore.wasm: %w", err)
-	}
-
-	e := &Engine{
-		module:    mod,
-		alloc:     mod.ExportedFunction("em_alloc"),
-		dealloc:   mod.ExportedFunction("em_dealloc"),
-		loadModel: mod.ExportedFunction("em_load_model"),
-		encode:    mod.ExportedFunction("em_encode"),
-	}
-
-	if err := e.load(ctx, blobs); err != nil {
-		_ = e.Close(ctx)
+	e := &Engine{pin: pin}
+	if err := e.instantiate(ctx); err != nil {
 		return nil, err
 	}
 
@@ -106,7 +86,37 @@ func New(ctx context.Context, pin ModelPin) (*Engine, error) {
 		return nil, fmt.Errorf("warmup encode: %w", err)
 	}
 	e.dims = len(warm[0])
+	e.lastUsed = time.Now()
 	return e, nil
+}
+
+func (e *Engine) instantiate(ctx context.Context) error {
+	blobs, err := resolveWeights(ctx, e.pin)
+	if err != nil {
+		return err
+	}
+
+	c, err := defaultLoader.load(ctx)
+	if err != nil {
+		return err
+	}
+
+	mod, err := c.runtime.InstantiateModule(ctx, c.compiled, wazero.NewModuleConfig().WithName(""))
+	if err != nil {
+		return fmt.Errorf("instantiate embedcore.wasm: %w", err)
+	}
+
+	e.module = mod
+	e.alloc = mod.ExportedFunction("em_alloc")
+	e.dealloc = mod.ExportedFunction("em_dealloc")
+	e.loadModel = mod.ExportedFunction("em_load_model")
+	e.encode = mod.ExportedFunction("em_encode")
+
+	if err := e.load(ctx, blobs); err != nil {
+		_ = e.release(ctx)
+		return err
+	}
+	return nil
 }
 
 // Dims is the embedding dimensionality every Encode vector carries.
@@ -115,12 +125,28 @@ func (e *Engine) Dims() int { return e.dims }
 // Close releases the resident WASM instance and the model memory it holds. The
 // compiled module, its runtime and the on-disk compilation cache are
 // process-wide and outlive every Engine built over them. Close nulls the
-// retained handles so a closed Engine pins no model memory. It is idempotent and
-// safe to call after a partial New.
+// retained handles so a closed Engine pins no model memory, and a later Encode
+// instantiates the module again. It is idempotent and safe to call after a
+// partial New.
 func (e *Engine) Close(ctx context.Context) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	return e.release(ctx)
+}
 
+// ReleaseIdle releases the resident instance, as Close does, when no Encode has
+// run since cutoff, reporting whether it released one. An in-flight Encode holds
+// the instance until it returns.
+func (e *Engine) ReleaseIdle(ctx context.Context, cutoff time.Time) (bool, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.module == nil || e.lastUsed.After(cutoff) {
+		return false, nil
+	}
+	return true, e.release(ctx)
+}
+
+func (e *Engine) release(ctx context.Context) error {
 	if e.module == nil {
 		return nil
 	}
@@ -136,7 +162,7 @@ func (e *Engine) Close(ctx context.Context) error {
 // Encode embeds each text into an L2-normalized float32 vector of length Dims.
 // Input is raw content — no query/document prefixes. A text with no
 // in-vocabulary tokens embeds to the zero vector. Calls serialize on the shared
-// instance.
+// instance, instantiating it again first when Close or ReleaseIdle released it.
 func (e *Engine) Encode(ctx context.Context, texts []string) ([][]float32, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -149,6 +175,12 @@ func (e *Engine) Encode(ctx context.Context, texts []string) ([][]float32, error
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	if e.module == nil {
+		if err := e.instantiate(ctx); err != nil {
+			return nil, err
+		}
+	}
+	e.lastUsed = time.Now()
 	// An in-flight WASM encode runs to completion; local calls stay under 15 ms.
 	return e.encodeBatch(ctx, texts)
 }

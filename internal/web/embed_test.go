@@ -8,6 +8,7 @@ import (
 	"os"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/yasyf/cc-context/internal/semsearch/embed"
 )
@@ -162,5 +163,36 @@ func TestEmbedIntegration(t *testing.T) {
 		if !slices.Equal(first[i], second[i]) {
 			t.Errorf("vector %d differs across calls; embedding is not deterministic", i)
 		}
+	}
+}
+
+type releasingEmbedder struct {
+	fakeEmbedder
+	cutoffs []time.Time
+}
+
+func (e *releasingEmbedder) ReleaseIdle(_ context.Context, cutoff time.Time) (bool, error) {
+	e.cutoffs = append(e.cutoffs, cutoff)
+	return true, nil
+}
+
+func TestSweepIdleReleasesOnlyAConstructedEmbedder(t *testing.T) {
+	ctx := context.Background()
+	emb := &releasingEmbedder{}
+	t.Cleanup(SetEmbedderProvider(fixedEmbedder(emb)))
+
+	if freed, err := SweepIdle(ctx, time.Now()); err != nil || freed {
+		t.Fatalf("SweepIdle before any search = %v, %v; want false, nil", freed, err)
+	}
+	if _, err := sharedEmbedder(ctx); err != nil {
+		t.Fatalf("sharedEmbedder: %v", err)
+	}
+	cutoff := time.Now()
+	freed, err := SweepIdle(ctx, cutoff)
+	if err != nil || !freed {
+		t.Fatalf("SweepIdle after a search = %v, %v; want true, nil", freed, err)
+	}
+	if len(emb.cutoffs) != 1 || !emb.cutoffs[0].Equal(cutoff) {
+		t.Errorf("embedder saw cutoffs %v, want [%v]", emb.cutoffs, cutoff)
 	}
 }

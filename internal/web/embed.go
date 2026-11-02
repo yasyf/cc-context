@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/yasyf/cc-context/internal/semsearch/embed"
 )
@@ -110,6 +111,21 @@ func CloseEmbedder(ctx context.Context) error {
 		return nil
 	}
 	return closer.Close(ctx)
+}
+
+// SweepIdle releases the resident web embedder's model memory when it has not
+// embedded since cutoff, reporting whether it did. The next web search
+// instantiates it again.
+func SweepIdle(ctx context.Context, cutoff time.Time) (bool, error) {
+	webEmbMu.Lock()
+	defer webEmbMu.Unlock()
+	releaser, ok := webEmbedder.(interface {
+		ReleaseIdle(context.Context, time.Time) (bool, error)
+	})
+	if !ok {
+		return false, nil
+	}
+	return releaser.ReleaseIdle(ctx, cutoff)
 }
 
 // SetEmbedderProvider overrides the resident web-embedder provider and clears the
