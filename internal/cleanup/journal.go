@@ -62,10 +62,14 @@ func ViewJournal(layout Layout) (*Journal, error) {
 // Layout is the state tree the journal writes under.
 func (j *Journal) Layout() Layout { return j.layout }
 
-// Create makes job's private folder, and its area in a spool when its tree
-// waits on another volume, then publishes its first record.
+// Create records job's worktree path in the layout's name index, makes job's
+// private folder, and its area in a spool when its tree waits on another
+// volume, then publishes its first record.
 func (j *Journal) Create(job Job) error {
 	if err := j.check(job); err != nil {
+		return err
+	}
+	if err := j.layout.Names().Record(job.Original, "cleanup job "+job.ID, job.Created); err != nil {
 		return err
 	}
 	dir := j.layout.JobDir(job.ID)
