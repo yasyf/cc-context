@@ -48,19 +48,23 @@ func (s PackIndexSnapshot) WithNewPacks(ctx context.Context, publish func(object
 	})
 }
 
-// Publish refreshes lookup metadata when newly produced indexes justify an amortized rewrite.
+// Publish refreshes lookup metadata when newly produced indexes justify an amortized update.
 func (s PackIndexSnapshot) Publish(ctx context.Context, dir render.Dir) error {
 	return s.WithNewPacks(ctx, func(objectDir string, indexes []string) error {
 		due, err := packIndexPublicationDue(ctx, objectDir, indexes)
 		if err != nil || !due {
 			return err
 		}
-		_, err = render.RunCLI(ctx, dir, "git", []string{"multi-pack-index", "--object-dir=" + objectDir, "write", "--no-bitmap"})
-		if err != nil {
-			return fmt.Errorf("publish multi-pack index: %w", err)
-		}
-		return nil
+		return writePackIndex(ctx, dir, objectDir)
 	})
+}
+
+func writePackIndex(ctx context.Context, dir render.Dir, objectDir string) error {
+	_, err := render.RunCLI(ctx, dir, "git", []string{"multi-pack-index", "--object-dir=" + objectDir, "write", "--incremental", "--no-bitmap"})
+	if err != nil {
+		return fmt.Errorf("publish multi-pack index: %w", err)
+	}
+	return nil
 }
 
 func packIndexNames(ctx context.Context, objectDir string) ([]string, error) {

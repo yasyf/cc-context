@@ -87,7 +87,7 @@ exit 99
 				}
 				return
 			}
-			want := "multi-pack-index\n--object-dir=" + objectDir + "\nwrite\n--no-bitmap\n"
+			want := "multi-pack-index\n--object-dir=" + objectDir + "\nwrite\n--incremental\n--no-bitmap\n"
 			if err != nil || string(args) != want {
 				t.Fatalf("publication = %q, %v; want %q", args, err, want)
 			}

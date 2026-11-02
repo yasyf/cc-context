@@ -55,7 +55,7 @@ func TestPackIndexPublisherCommandBoundary(t *testing.T) {
 				}
 				return
 			}
-			want := []string{"multi-pack-index", "--object-dir=" + objectDir, "write", "--no-bitmap"}
+			want := []string{"multi-pack-index", "--object-dir=" + objectDir, "write", "--incremental", "--no-bitmap"}
 			got := strings.Split(strings.TrimSuffix(string(args), "\n"), "\n")
 			if err != nil || !slices.Equal(got, want) {
 				t.Fatalf("command = %q, %v; want %q", got, err, want)
