@@ -36,8 +36,10 @@ Set `git config ccx.stack` to `github` or `graphite` to configure the stack prov
 ## Stack workspaces and cleanup
 
 Stack replay requires Git 2.56 or newer. Internal conflict and rehearsal
-workspaces are sparse. Git `ccx vcs worktree add` links a checkout to the
-caller's repository. Follow [the stack conflict guide](docs/stack-rebase.md)
+workspaces are sparse. Git `ccx vcs worktree add` links a sparse checkout to
+the caller's repository. New Git worktrees mint under
+`~/repos/claude/worktrees/<repo>/<lane>` when `~/repos` is a volume of its
+own, else under `~/.claude/worktrees`; `ccx.worktreeRoot` overrides both. Follow [the stack conflict guide](docs/stack-rebase.md)
 for sparse expansion, manual dependency setup, and explicit
 `ccx vcs stack regenerate --include <dir>` or `--full`. Keep mutable install
 state and build outputs private to each workspace; download and compiler
@@ -45,8 +47,11 @@ caches can remain shared.
 
 Git `ccx vcs stack new <name>` defaults to thin lanes backed by
 `~/.claude/stores/<key>/<repo>`, except a child of a non-trunk branch the
-calling checkout holds, which is cut in that checkout's clone; tracked `.claude` and `.agents`
-are checked out without running hooks or setup scripts. Thin stores share the
+calling checkout holds, which is cut in that checkout's clone. Thin lanes,
+lanes given `--include`, and lanes of a repository tracking more than 5,000
+files are sparse: root files and tracked `.claude`, `.agents`, `tools`, and
+`infra/ci/hooks`, plus each `--include <dir>`, checked out without running
+hooks or setup scripts. Thin stores share the
 source checkout's cc-notes records through `cc-notes storage bind`, which
 cc-notes must provide; existing unbound or differently bound stores are
 refused.
@@ -61,8 +66,8 @@ for sparse expansion, published parents, and ancestry refusals.
 Use `ccx vcs worktree rm <name>` or `--path <absolute-path>` for authorized
 unused trees. On macOS, logical removal precedes queued physical deletion;
 `--wait` waits for deletion. `--force` discards dirty work only and never
-overrides active sessions, locked trees, or the main checkout. `--path` moves
-an orphaned pool worktree, whose admin dir is gone, to `~/.Trash`. Inspect jobs
+overrides active sessions, locked trees, or the main checkout. `--path` deletes
+an orphaned pool worktree, whose admin dir is gone, in place and records it. Inspect jobs
 with `ccx vcs cleanup status [job-id] --json` and watchers with
 `ccx vcs cleanup watchers --json`. Follow [the cleanup reference](docs/worktree-cleanup.md)
 for completion checks and queue controls. Preserve occupied completed

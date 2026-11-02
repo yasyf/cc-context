@@ -77,6 +77,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- New Git worktrees mint under `~/repos/claude/worktrees/<repo>/<lane>` when
+  `~/repos` is the mount point of a volume of its own, keeping worktree churn
+  off the volume that holds home. `ccx.worktreeRoot` still wins when set, and
+  trees already under `~/.claude/worktrees` stay where they are. Stack
+  conflict workspaces follow the same pool instead of preferring the cleanup
+  daemon's volume.
+- Lanes of a large repository are sparse checkouts by default. The cone is the
+  caller's own sparse set, or root files alone, plus the tracked `.agents`,
+  `.claude`, and `tools` directories and `infra/ci/hooks`, which the
+  monorepo's `tools/ci` and `stack-enqueue` source before they run. Thin
+  lanes stay sparse at any size; `ccx vcs worktree add` and full-history or
+  caller-storage `ccx vcs stack new` lanes go sparse when `HEAD` tracks more
+  than 5,000 files or `--include` is given, and `worktree add` gains a
+  repeatable `--include <dir>`. A Go lane names its module with
+  `--include go/<module>`. Both commands print the
+  `git -C <path> sparse-checkout add <dir>` command that widens the lane, just
+  before its path.
+- `ccx vcs worktree rm --path` deletes an orphaned pool worktree in place
+  instead of moving it to `~/.Trash`, after appending its path, the admin dir
+  it named, and the time to `worktree-rm/orphans.jsonl` under ccx's cache. It
+  accepts orphans in `~/.claude/worktrees`, `~/repos/claude/worktrees`, and the
+  `ccx.worktreeRoot` pool.
+
 - **A paused cleanup queue retires a worktree only after its HEAD rests for an
   hour.** The process scan cannot see an agent between commands, so a forced
   `worktree rm` of a tree its lane still used retired the registration within

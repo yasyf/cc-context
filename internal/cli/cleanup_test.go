@@ -533,7 +533,7 @@ func TestCleanupWorktreeRmPathTargets(t *testing.T) {
 	mainRefusal := `worktree rm: "` + f.Dir + `" is the repository's own working copy, not a linked worktree`
 	pool := filepath.Join(fixtureHome(t, f), ".claude", "worktrees")
 	outsidePool := func(tree string) string {
-		return "worktree rm: " + tree + " is an orphaned checkout outside the worktree pool " + pool + " — rm moves only <pool>/<repo>/<name> orphans to the Trash"
+		return "worktree rm: " + tree + " is an orphaned checkout outside the worktree pools " + pool + " — rm deletes only <pool>/<repo>/<name> orphans"
 	}
 
 	tests := []struct {
