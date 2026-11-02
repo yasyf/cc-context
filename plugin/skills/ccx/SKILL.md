@@ -506,7 +506,8 @@ creation was requested. Use `git sparse-checkout add <dir>` in the conflict
 workspace to materialize more files, resolve and stage the conflict, then run
 `ccx vcs stack continue`. `ccx vcs stack abort` abandons the run.
 
-Generated conflicts stop too. Resolve and stage the other conflicts, expand
+A generated conflict is merged three-way first and stops only when both sides
+changed overlapping hunks. Resolve and stage the other conflicts, expand
 the workspace as needed, and set up dependencies there explicitly. Then run
 `ccx vcs stack regenerate --include <dir>` with one flag per needed directory,
 or `ccx vcs stack regenerate --full`. These options materialize files and run

@@ -113,7 +113,7 @@ func TestStackRebasePlansAStopForAGeneratedConflict(t *testing.T) {
 			if err != nil {
 				t.Fatalf("dry run: %v", err)
 			}
-			line := "feature" + shipSep + "gen/out.txt generated" + shipSep + "a conflict there stops for ccx vcs stack regenerate" + shipSep + regenCat
+			line := "feature" + shipSep + "gen/out.txt generated" + shipSep + "a conflict there merges three-way, and stops for ccx vcs stack regenerate only where the hunks overlap" + shipSep + regenCat
 			if got := strings.Contains(plan, line); got != tt.want {
 				t.Errorf("plan = %q, want line %q present = %v", plan, line, tt.want)
 			}
@@ -168,6 +168,36 @@ func TestStackRebaseStopsOnAGeneratedOnlyConflict(t *testing.T) {
 	}
 	if unmerged := gitAt(t, f.Env(), ws, "diff", "--name-only", "--diff-filter=U"); unmerged != "gen/out.txt" {
 		t.Errorf("unmerged after continue = %q, want gen/out.txt", unmerged)
+	}
+}
+
+func TestStackRebaseMergesDisjointHunksOfABinaryMergedGeneratedFile(t *testing.T) {
+	t.Parallel()
+	cmd, marker := regenMarked(t, regenCat)
+	f := regenRepo(t, cmd)
+	writeShipFile(t, f.Dir, ".gitattributes", "gen/*.txt merge=binary\n")
+	writeShipFile(t, f.Dir, "gen/out.txt", "a\nb\nc\nd\ne\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "-A")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "binary merge")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "main")
+	regenBranch(t, f, map[string]string{"src/f.txt": "f\n", "gen/out.txt": "a\nb\nc\nd\ne\nf\n"})
+	regenAdvanceTrunk(t, f, [2]string{"src/t.txt", "t\n"}, [2]string{"gen/out.txt", "t\na\nb\nc\nd\ne\n"})
+
+	out, _, err := runStackCmd(t, f, "rebase", "--no-push")
+	if err != nil {
+		t.Fatalf("stack rebase: %v", err)
+	}
+	if want := "merged gen/out.txt" + shipSep + "three-way"; !strings.Contains(out, want) {
+		t.Errorf("rebase output = %q, want %q", out, want)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "show", "feature:gen/out.txt"); got != "t\na\nb\nc\nd\ne\nf" {
+		t.Errorf("feature's gen/out.txt = %q, want both sides' lines", got)
+	}
+	if onto := gitAt(t, f.Env(), f.Dir, "merge-base", "--is-ancestor", "origin/main", "feature"); onto != "" {
+		t.Errorf("feature is not on origin/main: %s", onto)
+	}
+	if n := regenRuns(t, marker); n != 0 {
+		t.Errorf("the generator ran %d time(s), want none", n)
 	}
 }
 

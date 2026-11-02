@@ -17,6 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A stack rebase no longer stops on a conflict in a `[[generated]]` path when
+  the two sides changed hunks that do not overlap, as happens with a
+  `merge=binary` generated schema. ccx merges the file three-way, stages it, and
+  replays on; only overlapping changes stop for `ccx vcs stack regenerate`.
+- `ccx vcs worktree rm` takes a worktree on a volume other than the cleanup
+  daemon's state, such as one under `ccx.worktreeRoot`. Its job area waits in a
+  private `.ccx-cleanup` folder at that volume's mount point, so the tree still
+  moves by rename and is never copied.
 - A pull request the Trunk queue holds no record of reads as not queued once a
   second read still finds none, instead of an unknown queue state that refused
   every push to it (`merge queue state of #N is unknown`). Trunk indexes every

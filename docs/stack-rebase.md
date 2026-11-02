@@ -155,8 +155,12 @@ cleanup does not stop the session holding it.
 
 ## Regenerate conflicted output explicitly
 
-A conflict in a path declared under `[[generated]]` in `.claude/ccx.toml` stops for
-manual action. Rebase and continue do not run generators automatically.
+A conflict in a path declared under `[[generated]]` in `.claude/ccx.toml` is first
+merged three-way, as `git merge-file` would, even when `.gitattributes` gives the
+path `merge=binary`. When the two sides changed hunks that do not overlap, the
+merge is staged, a `merged <path>` line says so, and the rebase moves on. Only an
+overlapping change stops for manual action. Rebase and continue do not run
+generators automatically.
 
 1. Resolve and stage every conflict outside the declared generated paths.
    If `.claude/ccx.toml` conflicts, resolve and stage it too; regeneration reads the
