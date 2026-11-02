@@ -25,14 +25,19 @@ const (
 // sharedFetch runs fetch once for every worktree of the clone asking for
 // remote's branch at the same time: callers queue on a lock in the git common
 // dir, and one whose turn follows a fetch begun no more than maxAge before it
-// asked takes that result instead. It reports whether this caller fetched.
+// asked takes that result instead. A clone whose common dir only git can name
+// (GIT_DIR or GIT_COMMON_DIR set) fetches unshared. It reports whether this
+// caller fetched.
 func sharedFetch(ctx context.Context, dir render.Dir, prefix, remote, branch string, maxAge time.Duration, fetch func() error) (bool, error) {
 	since := time.Now().Add(-maxAge)
-	commonDir, err := sharedFetchCommonDir(ctx, dir, prefix)
+	ck, err := vcs.ResolveCheckout(string(dir))
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("%s: %w", prefix, err)
 	}
-	stamp := filepath.Join(commonDir, sharedFetchDir, fmt.Sprintf("%x", sha256.Sum256([]byte(remote+"\x00"+branch))))
+	if ck.CommonDir == "" || gitCommonDirOverridden(ctx) {
+		return true, fetch()
+	}
+	stamp := filepath.Join(ck.CommonDir, sharedFetchDir, fmt.Sprintf("%x", sha256.Sum256([]byte(remote+"\x00"+branch))))
 	if maxAge > 0 && sharedFetchCovers(stamp, since) {
 		return false, nil
 	}
@@ -57,20 +62,6 @@ func sharedFetch(ctx context.Context, dir render.Dir, prefix, remote, branch str
 		return true, fmt.Errorf("%s: record the shared fetch of %s/%s: %w", prefix, remote, branch, err)
 	}
 	return true, nil
-}
-
-func sharedFetchCommonDir(ctx context.Context, dir render.Dir, prefix string) (string, error) {
-	if gitCommonDirOverridden(ctx) {
-		return gtCommonDir(ctx, dir, prefix)
-	}
-	ck, err := vcs.ResolveCheckout(string(dir))
-	if err != nil {
-		return "", fmt.Errorf("%s: %w", prefix, err)
-	}
-	if ck.CommonDir == "" {
-		return gtCommonDir(ctx, dir, prefix)
-	}
-	return ck.CommonDir, nil
 }
 
 func sharedFetchCovers(stamp string, since time.Time) bool {
