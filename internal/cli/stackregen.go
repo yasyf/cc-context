@@ -222,6 +222,83 @@ func stackRegenerate(ctx context.Context, cmd *cobra.Command, ws string, gens []
 	return nil
 }
 
+func stackMergeGenerated(ctx context.Context, cmd *cobra.Command, ws string, unmerged []string) ([]string, error) {
+	gens, err := regenStaged(ctx, render.Dir(ws))
+	if err != nil {
+		return unmerged, nil
+	}
+	generated := regenDeclared(gens, unmerged)
+	if len(generated) == 0 {
+		return unmerged, nil
+	}
+	if _, err := stackWidenCone(ctx, ws, generated); err != nil {
+		return nil, err
+	}
+	for _, p := range generated {
+		merged, err := regenMerge(ctx, ws, p)
+		if err != nil {
+			return nil, err
+		}
+		if merged {
+			cmd.Println("merged " + p + shipSep + "three-way; neither side's hunks overlap the other's")
+		}
+	}
+	return stackUnmerged(ctx, ws)
+}
+
+func regenMerge(ctx context.Context, ws, path string) (bool, error) {
+	dir := render.Dir(ws)
+	stages, err := render.RunCLI(ctx, dir, "git", []string{"--literal-pathspecs", "ls-files", "-s", "--", path})
+	if err != nil {
+		return false, fmt.Errorf("stack rebase: read the index stages of %s: %w", path, err)
+	}
+	modes := map[string]string{}
+	for line := range strings.Lines(stages) {
+		if meta, _, ok := strings.Cut(line, "\t"); ok {
+			fields := strings.Fields(meta)
+			modes[fields[2]] = fields[0]
+		}
+	}
+	if len(modes) != 3 || modes["2"] != modes["3"] {
+		return false, nil
+	}
+	tmp, err := os.MkdirTemp("", "ccx-merge-")
+	if err != nil {
+		return false, fmt.Errorf("stack rebase: stage the three-way merge of %s: %w", path, err)
+	}
+	defer func() { _ = os.RemoveAll(tmp) }()
+	sides := make([]string, 0, 3)
+	for _, stage := range []string{"2", "1", "3"} {
+		blob, err := render.RunCLI(ctx, dir, "git", []string{"cat-file", "blob", ":" + stage + ":" + path})
+		if err != nil {
+			return false, fmt.Errorf("stack rebase: read stage %s of %s: %w", stage, path, err)
+		}
+		side := filepath.Join(tmp, stage)
+		if err := os.WriteFile(side, []byte(blob), 0o600); err != nil {
+			return false, fmt.Errorf("stack rebase: stage the three-way merge of %s: %w", path, err)
+		}
+		sides = append(sides, side)
+	}
+	merged, code, _, err := render.RunCLIExitCode(ctx, dir, "git", append([]string{"merge-file", "-p"}, sides...))
+	if err != nil {
+		return false, fmt.Errorf("stack rebase: git merge-file %s: %w", path, err)
+	}
+	if code != 0 {
+		return false, nil
+	}
+	perm := fs.FileMode(0o644)
+	if modes["2"] == "100755" {
+		perm = 0o755
+	}
+	if err := os.WriteFile(filepath.Join(ws, path), []byte(merged), perm); err != nil {
+		return false, fmt.Errorf("stack rebase: write the merged %s: %w", path, err)
+	}
+	if _, err := render.RunCLI(ctx, dir, "git", []string{"--literal-pathspecs", "add", "--", path}); err != nil {
+		return false, fmt.Errorf("stack rebase: stage the merged %s: %w", path, err)
+	}
+	return true, nil
+}
+
 func regenSettle(ctx context.Context, dir render.Dir, ws, path string, conflicted bool) (kept bool, err error) {
 	stages, err := render.RunCLI(ctx, dir, "git", []string{"--literal-pathspecs", "ls-files", "-s", "--", path})
 	if err != nil {
@@ -327,7 +404,7 @@ func stackRegenPlan(ctx context.Context, dir render.Dir, run *stackRebaseRun) ([
 		for i := range gens {
 			owned := slices.DeleteFunc(slices.Clone(both), func(p string) bool { return regenOwner(gens, p) != &gens[i] })
 			if len(owned) > 0 {
-				lines = append(lines, fmt.Sprintf("%s%s%s generated%sa conflict there stops for ccx vcs stack regenerate%s%s", b.Name, shipSep, strings.Join(owned, ", "), shipSep, shipSep, gens[i].Run))
+				lines = append(lines, fmt.Sprintf("%s%s%s generated%sa conflict there merges three-way, and stops for ccx vcs stack regenerate only where the hunks overlap%s%s", b.Name, shipSep, strings.Join(owned, ", "), shipSep, shipSep, gens[i].Run))
 			}
 		}
 	}
@@ -377,8 +454,9 @@ func newStackRegenerateCmd() *cobra.Command {
 		Short: "Rerun the declared generators in a stopped stack rebase's conflict workspace",
 		Long: `Rerun the declared generators in a stopped stack rebase's conflict workspace.
 
-A stack rebase never regenerates on its own: a conflict in a file .claude/ccx.toml lists
-under [[generated]] stops like any other. Once every other conflicted file is
+A stack rebase never regenerates on its own. A conflict in a file .claude/ccx.toml lists
+under [[generated]] is first merged three-way, as git merge-file would, and stops
+like any other only when the two sides' hunks overlap. Once every other conflicted file is
 resolved and added, regenerate runs, once each, the generators owning the
 conflicted generated files and every generated file the stopped commit touches,
 from the workspace root with the generator declarations staged there, then

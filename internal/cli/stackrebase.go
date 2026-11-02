@@ -3924,7 +3924,15 @@ func stackOpenConflict(ctx context.Context, cmd *cobra.Command, l lane, commonDi
 		if len(unmerged) == 0 {
 			return fmt.Errorf("stack rebase: git rebase in %s stopped without a conflict: %s", ws, strings.TrimSpace(stderr))
 		}
-		return stackStopped(ctx, run, b, unmerged)
+		if unmerged, err = stackMergeGenerated(ctx, cmd, ws, unmerged); err != nil {
+			return err
+		}
+		if len(unmerged) > 0 {
+			return stackStopped(ctx, run, b, unmerged)
+		}
+		if err := stackAdvance(ctx, cmd, run, b); err != nil {
+			return err
+		}
 	}
 	head, err := stackRevParse(ctx, render.Dir(ws), "HEAD")
 	if err != nil {
@@ -3936,7 +3944,7 @@ func stackOpenConflict(ctx context.Context, cmd *cobra.Command, l lane, commonDi
 	return stackCloseWorkspace(ctx, cmd, l, commonDir, run)
 }
 
-func stackAdvance(ctx context.Context, run *stackRebaseRun, b *stackRebaseBranch) error {
+func stackAdvance(ctx context.Context, cmd *cobra.Command, run *stackRebaseRun, b *stackRebaseBranch) error {
 	ws := render.Dir(run.Conflict.Workspace)
 	for stackRebasing(ctx, ws) {
 		argv := append(slices.Clone(stackGitRebaseArgs), "rebase", "--continue")
@@ -3954,7 +3962,12 @@ func stackAdvance(ctx context.Context, run *stackRebaseRun, b *stackRebaseBranch
 		if len(unmerged) == 0 {
 			return fmt.Errorf("stack rebase: git rebase --continue in %s failed: %s", ws, strings.TrimSpace(stderr))
 		}
-		return stackStopped(ctx, run, b, unmerged)
+		if unmerged, err = stackMergeGenerated(ctx, cmd, run.Conflict.Workspace, unmerged); err != nil {
+			return err
+		}
+		if len(unmerged) > 0 {
+			return stackStopped(ctx, run, b, unmerged)
+		}
 	}
 	return nil
 }
@@ -4385,7 +4398,7 @@ func stackResume(ctx context.Context, cmd *cobra.Command, l lane, commonDir stri
 	if len(markers) > 0 {
 		return fmt.Errorf("stack rebase: %s stages conflict markers at %s — remove them, git add the files, then run ccx vcs stack continue again", c.Workspace, strings.Join(markers, ", "))
 	}
-	if err := stackAdvance(ctx, run, b); err != nil {
+	if err := stackAdvance(ctx, cmd, run, b); err != nil {
 		return err
 	}
 	head, err := stackRevParse(ctx, ws, "HEAD")
