@@ -115,8 +115,8 @@ func TestBusySessionsStopDeletionUntilTwoQuietSamples(t *testing.T) {
 		for range 4 {
 			h.clock.Advance(400 * time.Millisecond)
 			h.expectEvents("step:a")
+			h.expectTimers(400 * time.Millisecond)
 		}
-		h.expectTimers(400 * time.Millisecond)
 		h.clock.Advance(400 * time.Millisecond)
 		h.expectEvents()
 		h.expectTimers(100 * time.Millisecond)
