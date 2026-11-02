@@ -24,10 +24,33 @@ func TestStackRebaseStartsAtTheParentHeadOnlyTheRemoteReflogRemembers(t *testing
 	}
 }
 
-func TestStackRebaseRefusesABranchNoReflogPlacesOnItsParent(t *testing.T) {
+func TestStackRebaseStartsPastTheParentsCopyNoReflogRemembers(t *testing.T) {
+	f := stackStaleParentRepo(t)
+	mustRun(t, f.Env(), f.Dir, "git", "reflog", "expire", "--expire=now", "--all")
+
+	if _, _, err := runStackCmd(t, f, "rebase", "--no-push"); err != nil {
+		t.Fatalf("stack rebase of a branch on a rewrite of base no reflog remembers: %v", err)
+	}
+	if n := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", "base..feature"); n != "1" {
+		t.Errorf("feature holds %s commits over base, want its own 1", n)
+	}
+	if !stackOnto(t, f, "base", "feature") {
+		t.Error("feature is not on base")
+	}
+}
+
+func TestStackRebaseRefusesABranchThatCopiesNoneOfItsParent(t *testing.T) {
 	f := stackStaleParentRepo(t)
 	stale := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
 	published := gitAt(t, f.Env(), f.Dir, "rev-parse", "refs/remotes/origin/base")
+	own := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "--detach", "feature~1")
+	writeShipFile(t, f.Dir, "unrelated.txt", "unrelated\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "unrelated.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-q", "--amend", "-m", "unrelated")
+	mustRun(t, f.Env(), f.Dir, "git", "cherry-pick", own)
+	mustRun(t, f.Env(), f.Dir, "git", "branch", "-f", "feature", "HEAD")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "feature")
 	before := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")
 	mustRun(t, f.Env(), f.Dir, "git", "reflog", "expire", "--expire=now", "--all")
 

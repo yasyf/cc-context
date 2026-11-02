@@ -132,22 +132,41 @@ func TestNativeAdoptedReplayUsesItsPublicationFork(t *testing.T) {
 	}
 }
 
-func TestNativeAdoptedReplayRefusesUnprovenForks(t *testing.T) {
-	for _, change := range []string{"patch", "authored", "merge", "empty", "no receipt"} {
+func TestNativeAdoptedReplayProvesItsForkByTheParentsCopy(t *testing.T) {
+	for _, change := range []string{"patch", "authored", "empty", "no receipt"} {
 		t.Run(change, func(t *testing.T) {
-			f, _, _ := adoptedNativeReplayRepo(t, change)
+			f, fork, _ := adoptedNativeReplayRepo(t, change)
 			before := shipHead(t, f)
 			l, err := resolveLane(f.Context(), "stack rebase", f.Dir, false)
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, err = stackPlan(f.Context(), l, filepath.Join(f.Dir, ".git"), stackRebaseOpts{tip: "child", tipOnly: true, restack: true, submit: true, dryRun: true})
-			if err == nil || !strings.Contains(err.Error(), "feature carries no head of base") {
-				t.Fatalf("unproven fork accepted or wrong refusal: %v", err)
+			run, err := stackPlan(f.Context(), l, filepath.Join(f.Dir, ".git"), stackRebaseOpts{tip: "child", tipOnly: true, restack: true, submit: true, dryRun: true})
+			if err != nil {
+				t.Fatalf("plan over a replay whose first commit copies base's: %v", err)
+			}
+			if feature := run.branch("feature"); feature.OldBase != fork || !feature.Kept {
+				t.Fatalf("adopted ancestor=%+v, want kept with its own commits past the copy of base at %s", feature, fork)
 			}
 			if got := shipHead(t, f); got != before {
-				t.Fatal("refused plan moved the child source")
+				t.Fatal("planning moved the child source")
 			}
 		})
+	}
+}
+
+func TestNativeAdoptedReplayRefusesAMergedFork(t *testing.T) {
+	f, _, _ := adoptedNativeReplayRepo(t, "merge")
+	before := shipHead(t, f)
+	l, err := resolveLane(f.Context(), "stack rebase", f.Dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = stackPlan(f.Context(), l, filepath.Join(f.Dir, ".git"), stackRebaseOpts{tip: "child", tipOnly: true, restack: true, submit: true, dryRun: true})
+	if err == nil || !strings.Contains(err.Error(), "feature carries no head of base") {
+		t.Fatalf("unproven fork accepted or wrong refusal: %v", err)
+	}
+	if got := shipHead(t, f); got != before {
+		t.Fatal("refused plan moved the child source")
 	}
 }

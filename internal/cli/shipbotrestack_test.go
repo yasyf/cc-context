@@ -28,11 +28,12 @@ func stackBotRestack(t *testing.T, f *vcstest.Fixture) {
 // reflog of the parent remembers.
 func TestShipTipOnlyFollowsABotRestackOfItsStack(t *testing.T) {
 	for _, tc := range []struct {
-		name  string
-		twice bool
+		name         string
+		twice, amend bool
 	}{
-		{"restacked once", false},
-		{"restacked twice, the lane on the first", true},
+		{"restacked once", false, false},
+		{"restacked twice, the lane on the first", true, false},
+		{"restacked once, its commit amended here", false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := shipGTRepo(t)
@@ -50,6 +51,10 @@ func TestShipTipOnlyFollowsABotRestackOfItsStack(t *testing.T) {
 				stackBotRestack(t, f)
 				mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin", "+refs/heads/feature:refs/remotes/origin/feature")
 				mustRun(t, f.Env(), f.Dir, "git", "reset", "-q", "--hard", "origin/feature")
+			}
+			if tc.amend {
+				writeShipFile(t, f.Dir, "feature.txt", "feat ure\n")
+				mustRun(t, f.Env(), f.Dir, "git", "commit", "-qa", "--amend", "--no-edit")
 			}
 			stackCommit(t, f, "new.txt")
 			restackAdvanceRemote(t, f, "main", "second.txt", "second\n")
@@ -71,11 +76,20 @@ func TestShipTipOnlyFollowsABotRestackOfItsStack(t *testing.T) {
 				t.Errorf("local base moved from %s to %s", local, got)
 			}
 			feature := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature")
-			if got := gitAt(t, f.Env(), f.Dir, "rev-parse", feature+"^"); got != restacked {
-				t.Errorf("origin feature %.12s sits on %.12s, want only its new commit fast-forwarded onto the restacked %.12s", feature, got, restacked)
-			}
-			if files := gitAt(t, f.Env(), f.Dir, "diff", "--name-only", restacked, feature); files != "new.txt" {
-				t.Errorf("origin feature adds %q over its restacked head, want only new.txt", files)
+			if tc.amend {
+				if got := gitAt(t, f.Env(), f.Dir, "show", feature+":feature.txt"); got != "feat ure" {
+					t.Errorf("origin feature.txt = %q, want the local amendment kept over the bot's restack of the old commit", got)
+				}
+				if !stackOnto(t, f, base, feature) || stackOnto(t, f, restacked, feature) {
+					t.Errorf("origin feature %.12s, want it replayed onto base's restacked head %.12s, not onto its own restack %.12s", feature, base, restacked)
+				}
+			} else {
+				if got := gitAt(t, f.Env(), f.Dir, "rev-parse", feature+"^"); got != restacked {
+					t.Errorf("origin feature %.12s sits on %.12s, want only its new commit fast-forwarded onto the restacked %.12s", feature, got, restacked)
+				}
+				if files := gitAt(t, f.Env(), f.Dir, "diff", "--name-only", restacked, feature); files != "new.txt" {
+					t.Errorf("origin feature adds %q over its restacked head, want only new.txt", files)
+				}
 			}
 			state, err := gtStateQuery(f.Context(), render.Dir(f.Dir), "test")
 			if err != nil {

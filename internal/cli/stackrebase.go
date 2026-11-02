@@ -3834,7 +3834,24 @@ func stackRemoteRestack(ctx context.Context, dir render.Dir, b *stackRebaseBranc
 			return "", nil
 		}
 	}
-	return ours[len(theirs)-1].sha, nil
+	past := ours[len(theirs)-1].sha
+	merged, code, stderr, err := render.RunCLIExitCode(ctx, dir, "git", []string{"--attr-source=" + b.NewBase, "merge-tree", "--write-tree", "--merge-base=" + b.OldBase, b.NewBase, past})
+	if err != nil {
+		return "", fmt.Errorf("%s: git merge-tree %.12s onto %.12s: %w", stackRebasePrefix, past, b.NewBase, err)
+	}
+	switch code {
+	case 0:
+	case 1:
+		return "", nil
+	default:
+		return "", fmt.Errorf("%s: git merge-tree %.12s onto %.12s exited %d: %s", stackRebasePrefix, past, b.NewBase, code, strings.TrimSpace(stderr))
+	}
+	tree, _, _ := strings.Cut(merged, "\n")
+	remote, err := stackRevParse(ctx, dir, b.Remote+"^{tree}")
+	if err != nil || remote != strings.TrimSpace(tree) {
+		return "", err
+	}
+	return past, nil
 }
 
 func stackReplay(ctx context.Context, dir render.Dir, run *stackRebaseRun, b *stackRebaseBranch) (string, error) {

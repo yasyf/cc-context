@@ -113,9 +113,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   copy the parent's, by patch or by author, date and message, and it is refused
   only when none of them do. After Trunk restacked a parent onto newer trunk, the
   next ship of its child used to refuse with "carries no head of … that gt or
-  a reflog remembers". When a branch's remote head copies its own commits onto
-  their new base patch for patch, only the commits past that copy are replayed
-  onto it, so the push fast-forwards the restack instead of overwriting it.
+  a reflog remembers". When a branch's remote head is an exact copy of its
+  first commits on their new base, only the commits past that copy are
+  replayed onto it, so the push fast-forwards the restack instead of
+  overwriting it.
 
 - A ccx process sending many GitHub requests at once, such as `ccx vcs pr
   status` over 150 pull requests, no longer times out on the shared quota
