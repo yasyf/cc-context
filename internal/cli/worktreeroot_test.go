@@ -47,9 +47,7 @@ func TestGitWorktreeRootLifecycle(t *testing.T) {
 		if !worktreeRegistered(t, f.Env(), f.Dir, path) {
 			t.Fatalf("preview unregistered %s", path)
 		}
-		if _, err := runWorktreeCmd(t, f, "rm", name); err != nil {
-			t.Fatalf("remove %s: %v", name, err)
-		}
+		removeWorktree(t, f, name)
 		if worktreeRegistered(t, f.Env(), f.Dir, path) {
 			t.Fatalf("still registers %s after removal", path)
 		}

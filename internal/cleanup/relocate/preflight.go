@@ -168,10 +168,6 @@ func registrationOf(job cleanup.Job) cleanup.Registration {
 	return cleanup.Registration{Tree: job.Tree, AdminDir: job.AdminDir, Admin: job.Admin}
 }
 
-func sameVolume(tree, jobs cleanup.FileID) bool {
-	return tree.Dev == jobs.Dev
-}
-
 func nestedWorktree(repo, adminDir, worktree string) (string, error) {
 	entries, err := registered(repo, worktree)
 	if err != nil {
@@ -224,39 +220,6 @@ func (r *Relocator) screen(ctx context.Context, job cleanup.Job) error {
 		return refuse(job.Original, "nested", "worktree %s is registered inside %s", nested, job.Original)
 	}
 
-	return nil
-}
-
-func nearest(path string) (fs.FileInfo, error) {
-	for {
-		info, err := os.Stat(path)
-		if !errors.Is(err, fs.ErrNotExist) {
-			return info, err
-		}
-		path = filepath.Dir(path)
-	}
-}
-
-// colocated refuses a tree that cannot move into a job folder with a rename:
-// one on another volume than the folder a new job of it would get.
-func (r *Relocator) colocated(tree string, id cleanup.FileID) error {
-	return r.housed(tree, id, r.cfg.Journal.Layout().JobsFor(tree, id.Dev))
-}
-
-// colocatedIn refuses a journaled job's tree that sits on another volume than
-// the jobs folder its record names.
-func (r *Relocator) colocatedIn(job *cleanup.Job, tree string, id cleanup.FileID) error {
-	return r.housed(tree, id, filepath.Dir(filepath.Dir(job.Payload)))
-}
-
-func (r *Relocator) housed(tree string, id cleanup.FileID, jobsDir string) error {
-	jobsInfo, err := nearest(jobsDir)
-	if err != nil {
-		return fmt.Errorf("cleanup: inspect %s: %w", jobsDir, err)
-	}
-	if !sameVolume(id, cleanup.IDOf(jobsInfo)) {
-		return refuse(tree, "volume", "%s and the cleanup folder %s are on different volumes", tree, jobsDir)
-	}
 	return nil
 }
 
@@ -324,9 +287,6 @@ func (r *Relocator) capture(ctx context.Context, job *cleanup.Job) error {
 func (r *Relocator) preflight(ctx context.Context, req cleanup.Request) (cleanup.Job, error) {
 	job, err := r.inspect(ctx, req)
 	if err != nil {
-		return cleanup.Job{}, err
-	}
-	if err := r.colocated(job.Original, job.Tree); err != nil {
 		return cleanup.Job{}, err
 	}
 	if err := idle(job.Original, r.unretired(ctx, &job)); err != nil {

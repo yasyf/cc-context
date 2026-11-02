@@ -1,9 +1,10 @@
 # Worktree removal and cleanup
 
-On macOS, `ccx vcs worktree rm` returns after logical removal: the original
-tree is gone and Git no longer registers that worktree. A durable per-user
-queue handles physical deletion afterward; `--wait` waits for that deletion
-to finish. Linux keeps synchronous removal.
+On macOS, `ccx vcs worktree rm` returns once a per-user daemon has proven the
+removal safe and locked the worktree's Git registration for its job. The tree
+stays at its path until the daemon's durable queue deletes it there, then the
+registration; nothing is moved. `--wait` waits for both, and a caller that
+reuses the path needs it. Linux keeps synchronous removal.
 
 ## Removal commands
 
@@ -73,23 +74,23 @@ their publication rules. The public command group is `ccx vcs cleanup`.
 | --- | --- |
 | `ccx vcs cleanup status [job-id] --json` | Report the queue, or one job, with progress and any blockage |
 | `ccx vcs cleanup wait <job-id>` | Wait for one job to finish; report a blockage if it cannot proceed |
-| `ccx vcs cleanup pause` | Stop physical relocation and deletion, retire inactive queued linked-worktree registrations in place, and queue new `worktree rm` removals as pending |
+| `ccx vcs cleanup pause` | Stop physical deletion, retire inactive queued linked-worktree registrations in place, and queue new `worktree rm` removals as pending |
 | `ccx vcs cleanup resume` | Resume the queue; refused while a maintenance hold stands |
-| `ccx vcs cleanup hold acquire --id <id> --reason <text>` | Block worktree-registration retirement, checkout relocation, and payload deletion under a hold that `resume` cannot lift |
+| `ccx vcs cleanup hold acquire --id <id> --reason <text>` | Block worktree-registration retirement and deletion under a hold that `resume` cannot lift |
 | `ccx vcs cleanup hold release --id <id>` | Lift the hold `<id>` names, leaving any ordinary pause in place |
 | `ccx vcs cleanup hold status [--json]` | Report the hold, if any, and the ordinary pause apart from it |
 | `ccx vcs cleanup retry <job-id>` | Retry a blocked job from its recorded phase after its cause is addressed |
 | `ccx vcs cleanup cancel <job-id>` | Keep a queued, waiting, or pending worktree: restore a retired registration in place and drop the job |
 | `ccx vcs cleanup watchers --json` | Inspect watcher roots and consumers without retiring them |
 
-`pause` stops physical relocation and deletion while keeping queued jobs at
+`pause` stops physical deletion while keeping queued jobs at
 their recorded phases and retaining their directories and content in place.
 During an ordinary pause, the daemon still checks inactivity and unregisters
 inactive queued linked worktrees in place; live activity or unknown ownership
 blocks logical retirement. While paused, the daemon accepts Expected-bound
 deferred workspace releases and rejects `cleanup adopt` on legacy trees, naming
 `ccx vcs cleanup resume`. A maintenance hold (`hold acquire`) blocks
-worktree-registration retirement, checkout relocation, and payload deletion,
+worktree-registration retirement and deletion,
 while `worktree rm` still journals `pending` queue intents and deferred
 releases and `cleanup adopt` are refused, until `hold release` is called with
 the matching `--id`, which leaves any ordinary pause intact. Both pause and hold
@@ -106,20 +107,20 @@ A lane that commits meanwhile changes `HEAD`, which blocks the job before
 retirement and keeps the registration.
 
 A `worktree rm` during a pause runs the initial main-working-copy, trunk, lock,
-submodule, nesting, volume, and dirty-tree refusals, then records a `pending`
+submodule, nesting, and dirty-tree refusals, then records a `pending`
 job without moving or deleting the directory; inactivity is checked later
 before logical retirement in place. `cleanup status` lists the job as `pending`,
 and the receipt reads `queue paused until ccx vcs cleanup resume`.
 `worktree rm --wait` and `cleanup wait` fail at once while the queue is paused,
 naming `ccx vcs cleanup resume`, instead of waiting for a resume nobody may
 run. On `resume`, the daemon repeats full preflight, identity, and activity
-checks in queue order before relocation and physical deletion, blocking any job
-that fails checks or whose tree changed.
+checks in queue order before it claims each registration and deletes the tree,
+blocking any job that fails checks or whose tree changed.
 
 A stack rebase, `stack continue`, or `stack abort` that meets a paused queue
 still finishes and records its conflict workspace as a `pending` retained
 directory: while paused, the daemon may retire the workspace's registration in
-place once inactive, and `resume` finishes physical relocation and deletion.
+place once inactive, and `resume` finishes the deletion.
 
 The daemon logs every `pause` and `resume` to `daemon.log` with the
 requesting process ID, its ccx version, and its parent's process ID and
@@ -136,7 +137,7 @@ hello. Both wait commands poll status with a 10s limit per request and back
 off up to 1s between polls. A poll that finds the socket missing or refusing
 polls again for up to a minute before it fails; `worktree rm` following a blocked job's automatic
 retry does the same. They succeed only when a poll shows the job
-`done`, after its payload is gone; `worktree rm --wait` then reports
+`done`, after its tree and registration are gone; `worktree rm --wait` then reports
 `deleted`. A blockage fails the wait with its reason.
 
 Each wait poll marks its job as awaited for the next 10s. The daemon deletes
@@ -159,7 +160,7 @@ record was lost. `worktree rm --wait` counts its removal receipt as seeing
 the job. Only a job `cleanup wait` has never seen is "not found" (exit 3).
 `cleanup status`, `cleanup wait`, and `cleanup retry` reject an empty job ID.
 
-`cleanup cancel` undoes a removal whose tree has not begun to move. It checks
+`cleanup cancel` undoes a removal that has not begun to claim its registration. It checks
 that the tree, its registration, its `.git` link, and the job's own lock are
 the ones the job captured; `HEAD` may have moved. It then writes the captured
 `gitdir` backlink back, removes the lock, and drops the job, so git lists the
@@ -171,12 +172,11 @@ Ordinary `ccx` cleanup queue-changing commands, including `worktree rm`, `cleanu
 
 An already-installed `LaunchAgent` can start the daemon at sign-in, and manual startup uses `ccx vcs cleanup serve` as an explicitly authorized service action. A software upgrade alone does not authorize restarting the daemon, and existing tasks remain with their running daemon.
 
-Shutdown cancels the worker's current step. Git reads stop; an `update-ref`,
-`worktree move`, or `worktree remove` already running finishes or reaches its
-budget before the step yields. One that reaches its budget is recorded as a
-timeout, and the restart retries it with the usual backoff. The relocation
-ladder stops at the next durably saved phase, and a restart resumes from that
-phase. Shutdown waits for at most one active Git command's budget, plus up to
+Shutdown cancels the worker's current step. Git reads stop; an `update-ref`
+already running finishes or reaches its budget before the step yields. One that
+reaches its budget is recorded as a timeout, and the restart retries it with the
+usual backoff. The job stops at its last durably saved phase, and a restart
+resumes from that phase. Shutdown waits for at most one active Git command's budget, plus up to
 five seconds if a descendant keeps its output pipes open.
 
 During the v0.67.3 upgrade incident, the draining daemon accepted each new
@@ -233,10 +233,10 @@ process running as the same user can release a hold whose ID it knows.
 
 | Reported outcome | Meaning |
 | --- | --- |
-| Logical removal succeeded | The original tree is gone and its Git registration is removed; queued data can still occupy disk space |
+| Claimed | The removal is proven and the job's lock holds the Git registration; the tree stays at its path until its deletion runs |
 | Waiting for inactivity | A completed internal workspace remains at its original path while a session holds it |
-| Physical deletion in progress | The daemon is deleting the relocated data in bounded slices |
-| Paused | Preparation, relocation, and deletion are held at the recorded phase |
+| Physical deletion in progress | The daemon is deleting the tree where it sits, then its registration, in bounded slices |
+| Paused | Preparation and deletion are held at the recorded phase |
 | Pending | A `worktree rm` asked for during a pause; nothing has moved, and `resume` runs its preflight |
 | Blocked | The job needs attention; its error and recorded phase explain where it stopped |
 | Done | Physical deletion finished |
@@ -250,12 +250,35 @@ The queue survives daemon restarts. It records each phase and checks the
 captured worktree identity before continuing. Thirty seconds after it loads the
 journal, and every six hours after that, the daemon retries every job blocked
 for an operator, so a daemon restarted onto a fix moves the jobs an older one
-gave up on. A job whose cause still holds blocks again with the same reason. A path reused by another actor
-is not permission to delete the replacement. Identity mismatches and other
-errors block the job with diagnostics. A payload whose repository was deleted
-has no registry left to claim it, so its deletion proceeds.
+gave up on. A job whose cause still holds blocks again with the same reason.
 
-Every Git command used for relocation has a finite budget, one minute by
+A path reused by another actor is not permission to delete the replacement. Identity mismatches and other
+errors block the job with diagnostics. A legacy payload whose repository was
+deleted has no registry left to claim it, so its deletion proceeds; a tree
+still at its path needs its repository for the proof, so it blocks.
+
+The daemon deletes every tree where it sits. Before it claims one, it checks
+the captured inode, the registration and links, and the pinned `HEAD`. The
+tree must also be clean unless `--force`, with no checked-out submodule, nested
+registration, watcher above or inside it, or live process. It then writes `ccx cleanup <job-id>` to the registration's `locked`
+file, which keeps `git worktree remove`, `prune`, and `move` off it, and
+proves all of it again before the deletion starts. It deletes the tree, then
+the admin directory under `<common>/worktrees/` that its lock holds, and the
+job is done once both are gone. A tree whose `.git` and admin directory were
+lost is proven against the job's saved `HEAD` through a throwaway index
+instead; a file the tree no longer holds is one that commit restores, so it is
+not dirt.
+
+A directory counts as the job's when it has the captured inode on the device
+its parent sits on at that moment, so a volume renumbered since capture still
+matches and a mount root never does. A tree gone from every path the job names
+finishes the job only once its registration is gone too or still carries the
+job's lock. A registration Git keeps under no lock of the job's holds the job
+on a retryable blockage, since the tree may only have moved away. Jobs an
+older daemon relocated into its job folder drain from where they sit, with no
+further moves.
+
+Every Git command the daemon runs has a finite budget, one minute by
 default. An expired budget blocks the job with the transient `timeout`
 reason at its recorded phase; it retries with the existing backoff. A watcher or
 quarantine probe that cannot answer blocks the same way. Captured

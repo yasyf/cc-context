@@ -71,8 +71,7 @@ func preconditionAdmin(t *testing.T) (*fixture, cleanup.Job, string, *quarantine
 	job := f.intend()
 	admin := moveCapturedAdmin(t, f, job)
 	retireFixture(t, f, &job)
-	f.advance(&job)
-	adminStage(t, f, &job)
+	stageAdmin(t, f, &job)
 	return f, job, admin, probe
 }
 

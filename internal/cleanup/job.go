@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -54,6 +55,16 @@ const (
 	PhaseDeletingAdmin Phase = "deleting_admin"
 	// PhaseDeletingRetiredPayload records durable admin removal before deleting its retained payload.
 	PhaseDeletingRetiredPayload Phase = "deleting_retired_payload"
+	// PhaseClaimed means the removal is proven against the tree where it sits
+	// and git's registration carries the job's lock, or the tree has none: from
+	// here only deletion in place remains.
+	PhaseClaimed Phase = "claimed"
+	// PhaseDeletingTree means physical deletion of the tree where it sits has
+	// begun.
+	PhaseDeletingTree Phase = "deleting_tree"
+	// PhaseDeletingRegistration means the tree is gone and the admin directory
+	// the job locked is being deleted where it sits.
+	PhaseDeletingRegistration Phase = "deleting_registration"
 	// PhaseDone means every owned deletion root is gone.
 	PhaseDone Phase = "done"
 )
@@ -69,17 +80,18 @@ var phaseRank = map[Phase]int{
 	PhaseDeleting:               7,
 	PhaseDeletingAdmin:          8,
 	PhaseDeletingRetiredPayload: 9,
-	PhaseDone:                   10,
+	PhaseClaimed:                10,
+	PhaseDeletingTree:           11,
+	PhaseDeletingRegistration:   12,
+	PhaseDone:                   13,
 }
 
 // Logical reports whether the phase still belongs to the logical half: the
-// tree is not yet both relocated and unregistered.
+// removal is not yet proven and claimed for deletion.
 func (p Phase) Logical() bool { return phaseRank[p] < phaseRank[PhaseUnregistered] }
 
 // Physical reports whether a captured deletion root remains.
-func (p Phase) Physical() bool {
-	return p == PhaseUnregistered || p == PhaseDeleting || p == PhaseDeletingAdmin || p == PhaseDeletingRetiredPayload
-}
+func (p Phase) Physical() bool { return !p.Logical() && p != PhaseDone }
 
 // Retirement records whether a retained checkout's Git backlink is being hidden or is hidden.
 type Retirement string
@@ -122,6 +134,29 @@ func LstatID(path string) (FileID, os.FileInfo, error) {
 		return FileID{}, nil, err
 	}
 	return IDOf(info), info, nil
+}
+
+// Placed reports whether path names the directory captured as want, with its
+// identity now: the captured inode, on the device its parent sits on at this
+// moment. A journaled device number is never compared, so a volume renumbered
+// since capture still matches while a mount root never does. A missing path
+// is no error and a zero identity.
+func Placed(path string, want FileID) (FileID, bool, error) {
+	id, info, err := LstatID(path)
+	if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
+		return FileID{}, false, nil
+	}
+	if err != nil {
+		return FileID{}, false, err
+	}
+	if !info.IsDir() || id.Ino != want.Ino {
+		return id, false, nil
+	}
+	parent, err := os.Stat(filepath.Dir(path))
+	if err != nil {
+		return FileID{}, false, err
+	}
+	return id, IDOf(parent).Dev == id.Dev, nil
 }
 
 // Links is the exact content of the two files that tie a linked worktree to

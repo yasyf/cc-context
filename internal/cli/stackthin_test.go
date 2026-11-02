@@ -1222,14 +1222,18 @@ func TestWorktreeRmRemovesAThinLaneFromTheSource(t *testing.T) {
 	store := thinTestStore(t, f)
 	_, byName := thinNew(t, f, f.Dir, "byname", "--thin", "--depth", strconv.Itoa(thinTestDepth))
 	_, byPath := thinNew(t, f, f.Dir, "bypath", "--thin")
-	fixtureCleanup(t, f)
+	cleanups := fixtureCleanup(t, f)
 
-	if _, err := runWorktreeCmdIn(f.Context(), t, "rm", "byname"); err != nil {
+	out, err := runWorktreeCmdIn(f.Context(), t, "rm", "byname")
+	if err != nil {
 		t.Fatalf("rm byname: %v", err)
 	}
-	if _, err := runWorktreeCmdIn(f.Context(), t, "rm", "--path", byPath); err != nil {
+	awaitDeleted(t, f, cleanups, out)
+	out, err = runWorktreeCmdIn(f.Context(), t, "rm", "--path", byPath)
+	if err != nil {
 		t.Fatalf("rm --path: %v", err)
 	}
+	awaitDeleted(t, f, cleanups, out)
 	for _, lane := range []string{byName, byPath} {
 		if _, err := os.Stat(lane); !os.IsNotExist(err) {
 			t.Errorf("%s still on disk after rm: %v", lane, err)

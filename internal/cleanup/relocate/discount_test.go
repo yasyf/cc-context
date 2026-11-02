@@ -71,13 +71,13 @@ func TestGuardDiscountsOnlyWatchersNotYetRetired(t *testing.T) {
 		f.watched()
 		job := f.accept()
 		f.advance(&job)
-		f.finished(&job)
+		f.claimed(&job)
 
 		f.admit(&job)
 
 		f.consulted(
-			[]string{f.worktree, f.worktree, job.Registered, job.Payload},
-			[][]cleanup.ProcessID{retiring, nil, nil, nil},
+			[]string{f.worktree, f.worktree, f.worktree},
+			[][]cleanup.ProcessID{retiring, nil, nil},
 			[]string{f.worktree, f.worktree},
 		)
 		f.retiredUnder([][]cleanup.ProcessID{retiring})
@@ -98,19 +98,19 @@ func TestGuardDiscountsOnlyWatchersNotYetRetired(t *testing.T) {
 		}
 		f.release()
 		f.advance(&job)
-		f.finished(&job)
+		f.claimed(&job)
 
 		f.admit(&job)
 
 		f.consulted(
-			[]string{f.worktree, f.worktree, f.worktree, f.worktree, f.worktree, job.Registered, job.Payload},
-			[][]cleanup.ProcessID{retiring, retiring, retiring, retiring, nil, nil, nil},
+			[]string{f.worktree, f.worktree, f.worktree, f.worktree, f.worktree, f.worktree},
+			[][]cleanup.ProcessID{retiring, retiring, retiring, retiring, nil, nil},
 			[]string{f.worktree, f.worktree, f.worktree, f.worktree, f.worktree},
 		)
 		f.retiredUnder([][]cleanup.ProcessID{retiring})
 	})
 
-	t.Run("a watcher that did not let go blocks the move", func(t *testing.T) {
+	t.Run("a watcher that did not let go blocks the claim", func(t *testing.T) {
 		f := newFixture(t)
 		f.watched()
 		holder := &cleanup.ActiveError{
@@ -144,10 +144,10 @@ func TestGuardDiscountsOnlyWatchersNotYetRetired(t *testing.T) {
 
 		f.advance(&job)
 
-		f.finished(&job)
+		f.claimed(&job)
 		f.consulted(
-			[]string{f.worktree, f.worktree, job.Registered},
-			[][]cleanup.ProcessID{nil, nil, nil},
+			[]string{f.worktree, f.worktree},
+			[][]cleanup.ProcessID{nil, nil},
 			[]string{f.worktree, f.worktree},
 		)
 		f.retiredUnder([][]cleanup.ProcessID{later})
@@ -158,11 +158,11 @@ func TestGuardDiscountsOnlyWatchersNotYetRetired(t *testing.T) {
 		q.watched()
 		job := q.adopt()
 		q.advance(&job)
-		q.finished(&job)
+		q.claimed(&job)
 
 		q.admit(&job)
 
-		q.consulted([]string{q.source, q.source, job.Payload}, [][]cleanup.ProcessID{nil, nil, nil}, nil)
+		q.consulted([]string{q.source, q.source, q.source}, [][]cleanup.ProcessID{nil, nil, nil}, nil)
 		q.retiredUnder(nil)
 		if len(q.watchers.retired) != 0 {
 			t.Errorf("watchers retired %v, want none", q.watchers.retired)
@@ -241,13 +241,13 @@ func TestGuardDiscountsTheWatchmanServerThatKeptTheTreeOpen(t *testing.T) {
 		f.keptOpen()
 		job := f.accept()
 		f.advance(&job)
-		f.finished(&job)
+		f.claimed(&job)
 
 		f.admit(&job)
 
 		f.consulted(
-			[]string{f.worktree, f.worktree, job.Registered, job.Payload},
-			[][]cleanup.ProcessID{server, server, server, server},
+			[]string{f.worktree, f.worktree, f.worktree},
+			[][]cleanup.ProcessID{server, server, server},
 			[]string{f.worktree, f.worktree},
 		)
 		f.retiredUnder([][]cleanup.ProcessID{server})
@@ -259,11 +259,11 @@ func TestGuardDiscountsTheWatchmanServerThatKeptTheTreeOpen(t *testing.T) {
 		q.keptOpen()
 		job := q.adopt()
 		q.advance(&job)
-		q.finished(&job)
+		q.claimed(&job)
 
 		q.admit(&job)
 
-		q.consulted([]string{q.source, q.source, job.Payload}, [][]cleanup.ProcessID{server, server, server}, nil)
+		q.consulted([]string{q.source, q.source, q.source}, [][]cleanup.ProcessID{server, server, server}, nil)
 	})
 
 	t.Run("an unnamed server authorizes nothing", func(t *testing.T) {

@@ -10,19 +10,17 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/yasyf/daemonkit/durable"
-
 	"github.com/yasyf/cc-context/internal/cleanup"
 )
 
 // Adopt journals the tree the retired janitor parked at req.Source at
-// PhasePrepared, moving nothing. It takes only the inode the request names,
-// and only while the legacy ref still pins the head the request carries; the
-// ref itself is never written. The registry proof covers req.CommonDir alone:
-// no admin entry of that repository names Source or anything inside it, and
-// Source's own .git is neither a repository nor mutually linked to an admin
-// directory. A registration another repository holds on a path inside Source
-// is not looked for.
+// PhasePrepared, moving nothing; Advance deletes it there. It takes only the
+// inode the request names, and only while the legacy ref still pins the head
+// the request carries; the ref itself is never written. The registry proof
+// covers req.CommonDir alone: no admin entry of that repository names Source or
+// anything inside it, and Source's own .git is neither a repository nor
+// mutually linked to an admin directory. A registration another repository
+// holds on a path inside Source is not looked for.
 func (r *Relocator) Adopt(ctx context.Context, seq uint64, req cleanup.AdoptRequest) (cleanup.Job, error) {
 	if err := req.Validate(); err != nil {
 		return cleanup.Job{}, fmt.Errorf("cleanup: adopt request: %w", err)
@@ -71,9 +69,6 @@ func (r *Relocator) Adopt(ctx context.Context, seq uint64, req cleanup.AdoptRequ
 	}
 	if detail != "" {
 		return cleanup.Job{}, refuse(source, "recovery", "%s", detail)
-	}
-	if err := r.colocated(source, req.Tree); err != nil {
-		return cleanup.Job{}, err
 	}
 	if err := r.cfg.Watchers.CheckQuarantine(ctx, source); err != nil {
 		return cleanup.Job{}, refuse(source, "watched", "%v", err)
@@ -273,61 +268,27 @@ func (r *Relocator) unpinned(ctx context.Context, git, repo, ref, head string) (
 	return "", nil
 }
 
-func adoption(job *cleanup.Job, source, payload sighting) string {
-	return fmt.Sprintf(
-		"source %s is %s; payload %s is %s; the job captured tree %s",
-		job.Source, source, job.Payload, payload, label(job.Tree),
-	)
-}
-
-func (r *Relocator) take(ctx context.Context, job *cleanup.Job, _ *bool) (bool, error) {
-	source, err := sight(job.Source)
+func (r *Relocator) take(ctx context.Context, job *cleanup.Job) (bool, error) {
+	tree, found, err := locate(job)
 	if err != nil {
-		return r.block(ctx, job, "reconcile", err.Error())
+		return r.block(ctx, job, "identity", err.Error())
 	}
-	payload, err := sight(job.Payload)
-	if err != nil {
-		return r.block(ctx, job, "reconcile", err.Error())
+	if !found {
+		return r.settle(ctx, job)
 	}
-	if !source.is(job.Tree) && payload.is(job.Tree) {
-		return r.publish(ctx, job)
-	}
-	if !source.is(job.Tree) || payload.exists {
-		return r.block(ctx, job, "reconcile", adoption(job, source, payload))
-	}
-	if reason, detail := r.vouch(ctx, job); reason != "" {
+	if reason, detail := r.vouch(ctx, job, tree); reason != "" {
 		return r.block(ctx, job, reason, detail)
 	}
-	if err := durable.Rename(job.Source, job.Payload); err != nil {
-		return r.block(ctx, job, "reconcile", fmt.Sprintf("rename %s to %s: %v", job.Source, job.Payload, err))
-	}
-	if payload, err = sight(job.Payload); err != nil {
-		return r.block(ctx, job, "reconcile", err.Error())
-	}
-	if !payload.is(job.Tree) {
-		return r.block(ctx, job, "reconcile", fmt.Sprintf(
-			"%s was replaced as it was renamed: payload %s is %s, the job captured tree %s",
-			job.Source, job.Payload, payload, label(job.Tree),
-		))
-	}
-	return r.publish(ctx, job)
+	return r.enter(job, cleanup.PhaseClaimed)
 }
 
-func (r *Relocator) vouch(ctx context.Context, job *cleanup.Job) (reason, detail string) {
-	_, detail, err := registration(job.Repo, job.Source)
+func (r *Relocator) vouch(ctx context.Context, job *cleanup.Job, tree spot) (reason, detail string) {
+	_, detail, err := registration(job.Repo, tree.path)
 	if err != nil {
 		return "reconcile", err.Error()
 	}
 	if detail != "" {
 		return "reconcile", detail
-	}
-	jobDir := filepath.Dir(job.Payload)
-	entries, err := registered(job.Repo, jobDir)
-	if err != nil {
-		return "reconcile", err.Error()
-	}
-	if len(entries) > 0 {
-		return "reconcile", entries[0].claim(job)
 	}
 	detail, err = r.unpinned(ctx, job.Git, job.Repo, job.RecoveryRef, job.Head)
 	if err != nil {
@@ -336,20 +297,14 @@ func (r *Relocator) vouch(ctx context.Context, job *cleanup.Job) (reason, detail
 	if detail != "" {
 		return "identity", detail
 	}
-	for _, dir := range []string{job.Source, jobDir} {
-		if err := r.cfg.Watchers.CheckQuarantine(ctx, dir); err != nil {
-			return probeReason("quarantine", err), err.Error()
-		}
+	if err := r.cfg.Watchers.CheckQuarantine(ctx, tree.path); err != nil {
+		return probeReason("quarantine", err), err.Error()
 	}
-	if holders := r.held(ctx, job, job.Source); holders != "" {
+	if holders := r.held(ctx, job, tree.path); holders != "" {
 		return "activity", holders
 	}
-	tree, err := sight(job.Source)
-	if err != nil {
-		return "identity", err.Error()
-	}
-	if !tree.is(job.Tree) {
-		return "identity", fmt.Sprintf("%s is %s, the job captured tree %s", job.Source, tree, label(job.Tree))
+	if again, ok, err := cleanup.Placed(tree.path, job.Tree); err != nil || !ok || again != tree.id {
+		return "identity", fmt.Sprintf("%s is no longer the tree %s the job captured", tree.path, label(job.Tree))
 	}
 	return "", ""
 }

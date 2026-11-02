@@ -481,43 +481,29 @@ func (f *gitFixture) finished(job cleanup.Job) {
 }
 
 func TestStopYieldsAtEveryLadderBoundaryAndARestartFinishes(t *testing.T) {
-	seedMoved := func(f *gitFixture) cleanup.Job {
+	seedClaimed := func(f *gitFixture) cleanup.Job {
 		job := f.accept()
-		f.park(&job, "rev-parse", cleanup.PhaseMoved, "identity")
+		if err := f.relocator().Advance(context.Background(), &job); err != nil || job.Phase != cleanup.PhaseClaimed || job.Blocked != nil {
+			f.t.Fatalf("Advance() = phase %s, blockage %+v, %v; want claimed", job.Phase, job.Blocked, err)
+		}
 		return job
 	}
-	seedDetached := func(f *gitFixture) cleanup.Job {
-		job := f.accept()
-		f.park(&job, "worktree remove", cleanup.PhaseDetached, "git")
-		return job
+	unlocked := func(f *gitFixture, job cleanup.Job) {
+		f.recovered(job)
+		f.absent(filepath.Join(f.adminDir, "locked"))
 	}
-	atOriginal := func(f *gitFixture, _ cleanup.Job) string { return f.worktree }
-	atRegistered := func(_ *gitFixture, job cleanup.Job) string { return job.Registered }
-	atPayload := func(_ *gitFixture, job cleanup.Job) string { return job.Payload }
 	tests := []struct {
 		name  string
 		seed  func(f *gitFixture) cleanup.Job
 		hold  string
 		read  bool
 		phase cleanup.Phase
-		tree  func(f *gitFixture, job cleanup.Job) string
 		check func(f *gitFixture, job cleanup.Job)
 	}{
-		{"the release read", (*gitFixture).intend, "rev-parse", true, cleanup.PhaseQueued, atOriginal, nil},
-		{"the move read", (*gitFixture).accept, "status", true, cleanup.PhasePrepared, atOriginal, nil},
-		{"the update-ref mutation", (*gitFixture).accept, "update-ref", false, cleanup.PhasePrepared, atOriginal, func(f *gitFixture, job cleanup.Job) {
-			f.recovered(job)
-			if f.ran("worktree move") {
-				f.t.Error("worktree move ran after the stop, want no mutation started under a cancelled step")
-			}
-		}},
-		{"the worktree move mutation", (*gitFixture).accept, "worktree move", false, cleanup.PhaseMoved, atRegistered, (*gitFixture).recovered},
-		{"the detach read", seedMoved, "rev-parse", true, cleanup.PhaseMoved, atRegistered, nil},
-		{"the worktree remove mutation", seedDetached, "worktree remove", false, cleanup.PhaseUnregistered, atPayload, func(f *gitFixture, _ cleanup.Job) {
-			if got, want := f.listing(), f.mainEntry(); got != want {
-				f.t.Errorf("worktree list = %q, want %q", got, want)
-			}
-		}},
+		{"the release read", (*gitFixture).intend, "rev-parse", true, cleanup.PhaseQueued, nil},
+		{"the claim read", (*gitFixture).accept, "status", true, cleanup.PhasePrepared, nil},
+		{"the update-ref mutation", (*gitFixture).accept, "update-ref", false, cleanup.PhasePrepared, unlocked},
+		{"the admission read", seedClaimed, "status", true, cleanup.PhaseClaimed, nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -533,8 +519,8 @@ func TestStopYieldsAtEveryLadderBoundaryAndARestartFinishes(t *testing.T) {
 				t.Errorf("Run() = %v, want nil: a stop is not a journal failure", err)
 			}
 			rested := f.rests(job, tt.phase)
-			if got := f.id(tt.tree(f, rested)); got != job.Tree {
-				t.Errorf("tree identity at %s = %v, want the tree %v", tt.tree(f, rested), got, job.Tree)
+			if got := f.id(f.worktree); got != job.Tree {
+				t.Errorf("tree identity at %s = %v, want the tree %v", f.worktree, got, job.Tree)
 			}
 			if tt.check != nil {
 				tt.check(f, rested)
@@ -552,7 +538,7 @@ func TestStopWithARemoveInFlightAnswersItsCaller(t *testing.T) {
 		read bool
 	}{
 		{"killed in its preflight read", "status", true},
-		{"stopped past its worktree move", "worktree move", false},
+		{"stopped past its update-ref", "update-ref", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -600,12 +586,12 @@ func TestStopWithARemoveInFlightAnswersItsCaller(t *testing.T) {
 			if len(jobs) != 1 {
 				t.Fatalf("journal holds %d jobs, want the one the remove journaled", len(jobs))
 			}
-			job := f.rests(jobs[0], cleanup.PhaseMoved)
+			job := f.rests(jobs[0], cleanup.PhasePrepared)
 			if len(job.Errors) != 0 {
 				t.Errorf("history = %v, want none", job.Errors)
 			}
-			if got := f.id(job.Registered); got != tree {
-				t.Errorf("tree identity at %s = %v, want the tree %v", job.Registered, got, tree)
+			if got := f.id(f.worktree); got != tree {
+				t.Errorf("tree identity at %s = %v, want the tree %v", f.worktree, got, tree)
 			}
 			f.recovered(job)
 			f.finished(f.resume(job))

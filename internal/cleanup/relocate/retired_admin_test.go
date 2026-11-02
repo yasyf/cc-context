@@ -11,12 +11,18 @@ import (
 	"github.com/yasyf/cc-context/internal/cleanup/rmtree"
 )
 
-func adminStage(t *testing.T, f *fixture, job *cleanup.Job) {
+func stageAdmin(t *testing.T, f *fixture, job *cleanup.Job) {
 	t.Helper()
-	if job.Phase != cleanup.PhaseDeletingAdmin || job.Blocked != nil || job.Retirement != "" {
-		t.Fatalf("job = %+v, want unblocked admin deletion stage", job)
+	if job.Blocked != nil || job.Retirement != cleanup.RetirementComplete {
+		t.Fatalf("job = %+v, want a completed retirement to stage", job)
 	}
-	f.stored(job)
+	if err := os.Rename(job.Original, job.Payload); err != nil {
+		t.Fatal(err)
+	}
+	job.Phase, job.Retirement, job.Updated = cleanup.PhaseDeletingAdmin, "", f.clock
+	if err := f.journal.Save(*job); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func moveCapturedAdmin(t *testing.T, f *fixture, job cleanup.Job) string {
@@ -43,127 +49,6 @@ func moveCapturedAdmin(t *testing.T, f *fixture, job cleanup.Job) string {
 		t.Fatalf("native registry = %q, want %q", got, want)
 	}
 	return retired
-}
-
-func TestPausedRetirementResumesAMovedCapturedAdmin(t *testing.T) {
-	tests := []struct {
-		name            string
-		phase           cleanup.Phase
-		detached        bool
-		resumeAtPayload bool
-		relative        bool
-	}{
-		{"queued branch", cleanup.PhaseQueued, false, false, false},
-		{"pending detached", cleanup.PhasePending, true, false, false},
-		{"prepared relative branch", cleanup.PhasePrepared, false, false, true},
-		{"renamed detached", cleanup.PhaseQueued, true, true, false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			f := newFixture(t)
-			if tt.detached {
-				f.run(f.worktree, "checkout", "-q", "--detach")
-			}
-			var job cleanup.Job
-			switch tt.phase {
-			case cleanup.PhaseQueued:
-				job = f.intend()
-			case cleanup.PhasePending:
-				var err error
-				job, err = f.relocator.Pend(context.Background(), 1, f.request(false))
-				if err != nil {
-					t.Fatal(err)
-				}
-			case cleanup.PhasePrepared:
-				job = f.accept()
-			}
-			capturedAdmin, capturedLinks := job.AdminDir, job.Links
-			retired := moveCapturedAdmin(t, f, job)
-			if tt.relative {
-				pointer, err := filepath.Rel(job.Original, retired)
-				if err != nil {
-					t.Fatal(err)
-				}
-				f.write(filepath.Join(job.Original, ".git"), "gitdir: "+pointer+"\n")
-			}
-			dotGit := f.read(filepath.Join(job.Original, ".git"))
-			common := f.read(filepath.Join(retired, "commondir"))
-			retireFixture(t, f, &job)
-			if job.Blocked != nil || job.Retirement != cleanup.RetirementComplete || job.Phase != tt.phase {
-				t.Fatalf("Retire() = %+v, want retired at %s", job, tt.phase)
-			}
-			if job.AdminDir != capturedAdmin || job.Links != capturedLinks {
-				t.Fatalf("Retire() replaced captured registration: %+v", job)
-			}
-			if got := f.id(job.Original); got != job.Tree {
-				t.Errorf("retained tree identity = %+v, want %+v", got, job.Tree)
-			}
-			if got := f.read(filepath.Join(job.Original, ".git")); got != dotGit {
-				t.Errorf("retained .git = %q, want %q", got, dotGit)
-			}
-			if got := f.read(filepath.Join(retired, "gitdir")); got != "" {
-				t.Errorf("retired backlink = %q, want empty", got)
-			}
-			if got := f.read(filepath.Join(retired, "locked")); got != retirementMarker(&job) {
-				t.Errorf("retirement marker = %q, want job's marker", got)
-			}
-			if got := f.run(f.repo, "rev-parse", job.RecoveryRef); got != job.Head {
-				t.Errorf("recovery ref = %q, want %q", got, job.Head)
-			}
-			var replacement cleanup.FileID
-			if tt.resumeAtPayload {
-				if err := os.Rename(job.Original, job.Payload); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.Mkdir(job.Original, 0o700); err != nil {
-					t.Fatal(err)
-				}
-				f.write(filepath.Join(job.Original, "mine.txt"), "mine\n")
-				replacement = f.id(job.Original)
-			}
-			f.open(f.layout.Root)
-			jobs, damaged, err := f.journal.Load()
-			if err != nil || len(damaged) != 0 || len(jobs) != 1 {
-				t.Fatalf("Load() = %d jobs, damaged %v, error %v", len(jobs), damaged, err)
-			}
-			job = jobs[0]
-			f.advance(&job)
-			adminStage(t, f, &job)
-			if job.Retirement != "" || f.id(job.Payload) != job.Tree {
-				t.Errorf("resumed job = %+v, want same payload and cleared retirement", job)
-			}
-			if tt.resumeAtPayload {
-				if got := f.id(job.Original); got != replacement {
-					t.Errorf("replacement identity = %+v, want %+v", got, replacement)
-				}
-				if got := f.read(filepath.Join(job.Original, "mine.txt")); got != "mine\n" {
-					t.Errorf("replacement contents = %q, want mine", got)
-				}
-			} else {
-				f.absent(job.Original)
-			}
-			f.absent(job.Registered)
-			f.absent(capturedAdmin)
-			if got := f.read(filepath.Join(job.Payload, "feature.txt")); got != "feature\n" {
-				t.Errorf("payload contents = %q, want feature contents", got)
-			}
-			if got := f.id(retired); got != job.Admin {
-				t.Errorf("retained admin identity = %+v, want %+v", got, job.Admin)
-			}
-			if got := f.read(filepath.Join(retired, "gitdir")); got != "" {
-				t.Errorf("resume restored displaced backlink %q", got)
-			}
-			if got := f.read(filepath.Join(retired, "commondir")); got != common {
-				t.Errorf("resume changed common directory = %q, want %q", got, common)
-			}
-			if got := f.read(filepath.Join(job.Payload, ".git")); got != "gitdir: "+retired+"\n" {
-				t.Errorf("payload .git = %q, want retained admin", got)
-			}
-			if got, want := f.listing(), f.mainEntry(); got != want {
-				t.Errorf("native registry after resume = %q, want %q", got, want)
-			}
-		})
-	}
 }
 
 func TestMovedCapturedAdminRetirementKeepsStrictActivityChecks(t *testing.T) {
@@ -197,29 +82,6 @@ func TestMovedCapturedAdminRetirementKeepsStrictActivityChecks(t *testing.T) {
 			f.stored(&job)
 		})
 	}
-}
-
-func TestMovedCapturedAdminCannotResumeThroughNativeGitMove(t *testing.T) {
-	f := newFixture(t)
-	job := f.accept()
-	captured := job
-	retired := moveCapturedAdmin(t, f, job)
-	job.AdminDir = retired
-	job.Links.DotGit = f.read(filepath.Join(job.Original, ".git"))
-	if err := job.Validate(); err == nil {
-		t.Fatal("displaced admin unexpectedly validates as a native registration")
-	}
-	vetted := false
-	reason, detail := f.relocator.move(context.Background(), &job, &vetted)
-	if reason != "git" || detail == "" {
-		t.Fatalf("move() = %q, %q, want native git refusal", reason, detail)
-	}
-	if got := f.id(job.Original); got != job.Tree {
-		t.Errorf("failed move tree identity = %+v, want %+v", got, job.Tree)
-	}
-	f.absent(job.Registered)
-	f.absent(job.Payload)
-	f.stored(&captured)
 }
 
 func TestMovedCapturedAdminRetirementRefusesAReplacedAdmin(t *testing.T) {
@@ -257,32 +119,6 @@ func TestMovedCapturedAdminRetirementRefusesAReplacedAdmin(t *testing.T) {
 	f.stored(&job)
 }
 
-func TestMovedCapturedAdminResumeRechecksDirt(t *testing.T) {
-	f := newFixture(t)
-	job := f.intend()
-	retired := moveCapturedAdmin(t, f, job)
-	retireFixture(t, f, &job)
-	if job.Blocked != nil || job.Retirement != cleanup.RetirementComplete {
-		t.Fatalf("Retire() = %+v, want completed retirement", job)
-	}
-	f.write(filepath.Join(job.Original, "dirty.txt"), "uncommitted\n")
-	f.advance(&job)
-	if job.Blocked == nil || job.Blocked.Reason != "dirty" || job.Retirement != cleanup.RetirementComplete {
-		t.Fatalf("Advance() = %+v, want dirty block with retirement retained", job)
-	}
-	if got := f.id(job.Original); got != job.Tree {
-		t.Errorf("dirty tree identity = %+v, want %+v", got, job.Tree)
-	}
-	if got := f.read(filepath.Join(job.Original, "dirty.txt")); got != "uncommitted\n" {
-		t.Errorf("dirty contents = %q, want retained edits", got)
-	}
-	if got := f.read(filepath.Join(retired, "gitdir")); got != "" {
-		t.Errorf("dirty resume restored backlink %q", got)
-	}
-	f.absent(job.Payload)
-	f.stored(&job)
-}
-
 func TestMovedCapturedAdminPhysicalAdmissionKeepsStrictActivityChecks(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -304,8 +140,7 @@ func TestMovedCapturedAdminPhysicalAdmissionKeepsStrictActivityChecks(t *testing
 			if job.Blocked != nil || job.Retirement != cleanup.RetirementComplete {
 				t.Fatalf("Retire() = %+v, want completed retirement", job)
 			}
-			f.advance(&job)
-			adminStage(t, f, &job)
+			stageAdmin(t, f, &job)
 			if tt.phase == cleanup.PhaseDeletingRetiredPayload {
 				root, err := f.relocator.Admit(context.Background(), &job)
 				if err != nil || job.Blocked != nil {
@@ -364,8 +199,7 @@ func TestMovedCapturedAdminCrashRecoveryDeletesAdminBeforePayload(t *testing.T) 
 			job := f.intend()
 			retired := moveCapturedAdmin(t, f, job)
 			retireFixture(t, f, &job)
-			f.advance(&job)
-			adminStage(t, f, &job)
+			stageAdmin(t, f, &job)
 			if err := os.Remove(filepath.Join(retired, removed)); err != nil {
 				t.Fatal(err)
 			}
@@ -444,8 +278,7 @@ func TestMovedCapturedAdminMissingLocatorBlocksBeforePayloadStage(t *testing.T) 
 	job := f.intend()
 	retired := moveCapturedAdmin(t, f, job)
 	retireFixture(t, f, &job)
-	f.advance(&job)
-	adminStage(t, f, &job)
+	stageAdmin(t, f, &job)
 	if err := os.Remove(filepath.Join(job.Payload, ".git")); err != nil {
 		t.Fatal(err)
 	}
@@ -572,8 +405,7 @@ func TestMovedCapturedAdminAbsentParentBlocksCheckpoint(t *testing.T) {
 	job := f.intend()
 	admin := moveCapturedAdmin(t, f, job)
 	retireFixture(t, f, &job)
-	f.advance(&job)
-	adminStage(t, f, &job)
+	stageAdmin(t, f, &job)
 	root, err := f.relocator.Admit(context.Background(), &job)
 	if err != nil || job.Blocked != nil {
 		t.Fatalf("Admit() = %+v, %v", job, err)
@@ -595,47 +427,6 @@ func TestMovedCapturedAdminAbsentParentBlocksCheckpoint(t *testing.T) {
 		t.Errorf("blocked locator = %q", got)
 	}
 	f.stored(&job)
-}
-
-func TestMovedCapturedAdminPointerPublicationRecoversOwnedPartial(t *testing.T) {
-	for _, foreign := range []bool{false, true} {
-		name := "owned partial"
-		if foreign {
-			name = "foreign"
-		}
-		t.Run(name, func(t *testing.T) {
-			f := newFixture(t)
-			job := f.intend()
-			admin := moveCapturedAdmin(t, f, job)
-			pointer, err := filepath.Rel(job.Original, admin)
-			if err != nil {
-				t.Fatal(err)
-			}
-			f.write(filepath.Join(job.Original, ".git"), "gitdir: "+pointer+"\n")
-			retireFixture(t, f, &job)
-			content := "gitdir: "
-			if foreign {
-				content = "operator\n"
-			}
-			stage := filepath.Join(f.layout.JobDir(job.ID), ".ccx-pointer")
-			f.write(stage, content)
-			f.advance(&job)
-			if foreign {
-				if job.Blocked == nil || job.Phase != cleanup.PhaseQueued {
-					t.Fatalf("foreign stage = %+v, want blocked retained tree", job)
-				}
-				if got := f.read(stage); got != content {
-					t.Errorf("foreign staging file = %q, want unchanged", got)
-				}
-				return
-			}
-			adminStage(t, f, &job)
-			f.absent(stage)
-			if got := f.read(filepath.Join(job.Payload, ".git")); got != "gitdir: "+admin+"\n" {
-				t.Errorf("normalized locator = %q", got)
-			}
-		})
-	}
 }
 
 func TestMovedCapturedAdminRechecksHeadAfterFinalGuard(t *testing.T) {
@@ -660,31 +451,4 @@ func TestMovedCapturedAdminRechecksHeadAfterFinalGuard(t *testing.T) {
 		t.Errorf("late HEAD refusal changed backlink to %q", got)
 	}
 	f.stored(&job)
-}
-
-func TestMovedCapturedAdminCrashPreservesAReRegisteredOriginal(t *testing.T) {
-	f := newFixture(t)
-	job := f.intend()
-	admin := moveCapturedAdmin(t, f, job)
-	retireFixture(t, f, &job)
-	if err := os.Rename(job.Original, job.Payload); err != nil {
-		t.Fatal(err)
-	}
-	f.run(f.repo, "worktree", "add", "-q", "--detach", job.Original)
-	replacement := f.observe(job.Original)
-	_ = f.holdAt(job.Original)
-	f.advance(&job)
-	adminStage(t, f, &job)
-	if got := f.observe(job.Original); got != replacement {
-		t.Errorf("replacement registration = %+v, want %+v", got, replacement)
-	}
-	root, err := f.relocator.Admit(context.Background(), &job)
-	if err != nil || job.Blocked != nil || root.ID != job.Admin {
-		t.Fatalf("captured admin admission = %+v, %+v, %v", job, root, err)
-	}
-	deleteRoot(t, root)
-	f.absent(admin)
-	if got := f.observe(job.Original); got != replacement {
-		t.Errorf("admin deletion changed replacement registration to %+v", got)
-	}
 }

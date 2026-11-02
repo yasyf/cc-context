@@ -145,6 +145,9 @@ func TestJobState(t *testing.T) {
 		{"deleting", PhaseDeleting, nil, State("deleting")},
 		{"deleting admin", PhaseDeletingAdmin, nil, State("deleting_admin")},
 		{"deleting retired payload", PhaseDeletingRetiredPayload, nil, State("deleting_retired_payload")},
+		{"claimed", PhaseClaimed, nil, State("claimed")},
+		{"deleting tree", PhaseDeletingTree, nil, State("deleting_tree")},
+		{"deleting registration", PhaseDeletingRegistration, nil, State("deleting_registration")},
 		{"done", PhaseDone, nil, State("done")},
 		{"blocked", PhaseDetached, blocked, StateBlocked},
 		{"blocked deleting", PhaseDeleting, blocked, StateBlocked},
@@ -323,6 +326,9 @@ func TestPhaseHalves(t *testing.T) {
 		{PhaseDeleting, false, true},
 		{PhaseDeletingAdmin, false, true},
 		{PhaseDeletingRetiredPayload, false, true},
+		{PhaseClaimed, false, true},
+		{PhaseDeletingTree, false, true},
+		{PhaseDeletingRegistration, false, true},
 		{PhaseDone, false, false},
 	}
 	for _, tt := range tests {

@@ -209,8 +209,8 @@ func (c *Client) Retry(ctx context.Context, jobID string) (cleanup.Job, error) {
 	return c.job(ctx, request{Op: opRetry, JobID: jobID})
 }
 
-// Cancel undoes a removal whose tree has not begun to move and returns the
-// dropped job.
+// Cancel undoes a removal that has not begun to claim its registration and
+// returns the dropped job.
 func (c *Client) Cancel(ctx context.Context, jobID string) (cleanup.Job, error) {
 	return c.job(ctx, request{Op: opCancel, JobID: jobID})
 }

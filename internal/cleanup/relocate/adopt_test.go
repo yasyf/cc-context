@@ -136,7 +136,7 @@ func TestAdoptJournalsAPreparedJobAndMovesNothing(t *testing.T) {
 	}
 }
 
-func TestAdvanceRenamesAnAdoptedTreeIntoItsPayload(t *testing.T) {
+func TestAdvanceClaimsAnAdoptedTreeWhereItSits(t *testing.T) {
 	q := newQuarantine(t)
 	refs := q.refs()
 	config := q.read(filepath.Join(q.common, "config"))
@@ -144,39 +144,43 @@ func TestAdvanceRenamesAnAdoptedTreeIntoItsPayload(t *testing.T) {
 
 	q.advance(&job)
 
-	q.finished(&job)
-	q.absent(q.source)
+	if job.Phase != cleanup.PhaseClaimed || job.Blocked != nil {
+		t.Fatalf("job is at %s with blockage %+v, want claimed and unblocked", job.Phase, job.Blocked)
+	}
+	q.stored(&job)
+	if got := q.id(q.source); got != q.tree {
+		t.Errorf("source identity = %v, want the tree %v", got, q.tree)
+	}
+	q.absent(job.Payload)
 	q.absent(job.Registered)
-	if got := q.id(job.Payload); got != q.tree {
-		t.Errorf("payload identity = %v, want the tree %v", got, q.tree)
-	}
-	if got := q.read(filepath.Join(job.Payload, "feature.txt")); got != "feature\n" {
-		t.Errorf("payload feature.txt = %q, want %q", got, "feature\n")
-	}
-	if got := q.run(q.repo, "rev-parse", q.ref); got != q.head {
-		t.Errorf("legacy ref = %s, want %s", got, q.head)
-	}
 	if got := q.refs(); got != refs {
 		t.Errorf("refs = %q, want them unchanged %q", got, refs)
 	}
 	if got := q.read(filepath.Join(q.common, "config")); got != config {
 		t.Errorf("repository config = %q, want it unchanged %q", got, config)
 	}
-	if got, want := q.listing(), q.mainEntry(); got != want {
-		t.Errorf("worktree list = %q, want %q", got, want)
-	}
-	if info, err := os.Stat(filepath.Dir(q.source)); err != nil || !info.IsDir() {
-		t.Errorf("quarantine directory: %v, want it left in place", err)
-	}
 	if want := []string{q.source, q.source}; !reflect.DeepEqual(q.guarded, want) {
 		t.Errorf("guard consulted for %v, want %v", q.guarded, want)
 	}
-	if want := []string{q.source, q.source, q.layout.JobDir(job.ID)}; !reflect.DeepEqual(q.watchers.checked, want) {
+	if want := []string{q.source, q.source}; !reflect.DeepEqual(q.watchers.checked, want) {
 		t.Errorf("quarantine checked %v, want %v", q.watchers.checked, want)
 	}
 	if len(q.watchers.retired) != 0 {
 		t.Errorf("watchers retired %v, want none", q.watchers.retired)
 	}
+
+	root, err := q.relocator.Admit(context.Background(), &job)
+	if err != nil || job.Blocked != nil || job.Phase != cleanup.PhaseDeletingTree {
+		t.Fatalf("Admit() = %+v, %v, want the tree admitted", job, err)
+	}
+	if want := (cleanup.DeletionRoot{Dir: filepath.Dir(q.source), Name: filepath.Base(q.source), ID: q.tree}); root != want {
+		t.Errorf("root = %+v, want %+v", root, want)
+	}
+	deleteRoot(t, root)
+	if _, err := q.relocator.Admit(context.Background(), &job); err != nil || job.Phase != cleanup.PhaseDone {
+		t.Fatalf("Admit() after the deletion = %+v, %v, want the job done", job, err)
+	}
+	q.stored(&job)
 }
 
 func TestAdoptRefusals(t *testing.T) {
@@ -399,33 +403,7 @@ func TestAdoptGuardUnclear(t *testing.T) {
 	}
 }
 
-func TestAdvanceAdoptedResumesAfterTheRename(t *testing.T) {
-	q := newQuarantine(t)
-	refs := q.refs()
-	job := q.adopt()
-	if err := os.Rename(q.source, job.Payload); err != nil {
-		t.Fatalf("rename: %v", err)
-	}
-	guarded, checked := len(q.guarded), len(q.watchers.checked)
-	marker := q.trap(&job)
-
-	q.advance(&job)
-
-	q.finished(&job)
-	q.absent(marker)
-	q.absent(q.source)
-	if got := q.id(job.Payload); got != q.tree {
-		t.Errorf("payload identity = %v, want the tree %v", got, q.tree)
-	}
-	if len(q.guarded) != guarded || len(q.watchers.checked) != checked {
-		t.Errorf("guard consulted %d and quarantine checked %d more times for an already relocated tree, want none", len(q.guarded)-guarded, len(q.watchers.checked)-checked)
-	}
-	if got := q.refs(); got != refs {
-		t.Errorf("refs = %q, want them unchanged %q", got, refs)
-	}
-}
-
-func TestAdvanceAdoptedLeavesAReplacementAtTheSource(t *testing.T) {
+func TestAdvanceAdoptedSettlesATreeThatLeftTheSource(t *testing.T) {
 	q := newQuarantine(t)
 	job := q.adopt()
 	aside := filepath.Join(q.root, "aside")
@@ -442,12 +420,11 @@ func TestAdvanceAdoptedLeavesAReplacementAtTheSource(t *testing.T) {
 
 	q.advance(&job)
 
-	q.blocked(&job, cleanup.PhasePrepared, "reconcile", fmt.Sprintf(
-		"source %s is directory %s; payload %s is absent; the job captured tree %s",
-		q.source, idText(replacement), job.Payload, idText(q.tree),
-	))
+	if job.Phase != cleanup.PhaseDone || job.Blocked != nil {
+		t.Fatalf("job is at %s with blockage %+v, want done", job.Phase, job.Blocked)
+	}
+	q.stored(&job)
 	q.absent(marker)
-	q.absent(job.Payload)
 	if got := q.id(q.source); got != replacement {
 		t.Errorf("replacement identity = %v, want %v", got, replacement)
 	}
@@ -464,36 +441,28 @@ func TestAdvanceAdoptedLeavesAReplacementAtTheSource(t *testing.T) {
 
 func TestAdvanceAdoptedBlocks(t *testing.T) {
 	tests := []struct {
-		name        string
-		arrange     func(q *quarantine, job cleanup.Job) (detail string)
-		reason      string
-		wantPayload bool
+		name    string
+		arrange func(q *quarantine, job cleanup.Job) (detail string)
+		reason  string
 	}{
 		{"the ref moved", func(q *quarantine, _ cleanup.Job) string {
 			base := q.run(q.repo, "rev-parse", "refs/heads/main")
 			q.run(q.repo, "update-ref", q.ref, base)
 			return fmt.Sprintf("%s resolves to %s in %s, not the saved head %s", q.ref, base, q.common, q.head)
-		}, "identity", false},
+		}, "identity"},
 		{"the ref is gone", func(q *quarantine, _ cleanup.Job) string {
 			q.run(q.repo, "update-ref", "-d", q.ref)
 			return fmt.Sprintf("%s names no commit in %s", q.ref, q.common)
-		}, "identity", false},
+		}, "identity"},
 		{"the tree was registered again", func(q *quarantine, _ cleanup.Job) string {
 			q.register()
 			return fmt.Sprintf("%s is still a registered worktree: %s links back to %s", q.source, q.adminDir, filepath.Join(q.source, ".git"))
-		}, "reconcile", false},
+		}, "reconcile"},
 		{"a worktree was registered inside", func(q *quarantine, _ cleanup.Job) string {
 			inner := filepath.Join(q.source, "inner")
 			q.run(q.repo, "worktree", "add", "-q", "-b", "inner", inner)
 			return fmt.Sprintf("%s still registers a worktree at %s", q.common, inner)
-		}, "reconcile", false},
-		{"the job folder was registered", func(q *quarantine, job cleanup.Job) string {
-			return "payload is registered as " + q.enroll("squat", filepath.Join(job.Payload, ".git"))
-		}, "reconcile", false},
-		{"a path inside the job folder was registered", func(q *quarantine, job cleanup.Job) string {
-			named := filepath.Join(job.Registered, ".git")
-			return fmt.Sprintf("%s registers %s", q.enroll("squat", named), named)
-		}, "reconcile", false},
+		}, "reconcile"},
 		{"the quarantine became watched", func(q *quarantine, _ cleanup.Job) string {
 			q.watchers.quarantine = func(_ context.Context, dir string) error {
 				if dir == q.source {
@@ -502,32 +471,14 @@ func TestAdvanceAdoptedBlocks(t *testing.T) {
 				return nil
 			}
 			return "the quarantine sits under a watched root"
-		}, "quarantine", false},
-		{"the job folder is watched", func(q *quarantine, job cleanup.Job) string {
-			q.watchers.quarantine = func(_ context.Context, dir string) error {
-				if dir == q.layout.JobDir(job.ID) {
-					return errors.New("job folder sits under a watched root")
-				}
-				return nil
-			}
-			return "job folder sits under a watched root"
-		}, "quarantine", false},
+		}, "quarantine"},
 		{"the tree became active", func(q *quarantine, _ cleanup.Job) string {
 			return q.holdAt(q.source).Error()
-		}, "activity", false},
+		}, "activity"},
 		{"activity is unclear", func(q *quarantine, _ cleanup.Job) string {
 			q.guard = func(context.Context, string) error { return errors.New("process table unreadable") }
 			return "could not verify that " + q.source + " is idle: process table unreadable"
-		}, "activity", false},
-		{"something already sits at the payload", func(q *quarantine, job cleanup.Job) string {
-			if err := os.Mkdir(job.Payload, 0o700); err != nil {
-				q.t.Fatalf("mkdir: %v", err)
-			}
-			return fmt.Sprintf(
-				"source %s is directory %s; payload %s is directory %s; the job captured tree %s",
-				q.source, idText(q.tree), job.Payload, idText(q.id(job.Payload)), idText(q.tree),
-			)
-		}, "reconcile", true},
+		}, "activity"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -545,9 +496,7 @@ func TestAdvanceAdoptedBlocks(t *testing.T) {
 			if got := q.read(filepath.Join(q.source, "feature.txt")); got != "feature\n" {
 				t.Errorf("source feature.txt = %q, want %q", got, "feature\n")
 			}
-			if !tt.wantPayload {
-				q.absent(job.Payload)
-			}
+			q.absent(job.Payload)
 			if got := q.refs(); got != refs {
 				t.Errorf("refs = %q, want them unchanged %q", got, refs)
 			}
@@ -585,37 +534,4 @@ func TestAdvanceAdoptedReturnsTheContextErrorWithoutBlocking(t *testing.T) {
 		t.Errorf("source identity = %v, want the tree %v", got, q.tree)
 	}
 	q.absent(job.Payload)
-}
-
-func TestAdvanceAdoptedBlocksWhenTheRenamedPayloadIsRegistered(t *testing.T) {
-	q := newQuarantine(t)
-	job := q.adopt()
-	if err := os.Rename(q.source, job.Payload); err != nil {
-		t.Fatalf("rename: %v", err)
-	}
-	repointed := filepath.Join(job.Payload, ".git") + "\n"
-	if err := os.Mkdir(q.adminDir, 0o700); err != nil {
-		t.Fatalf("recreate admin dir: %v", err)
-	}
-	q.write(filepath.Join(q.adminDir, "gitdir"), repointed)
-	guarded := len(q.guarded)
-	marker := q.trap(&job)
-
-	q.advance(&job)
-
-	q.blocked(&job, cleanup.PhasePrepared, "reconcile", "payload is registered as "+q.adminDir)
-	q.absent(marker)
-	q.absent(q.source)
-	if got := q.id(job.Payload); got != q.tree {
-		t.Errorf("payload identity = %v, want the tree %v", got, q.tree)
-	}
-	if got := q.read(filepath.Join(job.Payload, "feature.txt")); got != "feature\n" {
-		t.Errorf("payload feature.txt = %q, want %q", got, "feature\n")
-	}
-	if got := q.read(filepath.Join(q.adminDir, "gitdir")); got != repointed {
-		t.Errorf("admin gitdir = %q, want it untouched %q", got, repointed)
-	}
-	if len(q.guarded) != guarded {
-		t.Errorf("guard consulted %d more times, want none", len(q.guarded)-guarded)
-	}
 }

@@ -70,9 +70,12 @@ func TestPausedRetirementLeavesEachLogicalTreeInPlace(t *testing.T) {
 				t.Errorf("recovery ref = %q, want %q", got, job.Head)
 			}
 			f.advance(&job)
-			f.finished(&job)
-			if job.Retirement != "" || f.id(job.Payload) != before {
-				t.Errorf("resumed job = %+v, want original payload and cleared retirement", job)
+			f.claimed(&job)
+			if job.Retirement != "" || f.id(tree) != before {
+				t.Errorf("resumed job = %+v, want the tree claimed where it sits and retirement cleared", job)
+			}
+			if got := f.read(filepath.Join(f.adminDir, "locked")); got != retirementMarker(&job) {
+				t.Errorf("registration lock = %q, want the job's", got)
 			}
 		})
 	}
@@ -117,7 +120,10 @@ func TestPausedRetirementRecoversOnlyOwnedCrashStates(t *testing.T) {
 			}
 			if tt.resume {
 				f.advance(&job)
-				f.finished(&job)
+				f.claimed(&job)
+				if got := f.read(filepath.Join(f.adminDir, "locked")); got != retirementMarker(&job) {
+					t.Errorf("registration lock = %q, want the job's", got)
+				}
 				return
 			}
 			retireFixture(t, f, &job)
@@ -137,7 +143,7 @@ func TestPausedRetirementRecoversOnlyOwnedCrashStates(t *testing.T) {
 	}
 }
 
-func TestPausedRetirementKeepsDirtyContentsButResumeRechecksDirt(t *testing.T) {
+func TestPausedRetirementKeepsDirtyContentsButTheClaimRechecksDirt(t *testing.T) {
 	f := newFixture(t)
 	job := f.intend()
 	marker := filepath.Join(f.worktree, "dirty.txt")
@@ -147,8 +153,8 @@ func TestPausedRetirementKeepsDirtyContentsButResumeRechecksDirt(t *testing.T) {
 		t.Fatalf("Retire() = %+v", job)
 	}
 	f.advance(&job)
-	if job.Blocked == nil || job.Blocked.Reason != "dirty" || job.Retirement != "" {
-		t.Fatalf("Advance() = %+v, want ordinary dirt refusal after restoring", job)
+	if job.Blocked == nil || job.Blocked.Reason != "dirty" || job.Retirement != cleanup.RetirementComplete {
+		t.Fatalf("Advance() = %+v, want ordinary dirt refusal with the registration still retired", job)
 	}
 	if got := f.read(marker); got != "uncommitted\n" {
 		t.Errorf("dirty contents = %q", got)
@@ -196,9 +202,12 @@ func TestPausedRetirementReconcilesAnInterruptedMoveWithoutTouchingTheReleasedPa
 		t.Errorf("released original = %+v, want untouched %+v", got, replacement)
 	}
 	f.advance(&job)
-	f.finished(&job)
+	f.claimed(&job)
 	if got := f.observe(f.worktree); got != replacement {
 		t.Errorf("released original after resume = %+v, want %+v", got, replacement)
+	}
+	if got := f.id(job.Registered); got != job.Tree {
+		t.Errorf("tree identity at %s = %v, want the tree %v left where it sits", job.Registered, got, job.Tree)
 	}
 }
 
@@ -247,7 +256,10 @@ func TestRetiredNativePayloadKeepsItsDeviceOnlyRefresh(t *testing.T) {
 		t.Fatalf("native device refresh = %+v, want captured native admin %+v", job, want)
 	}
 	f.advance(&job)
-	f.finished(&job)
+	f.claimed(&job)
+	if got := f.id(job.Payload); got != job.Tree {
+		t.Errorf("tree identity at %s = %v, want the tree %v left where it sits", job.Payload, got, job.Tree)
+	}
 }
 
 func TestPausedRetirementIgnoresAnInterruptedMarkerTemporary(t *testing.T) {

@@ -9,9 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/yasyf/daemonkit/durable"
-	"golang.org/x/sys/unix"
-
 	"github.com/yasyf/cc-context/internal/cleanup"
 )
 
@@ -223,234 +220,17 @@ func (r *Relocator) strictIdle(ctx context.Context, job *cleanup.Job, first stri
 	return failed, err
 }
 
-func writePointer(files *retirementFiles, job *cleanup.Job) error {
-	want := "gitdir: " + files.admin + "\n"
-	staging, err := os.OpenRoot(filepath.Dir(job.Payload))
-	if err != nil {
-		return err
-	}
-	defer func() { _ = staging.Close() }()
-	const name = ".ccx-pointer"
-	staged, content, err := rootLink(staging, name, os.O_RDONLY)
-	present := err == nil
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return err
-	}
-	if present {
-		_ = staged.Close()
-		if content != want {
-			if !strings.HasPrefix(want, content) {
-				return errors.New("job pointer staging file is not owned by this retirement")
-			}
-			if err := staging.Remove(name); err != nil {
-				return err
-			}
-			if err := rootSync(staging); err != nil {
-				return err
-			}
-			present = false
-		}
-	}
-	if files.want.DotGit == want {
-		if present {
-			if err := staging.Remove(name); err != nil {
-				return err
-			}
-			if err := rootSync(staging); err != nil {
-				return err
-			}
-		}
-		return files.unchanged(job)
-	}
-	root, err := os.OpenRoot(files.tree)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = root.Close() }()
-	info, err := root.Stat(".")
-	if err != nil || cleanup.IDOf(info) != job.Tree {
-		return errors.New("retained tree changed while opening its pointer")
-	}
-	link, content, err := rootLink(root, ".git", os.O_RDONLY)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = link.Close() }()
-	if content != files.want.DotGit {
-		return errors.New("retained tree pointer changed")
-	}
-	if !present {
-		file, err := staging.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-		if err != nil {
-			return err
-		}
-		_, writeErr := file.WriteString(want)
-		if err := errors.Join(writeErr, file.Sync(), file.Close(), rootSync(staging)); err != nil {
-			return err
-		}
-	}
-	held, err := link.Stat()
-	if err != nil {
-		return err
-	}
-	named, err := root.Lstat(".git")
-	if err != nil {
-		return err
-	}
-	if !os.SameFile(held, named) {
-		return errors.New("retained tree pointer was replaced")
-	}
-	if err := files.unchanged(job); err != nil {
-		return err
-	}
-	from, err := staging.Open(".")
-	if err != nil {
-		return err
-	}
-	defer func() { _ = from.Close() }()
-	to, err := root.Open(".")
-	if err != nil {
-		return err
-	}
-	defer func() { _ = to.Close() }()
-	if err := unix.Renameat(int(from.Fd()), name, int(to.Fd()), ".git"); err != nil {
-		return err
-	}
-	files.want.DotGit = want
-	if err := errors.Join(rootSync(root), rootSync(staging)); err != nil {
-		return err
-	}
-	return files.unchanged(job)
-}
-
-func (r *Relocator) resumeDisplaced(ctx context.Context, job *cleanup.Job) (bool, error) {
-	captured, err := sight(job.AdminDir)
-	if err != nil {
-		_, err = r.retirementBlocked(ctx, job, err)
-		return true, err
-	}
-	if captured.is(job.Admin) {
-		return false, nil
-	}
-	files, err := r.retirementFiles(ctx, job)
-	if err != nil {
-		_, err = r.retirementBlocked(ctx, job, err)
-		return true, err
-	}
-	displaced := files.displaced
-	files.close()
-	if !displaced {
-		return false, nil
-	}
-	if err := r.Retire(ctx, job); err != nil || job.Blocked != nil {
-		return true, err
-	}
-	files, err = r.retirementFiles(ctx, job)
-	if err != nil {
-		_, err = r.retirementBlocked(ctx, job, err)
-		return true, err
-	}
-	defer files.close()
-	if !files.displaced {
-		_, err = r.block(ctx, job, "identity", "displaced registration changed during resume")
-		return true, err
-	}
-	if err := r.colocatedIn(job, files.tree, files.treeID); err != nil {
-		var refused *cleanup.RefusedError
-		if errors.As(err, &refused) {
-			_, err = r.block(ctx, job, refused.Reason, refused.Detail)
-			return true, err
-		}
-		_, err = r.block(ctx, job, "reconcile", err.Error())
-		return true, err
-	}
-	if err := r.submodules(ctx, job.Git, files.admin, files.tree, "--git-dir="+files.admin, "--work-tree="+files.tree); err != nil {
-		var refused *cleanup.RefusedError
-		if errors.As(err, &refused) {
-			_, err = r.block(ctx, job, refused.Reason, refused.Detail)
-			return true, err
-		}
-		_, err = r.block(ctx, job, gitReason(err), err.Error())
-		return true, err
-	}
-	if !job.Force {
-		dirt, err := r.dirtAt(ctx, job.Git, "--git-dir="+files.admin, "--work-tree="+files.tree)
-		if err != nil {
-			_, err = r.block(ctx, job, gitReason(err), err.Error())
-			return true, err
-		}
-		if dirt != "" {
-			_, err = r.block(ctx, job, "dirty", dirt)
-			return true, err
-		}
-	}
-	if detail, err := r.unpinned(ctx, job.Git, job.Repo, job.RecoveryRef, job.Head); err != nil || detail != "" {
-		if err != nil {
-			detail = err.Error()
-		}
-		_, err = r.block(ctx, job, "identity", detail)
-		return true, err
-	}
-	if err := r.cfg.Watchers.CheckQuarantine(ctx, filepath.Dir(job.Payload)); err != nil {
-		_, err = r.block(ctx, job, probeReason("quarantine", err), err.Error())
-		return true, err
-	}
-	if failed, err := r.strictIdle(ctx, job, files.tree, files.admin); err != nil {
-		_, err = r.block(ctx, job, "activity", unclear(failed, err))
-		return true, err
-	}
-	if err := displacedClaims(job, files.tree); err != nil {
-		_, err = r.block(ctx, job, "reconcile", err.Error())
-		return true, err
-	}
-	if err := ctx.Err(); err != nil {
-		return true, err
-	}
-	if err := r.verifyDisplaced(ctx, job, files); err != nil {
-		_, err = r.block(ctx, job, "identity", err.Error())
-		return true, err
-	}
-	if err := ctx.Err(); err != nil {
-		return true, err
-	}
-	if err := writePointer(files, job); err != nil {
-		_, err = r.block(ctx, job, "identity", err.Error())
-		return true, err
-	}
-	if err := ctx.Err(); err != nil {
-		return true, err
-	}
-	if files.tree != job.Payload {
-		if err := durable.Rename(files.tree, job.Payload); err != nil {
-			_, err = r.block(ctx, job, "reconcile", err.Error())
-			return true, err
-		}
-		files.tree = job.Payload
-	}
-	if err := files.unchanged(job); err != nil {
-		_, err = r.block(ctx, job, "identity", err.Error())
-		return true, err
-	}
-	updated := *job
-	updated.Phase, updated.Retirement, updated.Updated = cleanup.PhaseDeletingAdmin, "", r.cfg.Now()
-	if err := r.cfg.Journal.Save(updated); err != nil {
-		return true, err
-	}
-	*job = updated
-	return true, nil
-}
-
 func (r *Relocator) rejectRoot(ctx context.Context, job *cleanup.Job, reason string, err error) (cleanup.DeletionRoot, error) {
 	_, saveErr := r.block(ctx, job, reason, err.Error())
 	return cleanup.DeletionRoot{}, saveErr
 }
 
 func adminLocator(job *cleanup.Job, admin, dotGit string) error {
-	payload, err := sight(job.Payload)
+	_, ok, err := cleanup.Placed(job.Payload, job.Tree)
 	if err != nil {
 		return err
 	}
-	if !payload.is(job.Tree) {
+	if !ok {
 		return errors.New("retired admin deletion lost its captured payload")
 	}
 	current, pointer, err := displacedPointer(job.Payload)
@@ -507,11 +287,11 @@ func syncAbsentAdmin(ctx context.Context, job *cleanup.Job, admin, dotGit string
 }
 
 func (r *Relocator) admitAdmin(ctx context.Context, job *cleanup.Job) (cleanup.DeletionRoot, error) {
-	payload, err := sight(job.Payload)
+	_, ok, err := cleanup.Placed(job.Payload, job.Tree)
 	if err != nil {
 		return r.rejectRoot(ctx, job, "identity", err)
 	}
-	if !payload.is(job.Tree) {
+	if !ok {
 		return r.rejectRoot(ctx, job, "identity", errors.New("retired admin deletion lost its captured payload"))
 	}
 	admin, dotGit, err := displacedPointer(job.Payload)
@@ -524,16 +304,16 @@ func (r *Relocator) admitAdmin(ctx context.Context, job *cleanup.Job) (cleanup.D
 	if err := displacedClaims(job, job.Payload); err != nil {
 		return r.rejectRoot(ctx, job, "reconcile", err)
 	}
-	seen, err := sight(admin)
+	current, present, err := cleanup.Placed(admin, job.Admin)
 	if err != nil {
 		return r.rejectRoot(ctx, job, "identity", err)
 	}
-	if seen.exists && !seen.is(job.Admin) {
+	if !current.Zero() && !present {
 		return r.rejectRoot(ctx, job, "identity", errors.New("retired admin is no longer the captured directory"))
 	}
 	directories := []string{filepath.Dir(job.Payload)}
 	trees := []string{job.Payload}
-	if seen.exists {
+	if present {
 		directories = append(directories, admin)
 		trees = append(trees, admin)
 	}
@@ -546,7 +326,7 @@ func (r *Relocator) admitAdmin(ctx context.Context, job *cleanup.Job) (cleanup.D
 	if failed, err := r.strictIdle(ctx, job, trees[0], trees[1:]...); err != nil {
 		return r.rejectRoot(ctx, job, "activity", errors.New(unclear(failed, err)))
 	}
-	if !seen.exists {
+	if !present {
 		if err := syncAbsentAdmin(ctx, job, admin, dotGit); err != nil {
 			return r.rejectRoot(ctx, job, "reconcile", err)
 		}
@@ -564,7 +344,7 @@ func (r *Relocator) admitAdmin(ctx context.Context, job *cleanup.Job) (cleanup.D
 	}
 	defer func() { _ = root.Close() }()
 	held, err := root.Stat(".")
-	if err != nil || cleanup.IDOf(held) != job.Admin {
+	if err != nil || cleanup.IDOf(held) != current {
 		return r.rejectRoot(ctx, job, "identity", errors.New("retired admin changed while opening"))
 	}
 	if _, err := ownMarker(root, job); err != nil {
@@ -579,8 +359,7 @@ func (r *Relocator) admitAdmin(ctx context.Context, job *cleanup.Job) (cleanup.D
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return r.rejectRoot(ctx, job, "identity", err)
 	}
-	seen, err = sight(admin)
-	if err != nil || !seen.is(job.Admin) {
+	if again, still, err := cleanup.Placed(admin, job.Admin); err != nil || !still || again != current {
 		return r.rejectRoot(ctx, job, "identity", errors.New("retired admin changed during admission"))
 	}
 	if err := adminLocator(job, admin, dotGit); err != nil {
@@ -589,5 +368,5 @@ func (r *Relocator) admitAdmin(ctx context.Context, job *cleanup.Job) (cleanup.D
 	if err := ctx.Err(); err != nil {
 		return cleanup.DeletionRoot{}, err
 	}
-	return cleanup.DeletionRoot{Dir: filepath.Dir(admin), Name: filepath.Base(admin), ID: job.Admin}, nil
+	return cleanup.DeletionRoot{Dir: filepath.Dir(admin), Name: filepath.Base(admin), ID: current}, nil
 }

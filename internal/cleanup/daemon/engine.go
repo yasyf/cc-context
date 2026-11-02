@@ -576,9 +576,9 @@ func (e *Engine) Retry(ctx context.Context, jobID string) (cleanup.Job, error) {
 	return call(ctx, e, func(context.Context) (cleanup.Job, error) { return e.retry(jobID) })
 }
 
-// Cancel undoes a removal whose tree has not begun to move and drops its job,
-// leaving the worktree registered in place and its recovery ref kept. A
-// maintenance hold refuses it as a *HeldError.
+// Cancel undoes a removal that has not begun to claim its registration and
+// drops its job, leaving the worktree registered in place and its recovery ref
+// kept. A maintenance hold refuses it as a *HeldError.
 func (e *Engine) Cancel(ctx context.Context, jobID string) (cleanup.Job, error) {
 	return call(ctx, e, func(ctx context.Context) (cleanup.Job, error) { return e.cancel(ctx, jobID) })
 }
@@ -1093,7 +1093,7 @@ func (e *Engine) slice(ctx context.Context, job cleanup.Job) error {
 	start := e.clock.Now()
 	removed, done, err := e.active.deletion.Step(limit, budget, workers)
 	end := e.clock.Now()
-	if job.Phase != cleanup.PhaseDeletingAdmin {
+	if job.Phase != cleanup.PhaseDeletingAdmin && job.Phase != cleanup.PhaseDeletingRegistration {
 		job.Removed += uint64(removed) //nolint:gosec // a step never removes a negative count
 	}
 	e.gov.sliced(end.Sub(start), workers, removed)
@@ -1108,8 +1108,8 @@ func (e *Engine) slice(ctx context.Context, job cleanup.Job) error {
 	case done:
 		e.active = nil
 		e.publishGovernor()
-		if job.Phase == cleanup.PhaseDeletingAdmin {
-			job.Phase, job.Updated = cleanup.PhaseDeletingRetiredPayload, e.clock.Now()
+		if next, ok := afterRoot(job); ok {
+			job.Phase, job.Updated = next, e.clock.Now()
 			return e.save(job)
 		}
 		return e.finish(job)
@@ -1145,11 +1145,20 @@ func (e *Engine) open(ctx context.Context, job *cleanup.Job) error {
 		return &fatalError{fmt.Errorf("cleanup daemon: admit job %s: %w", job.ID, err)}
 	}
 	e.put(*job)
-	if job.Blocked != nil || e.holds(*job) {
+	switch {
+	case job.Blocked != nil:
+		return nil
+	case job.Phase == cleanup.PhaseDone:
+		return e.finish(*job)
+	case e.holds(*job):
 		return nil
 	}
 	deletion, err := e.deleter.Open(root.Dir, root.Name, root.ID)
 	if errors.Is(err, fs.ErrNotExist) && job.Phase != cleanup.PhaseDeletingAdmin {
+		if next, ok := afterRoot(*job); ok {
+			job.Phase, job.Updated = next, e.clock.Now()
+			return e.save(*job)
+		}
 		return e.finish(*job)
 	}
 	if err != nil {
@@ -1157,6 +1166,16 @@ func (e *Engine) open(ctx context.Context, job *cleanup.Job) error {
 	}
 	e.active = &activeDeletion{id: job.ID, deletion: deletion, savedAt: e.clock.Now()}
 	return nil
+}
+
+func afterRoot(job cleanup.Job) (cleanup.Phase, bool) {
+	switch {
+	case job.Phase == cleanup.PhaseDeletingAdmin:
+		return cleanup.PhaseDeletingRetiredPayload, true
+	case job.Phase == cleanup.PhaseDeletingTree && !job.Adopted:
+		return cleanup.PhaseDeletingRegistration, true
+	}
+	return "", false
 }
 
 func (e *Engine) block(job cleanup.Job, cause error) error {
@@ -1338,7 +1357,7 @@ type rejoinable func(job cleanup.Job) bool
 func registeredAt(worktree string, force bool) rejoinable {
 	resolved, _ := filepath.EvalSymlinks(worktree)
 	return func(job cleanup.Job) bool {
-		untouched := job.Phase == cleanup.PhaseQueued || job.Phase == cleanup.PhaseWaiting || job.Phase == cleanup.PhasePending || job.Phase == cleanup.PhasePrepared
+		untouched := job.Phase == cleanup.PhaseQueued || job.Phase == cleanup.PhaseWaiting || job.Phase == cleanup.PhasePending || job.Phase == cleanup.PhasePrepared || job.Phase == cleanup.PhaseClaimed
 		authorized := force || !job.Force
 		return untouched && authorized && !job.Adopted && (job.Original == worktree || job.Original == resolved)
 	}
@@ -1369,8 +1388,8 @@ func parkedAt(r cleanup.AdoptRequest) rejoinable {
 }
 
 func holds(path string, tree cleanup.FileID) bool {
-	id, _, err := cleanup.LstatID(path)
-	return err == nil && id == tree
+	_, ok, err := cleanup.Placed(path, tree)
+	return err == nil && ok
 }
 
 func (e *Engine) revive(rejoins rejoinable) (cleanup.Job, bool, error) {

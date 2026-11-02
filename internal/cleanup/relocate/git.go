@@ -272,6 +272,10 @@ func (r *Relocator) dirt(ctx context.Context, git, tree string) (string, error) 
 }
 
 func (r *Relocator) dirtAt(ctx context.Context, git string, location ...string) (string, error) {
+	return r.changes(ctx, git, dropping, append(location, "status", "--porcelain=v1", "-z", "--untracked-files=normal", "--ignore-submodules=none")...)
+}
+
+func (r *Relocator) changes(ctx context.Context, git string, skip func(status, name []byte) bool, args ...string) (string, error) {
 	var (
 		shown    []string
 		total    int
@@ -287,14 +291,14 @@ func (r *Relocator) dirtAt(ctx context.Context, git string, location ...string) 
 			status, name = head[:2], head[3:]
 		}
 		original = bytes.ContainsAny(status, "RC")
-		if dropping(status, name) {
+		if skip(status, name) {
 			return
 		}
 		total++
 		if len(shown) < dirtyShown {
 			shown = append(shown, string(name))
 		}
-	}, append(location, "status", "--porcelain=v1", "-z", "--untracked-files=normal", "--ignore-submodules=none")...)
+	}, args...)
 	if err != nil || total == 0 {
 		return "", err
 	}

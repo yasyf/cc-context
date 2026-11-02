@@ -162,8 +162,9 @@ func newCleanupCmd() *cobra.Command {
 		Long: `Inspect and steer the macOS worktree deletion queue.
 
 On macOS, "worktree rm" hands each linked worktree to a per-user daemon: the
-removal returns once the tree has left its path and git's registry, and the
-daemon deletes the relocated files afterward in bounded, throttled slices.
+removal returns once the daemon has proven the tree safe to delete and locked
+its registration, and the daemon deletes the tree where it sits afterward, then
+the registration, in bounded, throttled slices.
 These commands read that queue and steer its physical deletion. Linux removes
 inline and runs no daemon.`,
 		Args: cobra.NoArgs,
@@ -719,9 +720,9 @@ func newCleanupCancelCmd() *cobra.Command {
 		Short: "Keep a queued worktree: undo its removal and drop the job",
 		Long: `Keep a queued worktree: undo its removal and drop the job.
 
-Only a job whose tree has not begun to move can be cancelled: queued, waiting,
-or pending. A registration the paused queue retired gets its gitdir backlink
-back and loses the job's lock, so git lists the worktree again. The tree, its
+Only a job that has not begun to claim its registration can be cancelled:
+queued, waiting, or pending. A registration the paused queue retired gets its
+gitdir backlink back and loses the job's lock, so git lists the worktree again. The tree, its
 registration and its links must be the ones the job captured; its HEAD may
 have moved since. The job's recovery ref stays.`,
 		Args: cobra.MatchAll(cobra.ExactArgs(1), cleanupJobIDArg),

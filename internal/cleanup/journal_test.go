@@ -431,8 +431,10 @@ func TestJournalDiscard(t *testing.T) {
 	if err := j.Create(job); err != nil {
 		t.Fatalf("Create() = %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(l.JobDir(testID), ".job.json.654321"), nil, 0o600); err != nil {
-		t.Fatal(err)
+	for _, leftover := range []string{filepath.Join(l.JobDir(testID), ".job.json.654321"), l.ScratchIndex(testID), l.ScratchIndex(testID) + ".lock"} {
+		if err := os.WriteFile(leftover, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := j.Discard(job); err != nil {
 		t.Fatalf("Discard() = %v", err)

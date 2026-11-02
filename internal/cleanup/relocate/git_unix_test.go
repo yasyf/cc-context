@@ -136,36 +136,23 @@ func openFIFO(t *testing.T, path string, flag int, stuck string) *os.File {
 }
 
 func TestAdvanceBlocksAnInterruptedGitStepAsATimeoutThenRecovers(t *testing.T) {
-	moveArgv := func(f *fixture, job cleanup.Job) string {
-		return "--git-dir=" + f.common + " -c worktree.useRelativePaths=false worktree move " + f.worktree + " " + job.Registered
-	}
-	removeArgv := func(f *fixture, job cleanup.Job) string {
-		return "--git-dir=" + f.common + " worktree remove " + job.Registered
-	}
-	atOriginal := func(f *fixture, _ cleanup.Job) string { return f.worktree }
-	atRegistered := func(_ *fixture, job cleanup.Job) string { return job.Registered }
-	atPayload := func(_ *fixture, job cleanup.Job) string { return job.Payload }
 	tests := []struct {
 		name  string
 		hold  string
 		after bool
 		read  bool
 		stop  bool
-		phase cleanup.Phase
 		argv  func(f *fixture, job cleanup.Job) string
-		tree  func(f *fixture, job cleanup.Job) string
 	}{
-		{"update-ref killed once it had run", "update-ref", true, false, false, cleanup.PhasePrepared, func(f *fixture, job cleanup.Job) string {
+		{"update-ref killed once it had run", "update-ref", true, false, false, func(f *fixture, job cleanup.Job) string {
 			return "--git-dir=" + f.common + " update-ref " + job.RecoveryRef + " " + job.Head
-		}, atOriginal},
-		{"worktree move killed before it ran", "worktree move", false, false, false, cleanup.PhasePrepared, moveArgv, atOriginal},
-		{"worktree move killed once it had run", "worktree move", true, false, false, cleanup.PhasePrepared, moveArgv, atRegistered},
-		{"worktree move expired under a stop", "worktree move", true, false, true, cleanup.PhasePrepared, moveArgv, atRegistered},
-		{"worktree remove killed once it had run", "worktree remove", true, false, false, cleanup.PhaseDetached, removeArgv, atPayload},
-		{"worktree remove expired under a stop", "worktree remove", true, false, true, cleanup.PhaseDetached, removeArgv, atPayload},
-		{"status killed before it answered", "status", false, true, false, cleanup.PhasePrepared, func(f *fixture, _ cleanup.Job) string {
-			return "-C " + f.worktree + " status --porcelain=v1 -z --untracked-files=normal --ignore-submodules=none"
-		}, atOriginal},
+		}},
+		{"update-ref expired under a stop", "update-ref", true, false, true, func(f *fixture, job cleanup.Job) string {
+			return "--git-dir=" + f.common + " update-ref " + job.RecoveryRef + " " + job.Head
+		}},
+		{"status killed before it answered", "status", false, true, false, func(f *fixture, _ cleanup.Job) string {
+			return "--git-dir=" + f.adminDir + " --work-tree=" + f.worktree + " status --porcelain=v1 -z --untracked-files=normal --ignore-submodules=none"
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -194,16 +181,17 @@ func TestAdvanceBlocksAnInterruptedGitStepAsATimeoutThenRecovers(t *testing.T) {
 			if tt.read {
 				detail = cleanup.ErrUnprobed.Error() + ": " + killed
 			}
-			f.blocked(&job, tt.phase, "timeout", detail)
+			f.blocked(&job, cleanup.PhasePrepared, "timeout", detail)
 			if _, err := os.Stat(ran); tt.after && err != nil {
 				t.Fatalf("the held %s never ran the real git inside its %s budget: %v", tt.hold, shortBudget, err)
 			}
 			if !tt.after {
 				f.absent(ran)
 			}
-			if got := f.id(tt.tree(f, job)); got != job.Tree {
-				t.Fatalf("tree identity at %s = %v, want the tree %v", tt.tree(f, job), got, job.Tree)
+			if got := f.id(f.worktree); got != job.Tree {
+				t.Fatalf("tree identity at %s = %v, want the tree %v", f.worktree, got, job.Tree)
 			}
+			f.absent(filepath.Join(f.adminDir, "locked"))
 
 			if err := os.Remove(marker); err != nil {
 				t.Fatalf("release the holding git: %v", err)
@@ -211,18 +199,17 @@ func TestAdvanceBlocksAnInterruptedGitStepAsATimeoutThenRecovers(t *testing.T) {
 			job.Blocked = nil
 			f.advance(&job)
 
-			f.finished(&job)
-			f.absent(f.worktree)
-			f.absent(job.Registered)
-			f.absent(f.adminDir)
-			if got := f.id(job.Payload); got != job.Tree {
-				t.Errorf("payload identity = %v, want the tree %v", got, job.Tree)
+			f.claimed(&job)
+			if got := f.id(f.worktree); got != job.Tree {
+				t.Errorf("tree identity = %v, want the tree %v left in place", got, job.Tree)
 			}
+			f.absent(job.Registered)
+			f.absent(job.Payload)
 			if got := f.run(f.repo, "rev-parse", job.RecoveryRef); got != job.Head {
 				t.Errorf("recovery ref = %s, want %s", got, job.Head)
 			}
-			if got, want := f.listing(), f.mainEntry(); got != want {
-				t.Errorf("worktree list = %q, want %q", got, want)
+			if got := f.read(filepath.Join(f.adminDir, "locked")); got != "ccx cleanup "+job.ID+"\n" {
+				t.Errorf("registration lock = %q, want the job's", got)
 			}
 		})
 	}

@@ -153,8 +153,8 @@ func unregisterPaused(t *testing.T, f *vcstest.Fixture, h *cleanupHarness, names
 		if err != nil {
 			t.Fatalf("accept %s: %v", path, err)
 		}
-		if err := relocator.Advance(ctx, &job); err != nil || job.Phase != cleanup.PhaseUnregistered || job.Blocked != nil {
-			t.Fatalf("advance %s = phase %s, blockage %+v, %v; want it unregistered", path, job.Phase, job.Blocked, err)
+		if err := relocator.Advance(ctx, &job); err != nil || job.Phase != cleanup.PhaseClaimed || job.Blocked != nil {
+			t.Fatalf("advance %s = phase %s, blockage %+v, %v; want it claimed", path, job.Phase, job.Blocked, err)
 		}
 		ids, paths = append(ids, job.ID), append(paths, path)
 	}
@@ -258,6 +258,18 @@ func cleanupJob(t *testing.T, f *vcstest.Fixture, h *cleanupHarness, id string) 
 	return report.Jobs[0]
 }
 
+func awaitDeleted(t *testing.T, f *vcstest.Fixture, h *cleanupHarness, receipt string) {
+	t.Helper()
+	if !cleanupDaemonized {
+		return
+	}
+	ctx, cancel := context.WithTimeout(f.Context(), 10*time.Second)
+	defer cancel()
+	if job, err := h.engine.Wait(ctx, queuedJobID(t, receipt)); err != nil || job.Phase != cleanup.PhaseDone {
+		t.Fatalf("wait for the deletion = phase %s, blockage %+v, %v; want done", job.Phase, job.Blocked, err)
+	}
+}
+
 func journaledJobs(t *testing.T, h *cleanupHarness) []string {
 	t.Helper()
 	entries, err := os.ReadDir(h.layout.JobsDir())
@@ -333,6 +345,7 @@ func TestCleanupWorktreeRmQueuesDeletion(t *testing.T) {
 	if want := "removed feat · git worktree · " + path + " · deletion queued " + id + "\n"; out != want {
 		t.Errorf("rm output = %q, want %q", out, want)
 	}
+	awaitDeleted(t, f, h, out)
 	assertGone(t, path)
 	if worktreeRegistered(t, f.Env(), f.Dir, path) {
 		t.Errorf("git still registers %s, want it unregistered", path)
@@ -510,8 +523,9 @@ func TestCleanupWorktreeRmWait(t *testing.T) {
 		t.Errorf("job phase %s removed %d, want done with its entries counted", job.Phase, job.Removed)
 	}
 	assertGone(t, path)
-	assertGone(t, h.layout.Payload(id))
-	assertGone(t, h.layout.Registered(id))
+	if worktreeRegistered(t, f.Env(), f.Dir, path) {
+		t.Errorf("git still registers %s, want its registration deleted too", path)
+	}
 }
 
 func TestCleanupWorktreeRmPathTargets(t *testing.T) {
@@ -683,6 +697,7 @@ func TestCleanupWorktreeRmPathTargets(t *testing.T) {
 			if out != want+"\n" {
 				t.Errorf("%v output = %q, want %q", tt.args(tree), out, want+"\n")
 			}
+			awaitDeleted(t, f, h, out)
 			assertGone(t, tree)
 			if worktreeRegistered(t, f.Env(), f.Dir, tree) {
 				t.Errorf("git still registers %s, want it unregistered", tree)
@@ -736,7 +751,7 @@ func TestCleanupWorktreeRmPathRemovesAWorkingCopyOfAnotherRepository(t *testing.
 		t.Run(tt.name, func(t *testing.T) {
 			f := vcstest.Repo(t)
 			f.Isolate(t)
-			fixtureCleanup(t, f)
+			h := fixtureCleanup(t, f)
 			other := vcstest.Repo(t)
 			owner := other.Dir
 			if tt.bare {
@@ -752,9 +767,11 @@ func TestCleanupWorktreeRmPathRemovesAWorkingCopyOfAnotherRepository(t *testing.
 				ctx = f.ContextIn(unrelated)
 			}
 
-			if _, err := runWorktreeCmdIn(ctx, t, "rm", "--path", foreign); err != nil {
+			out, err := runWorktreeCmdIn(ctx, t, "rm", "--path", foreign)
+			if err != nil {
 				t.Fatalf("rm --path %s = %v, want it resolved from the worktree's own repository", foreign, err)
 			}
+			awaitDeleted(t, f, h, out)
 			assertGone(t, foreign)
 			if worktreeRegistered(t, other.Env(), owner, foreign) {
 				t.Errorf("%s still registers %s, want it unregistered", owner, foreign)
@@ -767,7 +784,7 @@ func TestCleanupWorktreeRmPathRemovesAWorkingCopyOfAnotherRepository(t *testing.
 func TestCleanupWorktreeRmPathForce(t *testing.T) {
 	f := vcstest.Repo(t)
 	f.Isolate(t)
-	fixtureCleanup(t, f)
+	h := fixtureCleanup(t, f)
 	checkouts := filepath.Join(filepath.Dir(f.Dir), "checkouts")
 	dirty := filepath.Join(checkouts, "dirty")
 	locked := filepath.Join(checkouts, "locked")
@@ -793,9 +810,11 @@ func TestCleanupWorktreeRmPathForce(t *testing.T) {
 	refusedFor(t, err, "dirty", dirty)
 	_, err = runWorktreeCmd(t, f, "rm", "--path", locked, "--force")
 	refusedFor(t, err, "locked", locked)
-	if _, err := runWorktreeCmd(t, f, "rm", "--path", dirty, "--force"); err != nil {
+	out, err := runWorktreeCmd(t, f, "rm", "--path", dirty, "--force")
+	if err != nil {
 		t.Fatalf("rm --path --force on a dirty tree error = %v", err)
 	}
+	awaitDeleted(t, f, h, out)
 	assertGone(t, dirty)
 	if worktreeRegistered(t, f.Env(), f.Dir, dirty) {
 		t.Errorf("git still registers %s, want it unregistered", dirty)
@@ -918,6 +937,7 @@ func TestCleanupWorktreeRmForceDirty(t *testing.T) {
 	if job := cleanupJob(t, f, h, id); !job.Force {
 		t.Errorf("job force = false, want the --force the removal carried")
 	}
+	awaitDeleted(t, f, h, out)
 	assertGone(t, path)
 	if worktreeRegistered(t, f.Env(), f.Dir, path) {
 		t.Errorf("git still registers %s, want it unregistered", path)
@@ -1024,6 +1044,7 @@ func TestCleanupWorktreeRmWaitFailure(t *testing.T) {
 			if out != "" {
 				t.Errorf("rm --wait output = %q, want none", out)
 			}
+			awaitDeleted(t, f, h, err.Error())
 			assertGone(t, path)
 			if worktreeRegistered(t, f.Env(), f.Dir, path) {
 				t.Errorf("git still registers %s, want it unregistered", path)
@@ -1068,8 +1089,8 @@ func TestCleanupWorktreeRmWaitNeedsTheJobSeenDone(t *testing.T) {
 			h := attachCleanup(t, f, newCleanupHarness(t, f, tuning))
 			var restarted *daemon.Engine
 			svc := &rmWaitService{Service: h.engine, t: t, handoff: func(r cleanup.Receipt) cleanup.Service {
-				if r.State != cleanup.State(cleanup.PhaseUnregistered) {
-					t.Fatalf("receipt = %+v, want it unregistered while the governor's baseline sample holds deletion", r)
+				if r.State != cleanup.State(cleanup.PhaseClaimed) {
+					t.Fatalf("receipt = %+v, want it claimed while the governor's baseline sample holds deletion", r)
 				}
 				if err := h.engine.Stop(f.Context()); err != nil {
 					t.Fatalf("stop the first engine: %v", err)
@@ -1089,7 +1110,7 @@ func TestCleanupWorktreeRmWaitNeedsTheJobSeenDone(t *testing.T) {
 			if want := []cleanup.Query{{JobID: id, Await: true}, {}}; !slices.Equal(svc.queries, want) {
 				t.Fatalf("status requests = %+v, want %+v", svc.queries, want)
 			}
-			prefix := "worktree rm: removed " + path + ", deletion queued " + id + "; wait: job " + id + " was last seen unregistered, and the daemon "
+			prefix := "worktree rm: removed " + path + ", deletion queued " + id + "; wait: job " + id + " was last seen claimed, and the daemon "
 			if tt.damaged {
 				report, statusErr := restarted.Status(f.Context(), cleanup.Query{})
 				if statusErr != nil || len(report.Damaged) != 1 || report.Damaged[0].ID != id || report.Damaged[0].Error == "" {
@@ -1097,16 +1118,16 @@ func TestCleanupWorktreeRmWaitNeedsTheJobSeenDone(t *testing.T) {
 				}
 				want := prefix + "now reports its record damaged: " + report.Damaged[0].Error
 				var damaged *cleanupJobDamagedError
-				if !errors.As(err, &damaged) || err.Error() != want || *damaged != (cleanupJobDamagedError{damaged: report.Damaged[0], seen: cleanup.PhaseUnregistered}) {
+				if !errors.As(err, &damaged) || err.Error() != want || *damaged != (cleanupJobDamagedError{damaged: report.Damaged[0], seen: cleanup.PhaseClaimed}) {
 					t.Errorf("rm --wait error = %v, want %q as a *cleanupJobDamagedError", err, want)
 				}
-				if _, err := os.Lstat(h.layout.Payload(id)); err != nil {
-					t.Errorf("lstat the payload of %s = %v, want its tree still undeleted", id, err)
+				if _, err := os.Lstat(path); err != nil {
+					t.Errorf("lstat the tree of %s = %v, want it still undeleted", id, err)
 				}
 			} else {
 				want := prefix + "no longer holds it: its completion cannot be proven, since it may have finished and been pruned or its record was lost"
 				var missing *cleanupJobMissingError
-				if !errors.As(err, &missing) || err.Error() != want || *missing != (cleanupJobMissingError{id: id, seen: cleanup.PhaseUnregistered}) {
+				if !errors.As(err, &missing) || err.Error() != want || *missing != (cleanupJobMissingError{id: id, seen: cleanup.PhaseClaimed}) {
 					t.Errorf("rm --wait error = %v, want %q as a *cleanupJobMissingError", err, want)
 				}
 			}
@@ -1116,10 +1137,7 @@ func TestCleanupWorktreeRmWaitNeedsTheJobSeenDone(t *testing.T) {
 			if out != "" {
 				t.Errorf("rm --wait output = %q, want nothing reported deleted", out)
 			}
-			assertGone(t, path)
-			if worktreeRegistered(t, f.Env(), f.Dir, path) {
-				t.Errorf("git still registers %s, want it unregistered", path)
-			}
+			assertIntact(t, f, path)
 		})
 	}
 }
@@ -1297,7 +1315,7 @@ func TestCleanupQueueCommands(t *testing.T) {
 	if len(lines) != 5 || !strings.HasPrefix(lines[0], header) || !strings.HasSuffix(lines[0], " · deletion paused") {
 		t.Fatalf("status = %q, want a paused header, the counts, and three jobs", out)
 	}
-	if want := "3 jobs · 1 blocked watchers · 1 pending · 1 unregistered"; lines[1] != want {
+	if want := "3 jobs · 1 blocked watchers · 1 claimed · 1 pending"; lines[1] != want {
 		t.Errorf("status counts = %q, want %q", lines[1], want)
 	}
 	if want := firstID + " · paused · " + first + " · 0 entries"; lines[2] != want {
@@ -1317,8 +1335,8 @@ func TestCleanupQueueCommands(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &report); err != nil {
 		t.Fatalf("unmarshal report: %v\n%s", err, out)
 	}
-	if !report.Paused || report.Version != "test" || len(report.Jobs) != 3 || report.Jobs[0].ID != firstID || report.Jobs[0].Phase != cleanup.PhaseUnregistered || report.Jobs[2].Phase != cleanup.PhasePending {
-		t.Errorf("report = %+v, want paused with job %s unregistered first and %s pending last", report, firstID, pendingID)
+	if !report.Paused || report.Version != "test" || len(report.Jobs) != 3 || report.Jobs[0].ID != firstID || report.Jobs[0].Phase != cleanup.PhaseClaimed || report.Jobs[2].Phase != cleanup.PhasePending {
+		t.Errorf("report = %+v, want paused with job %s claimed first and %s pending last", report, firstID, pendingID)
 	}
 
 	assertIntact(t, f, second)
@@ -1364,7 +1382,6 @@ func TestCleanupQueueCommands(t *testing.T) {
 			t.Errorf("wait %s = %q (removed %d), want %q with entries counted", job.id, out, done.Removed, want)
 		}
 		assertGone(t, job.path)
-		assertGone(t, h.layout.Payload(job.id))
 	}
 
 	const unknown = "0000000000000000-000000"
@@ -1423,7 +1440,7 @@ func TestCleanupHoldCommands(t *testing.T) {
 		t.Fatalf("status error = %v", err)
 	}
 	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
-	if len(lines) != 3 || !strings.HasSuffix(lines[0], " · deletion paused") || lines[1] != "1 job · 1 unregistered" || lines[2] != firstID+" · paused · "+first+" · 0 entries" {
+	if len(lines) != 3 || !strings.HasSuffix(lines[0], " · deletion paused") || lines[1] != "1 job · 1 claimed" || lines[2] != firstID+" · paused · "+first+" · 0 entries" {
 		t.Errorf("status = %q, want the paused header it prints for any stopped queue, then the resting job", out)
 	}
 	if out, err := runCleanupCmd(t, f, "hold", "status"); err != nil || out != held+" · deletion paused\n" {
@@ -1462,7 +1479,7 @@ func TestCleanupHoldCommands(t *testing.T) {
 	if _, err := runCleanupCmd(t, f, "wait", firstID); err != nil {
 		t.Errorf("wait after the resume = %v", err)
 	}
-	assertGone(t, h.layout.Payload(firstID))
+	assertGone(t, first)
 }
 
 func TestCleanupDeferWorkspace(t *testing.T) {
@@ -1548,11 +1565,7 @@ func TestCleanupDeferLostReceiptThenReplacement(t *testing.T) {
 	if !errors.As(err, &blocked) {
 		t.Fatalf("wait = %+v, %v; want the job blocked", job, err)
 	}
-	wantDetail := "original " + ws + " is directory " + fileIDText(replacement.Tree) +
-		"; registered " + h.layout.Registered(first.JobID) + " is absent" +
-		"; payload " + h.layout.Payload(first.JobID) + " is absent" +
-		"; admin " + original.AdminDir + " is directory " + fileIDText(original.Admin) +
-		"; the job captured tree " + fileIDText(original.Tree) + " and admin " + fileIDText(original.Admin)
+	wantDetail := ws + " moved to " + kept + ", where " + original.AdminDir + " still registers it; the job deletes nothing there"
 	if job.Phase != cleanup.PhaseWaiting || job.Blocked == nil || job.Blocked.Reason != "identity" || job.Blocked.Detail != wantDetail {
 		t.Errorf("job rests at %s with blockage %+v, want waiting and blocked on identity: %s", job.Phase, job.Blocked, wantDetail)
 	}
@@ -1956,7 +1969,7 @@ func TestCleanupWaitNeedsTheJobSeenDone(t *testing.T) {
 
 			out, err := runCleanupWith(t, svc, "wait", first)
 
-			assertGone(t, h.layout.Payload(first))
+			assertGone(t, paths[0])
 			if !tt.pruned {
 				if want := []cleanup.Query{{JobID: first, Await: true}, {JobID: first, Await: true}}; !slices.Equal(svc.queries, want) {
 					t.Errorf("status requests = %+v, want %+v", svc.queries, want)
@@ -1973,9 +1986,9 @@ func TestCleanupWaitNeedsTheJobSeenDone(t *testing.T) {
 			if want := []cleanup.Query{{JobID: first, Await: true}, {JobID: first, Await: true}, {}}; !slices.Equal(svc.queries, want) {
 				t.Errorf("status requests = %+v, want %+v", svc.queries, want)
 			}
-			want := "cleanup wait: job " + first + " was last seen unregistered, and the daemon no longer holds it: its completion cannot be proven, since it may have finished and been pruned or its record was lost"
+			want := "cleanup wait: job " + first + " was last seen claimed, and the daemon no longer holds it: its completion cannot be proven, since it may have finished and been pruned or its record was lost"
 			var missing *cleanupJobMissingError
-			if !errors.As(err, &missing) || err.Error() != want || *missing != (cleanupJobMissingError{id: first, seen: cleanup.PhaseUnregistered}) {
+			if !errors.As(err, &missing) || err.Error() != want || *missing != (cleanupJobMissingError{id: first, seen: cleanup.PhaseClaimed}) {
 				t.Errorf("wait error = %v, want %q as a *cleanupJobMissingError", err, want)
 			}
 			if errors.Is(err, ErrNotFound) || ExitCode(err) != 1 {
@@ -1994,7 +2007,7 @@ func TestCleanupWaitNeedsTheJobSeenDone(t *testing.T) {
 func TestCleanupWaitReportsARecordDamagedAcrossARestart(t *testing.T) {
 	f := vcstest.Repo(t)
 	f.Isolate(t)
-	h, ids, _ := pausedHarness(t, f, cleanupTuning(), "feat")
+	h, ids, paths := pausedHarness(t, f, cleanupTuning(), "feat")
 	id := ids[0]
 	var restarted *daemon.Engine
 	svc := &handoffStatus{Service: h.engine, handoff: func() cleanup.Service {
@@ -2017,9 +2030,9 @@ func TestCleanupWaitReportsARecordDamagedAcrossARestart(t *testing.T) {
 	if statusErr != nil || len(report.Damaged) != 1 || report.Damaged[0].ID != id || report.Damaged[0].Error == "" {
 		t.Fatalf("restarted status = damaged %+v, %v; want the torn record of %s", report.Damaged, statusErr, id)
 	}
-	want := "cleanup wait: job " + id + " was last seen unregistered, and the daemon now reports its record damaged: " + report.Damaged[0].Error
+	want := "cleanup wait: job " + id + " was last seen claimed, and the daemon now reports its record damaged: " + report.Damaged[0].Error
 	var damaged *cleanupJobDamagedError
-	if !errors.As(err, &damaged) || err.Error() != want || *damaged != (cleanupJobDamagedError{damaged: report.Damaged[0], seen: cleanup.PhaseUnregistered}) {
+	if !errors.As(err, &damaged) || err.Error() != want || *damaged != (cleanupJobDamagedError{damaged: report.Damaged[0], seen: cleanup.PhaseClaimed}) {
 		t.Errorf("wait error = %v, want %q as a *cleanupJobDamagedError", err, want)
 	}
 	if errors.Is(err, ErrNotFound) || ExitCode(err) != 1 {
@@ -2028,8 +2041,8 @@ func TestCleanupWaitReportsARecordDamagedAcrossARestart(t *testing.T) {
 	if out != "" {
 		t.Errorf("wait output = %q, want nothing reported done", out)
 	}
-	if _, err := os.Lstat(h.layout.Payload(id)); err != nil {
-		t.Errorf("lstat the payload of %s = %v, want its tree still undeleted", id, err)
+	if _, err := os.Lstat(paths[0]); err != nil {
+		t.Errorf("lstat the tree of %s = %v, want it still undeleted", id, err)
 	}
 }
 

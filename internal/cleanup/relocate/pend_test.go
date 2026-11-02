@@ -59,17 +59,19 @@ func TestPendRefusesADirtyTree(t *testing.T) {
 	f.unconsulted()
 }
 
-func TestAdvancePromotesAPendingJob(t *testing.T) {
+func TestAdvanceClaimsAPendingJob(t *testing.T) {
 	f := newFixture(t)
 	job := f.pend()
 
 	f.advance(&job)
 
-	f.finished(&job)
+	f.claimed(&job)
 	if len(f.guarded) == 0 || f.guarded[0] != f.worktree {
 		t.Errorf("guard consulted for %v, want the original %s first", f.guarded, f.worktree)
 	}
-	f.absent(f.worktree)
+	if got := f.id(f.worktree); got != job.Tree {
+		t.Errorf("tree identity = %v, want the tree %v left in place", got, job.Tree)
+	}
 }
 
 func TestAdvanceBlocksAPendingJobItsPreflightNoLongerPasses(t *testing.T) {
@@ -97,12 +99,6 @@ func TestAdvanceBlocksAPendingJobItsPreflightNoLongerPasses(t *testing.T) {
 			f.run(f.worktree, "switch", "-q", "-c", "other")
 			return fmt.Sprintf("branch changed: the job captured %q, %s now holds %q", job.Branch, f.worktree, "other")
 		}},
-		{"replaced", "identity", func(f *fixture, job cleanup.Job) string {
-			f.run(f.repo, "worktree", "remove", "--force", f.worktree)
-			f.run(f.repo, "worktree", "add", "-q", "-b", "other", f.worktree)
-			named := cleanup.Registration{Tree: job.Tree, AdminDir: job.AdminDir, Admin: job.Admin}
-			return replacedDetail(f.worktree, f.observe(f.worktree), named)
-		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -121,6 +117,25 @@ func TestAdvanceBlocksAPendingJobItsPreflightNoLongerPasses(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestAdvanceSettlesAPendingJobWhoseWorktreeWasReplaced(t *testing.T) {
+	f := newFixture(t)
+	job := f.pend()
+	f.run(f.repo, "worktree", "remove", "--force", f.worktree)
+	f.run(f.repo, "worktree", "add", "-q", "-b", "other", f.worktree)
+	replacement := f.observe(f.worktree)
+
+	f.advance(&job)
+
+	if job.Phase != cleanup.PhaseDone || job.Blocked != nil {
+		t.Fatalf("job = phase %s, blockage %+v; want done", job.Phase, job.Blocked)
+	}
+	f.stored(&job)
+	if got := f.observe(f.worktree); got != replacement {
+		t.Errorf("replacement registration = %+v, want it untouched %+v", got, replacement)
+	}
+	f.absent(filepath.Join(f.adminDir, "locked"))
 }
 
 func TestAdvanceSettlesAPendingJobWhoseTreeWasRemovedByHand(t *testing.T) {
