@@ -1169,11 +1169,11 @@ func (e *Engine) open(ctx context.Context, job *cleanup.Job) error {
 }
 
 func afterRoot(job cleanup.Job) (cleanup.Phase, bool) {
-	switch {
-	case job.Phase == cleanup.PhaseDeletingAdmin:
+	switch job.Phase {
+	case cleanup.PhaseDeletingAdmin:
 		return cleanup.PhaseDeletingRetiredPayload, true
-	case job.Phase == cleanup.PhaseDeletingTree && !job.Adopted:
-		return cleanup.PhaseDeletingRegistration, true
+	case cleanup.PhaseDeletingTree:
+		return cleanup.PhaseDeletingTree, true
 	}
 	return "", false
 }

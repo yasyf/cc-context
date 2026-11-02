@@ -117,16 +117,96 @@ func TestAdmitDeletesTheTreeThenTheRegistration(t *testing.T) {
 	}
 }
 
-func TestAdmitResumesAPartlyDeletedTreeWithoutReprovingIt(t *testing.T) {
-	f := newFixture(t)
-	job := f.claim()
-	f.admitted(&job, cleanup.PhaseDeletingTree, f.worktree, job.Tree)
-	if err := os.Remove(filepath.Join(f.worktree, "base.txt")); err != nil {
-		t.Fatalf("remove base.txt: %v", err)
+func TestAdmitReprovesAPartlyDeletedTree(t *testing.T) {
+	tests := []struct {
+		name    string
+		arrange func(f *fixture, job cleanup.Job) (reason, detail string)
+	}{
+		{"a deletion part way through", func(*fixture, cleanup.Job) (string, string) { return "", "" }},
+		{"a file written since", func(f *fixture, _ cleanup.Job) (string, string) {
+			f.write(filepath.Join(f.worktree, "late.txt"), "late\n")
+			return "dirty", "uncommitted changes: late.txt"
+		}},
+		{"a tracked file edited since", func(f *fixture, _ cleanup.Job) (string, string) {
+			f.write(filepath.Join(f.worktree, "feature.txt"), "edited\n")
+			return "dirty", "uncommitted changes: feature.txt"
+		}},
+		{"another registration claims the tree", func(f *fixture, _ cleanup.Job) (string, string) {
+			other := f.enroll("other", filepath.Join(f.worktree, ".git"))
+			return "reconcile", fmt.Sprintf("%s registers %s", other, filepath.Join(f.worktree, ".git"))
+		}},
+		{"the lock is gone", func(f *fixture, job cleanup.Job) (string, string) {
+			if err := os.Remove(filepath.Join(f.adminDir, "locked")); err != nil {
+				f.t.Fatal(err)
+			}
+			return "identity", fmt.Sprintf("%s no longer carries job %s's lock", f.adminDir, job.ID)
+		}},
+		{"a process holds it", func(f *fixture, _ cleanup.Job) (string, string) {
+			return "activity", f.holdAt(f.worktree).Error()
+		}},
 	}
-	f.write(filepath.Join(f.worktree, "late.txt"), "late\n")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFixture(t)
+			job := f.claim()
+			f.admitted(&job, cleanup.PhaseDeletingTree, f.worktree, job.Tree)
+			if err := os.Remove(filepath.Join(f.worktree, "base.txt")); err != nil {
+				t.Fatalf("remove base.txt: %v", err)
+			}
+			reason, detail := tt.arrange(f, job)
 
-	f.admitted(&job, cleanup.PhaseDeletingTree, f.worktree, job.Tree)
+			if reason == "" {
+				f.admitted(&job, cleanup.PhaseDeletingTree, f.worktree, job.Tree)
+				return
+			}
+			f.admit(&job)
+			f.blocked(&job, cleanup.PhaseDeletingTree, reason, detail)
+		})
+	}
+}
+
+func TestReadmitRechecksAnOpenDeletionWithoutGit(t *testing.T) {
+	t.Run("the tree", func(t *testing.T) {
+		f := newFixture(t)
+		job := f.claim()
+		root := f.admitted(&job, cleanup.PhaseDeletingTree, f.worktree, job.Tree)
+		git, log := f.recorder()
+		job.Git = git
+		f.write(filepath.Join(f.worktree, "late.txt"), "late\n")
+
+		got, err := f.relocator.Readmit(context.Background(), &job)
+
+		if err != nil || got != root || job.Blocked != nil || job.Phase != cleanup.PhaseDeletingTree {
+			t.Fatalf("Readmit() = %+v, %v with the job at %s, blockage %+v; want the same root", got, err, job.Phase, job.Blocked)
+		}
+		f.absent(log)
+		active := f.holdAt(f.worktree)
+		if got, err := f.relocator.Readmit(context.Background(), &job); err != nil || got != (cleanup.DeletionRoot{}) {
+			t.Fatalf("Readmit() of a held tree = %+v, %v; want no root", got, err)
+		}
+		f.blocked(&job, cleanup.PhaseDeletingTree, "activity", active.Error())
+		f.absent(log)
+	})
+
+	t.Run("the registration", func(t *testing.T) {
+		f := newFixture(t)
+		job := f.claim()
+		deleteRoot(t, f.admitted(&job, cleanup.PhaseDeletingTree, f.worktree, job.Tree))
+		root := f.admitted(&job, cleanup.PhaseDeletingRegistration, f.adminDir, job.Admin)
+		if err := os.Remove(filepath.Join(f.adminDir, "locked")); err != nil {
+			t.Fatal(err)
+		}
+
+		if got, err := f.relocator.Readmit(context.Background(), &job); err != nil || got != root || job.Blocked != nil {
+			t.Fatalf("Readmit() = %+v, %v, blockage %+v; want the admin root again", got, err, job.Blocked)
+		}
+		if err := os.Mkdir(f.worktree, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := f.relocator.Readmit(context.Background(), &job); err != nil || got != root || job.Phase != cleanup.PhaseDeletingRegistration {
+			t.Fatalf("Readmit() beside a new directory at the path = %+v, %v at %s; want the admin root", got, err, job.Phase)
+		}
+	})
 }
 
 func TestAdmitReprovesAClaimedTree(t *testing.T) {
@@ -353,7 +433,7 @@ func TestAdvanceSettlesATreeGoneFromEveryPath(t *testing.T) {
 	})
 }
 
-func TestAdmitRefusesARegistrationThatLostItsLockMidDeletion(t *testing.T) {
+func TestAdmitHoldsADeletedTreeWhoseRegistrationLostItsLock(t *testing.T) {
 	f := newFixture(t)
 	job := f.claim()
 	deleteRoot(t, f.admitted(&job, cleanup.PhaseDeletingTree, f.worktree, job.Tree))
@@ -363,10 +443,29 @@ func TestAdmitRefusesARegistrationThatLostItsLockMidDeletion(t *testing.T) {
 
 	f.admit(&job)
 
-	f.blocked(&job, cleanup.PhaseDeletingRegistration, "identity", fmt.Sprintf(
-		"%s no longer carries job %s's lock; git worktree prune drops it once nothing holds it, then ccx vcs cleanup retry finishes the job",
-		f.adminDir, job.ID,
+	f.blocked(&job, cleanup.PhaseDeletingTree, "activity", fmt.Sprintf(
+		"%s is gone from every path job %s names, but %s still registers it without the job's lock; the tree may only have moved away, so the job waits for it to return or for git worktree prune to drop the registration",
+		f.worktree, job.ID, f.adminDir,
 	))
+	if got := f.id(f.adminDir); got != job.Admin {
+		t.Errorf("admin identity = %v, want the admin %v kept", got, job.Admin)
+	}
+}
+
+func TestAdmitResumesAnAdminDeletionThatRemovedItsLock(t *testing.T) {
+	f := newFixture(t)
+	job := f.claim()
+	deleteRoot(t, f.admitted(&job, cleanup.PhaseDeletingTree, f.worktree, job.Tree))
+	f.admitted(&job, cleanup.PhaseDeletingRegistration, f.adminDir, job.Admin)
+	if err := os.Remove(filepath.Join(f.adminDir, "locked")); err != nil {
+		t.Fatalf("remove the lock: %v", err)
+	}
+
+	f.admitted(&job, cleanup.PhaseDeletingRegistration, f.adminDir, job.Admin)
+
+	f.write(filepath.Join(f.adminDir, "locked"), "someone else\n")
+	f.admit(&job)
+	f.blocked(&job, cleanup.PhaseDeletingRegistration, "identity", fmt.Sprintf("%s: registration has a lock not owned by job %s", f.adminDir, job.ID))
 	if got := f.id(f.adminDir); got != job.Admin {
 		t.Errorf("admin identity = %v, want the admin %v kept", got, job.Admin)
 	}

@@ -262,9 +262,17 @@ the captured inode, the registration and links, and the pinned `HEAD`. The
 tree must also be clean unless `--force`, with no checked-out submodule, nested
 registration, watcher above or inside it, or live process. It then writes `ccx cleanup <job-id>` to the registration's `locked`
 file, which keeps `git worktree remove`, `prune`, and `move` off it, and
-proves all of it again before the deletion starts. It deletes the tree, then
-the admin directory under `<common>/worktrees/` that its lock holds, and the
-job is done once both are gone. A tree whose `.git` and admin directory were
+proves all of it again before the deletion starts. A deletion that resumes
+after a pause, a crash, or a block is proven again too. That proof counts
+files added or edited since the deletion began, and skips the ones it already
+removed.
+
+The daemon deletes the tree, then the admin directory under
+`<common>/worktrees/` that its lock holds, and the job is done once both are
+gone. The lock is checked once the tree is gone, before the admin directory's
+deletion begins. A resumed admin deletion needs only the captured inode,
+since the deletion itself may already have removed `locked`. A tree whose
+`.git` and admin directory were
 lost is proven against the job's saved `HEAD` through a throwaway index
 instead; a file the tree no longer holds is one that commit restores, so it is
 not dirt.

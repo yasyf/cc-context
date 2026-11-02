@@ -128,11 +128,21 @@ type Relocator interface {
 	// Admit supplies the captured root to open where it sits after proving its
 	// ownership, registration, watcher and activity constraints afresh,
 	// journaling the phase that root belongs to first: the tree, then the
-	// admin directory the job locked. A job with no root left comes back at
-	// PhaseDone with no root. External admin completion is journaled before
-	// its payload can be admitted. A failed proof blocks the job; errors
-	// report journal failure or cancellation.
+	// admin directory the job locked. A tree whose deletion has begun is
+	// proven clean again on every admission, an entry the deletion removed
+	// not counting; an admin directory whose deletion has begun needs only its
+	// captured inode, its lock having been proven before that phase began. A
+	// job with no root left comes back at PhaseDone with no root. External
+	// admin completion is journaled before its payload can be admitted. A
+	// failed proof blocks the job; errors report journal failure or
+	// cancellation.
 	Admit(ctx context.Context, job *Job) (DeletionRoot, error)
+	// Readmit re-proves, while the deletion of the root Admit returned is
+	// under way, what can change beneath it, running no git: the root's
+	// placement, the registration's lock and claims, and that nothing watches
+	// or holds the root. It returns that same root, the zero root once the root
+	// is gone, or blocks the job, and never moves it to another phase.
+	Readmit(ctx context.Context, job *Job) (DeletionRoot, error)
 	// Site names, from the record alone, the directory whose volume the job's
 	// next step works on, so the scheduler can tell which jobs contend with
 	// the volume it guards.

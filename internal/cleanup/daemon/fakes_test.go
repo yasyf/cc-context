@@ -298,6 +298,10 @@ func (f *fakeRelocator) Cancel(ctx context.Context, job *cleanup.Job) error {
 	return ctx.Err()
 }
 
+func (f *fakeRelocator) Readmit(ctx context.Context, job *cleanup.Job) (cleanup.DeletionRoot, error) {
+	return f.Admit(ctx, job)
+}
+
 func (f *fakeRelocator) Admit(ctx context.Context, job *cleanup.Job) (cleanup.DeletionRoot, error) {
 	name := f.h.rec.name(job.ID)
 	f.h.rec.add("admit:" + name)

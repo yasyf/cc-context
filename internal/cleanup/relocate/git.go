@@ -272,7 +272,11 @@ func (r *Relocator) dirt(ctx context.Context, git, tree string) (string, error) 
 }
 
 func (r *Relocator) dirtAt(ctx context.Context, git string, location ...string) (string, error) {
-	return r.changes(ctx, git, dropping, append(location, "status", "--porcelain=v1", "-z", "--untracked-files=normal", "--ignore-submodules=none")...)
+	return r.dirtSkipping(ctx, git, dropping, location...)
+}
+
+func (r *Relocator) dirtSkipping(ctx context.Context, git string, skip func(status, name []byte) bool, location ...string) (string, error) {
+	return r.changes(ctx, git, skip, append(location, "status", "--porcelain=v1", "-z", "--untracked-files=normal", "--ignore-submodules=none")...)
 }
 
 func (r *Relocator) changes(ctx context.Context, git string, skip func(status, name []byte) bool, args ...string) (string, error) {
@@ -307,6 +311,10 @@ func (r *Relocator) changes(ctx context.Context, git string, skip func(status, n
 		detail += fmt.Sprintf(" and %d more", total-len(shown))
 	}
 	return detail, nil
+}
+
+func deleted(status, name []byte) bool {
+	return dropping(status, name) || string(status) == " D"
 }
 
 func dropping(status, name []byte) bool {

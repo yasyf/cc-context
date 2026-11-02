@@ -213,11 +213,11 @@ func (r *Relocator) native(ctx context.Context, job *cleanup.Job, tree string) (
 	return "", ""
 }
 
-func (r *Relocator) clean(ctx context.Context, job *cleanup.Job, tree string) (string, string) {
+func (r *Relocator) clean(ctx context.Context, job *cleanup.Job, tree string, skip func(status, name []byte) bool) (string, string) {
 	if job.Force {
 		return "", ""
 	}
-	dirt, err := r.dirtAt(ctx, job.Git, "--git-dir="+job.AdminDir, "--work-tree="+tree)
+	dirt, err := r.dirtSkipping(ctx, job.Git, skip, "--git-dir="+job.AdminDir, "--work-tree="+tree)
 	if err != nil {
 		return gitReason(err), err.Error()
 	}
@@ -332,7 +332,7 @@ func (r *Relocator) prove(ctx context.Context, job *cleanup.Job, tree spot, clai
 	}
 	dirt := func() (string, string) {
 		if held.native {
-			return r.clean(ctx, job, tree.path)
+			return r.clean(ctx, job, tree.path, dropping)
 		}
 		return r.orphaned(ctx, job, tree.path)
 	}
@@ -485,39 +485,77 @@ func (r *Relocator) admitTree(ctx context.Context, job *cleanup.Job) (cleanup.De
 		return r.rejectRoot(ctx, job, "identity", err)
 	}
 	if !found {
-		next := cleanup.PhaseDeletingRegistration
-		if job.Adopted {
-			next = cleanup.PhaseDone
-		}
-		if _, err := r.enter(job, next); err != nil {
+		if proceed, err := r.settle(ctx, job); err != nil || !proceed {
 			return cleanup.DeletionRoot{}, err
 		}
 		return r.Admit(ctx, job)
 	}
-	if !job.Adopted {
-		admin, ok, err := cleanup.Placed(job.AdminDir, job.Admin)
-		if err != nil {
-			return r.rejectRoot(ctx, job, "identity", err)
-		}
-		if ok {
-			owned, err := owns(job, admin)
-			if err != nil {
-				return r.rejectRoot(ctx, job, "identity", err)
-			}
-			if !owned {
-				return r.rejectRoot(ctx, job, "identity", fmt.Errorf("%s no longer carries job %s's lock", job.AdminDir, job.ID))
-			}
-		}
+	held, reason, detail := r.recheck(ctx, job, tree)
+	if reason == "" {
+		reason, detail = r.residue(ctx, job, tree, held)
 	}
-	if reason, detail := r.unlisted(ctx, job, "quarantine", r.cfg.Watchers.CheckQuarantine(ctx, tree.path)); reason != "" {
+	if reason != "" {
 		_, err := r.block(ctx, job, reason, detail)
 		return cleanup.DeletionRoot{}, err
 	}
-	if holders := r.quiet(ctx, job, tree.path, true); holders != "" {
-		_, err := r.block(ctx, job, "activity", holders)
-		return cleanup.DeletionRoot{}, err
-	}
 	return tree.root(), ctx.Err()
+}
+
+func (r *Relocator) recheck(ctx context.Context, job *cleanup.Job, tree spot) (bond, string, string) {
+	var held bond
+	if job.Adopted {
+		_, detail, err := registration(job.Repo, tree.path)
+		if err != nil {
+			return held, "reconcile", err.Error()
+		}
+		if detail != "" {
+			return held, "reconcile", detail
+		}
+	} else {
+		var reason, detail string
+		if held, reason, detail = bind(job, tree); reason != "" {
+			return held, reason, detail
+		}
+		if held.native && !held.owned {
+			return held, "identity", fmt.Sprintf("%s no longer carries job %s's lock", job.AdminDir, job.ID)
+		}
+		claim, err := claims(job, tree.path, held.native)
+		if err != nil {
+			return held, "reconcile", err.Error()
+		}
+		if claim != "" {
+			return held, "reconcile", claim
+		}
+	}
+	if err := r.cfg.Watchers.CheckQuarantine(ctx, tree.path); err != nil {
+		return held, probeReason("quarantine", err), err.Error()
+	}
+	if holders := r.quiet(ctx, job, tree.path, false); holders != "" {
+		return held, "activity", holders
+	}
+	return held, "", ""
+}
+
+func (r *Relocator) residue(ctx context.Context, job *cleanup.Job, tree spot, held bond) (string, string) {
+	if job.Head != "" {
+		unpinned, err := r.unpinned(ctx, job.Git, job.Repo, job.RecoveryRef, job.Head)
+		if err != nil {
+			return gitReason(err), err.Error()
+		}
+		if unpinned != "" {
+			return "identity", unpinned
+		}
+	}
+	switch {
+	case job.Adopted:
+		return "", ""
+	case held.native:
+		if reason, detail := r.native(ctx, job, tree.path); reason != "" {
+			return reason, detail
+		}
+		return r.clean(ctx, job, tree.path, deleted)
+	}
+	return r.orphaned(ctx, job, tree.path)
 }
 
 func (r *Relocator) admitRegistration(ctx context.Context, job *cleanup.Job) (cleanup.DeletionRoot, error) {
@@ -542,20 +580,17 @@ func (r *Relocator) admitRegistration(ctx context.Context, job *cleanup.Job) (cl
 		_, err := r.enter(job, cleanup.PhaseDone)
 		return cleanup.DeletionRoot{}, err
 	}
+	return r.adminRoot(ctx, job, admin)
+}
+
+func (r *Relocator) adminRoot(ctx context.Context, job *cleanup.Job, admin cleanup.FileID) (cleanup.DeletionRoot, error) {
 	root, err := openAdmin(job, admin)
 	if err != nil {
 		return r.rejectRoot(ctx, job, "identity", err)
 	}
 	defer func() { _ = root.Close() }()
-	owned, err := ownMarker(root, job)
-	if err != nil {
-		return r.rejectRoot(ctx, job, "identity", err)
-	}
-	if !owned {
-		return r.rejectRoot(ctx, job, "identity", fmt.Errorf(
-			"%s no longer carries job %s's lock; git worktree prune drops it once nothing holds it, then ccx vcs cleanup retry finishes the job",
-			job.AdminDir, job.ID,
-		))
+	if _, err := ownMarker(root, job); err != nil {
+		return r.rejectRoot(ctx, job, "identity", fmt.Errorf("%s: %w", job.AdminDir, err))
 	}
 	back, err := rootRead(root, "gitdir")
 	if err != nil && !gone(err) {
@@ -568,11 +603,56 @@ func (r *Relocator) admitRegistration(ctx context.Context, job *cleanup.Job) (cl
 			}
 		}
 	}
-	if holders := r.quiet(ctx, job, job.AdminDir, true); holders != "" {
+	if holders := r.quiet(ctx, job, job.AdminDir, false); holders != "" {
 		_, err := r.block(ctx, job, "activity", holders)
 		return cleanup.DeletionRoot{}, err
 	}
 	return spot{path: job.AdminDir, id: admin}.root(), ctx.Err()
+}
+
+// Readmit re-proves, while a deletion Admit handed out is under way, what can
+// change beneath it without running git: the root still sits where the job
+// captured it, the registration still carries the job's lock and no other
+// registration claims the tree, and nothing watches or holds the root, a
+// probe that cannot answer blocking. It returns the root Admit handed out, the
+// zero root once that root is gone or the tree has come back, or blocks the
+// job; it never moves the job to another phase. A legacy job is admitted again
+// in full.
+func (r *Relocator) Readmit(ctx context.Context, job *cleanup.Job) (cleanup.DeletionRoot, error) {
+	if err := ctx.Err(); err != nil {
+		return cleanup.DeletionRoot{}, err
+	}
+	switch job.Phase {
+	case cleanup.PhaseDeletingTree:
+		tree, found, err := locate(job)
+		if err != nil {
+			return r.rejectRoot(ctx, job, "identity", err)
+		}
+		if !found {
+			return cleanup.DeletionRoot{}, nil
+		}
+		if _, reason, detail := r.recheck(ctx, job, tree); reason != "" {
+			_, err := r.block(ctx, job, reason, detail)
+			return cleanup.DeletionRoot{}, err
+		}
+		return tree.root(), ctx.Err()
+	case cleanup.PhaseDeletingRegistration:
+		if _, found, err := locate(job); err != nil || found {
+			if err != nil {
+				return r.rejectRoot(ctx, job, "identity", err)
+			}
+			return cleanup.DeletionRoot{}, nil
+		}
+		admin, ok, err := cleanup.Placed(job.AdminDir, job.Admin)
+		if err != nil {
+			return r.rejectRoot(ctx, job, "identity", err)
+		}
+		if !ok {
+			return cleanup.DeletionRoot{}, nil
+		}
+		return r.adminRoot(ctx, job, admin)
+	}
+	return r.Admit(ctx, job)
 }
 
 // Site is the directory whose volume holds job's next deletion root, read off
