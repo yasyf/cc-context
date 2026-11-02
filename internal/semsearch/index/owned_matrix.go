@@ -143,7 +143,7 @@ func mapOwnedAnswers(ctx context.Context, path, identity, generation string, doc
 	if err := ctx.Err(); err != nil {
 		return nil, false, err
 	}
-	file, err := os.Open(path) // #nosec G304 -- configured cache root and SHA-256 identity/generation keys select this immutable matrix
+	file, err := os.Open(path) // #nosec G304 G703 -- configured cache root and SHA-256 identity/generation keys select this immutable matrix
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, false, nil
 	}

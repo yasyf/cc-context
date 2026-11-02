@@ -290,9 +290,9 @@ func buildOwnedAnswers(ctx context.Context, path, identity string, emb Embedder,
 		}
 		buildPath = f.Name()
 		defer func() {
-			_ = os.Remove(buildPath)
-			_ = os.Remove(buildPath + "-wal")
-			_ = os.Remove(buildPath + "-shm")
+			_ = os.Remove(buildPath)          // #nosec G703 -- CreateTemp staging file under the configured cache identity directory
+			_ = os.Remove(buildPath + "-wal") // #nosec G703 -- fixed SQLite sidecar of the owned CreateTemp staging file
+			_ = os.Remove(buildPath + "-shm") // #nosec G703 -- fixed SQLite sidecar of the owned CreateTemp staging file
 		}()
 		if err := f.Close(); err != nil {
 			return 0, err
@@ -394,7 +394,7 @@ func buildOwnedAnswers(ctx context.Context, path, identity string, emb Embedder,
 		return 0, err
 	}
 	if fresh {
-		if err := os.Rename(buildPath, path); err != nil {
+		if err := os.Rename(buildPath, path); err != nil { // #nosec G703 -- owned CreateTemp staging file published as fixed index.sqlite in the same cache identity directory
 			return 0, err
 		}
 	}
