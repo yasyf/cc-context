@@ -353,3 +353,43 @@ func TestShipMaterializeHookEntriesWidensASparseLane(t *testing.T) {
 		t.Errorf("sparse-checkout list = %q, want tools/hooks", got)
 	}
 }
+
+func TestShipMaterializeHookEntriesFillsANonConeLane(t *testing.T) {
+	t.Parallel()
+	f := vcstest.Repo(t)
+	config := filepath.Join(f.Dir, ".pre-commit-config.yaml")
+	files := map[string]string{
+		".pre-commit-config.yaml":   "repos:\n- repo: local\n  hooks:\n  - id: biome\n    entry: ./tools/hooks/hook-biome.sh\n",
+		"biome.json":                "{}\n",
+		"tools/hooks/hook-biome.sh": "#!/bin/sh\n",
+		"tools/ci":                  "#!/bin/sh\n",
+		"other/x.txt":               "x\n",
+	}
+	for name, body := range files {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(f.Dir, name)), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(f.Dir, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustRun(t, f.Env(), f.Dir, "git", "add", "-A")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "hooks")
+	mustRun(t, f.Env(), f.Dir, "git", "sparse-checkout", "set", "--no-cone", "/tools/ci", "/.pre-commit-config.yaml")
+	if _, err := os.Stat(filepath.Join(f.Dir, "biome.json")); !os.IsNotExist(err) {
+		t.Fatalf("biome.json present before the ship: %v", err)
+	}
+
+	if err := shipMaterializeHookEntries(f.Context(), render.Dir(f.Dir), config); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, want := range []string{"biome.json", "tools/hooks/hook-biome.sh", "tools/ci"} {
+		if _, err := os.Stat(filepath.Join(f.Dir, want)); err != nil {
+			t.Errorf("%s not checked out: %v", want, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(f.Dir, "other")); !os.IsNotExist(err) {
+		t.Errorf("other/ checked out: %v", err)
+	}
+}

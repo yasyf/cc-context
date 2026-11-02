@@ -232,15 +232,54 @@ func shipMaterializeHookEntries(ctx context.Context, dir render.Dir, config stri
 			dirs = append(dirs, parent)
 		}
 	}
-	if len(dirs) == 0 {
-		return nil
-	}
 	sparse, err := stackConfigBool(ctx, dir, "core.sparseCheckout", false)
 	if err != nil || !sparse {
 		return err
 	}
 	slices.Sort(dirs)
-	return stackAddCone(ctx, "ship: hooks", dir, slices.Compact(dirs))
+	dirs = slices.Compact(dirs)
+	cone, err := stackConfigBool(ctx, dir, "core.sparseCheckoutCone", false)
+	if err != nil {
+		return err
+	}
+	if cone {
+		if len(dirs) == 0 {
+			return nil
+		}
+		return stackAddCone(ctx, "ship: hooks", dir, dirs)
+	}
+	patterns, err := shipMissingRootFiles(ctx, dir)
+	if err != nil {
+		return err
+	}
+	for _, d := range dirs {
+		patterns = append(patterns, "/"+d+"/")
+	}
+	if len(patterns) == 0 {
+		return nil
+	}
+	if _, err := render.RunCLI(ctx, dir, "git", append([]string{"sparse-checkout", "add", "--skip-checks", "--"}, patterns...)); err != nil {
+		return fmt.Errorf("ship: hooks: check out %s in %s: %w", strings.Join(patterns, ", "), dir, err)
+	}
+	return nil
+}
+
+func shipMissingRootFiles(ctx context.Context, dir render.Dir) ([]string, error) {
+	out, err := render.RunCLI(ctx, dir, "git", []string{"ls-tree", "-z", "HEAD"})
+	if err != nil {
+		return nil, fmt.Errorf("ship: hooks: list the root files: %w", err)
+	}
+	var missing []string
+	for _, entry := range strings.Split(out, "\x00") {
+		meta, name, ok := strings.Cut(entry, "\t")
+		if !ok || strings.Fields(meta)[1] != "blob" {
+			continue
+		}
+		if _, err := os.Lstat(filepath.Join(string(dir), name)); err != nil {
+			missing = append(missing, "/"+name)
+		}
+	}
+	return missing, nil
 }
 
 func shipHookEntryPaths(config []byte) []string {
