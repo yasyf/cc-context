@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
+	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/version"
 )
 
@@ -39,7 +40,7 @@ func NewRootCmd() *cobra.Command {
 		newMCPCmd(),
 	)
 	root.PersistentPreRun = func(cmd *cobra.Command, _ []string) {
-		cmd.SetContext(gtDedupe(cmd.Context()))
+		cmd.SetContext(render.WithMeter(gtDedupe(cmd.Context()), chargeGHChild))
 	}
 	root.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error {
 		if hint := flagErrorHint(cmd, err); hint != "" {

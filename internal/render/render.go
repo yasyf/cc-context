@@ -105,7 +105,12 @@ const Ambient Dir = ""
 // the inherited pipes. The process group belongs to RunCLIProbe, not here. The
 // returned context is where timedOut reads the guard back off; cancel must be
 // deferred.
-func newCmd(ctx context.Context, dir Dir, bin string, argv, extraEnv []string) (*exec.Cmd, context.Context, context.CancelFunc) {
+func newCmd(ctx context.Context, dir Dir, bin string, argv, extraEnv []string) (*exec.Cmd, context.Context, context.CancelFunc, error) {
+	if meter, ok := ctx.Value(meterKey{}).(Meter); ok {
+		if err := meter(ctx, bin, argv, slices.Concat(EnvFrom(ctx), extraEnv)); err != nil {
+			return nil, nil, nil, err
+		}
+	}
 	runCtx, cancel := withRunGuard(ctx)
 	env, resolve := childEnv(ctx, dir, extraEnv)
 	cmd := exec.CommandContext(runCtx, resolve.Bin(bin), argv...) //nolint:gosec // bin/argv come from trusted backend translation, not user free-text
@@ -119,7 +124,18 @@ func newCmd(ctx context.Context, dir Dir, bin string, argv, extraEnv []string) (
 	return cmd, runCtx, func() {
 		stop()
 		cancel()
-	}
+	}, nil
+}
+
+type meterKey struct{}
+
+// Meter sees each child before it starts, with its binary, its arguments and
+// the environment ccx adds to the inherited one. An error refuses the child.
+type Meter func(ctx context.Context, bin string, argv, env []string) error
+
+// WithMeter returns ctx running meter before every child spawned through it.
+func WithMeter(ctx context.Context, meter Meter) context.Context {
+	return context.WithValue(ctx, meterKey{}, meter)
 }
 
 type envKey struct{}
@@ -361,12 +377,15 @@ func StartDetached(ctx context.Context, dir Dir, bin string, argv []string) erro
 // (e.g. GIT_INDEX_FILE). A "KEY=value" element overrides any inherited KEY per
 // exec's last-wins rule.
 func RunCLIEnv(ctx context.Context, dir Dir, bin string, argv, extraEnv []string) (string, error) {
-	cmd, runCtx, cancel := newCmd(ctx, dir, bin, argv, extraEnv)
+	cmd, runCtx, cancel, err := newCmd(ctx, dir, bin, argv, extraEnv)
+	if err != nil {
+		return "", err
+	}
 	defer cancel()
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
+	if err = cmd.Run(); err != nil {
 		return "", failure(runCtx, bin, err, stderr.String())
 	}
 	return stdout.String(), nil
@@ -381,13 +400,16 @@ func RunCLIStdin(ctx context.Context, dir Dir, bin string, argv []string, stdin 
 // RunCLIStdinEnv is RunCLIStdin with extraEnv appended to the child's
 // environment, as RunCLIEnv appends it.
 func RunCLIStdinEnv(ctx context.Context, dir Dir, bin string, argv []string, stdin []byte, extraEnv []string) (string, error) {
-	cmd, runCtx, cancel := newCmd(ctx, dir, bin, argv, extraEnv)
+	cmd, runCtx, cancel, err := newCmd(ctx, dir, bin, argv, extraEnv)
+	if err != nil {
+		return "", err
+	}
 	defer cancel()
 	cmd.Stdin = bytes.NewReader(stdin)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
+	if err = cmd.Run(); err != nil {
 		return "", failure(runCtx, bin, err, stderr.String())
 	}
 	return stdout.String(), nil
@@ -415,11 +437,14 @@ func RunCLIStreamEnv(ctx context.Context, dir Dir, bin string, argv []string, w 
 // two copying goroutines, so the streams stay separable and their relative order
 // does not survive.
 func RunCLIStreamSplitEnv(ctx context.Context, dir Dir, bin string, argv []string, outW, errW io.Writer, extraEnv []string) error {
-	cmd, runCtx, cancel := newCmd(ctx, dir, bin, argv, extraEnv)
+	cmd, runCtx, cancel, err := newCmd(ctx, dir, bin, argv, extraEnv)
+	if err != nil {
+		return err
+	}
 	defer cancel()
 	cmd.Stdout = outW
 	cmd.Stderr = errW
-	if err := cmd.Run(); err != nil {
+	if err = cmd.Run(); err != nil {
 		if signal := signalled(runCtx, bin, err); signal != nil {
 			return signal
 		}
@@ -439,13 +464,16 @@ func RunCLIStreamSplitEnv(ctx context.Context, dir Dir, bin string, argv []strin
 // non-listed nonzero exit. The exit code is read from the process error via
 // errors.As, never by string-matching.
 func RunCLIAllowExit(ctx context.Context, dir Dir, bin string, argv []string, okCodes ...int) (string, error) {
-	cmd, runCtx, cancel := newCmd(ctx, dir, bin, argv, nil)
+	cmd, runCtx, cancel, err := newCmd(ctx, dir, bin, argv, nil)
+	if err != nil {
+		return "", err
+	}
 	defer cancel()
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	err := cmd.Run()
+	err = cmd.Run()
 	if err == nil {
 		return stdout.String(), nil
 	}
@@ -470,13 +498,16 @@ func RunCLIExitCode(ctx context.Context, dir Dir, bin string, argv []string) (st
 // RunCLIExitCodeEnv is RunCLIExitCode with extraEnv appended to the child's
 // environment, as RunCLIEnv appends it.
 func RunCLIExitCodeEnv(ctx context.Context, dir Dir, bin string, argv, extraEnv []string) (string, int, string, error) {
-	cmd, runCtx, cancel := newCmd(ctx, dir, bin, argv, extraEnv)
+	cmd, runCtx, cancel, err := newCmd(ctx, dir, bin, argv, extraEnv)
+	if err != nil {
+		return "", 0, "", err
+	}
 	defer cancel()
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	err := cmd.Run()
+	err = cmd.Run()
 	if err == nil {
 		return stdout.String(), 0, stderr.String(), nil
 	}
@@ -510,14 +541,17 @@ func BoundChild(cmd *exec.Cmd) {
 // Whatever the child managed to write is returned even when it was killed, so the
 // caller can still read a reason off a partial answer.
 func RunCLIProbe(ctx context.Context, dir Dir, bin string, argv []string) (string, int, string, error) {
-	cmd, runCtx, cancel := newCmd(ctx, dir, bin, argv, nil)
+	cmd, runCtx, cancel, err := newCmd(ctx, dir, bin, argv, nil)
+	if err != nil {
+		return "", 0, "", err
+	}
 	defer cancel()
 	configureProbeCommand(cmd)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	err := cmd.Run()
+	err = cmd.Run()
 	if err == nil {
 		return stdout.String(), 0, stderr.String(), nil
 	}
@@ -539,12 +573,15 @@ func RunCLIProbe(ctx context.Context, dir Dir, bin string, argv []string) (strin
 // that an autostash pop "resulted in conflicts" and exits 0). A nonzero exit wraps
 // the child's stderr in the returned error as RunCLI does.
 func RunCLIKeepStderr(ctx context.Context, dir Dir, bin string, argv []string) (stdout, stderr string, err error) {
-	cmd, runCtx, cancel := newCmd(ctx, dir, bin, argv, nil)
+	cmd, runCtx, cancel, err := newCmd(ctx, dir, bin, argv, nil)
+	if err != nil {
+		return "", "", err
+	}
 	defer cancel()
 	var outBuf, errBuf bytes.Buffer
 	cmd.Stdout = &outBuf
 	cmd.Stderr = &errBuf
-	if err := cmd.Run(); err != nil {
+	if err = cmd.Run(); err != nil {
 		return "", "", failure(runCtx, bin, err, errBuf.String())
 	}
 	return outBuf.String(), errBuf.String(), nil

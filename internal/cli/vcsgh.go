@@ -279,6 +279,24 @@ func ghResource(argv []string) string {
 	}
 }
 
+func chargeGHChild(ctx context.Context, bin string, argv, env []string) error {
+	resource, ok := ghUserPool(bin, argv, env)
+	if !ok {
+		return nil
+	}
+	return reviewsAPI().Charge(ctx, ghapi.IdentityUser, resource)
+}
+
+func ghUserPool(bin string, argv, env []string) (string, bool) {
+	appToken := slices.ContainsFunc(env, func(kv string) bool { return strings.HasPrefix(kv, "GH_TOKEN=") })
+	if bin != "gh" || ghOffline[argv[0]] || appToken {
+		return "", false
+	}
+	return ghResource(argv), true
+}
+
+var ghOffline = map[string]bool{"auth": true, "config": true}
+
 func ghStdin(cmd *cobra.Command, argv []string) ([]byte, error) {
 	if !slices.ContainsFunc(argv, func(arg string) bool { return arg == "-" || arg == "--input=-" || strings.HasSuffix(arg, "=@-") }) {
 		return nil, nil
