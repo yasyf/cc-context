@@ -377,7 +377,7 @@ func (r *Relocator) relocate(ctx context.Context, job *cleanup.Job, vetted *bool
 }
 
 func (r *Relocator) move(ctx context.Context, job *cleanup.Job, vetted *bool) (reason, detail string) {
-	if err := r.colocated(job.Original, job.Tree); err != nil {
+	if err := r.colocatedIn(job, job.Original, job.Tree); err != nil {
 		var refused *cleanup.RefusedError
 		if errors.As(err, &refused) {
 			return refused.Reason, refused.Detail
@@ -394,7 +394,7 @@ func (r *Relocator) move(ctx context.Context, job *cleanup.Job, vetted *bool) (r
 	if reason, detail := r.unlisted(ctx, job, vetted, "watchers", r.retire(ctx, job.Original)); reason != "" {
 		return reason, detail
 	}
-	if reason, detail := r.unlisted(ctx, job, vetted, "quarantine", r.cfg.Watchers.CheckQuarantine(ctx, r.cfg.Journal.Layout().JobDir(job.ID))); reason != "" {
+	if reason, detail := r.unlisted(ctx, job, vetted, "quarantine", r.cfg.Watchers.CheckQuarantine(ctx, filepath.Dir(job.Payload))); reason != "" {
 		return reason, detail
 	}
 	if holders := r.held(ctx, job, job.Original); holders != "" {

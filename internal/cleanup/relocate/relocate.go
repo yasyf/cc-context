@@ -156,8 +156,11 @@ func (r *Relocator) stamp(job *cleanup.Job, seq uint64, phase cleanup.Phase) {
 	job.ID = cleanup.MintID(now)
 	job.Seq = seq
 	job.Phase = phase
-	job.Registered = layout.Registered(job.ID)
-	job.Payload = layout.Payload(job.ID)
+	tree := job.Original
+	if job.Adopted {
+		tree = job.Source
+	}
+	job.Registered, job.Payload = cleanup.Area(layout.JobsFor(tree, job.Tree.Dev), job.ID)
 	if job.Head != "" && !job.Adopted {
 		job.RecoveryRef = cleanup.RecoveryRefFor(job.ID)
 	}

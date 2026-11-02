@@ -200,3 +200,40 @@ func TestCrossVolumePreparedCannotMoveAfterJournalChangesVolume(t *testing.T) {
 	f.absent(job.Registered)
 	f.absent(job.Payload)
 }
+
+func TestCrossVolumeRemovalMovesIntoTheSpoolOnTheTreeVolume(t *testing.T) {
+	disk, err := os.MkdirTemp("", "ccx-state-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(disk) })
+	state := filepath.Join(disk, "state")
+	shm, err := os.MkdirTemp("/dev/shm", "ccx-spool-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(shm) })
+	t.Setenv("TMPDIR", shm)
+	f := newFixture(t)
+	f.open(state)
+	before := f.id(f.worktree)
+	if sameVolume(f.id(state), before) {
+		t.Fatal("cross-volume fixture needs distinct filesystems")
+	}
+
+	job := f.accept()
+	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(job.Payload)) })
+	if _, want := cleanup.Area(cleanup.Spool("/dev/shm"), job.ID); job.Payload != want {
+		t.Fatalf("payload = %s, want %s", job.Payload, want)
+	}
+	f.advance(&job)
+
+	f.finished(&job)
+	if got := f.id(job.Payload); got != before {
+		t.Errorf("payload identity = %+v, want %+v", got, before)
+	}
+	f.absent(f.worktree)
+	if got := f.listing(); strings.Contains(got, f.worktree) {
+		t.Errorf("removed worktree remains listed: %s", got)
+	}
+}

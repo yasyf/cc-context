@@ -29,9 +29,9 @@ const (
 )
 
 // Layout is the daemon's private state tree, rooted at one 0700 directory. The
-// job folders under it are where relocated worktrees wait for deletion, so the
-// root must sit on the volume those worktrees live on and outside every
-// watched tree.
+// job folders under it are where relocated worktrees on its volume wait for
+// deletion, so the root must sit outside every watched tree; a tree on another
+// volume waits in that volume's Spool, while its record stays here.
 type Layout struct {
 	Root string
 }

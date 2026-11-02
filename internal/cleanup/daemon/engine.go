@@ -1029,7 +1029,7 @@ func (e *Engine) finish(job cleanup.Job) error {
 	}
 	slices.SortFunc(finished, byFinish)
 	for _, old := range finished[:max(len(finished)-e.tuning.KeepDone, 0)] {
-		if err := e.journal.Discard(old.ID); err != nil {
+		if err := e.journal.Discard(old); err != nil {
 			return &fatalError{fmt.Errorf("cleanup daemon: prune finished job %s: %w", old.ID, err)}
 		}
 		e.mu.Lock()
@@ -1264,7 +1264,7 @@ func (e *Engine) cancel(ctx context.Context, jobID string) (cleanup.Job, error) 
 	if err := e.relocator.Cancel(ctx, &job); err != nil {
 		return cleanup.Job{}, err
 	}
-	if err := e.journal.Discard(job.ID); err != nil {
+	if err := e.journal.Discard(job); err != nil {
 		return cleanup.Job{}, &fatalError{fmt.Errorf("cleanup daemon: discard cancelled job %s: %w", job.ID, err)}
 	}
 	delete(e.checked, job.ID)

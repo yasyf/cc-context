@@ -443,7 +443,7 @@ func (r *Relocator) restoreRegistration(ctx context.Context, job *cleanup.Job) (
 	if err := r.retirementDevices(job, files); err != nil {
 		return false, err
 	}
-	if err := r.colocated(files.tree, files.treeID); err != nil {
+	if err := r.colocatedIn(job, files.tree, files.treeID); err != nil {
 		var refused *cleanup.RefusedError
 		if errors.As(err, &refused) {
 			return r.block(ctx, job, refused.Reason, refused.Detail)

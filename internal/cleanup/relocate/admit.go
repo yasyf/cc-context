@@ -53,7 +53,7 @@ func (r *Relocator) admission(ctx context.Context, job *cleanup.Job) (reason, de
 	if claim != "" {
 		return "reconcile", claim
 	}
-	if err := r.cfg.Watchers.CheckQuarantine(ctx, r.cfg.Journal.Layout().JobDir(job.ID)); err != nil {
+	if err := r.cfg.Watchers.CheckQuarantine(ctx, filepath.Dir(job.Payload)); err != nil {
 		return "quarantine", err.Error()
 	}
 	if job.Phase == cleanup.PhaseDeletingRetiredPayload {
