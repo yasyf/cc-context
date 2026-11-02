@@ -81,7 +81,7 @@ jobs:
           set -euo pipefail
           cd .ci-native-answer-corpus-before
           status=0
-          go test -race -count=1 -json -run '^TestOwnedAnswersHeldReaderAllowsGenerationAdvance$' ./internal/semsearch/index > "$RUNNER_TEMP/native-answer-corpus-components/rollback.jsonl" 2>&1 || status=$?
+          go test -race -count=1 -json -run '^TestOwnedAnswersHeldReaderAllowsGenerationAdvance$' ./internal/semsearch/index > "$RUNNER_TEMP/native-answer-corpus-components/rollback.jsonl" 2> "$RUNNER_TEMP/native-answer-corpus-components/rollback.stderr.log" || status=$?
           cat "$RUNNER_TEMP/native-answer-corpus-components/rollback.jsonl"
           python3 - "$status" <<'PY'
           import json, os, pathlib, sys
