@@ -1,0 +1,119 @@
+name: Owned generation retention
+
+on:
+  pull_request:
+    paths:
+      - internal/semsearch/**
+      - .github/workflows/owned-generation-retention.yml
+      - .github/actions/wasm/**
+      - go.mod
+      - go.sum
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: owned-generation-retention-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  owned-generation-retention:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    env:
+      GOMAXPROCS: "2"
+      GOFLAGS: -p=2
+      CARGO_BUILD_JOBS: "2"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: ./.github/actions/wasm
+      - uses: actions/checkout@v7
+        with:
+          ref: 578a392287fdd5d38fb44189be7539c4c6fb706f
+          path: .ci-retention-before
+          persist-credentials: false
+      - name: Bind genuine unbounded source and common dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/owned-generation-retention"
+          python3 - <<'PY'
+          import pathlib, shutil, subprocess
+          root = pathlib.Path.cwd()
+          before = root / ".ci-retention-before"
+          assert subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=before, text=True).strip() == "578a392287fdd5d38fb44189be7539c4c6fb706f"
+          for name in ("go.mod", "go.sum"):
+              assert (root / name).read_bytes() == (before / name).read_bytes(), name
+          for name in ("internal/format/formatcore.wasm", "internal/semsearch/embed/embedcore.wasm"):
+              shutil.copyfile(root / name, before / name)
+          shutil.copytree(root / "internal/semsearch/chunk/grammars", before / "internal/semsearch/chunk/grammars", dirs_exist_ok=True)
+          shutil.copyfile(root / "internal/semsearch/index/owned_retention_unix_test.go", before / "internal/semsearch/index/owned_retention_unix_test.go")
+          PY
+      - name: Authentic three-generation retention negative
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          (cd .ci-retention-before && go test -race -count=1 -json -run '^TestOwnedAnswersRetainsTwoGenerations/32$' ./internal/semsearch/index) | tee "$RUNNER_TEMP/owned-generation-retention/before.jsonl"
+          code=${PIPESTATUS[0]}
+          set -e
+          test "$code" -eq 1
+          python3 - <<'PY'
+          import json, os, pathlib
+          root = pathlib.Path(os.environ["RUNNER_TEMP"]) / "owned-generation-retention"
+          events = [json.loads(line) for line in (root / "before.jsonl").read_text().splitlines()]
+          failures = {event.get("Test") for event in events if event["Action"] == "fail" and event.get("Test")}
+          assert failures == {"TestOwnedAnswersRetainsTwoGenerations", "TestOwnedAnswersRetainsTwoGenerations/32"}, failures
+          assert not any(event["Action"] == "skip" for event in events)
+          assert any("retained 3 generations and 96 members, want 2 and 64" in event.get("Output", "") for event in events)
+          (root / "before-verdict.json").write_text(json.dumps({"source": "578a392287fdd5d38fb44189be7539c4c6fb706f", "observed": "three retained generations at N32", "failures": sorted(failures)}, indent=2) + "\n")
+          PY
+      - name: Fixed retention, active mappings and exact ranking controls
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test -race -count=1 -json -run '^TestOwnedAnswers(RetainsTwoGenerations|EvictionPreservesOpenMappingAndD2|WarmMappingDoesNotWaitForEmbedding|WorkCounts|ExactRankParity|MappedWarmProcess|MappedReaderSurvivesPublication)$' ./internal/semsearch/index | tee "$RUNNER_TEMP/owned-generation-retention/fixed.jsonl"
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, re, subprocess
+          root = pathlib.Path(os.environ["RUNNER_TEMP"]) / "owned-generation-retention"
+          events = [json.loads(line) for line in (root / "fixed.jsonl").read_text().splitlines()]
+          required = {"TestOwnedAnswers" + name for name in ("RetainsTwoGenerations", "EvictionPreservesOpenMappingAndD2", "WarmMappingDoesNotWaitForEmbedding", "WorkCounts", "ExactRankParity", "MappedWarmProcess", "MappedReaderSurvivesPublication")}
+          passed = {event.get("Test") for event in events if event["Action"] == "pass"}
+          assert required <= passed, required - passed
+          assert not any(event["Action"] in ("fail", "skip") for event in events)
+          pattern = re.compile(r"OWNED_GENERATION_HISTORY n=(\d+) step=(\d+) cuts=(\d+) members=(\d+) content_versions=(\d+) matrices=(\d+) matrix_bytes=(\d+) database_bytes=(\d+) wal_bytes=(\d+) text_reads=(\d+) chunker_inputs=(\d+) embedded_texts=(\d+)")
+          counts = [tuple(map(int, match.groups())) for event in events for match in pattern.finditer(event.get("Output", ""))]
+          for n in (32, 10000):
+              rows = [row for row in counts if row[0] == n]
+              assert len(rows) == 12 and {row[1] for row in rows} == set(range(12)), rows
+              for row in rows:
+                  _, step, cuts, members, versions, matrices, matrix_bytes, database_bytes, wal_bytes, reads, chunks, embeds = row
+                  assert cuts == matrices == min(step + 1, 2) and members == cuts * n, row
+                  assert versions == n + step // 3 and matrix_bytes > 0 and database_bytes > 0 and wal_bytes >= 0, row
+                  expected = n if step == 0 else int(step % 3 == 0)
+                  assert reads == chunks == embeds == expected, row
+          names = ("internal/semsearch/index/owned_answers.go", "internal/semsearch/index/owned_retention_unix.go", "internal/semsearch/index/owned_retention_windows.go", "internal/semsearch/index/owned_retention_unix_test.go", ".github/workflows/owned-generation-retention.yml", "go.mod", "go.sum")
+          receipt = {"head": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(), "passed": sorted(required), "counts": counts, "files": {name: hashlib.sha256(pathlib.Path(name).read_bytes()).hexdigest() for name in names}, "scope": "Mac/Linux two eligible generations and retained D2 versions; component bytes measured after views close, not a universal physical-storage bound. Windows retirement remains open. No live model, controller or physical-IO attribution."}
+          (root / "fixed-verdict.json").write_text(json.dumps(receipt, indent=2) + "\n")
+          PY
+      - name: Cross-build preserved Windows behavior
+        if: runner.os == 'Linux'
+        run: CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build ./internal/semsearch/index
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: owned-generation-retention-${{ runner.os }}
+          path: ${{ runner.temp }}/owned-generation-retention
