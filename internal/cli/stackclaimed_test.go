@@ -24,6 +24,7 @@ func stackClaimedBase(t *testing.T, claim string) (*vcstest.Fixture, *gtAPIStub)
 		t.Fatalf("publish base: %v", err)
 	}
 	shipGTStack(t, f, "feature")
+	stackForgetCheckouts(t, f)
 	api.prs["feature"] = 8
 	writeShipExecutable(t, f.ShimBin, "cci", "#!/bin/sh\n[ \"$1 $3\" = 'who branch:base' ] && echo '"+claim+"'\nexit 0\n")
 	f.Setenv(envClaudeSessionKey, "sess-drive")

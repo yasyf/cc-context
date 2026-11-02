@@ -88,6 +88,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ccx vcs stack submit`, `stack rebase`, `stack restack` and `ship` treat a
+  branch this working copy has checked out as this lane's, whichever lane cut
+  it or opened its pull request. The checkout is read from the working copy's
+  HEAD reflog, so a branch it checked out earlier counts too. A branch with
+  another lane's name prefix, or one another live cci session claims, used to
+  stay at its published head after this working copy took it over. The submit
+  skipped the commits made on it here and pushed nothing for it. A branch
+  another lane's working copy holds now is still that lane's.
 - `ccx vcs stack submit` reads a pull request's parent from its native GitHub
   stack. When GitHub holds the pull request on an open member of the same
   native stack, that member is its parent, whatever an older submit record or

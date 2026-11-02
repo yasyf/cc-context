@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -64,7 +65,58 @@ func stackClaims(ctx context.Context, dir render.Dir, branches []string) (map[st
 			claims[branch] = "lane " + owner
 		}
 	}
+	if len(claims) == 0 {
+		return claims, nil
+	}
+	here, err := stackCheckedOutHere(ctx, dir, "stack")
+	if err != nil {
+		return nil, err
+	}
+	maps.DeleteFunc(claims, func(branch, _ string) bool { return here[branch] })
 	return claims, nil
+}
+
+func stackCheckedOutHere(ctx context.Context, dir render.Dir, prefix string) (map[string]bool, error) {
+	current, err := gitCurrentBranch(ctx, dir, prefix)
+	if err != nil {
+		return nil, err
+	}
+	out, err := render.RunCLI(ctx, dir, "git", []string{"reflog", "show", "--format=%gs", "HEAD"})
+	if err != nil {
+		return nil, fmt.Errorf("%s: git reflog show HEAD: %w", prefix, err)
+	}
+	here := map[string]bool{}
+	if current != "" {
+		here[current] = true
+	}
+	for line := range strings.Lines(out) {
+		line = strings.TrimSpace(line)
+		if moved, ok := strings.CutPrefix(line, "checkout: moving from "); ok {
+			from, to, _ := strings.Cut(moved, " to ")
+			here[from], here[to] = true, true
+		} else if branch, ok := strings.CutPrefix(line, "rebase (finish): returning to refs/heads/"); ok {
+			here[branch] = true
+		}
+	}
+	return here, nil
+}
+
+func stackOtherLanes(ctx context.Context, dir render.Dir, prefix, current string, names []string) (map[string]bool, error) {
+	others := map[string]bool{}
+	for _, name := range names {
+		if branchLane(name) != branchLane(current) {
+			others[name] = true
+		}
+	}
+	if len(others) == 0 {
+		return others, nil
+	}
+	here, err := stackCheckedOutHere(ctx, dir, prefix)
+	if err != nil {
+		return nil, err
+	}
+	maps.DeleteFunc(others, func(name string, _ bool) bool { return here[name] })
+	return others, nil
 }
 
 func stackWithClaims(holders, claims map[string]string) map[string]string {

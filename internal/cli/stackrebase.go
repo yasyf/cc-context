@@ -340,14 +340,16 @@ run at <branch>: of the branches stacked above a seed, only those <branch> sits
 on, and <branch> itself, join it. Every seed must be <branch> or sit below it;
 any other <branch> is refused, as is one a member was last published onto. --all-lanes widens the run to every branch gt
 tracks. Without it, a pushing run keeps a branch whose name differs from the
-checked-out branch's before the last slash at its published head when this lane
-sits on it, never pushing or submitting it, and leaves out the rest of that lane.
+checked-out branch's before the last slash, and that this working copy has never
+checked out, at its published head when this lane sits on it, never pushing or
+submitting it, and leaves out the rest of that lane.
 A branch below the checked-out one that another working copy holds is that
 working copy's, and so is every branch below it down to the next one another
 working copy holds: the run keeps each at its published head, or at its local
 head in a run that does not push, names it with the working copy whose lane
 owns it, and moves only the branches above them. A branch another live cci
-session claims is held by that session's lane the same way. In a run that pushes, a branch
+session claims is held by that session's lane the same way, unless this working
+copy has checked it out, now or earlier by its HEAD reflog. In a run that pushes, a branch
 above the checked-out one that a working copy of another lane holds is that
 lane's too: it and every branch stacked on it are left where they are, named,
 and never pushed; that lane publishes them with ccx vcs stack submit. A working
@@ -1331,7 +1333,11 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 		}
 	}
 	if !o.noPush && !o.allLanes && !o.otherLanes && o.replayed == nil && current != "" && current != trunk {
-		members, lanePins, otherLanes = stackPinOtherLanes(retargeted, current, members, o.include, heldBelow)
+		others, err := stackOtherLanes(ctx, l.dir(), prefix, current, members)
+		if err != nil {
+			return nil, err
+		}
+		members, lanePins, otherLanes = stackPinOtherLanes(retargeted, current, members, o.include, heldBelow, others)
 		o.pinned = append(o.pinned, slices.DeleteFunc(slices.Clone(lanePins), func(name string) bool { return slices.Contains(o.pinned, name) })...)
 	}
 
@@ -2350,12 +2356,12 @@ func stackHeldAbove(state gtState, current string, members, include []string, ho
 
 // stackPinOtherLanes pins at its published head each branch of another lane
 // that this lane sits on, and leaves out the rest of the other lanes. A branch
-// is another lane's when its name differs from the checked-out branch's before
-// the last slash, or when heldBelow names it.
-func stackPinOtherLanes(state gtState, current string, members, include []string, heldBelow map[string]stackSkip) (kept, pinned []string, left []stackLeft) {
+// is another lane's when others names it and include does not, or when
+// heldBelow names it.
+func stackPinOtherLanes(state gtState, current string, members, include []string, heldBelow map[string]stackSkip, others map[string]bool) (kept, pinned []string, left []stackLeft) {
 	lane := branchLane(current)
 	other := func(name string) bool {
-		return heldBelow[name].holder != "" || branchLane(name) != lane && !slices.Contains(include, name)
+		return heldBelow[name].holder != "" || others[name] && !slices.Contains(include, name)
 	}
 	carried := map[string]bool{}
 	for _, name := range members {

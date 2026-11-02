@@ -2561,7 +2561,11 @@ func shipPushGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, meta ma
 		sub.trunkHead = c.restack.Pin
 		sub.leases = stackPublicationLeases(c.restack)
 	} else if !o.allLanes {
-		sub.otherLanes = slices.DeleteFunc(slices.Clone(chain), func(name string) bool { return branchLane(name) == branchLane(branch) })
+		others, err := stackOtherLanes(ctx, l.dir(), "ship", branch, chain)
+		if err != nil {
+			return "", nil, nil, err
+		}
+		sub.otherLanes = slices.DeleteFunc(slices.Clone(chain), func(name string) bool { return !others[name] })
 	}
 	commonDir, err := c.common(ctx)
 	if err != nil {
