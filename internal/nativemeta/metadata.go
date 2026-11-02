@@ -258,7 +258,8 @@ func readRowsState(ctx context.Context, commonDir string, remote, planned bool, 
 			return nil, nil, err
 		}
 		byName := index(r)
-		r = slices.DeleteFunc(slices.Clone(r), func(row branchRow) bool { return rootOf(byName, row.branch) != trunk })
+		roots := indexRoots(slices.Collect(maps.Keys(byName)), func(branch string) string { return byName[branch].parent })
+		r = slices.DeleteFunc(slices.Clone(r), func(row branchRow) bool { return roots[row.branch] != trunk })
 		if len(r) == 0 {
 			r = []branchRow{{branch: trunk, owner: -1}}
 		}
@@ -380,6 +381,58 @@ func index(r []branchRow) map[string]branchRow {
 		byName[row.branch] = row
 	}
 	return byName
+}
+
+type indexedRoot struct {
+	branch string
+	depth  int
+}
+
+func indexRoots(branches []string, parent func(string) string) map[string]string {
+	resolved := make(map[string]indexedRoot, len(branches))
+	pending := make(map[string]bool)
+	for _, branch := range branches {
+		if _, known := resolved[branch]; known {
+			continue
+		}
+		var path []string
+		at := branch
+		root := indexedRoot{}
+		for {
+			if known, ok := resolved[at]; ok {
+				root = known
+				break
+			}
+			if pending[at] {
+				break
+			}
+			pending[at] = true
+			path = append(path, at)
+			next := parent(at)
+			if next == "" {
+				root.branch = at
+				break
+			}
+			at = next
+		}
+		for i := len(path) - 1; i >= 0; i-- {
+			if root.branch != "" {
+				root.depth++
+			}
+			resolved[path[i]] = root
+			delete(pending, path[i])
+		}
+	}
+	roots := make(map[string]string, len(branches))
+	for _, branch := range branches {
+		root := resolved[branch]
+		if root.depth > len(branches) {
+			roots[branch] = ""
+		} else {
+			roots[branch] = root.branch
+		}
+	}
+	return roots
 }
 
 func rootOf(byName map[string]branchRow, branch string) string {

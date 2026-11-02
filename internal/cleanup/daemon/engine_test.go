@@ -1904,7 +1904,7 @@ func TestQueueOrderFollowsSeqAcrossLoadPutAndPrune(t *testing.T) {
 	}
 
 	delete(e.jobs, jobs[5].ID)
-	e.dequeue(jobs[5])
+	e.dequeue(updated)
 	if got, want := seqs(), []uint64{2, 7, 9}; !slices.Equal(got, want) {
 		t.Fatalf("order after a prune = %v, want %v", got, want)
 	}

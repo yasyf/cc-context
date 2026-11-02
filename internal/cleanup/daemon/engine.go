@@ -202,6 +202,8 @@ type Engine struct {
 
 	seq             uint64
 	order           []seqKey
+	unfinishedOrder []seqKey
+	finishedOrder   []finishKey
 	logicalOrder    []seqKey
 	retirementOrder []seqKey
 	wakeOrder       []seqKey
@@ -382,21 +384,15 @@ func (e *Engine) Status(ctx context.Context, q cleanup.Query) (cleanup.Report, e
 	if limit <= 0 {
 		limit = e.tuning.StatusLimit
 	}
-	var finished []cleanup.Job
-	for job := range e.ordered() {
-		if job.Phase == cleanup.PhaseDone {
-			finished = append(finished, job)
-			continue
-		}
+	for job := range e.orderedKeys(e.unfinishedOrder) {
 		report.Jobs = append(report.Jobs, e.reported(job))
 		if len(report.Jobs) == limit {
 			report.Omitted = len(e.jobs) - len(report.Jobs)
 			return report, nil
 		}
 	}
-	slices.SortFunc(finished, func(a, b cleanup.Job) int { return byFinish(b, a) })
-	for _, job := range finished[:min(len(finished), limit-len(report.Jobs))] {
-		report.Jobs = append(report.Jobs, clone(job))
+	for _, key := range e.finishedOrder[:min(len(e.finishedOrder), limit-len(report.Jobs))] {
+		report.Jobs = append(report.Jobs, clone(e.jobs[key.id]))
 	}
 	report.Omitted = len(e.jobs) - len(report.Jobs)
 	return report, nil
@@ -629,6 +625,7 @@ func (e *Engine) load() error {
 			e.wakeOrder = append(e.wakeOrder, key)
 		}
 	}
+	e.indexStatus()
 	close(e.loaded)
 	return nil
 }
@@ -1352,22 +1349,37 @@ func (e *Engine) save(job cleanup.Job) error {
 
 func (e *Engine) put(job cleanup.Job) {
 	e.mu.Lock()
-	if _, known := e.jobs[job.ID]; !known {
+	before, known := e.jobs[job.ID]
+	if !known {
 		at, _ := slices.BinarySearchFunc(e.order, job.Seq, bySeqKey)
 		e.order = slices.Insert(e.order, at, seqKey{seq: job.Seq, id: job.ID})
 	}
 	e.jobs[job.ID] = clone(job)
 	e.schedule(job)
+	e.unfinishedOrder = scheduleKey(e.unfinishedOrder, e.order, job, job.Phase != cleanup.PhaseDone)
+	if before.Phase == cleanup.PhaseDone && (job.Phase != cleanup.PhaseDone || byFinish(before, job) != 0) {
+		e.removeFinished(before)
+	}
+	if job.Phase == cleanup.PhaseDone && (before.Phase != cleanup.PhaseDone || byFinish(before, job) != 0) {
+		e.insertFinished(job)
+	}
 	e.broadcast()
 	e.mu.Unlock()
 }
 
 func (e *Engine) dequeue(job cleanup.Job) {
 	at, found := slices.BinarySearchFunc(e.order, job.Seq, bySeqKey)
-	if !found || e.order[at].id != job.ID {
+	for found && at < len(e.order) && e.order[at].seq == job.Seq && e.order[at].id != job.ID {
+		at++
+	}
+	if !found || at == len(e.order) || e.order[at].seq != job.Seq || e.order[at].id != job.ID {
 		panic(fmt.Sprintf("cleanup daemon: job %s at seq %d is missing from the queue order", job.ID, job.Seq))
 	}
 	e.order = slices.Delete(e.order, at, at+1)
+	e.unfinishedOrder = scheduleKey(e.unfinishedOrder, e.order, job, false)
+	if job.Phase == cleanup.PhaseDone {
+		e.removeFinished(job)
+	}
 	e.logicalOrder = scheduleKey(e.logicalOrder, e.order, job, false)
 	e.retirementOrder = scheduleKey(e.retirementOrder, e.order, job, false)
 	e.wakeOrder = scheduleKey(e.wakeOrder, e.order, job, false)
@@ -1428,6 +1440,46 @@ func scheduleKey(order, all []seqKey, job cleanup.Job, eligible bool) []seqKey {
 	return slices.Insert(order, at, seqKey{seq: job.Seq, id: job.ID})
 }
 
+func (e *Engine) indexStatus() {
+	e.unfinishedOrder, e.finishedOrder = nil, nil
+	for _, key := range e.order {
+		job := e.jobs[key.id]
+		if job.Phase == cleanup.PhaseDone {
+			e.finishedOrder = append(e.finishedOrder, finishKey{seqKey: key, updated: job.Updated})
+		} else {
+			e.unfinishedOrder = append(e.unfinishedOrder, key)
+		}
+	}
+	slices.SortStableFunc(e.finishedOrder, byFinishKey)
+}
+
+func (e *Engine) insertFinished(job cleanup.Job) {
+	key := finishKey{seqKey: seqKey{seq: job.Seq, id: job.ID}, updated: job.Updated}
+	at, _ := slices.BinarySearchFunc(e.finishedOrder, key, byFinishKey)
+	start, _ := slices.BinarySearchFunc(e.order, job.Seq, bySeqKey)
+	for _, queued := range e.order[start:] {
+		if queued.id == job.ID {
+			break
+		}
+		if at < len(e.finishedOrder) && byFinishKey(e.finishedOrder[at], key) == 0 && e.finishedOrder[at].seqKey == queued {
+			at++
+		}
+	}
+	e.finishedOrder = slices.Insert(e.finishedOrder, at, key)
+}
+
+func (e *Engine) removeFinished(job cleanup.Job) {
+	key := finishKey{seqKey: seqKey{seq: job.Seq, id: job.ID}, updated: job.Updated}
+	at, found := slices.BinarySearchFunc(e.finishedOrder, key, byFinishKey)
+	for found && at < len(e.finishedOrder) && byFinishKey(e.finishedOrder[at], key) == 0 && e.finishedOrder[at].id != job.ID {
+		at++
+	}
+	if !found || at == len(e.finishedOrder) || byFinishKey(e.finishedOrder[at], key) != 0 || e.finishedOrder[at].id != job.ID {
+		panic(fmt.Sprintf("cleanup daemon: finished job %s at seq %d is missing from the status order", job.ID, job.Seq))
+	}
+	e.finishedOrder = slices.Delete(e.finishedOrder, at, at+1)
+}
+
 func (e *Engine) ordered() iter.Seq[cleanup.Job] {
 	return e.orderedKeys(e.order)
 }
@@ -1451,6 +1503,18 @@ func bySeq(a, b cleanup.Job) int { return cmp.Compare(a.Seq, b.Seq) }
 type seqKey struct {
 	seq uint64
 	id  string
+}
+
+type finishKey struct {
+	seqKey
+	updated time.Time
+}
+
+func byFinishKey(a, b finishKey) int {
+	if order := b.updated.Compare(a.updated); order != 0 {
+		return order
+	}
+	return cmp.Compare(b.seq, a.seq)
 }
 
 func bySeqKey(key seqKey, seq uint64) int { return cmp.Compare(key.seq, seq) }
