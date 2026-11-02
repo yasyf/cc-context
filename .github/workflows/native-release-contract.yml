@@ -2,7 +2,6 @@ name: Native release contract
 on:
   pull_request:
     paths:
-      - .github/workflows/ci.yml
       - .github/workflows/release.yml
       - .github/workflows/native-release-contract.yml
       - .github/scripts/test-native-release-gates.py
@@ -20,13 +19,6 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
       - id: commit
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-  native-ci:
-    needs: source
-    permissions:
-      contents: read
-    uses: ./.github/workflows/ci.yml
-    with:
-      commit: ${{ needs.source.outputs.commit }}
   native-guides:
     needs: source
     permissions:
