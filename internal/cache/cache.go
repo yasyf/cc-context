@@ -3,8 +3,10 @@
 package cache
 
 import (
+	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -36,13 +38,27 @@ func dirUnder(root string, sub ...string) (string, error) {
 // Store atomically installs data at path with perm: it writes a sibling temp
 // file, chmods it, and renames it over path.
 func Store(path string, data []byte, perm os.FileMode) error {
+	return StoreFrom(path, perm, func(w io.Writer) error {
+		_, err := w.Write(data)
+		return err
+	})
+}
+
+// StoreFrom atomically installs what write produces at path with perm, as Store
+// does, streaming it through a buffer instead of holding it whole in memory.
+func StoreFrom(path string, perm os.FileMode, write func(io.Writer) error) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".cache-*")
 	if err != nil {
 		return fmt.Errorf("create temp file: %w", err)
 	}
 	defer func() { _ = os.Remove(tmp.Name()) }()
 
-	if _, err := tmp.Write(data); err != nil {
+	buf := bufio.NewWriterSize(tmp, 1<<20)
+	if err := write(buf); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write %q: %w", path, err)
+	}
+	if err := buf.Flush(); err != nil {
 		_ = tmp.Close()
 		return fmt.Errorf("write %q: %w", path, err)
 	}

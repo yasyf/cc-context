@@ -325,7 +325,7 @@ func TestWarmLoadDoesNotRewriteCache(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dir, err := variantCacheDir(ctx, resolved, variantKey("model-x", ContentKey([]ContentType{ContentCode}), DefaultChunker().ID(), emb.Dims()))
+	dir, err := variantCacheDir(ctx, resolved, variantKey(schemaVersion, "model-x", ContentKey([]ContentType{ContentCode}), DefaultChunker().ID(), emb.Dims()))
 	if err != nil {
 		t.Fatal(err)
 	}

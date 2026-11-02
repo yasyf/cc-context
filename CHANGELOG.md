@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Semantic search reads its index in place, so every session on a worktree
+  shares one copy of it.** A loaded index used to be decoded onto each
+  process's heap: on the monorepo's 281,362 chunks that was 1,267 MB per `ccx
+  mcp` server after one search, and a 12.6 s, 1,838 MB load for every one-shot
+  `ccx code search`. The index cache now stores chunk text as a binary blob and
+  persists its BM25 postings, and a load maps the chunk, vector, and posting
+  files read-only instead of reading them. Chunk contents and vector rows alias
+  those mappings, so the kernel holds one copy for every process that searches
+  the same index and can drop those pages under memory pressure. A query reads
+  only its own terms' postings, and the ranking is unchanged. The first search
+  after upgrading converts each existing index from the previous format without
+  re-embedding anything.
 - **An idle `ccx mcp` server gives back its embedding models too, not just its
   indexes.** A server that had run one semantic or web search kept each
   embedder's model memory for the rest of its life. On the monorepo, a server

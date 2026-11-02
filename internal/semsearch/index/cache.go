@@ -4,12 +4,11 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -22,16 +21,23 @@ import (
 
 // schemaVersion is the on-disk index-cache format version. A mismatch discards
 // the cache and rebuilds — bump it whenever the persisted layout changes.
-const schemaVersion = 3
+// legacySchemaVersion is the JSON-chunk format before it, still read so an
+// existing index converts without re-embedding.
+const (
+	schemaVersion       = 4
+	legacySchemaVersion = 3
+)
 
 // Cache file names within a repo's cache dir.
 const (
-	manifestFile = "manifest.json"
-	chunksFile   = "chunks.json"
-	vectorsFile  = "vectors.bin"
-	lastUsedFile = "last_used"
-	rootFile     = "root"
-	seedsDir     = "seeds"
+	manifestFile     = "manifest.json"
+	chunksFile       = "chunks.bin"
+	legacyChunksFile = "chunks.json"
+	vectorsFile      = "vectors.bin"
+	termsFile        = "terms.bin"
+	lastUsedFile     = "last_used"
+	rootFile         = "root"
+	seedsDir         = "seeds"
 )
 
 const maxSeedCandidates = 8
@@ -63,11 +69,15 @@ type chunkEnvelope struct {
 }
 
 // persisted is a loaded, self-consistent cache: the manifest, the flat chunk
-// list, and the parallel vector matrix.
+// list, the parallel vector matrix, and the corpus BM25 postings. The chunks,
+// vectors, and terms alias files, which a legacy cache maps only for its
+// vectors and which has no terms; whoever drops a persisted unmaps its files.
 type persisted struct {
 	manifest manifest
 	chunks   []semsearch.Chunk
 	vectors  [][]float32
+	terms    *termStore
+	files    *mappedFiles
 }
 
 // cacheDir resolves the per-repo cache directory, keyed by the sha256 of the
@@ -78,8 +88,8 @@ func cacheDir(ctx context.Context, root string) (string, error) {
 	return cache.Dir(ctx, "semsearch", hex.EncodeToString(sum[:]))
 }
 
-func variantKey(model, content, chunker string, dims int) string {
-	sum := sha256.Sum256(fmt.Appendf(nil, "%d %q %q %q %d", schemaVersion, model, content, chunker, dims))
+func variantKey(schema int, model, content, chunker string, dims int) string {
+	sum := sha256.Sum256(fmt.Appendf(nil, "%d %q %q %q %d", schema, model, content, chunker, dims))
 	return hex.EncodeToString(sum[:])
 }
 
@@ -199,44 +209,96 @@ func ResolveRoot(root string) (string, error) {
 // mirroring semble's load_previous_for_incremental (a bad cache is rebuilt, not
 // fatal). dims is the live embedder's output width: a cache whose vectors do not
 // match it is rejected (rebuilt) so mismatched vectors never reach rank.Cosine.
+// A legacy-schema cache loads its chunks onto the heap and carries no terms.
 func loadPersisted(dir, model, content, chunker string, dims int) *persisted {
 	man, err := readManifest(dir)
 	if err != nil {
 		return nil
 	}
-	if man.Schema != schemaVersion || man.Model != model || man.Content != content || man.Chunker != chunker {
+	if man.Model != model || man.Content != content || man.Chunker != chunker {
 		return nil
 	}
-	chunkData, err := readChunks(dir)
-	if err != nil {
+	var p *persisted
+	switch man.Schema {
+	case schemaVersion:
+		p = loadMapped(dir, man)
+	case legacySchemaVersion:
+		p = loadLegacy(dir, man)
+	}
+	if p == nil {
 		return nil
 	}
-	vectorGeneration, vectors, err := readVectors(dir)
-	if err != nil {
+	if !consistent(p, dims) {
+		p.files.unmap()
 		return nil
 	}
-	if man.Generation == "" || man.Generation != chunkData.Generation || man.Generation != vectorGeneration {
-		return nil
-	}
-	chunks := chunkData.Chunks
+	return p
+}
+
+func consistent(p *persisted, dims int) bool {
+	man, chunks, vectors := p.manifest, p.chunks, p.vectors
 	if len(chunks) != len(vectors) || (man.Dims != 0 && len(vectors) > 0 && len(vectors[0]) != man.Dims) {
-		return nil
+		return false
 	}
 	if dims != 0 && ((man.Dims != 0 && man.Dims != dims) || (len(vectors) > 0 && len(vectors[0]) != dims)) {
-		return nil
+		return false
+	}
+	if p.terms != nil && len(p.terms.lengths) != len(chunks) {
+		return false
 	}
 	// Every file's chunk range must line up with the flat arrays.
 	next := 0
 	for _, f := range man.Files {
 		if f.Start != next || f.Start+f.Count > len(chunks) {
-			return nil
+			return false
 		}
 		next += f.Count
 	}
-	if next != len(chunks) {
+	return next == len(chunks)
+}
+
+func loadMapped(dir string, man manifest) *persisted {
+	var maps []*mapping
+	for _, name := range []string{vectorsFile, chunksFile, termsFile} {
+		m, err := mapFile(filepath.Join(dir, name))
+		if err != nil {
+			unmapAll(maps)
+			return nil
+		}
+		maps = append(maps, m)
+	}
+	vectorGeneration, vectors, verr := readVectorsMapped(maps[0].data)
+	chunkGeneration, chunks, cerr := readChunksMapped(maps[1].data, man.Files)
+	termGeneration, terms, terr := readTermsMapped(maps[2].data)
+	if verr != nil || cerr != nil || terr != nil || man.Generation == "" ||
+		man.Generation != vectorGeneration || man.Generation != chunkGeneration || man.Generation != termGeneration {
+		unmapAll(maps)
 		return nil
 	}
-	return &persisted{manifest: man, chunks: chunks, vectors: vectors}
+	return &persisted{manifest: man, chunks: chunks, vectors: vectors, terms: terms, files: &mappedFiles{maps: maps}}
+}
+
+func loadLegacy(dir string, man manifest) *persisted {
+	chunkData, err := readChunks(dir)
+	if err != nil {
+		return nil
+	}
+	vm, err := mapFile(filepath.Join(dir, vectorsFile))
+	if err != nil {
+		return nil
+	}
+	vectorGeneration, vectors, err := readVectorsMapped(vm.data)
+	if err != nil || man.Generation == "" || man.Generation != chunkData.Generation || man.Generation != vectorGeneration {
+		unmapAll([]*mapping{vm})
+		return nil
+	}
+	return &persisted{manifest: man, chunks: chunkData.Chunks, vectors: vectors, files: &mappedFiles{maps: []*mapping{vm}}}
+}
+
+func (p *persisted) unmap() {
+	if p != nil {
+		p.files.unmap()
+	}
 }
 
 // entryByPath indexes a persisted manifest's file entries by repo-relative path.
@@ -248,7 +310,9 @@ func (p *persisted) entryByPath() map[string]fileManifest {
 	return m
 }
 
-// store writes the manifest, chunks, and vector matrix into dir.
+// store writes the chunks, vector matrix, corpus BM25 postings, and manifest
+// into dir, streaming each file so the write never holds a second copy of the
+// corpus.
 func store(dir string, man manifest, chunks []semsearch.Chunk, vectors [][]float32) error {
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return fmt.Errorf("create cache dir %q: %w", dir, err)
@@ -263,18 +327,18 @@ func store(dir string, man manifest, chunks []semsearch.Chunk, vectors [][]float
 	if err != nil {
 		return fmt.Errorf("marshal manifest: %w", err)
 	}
-	chunkData, err := json.Marshal(chunkEnvelope{
-		Generation: man.Generation,
-		Chunks:     chunks,
-	})
-	if err != nil {
-		return fmt.Errorf("marshal chunks: %w", err)
+	writers := []struct {
+		name  string
+		write func(io.Writer) error
+	}{
+		{chunksFile, func(w io.Writer) error { return writeChunks(w, man.Generation, chunks) }},
+		{vectorsFile, func(w io.Writer) error { return writeVectors(w, man.Generation, vectors) }},
+		{termsFile, func(w io.Writer) error { return writeTerms(w, man.Generation, chunks) }},
 	}
-	if err := cache.Store(filepath.Join(dir, chunksFile), chunkData, 0o640); err != nil {
-		return err
-	}
-	if err := cache.Store(filepath.Join(dir, vectorsFile), encodeVectors(man.Generation, vectors), 0o640); err != nil {
-		return err
+	for _, f := range writers {
+		if err := cache.StoreFrom(filepath.Join(dir, f.name), 0o640, f.write); err != nil {
+			return err
+		}
 	}
 	// Manifest last: it is the validity gate, so it must not name chunks/vectors
 	// that are not yet on disk.
@@ -294,7 +358,7 @@ func readManifest(dir string) (manifest, error) {
 }
 
 func readChunks(dir string) (chunkEnvelope, error) {
-	data, err := os.ReadFile(filepath.Join(dir, chunksFile)) //nolint:gosec // dir derives from the repo-path sha256, not user input
+	data, err := os.ReadFile(filepath.Join(dir, legacyChunksFile)) //nolint:gosec // dir derives from the repo-path sha256, not user input
 	if err != nil {
 		return chunkEnvelope{}, err
 	}
@@ -303,61 +367,4 @@ func readChunks(dir string) (chunkEnvelope, error) {
 		return chunkEnvelope{}, fmt.Errorf("decode chunks: %w", err)
 	}
 	return envelope, nil
-}
-
-// encodeVectors frames a vector matrix as
-// [u32 generation length][generation][u32 rows][u32 dims][row-major f32].
-func encodeVectors(generation string, vectors [][]float32) []byte {
-	dims := 0
-	if len(vectors) > 0 {
-		dims = len(vectors[0])
-	}
-	buf := make([]byte, 0, 12+len(generation)+len(vectors)*dims*4)
-	buf = binary.LittleEndian.AppendUint32(buf, uint32(len(generation))) //nolint:gosec // generated nonce length fits the u32 framing
-	buf = append(buf, generation...)
-	buf = binary.LittleEndian.AppendUint32(buf, uint32(len(vectors))) //nolint:gosec // matrix dims fit the u32 framing
-	buf = binary.LittleEndian.AppendUint32(buf, uint32(dims))
-	for _, row := range vectors {
-		for _, v := range row {
-			buf = binary.LittleEndian.AppendUint32(buf, math.Float32bits(v))
-		}
-	}
-	return buf
-}
-
-func readVectors(dir string) (string, [][]float32, error) {
-	data, err := os.ReadFile(filepath.Join(dir, vectorsFile)) //nolint:gosec // dir derives from the repo-path sha256, not user input
-	if err != nil {
-		return "", nil, err
-	}
-	if len(data) < 12 {
-		return "", nil, errors.New("vectors.bin too short")
-	}
-	generationLen := binary.LittleEndian.Uint32(data[0:4])
-	if uint64(generationLen)+12 > uint64(len(data)) {
-		return "", nil, fmt.Errorf("vectors.bin generation length %d exceeds %d-byte payload", generationLen, len(data))
-	}
-	generationEnd := 4 + int(generationLen)
-	generation := string(data[4:generationEnd])
-	rowsValue := binary.LittleEndian.Uint32(data[generationEnd : generationEnd+4])
-	dimsValue := binary.LittleEndian.Uint32(data[generationEnd+4 : generationEnd+8])
-	want := uint64(generationEnd+8) + uint64(rowsValue)*uint64(dimsValue)*4
-	if uint64(len(data)) != want {
-		return "", nil, fmt.Errorf("vectors.bin is %d bytes, want %d (rows=%d dims=%d)", len(data), want, rowsValue, dimsValue)
-	}
-	rows := int(rowsValue)
-	dims := int(dimsValue)
-	// One backing array sliced per row, not one allocation per row: a monorepo's
-	// ~144k rows otherwise become that many separately-scanned 1 KiB heap objects.
-	flat := make([]float32, rows*dims)
-	off := generationEnd + 8
-	for i := range flat {
-		flat[i] = math.Float32frombits(binary.LittleEndian.Uint32(data[off : off+4]))
-		off += 4
-	}
-	out := make([][]float32, rows)
-	for i := range out {
-		out[i] = flat[i*dims : (i+1)*dims : (i+1)*dims]
-	}
-	return generation, out, nil
 }

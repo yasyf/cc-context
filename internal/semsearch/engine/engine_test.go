@@ -7,8 +7,10 @@ import (
 	"math"
 	"math/rand"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yasyf/cc-context/internal/backend"
 	"github.com/yasyf/cc-context/internal/render"
@@ -171,5 +173,38 @@ func TestRelatedUnknownLocation(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("Related on an out-of-range line should error")
+	}
+}
+
+func TestResultsOutliveTheEvictedIndex(t *testing.T) {
+	ctx := render.WithEnv(t.Context(), "CLAUDE_PLUGIN_DATA="+t.TempDir())
+	engine.CloseIndexCache()
+	t.Cleanup(engine.CloseIndexCache)
+
+	search, err := engine.Search(ctx, fakeEmbedder{}, backend.Args{Query: "authenticated user session login flow", Path: repoPath(t), K: 5})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	related, err := engine.Related(ctx, fakeEmbedder{}, backend.Args{Query: "auth/login.go:4", Path: repoPath(t), K: 5})
+	if err != nil {
+		t.Fatalf("Related: %v", err)
+	}
+	results := slices.Concat(search, related)
+	if len(search) == 0 || len(related) == 0 {
+		t.Fatalf("got %d search and %d related results, want some of each", len(search), len(related))
+	}
+	want := make([]string, len(results))
+	for i, r := range results {
+		want[i] = strings.Clone(r.Content)
+	}
+
+	engine.CloseIndexCache()
+	if n := engine.SweepIdle(time.Now().Add(time.Hour)); n != 0 {
+		t.Fatalf("SweepIdle dropped %d indexes after CloseIndexCache, want 0", n)
+	}
+	for i, r := range results {
+		if r.Content != want[i] {
+			t.Errorf("result %d content changed after its index closed: %q, want %q", i, r.Content, want[i])
+		}
 	}
 }

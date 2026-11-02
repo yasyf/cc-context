@@ -35,9 +35,13 @@ type Embedder interface {
 }
 
 // Index is a repo's loaded chunk corpus and its parallel embedding matrix:
-// Vectors[i] embeds Chunks[i]. It is the input to the ranking stage. BM25 is the
-// prebuilt corpus BM25 over Chunks in the same order — built eagerly on Load,
-// never persisted — so a warm reuse serves queries without rebuilding it.
+// Vectors[i] embeds Chunks[i]. It is the input to the ranking stage; BM25For
+// supplies the corpus BM25 over Chunks in the same order.
+//
+// A loaded Index reads its cache files in place: every chunk's Content and every
+// Vectors row alias read-only mappings of them, shared with every process that
+// loads the same index and never copied onto the heap. They stay valid until
+// Close, so a caller that closes an Index clones any Content it keeps.
 type Index struct {
 	Root       string
 	Chunks     []semsearch.Chunk
@@ -45,6 +49,25 @@ type Index struct {
 	BM25       *rank.BM25
 	Reindexed  int // files re-embedded this Load; 0 means a fully warm cache hit
 	TotalFiles int
+	terms      *termStore
+	files      *mappedFiles
+}
+
+// Close unmaps the cache files a loaded Index reads in place. Neither the Index
+// nor any Content or Vectors row read from it may be used afterwards. An Index
+// assembled in memory has nothing to release.
+func (idx *Index) Close() {
+	idx.files.unmap()
+}
+
+// BM25For returns the corpus BM25 to rank query with. A loaded index reads only
+// the query's terms' postings from its mapped cache; one assembled in memory
+// returns its BM25, where nil makes rank rebuild it per call.
+func (idx *Index) BM25For(query string) (*rank.BM25, error) {
+	if idx.terms == nil {
+		return idx.BM25, nil
+	}
+	return idx.terms.bm25(query)
 }
 
 // Load loads the repo's cached index or builds it, reusing unchanged files'
@@ -68,7 +91,8 @@ func Load(ctx context.Context, emb Embedder, root string, content []ContentType,
 
 	contentK := ContentKey(content)
 	chunkerID := chunker.ID()
-	vKey := variantKey(modelID, contentK, chunkerID, emb.Dims())
+	vKey := variantKey(schemaVersion, modelID, contentK, chunkerID, emb.Dims())
+	legacyKey := variantKey(legacySchemaVersion, modelID, contentK, chunkerID, emb.Dims())
 	dir, err := variantCacheDir(ctx, root, vKey)
 	if err != nil {
 		return nil, err
@@ -86,8 +110,12 @@ func Load(ctx context.Context, emb Embedder, root string, content []ContentType,
 		}
 		prev := loadPersisted(dir, modelID, contentK, chunkerID, emb.Dims())
 		base, trustMtime := prev, true
-		if prev == nil && famDir != "" {
-			seedDir, err := bestSeed(ctx, root, exts, siblingIndexes(famDir, dir))
+		if base == nil {
+			base = loadPersisted(filepath.Join(filepath.Dir(dir), legacyKey), modelID, contentK, chunkerID, emb.Dims())
+		}
+		if base == nil && famDir != "" {
+			candidates := append(siblingIndexes(famDir, dir), siblingIndexes(filepath.Join(filepath.Dir(famDir), legacyKey), dir)...)
+			seedDir, err := bestSeed(ctx, root, exts, candidates)
 			if err != nil {
 				return err
 			}
@@ -95,6 +123,11 @@ func Load(ctx context.Context, emb Embedder, root string, content []ContentType,
 				base, trustMtime = loadPersisted(seedDir, modelID, contentK, chunkerID, emb.Dims()), false
 			}
 		}
+		defer func() {
+			if idx == nil || base == nil || base.files != idx.files {
+				base.unmap()
+			}
+		}()
 		built, berr := build(ctx, emb, root, exts, chunker, base, trustMtime)
 		if berr != nil {
 			return berr
@@ -127,13 +160,20 @@ func Load(ctx context.Context, emb Embedder, root string, content []ContentType,
 		if err := touchLastUsed(dir); err != nil {
 			return err
 		}
+		current := prev
+		if stored {
+			if current = loadPersisted(dir, modelID, contentK, chunkerID, emb.Dims()); current == nil {
+				return fmt.Errorf("semsearch: reopen the index just stored in %s", dir)
+			}
+		}
 		idx = &Index{
 			Root:       root,
-			Chunks:     built.chunks,
-			Vectors:    built.vectors,
-			BM25:       rank.BuildBM25(built.chunks),
+			Chunks:     current.chunks,
+			Vectors:    current.vectors,
 			Reindexed:  built.reindexed,
 			TotalFiles: len(built.files),
+			terms:      current.terms,
+			files:      current.files,
 		}
 		return nil
 	})
@@ -246,9 +286,6 @@ func build(ctx context.Context, emb Embedder, root string, exts []string, chunke
 		return nil, fmt.Errorf("semsearch: no indexable files under %s", root)
 	}
 	results = nil
-	if prev != nil {
-		prev.chunks, prev.vectors = nil, nil
-	}
 
 	if len(toEmbed) > 0 {
 		embs, err := encodeAll(ctx, emb, toEmbed)

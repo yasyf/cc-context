@@ -42,7 +42,7 @@ func TestLoadPrunesAncestorIgnoredPersistedFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dir, err := variantCacheDir(ctx, resolved, variantKey("model-x", ContentKey(content), chunker.ID(), emb.Dims()))
+	dir, err := variantCacheDir(ctx, resolved, variantKey(schemaVersion, "model-x", ContentKey(content), chunker.ID(), emb.Dims()))
 	if err != nil {
 		t.Fatal(err)
 	}

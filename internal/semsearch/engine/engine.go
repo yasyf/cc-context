@@ -44,18 +44,20 @@ func Search(ctx context.Context, emb index.Embedder, a backend.Args) ([]semsearc
 	if strings.TrimSpace(a.Query) == "" {
 		return nil, nil
 	}
-	idx, content, err := loadCached(ctx, emb, a)
+	idx, content, release, err := loadCached(ctx, emb, a)
 	if err != nil {
 		return nil, err
 	}
+	defer release()
 	return SearchLoaded(ctx, emb, idx, content, a)
 }
 
 // SearchLoaded ranks a.Query against an already-loaded index: it embeds the
-// query, runs the rank stage over idx's resident chunks/vectors reusing the
-// prebuilt idx.BM25 (nil rebuilds per call), and truncates snippets. Search
-// loads idx via the resident cache and calls this; the bench time loop calls it
-// directly to time warm serving without a per-query reload.
+// query, runs the rank stage over idx's chunks/vectors with the corpus BM25
+// idx.BM25For supplies, and truncates snippets into strings of their own, so the
+// results outlive idx. Search loads idx via the resident cache and calls this;
+// the bench time loop calls it directly to time warm serving without a
+// per-query reload.
 func SearchLoaded(ctx context.Context, emb index.Embedder, idx *index.Index, content []index.ContentType, a backend.Args) ([]semsearch.Result, error) {
 	if len(idx.Chunks) == 0 {
 		return nil, nil
@@ -64,7 +66,11 @@ func SearchLoaded(ctx context.Context, emb index.Embedder, idx *index.Index, con
 	if err != nil {
 		return nil, fmt.Errorf("embed query: %w", err)
 	}
-	opts := rank.Options{TopK: topK(a.K), Rerank: hasCode(content), BM25: idx.BM25}
+	bm, err := idx.BM25For(a.Query)
+	if err != nil {
+		return nil, fmt.Errorf("load query postings: %w", err)
+	}
+	opts := rank.Options{TopK: topK(a.K), Rerank: hasCode(content), BM25: bm}
 	results := rank.Rank(a.Query, vecs[0], idx.Chunks, idx.Vectors, opts)
 	truncate(results, a.MaxSnippetLines)
 	return results, nil
@@ -84,10 +90,11 @@ func Related(ctx context.Context, emb index.Embedder, a backend.Args) ([]semsear
 	if err != nil {
 		return nil, err
 	}
-	idx, _, err := loadCached(ctx, emb, a)
+	idx, _, release, err := loadCached(ctx, emb, a)
 	if err != nil {
 		return nil, err
 	}
+	defer release()
 
 	repoRel := repoRelative(ctx, idx.Root, file)
 	srcIdx := resolveChunk(idx.Chunks, repoRel, line)
@@ -110,7 +117,7 @@ func Related(ctx context.Context, emb index.Embedder, a backend.Args) ([]semsear
 			EndLine:       c.EndLine,
 			Score:         score,
 			SemanticScore: &score,
-			Content:       snippet(c.Content, a.MaxSnippetLines),
+			Content:       strings.Clone(snippet(c.Content, a.MaxSnippetLines)),
 		})
 		if len(out) == k {
 			break
@@ -164,6 +171,30 @@ const (
 type residentEntry struct {
 	idx      *index.Index
 	lastUsed time.Time
+	holds    int
+	evicted  bool
+}
+
+// release ends one loadCached hold, closing the index once it has been evicted
+// and no query still reads it.
+func (e *residentEntry) release() {
+	residentMu.Lock()
+	defer residentMu.Unlock()
+	e.holds--
+	if e.evicted && e.holds == 0 {
+		e.idx.Close()
+	}
+}
+
+// drop evicts key from resident, closing its index unless a query still holds
+// it. The caller holds residentMu.
+func drop(resident map[indexKey]*residentEntry, key indexKey) {
+	e := resident[key]
+	delete(resident, key)
+	e.evicted = true
+	if e.holds == 0 {
+		e.idx.Close()
+	}
 }
 
 // indexKey identifies a resident index by its resolved repo path and the
@@ -176,21 +207,22 @@ type indexKey struct {
 }
 
 // loadCached returns the repo's loaded index from the resident cache, loading it
-// once on a miss and retaining it for the process's lifetime. It resolves the
+// once on a miss, plus the release that ends this caller's hold on it: an
+// evicted index stays open until its last holder releases it. It resolves the
 // repo exactly as load/index.Load does so a hit and its populating miss share a
 // key.
-func loadCached(ctx context.Context, emb index.Embedder, a backend.Args) (*index.Index, []index.ContentType, error) {
+func loadCached(ctx context.Context, emb index.Embedder, a backend.Args) (*index.Index, []index.ContentType, func(), error) {
 	content, err := index.ParseContent(a.Kind)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	repo, err := repoOrRoot(ctx, a.Path)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	resolved, err := index.ResolveRoot(repo)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	chunker := index.DefaultChunker()
 	key := indexKey{repo: resolved, content: index.ContentKey(content), model: ModelID, chunker: chunker.ID()}
@@ -199,15 +231,17 @@ func loadCached(ctx context.Context, emb index.Embedder, a backend.Args) (*index
 	defer residentMu.Unlock()
 	if e := residentIndex[key]; e != nil {
 		e.lastUsed = time.Now()
-		return e.idx, content, nil
+		e.holds++
+		return e.idx, content, e.release, nil
 	}
 	idx, err := index.Load(ctx, emb, repo, content, chunker, ModelID)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	evictOldest(residentIndex, residentCap-1)
-	residentIndex[key] = &residentEntry{idx: idx, lastUsed: time.Now()}
-	return idx, content, nil
+	e := &residentEntry{idx: idx, lastUsed: time.Now(), holds: 1}
+	residentIndex[key] = e
+	return idx, content, e.release, nil
 }
 
 // evictOldest drops least-recently-used entries from resident until at most n
@@ -221,7 +255,7 @@ func evictOldest(resident map[indexKey]*residentEntry, n int) {
 				oldest, first = k, false
 			}
 		}
-		delete(resident, oldest)
+		drop(resident, oldest)
 	}
 }
 
@@ -237,7 +271,7 @@ func sweepIdle(resident map[indexKey]*residentEntry, cutoff time.Time) int {
 	dropped := 0
 	for k, e := range resident {
 		if e.lastUsed.Before(cutoff) {
-			delete(resident, k)
+			drop(resident, k)
 			dropped++
 		}
 	}
@@ -258,7 +292,9 @@ func PruneDisk(ctx context.Context) {
 func CloseIndexCache() {
 	residentMu.Lock()
 	defer residentMu.Unlock()
-	residentIndex = map[indexKey]*residentEntry{}
+	for k := range residentIndex {
+		drop(residentIndex, k)
+	}
 }
 
 // resolveChunk returns the index of the chunk containing line in file, or -1 —
@@ -299,7 +335,7 @@ func repoRelative(ctx context.Context, root, file string) string {
 // truncate caps each result's content to maxLines in place.
 func truncate(results []semsearch.Result, maxLines int) {
 	for i := range results {
-		results[i].Content = snippet(results[i].Content, maxLines)
+		results[i].Content = strings.Clone(snippet(results[i].Content, maxLines))
 	}
 }
 
