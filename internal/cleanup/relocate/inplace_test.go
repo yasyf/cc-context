@@ -191,6 +191,10 @@ func TestReadmitRechecksAnOpenDeletionWithoutGit(t *testing.T) {
 	t.Run("the registration", func(t *testing.T) {
 		f := newFixture(t)
 		job := f.claim()
+		stranger := f.worktree + "-stranger"
+		if err := os.Mkdir(stranger, 0o700); err != nil {
+			t.Fatal(err)
+		}
 		deleteRoot(t, f.admitted(&job, cleanup.PhaseDeletingTree, f.worktree, job.Tree))
 		root := f.admitted(&job, cleanup.PhaseDeletingRegistration, f.adminDir, job.Admin)
 		if err := os.Remove(filepath.Join(f.adminDir, "locked")); err != nil {
@@ -200,7 +204,7 @@ func TestReadmitRechecksAnOpenDeletionWithoutGit(t *testing.T) {
 		if got, err := f.relocator.Readmit(context.Background(), &job); err != nil || got != root || job.Blocked != nil {
 			t.Fatalf("Readmit() = %+v, %v, blockage %+v; want the admin root again", got, err, job.Blocked)
 		}
-		if err := os.Mkdir(f.worktree, 0o700); err != nil {
+		if err := os.Rename(stranger, f.worktree); err != nil {
 			t.Fatal(err)
 		}
 		if got, err := f.relocator.Readmit(context.Background(), &job); err != nil || got != root || job.Phase != cleanup.PhaseDeletingRegistration {
