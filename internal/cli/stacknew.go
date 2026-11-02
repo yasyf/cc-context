@@ -256,6 +256,9 @@ func runStackNew(cmd *cobra.Command, name string, options stackNewOpts) error {
 		}
 		return fmt.Errorf("stack new: child %s at %s is incomplete; its worktree, ref, and metadata were retained for inspection: %w", name, path, err)
 	}
+	if err := recordLane(ctx, "stack new", path); err != nil {
+		return err
+	}
 	joins, err := stackNewJoinsLane(ctx, l, current, parent, trunk)
 	if err != nil {
 		return err
@@ -408,6 +411,9 @@ func stackNewPath(ctx context.Context, checkout vcs.Checkout, name, requested st
 		if rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 			return "", fmt.Errorf("stack new: destination %s is inside checkout %s", path, root)
 		}
+	}
+	if err := refuseUsedLane(ctx, "stack new", checkout, name, path); err != nil {
+		return "", err
 	}
 	if _, err := os.Lstat(path); err == nil {
 		return "", fmt.Errorf("stack new: destination %s already exists", path)
