@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yasyf/cc-context/internal/ghapi"
 	"github.com/yasyf/cc-context/internal/version"
 )
 
@@ -33,9 +34,21 @@ type Client struct {
 	queueBase     string
 	trunkSSM      *trunkSSMSource
 	queueProvider string
+	charge        func(ctx context.Context, identity, target string, header http.Header) error
+	appToken      func(ctx context.Context, nameWithOwner string) (string, error)
 }
 
-var defaultClient = sync.OnceValue(func() *Client { return New(baseURLProd) })
+var defaultClient = sync.OnceValue(func() *Client {
+	c := New(baseURLProd)
+	c.charge = func(ctx context.Context, identity, target string, header http.Header) error {
+		return ghapi.Default().Record(ctx, identity, target, header)
+	}
+	c.appToken = func(ctx context.Context, nameWithOwner string) (string, error) {
+		token, _, err := ghapi.Default().ForRepo(nameWithOwner).AppToken(ctx, ghapi.AppRefreshMargin)
+		return token, err
+	}
+	return c
+})
 
 // Default shares GitHub authentication and HTTP connections within this process.
 func Default() *Client { return defaultClient() }
@@ -83,12 +96,12 @@ func (c *Client) do(ctx context.Context, method, path string, body []byte) ([]by
 	if err != nil {
 		return nil, err
 	}
-	return c.request(ctx, c.base, token, method, path, body)
+	return c.request(ctx, c.base, token, ghapi.IdentityUser, method, path, body)
 }
 
-func (c *Client) request(ctx context.Context, base, token, method, path string, body []byte) ([]byte, error) {
+func (c *Client) request(ctx context.Context, base, token, identity, method, path string, body []byte) ([]byte, error) {
 	for _, wait := range secondaryLimitWaits {
-		payload, retryAfter, err := c.attempt(ctx, base, token, method, path, body)
+		payload, retryAfter, err := c.attempt(ctx, base, token, identity, method, path, body)
 		if retryAfter < 0 {
 			return payload, err
 		}
@@ -98,11 +111,11 @@ func (c *Client) request(ctx context.Context, base, token, method, path string, 
 		case <-time.After(max(wait, retryAfter)):
 		}
 	}
-	payload, _, err := c.attempt(ctx, base, token, method, path, body)
+	payload, _, err := c.attempt(ctx, base, token, identity, method, path, body)
 	return payload, err
 }
 
-func (c *Client) attempt(ctx context.Context, base, token, method, path string, body []byte) ([]byte, time.Duration, error) {
+func (c *Client) attempt(ctx context.Context, base, token, identity, method, path string, body []byte) ([]byte, time.Duration, error) {
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, method, base+path, bytes.NewReader(body))
@@ -121,6 +134,11 @@ func (c *Client) attempt(ctx context.Context, base, token, method, path string, 
 		return nil, -1, fmt.Errorf("github-stack: %s %s: %w", method, req.URL, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
+	if c.charge != nil && base == c.base {
+		if err := c.charge(ctx, identity, req.URL.String(), resp.Header); err != nil {
+			return nil, -1, err
+		}
+	}
 	payload, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, -1, err
@@ -149,6 +167,35 @@ func (c *Client) graphql(ctx context.Context, query string, out any) error {
 	if err != nil {
 		return err
 	}
+	return decodeGraphQL(payload, out)
+}
+
+// readGraphQL runs a query against owner/repo on the GitHub App installation's
+// token when the app is installed there, so it draws on the installation's
+// quota instead of the user's, and on the user's token otherwise.
+func (c *Client) readGraphQL(ctx context.Context, owner, repo, query string, out any) error {
+	token := ""
+	if c.appToken != nil {
+		var err error
+		if token, err = c.appToken(ctx, owner+"/"+repo); err != nil {
+			return err
+		}
+	}
+	if token == "" {
+		return c.graphql(ctx, query, out)
+	}
+	body, err := json.Marshal(map[string]any{"query": query})
+	if err != nil {
+		return fmt.Errorf("github-stack: encode /graphql: %w", err)
+	}
+	payload, err := c.request(ctx, c.base, token, ghapi.IdentityApp, http.MethodPost, "/graphql", body)
+	if err != nil {
+		return err
+	}
+	return decodeGraphQL(payload, out)
+}
+
+func decodeGraphQL(payload []byte, out any) error {
 	var response struct {
 		Data   json.RawMessage `json:"data"`
 		Errors []struct {

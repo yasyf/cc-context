@@ -1146,3 +1146,34 @@ func TestASecondaryRateLimitIsRetriedAndAPrimaryOneOrAPermissionRefusalIsNot(t *
 		})
 	}
 }
+
+func TestPullRequestInfoReadsOnTheAppTokenWhenTheAppIsInstalled(t *testing.T) {
+	for _, tc := range []struct {
+		name, app, auth, identity string
+	}{
+		{name: "app installed", app: "app-key", auth: "Bearer app-key", identity: "app"},
+		{name: "no app", auth: "Bearer github-key", identity: "user"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var auth string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				auth = r.Header.Get("Authorization")
+				_, _ = w.Write([]byte(`{"data":{"repository":{"p0":{"number":7,"state":"OPEN","headRefName":"b","baseRefName":"main"}}}}`))
+			}))
+			defer srv.Close()
+			c := NewWithToken(srv.URL, "github-key")
+			c.appToken = func(context.Context, string) (string, error) { return tc.app, nil }
+			var charged string
+			c.charge = func(_ context.Context, identity, _ string, _ http.Header) error {
+				charged = identity
+				return nil
+			}
+			if _, err := c.PullRequestInfo(t.Context(), PullRequestInfoRequest{RepoOwner: "o", RepoName: "r", PRNumbers: []int{7}}); err != nil {
+				t.Fatal(err)
+			}
+			if auth != tc.auth || charged != tc.identity {
+				t.Errorf("read on %q charged to %q, want %q charged to %q", auth, charged, tc.auth, tc.identity)
+			}
+		})
+	}
+}
