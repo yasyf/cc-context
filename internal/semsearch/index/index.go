@@ -49,7 +49,7 @@ type Index struct {
 	BM25       *rank.BM25
 	Reindexed  int // files re-embedded this Load; 0 means a fully warm cache hit
 	TotalFiles int
-	terms      *termStore
+	terms      *corpusTerms
 	files      *mappedFiles
 }
 
@@ -92,7 +92,10 @@ func Load(ctx context.Context, emb Embedder, root string, content []ContentType,
 	contentK := ContentKey(content)
 	chunkerID := chunker.ID()
 	vKey := variantKey(schemaVersion, modelID, contentK, chunkerID, emb.Dims())
-	legacyKey := variantKey(legacySchemaVersion, modelID, contentK, chunkerID, emb.Dims())
+	priorKeys := make([]string, len(priorSchemaVersions))
+	for i, v := range priorSchemaVersions {
+		priorKeys[i] = variantKey(v, modelID, contentK, chunkerID, emb.Dims())
+	}
 	dir, err := variantCacheDir(ctx, root, vKey)
 	if err != nil {
 		return nil, err
@@ -110,12 +113,19 @@ func Load(ctx context.Context, emb Embedder, root string, content []ContentType,
 		}
 		prev := loadPersisted(dir, modelID, contentK, chunkerID, emb.Dims())
 		base, trustMtime := prev, true
-		priors := append([]string{filepath.Join(filepath.Dir(dir), legacyKey)}, movedIndexes(ctx, rootKey(root), vKey, legacyKey)...)
+		var priors []string
+		for _, k := range priorKeys {
+			priors = append(priors, filepath.Join(filepath.Dir(dir), k))
+		}
+		priors = append(priors, movedIndexes(ctx, rootKey(root), append([]string{vKey}, priorKeys...)...)...)
 		for i := 0; base == nil && i < len(priors); i++ {
 			base = loadPersisted(priors[i], modelID, contentK, chunkerID, emb.Dims())
 		}
 		if base == nil && famDir != "" {
-			candidates := append(siblingIndexes(famDir, dir), siblingIndexes(filepath.Join(filepath.Dir(famDir), legacyKey), dir)...)
+			candidates := siblingIndexes(famDir, dir)
+			for _, k := range priorKeys {
+				candidates = append(candidates, siblingIndexes(filepath.Join(filepath.Dir(famDir), k), dir)...)
+			}
 			seedDir, err := bestSeed(ctx, root, exts, candidates)
 			if err != nil {
 				return err
@@ -143,7 +153,14 @@ func Load(ctx context.Context, emb Embedder, root string, content []ContentType,
 		}
 		stored := !unchanged(built, prev)
 		if stored {
-			if err := store(dir, man, built.chunks, built.vectors); err != nil {
+			var segments []string
+			if prev != nil {
+				segments = append(segments, prev.manifest.Segments...)
+			}
+			if famDir != "" {
+				segments = append(segments, familySegments(siblingIndexes(famDir, dir))...)
+			}
+			if err := store(ctx, dir, man, built.chunks, built.vectors, segments); err != nil {
 				return err
 			}
 			if err := recordRoot(dir, root); err != nil {

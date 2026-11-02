@@ -155,31 +155,50 @@ func writeChunks(w io.Writer, generation string, chunks []semsearch.Chunk) error
 	return nil
 }
 
-func readChunksMapped(data []byte, files []fileManifest) (string, []semsearch.Chunk, error) {
+type chunkTable struct {
+	n                     int
+	starts, ends, offsets []byte
+	blob                  []byte
+}
+
+func parseChunkTable(data []byte) (string, chunkTable, error) {
 	r := &byteReader{data: data}
 	generation := r.generation()
 	n := r.count(16)
-	starts, ends, offsets := r.take(4*n), r.take(4*n), r.take(8*(n+1))
-	blob := r.data[min(r.off, len(r.data)):]
+	t := chunkTable{n: n, starts: r.take(4 * n), ends: r.take(4 * n), offsets: r.take(8 * (n + 1))}
+	t.blob = r.data[min(r.off, len(r.data)):]
 	if r.err != nil {
-		return "", nil, fmt.Errorf("chunks.bin: %w", r.err)
+		return "", chunkTable{}, fmt.Errorf("chunks.bin: %w", r.err)
 	}
-	if !ascendingTo(offsets, uint64(len(blob))) {
-		return "", nil, errors.New("chunks.bin: content offsets are not ascending to the end of the file")
+	if !ascendingTo(t.offsets, uint64(len(t.blob))) {
+		return "", chunkTable{}, errors.New("chunks.bin: content offsets are not ascending to the end of the file")
 	}
-	chunks := make([]semsearch.Chunk, n)
+	return generation, t, nil
+}
+
+func (t chunkTable) at(i int, path string) semsearch.Chunk {
+	lo := binary.LittleEndian.Uint64(t.offsets[8*i:])
+	hi := binary.LittleEndian.Uint64(t.offsets[8*i+8:])
+	return semsearch.Chunk{
+		Path:      path,
+		StartLine: int(binary.LittleEndian.Uint32(t.starts[4*i:])),
+		EndLine:   int(binary.LittleEndian.Uint32(t.ends[4*i:])),
+		Content:   aliasString(t.blob[lo:hi]),
+	}
+}
+
+func readChunksMapped(data []byte, files []fileManifest) (string, []semsearch.Chunk, error) {
+	generation, t, err := parseChunkTable(data)
+	if err != nil {
+		return "", nil, err
+	}
+	chunks := make([]semsearch.Chunk, t.n)
 	for i := range chunks {
-		lo := binary.LittleEndian.Uint64(offsets[8*i:])
-		hi := binary.LittleEndian.Uint64(offsets[8*i+8:])
-		chunks[i] = semsearch.Chunk{
-			StartLine: int(binary.LittleEndian.Uint32(starts[4*i:])),
-			EndLine:   int(binary.LittleEndian.Uint32(ends[4*i:])),
-			Content:   aliasString(blob[lo:hi]),
-		}
+		chunks[i] = t.at(i, "")
 	}
 	for _, f := range files {
-		if f.Start < 0 || f.Count < 0 || f.Start+f.Count > n {
-			return "", nil, fmt.Errorf("chunks.bin: %s spans [%d, %d) of %d chunks", f.Path, f.Start, f.Start+f.Count, n)
+		if f.Start < 0 || f.Count < 0 || f.Start+f.Count > t.n {
+			return "", nil, fmt.Errorf("chunks.bin: %s spans [%d, %d) of %d chunks", f.Path, f.Start, f.Start+f.Count, t.n)
 		}
 		for i := f.Start; i < f.Start+f.Count; i++ {
 			chunks[i].Path = f.Path
@@ -217,26 +236,46 @@ func writeVectors(w io.Writer, generation string, vectors [][]float32) error {
 	return nil
 }
 
-func readVectorsMapped(data []byte) (string, [][]float32, error) {
+type vectorTable struct {
+	rows, dims int
+	flat       []float32
+}
+
+func parseVectorTable(data []byte) (string, vectorTable, error) {
 	r := &byteReader{data: data}
 	generation := r.generation()
 	rows, dims := int(r.u32()), int(r.u32())
 	if r.err != nil {
-		return "", nil, fmt.Errorf("vectors.bin: %w", r.err)
+		return "", vectorTable{}, fmt.Errorf("vectors.bin: %w", r.err)
 	}
 	if want := r.off + rows*dims*4; len(data) != want {
-		return "", nil, fmt.Errorf("vectors.bin is %d bytes, want %d (rows=%d dims=%d)", len(data), want, rows, dims)
+		return "", vectorTable{}, fmt.Errorf("vectors.bin is %d bytes, want %d (rows=%d dims=%d)", len(data), want, rows, dims)
 	}
 	if r.off%4 != 0 {
-		return "", nil, fmt.Errorf("vectors.bin matrix starts at unaligned offset %d", r.off)
+		return "", vectorTable{}, fmt.Errorf("vectors.bin matrix starts at unaligned offset %d", r.off)
 	}
-	out := make([][]float32, rows)
-	if rows == 0 || dims == 0 {
-		return generation, out, nil
+	t := vectorTable{rows: rows, dims: dims}
+	if rows > 0 && dims > 0 {
+		t.flat = unsafe.Slice((*float32)(unsafe.Pointer(&data[r.off])), rows*dims) //nolint:gosec // vectors.bin rows alias the read-only mapping the index owns until Close
 	}
-	flat := unsafe.Slice((*float32)(unsafe.Pointer(&data[r.off])), rows*dims) //nolint:gosec // vectors.bin rows alias the read-only mapping the index owns until Close
+	return generation, t, nil
+}
+
+func (t vectorTable) row(i int) []float32 {
+	if t.dims == 0 {
+		return nil
+	}
+	return t.flat[i*t.dims : (i+1)*t.dims : (i+1)*t.dims]
+}
+
+func readVectorsMapped(data []byte) (string, [][]float32, error) {
+	generation, t, err := parseVectorTable(data)
+	if err != nil {
+		return "", nil, err
+	}
+	out := make([][]float32, t.rows)
 	for i := range out {
-		out[i] = flat[i*dims : (i+1)*dims : (i+1)*dims]
+		out[i] = t.row(i)
 	}
 	return generation, out, nil
 }
@@ -304,7 +343,8 @@ func writeTerms(w io.Writer, generation string, chunks []semsearch.Chunk) error 
 }
 
 type termStore struct {
-	lengths        []int
+	nDocs          int
+	lengths        []byte
 	termOffsets    []byte
 	postingOffsets []byte
 	terms          []byte
@@ -318,8 +358,7 @@ func readTermsMapped(data []byte) (string, *termStore, error) {
 	nDocs := r.count(4)
 	nTerms := r.count(16)
 	nPostings := r.count(8)
-	lengthBytes := r.take(4 * nDocs)
-	s := &termStore{nTerms: nTerms}
+	s := &termStore{nDocs: nDocs, nTerms: nTerms, lengths: r.take(4 * nDocs)}
 	s.termOffsets = r.take(8 * (nTerms + 1))
 	s.postingOffsets = r.take(8 * (nTerms + 1))
 	if r.err != nil {
@@ -345,10 +384,6 @@ func readTermsMapped(data []byte) (string, *termStore, error) {
 			return "", nil, errors.New("terms.bin: term table is not strictly ascending")
 		}
 	}
-	s.lengths = make([]int, nDocs)
-	for i := range s.lengths {
-		s.lengths[i] = int(binary.LittleEndian.Uint32(lengthBytes[4*i:]))
-	}
 	return generation, s, nil
 }
 
@@ -362,6 +397,10 @@ func ascendingTo(offsets []byte, end uint64) bool {
 		prev = v
 	}
 	return binary.LittleEndian.Uint64(offsets[0:]) == 0 && prev == end
+}
+
+func (s *termStore) length(i int) int {
+	return int(binary.LittleEndian.Uint32(s.lengths[4*i:]))
 }
 
 func (s *termStore) term(i int) string {
@@ -388,18 +427,74 @@ func (s *termStore) lookup(term string) []rank.BM25Posting {
 	return out
 }
 
-func (s *termStore) bm25(query string) (*rank.BM25, error) {
+type corpusTerms struct {
+	lengths []int
+	layers  []termLayer
+}
+
+type termLayer struct {
+	store  *termStore
+	toFlat []int
+}
+
+const unusedDoc = -1
+
+func (c *corpusTerms) bm25(query string) (*rank.BM25, error) {
 	terms := map[string][]rank.BM25Posting{}
 	for _, t := range rank.Tokenize(query) {
 		if _, seen := terms[t]; seen {
 			continue
 		}
-		terms[t] = s.lookup(t)
+		var merged []rank.BM25Posting
+		for _, l := range c.layers {
+			postings, err := l.postings(t)
+			if err != nil {
+				return nil, err
+			}
+			merged = mergePostings(merged, postings)
+		}
+		terms[t] = merged
 	}
 	for t, p := range terms {
 		if p == nil {
 			delete(terms, t)
 		}
 	}
-	return rank.BM25FromPostings(s.lengths, terms)
+	return rank.BM25FromPostings(c.lengths, terms)
+}
+
+func (l termLayer) postings(term string) ([]rank.BM25Posting, error) {
+	raw := l.store.lookup(term)
+	out := raw[:0]
+	for _, p := range raw {
+		if p.Document < 0 || p.Document >= len(l.toFlat) {
+			return nil, fmt.Errorf("terms.bin: posting for %q names document %d of %d", term, p.Document, len(l.toFlat))
+		}
+		if flat := l.toFlat[p.Document]; flat != unusedDoc {
+			p.Document = flat
+			out = append(out, p)
+		}
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
+}
+
+func mergePostings(a, b []rank.BM25Posting) []rank.BM25Posting {
+	if len(a) == 0 {
+		return b
+	}
+	if len(b) == 0 {
+		return a
+	}
+	out := make([]rank.BM25Posting, 0, len(a)+len(b))
+	for len(a) > 0 && len(b) > 0 {
+		if a[0].Document <= b[0].Document {
+			out, a = append(out, a[0]), a[1:]
+		} else {
+			out, b = append(out, b[0]), b[1:]
+		}
+	}
+	return append(append(out, a...), b...)
 }

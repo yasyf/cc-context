@@ -2,13 +2,11 @@ package index
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -22,12 +20,16 @@ import (
 
 // schemaVersion is the on-disk index-cache format version. A mismatch discards
 // the cache and rebuilds — bump it whenever the persisted layout changes.
-// legacySchemaVersion is the JSON-chunk format before it, still read so an
+// mappedSchemaVersion (one worktree-private set of mapped files) and
+// legacySchemaVersion (JSON chunks) are the formats before it, still read so an
 // existing index converts without re-embedding.
 const (
-	schemaVersion       = 4
+	schemaVersion       = 5
+	mappedSchemaVersion = 4
 	legacySchemaVersion = 3
 )
+
+var priorSchemaVersions = []int{mappedSchemaVersion, legacySchemaVersion}
 
 // Cache file names within a repo's cache dir.
 const (
@@ -44,13 +46,16 @@ const (
 const maxSeedCandidates = 8
 
 // fileManifest records one file's modification time, content hash, and chunk
-// range within the flat chunk/vector arrays — semble's FileManifestEntry.
+// range within the flat chunk/vector arrays — semble's FileManifestEntry — plus,
+// from schema 5, the segment holding those chunks and their offset within it.
 type fileManifest struct {
 	Path    string `json:"path"`
 	MtimeNs int64  `json:"mtime_ns"`
 	Hash    string `json:"sha256"`
 	Start   int    `json:"start"`
 	Count   int    `json:"count"`
+	Segment int    `json:"segment,omitempty"`
+	Offset  int    `json:"offset,omitempty"`
 }
 
 // manifest is the cache header plus the per-file chunk ranges, in walk order.
@@ -61,6 +66,7 @@ type manifest struct {
 	Content    string         `json:"content"`
 	Chunker    string         `json:"chunker"`
 	Dims       int            `json:"dims"`
+	Segments   []string       `json:"segments,omitempty"`
 	Files      []fileManifest `json:"files"`
 }
 
@@ -77,7 +83,7 @@ type persisted struct {
 	manifest manifest
 	chunks   []semsearch.Chunk
 	vectors  [][]float32
-	terms    *termStore
+	terms    *corpusTerms
 	files    *mappedFiles
 }
 
@@ -258,6 +264,8 @@ func loadPersisted(dir, model, content, chunker string, dims int) *persisted {
 	var p *persisted
 	switch man.Schema {
 	case schemaVersion:
+		p = loadLayered(dir, man)
+	case mappedSchemaVersion:
 		p = loadMapped(dir, man)
 	case legacySchemaVersion:
 		p = loadLegacy(dir, man)
@@ -296,7 +304,7 @@ func consistent(p *persisted, dims int) bool {
 
 func loadMapped(dir string, man manifest) *persisted {
 	var maps []*mapping
-	for _, name := range []string{vectorsFile, chunksFile, termsFile} {
+	for _, name := range []string{vectorsFile, chunksFile} {
 		m, err := mapFile(filepath.Join(dir, name))
 		if err != nil {
 			unmapAll(maps)
@@ -306,13 +314,11 @@ func loadMapped(dir string, man manifest) *persisted {
 	}
 	vectorGeneration, vectors, verr := readVectorsMapped(maps[0].data)
 	chunkGeneration, chunks, cerr := readChunksMapped(maps[1].data, man.Files)
-	termGeneration, terms, terr := readTermsMapped(maps[2].data)
-	if verr != nil || cerr != nil || terr != nil || man.Generation == "" ||
-		man.Generation != vectorGeneration || man.Generation != chunkGeneration || man.Generation != termGeneration {
+	if verr != nil || cerr != nil || man.Generation == "" || man.Generation != vectorGeneration || man.Generation != chunkGeneration {
 		unmapAll(maps)
 		return nil
 	}
-	return &persisted{manifest: man, chunks: chunks, vectors: vectors, terms: terms, files: &mappedFiles{maps: maps}}
+	return &persisted{manifest: man, chunks: chunks, vectors: vectors, files: &mappedFiles{maps: maps}}
 }
 
 func loadLegacy(dir string, man manifest) *persisted {
@@ -345,41 +351,6 @@ func (p *persisted) entryByPath() map[string]fileManifest {
 		m[f.Path] = f
 	}
 	return m
-}
-
-// store writes the chunks, vector matrix, corpus BM25 postings, and manifest
-// into dir, streaming each file so the write never holds a second copy of the
-// corpus.
-func store(dir string, man manifest, chunks []semsearch.Chunk, vectors [][]float32) error {
-	if err := os.MkdirAll(dir, 0o750); err != nil {
-		return fmt.Errorf("create cache dir %q: %w", dir, err)
-	}
-	var nonce [16]byte
-	if _, err := rand.Read(nonce[:]); err != nil {
-		return fmt.Errorf("generate cache generation: %w", err)
-	}
-	man.Generation = hex.EncodeToString(nonce[:])
-
-	manData, err := json.Marshal(man)
-	if err != nil {
-		return fmt.Errorf("marshal manifest: %w", err)
-	}
-	writers := []struct {
-		name  string
-		write func(io.Writer) error
-	}{
-		{chunksFile, func(w io.Writer) error { return writeChunks(w, man.Generation, chunks) }},
-		{vectorsFile, func(w io.Writer) error { return writeVectors(w, man.Generation, vectors) }},
-		{termsFile, func(w io.Writer) error { return writeTerms(w, man.Generation, chunks) }},
-	}
-	for _, f := range writers {
-		if err := cache.StoreFrom(filepath.Join(dir, f.name), 0o640, f.write); err != nil {
-			return err
-		}
-	}
-	// Manifest last: it is the validity gate, so it must not name chunks/vectors
-	// that are not yet on disk.
-	return cache.Store(filepath.Join(dir, manifestFile), manData, 0o640)
 }
 
 func readManifest(dir string) (manifest, error) {
