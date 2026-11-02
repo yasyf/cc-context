@@ -491,9 +491,9 @@ func nativeRetargetLandedRoot(ctx context.Context, l lane, prefix, branch string
 	if err != nil || trunk == "" || branch == trunk {
 		return "", err
 	}
-	state, err := gtStateQuery(ctx, l.dir(), prefix)
+	state, _, err := nativemeta.ReadOriginOrphans(ctx, l.checkout.CommonDir)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("%s: %w", prefix, err)
 	}
 	root := branch
 	for s, tracked := state[root]; tracked && !s.Trunk && len(s.Parents) > 0; s, tracked = state[root] {

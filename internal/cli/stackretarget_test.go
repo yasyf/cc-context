@@ -26,9 +26,6 @@ func TestStackRetargetMovesAStackOffABaseThatLanded(t *testing.T) {
 	common := filepath.Join(f.Dir, ".git")
 	landed := gitAt(t, f.Env(), f.Dir, "rev-parse", "landed")
 	child := gitAt(t, f.Env(), f.Dir, "rev-parse", "child")
-	if err := nativemeta.Init(f.Context(), common, "landed"); err != nil {
-		t.Fatal(err)
-	}
 	if err := nativemeta.AdoptRoot(f.Context(), common, "child", "landed", landed, child); err != nil {
 		t.Fatal(err)
 	}

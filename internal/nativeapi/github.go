@@ -289,12 +289,13 @@ func (c *Client) submitPull(ctx context.Context, owner, repo string, entry Submi
 	if err := c.requirePublishedHead(ctx, owner, repo, entry); err != nil {
 		return restPull{}, err
 	}
+	var above []int
 	if _, retarget := values["base"]; retarget && entry.Action == SubmitUpdate && pull.Stack != nil {
-		left, unstacked, err := c.leaveDeadStack(ctx, owner, repo, pull)
+		left, upper, unstacked, err := c.leaveDeadStack(ctx, owner, repo, pull, entry.Base)
 		if err != nil {
 			return restPull{}, err
 		}
-		pull = left
+		pull, above = left, upper
 		if !unstacked && entry.Move {
 			moved, err := c.movePull(ctx, owner, repo, pull, entry)
 			if err != nil {
@@ -313,6 +314,13 @@ func (c *Client) submitPull(ctx context.Context, owner, repo string, entry Submi
 		if err := json.Unmarshal(payload, &pull); err != nil {
 			return restPull{}, err
 		}
+	}
+	if len(above) > 0 {
+		relinked, err := c.restackAbove(ctx, owner, repo, pull, above)
+		if err != nil {
+			return pull, err
+		}
+		pull = relinked
 	}
 	if pull.Head.Ref != entry.Head || !strings.EqualFold(pull.Head.Repo.FullName, owner+"/"+repo) {
 		return pull, fmt.Errorf("PR #%d uses head %s:%s instead of %s/%s:%s", pull.Number, pull.Head.Repo.FullName, pull.Head.Ref, owner, repo, entry.Head)
@@ -389,7 +397,11 @@ func (c *Client) linkPull(ctx context.Context, owner, repo, trunk string, pull r
 		if repository.DefaultBranch == pull.Base.Ref {
 			return 0, nil
 		}
-		return 0, fmt.Errorf("PR #%d parent branch %s has no open pull request, so it cannot join a native stack; move it onto trunk with ccx vcs stack submit --parent %s=%s", pull.Number, pull.Base.Ref, pull.Head.Ref, trunk)
+		remedy := fmt.Sprintf("ccx vcs stack submit --parent %s=%s", pull.Head.Ref, trunk)
+		if pull.Stack != nil {
+			remedy += " --move " + pull.Head.Ref
+		}
+		return 0, fmt.Errorf("PR #%d parent branch %s has no open pull request, so it cannot join a native stack; move it onto trunk with %s", pull.Number, pull.Base.Ref, remedy)
 	}
 	if len(parents) != 1 {
 		return 0, fmt.Errorf("PR #%d parent branch %s has %d open pull requests; native stack registration requires one", pull.Number, pull.Base.Ref, len(parents))
@@ -460,30 +472,48 @@ func (s nativeStack) numbers() []int {
 	return numbers
 }
 
-func (c *Client) leaveDeadStack(ctx context.Context, owner, repo string, pull restPull) (restPull, bool, error) {
+func (c *Client) leaveDeadStack(ctx context.Context, owner, repo string, pull restPull, base string) (restPull, []int, bool, error) {
 	path := fmt.Sprintf("/repos/%s/%s/stacks/%d", url.PathEscape(owner), url.PathEscape(repo), pull.Stack.Number)
 	payload, err := c.get(ctx, path, nil)
 	if err != nil {
-		return restPull{}, false, err
+		return restPull{}, nil, false, err
 	}
 	var stack nativeStack
 	if err := json.Unmarshal(payload, &stack); err != nil {
-		return restPull{}, false, err
+		return restPull{}, nil, false, err
 	}
-	if slices.ContainsFunc(stack.PullRequests, func(pr nativeStackPull) bool { return pr.Number != pull.Number && pr.State != "closed" }) {
-		return pull, false, nil
+	at := slices.Index(stack.numbers(), pull.Number)
+	if at < 0 {
+		return restPull{}, nil, false, fmt.Errorf("native GitHub stack #%d does not list PR #%d, which names it as its stack", pull.Stack.Number, pull.Number)
+	}
+	var above []int
+	for _, pr := range stack.PullRequests[at+1:] {
+		if pr.State != "closed" {
+			above = append(above, pr.Number)
+		}
+	}
+	if slices.ContainsFunc(stack.PullRequests[:at], func(pr nativeStackPull) bool { return pr.State != "closed" }) || len(above) > 0 && base != pull.Stack.Base.Ref {
+		return pull, nil, false, nil
 	}
 	if _, err := c.do(ctx, http.MethodPost, path+"/unstack", nil); err != nil {
-		return restPull{}, false, fmt.Errorf("unstack native GitHub stack #%d, whose other pull requests are all closed, to retarget PR #%d: %w", pull.Stack.Number, pull.Number, err)
+		return restPull{}, nil, false, fmt.Errorf("unstack native GitHub stack #%d, whose pull requests below PR #%d are all merged or closed, to retarget #%d: %w", pull.Stack.Number, pull.Number, pull.Number, err)
 	}
 	left, err := c.readPull(ctx, owner, repo, pull.Number)
 	if err != nil {
-		return restPull{}, false, err
+		return restPull{}, nil, false, err
 	}
 	if left.Stack != nil {
-		return restPull{}, false, fmt.Errorf("PR #%d is still in native GitHub stack #%d after unstacking #%d", pull.Number, left.Stack.Number, pull.Stack.Number)
+		return restPull{}, nil, false, fmt.Errorf("PR #%d is still in native GitHub stack #%d after unstacking #%d", pull.Number, left.Stack.Number, pull.Stack.Number)
 	}
-	return left, true, nil
+	return left, above, true, nil
+}
+
+func (c *Client) restackAbove(ctx context.Context, owner, repo string, pull restPull, above []int) (restPull, error) {
+	desired := append([]int{pull.Number}, above...)
+	if _, err := c.post(ctx, fmt.Sprintf("/repos/%s/%s/stacks", url.PathEscape(owner), url.PathEscape(repo)), map[string]any{"pull_requests": desired}); err != nil {
+		return pull, fmt.Errorf("moved PR #%d onto %s, but relinking %v as one native GitHub stack failed, so the pull requests above it are unstacked: %w", pull.Number, pull.Base.Ref, desired, err)
+	}
+	return c.readPull(ctx, owner, repo, pull.Number)
 }
 
 func (c *Client) relinkPastClosed(ctx context.Context, owner, repo string, stackNumber, parent, pull int) (int, bool, error) {

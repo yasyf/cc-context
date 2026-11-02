@@ -344,6 +344,9 @@ func ReadTrunk(ctx context.Context, commonDir string) (string, error) {
 }
 
 func trunkOf(ctx context.Context, commonDir string, r []branchRow) (string, error) {
+	if trunk, err := originHead(ctx, commonDir); err == nil {
+		return trunk, nil
+	}
 	var roots []string
 	for _, row := range r {
 		if row.parent == "" {
@@ -354,23 +357,23 @@ func trunkOf(ctx context.Context, commonDir string, r []branchRow) (string, erro
 		return roots[0], nil
 	}
 	trunk, err := originTrunk(ctx, commonDir)
-	if err == nil && (len(roots) == 0 || slices.Contains(roots, trunk)) {
-		return trunk, nil
+	if err != nil {
+		return "", fmt.Errorf("native stack catalog has %d roots, and origin/HEAD names no trunk; set it with git remote set-head origin <branch>: %w", len(roots), err)
 	}
-	return "", fmt.Errorf("native stack catalog has no unambiguous trunk; initialize it with gh stack init --base <branch>")
+	return trunk, nil
 }
 
 func originTrunk(ctx context.Context, commonDir string) (string, error) {
-	dir := render.Dir(commonDir)
-	head := []string{"--git-dir=" + commonDir, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"}
-	out, err := render.RunCLI(ctx, dir, "git", head)
+	if _, err := render.RunCLI(ctx, render.Dir(commonDir), "git", []string{"--git-dir=" + commonDir, "remote", "set-head", "origin", "--auto"}); err != nil {
+		return "", err
+	}
+	return originHead(ctx, commonDir)
+}
+
+func originHead(ctx context.Context, commonDir string) (string, error) {
+	out, err := render.RunCLI(ctx, render.Dir(commonDir), "git", []string{"--git-dir=" + commonDir, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"})
 	if err != nil {
-		if _, err := render.RunCLI(ctx, dir, "git", []string{"--git-dir=" + commonDir, "remote", "set-head", "origin", "--auto"}); err != nil {
-			return "", err
-		}
-		if out, err = render.RunCLI(ctx, dir, "git", head); err != nil {
-			return "", err
-		}
+		return "", err
 	}
 	return strings.TrimPrefix(strings.TrimSpace(out), "origin/"), nil
 }
