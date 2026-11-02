@@ -33,6 +33,42 @@ env:
   HEAVY_PKGS: internal/web|internal/semsearch/chunk|internal/semsearch/embed|internal/gtmeta
 
 jobs:
+  status-window-performance:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    env:
+      GOMAXPROCS: "2"
+      GOFLAGS: -p=2
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.commit || github.sha }}
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          check-latest: true
+          cache: true
+      - uses: ./.github/actions/wasm
+      - name: Status reference, lifecycle and allocation bounds
+        run: go test -race -count=1 -v -run '^TestStatus' ./internal/cleanup/daemon
+      - name: Fixed-window reads, updates and batch removals
+        run: |
+          set -euo pipefail
+          go test -run '^$' -bench '^BenchmarkStatus(Read|Update|Prune)$' -benchtime=100ms -count=3 ./internal/cleanup/daemon | tee status-window.txt
+      - name: Journal loading and index construction
+        run: |
+          set -euo pipefail
+          go test -run '^$' -bench '^BenchmarkStatusLoad$' -benchtime=1x -count=3 ./internal/cleanup/daemon | tee status-load.txt
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: status-window-${{ matrix.os }}
+          path: status-*.txt
+
   cleanup-cold-startup:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
