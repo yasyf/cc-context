@@ -72,6 +72,19 @@ type Tuning struct {
 	// ResumeSamples is how many consecutive samples under ResumeBelow lift an
 	// fseventsd throttle, and how many with no stalled slice lift a stall one.
 	ResumeSamples int
+	// ActivityEvery is the interval between activity samples while work is
+	// pending on the daemon's own volume, and ProbeSettle how long deletion
+	// rests before one, so the sample measures everyone but the deleter.
+	ActivityEvery time.Duration
+	ProbeSettle   time.Duration
+	// BusyPercent is the CPU use, in percent of one core, past which a Claude
+	// or Codex process counts as busy. Work on the daemon's volume stops while
+	// more than MaxBusy are busy or a file create there takes longer than
+	// MaxCreate, and resumes after QuietSamples samples in a row within both.
+	BusyPercent  float64
+	MaxBusy      int
+	MaxCreate    time.Duration
+	QuietSamples int
 	// Recheck is the interval between activity checks of a waiting job.
 	Recheck time.Duration
 	// RetryAfter is the first retry of a job blocked on a transient
@@ -98,7 +111,10 @@ type Tuning struct {
 // DefaultTuning is the production pace: 16 removals in flight at up to 4000
 // entries a second, in slices of at most 1600 entries or 800ms, and one at a
 // time at up to 100 a second, in slices of 100 entries or 50ms, while the
-// governor throttles. Blocked jobs are retried every six hours.
+// governor throttles. Work on the daemon's volume stops while more than three
+// Claude or Codex sessions use over a tenth of a core or a file create there
+// takes over 3ms, sampled every 15 seconds, and resumes after two quiet
+// samples. Blocked jobs are retried every six hours.
 func DefaultTuning() Tuning {
 	return Tuning{
 		Rate:          4000,
@@ -111,6 +127,12 @@ func DefaultTuning() Tuning {
 		PauseAbove:    50,
 		ResumeBelow:   25,
 		ResumeSamples: 3,
+		ActivityEvery: 15 * time.Second,
+		ProbeSettle:   time.Second,
+		BusyPercent:   10,
+		MaxBusy:       3,
+		MaxCreate:     3 * time.Millisecond,
+		QuietSamples:  2,
 		Recheck:       30 * time.Second,
 		RetryAfter:    30 * time.Second,
 		RetryCeiling:  10 * time.Minute,
@@ -130,6 +152,8 @@ func (t Tuning) validate() error {
 		return fmt.Errorf("floor rate %d must be positive and at most the rate %d", t.FloorRate, t.Rate)
 	case t.FloorWorkers <= 0, t.FloorWorkers > t.Workers:
 		return fmt.Errorf("floor workers %d must be positive and at most the workers %d", t.FloorWorkers, t.Workers)
+	case t.ActivityEvery <= 0, t.ProbeSettle < 0, t.BusyPercent <= 0, t.MaxBusy < 0, t.MaxCreate <= 0, t.QuietSamples <= 0:
+		return fmt.Errorf("activity sampled every %s after %s of rest, %d sessions over %v%% and creates over %s held until %d quiet samples: the interval, threshold, create bound and samples must be positive, the rest and sessions not negative", t.ActivityEvery, t.ProbeSettle, t.MaxBusy, t.BusyPercent, t.MaxCreate, t.QuietSamples)
 	case t.Reconcile < 0:
 		return fmt.Errorf("reconcile interval %s must not be negative", t.Reconcile)
 	case t.SampleEvery <= 0, t.Recheck <= 0, t.RetryAfter <= 0, t.RetryCeiling < t.RetryAfter, t.RetryLimit <= 0:
@@ -151,6 +175,9 @@ type Config struct {
 	Relocator cleanup.Relocator
 	Deleter   cleanup.Deleter
 	CPU       cleanup.CPUSampler
+	// Activity is what work on the daemon's own volume yields to; nil yields
+	// to nothing.
+	Activity cleanup.ActivitySampler
 	// Band runs commands and paused registration retirement in the default
 	// band, and physical deletion in the background band.
 	Band    cleanup.Band
@@ -194,6 +221,7 @@ type Engine struct {
 	relocator cleanup.Relocator
 	deleter   cleanup.Deleter
 	cpu       cleanup.CPUSampler
+	activity  cleanup.ActivitySampler
 	band      cleanup.Band
 	parent    func(pid int) (int, []string, error)
 	identify  func(pid int) (cleanup.ProcessID, error)
@@ -232,6 +260,12 @@ type Engine struct {
 	retirementOrder []seqKey
 	wakeOrder       []seqKey
 	gov             *governor
+	gate            *gate
+	guarded         uint64
+	sites           map[string]site
+	wanted          bool
+	deferred        bool
+	slicedAt        time.Time
 	checked         map[string]time.Time
 	active          *activeDeletion
 	paceUntil       time.Time
@@ -263,12 +297,17 @@ func New(cfg Config) (*Engine, error) {
 		clock = systemClock{}
 	}
 	gov := newGovernor(tuning)
+	var yield *gate
+	if cfg.Activity != nil {
+		yield = newGate(tuning)
+	}
 	return &Engine{
 		journal:   cfg.Journal,
 		layout:    cfg.Journal.Layout(),
 		relocator: cfg.Relocator,
 		deleter:   cfg.Deleter,
 		cpu:       cfg.CPU,
+		activity:  cfg.Activity,
 		band:      cfg.Band,
 		parent:    cfg.Parent,
 		identify:  cfg.Identify,
@@ -286,6 +325,8 @@ func New(cfg Config) (*Engine, error) {
 		governed:  gov.report(),
 		changed:   make(chan struct{}),
 		gov:       gov,
+		gate:      yield,
+		sites:     make(map[string]site),
 		checked:   make(map[string]time.Time),
 	}, nil
 }
@@ -633,6 +674,10 @@ func (e *Engine) load() error {
 	if err != nil {
 		return fmt.Errorf("cleanup daemon: load the pause switch: %w", err)
 	}
+	root, err := os.Stat(e.layout.Root)
+	if err != nil {
+		return fmt.Errorf("cleanup daemon: find the volume it guards: %w", err)
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	for _, job := range jobs {
@@ -642,6 +687,7 @@ func (e *Engine) load() error {
 	}
 	slices.SortFunc(e.order, func(a, b seqKey) int { return cmp.Compare(a.seq, b.seq) })
 	e.damaged, e.paused, e.hold, e.booted = damaged, sw.Paused, sw.Hold, e.clock.Now()
+	e.guarded = cleanup.IDOf(root).Dev
 	e.reconcileAt = e.booted.Add(e.tuning.RetryAfter)
 	for _, key := range e.order {
 		logical, retirement, wake := e.scheduled(e.jobs[key.id])
@@ -707,7 +753,15 @@ func (e *Engine) work(ctx context.Context) error {
 			}
 			continue
 		}
-		if job, ok := e.logicalDue(now); ok {
+		e.wanted, e.deferred = false, false
+		job, logical := e.logicalDue(now)
+		if e.sampleDue(now) {
+			if e.sample(ctx, now) {
+				return nil
+			}
+			continue
+		}
+		if logical {
 			if job.Blocked != nil {
 				var err error
 				if job, err = e.unblock(job); err != nil {
@@ -720,6 +774,12 @@ func (e *Engine) work(ctx context.Context) error {
 			continue
 		}
 		job, physical := e.physicalDue(now)
+		if e.sampleDue(now) {
+			if e.sample(ctx, now) {
+				return nil
+			}
+			continue
+		}
 		if physical && job.Blocked != nil {
 			var err error
 			if job, err = e.unblock(job); err != nil {
@@ -733,8 +793,8 @@ func (e *Engine) work(ctx context.Context) error {
 		}
 		if !physical {
 			e.gov.reset()
-			e.publishGovernor()
 		}
+		e.publishGovernor()
 		if physical {
 			if e.gov.due(now) {
 				cpu, err := e.cpu.Sample(ctx)
@@ -815,6 +875,9 @@ func (e *Engine) wake(physical bool) (time.Time, bool) {
 			consider(e.paceUntil)
 		}
 	}
+	if e.wanted {
+		consider(e.gate.next(e.slicedAt))
+	}
 	return wake, timed
 }
 
@@ -860,7 +923,7 @@ func (e *Engine) logicalDue(now time.Time) (cleanup.Job, bool) {
 			continue
 		}
 		if job.Blocked != nil {
-			if at, ok := e.retryAt(job); ok && !now.Before(at) {
+			if at, ok := e.retryAt(job); ok && !now.Before(at) && !e.yields(job) {
 				return clone(job), true
 			}
 			continue
@@ -870,6 +933,9 @@ func (e *Engine) logicalDue(now time.Time) (cleanup.Job, bool) {
 				continue
 			}
 		} else if at, ok := e.checked[job.ID]; ok && job.Phase == cleanup.PhaseWaiting && now.Before(at.Add(e.tuning.Recheck)) {
+			continue
+		}
+		if e.yields(job) {
 			continue
 		}
 		return clone(job), true
@@ -942,6 +1008,9 @@ func (e *Engine) physicalDue(now time.Time) (cleanup.Job, bool) {
 			if at, ok := e.retryAt(job); !ok || now.Before(at) {
 				continue
 			}
+		}
+		if e.yields(job) {
+			continue
 		}
 		if e.awaited(job.ID, now) {
 			return clone(job), true
@@ -1018,6 +1087,7 @@ func (e *Engine) slice(ctx context.Context, job cleanup.Job) error {
 		job.Removed += uint64(removed) //nolint:gosec // a step never removes a negative count
 	}
 	e.gov.sliced(end.Sub(start), workers, removed)
+	e.slicedAt = end
 	e.publishGovernor()
 	e.paceUntil = start.Add(e.rest(removed, end.Sub(start), limit, budget))
 	switch {
@@ -1453,6 +1523,7 @@ func (e *Engine) dequeue(job cleanup.Job) {
 	}
 	e.order = slices.Delete(e.order, at, at+1)
 	e.count(job, -1)
+	delete(e.sites, job.ID)
 	e.unfinishedOrder = scheduleKey(e.unfinishedOrder, e.order, job, false)
 	if job.Phase == cleanup.PhaseDone {
 		e.removeFinished(job)
@@ -1471,6 +1542,8 @@ func (e *Engine) publishGovernor() {
 	report, pace, job := e.gov.report(), e.gov.paced(), ""
 	if e.active != nil {
 		job = e.active.id
+	} else if e.deferred {
+		report, pace = e.gate.report(), cleanup.Pace{}
 	}
 	if report == e.governed && pace == e.pace && job == e.paceJob {
 		return

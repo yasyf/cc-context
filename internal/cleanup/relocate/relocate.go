@@ -166,3 +166,18 @@ func (r *Relocator) stamp(job *cleanup.Job, seq uint64, phase cleanup.Phase) {
 	}
 	job.Created, job.Updated = now, now
 }
+
+// Site names the directory holding what the job's next step works on: the
+// tree's parent until git moves it, the job area once it has, and the admin
+// directory's parent while that is deleted.
+func (r *Relocator) Site(job cleanup.Job) string {
+	switch {
+	case job.Phase == cleanup.PhaseDeletingAdmin:
+		return filepath.Dir(job.AdminDir)
+	case !job.Phase.Logical(), job.Phase == cleanup.PhaseMoved, job.Phase == cleanup.PhaseDetached:
+		return filepath.Dir(job.Payload)
+	case job.Adopted:
+		return filepath.Dir(job.Source)
+	}
+	return filepath.Dir(job.Original)
+}

@@ -71,6 +71,7 @@ func runCleanupServe(ctx context.Context) error {
 		}),
 		Deleter:  rmtree.Deleter{},
 		CPU:      native.NewFSEventsSampler(),
+		Activity: native.NewActivitySampler(layout.ProbeDir()),
 		Band:     band,
 		Parent:   native.ParentCommand,
 		Identify: native.Identify,

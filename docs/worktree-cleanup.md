@@ -287,6 +287,21 @@ The floor keeps the queue draining on a machine whose `fseventsd` never goes
 quiet. A job a wait command is polling skips the queue only. It deletes at the
 rate the governor allows.
 
+Work on the daemon's own volume also waits for the Claude and Codex sessions
+that share it. Any parallel deletion there slows every file create on that
+volume roughly tenfold, background priority included. Every 15s while such
+work is pending, the daemon counts the processes of yours whose `argv[0]` is
+`claude` or `codex` and that used over a tenth of a core since the last
+sample. It also times eight file creates in its `probe` directory after
+deletion has rested for a second.
+
+When more than three sessions are busy, or
+the median create takes over 3ms, the header reads `governor held: <counts>`.
+In that state no job on that volume deletes or advances, however long it
+waits. Work resumes at full speed after two quiet samples in a row, and the
+first sample after a start only sets the CPU baseline. A job whose tree sits
+on another volume, such as `~/repos` or `~/.vcache`, does not wait.
+
 A completed internal conflict workspace can wait for inactivity while other
 cleanup jobs proceed and stack completion succeeds. Interactive Claude,
 Codex, Orca, editor, and terminal sessions remain alive. Leave the workspace

@@ -46,6 +46,24 @@ type CPUSampler interface {
 	Sample(ctx context.Context) (time.Duration, error)
 }
 
+// Activity is how busy the sessions that share the daemon's volume were over
+// the window since the previous sample.
+type Activity struct {
+	// Sessions is each Claude or Codex process's CPU use over the window, in
+	// percent of one core.
+	Sessions []float64
+	// Create is the median time to create and unlink one file on the daemon's
+	// volume.
+	Create time.Duration
+}
+
+// ActivitySampler reads the activity deletion yields to. Its first sample
+// only sets the baseline the next one measures CPU use against, and is an
+// error.
+type ActivitySampler interface {
+	Sample(ctx context.Context) (Activity, error)
+}
+
 // Band moves the daemon into the default band while a client waits on it and
 // back to the background band; the processes it starts inherit the band.
 type Band interface {
@@ -108,6 +126,10 @@ type Relocator interface {
 	// completion is journaled before its payload can be admitted. A failed
 	// proof blocks the job; errors report journal failure or cancellation.
 	Admit(ctx context.Context, job *Job) (DeletionRoot, error)
+	// Site names, from the record alone, the directory whose volume the job's
+	// next step works on, so the scheduler can tell which jobs contend with
+	// the volume it guards.
+	Site(job Job) string
 }
 
 // DeletionRoot names one captured directory admitted for descriptor-safe deletion.

@@ -1948,3 +1948,29 @@ func descriptorOne(s *scan, process cleanup.ProcessID, name string) (string, err
 	descriptorEvidence(roots, process, name)
 	return roots[0].current.path, roots[0].current.err
 }
+
+func TestActivitySamplerPrimesThenTimesCreates(t *testing.T) {
+	if got := unsafe.Sizeof(procTaskAllInfo{}); got != 232 {
+		t.Fatalf("proc_taskallinfo is %d bytes, want 232", got)
+	}
+	probe := filepath.Join(t.TempDir(), "probe")
+	s := NewActivitySampler(probe)
+	if _, err := s.Sample(context.Background()); !errors.Is(err, errPriming) {
+		t.Fatalf("first Sample() = %v, want %v", err, errPriming)
+	}
+	activity, err := s.Sample(context.Background())
+	if err != nil {
+		t.Fatalf("second Sample() = %v", err)
+	}
+	if activity.Create <= 0 {
+		t.Errorf("create took %s, want a positive median", activity.Create)
+	}
+	for _, percent := range activity.Sessions {
+		if percent < 0 {
+			t.Errorf("session cpu %v%%, want none negative", percent)
+		}
+	}
+	if left, err := os.ReadDir(probe); err != nil || len(left) != 0 {
+		t.Errorf("probe directory holds %d entries, %v; want it empty", len(left), err)
+	}
+}

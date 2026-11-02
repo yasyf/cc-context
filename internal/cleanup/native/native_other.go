@@ -21,6 +21,18 @@ func (*FSEventsSampler) Sample(_ context.Context) (time.Duration, error) {
 	return 0, cleanup.ErrUnsupported
 }
 
+// ActivitySampler has no sessions to census off darwin.
+type ActivitySampler struct{}
+
+// NewActivitySampler returns a sampler whose every Sample reports
+// cleanup.ErrUnsupported.
+func NewActivitySampler(string) *ActivitySampler { return &ActivitySampler{} }
+
+// Sample reports cleanup.ErrUnsupported.
+func (*ActivitySampler) Sample(_ context.Context) (cleanup.Activity, error) {
+	return cleanup.Activity{}, cleanup.ErrUnsupported
+}
+
 // Guard reports cleanup.ErrUnsupported, which authorizes nothing.
 func Guard(ctx context.Context, path string) error {
 	_, err := GuardRoots(ctx, cleanup.GuardRoot{Path: path, Retiring: cleanup.RetiringFrom(ctx)})
