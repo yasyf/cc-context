@@ -497,7 +497,11 @@ func dryRunStack(ctx context.Context, l lane, o shipOpts, c *gtCache, r *shipDry
 	if state, err = dryRunPlanned(ctx, l, state, r); err != nil {
 		return err
 	}
-	anchor := dryRunAnchor(state, o.tipOnly, o.parent != "", r)
+	onPublished, err := dryRunOnPublishedParent(ctx, l, o, state, r)
+	if err != nil {
+		return err
+	}
+	anchor := dryRunAnchor(state, o.tipOnly, o.parent != "", onPublished, r)
 	if anchor == "" {
 		return nil
 	}
@@ -521,11 +525,28 @@ func dryRunStack(ctx context.Context, l lane, o shipOpts, c *gtCache, r *shipDry
 			return err
 		}
 	}
-	dryRunMoves(moveState, chain, holders, o, r)
+	line := shipParentLine(o.parent != "" || onPublished, chain, r.branch)
+	dryRunMoves(moveState, chain, line, holders, o, r)
 	if err := dryRunRewrites(ctx, l, state, r); err != nil {
 		return err
 	}
-	return dryRunHeads(ctx, l, o, state, chain, holders, r)
+	return dryRunHeads(ctx, l, o, state, chain, line, holders, r)
+}
+
+// dryRunOnPublishedParent is shipOnPublishedParent over the parent the report
+// resolved, read offline like the rest of the report.
+func dryRunOnPublishedParent(ctx context.Context, l lane, o shipOpts, state gtState, r *shipDryRun) (bool, error) {
+	if !shipInfersParentLine(o) || o.noPush {
+		return false, nil
+	}
+	tr, err := gtTrunkRefOffline(ctx, l.dir(), "ship", r.trunk)
+	if errors.Is(err, vcs.ErrNoTrunk) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return shipOnPublishedParent(ctx, l.dir(), tr, state, r.parent, gtRestackRef(r.branch))
 }
 
 // dryRunAnchor is the branch whose stack this ship publishes. For a tracked
@@ -533,7 +554,7 @@ func dryRunStack(ctx context.Context, l lane, o shipOpts, c *gtCache, r *shipDry
 // answer is the parent a track would adopt it onto — whose whole downstack the
 // submit then publishes, which is the surprise the report exists to end. Empty
 // means there is no stack to read.
-func dryRunAnchor(state gtState, tipOnly, parentNamed bool, r *shipDryRun) string {
+func dryRunAnchor(state gtState, tipOnly, parentNamed, onPublished bool, r *shipDryRun) string {
 	if _, tracked := state[r.branch]; tracked {
 		return r.branch
 	}
@@ -545,9 +566,12 @@ func dryRunAnchor(state gtState, tipOnly, parentNamed bool, r *shipDryRun) strin
 		r.notes = append(r.notes, r.branch+" is untracked and would be adopted onto trunk, so the submit publishes it alone")
 		return ""
 	}
-	if parentNamed {
+	switch {
+	case parentNamed:
 		r.notes = append(r.notes, r.branch+" is untracked; --parent records it on "+r.parent+" and moves neither "+r.parent+" nor a branch below it")
-	} else {
+	case onPublished:
+		r.notes = append(r.notes, r.branch+" is untracked and cut from "+r.parent+"'s published head, which local "+r.parent+" lacks, so ship records it on "+r.parent+" and moves neither "+r.parent+" nor a branch below it")
+	default:
 		r.notes = append(r.notes, r.branch+" is untracked, so the submit publishes the downstack of "+r.parent+" along with it")
 	}
 	return r.parent
@@ -573,7 +597,7 @@ func dryRunPlanned(ctx context.Context, l lane, state gtState, r *shipDryRun) (g
 // downstack half is the restack gt asks for, which moves parents whose pull
 // requests are already open; the upstack half is what a commit onto this branch
 // does to the branches above it, which the run never announces.
-func dryRunMoves(state gtState, chain []string, holders map[string]string, o shipOpts, r *shipDryRun) {
+func dryRunMoves(state gtState, chain, parentLine []string, holders map[string]string, o shipOpts, r *shipDryRun) {
 	movers, held := gtRestackPlan(state, gtBottomUp(chain))
 	if o.tipOnly {
 		r.notes = append(r.notes, "--tip-only ships "+r.branch+" on its base, or onto its parent's published head when the parent was rewritten, and pushes no ancestor")
@@ -582,9 +606,7 @@ func dryRunMoves(state gtState, chain []string, holders map[string]string, o shi
 		}
 		movers = slices.DeleteFunc(movers, func(branch string) bool { return tipOnlyAncestor(o.tipOnly, r.branch, branch) })
 	}
-	if parentLine := shipParentLine(o, chain, r.branch); len(parentLine) > 0 {
-		movers = slices.DeleteFunc(movers, func(branch string) bool { return slices.Contains(parentLine, branch) })
-	}
+	movers = slices.DeleteFunc(movers, func(branch string) bool { return slices.Contains(parentLine, branch) })
 	for _, branch := range movers {
 		why := "its parent moves under it"
 		if state[branch].NeedsRestack {
@@ -681,7 +703,7 @@ func dryRunDiffNames(ctx context.Context, l lane, from, to string) ([]string, er
 	return strings.Split(trimmed, "\n"), nil
 }
 
-func dryRunHeads(ctx context.Context, l lane, o shipOpts, state gtState, chain []string, holders map[string]string, r *shipDryRun) error {
+func dryRunHeads(ctx context.Context, l lane, o shipOpts, state gtState, chain, parentLine []string, holders map[string]string, r *shipDryRun) error {
 	if o.noPush {
 		r.notes = append(r.notes, "--no-push moves no remote ref, so no pull request head moves")
 		return nil
@@ -728,10 +750,10 @@ func dryRunHeads(ctx context.Context, l lane, o shipOpts, state gtState, chain [
 		})
 	}
 	slices.SortFunc(r.prs, func(a, b dryRunPR) int { return a.number - b.number })
-	return dryRunCreates(ctx, l, o, state, chain, open, r)
+	return dryRunCreates(ctx, l, o, state, chain, parentLine, open, r)
 }
 
-func dryRunCreates(ctx context.Context, l lane, o shipOpts, state gtState, chain []string, open map[string]bool, r *shipDryRun) error {
+func dryRunCreates(ctx context.Context, l lane, o shipOpts, state gtState, chain, parentLine []string, open map[string]bool, r *shipDryRun) error {
 	tr, err := gtTrunkRefOffline(ctx, l.dir(), "ship", r.trunk)
 	if errors.Is(err, vcs.ErrNoTrunk) {
 		r.notes = append(r.notes, "no remote trunk ref is fetched yet, so the titles a submit would derive cannot be read without one")
@@ -745,7 +767,7 @@ func dryRunCreates(ctx context.Context, l lane, o shipOpts, state gtState, chain
 		stacked[branch] = true
 	}
 	for _, branch := range gtBottomUp(chain) {
-		if open[branch] || len(state[branch].Parents) == 0 || tipOnlyAncestor(o.tipOnly, r.branch, branch) {
+		if open[branch] || len(state[branch].Parents) == 0 || tipOnlyAncestor(o.tipOnly, r.branch, branch) || slices.Contains(parentLine, branch) {
 			continue
 		}
 		if o.noPR {

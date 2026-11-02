@@ -538,6 +538,12 @@ func runShip(cmd *cobra.Command, o shipOpts) (err error) {
 		if err != nil {
 			return err
 		}
+		onPublished := false
+		if shipInfersParentLine(o) && len(chain) > 1 {
+			if onPublished, err = shipOnPublishedParent(ctx, l.dir(), tr, state, chain[1], state[branch].Head); err != nil {
+				return err
+			}
+		}
 		var upstack []string
 		if !o.tipOnly {
 			if !o.allLanes && len(chain) > 0 {
@@ -549,12 +555,12 @@ func runShip(cmd *cobra.Command, o shipOpts) (err error) {
 				return err
 			}
 		}
-		if plan.needsRestack || !contains || published || len(upstack) > 0 || len(o.landed) > 0 || len(o.newPRs) > 0 || (o.tipOnly && len(chain) > 1) {
+		if plan.needsRestack || !contains || published || onPublished || len(upstack) > 0 || len(o.landed) > 0 || len(o.newPRs) > 0 || (o.tipOnly && len(chain) > 1) {
 			intent, err := stackShipOptions(o, meta, prNWO, branch)
 			if err != nil {
 				return err
 			}
-			if err := runStackRebase(cmd, stackRebaseOpts{members: append(gtBottomUp(chain), upstack...), pinned: shipParentLine(o, chain, branch), landed: o.landed, newPRs: o.newPRs, draft: shipDraft(o), draftAll: o.draft || o.publish, noVerify: o.noVerify, deferPush: true, result: &gtc.restack, ship: intent, submit: true, owners: map[string]string{}, tip: branch, tipOnly: o.tipOnly, restack: o.restack, stayClean: !o.restack, dropCommits: o.dropCommits || o.yolo, evictQueued: o.evictQueued, otherLanes: o.allLanes, target: &target}); err != nil {
+			if err := runStackRebase(cmd, stackRebaseOpts{members: append(gtBottomUp(chain), upstack...), pinned: shipParentLine(o.parent != "" || onPublished, chain, branch), landed: o.landed, newPRs: o.newPRs, draft: shipDraft(o), draftAll: o.draft || o.publish, noVerify: o.noVerify, deferPush: true, result: &gtc.restack, ship: intent, submit: true, owners: map[string]string{}, tip: branch, tipOnly: o.tipOnly, restack: o.restack, stayClean: !o.restack, dropCommits: o.dropCommits || o.yolo, evictQueued: o.evictQueued, otherLanes: o.allLanes, target: &target}); err != nil {
 				if preAmendSHA != "" && gtc.restack == nil {
 					return shipAmendKept(ctx, dir, preAmendSHA, err)
 				}
@@ -733,13 +739,43 @@ func runShip(cmd *cobra.Command, o shipOpts) (err error) {
 	return ciErr
 }
 
-// shipParentLine is what a ship of branch onto --parent never moves: every
+// shipParentLine is what a ship of branch never moves once its parent is fixed,
+// by --parent or by holding the published head branch was cut from: every
 // other branch of its downstack chain, the parent and each branch below it.
-func shipParentLine(o shipOpts, chain []string, branch string) []string {
-	if o.parent == "" {
+func shipParentLine(fixed bool, chain []string, branch string) []string {
+	if !fixed {
 		return nil
 	}
 	return slices.DeleteFunc(slices.Clone(chain), func(name string) bool { return name == branch })
+}
+
+// shipInfersParentLine is whether a ship reads its parent line as fixed from
+// where the branch was cut: --parent already says so, and --tip-only,
+// --restack and --all-lanes each ask for something else of the line below.
+func shipInfersParentLine(o shipOpts) bool {
+	return o.parent == "" && !o.tipOnly && !o.restack && !o.allLanes
+}
+
+// shipOnPublishedParent is whether tip sits on the published head of parent
+// while parent's own local branch trails behind it: the line this checkout
+// records below parent predates that push, so the ship keeps it where it is, as
+// --parent does. A local head that rewrote the published one is not stale but
+// diverged, which the stack rebase refuses on its own.
+func shipOnPublishedParent(ctx context.Context, dir render.Dir, tr vcs.Trunk, state gtState, parent, tip string) (bool, error) {
+	if _, tracked := state[parent]; !tracked || parent == tr.Name() {
+		return false, nil
+	}
+	published := "refs/remotes/" + tr.Remote() + "/" + parent
+	if present, err := gitRefExists(ctx, dir, "ship", published); err != nil || !present {
+		return false, err
+	}
+	if held, err := gitIsAncestor(ctx, dir, "ship", published, state[parent].Head); err != nil || held {
+		return false, err
+	}
+	if behind, err := gitIsAncestor(ctx, dir, "ship", state[parent].Head, published); err != nil || !behind {
+		return false, err
+	}
+	return gitIsAncestor(ctx, dir, "ship", published, tip)
 }
 
 func shipSettleRestack(ctx context.Context, l lane, c *gtCache, cause error) error {

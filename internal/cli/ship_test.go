@@ -4212,6 +4212,7 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 		branch     string
 		stateJSON  string
 		prBranches []string
+		parentInv  [][]string
 		submitInv  [][]string
 		receiptInv [][]string
 		wantSeg    string
@@ -4237,6 +4238,7 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 			stateJSON: `{"main":{"trunk":true},"feature":{"parents":[{"ref":"main","sha":"deadbeef"}]},` +
 				`"feature2":{"parents":[{"ref":"feature","sha":"beadfeed"}]}}`,
 			prBranches: []string{"feature", "feature2"},
+			parentInv:  [][]string{{"git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/feature"}},
 			submitInv: append(
 				gtShipSubmitInv("main", "beadfeed", vcstest.GraphiteLeafSHA),
 				gtCreateLogInv(gtRemoteTrunk("main"), "beadfeed"),
@@ -4259,6 +4261,9 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 			t.Setenv("GH_RUN_LIST_JSON", fakeRunListJSON)
 			t.Setenv("GH_RUN_VIEW_JSON", ghStdout(t, "run-view-success"))
 			t.Setenv("GIT_LOG_BODY", "why")
+			if tt.parentInv != nil {
+				t.Setenv("GIT_REMOTE_REF_MISSING", "1")
+			}
 			shipCIPollInterval = 0
 
 			got, err := runShipCmd(gt.ctx(context.Background()), t, "-m", "fix: frobnicate")
@@ -4285,8 +4290,9 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 				gtRefsArgv(),
 				{"git", "merge-base", "--is-ancestor", gtRemoteTrunk("main"), vcstest.GraphiteLeafSHA},
 				gtQueueGateInv(tt.branch),
-				{"git", "log", "-1", "--format=%h%x00%s"},
 			}
+			want = append(want, tt.parentInv...)
+			want = append(want, []string{"git", "log", "-1", "--format=%h%x00%s"})
 			want = append(want, tt.submitInv...)
 			want = append(want, tt.receiptInv...)
 			want = append(want,

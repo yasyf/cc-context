@@ -1661,7 +1661,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 		requested.noPush = true
 		return stackPlan(ctx, l, commonDir, requested)
 	}
-	if len(unpushed) > 0 {
+	if unpushed = slices.DeleteFunc(unpushed, func(pin string) bool { return !stackMovesOnto(byName, pin) }); len(unpushed) > 0 {
 		return nil, stackRefuseUnpushedPins(unpushed)
 	}
 	for _, name := range order {
@@ -2917,7 +2917,19 @@ func stackTipStays(ctx context.Context, dir render.Dir, b *stackRebaseBranch, pa
 	return gitIsAncestor(ctx, dir, stackRebasePrefix, b.OldBase, parentHead)
 }
 
-// stackRefuseUnpushedPins refuses a run kept at the published heads of branches
+// stackMovesOnto is whether a branch the run replays or publishes sits on pin.
+// A pin that only another kept branch sits on is never stacked on: that branch
+// stays at its own published head, which already carries whatever lies below.
+func stackMovesOnto(byName map[string]*stackRebaseBranch, pin string) bool {
+	for _, b := range byName {
+		if b.Parent == pin && b.Landed == "" && b.Held == "" && !b.Kept {
+			return true
+		}
+	}
+	return false
+}
+
+// stackRefuseUnpushedPins refuses a run that stacks a branch it moves on one
 // another lane holds and never pushed: there is nothing to stack on.
 func stackRefuseUnpushedPins(names []string) error {
 	reasons := make([]string, len(names))
@@ -2970,7 +2982,9 @@ func stackMovingBranches(state gtState, o stackRebaseOpts, overrides map[string]
 // in failure handling, when Graphite drops the flag. Graphite keeps a pull
 // request flagged after the queue lets it go, so each one flagged or carrying a
 // queue label is settled by its merge activity, read the way ccx vcs pr status
-// reads it.
+// reads it. A native lane takes each open pull request from the stack's own
+// read, which falls back to REST under a GraphQL rate limit, and asks only the
+// queue provider.
 func stackQueueStates(ctx context.Context, l lane, noPush bool, byName map[string]*stackRebaseBranch) (map[string]prQueueState, error) {
 	var heads []string
 	for _, name := range slices.Sorted(maps.Keys(byName)) {
@@ -2985,13 +2999,20 @@ func stackQueueStates(ctx context.Context, l lane, noPush bool, byName map[strin
 	if err != nil {
 		return nil, err
 	}
-	infos, err := gtAPI(ctx).PullRequestInfo(ctx, gtapi.PullRequestInfoRequest{RepoOwner: owner, RepoName: name, PRHeadRefNames: heads, Consistent: true, Callsite: "ccx"})
-	if err != nil {
-		return nil, fmt.Errorf("stack rebase: read the merge queue before pushing: %w", err)
+	var infos []gtapi.PullRequestInfo
+	if client := gtAPI(ctx); client.IsNative() {
+		for _, head := range heads {
+			pr := byName[head].PR
+			infos = append(infos, gtapi.PullRequestInfo{PRNumber: pr.Number, State: gtapi.PROpen, HeadRefName: head, BaseRefName: pr.Base})
+		}
+	} else {
+		if infos, err = client.PullRequestInfo(ctx, gtapi.PullRequestInfoRequest{RepoOwner: owner, RepoName: name, PRHeadRefNames: heads, Consistent: true, Callsite: "ccx"}); err != nil {
+			return nil, fmt.Errorf("stack rebase: read the merge queue before pushing: %w", err)
+		}
+		infos = slices.DeleteFunc(infos, func(info gtapi.PullRequestInfo) bool {
+			return info.State != gtapi.PROpen || !slices.Contains(heads, info.HeadRefName)
+		})
 	}
-	infos = slices.DeleteFunc(infos, func(info gtapi.PullRequestInfo) bool {
-		return info.State != gtapi.PROpen || !slices.Contains(heads, info.HeadRefName)
-	})
 	labels := map[string][]string{}
 	for _, info := range infos {
 		labels[info.HeadRefName] = byName[info.HeadRefName].PR.Labels

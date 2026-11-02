@@ -574,6 +574,114 @@ func shipParentKeepsItsLine(t *testing.T, push bool) {
 	}
 }
 
+// TestShipGTParentStacksOnAPublishedParentOverAnUnpushedBranchBelow is
+// dashboard-efficiency's ship --parent dashboard-fold-2b in cc-skills on
+// 2026-11-02: the parent was published, yet a stale branch below it that was
+// never pushed refused the run, "dashboard-pages-needs is another lane's and
+// has never been pushed". Nothing the ship moves sits on mid, so c ships onto
+// p's published head and the line below stays where it was.
+func TestShipGTParentStacksOnAPublishedParentOverAnUnpushedBranchBelow(t *testing.T) {
+	f := shipGTRepo(t)
+	shipGTStack(t, f, "base", "mid", "p")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "p")
+	stackAdvanceTrunk(t, f, "trunk.txt", "trunk\n")
+	shipGTUntracked(t, f, "c")
+	heads := map[string]string{}
+	for _, ref := range []string{"base", "mid", "p", "origin/base", "origin/p"} {
+		heads[ref] = gitAt(t, f.Env(), f.Dir, "rev-parse", ref)
+	}
+	shipResetLog(t, f)
+
+	if _, err := runShipCmd(f.Context(), t, "--no-commit", "--no-watch", "--parent", "p"); err != nil {
+		t.Fatalf("ship --parent p = %v, want c shipped onto p's published head", err)
+	}
+	for ref, before := range heads {
+		if after := gitAt(t, f.Env(), f.Dir, "rev-parse", ref); after != before {
+			t.Errorf("%s moved from %s to %s, want it left where it was", ref, before, after)
+		}
+	}
+	if gitBranchExists(t, f.Env(), f.RemoteDir, "mid") {
+		t.Error("origin carries mid, want it left unpushed")
+	}
+	pushed := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "c")
+	if subjects := gitAt(t, f.Env(), f.Dir, "log", "--format=%s", heads["origin/p"]+".."+pushed); subjects != "c" {
+		t.Errorf("origin c carries %q above p's published head, want its own commit alone", subjects)
+	}
+}
+
+// shipCutFromPublishedParent is cc-skills' dashboard-cci-polling on
+// 2026-11-02: base and p are published, local p is two pushes behind origin/p,
+// s is a sibling lane's branch tracked on p at the commit between them, and c
+// is cut from origin/p and left untracked, with trunk moved on past them all.
+func shipCutFromPublishedParent(t *testing.T) *vcstest.Fixture {
+	t.Helper()
+	f := shipGTRepo(t)
+	shipGTStack(t, f, "base", "p")
+	stale := gitAt(t, f.Env(), f.Dir, "rev-parse", "p")
+	stackCommit(t, f, "p2.txt")
+	shipGTLevel(t, f, "s")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "p")
+	stackCommit(t, f, "p3.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "p")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
+	mustRun(t, f.Env(), f.Dir, "git", "branch", "-f", "p", stale)
+	stackAdvanceTrunk(t, f, "trunk.txt", "trunk\n")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "c", "origin/p")
+	writeShipFile(t, f.Dir, "c.txt", "c\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "c.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-q", "-m", "c", "-m", "why c")
+	return f
+}
+
+// TestShipStacksABranchCutFromAPublishedParentOnThatHead is
+// dashboard-cci-polling's dry run: cut from origin/dashboard-fold-2b while the
+// local branch sat 43 commits behind, it read as stacked on the sibling lane's
+// dashboard-efficiency and planned to restack and force-push the whole stale
+// local line under it. The cut point names p, so c records on p, ships onto
+// its published head, and nothing below p moves.
+func TestShipStacksABranchCutFromAPublishedParentOnThatHead(t *testing.T) {
+	f := shipCutFromPublishedParent(t)
+	refs := []string{"base", "p", "s", "origin/base", "origin/p"}
+	heads := map[string]string{}
+	for _, ref := range refs {
+		heads[ref] = gitAt(t, f.Env(), f.Dir, "rev-parse", ref)
+	}
+
+	report := dryRunReport(t, f, "--no-commit")
+	if got := dryRunValues(report, "parent"); len(got) != 1 || !strings.HasPrefix(got[0], "p"+shipSep) {
+		t.Errorf("parent = %q, want c recorded on p", got)
+	}
+	if moves := dryRunValues(report, "restack"); len(moves) != 0 {
+		t.Errorf("restack = %q, want nothing below c moved", moves)
+	}
+	if creates := dryRunValues(report, "pr new"); len(creates) != 0 {
+		t.Errorf("pr new = %q, want no pull request opened below c", creates)
+	}
+	if notes := dryRunValues(report, "note"); !slices.ContainsFunc(notes, func(n string) bool { return strings.Contains(n, "cut from p's published head") }) {
+		t.Errorf("notes = %q, want one saying c was cut from p's published head", notes)
+	}
+	shipResetLog(t, f)
+
+	if _, err := runShipCmd(f.Context(), t, "--no-commit", "--no-watch"); err != nil {
+		t.Fatalf("ship = %v, want c shipped onto p's published head", err)
+	}
+	if parent := shipParentOf(t, f, "c"); parent != "p" {
+		t.Errorf("c's parent = %s, want p", parent)
+	}
+	for _, ref := range refs {
+		if after := gitAt(t, f.Env(), f.Dir, "rev-parse", ref); after != heads[ref] {
+			t.Errorf("%s moved from %s to %s, want it left where it was", ref, heads[ref], after)
+		}
+	}
+	if gitBranchExists(t, f.Env(), f.RemoteDir, "s") {
+		t.Error("origin carries s, want the sibling lane's branch left unpushed")
+	}
+	pushed := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "c")
+	if subjects := gitAt(t, f.Env(), f.Dir, "log", "--format=%s", heads["origin/p"]+".."+pushed); subjects != "c" {
+		t.Errorf("origin c carries %q above p's published head, want its own commit alone", subjects)
+	}
+}
+
 // TestShipGTTipOnlyLeavesALandedAncestorWithLaterCommitsToItsLane is a
 // --tip-only ship over an ancestor another lane kept committing to after its
 // pull request landed: the ship moves none of that ancestor, so it ships the tip
@@ -812,7 +920,7 @@ func TestShipGTTipOnlyMovesOntoTheParentsPublishedHeadWhenItsTrackingRefIsStale(
 // --tip-only would publish its parent's whole downstack.
 func TestShipDryRunUnderTipOnlyPublishesAnUntrackedBranchAlone(t *testing.T) {
 	r := &shipDryRun{branch: "n", parent: "p", trunk: "main"}
-	if anchor := dryRunAnchor(gtState{}, true, false, r); anchor != "" || !slices.Equal(r.notes, []string{"n is untracked; --tip-only records it on p's published head and publishes it alone"}) {
+	if anchor := dryRunAnchor(gtState{}, true, false, false, r); anchor != "" || !slices.Equal(r.notes, []string{"n is untracked; --tip-only records it on p's published head and publishes it alone"}) {
 		t.Errorf("anchor = %q, notes = %q, want n published alone", anchor, r.notes)
 	}
 }
