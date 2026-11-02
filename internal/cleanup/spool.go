@@ -66,11 +66,7 @@ func MountOf(path string) (string, error) {
 }
 
 func (l Layout) holds(jobs string) bool {
-	if jobs == l.JobsDir() {
-		return true
-	}
-	mount, err := MountOf(jobs)
-	return err == nil && Spool(mount) == jobs
+	return jobs == l.JobsDir() || filepath.Base(jobs) == "jobs" && filepath.Base(filepath.Dir(jobs)) == SpoolName
 }
 
 func ensureSpool(jobs string) error {
@@ -78,14 +74,14 @@ func ensureSpool(jobs string) error {
 		return err
 	}
 	for _, dir := range []string{filepath.Dir(jobs), jobs} {
-		if err := os.Mkdir(dir, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
+		if err := durable.Mkdir(dir, 0o700); err != nil {
 			return fmt.Errorf("cleanup: create %s: %w", dir, err)
 		}
 		if err := private(dir); err != nil {
 			return err
 		}
 	}
-	return durable.SyncDir(filepath.Dir(filepath.Dir(jobs)))
+	return nil
 }
 
 func spoolUsable(jobs string) error {
