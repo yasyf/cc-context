@@ -58,14 +58,15 @@ func NewBM25() *BM25 {
 
 // BM25FromPostings uses full corpus lengths with only the requested terms loaded.
 func BM25FromPostings(lengths []int, terms map[string][]BM25Posting) (*BM25, error) {
-	if len(lengths) > math.MaxInt32 {
+	documentCount := len(lengths)
+	if documentCount > math.MaxInt32 {
 		return nil, fmt.Errorf("rank: document count exceeds posting range")
 	}
 	b := NewBM25()
 	b.docLengths = lengths
-	b.nDocs = int32(len(lengths))
-	b.nOrder = len(lengths)
-	b.positions = make([]int, len(lengths))
+	b.nDocs = int32(documentCount)
+	b.nOrder = documentCount
+	b.positions = make([]int, documentCount)
 	for i, length := range lengths {
 		if length < 0 {
 			return nil, fmt.Errorf("rank: negative document length at %d", i)
@@ -78,11 +79,12 @@ func BM25FromPostings(lengths []int, terms map[string][]BM25Posting) (*BM25, err
 		list := make([]posting, len(entries))
 		previous := -1
 		for i, entry := range entries {
-			if entry.Document <= previous || entry.Document > math.MaxInt32 || entry.Document >= len(lengths) || entry.Frequency <= 0 || entry.Frequency > math.MaxInt32 || entry.Frequency > lengths[entry.Document] {
+			document, frequency := entry.Document, entry.Frequency
+			if document < 0 || document <= previous || document > math.MaxInt32 || document >= documentCount || frequency <= 0 || frequency > math.MaxInt32 || frequency > lengths[document] {
 				return nil, fmt.Errorf("rank: invalid posting for %q", term)
 			}
-			list[i] = posting{doc: int32(entry.Document), tf: int32(entry.Frequency)}
-			previous = entry.Document
+			list[i] = posting{doc: int32(document), tf: int32(frequency)}
+			previous = document
 		}
 		b.postings = append(b.postings, list)
 	}
