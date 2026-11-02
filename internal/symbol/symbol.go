@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -52,6 +53,23 @@ func Run(ctx context.Context, a backend.Args) (string, []string, error) {
 	root := backend.SharedGlobAnchor(a.Globs)
 	if root == "" {
 		root = "."
+	}
+	if root == "." {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", nil, fmt.Errorf("symbol: resolve home: %w", err)
+		}
+		homeInfo, err := os.Stat(home)
+		if err != nil {
+			return "", nil, fmt.Errorf("symbol: inspect home: %w", err)
+		}
+		rootInfo, err := os.Stat(cwd)
+		if err != nil {
+			return "", nil, fmt.Errorf("symbol: inspect root: %w", err)
+		}
+		if os.SameFile(homeInfo, rootInfo) {
+			return "", nil, fmt.Errorf("symbol: home directory requires an explicit anchored -g scope")
+		}
 	}
 	r := &resolver{
 		ctx:       ctx,
