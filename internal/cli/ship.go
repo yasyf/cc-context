@@ -753,9 +753,11 @@ func shipInfersParentLine(o shipOpts) bool {
 	return o.parent == "" && !o.tipOnly && !o.restack && !o.allLanes
 }
 
-// shipOnPublishedParent is whether tip sits on the published head of parent, a
-// head parent's own local branch lacks: the line this checkout records below
-// parent predates that push, so the ship keeps it where it is, as --parent does.
+// shipOnPublishedParent is whether tip sits on the published head of parent
+// while parent's own local branch trails behind it: the line this checkout
+// records below parent predates that push, so the ship keeps it where it is, as
+// --parent does. A local head that rewrote the published one is not stale but
+// diverged, which the stack rebase refuses on its own.
 func shipOnPublishedParent(ctx context.Context, dir render.Dir, tr vcs.Trunk, state gtState, parent, tip string) (bool, error) {
 	if _, tracked := state[parent]; !tracked || parent == tr.Name() {
 		return false, nil
@@ -774,7 +776,7 @@ func shipOnPublishedParent(ctx context.Context, dir render.Dir, tr vcs.Trunk, st
 	if published == state[parent].Head {
 		return false, nil
 	}
-	if held, err := gitIsAncestor(ctx, dir, "ship", published, state[parent].Head); err != nil || held {
+	if behind, err := gitIsAncestor(ctx, dir, "ship", state[parent].Head, published); err != nil || !behind {
 		return false, err
 	}
 	return gitIsAncestor(ctx, dir, "ship", published, tip)

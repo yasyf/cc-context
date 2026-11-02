@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -49,12 +50,13 @@ func TestStackQueueStatesSkipsPullRequestsNotAskedAbout(t *testing.T) {
 	}
 }
 
-// TestStackQueueStatesOnANativeLaneAsksOnlyTheQueue is git-efficiency's push
-// in Forge-AI/monorepo on 2026-11-02: GitHub refused the queue read's GraphQL
-// pull-request lookup, "API rate limit already exceeded for user ID 709645",
-// and a plain fast-forward push stopped there. The stack's own read already
-// names each open pull request, so only the queue itself is asked.
-func TestStackQueueStatesOnANativeLaneAsksOnlyTheQueue(t *testing.T) {
+// TestStackQueueStatesOnANativeLaneLooksNoPullRequestUpByHead is
+// git-efficiency's push in Forge-AI/monorepo on 2026-11-02: GitHub refused the
+// queue read's GraphQL lookup of each head's pull request, "API rate limit
+// already exceeded for user ID 709645", and a plain fast-forward push stopped
+// there. The stack's own read already names each open pull request, so the
+// queue is read without that lookup.
+func TestStackQueueStatesOnANativeLaneLooksNoPullRequestUpByHead(t *testing.T) {
 	var mu sync.Mutex
 	var queries []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -91,8 +93,8 @@ func TestStackQueueStatesOnANativeLaneAsksOnlyTheQueue(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if len(queries) != 1 || !strings.Contains(queries[0], "mergeQueueEntry") {
-		t.Errorf("queries = %q, want the one merge queue read", queries)
+	if slices.ContainsFunc(queries, func(q string) bool { return strings.Contains(q, "headRefName:") }) {
+		t.Errorf("queries = %q, want no pull request looked up by head", queries)
 	}
 }
 
