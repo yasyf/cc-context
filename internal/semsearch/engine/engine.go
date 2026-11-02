@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
-	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -159,14 +158,6 @@ const (
 	// workspace; a second entry covers the default-content then all-content
 	// pattern without letting one session retain an index per repo it names.
 	residentCap = 2
-	// residentIdleTTL is how long an index outlives its last query. A loaded
-	// monorepo index is hundreds of MB, so an abandoned session should not hold
-	// one indefinitely; the cost of being wrong is one reload.
-	residentIdleTTL = 15 * time.Minute
-	// residentSweepInterval is how often StartIdleSweeper checks the TTL.
-	residentSweepInterval = 5 * time.Minute
-	// diskIdleTTL is how long an on-disk index outlives its last Load before
-	// StartIdleSweeper's startup prune deletes it.
 	diskIdleTTL = 14 * 24 * time.Hour
 )
 
@@ -234,23 +225,15 @@ func evictOldest(resident map[indexKey]*residentEntry, n int) {
 	}
 }
 
-// SweepIdle drops every resident index unused for longer than residentIdleTTL
-// and returns the freed pages to the OS. Go's scavenger reclaims a several
-// hundred MB index only over many minutes otherwise, so the eviction would not
-// show up as RSS relief without the explicit call.
-func SweepIdle() {
+// SweepIdle drops every resident index last queried before cutoff and returns
+// how many it dropped. The caller returns the freed pages to the OS.
+func SweepIdle(cutoff time.Time) int {
 	residentMu.Lock()
-	dropped := sweepIdle(residentIndex, time.Now())
-	residentMu.Unlock()
-	if dropped > 0 {
-		debug.FreeOSMemory()
-	}
+	defer residentMu.Unlock()
+	return sweepIdle(residentIndex, cutoff)
 }
 
-// sweepIdle deletes every entry of resident last used more than residentIdleTTL
-// before now, returning how many it dropped. The caller holds residentMu.
-func sweepIdle(resident map[indexKey]*residentEntry, now time.Time) int {
-	cutoff := now.Add(-residentIdleTTL)
+func sweepIdle(resident map[indexKey]*residentEntry, cutoff time.Time) int {
 	dropped := 0
 	for k, e := range resident {
 		if e.lastUsed.Before(cutoff) {
@@ -261,25 +244,12 @@ func sweepIdle(resident map[indexKey]*residentEntry, now time.Time) int {
 	return dropped
 }
 
-// StartIdleSweeper prunes the on-disk index cache once, then runs SweepIdle on a
-// ticker until ctx is cancelled. The MCP server starts it so a long-lived process
-// releases an index it has stopped querying; the one-shot CLI never calls it.
-func StartIdleSweeper(ctx context.Context) {
-	go func() {
-		if err := index.Prune(ctx, diskIdleTTL); err != nil && ctx.Err() == nil {
-			slog.Warn("semsearch: prune index cache", "err", err)
-		}
-		t := time.NewTicker(residentSweepInterval)
-		defer t.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-t.C:
-				SweepIdle()
-			}
-		}
-	}()
+// PruneDisk deletes every on-disk index no Load has touched for diskIdleTTL. The
+// MCP server runs it once at startup; the one-shot CLI never calls it.
+func PruneDisk(ctx context.Context) {
+	if err := index.Prune(ctx, diskIdleTTL); err != nil && ctx.Err() == nil {
+		slog.Warn("semsearch: prune index cache", "err", err)
+	}
 }
 
 // CloseIndexCache drops every retained index so the process frees the memory.

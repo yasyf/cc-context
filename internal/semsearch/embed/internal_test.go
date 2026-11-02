@@ -207,6 +207,60 @@ func TestCloseIdempotentReleasesHandles(t *testing.T) {
 	}
 }
 
+func TestReleaseIdleReinstantiatesOnEncode(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	eng, err := New(ctx, CodePin)
+	if errors.Is(err, ErrWeightsUnavailable) {
+		t.Skip("model weights unavailable (offline, empty cache) — skipping")
+	}
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = eng.Close(context.Background()) })
+
+	texts := []string{"func Login(user string) error", "release the resident model"}
+	before, err := eng.Encode(ctx, texts)
+	if err != nil {
+		t.Fatalf("Encode before release: %v", err)
+	}
+
+	released, err := eng.ReleaseIdle(ctx, time.Now().Add(-time.Hour))
+	if err != nil || released {
+		t.Fatalf("ReleaseIdle(an hour ago) = %v, %v; want false, nil for an engine used since", released, err)
+	}
+	if eng.module == nil {
+		t.Fatal("ReleaseIdle released an engine used after the cutoff")
+	}
+
+	released, err = eng.ReleaseIdle(ctx, time.Now().Add(time.Second))
+	if err != nil || !released {
+		t.Fatalf("ReleaseIdle(after last use) = %v, %v; want true, nil", released, err)
+	}
+	if eng.module != nil || eng.encode != nil {
+		t.Fatal("ReleaseIdle left the resident module set")
+	}
+	released, err = eng.ReleaseIdle(ctx, time.Now().Add(time.Second))
+	if err != nil || released {
+		t.Fatalf("second ReleaseIdle = %v, %v; want false, nil once released", released, err)
+	}
+
+	after, err := eng.Encode(ctx, texts)
+	if err != nil {
+		t.Fatalf("Encode after release: %v", err)
+	}
+	if eng.module == nil {
+		t.Fatal("Encode after release did not instantiate the module again")
+	}
+	for i := range before {
+		for j := range before[i] {
+			if before[i][j] != after[i][j] {
+				t.Fatalf("text %d component %d: %v after release, %v before", i, j, after[i][j], before[i][j])
+			}
+		}
+	}
+}
+
 // --- E4: weight download is size-bounded before verification ----------------
 
 func TestDownloadBounded(t *testing.T) {

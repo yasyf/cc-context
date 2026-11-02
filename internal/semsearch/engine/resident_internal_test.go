@@ -77,6 +77,7 @@ func TestEvictOldestKeepsMostRecent(t *testing.T) {
 
 func TestSweepIdleDropsOnlyStaleEntries(t *testing.T) {
 	t.Parallel()
+	const ttl = 15 * time.Minute
 	tests := []struct {
 		name    string
 		entries map[string]time.Duration
@@ -84,17 +85,17 @@ func TestSweepIdleDropsOnlyStaleEntries(t *testing.T) {
 	}{
 		{
 			name:    "drops past the ttl, keeps within it",
-			entries: map[string]time.Duration{"stale": residentIdleTTL + time.Minute, "fresh": time.Minute},
+			entries: map[string]time.Duration{"stale": ttl + time.Minute, "fresh": time.Minute},
 			want:    map[string]bool{"fresh": true},
 		},
 		{
 			name:    "keeps an entry exactly at the ttl",
-			entries: map[string]time.Duration{"edge": residentIdleTTL - time.Second},
+			entries: map[string]time.Duration{"edge": ttl - time.Second},
 			want:    map[string]bool{"edge": true},
 		},
 		{
 			name:    "drops every stale entry",
-			entries: map[string]time.Duration{"a": residentIdleTTL * 2, "b": residentIdleTTL * 3},
+			entries: map[string]time.Duration{"a": ttl * 2, "b": ttl * 3},
 			want:    map[string]bool{},
 		},
 	}
@@ -102,7 +103,7 @@ func TestSweepIdleDropsOnlyStaleEntries(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			now := time.Now()
 			resident := seed(now, tt.entries)
-			sweepIdle(resident, now)
+			sweepIdle(resident, now.Add(-ttl))
 			got := repos(resident)
 			if len(got) != len(tt.want) {
 				t.Fatalf("retained %v, want %v", got, tt.want)

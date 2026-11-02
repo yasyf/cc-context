@@ -6,6 +6,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **An idle `ccx mcp` server gives back its embedding models too, not just its
+  indexes.** A server that had run one semantic or web search kept each
+  embedder's model memory for the rest of its life. On the monorepo, a server
+  still held 370 MB 24 minutes after its last search, with its index long gone. The code model alone accounts for most of the 181 MB a search on
+  a two-file repo peaks at. Both embedders now release their WebAssembly
+  instance after fifteen minutes without an encode, alongside the index, and the
+  next search reloads it from the cached weights. The sweep runs every minute
+  instead of every five, so the release lands sixteen minutes after the last
+  search, where it used to take up to twenty.
+
 ### Added
 
 - `ccx vcs fetch <branch>...` fetches remote branches into their
@@ -16,6 +28,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   30 seconds. The trunk fetch behind `ccx vcs ship`, `stack submit`,
   `stack rebase` and `stack new` shares the same way, so concurrent lanes on
   one clone stop downloading and indexing the same trunk pack side by side.
+- `ccx mcp` serves Go's runtime profiles on a socket only its user can open, at
+  `<plugin data>/pprof/<pid>.sock`, so a server that has grown can be profiled
+  where it runs: `curl --unix-socket <sock> http://ccx/debug/pprof/heap`.
 - `ccx vcs stack submit --parent <branch>=<parent>` moves a branch and the
   branches above it onto a new parent and retargets its pull request, as
   `stack rebase --parent` already did. A native stack submit whose parent pull

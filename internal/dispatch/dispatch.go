@@ -196,6 +196,27 @@ func sharedEmbedder(ctx context.Context) (index.Embedder, error) {
 // it on shutdown alongside CloseEmbedder; a one-shot CLI relies on process exit.
 func CloseIndexCache() { engine.CloseIndexCache() }
 
+// PruneIndexCache deletes the long-unused on-disk indexes. The MCP proxy runs it
+// once at startup.
+func PruneIndexCache(ctx context.Context) { engine.PruneDisk(ctx) }
+
+// SweepIdle drops every resident index last queried before cutoff and releases
+// the embedder's model memory when it has not encoded since cutoff, reporting
+// whether it freed either. The next semantic op reloads what it needs.
+func SweepIdle(ctx context.Context, cutoff time.Time) (bool, error) {
+	dropped := engine.SweepIdle(cutoff) > 0
+	embMu.Lock()
+	defer embMu.Unlock()
+	releaser, ok := embEngine.(interface {
+		ReleaseIdle(context.Context, time.Time) (bool, error)
+	})
+	if !ok {
+		return dropped, nil
+	}
+	released, err := releaser.ReleaseIdle(ctx, cutoff)
+	return dropped || released, err
+}
+
 // CloseEmbedder releases the resident embedder if one was constructed. The MCP
 // proxy calls it on shutdown; a one-shot CLI relies on process exit.
 func CloseEmbedder(ctx context.Context) error {

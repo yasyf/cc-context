@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"strings"
 
@@ -22,7 +23,6 @@ import (
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/ripgrep"
 	"github.com/yasyf/cc-context/internal/search"
-	"github.com/yasyf/cc-context/internal/semsearch/engine"
 	"github.com/yasyf/cc-context/internal/symbol"
 	"github.com/yasyf/cc-context/internal/version"
 	"github.com/yasyf/cc-context/internal/workspace"
@@ -265,7 +265,12 @@ const serverInstructions = "Single question → the matching ccx_* tool; pipelin
 func Serve(ctx context.Context) error {
 	p := proxy.New()
 	defer func() { _ = p.Close(context.WithoutCancel(ctx)) }()
-	engine.StartIdleSweeper(ctx)
+	p.StartIdleSweeper(ctx)
+	if stop, err := serveProfiles(ctx); err != nil {
+		slog.Warn("mcpserver: serve profiles", "err", err)
+	} else {
+		defer stop()
+	}
 
 	var eng *codeexec.Engine
 	if codeexec.Supported(ctx) {
