@@ -64,7 +64,7 @@ func LoadOwnedAnswers(ctx context.Context, emb Embedder, corpus OwnedAnswerCorpu
 	binary.NativeEndian.PutUint32(order[:], 1)
 	identity := fmt.Sprintf("%d %q %q docs %q %d %x", ownedAnswerFormat, corpus.Binding, model, chunker.ID(), emb.Dims(), order)
 	dir := filepath.Join(root, "ccx", contentHash(identity))
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil { // #nosec G703 -- configured cache root with SHA-256 child keys, not query text
 		return nil, fmt.Errorf("create owned answer cache: %w", err)
 	}
 	path := filepath.Join(dir, "index.sqlite")
@@ -140,7 +140,7 @@ func ownedAnswerDB(path, mode string) (*sql.DB, error) {
 }
 
 func readOwnedAnswers(ctx context.Context, path, identity, generation string, members []ownedAnswerMember, dims int) (*ownedAnswerMaterialization, bool, error) {
-	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) { // #nosec G703 -- fixed index.sqlite under the configured cache and SHA-256 identity directory
 		return nil, false, nil
 	} else if err != nil {
 		return nil, false, err
@@ -277,7 +277,7 @@ func readOwnedAnswers(ctx context.Context, path, identity, generation string, me
 }
 
 func buildOwnedAnswers(ctx context.Context, path, identity string, emb Embedder, corpus OwnedAnswerCorpus, members []ownedAnswerMember, chunker Chunker) (int, error) {
-	_, statErr := os.Stat(path)
+	_, statErr := os.Stat(path) // #nosec G703 -- fixed index.sqlite under the configured cache and SHA-256 identity directory
 	fresh := errors.Is(statErr, os.ErrNotExist)
 	if statErr != nil && !fresh {
 		return 0, statErr

@@ -25,7 +25,7 @@ func (c denseCorpus) Chunk(i int) semsearch.Chunk { return c.chunks[i] }
 
 func (c denseCorpus) Vector(i int) []float32 { return c.vectors[i] }
 
-// RankAnswers shares the exact dense scorer; result paths borrow the source's storage.
-func RankAnswers(query string, queryVec []float32, source AnswerCorpus, topK int) []semsearch.Result {
+// Answers shares the exact dense scorer; result paths borrow the source's storage.
+func Answers(query string, queryVec []float32, source AnswerCorpus, topK int) []semsearch.Result {
 	return rankCorpus(query, queryVec, source, nil, Options{TopK: topK}, source)
 }

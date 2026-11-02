@@ -25,11 +25,11 @@ const (
 
 // OwnedAnswerWork separates publication materialization from mapped bytes and query arithmetic.
 type OwnedAnswerWork struct {
-	MaterializationSQLRows            int
-	MaterializedChunks int
-	DecodedValues      int
-	PublishedBytes     int
-	MappedBytes        int
+	MaterializationSQLRows int
+	MaterializedChunks     int
+	DecodedValues          int
+	PublishedBytes         int
+	MappedBytes            int
 }
 
 // OwnedAnswerIndex owns a read-only generation mapping; Close ends every borrowed view.
@@ -69,14 +69,19 @@ func (p mappedPostings) At(i int) rank.BM25Posting {
 	}
 }
 
+// Len counts the immutable chunk rows used by both ranking legs.
 func (m *OwnedAnswerIndex) Len() int { return m.rows }
 
+// OrderSize counts the score positions in this complete mapped corpus.
 func (m *OwnedAnswerIndex) OrderSize() int { return m.rows }
 
+// TotalLength is the sum of BM25 token counts across the mapped chunk rows.
 func (m *OwnedAnswerIndex) TotalLength() int { return m.totalLen }
 
+// Position keeps each mapped document at its canonical chunk index.
 func (m *OwnedAnswerIndex) Position(i int) int { return i }
 
+// DocumentLength reads the stored BM25 token count for one chunk row.
 func (m *OwnedAnswerIndex) DocumentLength(i int) int {
 	return ownedMatrixInt(binary.NativeEndian.Uint64(m.data[m.rowOffset+i*ownedMatrixRow+32:]))
 }
@@ -99,9 +104,10 @@ func (m *OwnedAnswerIndex) Vector(i int) []float32 {
 func (m *OwnedAnswerIndex) text(offset, length uint64) string {
 	start := m.textOffset + ownedMatrixInt(offset)
 	data := m.data[start : start+ownedMatrixInt(length)]
-	return unsafe.String(unsafe.SliceData(data), len(data))
+	return unsafe.String(unsafe.SliceData(data), len(data)) // #nosec G103 -- Go slice bounds cover this read-only span; retained IDs are cloned before Close
 }
 
+// Postings borrows the requested term's rows until the mapping is closed.
 func (m *OwnedAnswerIndex) Postings(term string) rank.BM25Postings {
 	i := sort.Search(m.terms, func(i int) bool {
 		row := m.data[m.termOffset+i*ownedMatrixTerm:]
@@ -119,6 +125,7 @@ func (m *OwnedAnswerIndex) Postings(term string) rank.BM25Postings {
 	return mappedPostings{data: m.data[m.postOffset+start*ownedMatrixPost : m.postOffset+(start+count)*ownedMatrixPost]}
 }
 
+// GetScores preserves the resident BM25 implementation's float32 accumulation order.
 func (m *OwnedAnswerIndex) GetScores(tokens []string) []float64 {
 	return rank.ScoreBM25(tokens, m)
 }
@@ -136,7 +143,7 @@ func mapOwnedAnswers(ctx context.Context, path, identity, generation string, doc
 	if err := ctx.Err(); err != nil {
 		return nil, false, err
 	}
-	file, err := os.Open(path)
+	file, err := os.Open(path) // #nosec G304 -- configured cache root and SHA-256 identity/generation keys select this immutable matrix
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, false, nil
 	}
@@ -230,12 +237,12 @@ func decodeOwnedAnswers(data []byte, identity, generation string, documents, dim
 	}
 	m := &OwnedAnswerIndex{
 		TotalFiles: documents,
-		Work: OwnedAnswerWork{MappedBytes: len(data)},
-		data: data, rows: rows, dims: dims,
+		Work:       OwnedAnswerWork{MappedBytes: len(data)},
+		data:       data, rows: rows, dims: dims,
 		rowOffset: header[8], termOffset: header[10], terms: header[11],
 		postOffset: header[12], textOffset: header[14], totalLen: header[7],
 	}
-	m.vectors = unsafe.Slice((*float32)(unsafe.Pointer(unsafe.SliceData(data[rowEnd:vectorEnd]))), values)
+	m.vectors = unsafe.Slice((*float32)(unsafe.Pointer(unsafe.SliceData(data[rowEnd:vectorEnd]))), values) // #nosec G103 -- validated aligned extents bound this native-endian read-only view, borrowed until Close
 	return m, nil
 }
 

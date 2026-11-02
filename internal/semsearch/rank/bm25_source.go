@@ -29,16 +29,22 @@ func (p storedPostings) At(i int) BM25Posting {
 	return BM25Posting{Document: int(p[i].doc), Frequency: int(p[i].tf)}
 }
 
+// Len counts documents included in BM25 corpus statistics.
 func (b *BM25) Len() int { return len(b.docLengths) }
 
+// OrderSize includes every original chunk position, including filtered documents.
 func (b *BM25) OrderSize() int { return b.nOrder }
 
+// TotalLength is the corpus token count used to derive average document length.
 func (b *BM25) TotalLength() int { return b.totalDocLen }
 
+// DocumentLength supplies the original token count before scoring normalization.
 func (b *BM25) DocumentLength(i int) int { return b.docLengths[i] }
 
+// Position maps a corpus document to its original chunk slot, or -1 when filtered.
 func (b *BM25) Position(i int) int { return b.positions[i] }
 
+// Postings borrows the term's document IDs and occurrence counts without a copy.
 func (b *BM25) Postings(term string) BM25Postings {
 	id, exists := b.terms[term]
 	if !exists {

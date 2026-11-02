@@ -57,7 +57,7 @@ func ownedAnswerFixture(n int) (OwnedAnswerCorpus, *ownedAnswerTexts) {
 	return corpus, source
 }
 
-func loadOwnedAnswersTest(t *testing.T, ctx context.Context, emb Embedder, corpus OwnedAnswerCorpus, root string, chunker Chunker, model string) (*OwnedAnswerIndex, error) {
+func loadOwnedAnswersTest(ctx context.Context, t *testing.T, emb Embedder, corpus OwnedAnswerCorpus, root string, chunker Chunker, model string) (*OwnedAnswerIndex, error) {
 	t.Helper()
 	idx, err := LoadOwnedAnswers(ctx, emb, corpus, root, chunker, model)
 	if err == nil {
@@ -83,7 +83,7 @@ func TestOwnedAnswersWorkCounts(t *testing.T) {
 				source.reads.Store(0)
 				chunker.calls.Store(0)
 				emb.encoded = 0
-				idx, err := loadOwnedAnswersTest(t, t.Context(), emb, corpus, root, chunker, "test-model")
+				idx, err := loadOwnedAnswersTest(t.Context(), t, emb, corpus, root, chunker, "test-model")
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -157,13 +157,13 @@ func TestOwnedAnswersExactRankParity(t *testing.T) {
 	root := t.TempDir()
 	for _, query := range []string{"alpha beta alpha", "0000001", "é κόσμος", "nomatch", ""} {
 		for _, k := range []int{1, 5, 40} {
-			idx, err := loadOwnedAnswersTest(t, t.Context(), emb, corpus, root, chunker, "test-model")
+			idx, err := loadOwnedAnswersTest(t.Context(), t, emb, corpus, root, chunker, "test-model")
 			if err != nil {
 				t.Fatal(err)
 			}
 			for _, qvec := range [][]float32{detVec(query, emb.Dims()), make([]float32, emb.Dims())} {
 				want := rank.Rank(query, qvec, chunks, vectors, rank.Options{TopK: k})
-				got := rank.RankAnswers(query, qvec, idx, k)
+				got := rank.Answers(query, qvec, idx, k)
 				for i := range want {
 					want[i].Content = ""
 				}
@@ -182,7 +182,7 @@ func TestOwnedAnswersConcurrentCold(t *testing.T) {
 	var group errgroup.Group
 	for range 2 {
 		group.Go(func() error {
-			_, err := loadOwnedAnswersTest(t, t.Context(), &countingEmbedder{}, corpus, root, chunker, "test-model")
+			_, err := loadOwnedAnswersTest(t.Context(), t, &countingEmbedder{}, corpus, root, chunker, "test-model")
 			return err
 		})
 	}
@@ -198,7 +198,7 @@ func TestOwnedAnswersHeldReaderAllowsGenerationAdvance(t *testing.T) {
 	corpus, _ := ownedAnswerFixture(2)
 	root := t.TempDir()
 	chunker := &ownedAnswerChunker{}
-	if _, err := loadOwnedAnswersTest(t, t.Context(), &countingEmbedder{}, corpus, root, chunker, "model"); err != nil {
+	if _, err := loadOwnedAnswersTest(t.Context(), t, &countingEmbedder{}, corpus, root, chunker, "model"); err != nil {
 		t.Fatal(err)
 	}
 	paths, err := filepath.Glob(filepath.Join(root, "ccx", "*", "index.sqlite"))
@@ -224,7 +224,7 @@ func TestOwnedAnswersHeldReaderAllowsGenerationAdvance(t *testing.T) {
 		t.Fatalf("old documents=%d", documents)
 	}
 	corpus.Generation = "metadata-advance-with-held-reader"
-	if _, err := loadOwnedAnswersTest(t, t.Context(), &countingEmbedder{}, corpus, root, chunker, "model"); err != nil {
+	if _, err := loadOwnedAnswersTest(t.Context(), t, &countingEmbedder{}, corpus, root, chunker, "model"); err != nil {
 		var sqliteError *sqlite.Error
 		if errors.As(err, &sqliteError) && sqliteError.Code() == 5 {
 			t.Fatalf("generation advance blocked by held reader: SQLITE_BUSY (5): %v", err)
@@ -241,7 +241,7 @@ func TestOwnedAnswersHeldReaderAllowsGenerationAdvance(t *testing.T) {
 	if err := reader.Commit(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := loadOwnedAnswersTest(t, t.Context(), &countingEmbedder{}, corpus, root, chunker, "model"); err != nil {
+	if _, err := loadOwnedAnswersTest(t.Context(), t, &countingEmbedder{}, corpus, root, chunker, "model"); err != nil {
 		t.Fatalf("next reader did not see advanced generation: %v", err)
 	}
 }
@@ -250,7 +250,7 @@ func TestOwnedAnswersPublishedMainFileNeedsNoSidecars(t *testing.T) {
 	corpus, source := ownedAnswerFixture(2)
 	root := t.TempDir()
 	chunker := &ownedAnswerChunker{}
-	if _, err := loadOwnedAnswersTest(t, t.Context(), &countingEmbedder{}, corpus, root, chunker, "model"); err != nil {
+	if _, err := loadOwnedAnswersTest(t.Context(), t, &countingEmbedder{}, corpus, root, chunker, "model"); err != nil {
 		t.Fatal(err)
 	}
 	paths, err := filepath.Glob(filepath.Join(root, "ccx", "*", "index.sqlite"))
@@ -275,7 +275,7 @@ func TestOwnedAnswersPublishedMainFileNeedsNoSidecars(t *testing.T) {
 	}
 	source.err = errors.New("copied cache attempted source fallback")
 	source.reads.Store(0)
-	if _, err := loadOwnedAnswersTest(t, t.Context(), &countingEmbedder{}, corpus, copyRoot, chunker, "model"); err != nil {
+	if _, err := loadOwnedAnswersTest(t.Context(), t, &countingEmbedder{}, corpus, copyRoot, chunker, "model"); err != nil {
 		t.Fatalf("published main file requires missing sidecar: %v", err)
 	}
 	if source.reads.Load() != 0 {
@@ -290,7 +290,7 @@ func TestOwnedAnswersFailureAtomicityAndCorruption(t *testing.T) {
 	emb := &countingEmbedder{}
 	sentinel := errors.New("source failure")
 	source.err = sentinel
-	if _, err := loadOwnedAnswersTest(t, t.Context(), emb, corpus, root, chunker, "model"); !errors.Is(err, sentinel) {
+	if _, err := loadOwnedAnswersTest(t.Context(), t, emb, corpus, root, chunker, "model"); !errors.Is(err, sentinel) {
 		t.Fatalf("source failure=%v", err)
 	}
 	paths, err := filepath.Glob(filepath.Join(root, "ccx", "*", "index.sqlite"))
@@ -298,7 +298,7 @@ func TestOwnedAnswersFailureAtomicityAndCorruption(t *testing.T) {
 		t.Fatalf("partial published cache: %v %v", paths, err)
 	}
 	source.err = nil
-	if _, err := loadOwnedAnswersTest(t, t.Context(), emb, corpus, root, chunker, "model"); err != nil {
+	if _, err := loadOwnedAnswersTest(t.Context(), t, emb, corpus, root, chunker, "model"); err != nil {
 		t.Fatal(err)
 	}
 	paths, err = filepath.Glob(filepath.Join(root, "ccx", "*", "index.sqlite"))
@@ -316,7 +316,7 @@ func TestOwnedAnswersFailureAtomicityAndCorruption(t *testing.T) {
 		t.Fatal(err)
 	}
 	source.reads.Store(0)
-	if _, err := loadOwnedAnswersTest(t, t.Context(), emb, corpus, root, chunker, "model"); err == nil {
+	if _, err := loadOwnedAnswersTest(t.Context(), t, emb, corpus, root, chunker, "model"); err == nil {
 		t.Fatal("corrupt selected matrix accepted")
 	}
 	if source.reads.Load() != 0 {
@@ -328,7 +328,7 @@ func TestOwnedAnswersCancellation(t *testing.T) {
 	corpus, _ := ownedAnswerFixture(2)
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	if _, err := loadOwnedAnswersTest(t, ctx, &countingEmbedder{}, corpus, t.TempDir(), &ownedAnswerChunker{}, "model"); !errors.Is(err, context.Canceled) {
+	if _, err := loadOwnedAnswersTest(ctx, t, &countingEmbedder{}, corpus, t.TempDir(), &ownedAnswerChunker{}, "model"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancellation=%v", err)
 	}
 }
@@ -342,7 +342,7 @@ func TestOwnedAnswersSourceAndModelIdentity(t *testing.T) {
 		corpus.Binding = identity.binding
 		source.reads.Store(0)
 		emb.encoded = 0
-		if _, err := loadOwnedAnswersTest(t, t.Context(), emb, corpus, root, chunker, identity.model); err != nil {
+		if _, err := loadOwnedAnswersTest(t.Context(), t, emb, corpus, root, chunker, identity.model); err != nil {
 			t.Fatal(err)
 		}
 		if source.reads.Load() != 2 || emb.encoded != 2 {
@@ -356,7 +356,7 @@ func TestOwnedAnswersFailedAdvanceRetainsPublishedGeneration(t *testing.T) {
 	root := t.TempDir()
 	emb := &countingEmbedder{}
 	chunker := &ownedAnswerChunker{}
-	if _, err := loadOwnedAnswersTest(t, t.Context(), emb, corpus, root, chunker, "model"); err != nil {
+	if _, err := loadOwnedAnswersTest(t.Context(), t, emb, corpus, root, chunker, "model"); err != nil {
 		t.Fatal(err)
 	}
 	old := corpus
@@ -365,12 +365,12 @@ func TestOwnedAnswersFailedAdvanceRetainsPublishedGeneration(t *testing.T) {
 	corpus.Documents[0].TextDigest = contentHash("changed")
 	sentinel := errors.New("changed source failure")
 	source.err = sentinel
-	if _, err := loadOwnedAnswersTest(t, t.Context(), emb, corpus, root, chunker, "model"); !errors.Is(err, sentinel) {
+	if _, err := loadOwnedAnswersTest(t.Context(), t, emb, corpus, root, chunker, "model"); !errors.Is(err, sentinel) {
 		t.Fatalf("advance error=%v", err)
 	}
 	source.reads.Store(0)
 	emb.encoded = 0
-	if _, err := loadOwnedAnswersTest(t, t.Context(), emb, old, root, chunker, "model"); err != nil {
+	if _, err := loadOwnedAnswersTest(t.Context(), t, emb, old, root, chunker, "model"); err != nil {
 		t.Fatal(err)
 	}
 	if source.reads.Load() != 0 || emb.encoded != 0 {
@@ -399,7 +399,7 @@ func TestOwnedAnswersDefaultChunkerLegacyParity(t *testing.T) {
 	}
 	root := t.TempDir()
 	for _, query := range []string{"alpha alpha", "é κόσμος", "Heading", "absent"} {
-		owned, err := loadOwnedAnswersTest(t, ctx, &countingEmbedder{}, corpus, root, DefaultChunker(), "model")
+		owned, err := loadOwnedAnswersTest(ctx, t, &countingEmbedder{}, corpus, root, DefaultChunker(), "model")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -414,7 +414,7 @@ func TestOwnedAnswersDefaultChunkerLegacyParity(t *testing.T) {
 		for _, k := range []int{1, 5, 20} {
 			vector := detVec(query, 8)
 			want := rank.Rank(query, vector, legacy.Chunks, legacy.Vectors, rank.Options{TopK: k, BM25: legacy.BM25})
-			got := rank.RankAnswers(query, vector, owned, k)
+			got := rank.Answers(query, vector, owned, k)
 			for i := range want {
 				want[i].Content = ""
 			}

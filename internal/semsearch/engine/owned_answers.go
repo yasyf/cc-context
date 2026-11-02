@@ -24,7 +24,7 @@ func MatchAnswers(ctx context.Context, emb index.Embedder, corpus index.OwnedAns
 	if err != nil {
 		return nil, fmt.Errorf("embed query: %w", err)
 	}
-	hits := rank.RankAnswers(query, vecs[0], idx, topK(k))
+	hits := rank.Answers(query, vecs[0], idx, topK(k))
 	seen := map[string]bool{}
 	for _, id := range excluded {
 		seen[id] = true

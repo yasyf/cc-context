@@ -65,7 +65,7 @@ func TestOwnedAnswersMappedWarmProcess(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			child := exec.Command(executable, "-test.run=^TestOwnedAnswersMappedWarmChild$", "-test.v")
+			child := exec.Command(executable, "-test.run=^TestOwnedAnswersMappedWarmChild$", "-test.v") // #nosec G204 -- os.Executable selects this test binary and the single-test selector is literal
 			child.Env = append(os.Environ(), "CCX_OWNED_MATRIX_CHILD_ROOT="+copyRoot, "CCX_OWNED_MATRIX_CHILD_N="+strconv.Itoa(n))
 			output, err := child.CombinedOutput()
 			if err != nil {
@@ -140,7 +140,7 @@ func TestOwnedAnswersMappedWarmChild(t *testing.T) {
 	}
 	receipt := ownedMatrixProcessReceipt{N: n, Work: idx.Work, Allocated: after.TotalAlloc - before.TotalAlloc, Allocations: after.Mallocs - before.Mallocs, LoadNanos: elapsed.Nanoseconds(), CanonicalRead: source.reads.Load()}
 	for _, query := range []string{"alpha beta alpha", "0000001", "nomatch"} {
-		results := rank.RankAnswers(query, detVec(query, 8), idx, 5)
+		results := rank.Answers(query, detVec(query, 8), idx, 5)
 		for i := range results {
 			results[i].FilePath = strings.Clone(results[i].FilePath)
 		}
