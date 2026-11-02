@@ -3,6 +3,7 @@ on:
   schedule:
     - cron: "17 9 * * *"
   pull_request:
+    branches: [main]
   push:
     branches: [main]
 permissions:

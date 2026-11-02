@@ -1,6 +1,7 @@
 name: Native Git loose-ref controls
 on:
   pull_request:
+    branches: [main]
     paths:
       - scripts/git-loose-ref-*.patch
       - scripts/loose-ref-*.py

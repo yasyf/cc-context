@@ -4,6 +4,7 @@ on:
   schedule:
     - cron: "17 9 * * *"
   pull_request:
+    branches: [main]
     paths:
       - internal/semsearch/**
       - .github/fixtures/native-answer-corpus/**
