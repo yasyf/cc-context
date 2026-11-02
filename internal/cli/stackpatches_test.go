@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yasyf/cc-context/internal/execstub"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
@@ -31,9 +32,7 @@ func recordStackPatchBytes(t *testing.T, f *vcstest.Fixture) string {
 		"printf '%s\\0' \"$@\" > \"$out.argv\"\n" +
 		quote(recorded) + " \"$@\" > \"$out.patch\"\nstatus=$?\n/bin/cat \"$out.patch\"\nexit \"$status\"\nfi\n" +
 		"exec " + quote(recorded) + " \"$@\"\n"
-	if err := os.WriteFile(git, []byte(script), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	execstub.Write(t, git, script)
 	return output
 }
 
