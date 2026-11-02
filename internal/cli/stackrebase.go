@@ -2641,6 +2641,7 @@ func stackFetchRemoteHeads(ctx context.Context, dir render.Dir, prefix, remote s
 // restack makes diverges from the head it last pushed. A branch the run reads
 // at its published head is taken at that head, its local one never compared.
 func stackSnapshot(ctx context.Context, dir render.Dir, tr vcs.Trunk, s gtBranchState, name, remote, submitted string, pr *stackPR, declared bool, pin string, dropCommits, published bool) (stackRebaseBranch, error) {
+	ctx = context.WithValue(ctx, stackPatchSeriesKey{}, map[stackPatchRange][]string{})
 	b := stackRebaseBranch{
 		Name: name, WasParent: s.Parents[0].Ref, Local: s.Head, Remote: remote,
 		Head: s.Head, PR: pr, Held: s.State,
@@ -3096,7 +3097,27 @@ func stackQueueRestackBase(ctx context.Context, dir render.Dir, pin, remote, our
 	return base, nil
 }
 
+type stackPatchSeriesKey struct{}
+
+type stackPatchRange struct {
+	dir       render.Dir
+	pin, head string
+}
+
 func stackPatchSeries(ctx context.Context, dir render.Dir, pin, head string) ([]string, error) {
+	cache, _ := ctx.Value(stackPatchSeriesKey{}).(map[stackPatchRange][]string)
+	key := stackPatchRange{dir: dir, pin: pin, head: head}
+	if series, ok := cache[key]; ok {
+		return series, nil
+	}
+	series, err := stackReadPatchSeries(ctx, dir, pin, head)
+	if err == nil && cache != nil {
+		cache[key] = series
+	}
+	return series, err
+}
+
+func stackReadPatchSeries(ctx context.Context, dir render.Dir, pin, head string) ([]string, error) {
 	span := pin + ".." + head
 	merges, err := render.RunCLI(ctx, dir, "git", []string{"rev-list", "--merges", span})
 	if err != nil {
