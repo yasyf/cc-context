@@ -368,6 +368,20 @@ func (c *Client) Charge(ctx context.Context, identity, resource string) error {
 	return c.quota.charge(ctx, principal, resource, CallerName(ctx), http.Header{})
 }
 
+// Record charges one request another client in this process sent to target
+// with identity's token, and reads the pool's balance from the response's
+// rate-limit headers.
+func (c *Client) Record(ctx context.Context, identity, target string, header http.Header) error {
+	if c.quota == nil {
+		return nil
+	}
+	principal, err := c.principal(ctx, identity)
+	if err != nil {
+		return err
+	}
+	return c.quota.charge(ctx, principal, Resource(target), CallerName(ctx), header)
+}
+
 // Pools reads identity's pools fresh from rate_limit and returns them with
 // the callers the ledger charged since each last reset.
 func (c *Client) Pools(ctx context.Context, identity string) ([]Pool, error) {

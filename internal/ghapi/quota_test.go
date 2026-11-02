@@ -233,3 +233,22 @@ func TestChargesQueuedBehindAnotherHolderAllLandInOneFlush(t *testing.T) {
 		t.Errorf("pools = %+v, want %d requests charged", pools, charges)
 	}
 }
+
+func TestRecordChargesAnotherClientsRequestToItsCallerAndPool(t *testing.T) {
+	c, l := quotaClient(t, func(http.ResponseWriter, *http.Request) {})
+	t.Setenv("CCX_CALLER", "stack-submit")
+	header := http.Header{}
+	header.Set("X-RateLimit-Limit", "5000")
+	header.Set("X-RateLimit-Remaining", "4000")
+	header.Set("X-RateLimit-Reset", strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10))
+	if err := c.Record(t.Context(), IdentityUser, "https://api.github.com/graphql", header); err != nil {
+		t.Fatal(err)
+	}
+	pools, err := l.pools(IdentityUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pools) != 1 || pools[0].Resource != ResourceGraphQL || pools[0].Remaining != 4000 || len(pools[0].Callers) != 1 || pools[0].Callers[0] != (Caller{Caller: "stack-submit", Requests: 1}) {
+		t.Errorf("pools = %+v, want one graphql request by stack-submit with 4000 left", pools)
+	}
+}

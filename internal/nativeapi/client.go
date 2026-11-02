@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yasyf/cc-context/internal/ghapi"
 	"github.com/yasyf/cc-context/internal/version"
 )
 
@@ -33,9 +34,16 @@ type Client struct {
 	queueBase     string
 	trunkSSM      *trunkSSMSource
 	queueProvider string
+	charge        func(ctx context.Context, target string, header http.Header) error
 }
 
-var defaultClient = sync.OnceValue(func() *Client { return New(baseURLProd) })
+var defaultClient = sync.OnceValue(func() *Client {
+	c := New(baseURLProd)
+	c.charge = func(ctx context.Context, target string, header http.Header) error {
+		return ghapi.Default().Record(ctx, ghapi.IdentityUser, target, header)
+	}
+	return c
+})
 
 // Default shares GitHub authentication and HTTP connections within this process.
 func Default() *Client { return defaultClient() }
@@ -121,6 +129,11 @@ func (c *Client) attempt(ctx context.Context, base, token, method, path string, 
 		return nil, -1, fmt.Errorf("github-stack: %s %s: %w", method, req.URL, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
+	if c.charge != nil && base == c.base {
+		if err := c.charge(ctx, req.URL.String(), resp.Header); err != nil {
+			return nil, -1, err
+		}
+	}
 	payload, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, -1, err
