@@ -5,7 +5,7 @@ import subprocess
 import unittest
 
 EXPECTED_CANCEL = "${{ inputs.commit == '' && github.event_name == 'pull_request' }}"
-EXPECTED_DYNAMIC_PROFILES = 6
+EXPECTED_DYNAMIC_PROFILES = 9
 
 
 def load_workflow(name):
@@ -90,7 +90,7 @@ class NativeReleaseGateTest(unittest.TestCase):
                     profiles.append(os)
         self.assertEqual(len(profiles), EXPECTED_DYNAMIC_PROFILES)
         for profile in profiles:
-            self.assertIn("github.event_name == 'pull_request' || inputs.commit != ''", profile)
+            self.assertIn("github.event_name == 'pull_request'", profile)
             self.assertNotIn("github.event_name == 'workflow_dispatch'", profile)
 
 
