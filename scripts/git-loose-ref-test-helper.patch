@@ -1,9 +1,6 @@
 --- a/t/helper/test-ref-store.c
 +++ b/t/helper/test-ref-store.c
-@@ -297,6 +297,39 @@
- 	return refs_update_ref(refs, msg, refname,
- 			       &new_oid, old_oid_ptr,
- 			       flags, UPDATE_REFS_DIE_ON_ERR);
+@@ -299,0 +300,33 @@
 +}
 +
 +static int cmd_excluded_cache(struct ref_store *refs, const char **argv)
@@ -37,13 +34,5 @@
 +		return 1;
 +	puts("ALL_AFTER");
 +	return refs_for_each_ref(refs, each_ref, NULL);
- }
-
- struct command {
-@@ -323,6 +356,7 @@
- 	 */
- 	{ "delete-ref", cmd_delete_ref },
- 	{ "update-ref", cmd_update_ref },
+@@ -325,0 +359,1 @@
 +	{ "excluded-cache", cmd_excluded_cache },
- 	{ NULL, NULL }
- };

@@ -1,9 +1,6 @@
 --- a/revision.c
 +++ b/revision.c
-@@ -1650,6 +1650,22 @@
- 	cb->all_flags = flags;
- 	revs->rev_input_given = 1;
- 	cb->wt = NULL;
+@@ -1652,0 +1653,16 @@
 +}
 +
 +static int for_each_ref_excluding_hidden(struct ref_store *refs,
@@ -20,15 +17,6 @@
 +
 +	strvec_clear(&excludes);
 +	return ret;
- }
-
- static void handle_refs(struct ref_store *refs,
-@@ -2844,7 +2860,7 @@
- 	 * register it in the list at the top of handle_revision_opt.
- 	 */
- 	if (!strcmp(arg, "--all")) {
+@@ -2847,1 +2863,1 @@
 -		handle_refs(refs, revs, *flags, refs_for_each_ref);
 +		handle_refs(refs, revs, *flags, for_each_ref_excluding_hidden);
- 		handle_refs(refs, revs, *flags, refs_head_ref);
- 		if (!revs->single_worktree) {
- 			struct all_refs_cb cb;

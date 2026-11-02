@@ -86,7 +86,7 @@ def trace_check(repo, wanted, ledger, n, hidden, missing=False):
     row = {"label": label, "count": n, "hidden": hidden, "missing": missing, "exit": result.returncode, "ledger_objects_opened": len(opened & ledger), "all_loose_objects_opened": len(opened), "hidden_numeric_ref_opens": numeric_ref_opens, "loose_read_bytes": read_bytes, "trace_sha256": hashlib.sha256(trace.read_bytes()).hexdigest()}
     REPORT["rows"].append(row)
     if REF_LAYOUT == "loose":
-        expected = 0 if hidden and EXPECTED_HIDDEN_REF_OPENS == "0" else n
+        expected = 0 if missing or (hidden and EXPECTED_HIDDEN_REF_OPENS == "0") else n
         assert numeric_ref_opens == expected, row
     assert result.returncode != 0 if missing else result.returncode == 0, row
     if not missing:

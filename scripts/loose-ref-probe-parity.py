@@ -26,11 +26,14 @@ for layout in ["loose", "packed"]:
         for key in ["count", "hidden", "missing", "exit", "ledger_objects_opened", "all_loose_objects_opened"]:
             assert old[key] == new[key], (layout, label, key, old, new)
         if layout == "loose":
-            assert old["hidden_numeric_ref_opens"] == old["count"], (label, old)
-            expected = 0 if new["hidden"] else new["count"]
+            assert old["hidden_numeric_ref_opens"] == (0 if old["missing"] else old["count"]), (label, old)
+            expected = 0 if new["missing"] or new["hidden"] else new["count"]
             assert new["hidden_numeric_ref_opens"] == expected, (label, new)
         else:
             assert old["hidden_numeric_ref_opens"] == new["hidden_numeric_ref_opens"] == 0, (label, old, new)
+        old_stderr = (before / layout / f"{label}.stderr").read_bytes()
+        new_stderr = (after / layout / f"{label}.stderr").read_bytes()
+        assert old_stderr == new_stderr, (layout, label, old_stderr, new_stderr)
         report["fetch"].append({"layout": layout, "label": label, "count": old["count"], "hidden": old["hidden"], "missing": old["missing"], "exit": old["exit"], "before_ref_opens": old["hidden_numeric_ref_opens"], "after_ref_opens": new["hidden_numeric_ref_opens"]})
     fields = ["label", "hidden", "exit"]
     assert [{key: row[key] for key in fields} for row in left["fetches"]] == [{key: row[key] for key in fields} for row in right["fetches"]]
