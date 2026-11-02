@@ -220,10 +220,12 @@ submitted, and this lane's branches are replayed onto that head and submitted,
 so after the parent's lane restacks the parent, the child lane resubmits onto it
 from its own working copy. One with none of this lane's branches above it is
 skipped and named with the working copy holding it. A branch another live cci
-session claims, checked out or not, is that lane's the same way: ccx vcs ship
-and stack submit claim the branch of each pull request they open, and the lane
-that opened it owns it. --include submits it anyway, and --all-lanes submits
-every such branch. One whose pull request landed is no
+session claims is that lane's the same way: ccx vcs ship and stack submit claim
+the branch of each pull request they open, and the lane that opened it owns it
+until another lane checks it out. A branch this working copy has checked out,
+now or earlier by its HEAD reflog, is this lane's whoever claims it, unless a
+working copy of another lane holds it now. --include submits a claimed branch
+anyway, and --all-lanes submits every such branch. One whose pull request landed is no
 lane's any more: it is dropped like any landed branch, and the branches on it
 move onto trunk. Below the branch checked out here, a branch under one another
 lane holds or claims is that lane's too, kept at its published head whether or
@@ -234,7 +236,7 @@ such branch is named on stdout with the --include that takes it in; one never
 pushed has no published head to keep, so it is submitted as before.
 
 A branch whose name differs from the checked-out branch's before the last slash
-is another lane's too: one this lane sits on is kept at its published head,
+is another lane's too, unless this working copy has checked it out: one this lane sits on is kept at its published head,
 neither pushed nor submitted, and named on stderr; the rest are left out.
 --all-lanes, or --include for one branch, submits them anyway. A kept branch
 whose parent this run moves no longer sits on that parent's new head, so the

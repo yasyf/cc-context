@@ -294,6 +294,7 @@ func TestStackSubmitGoesThroughTheGraphiteAPI(t *testing.T) {
 func stackOtherLaneRepo(t *testing.T) (*vcstest.Fixture, *gtAPIStub, string) {
 	t.Helper()
 	f := shipGTRepo(t, vcstest.GTParentStack("l30/base", "l18/feature"))
+	stackForgetCheckouts(t, f)
 	stubOpenPRs(t, f, nil, "l30/base", "l18/feature")
 	api := stubGTAPI(t)
 	f.Decorate(api.ctx)
