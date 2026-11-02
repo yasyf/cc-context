@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -57,6 +58,27 @@ func TestDirUserCacheFallback(t *testing.T) {
 	}
 	if want := filepath.Join(base, "cc-context", "bin"); got != want {
 		t.Errorf("Dir(bin) = %q, want %q", got, want)
+	}
+}
+
+func TestRootsListsThePluginDataThenTheUserCache(t *testing.T) {
+	t.Parallel()
+	base, err := os.UserCacheDir()
+	if err != nil {
+		t.Fatalf("UserCacheDir: %v", err)
+	}
+	data := t.TempDir()
+	user := filepath.Join(base, "cc-context")
+	for _, tc := range []struct {
+		env  string
+		want []string
+	}{
+		{"CLAUDE_PLUGIN_DATA=" + data, []string{data, user}},
+		{"CLAUDE_PLUGIN_DATA=", []string{user}},
+	} {
+		if got := Roots(render.WithEnv(t.Context(), tc.env)); !slices.Equal(got, tc.want) {
+			t.Errorf("Roots(%s) = %q, want %q", tc.env, got, tc.want)
+		}
 	}
 }
 

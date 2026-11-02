@@ -110,8 +110,9 @@ func Load(ctx context.Context, emb Embedder, root string, content []ContentType,
 		}
 		prev := loadPersisted(dir, modelID, contentK, chunkerID, emb.Dims())
 		base, trustMtime := prev, true
-		if base == nil {
-			base = loadPersisted(filepath.Join(filepath.Dir(dir), legacyKey), modelID, contentK, chunkerID, emb.Dims())
+		priors := append([]string{filepath.Join(filepath.Dir(dir), legacyKey)}, movedIndexes(ctx, rootKey(root), vKey, legacyKey)...)
+		for i := 0; base == nil && i < len(priors); i++ {
+			base = loadPersisted(priors[i], modelID, contentK, chunkerID, emb.Dims())
 		}
 		if base == nil && famDir != "" {
 			candidates := append(siblingIndexes(famDir, dir), siblingIndexes(filepath.Join(filepath.Dir(famDir), legacyKey), dir)...)
