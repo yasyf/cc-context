@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -490,7 +491,9 @@ func TestShipTipOnlyMeasuresOwnCommitsAgainstThePublishedParent(t *testing.T) {
 	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "--force", "origin", "second-publish:parent")
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "child")
 
-	report := dryRunReport(t, f, "--no-commit", "--tip-only", "--parent", "parent")
+	body := filepath.Join(t.TempDir(), "body.md")
+	writeShipFile(t, filepath.Dir(body), "body.md", "Ships child.\n")
+	report := dryRunReport(t, f, "--no-commit", "--tip-only", "--parent", "parent", "--pr-body-file", body)
 
 	if refusals := dryRunValues(report, "refuses"); len(refusals) != 0 {
 		t.Errorf("refuses = %q, want none", refusals)
