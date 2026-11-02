@@ -1194,6 +1194,7 @@ func gtTrackableParent(ctx context.Context, c *gtCache, commonDir, branch, recor
 type gtRecordedParent struct {
 	name, base string
 	pr         int
+	published  bool
 }
 
 func gtAdoptRecordedParent(ctx context.Context, errW io.Writer, l lane, c *gtCache, state gtState, parent string) (string, error) {
@@ -1250,42 +1251,92 @@ func gtTrackFailed(l lane, branch, advice string, runErr error) error {
 
 // gtNativeTrackParent is the parent an untracked branch is tracked onto on the
 // native lane when no --parent names one: the base of its open pull request
-// when that is not trunk. A branch cut from another lane's push carries no
+// when that is not trunk, else the nearest branch below it whose published head
+// is an open pull request's. A branch cut from another lane's push carries no
 // commit of a branch this checkout tracks, so history alone reads it as cut
 // from trunk and a restack replays the other lane's commits into it.
 func gtNativeTrackParent(ctx context.Context, l lane, branch string) (gtRecordedParent, error) {
 	if !l.native {
 		return gtRecordedParent{}, nil
 	}
+	trunk, err := nativemeta.ReadTrunk(ctx, l.checkout.CommonDir)
+	if err != nil {
+		return gtRecordedParent{}, err
+	}
+	below, err := gtPublishedBelow(ctx, l.dir(), trunk, branch)
+	if err != nil {
+		return gtRecordedParent{}, err
+	}
 	owner, repo, err := gtRepoOwnerName(ctx, l, "ship")
 	if err != nil {
 		return gtRecordedParent{}, err
 	}
-	infos, err := gtAPI(ctx).PullRequestInfo(ctx, gtapi.PullRequestInfoRequest{RepoOwner: owner, RepoName: repo, PRHeadRefNames: []string{branch}, Callsite: "ccx"})
+	infos, err := gtAPI(ctx).PullRequestInfo(ctx, gtapi.PullRequestInfoRequest{RepoOwner: owner, RepoName: repo, PRHeadRefNames: append([]string{branch}, below...), Callsite: "ccx"})
 	if err != nil {
 		return gtRecordedParent{}, fmt.Errorf("ship: read the pull request of %s: %w", branch, err)
 	}
-	var recorded gtRecordedParent
+	open := map[string]gtapi.PullRequestInfo{}
 	for _, info := range infos {
-		if info.State == gtapi.PROpen && info.HeadRefName == branch {
-			recorded = gtRecordedParent{name: branch, base: info.BaseRefName, pr: info.PRNumber}
+		if info.State == gtapi.PROpen {
+			open[info.HeadRefName] = info
 		}
 	}
-	if recorded.base == "" {
-		return gtRecordedParent{}, nil
+	recorded := gtRecordedParent{}
+	if info, ok := open[branch]; ok {
+		recorded = gtRecordedParent{name: branch, base: info.BaseRefName, pr: info.PRNumber}
+	} else if i := slices.IndexFunc(below, func(name string) bool { _, ok := open[name]; return ok }); i >= 0 {
+		recorded = gtRecordedParent{name: branch, base: below[i], pr: open[below[i]].PRNumber, published: true}
 	}
-	trunk, err := nativemeta.ReadTrunk(ctx, l.checkout.CommonDir)
-	if err != nil || recorded.base == trunk {
-		return gtRecordedParent{}, err
+	if recorded.base == "" || recorded.base == trunk {
+		return gtRecordedParent{}, nil
 	}
 	local, err := gitRefExists(ctx, l.dir(), "ship", gtRestackRef(recorded.base))
 	if err != nil {
 		return gtRecordedParent{}, err
 	}
-	if !local {
+	switch {
+	case local:
+		return recorded, nil
+	case recorded.published:
+		return gtRecordedParent{}, refuse("ship: %s, the branch of open #%d that %s was cut from, is no local branch — fetch it with git fetch origin %s:%s, then ship again", recorded.base, recorded.pr, branch, recorded.base, recorded.base)
+	default:
 		return gtRecordedParent{}, refuse("ship: %s, the base of %s's open #%d, is no local branch — fetch it with git fetch origin %s:%s, then ship again", recorded.base, branch, recorded.pr, recorded.base, recorded.base)
 	}
-	return recorded, nil
+}
+
+// gtPublishedBelow names the remote branches whose heads are among branch's
+// commits above the remote trunk, nearest first.
+func gtPublishedBelow(ctx context.Context, dir render.Dir, trunk, branch string) ([]string, error) {
+	tr, err := gtTrunkRefOffline(ctx, dir, "ship", trunk)
+	if errors.Is(err, vcs.ErrNoTrunk) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	out, err := render.RunCLI(ctx, dir, "git", []string{"for-each-ref", "--format=%(objectname) %(refname:lstrip=3)", "refs/remotes/" + tr.Remote() + "/"})
+	if err != nil {
+		return nil, fmt.Errorf("ship: list %s's branches: %w", tr.Remote(), err)
+	}
+	at := map[string][]string{}
+	for line := range strings.Lines(out) {
+		head, name, _ := strings.Cut(strings.TrimSpace(line), " ")
+		if name != branch && name != trunk && name != "HEAD" {
+			at[head] = append(at[head], name)
+		}
+	}
+	if len(at) == 0 {
+		return nil, nil
+	}
+	out, err = render.RunCLI(ctx, dir, "git", []string{"rev-list", string(tr.Ref()) + ".." + gtRestackRef(branch)})
+	if err != nil {
+		return nil, fmt.Errorf("ship: list %s's commits above %s: %w", branch, tr.Ref(), err)
+	}
+	var below []string
+	for _, commit := range strings.Fields(out) {
+		below = append(below, at[commit]...)
+	}
+	return below, nil
 }
 
 func gtRecordedBase(ctx context.Context, l lane, branch string) (gtRecordedParent, error) {
