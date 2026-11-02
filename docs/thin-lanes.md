@@ -24,10 +24,10 @@ ccx creates the thin store on first use, then cuts the lane as a linked
 worktree of that store. From a store lane, every new lane is a linked
 worktree of the same store and is sparse like its caller, with or without
 `--thin` and regardless of the `CCX_STACK_NEW` default. Every lane also checks
-out tracked top-level `.claude`, `.agents`, and `tools` directories and
-`infra/ci/hooks` for project hooks, settings, skills, instructions, and repo
-tooling, alongside root files
-and inherited or `--include` directories. Only `--no-checkout` skips
+out tracked top-level `.claude` and `.agents` directories for project hooks,
+settings, skills, and instructions, alongside root files, inherited or
+`--include` directories, and the `ccx.sparseInclude` directories described in
+[Check out more directories](#check-out-more-directories). Only `--no-checkout` skips
 materializing files there; stacking works as usual. The summary line names the
 `git -C <path> sparse-checkout add <dir>` command that widens the lane.
 
@@ -84,8 +84,9 @@ ccx vcs stack new full-work --full-history
 ```
 
 `--full-history` creates a linked worktree of the checkout you run it from.
-It shares that checkout's history. In a repository tracking more than 5,000
-files, or with `--include`, it is sparse like a thin lane. The flag is refused
+It shares that checkout's history. With `--include`, or in a repository
+tracking more than 5,000 files once `ccx.sparseLanes` is set, it is sparse like
+a thin lane. The flag is refused
 inside the ccx thin store.
 
 ## Choose full history
@@ -111,13 +112,25 @@ requirements apply to the default too.
 ## Check out more directories
 
 A thin lane is always sparse. A lane in the caller's own clone, and a
-`ccx vcs worktree add` worktree, is sparse when the repository tracks more
-than 5,000 files at `HEAD` or `--include` is given; a smaller repository gets
-a full checkout, since a cone saves it nothing. A sparse lane inherits the
-source checkout's per-worktree sparse patterns when active, else root files
-alone. It also checks out the tracked top-level `.claude`, `.agents`, and
-`tools` directories, plus `infra/ci/hooks`, which the monorepo's `tools/ci`
-sources. Creation runs no hooks or setup scripts and installs no
+`ccx vcs worktree add` worktree, is a full checkout unless `--include` is
+given. To cut those lanes sparse in large repositories, opt in:
+
+```sh
+git config --global ccx.sparseLanes true
+```
+
+With it set, such a lane is sparse when the repository tracks more than 5,000
+files at `HEAD`; a smaller repository still gets a full checkout, since a cone
+saves it nothing. A sparse lane inherits the source checkout's per-worktree
+sparse patterns when active, else root files alone. It also checks out the
+tracked top-level `.claude` and `.agents` directories, plus every directory
+`ccx.sparseInclude` names. Add one value per directory a lane always needs:
+
+```sh
+git config --global --add ccx.sparseInclude tools
+git config --global --add ccx.sparseInclude infra/ci/hooks
+```
+ Creation runs no hooks or setup scripts and installs no
 dependencies. For a repository with a `src` directory, include it when
 creating the lane:
 

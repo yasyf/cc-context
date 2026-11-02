@@ -73,7 +73,7 @@ func runStackNew(cmd *cobra.Command, name string, options stackNewOpts) error {
 	thin := storage == storageThin && !inStore
 	sparseLane := options.sparse || (storage == storageThin || inStore || len(options.includes) > 0) && !options.noCheckout
 	if !sparseLane && !options.noCheckout && src.checkout.Kind == vcs.Git {
-		if sparseLane, err = laneLarge(ctx, src.dir()); err != nil {
+		if sparseLane, err = laneSparseByDefault(ctx, src.dir()); err != nil {
 			return err
 		}
 	}
@@ -103,7 +103,9 @@ func runStackNew(cmd *cobra.Command, name string, options stackNewOpts) error {
 			return err
 		}
 		if thin || inStore {
-			read = stackWithMetadata(read)
+			if read, err = stackWithMetadata(ctx, src.dir(), read); err != nil {
+				return err
+			}
 		}
 		sparse = &read
 	case sparseLane:
@@ -554,10 +556,15 @@ func stackReadSparse(ctx context.Context, dir render.Dir) (stackSparse, error) {
 	return sparse, nil
 }
 
-// laneLarge reports whether the checkout at dir tracks more than
-// laneSparseFiles files at HEAD, past which a lane is cut sparse by default; a
-// smaller repository gains nothing from a cone and loses every source dir.
-func laneLarge(ctx context.Context, dir render.Dir) (bool, error) {
+// laneSparseByDefault reports whether a lane cut from dir is sparse unasked:
+// only once ccx.sparseLanes is true, and then only when dir tracks more than
+// laneSparseFiles files at HEAD, since a smaller repository gains nothing from
+// a cone and loses every source dir.
+func laneSparseByDefault(ctx context.Context, dir render.Dir) (bool, error) {
+	on, err := stackConfigBool(ctx, dir, sparseLanesKey, false)
+	if err != nil || !on {
+		return false, err
+	}
 	out, err := render.RunCLI(ctx, dir, "git", []string{"ls-tree", "-r", "--name-only", "-z", "HEAD"})
 	if err != nil {
 		return false, err
@@ -566,13 +573,36 @@ func laneLarge(ctx context.Context, dir render.Dir) (bool, error) {
 }
 
 // laneSparse is the cone a lane cut from dir checks out by default: dir's own
-// active sparse set, else root files alone, plus laneConeDirs.
+// active sparse set, else root files alone, plus laneConeDirs and each
+// ccx.sparseInclude directory.
 func laneSparse(ctx context.Context, dir render.Dir) (stackSparse, error) {
 	inherited, err := stackThinSparse(ctx, dir)
 	if err != nil {
 		return stackSparse{}, err
 	}
-	return stackWithMetadata(inherited), nil
+	return stackWithMetadata(ctx, dir, inherited)
+}
+
+// laneIncludes is every directory ccx.sparseInclude adds to a sparse lane cut
+// from dir, in the order git config lists them.
+func laneIncludes(ctx context.Context, dir render.Dir) ([]string, error) {
+	out, code, stderr, err := render.RunCLIExitCode(ctx, dir, "git", []string{"config", "--get-all", sparseIncludeKey})
+	if err != nil {
+		return nil, err
+	}
+	if code == 1 {
+		return nil, nil
+	}
+	if code != 0 {
+		return nil, fmt.Errorf("stack new: read %s: %s", sparseIncludeKey, strings.TrimSpace(stderr))
+	}
+	var dirs []string
+	for line := range strings.Lines(out) {
+		if include := strings.TrimSpace(line); include != "" {
+			dirs = append(dirs, include)
+		}
+	}
+	return dirs, nil
 }
 
 // laneWiden is the summary segment naming the command that checks out one
@@ -589,7 +619,11 @@ func stackThinSparse(ctx context.Context, dir render.Dir) (stackSparse, error) {
 	return stackSparse{patterns: []byte("/*\n!/*/\n"), cone: true}, nil
 }
 
-func stackWithMetadata(s stackSparse) stackSparse {
+func stackWithMetadata(ctx context.Context, dir render.Dir, s stackSparse) (stackSparse, error) {
+	includes, err := laneIncludes(ctx, dir)
+	if err != nil {
+		return stackSparse{}, err
+	}
 	patterns := slices.Clone(s.patterns)
 	have := map[string]bool{}
 	for line := range strings.Lines(string(patterns)) {
@@ -605,7 +639,7 @@ func stackWithMetadata(s stackSparse) stackSparse {
 		}
 		patterns = append(patterns, pattern+"\n"...)
 	}
-	return stackSparse{patterns: patterns, cone: s.cone, dirs: slices.Concat(s.dirs, laneConeNested)}
+	return stackSparse{patterns: patterns, cone: s.cone, dirs: slices.Concat(s.dirs, includes)}, nil
 }
 
 func stackActiveSparse(ctx context.Context, dir render.Dir) (stackSparse, bool, error) {

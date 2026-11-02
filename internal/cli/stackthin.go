@@ -33,16 +33,17 @@ const (
 	thinNotesKey        = "cc-notes.storage"
 )
 
-const laneSparseFiles = 5000
+const (
+	laneSparseFiles  = 5000
+	sparseLanesKey   = "ccx.sparseLanes"
+	sparseIncludeKey = "ccx.sparseInclude"
+)
 
 var (
 	thinStoreConfig    = []string{"feature.experimental=true", "feature.manyFiles=true", "pack.threads=2"}
 	thinMirroredConfig = []string{"user.name", "user.email", "user.signingkey", "commit.gpgsign", nogtKey}
-	laneConeDirs       = []string{".claude", ".agents", "tools"}
-	// Forge-AI/monorepo's tools/ci sources infra/ci/hooks/lib/ci.sh before it
-	// runs anything, so a lane without it cannot run tools/ci or stack-enqueue.
-	laneConeNested   = []string{"infra/ci/hooks"}
-	thinDefaultPorts = map[string]string{"ssh": "22", "git+ssh": "22", "ssh+git": "22", "git": "9418", "http": "80", "https": "443"}
+	laneConeDirs       = []string{".claude", ".agents"}
+	thinDefaultPorts   = map[string]string{"ssh": "22", "git+ssh": "22", "ssh+git": "22", "git": "9418", "http": "80", "https": "443"}
 )
 
 type stackStorage int
