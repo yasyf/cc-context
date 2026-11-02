@@ -327,11 +327,7 @@ func (r *Relocator) retirementState(job *cleanup.Job, state cleanup.Retirement) 
 }
 
 func (r *Relocator) retirementBlocked(ctx context.Context, job *cleanup.Job, err error) (bool, error) {
-	reason := "identity"
-	if errors.Is(err, cleanup.ErrUnprobed) {
-		reason = timeoutReason
-	}
-	return r.block(ctx, job, reason, err.Error())
+	return r.block(ctx, job, probeReason("identity", err), err.Error())
 }
 
 // Retire unregisters an idle queued tree in place while physical deletion is paused.

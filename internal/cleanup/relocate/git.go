@@ -114,11 +114,13 @@ func unprobed(ctx, bounded context.Context, err error) error {
 	return err
 }
 
-func gitReason(err error) string {
+func gitReason(err error) string { return probeReason("git", err) }
+
+func probeReason(reason string, err error) string {
 	if errors.Is(err, cleanup.ErrUnprobed) {
 		return timeoutReason
 	}
-	return "git"
+	return reason
 }
 
 func (r *Relocator) stream(ctx context.Context, git string, delim byte, visit func(head []byte), args ...string) error {

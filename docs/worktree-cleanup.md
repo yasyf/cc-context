@@ -236,11 +236,13 @@ does not substitute for that result.
 The queue survives daemon restarts. It records each phase and checks the
 captured worktree identity before continuing. A path reused by another actor
 is not permission to delete the replacement. Identity mismatches and other
-errors block the job with diagnostics.
+errors block the job with diagnostics. A payload whose repository was deleted
+has no registry left to claim it, so its deletion proceeds.
 
 Every Git command used for relocation has a finite budget, one minute by
 default. An expired budget blocks the job with the transient `timeout`
-reason at its recorded phase; it retries with the existing backoff. Captured
+reason at its recorded phase; it retries with the existing backoff. A watcher or
+quarantine probe that cannot answer blocks the same way. Captured
 Git error output has a byte limit. Cancellation signals only the direct
 child, never a process group.
 

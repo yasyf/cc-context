@@ -127,6 +127,26 @@ func TestAdmitPassesAnAbsentPayload(t *testing.T) {
 	}
 }
 
+func TestAdmitPassesAPayloadWhoseRepositoryIsGone(t *testing.T) {
+	f := newFixture(t)
+	job := f.unregistered()
+	if err := os.Rename(f.repo, filepath.Join(f.root, "renamed")); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+
+	root, err := f.relocator.Admit(context.Background(), &job)
+	if err != nil {
+		t.Fatalf("Admit() error = %v", err)
+	}
+
+	if job.Blocked != nil {
+		t.Fatalf("blockage = %+v, want the payload admitted", job.Blocked)
+	}
+	if want := (cleanup.DeletionRoot{Dir: filepath.Dir(job.Payload), Name: filepath.Base(job.Payload), ID: job.Tree}); root != want {
+		t.Errorf("root = %+v, want %+v", root, want)
+	}
+}
+
 func TestAdmitBlocks(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -231,11 +251,19 @@ func TestAdmitBlocks(t *testing.T) {
 			f.write(carried, "gitdir: "+admin+"\n")
 			return fmt.Sprintf("%s registers %s, which moved to %s with the tree", admin, named, carried)
 		}, "reconcile", false, false},
-		{"the repository is gone", func(f *fixture, _ cleanup.Job) string {
-			if err := os.Rename(f.repo, filepath.Join(f.root, "renamed")); err != nil {
-				f.t.Fatalf("rename: %v", err)
+		{"the registry is unreadable", func(f *fixture, _ cleanup.Job) string {
+			if os.Geteuid() == 0 {
+				f.t.Skip("root reads through a closed directory")
 			}
-			return fmt.Sprintf("read worktree registry of %s: stat %s: no such file or directory", f.common, f.common)
+			registry := filepath.Join(f.common, "worktrees")
+			if err := os.MkdirAll(registry, 0o700); err != nil {
+				f.t.Fatalf("mkdir: %v", err)
+			}
+			if err := os.Chmod(registry, 0); err != nil {
+				f.t.Fatalf("chmod: %v", err)
+			}
+			f.t.Cleanup(func() { _ = os.Chmod(registry, 0o700) }) //nolint:gosec // restores a fixture directory so it can be removed
+			return fmt.Sprintf("read worktree registry of %s: open %s: permission denied", f.common, registry)
 		}, "reconcile", false, false},
 		{"the job folder is watched", func(f *fixture, _ cleanup.Job) string {
 			f.watchers.quarantine = func(context.Context, string) error { return errors.New("job folder sits under a watched root") }

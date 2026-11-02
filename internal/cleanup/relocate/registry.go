@@ -35,9 +35,6 @@ func enrolled(repo string) ([]entry, error) {
 	registry := filepath.Join(repo, "worktrees")
 	admins, err := os.ReadDir(registry)
 	if errors.Is(err, fs.ErrNotExist) {
-		if _, err := os.Stat(repo); err != nil {
-			return nil, fmt.Errorf("read worktree registry of %s: %w", repo, err)
-		}
 		return nil, nil
 	}
 	if err != nil {
