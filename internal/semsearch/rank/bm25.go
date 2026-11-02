@@ -138,12 +138,17 @@ func (b *BM25) SetDocOrder(chunkIDs []string) {
 // calls and tied documents compare exactly equal — a float64 sum over map-order
 // terms is not associative and would vary run to run.
 func (b *BM25) GetScores(tokens []string) []float64 {
-	scores := make([]float64, b.nOrder)
-	corpusSize := len(b.docLengths)
-	if len(tokens) == 0 || corpusSize == 0 || b.nOrder == 0 {
+	return ScoreBM25(tokens, b)
+}
+
+// ScoreBM25 preserves the float32 accumulation order for both resident and mapped corpora.
+func ScoreBM25(tokens []string, source BM25Source) []float64 {
+	scores := make([]float64, source.OrderSize())
+	corpusSize := source.Len()
+	if len(tokens) == 0 || corpusSize == 0 || source.OrderSize() == 0 {
 		return scores
 	}
-	avgdl := float64(b.totalDocLen) / float64(corpusSize)
+	avgdl := float64(source.TotalLength()) / float64(corpusSize)
 	terms := make([]string, 0, len(tokens))
 	queryTF := map[string]int{}
 	for _, t := range tokens {
@@ -152,23 +157,23 @@ func (b *BM25) GetScores(tokens []string) []float64 {
 		}
 		queryTF[t]++
 	}
-	acc := make([]float32, b.nOrder)
+	acc := make([]float32, source.OrderSize())
 	for _, term := range terms {
-		id, exists := b.terms[term]
-		if !exists {
+		docs := source.Postings(term)
+		if docs.Len() == 0 {
 			continue
 		}
-		docs := b.postings[id]
 		qtf := queryTF[term]
-		df := len(docs)
+		df := docs.Len()
 		idf := math.Log(1 + (float64(corpusSize)-float64(df)+0.5)/(float64(df)+0.5))
-		for _, p := range docs {
-			idx := b.positions[p.doc]
+		for i := 0; i < docs.Len(); i++ {
+			p := docs.At(i)
+			idx := source.Position(p.Document)
 			if idx < 0 {
 				continue
 			}
-			dl := b.docLengths[p.doc]
-			tfc := float64(p.tf) / (bm25K1*(1-bm25B+bm25B*float64(dl)/avgdl) + float64(p.tf))
+			dl := source.DocumentLength(p.Document)
+			tfc := float64(p.Frequency) / (bm25K1*(1-bm25B+bm25B*float64(dl)/avgdl) + float64(p.Frequency))
 			acc[idx] += float32(float64(qtf) * idf * tfc)
 		}
 	}

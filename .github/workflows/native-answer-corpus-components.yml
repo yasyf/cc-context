@@ -41,11 +41,48 @@ jobs:
           go-version-file: go.mod
           cache: true
       - uses: ./.github/actions/wasm
+      - name: Cross-build the Windows read-only mapping seam
+        if: runner.os == 'Linux'
+        run: CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build internal/semsearch/index/owned_mapping_windows.go
       - uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: b2c1bd4ac6a4ae8d0577aa90827aa78860c04d4e
           path: .ci-native-answer-corpus-before
           persist-credentials: false
+      - name: Genuine pre-mapped warm hydration baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/native-answer-corpus-components"
+          python3 - <<'PYBASE'
+          import hashlib, json, pathlib, shutil, subprocess
+          root = pathlib.Path.cwd()
+          before = root / ".ci-native-answer-corpus-before"
+          manifest = json.loads((root / ".github/fixtures/native-answer-corpus/warm-baseline.json").read_text())
+          assert subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=before, text=True).strip() == manifest["source"]
+          for name, expected in manifest["files"].items():
+              assert hashlib.sha256((before / name).read_bytes()).hexdigest() == expected, name
+          for name in ("go.mod", "go.sum"):
+              assert (root / name).read_bytes() == (before / name).read_bytes(), name
+          for name in ("internal/format/formatcore.wasm", "internal/semsearch/embed/embedcore.wasm"):
+              shutil.copyfile(root / name, before / name)
+          shutil.copytree(root / "internal/semsearch/chunk/grammars", before / "internal/semsearch/chunk/grammars", dirs_exist_ok=True)
+          PYBASE
+          (cd .ci-native-answer-corpus-before && go test -race -count=1 -json -run '^TestOwnedAnswersWorkCounts$' ./internal/semsearch/index) | tee "$RUNNER_TEMP/native-answer-corpus-components/warm-baseline.jsonl"
+          python3 - <<'PYBASE'
+          import json, os, pathlib, re
+          root = pathlib.Path(os.environ["RUNNER_TEMP"]) / "native-answer-corpus-components"
+          events = [json.loads(line) for line in (root / "warm-baseline.jsonl").read_text().splitlines()]
+          assert any(event.get("Test") == "TestOwnedAnswersWorkCounts" and event["Action"] == "pass" for event in events)
+          assert not any(event["Action"] in ("skip", "fail") for event in events)
+          pattern = re.compile(r"OWNED_ANSWER_WORK n=(\d+) generation=(\S+) canonical_text_reads=(\d+) chunker_inputs=(\d+) embedded_texts=(\d+) numeric_chunks=(\d+) vector_values=(\d+)")
+          counts = [match.groups() for event in events for match in pattern.finditer(event.get("Output", ""))]
+          for n in (32, 10000):
+              rows = [row for row in counts if int(row[0]) == n]
+              assert len(rows) == 6 and rows[1][1:5] == ("generation-A", "0", "0", "0"), rows
+              assert int(rows[1][5]) == n and int(rows[1][6]) == n * 8, rows
+          (root / "warm-baseline-verdict.json").write_text(json.dumps({"source": "b2c1bd4ac6a4ae8d0577aa90827aa78860c04d4e", "work_counts": counts, "scope": "Actual format2 row/vector hydration with fake8D embeddings; not physical IO or live CPU attribution"}, indent=2) + "\n")
+          PYBASE
       - name: Bind exact rollback fixtures and current dependencies
         shell: bash
         run: |
@@ -67,7 +104,7 @@ jobs:
               data = (root / name).read_bytes()
               assert data == (before / name).read_bytes(), name
               files[name] = hashlib.sha256(data).hexdigest()
-          for name in ("internal/semsearch/engine/owned_answers.go", "internal/semsearch/engine/owned_answers_test.go", "internal/semsearch/index/owned_answers.go", "internal/semsearch/index/owned_answers_test.go", "internal/semsearch/rank/bm25.go", "internal/semsearch/rank/bm25_snapshot_test.go", ".github/workflows/native-answer-corpus-components.yml"):
+          for name in ("internal/semsearch/engine/owned_answers.go", "internal/semsearch/engine/owned_answers_test.go", "internal/semsearch/index/owned_answers.go", "internal/semsearch/index/owned_answers_test.go", "internal/semsearch/index/owned_matrix.go", "internal/semsearch/index/owned_matrix_test.go", "internal/semsearch/index/owned_mapping_unix.go", "internal/semsearch/index/owned_mapping_windows.go", "internal/semsearch/rank/bm25.go", "internal/semsearch/rank/bm25_source.go", "internal/semsearch/rank/corpus.go", "internal/semsearch/rank/fusion.go", "internal/semsearch/rank/fusion_test.go", "internal/semsearch/rank/bm25_snapshot_test.go", ".github/fixtures/native-answer-corpus/warm-baseline.json", ".github/workflows/native-answer-corpus-components.yml"):
               files[name] = hashlib.sha256((root / name).read_bytes()).hexdigest()
           receipt = {"head": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(), "os": platform.system(), "baseline": manifest, "files": files, "GOMAXPROCS": os.environ["GOMAXPROCS"], "GOFLAGS": os.environ["GOFLAGS"]}
           (pathlib.Path(os.environ["RUNNER_TEMP"]) / "native-answer-corpus-components/source.json").write_text(json.dumps(receipt, indent=2) + "\n")
@@ -111,6 +148,7 @@ jobs:
               "TestOwnedAnswersHeldReaderAllowsGenerationAdvance", "TestOwnedAnswersPublishedMainFileNeedsNoSidecars",
               "TestOwnedAnswersFailureAtomicityAndCorruption", "TestOwnedAnswersCancellation", "TestOwnedAnswersSourceAndModelIdentity",
               "TestOwnedAnswersFailedAdvanceRetainsPublishedGeneration", "TestOwnedAnswersDefaultChunkerLegacyParity",
+              "TestOwnedAnswersMappedWarmProcess", "TestOwnedAnswersMappedReaderSurvivesPublication",
               "TestMatchAnswersExcludesAfterChunkTopK", "TestBM25QueryPostingsExactScores", "TestBM25RejectsInvalidPostings",
               "TestGoldenBM25Tokens", "TestGoldenBM25Scores", "TestGoldenQueryClassification", "TestChunkCorpusGoldens",
           }
@@ -122,7 +160,25 @@ jobs:
               expected = [("generation-A", n), ("generation-A", 0), ("body-edit", 1), ("metadata-only-tip-edit", 0), ("delete", 0), ("restore", 0)]
               assert [(row[1], int(row[2])) for row in actual] == expected, actual
               assert all(row[2] == row[3] == row[4] for row in actual), actual
-          (root / "fixed-verdict.json").write_text(json.dumps({"required_passed": sorted(required), "work_counts": counts, "embedding_fixture": "deterministic fake embedders; model package tests excluded"}, indent=2) + "\n")
+          matrix_pattern = re.compile(r"OWNED_ANSWER_MATRIX_WORK n=(\d+) generation=(\S+) materialization_sql_rows=(\d+) materialized_chunks=(\d+) decoded_values=(\d+) published_bytes=(\d+) mapped_bytes=(\d+) dense_rows=(\d+) dense_values=(\d+)")
+          matrix_counts = [match.groups() for event in events for match in matrix_pattern.finditer(event.get("Output", ""))]
+          process_pattern = re.compile(r"OWNED_ANSWER_FRESH_PROCESS_COST n=(\d+) mapped_bytes=(\d+) allocated_bytes=(\d+) allocations=(\d+) load_ns=(\d+) dense_values=(\d+)")
+          process_counts = [match.groups() for event in events for match in process_pattern.finditer(event.get("Output", ""))]
+          for n in (32, 10000):
+              rows = [row for row in matrix_counts if int(row[0]) == n]
+              assert len(rows) == 6, rows
+              assert rows[1][1:6] == ("generation-A", "0", "0", "0", "0"), rows
+              assert int(rows[1][6]) > 0 and int(rows[1][7]) == n and int(rows[1][8]) == n * 8, rows
+              assert all(int(row[3]) == int(row[7]) and int(row[4]) == int(row[8]) for i, row in enumerate(rows) if i != 1), rows
+              process = [row for row in process_counts if int(row[0]) == n]
+              assert len(process) == 1 and int(process[0][1]) > 0 and int(process[0][5]) == n * 8, process
+          storage_pattern = re.compile(r"OWNED_ANSWER_MATRIX_STORAGE n=(\d+) generation=(\S+) derived_bytes=(\d+)")
+          storage_counts = [match.groups() for event in events for match in storage_pattern.finditer(event.get("Output", ""))]
+          for n in (32, 10000):
+              rows = [row for row in storage_counts if int(row[0]) == n]
+              assert len(rows) == 6 and all(int(row[2]) > 0 for row in rows), rows
+          assert not any(event["Action"] == "skip" for event in events)
+          (root / "fixed-verdict.json").write_text(json.dumps({"required_passed": sorted(required), "work_counts": counts, "matrix_work_counts": matrix_counts, "fresh_process_costs": process_counts, "derived_storage_bytes": storage_counts, "embedding_fixture": "deterministic fake embedders; model package tests excluded", "scope": "Warm SQL/decode/materialization removed; mapped bytes and dense N math remain, allocation/load timing observed only; generation storage/history remains measured and unbounded here"}, indent=2) + "\n")
           PY
       - uses: actions/upload-artifact@v7
         if: always()

@@ -53,25 +53,32 @@ type Options struct {
 // the query embedding; vectors[i] is the embedding of chunks[i]. Mirrors
 // semble/search.py search.
 func Rank(query string, queryVec []float32, chunks []semsearch.Chunk, vectors [][]float32, opts Options) []semsearch.Result {
+	return rankCorpus(query, queryVec, denseCorpus{chunks: chunks, vectors: vectors}, chunks, opts, nil)
+}
+
+func rankCorpus(query string, queryVec []float32, source corpus, chunks []semsearch.Chunk, opts Options, bm BM25Scorer) []semsearch.Result {
 	alpha := ResolveAlpha(query, opts.Alpha)
 	candidateCount := opts.TopK * 5
 
-	semantic := searchSemantic(queryVec, vectors, chunks, candidateCount)
+	semantic := searchSemantic(queryVec, source, candidateCount)
 	semanticScores := make(map[int]float64, len(semantic))
 	for _, h := range semantic {
 		semanticScores[h.idx] = h.score
 	}
 
-	bm := opts.BM25
 	if bm == nil {
-		bm = buildBM25(chunks)
+		loaded := opts.BM25
+		if loaded == nil {
+			loaded = buildBM25(chunks)
+		}
+		bm = loaded
 	}
-	bm25 := searchBM25(bm, query, chunks, candidateCount)
+	bm25 := searchBM25(bm, query, source.Chunk, candidateCount)
 
-	normSemantic := rrfScores(semantic, chunks)
-	normBM25 := rrfScores(bm25, chunks)
+	normSemantic := rrfScores(semantic, source.Chunk)
+	normBM25 := rrfScores(bm25, source.Chunk)
 
-	union := unionOrdered(normSemantic, normBM25, chunks)
+	union := unionOrdered(normSemantic, normBM25, source.Chunk)
 	var combined []scored
 	for _, idx := range union {
 		score := alpha*normSemantic[idx] + (1.0-alpha)*normBM25[idx]
@@ -95,7 +102,7 @@ func Rank(query string, queryVec []float32, chunks []semsearch.Chunk, vectors []
 
 	results := make([]semsearch.Result, len(ranked))
 	for i, r := range ranked {
-		c := chunks[r.idx]
+		c := source.Chunk(r.idx)
 		results[i] = semsearch.Result{
 			FilePath:  c.Path,
 			StartLine: c.StartLine,
@@ -130,26 +137,22 @@ func Cosine(a, b []float32) float64 {
 	return dot / (math.Sqrt(na) * math.Sqrt(nb))
 }
 
-// searchSemantic returns the top candidateCount chunks by cosine similarity.
-// Mirrors semble/search.py _search_semantic over the whole corpus.
-func searchSemantic(queryVec []float32, vectors [][]float32, chunks []semsearch.Chunk, candidateCount int) []scored {
-	if candidateCount < 1 || len(vectors) == 0 {
+func searchSemantic(queryVec []float32, source corpus, candidateCount int) []scored {
+	if candidateCount < 1 || source.Len() == 0 {
 		return nil
 	}
-	hits := make([]scored, len(vectors))
-	for i := range vectors {
-		hits[i] = scored{idx: i, score: Cosine(queryVec, vectors[i])}
+	hits := make([]scored, source.Len())
+	for i := range hits {
+		hits[i] = scored{idx: i, score: Cosine(queryVec, source.Vector(i))}
 	}
-	sortByScoreThenCanonical(hits, chunks)
+	sortByScoreThenCanonical(hits, source.Chunk)
 	if candidateCount < len(hits) {
 		return hits[:candidateCount]
 	}
 	return hits
 }
 
-// searchBM25 returns the top candidateCount chunks by BM25 score, dropping
-// zero-score (unmatched) chunks. Mirrors semble/search.py _search_bm25.
-func searchBM25(bm *BM25, query string, chunks []semsearch.Chunk, candidateCount int) []scored {
+func searchBM25(bm BM25Scorer, query string, chunkAt func(int) semsearch.Chunk, candidateCount int) []scored {
 	tokens := Tokenize(query)
 	if len(tokens) == 0 {
 		return nil
@@ -159,7 +162,7 @@ func searchBM25(bm *BM25, query string, chunks []semsearch.Chunk, candidateCount
 	for i, s := range raw {
 		hits[i] = scored{idx: i, score: s}
 	}
-	sortByScoreThenCanonical(hits, chunks)
+	sortByScoreThenCanonical(hits, chunkAt)
 	if candidateCount < len(hits) {
 		hits = hits[:candidateCount]
 	}
@@ -191,25 +194,21 @@ func buildBM25(chunks []semsearch.Chunk) *BM25 {
 	return bm
 }
 
-// rrfScores maps each hit to its reciprocal-rank-fusion score 1/(k+rank).
-// Mirrors semble/search.py _rrf_scores.
-func rrfScores(hits []scored, chunks []semsearch.Chunk) map[int]float64 {
+func rrfScores(hits []scored, chunkAt func(int) semsearch.Chunk) map[int]float64 {
 	out := make(map[int]float64, len(hits))
 	if len(hits) == 0 {
 		return out
 	}
 	ranked := make([]scored, len(hits))
 	copy(ranked, hits)
-	sortByScoreThenCanonical(ranked, chunks)
+	sortByScoreThenCanonical(ranked, chunkAt)
 	for i, h := range ranked {
 		out[h.idx] = 1.0 / (rrfK + float64(i+1))
 	}
 	return out
 }
 
-// unionOrdered returns the union of two score maps' chunk indices, sorted by
-// (start_line, path) — semble/search.py's start-line pre-sort.
-func unionOrdered(a, b map[int]float64, chunks []semsearch.Chunk) []int {
+func unionOrdered(a, b map[int]float64, chunkAt func(int) semsearch.Chunk) []int {
 	set := make(map[int]bool, len(a)+len(b))
 	for idx := range a {
 		set[idx] = true
@@ -222,7 +221,7 @@ func unionOrdered(a, b map[int]float64, chunks []semsearch.Chunk) []int {
 		union = append(union, idx)
 	}
 	sort.Slice(union, func(i, j int) bool {
-		ca, cb := chunks[union[i]], chunks[union[j]]
+		ca, cb := chunkAt(union[i]), chunkAt(union[j])
 		if ca.StartLine != cb.StartLine {
 			return ca.StartLine < cb.StartLine
 		}
@@ -234,16 +233,12 @@ func unionOrdered(a, b map[int]float64, chunks []semsearch.Chunk) []int {
 	return union
 }
 
-// sortByScoreThenCanonical sorts hits by score descending, breaking ties by
-// (start_line, path) ascending and then by corpus index — a strict total order
-// over distinct chunks even when two chunks share both path and start_line (a
-// minified single-line file yields many chunks at start_line 1).
-func sortByScoreThenCanonical(hits []scored, chunks []semsearch.Chunk) {
+func sortByScoreThenCanonical(hits []scored, chunkAt func(int) semsearch.Chunk) {
 	sort.Slice(hits, func(i, j int) bool {
 		if hits[i].score != hits[j].score {
 			return hits[i].score > hits[j].score
 		}
-		ca, cb := chunks[hits[i].idx], chunks[hits[j].idx]
+		ca, cb := chunkAt(hits[i].idx), chunkAt(hits[j].idx)
 		if ca.StartLine != cb.StartLine {
 			return ca.StartLine < cb.StartLine
 		}

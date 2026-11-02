@@ -36,7 +36,7 @@ func TestRRFScores(t *testing.T) {
 		mkChunk("c.py", 3, ""), // 2
 	}
 	// scores 0.9/0.5/0.7 → ranks c0=1, c2=2, c1=3.
-	got := rrfScores([]scored{{0, 0.9}, {1, 0.5}, {2, 0.7}}, chunks)
+	got := rrfScores([]scored{{0, 0.9}, {1, 0.5}, {2, 0.7}}, denseCorpus{chunks: chunks}.Chunk)
 	want := map[int]float64{0: 1.0 / 61, 2: 1.0 / 62, 1: 1.0 / 63}
 	for idx, w := range want {
 		if !almostEqual(got[idx], w) {
@@ -52,7 +52,7 @@ func TestRRFScoresTieBrokenByStartLine(t *testing.T) {
 		mkChunk("b.py", 1, ""), // 1
 	}
 	// equal scores → tie broken by (start_line, path): c1 (line 1) ranks first.
-	got := rrfScores([]scored{{0, 0.5}, {1, 0.5}}, chunks)
+	got := rrfScores([]scored{{0, 0.5}, {1, 0.5}}, denseCorpus{chunks: chunks}.Chunk)
 	want := map[int]float64{1: 1.0 / 61, 0: 1.0 / 62}
 	for idx, w := range want {
 		if !almostEqual(got[idx], w) {
@@ -69,8 +69,8 @@ func TestFusionAlphaBlend(t *testing.T) {
 		mkChunk("c.py", 3, ""), // 2 — bm25 only
 	}
 	// semantic leg: c0 rank1, c1 rank2. bm25 leg: c1 rank1, c2 rank2.
-	normSem := rrfScores([]scored{{0, 0.9}, {1, 0.4}}, chunks)
-	normBM := rrfScores([]scored{{1, 0.9}, {2, 0.4}}, chunks)
+	normSem := rrfScores([]scored{{0, 0.9}, {1, 0.4}}, denseCorpus{chunks: chunks}.Chunk)
+	normBM := rrfScores([]scored{{1, 0.9}, {2, 0.4}}, denseCorpus{chunks: chunks}.Chunk)
 
 	const alpha = 0.5
 	want := map[int]float64{
