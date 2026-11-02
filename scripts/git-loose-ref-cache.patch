@@ -1,0 +1,182 @@
+--- a/refs/ref-cache.c
++++ b/refs/ref-cache.c
+@@ -2,6 +2,7 @@
+ #include "../hash.h"
+ #include "../refs.h"
+ #include "../repository.h"
++#include "../strvec.h"
+ #include "refs-internal.h"
+ #include "ref-cache.h"
+ #include "../iterator.h"
+@@ -276,12 +277,17 @@
+ 		return PREFIX_EXCLUDES_DIR;
+ }
+
+-/*
+- * Load all of the refs from `dir` (recursively) that could possibly
+- * contain references matching `prefix` into our in-memory cache. If
+- * `prefix` is NULL, prime unconditionally.
+- */
+-static void prime_ref_dir(struct ref_dir *dir, const char *prefix)
++static int ref_dir_is_excluded(const char *dirname,
++			       const struct strvec *excluded_prefixes)
++{
++	for (size_t i = 0; i < excluded_prefixes->nr; i++)
++		if (starts_with(dirname, excluded_prefixes->v[i]))
++			return 1;
++	return 0;
++}
++
++static void prime_ref_dir(struct ref_dir *dir, const char *prefix,
++			  const struct strvec *excluded_prefixes)
+ {
+ 	/*
+ 	 * The hard work of loading loose refs is done by get_ref_dir(), so we
+@@ -292,11 +298,11 @@
+ 	int i;
+ 	for (i = 0; i < dir->nr; i++) {
+ 		struct ref_entry *entry = dir->entries[i];
+-		if (!(entry->flag & REF_DIR)) {
+-			/* Not a directory; no need to recurse. */
+-		} else if (!prefix) {
+-			/* Recurse in any case: */
+-			prime_ref_dir(get_ref_dir(entry), NULL);
++		if (!(entry->flag & REF_DIR) ||
++		    ref_dir_is_excluded(entry->name, excluded_prefixes))
++			continue;
++		if (!prefix) {
++			prime_ref_dir(get_ref_dir(entry), NULL, excluded_prefixes);
+ 		} else {
+ 			switch (overlaps_prefix(entry->name, prefix)) {
+ 			case PREFIX_CONTAINS_DIR:
+@@ -305,10 +311,10 @@
+ 				 * don't have to check the prefix
+ 				 * anymore:
+ 				 */
+-				prime_ref_dir(get_ref_dir(entry), NULL);
++				prime_ref_dir(get_ref_dir(entry), NULL, excluded_prefixes);
+ 				break;
+ 			case PREFIX_WITHIN_DIR:
+-				prime_ref_dir(get_ref_dir(entry), prefix);
++				prime_ref_dir(get_ref_dir(entry), prefix, excluded_prefixes);
+ 				break;
+ 			case PREFIX_EXCLUDES_DIR:
+ 				/* No need to prime this directory. */
+@@ -374,6 +380,7 @@
+
+ 	struct repository *repo;
+ 	struct ref_cache *cache;
++	struct strvec excluded_prefixes;
+
+ 	int prime_dir;
+ };
+@@ -416,6 +423,8 @@
+ 		}
+
+ 		if (entry->flag & REF_DIR) {
++			if (ref_dir_is_excluded(entry->name, &iter->excluded_prefixes))
++				continue;
+ 			/* push down a level */
+ 			ALLOC_GROW(iter->levels, iter->levels_nr + 1,
+ 				   iter->levels_alloc);
+@@ -450,7 +459,7 @@
+ 	}
+
+ 	if (iter->prime_dir)
+-		prime_ref_dir(dir, prefix);
++		prime_ref_dir(dir, prefix, &iter->excluded_prefixes);
+ 	iter->levels_nr = 1;
+ 	level = &iter->levels[0];
+ 	level->index = -1;
+@@ -484,7 +493,7 @@
+ 		dir = get_ref_dir(iter->cache->root);
+
+ 		if (iter->prime_dir)
+-			prime_ref_dir(dir, refname);
++			prime_ref_dir(dir, refname, &iter->excluded_prefixes);
+
+ 		iter->levels_nr = 1;
+ 		level = &iter->levels[0];
+@@ -552,6 +561,7 @@
+ 		(struct cache_ref_iterator *)ref_iterator;
+ 	free(iter->prefix);
+ 	free(iter->levels);
++	strvec_clear(&iter->excluded_prefixes);
+ }
+
+ static struct ref_iterator_vtable cache_ref_iterator_vtable = {
+@@ -563,7 +573,8 @@
+ struct ref_iterator *cache_ref_iterator_begin(struct ref_cache *cache,
+ 					      const char *prefix,
+ 					      struct repository *repo,
+-					      int prime_dir)
++					      int prime_dir,
++					      const char **exclude_patterns)
+ {
+ 	struct cache_ref_iterator *iter;
+ 	struct ref_iterator *ref_iterator;
+@@ -576,6 +587,13 @@
+ 	iter->repo = repo;
+ 	iter->cache = cache;
+ 	iter->prime_dir = prime_dir;
++	strvec_init(&iter->excluded_prefixes);
++	if (exclude_patterns)
++		for (size_t i = 0; exclude_patterns[i]; i++) {
++			const char *pattern = exclude_patterns[i];
++			if (!has_glob_specials(pattern) && !strchr(pattern, '\\'))
++				strvec_push(&iter->excluded_prefixes, pattern);
++		}
+
+ 	if (cache_ref_iterator_seek(&iter->base, prefix,
+ 				    REF_ITERATOR_SEEK_SET_PREFIX) < 0) {
+--- a/refs/ref-cache.h
++++ b/refs/ref-cache.h
+@@ -201,16 +201,10 @@
+  */
+ void add_entry_to_dir(struct ref_dir *dir, struct ref_entry *entry);
+
+-/*
+- * Start iterating over references in `cache`. If `prefix` is
+- * specified, only include references whose names start with that
+- * prefix. If `prime_dir` is true, then fill any incomplete
+- * directories before beginning the iteration. The output is ordered
+- * by refname.
+- */
+ struct ref_iterator *cache_ref_iterator_begin(struct ref_cache *cache,
+ 					      const char *prefix,
+ 					      struct repository *repo,
+-					      int prime_dir);
++					      int prime_dir,
++					      const char **exclude_patterns);
+
+ #endif /* REFS_REF_CACHE_H */
+--- a/refs/files-backend.c
++++ b/refs/files-backend.c
+@@ -1095,7 +1095,8 @@
+ 	 */
+
+ 	loose_iter = cache_ref_iterator_begin(get_loose_ref_cache(refs, flags),
+-					      prefix, ref_store->repo, 1);
++					      prefix, ref_store->repo, 1,
++					      exclude_patterns);
+
+ 	/*
+ 	 * The packed-refs file might contain broken references, for
+@@ -1491,7 +1492,7 @@
+ 		limit = 16;
+
+ 	iter = cache_ref_iterator_begin(get_loose_ref_cache(refs, 0), NULL,
+-					refs->base.repo, 0);
++					refs->base.repo, 0, NULL);
+ 	while ((ret = ref_iterator_advance(iter)) == ITER_OK) {
+ 		if (should_pack_ref(refs, &iter->ref, opts))
+ 			refcount++;
+@@ -1531,7 +1532,7 @@
+ 	packed_refs_lock(refs->packed_ref_store, LOCK_DIE_ON_ERROR, &err);
+
+ 	iter = cache_ref_iterator_begin(get_loose_ref_cache(refs, 0), NULL,
+-					refs->base.repo, 0);
++					refs->base.repo, 0, NULL);
+ 	while ((ok = ref_iterator_advance(iter)) == ITER_OK) {
+ 		/*
+ 		 * If the loose reference can be packed, add an entry

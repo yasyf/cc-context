@@ -1,0 +1,49 @@
+--- a/t/helper/test-ref-store.c
++++ b/t/helper/test-ref-store.c
+@@ -297,6 +297,39 @@
+ 	return refs_update_ref(refs, msg, refname,
+ 			       &new_oid, old_oid_ptr,
+ 			       flags, UPDATE_REFS_DIE_ON_ERR);
++}
++
++static int cmd_excluded_cache(struct ref_store *refs, const char **argv)
++{
++	const char *excludes[] = { notnull(*argv++, "exclude"), NULL };
++	const char *updated = notnull(*argv++, "updated");
++	const char *deleted = notnull(*argv++, "deleted");
++	const char *created = notnull(*argv++, "created");
++	const char *target = notnull(*argv++, "target");
++	struct object_id before, after;
++	struct refs_for_each_ref_options opts = {
++		.exclude_patterns = excludes,
++	};
++
++	if (get_oid_hex(target, &after))
++		die("cannot parse %s as %s", target, the_hash_algo->name);
++	puts("FILTERED");
++	if (refs_for_each_ref_ext(refs, each_ref, NULL, &opts))
++		return 1;
++	if (refs_read_ref(refs, updated, &before))
++		return 1;
++	printf("DIRECT %s %s\n", updated, oid_to_hex(&before));
++	puts("ALL_BEFORE");
++	if (refs_for_each_ref(refs, each_ref, NULL))
++		return 1;
++	if (refs_update_ref(refs, "excluded-cache", updated, &after, &before,
++			    0, UPDATE_REFS_DIE_ON_ERR) ||
++	    refs_delete_ref(refs, "excluded-cache", deleted, NULL, 0) ||
++	    refs_update_ref(refs, "excluded-cache", created, &after, null_oid(the_hash_algo),
++			    0, UPDATE_REFS_DIE_ON_ERR))
++		return 1;
++	puts("ALL_AFTER");
++	return refs_for_each_ref(refs, each_ref, NULL);
+ }
+
+ struct command {
+@@ -323,6 +356,7 @@
+ 	 */
+ 	{ "delete-ref", cmd_delete_ref },
+ 	{ "update-ref", cmd_update_ref },
++	{ "excluded-cache", cmd_excluded_cache },
+ 	{ NULL, NULL }
+ };

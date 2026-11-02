@@ -1,0 +1,34 @@
+--- a/revision.c
++++ b/revision.c
+@@ -1650,6 +1650,22 @@
+ 	cb->all_flags = flags;
+ 	revs->rev_input_given = 1;
+ 	cb->wt = NULL;
++}
++
++static int for_each_ref_excluding_hidden(struct ref_store *refs,
++					refs_for_each_cb fn, void *cb_data)
++{
++	struct all_refs_cb *cb = cb_data;
++	struct strvec excludes = STRVEC_INIT;
++	struct refs_for_each_ref_options opts = {
++		.exclude_patterns = get_namespaced_exclude_patterns(
++			hidden_refs_to_excludes(&cb->all_revs->ref_excludes.hidden_refs),
++			get_git_namespace(), &excludes),
++	};
++	int ret = refs_for_each_ref_ext(refs, fn, cb_data, &opts);
++
++	strvec_clear(&excludes);
++	return ret;
+ }
+
+ static void handle_refs(struct ref_store *refs,
+@@ -2844,7 +2860,7 @@
+ 	 * register it in the list at the top of handle_revision_opt.
+ 	 */
+ 	if (!strcmp(arg, "--all")) {
+-		handle_refs(refs, revs, *flags, refs_for_each_ref);
++		handle_refs(refs, revs, *flags, for_each_ref_excluding_hidden);
+ 		handle_refs(refs, revs, *flags, refs_head_ref);
+ 		if (!revs->single_worktree) {
+ 			struct all_refs_cb cb;
