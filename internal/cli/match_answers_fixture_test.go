@@ -216,7 +216,7 @@ func runNativeMatchFixture(ctx context.Context, config nativeMatchFixtureConfig,
 		}
 		return json.NewEncoder(os.Stdout).Encode(answer)
 	case "answers":
-		answers, err := client.Answers(ctx, notes.DocumentFilter{Labels: config.Labels, Anchors: notes.AnchorFilter{Branch: config.Branch}})
+		answers, err := client.Answers(ctx, notes.DocumentFilter{Labels: config.Labels, Anchor: notes.AnchorFilter{Branch: config.Branch}})
 		if err != nil {
 			return err
 		}
