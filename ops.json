@@ -1,1 +1,1 @@
-{"v":1,"lamport":6,"ops":[{"kind":"remove_criterion","id":"76ad97cc6273643f30f0b88cd97645d0"}]}
+{"v":1,"lamport":7,"ops":[{"kind":"add_criterion","id":"b49c09b2e1b361c8309b8ec1cefa1a42","text":"Execute only the reviewed single helper update under fresh headroom/canonical admission, preserving physical deletion paused and all protected sessions/ancestors; prove new loaded image/source/kernel peer, source-proven non-job-mutating control scope, own hold release and natural children.","script":""}]}
