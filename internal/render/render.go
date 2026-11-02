@@ -472,7 +472,7 @@ func RunCLIExitCode(ctx context.Context, dir Dir, bin string, argv []string) (st
 func RunCLIExitCodeEnv(ctx context.Context, dir Dir, bin string, argv, extraEnv []string) (string, int, string, error) {
 	cmd, runCtx, cancel := newCmd(ctx, dir, bin, argv, extraEnv)
 	defer cancel()
-	return runCLIExitCode(cmd, runCtx, bin)
+	return runCLIExitCode(runCtx, cmd, bin)
 }
 
 // RunCLIExitCodeWithoutEnv removes named variables from this child alone after directory and context overrides.
@@ -483,10 +483,10 @@ func RunCLIExitCodeWithoutEnv(ctx context.Context, dir Dir, bin string, argv, wi
 		key, _, _ := strings.Cut(kv, "=")
 		return slices.Contains(withoutEnv, key)
 	})
-	return runCLIExitCode(cmd, runCtx, bin)
+	return runCLIExitCode(runCtx, cmd, bin)
 }
 
-func runCLIExitCode(cmd *exec.Cmd, runCtx context.Context, bin string) (string, int, string, error) {
+func runCLIExitCode(runCtx context.Context, cmd *exec.Cmd, bin string) (string, int, string, error) {
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

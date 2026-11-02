@@ -17,6 +17,7 @@ func TestLookupRepoInvalidatesEffectiveIncludedConfig(t *testing.T) {
 	for _, scope := range []string{"command", "nested", "global", "local", "gitdir", "onbranch", "static-shadow"} {
 		t.Run(scope, func(t *testing.T) {
 			f := vcstest.Repo(t)
+			f.Out(t, "git", "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
 			f.Isolate(t)
 			log := ghReplay(t, f, map[string][]string{
 				ghRepoVerb:    {"repo-api-foreign", "repo-api-own"},
@@ -145,22 +146,22 @@ func TestRepoCachePathInactiveAndMissingIncludes(t *testing.T) {
 func TestRepoCachePathDoesNotExposeConfig(t *testing.T) {
 	f := vcstest.Repo(t)
 	f.Isolate(t)
-	const secret = "private-config-marker"
-	f.Out(t, "git", "config", "credential.helper", secret)
+	const marker = "private-config-marker"
+	f.Out(t, "git", "config", "credential.helper", marker)
 	selected := filepath.Join(t.TempDir(), "static.gitconfig")
-	mustWriteFile(t, selected, "[credential]\n\thelper = "+secret+"\n")
+	mustWriteFile(t, selected, "[credential]\n\thelper = "+marker+"\n")
 	f.Setenv("GIT_CONFIG", selected)
 	path, err := RepoCachePath(f.Context(), f.Dir)
-	if err != nil || strings.Contains(path, secret) {
+	if err != nil || strings.Contains(path, marker) {
 		t.Fatalf("config fingerprint failed or exposed value: %v", err)
 	}
 	bin := t.TempDir()
 	execstub.Write(t, filepath.Join(bin, "git"), "#!/bin/sh\n"+
 		`test -z "${GIT_CONFIG+x}" || exit 8`+"\n"+
-		"printf '%s' "+shQuote(secret)+"\nprintf '%s' "+shQuote(secret)+" >&2\nexit 7\n")
+		"printf '%s' "+shQuote(marker)+"\nprintf '%s' "+shQuote(marker)+" >&2\nexit 7\n")
 	ctx := render.WithEnv(f.Context(), "PATH="+bin)
 	_, err = RepoCachePath(ctx, f.Dir)
-	if !errors.Is(err, ErrNoGitHub) || strings.Contains(err.Error(), secret) || !strings.Contains(err.Error(), "exit 7") {
+	if !errors.Is(err, ErrNoGitHub) || strings.Contains(err.Error(), marker) || !strings.Contains(err.Error(), "exit 7") {
 		t.Fatalf("config failure lost classification or exposed value: %v", err)
 	}
 }
