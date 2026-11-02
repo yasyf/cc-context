@@ -170,10 +170,14 @@ func layersAscend(layers []termLayer) bool {
 	return true
 }
 
-func placeFiles(root, variant string, files []fileManifest, chunks []semsearch.Chunk, vectors [][]float32, candidates []string) ([]fileManifest, []string, error) {
+type stagedSegment struct {
+	key, tmp string
+}
+
+func placeFiles(root, variant string, files []fileManifest, chunks []semsearch.Chunk, vectors [][]float32, candidates []string) ([]fileManifest, []string, []stagedSegment, error) {
 	base, offsets := chooseBase(root, files, len(chunks), candidates)
 	if base == "" {
-		return publishWhole(root, variant, files, chunks, vectors)
+		return stageWhole(root, variant, files, chunks, vectors)
 	}
 	placed := append([]fileManifest(nil), files...)
 	var overlay []segmentEntry
@@ -190,13 +194,14 @@ func placeFiles(root, variant string, files []fileManifest, chunks []semsearch.C
 		overlayVectors = append(overlayVectors, vectors[f.Start:f.Start+f.Count]...)
 	}
 	if len(overlay) == 0 {
-		return placed, []string{base}, nil
+		return placed, []string{base}, nil, nil
 	}
 	key := segmentKey(variant, overlay)
-	if err := publishSegment(root, key, overlay, overlayChunks, overlayVectors); err != nil {
-		return nil, nil, err
+	staged, err := stageSegment(root, key, overlay, overlayChunks, overlayVectors)
+	if err != nil {
+		return nil, nil, nil, err
 	}
-	return placed, []string{base, key}, nil
+	return placed, []string{base, key}, staged, nil
 }
 
 func chooseBase(root string, files []fileManifest, live int, candidates []string) (string, map[segmentFileID]int) {
@@ -235,7 +240,7 @@ func chooseBase(root string, files []fileManifest, live int, candidates []string
 	return best, bestOffsets
 }
 
-func publishWhole(root, variant string, files []fileManifest, chunks []semsearch.Chunk, vectors [][]float32) ([]fileManifest, []string, error) {
+func stageWhole(root, variant string, files []fileManifest, chunks []semsearch.Chunk, vectors [][]float32) ([]fileManifest, []string, []stagedSegment, error) {
 	placed := append([]fileManifest(nil), files...)
 	entries := make([]segmentEntry, len(placed))
 	for i, f := range placed {
@@ -243,38 +248,40 @@ func publishWhole(root, variant string, files []fileManifest, chunks []semsearch
 		entries[i] = segmentEntry{Path: f.Path, Hash: f.Hash, Offset: f.Start, Count: f.Count}
 	}
 	key := segmentKey(variant, entries)
-	if err := publishSegment(root, key, entries, chunks, vectors); err != nil {
-		return nil, nil, err
+	staged, err := stageSegment(root, key, entries, chunks, vectors)
+	if err != nil {
+		return nil, nil, nil, err
 	}
-	return placed, []string{key}, nil
+	return placed, []string{key}, staged, nil
 }
 
-func publishSegment(root, key string, entries []segmentEntry, chunks []semsearch.Chunk, vectors [][]float32) error {
-	final := filepath.Join(root, key)
-	if validSegment(final, key) {
-		now := time.Now()
-		return os.Chtimes(final, now, now)
+func stageSegment(root, key string, entries []segmentEntry, chunks []semsearch.Chunk, vectors [][]float32) ([]stagedSegment, error) {
+	if validSegment(filepath.Join(root, key), key) {
+		return nil, nil
 	}
 	tmp, err := os.MkdirTemp(root, segmentTempPrefix)
 	if err != nil {
-		return fmt.Errorf("create segment dir: %w", err)
+		return nil, fmt.Errorf("create segment dir: %w", err)
 	}
-	defer func() { _ = os.RemoveAll(tmp) }()
 	if err := writeSegment(tmp, key, entries, chunks, vectors); err != nil {
-		return err
+		_ = os.RemoveAll(tmp)
+		return nil, err
 	}
-	if err := os.Rename(tmp, final); err == nil {
-		return nil
-	}
-	if validSegment(final, key) {
-		now := time.Now()
-		return os.Chtimes(final, now, now)
-	}
-	if err := os.RemoveAll(final); err != nil {
-		return fmt.Errorf("remove invalid segment %s: %w", key, err)
-	}
-	if err := os.Rename(tmp, final); err != nil && !validSegment(final, key) {
-		return fmt.Errorf("install segment %s: %w", key, err)
+	return []stagedSegment{{key: key, tmp: tmp}}, nil
+}
+
+func installSegments(root string, staged []stagedSegment) error {
+	for _, s := range staged {
+		final := filepath.Join(root, s.key)
+		if validSegment(final, s.key) {
+			continue
+		}
+		if err := os.RemoveAll(final); err != nil {
+			return fmt.Errorf("remove invalid segment %s: %w", s.key, err)
+		}
+		if err := os.Rename(s.tmp, final); err != nil {
+			return fmt.Errorf("install segment %s: %w", s.key, err)
+		}
 	}
 	return nil
 }
@@ -312,9 +319,9 @@ func readSegmentManifest(dir string) (segmentManifest, error) {
 	return seg, nil
 }
 
-func segmentsPresent(root string, keys []string) bool {
+func segmentsValid(root string, keys []string) bool {
 	for _, key := range keys {
-		if _, err := os.Stat(filepath.Join(root, key, segmentFile)); err != nil {
+		if !validSegment(filepath.Join(root, key), key) {
 			return false
 		}
 	}
@@ -329,13 +336,26 @@ func store(ctx context.Context, dir string, man manifest, chunks []semsearch.Chu
 		}
 	}
 	variant := filepath.Base(dir)
-	files, segments, err := placeFiles(root, variant, man.Files, chunks, vectors, candidates)
+	files, segments, staged, err := placeFiles(root, variant, man.Files, chunks, vectors, candidates)
 	if err != nil {
 		return err
 	}
+	defer func() {
+		for _, s := range staged {
+			_ = os.RemoveAll(s.tmp)
+		}
+	}()
 	return cache.WithLock(ctx, root, segmentLock, func() error {
-		if !segmentsPresent(root, segments) {
-			if files, segments, err = publishWhole(root, variant, man.Files, chunks, vectors); err != nil {
+		if err := installSegments(root, staged); err != nil {
+			return err
+		}
+		if !segmentsValid(root, segments) {
+			var whole []stagedSegment
+			if files, segments, whole, err = stageWhole(root, variant, man.Files, chunks, vectors); err != nil {
+				return err
+			}
+			staged = append(staged, whole...)
+			if err := installSegments(root, whole); err != nil {
 				return err
 			}
 		}

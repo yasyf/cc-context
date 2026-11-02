@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -160,9 +161,17 @@ func TestPruneSweepsOnlyUnreferencedSegmentsPastTheirGrace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	orphan := filepath.Join(filepath.Dir(root), strings.Repeat("f", 64), "orphan")
 	man, chunks, vectors := cacheFixture()
-	fresh := segmentKey("fresh", []segmentEntry{{Path: "a.go", Count: len(chunks)}})
-	if err := publishSegment(root, fresh, []segmentEntry{{Path: "a.go", Offset: man.Files[0].Start, Count: len(chunks)}}, chunks, vectors); err != nil {
+	if err := store(ctx, orphan, man, chunks, vectors, nil); err != nil {
+		t.Fatal(err)
+	}
+	orphaned, err := readManifest(orphan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh := orphaned.Segments[0]
+	if err := os.Remove(filepath.Join(orphan, manifestFile)); err != nil {
 		t.Fatal(err)
 	}
 	abandoned := filepath.Join(root, segmentTempPrefix+"abandoned")
@@ -186,6 +195,43 @@ func TestPruneSweepsOnlyUnreferencedSegmentsPastTheirGrace(t *testing.T) {
 		_, err := os.Stat(filepath.Join(root, dir))
 		if got := err == nil; got != want {
 			t.Errorf("segment %s kept = %t, want %t", dir, got, want)
+		}
+	}
+}
+
+func TestLoadRecoversFromACorruptSharedSegment(t *testing.T) {
+	t.Parallel()
+	main, linked := layeredFamily(t)
+	writeLayeredFile(t, linked, "pkg/f03.go", "package pkg\n\nfunc Handler03() string { return \"linked\" }\n")
+	ctx := render.WithEnv(t.Context(), "CLAUDE_PLUGIN_DATA="+t.TempDir(), cacheEnv+"=")
+	emb := &countingEmbedder{}
+	content := []ContentType{ContentCode}
+	for _, repo := range []string{main, linked} {
+		if _, err := Load(ctx, emb, repo, content, DefaultChunker(), "model-x"); err != nil {
+			t.Fatalf("Load %s: %v", repo, err)
+		}
+	}
+	base := indexManifest(ctx, t, main).Segments[0]
+	root, err := semsearchDir(ctx, segmentsDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, base, chunksFile), []byte("corrupt"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeLayeredFile(t, linked, "pkg/f04.go", "package pkg\n\nfunc Handler04() string { return \"linked again\" }\n")
+
+	for _, repo := range []string{linked, main} {
+		idx, err := Load(ctx, emb, repo, content, DefaultChunker(), "model-x")
+		if err != nil {
+			t.Fatalf("Load %s over a corrupt base: %v", repo, err)
+		}
+		if idx.TotalFiles != layeredFixtureFiles {
+			t.Errorf("%s TotalFiles = %d, want %d", repo, idx.TotalFiles, layeredFixtureFiles)
+		}
+		man := indexManifest(ctx, t, repo)
+		if !segmentsValid(root, man.Segments) {
+			t.Errorf("%s manifest names segments %v that do not open", repo, man.Segments)
 		}
 	}
 }
