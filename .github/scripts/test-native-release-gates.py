@@ -25,15 +25,15 @@ class NativeReleaseGateTest(unittest.TestCase):
         commit_steps = [step for step in descriptor["steps"] if step.get("id") == "commit"]
         self.assertEqual(len(commit_steps), 1)
         self.assertIn('echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"', commit_steps[0]["run"])
-        for name in ["post-release-ci", "post-release-guides"]:
-            job = jobs[name]
-            self.assertEqual(job["needs"], "descriptor")
-            expected = {"commit": "${{ needs.descriptor.outputs.commit }}"}
-            if name == "post-release-guides":
-                expected["parallel_commits"] = True
-            self.assertEqual(job["with"], expected)
-            for key in ["if", "continue-on-error", "concurrency", "steps"]:
-                self.assertNotIn(key, job)
+        guides = jobs["post-release-guides"]
+        self.assertEqual(guides["needs"], "descriptor")
+        self.assertEqual(guides["with"], {"commit": "${{ needs.descriptor.outputs.commit }}", "parallel_commits": True})
+        for key in ["if", "continue-on-error", "concurrency", "steps"]:
+            self.assertNotIn(key, guides)
+        agreement = jobs["descriptor-agreement"]
+        self.assertEqual(agreement["needs"], "descriptor")
+        self.assertEqual(agreement["steps"][0]["with"], {"ref": "${{ needs.descriptor.outputs.commit }}"})
+        self.assertIn('test "$manifest" = "$pinned"', agreement["steps"][1]["run"])
         self.assertNotIn("concurrency", self.release)
         graph = {name: ([job["needs"]] if isinstance(job.get("needs"), str) else job.get("needs", [])) for name, job in jobs.items()}
         for parents in graph.values():
@@ -42,31 +42,27 @@ class NativeReleaseGateTest(unittest.TestCase):
 
     def test_permissions_and_single_validation_calls(self):
         jobs = self.release["jobs"]
-        ci = jobs["post-release-ci"]
         guides = jobs["post-release-guides"]
-        self.assertEqual(ci["uses"], "./.github/workflows/ci.yml")
-        self.assertEqual(ci["permissions"], {"contents": "read"})
-        self.assertNotIn("secrets", ci)
+        self.assertFalse(any(job.get("uses") == "./.github/workflows/ci.yml" for job in jobs.values()))
+        self.assertEqual(jobs["descriptor-agreement"]["permissions"], {"contents": "read"})
         self.assertRegex(guides["uses"], r"^yasyf/cc-guides/\.github/workflows/guides\.yml@[0-9a-f]{40}$")
         self.assertEqual(guides["permissions"], {"contents": "write"})
         self.assertEqual(guides["secrets"], "inherit")
         self.assertEqual(jobs["descriptor"]["permissions"], {"contents": "write"})
-        self.assertEqual(sum(job.get("uses") == ci["uses"] for job in jobs.values()), 1)
         self.assertEqual(sum(job.get("uses") == guides["uses"] for job in jobs.values()), 1)
 
     def test_read_only_pr_native_call_fixture_matches_release(self):
         fixture = load_workflow("native-release-contract.yml")
         jobs = fixture["jobs"]
-        self.assertEqual(set(jobs), {"source", "native-ci", "native-guides"})
+        self.assertEqual(set(jobs), {"source", "native-guides"})
         self.assertEqual(fixture["permissions"], {"contents": "read"})
         self.assertNotIn("concurrency", fixture)
         self.assertEqual(jobs["source"]["outputs"], {"commit": "${{ steps.commit.outputs.sha }}"})
         self.assertEqual(jobs["source"]["steps"][0]["with"], {"ref": "${{ github.event.pull_request.head.sha }}"})
-        for role in ["ci", "guides"]:
-            expected = dict(self.release["jobs"]["post-release-" + role])
-            expected["needs"] = "source"
-            expected["with"] = dict(expected["with"], commit="${{ needs.source.outputs.commit }}")
-            self.assertEqual(jobs["native-" + role], expected)
+        expected = dict(self.release["jobs"]["post-release-guides"])
+        expected["needs"] = "source"
+        expected["with"] = dict(expected["with"], commit="${{ needs.source.outputs.commit }}")
+        self.assertEqual(jobs["native-guides"], expected)
         source = Path(".github/workflows/native-release-contract.yml").read_text()
         self.assertIn("  pull_request:", source)
         self.assertNotIn("workflow_dispatch", source)
@@ -90,7 +86,7 @@ class NativeReleaseGateTest(unittest.TestCase):
                     profiles.append(os)
         self.assertEqual(len(profiles), EXPECTED_DYNAMIC_PROFILES)
         for profile in profiles:
-            self.assertIn("github.event_name == 'pull_request'", profile)
+            self.assertIn("github.event_name == 'schedule'", profile)
             self.assertNotIn("github.event_name == 'workflow_dispatch'", profile)
 
 

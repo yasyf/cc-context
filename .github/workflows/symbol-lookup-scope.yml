@@ -1,6 +1,8 @@
 name: Symbol lookup scope
 
 on:
+  schedule:
+    - cron: "17 9 * * *"
   pull_request:
     paths:
       - internal/symbol/**
@@ -41,7 +43,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ github.event_name == 'pull_request' && fromJSON('["ubuntu-latest"]') || fromJSON('["ubuntu-latest","macos-latest"]') }}
+        os: ${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["ubuntu-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
     env:
       GOMAXPROCS: "2"
       GOFLAGS: -p=2

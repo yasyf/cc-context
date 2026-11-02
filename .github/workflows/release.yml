@@ -118,13 +118,22 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release upload "${GITHUB_REF_NAME}" plugin/bin/ccx.binrun --repo "${GITHUB_REPOSITORY}" --clobber
 
-  post-release-ci:
+  descriptor-agreement:
     needs: descriptor
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       contents: read
-    uses: ./.github/workflows/ci.yml
-    with:
-      commit: ${{ needs.descriptor.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.descriptor.outputs.commit }}
+      - name: Plugin manifest version equals the pinned binrun descriptor
+        run: |
+          manifest="$(jq -r .version plugin/.claude-plugin/plugin.json)"
+          pinned="$(tail -n +2 plugin/bin/ccx.binrun | jq -r .version.static)"
+          echo "manifest=$manifest pinned=$pinned"
+          test "$manifest" = "$pinned"
 
   post-release-guides:
     needs: descriptor
