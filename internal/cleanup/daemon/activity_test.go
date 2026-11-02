@@ -131,7 +131,7 @@ func TestBusySessionsStopDeletionUntilTwoQuietSamples(t *testing.T) {
 }
 
 func TestBusySessionsHoldLogicalWorkOnTheVolume(t *testing.T) {
-	bubble(t, gated(), func(t *testing.T, h *harness) {
+	bubble(t, gated(), func(_ *testing.T, h *harness) {
 		withActivity(h, busySessions)
 		h.seed("a", 1, cleanup.PhasePrepared)
 		h.deleter.put("a", &payload{entries: 50})

@@ -29,7 +29,7 @@ var (
 )
 
 type procTaskAllInfo struct {
-	bsd    procBSDInfo
+	_      procBSDInfo
 	_      [16]byte
 	user   uint64
 	system uint64
@@ -94,18 +94,23 @@ func timeCreates(dir string) (time.Duration, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return 0, fmt.Errorf("native: make the create probe directory: %w", err)
 	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return 0, fmt.Errorf("native: open the create probe directory: %w", err)
+	}
+	defer func() { _ = root.Close() }()
 	took := make([]time.Duration, createProbes)
 	for i := range took {
-		path := filepath.Join(dir, "probe-"+strconv.Itoa(i))
+		name := "probe-" + strconv.Itoa(i)
 		start := time.Now()
-		f, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+		f, err := root.OpenFile(name, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 		if err != nil {
 			return 0, fmt.Errorf("native: create probe file: %w", err)
 		}
 		if err := f.Close(); err != nil {
 			return 0, fmt.Errorf("native: close probe file: %w", err)
 		}
-		if err := os.Remove(path); err != nil {
+		if err := root.Remove(name); err != nil {
 			return 0, fmt.Errorf("native: remove probe file: %w", err)
 		}
 		took[i] = time.Since(start)
