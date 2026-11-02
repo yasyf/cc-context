@@ -3822,13 +3822,12 @@ func stackFreeWorkspace(ctx context.Context, l lane, name string) (string, error
 		if err != nil {
 			return "", err
 		}
-		_, err = os.Lstat(ws)
-		switch {
-		case err == nil, slices.ContainsFunc(worktrees, func(w vcs.Holding) bool { return w.Path == ws }):
-		case errors.Is(err, fs.ErrNotExist):
+		free, err := laneFree(ctx, stackRebasePrefix, ws)
+		if err != nil {
+			return "", err
+		}
+		if free && !slices.ContainsFunc(worktrees, func(w vcs.Holding) bool { return w.Path == ws }) {
 			return ws, nil
-		default:
-			return "", fmt.Errorf("stack rebase: %w", err)
 		}
 	}
 }
@@ -3843,6 +3842,9 @@ func stackOpenConflict(ctx context.Context, cmd *cobra.Command, l lane, commonDi
 	}
 	if _, err := render.RunCLI(ctx, l.dir(), "git", []string{"-c", "core.hooksPath=/dev/null", "worktree", "add", "--detach", "--no-checkout", ws, b.Head}); err != nil {
 		return fmt.Errorf("stack rebase: git worktree add %s: %w", ws, err)
+	}
+	if err := recordLane(ctx, stackRebasePrefix, ws); err != nil {
+		return err
 	}
 	registration, err := cleanupObserveWorkspace(ws)
 	if err != nil {

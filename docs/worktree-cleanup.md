@@ -21,6 +21,16 @@ worktree name or an absolute path.
 `--wait` also works with `--path`. On macOS, removal reports a cleanup job ID
 for later inspection.
 
+A lane name is never cut twice. `ccx vcs worktree add`, `ccx vcs stack new`,
+and the stack's conflict workspaces record every path they cut, and removal
+records every path it takes. The record covers the path and its lane name,
+`<repository pool>/<name>`, under every worktree root. A later cut of a recorded
+name refuses and suggests the next free suffix, such as `feat-2`, whether the
+old tree's deletion is still pending or long done. Conflict workspaces take
+that suffix on their own. The record lives under
+`~/.daemonkit/a/ccx-cleanup/names`, one file per key, so the check is one read
+per key.
+
 Removal refuses the main checkout, locked trees, active sessions, nested
 worktrees, and unsupported submodule layouts. Dirty work requires `--force`.
 That flag permits discarding uncommitted files only; it never overrides the

@@ -42,6 +42,11 @@ func DefaultLayout() Layout {
 	return Layout{Root: paths.Agent(AgentName).StateDir()}
 }
 
+// LayoutUnder is the layout DefaultLayout names for a user whose home is home.
+func LayoutUnder(home string) Layout {
+	return Layout{Root: filepath.Join(home, paths.Agent(AgentName).App)}
+}
+
 // JobsDir is the parent of every job folder.
 func (l Layout) JobsDir() string { return filepath.Join(l.Root, "jobs") }
 

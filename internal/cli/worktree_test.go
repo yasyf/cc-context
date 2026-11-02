@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yasyf/cc-context/internal/cleanup"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcs"
 	"github.com/yasyf/cc-context/internal/vcstest"
@@ -65,6 +66,15 @@ func addPoolWorktree(t *testing.T, f *vcstest.Fixture, name string) string {
 		t.Fatalf("add %s error = %v", name, err)
 	}
 	return worktreeSummaryPath(t, out)
+}
+
+// forgetLaneNames drops the isolated home's index of used lane names, which an
+// add interrupted before it finished never wrote.
+func forgetLaneNames(t *testing.T) {
+	t.Helper()
+	if err := os.RemoveAll(filepath.Join(cleanup.LayoutUnder(os.Getenv("HOME")).Root, "names")); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // worktreeRegistered reports whether git's own registry still carries path.
@@ -414,6 +424,7 @@ func TestWorktreeAddReclaimsAnInterruptedAdd(t *testing.T) {
 			f.Isolate(t)
 			head := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD")
 			path := addPoolWorktree(t, f, "feat")
+			forgetLaneNames(t)
 			admin := gitAt(t, f.Env(), path, "rev-parse", "--absolute-git-dir")
 			if err := os.WriteFile(filepath.Join(admin, "locked"), []byte("initializing\n"), 0o600); err != nil {
 				t.Fatal(err)
@@ -1481,5 +1492,53 @@ func TestWorktreeParkOnAFreeTrunkIsANoop(t *testing.T) {
 	}
 	if !strings.Contains(out, "already free") {
 		t.Errorf("park summary = %q, want the free trunk reported", out)
+	}
+}
+
+func TestWorktreeAddNeverCutsALaneNameTwice(t *testing.T) {
+	tests := []struct {
+		name   string
+		before func(t *testing.T, f *vcstest.Fixture) string
+		by     string
+	}{
+		{"a removed lane whose deletion is pending", func(t *testing.T, f *vcstest.Fixture) string {
+			path := filepath.Join(os.Getenv("HOME"), ".claude", "worktrees", filepath.Base(f.Dir), "feat")
+			if err := os.MkdirAll(path, 0o750); err != nil {
+				t.Fatal(err)
+			}
+			if err := cleanup.LayoutUnder(os.Getenv("HOME")).Names().Record(path, "cleanup job 0000000000000001-000001", time.Now()); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.RemoveAll(path); err != nil {
+				t.Fatal(err)
+			}
+			return path
+		}, "cleanup job 0000000000000001-000001"},
+		{"a lane whose deletion completed", func(t *testing.T, f *vcstest.Fixture) string {
+			path := addPoolWorktree(t, f, "feat")
+			mustRun(t, f.Env(), f.Dir, "git", "worktree", "remove", "--force", path)
+			mustRun(t, f.Env(), f.Dir, "git", "branch", "-D", "feat")
+			return path
+		}, "worktree add"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := vcstest.Repo(t)
+			f.Isolate(t)
+			path := tt.before(t, f)
+
+			_, err := runWorktreeCmd(t, f, "add", "feat")
+			if err == nil || !strings.Contains(err.Error(), "lane "+cleanup.LaneName(path)+" was already used by "+tt.by) || !strings.Contains(err.Error(), "such as feat-2") {
+				t.Fatalf("re-cut error = %v, want a refusal naming %s's use by %s and suggesting feat-2", err, cleanup.LaneName(path), tt.by)
+			}
+			if _, err := os.Lstat(path); !errors.Is(err, fs.ErrNotExist) {
+				t.Errorf("stat %s after the refusal = %v, want nothing cut", path, err)
+			}
+
+			fresh := addPoolWorktree(t, f, "feat-2")
+			if filepath.Base(fresh) != "feat-2" {
+				t.Errorf("fresh name cut %q, want feat-2", fresh)
+			}
+		})
 	}
 }

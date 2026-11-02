@@ -678,6 +678,12 @@ func (e *Engine) load() error {
 	if err != nil {
 		return fmt.Errorf("cleanup daemon: find the volume it guards: %w", err)
 	}
+	names := e.layout.Names()
+	for _, job := range jobs {
+		if err := names.Record(job.Original, "cleanup job "+job.ID, job.Created); err != nil {
+			return fmt.Errorf("cleanup daemon: %w", err)
+		}
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	for _, job := range jobs {

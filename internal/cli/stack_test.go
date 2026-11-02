@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yasyf/cc-context/internal/cleanup"
 	"github.com/yasyf/cc-context/internal/gtmeta"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcs"
@@ -2096,5 +2097,28 @@ func TestStackPublishesAboveALaneBranchOriginRewroteUnderTheCopyItCarries(t *tes
 				t.Errorf("top holds %s commits over mid, want its own 1", n)
 			}
 		})
+	}
+}
+
+func TestStackNewNeverCutsALaneNameTwice(t *testing.T) {
+	f := shipGTRepo(t, vcstest.GTStack("base"))
+	out, _, err := runStackCmd(t, f, "new", "--full-history", "feature")
+	if err != nil {
+		t.Fatalf("stack new: %v", err)
+	}
+	path := out[strings.LastIndex(out, shipSep)+len(shipSep):]
+	gitAt(t, f.Env(), f.Dir, "worktree", "remove", "--force", path)
+
+	_, _, err = runStackCmd(t, f, "new", "--full-history", "feature")
+	if err == nil || !strings.Contains(err.Error(), "lane "+cleanup.LaneName(path)+" was already used by stack new") || !strings.Contains(err.Error(), "such as feature-2") {
+		t.Fatalf("re-cut error = %v, want a refusal naming %s's use by stack new and suggesting feature-2", err, cleanup.LaneName(path))
+	}
+
+	out, _, err = runStackCmd(t, f, "new", "--full-history", "feature-2")
+	if err != nil {
+		t.Fatalf("stack new feature-2: %v", err)
+	}
+	if fresh := out[strings.LastIndex(out, shipSep)+len(shipSep):]; filepath.Base(fresh) != "feature-2" {
+		t.Errorf("fresh name cut %q, want feature-2", fresh)
 	}
 }

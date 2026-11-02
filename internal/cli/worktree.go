@@ -524,6 +524,9 @@ func runWorktreeAdd(cmd *cobra.Command, name, requested string, includes []strin
 	if err != nil {
 		return err
 	}
+	if err := refuseUsedLane(ctx, "worktree add", l.checkout, name, path); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return fmt.Errorf("worktree add: mint pool for %q: %w", name, err)
 	}
@@ -601,6 +604,9 @@ func runWorktreeAdd(cmd *cobra.Command, name, requested string, includes []strin
 		} else if err := worktreeTrack(trackingContext, cmd.ErrOrStderr(), l, base.parent, path); err != nil {
 			return err
 		}
+	}
+	if err := recordLane(ctx, "worktree add", path); err != nil {
+		return err
 	}
 	cmd.Println(strings.Join(slices.Concat([]string{"added " + name, worktreeShapeOf(mode), base.segment()}, reclaimed, tracked, widen, []string{path}), shipSep))
 	return nil
@@ -1151,6 +1157,9 @@ func removeOrphanWorktree(ctx context.Context, cmd *cobra.Command, path string, 
 	if err != nil {
 		return err
 	}
+	if err := recordLane(ctx, "worktree rm --path", path); err != nil {
+		return err
+	}
 	removed, err := deleteOrphanWorktree(path, rechecked)
 	if err != nil {
 		return err
@@ -1328,6 +1337,9 @@ func removeGitWorktree(ctx context.Context, cmd *cobra.Command, l lane, wt vcs.W
 		if err != nil {
 			return err
 		}
+		if err := recordLane(ctx, "worktree rm", wt.Path); err != nil {
+			return err
+		}
 		return reportGitWorktreeRemoval(ctx, cmd, name, shape, wt.Path, receipt, opts.wait)
 	}
 	argv := []string{"worktree", "remove"}
@@ -1336,6 +1348,9 @@ func removeGitWorktree(ctx context.Context, cmd *cobra.Command, l lane, wt vcs.W
 	}
 	if _, err := render.RunCLI(ctx, l.dir(), "git", append(argv, wt.Path)); err != nil {
 		return fmt.Errorf("worktree rm: git worktree remove %s: %w", wt.Path, err)
+	}
+	if err := recordLane(ctx, "worktree rm", wt.Path); err != nil {
+		return err
 	}
 	cmd.Println(strings.Join(segs, shipSep))
 	return nil
