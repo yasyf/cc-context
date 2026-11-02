@@ -440,6 +440,10 @@ func stackNativeAdopt(ctx context.Context, l lane, tr vcs.Trunk, state gtState, 
 		state[current] = gtBranchState{Head: head, Parents: []gtRef{{Ref: base, SHA: fork}}}
 		adopted[current] = state[current]
 	}
+	state, err := stackNativeAdoptAncestors(ctx, l, tr, state, adopted, current)
+	if err != nil {
+		return nil, nil, err
+	}
 	moves, planned, err := nativeStackParents(ctx, l, state, current)
 	if err != nil {
 		return nil, nil, err
@@ -450,6 +454,59 @@ func stackNativeAdopt(ctx context.Context, l lane, tr vcs.Trunk, state gtState, 
 		}
 	}
 	return planned, adopted, nil
+}
+
+func stackNativeAdoptAncestors(ctx context.Context, l lane, tr vcs.Trunk, state, adopted gtState, current string) (gtState, error) {
+	var tracked gtState
+	seen := map[string]bool{}
+	for cur := current; cur != tr.Name() && !seen[cur]; {
+		seen[cur] = true
+		s := state[cur]
+		if s.Trunk || len(s.Parents) == 0 {
+			break
+		}
+		parent := s.Parents[0].Ref
+		cur = parent
+		if _, known := state[parent]; known || parent == tr.Name() {
+			continue
+		}
+		if tracked == nil {
+			full, err := gtStateAt(ctx, l.checkout.CommonDir, stackRebasePrefix)
+			if err != nil {
+				return nil, err
+			}
+			tracked, state = full, maps.Clone(state)
+		}
+		if entry, known := tracked[parent]; known {
+			state[parent] = entry
+			continue
+		}
+		exists, err := gitRefExists(ctx, l.dir(), stackRebasePrefix, gtRestackRef(parent))
+		if err != nil || !exists {
+			return state, err
+		}
+		merged := maps.Clone(tracked)
+		maps.Copy(merged, state)
+		below, err := gtNearestTracked(ctx, l.dir(), merged, tr.Name(), parent)
+		if err != nil {
+			return nil, err
+		}
+		head, err := gtRestackHead(ctx, stackRebasePrefix, l.dir(), parent)
+		if err != nil {
+			return nil, err
+		}
+		floor := string(tr.Ref())
+		if below != tr.Name() {
+			floor = gtRestackRef(below)
+		}
+		fork, err := stackMergeBase(ctx, l.dir(), head, floor)
+		if err != nil {
+			return nil, err
+		}
+		state[parent] = gtBranchState{Head: head, Parents: []gtRef{{Ref: below, SHA: fork}}}
+		adopted[parent] = state[parent]
+	}
+	return state, nil
 }
 
 func stackOpenPR(ctx context.Context, l lane, branch string) (gtapi.PullRequestInfo, error) {
