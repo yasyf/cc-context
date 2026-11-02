@@ -1676,7 +1676,7 @@ func gtOntoPlan(ctx context.Context, l lane, o shipOpts, branch, parent, trunk s
 	if err != nil || on {
 		return gtOntoMove{onto: onto}, err
 	}
-	upstream := gtRestackRef(parent)
+	upstream := onto
 	var offTrunk map[string]bool
 	if parent == trunk {
 		upstream, onto, err = gtRemoteTrunkOnto(ctx, l.dir(), parent, upstream, onto)
