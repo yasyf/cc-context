@@ -340,6 +340,11 @@ func readTermsMapped(data []byte) (string, *termStore, error) {
 	if !ascendingTo(s.termOffsets, termBytes) || !ascendingTo(s.postingOffsets, uint64(nPostings)) {
 		return "", nil, errors.New("terms.bin: offset tables are not ascending to their section ends")
 	}
+	for i := 1; i < nTerms; i++ {
+		if s.term(i-1) >= s.term(i) {
+			return "", nil, errors.New("terms.bin: term table is not strictly ascending")
+		}
+	}
 	s.lengths = make([]int, nDocs)
 	for i := range s.lengths {
 		s.lengths[i] = int(binary.LittleEndian.Uint32(lengthBytes[4*i:]))
