@@ -36,6 +36,7 @@ const orphanShape = "orphaned checkout"
 const (
 	orphanStepEntries = 4096
 	orphanStepBudget  = time.Second
+	orphanStepWorkers = 16
 )
 
 const (
@@ -1226,7 +1227,7 @@ func deleteOrphanWorktree(path string, tree os.FileInfo) (int, error) {
 	}
 	removed := 0
 	for {
-		n, done, err := deletion.Step(orphanStepEntries, orphanStepBudget)
+		n, done, err := deletion.Step(orphanStepEntries, orphanStepBudget, orphanStepWorkers)
 		removed += n
 		switch {
 		case err != nil:
