@@ -300,7 +300,10 @@ func dryRunTrack(ctx context.Context, l lane, o shipOpts, state gtState, r *ship
 			}
 		}
 		r.because = "untracked, so gt track --parent records it (ship drops -f, which would outrank it)" + replay
-		if recorded.base != "" {
+		switch {
+		case recorded.published:
+			r.because = fmt.Sprintf("untracked, so ship tracks it on the branch of open #%d it was cut from", recorded.pr) + replay
+		case recorded.base != "":
 			r.because = fmt.Sprintf("untracked, so ship tracks it on the base of its open #%d", recorded.pr) + replay
 		}
 		if o.parent == r.trunk && !o.amend {

@@ -244,6 +244,70 @@ func TestShipTracksABranchCutFromAnotherLaneOnItsPullRequestBase(t *testing.T) {
 	}
 }
 
+// TestShipTracksABranchCutFromAnotherLanesPublishedHead ships mine, a new
+// branch with no pull request cut from the published head of theirs, another
+// lane's open pull request this checkout never tracked. Nothing named theirs,
+// so ship recorded mine on main at the old merge base and every --tip-only ship
+// planned a whole-stack rebase onto main.
+func TestShipTracksABranchCutFromAnotherLanesPublishedHead(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		local bool
+		flags []string
+	}{
+		{name: "ship", local: true},
+		{name: "tip only", local: true, flags: []string{"--tip-only"}},
+		{name: "theirs is only on origin", local: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := shipRepo(t, vcstest.Remote())
+			f.Decorate(func(ctx context.Context) context.Context { return withStackProvider(ctx, true) })
+			mustRun(t, f.Env(), f.Dir, "git", "config", "ccx.stack", "github")
+			shipGTUntracked(t, f, "theirs")
+			mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "theirs")
+			shipGTUntracked(t, f, "mine")
+			mine := gitAt(t, f.Env(), f.Dir, "rev-parse", "mine")
+			if !tt.local {
+				mustRun(t, f.Env(), f.Dir, "git", "branch", "-qD", "theirs")
+			}
+			if err := nativemeta.Init(f.Context(), filepath.Join(f.Dir, ".git"), "main"); err != nil {
+				t.Fatal(err)
+			}
+			api := stubGTAPI(t)
+			api.openPRs("theirs")
+			api.bases["theirs"], api.recorded["theirs"] = "main", "main"
+			f.Decorate(api.ctx)
+			stubStackPRs(t, f, nil)
+			stubStackStanding(t, f, nil)
+			shipGTReady(t, f)
+
+			_, err := runShipCmd(f.Context(), t, append([]string{"-m", "fix: frobnicate", "--no-push"}, tt.flags...)...)
+			state, stateErr := gtStateQuery(f.Context(), render.Dir(f.Dir), "test")
+			if stateErr != nil {
+				t.Fatal(stateErr)
+			}
+			if !tt.local {
+				if err == nil || !strings.Contains(err.Error(), "theirs, the branch of open #9000 that mine was cut from, is no local branch") {
+					t.Fatalf("ship error = %v, want a refusal naming theirs as the branch to fetch", err)
+				}
+				if s, tracked := state["mine"]; tracked {
+					t.Errorf("mine = %+v, want it left untracked rather than recorded on main", s)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ship: %v", err)
+			}
+			if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "mine~1"); got != mine {
+				t.Errorf("mine was replayed: its commit before the new one is %s, want %s", got, mine)
+			}
+			if s := state["mine"]; len(s.Parents) != 1 || s.Parents[0].Ref != "theirs" || s.NeedsRestack {
+				t.Errorf("mine = %+v, want it recorded on theirs with nothing to restack", s)
+			}
+		})
+	}
+}
+
 func TestShipTipOnlyParentReportsTheNativeStackRefusal(t *testing.T) {
 	f := shipRepo(t, vcstest.Remote())
 	f.Decorate(func(ctx context.Context) context.Context { return withStackProvider(ctx, true) })
