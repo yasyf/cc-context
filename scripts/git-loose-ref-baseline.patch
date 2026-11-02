@@ -1,0 +1,8 @@
+--- a/odb/source-packed.c
++++ b/odb/source-packed.c
+@@ -351,1 +351,1 @@
+-	if (m) {
++	if (m && !(opts->flags & ODB_FOR_EACH_OBJECT_PROMISOR_ONLY)) {
+@@ -358,1 +358,1 @@
+-		if (e->pack->multi_pack_index)
++		if (e->pack->multi_pack_index && !(opts->flags & ODB_FOR_EACH_OBJECT_PROMISOR_ONLY))

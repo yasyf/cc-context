@@ -1,0 +1,60 @@
+name: Native Git loose-ref controls
+on:
+  pull_request:
+    paths:
+      - scripts/git-loose-ref-*.patch
+      - scripts/loose-ref-*.py
+      - scripts/build-git-loose-ref-control.sh
+      - .github/workflows/git-loose-ref.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  paired-native:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      GOMAXPROCS: "2"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Record exact source
+        run: |
+          mkdir -p "$RUNNER_TEMP/loose-ref-controls"
+          git rev-parse HEAD > "$RUNNER_TEMP/loose-ref-controls/source-head.txt"
+          sha256sum .github/workflows/git-loose-ref.yml scripts/git-loose-ref-*.patch scripts/loose-ref-*.py scripts/build-git-loose-ref-control.sh \
+            > "$RUNNER_TEMP/loose-ref-controls/source-sha256.txt"
+      - name: Baseline native Git and controls
+        env:
+          PREFIX: ${{ runner.temp }}/git-loose-ref-baseline
+        run: |
+          bash scripts/build-git-loose-ref-control.sh "$PREFIX" baseline
+          export PATH="$PREFIX/bin:$PATH"
+          for layout in loose packed; do
+            PROBE_REF_LAYOUT="$layout" EXPECTED_HIDDEN_REF_OPENS=all PROBE_OUTPUT="$RUNNER_TEMP/loose-ref-controls/baseline/$layout" \
+              python3 -I -B scripts/loose-ref-fetch-probe.py
+          done
+          PROBE_GIT="$PREFIX/bin/git" PROBE_TEST_TOOL="$PREFIX/bin/git-loose-ref-test-tool" PROBE_OUTPUT="$RUNNER_TEMP/loose-ref-controls/baseline/cache" \
+            python3 -I -B scripts/loose-ref-cache-control.py
+      - name: Candidate native Git and controls
+        env:
+          PREFIX: ${{ runner.temp }}/git-loose-ref-candidate
+        run: |
+          bash scripts/build-git-loose-ref-control.sh "$PREFIX" candidate
+          export PATH="$PREFIX/bin:$PATH"
+          for layout in loose packed; do
+            PROBE_REF_LAYOUT="$layout" EXPECTED_HIDDEN_REF_OPENS=0 PROBE_OUTPUT="$RUNNER_TEMP/loose-ref-controls/candidate/$layout" \
+              python3 -I -B scripts/loose-ref-fetch-probe.py
+          done
+          PROBE_GIT="$PREFIX/bin/git" PROBE_TEST_TOOL="$PREFIX/bin/git-loose-ref-test-tool" PROBE_OUTPUT="$RUNNER_TEMP/loose-ref-controls/candidate/cache" \
+            python3 -I -B scripts/loose-ref-cache-control.py
+      - name: Exact native parity and scaling
+        run: |
+          python3 -I -B scripts/loose-ref-probe-parity.py \
+            "$RUNNER_TEMP/loose-ref-controls/baseline" "$RUNNER_TEMP/loose-ref-controls/candidate" "$RUNNER_TEMP/loose-ref-controls/parity.json"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: native-git-loose-ref-controls
+          path: ${{ runner.temp }}/loose-ref-controls

@@ -1,0 +1,90 @@
+--- a/refs/ref-cache.c
++++ b/refs/ref-cache.c
+@@ -4,0 +5,1 @@
++#include "../strvec.h"
+@@ -279,6 +280,11 @@
+-/*
+- * Load all of the refs from `dir` (recursively) that could possibly
+- * contain references matching `prefix` into our in-memory cache. If
+- * `prefix` is NULL, prime unconditionally.
+- */
+-static void prime_ref_dir(struct ref_dir *dir, const char *prefix)
++static int ref_dir_is_excluded(const char *dirname,
++			       const struct strvec *excluded_prefixes)
++{
++	for (size_t i = 0; i < excluded_prefixes->nr; i++)
++		if (starts_with(dirname, excluded_prefixes->v[i]))
++			return 1;
++	return 0;
++}
++
++static void prime_ref_dir(struct ref_dir *dir, const char *prefix,
++			  const struct strvec *excluded_prefixes)
+@@ -295,5 +301,5 @@
+-		if (!(entry->flag & REF_DIR)) {
+-			/* Not a directory; no need to recurse. */
+-		} else if (!prefix) {
+-			/* Recurse in any case: */
+-			prime_ref_dir(get_ref_dir(entry), NULL);
++		if (!(entry->flag & REF_DIR) ||
++		    ref_dir_is_excluded(entry->name, excluded_prefixes))
++			continue;
++		if (!prefix) {
++			prime_ref_dir(get_ref_dir(entry), NULL, excluded_prefixes);
+@@ -308,1 +314,1 @@
+-				prime_ref_dir(get_ref_dir(entry), NULL);
++				prime_ref_dir(get_ref_dir(entry), NULL, excluded_prefixes);
+@@ -311,1 +317,1 @@
+-				prime_ref_dir(get_ref_dir(entry), prefix);
++				prime_ref_dir(get_ref_dir(entry), prefix, excluded_prefixes);
+@@ -376,0 +383,1 @@
++	struct strvec excluded_prefixes;
+@@ -418,0 +426,2 @@
++			if (ref_dir_is_excluded(entry->name, &iter->excluded_prefixes))
++				continue;
+@@ -453,1 +462,1 @@
+-		prime_ref_dir(dir, prefix);
++		prime_ref_dir(dir, prefix, &iter->excluded_prefixes);
+@@ -487,1 +496,1 @@
+-			prime_ref_dir(dir, refname);
++			prime_ref_dir(dir, refname, &iter->excluded_prefixes);
+@@ -554,0 +564,1 @@
++	strvec_clear(&iter->excluded_prefixes);
+@@ -566,1 +576,2 @@
+-					      int prime_dir)
++					      int prime_dir,
++					      const char **exclude_patterns)
+@@ -578,0 +590,7 @@
++	strvec_init(&iter->excluded_prefixes);
++	if (exclude_patterns)
++		for (size_t i = 0; exclude_patterns[i]; i++) {
++			const char *pattern = exclude_patterns[i];
++			if (!has_glob_specials(pattern) && !strchr(pattern, '\\'))
++				strvec_push(&iter->excluded_prefixes, pattern);
++		}
+--- a/refs/ref-cache.h
++++ b/refs/ref-cache.h
+@@ -204,7 +203,0 @@
+-/*
+- * Start iterating over references in `cache`. If `prefix` is
+- * specified, only include references whose names start with that
+- * prefix. If `prime_dir` is true, then fill any incomplete
+- * directories before beginning the iteration. The output is ordered
+- * by refname.
+- */
+@@ -214,1 +207,2 @@
+-					      int prime_dir);
++					      int prime_dir,
++					      const char **exclude_patterns);
+--- a/refs/files-backend.c
++++ b/refs/files-backend.c
+@@ -1098,1 +1098,2 @@
+-					      prefix, ref_store->repo, 1);
++					      prefix, ref_store->repo, 1,
++					      exclude_patterns);
+@@ -1494,1 +1495,1 @@
+-					refs->base.repo, 0);
++					refs->base.repo, 0, NULL);
+@@ -1534,1 +1535,1 @@
+-					refs->base.repo, 0);
++					refs->base.repo, 0, NULL);
