@@ -1,9 +1,12 @@
-// Package rmtree deletes a relocated payload one entry at a time through
-// directory descriptors it holds open, so no removal resolves a path, follows a
-// symlink, or crosses onto another volume. Every step first proves that the
-// directory holding the payload is still the one its path names and that the
-// payload still sits at its name inside it, and lets go of any held directory
-// that has left its place, so a tree moved away is never deleted through a
+// Package rmtree deletes a relocated payload through directory descriptors it
+// holds open, from a pool of workers, so no removal resolves a path, follows a
+// symlink, or crosses onto another volume. Workers share one queue of passes
+// over directories and removals of their entries, and a directory is removed
+// only after a pass over it lists nothing. Every step first proves that the
+// directory holding the payload is still the one its path names, that the
+// payload still sits at its name inside it, and that every held directory
+// still sits at its name in its parent, and lets go of any held directory that
+// has left its place, so a tree moved away is never deleted through a
 // descriptor.
 package rmtree
 
@@ -79,13 +82,7 @@ func (Deleter) Open(dir, name string, want cleanup.FileID) (cleanup.Deletion, er
 		err := fmt.Errorf("%w: found dev %d ino %d, want dev %d ino %d", cleanup.ErrIdentity, got.Dev, got.Ino, want.Dev, want.Ino)
 		return nil, &Error{Op: "open", Rel: ".", Err: errors.Join(err, unix.Close(fd), unix.Close(base))}
 	}
-	return &deletion{
-		dir:   dir,
-		base:  holder{fd: base, spent: true},
-		home:  idOf(&held),
-		dev:   want.Dev,
-		stack: []*frame{newFrame(fd, name, &st, 0)},
-	}, nil
+	return newDeletion(dir, base, idOf(&held), want.Dev, newNode(fd, name, &st, nil)), nil
 }
 
 func rootError(err error) error {

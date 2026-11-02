@@ -1,11 +1,13 @@
 package cli
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -368,7 +370,14 @@ func renderCleanupReport(r cleanup.Report) string {
 	if r.Paused {
 		deletion = "deletion paused"
 	}
-	b.WriteString(strings.Join([]string{"cleanup daemon " + r.Version, "pid " + strconv.Itoa(r.PID), governorSegment(r.Governor), deletion}, shipSep) + "\n")
+	header := []string{"cleanup daemon " + r.Version, "pid " + strconv.Itoa(r.PID), governorSegment(r.Governor)}
+	if r.Pace.Workers > 0 {
+		header = append(header, paceSegment(r.Pace))
+	}
+	b.WriteString(strings.Join(append(header, deletion), shipSep) + "\n")
+	if len(r.Counts) > 0 {
+		b.WriteString(countsLine(r.Counts) + "\n")
+	}
 	if len(r.Jobs) == 0 {
 		b.WriteString("no cleanup jobs\n")
 	}
@@ -409,12 +418,32 @@ func governorSegment(g cleanup.Governor) string {
 	return seg
 }
 
+func paceSegment(p cleanup.Pace) string {
+	return fmt.Sprintf("%d %s · %.0f entries/s", p.Workers, plural(p.Workers, "worker", "workers"), p.Rate)
+}
+
+func countsLine(counts map[string]int) string {
+	states := slices.SortedFunc(maps.Keys(counts), func(a, b string) int {
+		return cmp.Or(cmp.Compare(counts[b], counts[a]), cmp.Compare(a, b))
+	})
+	total := 0
+	segs := make([]string, 0, len(states)+1)
+	for _, state := range states {
+		total += counts[state]
+		segs = append(segs, fmt.Sprintf("%d %s", counts[state], strings.Replace(state, ":", " ", 1)))
+	}
+	return strings.Join(append([]string{fmt.Sprintf("%d %s", total, plural(total, "job", "jobs"))}, segs...), shipSep)
+}
+
 func cleanupJobLine(job cleanup.Job, paused bool) string {
 	state := string(job.State())
 	if paused && job.Blocked == nil && job.Phase.Physical() {
 		state = "paused"
 	}
 	segs := []string{job.ID, state, job.Original, strconv.FormatUint(job.Removed, 10) + " entries"}
+	if job.Rate > 0 {
+		segs = append(segs, fmt.Sprintf("%.0f entries/s", job.Rate))
+	}
 	switch {
 	case job.Blocked != nil:
 		segs = append(segs, job.Blocked.Reason+": "+job.Blocked.Detail)

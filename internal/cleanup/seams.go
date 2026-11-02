@@ -128,9 +128,10 @@ type Deleter interface {
 // Deletion is one captured root's deletion in progress. It holds its place in the
 // tree between steps, so a step never rescans what an earlier one covered.
 type Deletion interface {
-	// Step removes at most limit entries, stopping early once budget has
-	// elapsed. done reports that the payload directory itself is gone.
-	Step(limit int, budget time.Duration) (removed int, done bool, err error)
+	// Step removes at most limit entries with up to workers removals in
+	// flight at once, stopping early once budget has elapsed and at least one
+	// entry is gone. done reports that the payload directory itself is gone.
+	Step(limit int, budget time.Duration, workers int) (removed int, done bool, err error)
 	// Close releases the deletion's place in the tree without removing more.
 	Close() error
 }

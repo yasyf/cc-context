@@ -346,7 +346,7 @@ func deleteRoot(t *testing.T, root cleanup.DeletionRoot) {
 	}
 	defer func() { _ = deletion.Close() }()
 	for range 256 {
-		_, done, err := deletion.Step(1, time.Second)
+		_, done, err := deletion.Step(1, time.Second, 1)
 		if err != nil {
 			t.Fatal(err)
 		}

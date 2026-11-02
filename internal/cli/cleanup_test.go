@@ -1294,17 +1294,20 @@ func TestCleanupQueueCommands(t *testing.T) {
 		t.Fatalf("status error = %v", err)
 	}
 	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
-	if len(lines) != 4 || !strings.HasPrefix(lines[0], header) || !strings.HasSuffix(lines[0], " · deletion paused") {
-		t.Fatalf("status = %q, want a paused header and three jobs", out)
+	if len(lines) != 5 || !strings.HasPrefix(lines[0], header) || !strings.HasSuffix(lines[0], " · deletion paused") {
+		t.Fatalf("status = %q, want a paused header, the counts, and three jobs", out)
 	}
-	if want := firstID + " · paused · " + first + " · 0 entries"; lines[1] != want {
-		t.Errorf("status job line = %q, want %q", lines[1], want)
+	if want := "3 jobs · 1 blocked watchers · 1 pending · 1 unregistered"; lines[1] != want {
+		t.Errorf("status counts = %q, want %q", lines[1], want)
 	}
-	if want := blockedID + " · blocked · " + second + " · 0 entries · watchers: "; !strings.HasPrefix(lines[2], want) || !strings.Contains(lines[2], "watcher still attached") {
-		t.Errorf("status job line = %q, want it starting %q naming the watcher", lines[2], want)
+	if want := firstID + " · paused · " + first + " · 0 entries"; lines[2] != want {
+		t.Errorf("status job line = %q, want %q", lines[2], want)
 	}
-	if want := pendingID + " · pending · " + third + " · 0 entries"; lines[3] != want {
-		t.Errorf("status job line = %q, want %q", lines[3], want)
+	if want := blockedID + " · blocked · " + second + " · 0 entries · watchers: "; !strings.HasPrefix(lines[3], want) || !strings.Contains(lines[3], "watcher still attached") {
+		t.Errorf("status job line = %q, want it starting %q naming the watcher", lines[3], want)
+	}
+	if want := pendingID + " · pending · " + third + " · 0 entries"; lines[4] != want {
+		t.Errorf("status job line = %q, want %q", lines[4], want)
 	}
 	out, err = runCleanupCmd(t, f, "status", "--json")
 	if err != nil {
@@ -1332,7 +1335,7 @@ func TestCleanupQueueCommands(t *testing.T) {
 		t.Fatalf("status --limit 1 error = %v", err)
 	}
 	lines = strings.Split(strings.TrimSuffix(out, "\n"), "\n")
-	if len(lines) != 3 || lines[1] != firstID+" · paused · "+first+" · 0 entries" || lines[2] != "omitted 2 more jobs" {
+	if len(lines) != 4 || lines[2] != firstID+" · paused · "+first+" · 0 entries" || lines[3] != "omitted 2 more jobs" {
 		t.Errorf("status --limit 1 = %q, want the first job and two omitted", out)
 	}
 
@@ -1420,7 +1423,7 @@ func TestCleanupHoldCommands(t *testing.T) {
 		t.Fatalf("status error = %v", err)
 	}
 	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
-	if len(lines) != 2 || !strings.HasSuffix(lines[0], " · deletion paused") || lines[1] != firstID+" · paused · "+first+" · 0 entries" {
+	if len(lines) != 3 || !strings.HasSuffix(lines[0], " · deletion paused") || lines[1] != "1 job · 1 unregistered" || lines[2] != firstID+" · paused · "+first+" · 0 entries" {
 		t.Errorf("status = %q, want the paused header it prints for any stopped queue, then the resting job", out)
 	}
 	if out, err := runCleanupCmd(t, f, "hold", "status"); err != nil || out != held+" · deletion paused\n" {
@@ -2084,6 +2087,24 @@ func TestCleanupRenderReport(t *testing.T) {
 				"a · deleting · /w/one · 5 entries\n" +
 				"b · blocked · /w/two · 1 entries · delete: nested mount\n" +
 				"omitted 1 more job\n",
+		},
+		{
+			name: "deleting with pace and counts",
+			report: cleanup.Report{
+				Version:  "v2.0.0",
+				PID:      12,
+				Governor: cleanup.Governor{State: "clear", CPUPercent: 8},
+				Pace:     cleanup.Pace{Workers: 16, Rate: 912.4},
+				Counts:   map[string]int{"deleting": 1, "pending": 2814, "blocked:identity": 1535, "blocked:activity": 1535},
+				Jobs: []cleanup.Job{
+					{ID: "a", Phase: cleanup.PhaseDeleting, Original: "/w/one", Removed: 40000, Rate: 912.4},
+				},
+				Omitted: 5884,
+			},
+			want: "cleanup daemon v2.0.0 · pid 12 · governor clear at 8% cpu · 16 workers · 912 entries/s · deletion running\n" +
+				"5885 jobs · 2814 pending · 1535 blocked activity · 1535 blocked identity · 1 deleting\n" +
+				"a · deleting · /w/one · 40000 entries · 912 entries/s\n" +
+				"omitted 5884 more jobs\n",
 		},
 	}
 	for _, tt := range tests {

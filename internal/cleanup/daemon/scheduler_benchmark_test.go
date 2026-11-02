@@ -11,10 +11,11 @@ import (
 func schedulerFixture(n int) (*Engine, time.Time) {
 	now := time.Unix(10000, 0)
 	e := &Engine{
-		jobs: make(map[string]cleanup.Job, n), checked: make(map[string]time.Time),
+		jobs: make(map[string]cleanup.Job, n), checked: make(map[string]time.Time), counts: make(map[string]int),
 		changed: make(chan struct{}), tuning: DefaultTuning(), booted: now,
 		paused: true,
 	}
+	e.tuning.Reconcile = 0
 	for seq := 1; seq <= n; seq++ {
 		job := cleanup.Job{ID: fmt.Sprintf("job-%d", seq), Seq: uint64(seq), Phase: cleanup.PhaseUnregistered}
 		switch seq % 5 {
