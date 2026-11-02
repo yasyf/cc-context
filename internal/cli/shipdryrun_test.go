@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -459,5 +460,45 @@ func TestShipDryRunReportsNoRefusalWhenTheShipWouldRun(t *testing.T) {
 
 	if got := dryRunValues(report, "refuses"); len(got) != 0 {
 		t.Errorf("refuses lines = %v, want none on a ship that would run", got)
+	}
+}
+
+// TestShipTipOnlyMeasuresOwnCommitsAgainstThePublishedParent cuts child off one
+// published head of parent, then parent is rewritten on the remote again while
+// this clone's local parent still sits on its first commit. --tip-only replays
+// child onto the published head, so its own commits are the ones that head does
+// not carry: the stale local ref counted parent's second commit as child's own.
+func TestShipTipOnlyMeasuresOwnCommitsAgainstThePublishedParent(t *testing.T) {
+	f := shipGTRepo(t, vcstest.GTStack("parent"))
+	commit := func(name string) {
+		writeShipFile(t, f.Dir, name+".txt", name+"\n")
+		mustRun(t, f.Env(), f.Dir, "git", "add", name+".txt")
+		mustRun(t, f.Env(), f.Dir, "git", "commit", "-q", "-m", name)
+	}
+	copyOf := func(rev, subject string) {
+		mustRun(t, f.Env(), f.Dir, "git", "cherry-pick", rev)
+		mustRun(t, f.Env(), f.Dir, "git", "commit", "-q", "--amend", "-m", subject)
+	}
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "-c", "first-publish", "main")
+	copyOf("parent", "parent, first publish")
+	commit("second")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "-c", "child")
+	commit("child")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "-c", "second-publish", "main")
+	copyOf("parent", "parent, second publish")
+	copyOf("first-publish", "second, second publish")
+	commit("third")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "--force", "origin", "second-publish:parent")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "child")
+
+	body := filepath.Join(t.TempDir(), "body.md")
+	writeShipFile(t, filepath.Dir(body), "body.md", "Ships child.\n")
+	report := dryRunReport(t, f, "--no-commit", "--tip-only", "--parent", "parent", "--pr-body-file", body)
+
+	if refusals := dryRunValues(report, "refuses"); len(refusals) != 0 {
+		t.Errorf("refuses = %q, want none", refusals)
+	}
+	if got := strings.Join(dryRunValues(report, "parent"), "\n"); !strings.Contains(got, "replaying its 1 own commit(s) onto parent") {
+		t.Errorf("parent = %q, want child's one own commit replayed onto parent's published head", got)
 	}
 }
