@@ -85,6 +85,11 @@ type Tuning struct {
 	MaxBusy      int
 	MaxCreate    time.Duration
 	QuietSamples int
+	// Readmit is how long a deletion runs on one admission before the engine
+	// admits its job again, so a process that enters the tree, or a
+	// registration that changes hands, stops the deletion within Readmit. Zero
+	// admits each deletion once.
+	Readmit time.Duration
 	// Recheck is the interval between activity checks of a waiting job.
 	Recheck time.Duration
 	// RetryAfter is the first retry of a job blocked on a transient
@@ -133,6 +138,7 @@ func DefaultTuning() Tuning {
 		MaxBusy:       3,
 		MaxCreate:     3 * time.Millisecond,
 		QuietSamples:  2,
+		Readmit:       10 * time.Second,
 		Recheck:       30 * time.Second,
 		RetryAfter:    30 * time.Second,
 		RetryCeiling:  10 * time.Minute,
@@ -154,6 +160,8 @@ func (t Tuning) validate() error {
 		return fmt.Errorf("floor workers %d must be positive and at most the workers %d", t.FloorWorkers, t.Workers)
 	case t.ActivityEvery <= 0, t.ProbeSettle < 0, t.BusyPercent <= 0, t.MaxBusy < 0, t.MaxCreate <= 0, t.QuietSamples <= 0:
 		return fmt.Errorf("activity sampled every %s after %s of rest, %d sessions over %v%% and creates over %s held until %d quiet samples: the interval, threshold, create bound and samples must be positive, the rest and sessions not negative", t.ActivityEvery, t.ProbeSettle, t.MaxBusy, t.BusyPercent, t.MaxCreate, t.QuietSamples)
+	case t.Readmit < 0:
+		return fmt.Errorf("readmit interval %s must not be negative", t.Readmit)
 	case t.Reconcile < 0:
 		return fmt.Errorf("reconcile interval %s must not be negative", t.Reconcile)
 	case t.SampleEvery <= 0, t.Recheck <= 0, t.RetryAfter <= 0, t.RetryCeiling < t.RetryAfter, t.RetryLimit <= 0:
@@ -208,6 +216,8 @@ func (f *fatalError) Unwrap() error { return f.err }
 type activeDeletion struct {
 	id       string
 	deletion cleanup.Deletion
+	root     cleanup.DeletionRoot
+	admitted time.Time
 	unsaved  bool
 	savedAt  time.Time
 }
@@ -1100,6 +1110,10 @@ func (e *Engine) slice(ctx context.Context, job cleanup.Job) error {
 		if err := e.open(ctx, &job); err != nil || e.active == nil {
 			return err
 		}
+	} else if e.tuning.Readmit > 0 && e.clock.Now().Sub(e.active.admitted) >= e.tuning.Readmit {
+		if parked, err := e.readmit(ctx, &job); err != nil || parked {
+			return err
+		}
 	}
 	workers := e.gov.workers()
 	limit, budget := e.tuning.SliceEntries*workers, e.tuning.SliceBudget*time.Duration(workers)
@@ -1177,8 +1191,25 @@ func (e *Engine) open(ctx context.Context, job *cleanup.Job) error {
 	if err != nil {
 		return e.block(*job, err)
 	}
-	e.active = &activeDeletion{id: job.ID, deletion: deletion, savedAt: e.clock.Now()}
+	now := e.clock.Now()
+	e.active = &activeDeletion{id: job.ID, deletion: deletion, root: root, admitted: now, savedAt: now}
 	return nil
+}
+
+func (e *Engine) readmit(ctx context.Context, job *cleanup.Job) (bool, error) {
+	root, err := e.relocator.Readmit(ctx, job)
+	if err != nil {
+		if cancelled(ctx, err) {
+			return true, nil
+		}
+		return true, &fatalError{fmt.Errorf("cleanup daemon: readmit job %s: %w", job.ID, err)}
+	}
+	e.put(*job)
+	if job.Blocked != nil || job.Phase == cleanup.PhaseDone || root != e.active.root || e.holds(*job) {
+		return true, e.park()
+	}
+	e.active.admitted = e.clock.Now()
+	return false, nil
 }
 
 func afterRoot(job cleanup.Job) (cleanup.Phase, bool) {

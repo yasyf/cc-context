@@ -330,18 +330,24 @@ func (f *fakeRelocator) Cancel(ctx context.Context, job *cleanup.Job) error {
 }
 
 func (f *fakeRelocator) Readmit(ctx context.Context, job *cleanup.Job) (cleanup.DeletionRoot, error) {
-	return f.Admit(ctx, job)
+	return f.admit(ctx, "readmit", job)
 }
 
 func (f *fakeRelocator) Admit(ctx context.Context, job *cleanup.Job) (cleanup.DeletionRoot, error) {
+	return f.admit(ctx, "admit", job)
+}
+
+func (f *fakeRelocator) admit(ctx context.Context, op string, job *cleanup.Job) (cleanup.DeletionRoot, error) {
 	name := f.h.rec.name(job.ID)
-	f.h.rec.add("admit:" + name)
+	f.h.rec.add(op + ":" + name)
 	f.mu.Lock()
-	f.admitted = append(f.admitted, name+"="+requesterOf(ctx))
-	verdict, gate := f.scripts["admit:"+name], f.gates["admit:"+name]
+	if op == "admit" {
+		f.admitted = append(f.admitted, name+"="+requesterOf(ctx))
+	}
+	verdict, gate := f.scripts[op+":"+name], f.gates[op+":"+name]
 	f.mu.Unlock()
 	if gate != nil {
-		f.entered <- "admit:" + name
+		f.entered <- op + ":" + name
 		<-gate
 	}
 	if err := ctx.Err(); err != nil {
@@ -895,6 +901,6 @@ func (h *harness) names(jobs []cleanup.Job) []string {
 
 func paced() Tuning {
 	t := DefaultTuning()
-	t.Rate, t.FloorRate, t.Workers, t.FloorWorkers, t.Reconcile = 250, 250, 1, 1, 0
+	t.Rate, t.FloorRate, t.Workers, t.FloorWorkers, t.Reconcile, t.Readmit = 250, 250, 1, 1, 0, 0
 	return t
 }
