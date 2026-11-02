@@ -497,7 +497,7 @@ func dryRunStack(ctx context.Context, l lane, o shipOpts, c *gtCache, r *shipDry
 	if state, err = dryRunPlanned(ctx, l, state, r); err != nil {
 		return err
 	}
-	anchor := dryRunAnchor(state, o.tipOnly, r)
+	anchor := dryRunAnchor(state, o.tipOnly, o.parent != "", r)
 	if anchor == "" {
 		return nil
 	}
@@ -533,7 +533,7 @@ func dryRunStack(ctx context.Context, l lane, o shipOpts, c *gtCache, r *shipDry
 // answer is the parent a track would adopt it onto — whose whole downstack the
 // submit then publishes, which is the surprise the report exists to end. Empty
 // means there is no stack to read.
-func dryRunAnchor(state gtState, tipOnly bool, r *shipDryRun) string {
+func dryRunAnchor(state gtState, tipOnly, parentNamed bool, r *shipDryRun) string {
 	if _, tracked := state[r.branch]; tracked {
 		return r.branch
 	}
@@ -545,7 +545,11 @@ func dryRunAnchor(state gtState, tipOnly bool, r *shipDryRun) string {
 		r.notes = append(r.notes, r.branch+" is untracked and would be adopted onto trunk, so the submit publishes it alone")
 		return ""
 	}
-	r.notes = append(r.notes, r.branch+" is untracked, so the submit publishes the downstack of "+r.parent+" along with it")
+	if parentNamed {
+		r.notes = append(r.notes, r.branch+" is untracked; --parent records it on "+r.parent+" and moves neither "+r.parent+" nor a branch below it")
+	} else {
+		r.notes = append(r.notes, r.branch+" is untracked, so the submit publishes the downstack of "+r.parent+" along with it")
+	}
 	return r.parent
 }
 
@@ -577,6 +581,9 @@ func dryRunMoves(state gtState, chain []string, holders map[string]string, o shi
 			return
 		}
 		movers = slices.DeleteFunc(movers, func(branch string) bool { return tipOnlyAncestor(o.tipOnly, r.branch, branch) })
+	}
+	if parentLine := shipParentLine(o, chain, r.branch); len(parentLine) > 0 {
+		movers = slices.DeleteFunc(movers, func(branch string) bool { return slices.Contains(parentLine, branch) })
 	}
 	for _, branch := range movers {
 		why := "its parent moves under it"

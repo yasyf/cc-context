@@ -551,7 +551,7 @@ func runShip(cmd *cobra.Command, o shipOpts) (err error) {
 			if err != nil {
 				return err
 			}
-			if err := runStackRebase(cmd, stackRebaseOpts{members: append(gtBottomUp(chain), upstack...), landed: o.landed, newPRs: o.newPRs, draft: shipDraft(o), draftAll: o.draft || o.publish, noVerify: o.noVerify, deferPush: true, result: &gtc.restack, ship: intent, submit: true, owners: map[string]string{}, tip: branch, tipOnly: o.tipOnly, restack: o.restack, stayClean: !o.restack, dropCommits: o.dropCommits || o.yolo, evictQueued: o.evictQueued, otherLanes: o.allLanes, target: &target}); err != nil {
+			if err := runStackRebase(cmd, stackRebaseOpts{members: append(gtBottomUp(chain), upstack...), pinned: shipParentLine(o, chain, branch), landed: o.landed, newPRs: o.newPRs, draft: shipDraft(o), draftAll: o.draft || o.publish, noVerify: o.noVerify, deferPush: true, result: &gtc.restack, ship: intent, submit: true, owners: map[string]string{}, tip: branch, tipOnly: o.tipOnly, restack: o.restack, stayClean: !o.restack, dropCommits: o.dropCommits || o.yolo, evictQueued: o.evictQueued, otherLanes: o.allLanes, target: &target}); err != nil {
 				if preAmendSHA != "" && gtc.restack == nil {
 					return shipAmendKept(ctx, dir, preAmendSHA, err)
 				}
@@ -563,7 +563,7 @@ func runShip(cmd *cobra.Command, o shipOpts) (err error) {
 			gtc.forget()
 			restackSeg = "restacked in isolation" + shipTipStayed(gtc.restack, branch)
 		}
-	} else if plan.needsRestack && !o.tipOnly {
+	} else if plan.needsRestack && !o.tipOnly && o.parent == "" {
 		moveUndo = nil
 		if _, err := gtTrunkRef(ctx, dir, "ship", plan.trunk); err != nil {
 			return fmt.Errorf("%w. The commit already landed and the restack did not run — run ccx vcs stack restack once the fetch succeeds", err)
@@ -728,6 +728,15 @@ func runShip(cmd *cobra.Command, o shipOpts) (err error) {
 		return errors.Join(ciErr, shipReviewsWatch(ctx, cmd.OutOrStdout(), reviewBranches))
 	}
 	return ciErr
+}
+
+// shipParentLine is what a ship of branch onto --parent never moves: every
+// other branch of its downstack chain, the parent and each branch below it.
+func shipParentLine(o shipOpts, chain []string, branch string) []string {
+	if o.parent == "" {
+		return nil
+	}
+	return slices.DeleteFunc(slices.Clone(chain), func(name string) bool { return name == branch })
 }
 
 func shipSettleRestack(ctx context.Context, l lane, c *gtCache, cause error) error {

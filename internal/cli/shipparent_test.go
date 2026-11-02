@@ -516,6 +516,64 @@ func TestShipGTParentPutsTheBranchBackWhenTheStackRebaseRefuses(t *testing.T) {
 	}
 }
 
+// TestShipGTParentMovesNeitherTheParentNorABranchBelowIt is cc-skills'
+// dashboard line: a branch cut off p, whose line sits off its own bottom
+// branch's newer head and behind trunk, where only that bottom branch has a
+// pull request. ship --parent p used to restack the whole line and stop in a
+// conflict workspace under it. It now ships the branch on p and moves nothing
+// below it.
+func TestShipGTParentMovesNeitherTheParentNorABranchBelowIt(t *testing.T) {
+	for _, push := range []bool{true, false} {
+		t.Run(map[bool]string{true: "push", false: "no-push"}[push], func(t *testing.T) {
+			shipParentKeepsItsLine(t, push)
+		})
+	}
+}
+
+func shipParentKeepsItsLine(t *testing.T, push bool) {
+	f := shipGTRepo(t)
+	shipGTStack(t, f, "base", "mid", "p")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "base")
+	writeShipFile(t, f.Dir, "base.txt", "base, revised\n")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qam", "base revised")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "mid", "p")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
+	writeShipFile(t, f.Dir, "trunk.txt", "trunk\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "trunk.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "trunk")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "main")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "p")
+	shipGTUntracked(t, f, "c")
+	stubStackPRs(t, f, map[string]*stackPR{
+		"base": {Number: 5, Title: "base", State: "OPEN", Base: "main"},
+	})
+	heads := map[string]string{}
+	for _, ref := range []string{"base", "mid", "p", "origin/base", "origin/mid", "origin/p"} {
+		heads[ref] = gitAt(t, f.Env(), f.Dir, "rev-parse", ref)
+	}
+	shipResetLog(t, f)
+
+	args, own := []string{"--no-commit", "--no-watch", "--parent", "p"}, "c"
+	if !push {
+		writeShipFile(t, f.Dir, "fix.txt", "fix\n")
+		args, own = []string{"-m", "fix: frobnicate", "--no-push", "--parent", "p"}, "fix: frobnicate\nc"
+	}
+	if _, err := runShipCmd(f.Context(), t, args...); err != nil {
+		t.Fatalf("ship = %v, want c shipped onto p", err)
+	}
+	for ref, before := range heads {
+		if after := gitAt(t, f.Env(), f.Dir, "rev-parse", ref); after != before {
+			t.Errorf("%s moved from %s to %s, want it left where it was", ref, before, after)
+		}
+	}
+	if parent := shipParentOf(t, f, "c"); parent != "p" {
+		t.Errorf("c's parent = %s, want p", parent)
+	}
+	if subjects := gitAt(t, f.Env(), f.Dir, "log", "--format=%s", "p..c"); subjects != own {
+		t.Errorf("c carries %q above p, want its own commits alone", subjects)
+	}
+}
+
 // TestShipGTTipOnlyLeavesALandedAncestorWithLaterCommitsToItsLane is a
 // --tip-only ship over an ancestor another lane kept committing to after its
 // pull request landed: the ship moves none of that ancestor, so it ships the tip
@@ -754,7 +812,7 @@ func TestShipGTTipOnlyMovesOntoTheParentsPublishedHeadWhenItsTrackingRefIsStale(
 // --tip-only would publish its parent's whole downstack.
 func TestShipDryRunUnderTipOnlyPublishesAnUntrackedBranchAlone(t *testing.T) {
 	r := &shipDryRun{branch: "n", parent: "p", trunk: "main"}
-	if anchor := dryRunAnchor(gtState{}, true, r); anchor != "" || !slices.Equal(r.notes, []string{"n is untracked; --tip-only records it on p's published head and publishes it alone"}) {
+	if anchor := dryRunAnchor(gtState{}, true, false, r); anchor != "" || !slices.Equal(r.notes, []string{"n is untracked; --tip-only records it on p's published head and publishes it alone"}) {
 		t.Errorf("anchor = %q, notes = %q, want n published alone", anchor, r.notes)
 	}
 }
