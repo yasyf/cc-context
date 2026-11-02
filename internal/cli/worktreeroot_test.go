@@ -71,9 +71,11 @@ func TestWorktreePoolsReachTheConfiguredRoot(t *testing.T) {
 	configureGitWorktreeRoot(t, f, "~/repos/worktrees")
 	path := addPoolWorktree(t, f, "feat")
 	orphanWorktree(t, f.Env(), path)
-	if _, err := runWorktreeCmd(t, f, orphanRmArgs(path)...); err != nil {
+	out, err := runWorktreeCmd(t, f, orphanRmArgs(path)...)
+	if err != nil {
 		t.Fatalf("rm --path error = %v, want the configured pool's orphan deleted", err)
 	}
+	awaitDeleted(t, f, fixtureCleanup(t, f), out)
 	assertGone(t, path)
 }
 

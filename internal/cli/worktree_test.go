@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yasyf/cc-context/internal/cache"
 	"github.com/yasyf/cc-context/internal/cleanup"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcs"
@@ -803,22 +804,38 @@ func TestWorktreeRmPathOrphanDeletesInPlace(t *testing.T) {
 	path := addPoolWorktree(t, f, "feat")
 	admin := filepath.Clean(strings.TrimPrefix(strings.TrimSpace(readFileStr(t, filepath.Join(path, ".git"))), "gitdir: "))
 	orphanWorktree(t, f.Env(), path)
+	h := fixtureCleanup(t, f)
 	unrelated := worktreeTempDir(t)
 	t.Chdir(unrelated)
+	ctx := f.ContextIn(unrelated)
 
 	before := time.Now().UTC().Add(-time.Second)
-	out, err := runWorktreeCmdIn(f.ContextIn(unrelated), t, orphanRmArgs(path)...)
+	out, err := runWorktreeCmdIn(ctx, t, orphanRmArgs(path)...)
 	if err != nil {
 		t.Fatalf("rm --path error = %v", err)
 	}
 	segments := strings.Split(strings.TrimSuffix(out, "\n"), shipSep)
-	if len(segments) != 4 || segments[0] != "removed feat" || segments[1] != orphanShape ||
-		!strings.HasPrefix(segments[2], "deleted ") || !strings.HasSuffix(segments[2], " entries in place") {
-		t.Fatalf("rm --path output = %q, want removed feat · orphaned checkout · deleted <n> entries in place · recorded in <file>", out)
-	}
-	record, ok := strings.CutPrefix(segments[3], "recorded in ")
-	if !ok {
-		t.Fatalf("rm --path output = %q, want it to name the record", out)
+	var record string
+	if cleanupDaemonized {
+		if len(segments) != 4 || segments[0] != "removed feat" || segments[1] != orphanShape || segments[2] != path ||
+			!strings.HasPrefix(segments[3], "deletion queued ") {
+			t.Fatalf("rm --path output = %q, want removed feat · orphaned checkout · %s · deletion queued <job>", out, path)
+		}
+		awaitDeleted(t, f, h, out)
+		dir, err := cache.Dir(ctx, "worktree-rm")
+		if err != nil {
+			t.Fatal(err)
+		}
+		record = filepath.Join(dir, "orphans.jsonl")
+	} else {
+		if len(segments) != 4 || segments[0] != "removed feat" || segments[1] != orphanShape ||
+			!strings.HasPrefix(segments[2], "deleted ") || !strings.HasSuffix(segments[2], " entries in place") {
+			t.Fatalf("rm --path output = %q, want removed feat · orphaned checkout · deleted <n> entries in place · recorded in <file>", out)
+		}
+		var ok bool
+		if record, ok = strings.CutPrefix(segments[3], "recorded in "); !ok {
+			t.Fatalf("rm --path output = %q, want it to name the record", out)
+		}
 	}
 	assertGone(t, path)
 	assertGone(t, filepath.Join(fixtureHome(t, f), ".Trash"))
