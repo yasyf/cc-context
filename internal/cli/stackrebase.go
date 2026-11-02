@@ -3797,7 +3797,7 @@ func stackFreeWorkspace(ctx context.Context, l lane, name string) (string, error
 		if n > 1 {
 			candidate = name + "-" + strconv.Itoa(n)
 		}
-		ws, err := mintGitWorktreePath(ctx, stackRebasePrefix, l.checkout, candidate)
+		ws, err := stackMintWorkspace(ctx, l.checkout, candidate)
 		if err != nil {
 			return "", err
 		}
@@ -3809,6 +3809,54 @@ func stackFreeWorkspace(ctx context.Context, l lane, name string) (string, error
 		default:
 			return "", fmt.Errorf("stack rebase: %w", err)
 		}
+	}
+}
+
+// stackMintWorkspace places a conflict workspace on the cleanup queue's
+// volume when one of its candidate paths is there, since the queue moves a
+// tree into its own folder and cannot take one from another volume.
+func stackMintWorkspace(ctx context.Context, c vcs.Checkout, name string) (string, error) {
+	ws, err := mintGitWorktreePath(ctx, stackRebasePrefix, c, name)
+	if err != nil || !cleanupDaemonized {
+		return ws, err
+	}
+	paths, err := gitWorktreePaths(ctx, stackRebasePrefix, c, name)
+	if err != nil {
+		return "", err
+	}
+	if beside, err := stackOnVolumeOf(cleanup.DefaultLayout().JobsDir(), paths); err != nil || beside != "" {
+		return beside, err
+	}
+	return ws, nil
+}
+
+func stackOnVolumeOf(dir string, paths []string) (string, error) {
+	want, err := stackVolume(dir)
+	if err != nil {
+		return "", err
+	}
+	for _, path := range paths {
+		got, err := stackVolume(path)
+		if err != nil {
+			return "", err
+		}
+		if got == want {
+			return path, nil
+		}
+	}
+	return "", nil
+}
+
+func stackVolume(path string) (uint64, error) {
+	for {
+		info, err := os.Stat(path)
+		if err == nil {
+			return cleanup.IDOf(info).Dev, nil
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return 0, fmt.Errorf("stack rebase: %w", err)
+		}
+		path = filepath.Dir(path)
 	}
 }
 
@@ -4352,13 +4400,6 @@ func stackCloseWorkspace(ctx context.Context, cmd *cobra.Command, l lane, common
 			return fmt.Errorf("stack rebase: the conflict workspace %s holds uncommitted changes to tracked files (clear what it holds, then continue again): %s", c.Workspace, strings.TrimSpace(changed))
 		}
 	}
-	note, err := stackReleaseWorkspace(ctx, l, commonDir, c, false)
-	if err != nil {
-		return fmt.Errorf("%w; the run is kept, so continue can run again", err)
-	}
-	if note != "" {
-		cmd.Println(note)
-	}
 	if err := os.Remove(c.Brief); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("stack rebase: %w", err)
 	}
@@ -4366,7 +4407,15 @@ func stackCloseWorkspace(ctx context.Context, cmd *cobra.Command, l lane, common
 	if err := stackSaveRun(run); err != nil {
 		return err
 	}
-	return stackDrive(ctx, cmd, l, commonDir, run)
+	driven := stackDrive(ctx, cmd, l, commonDir, run)
+	note, err := stackReleaseWorkspace(ctx, l, commonDir, c, false)
+	if err != nil {
+		return errors.Join(driven, err)
+	}
+	if note != "" {
+		cmd.Println(note)
+	}
+	return driven
 }
 
 func stackRebasing(ctx context.Context, ws render.Dir) bool {
@@ -4526,10 +4575,12 @@ func stackReleaseWorkspace(ctx context.Context, l lane, commonDir string, c *sta
 		switch {
 		case errors.As(err, &refused) && refused.Reason == "replaced":
 			return stackMismatchLine(ws), nil
+		case errors.As(err, &refused) && refused.Reason == "volume":
+			return fmt.Sprintf("left %s in place: %s — nothing was removed; git worktree remove --force %s deletes it where it is", ws, refused.Detail, ws), nil
 		case errors.As(err, &refused):
-			return "", fmt.Errorf("stack rebase: %w — nothing was removed, and %s is left where it is", err, ws)
+			return fmt.Sprintf("left %s in place: %s — nothing was removed; ccx vcs worktree rm --path %s queues it once that is cleared", ws, refused.Detail, ws), nil
 		}
-		return "", fmt.Errorf("stack rebase: %w — the cleanup daemon may already hold %s", err, ws)
+		return fmt.Sprintf("left %s to the cleanup daemon, which may already hold it: %v — ccx vcs cleanup status shows whether it does", ws, err), nil
 	}
 	line := fmt.Sprintf("handed %s to cleanup job %s, %s", ws, receipt.JobID, receipt.State)
 	if receipt.Detail != "" {
