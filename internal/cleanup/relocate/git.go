@@ -233,6 +233,13 @@ func (r *Relocator) checkedOutSubmoduleAt(ctx context.Context, git, tree string,
 	return found, errors.Join(err, inspect)
 }
 
+func (r *Relocator) headPushed(ctx context.Context, job *cleanup.Job) (bool, error) {
+	if job.Orphaned {
+		return false, nil
+	}
+	return r.pushed(ctx, job.Git, job.Repo, job.Branch, job.Head)
+}
+
 func (r *Relocator) pushed(ctx context.Context, git, repo, branch, head string) (bool, error) {
 	if head == "" {
 		return true, nil

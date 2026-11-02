@@ -46,9 +46,16 @@ A linked worktree is orphaned when its `.git` file names an admin dir that no
 longer exists, for example, after its repository was re-cloned. Git no longer
 registers it, so neither `git worktree remove` nor `git worktree repair` can
 reach it. `ccx vcs worktree rm --path <absolute-path>` deletes an orphan in
-place and prints
+place. It runs from any directory, since no repository registers the tree.
+
+On macOS, the cleanup daemon deletes it. The command returns once the daemon
+has journaled the orphan as a job and claimed it, and prints
+`removed <name> · orphaned checkout · <path> · deletion queued <job-id>`.
+`--wait` returns once the tree is gone. The daemon pins the tree and its
+parent directory by inode and refuses the job if either changes. It also
+refuses one that a process holds, or that its quarantine check cannot clear.
+On Linux, the command deletes the tree itself and prints
 `removed <name> · orphaned checkout · deleted <n> entries in place · recorded in <file>`.
-It runs from any directory, since no repository registers the tree.
 
 Removal refuses an orphan whose resolved path is not exactly
 `<pool>/<repo>/<name>` in one of the worktree pools: `~/.claude/worktrees` or

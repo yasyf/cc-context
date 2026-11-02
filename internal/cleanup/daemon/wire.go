@@ -13,6 +13,7 @@ const (
 	opRemove   = "remove"
 	opDefer    = "defer"
 	opAdopt    = "adopt"
+	opOrphan   = "orphan"
 	opStatus   = "status"
 	opWait     = "wait"
 	opPause    = "pause"
@@ -46,16 +47,17 @@ type head struct {
 }
 
 type request struct {
-	Protocol int                   `json:"protocol"`
-	Version  string                `json:"version"`
-	Op       string                `json:"op"`
-	Remove   *cleanup.Request      `json:"remove,omitempty"`
-	Defer    *cleanup.DeferRequest `json:"defer,omitempty"`
-	Adopt    *cleanup.AdoptRequest `json:"adopt,omitempty"`
-	Query    *cleanup.Query        `json:"query,omitempty"`
-	JobID    string                `json:"job_id,omitempty"`
-	Hold     *cleanup.HoldRequest  `json:"hold,omitempty"`
-	Holder   string                `json:"holder,omitempty"`
+	Protocol int                    `json:"protocol"`
+	Version  string                 `json:"version"`
+	Op       string                 `json:"op"`
+	Remove   *cleanup.Request       `json:"remove,omitempty"`
+	Defer    *cleanup.DeferRequest  `json:"defer,omitempty"`
+	Adopt    *cleanup.AdoptRequest  `json:"adopt,omitempty"`
+	Orphan   *cleanup.OrphanRequest `json:"orphan,omitempty"`
+	Query    *cleanup.Query         `json:"query,omitempty"`
+	JobID    string                 `json:"job_id,omitempty"`
+	Hold     *cleanup.HoldRequest   `json:"hold,omitempty"`
+	Holder   string                 `json:"holder,omitempty"`
 }
 
 func (r request) Validate() error {
@@ -64,7 +66,7 @@ func (r request) Validate() error {
 	}
 	switch r.Op {
 	case opHello, opShutdown, opPause, opResume, opHolding:
-		if r.Remove != nil || r.Defer != nil || r.Adopt != nil || r.Query != nil || r.JobID != "" || r.Hold != nil || r.Holder != "" {
+		if r.Remove != nil || r.Defer != nil || r.Adopt != nil || r.Orphan != nil || r.Query != nil || r.JobID != "" || r.Hold != nil || r.Holder != "" {
 			return fmt.Errorf("%s carries nothing beyond its op", r.Op)
 		}
 		return nil
@@ -93,6 +95,11 @@ func (r request) Validate() error {
 			return errors.New("adopt carries no request")
 		}
 		return r.Adopt.Validate()
+	case opOrphan:
+		if r.Orphan == nil {
+			return errors.New("orphan carries no request")
+		}
+		return r.Orphan.Validate()
 	case opStatus:
 		if r.Query == nil {
 			return errors.New("status carries no query")

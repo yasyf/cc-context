@@ -274,8 +274,9 @@ type Engine struct {
 }
 
 var (
-	_ cleanup.Service = (*Engine)(nil)
-	_ cleanup.Adopter = (*Engine)(nil)
+	_ cleanup.Service  = (*Engine)(nil)
+	_ cleanup.Adopter  = (*Engine)(nil)
+	_ cleanup.Orphaner = (*Engine)(nil)
 )
 
 // New builds an Engine over cfg's journal and reads nothing from it: Run loads
@@ -415,6 +416,18 @@ func (e *Engine) Adopt(ctx context.Context, r cleanup.AdoptRequest) (cleanup.Rec
 		return cleanup.Receipt{}, fmt.Errorf("cleanup daemon: adopt request: %w", err)
 	}
 	return call(ctx, e, onBehalf(ctx, func(ctx context.Context) (cleanup.Receipt, error) { return e.adopt(ctx, r) }))
+}
+
+// Orphan journals an orphaned pool worktree an operator named by path and
+// claims it for deletion where it sits, on the worker. A repeat of a request
+// whose tree still sits at its path rejoins the job the first one journaled.
+// While the queue is paused or held it is cleanup.ErrPaused, before any
+// preflight or record.
+func (e *Engine) Orphan(ctx context.Context, r cleanup.OrphanRequest) (cleanup.Receipt, error) {
+	if err := r.Validate(); err != nil {
+		return cleanup.Receipt{}, fmt.Errorf("cleanup daemon: orphan request: %w", err)
+	}
+	return call(ctx, e, onBehalf(ctx, func(ctx context.Context) (cleanup.Receipt, error) { return e.orphan(ctx, r) }))
 }
 
 // Status reads a snapshot and never waits behind the worker once Run has
@@ -917,7 +930,7 @@ func (e *Engine) reconcile(now time.Time) error {
 }
 
 func (e *Engine) retirementDue(job cleanup.Job) bool {
-	return job.Phase.Logical() && !job.Adopted && job.Retirement != cleanup.RetirementComplete
+	return job.Phase.Logical() && !job.Unbound() && job.Retirement != cleanup.RetirementComplete
 }
 
 func (e *Engine) logicalDue(now time.Time) (cleanup.Job, bool) {
@@ -1274,6 +1287,23 @@ func (e *Engine) adopt(ctx context.Context, r cleanup.AdoptRequest) (cleanup.Rec
 	return e.relocate(ctx, requested(ctx, job))
 }
 
+func (e *Engine) orphan(ctx context.Context, r cleanup.OrphanRequest) (cleanup.Receipt, error) {
+	if e.halted() {
+		return cleanup.Receipt{}, cleanup.ErrPaused
+	}
+	job, found, err := e.revive(orphanedAt(r))
+	if err != nil {
+		return cleanup.Receipt{}, err
+	}
+	if !found {
+		e.seq++
+		if job, err = e.created(e.relocator.Orphan(ctx, e.seq, r)); err != nil {
+			return cleanup.Receipt{}, err
+		}
+	}
+	return e.relocate(ctx, requested(ctx, job))
+}
+
 func requested(ctx context.Context, job cleanup.Job) cleanup.Job {
 	if requester, named := cleanup.RequesterFrom(ctx); named {
 		job.Requester = requester
@@ -1359,7 +1389,7 @@ func registeredAt(worktree string, force bool) rejoinable {
 	return func(job cleanup.Job) bool {
 		untouched := job.Phase == cleanup.PhaseQueued || job.Phase == cleanup.PhaseWaiting || job.Phase == cleanup.PhasePending || job.Phase == cleanup.PhasePrepared || job.Phase == cleanup.PhaseClaimed
 		authorized := force || !job.Force
-		return untouched && authorized && !job.Adopted && (job.Original == worktree || job.Original == resolved)
+		return untouched && authorized && !job.Unbound() && (job.Original == worktree || job.Original == resolved)
 	}
 }
 
@@ -1384,6 +1414,13 @@ func parkedAt(r cleanup.AdoptRequest) rejoinable {
 	return func(job cleanup.Job) bool {
 		same := job.Source == r.Source && job.Tree == r.Tree && job.Head == r.Head
 		return job.Adopted && job.Phase == cleanup.PhasePrepared && same && holds(job.Source, job.Tree)
+	}
+}
+
+func orphanedAt(r cleanup.OrphanRequest) rejoinable {
+	return func(job cleanup.Job) bool {
+		untouched := job.Phase == cleanup.PhasePrepared || job.Phase == cleanup.PhaseClaimed
+		return job.Orphaned && untouched && job.Original == r.Path && holds(job.Original, job.Tree)
 	}
 }
 

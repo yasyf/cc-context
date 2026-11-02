@@ -386,6 +386,8 @@ func TestServeGatesRequestsOnTheProtocol(t *testing.T) {
 		{"a remove with no request", `{"protocol":5,"version":"v9","op":"remove"}`, kindInternal, ""},
 		{"an adopt with no request", `{"protocol":5,"version":"v9","op":"adopt"}`, kindInternal, ""},
 		{"an adopt of a tree its ref does not pin", `{"protocol":5,"version":"v9",` + adopt + `}`, kindInternal, ""},
+		{"an orphan with no request", `{"protocol":5,"version":"v9","op":"orphan"}`, kindInternal, ""},
+		{"an orphan naming no parent", `{"protocol":5,"version":"v9","op":"orphan","orphan":{"path":"/pool/lane","tree":{"dev":1,"ino":2},"common_dir":"/repo.git","git":"/usr/bin/git"}}`, kindInternal, ""},
 		{"a pause naming a job", `{"protocol":5,"version":"v9","op":"pause","job_id":"` + unknownJob + `"}`, kindInternal, ""},
 		{"not json", `remove everything`, kindInternal, ""},
 		{"a shutdown behind a duplicate op", `{"protocol":5,"version":"v9","op":"hello","op":"shutdown"}`, kindInternal, ""},

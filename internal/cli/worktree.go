@@ -1160,6 +1160,13 @@ func removeOrphanWorktree(ctx context.Context, cmd *cobra.Command, path string, 
 	if err := recordLane(ctx, "worktree rm --path", path); err != nil {
 		return err
 	}
+	if cleanupDaemonized {
+		receipt, err := queueOrphanRemoval(ctx, path, rechecked, gitDir)
+		if err != nil {
+			return err
+		}
+		return reportGitWorktreeRemoval(ctx, cmd, name, orphanShape, path, receipt, opts.wait)
+	}
 	removed, err := deleteOrphanWorktree(path, rechecked)
 	if err != nil {
 		return err
@@ -1230,6 +1237,42 @@ func recordOrphanRemoval(ctx context.Context, path, gitDir string) (string, erro
 		return "", fmt.Errorf("worktree rm: record %s: %w", path, err)
 	}
 	return record, nil
+}
+
+func queueOrphanRemoval(ctx context.Context, path string, tree os.FileInfo, gitDir string) (cleanup.Receipt, error) {
+	git, err := cleanupGit(ctx, "worktree rm")
+	if err != nil {
+		return cleanup.Receipt{}, err
+	}
+	parent, err := os.Stat(filepath.Dir(path))
+	if err != nil {
+		return cleanup.Receipt{}, fmt.Errorf("worktree rm: %w", err)
+	}
+	svc, err := cleanupService(ctx)
+	if err != nil {
+		return cleanup.Receipt{}, fmt.Errorf("worktree rm: %w", err)
+	}
+	orphaner, ok := svc.(cleanup.Orphaner)
+	if !ok {
+		return cleanup.Receipt{}, fmt.Errorf("worktree rm: %T deletes no orphaned checkout", svc)
+	}
+	request := cleanup.OrphanRequest{
+		Path:      path,
+		Tree:      cleanup.IDOf(tree),
+		Parent:    cleanup.IDOf(parent),
+		CommonDir: filepath.Dir(filepath.Dir(gitDir)),
+		Git:       git,
+	}
+	receipt, err := cleanupHandoff(ctx, func(ctx context.Context) (cleanup.Receipt, error) {
+		return orphaner.Orphan(ctx, request)
+	})
+	if err != nil {
+		receipt, err = followCleanupRetry(ctx, svc, err)
+	}
+	if err != nil {
+		return cleanup.Receipt{}, fmt.Errorf("worktree rm: %w", err)
+	}
+	return receipt, nil
 }
 
 // deleteOrphanWorktree deletes the tree at path in place through held

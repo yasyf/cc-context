@@ -111,7 +111,7 @@ func lockedBy(root *os.Root, job *cleanup.Job, err error) string {
 }
 
 func bind(job *cleanup.Job, tree spot) (bond, string, string) {
-	if job.Adopted {
+	if job.Unbound() {
 		return bond{}, "", ""
 	}
 	admin, ok, err := cleanup.Placed(job.AdminDir, job.Admin)
@@ -301,7 +301,7 @@ func (r *Relocator) quiet(ctx context.Context, job *cleanup.Job, tree string, cl
 	case errors.As(err, &active):
 		return active.Error()
 	case clean && errors.Is(err, cleanup.ErrUnprobed):
-		if pushed, pushErr := r.pushed(ctx, job.Git, job.Repo, job.Branch, job.Head); pushErr == nil && pushed {
+		if pushed, pushErr := r.headPushed(ctx, job); pushErr == nil && pushed {
 			slog.Warn("cleanup: treating a clean, pushed tree as idle past a failed probe", "job", job.ID, "tree", tree, "error", err)
 			return ""
 		}
@@ -422,7 +422,7 @@ func registeredAway(job *cleanup.Job) string {
 }
 
 func (r *Relocator) settle(ctx context.Context, job *cleanup.Job) (bool, error) {
-	if job.Adopted {
+	if job.Unbound() {
 		return r.enter(job, cleanup.PhaseDone)
 	}
 	admin, ok, err := cleanup.Placed(job.AdminDir, job.Admin)
@@ -460,7 +460,7 @@ func (r *Relocator) admitClaimed(ctx context.Context, job *cleanup.Job) (cleanup
 		return r.Admit(ctx, job)
 	}
 	var reason, detail string
-	if job.Adopted {
+	if job.Unbound() {
 		reason, detail = r.vouch(ctx, job, tree)
 	} else {
 		var held bond
@@ -503,13 +503,18 @@ func (r *Relocator) admitTree(ctx context.Context, job *cleanup.Job) (cleanup.De
 
 func (r *Relocator) recheck(ctx context.Context, job *cleanup.Job, tree spot) (bond, string, string) {
 	var held bond
-	if job.Adopted {
+	if job.Unbound() {
 		_, detail, err := registration(job.Repo, tree.path)
 		if err != nil {
 			return held, "reconcile", err.Error()
 		}
 		if detail != "" {
 			return held, "reconcile", detail
+		}
+		if job.Orphaned {
+			if detail := parented(tree.path, job.Parent); detail != "" {
+				return held, "identity", detail
+			}
 		}
 	} else {
 		var reason, detail string
@@ -547,7 +552,7 @@ func (r *Relocator) residue(ctx context.Context, job *cleanup.Job, tree spot, he
 		}
 	}
 	switch {
-	case job.Adopted:
+	case job.Unbound():
 		return "", ""
 	case held.native:
 		if reason, detail := r.native(ctx, job, tree.path); reason != "" {
@@ -559,7 +564,7 @@ func (r *Relocator) residue(ctx context.Context, job *cleanup.Job, tree spot, he
 }
 
 func (r *Relocator) admitRegistration(ctx context.Context, job *cleanup.Job) (cleanup.DeletionRoot, error) {
-	if job.Adopted {
+	if job.Unbound() {
 		_, err := r.enter(job, cleanup.PhaseDone)
 		return cleanup.DeletionRoot{}, err
 	}

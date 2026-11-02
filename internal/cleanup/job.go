@@ -212,6 +212,12 @@ type Job struct {
 	Adopted bool   `json:"adopted,omitempty"`
 	Source  string `json:"source,omitempty"`
 	Owner   string `json:"owner,omitempty"`
+	// Orphaned marks a pool worktree whose admin directory was already gone
+	// when an operator named it by path. It has no registration, no head and
+	// no links: the job deletes the tree at Original on the operator's
+	// authorization, Parent pinning the directory that holds it.
+	Orphaned bool   `json:"orphaned,omitempty"`
+	Parent   FileID `json:"parent,omitzero"`
 	// Repo is the canonical git common directory.
 	Repo string `json:"repo"`
 	// AdminDir is the worktree's admin directory, <Repo>/worktrees/<id>; empty
@@ -317,7 +323,7 @@ func (j Job) Validate() error {
 	switch j.Retirement {
 	case "":
 	case RetirementIntent, RetirementComplete:
-		if j.Adopted || !j.Phase.Logical() {
+		if j.Unbound() || !j.Phase.Logical() {
 			return fmt.Errorf("retirement %q belongs to a retained linked worktree", j.Retirement)
 		}
 	default:
@@ -344,8 +350,13 @@ func (j Job) Validate() error {
 		return fmt.Errorf("head %q is not an object id", j.Head)
 	}
 	identity := j.validateLinked
-	if j.Adopted {
+	switch {
+	case j.Adopted && j.Orphaned:
+		return errors.New("a job cannot be both adopted and orphaned")
+	case j.Adopted:
 		identity = j.validateAdopted
+	case j.Orphaned:
+		identity = j.validateOrphaned
 	}
 	if err := identity(); err != nil {
 		return err
@@ -408,6 +419,26 @@ func (j Job) validateAdopted() error {
 	}
 	return LegacyBinding(j.Source, j.RecoveryRef)
 }
+
+func (j Job) validateOrphaned() error {
+	switch {
+	case j.Deferred:
+		return errors.New("an orphaned job cannot be deferred")
+	case j.Phase != PhasePrepared && j.Phase != PhaseClaimed && j.Phase != PhaseDeletingTree && j.Phase != PhaseDone:
+		return fmt.Errorf("phase %q belongs to a registered worktree, not an orphaned tree", j.Phase)
+	case j.AdminDir != "" || !j.Admin.Zero() || j.Links != (Links{}):
+		return errors.New("an orphaned job carries admin or link state it never had")
+	case j.Head != "" || j.RecoveryRef != "" || j.Branch != "":
+		return errors.New("an orphaned job carries a head it never had")
+	case j.Parent.Zero():
+		return errors.New("parent identity was never captured")
+	}
+	return nil
+}
+
+// Unbound reports whether no git registration names the job's tree, so its
+// deletion ends with the tree: an adopted tree or an orphaned one.
+func (j Job) Unbound() bool { return j.Adopted || j.Orphaned }
 
 func cleanAbs(path string) bool {
 	return filepath.IsAbs(path) && filepath.Clean(path) == path

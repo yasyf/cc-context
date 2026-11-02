@@ -97,6 +97,13 @@ type Relocator interface {
 	// *RefusedError or an *ActiveError with nothing journaled. Advance then
 	// claims an adopted job for deletion at Source.
 	Adopt(ctx context.Context, seq uint64, r AdoptRequest) (Job, error)
+	// Orphan verifies that r.Path holds the tree r names, under the parent r
+	// names, with a .git that points at a missing admin directory of
+	// r.CommonDir and no registration of that repository on it, and that the
+	// tree is idle; it journals the tree at PhasePrepared under seq, moving
+	// nothing. A refusal is a *RefusedError or an *ActiveError with nothing
+	// journaled. Advance then claims it for deletion at r.Path.
+	Orphan(ctx context.Context, seq uint64, r OrphanRequest) (Job, error)
 	// Advance takes a logical job to PhaseClaimed: it finds the tree the job
 	// captured where it sits now, proves the removal against it, and locks the
 	// registration in place. It moves nothing, so it is equally the resume of
