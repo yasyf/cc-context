@@ -39,8 +39,8 @@ Set `git config ccx.stack` to `github` or `graphite` to configure the stack prov
 Stack replay requires Git 2.56 or newer. Internal conflict and rehearsal
 workspaces are sparse. Git `ccx vcs worktree add` links a sparse checkout to
 the caller's repository. New Git worktrees mint under
-`~/.claude/worktrees/<repo>/<lane>`; `git config --global ccx.worktreeRoot
-<path>` moves them to `<path>/<repo>/<lane>`. Follow [the stack conflict guide](docs/stack-rebase.md)
+`~/repos/claude/worktrees/<repo>/<lane>` when `~/repos` is a volume of its
+own, else under `~/.claude/worktrees`; `ccx.worktreeRoot` overrides both. Follow [the stack conflict guide](docs/stack-rebase.md)
 for sparse expansion, manual dependency setup, and explicit
 `ccx vcs stack regenerate --include <dir>` or `--full`. Keep mutable install
 state and build outputs private to each workspace; download and compiler
