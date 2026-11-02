@@ -1,6 +1,7 @@
 package rank
 
 import (
+	"math"
 	"reflect"
 	"testing"
 )
@@ -44,5 +45,20 @@ func TestBM25RejectsInvalidPostings(t *testing.T) {
 		if _, err := BM25FromPostings([]int{2}, map[string][]BM25Posting{"alpha": entries}); err == nil {
 			t.Fatalf("accepted %v", entries)
 		}
+	}
+}
+
+func TestBM25PostingIntegerDomain(t *testing.T) {
+	if _, err := BM25FromPostings([]int{math.MaxInt32 + 1}, map[string][]BM25Posting{"alpha": {{Document: 0, Frequency: 1}}}); err != nil {
+		t.Fatalf("rejected a large document length with a representable term frequency: %v", err)
+	}
+	if _, err := BM25FromPostings([]int{1}, map[string][]BM25Posting{"alpha": {{Document: math.MaxInt32 + 1, Frequency: 1}}}); err == nil {
+		t.Fatal("accepted a document index outside the posting integer domain")
+	}
+	if _, err := BM25FromPostings([]int{math.MaxInt32 + 1}, map[string][]BM25Posting{"alpha": {{Document: 0, Frequency: math.MaxInt32 + 1}}}); err == nil {
+		t.Fatal("accepted a term frequency outside the posting integer domain")
+	}
+	if _, err := BM25FromPostings([]int{math.MaxInt32}, map[string][]BM25Posting{"alpha": {{Document: 0, Frequency: math.MaxInt32}}}); err != nil {
+		t.Fatalf("rejected the posting integer boundary: %v", err)
 	}
 }

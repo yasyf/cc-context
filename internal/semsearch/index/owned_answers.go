@@ -15,7 +15,7 @@ import (
 	"slices"
 	"strings"
 
-	_ "modernc.org/sqlite"
+	_ "modernc.org/sqlite" // Registers the SQLite driver with database/sql.
 
 	"github.com/yasyf/cc-context/internal/cache"
 	"github.com/yasyf/cc-context/internal/semsearch"

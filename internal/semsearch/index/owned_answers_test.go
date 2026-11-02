@@ -107,10 +107,10 @@ func TestOwnedAnswersExactRankParity(t *testing.T) {
 	corpus, source := ownedAnswerFixture(32)
 	emb := &countingEmbedder{}
 	chunker := &ownedAnswerChunker{}
-	var chunks []semsearch.Chunk
+	chunks := make([]semsearch.Chunk, 0, len(corpus.Documents))
 	documents := slices.Clone(corpus.Documents)
 	slices.SortFunc(documents, func(a, b OwnedAnswerDocument) int { return strings.Compare(a.Path, b.Path) })
-	var vectors [][]float32
+	vectors := make([][]float32, 0, len(documents))
 	for _, doc := range documents {
 		chunks = append(chunks, chunker.ChunkFile(t.Context(), doc.Path, "markdown", source.texts[doc.ID])...)
 		vectors = append(vectors, detVec(source.texts[doc.ID], emb.Dims()))
