@@ -2907,12 +2907,6 @@ func (d *deferCleanup) Defer(_ context.Context, r cleanup.DeferRequest) (cleanup
 	return d.receipt, d.err
 }
 
-func (d *deferCleanup) answer(receipt cleanup.Receipt, err error) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.receipt, d.err = receipt, err
-}
-
 func (d *deferCleanup) asked() []cleanup.DeferRequest {
 	d.mu.Lock()
 	defer d.mu.Unlock()
