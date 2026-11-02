@@ -7,10 +7,8 @@ import (
 	"io/fs"
 	"log/slog"
 	"path/filepath"
-	"strings"
 	"syscall"
-
-	"github.com/yasyf/daemonkit/durable"
+	"time"
 
 	"github.com/yasyf/cc-context/internal/cleanup"
 )
@@ -73,14 +71,6 @@ func observe(job *cleanup.Job, released bool) (observation, error) {
 	return seen, err
 }
 
-func (o observation) untouched(job *cleanup.Job) bool {
-	return o.original.is(job.Tree) && !o.registered.exists && !o.payload.exists && o.admin.is(job.Admin)
-}
-
-func (o observation) relocated(job *cleanup.Job) bool {
-	return !o.original.is(job.Tree) && o.registered.is(job.Tree) && !o.payload.exists && o.admin.is(job.Admin)
-}
-
 func (o observation) describe(job *cleanup.Job) string {
 	original := ""
 	if !o.released {
@@ -104,45 +94,8 @@ func expectedLinks(job *cleanup.Job) (cleanup.Links, error) {
 	}, nil
 }
 
-func readLinks(tree, adminDir string) (cleanup.Links, error) {
-	dotGit, err := readLinkage(filepath.Join(tree, ".git"))
-	if err != nil {
-		return cleanup.Links{}, err
-	}
-	adminGitdir, err := readLinkage(filepath.Join(adminDir, "gitdir"))
-	if err != nil {
-		return cleanup.Links{}, err
-	}
-	return cleanup.Links{DotGit: dotGit, AdminGitdir: adminGitdir}, nil
-}
-
-func linkDrift(tree, adminDir string, want cleanup.Links) string {
-	links, err := readLinks(tree, adminDir)
-	if err != nil {
-		return err.Error()
-	}
-	return drifted(tree, adminDir, links, want)
-}
-
-func drifted(tree, adminDir string, links, want cleanup.Links) string {
-	switch {
-	case links.DotGit != want.DotGit:
-		return fmt.Sprintf("%s reads %q, want %q", filepath.Join(tree, ".git"), links.DotGit, want.DotGit)
-	case links.AdminGitdir != want.AdminGitdir:
-		return fmt.Sprintf("%s reads %q, want %q", filepath.Join(adminDir, "gitdir"), links.AdminGitdir, want.AdminGitdir)
-	}
-	return ""
-}
-
 func unclear(tree string, err error) string {
 	return fmt.Sprintf("could not verify that %s is idle: %v", tree, err)
-}
-
-func parked(job *cleanup.Job, detail string) string {
-	return fmt.Sprintf(
-		"%s; the tree is parked at %s, still registered; `git worktree move %s %s` restores it",
-		detail, job.Registered, job.Registered, job.Original,
-	)
 }
 
 func (r *Relocator) held(ctx context.Context, job *cleanup.Job, tree string) string {
@@ -157,21 +110,6 @@ func (r *Relocator) held(ctx context.Context, job *cleanup.Job, tree string) str
 	return unclear(tree, err)
 }
 
-func (r *Relocator) vet(ctx context.Context, job *cleanup.Job, tree string, vetted *bool) (reason, detail string) {
-	if job.Force || *vetted {
-		return "", ""
-	}
-	dirt, err := r.dirt(ctx, job.Git, tree)
-	if err != nil {
-		return gitReason(err), err.Error()
-	}
-	if dirt != "" {
-		return "dirty", dirt
-	}
-	*vetted = true
-	return "", ""
-}
-
 func (r *Relocator) block(ctx context.Context, job *cleanup.Job, reason, detail string) (bool, error) {
 	if err := ctx.Err(); err != nil && reason != timeoutReason {
 		return false, err
@@ -183,252 +121,70 @@ func (r *Relocator) block(ctx context.Context, job *cleanup.Job, reason, detail 
 func (r *Relocator) enter(job *cleanup.Job, phase cleanup.Phase) (bool, error) {
 	job.Phase = phase
 	job.Updated = r.cfg.Now()
+	if !phase.Logical() {
+		job.Retirement, job.RetireAfter = "", time.Time{}
+	}
 	if err := r.cfg.Journal.Save(*job); err != nil {
 		return false, err
 	}
 	return true, nil
 }
 
-// Advance resumes job from the phase its record holds, trusting it only as far
-// as the filesystem agrees. It never deletes a tree, touches the original path
-// once the tree has left it, or runs git's repair or prune.
+// Advance proves job against its tree where it sits and claims the tree's
+// registration in place, trusting the record only as far as the filesystem
+// agrees. It never deletes or moves a tree and never runs git's repair or
+// prune.
 //
 // A cancelled ctx returns its error and journals nothing, unless a git step
 // expired its own budget, as a mutation can past the cancellation; then it
 // journals a timeout blockage and returns nil.
 func (r *Relocator) Advance(ctx context.Context, job *cleanup.Job) error {
-	if job.Retirement != "" {
-		if handled, err := r.resumeDisplaced(ctx, job); handled || err != nil {
-			return err
-		}
-		if proceed, err := r.restoreRegistration(ctx, job); err != nil || !proceed {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !job.Phase.Logical() {
+		return nil
+	}
+	if job.Phase == cleanup.PhaseQueued || job.Phase == cleanup.PhaseWaiting {
+		if proceed, err := r.release(ctx, job); err != nil || !proceed {
 			return err
 		}
 	}
-	vetted := false
-	for {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		var step func(context.Context, *cleanup.Job, *bool) (bool, error)
-		switch job.Phase {
-		case cleanup.PhaseQueued, cleanup.PhaseWaiting:
-			step = r.release
-		case cleanup.PhasePending:
-			step = r.promote
-		case cleanup.PhasePrepared:
-			step = r.relocate
-			if job.Adopted {
-				step = r.take
-			}
-		case cleanup.PhaseMoved:
-			step = r.detach
-		case cleanup.PhaseDetached:
-			step = r.unregister
-		default:
-			return nil
-		}
-		proceed, err := step(ctx, job, &vetted)
-		if err != nil || !proceed {
-			return err
-		}
+	claim := r.claim
+	if job.Adopted {
+		claim = r.take
 	}
+	_, err := claim(ctx, job)
+	return err
 }
 
-func (r *Relocator) release(ctx context.Context, job *cleanup.Job, vetted *bool) (bool, error) {
-	if err := r.unretired(ctx, job); err != nil {
-		var active *cleanup.ActiveError
-		if !errors.As(err, &active) {
-			if tree, sightErr := sight(job.Original); sightErr == nil && !tree.exists {
-				return r.vanished(ctx, job)
-			}
-			return r.block(ctx, job, "activity", unclear(job.Original, err))
-		}
-		if err := ctx.Err(); err != nil {
-			return false, err
-		}
-		if job.Phase == cleanup.PhaseWaiting {
-			return false, nil
-		}
-		now := r.cfg.Now()
-		job.Phase = cleanup.PhaseWaiting
-		job.Note(now, active.Error())
-		job.Updated = now
-		return false, r.cfg.Journal.Save(*job)
+func (r *Relocator) release(ctx context.Context, job *cleanup.Job) (bool, error) {
+	err := r.unretired(ctx, job)
+	if err == nil {
+		return true, nil
 	}
-
-	seen, err := observe(job, false)
-	if err != nil {
-		return r.block(ctx, job, "identity", err.Error())
-	}
-	if !seen.original.exists {
-		return r.vanished(ctx, job)
-	}
-	if proceed, err := r.devices(ctx, job, seen); err != nil || !proceed {
-		return proceed, err
-	}
-	if !seen.original.is(job.Tree) || !seen.admin.is(job.Admin) {
-		return r.block(ctx, job, "identity", seen.describe(job))
-	}
-	if drift := linkDrift(job.Original, job.AdminDir, job.Links); drift != "" {
-		return r.block(ctx, job, "identity", drift)
-	}
-	head, err := r.head(ctx, job.Git, job.Original)
-	if err != nil {
-		return r.block(ctx, job, gitReason(err), err.Error())
-	}
-	if head != job.Head {
-		return r.block(ctx, job, "identity", headChanged(job, job.Original, head))
-	}
-	if reason, detail := r.vet(ctx, job, job.Original, vetted); reason != "" {
-		return r.block(ctx, job, reason, detail)
-	}
-	return r.enter(job, cleanup.PhasePrepared)
-}
-
-func (r *Relocator) promote(ctx context.Context, job *cleanup.Job, _ *bool) (bool, error) {
-	current, err := r.inspect(ctx, cleanup.Request{Worktree: job.Original, Force: job.Force, Git: job.Git})
-	var refused *cleanup.RefusedError
-	switch {
-	case errors.As(err, &refused):
-		if tree, sightErr := sight(job.Original); sightErr == nil && !tree.exists {
-			return r.vanished(ctx, job)
-		}
-		return r.block(ctx, job, refused.Reason, refused.Detail)
-	case err != nil:
-		return r.block(ctx, job, gitReason(err), err.Error())
-	}
-	seen := observation{
-		original: sighting{id: current.Tree, dir: true, exists: true},
-		admin:    sighting{id: current.Admin, dir: true, exists: true},
-	}
-	if proceed, err := r.devices(ctx, job, seen); err != nil || !proceed {
-		return proceed, err
-	}
-	switch {
-	case registrationOf(current) != registrationOf(*job):
-		return r.block(ctx, job, "identity", replaced(job.Original, registrationOf(current), registrationOf(*job)))
-	case current.Links != job.Links:
-		return r.block(ctx, job, "identity", drifted(job.Original, job.AdminDir, current.Links, job.Links))
-	case current.Head != job.Head:
-		return r.block(ctx, job, "identity", headChanged(job, job.Original, current.Head))
-	case current.Branch != job.Branch:
-		return r.block(ctx, job, "identity", fmt.Sprintf("branch changed: the job captured %q, %s now holds %q", job.Branch, job.Original, current.Branch))
-	}
-	if err := r.unretired(ctx, job); err != nil {
-		var active *cleanup.ActiveError
-		if errors.As(err, &active) {
-			return r.block(ctx, job, "activity", active.Error())
+	var active *cleanup.ActiveError
+	if !errors.As(err, &active) {
+		if _, found, locateErr := locate(job); locateErr == nil && !found {
+			return true, nil
 		}
 		return r.block(ctx, job, "activity", unclear(job.Original, err))
 	}
-	return r.enter(job, cleanup.PhasePrepared)
-}
-
-// vanished settles a deferred or pending removal whose tree left its path by
-// other hands: with its registration gone too there is nothing left to
-// remove, and with the registration still there only git worktree prune can
-// drop it.
-func (r *Relocator) vanished(ctx context.Context, job *cleanup.Job) (bool, error) {
-	admin, err := sight(job.AdminDir)
-	if err != nil {
-		return r.block(ctx, job, "identity", err.Error())
+	if err := ctx.Err(); err != nil {
+		return false, err
 	}
-	if admin.exists {
-		return r.block(ctx, job, "identity", fmt.Sprintf("%s is gone, but git still registers it at %s; git worktree prune drops the registration, then ccx vcs cleanup retry finishes the job", job.Original, job.AdminDir))
+	if job.Phase == cleanup.PhaseWaiting {
+		return false, nil
 	}
-	return r.enter(job, cleanup.PhaseDone)
+	now := r.cfg.Now()
+	job.Phase = cleanup.PhaseWaiting
+	job.Note(now, active.Error())
+	job.Updated = now
+	return false, r.cfg.Journal.Save(*job)
 }
 
 func headChanged(job *cleanup.Job, tree, head string) string {
 	return fmt.Sprintf("HEAD changed: the job captured %q, %s now reads %q", job.Head, tree, head)
-}
-
-func (r *Relocator) relocate(ctx context.Context, job *cleanup.Job, vetted *bool) (bool, error) {
-	expected, err := expectedLinks(job)
-	if err != nil {
-		return r.block(ctx, job, "reconcile", err.Error())
-	}
-	seen, err := observe(job, false)
-	if err != nil {
-		return r.block(ctx, job, "reconcile", err.Error())
-	}
-	if proceed, err := r.devices(ctx, job, seen); err != nil || !proceed {
-		return proceed, err
-	}
-	if seen.untouched(job) {
-		if drift := linkDrift(job.Original, job.AdminDir, job.Links); drift != "" {
-			return r.block(ctx, job, "reconcile", drift)
-		}
-		if reason, detail := r.move(ctx, job, vetted); reason != "" {
-			return r.block(ctx, job, reason, detail)
-		}
-		if seen, err = observe(job, false); err != nil {
-			return r.block(ctx, job, "reconcile", err.Error())
-		}
-	}
-	if !seen.relocated(job) {
-		return r.block(ctx, job, "reconcile", seen.describe(job))
-	}
-	if err := settleLinks(job, expected); err != nil {
-		return r.block(ctx, job, "reconcile", err.Error())
-	}
-	return r.enter(job, cleanup.PhaseMoved)
-}
-
-func (r *Relocator) move(ctx context.Context, job *cleanup.Job, vetted *bool) (reason, detail string) {
-	if err := r.colocatedIn(job, job.Original, job.Tree); err != nil {
-		var refused *cleanup.RefusedError
-		if errors.As(err, &refused) {
-			return refused.Reason, refused.Detail
-		}
-		return "reconcile", err.Error()
-	}
-	nested, err := nestedWorktree(job.Repo, job.AdminDir, job.Original)
-	if err != nil {
-		return "reconcile", err.Error()
-	}
-	if nested != "" {
-		return "reconcile", fmt.Sprintf("worktree %s is registered inside %s", nested, job.Original)
-	}
-	if reason, detail := r.unlisted(ctx, job, vetted, "watchers", r.retire(ctx, job.Original)); reason != "" {
-		return reason, detail
-	}
-	if reason, detail := r.unlisted(ctx, job, vetted, "quarantine", r.cfg.Watchers.CheckQuarantine(ctx, filepath.Dir(job.Payload))); reason != "" {
-		return reason, detail
-	}
-	if holders := r.held(ctx, job, job.Original); holders != "" {
-		return "activity", holders
-	}
-	if reason, detail := r.vet(ctx, job, job.Original, vetted); reason != "" {
-		return reason, detail
-	}
-
-	if job.Head != "" {
-		if _, err := r.rewrite(ctx, job.Git, "--git-dir="+job.Repo, "update-ref", job.RecoveryRef, job.Head); err != nil {
-			return gitReason(err), err.Error()
-		}
-	}
-	tree, err := sight(job.Original)
-	if err != nil {
-		return "identity", err.Error()
-	}
-	if !tree.is(job.Tree) {
-		return "identity", fmt.Sprintf("%s is %s, the job captured tree %s", job.Original, tree, label(job.Tree))
-	}
-	_, err = r.rewrite(ctx, job.Git, "--git-dir="+job.Repo, "-c", "worktree.useRelativePaths=false", "worktree", "move", job.Original, job.Registered)
-	if err == nil {
-		return "", ""
-	}
-	if errors.Is(err, cleanup.ErrUnprobed) {
-		return gitReason(err), err.Error()
-	}
-	seen, seeErr := observe(job, false)
-	if seeErr == nil && seen.untouched(job) && linkDrift(job.Original, job.AdminDir, job.Links) == "" {
-		return "git", err.Error()
-	}
-	slog.Warn("cleanup: git worktree move failed after the tree left its original state", "job", job.ID, "error", err)
-	return "", ""
 }
 
 func (r *Relocator) retire(ctx context.Context, tree string) error {
@@ -439,7 +195,7 @@ func (r *Relocator) retire(ctx context.Context, tree string) error {
 	return r.cfg.Watchers.Retire(cleanup.WithRetiring(ctx, watchers.Retiring), tree)
 }
 
-func (r *Relocator) unlisted(ctx context.Context, job *cleanup.Job, vetted *bool, reason string, err error) (string, string) {
+func (r *Relocator) unlisted(ctx context.Context, job *cleanup.Job, reason string, err error) (string, string) {
 	switch {
 	case err == nil:
 		return "", ""
@@ -453,8 +209,7 @@ func (r *Relocator) unlisted(ctx context.Context, job *cleanup.Job, vetted *bool
 	case !pushed:
 		return timeoutReason, fmt.Sprintf("%v; no remote-tracking ref holds %s's head %s", err, job.Original, job.Head)
 	}
-	*vetted = false
-	slog.Warn("cleanup: moving a pushed tree whose watchers could not be listed", "job", job.ID, "tree", job.Original, "check", reason, "error", err)
+	slog.Warn("cleanup: deleting a pushed tree whose watchers could not be listed", "job", job.ID, "tree", job.Original, "check", reason, "error", err)
 	return "", ""
 }
 
@@ -464,6 +219,9 @@ func (r *Relocator) excused(ctx context.Context, job *cleanup.Job, tree string, 
 		return false
 	}
 	if tree == job.Original || tree == job.Registered {
+		if _, err := readLinkage(filepath.Join(tree, ".git")); err != nil {
+			return false
+		}
 		if dirt, dirtErr := r.dirt(ctx, job.Git, tree); dirtErr != nil || dirt != "" {
 			return false
 		}
@@ -473,153 +231,4 @@ func (r *Relocator) excused(ctx context.Context, job *cleanup.Job, tree string, 
 	}
 	slog.Warn("cleanup: treating a clean, pushed tree as idle past a failed probe", "job", job.ID, "tree", tree, "error", err)
 	return true
-}
-
-func settleLinks(job *cleanup.Job, expected cleanup.Links) error {
-	dotGitPath, adminGitdirPath := filepath.Join(job.Registered, ".git"), filepath.Join(job.AdminDir, "gitdir")
-	links, err := readLinks(job.Registered, job.AdminDir)
-	if err != nil {
-		return err
-	}
-	if links.DotGit != expected.DotGit && links.DotGit != job.Links.DotGit {
-		return fmt.Errorf("%s reads %q, neither the captured %q nor the expected %q", dotGitPath, links.DotGit, job.Links.DotGit, expected.DotGit)
-	}
-	if links.AdminGitdir != expected.AdminGitdir && links.AdminGitdir != job.Links.AdminGitdir {
-		return fmt.Errorf("%s reads %q, neither the captured %q nor the expected %q", adminGitdirPath, links.AdminGitdir, job.Links.AdminGitdir, expected.AdminGitdir)
-	}
-	if links.AdminGitdir != expected.AdminGitdir {
-		if err := durable.WriteFile(adminGitdirPath, []byte(expected.AdminGitdir), 0o644); err != nil {
-			return fmt.Errorf("rewrite %s: %w", adminGitdirPath, err)
-		}
-	}
-	if links.DotGit != expected.DotGit {
-		if err := durable.WriteFile(dotGitPath, []byte(expected.DotGit), 0o644); err != nil {
-			return fmt.Errorf("rewrite %s: %w", dotGitPath, err)
-		}
-	}
-	return nil
-}
-
-func (r *Relocator) detach(ctx context.Context, job *cleanup.Job, vetted *bool) (bool, error) {
-	expected, err := expectedLinks(job)
-	if err != nil {
-		return r.block(ctx, job, "reconcile", err.Error())
-	}
-	seen, err := observe(job, true)
-	if err != nil {
-		return r.block(ctx, job, "reconcile", err.Error())
-	}
-	if proceed, err := r.devices(ctx, job, seen); err != nil || !proceed {
-		return proceed, err
-	}
-	if !seen.registered.exists && seen.payload.is(job.Tree) {
-		return r.enter(job, cleanup.PhaseDetached)
-	}
-	if !seen.registered.is(job.Tree) || seen.payload.exists {
-		return r.block(ctx, job, "reconcile", seen.describe(job))
-	}
-
-	if !seen.admin.is(job.Admin) {
-		return r.block(ctx, job, "identity", seen.describe(job))
-	}
-	if drift := linkDrift(job.Registered, job.AdminDir, expected); drift != "" {
-		return r.block(ctx, job, "identity", drift)
-	}
-	head, err := r.head(ctx, job.Git, job.Registered)
-	if err != nil {
-		return r.block(ctx, job, gitReason(err), err.Error())
-	}
-	if head != job.Head {
-		return r.block(ctx, job, "identity", headChanged(job, job.Registered, head))
-	}
-	if holders := r.held(ctx, job, job.Registered); holders != "" {
-		return r.block(ctx, job, "activity", parked(job, holders))
-	}
-	if reason, detail := r.vet(ctx, job, job.Registered, vetted); reason != "" {
-		return r.block(ctx, job, reason, parked(job, detail))
-	}
-	claim, err := intruder(job, expected)
-	if err != nil {
-		return r.block(ctx, job, "reconcile", parked(job, err.Error()))
-	}
-	if claim != "" {
-		return r.block(ctx, job, "reconcile", parked(job, claim))
-	}
-	if seen, err = observe(job, true); err != nil {
-		return r.block(ctx, job, "reconcile", err.Error())
-	}
-	if !seen.registered.is(job.Tree) || seen.payload.exists {
-		return r.block(ctx, job, "reconcile", seen.describe(job))
-	}
-	if err := durable.Rename(job.Registered, job.Payload); err != nil {
-		return r.block(ctx, job, "reconcile", fmt.Sprintf("rename %s to %s: %v", job.Registered, job.Payload, err))
-	}
-	return r.enter(job, cleanup.PhaseDetached)
-}
-
-func parkedEntry(job *cleanup.Job, expected cleanup.Links) entry {
-	return entry{admin: job.AdminDir, names: strings.TrimSuffix(expected.AdminGitdir, "\n")}
-}
-
-func (r *Relocator) unregister(ctx context.Context, job *cleanup.Job, _ *bool) (bool, error) {
-	expected, err := expectedLinks(job)
-	if err != nil {
-		return r.block(ctx, job, "reconcile", err.Error())
-	}
-	seen, err := observe(job, true)
-	if err != nil {
-		return r.block(ctx, job, "reconcile", err.Error())
-	}
-	if proceed, err := r.devices(ctx, job, seen); err != nil || !proceed {
-		return proceed, err
-	}
-	if seen.registered.exists || !seen.payload.is(job.Tree) {
-		return r.block(ctx, job, "reconcile", seen.describe(job))
-	}
-	registry, err := enrolled(job.Repo)
-	if err != nil {
-		return r.block(ctx, job, "reconcile", err.Error())
-	}
-	entries, err := reaching(registry, filepath.Dir(job.Payload))
-	if err != nil {
-		return r.block(ctx, job, "reconcile", err.Error())
-	}
-	for _, e := range entries {
-		if !seen.admin.is(job.Admin) || e != parkedEntry(job, expected) {
-			return r.block(ctx, job, "reconcile", e.claim(job))
-		}
-	}
-	stowaway, err := carried(job, registry, job.Payload)
-	if err != nil {
-		return r.block(ctx, job, "reconcile", err.Error())
-	}
-	if stowaway != "" {
-		return r.block(ctx, job, "reconcile", stowaway)
-	}
-	if seen.admin.is(job.Admin) {
-		adminGitdirPath := filepath.Join(job.AdminDir, "gitdir")
-		if _, err := readLinkage(adminGitdirPath); errors.Is(err, fs.ErrNotExist) {
-			return r.block(ctx, job, "reconcile", fmt.Sprintf(
-				"admin %s is still the directory %s the job captured but %s is gone: an interrupted removal left the registration half-deleted; remove %s to finish dropping it",
-				job.AdminDir, label(job.Admin), adminGitdirPath, job.AdminDir,
-			))
-		}
-	}
-	if len(entries) > 0 {
-		if _, err := r.rewrite(ctx, job.Git, "--git-dir="+job.Repo, "worktree", "remove", job.Registered); err != nil {
-			return r.block(ctx, job, gitReason(err), err.Error())
-		}
-	}
-	return r.publish(ctx, job)
-}
-
-func (r *Relocator) publish(ctx context.Context, job *cleanup.Job) (bool, error) {
-	claim, err := claimed(job)
-	if err != nil {
-		return r.block(ctx, job, "reconcile", err.Error())
-	}
-	if claim != "" {
-		return r.block(ctx, job, "reconcile", claim)
-	}
-	return r.enter(job, cleanup.PhaseUnregistered)
 }

@@ -296,21 +296,10 @@ func (f *fixture) advance(job *cleanup.Job) {
 	}
 }
 
-func (f *fixture) park(job *cleanup.Job) {
+func (f *fixture) claimed(job *cleanup.Job) {
 	f.t.Helper()
-	_ = f.holdAt(job.Registered)
-	f.advance(job)
-	if job.Phase != cleanup.PhaseMoved || job.Blocked == nil || job.Blocked.Reason != "activity" {
-		f.t.Fatalf("parked job is at %s with blockage %+v, want moved and blocked on activity", job.Phase, job.Blocked)
-	}
-	f.release()
-	job.Blocked = nil
-}
-
-func (f *fixture) finished(job *cleanup.Job) {
-	f.t.Helper()
-	if job.Phase != cleanup.PhaseUnregistered || job.Blocked != nil {
-		f.t.Fatalf("job is at %s with blockage %+v, want unregistered and unblocked", job.Phase, job.Blocked)
+	if job.Phase != cleanup.PhaseClaimed || job.Blocked != nil {
+		f.t.Fatalf("job is at %s with blockage %+v, want claimed and unblocked", job.Phase, job.Blocked)
 	}
 	f.stored(job)
 }
@@ -412,12 +401,4 @@ func replacedDetail(path string, holds, named cleanup.Registration) string {
 		"%s no longer holds the worktree the request named: it holds tree %s registered under %s (%s), the request named tree %s registered under %s (%s)",
 		path, idText(holds.Tree), holds.AdminDir, idText(holds.Admin), idText(named.Tree), named.AdminDir, idText(named.Admin),
 	)
-}
-
-func expectedDotGit(job cleanup.Job) string {
-	return "gitdir: " + job.AdminDir + "\n"
-}
-
-func expectedAdminGitdir(job cleanup.Job) string {
-	return job.Registered + "/.git\n"
 }

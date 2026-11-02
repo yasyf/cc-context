@@ -15,8 +15,15 @@ import (
 func (f *fixture) unregistered() cleanup.Job {
 	f.t.Helper()
 	job := f.accept()
-	f.advance(&job)
-	f.finished(&job)
+	if err := os.Rename(f.worktree, job.Payload); err != nil {
+		f.t.Fatalf("relocate the tree the legacy way: %v", err)
+	}
+	f.run(f.repo, "worktree", "prune")
+	f.absent(f.adminDir)
+	job.Phase = cleanup.PhaseUnregistered
+	if err := f.journal.Save(job); err != nil {
+		f.t.Fatalf("Save() error = %v", err)
+	}
 	return job
 }
 
@@ -311,8 +318,13 @@ func TestAdmitBlocks(t *testing.T) {
 func TestAdmitBlocksAnAdoptedPayloadWhoseSourceIsRegistered(t *testing.T) {
 	q := newQuarantine(t)
 	job := q.adopt()
-	q.advance(&job)
-	q.finished(&job)
+	if err := os.Rename(q.source, job.Payload); err != nil {
+		t.Fatalf("take the tree the legacy way: %v", err)
+	}
+	job.Phase = cleanup.PhaseUnregistered
+	if err := q.journal.Save(job); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
 	named := filepath.Join(q.source, ".git")
 	admin := q.enroll("returned", named)
 	guarded := len(q.guarded)

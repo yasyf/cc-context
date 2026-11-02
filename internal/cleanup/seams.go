@@ -95,37 +95,54 @@ type Relocator interface {
 	// Adopt verifies a tree the retired janitor parked at r.Source and journals
 	// it at PhasePrepared under seq, moving nothing. A refusal is a
 	// *RefusedError or an *ActiveError with nothing journaled. Advance then
-	// takes an adopted job from Source straight to Payload.
+	// claims an adopted job for deletion at Source.
 	Adopt(ctx context.Context, seq uint64, r AdoptRequest) (Job, error)
-	// Advance moves job toward PhaseUnregistered from whatever phase it holds,
-	// journaling each phase before the step that leaves it. It first reconciles
-	// the phase against the filesystem, so it is equally the resume of a job a
-	// crash interrupted and the retry of one an operator unblocked.
+	// Advance takes a logical job to PhaseClaimed: it finds the tree the job
+	// captured where it sits now, proves the removal against it, and locks the
+	// registration in place. It moves nothing, so it is equally the resume of
+	// a job a crash interrupted and the retry of one an operator unblocked,
+	// and it drains a legacy job whose tree a relocation left in its folder.
+	// A job whose tree is gone from every path it names settles: done once the
+	// registration is gone too, PhaseDeletingRegistration while the job's lock
+	// still holds it, blocked as a retryable activity while git still
+	// registers it under no lock of the job's, and blocked on identity once git
+	// registers it somewhere else.
 	//
-	// From PhasePending it runs Accept's whole preflight again, and blocks the
-	// job unless that passes for the tree the job captured.
-	//
-	// It returns nil with job at PhaseUnregistered or PhaseDeletingAdmin on success, nil with job at
-	// PhaseWaiting when a deferred job's tree is still held, and nil with
-	// job.Blocked set when the job needs an operator. The error is the journal's
-	// when it could not be written, and ctx's when ctx was cancelled, leaving
-	// the record unblocked at its last journaled phase for the next Advance. A
-	// step rewriting git's state runs on past the cancellation until it ends or
-	// expires its budget; a git step that expired its own budget journals a
-	// timeout blockage and returns nil, cancelled or not.
+	// It returns nil with job at PhaseClaimed, PhaseDeletingRegistration or
+	// PhaseDone on success, nil with job at PhaseWaiting when a deferred job's
+	// tree is still held, and nil with job.Blocked set when the job needs an
+	// operator. The error is the journal's when it could not be written, and ctx's
+	// when ctx was cancelled, leaving the record unblocked at its last journaled
+	// phase for the next Advance. A step rewriting git's state runs on past the
+	// cancellation until it ends or expires its budget; a git step that expired
+	// its own budget journals a timeout blockage and returns nil, cancelled or
+	// not.
 	Advance(ctx context.Context, job *Job) error
 	// Retire hides an inactive worktree's registration while retaining its checkout in place.
 	// Registration-rebinding maintenance must not overlap retirement; a maintenance hold excludes it.
 	Retire(ctx context.Context, job *Job) error
-	// Cancel undoes a removal whose tree has not begun to move, restoring a
-	// retired registration in place; a refusal is a *RefusedError and changes
-	// nothing.
+	// Cancel undoes a removal that has not begun to claim its registration,
+	// restoring a retired registration in place; a refusal is a *RefusedError
+	// and changes nothing.
 	Cancel(ctx context.Context, job *Job) error
-	// Admit supplies the captured root to open after proving its ownership,
-	// registration, watcher and activity constraints afresh. External admin
-	// completion is journaled before its payload can be admitted. A failed
-	// proof blocks the job; errors report journal failure or cancellation.
+	// Admit supplies the captured root to open where it sits after proving its
+	// ownership, registration, watcher and activity constraints afresh,
+	// journaling the phase that root belongs to first: the tree, then the
+	// admin directory the job locked. A tree whose deletion has begun is
+	// proven clean again on every admission, an entry the deletion removed
+	// not counting; an admin directory whose deletion has begun needs only its
+	// captured inode, its lock having been proven before that phase began. A
+	// job with no root left comes back at PhaseDone with no root. External
+	// admin completion is journaled before its payload can be admitted. A
+	// failed proof blocks the job; errors report journal failure or
+	// cancellation.
 	Admit(ctx context.Context, job *Job) (DeletionRoot, error)
+	// Readmit re-proves, while the deletion of the root Admit returned is
+	// under way, what can change beneath it, running no git: the root's
+	// placement, the registration's lock and claims, and that nothing watches
+	// or holds the root. It returns that same root, the zero root once the root
+	// is gone, or blocks the job, and never moves it to another phase.
+	Readmit(ctx context.Context, job *Job) (DeletionRoot, error)
 	// Site names, from the record alone, the directory whose volume the job's
 	// next step works on, so the scheduler can tell which jobs contend with
 	// the volume it guards.

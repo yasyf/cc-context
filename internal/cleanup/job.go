@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -29,15 +30,15 @@ const (
 type Phase string
 
 const (
-	// PhaseQueued is a deferred removal awaiting normal relocation.
+	// PhaseQueued is a deferred removal awaiting its claim.
 	PhaseQueued Phase = "queued"
 	// PhaseWaiting is a deferred removal that last awaited inactivity.
 	PhaseWaiting Phase = "waiting"
 	// PhasePending is a paused removal with a captured registration that has
-	// not passed the full relocation preflight.
+	// not passed the full preflight.
 	PhasePending Phase = "pending"
 	// PhasePrepared is journaled before the first mutation: from here watchers
-	// may be retired, the recovery ref written, and git's move attempted.
+	// may be retired, the recovery ref written, and the registration locked.
 	PhasePrepared Phase = "prepared"
 	// PhaseMoved means git registers the tree at Registered and the original
 	// path is free.
@@ -54,6 +55,16 @@ const (
 	PhaseDeletingAdmin Phase = "deleting_admin"
 	// PhaseDeletingRetiredPayload records durable admin removal before deleting its retained payload.
 	PhaseDeletingRetiredPayload Phase = "deleting_retired_payload"
+	// PhaseClaimed means the removal is proven against the tree where it sits
+	// and git's registration carries the job's lock, or the tree has none: from
+	// here only deletion in place remains.
+	PhaseClaimed Phase = "claimed"
+	// PhaseDeletingTree means physical deletion of the tree where it sits has
+	// begun.
+	PhaseDeletingTree Phase = "deleting_tree"
+	// PhaseDeletingRegistration means the tree is gone and the admin directory
+	// the job locked is being deleted where it sits.
+	PhaseDeletingRegistration Phase = "deleting_registration"
 	// PhaseDone means every owned deletion root is gone.
 	PhaseDone Phase = "done"
 )
@@ -69,23 +80,24 @@ var phaseRank = map[Phase]int{
 	PhaseDeleting:               7,
 	PhaseDeletingAdmin:          8,
 	PhaseDeletingRetiredPayload: 9,
-	PhaseDone:                   10,
+	PhaseClaimed:                10,
+	PhaseDeletingTree:           11,
+	PhaseDeletingRegistration:   12,
+	PhaseDone:                   13,
 }
 
 // Logical reports whether the phase still belongs to the logical half: the
-// tree is not yet both relocated and unregistered.
+// removal is not yet proven and claimed for deletion.
 func (p Phase) Logical() bool { return phaseRank[p] < phaseRank[PhaseUnregistered] }
 
 // Physical reports whether a captured deletion root remains.
-func (p Phase) Physical() bool {
-	return p == PhaseUnregistered || p == PhaseDeleting || p == PhaseDeletingAdmin || p == PhaseDeletingRetiredPayload
-}
+func (p Phase) Physical() bool { return !p.Logical() && p != PhaseDone }
 
 // Retirement records whether a retained checkout's Git backlink is being hidden or is hidden.
 type Retirement string
 
 const (
-	// RetirementIntent marks a registration update that must finish before relocation.
+	// RetirementIntent marks a registration update that must finish before the job claims its tree.
 	RetirementIntent Retirement = "intent"
 	// RetirementComplete marks an unregistered checkout retained for physical deletion.
 	RetirementComplete Retirement = "retired"
@@ -122,6 +134,29 @@ func LstatID(path string) (FileID, os.FileInfo, error) {
 		return FileID{}, nil, err
 	}
 	return IDOf(info), info, nil
+}
+
+// Placed reports whether path names the directory captured as want, with its
+// identity now: the captured inode, on the device its parent sits on at this
+// moment. A journaled device number is never compared, so a volume renumbered
+// since capture still matches while a mount root never does. A missing path
+// is no error and a zero identity.
+func Placed(path string, want FileID) (FileID, bool, error) {
+	id, info, err := LstatID(path)
+	if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
+		return FileID{}, false, nil
+	}
+	if err != nil {
+		return FileID{}, false, err
+	}
+	if !info.IsDir() || id.Ino != want.Ino {
+		return id, false, nil
+	}
+	parent, err := os.Stat(filepath.Dir(path))
+	if err != nil {
+		return FileID{}, false, err
+	}
+	return id, IDOf(parent).Dev == id.Dev, nil
 }
 
 // Links is the exact content of the two files that tie a linked worktree to
@@ -172,7 +207,8 @@ type Job struct {
 	RetireAfter time.Time `json:"retire_after,omitzero"`
 	// Adopted marks a tree the retired janitor had already unregistered and
 	// parked at Source in its quarantine. It has no admin directory and no
-	// links to capture: the job takes the tree from Source straight to Payload.
+	// links to capture: the job deletes the tree at Source and has no
+	// registration to remove.
 	Adopted bool   `json:"adopted,omitempty"`
 	Source  string `json:"source,omitempty"`
 	Owner   string `json:"owner,omitempty"`

@@ -35,21 +35,4 @@ func TestDisplacedActivityProbeCallCountsCI(t *testing.T) {
 		}
 	}
 	t.Logf("logical_guard_requests=%d roots=%v", len(f.guardRequests), f.guarded)
-	f.guarded, f.discounts, f.guardRequests = nil, nil, nil
-	f.advance(&job)
-	adminStage(t, f, &job)
-	resumeRoots := []string{job.Original, admin, job.Original, admin, job.Original, admin}
-	resumeDiscounts := [][]cleanup.ProcessID{retiring, server, server, server, server, server}
-	if !reflect.DeepEqual(f.guarded, resumeRoots) || !reflect.DeepEqual(f.discounts, resumeDiscounts) {
-		t.Fatalf("resume guards = %v/%v, want %v/%v", f.guarded, f.discounts, resumeRoots, resumeDiscounts)
-	}
-	if len(f.guardRequests) != 3 {
-		t.Fatalf("resume requests = %v, want three complete root pairs", f.guardRequests)
-	}
-	for _, request := range f.guardRequests {
-		if len(request) != 2 {
-			t.Fatalf("resume request omitted a root: %v", request)
-		}
-	}
-	t.Logf("resume_guard_requests=%d roots=%v", len(f.guardRequests), f.guarded)
 }

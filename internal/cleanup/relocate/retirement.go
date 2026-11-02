@@ -427,75 +427,17 @@ func (r *Relocator) Retire(ctx context.Context, job *cleanup.Job) error {
 	return r.retirementState(job, cleanup.RetirementComplete)
 }
 
-func (r *Relocator) restoreRegistration(ctx context.Context, job *cleanup.Job) (bool, error) {
-	files, err := r.retirementFiles(ctx, job)
-	if err != nil {
-		return r.retirementBlocked(ctx, job, err)
-	}
-	defer files.close()
-	if files.displaced {
-		return r.block(ctx, job, "identity", "registration moved during native restoration")
-	}
-	if err := r.retirementDevices(job, files); err != nil {
-		return false, err
-	}
-	if err := r.colocatedIn(job, files.tree, files.treeID); err != nil {
-		var refused *cleanup.RefusedError
-		if errors.As(err, &refused) {
-			return r.block(ctx, job, refused.Reason, refused.Detail)
-		}
-		return r.block(ctx, job, "reconcile", err.Error())
-	}
-	owned, err := ownMarker(files.root, job)
-	if err != nil {
-		return r.block(ctx, job, "identity", err.Error())
-	}
-	if !owned {
-		info, err := files.back.Stat()
-		if err != nil || info.Size() == 0 {
-			return r.block(ctx, job, "identity", "retired backlink has no owned lock marker")
-		}
-	}
-	if err := files.unchanged(job); err != nil {
-		return r.block(ctx, job, "identity", err.Error())
-	}
-	if err := ctx.Err(); err != nil {
-		return false, err
-	}
-	if err := r.retirementState(job, cleanup.RetirementIntent); err != nil {
-		return false, err
-	}
-	if owned {
-		if _, err := files.back.WriteAt([]byte(files.want.AdminGitdir), 0); err != nil {
-			return r.block(ctx, job, "reconcile", fmt.Sprintf("restore retiring backlink: %v", err))
-		}
-		if err := files.back.Truncate(int64(len(files.want.AdminGitdir))); err != nil {
-			return r.block(ctx, job, "reconcile", fmt.Sprintf("truncate restored backlink: %v", err))
-		}
-		if err := files.back.Sync(); err != nil {
-			return r.block(ctx, job, "reconcile", fmt.Sprintf("sync restored backlink: %v", err))
-		}
-		if err := files.root.Remove("locked"); err != nil {
-			return r.block(ctx, job, "reconcile", fmt.Sprintf("remove retirement marker: %v", err))
-		}
-		if err := rootSync(files.root); err != nil {
-			return r.block(ctx, job, "reconcile", fmt.Sprintf("sync restored registration: %v", err))
-		}
-	}
-	return true, r.retirementState(job, "")
-}
-
-// Cancel undoes a removal that has not moved its tree, leaving the worktree
-// registered where it is: a retired registration gets its captured backlink
-// back and loses the job's lock. The committed HEAD may have moved since the
-// job captured it; the tree, its registration and its links must not have. The
-// recovery ref stays.
+// Cancel undoes a removal that has not begun to claim its registration, leaving
+// the worktree registered where it is: a retired registration gets its captured
+// backlink back and loses the job's lock. The committed HEAD may have moved
+// since the job captured it; the tree, its registration and its links must not
+// have. The recovery ref stays.
 func (r *Relocator) Cancel(ctx context.Context, job *cleanup.Job) error {
 	switch {
 	case job.Adopted:
 		return refuse(job.Original, "phase", "job %s adopted a tree with no registration to keep", job.ID)
 	case job.Phase != cleanup.PhaseQueued && job.Phase != cleanup.PhaseWaiting && job.Phase != cleanup.PhasePending:
-		return refuse(job.Original, "phase", "job %s is %s: its tree has begun to move", job.ID, job.Phase)
+		return refuse(job.Original, "phase", "job %s is %s: its removal is under way", job.ID, job.Phase)
 	case job.Retirement == "":
 		return nil
 	}

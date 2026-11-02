@@ -71,24 +71,24 @@ func TestEveryGitChildOfARemovalIsIsolatedFromTheProject(t *testing.T) {
 
 	f.advance(&job)
 
-	f.finished(&job)
-	status := "-C " + f.worktree + " status --porcelain=v1 -z --untracked-files=normal --ignore-submodules=none"
+	f.claimed(&job)
+	status := " status --porcelain=v1 -z --untracked-files=normal --ignore-submodules=none"
 	f.recorded(log, []string{
-		status,
+		"-C " + f.worktree + status,
 		"-C " + f.worktree + " rev-parse --verify --quiet HEAD^{commit}",
 		"-C " + f.worktree + " symbolic-ref --quiet --short HEAD",
-		status,
+		"--git-dir=" + f.adminDir + " rev-parse --verify --quiet HEAD^{commit}",
+		"--git-dir=" + f.adminDir + " symbolic-ref --quiet --short HEAD",
+		"--git-dir=" + f.adminDir + " --work-tree=" + f.worktree + status,
+		"--git-dir=" + f.adminDir + " --work-tree=" + f.worktree + status,
 		"--git-dir=" + f.common + " update-ref " + job.RecoveryRef + " " + job.Head,
-		"--git-dir=" + f.common + " -c worktree.useRelativePaths=false worktree move " + f.worktree + " " + job.Registered,
-		"-C " + job.Registered + " rev-parse --verify --quiet HEAD^{commit}",
-		"--git-dir=" + f.common + " worktree remove " + job.Registered,
 	})
 	f.absent(marker)
 	if got := f.run(f.repo, "rev-parse", job.RecoveryRef); got != job.Head {
 		t.Errorf("recovery ref = %s, want %s", got, job.Head)
 	}
-	if got, want := f.listing(), f.mainEntry(); got != want {
-		t.Errorf("worktree list = %q, want %q", got, want)
+	if got := f.read(filepath.Join(f.adminDir, "locked")); got != "ccx cleanup "+job.ID+"\n" {
+		t.Errorf("registration lock = %q, want the job's", got)
 	}
 }
 
@@ -101,7 +101,7 @@ func TestEveryGitChildOfAnAdoptionIsIsolatedFromTheProject(t *testing.T) {
 
 	q.advance(&job)
 
-	q.finished(&job)
+	q.claimed(&job)
 	pinned := "--git-dir=" + q.common + " rev-parse --verify --quiet " + q.ref + "^{commit}"
 	q.recorded(log, []string{pinned, pinned})
 	q.absent(marker)

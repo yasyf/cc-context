@@ -1,7 +1,10 @@
 // Package relocate is the logical half of a worktree removal: it preflights a
-// linked worktree, journals the removal, has git move the tree into the job's
-// private folder, and drops the registration. It also adopts the trees the
-// retired janitor left unregistered in its quarantine. It never deletes a tree.
+// linked worktree, journals the removal, proves it against the tree where it
+// sits, and claims git's registration in place with the job's lock; then it
+// admits each root the daemon deletes there, the tree and then the admin
+// directory. It also adopts the trees the retired janitor left unregistered
+// in its quarantine, and drains what the retired relocation left in job
+// folders. It never moves or deletes a tree itself.
 package relocate
 
 import (
@@ -38,8 +41,7 @@ type Relocator struct {
 
 var _ cleanup.Relocator = (*Relocator)(nil)
 
-// New returns a Relocator that journals through cfg.Journal and relocates into
-// that journal's layout.
+// New returns a Relocator that journals through cfg.Journal.
 func New(cfg Config) *Relocator {
 	return &Relocator{cfg: cfg}
 }
@@ -73,8 +75,9 @@ func (r *Relocator) Accept(ctx context.Context, seq uint64, req cleanup.Request)
 
 // Pend journals a removal asked for while the queue is paused at PhasePending.
 // It captures the registration without checking watchers or activity. Retire
-// checks inactivity before hiding its registration; Advance repeats the full
-// removal preflight before relocation. Pend itself only journals the job.
+// checks inactivity before hiding its registration; Advance proves the whole
+// removal again before it claims the registration. Pend itself only journals
+// the job.
 func (r *Relocator) Pend(ctx context.Context, seq uint64, req cleanup.Request) (cleanup.Job, error) {
 	job, err := r.inspect(ctx, req)
 	if err != nil {
@@ -111,9 +114,6 @@ func (r *Relocator) Intend(ctx context.Context, seq uint64, req cleanup.DeferReq
 	job.Git, job.Force = req.Git, req.Force
 	job.Deferred, job.Owner = true, req.Owner
 	if err := r.screen(ctx, job); err != nil {
-		return cleanup.Job{}, err
-	}
-	if err := r.colocated(job.Original, job.Tree); err != nil {
 		return cleanup.Job{}, err
 	}
 	if err := r.capture(ctx, &job); err != nil {
@@ -156,28 +156,9 @@ func (r *Relocator) stamp(job *cleanup.Job, seq uint64, phase cleanup.Phase) {
 	job.ID = cleanup.MintID(now)
 	job.Seq = seq
 	job.Phase = phase
-	tree := job.Original
-	if job.Adopted {
-		tree = job.Source
-	}
-	job.Registered, job.Payload = cleanup.Area(layout.JobsFor(tree, job.Tree.Dev), job.ID)
+	job.Registered, job.Payload = layout.Registered(job.ID), layout.Payload(job.ID)
 	if job.Head != "" && !job.Adopted {
 		job.RecoveryRef = cleanup.RecoveryRefFor(job.ID)
 	}
 	job.Created, job.Updated = now, now
-}
-
-// Site names the directory holding what the job's next step works on: the
-// tree's parent until git moves it, the job area once it has, and the admin
-// directory's parent while that is deleted.
-func (r *Relocator) Site(job cleanup.Job) string {
-	switch {
-	case job.Phase == cleanup.PhaseDeletingAdmin:
-		return filepath.Dir(job.AdminDir)
-	case !job.Phase.Logical(), job.Phase == cleanup.PhaseMoved, job.Phase == cleanup.PhaseDetached:
-		return filepath.Dir(job.Payload)
-	case job.Adopted:
-		return filepath.Dir(job.Source)
-	}
-	return filepath.Dir(job.Original)
 }

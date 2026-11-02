@@ -88,7 +88,11 @@ func (f *gitFixture) resumed(engine *Engine, running <-chan error, id string) cl
 func TestMaintenanceHoldRestsJournaledJobsAtTheirPhaseUntilRelease(t *testing.T) {
 	seedMoved := func(f *gitFixture) cleanup.Job {
 		job := f.accept()
-		f.park(&job, "rev-parse", cleanup.PhaseMoved, "identity")
+		f.run(f.repo, "worktree", "move", f.worktree, job.Registered)
+		job.Phase = cleanup.PhaseMoved
+		if err := f.journal.Save(job); err != nil {
+			f.t.Fatalf("Save() = %v", err)
+		}
 		return job
 	}
 	atOriginal := func(f *gitFixture, _ cleanup.Job) string { return f.worktree }

@@ -17,6 +17,7 @@ const (
 
 	recordName     = "job.json"
 	registeredName = "registered"
+	scratchName    = "index"
 	// PayloadName is the entry of a job folder holding the relocated tree once
 	// git no longer finds it at the registered path.
 	PayloadName = "payload"
@@ -28,10 +29,10 @@ const (
 	sunPathBytes = 104
 )
 
-// Layout is the daemon's private state tree, rooted at one 0700 directory. The
-// job folders under it are where relocated worktrees on its volume wait for
-// deletion, so the root must sit outside every watched tree; a tree on another
-// volume waits in that volume's Spool, while its record stays here.
+// Layout is the daemon's private state tree, rooted at one 0700 directory,
+// holding one folder per job with its record. A tree is deleted where it sits;
+// only a legacy job's relocated tree waits in a job folder, or in the spool of
+// its own volume.
 type Layout struct {
 	Root string
 }
@@ -61,6 +62,11 @@ func (l Layout) Registered(id string) string { return filepath.Join(l.JobDir(id)
 
 // Payload is where a relocated worktree waits for deletion.
 func (l Layout) Payload(id string) string { return filepath.Join(l.JobDir(id), PayloadName) }
+
+// ScratchIndex is the throwaway git index one job proves an orphaned tree
+// clean against. It lives for a single proof; git's lock beside it may outlive
+// a crash.
+func (l Layout) ScratchIndex(id string) string { return filepath.Join(l.JobDir(id), scratchName) }
 
 // Socket is the daemon's control socket, refused when the kernel's sun_path
 // would truncate it.

@@ -168,23 +168,6 @@ func carried(job *cleanup.Job, entries []entry, tree string) (string, error) {
 	return "", nil
 }
 
-func intruder(job *cleanup.Job, expected cleanup.Links) (string, error) {
-	entries, err := enrolled(job.Repo)
-	if err != nil {
-		return "", err
-	}
-	claims, err := reaching(entries, filepath.Dir(job.Registered))
-	if err != nil {
-		return "", err
-	}
-	for _, e := range claims {
-		if e != parkedEntry(job, expected) {
-			return e.claim(job), nil
-		}
-	}
-	return carried(job, entries, job.Registered)
-}
-
 func claimed(job *cleanup.Job) (string, error) {
 	dirs := []string{filepath.Dir(job.Payload)}
 	if job.Adopted {

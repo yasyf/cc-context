@@ -63,8 +63,7 @@ func ViewJournal(layout Layout) (*Journal, error) {
 func (j *Journal) Layout() Layout { return j.layout }
 
 // Create records job's worktree path in the layout's name index, makes job's
-// private folder, and its area in a spool when its tree waits on another
-// volume, then publishes its first record.
+// private folder, then publishes its first record.
 func (j *Journal) Create(job Job) error {
 	if err := j.check(job); err != nil {
 		return err
@@ -78,17 +77,6 @@ func (j *Journal) Create(job Job) error {
 	}
 	if err := durable.SyncDir(filepath.Dir(dir)); err != nil {
 		return err
-	}
-	if area := filepath.Dir(job.Payload); area != dir {
-		if err := ensureSpool(filepath.Dir(area)); err != nil {
-			return err
-		}
-		if err := os.Mkdir(area, 0o700); err != nil {
-			return fmt.Errorf("cleanup: create job area: %w", err)
-		}
-		if err := durable.SyncDir(filepath.Dir(area)); err != nil {
-			return err
-		}
 	}
 	return j.write(job)
 }
@@ -138,7 +126,7 @@ func (j *Journal) discard(id string) error {
 	}
 	for _, entry := range entries {
 		name := entry.Name()
-		if name != recordName && !strings.HasPrefix(name, "."+recordName+".") {
+		if name != recordName && !strings.HasPrefix(name, "."+recordName+".") && !strings.HasPrefix(name, scratchName) {
 			return fmt.Errorf("cleanup: job folder %s still holds %s", dir, name)
 		}
 	}

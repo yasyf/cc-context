@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
-	"syscall"
 	"testing"
 
 	"github.com/yasyf/cc-context/internal/cleanup"
@@ -105,44 +104,6 @@ func TestPreviewThroughAViewedJournalCreatesNothing(t *testing.T) {
 	}
 }
 
-func TestNearest(t *testing.T) {
-	root := t.TempDir()
-	file := filepath.Join(root, "file")
-	if err := os.WriteFile(file, nil, 0o600); err != nil {
-		t.Fatalf("write %s: %v", file, err)
-	}
-	tests := []struct {
-		name    string
-		path    string
-		want    string
-		wantErr error
-	}{
-		{"existing path", file, file, nil},
-		{"one absent component", filepath.Join(root, "jobs"), root, nil},
-		{"several absent components", filepath.Join(root, "state", "jobs", "id"), root, nil},
-		{"under a regular file", filepath.Join(file, "jobs"), "", syscall.ENOTDIR},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			info, err := nearest(tt.path)
-
-			if !errors.Is(err, tt.wantErr) {
-				t.Fatalf("nearest() error = %v, want %v", err, tt.wantErr)
-			}
-			if tt.wantErr != nil {
-				return
-			}
-			want, err := os.Stat(tt.want)
-			if err != nil {
-				t.Fatalf("stat %s: %v", tt.want, err)
-			}
-			if !os.SameFile(info, want) {
-				t.Errorf("nearest() = %s, want %s", info.Name(), tt.want)
-			}
-		})
-	}
-}
-
 func TestAcceptCanonicalizesASymlinkedPath(t *testing.T) {
 	f := newFixture(t)
 	alias := filepath.Join(f.root, "alias")
@@ -191,8 +152,10 @@ func TestAcceptCapturesHeadAndBranch(t *testing.T) {
 			}
 
 			f.advance(&job)
-			f.finished(&job)
-			f.absent(other)
+			f.claimed(&job)
+			if got := f.id(other); got != job.Tree {
+				t.Errorf("tree identity = %v, want the tree %v left in place", got, job.Tree)
+			}
 			if refs := f.run(f.repo, "for-each-ref", "--format=%(refname) %(objectname)", cleanup.RecoveryRefPrefix); refs != strings.TrimSpace(wantRef+" "+wantHead) {
 				t.Errorf("recovery refs = %q, want %q", refs, strings.TrimSpace(wantRef+" "+wantHead))
 			}
@@ -304,16 +267,16 @@ func TestAcceptForceOverridesDirtiness(t *testing.T) {
 	}
 	f.advance(&job)
 
-	f.finished(&job)
+	f.claimed(&job)
 	if !job.Force {
 		t.Error("Force = false, want true")
 	}
-	if got := f.read(filepath.Join(job.Payload, "scratch.txt")); got != "scratch\n" {
-		t.Errorf("payload scratch.txt = %q, want %q", got, "scratch\n")
+	if got := f.read(filepath.Join(f.worktree, "scratch.txt")); got != "scratch\n" {
+		t.Errorf("scratch.txt = %q, want %q", got, "scratch\n")
 	}
 }
 
-func TestAcceptMovesAWorktreeWhoseSubmodulesAreNotCheckedOut(t *testing.T) {
+func TestAcceptClaimsAWorktreeWhoseSubmodulesAreNotCheckedOut(t *testing.T) {
 	for _, tt := range []struct {
 		name string
 		dir  bool
@@ -338,8 +301,10 @@ func TestAcceptMovesAWorktreeWhoseSubmodulesAreNotCheckedOut(t *testing.T) {
 			job := f.accept()
 			f.advance(&job)
 
-			f.finished(&job)
-			f.absent(f.worktree)
+			f.claimed(&job)
+			if got := f.id(f.worktree); got != job.Tree {
+				t.Errorf("tree identity = %v, want the tree %v left in place", got, job.Tree)
+			}
 		})
 	}
 }
@@ -411,25 +376,6 @@ func TestAcceptRecordsWhatTheGuardIgnored(t *testing.T) {
 	}
 	if got, want := cleanup.ReceiptOf(job).Ignored, "intelligenceflowd (pid 98135, a system daemon at /usr/libexec/intelligenceflowd)"; got != want {
 		t.Errorf("ReceiptOf(job).Ignored = %q, want %q", got, want)
-	}
-}
-
-func TestSameVolume(t *testing.T) {
-	tests := []struct {
-		name string
-		tree cleanup.FileID
-		jobs cleanup.FileID
-		want bool
-	}{
-		{"one device", cleanup.FileID{Dev: 16777231, Ino: 10}, cleanup.FileID{Dev: 16777231, Ino: 99}, true},
-		{"two devices", cleanup.FileID{Dev: 16777231, Ino: 10}, cleanup.FileID{Dev: 16777232, Ino: 10}, false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := sameVolume(tt.tree, tt.jobs); got != tt.want {
-				t.Errorf("sameVolume() = %t, want %t", got, tt.want)
-			}
-		})
 	}
 }
 

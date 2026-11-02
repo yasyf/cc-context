@@ -29,6 +29,15 @@ func runWorktreeCmd(t *testing.T, f *vcstest.Fixture, args ...string) (string, e
 	return runWorktreeCmdIn(f.Context(), t, args...)
 }
 
+func removeWorktree(t *testing.T, f *vcstest.Fixture, args ...string) {
+	t.Helper()
+	out, err := runWorktreeCmd(t, f, append([]string{"rm"}, args...)...)
+	if err != nil {
+		t.Fatalf("rm %v error = %v", args, err)
+	}
+	awaitDeleted(t, f, fixtureCleanup(t, f), out)
+}
+
 // runWorktreeCmdIn is runWorktreeCmd rooted where the caller says, for a test
 // driving the command from a worktree or a relocated checkout rather than from
 // the fixture's own repository.
@@ -225,9 +234,7 @@ func TestWorktreeAddRmRoundTrip(t *testing.T) {
 		t.Errorf("listing = %q, want it to carry the added worktree", listed)
 	}
 
-	if _, err := runWorktreeCmd(t, f, "rm", "feat"); err != nil {
-		t.Fatalf("rm error = %v", err)
-	}
+	removeWorktree(t, f, "feat")
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Errorf("stat %s after rm = %v, want the tree gone", path, err)
 	}
@@ -255,17 +262,13 @@ func TestWorktreeAddBranchShapedName(t *testing.T) {
 	if !strings.Contains(listed, path+" · git worktree · user/feat") {
 		t.Errorf("listing = %q, want it to carry the added worktree", listed)
 	}
-	if _, err := runWorktreeCmd(t, f, "rm", "user/feat"); err != nil {
-		t.Fatalf("rm error = %v", err)
-	}
+	removeWorktree(t, f, "user/feat")
 	if worktreeRegistered(t, f.Env(), dir, path) {
 		t.Errorf("git still registers %s after rm by name, want it deregistered", path)
 	}
 
 	path = addPoolWorktree(t, f, "user/other")
-	if _, err := runWorktreeCmd(t, f, "rm", "--path", path); err != nil {
-		t.Fatalf("rm --path error = %v", err)
-	}
+	removeWorktree(t, f, "--path", path)
 	if worktreeRegistered(t, f.Env(), dir, path) {
 		t.Errorf("git still registers %s after rm --path, want it deregistered", path)
 	}
@@ -623,9 +626,7 @@ func TestWorktreeRmNoTrunkSkipsHolderGuard(t *testing.T) {
 	f.Isolate(t)
 	path := addPoolWorktree(t, f, "feat")
 
-	if _, err := runWorktreeCmd(t, f, "rm", "feat"); err != nil {
-		t.Fatalf("rm error = %v", err)
-	}
+	removeWorktree(t, f, "feat")
 	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
 		t.Errorf("stat %s after rm = %v, want the tree gone", path, statErr)
 	}
@@ -645,9 +646,7 @@ func TestWorktreeRmNoOriginHeadSkipsHolderGuard(t *testing.T) {
 	path := addPoolWorktree(t, f, "holder")
 	mustRun(t, f.Env(), path, "git", "checkout", "-q", "main")
 
-	if _, err := runWorktreeCmd(t, f, "rm", "holder"); err != nil {
-		t.Fatalf("rm error = %v", err)
-	}
+	removeWorktree(t, f, "holder")
 	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
 		t.Errorf("stat %s after rm = %v, want the tree gone", path, statErr)
 	}
@@ -789,9 +788,7 @@ func TestWorktreeRmPathReregistersARetiredWorktree(t *testing.T) {
 		t.Fatalf("git still registers %s after retiring it", path)
 	}
 
-	if _, err := runWorktreeCmd(t, f, "rm", "--path", path); err != nil {
-		t.Fatalf("rm --path error = %v, want the retired worktree removed", err)
-	}
+	removeWorktree(t, f, "--path", path)
 	if worktreeRegistered(t, f.Env(), f.Dir, path) {
 		t.Errorf("git still registers %s after rm --path, want it deregistered", path)
 	}
@@ -989,9 +986,7 @@ func TestWorktreeRmPoolBesideNameTwin(t *testing.T) {
 	addLinkedWorktree(t, f.Env(), dir, twin, sha)
 	path := addPoolWorktree(t, f, "feat")
 
-	if _, err := runWorktreeCmd(t, f, "rm", "feat"); err != nil {
-		t.Fatalf("rm error = %v", err)
-	}
+	removeWorktree(t, f, "feat")
 	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
 		t.Errorf("stat %s after rm = %v, want the pool worktree gone", path, statErr)
 	}
