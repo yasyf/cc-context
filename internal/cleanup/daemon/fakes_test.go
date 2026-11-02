@@ -248,6 +248,37 @@ func (f *fakeRelocator) Adopt(ctx context.Context, seq uint64, r cleanup.AdoptRe
 	return job, f.h.journal.Create(job)
 }
 
+func (f *fakeRelocator) Orphan(ctx context.Context, seq uint64, r cleanup.OrphanRequest) (cleanup.Job, error) {
+	name := filepath.Base(r.Path)
+	f.h.rec.add("orphan:" + name)
+	f.serve(ctx, "orphan", name)
+	f.mu.Lock()
+	refusal := f.refuse[name]
+	f.mu.Unlock()
+	if refusal != nil {
+		return cleanup.Job{}, refusal
+	}
+	now := f.h.clock.Now()
+	id := f.h.mint(name, seq)
+	job := cleanup.Job{
+		Schema:     cleanup.Schema,
+		ID:         id,
+		Seq:        seq,
+		Phase:      cleanup.PhasePrepared,
+		Orphaned:   true,
+		Repo:       r.CommonDir,
+		Original:   r.Path,
+		Registered: f.h.layout.Registered(id),
+		Payload:    f.h.layout.Payload(id),
+		Tree:       r.Tree,
+		Parent:     r.Parent,
+		Git:        r.Git,
+		Created:    now,
+		Updated:    now,
+	}
+	return job, f.h.journal.Create(job)
+}
+
 func (f *fakeRelocator) Advance(ctx context.Context, job *cleanup.Job) error {
 	name := f.h.rec.name(job.ID)
 	f.h.rec.add(fmt.Sprintf("advance:%s@%s", name, job.Phase))
@@ -694,6 +725,29 @@ func (h *harness) parked(name string) string {
 		h.t.Fatalf("park tree %s: %v", name, err)
 	}
 	return path
+}
+
+func (h *harness) orphaned(name string) cleanup.OrphanRequest {
+	h.t.Helper()
+	path := filepath.Join(h.root, "pool", name)
+	if err := os.MkdirAll(path, 0o700); err != nil {
+		h.t.Fatal(err)
+	}
+	tree, _, err := cleanup.LstatID(path)
+	if err != nil {
+		h.t.Fatalf("LstatID(%s) = %v", path, err)
+	}
+	parent, _, err := cleanup.LstatID(filepath.Dir(path))
+	if err != nil {
+		h.t.Fatalf("LstatID(%s) = %v", filepath.Dir(path), err)
+	}
+	return cleanup.OrphanRequest{
+		Path:      path,
+		Tree:      tree,
+		Parent:    parent,
+		CommonDir: filepath.Join(h.root, "repo.git"),
+		Git:       "/usr/bin/git",
+	}
 }
 
 func (h *harness) adoption(name string) cleanup.AdoptRequest {

@@ -290,12 +290,18 @@ func (r *Relocator) vouch(ctx context.Context, job *cleanup.Job, tree spot) (rea
 	if detail != "" {
 		return "reconcile", detail
 	}
-	detail, err = r.unpinned(ctx, job.Git, job.Repo, job.RecoveryRef, job.Head)
-	if err != nil {
-		return gitReason(err), err.Error()
-	}
-	if detail != "" {
-		return "identity", detail
+	if job.Orphaned {
+		if detail := parented(tree.path, job.Parent); detail != "" {
+			return "identity", detail
+		}
+	} else {
+		detail, err = r.unpinned(ctx, job.Git, job.Repo, job.RecoveryRef, job.Head)
+		if err != nil {
+			return gitReason(err), err.Error()
+		}
+		if detail != "" {
+			return "identity", detail
+		}
 	}
 	if err := r.cfg.Watchers.CheckQuarantine(ctx, tree.path); err != nil {
 		return probeReason("quarantine", err), err.Error()

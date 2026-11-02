@@ -451,6 +451,7 @@ func TestMaintenanceHoldRestsEveryJobAndHoldsNewRemovals(t *testing.T) {
 			ask  func() error
 		}{
 			{"adopt", func() error { _, err := h.engine.Adopt(ctx, h.adoption("q")); return err }},
+			{"orphan", func() error { _, err := h.engine.Orphan(ctx, h.orphaned("o")); return err }},
 		} {
 			if err := tt.ask(); !errors.Is(err, cleanup.ErrPaused) {
 				t.Errorf("%s under a queue pause = %v, want ErrPaused", tt.name, err)
@@ -1999,6 +2000,7 @@ func TestMaintenanceHoldRestsTheQueueAcrossARestartUntilItsHolderReleasesIt(t *t
 		}{
 			{"defer", func() error { _, err := h.engine.Defer(ctx, h.deferral("d")); return err }},
 			{"adopt", func() error { _, err := h.engine.Adopt(ctx, h.adoption("q")); return err }},
+			{"orphan", func() error { _, err := h.engine.Orphan(ctx, h.orphaned("o")); return err }},
 		} {
 			if err := tt.ask(); !errors.Is(err, cleanup.ErrPaused) {
 				t.Errorf("%s under the hold = %v, want ErrPaused", tt.name, err)

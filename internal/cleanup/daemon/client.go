@@ -32,8 +32,9 @@ type Client struct {
 }
 
 var (
-	_ cleanup.Control = (*Client)(nil)
-	_ cleanup.Adopter = (*Client)(nil)
+	_ cleanup.Control  = (*Client)(nil)
+	_ cleanup.Adopter  = (*Client)(nil)
+	_ cleanup.Orphaner = (*Client)(nil)
 )
 
 // Dial returns a Client for the daemon at socket. Nothing connects until a
@@ -138,6 +139,13 @@ func (c *Client) Defer(ctx context.Context, r cleanup.DeferRequest) (cleanup.Rec
 // quarantine.
 func (c *Client) Adopt(ctx context.Context, r cleanup.AdoptRequest) (cleanup.Receipt, error) {
 	return c.receipt(ctx, request{Op: opAdopt, Adopt: &r})
+}
+
+// Orphan hands the daemon one orphaned pool worktree to delete where it sits.
+// The daemon finishes the ladder step it is on even when this call is
+// abandoned.
+func (c *Client) Orphan(ctx context.Context, r cleanup.OrphanRequest) (cleanup.Receipt, error) {
+	return c.receipt(ctx, request{Op: opOrphan, Orphan: &r})
 }
 
 // Status reports the queue, or one job.

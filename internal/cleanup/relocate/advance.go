@@ -151,7 +151,7 @@ func (r *Relocator) Advance(ctx context.Context, job *cleanup.Job) error {
 		}
 	}
 	claim := r.claim
-	if job.Adopted {
+	if job.Unbound() {
 		claim = r.take
 	}
 	_, err := claim(ctx, job)
@@ -202,10 +202,12 @@ func (r *Relocator) unlisted(ctx context.Context, job *cleanup.Job, reason strin
 	case !errors.Is(err, cleanup.ErrUnprobed):
 		return reason, err.Error()
 	}
-	pushed, pushErr := r.pushed(ctx, job.Git, job.Repo, job.Branch, job.Head)
+	pushed, pushErr := r.headPushed(ctx, job)
 	switch {
 	case pushErr != nil:
 		return gitReason(pushErr), pushErr.Error()
+	case !pushed && job.Orphaned:
+		return timeoutReason, err.Error()
 	case !pushed:
 		return timeoutReason, fmt.Sprintf("%v; no remote-tracking ref holds %s's head %s", err, job.Original, job.Head)
 	}
@@ -226,7 +228,7 @@ func (r *Relocator) excused(ctx context.Context, job *cleanup.Job, tree string, 
 			return false
 		}
 	}
-	if pushed, pushErr := r.pushed(ctx, job.Git, job.Repo, job.Branch, job.Head); pushErr != nil || !pushed {
+	if pushed, pushErr := r.headPushed(ctx, job); pushErr != nil || !pushed {
 		return false
 	}
 	slog.Warn("cleanup: treating a clean, pushed tree as idle past a failed probe", "job", job.ID, "tree", tree, "error", err)

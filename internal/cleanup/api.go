@@ -184,6 +184,34 @@ func (r AdoptRequest) Validate() error {
 	return LegacyBinding(r.Source, r.RecoveryRef)
 }
 
+// OrphanRequest asks for one orphaned pool worktree to be deleted where it
+// sits: a tree whose .git names an admin directory that no longer exists and
+// that no registration of its repository claims. No saved head is left to
+// prove it clean against, so the caller's explicit authorization stands in for
+// that proof; the daemon still pins the tree and its parent by identity and
+// waits for the tree to be idle.
+type OrphanRequest struct {
+	// Path is the canonical absolute path of the tree.
+	Path string `json:"path"`
+	// Tree is the identity the caller saw at Path.
+	Tree FileID `json:"tree"`
+	// Parent is the identity the caller saw for Path's parent directory.
+	Parent FileID `json:"parent"`
+	// CommonDir is the git common directory the tree's .git points into.
+	CommonDir string `json:"common_dir"`
+	// Git is the absolute git binary the caller resolved.
+	Git string `json:"git"`
+}
+
+// Validate rejects a request that leaves an identity unset or names a path by
+// anything but a clean absolute path.
+func (r OrphanRequest) Validate() error {
+	if r.Tree.Zero() || r.Parent.Zero() {
+		return errors.New("tree or parent identity is unset")
+	}
+	return validatePaths(map[string]string{"path": r.Path, "common_dir": r.CommonDir, "git": r.Git})
+}
+
 func validatePaths(named map[string]string) error {
 	for name, path := range named {
 		if !cleanAbs(path) {
@@ -428,7 +456,7 @@ type Service interface {
 	Wait(ctx context.Context, jobID string) (Job, error)
 	// Pause stops the queue: every job rests at its journaled phase, Remove
 	// journals a new removal as pending, admits Expected-bound deferrals, and
-	// refuses adoption until Resume, across restarts.
+	// refuses adoption and orphan requests until Resume, across restarts.
 	Pause(ctx context.Context) error
 	// Resume lets the queue run again, rested and pending jobs and new
 	// removals alike. While a maintenance hold stands it is a *HeldError and
@@ -463,6 +491,15 @@ type Adopter interface {
 	// deletion where it sits. A refusal is a *RefusedError or an *ActiveError
 	// with nothing journaled and nothing claimed.
 	Adopt(ctx context.Context, r AdoptRequest) (Receipt, error)
+}
+
+// Orphaner is the operator's path for the pool worktrees whose registration
+// is already gone.
+type Orphaner interface {
+	// Orphan proves the tree orphaned, unclaimed and idle, journals it, and
+	// claims it for deletion where it sits. A refusal is a *RefusedError or an
+	// *ActiveError with nothing journaled.
+	Orphan(ctx context.Context, r OrphanRequest) (Receipt, error)
 }
 
 // Peer is the process serving the daemon socket, as the kernel reports it for
