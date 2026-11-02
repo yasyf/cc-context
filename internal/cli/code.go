@@ -13,6 +13,7 @@ func newCodeCmd() *cobra.Command {
 		newReadCmd(),
 		newOutlineCmd(),
 		newSearchCmd(),
+		newMatchAnswersCmd(),
 		newGrepCmd(),
 		newSymbolCmd(),
 		newDepsCmd(),
