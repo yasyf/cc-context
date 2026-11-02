@@ -124,13 +124,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `git config --global ccx.worktreeRoot <path>` names another pool; ccx never
   picks a pool from the volumes mounted under home. Stack conflict workspaces
   follow the same pool instead of preferring the cleanup daemon's volume.
-- Lanes of a large repository are sparse checkouts by default. The cone is the
-  caller's own sparse set, or root files alone, plus the tracked `.agents`,
-  `.claude`, and `tools` directories and `infra/ci/hooks`, which the
-  monorepo's `tools/ci` and `stack-enqueue` source before they run. Thin
-  lanes stay sparse at any size; `ccx vcs worktree add` and full-history or
+- Lanes of a large repository can be sparse checkouts. With
+  `git config ccx.sparseLanes true`, `ccx vcs worktree add` and full-history or
   caller-storage `ccx vcs stack new` lanes go sparse when `HEAD` tracks more
-  than 5,000 files or `--include` is given, and `worktree add` gains a
+  than 5,000 files; without it they stay full checkouts. `--include` makes a
+  lane sparse either way, and thin lanes stay sparse at any size. The cone is
+  the caller's own sparse set, or root files alone, plus the tracked `.agents`
+  and `.claude` directories and each directory
+  `git config --add ccx.sparseInclude <dir>` names. `worktree add` gains a
   repeatable `--include <dir>`. A Go lane names its module with
   `--include go/<module>`. Both commands print the
   `git -C <path> sparse-checkout add <dir>` command that widens the lane, just

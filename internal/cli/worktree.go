@@ -129,10 +129,12 @@ content. "git config --global ccx.worktreeRoot <absolute-path>" moves the pool
 for new git worktrees to "<absolute-path>/<main-basename>/<name>"; a jj
 workspace always mints in the default pool. Existing registered Git worktrees
 remain addressable.
-In a Git checkout tracking more than 5,000 files at HEAD, or given --include,
-the worktree is sparse: the sparse set of the checkout you run this from, or
-root files alone when it has none, plus the tracked .agents, .claude, tools,
-and infra/ci/hooks directories and each --include directory. The summary names
+Given --include, or in a Git checkout tracking more than 5,000 files at HEAD
+once "git config ccx.sparseLanes true" is set, the worktree is sparse: the
+sparse set of the checkout you run this from, or root files alone when it has
+none, plus the tracked .agents and .claude directories, every directory
+"git config --add ccx.sparseInclude <dir>" names, and each --include
+directory. The summary names
 the "git -C <path> sparse-checkout add <dir>" command that widens it.
 A branch-shaped name such as user/slug keeps its full branch name and mints the
 directory user-slug.
@@ -508,7 +510,7 @@ func runWorktreeAdd(cmd *cobra.Command, name, requested string, includes []strin
 		return errors.New("worktree add: --include checks out directories in a sparse git worktree, which needs a Git checkout")
 	}
 	if sparseLane && len(includes) == 0 {
-		if sparseLane, err = laneLarge(ctx, l.dir()); err != nil {
+		if sparseLane, err = laneSparseByDefault(ctx, l.dir()); err != nil {
 			return err
 		}
 	}

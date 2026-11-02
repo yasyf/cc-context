@@ -71,11 +71,13 @@ works the lane. A slash in the branch name becomes a dash in the working copy's
 directory name: owner/topic becomes owner-topic. A lane cut onto trunk starts at
 the freshly fetched remote trunk, leaving the local trunk branch where it is.
 
-In a Git checkout a thin lane, a lane given --include, and any lane of a
-repository tracking more than 5,000 files at HEAD is sparse, whatever its
-storage: this checkout's sparse set, or root files alone when it has none, plus
-the tracked .claude, .agents, tools, and infra/ci/hooks directories. A Go lane names its module, as --include
-go/<module>. The summary names the "git -C <path> sparse-checkout add <dir>"
+In a Git checkout a thin lane and a lane given --include are sparse, and once
+"git config ccx.sparseLanes true" is set so is any lane of a repository
+tracking more than 5,000 files at HEAD, whatever its storage. A sparse lane
+checks out this checkout's sparse set, or root files alone when it has none,
+plus the tracked .claude and .agents directories and every directory
+"git config --add ccx.sparseInclude <dir>" names. A Go lane names its module,
+as --include go/<module>. The summary names the "git -C <path> sparse-checkout add <dir>"
 command that widens the lane, just before its path.
 
 --published-parent uses the parent's recorded publication only when its source,

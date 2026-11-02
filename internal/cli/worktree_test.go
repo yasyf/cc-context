@@ -311,7 +311,22 @@ func TestWorktreeAddCutsASparseCone(t *testing.T) {
 	mustRun(t, f.Env(), f.Dir, "git", "add", "-A")
 	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "tree")
 
-	out, err := runWorktreeCmd(t, f, "add", "feat", "--include", "go/svc")
+	out, err := runWorktreeCmd(t, f, "add", "plain", "--include", "go/svc")
+	if err != nil {
+		t.Fatalf("add plain error = %v", err)
+	}
+	plain := worktreeSummaryPath(t, out)
+	for _, file := range []string{"f.txt", "go/svc/main.go", ".claude/settings.json", ".agents/skill.md"} {
+		if got := readFileStr(t, filepath.Join(plain, file)); got == "" {
+			t.Errorf("plain lane's %s is empty, want it checked out", file)
+		}
+	}
+	assertGone(t, filepath.Join(plain, "tools"))
+	assertGone(t, filepath.Join(plain, "infra"))
+
+	mustRun(t, f.Env(), f.Dir, "git", "config", "--add", sparseIncludeKey, "tools")
+	mustRun(t, f.Env(), f.Dir, "git", "config", "--add", sparseIncludeKey, "infra/ci/hooks")
+	out, err = runWorktreeCmd(t, f, "add", "feat", "--include", "go/svc")
 	if err != nil {
 		t.Fatalf("add error = %v", err)
 	}
@@ -338,12 +353,14 @@ func TestWorktreeAddCutsASparseCone(t *testing.T) {
 	}
 }
 
-func TestLaneLargeCountsTrackedFiles(t *testing.T) {
+func TestLaneSparseByDefaultNeedsTheConfigAndALargeRepository(t *testing.T) {
 	t.Parallel()
 	f := vcstest.Repo(t)
-	if large, err := laneLarge(f.Context(), render.Dir(f.Dir)); err != nil || large {
-		t.Fatalf("laneLarge of the fixture = %v, %v, want a small repository", large, err)
+	mustRun(t, f.Env(), f.Dir, "git", "config", sparseLanesKey, "true")
+	if sparse, err := laneSparseByDefault(f.Context(), render.Dir(f.Dir)); err != nil || sparse {
+		t.Fatalf("laneSparseByDefault of the fixture = %v, %v, want a small repository left full", sparse, err)
 	}
+	mustRun(t, f.Env(), f.Dir, "git", "config", "--unset", sparseLanesKey)
 	blob := gitAt(t, f.Env(), f.Dir, "hash-object", "-w", "f.txt")
 	var info strings.Builder
 	for i := range laneSparseFiles + 1 {
@@ -355,8 +372,12 @@ func TestLaneLargeCountsTrackedFiles(t *testing.T) {
 		t.Fatalf("git update-index: %v\n%s", err, out)
 	}
 	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "bulk")
-	if large, err := laneLarge(f.Context(), render.Dir(f.Dir)); err != nil || !large {
-		t.Fatalf("laneLarge past %d files = %v, %v, want a large repository", laneSparseFiles, large, err)
+	if sparse, err := laneSparseByDefault(f.Context(), render.Dir(f.Dir)); err != nil || sparse {
+		t.Fatalf("laneSparseByDefault past %d files without %s = %v, %v, want a full checkout", laneSparseFiles, sparseLanesKey, sparse, err)
+	}
+	mustRun(t, f.Env(), f.Dir, "git", "config", sparseLanesKey, "true")
+	if sparse, err := laneSparseByDefault(f.Context(), render.Dir(f.Dir)); err != nil || !sparse {
+		t.Fatalf("laneSparseByDefault past %d files with %s = %v, %v, want a sparse lane", laneSparseFiles, sparseLanesKey, sparse, err)
 	}
 }
 
