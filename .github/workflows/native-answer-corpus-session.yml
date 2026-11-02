@@ -22,6 +22,7 @@ concurrency:
 
 jobs:
   native-answer-corpus-session:
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
