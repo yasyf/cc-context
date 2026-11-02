@@ -274,6 +274,15 @@ func resolveLaneRefresh(ctx context.Context, name, dir string, noGT, refresh boo
 		if err != nil {
 			return lane{}, fmt.Errorf("%s: %w", name, err)
 		}
+		if parent, _ := ctx.Value(shipParentKey{}).(string); parent != "" && provider != "github" {
+			native, err := gtmeta.NativeMembership(ck.CommonDir, parent)
+			if err != nil {
+				return lane{}, fmt.Errorf("%s: %w", name, err)
+			}
+			if native {
+				provider = "github"
+			}
+		}
 	}
 	if provider == "github" {
 		repo, err := vcs.LookupRepo(ctx, render.Dir(root), refresh)

@@ -18,6 +18,7 @@ import (
 type (
 	stackProviderKey struct{}
 	stackParentKey   struct{}
+	shipParentKey    struct{}
 	stackHereKey     struct{}
 )
 
