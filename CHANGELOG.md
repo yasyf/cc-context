@@ -17,6 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A ccx process sending many GitHub requests at once, such as `ccx vcs pr
+  status` over 150 pull requests, no longer times out on the shared quota
+  ledger's lock. Its charges join one batch per lock hold instead of taking the
+  machine-wide lock once per request, so a request no longer fails because its
+  bookkeeping waited past the deadline.
+- `ccx vcs ship --parent <branch>` moves neither the parent nor any branch below
+  it. A parent line that sat behind trunk, with no pull request on its middle
+  branches, used to be restacked and pushed by the ship's submit.
 - A stack rebase no longer stops on a conflict in a `[[generated]]` path when
   the two sides changed hunks that do not overlap, as happens with a
   `merge=binary` generated schema. ccx merges the file three-way, stages it, and
