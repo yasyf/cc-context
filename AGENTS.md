@@ -37,8 +37,8 @@ Set `git config ccx.stack` to `github` or `graphite` to configure the stack prov
 ## Stack workspaces and cleanup
 
 Stack replay requires Git 2.56 or newer. Internal conflict and rehearsal
-workspaces are sparse. Git `ccx vcs worktree add` links a sparse checkout to
-the caller's repository. New Git worktrees mint under
+workspaces are sparse. Git `ccx vcs worktree add` links a checkout to the
+caller's repository. New Git worktrees mint under
 `~/.claude/worktrees/<repo>/<lane>`; `git config --global ccx.worktreeRoot
 <path>` moves them to `<path>/<repo>/<lane>`. Follow [the stack conflict guide](docs/stack-rebase.md)
 for sparse expansion, manual dependency setup, and explicit
@@ -48,10 +48,11 @@ caches can remain shared.
 
 Git `ccx vcs stack new <name>` defaults to thin lanes backed by
 `~/.claude/stores/<key>/<repo>`, except a child of a non-trunk branch the
-calling checkout holds, which is cut in that checkout's clone. Thin lanes,
-lanes given `--include`, and lanes of a repository tracking more than 5,000
-files are sparse: root files and tracked `.claude`, `.agents`, `tools`, and
-`infra/ci/hooks`, plus each `--include <dir>`, checked out without running
+calling checkout holds, which is cut in that checkout's clone. Thin lanes and
+lanes given `--include` are sparse, and so are lanes of a repository tracking
+more than 5,000 files once `git config ccx.sparseLanes true` is set. A sparse
+lane checks out root files and tracked `.claude` and `.agents`, plus each
+`ccx.sparseInclude` directory and each `--include <dir>`, without running
 hooks or setup scripts. Thin stores share the
 source checkout's cc-notes records through `cc-notes storage bind`, which
 cc-notes must provide; existing unbound or differently bound stores are
