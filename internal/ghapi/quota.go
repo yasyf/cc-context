@@ -112,6 +112,17 @@ func (p *poolState) stale(now time.Time) bool {
 type ledger struct {
 	dir string
 	now func() time.Time
+
+	mu   sync.Mutex
+	open *ledgerBatch
+}
+
+// ledgerBatch is the updates of one process that one hold of the ledger lock
+// applies together: it takes updates until its leader holds the lock.
+type ledgerBatch struct {
+	applies []func(map[string]*poolState)
+	done    chan struct{}
+	err     error
 }
 
 // QuotaDir is the machine-wide directory holding the quota ledger and the
@@ -150,16 +161,53 @@ func (l *ledger) load() (map[string]*poolState, error) {
 	return pools, nil
 }
 
+// update applies apply to the ledger. Concurrent updates in one process join
+// one batch, so the process takes the machine-wide lock once per batch rather
+// than once per request.
 func (l *ledger) update(ctx context.Context, apply func(map[string]*poolState)) error {
+	l.mu.Lock()
+	b := l.open
+	lead := b == nil
+	if lead {
+		b = &ledgerBatch{done: make(chan struct{})}
+		l.open = b
+	}
+	b.applies = append(b.applies, apply)
+	l.mu.Unlock()
+	if !lead {
+		select {
+		case <-b.done:
+			return b.err
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	b.err = l.flush(ctx, b)
+	l.mu.Lock()
+	if l.open == b {
+		l.open = nil
+	}
+	l.mu.Unlock()
+	close(b.done)
+	return b.err
+}
+
+func (l *ledger) flush(ctx context.Context, b *ledgerBatch) error {
 	if err := os.MkdirAll(l.dir, 0o700); err != nil {
 		return fmt.Errorf("ghapi: create %s: %w", l.dir, err)
 	}
 	return cache.WithLock(ctx, l.dir, "ledger", func() error {
+		l.mu.Lock()
+		l.open = nil
+		applies := b.applies
+		l.mu.Unlock()
 		pools, err := l.load()
 		if err != nil {
 			return err
 		}
-		apply(pools)
+		for _, apply := range applies {
+			apply(pools)
+		}
 		data, err := json.Marshal(pools)
 		if err != nil {
 			return fmt.Errorf("ghapi: encode quota ledger: %w", err)

@@ -1,14 +1,17 @@
 package ghapi
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/yasyf/cc-context/internal/cache"
 	"github.com/yasyf/cc-context/internal/render"
 )
 
@@ -182,5 +185,51 @@ func TestALateResponseNeverRaisesTheBalanceWithinAWindow(t *testing.T) {
 	}
 	if len(pools) != 1 || pools[0].Remaining != 4000 || pools[0].Callers[0].Requests != 2 {
 		t.Errorf("pools = %+v, want 4000 left after a late 4100 and two requests charged", pools)
+	}
+}
+
+func TestChargesQueuedBehindAnotherHolderAllLandInOneFlush(t *testing.T) {
+	l := &ledger{dir: t.TempDir(), now: time.Now}
+	held, release := make(chan struct{}), make(chan struct{})
+	holder := make(chan error, 1)
+	go func() {
+		holder <- cache.WithLock(t.Context(), l.dir, "ledger", func() error {
+			close(held)
+			<-release
+			return nil
+		})
+	}()
+	<-held
+
+	header := http.Header{}
+	header.Set("X-RateLimit-Limit", "5000")
+	header.Set("X-RateLimit-Remaining", "4000")
+	header.Set("X-RateLimit-Reset", strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10))
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	const charges = 300
+	errs := make(chan error, charges)
+	var wg sync.WaitGroup
+	for range charges {
+		wg.Go(func() { errs <- l.charge(ctx, IdentityUser, ResourceCore, "status.sh", header) })
+	}
+	time.Sleep(200 * time.Millisecond)
+	close(release)
+	wg.Wait()
+	close(errs)
+	if err := <-holder; err != nil {
+		t.Fatal(err)
+	}
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("charge = %v, want every queued charge recorded", err)
+		}
+	}
+	pools, err := l.pools(IdentityUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pools) != 1 || len(pools[0].Callers) != 1 || pools[0].Callers[0].Requests != charges {
+		t.Errorf("pools = %+v, want %d requests charged", pools, charges)
 	}
 }
