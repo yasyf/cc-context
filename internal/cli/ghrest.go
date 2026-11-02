@@ -45,6 +45,9 @@ type ghPull struct {
 	Labels []struct {
 		Name string `json:"name"`
 	} `json:"labels"`
+	Stack *struct {
+		Number int `json:"number"`
+	} `json:"stack"`
 }
 
 // graphQLState is the state gh pr reports, which REST splits into a closed

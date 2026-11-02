@@ -56,20 +56,21 @@ var stackGitRebaseArgs = []string{"-c", "rerere.enabled=false", "-c", "rebase.up
 var stackReplayRebaseArgs = []string{"--no-fork-point", "--no-rebase-merges", "--reapply-cherry-picks", "--keep-empty", "--empty=drop"}
 
 type stackPR struct {
-	Number     int      `json:"number"`
-	URL        string   `json:"url"`
-	Title      string   `json:"title"`
-	Body       string   `json:"body"`
-	State      string   `json:"state"`
-	Base       string   `json:"base"`
-	Head       string   `json:"head"`
-	Mergeable  string   `json:"mergeable"`
-	Labels     []string `json:"labels,omitempty"`
-	Landed     bool     `json:"landed"`
-	BaseGone   bool     `json:"base_gone,omitempty"`
-	BaseBack   bool     `json:"base_back,omitempty"`
-	ParkedFrom string   `json:"parked_from,omitempty"`
-	Segment    bool     `json:"segment,omitempty"`
+	Number      int      `json:"number"`
+	URL         string   `json:"url"`
+	Title       string   `json:"title"`
+	Body        string   `json:"body"`
+	State       string   `json:"state"`
+	Base        string   `json:"base"`
+	Head        string   `json:"head"`
+	Mergeable   string   `json:"mergeable"`
+	Labels      []string `json:"labels,omitempty"`
+	Landed      bool     `json:"landed"`
+	BaseGone    bool     `json:"base_gone,omitempty"`
+	BaseBack    bool     `json:"base_back,omitempty"`
+	ParkedFrom  string   `json:"parked_from,omitempty"`
+	Segment     bool     `json:"segment,omitempty"`
+	NativeStack int      `json:"native_stack,omitempty"`
 }
 
 func (p *stackPR) base() string {
@@ -1562,6 +1563,9 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 		if _, member := byName[b.Parent]; b.Parent != trunk && !member {
 			b.Parent = stackPassThrough(passed, state[name].Parents[0].Ref)
 		}
+		if native, ok := stackNativeParent(b, byName); ok {
+			b.Parent = native
+		}
 		if p, ok := parentOverrides[name]; ok {
 			b.Parent = p
 		}
@@ -2544,6 +2548,17 @@ func stackAncestry(state gtState, trunk string, seeds []string) ([]string, []str
 // the receipt still names the parent.
 func stackRetracked(receipt *stackPublication, s gtBranchState) bool {
 	return receipt != nil && receipt.Parent != s.Parents[0].Ref && receipt.SourceBase != s.Parents[0].SHA
+}
+
+func stackNativeParent(b *stackRebaseBranch, byName map[string]*stackRebaseBranch) (string, bool) {
+	if b.PR == nil || b.PR.State != "OPEN" || b.PR.NativeStack == 0 {
+		return "", false
+	}
+	p := byName[b.PR.Base]
+	if p == nil || p.Landed != "" || p.PR == nil || p.PR.State != "OPEN" || p.PR.NativeStack != b.PR.NativeStack {
+		return "", false
+	}
+	return p.Name, true
 }
 
 // stackPublishedParent names the parent a branch's remote head was published

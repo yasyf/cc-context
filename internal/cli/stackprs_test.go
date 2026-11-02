@@ -85,6 +85,7 @@ func TestStackQueryPRsReadsOverGraphQL(t *testing.T) {
 		state     string
 		mergeable string
 		landed    bool
+		stack     int
 	}
 	tests := []struct {
 		golden   string
@@ -93,12 +94,12 @@ func TestStackQueryPRsReadsOverGraphQL(t *testing.T) {
 		want     map[string]want
 	}{
 		{"stack-graphql-own", laneSeed{}, stackGoldenOwnBranches, map[string]want{
-			"fix-ship-help-graphite-demote": {3, "MERGED", statusUnknown, true},
-			"yasyf/transcript-ccx-issues":   {2, "MERGED", statusUnknown, true},
-			"stack-rebase-per-root":         {64, "CLOSED", "CONFLICTING", false},
+			"fix-ship-help-graphite-demote": {3, "MERGED", statusUnknown, true, 0},
+			"yasyf/transcript-ccx-issues":   {2, "MERGED", statusUnknown, true, 0},
+			"stack-rebase-per-root":         {64, "CLOSED", "CONFLICTING", false, 0},
 		}},
 		{"stack-graphql-foreign", laneSeed{nameWithOwner: "cli/cli", owner: "cli", public: true}, stackGoldenForeignBranches, map[string]want{
-			"williammartin-clean-git-test-seams": {14355, "OPEN", "MERGEABLE", false},
+			"williammartin-clean-git-test-seams": {14355, "MERGED", "CONFLICTING", true, 14352},
 		}},
 	}
 	for _, tt := range tests {
@@ -120,9 +121,9 @@ func TestStackQueryPRsReadsOverGraphQL(t *testing.T) {
 					t.Errorf("%s: no pull request, want #%d", branch, w.number)
 				case w.number == 0:
 					t.Errorf("%s resolved to %+v, want none", branch, pr)
-				case pr.Number != w.number || pr.State != w.state || pr.Mergeable != w.mergeable || pr.Landed != w.landed:
-					t.Errorf("%s = #%d %s %s landed=%v, want #%d %s %s landed=%v",
-						branch, pr.Number, pr.State, pr.Mergeable, pr.Landed, w.number, w.state, w.mergeable, w.landed)
+				case pr.Number != w.number || pr.State != w.state || pr.Mergeable != w.mergeable || pr.Landed != w.landed || pr.NativeStack != w.stack:
+					t.Errorf("%s = #%d %s %s landed=%v stack=%d, want #%d %s %s landed=%v stack=%d",
+						branch, pr.Number, pr.State, pr.Mergeable, pr.Landed, pr.NativeStack, w.number, w.state, w.mergeable, w.landed, w.stack)
 				}
 			}
 			assertNoGH(t, calls)
