@@ -49,9 +49,12 @@ The merge requires the head GitHub holds when the command reads the pull
 request, so a push in between cancels it. Without --admin GitHub's merge queue
 takes the pull request when the base branch has one, and the report reads
 enqueued. --admin merges directly and bypasses the repository rules the caller
-may bypass. Without --admin the command reads the repository's merge queue
-from a checkout of it, and refuses when that queue is Trunk or Graphite, since
-a direct merge skips it.
+may bypass.
+
+The command reads the repository's merge queue from a checkout of it, and
+refuses, with or without --admin, when that queue is Trunk or Graphite: those
+queues land a pull request themselves, and a merge from here would skip them.
+Run it from a checkout of the repository so it can tell.
 
 The merge method is squash unless --merge or --rebase says otherwise. A merge
 still pending after ten minutes stops waiting; rerunning the command resumes
@@ -62,7 +65,7 @@ the same request.`,
 		},
 	}
 	cmd.Flags().StringVarP(&o.repo, "repo", "R", "", "the owner/name repository (default: the current checkout's)")
-	cmd.Flags().BoolVar(&o.admin, "admin", false, "merge directly, bypassing the repository rules and merge queue the caller may bypass")
+	cmd.Flags().BoolVar(&o.admin, "admin", false, "merge directly, past GitHub's merge queue and the repository rules the caller may bypass")
 	cmd.Flags().BoolVar(&o.squash, "squash", false, "squash the pull request into one commit (the default)")
 	cmd.Flags().BoolVar(&o.merge, "merge", false, "merge with a merge commit")
 	cmd.Flags().BoolVar(&o.rebase, "rebase", false, "rebase the pull request's commits onto the base")
@@ -104,14 +107,12 @@ func runVcsMerge(cmd *cobra.Command, args []string, o vcsMergeOpts) error {
 		}
 		repo = looked.NameWithOwner
 	}
-	if !o.admin {
-		client := gtAPIForRepo(ctx, repo)
-		if err := client.ProviderError(); err != nil {
-			return fmt.Errorf("merge: %w, or pass --admin to merge directly", err)
-		}
-		if queue := client.QueueProvider(); queue == "trunk" || queue == "graphite" || queue == "mixed" {
-			return fmt.Errorf("merge: %s lands through the %s queue, which a direct merge skips; enqueue it there, or pass --admin to merge past it", repo, queue)
-		}
+	client := gtAPIForRepo(ctx, repo)
+	if err := client.ProviderError(); err != nil {
+		return fmt.Errorf("merge: %w", err)
+	}
+	if queue := client.QueueProvider(); queue == "trunk" || queue == "graphite" || queue == "mixed" {
+		return fmt.Errorf("merge: %s lands through the %s queue, which merges its pull requests itself; enqueue it there", repo, queue)
 	}
 	owner, name, ok := strings.Cut(repo, "/")
 	if !ok || owner == "" || name == "" {

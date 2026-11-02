@@ -34,8 +34,7 @@ materializing files there; stacking works as usual. The summary line names the
 The store is a non-bare clone at `~/.claude/stores/<key>/<repo>`. Only a
 checkout at the exact path its own origin derives counts as a thin store.
 `<repo>` is the source checkout's directory name. Lanes use the same pool
-as other lanes: `~/repos/claude/worktrees/<repo>/<lane>` when `~/repos` is a
-volume of its own, else `~/.claude/worktrees/<repo>/<lane>`, unless
+as other lanes: `~/.claude/worktrees/<repo>/<lane>`, unless
 `ccx.worktreeRoot` names another pool. Checkouts of one remote
 share a store only when their directories have the same name; a checkout
 named differently gets its own store under the same key.

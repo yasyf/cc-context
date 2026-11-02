@@ -60,7 +60,7 @@ func TestWorktreePoolsReachTheConfiguredRoot(t *testing.T) {
 	f := vcstest.Repo(t)
 	f.Isolate(t)
 	home := fixtureHome(t, f)
-	if err := os.MkdirAll(filepath.Join(home, worktreeVolume), 0o750); err != nil {
+	if err := os.MkdirAll(filepath.Join(home, "repos", "claude", "worktrees"), 0o750); err != nil {
 		t.Fatal(err)
 	}
 	pools, err := worktreePools(f.Context(), "test", home)
@@ -68,7 +68,7 @@ func TestWorktreePoolsReachTheConfiguredRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	if want := []string{worktreePool(home)}; !slices.Equal(pools, want) {
-		t.Errorf("pools = %v, want %v while ~/repos shares home's volume and nothing is configured", pools, want)
+		t.Errorf("pools = %v, want %v while nothing is configured, whatever sits at ~/repos", pools, want)
 	}
 	configureGitWorktreeRoot(t, f, "~/repos/worktrees")
 	path := addPoolWorktree(t, f, "feat")
