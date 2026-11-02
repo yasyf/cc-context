@@ -493,6 +493,10 @@ func Rows(ctx context.Context, commonDir string) ([]Row, error) {
 }
 
 func mutate(ctx context.Context, commonDir string, change func(*catalog, *receipts) (bool, bool, error)) error {
+	return mutateKeeping(ctx, commonDir, "", change)
+}
+
+func mutateKeeping(ctx context.Context, commonDir, keep string, change func(*catalog, *receipts) (bool, bool, error)) error {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	operation, err := lockCatalog(ctx, commonDir, "gh-stack-operation.lock")
@@ -509,7 +513,7 @@ func mutate(ctx context.Context, commonDir string, change func(*catalog, *receip
 	if err != nil {
 		return err
 	}
-	healed, err := dropStrayRoots(ctx, commonDir, &c, &r)
+	healed, err := dropStrayRoots(ctx, commonDir, keep, &c, &r)
 	if err != nil {
 		return err
 	}
@@ -529,7 +533,7 @@ func mutate(ctx context.Context, commonDir string, change func(*catalog, *receip
 	return nil
 }
 
-func dropStrayRoots(ctx context.Context, commonDir string, c *catalog, r *receipts) (bool, error) {
+func dropStrayRoots(ctx context.Context, commonDir, keep string, c *catalog, r *receipts) (bool, error) {
 	all, err := rows(*c)
 	if err != nil {
 		return false, err
@@ -549,7 +553,7 @@ func dropStrayRoots(ctx context.Context, commonDir string, c *catalog, r *receip
 	}
 	stray := map[string]bool{}
 	for _, root := range roots {
-		if root == trunk {
+		if root == trunk || root == keep {
 			continue
 		}
 		onOrigin, headed, err := branchHistory(ctx, commonDir, root)
@@ -730,7 +734,7 @@ func RetargetRoot(ctx context.Context, commonDir, root, trunk string) error {
 	if err != nil {
 		return fmt.Errorf("resolve native stack trunk %s: %w", trunk, err)
 	}
-	return mutate(ctx, commonDir, func(c *catalog, _ *receipts) (bool, bool, error) {
+	return mutateKeeping(ctx, commonDir, root, func(c *catalog, _ *receipts) (bool, bool, error) {
 		moved := false
 		for i := range c.Stacks {
 			if c.Stacks[i].Trunk.Branch == root {

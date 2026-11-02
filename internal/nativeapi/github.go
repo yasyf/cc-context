@@ -511,7 +511,7 @@ func (c *Client) leaveDeadStack(ctx context.Context, owner, repo string, pull re
 func (c *Client) restackAbove(ctx context.Context, owner, repo string, pull restPull, above []int) (restPull, error) {
 	desired := append([]int{pull.Number}, above...)
 	if _, err := c.post(ctx, fmt.Sprintf("/repos/%s/%s/stacks", url.PathEscape(owner), url.PathEscape(repo)), map[string]any{"pull_requests": desired}); err != nil {
-		return pull, fmt.Errorf("moved PR #%d onto %s, but relinking %v as one native GitHub stack failed, so the pull requests above it are unstacked: %w", pull.Number, pull.Base.Ref, desired, err)
+		return pull, fmt.Errorf("moved PR #%d onto %s, but relinking %v as one native GitHub stack failed, so the pull requests above it are unstacked until ccx vcs stack submit links them again: %w", pull.Number, pull.Base.Ref, desired, err)
 	}
 	return c.readPull(ctx, owner, repo, pull.Number)
 }
