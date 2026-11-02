@@ -3328,7 +3328,8 @@ func gtAnnounceUnchanged(errW io.Writer, prefix string, unchanged []string) erro
 // that one ref first: against a local trunk left behind, a branch whose commits
 // are already upstream reads as a stack member, and graphite refuses the empty
 // pull request that follows. The fetch moves no local branch and no working
-// copy — gt still owns restacking.
+// copy — gt still owns restacking — and is shared with every worktree of the
+// clone fetching the same trunk at once.
 func gtTrunkRef(ctx context.Context, dir render.Dir, prefix, trunk string) (vcs.Trunk, error) {
 	remote, err := vcs.GitRemoteFor(ctx, dir, "HEAD")
 	if err != nil {
@@ -3346,7 +3347,9 @@ func gtTrunkRef(ctx context.Context, dir render.Dir, prefix, trunk string) (vcs.
 	if code == 0 {
 		args = append(args, "--negotiation-tip="+ref)
 	}
-	if err := gitFetch(ctx, dir, append(args, remote, trunk)...); err != nil {
+	if _, err := sharedFetch(ctx, dir, prefix, remote, trunk, 0, func() error {
+		return gitFetch(ctx, dir, append(args, remote, trunk)...)
+	}); err != nil {
 		return vcs.Trunk{}, fmt.Errorf("%s: git fetch %s %s: %w", prefix, remote, trunk, err)
 	}
 	return gtTrunkRefAt(ctx, dir, prefix, remote, trunk)

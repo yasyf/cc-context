@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ccx vcs fetch <branch>...` fetches remote branches into their
+  remote-tracking refs, sharing one fetch among every worktree of the clone
+  that asks at once. Callers queue on a lock in the git common dir, and one
+  that was waiting when a fetch began takes that fetch's result instead of
+  running its own; `--max-age 30s` also accepts a fetch begun within the last
+  30 seconds. The trunk fetch behind `ccx vcs ship`, `stack submit`,
+  `stack rebase` and `stack new` shares the same way, so concurrent lanes on
+  one clone stop downloading and indexing the same trunk pack side by side.
 - `ccx vcs stack submit --parent <branch>=<parent>` moves a branch and the
   branches above it onto a new parent and retargets its pull request, as
   `stack rebase --parent` already did. A native stack submit whose parent pull
