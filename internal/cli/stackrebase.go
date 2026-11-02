@@ -1212,6 +1212,10 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	if err != nil {
 		return nil, err
 	}
+	for _, pair := range o.parents {
+		child, _, _ := strings.Cut(pair, "=")
+		o.include = slices.Concat(o.include, []string{child})
+	}
 	if err := topology.include(current); err != nil {
 		return nil, err
 	}

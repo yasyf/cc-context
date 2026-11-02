@@ -218,6 +218,28 @@ func TestStackRebaseRefusesToStackOnAPublishedHeadALocalRunMovedPast(t *testing.
 	}
 }
 
+func TestStackRebaseParentPublishesAnotherLanesBranchALocalRunMoved(t *testing.T) {
+	f := shipGTRepo(t)
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	linearizeLocallyMoved(t, f)
+	stubOpenPRs(t, f, nil, "grants", "third")
+	api.prs["grants"], api.prs["third"] = 9000, 9001
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", t.TempDir()+"/grants", "grants")
+	local := gitAt(t, f.Env(), f.Dir, "rev-parse", "grants")
+
+	if _, errOut, err := runStackCmd(t, f, "rebase", "--linearize", "grants,third", "--parent", "grants=culprits"); err != nil {
+		t.Fatalf("linearize grants,third --parent grants=culprits: %v (stderr=%q)", err, errOut)
+	}
+	remote := linearizeRemoteHeads(t, f, "culprits", "grants", "third")
+	if remote["grants"] != local {
+		t.Errorf("origin/grants = %.12s, want its local head %.12s on culprits published", remote["grants"], local)
+	}
+	if !stackOnto(t, f, remote["culprits"], remote["grants"]) || !stackOnto(t, f, remote["grants"], remote["third"]) {
+		t.Error("origin does not hold third on grants on culprits")
+	}
+}
+
 func TestStackRebaseLocalOnlyKeepsAnotherLanesUnpushedCommits(t *testing.T) {
 	f := shipGTRepo(t)
 	api := stubGTAPI(t)
