@@ -3818,7 +3818,7 @@ func stackFreeWorkspace(ctx context.Context, l lane, name string) (string, error
 		if n > 1 {
 			candidate = name + "-" + strconv.Itoa(n)
 		}
-		ws, err := stackMintWorkspace(ctx, l.checkout, candidate)
+		ws, err := mintGitWorktreePath(ctx, stackRebasePrefix, l.checkout, candidate)
 		if err != nil {
 			return "", err
 		}
@@ -3830,54 +3830,6 @@ func stackFreeWorkspace(ctx context.Context, l lane, name string) (string, error
 		default:
 			return "", fmt.Errorf("stack rebase: %w", err)
 		}
-	}
-}
-
-// stackMintWorkspace places a conflict workspace on the cleanup queue's
-// volume when one of its candidate paths is there, since the queue moves a
-// tree into its own folder and cannot take one from another volume.
-func stackMintWorkspace(ctx context.Context, c vcs.Checkout, name string) (string, error) {
-	ws, err := mintGitWorktreePath(ctx, stackRebasePrefix, c, name)
-	if err != nil || !cleanupDaemonized {
-		return ws, err
-	}
-	paths, err := gitWorktreePaths(ctx, stackRebasePrefix, c, name)
-	if err != nil {
-		return "", err
-	}
-	if beside, err := stackOnVolumeOf(cleanup.DefaultLayout().JobsDir(), paths); err != nil || beside != "" {
-		return beside, err
-	}
-	return ws, nil
-}
-
-func stackOnVolumeOf(dir string, paths []string) (string, error) {
-	want, err := stackVolume(dir)
-	if err != nil {
-		return "", err
-	}
-	for _, path := range paths {
-		got, err := stackVolume(path)
-		if err != nil {
-			return "", err
-		}
-		if got == want {
-			return path, nil
-		}
-	}
-	return "", nil
-}
-
-func stackVolume(path string) (uint64, error) {
-	for {
-		info, err := os.Stat(path)
-		if err == nil {
-			return cleanup.IDOf(info).Dev, nil
-		}
-		if !errors.Is(err, fs.ErrNotExist) {
-			return 0, fmt.Errorf("stack rebase: %w", err)
-		}
-		path = filepath.Dir(path)
 	}
 }
 

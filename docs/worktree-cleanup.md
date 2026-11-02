@@ -34,23 +34,25 @@ dirty files discarded with `--force`.
 A linked worktree is orphaned when its `.git` file names an admin dir that no
 longer exists, for example, after its repository was re-cloned. Git no longer
 registers it, so neither `git worktree remove` nor `git worktree repair` can
-reach it. `ccx vcs worktree rm --path <absolute-path>` moves an orphan to
-`~/.Trash/<name>-<timestamp>` and prints
-`removed <name> · orphaned checkout · moved to Trash <path>`. It runs from any
-directory, since no repository registers the tree.
+reach it. `ccx vcs worktree rm --path <absolute-path>` deletes an orphan in
+place and prints
+`removed <name> · orphaned checkout · deleted <n> entries in place · recorded in <file>`.
+It runs from any directory, since no repository registers the tree.
 
 Removal refuses an orphan whose resolved path is not exactly
-`~/.claude/worktrees/<repo>/<name>`, or whose `.git` is not a regular file
-with a missing `gitdir:` target. It also refuses one that a live process works
-in, holds a file open in, or was started on. Linux has no such process check,
-so there `--force` is required.
+`<pool>/<repo>/<name>` in one of the worktree pools: `~/.claude/worktrees`,
+`~/repos/claude/worktrees`, or the `ccx.worktreeRoot` pool. It also refuses
+one whose `.git` is not a regular file with a missing `gitdir:` target, and
+one that a live process works in, holds a file open in, or was started on.
+Linux has no such process check, so there `--force` is required.
 
-Git cannot tell whether an orphan held uncommitted or unpushed work, so
-removal moves it to the Trash instead of deleting it. A tree on another
-volume than the Trash is refused. `--dry-run` runs the path, `.git`, and
-live-process checks and prints `would remove`. It does not attempt the move,
-so it cannot report a Trash on another volume. On macOS, `--force` waives none
-of these checks.
+Git cannot tell whether an orphan held uncommitted or unpushed work. Before
+deleting anything, removal appends a JSON line with the orphan's path, the
+admin dir its `.git` named, and the time to `worktree-rm/orphans.jsonl` under
+ccx's cache directory. Deletion runs through held directory descriptors and
+stops if the path comes to name a different tree. `--dry-run` runs the path,
+`.git`, and live-process checks, prints `would remove`, and deletes nothing.
+On macOS, `--force` waives none of these checks.
 
 ## Queue commands
 

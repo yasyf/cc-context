@@ -71,21 +71,26 @@ works the lane. A slash in the branch name becomes a dash in the working copy's
 directory name: owner/topic becomes owner-topic. A lane cut onto trunk starts at
 the freshly fetched remote trunk, leaving the local trunk branch where it is.
 
+In a Git checkout every lane is sparse, whatever its storage: this checkout's
+sparse set, or root files alone when it has none, plus the tracked .claude,
+.agents, and tools directories. A Go lane names its module, as --include
+go/<module>. The summary names the "git -C <path> sparse-checkout add <dir>"
+command that widens the lane, just before its path.
+
 --published-parent uses the parent's recorded publication only when its source,
 remote head, and submission metadata still match. --sparse copies this checkout's
-per-worktree sparse configuration before populating the child. --no-checkout leaves
-files unmaterialized instead. --include checks out more directories in a sparse
-lane. --path names a new location outside the checkout you run this from, its
-main checkout, and the thin store. Sparse, no-checkout, and thin creation require
-a Git checkout.
+per-worktree sparse configuration exactly instead, before populating the child.
+--no-checkout leaves files unmaterialized instead. --include checks out more
+directories in a sparse lane. --path names a new location outside the checkout
+you run this from, its main checkout, and the thin store. Sparse, no-checkout,
+and thin creation require a Git checkout.
 
 Git checkouts cut the lane into the repository's thin store by default, except
 a child of a non-trunk branch this checkout holds, which is cut in this
 checkout's clone beside its parent. The store is one
 clone per repository under $HOME/.claude/stores, with --depth commits of trunk history (256 unless
 the store already exists), no blobs until a checkout needs them, no tags, a
-fetch of trunk alone, and a sparse checkout of root files, the tracked .claude
-and .agents directories, and this checkout's sparse set. The store shares this
+fetch of trunk alone, and a sparse checkout of root files. The store shares this
 checkout's cc-notes records: creation binds it with "cc-notes storage bind"
 before installing it, so cc-notes must provide that command, and every later
 --thin lane has cc-notes confirm the store is bound to this checkout's records,

@@ -272,7 +272,7 @@ func TestWorktreeAddCutsFromFetchedTrunk(t *testing.T) {
 		t.Fatalf("add error = %v", err)
 	}
 	path := worktreeSummaryPath(t, out)
-	want := strings.Join([]string{"added feat", "git worktree", "from origin/main " + shortOID(tip), path}, shipSep) + "\n"
+	want := strings.Join([]string{"added feat", "git worktree", "from origin/main " + shortOID(tip), laneWiden(path), path}, shipSep) + "\n"
 	if out != want {
 		t.Errorf("summary = %q, want %q", out, want)
 	}
@@ -290,6 +290,41 @@ func TestWorktreeAddCutsFromFetchedTrunk(t *testing.T) {
 	}
 }
 
+func TestWorktreeAddCutsASparseCone(t *testing.T) {
+	f := vcstest.Repo(t)
+	f.Isolate(t)
+	files := []string{"tools/run.sh", "go/svc/main.go", "go/other/main.go", "docs/guide.md", ".claude/settings.json", ".agents/skill.md"}
+	for _, file := range files {
+		writeShipFile(t, f.Dir, file, file+"\n")
+	}
+	mustRun(t, f.Env(), f.Dir, "git", "add", "-A")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "tree")
+
+	out, err := runWorktreeCmd(t, f, "add", "feat", "--include", "go/svc")
+	if err != nil {
+		t.Fatalf("add error = %v", err)
+	}
+	path := worktreeSummaryPath(t, out)
+	if !strings.Contains(out, shipSep+laneWiden(path)+shipSep) {
+		t.Errorf("summary = %q, want it to name %q before the path", out, laneWiden(path))
+	}
+	for _, file := range []string{"f.txt", "tools/run.sh", "go/svc/main.go", ".claude/settings.json", ".agents/skill.md"} {
+		if got := readFileStr(t, filepath.Join(path, file)); got == "" {
+			t.Errorf("%s is empty, want it checked out", file)
+		}
+	}
+	assertGone(t, filepath.Join(path, "docs"))
+	assertGone(t, filepath.Join(path, "go", "other"))
+	if got := mustRun(t, f.Env(), path, "git", "status", "--porcelain"); got != "" {
+		t.Errorf("status = %q, want a clean sparse checkout", got)
+	}
+	for _, file := range files {
+		if got := readFileStr(t, filepath.Join(f.Dir, file)); got == "" {
+			t.Errorf("caller's %s is empty, want the caller's checkout untouched", file)
+		}
+	}
+}
+
 func TestWorktreeAddChecksOutExistingBranch(t *testing.T) {
 	f := vcstest.Repo(t, vcstest.Remote())
 	f.Isolate(t)
@@ -302,7 +337,7 @@ func TestWorktreeAddChecksOutExistingBranch(t *testing.T) {
 		t.Fatalf("add error = %v", err)
 	}
 	path := worktreeSummaryPath(t, out)
-	want := strings.Join([]string{"added feat", "git worktree", "existing feat at " + shortOID(head), path}, shipSep) + "\n"
+	want := strings.Join([]string{"added feat", "git worktree", "existing feat at " + shortOID(head), laneWiden(path), path}, shipSep) + "\n"
 	if out != want {
 		t.Errorf("summary = %q, want %q", out, want)
 	}
@@ -368,7 +403,7 @@ func TestWorktreeAddReclaimsAnInterruptedAdd(t *testing.T) {
 			if err != nil {
 				t.Fatalf("re-add error = %v", err)
 			}
-			want := strings.Join([]string{"added feat", "git worktree", "existing feat at " + shortOID(head), "cleared an interrupted add", path}, shipSep) + "\n"
+			want := strings.Join([]string{"added feat", "git worktree", "existing feat at " + shortOID(head), "cleared an interrupted add", laneWiden(path), path}, shipSep) + "\n"
 			if out != want {
 				t.Errorf("summary = %q, want %q", out, want)
 			}
@@ -397,7 +432,7 @@ func TestWorktreeAddChecksOutTheRemoteBranch(t *testing.T) {
 		t.Fatalf("add error = %v", err)
 	}
 	path := worktreeSummaryPath(t, out)
-	want := strings.Join([]string{"added feat", "git worktree", "existing origin/feat at " + shortOID(published), path}, shipSep) + "\n"
+	want := strings.Join([]string{"added feat", "git worktree", "existing origin/feat at " + shortOID(published), laneWiden(path), path}, shipSep) + "\n"
 	if out != want {
 		t.Errorf("summary = %q, want %q", out, want)
 	}
@@ -422,7 +457,7 @@ func TestWorktreeAddWithoutRemoteCutsFromHead(t *testing.T) {
 		t.Fatalf("add error = %v", err)
 	}
 	path := worktreeSummaryPath(t, out)
-	want := strings.Join([]string{"added feat", "git worktree", "from HEAD " + shortOID(head), path}, shipSep) + "\n"
+	want := strings.Join([]string{"added feat", "git worktree", "from HEAD " + shortOID(head), laneWiden(path), path}, shipSep) + "\n"
 	if out != want {
 		t.Errorf("summary = %q, want %q", out, want)
 	}
@@ -708,29 +743,38 @@ func TestWorktreeRmPathReregistersARetiredWorktree(t *testing.T) {
 	}
 }
 
-func TestWorktreeRmPathOrphanMovesToTrash(t *testing.T) {
+func TestWorktreeRmPathOrphanDeletesInPlace(t *testing.T) {
 	f := vcstest.Repo(t)
 	f.Isolate(t)
 	path := addPoolWorktree(t, f, "feat")
+	admin := filepath.Clean(strings.TrimPrefix(strings.TrimSpace(readFileStr(t, filepath.Join(path, ".git"))), "gitdir: "))
 	orphanWorktree(t, f.Env(), path)
 	unrelated := worktreeTempDir(t)
 	t.Chdir(unrelated)
 
+	before := time.Now().UTC().Add(-time.Second)
 	out, err := runWorktreeCmdIn(f.ContextIn(unrelated), t, orphanRmArgs(path)...)
 	if err != nil {
 		t.Fatalf("rm --path error = %v", err)
 	}
-	prefix := "removed feat · orphaned checkout · moved to Trash "
-	dest, ok := strings.CutPrefix(strings.TrimSuffix(out, "\n"), prefix)
-	if !ok {
-		t.Fatalf("rm --path output = %q, want it to start %q", out, prefix)
+	segments := strings.Split(strings.TrimSuffix(out, "\n"), shipSep)
+	if len(segments) != 4 || segments[0] != "removed feat" || segments[1] != orphanShape ||
+		!strings.HasPrefix(segments[2], "deleted ") || !strings.HasSuffix(segments[2], " entries in place") {
+		t.Fatalf("rm --path output = %q, want removed feat · orphaned checkout · deleted <n> entries in place · recorded in <file>", out)
 	}
-	if trash := filepath.Join(fixtureHome(t, f), ".Trash"); filepath.Dir(dest) != trash || !strings.HasPrefix(filepath.Base(dest), "feat-") {
-		t.Errorf("moved to %s, want feat-<timestamp> under %s", dest, trash)
+	record, ok := strings.CutPrefix(segments[3], "recorded in ")
+	if !ok {
+		t.Fatalf("rm --path output = %q, want it to name the record", out)
 	}
 	assertGone(t, path)
-	if got := readFileStr(t, filepath.Join(dest, "f.txt")); got == "" {
-		t.Errorf("%s/f.txt is empty, want the tree moved whole", dest)
+	assertGone(t, filepath.Join(fixtureHome(t, f), ".Trash"))
+	lines := strings.Split(strings.TrimSpace(readFileStr(t, record)), "\n")
+	var got orphanRemoval
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &got); err != nil {
+		t.Fatalf("record %s: %v", record, err)
+	}
+	if got.Path != path || got.GitDir != admin || got.Time.Before(before) {
+		t.Errorf("record = %+v, want path %s, gitdir %s, and a time after %s", got, path, admin, before)
 	}
 }
 
@@ -865,7 +909,7 @@ func TestWorktreeRmPathOrphanUnguardedNeedsForce(t *testing.T) {
 	orphanWorktree(t, f.Env(), path)
 
 	out, err := runWorktreeCmd(t, f, "rm", "--path", path)
-	if err == nil || !strings.Contains(err.Error(), "--force moves it to the Trash unchecked") {
+	if err == nil || !strings.Contains(err.Error(), "--force deletes it unchecked") {
 		t.Fatalf("rm --path error = %v, want the missing guard to refuse", err)
 	}
 	if out != "" {

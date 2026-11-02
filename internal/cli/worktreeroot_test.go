@@ -3,6 +3,7 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -53,6 +54,29 @@ func TestGitWorktreeRootLifecycle(t *testing.T) {
 			t.Fatalf("still registers %s after removal", path)
 		}
 	}
+}
+
+func TestWorktreePoolsReachTheConfiguredRoot(t *testing.T) {
+	f := vcstest.Repo(t)
+	f.Isolate(t)
+	home := fixtureHome(t, f)
+	if err := os.MkdirAll(filepath.Join(home, worktreeVolume), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	pools, err := worktreePools(f.Context(), "test", home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{worktreePool(home)}; !slices.Equal(pools, want) {
+		t.Errorf("pools = %v, want %v while ~/repos shares home's volume and nothing is configured", pools, want)
+	}
+	configureGitWorktreeRoot(t, f, "~/repos/worktrees")
+	path := addPoolWorktree(t, f, "feat")
+	orphanWorktree(t, f.Env(), path)
+	if _, err := runWorktreeCmd(t, f, orphanRmArgs(path)...); err != nil {
+		t.Fatalf("rm --path error = %v, want the configured pool's orphan deleted", err)
+	}
+	assertGone(t, path)
 }
 
 func TestGitWorktreeRootCollisionRequiresPath(t *testing.T) {

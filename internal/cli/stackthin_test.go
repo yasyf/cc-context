@@ -294,7 +294,7 @@ func TestStackNewThinCreatesAThinStore(t *testing.T) {
 
 	out, lane := thinNew(t, f, f.Dir, "lane1", "--depth", strconv.Itoa(thinTestDepth))
 	store := thinTestStore(t, f)
-	if want := "created thin store " + store + shipSep + "cut lane1 onto main at " + shortOID(gitAt(t, f.Env(), lane, "rev-parse", "HEAD")) + shipSep + thinTestLane(t, f, "lane1"); out != want {
+	if want := "created thin store " + store + shipSep + "cut lane1 onto main at " + shortOID(gitAt(t, f.Env(), lane, "rev-parse", "HEAD")) + shipSep + laneWiden(thinTestLane(t, f, "lane1")) + shipSep + thinTestLane(t, f, "lane1"); out != want {
 		t.Fatalf("stack new = %q, want %q", out, want)
 	}
 	for key, want := range map[string]string{
@@ -373,7 +373,7 @@ func TestStackNewThinReusesTheStore(t *testing.T) {
 	}
 	thinCommit(t, f, a, "a.txt", "a\n")
 	out, c := thinNew(t, f, a, "c", "--include", "keep")
-	if want := "cut c onto a at " + shortOID(gitAt(t, f.Env(), a, "rev-parse", "HEAD")) + shipSep + thinTestLane(t, f, "c"); out != want {
+	if want := "cut c onto a at " + shortOID(gitAt(t, f.Env(), a, "rev-parse", "HEAD")) + shipSep + laneWiden(thinTestLane(t, f, "c")) + shipSep + thinTestLane(t, f, "c"); out != want {
 		t.Errorf("nested lane = %q, want %q", out, want)
 	}
 	for _, lane := range []string{a, b, c} {
@@ -1147,17 +1147,18 @@ func TestStackNewStorageModes(t *testing.T) {
 	}{
 		{name: "unset Git default", args: []string{"--parent", "main"}, store: true, sparse: true},
 		{name: "unset plain Git default", noGT: true, args: []string{"--parent", "main"}, store: true, sparse: true},
-		{name: "explicit full history with unset env", args: []string{"--parent", "main", "--full-history"}},
+		{name: "explicit full history with unset env", args: []string{"--parent", "main", "--full-history"}, sparse: true},
 		{name: "env thin", env: "thin", args: []string{"--parent", "main"}, store: true, sparse: true},
-		{name: "env full", env: "full", args: []string{"--parent", "main"}},
-		{name: "full history overrides env thin", env: "thin", args: []string{"--parent", "main", "--full-history"}},
+		{name: "env full", env: "full", args: []string{"--parent", "main"}, sparse: true},
+		{name: "full history overrides env thin", env: "thin", args: []string{"--parent", "main", "--full-history"}, sparse: true},
 		{name: "env bogus", env: "shallow", args: []string{"--parent", "main"}, refusal: `CCX_STACK_NEW="shallow" is neither thin nor full`},
 		{name: "thin and full history", args: []string{"--thin", "--full-history"}, refusal: "none of the others can be"},
 		{name: "thin and no checkout", args: []string{"--thin", "--no-checkout"}, refusal: "none of the others can be"},
 		{name: "unset default and no checkout", args: []string{"--parent", "main", "--no-checkout"}, refusal: "--no-checkout conflicts with thin storage"},
 		{name: "env thin and no checkout", env: "thin", args: []string{"--parent", "main", "--no-checkout"}, refusal: "--no-checkout conflicts with thin storage"},
-		{name: "include without sparse", env: "full", args: []string{"--parent", "main", "--include", "keep"}, refusal: "--include checks out directories in a sparse lane"},
-		{name: "unset default source-only parent", args: []string{"--parent", "parent"}},
+		{name: "include in a full-history lane", env: "full", args: []string{"--parent", "main", "--include", "keep"}, sparse: true},
+		{name: "full history and no checkout", args: []string{"--parent", "main", "--full-history", "--no-checkout"}},
+		{name: "unset default source-only parent", args: []string{"--parent", "parent"}, sparse: true},
 		{name: "unpublished source-only parent", args: []string{"--thin", "--parent", "parent"}, refusal: "parent has no publication"},
 		{name: "full history in the store", inStore: true, args: []string{"--full-history"}, refusal: "is a thin store"},
 		{name: "depth in the store", inStore: true, args: []string{"--depth", "8"}, refusal: "--depth and --deepen apply only"},

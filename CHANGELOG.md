@@ -50,6 +50,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- New Git worktrees mint under `~/repos/claude/worktrees/<repo>/<lane>` when
+  `~/repos` is the mount point of a volume of its own, keeping worktree churn
+  off the volume that holds home. `ccx.worktreeRoot` still wins when set, and
+  trees already under `~/.claude/worktrees` stay where they are. Stack
+  conflict workspaces follow the same pool instead of preferring the cleanup
+  daemon's volume.
+- Every Git lane is a sparse checkout by default. `ccx vcs worktree add` now
+  checks out root files plus the tracked `.agents`, `.claude`, and `tools`
+  directories, or the caller's own sparse set, and takes a repeatable
+  `--include <dir>`. `ccx vcs stack new` adds `tools` to its cone and cuts
+  full-history and caller-storage lanes sparse too, not just thin ones; a Go
+  lane names its module with `--include go/<module>`. Both commands print the
+  `git -C <path> sparse-checkout add <dir>` command that widens the lane,
+  just before its path.
+- `ccx vcs worktree rm --path` deletes an orphaned pool worktree in place
+  instead of moving it to `~/.Trash`, after appending its path, the admin dir
+  it named, and the time to `worktree-rm/orphans.jsonl` under ccx's cache. It
+  accepts orphans in `~/.claude/worktrees`, `~/repos/claude/worktrees`, and the
+  `ccx.worktreeRoot` pool.
+
 - **A paused cleanup queue retires a worktree only after its HEAD rests for an
   hour.** The process scan cannot see an agent between commands, so a forced
   `worktree rm` of a tree its lane still used retired the registration within

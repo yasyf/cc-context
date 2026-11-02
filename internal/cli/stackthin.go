@@ -36,7 +36,7 @@ const (
 var (
 	thinStoreConfig    = []string{"feature.experimental=true", "feature.manyFiles=true", "pack.threads=2"}
 	thinMirroredConfig = []string{"user.name", "user.email", "user.signingkey", "commit.gpgsign", nogtKey}
-	thinMetadataDirs   = []string{".claude", ".agents"}
+	laneConeDirs       = []string{".claude", ".agents", "tools"}
 	thinDefaultPorts   = map[string]string{"ssh": "22", "git+ssh": "22", "ssh+git": "22", "git": "9418", "http": "80", "https": "443"}
 )
 

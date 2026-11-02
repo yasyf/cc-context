@@ -24,15 +24,18 @@ ccx creates the thin store on first use, then cuts the lane as a linked
 worktree of that store. From a store lane, every new lane is a linked
 worktree of the same store and is sparse like its caller, with or without
 `--thin` and regardless of the `CCX_STACK_NEW` default. Every lane also checks
-out tracked top-level `.claude` and `.agents` directories for project hooks,
-settings, skills, and instructions, alongside root files and inherited or
-`--include` directories. Only `--no-checkout` skips materializing files
-there; stacking works as usual.
+out tracked top-level `.claude`, `.agents`, and `tools` directories for project
+hooks, settings, skills, instructions, and repo tooling, alongside root files
+and inherited or `--include` directories. Only `--no-checkout` skips
+materializing files there; stacking works as usual. The summary line names the
+`git -C <path> sparse-checkout add <dir>` command that widens the lane.
 
 The store is a non-bare clone at `~/.claude/stores/<key>/<repo>`. Only a
 checkout at the exact path its own origin derives counts as a thin store.
 `<repo>` is the source checkout's directory name. Lanes use the same pool
-as other lanes: `~/.claude/worktrees/<repo>/<lane>`. Checkouts of one remote
+as other lanes: `~/repos/claude/worktrees/<repo>/<lane>` when `~/repos` is a
+volume of its own, else `~/.claude/worktrees/<repo>/<lane>`, unless
+`ccx.worktreeRoot` names another pool. Checkouts of one remote
 share a store only when their directories have the same name; a checkout
 named differently gets its own store under the same key.
 
@@ -81,7 +84,9 @@ ccx vcs stack new full-work --full-history
 ```
 
 `--full-history` creates a linked worktree of the checkout you run it from.
-The flag is refused inside the ccx thin store.
+It shares that checkout's history, not its full working tree: the lane is
+sparse like every other Git lane. The flag is refused inside the ccx thin
+store.
 
 ## Choose full history
 
@@ -105,22 +110,29 @@ requirements apply to the default too.
 
 ## Check out more directories
 
-Thin lanes inherit the source checkout's per-worktree sparse patterns when
-active. Every lane also checks out root files and tracked top-level
-`.claude` and `.agents` directories; creation runs no hooks or setup scripts
-and installs no dependencies. For a repository with `src` and `tools`
-directories, include both when creating the lane:
+Every Git lane is sparse, whatever its storage. It inherits the source
+checkout's per-worktree sparse patterns when active, else root files alone,
+and also checks out tracked top-level `.claude`, `.agents`, and `tools`
+directories; creation runs no hooks or setup scripts and installs no
+dependencies. `ccx vcs worktree add` cuts the same cone. For a repository
+with a `src` directory, include it when creating the lane:
 
 ```sh
-ccx vcs stack new agent-files --thin --include src --include tools
+ccx vcs stack new agent-files --include src
 ```
 
-`--include DIR` is repeatable and, outside the store, requires `--thin` or
-`--sparse`. It is refused with `--no-checkout`. From inside a lane, expand
-the checkout as work requires:
+A Go lane in a repository of several Go modules names just its module:
 
 ```sh
-git sparse-checkout add src tools
+ccx vcs stack new agent-go --include go/<module>
+```
+
+`--include DIR` is repeatable and refused with `--no-checkout`. The summary
+line names the widen command, just before the lane's path. From inside a
+lane, expand the checkout as work requires:
+
+```sh
+git -C <path> sparse-checkout add src
 ```
 
 Other paths imported by agent instructions are not discovered automatically.
@@ -202,7 +214,7 @@ segment. A refused deepen can leave the store deeper; history only grows.
 | `--depth` or `--deepen` without a thin lane cut from a full checkout | Pass them with `--thin` from the full checkout, or drop them |
 | Explicit `--depth` with an existing store | Omit `--depth`; it applies only when creating the store |
 | `--full-history` inside the thin store | Run it from the full source checkout |
-| `--include` outside the store without `--thin` or `--sparse` | Select `--thin` or `--sparse`, or run from inside the store |
+| `--include` with `--no-checkout`, or outside a Git checkout | Drop `--no-checkout`, or run from a Git checkout |
 | Invalid `CCX_STACK_NEW` value | Set `thin` or `full`, or unset it |
 | The store's own same-named parent differs from the source parent | Creation refuses before changes and names both commits; cut from the store's checkout of that branch, or use `--full-history` |
 | A source-only parent lacks a verified publication onto trunk | On the Graphite lane, run `ccx vcs stack submit` from the parent's working copy and retry, or run `ccx vcs stack new <child> --parent <parent> --full-history` from a full checkout; outside the Graphite lane, use the full-history command |

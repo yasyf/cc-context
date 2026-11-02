@@ -70,7 +70,7 @@ func runStackNew(cmd *cobra.Command, name string, options stackNewOpts) error {
 		return fmt.Errorf("stack new: %s is a thin store, so no lane cut here carries full history — run --full-history from a full checkout of the repository", src.root)
 	}
 	thin := storage == storageThin && !inStore
-	sparseLane := options.sparse || (storage == storageThin || inStore) && !options.noCheckout
+	sparseLane := options.sparse || src.checkout.Kind == vcs.Git && !options.noCheckout
 	if options.published && !src.gt {
 		return errors.New("stack new: --published-parent requires a stack-managed lane")
 	}
@@ -81,7 +81,7 @@ func runStackNew(cmd *cobra.Command, name string, options stackNewOpts) error {
 		return errors.New("stack new: a thin lane is a sparse checkout, so --no-checkout conflicts with thin storage; pass --full-history from a full checkout")
 	}
 	if len(options.includes) > 0 && !sparseLane {
-		return errors.New("stack new: --include checks out directories in a sparse lane — pass it with --thin or --sparse")
+		return errors.New("stack new: --include checks out directories in a sparse lane, which needs a Git checkout and no --no-checkout")
 	}
 	if (options.depthSet || options.deepen) && !thin {
 		return errors.New("stack new: --depth and --deepen apply only to a thin lane cut from a full checkout")
@@ -96,17 +96,16 @@ func runStackNew(cmd *cobra.Command, name string, options stackNewOpts) error {
 		if err != nil {
 			return err
 		}
+		if thin || inStore {
+			read = stackWithMetadata(read)
+		}
 		sparse = &read
 	case sparseLane:
-		inherited, err := stackThinSparse(ctx, src.dir())
+		cone, err := laneSparse(ctx, src.dir())
 		if err != nil {
 			return err
 		}
-		sparse = &inherited
-	}
-	if sparse != nil && (thin || inStore) {
-		hydrated := stackWithMetadata(*sparse)
-		sparse = &hydrated
+		sparse = &cone
 	}
 	if inStore {
 		if err := thinVerifyNotes(ctx, src, src.checkout.MainRoot); err != nil {
@@ -207,7 +206,7 @@ func runStackNew(cmd *cobra.Command, name string, options stackNewOpts) error {
 			if want := stackNewPinned(receipt, adopted); want != "" && head != want {
 				return errors.New("stack new: child ref changed before sparse population")
 			}
-			if err := stackWriteSparse(ctx, created, *sparse, head); err != nil {
+			if err := stackWriteSparse(ctx, created, "stack new", *sparse, head); err != nil {
 				return err
 			}
 			if len(options.includes) > 0 {
@@ -260,7 +259,11 @@ func runStackNew(cmd *cobra.Command, name string, options stackNewOpts) error {
 			return err
 		}
 	}
-	cmd.Println(strings.Join(append(segs, "cut "+name+" onto "+parent+" at "+shortOID(base), path), shipSep))
+	segs = append(segs, "cut "+name+" onto "+parent+" at "+shortOID(base))
+	if sparse != nil {
+		segs = append(segs, laneWiden(path))
+	}
+	cmd.Println(strings.Join(append(segs, path), shipSep))
 	return nil
 }
 
@@ -525,6 +528,22 @@ func stackReadSparse(ctx context.Context, dir render.Dir) (stackSparse, error) {
 	return sparse, nil
 }
 
+// laneSparse is the cone a lane cut from dir checks out by default: dir's own
+// active sparse set, else root files alone, plus laneConeDirs.
+func laneSparse(ctx context.Context, dir render.Dir) (stackSparse, error) {
+	inherited, err := stackThinSparse(ctx, dir)
+	if err != nil {
+		return stackSparse{}, err
+	}
+	return stackWithMetadata(inherited), nil
+}
+
+// laneWiden is the summary segment naming the command that checks out one
+// more directory of the sparse lane at path.
+func laneWiden(path string) string {
+	return "widen with git -C " + path + " sparse-checkout add <dir>"
+}
+
 func stackThinSparse(ctx context.Context, dir render.Dir) (stackSparse, error) {
 	sparse, active, err := stackActiveSparse(ctx, dir)
 	if err != nil || active {
@@ -539,7 +558,7 @@ func stackWithMetadata(s stackSparse) stackSparse {
 	for line := range strings.Lines(string(patterns)) {
 		have[strings.TrimSpace(line)] = true
 	}
-	for _, dir := range thinMetadataDirs {
+	for _, dir := range laneConeDirs {
 		pattern := "/" + dir + "/"
 		if have[pattern] {
 			continue
@@ -579,7 +598,10 @@ func stackActiveSparse(ctx context.Context, dir render.Dir) (stackSparse, bool, 
 	return stackSparse{patterns: patterns, cone: cone}, true, nil
 }
 
-func stackWriteSparse(ctx context.Context, dir render.Dir, sparse stackSparse, head string) error {
+func stackWriteSparse(ctx context.Context, dir render.Dir, prefix string, sparse stackSparse, head string) error {
+	if err := stackEnableWorktreeConfig(ctx, dir, prefix); err != nil {
+		return err
+	}
 	out, err := render.RunCLI(ctx, dir, "git", []string{"rev-parse", "--path-format=absolute", "--git-path", "info/sparse-checkout"})
 	if err != nil {
 		return err
@@ -596,7 +618,21 @@ func stackWriteSparse(ctx context.Context, dir render.Dir, sparse stackSparse, h
 			return err
 		}
 	}
-	return stackPopulateSparse(ctx, dir, "stack new", head)
+	return stackPopulateSparse(ctx, dir, prefix, head)
+}
+
+// stackEnableWorktreeConfig turns on extensions.worktreeConfig the way git's
+// own sparse-checkout does, moving any shared core.bare or core.worktree out of
+// the common config, so the new worktree's sparse settings stay its own.
+func stackEnableWorktreeConfig(ctx context.Context, dir render.Dir, prefix string) error {
+	enabled, err := stackConfigBool(ctx, dir, "extensions.worktreeConfig", false)
+	if err != nil || enabled {
+		return err
+	}
+	if _, err := render.RunCLI(ctx, dir, "git", []string{"-c", "core.hooksPath=/dev/null", "sparse-checkout", "set", "--cone", "--no-sparse-index"}); err != nil {
+		return fmt.Errorf("%s: enable per-worktree config in %s: %w", prefix, dir, err)
+	}
+	return nil
 }
 
 func stackPopulateSparse(ctx context.Context, dir render.Dir, prefix, head string) error {
