@@ -62,9 +62,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   open pull request below it, and the report prints one line per pull request,
   bottom-up, with its merge commit. `--admin` merges directly and bypasses the
   rules the caller may bypass. Without it, GitHub's merge queue takes the pull
-  request when the base branch has one, and the command refuses when a checkout
-  of the repository names the Trunk or Graphite queue. `--squash` is the default, and `--merge` or
-  `--rebase` picks another method. A merge still pending after ten minutes
+  request when the base branch has one. The command reads the repository's
+  queue from a checkout of it and refuses, `--admin` or not, when that queue is
+  Trunk or Graphite, which land their pull requests themselves. `--squash` is
+  the default, and `--merge` or `--rebase` picks another method. A merge still pending after ten minutes
   stops waiting; rerunning the command resumes the same request.
 
 - `ccx vcs fetch <branch>...` fetches remote branches into their
@@ -119,12 +120,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- New Git worktrees mint under `~/repos/claude/worktrees/<repo>/<lane>` when
-  `~/repos` is the mount point of a volume of its own, keeping worktree churn
-  off the volume that holds home. `ccx.worktreeRoot` still wins when set, and
-  trees already under `~/.claude/worktrees` stay where they are. Stack
-  conflict workspaces follow the same pool instead of preferring the cleanup
-  daemon's volume.
+- New Git worktrees mint under `~/.claude/worktrees/<repo>/<lane>` unless
+  `git config --global ccx.worktreeRoot <path>` names another pool; ccx never
+  picks a pool from the volumes mounted under home. Stack conflict workspaces
+  follow the same pool instead of preferring the cleanup daemon's volume.
 - Lanes of a large repository are sparse checkouts by default. The cone is the
   caller's own sparse set, or root files alone, plus the tracked `.agents`,
   `.claude`, and `tools` directories and `infra/ci/hooks`, which the
@@ -139,8 +138,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ccx vcs worktree rm --path` deletes an orphaned pool worktree in place
   instead of moving it to `~/.Trash`, after appending its path, the admin dir
   it named, and the time to `worktree-rm/orphans.jsonl` under ccx's cache. It
-  accepts orphans in `~/.claude/worktrees`, `~/repos/claude/worktrees`, and the
-  `ccx.worktreeRoot` pool.
+  accepts orphans in `~/.claude/worktrees` and the `ccx.worktreeRoot` pool.
 
 - **A paused cleanup queue retires a worktree only after its HEAD rests for an
   hour.** The process scan cannot see an agent between commands, so a forced

@@ -50,8 +50,8 @@ place and prints
 It runs from any directory, since no repository registers the tree.
 
 Removal refuses an orphan whose resolved path is not exactly
-`<pool>/<repo>/<name>` in one of the worktree pools: `~/.claude/worktrees`,
-`~/repos/claude/worktrees`, or the `ccx.worktreeRoot` pool. It also refuses
+`<pool>/<repo>/<name>` in one of the worktree pools: `~/.claude/worktrees` or
+the `ccx.worktreeRoot` pool. It also refuses
 one whose `.git` is not a regular file with a missing `gitdir:` target, and
 one that a live process works in, holds a file open in, or was started on.
 Linux has no such process check, so there `--force` is required.
@@ -312,7 +312,7 @@ the median create takes over 3ms, the header reads `governor held: <counts>`.
 In that state no job on that volume deletes or advances, however long it
 waits. Work resumes at full speed after two quiet samples in a row, and the
 first sample after a start only sets the CPU baseline. A job whose tree sits
-on another volume, such as `~/repos` or `~/.vcache`, does not wait.
+on another volume does not wait.
 
 A completed internal conflict workspace can wait for inactivity while other
 cleanup jobs proceed and stack completion succeeds. Interactive Claude,

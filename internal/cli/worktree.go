@@ -123,12 +123,11 @@ func newWorktreeAddCmd() *cobra.Command {
 		Short: "Create a working copy named <name> under the repository's pool",
 		Long: `Create a working copy named <name> under the repository's pool.
 
-A git worktree is minted at "$HOME/repos/claude/worktrees/<main-basename>/<name>"
-when $HOME/repos is the mount point of a volume of its own, and at
-"$HOME/.claude/worktrees/<main-basename>/<name>" otherwise, as a jj workspace
-always is: outside every repository tree, so a worktree is never mistaken for
-repo content. "git config --global ccx.worktreeRoot <absolute-path>" sets the
-pool for new git worktrees ahead of both. Existing registered Git worktrees
+A working copy is minted at "$HOME/.claude/worktrees/<main-basename>/<name>":
+outside every repository tree, so a worktree is never mistaken for repo
+content. "git config --global ccx.worktreeRoot <absolute-path>" moves the pool
+for new git worktrees to "<absolute-path>/<main-basename>/<name>"; a jj
+workspace always mints in the default pool. Existing registered Git worktrees
 remain addressable.
 In a Git checkout tracking more than 5,000 files at HEAD, or given --include,
 the worktree is sparse: the sparse set of the checkout you run this from, or
@@ -216,8 +215,7 @@ exists, is out of git's reach. --path deletes it in place from any directory
 and appends its path, the admin dir it named, and the time to
 orphans.jsonl under ccx's cache, the only record left once git can no longer
 tell whether it held unpushed work. It must sit at <pool>/<repo>/<name> in
-$HOME/.claude/worktrees, $HOME/repos/claude/worktrees, or the ccx.worktreeRoot
-pool, its .git must be a regular file, and no live process may hold it. Off
+$HOME/.claude/worktrees or the ccx.worktreeRoot pool, its .git must be a regular file, and no live process may hold it. Off
 macOS, where that process check is missing, --force stands in for it.
 --dry-run runs every check and deletes nothing.`,
 		Args: cobra.MaximumNArgs(1),
