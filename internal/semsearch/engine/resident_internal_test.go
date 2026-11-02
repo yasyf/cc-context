@@ -1,9 +1,14 @@
 package engine
 
 import (
+	"context"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/yasyf/cc-context/internal/backend"
+	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/semsearch/index"
 )
 
@@ -115,4 +120,43 @@ func TestSweepIdleDropsOnlyStaleEntries(t *testing.T) {
 			}
 		})
 	}
+}
+
+type constEmbedder struct{}
+
+func (constEmbedder) Dims() int { return 4 }
+
+func (constEmbedder) Encode(_ context.Context, texts []string) ([][]float32, error) {
+	out := make([][]float32, len(texts))
+	for i := range out {
+		out[i] = []float32{1, 0, 0, 0}
+	}
+	return out, nil
+}
+
+func TestEvictionWaitsForTheLastHolder(t *testing.T) {
+	ctx := render.WithEnv(t.Context(), "CLAUDE_PLUGIN_DATA="+t.TempDir())
+	CloseIndexCache()
+	t.Cleanup(CloseIndexCache)
+	repo, err := filepath.Abs(filepath.Join("testdata", "repo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	idx, _, release, err := loadCached(ctx, constEmbedder{}, backend.Args{Path: repo})
+	if err != nil {
+		t.Fatalf("loadCached: %v", err)
+	}
+	want := strings.Clone(idx.Chunks[0].Content)
+	CloseIndexCache()
+	if got := idx.Chunks[0].Content; got != want {
+		t.Fatalf("held index read %q after eviction, want %q", got, want)
+	}
+	residentMu.Lock()
+	cached := len(residentIndex)
+	residentMu.Unlock()
+	if cached != 0 {
+		t.Fatalf("resident cache holds %d entries after CloseIndexCache, want 0", cached)
+	}
+	release()
 }

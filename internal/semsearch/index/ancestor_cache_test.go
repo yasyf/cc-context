@@ -42,7 +42,7 @@ func TestLoadPrunesAncestorIgnoredPersistedFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dir, err := variantCacheDir(ctx, resolved, variantKey("model-x", ContentKey(content), chunker.ID(), emb.Dims()))
+	dir, err := variantCacheDir(ctx, resolved, variantKey(schemaVersion, "model-x", ContentKey(content), chunker.ID(), emb.Dims()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,8 +50,8 @@ func TestLoadPrunesAncestorIgnoredPersistedFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if before.Schema != 3 || len(before.Files) != 2 {
-		t.Fatalf("primed schema/files = %d/%d, want 3/2", before.Schema, len(before.Files))
+	if before.Schema != schemaVersion || len(before.Files) != 2 {
+		t.Fatalf("primed schema/files = %d/%d, want %d/2", before.Schema, len(before.Files), schemaVersion)
 	}
 	if err := os.WriteFile(filepath.Join(repo, ".gitignore"), []byte("/scope/.build/\n"), 0o600); err != nil {
 		t.Fatal(err)
