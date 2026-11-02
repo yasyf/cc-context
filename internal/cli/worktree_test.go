@@ -294,7 +294,7 @@ func TestWorktreeAddCutsFromFetchedTrunk(t *testing.T) {
 func TestWorktreeAddCutsASparseCone(t *testing.T) {
 	f := vcstest.Repo(t)
 	f.Isolate(t)
-	files := []string{"tools/run.sh", "go/svc/main.go", "go/other/main.go", "docs/guide.md", ".claude/settings.json", ".agents/skill.md", "infra/ci/hooks/lib/ci.sh", "infra/ci/pipeline.yml"}
+	files := []string{"tools/run.sh", "go/svc/main.go", "go/other/main.go", "docs/guide.md", ".claude/settings.json", ".agents/skill.md", "infra/ci/hooks/lib/ci.sh", "infra/ci/pipelines/main.yml", "infra/terraform/main.tf"}
 	for _, file := range files {
 		writeShipFile(t, f.Dir, file, file+"\n")
 	}
@@ -316,7 +316,8 @@ func TestWorktreeAddCutsASparseCone(t *testing.T) {
 	}
 	assertGone(t, filepath.Join(path, "docs"))
 	assertGone(t, filepath.Join(path, "go", "other"))
-	assertGone(t, filepath.Join(path, "infra", "ci", "pipeline.yml"))
+	assertGone(t, filepath.Join(path, "infra", "ci", "pipelines"))
+	assertGone(t, filepath.Join(path, "infra", "terraform"))
 	if got := mustRun(t, f.Env(), path, "git", "status", "--porcelain"); got != "" {
 		t.Errorf("status = %q, want a clean sparse checkout", got)
 	}
