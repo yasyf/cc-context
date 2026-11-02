@@ -3285,8 +3285,11 @@ func stackOldBase(ctx context.Context, dir render.Dir, tr vcs.Trunk, pin string,
 
 // stackRecordedBase is the base a branch's state records: the furthest recorded
 // parent head it contains, else the furthest fork point in the parent's local and
-// remote-tracking reflogs. A branch staying on the parent is refused past that;
-// one leaving it takes its merge base, or trunk's when trunk holds the rest.
+// remote-tracking reflogs. A branch staying on the parent that holds neither,
+// or only a fork point trunk passed, starts past its leading commits above trunk
+// that copy the parent's, as a bot or merge queue restack of both leaves it, and
+// is refused when none does; one leaving it takes its merge base, or trunk's
+// when trunk holds the rest.
 // Either way it starts past the furthest head of a branch below it that it
 // holds. Unless that is its parent's, it also starts past each leading commit
 // copying one of theirs by patch or by author, date and message, as a branch
@@ -3342,11 +3345,25 @@ func stackRecordedBase(ctx context.Context, dir render.Dir, tr vcs.Trunk, pin st
 		if best, err = stackFurthest(ctx, dir, self.Head, forks); err != nil {
 			return "", err
 		}
+		if best != "" && best != onTrunk && self.Parent == parent {
+			behind, err := gitIsAncestor(ctx, dir, stackRebasePrefix, best, onTrunk)
+			if err != nil {
+				return "", err
+			}
+			if behind {
+				best = ""
+			}
+		}
 		if best == "" && self.Parent == parent {
 			if err := stackRefuseStalePublished(ctx, dir, self, candidates[0]); err != nil {
 				return "", err
 			}
-			return "", stackNoOldBase(ctx, dir, tr, state, self.Name, published)
+			if best, err = stackPastCopies(ctx, dir, pin, onTrunk, self.Head, slices.Concat(candidates, refs)); err != nil {
+				return "", err
+			}
+			if best == onTrunk {
+				return "", stackNoOldBase(ctx, dir, tr, state, self.Name, published)
+			}
 		}
 		if best == "" {
 			if best, err = stackMergeBase(ctx, dir, self.Head, candidates[0]); err != nil {
@@ -3431,8 +3448,11 @@ func stackPastChain(ctx context.Context, dir render.Dir, pin string, self *stack
 			return base, err
 		}
 	}
-	base = furthest
-	span := base + ".." + self.Head
+	return stackPastCopies(ctx, dir, pin, furthest, self.Head, heads)
+}
+
+func stackPastCopies(ctx context.Context, dir render.Dir, pin, base, head string, heads []string) (string, error) {
+	span := base + ".." + head
 	merges, err := render.RunCLI(ctx, dir, "git", []string{"rev-list", "--merges", span})
 	if err != nil {
 		return "", fmt.Errorf("%s: git rev-list --merges %s: %w", stackRebasePrefix, span, err)
@@ -3444,7 +3464,8 @@ func stackPastChain(ctx context.Context, dir render.Dir, pin string, self *stack
 	if err != nil || len(ours) == 0 {
 		return base, err
 	}
-	theirs, err := stackPatches(ctx, dir, append(heads, "^"+pin)...)
+	revs := slices.DeleteFunc(slices.Concat(heads, []string{"^" + pin}), func(rev string) bool { return rev == "" })
+	theirs, err := stackPatches(ctx, dir, revs...)
 	if err != nil {
 		return "", err
 	}
@@ -3748,8 +3769,22 @@ func stackDrive(ctx context.Context, cmd *cobra.Command, l lane, commonDir strin
 		}
 		b.NewBase = run.headOf(b.Parent)
 		head := b.Head
-		if b.NewBase != b.OldBase {
-			var err error
+		past, err := stackRemoteRestack(ctx, l.dir(), b)
+		if err != nil {
+			return err
+		}
+		if past != "" {
+			onto := *b
+			onto.NewBase, onto.OldBase = b.Remote, past
+			head, err = stackReplay(ctx, l.dir(), run, &onto)
+			switch {
+			case errors.Is(err, errReplayConflict):
+				head, past = b.Head, ""
+			case err != nil:
+				return err
+			}
+		}
+		if past == "" && b.NewBase != b.OldBase {
 			head, err = stackReplay(ctx, l.dir(), run, b)
 			if errors.Is(err, errReplayConflict) {
 				return stackOpenConflict(ctx, cmd, l, commonDir, run, b)
@@ -3759,7 +3794,6 @@ func stackDrive(ctx context.Context, cmd *cobra.Command, l lane, commonDir strin
 			}
 		}
 		if b.Bump && head == b.Head {
-			var err error
 			if head, err = stackBumpHead(ctx, l.dir(), run, b); err != nil {
 				return err
 			}
@@ -3773,6 +3807,57 @@ func stackDrive(ctx context.Context, cmd *cobra.Command, l lane, commonDir strin
 		return stackFinishGit(ctx, cmd, l, commonDir, run)
 	}
 	return stackFinish(ctx, cmd, l, commonDir, run)
+}
+
+func stackRemoteRestack(ctx context.Context, dir render.Dir, b *stackRebaseBranch) (string, error) {
+	if b.Remote == "" || b.Remote == b.Head || b.Remote == b.NewBase {
+		return "", nil
+	}
+	on, err := gitIsAncestor(ctx, dir, stackRebasePrefix, b.NewBase, b.Remote)
+	if err != nil || !on {
+		return "", err
+	}
+	held, err := gitIsAncestor(ctx, dir, stackRebasePrefix, b.Remote, b.Head)
+	if err != nil || held {
+		return "", err
+	}
+	var series [2][]stackPatch
+	for i, span := range []string{b.NewBase + ".." + b.Remote, b.OldBase + ".." + b.Head} {
+		merges, err := gtRevCount(ctx, stackRebasePrefix, dir, span, "--merges")
+		if err != nil || merges > 0 {
+			return "", err
+		}
+		if series[i], err = stackPatches(ctx, dir, span); err != nil {
+			return "", err
+		}
+	}
+	theirs, ours := series[0], series[1]
+	if len(ours) <= len(theirs) {
+		return "", nil
+	}
+	for i, c := range theirs {
+		if c.patch == "" || c.patch != ours[i].patch || c.authored != ours[i].authored {
+			return "", nil
+		}
+	}
+	past := ours[len(theirs)-1].sha
+	merged, code, stderr, err := render.RunCLIExitCode(ctx, dir, "git", []string{"--attr-source=" + b.NewBase, "merge-tree", "--write-tree", "--merge-base=" + b.OldBase, b.NewBase, past})
+	if err != nil {
+		return "", fmt.Errorf("%s: git merge-tree %.12s onto %.12s: %w", stackRebasePrefix, past, b.NewBase, err)
+	}
+	switch code {
+	case 0:
+	case 1:
+		return "", nil
+	default:
+		return "", fmt.Errorf("%s: git merge-tree %.12s onto %.12s exited %d: %s", stackRebasePrefix, past, b.NewBase, code, strings.TrimSpace(stderr))
+	}
+	tree, _, _ := strings.Cut(merged, "\n")
+	remote, err := stackRevParse(ctx, dir, b.Remote+"^{tree}")
+	if err != nil || remote != strings.TrimSpace(tree) {
+		return "", err
+	}
+	return past, nil
 }
 
 func stackReplay(ctx context.Context, dir render.Dir, run *stackRebaseRun, b *stackRebaseBranch) (string, error) {

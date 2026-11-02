@@ -725,31 +725,35 @@ func stackAdoptChain(cmd *cobra.Command, dir render.Dir) error {
 	if err != nil || branch == "" {
 		return err
 	}
-	state, err := gtStateQueryFocused(ctx, dir, "stack submit", branch)
-	if err != nil {
-		return err
-	}
-	trunk, err := gtTrunkBranch("stack submit", state)
-	if err != nil {
-		return err
-	}
-	if branch == trunk || len(state[branch].Parents) > 0 {
-		return nil
-	}
-	base, err := gtNearestTracked(ctx, dir, state, trunk, branch)
-	if err != nil {
-		return err
-	}
-	chain, err := gtUntrackedChain(ctx, dir, "stack submit", state, trunk, base, branch, gtRestackRef(branch))
-	if err != nil {
-		return err
-	}
-	segs, err := gtAdoptChain(ctx, dir, "stack submit", chain)
-	if err != nil {
+	segs, err := gtAdoptUntracked(ctx, dir, "stack submit", branch)
+	if err != nil || len(segs) == 0 {
 		return err
 	}
 	cmd.Println(strings.Join(segs, shipSep))
 	return nil
+}
+
+func gtAdoptUntracked(ctx context.Context, dir render.Dir, prefix, branch string) ([]string, error) {
+	state, err := gtStateQueryFocused(ctx, dir, prefix, branch)
+	if err != nil {
+		return nil, err
+	}
+	trunk, err := gtTrunkBranch(prefix, state)
+	if err != nil {
+		return nil, err
+	}
+	if branch == trunk || len(state[branch].Parents) > 0 {
+		return nil, nil
+	}
+	base, err := gtNearestTracked(ctx, dir, state, trunk, branch)
+	if err != nil {
+		return nil, err
+	}
+	chain, err := gtUntrackedChain(ctx, dir, prefix, state, trunk, base, branch, gtRestackRef(branch))
+	if err != nil {
+		return nil, err
+	}
+	return gtAdoptChain(ctx, dir, prefix, chain)
 }
 
 func stackRepairTracking(cmd *cobra.Command, l lane, opts stackRebaseOpts, tracking *stackTracking) error {

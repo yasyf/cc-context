@@ -174,20 +174,20 @@ func TestShipGTResubmitsAnUnchangedBranchToChangeItsDraftState(t *testing.T) {
 func TestShipGTAmendRefusalNamesTheRecovery(t *testing.T) {
 	f := shipGTRepo(t, vcstest.GTStack("a", "b"))
 	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
-	mustRun(t, f.Env(), f.Dir, "git", "rebase", "-q", "origin/main")
+	mustRun(t, f.Env(), f.Dir, "git", "rebase", "-q", "--onto", "origin/main", "a")
 	stackAdvanceTrunk(t, f, "later.txt", "later\n")
 	pre := shipHead(t, f)
 	shipGTReady(t, f)
 
 	_, _, err := runShipCmdFull(f.Context(), t, "--amend", "--no-watch")
 	if err == nil {
-		t.Fatal("ship --amend published a branch replaying trunk's commit")
+		t.Fatal("ship --amend published a branch that carries none of its parent's commits")
 	}
 	amended := shipHead(t, f)
 	if amended == pre {
 		t.Fatalf("fixture refused before the amend formed: %v", err)
 	}
-	for _, want := range []string{"would replay 3 commits but owns 2", "ccx vcs stack rebase --parent b=<branch>", shortOID(amended), "git reset --soft " + pre} {
+	for _, want := range []string{"b carries none of a's commits", "ccx vcs stack rebase --parent b=<branch>", shortOID(amended), "git reset --soft " + pre} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("refusal = %q, want it to name %q", err, want)
 		}

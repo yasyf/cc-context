@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -15,6 +14,7 @@ import (
 	"github.com/yasyf/cc-context/internal/gtapi"
 	"github.com/yasyf/cc-context/internal/gtmeta"
 	"github.com/yasyf/cc-context/internal/nativemeta"
+	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcs"
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
@@ -186,24 +186,32 @@ func TestStackNewPrefersNativeForGitHubOriginWithoutCatalog(t *testing.T) {
 	assertNoGT(t, vcstest.Invocations(t, f.ArgvLog))
 }
 
-// TestStackNewRefusesAnUntrackedNativeParent is store-bounded-open: a child cut
-// on a plain pull request branch rooted cc-inbox's only native stack on it,
-// which then read as every lane's trunk.
-func TestStackNewRefusesAnUntrackedNativeParent(t *testing.T) {
+// TestStackNewTracksAnUntrackedNativeParentFirst is cc-transcript's
+// parallel-grep: a child cut on fix/discovery-index, a plain pull request branch
+// no native stack tracked, left its restack with no parent below the child's.
+func TestStackNewTracksAnUntrackedNativeParentFirst(t *testing.T) {
 	f := shipRepo(t, vcstest.Remote())
 	f.Decorate(func(ctx context.Context) context.Context { return withStackProvider(ctx, true) })
 	mustRun(t, f.Env(), f.Dir, "git", "config", "ccx.stack", "github")
+	trunk := gitAt(t, f.Env(), f.Dir, "rev-parse", "main")
 	shipGTUntracked(t, f, "loose")
+	loose := gitAt(t, f.Env(), f.Dir, "rev-parse", "loose")
 	child := filepath.Join(t.TempDir(), "child")
 
-	_, _, err := runStackCmd(t, f, "new", "child", "--full-history", "--path", child)
-	if err == nil || !strings.Contains(err.Error(), "loose is in no native stack on main") || !strings.Contains(err.Error(), "--parent main") {
-		t.Fatalf("stack new on loose = %v, want it refused naming main", err)
+	out, errOut, err := runStackCmd(t, f, "new", "child", "--full-history", "--path", child)
+	if err != nil {
+		t.Fatalf("stack new on untracked loose: %v\n%s%s", err, out, errOut)
 	}
-	if _, err := os.Stat(child); !os.IsNotExist(err) {
-		t.Errorf("refused stack new left %s: %v", child, err)
+	if !strings.Contains(out, "tracked loose onto main"+shipSep+"cut child onto loose") {
+		t.Errorf("stack new = %q, want loose tracked onto main before child is cut onto it", out)
 	}
-	if out, _ := combinedRun(t, f.Env(), f.Dir, "git", "rev-parse", "--verify", "--quiet", "refs/heads/child"); strings.TrimSpace(out) != "" {
-		t.Errorf("refused stack new created branch child at %s", out)
+	state, err := gtStateQuery(f.Context(), render.Dir(f.Dir), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for branch, want := range map[string]gtRef{"loose": {Ref: "main", SHA: trunk}, "child": {Ref: "loose", SHA: loose}} {
+		if s := state[branch]; len(s.Parents) != 1 || s.Parents[0] != want {
+			t.Errorf("%s = %+v, want it recorded on %s at %.12s", branch, s, want.Ref, want.SHA)
+		}
 	}
 }

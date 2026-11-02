@@ -24,10 +24,31 @@ func TestStackRebaseStartsAtTheParentHeadOnlyTheRemoteReflogRemembers(t *testing
 	}
 }
 
-func TestStackRebaseRefusesABranchNoReflogPlacesOnItsParent(t *testing.T) {
+func TestStackRebaseStartsPastTheParentsCopyNoReflogRemembers(t *testing.T) {
 	f := stackStaleParentRepo(t)
-	stale := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
-	published := gitAt(t, f.Env(), f.Dir, "rev-parse", "refs/remotes/origin/base")
+	mustRun(t, f.Env(), f.Dir, "git", "reflog", "expire", "--expire=now", "--all")
+
+	if _, _, err := runStackCmd(t, f, "rebase", "--no-push"); err != nil {
+		t.Fatalf("stack rebase of a branch on a rewrite of base no reflog remembers: %v", err)
+	}
+	if n := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", "base..feature"); n != "1" {
+		t.Errorf("feature holds %s commits over base, want its own 1", n)
+	}
+	if !stackOnto(t, f, "base", "feature") {
+		t.Error("feature is not on base")
+	}
+}
+
+func TestStackRebaseRefusesABranchThatCopiesNoneOfItsParent(t *testing.T) {
+	f := stackStaleParentRepo(t)
+	own := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "--detach", "feature~1")
+	writeShipFile(t, f.Dir, "unrelated.txt", "unrelated\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "unrelated.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-q", "--amend", "-m", "unrelated")
+	mustRun(t, f.Env(), f.Dir, "git", "cherry-pick", own)
+	mustRun(t, f.Env(), f.Dir, "git", "branch", "-f", "feature", "HEAD")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "feature")
 	before := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")
 	mustRun(t, f.Env(), f.Dir, "git", "reflog", "expire", "--expire=now", "--all")
 
@@ -35,13 +56,7 @@ func TestStackRebaseRefusesABranchNoReflogPlacesOnItsParent(t *testing.T) {
 	if err == nil {
 		t.Fatal("stack rebase replayed feature with no base it could tell from base's commits")
 	}
-	for _, want := range []string{
-		"feature carries no head of base",
-		"gt records it on " + shortSHA(stale),
-		"base is at " + shortSHA(stale) + " here and at " + shortSHA(published) + " on origin",
-		"git rebase --onto base",
-		"gt track --parent base feature",
-	} {
+	for _, want := range []string{"feature carries none of base's commits", "ccx vcs stack rebase --parent feature=<branch>"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("stack rebase = %v, want it to name %q", err, want)
 		}

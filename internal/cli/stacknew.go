@@ -184,9 +184,11 @@ func runStackNew(cmd *cobra.Command, name string, options stackNewOpts) error {
 		if err != nil {
 			return err
 		}
-		if err := stackNewNativeParent(l, parent, t); err != nil {
+		tracked, err := stackNewNativeParent(ctx, l, parent, t)
+		if err != nil {
 			return err
 		}
+		segs = append(segs, tracked...)
 		start, err = stackNewStart(ctx, l, parent, t)
 		if err != nil {
 			return err
@@ -496,15 +498,15 @@ func stackNewStart(ctx context.Context, l lane, parent, trunk string) (string, e
 	return gtTrunkHead(ctx, l.dir(), "stack new", tr)
 }
 
-func stackNewNativeParent(l lane, parent, trunk string) error {
+func stackNewNativeParent(ctx context.Context, l lane, parent, trunk string) ([]string, error) {
 	if !l.native || parent == trunk {
-		return nil
+		return nil, nil
 	}
 	member, err := gtmeta.NativeMembership(l.checkout.CommonDir, parent)
 	if err != nil || member {
-		return err
+		return nil, err
 	}
-	return fmt.Errorf("stack new: %s is in no native stack on %s, so a child cut on it would root a stack of its own on %s; ship %s onto its parent first with ccx vcs ship --parent <branch>, or cut the child from %s with --parent %s", parent, trunk, parent, parent, trunk, trunk)
+	return gtAdoptUntracked(ctx, l.dir(), "stack new", parent)
 }
 
 func stackNewTrunk(ctx context.Context, l lane) (string, error) {

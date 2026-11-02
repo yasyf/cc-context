@@ -103,12 +103,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   leave a record that made every later submit retarget the pull request onto
   trunk. The native stack refused, and the submit offered `--move`, which would
   have closed the pull request and opened a replacement.
-- `ccx vcs stack new` refuses to cut a child on a branch that is in no native
-  stack, naming `--parent <trunk>` and the ship that tracks the parent. The
-  first adoption into an empty native catalog used to skip that check, so a
-  child of a plain pull request branch rooted a stack on that branch, which
-  then read as the trunk for every lane of the repository. A repository with
-  no `origin/HEAD` still roots its first stack on the parent it names.
+- `ccx vcs stack new` tracks a parent that is in no native stack before it
+  cuts the child, onto the nearest tracked branch below it in git ancestry or
+  onto trunk. A child cut on a plain pull request branch used to leave that
+  branch untracked, so the child's next restack refused the whole stack. The
+  first adoption into an empty native catalog used to root a stack on such a
+  parent instead, which then read as the trunk for every lane of the
+  repository.
+- `ccx vcs stack rebase` and `ccx vcs stack restack` track an ancestor no
+  native stack holds, such as the base of an untracked branch's pull request,
+  onto the nearest tracked branch below it in git ancestry, and record it
+  there. They used to refuse with "gt state has no parent for …, the stack is
+  unresolvable".
+- `ccx vcs ship --tip-only` and `ccx vcs stack submit` follow a bot or merge
+  queue restack of a stack. A branch may hold none of its parent's recorded or
+  reflogged heads. Its own commits then start past its leading commits that
+  copy the parent's, by patch or by author, date and message, and it is refused
+  only when none of them do. After Trunk restacked a parent onto newer trunk, the
+  next ship of its child used to refuse with "carries no head of … that gt or
+  a reflog remembers". When a branch's remote head is an exact copy of its
+  first commits on their new base, only the commits past that copy are
+  replayed onto it, so the push fast-forwards the restack instead of
+  overwriting it.
 
 - A ccx process sending many GitHub requests at once, such as `ccx vcs pr
   status` over 150 pull requests, no longer times out on the shared quota
