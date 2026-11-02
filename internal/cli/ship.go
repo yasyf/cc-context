@@ -762,19 +762,12 @@ func shipOnPublishedParent(ctx context.Context, dir render.Dir, tr vcs.Trunk, st
 	if _, tracked := state[parent]; !tracked || parent == tr.Name() {
 		return false, nil
 	}
-	ref := "refs/remotes/" + tr.Remote() + "/" + parent
-	out, code, stderr, err := render.RunCLIExitCode(ctx, dir, "git", []string{"rev-parse", "--verify", "--quiet", ref})
-	switch {
-	case err != nil:
-		return false, fmt.Errorf("ship: git rev-parse %s: %w", ref, err)
-	case code == 1:
-		return false, nil
-	case code != 0:
-		return false, fmt.Errorf("ship: git rev-parse %s: exit %d: %s", ref, code, strings.TrimSpace(stderr))
+	published := "refs/remotes/" + tr.Remote() + "/" + parent
+	if present, err := gitRefExists(ctx, dir, "ship", published); err != nil || !present {
+		return false, err
 	}
-	published := strings.TrimSpace(out)
-	if published == state[parent].Head {
-		return false, nil
+	if held, err := gitIsAncestor(ctx, dir, "ship", published, state[parent].Head); err != nil || held {
+		return false, err
 	}
 	if behind, err := gitIsAncestor(ctx, dir, "ship", state[parent].Head, published); err != nil || !behind {
 		return false, err
