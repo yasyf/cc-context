@@ -276,3 +276,40 @@ func TestShipTipOnlyParentReportsTheNativeStackRefusal(t *testing.T) {
 		t.Errorf("ship error = %q, want no Graphite advice on the native lane", err)
 	}
 }
+
+// TestShipParentOnANativeBranchShipsOnTheNativeLane moves child, tracked by
+// Graphite on main, onto base, a native stack member, in a Graphite
+// repository. The Graphite lane hides every native branch, so it refused
+// --parent base as a branch graphite does not track while gt still listed it.
+func TestShipParentOnANativeBranchShipsOnTheNativeLane(t *testing.T) {
+	f := shipRepo(t, vcstest.GT(), vcstest.Remote(), vcstest.GTStack("child"))
+	trunk := gitAt(t, f.Env(), f.Dir, "rev-parse", "main")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
+	shipGTUntracked(t, f, "base")
+	base := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "child")
+	common := filepath.Join(f.Dir, ".git")
+	if err := nativemeta.Init(f.Context(), common, "main"); err != nil {
+		t.Fatal(err)
+	}
+	if err := nativemeta.AdoptRoot(f.Context(), common, "base", "main", trunk, base); err != nil {
+		t.Fatal(err)
+	}
+	api := stubGTAPI(t)
+	api.openPRs("base")
+	api.bases["base"] = "main"
+	api.stacks["base"] = 46
+	f.Decorate(api.ctx)
+	stubStackPRs(t, f, nil)
+	stubStackStanding(t, f, nil)
+
+	report := dryRunReport(t, f, "--no-commit", "--parent", "base")
+
+	if refusals := dryRunValues(report, "refuses"); len(refusals) != 0 {
+		t.Errorf("refuses = %q, want none", refusals)
+	}
+	if got := dryRunValues(report, "parent"); len(got) != 1 || !strings.HasPrefix(got[0], "base") {
+		t.Errorf("parent = %q, want child shipped onto base", got)
+	}
+}
