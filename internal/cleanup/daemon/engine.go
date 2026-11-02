@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"iter"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -46,12 +47,18 @@ func (systemClock) After(d time.Duration) <-chan time.Time { return time.After(d
 // retains and reports.
 type Tuning struct {
 	// Rate caps the entries deleted per second while fseventsd keeps near its
-	// ambient load and no slice stalls past twice SliceBudget. FloorRate caps
-	// it otherwise, an unreadable fseventsd included.
+	// ambient load and no slice stalls past twice its time budget. FloorRate
+	// caps it otherwise, an unreadable fseventsd included.
 	Rate      int
 	FloorRate int
-	// SliceEntries and SliceBudget bound one uninterruptible step, which rests
-	// for the larger share it used of either bound, a full slice's rest at most.
+	// Workers is how many removals one slice keeps in flight at Rate, and
+	// FloorWorkers how many at FloorRate.
+	Workers      int
+	FloorWorkers int
+	// SliceEntries and SliceBudget bound one uninterruptible step per worker,
+	// so a slice removes at most SliceEntries times its workers within
+	// SliceBudget times its workers. It rests for the larger share it used of
+	// either bound, a full slice's rest at most.
 	SliceEntries int
 	SliceBudget  time.Duration
 	// SampleEvery is the interval between fseventsd CPU samples while deletion
@@ -74,6 +81,11 @@ type Tuning struct {
 	RetryAfter   time.Duration
 	RetryCeiling time.Duration
 	RetryLimit   int
+	// Reconcile is the interval between sweeps that retry every job blocked
+	// for an operator, the first RetryAfter past the journal load, so a
+	// restarted or upgraded daemon re-proves what an earlier one gave up on.
+	// Zero sweeps never.
+	Reconcile time.Duration
 	// AwaitLease is how long one awaiting status read keeps its job ahead of
 	// the queue.
 	AwaitLease time.Duration
@@ -83,13 +95,16 @@ type Tuning struct {
 	StatusLimit int
 }
 
-// DefaultTuning is the production pace: 1000 entries a second in slices of at
-// most 100 entries or 50ms, and at most 100 a second while the governor
-// throttles.
+// DefaultTuning is the production pace: 16 removals in flight at up to 4000
+// entries a second, in slices of at most 1600 entries or 800ms, and one at a
+// time at up to 100 a second, in slices of 100 entries or 50ms, while the
+// governor throttles. Blocked jobs are retried every six hours.
 func DefaultTuning() Tuning {
 	return Tuning{
-		Rate:          1000,
+		Rate:          4000,
 		FloorRate:     100,
+		Workers:       16,
+		FloorWorkers:  1,
 		SliceEntries:  100,
 		SliceBudget:   50 * time.Millisecond,
 		SampleEvery:   5 * time.Second,
@@ -100,6 +115,7 @@ func DefaultTuning() Tuning {
 		RetryAfter:    30 * time.Second,
 		RetryCeiling:  10 * time.Minute,
 		RetryLimit:    6,
+		Reconcile:     6 * time.Hour,
 		AwaitLease:    10 * time.Second,
 		KeepDone:      100,
 		StatusLimit:   50,
@@ -112,6 +128,10 @@ func (t Tuning) validate() error {
 		return fmt.Errorf("rate %d, slice of %d entries or %s: all must be positive", t.Rate, t.SliceEntries, t.SliceBudget)
 	case t.FloorRate <= 0, t.FloorRate > t.Rate:
 		return fmt.Errorf("floor rate %d must be positive and at most the rate %d", t.FloorRate, t.Rate)
+	case t.FloorWorkers <= 0, t.FloorWorkers > t.Workers:
+		return fmt.Errorf("floor workers %d must be positive and at most the workers %d", t.FloorWorkers, t.Workers)
+	case t.Reconcile < 0:
+		return fmt.Errorf("reconcile interval %s must not be negative", t.Reconcile)
 	case t.SampleEvery <= 0, t.Recheck <= 0, t.RetryAfter <= 0, t.RetryCeiling < t.RetryAfter, t.RetryLimit <= 0:
 		return fmt.Errorf("sample interval %s, recheck interval %s, first retry %s and retry limit %d must be positive, and the retry ceiling %s at least the first retry", t.SampleEvery, t.Recheck, t.RetryAfter, t.RetryLimit, t.RetryCeiling)
 	case t.ResumeBelow <= 0, t.PauseAbove < t.ResumeBelow, t.ResumeSamples <= 0:
@@ -198,6 +218,10 @@ type Engine struct {
 	hold     *cleanup.Hold
 	booted   time.Time
 	governed cleanup.Governor
+	pace     cleanup.Pace
+	paceJob  string
+	counts   map[string]int
+	blocked  int
 	changed  chan struct{}
 
 	seq             uint64
@@ -211,6 +235,7 @@ type Engine struct {
 	checked         map[string]time.Time
 	active          *activeDeletion
 	paceUntil       time.Time
+	reconcileAt     time.Time
 	loud            bool
 }
 
@@ -366,6 +391,7 @@ func (e *Engine) Status(ctx context.Context, q cleanup.Query) (cleanup.Report, e
 		PID:      os.Getpid(),
 		Paused:   e.halted(),
 		Governor: e.governed,
+		Pace:     e.pace,
 		Jobs:     []cleanup.Job{},
 		Damaged:  slices.Clone(e.damaged),
 	}
@@ -379,6 +405,9 @@ func (e *Engine) Status(ctx context.Context, q cleanup.Query) (cleanup.Report, e
 		}
 		report.Jobs = append(report.Jobs, e.reported(job))
 		return report, nil
+	}
+	if len(e.counts) > 0 {
+		report.Counts = maps.Clone(e.counts)
 	}
 	limit := q.Limit
 	if limit <= 0 {
@@ -613,6 +642,7 @@ func (e *Engine) load() error {
 	}
 	slices.SortFunc(e.order, func(a, b seqKey) int { return cmp.Compare(a.seq, b.seq) })
 	e.damaged, e.paused, e.hold, e.booted = damaged, sw.Paused, sw.Hold, e.clock.Now()
+	e.reconcileAt = e.booted.Add(e.tuning.RetryAfter)
 	for _, key := range e.order {
 		logical, retirement, wake := e.scheduled(e.jobs[key.id])
 		if logical {
@@ -671,6 +701,12 @@ func (e *Engine) work(ctx context.Context) error {
 		default:
 		}
 		now := e.clock.Now()
+		if e.reconcileDue(now) {
+			if err := e.reconcile(now); err != nil {
+				return err
+			}
+			continue
+		}
 		if job, ok := e.logicalDue(now); ok {
 			if job.Blocked != nil {
 				var err error
@@ -750,6 +786,9 @@ func (e *Engine) wake(physical bool) (time.Time, bool) {
 			wake, timed = at, true
 		}
 	}
+	if e.reconciles() {
+		consider(e.reconcileAt)
+	}
 	order := e.wakeOrder
 	if e.paused {
 		order = e.retirementOrder
@@ -777,6 +816,31 @@ func (e *Engine) wake(physical bool) (time.Time, bool) {
 		}
 	}
 	return wake, timed
+}
+
+func (e *Engine) reconciles() bool {
+	return e.tuning.Reconcile > 0 && !e.reconcileAt.IsZero() && e.hold == nil && e.blocked > 0
+}
+
+func (e *Engine) reconcileDue(now time.Time) bool {
+	return e.reconciles() && !now.Before(e.reconcileAt)
+}
+
+func (e *Engine) reconcile(now time.Time) error {
+	var stuck []cleanup.Job
+	for job := range e.ordered() {
+		if _, retries := e.retryAt(job); job.Blocked != nil && !retries {
+			stuck = append(stuck, clone(job))
+		}
+	}
+	for _, job := range stuck {
+		if _, err := e.unblock(job); err != nil {
+			return err
+		}
+	}
+	e.reconcileAt = now.Add(e.tuning.Reconcile)
+	slog.Info("cleanup daemon: reconcile blocked jobs", "retried", len(stuck), "next", e.reconcileAt)
+	return nil
 }
 
 func (e *Engine) retirementDue(job cleanup.Job) bool {
@@ -851,6 +915,9 @@ func (e *Engine) reported(job cleanup.Job) cleanup.Job {
 	job = clone(job)
 	if at, ok := e.retryAt(job); ok {
 		job.Blocked.RetryAt = &at
+	}
+	if job.ID == e.paceJob {
+		job.Rate = e.pace.Rate
 	}
 	return job
 }
@@ -942,21 +1009,25 @@ func (e *Engine) slice(ctx context.Context, job cleanup.Job) error {
 			return err
 		}
 	}
+	workers := e.gov.workers()
+	limit, budget := e.tuning.SliceEntries*workers, e.tuning.SliceBudget*time.Duration(workers)
 	start := e.clock.Now()
-	removed, done, err := e.active.deletion.Step(e.tuning.SliceEntries, e.tuning.SliceBudget)
+	removed, done, err := e.active.deletion.Step(limit, budget, workers)
 	end := e.clock.Now()
 	if job.Phase != cleanup.PhaseDeletingAdmin {
 		job.Removed += uint64(removed) //nolint:gosec // a step never removes a negative count
 	}
-	e.gov.sliced(end.Sub(start))
+	e.gov.sliced(end.Sub(start), workers, removed)
 	e.publishGovernor()
-	e.paceUntil = start.Add(e.rest(removed, end.Sub(start)))
+	e.paceUntil = start.Add(e.rest(removed, end.Sub(start), limit, budget))
 	switch {
 	case err != nil:
 		e.active = nil
+		e.publishGovernor()
 		return e.block(job, err)
 	case done:
 		e.active = nil
+		e.publishGovernor()
 		if job.Phase == cleanup.PhaseDeletingAdmin {
 			job.Phase, job.Updated = cleanup.PhaseDeletingRetiredPayload, e.clock.Now()
 			return e.save(job)
@@ -971,11 +1042,11 @@ func (e *Engine) slice(ctx context.Context, job cleanup.Job) error {
 	return nil
 }
 
-func (e *Engine) rest(removed int, took time.Duration) time.Duration {
+func (e *Engine) rest(removed int, took time.Duration, limit int, budget time.Duration) time.Duration {
 	rate := time.Duration(e.gov.rate())
-	whole := time.Duration(e.tuning.SliceEntries) * time.Second / rate
+	whole := time.Duration(limit) * time.Second / rate
 	byEntries := time.Duration(removed) * time.Second / rate
-	byTime := time.Duration(min(float64(took)/float64(e.tuning.SliceBudget), 1) * float64(whole))
+	byTime := time.Duration(min(float64(took)/float64(budget), 1) * float64(whole))
 	return max(byEntries, byTime)
 }
 
@@ -1050,6 +1121,7 @@ func (e *Engine) park() error {
 	}
 	active := e.active
 	e.active = nil
+	e.publishGovernor()
 	if err := active.deletion.Close(); err != nil {
 		slog.Warn("cleanup daemon: close a paused deletion", "job", active.id, "error", err)
 	}
@@ -1354,6 +1426,10 @@ func (e *Engine) put(job cleanup.Job) {
 		at, _ := slices.BinarySearchFunc(e.order, job.Seq, bySeqKey)
 		e.order = slices.Insert(e.order, at, seqKey{seq: job.Seq, id: job.ID})
 	}
+	if known {
+		e.count(before, -1)
+	}
+	e.count(job, 1)
 	e.jobs[job.ID] = clone(job)
 	e.schedule(job)
 	e.unfinishedOrder = scheduleKey(e.unfinishedOrder, e.order, job, job.Phase != cleanup.PhaseDone)
@@ -1376,6 +1452,7 @@ func (e *Engine) dequeue(job cleanup.Job) {
 		panic(fmt.Sprintf("cleanup daemon: job %s at seq %d is missing from the queue order", job.ID, job.Seq))
 	}
 	e.order = slices.Delete(e.order, at, at+1)
+	e.count(job, -1)
 	e.unfinishedOrder = scheduleKey(e.unfinishedOrder, e.order, job, false)
 	if job.Phase == cleanup.PhaseDone {
 		e.removeFinished(job)
@@ -1391,12 +1468,15 @@ func (e *Engine) broadcast() {
 }
 
 func (e *Engine) publishGovernor() {
-	report := e.gov.report()
-	if report == e.governed {
+	report, pace, job := e.gov.report(), e.gov.paced(), ""
+	if e.active != nil {
+		job = e.active.id
+	}
+	if report == e.governed && pace == e.pace && job == e.paceJob {
 		return
 	}
 	e.mu.Lock()
-	e.governed = report
+	e.governed, e.pace, e.paceJob = report, pace, job
 	e.broadcast()
 	e.mu.Unlock()
 }
@@ -1442,8 +1522,10 @@ func scheduleKey(order, all []seqKey, job cleanup.Job, eligible bool) []seqKey {
 
 func (e *Engine) indexStatus() {
 	e.unfinishedOrder, e.finishedOrder = nil, nil
+	e.counts, e.blocked = make(map[string]int), 0
 	for _, key := range e.order {
 		job := e.jobs[key.id]
+		e.count(job, 1)
 		if job.Phase == cleanup.PhaseDone {
 			e.finishedOrder = append(e.finishedOrder, finishKey{seqKey: key, updated: job.Updated})
 		} else {
@@ -1451,6 +1533,27 @@ func (e *Engine) indexStatus() {
 		}
 	}
 	slices.SortStableFunc(e.finishedOrder, byFinishKey)
+}
+
+func stateCount(job cleanup.Job) string {
+	if job.Blocked != nil {
+		return string(cleanup.StateBlocked) + ":" + job.Blocked.Reason
+	}
+	return string(job.Phase)
+}
+
+func (e *Engine) count(job cleanup.Job, delta int) {
+	key := stateCount(job)
+	if e.counts == nil {
+		e.counts = make(map[string]int)
+	}
+	e.counts[key] += delta
+	if e.counts[key] == 0 {
+		delete(e.counts, key)
+	}
+	if job.Blocked != nil {
+		e.blocked += delta
+	}
 }
 
 func (e *Engine) insertFinished(job cleanup.Job) {

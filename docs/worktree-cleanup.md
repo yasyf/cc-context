@@ -177,10 +177,11 @@ Inspect queue progress as JSON:
 ccx vcs cleanup status --json
 ```
 
-Status bounds the number of jobs it returns and reports omissions. It does not
-scan the remaining files to invent a total or an estimated completion time.
-Query the job ID from a removal report to inspect a job omitted from the queue
-view.
+Status bounds the number of jobs it returns and reports omissions. Its second
+line counts every job in the queue by state, a blocked job as
+`blocked <reason>`, so jobs past the limit stay visible. It does not scan the
+remaining files to invent a total or an estimated completion time. Query the
+job ID from a removal report to inspect a job omitted from the queue view.
 
 ### Maintenance hold
 
@@ -234,7 +235,10 @@ after checking the original path and Git registration. `--wait` or
 does not substitute for that result.
 
 The queue survives daemon restarts. It records each phase and checks the
-captured worktree identity before continuing. A path reused by another actor
+captured worktree identity before continuing. Thirty seconds after it loads the
+journal, and every six hours after that, the daemon retries every job blocked
+for an operator, so a daemon restarted onto a fix moves the jobs an older one
+gave up on. A job whose cause still holds blocks again with the same reason. A path reused by another actor
 is not permission to delete the replacement. Identity mismatches and other
 errors block the job with diagnostics.
 
@@ -244,23 +248,34 @@ reason at its recorded phase; it retries with the existing backoff. Captured
 Git error output has a byte limit. Cancellation signals only the direct
 child, never a process group.
 
-The daemon deletes in bounded slices at up to 1,000 entries a second and
-yields to new logical removals. A slice ends after 100 entries or 50ms, and
-the daemon rests after each one for the larger share it used of either bound.
-A slice that spends its 50ms on directories and removes little rests as long
-as a full one. The daemon samples `fseventsd` every 5s and learns its ambient
+The daemon deletes in bounded slices and yields to new logical removals. While
+the governor is clear, 16 workers remove entries in parallel at up to 4,000
+entries a second, and a slice ends after 1,600 entries or 800ms. The workers
+remove entries through directory descriptors the deletion holds open. They
+never follow a symlink or cross onto another volume, they restore write access
+to a read-only directory before emptying it, and they remove a directory only
+after a pass over it lists nothing. Each slice first proves that every held
+directory still sits where the deletion found it, and lets go of one that
+moved.
+
+The daemon rests after each slice for the larger share it used of either
+bound. A slice that spends its time on directories and removes little rests as
+long as a full one. The `cleanup status` header names the worker count and the
+entries deleted per second over the last sample, and the job being deleted
+carries the same rate. The daemon samples `fseventsd` every 5s and learns its ambient
 load from samples taken while deletion ran no faster than its floor. It does
 not run idle repository or process scans.
 
-The daemon slows to at most 100 entries a second in three cases:
+The daemon drops to one worker and at most 100 entries a second, in slices of
+100 entries or 50ms, in three cases:
 
 | `cleanup status` governor | Cause | Lifts |
 | --- | --- | --- |
 | `throttled at N% cpu` | Deletion pushed `fseventsd` more than half a core over its ambient load | After three samples within a quarter core of that load |
-| `throttled at N% cpu: slices stalled past twice their time budget` | A slice took 100ms or more, which takes one operation on the volume stalling for a whole 50ms. The floor starts with that slice's own rest, not at the next sample | After three samples that each ran a slice, none of them stalled |
+| `throttled at N% cpu: slices stalled past twice their time budget` | A slice took twice its time budget or more, 1.6s with 16 workers and 100ms with one. The floor starts with that slice's own rest, not at the next sample | After three samples that each ran a slice, none of them stalled |
 | `unavailable: <error>` | `fseventsd` could not be sampled | One sample after `fseventsd` reads again; deletion waits out that 5s interval |
 
-A slice that ends at its 50ms is the budget working, and does not throttle.
+A slice that ends at its time budget is the budget working, and does not throttle.
 Both throttles can hold at once. The status then names the stalled slices, and
 the full rate returns once each has lifted. At the floor, a slice that takes
 its whole 50ms rests a full second whatever it removed, so deletion can run

@@ -20,7 +20,7 @@ func TestGovernor(t *testing.T) {
 		rate   int
 	}
 	const (
-		full, floor = 1000, 100
+		full, floor = 4000, 100
 		onTime      = time.Millisecond
 		budget      = 50 * time.Millisecond
 		stall       = 2 * budget
@@ -195,7 +195,7 @@ func TestGovernor(t *testing.T) {
 			var cpu time.Duration
 			for i, s := range tt.steps {
 				for _, took := range s.slices {
-					g.sliced(took)
+					g.sliced(took, 1, 0)
 				}
 				if s.reset {
 					g.reset()
@@ -222,7 +222,7 @@ func TestGovernorThrottlesOnTheSliceThatStalls(t *testing.T) {
 		quiet bool
 	}
 	const (
-		full, floor = 1000, 100
+		full, floor = 4000, 100
 		stall       = 100 * time.Millisecond
 	)
 	errSampler := errors.New("fseventsd not found")
@@ -249,7 +249,7 @@ func TestGovernorThrottlesOnTheSliceThatStalls(t *testing.T) {
 				cpu += s.cpu
 				g.observe(now, cpu, s.err, s.quiet)
 			}
-			g.sliced(tt.took)
+			g.sliced(tt.took, 1, 0)
 			if got := g.report(); got != tt.want {
 				t.Errorf("report() = %+v, want %+v", got, tt.want)
 			}

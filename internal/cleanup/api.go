@@ -309,6 +309,15 @@ type Governor struct {
 	Detail string `json:"detail,omitempty"`
 }
 
+// Pace is how fast physical deletion runs as an observer reads it.
+type Pace struct {
+	// Workers is how many removals a slice keeps in flight in the governor's
+	// state, zero while nothing is deleted.
+	Workers int `json:"workers"`
+	// Rate is the entries deleted per second over the last sample interval.
+	Rate float64 `json:"entries_per_second"`
+}
+
 // Report is the daemon's bounded view of its queue: unfinished jobs first in
 // queue order, then the most recently finished, with no total file count and
 // no estimate of time remaining.
@@ -319,7 +328,11 @@ type Report struct {
 	// or a maintenance hold.
 	Paused   bool     `json:"paused"`
 	Governor Governor `json:"governor"`
-	Jobs     []Job    `json:"jobs"`
+	Pace     Pace     `json:"pace,omitzero"`
+	// Counts tallies every job of a queue report by state: its phase, or
+	// blocked:<reason> for a blocked job.
+	Counts map[string]int `json:"counts,omitempty"`
+	Jobs   []Job          `json:"jobs"`
 	// Omitted counts the jobs the limit left out.
 	Omitted int `json:"omitted,omitempty"`
 	// Damaged names job folders whose record could not be read; the daemon

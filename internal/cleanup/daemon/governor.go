@@ -37,8 +37,9 @@ func (h *hold) observe(tripped, calm bool, resumeSamples int) {
 }
 
 type tally struct {
-	slices int
-	stalls int
+	slices  int
+	stalls  int
+	removed int
 }
 
 type governor struct {
@@ -48,6 +49,7 @@ type governor struct {
 	resumeBelow   float64
 	resumeSamples int
 	rates         map[string]int
+	crews         map[string]int
 
 	state   string
 	percent float64
@@ -61,6 +63,7 @@ type governor struct {
 	ambient float64
 	learned bool
 	settled bool
+	pace    float64
 }
 
 func newGovernor(t Tuning) *governor {
@@ -75,6 +78,11 @@ func newGovernor(t Tuning) *governor {
 			governorUnavailable: t.FloorRate,
 			governorThrottled:   t.FloorRate,
 		},
+		crews: map[string]int{
+			governorClear:       t.Workers,
+			governorUnavailable: t.FloorWorkers,
+			governorThrottled:   t.FloorWorkers,
+		},
 		state: governorIdle,
 	}
 }
@@ -87,9 +95,12 @@ func (g *governor) next() time.Time { return g.at.Add(g.sampleEvery) }
 
 func (g *governor) rate() int { return g.rates[g.state] }
 
-func (g *governor) sliced(took time.Duration) {
+func (g *governor) workers() int { return g.crews[g.state] }
+
+func (g *governor) sliced(took time.Duration, workers, removed int) {
 	g.window.slices++
-	if took < 2*g.sliceBudget {
+	g.window.removed += removed
+	if took < 2*g.sliceBudget*time.Duration(workers) {
 		return
 	}
 	g.window.stalls++
@@ -104,6 +115,10 @@ func (g *governor) observe(now time.Time, cpu time.Duration, err error, quiet bo
 	g.at, g.settled = now, quiet
 	if g.window.slices > 0 {
 		g.stalled.observe(g.window.stalls > 0, g.window.stalls == 0, g.resumeSamples)
+	}
+	g.pace = 0
+	if was != governorIdle && since > 0 {
+		g.pace = float64(g.window.removed) / since.Seconds()
 	}
 	g.window = tally{}
 	if err != nil {
@@ -142,10 +157,14 @@ func (g *governor) observe(now time.Time, cpu time.Duration, err error, quiet bo
 }
 
 func (g *governor) reset() {
-	g.state, g.percent, g.detail, g.counted = governorIdle, 0, "", false
+	g.state, g.percent, g.detail, g.counted, g.pace = governorIdle, 0, "", false, 0
 	g.hot, g.stalled, g.window = hold{}, hold{}, tally{}
 }
 
 func (g *governor) report() cleanup.Governor {
 	return cleanup.Governor{State: g.state, CPUPercent: g.percent, Detail: g.detail}
+}
+
+func (g *governor) paced() cleanup.Pace {
+	return cleanup.Pace{Workers: g.workers(), Rate: g.pace}
 }

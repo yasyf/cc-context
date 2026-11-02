@@ -205,7 +205,11 @@ type Job struct {
 	Blocked *Blockage  `json:"blocked,omitempty"`
 	Errors  []JobError `json:"errors,omitempty"`
 	// Removed counts the payload entries deleted so far.
-	Removed uint64    `json:"removed,omitempty"`
+	Removed uint64 `json:"removed,omitempty"`
+	// Rate is the entries per second the job's deletion ran at over the last
+	// sample interval, while it is the deletion in progress. The daemon sets it
+	// on the jobs it reports, never in the journal.
+	Rate    float64   `json:"entries_per_second,omitempty"`
 	Created time.Time `json:"created"`
 	Updated time.Time `json:"updated"`
 }

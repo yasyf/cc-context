@@ -183,10 +183,41 @@ func nest(t *testing.T, dir string, levels int) {
 	}
 }
 
+func turn(t *testing.T, d *deletion, turns int) int {
+	t.Helper()
+	removed := 0
+	for range turns {
+		d.mu.Lock()
+		next := d.queue[len(d.queue)-1]
+		d.queue = d.queue[:len(d.queue)-1]
+		n, err := d.perform(next)
+		d.mu.Unlock()
+		if err != nil {
+			t.Fatalf("perform %v: %v", next, err)
+		}
+		removed += n
+	}
+	return removed
+}
+
+func held(d *deletion, name string) *node {
+	for n := range d.live {
+		if n.name == name {
+			return n
+		}
+	}
+	return nil
+}
+
 func drain(t *testing.T, d cleanup.Deletion, limit int) (total, steps int) {
 	t.Helper()
+	return drainWith(t, d, limit, 1)
+}
+
+func drainWith(t *testing.T, d cleanup.Deletion, limit, workers int) (total, steps int) {
+	t.Helper()
 	for {
-		n, done, err := d.Step(limit, time.Minute)
+		n, done, err := d.Step(limit, time.Minute, workers)
 		if err != nil {
 			t.Fatalf("Step(%d) after %d removed: %v", limit, total, err)
 		}
@@ -203,7 +234,7 @@ func drain(t *testing.T, d cleanup.Deletion, limit int) (total, steps int) {
 
 func assertClosed(t *testing.T, d cleanup.Deletion) {
 	t.Helper()
-	n, done, err := d.Step(1, time.Minute)
+	n, done, err := d.Step(1, time.Minute, 1)
 	var failure *Error
 	if n != 0 || done || !errors.Is(err, fs.ErrClosed) || !errors.As(err, &failure) || failure.Op != "step" {
 		t.Errorf("Step on a closed deletion = (%d, %v, %v), want (0, false, step error wrapping fs.ErrClosed)", n, done, err)
@@ -273,7 +304,7 @@ func TestDirectorySwappedForSymlinkBetweenSteps(t *testing.T) {
 		before := f.snapshot(t, f.payload)
 		d := f.open(t)
 
-		if n, done, err := d.Step(2, time.Minute); n != 2 || done || err != nil {
+		if n, done, err := d.Step(2, time.Minute, 1); n != 2 || done || err != nil {
 			t.Fatalf("Step(2) = (%d, %v, %v), want (2, false, nil)", n, done, err)
 		}
 		if err := os.Rename(victim, filepath.Join(f.payload, "moved")); err != nil {
@@ -297,7 +328,7 @@ func TestDirectorySwappedForSymlinkBetweenSteps(t *testing.T) {
 		before := f.snapshot(t, f.payload)
 		d := f.open(t)
 
-		if n, done, err := d.Step(1, time.Minute); n != 1 || done || err != nil {
+		if n, done, err := d.Step(1, time.Minute, 1); n != 1 || done || err != nil {
 			t.Fatalf("Step(1) = (%d, %v, %v), want (1, false, nil)", n, done, err)
 		}
 		untouched := filepath.Join(f.payload, "one")
@@ -343,7 +374,7 @@ func TestLockedDirectoriesAreDeleted(t *testing.T) {
 
 			total, done := 0, false
 			for !done {
-				n, finished, err := d.Step(100, time.Minute)
+				n, finished, err := d.Step(100, time.Minute, 1)
 				if runtime.GOOS == "linux" && errors.Is(err, unix.EOPNOTSUPP) {
 					t.Skip("this kernel has no fchmodat2, so a directory cannot be chmodded without following symlinks")
 				}
@@ -495,7 +526,7 @@ func TestInterferenceAtThePayloadRoot(t *testing.T) {
 		before := f.snapshot(t, f.payload)
 		d := f.open(t)
 
-		if n, done, err := d.Step(1, time.Minute); n != 1 || done || err != nil {
+		if n, done, err := d.Step(1, time.Minute, 1); n != 1 || done || err != nil {
 			t.Fatalf("Step(1) = (%d, %v, %v), want (1, false, nil)", n, done, err)
 		}
 		entries, err := os.ReadDir(f.payload)
@@ -507,7 +538,7 @@ func TestInterferenceAtThePayloadRoot(t *testing.T) {
 				t.Fatalf("remove: %v", err)
 			}
 		}
-		n, done, err := d.Step(100, time.Minute)
+		n, done, err := d.Step(100, time.Minute, 1)
 
 		if n != 1 || !done || err != nil {
 			t.Errorf("Step after the entries vanished = (%d, %v, %v), want (1, true, nil)", n, done, err)
@@ -533,7 +564,7 @@ func TestInterferenceAtThePayloadRoot(t *testing.T) {
 			}
 			before := f.snapshot(t, "")
 
-			n, done, err := d.Step(100, time.Minute)
+			n, done, err := d.Step(100, time.Minute, 1)
 
 			var failure *Error
 			if n != 0 || done || !errors.Is(err, cleanup.ErrIdentity) || !errors.As(err, &failure) {
@@ -556,7 +587,7 @@ func TestInterferenceAtThePayloadRoot(t *testing.T) {
 		f := newFixture(t)
 		populate(t, f.payload, 0, 0, 5)
 		d := f.open(t)
-		if n, done, err := d.Step(3, time.Minute); n != 3 || done || err != nil {
+		if n, done, err := d.Step(3, time.Minute, 1); n != 3 || done || err != nil {
 			t.Fatalf("Step(3) = (%d, %v, %v), want (3, false, nil)", n, done, err)
 		}
 		parked := filepath.Join(f.job, "parked")
@@ -571,7 +602,7 @@ func TestInterferenceAtThePayloadRoot(t *testing.T) {
 		}
 		before := f.snapshot(t, "")
 
-		n, done, err := d.Step(100, time.Minute)
+		n, done, err := d.Step(100, time.Minute, 1)
 
 		var failure *Error
 		if n != 0 || done || !errors.Is(err, cleanup.ErrIdentity) || !errors.As(err, &failure) {
@@ -616,17 +647,17 @@ func TestPayloadDisplacedWithinASlice(t *testing.T) {
 			tt.displace(t, f)
 			before := f.snapshot(t, "")
 
-			n, done, err := d.advance()
+			n, err := d.run(100, time.Minute, 1)
 
 			var failure *Error
-			if n != 0 || done || !errors.Is(err, cleanup.ErrIdentity) || !errors.As(err, &failure) {
-				t.Fatalf("advance = (%d, %v, %v), want (0, false, error wrapping cleanup.ErrIdentity)", n, done, err)
+			if n != 0 || d.done || !errors.Is(err, cleanup.ErrIdentity) || !errors.As(err, &failure) {
+				t.Fatalf("run = (%d, %v, %v), want (0, false, error wrapping cleanup.ErrIdentity)", n, d.done, err)
 			}
 			if failure.Op != "rmdir" || failure.Rel != "." {
 				t.Errorf("failure = %s %s, want rmdir .", failure.Op, failure.Rel)
 			}
 			if errors.Is(err, fs.ErrNotExist) {
-				t.Errorf("advance error %v wraps fs.ErrNotExist, which reads as a payload already deleted", err)
+				t.Errorf("run error %v wraps fs.ErrNotExist, which reads as a payload already deleted", err)
 			}
 			if after := f.snapshot(t, ""); !maps.Equal(after, before) {
 				t.Errorf("the tree changed after the payload left its name:\n got %v\nwant %v", after, before)
@@ -660,18 +691,18 @@ func TestHeldSubdirectoryDisplacedWithinASlice(t *testing.T) {
 			sub := filepath.Join(f.payload, "sub")
 			mkdir(t, sub)
 			d := f.open(t).(*deletion)
-			if n, done, err := d.advance(); n != 0 || done || err != nil || len(d.stack) != 2 {
-				t.Fatalf("advance into sub = (%d, %v, %v) holding %d levels, want (0, false, nil) holding 2", n, done, err, len(d.stack))
+			if n := turn(t, d, 2); n != 0 || len(d.live) != 2 {
+				t.Fatalf("turns into sub removed %d holding %d directories, want 0 holding 2", n, len(d.live))
 			}
 			tt.displace(t, sub)
 			before := f.snapshot(t, f.payload)
 
-			n, done, err := d.advance()
+			n := turn(t, d, 2)
 
-			if n != 0 || done || err != nil || len(d.stack) != 1 {
-				t.Fatalf("advance after sub left its name = (%d, %v, %v) holding %d levels, want (0, false, nil) holding 1", n, done, err, len(d.stack))
+			if n != 0 || d.done || len(d.live) != 1 {
+				t.Fatalf("turns after sub left its name removed %d holding %d directories, want 0 holding 1", n, len(d.live))
 			}
-			if n, done, err := d.Step(100, time.Minute); n != tt.removed || !done || err != nil {
+			if n, done, err := d.Step(100, time.Minute, 1); n != tt.removed || !done || err != nil {
 				t.Errorf("Step after sub left its name = (%d, %v, %v), want (%d, true, nil)", n, done, err, tt.removed)
 			}
 			f.assertOnlyPayloadGone(t, before)
@@ -684,16 +715,16 @@ func TestHeldSubdirectoryRenamedOutIsNotDeletedThrough(t *testing.T) {
 		name          string
 		leaf, moved   string
 		limit         int
-		budget        time.Duration
+		turns         int
 		removedBefore int
 		heldBefore    int
 		removedAfter  int
 		survivors     int
 	}{
-		{name: "the held leaf", leaf: "held", moved: "held", limit: 2, budget: time.Minute, removedBefore: 2, heldBefore: 2, removedAfter: 1, survivors: 3},
-		{name: "a held ancestor of the leaf", leaf: "a/b/c", moved: "a/b", limit: 2, budget: time.Minute, removedBefore: 2, heldBefore: 4, removedAfter: 2, survivors: 3},
-		{name: "the first held level", leaf: "a/b/c", moved: "a", limit: 2, budget: time.Minute, removedBefore: 2, heldBefore: 4, removedAfter: 1, survivors: 3},
-		{name: "a directory entered but not yet emptied", leaf: "held", moved: "held", limit: 100, budget: time.Nanosecond, removedBefore: 0, heldBefore: 2, removedAfter: 1, survivors: 5},
+		{name: "the held leaf", leaf: "held", moved: "held", limit: 2, removedBefore: 2, heldBefore: 2, removedAfter: 1, survivors: 3},
+		{name: "a held ancestor of the leaf", leaf: "a/b/c", moved: "a/b", limit: 2, removedBefore: 2, heldBefore: 4, removedAfter: 2, survivors: 3},
+		{name: "the first held level", leaf: "a/b/c", moved: "a", limit: 2, removedBefore: 2, heldBefore: 4, removedAfter: 1, survivors: 3},
+		{name: "a directory entered but not yet emptied", leaf: "held", moved: "held", turns: 3, removedBefore: 0, heldBefore: 2, removedAfter: 1, survivors: 5},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -702,11 +733,15 @@ func TestHeldSubdirectoryRenamedOutIsNotDeletedThrough(t *testing.T) {
 			mkdir(t, leaf)
 			populate(t, leaf, 0, 0, 5)
 			d := f.open(t)
-			if n, done, err := d.Step(tt.limit, tt.budget); n != tt.removedBefore || done || err != nil {
+			if tt.turns > 0 {
+				if n := turn(t, d.(*deletion), tt.turns); n != tt.removedBefore {
+					t.Fatalf("turns before the rename removed %d, want %d", n, tt.removedBefore)
+				}
+			} else if n, done, err := d.Step(tt.limit, time.Minute, 1); n != tt.removedBefore || done || err != nil {
 				t.Fatalf("Step before the rename = (%d, %v, %v), want (%d, false, nil)", n, done, err, tt.removedBefore)
 			}
-			if held := len(d.(*deletion).stack); held != tt.heldBefore {
-				t.Fatalf("the deletion holds %d levels before the rename, want %d", held, tt.heldBefore)
+			if held := len(d.(*deletion).live); held != tt.heldBefore {
+				t.Fatalf("the deletion holds %d directories before the rename, want %d", held, tt.heldBefore)
 			}
 			rescued := filepath.Join(f.outside, "rescued")
 			if err := os.Rename(filepath.Join(f.payload, filepath.FromSlash(tt.moved)), rescued); err != nil {
@@ -714,7 +749,7 @@ func TestHeldSubdirectoryRenamedOutIsNotDeletedThrough(t *testing.T) {
 			}
 			before := f.snapshot(t, f.payload)
 
-			n, done, err := d.Step(100, time.Minute)
+			n, done, err := d.Step(100, time.Minute, 1)
 
 			if n != tt.removedAfter || !done || err != nil {
 				t.Errorf("Step after the rename = (%d, %v, %v), want (%d, true, nil)", n, done, err, tt.removedAfter)
@@ -731,12 +766,12 @@ func TestHeldSubdirectoryReplacedGetsAFreshDescent(t *testing.T) {
 	tests := []struct {
 		name          string
 		limit         int
-		budget        time.Duration
+		turns         int
 		removedBefore int
 		survivors     int
 	}{
-		{name: "after entries were removed from it", limit: 2, budget: time.Minute, removedBefore: 2, survivors: 3},
-		{name: "before anything was removed from it", limit: 100, budget: time.Nanosecond, removedBefore: 0, survivors: 5},
+		{name: "after entries were removed from it", limit: 2, removedBefore: 2, survivors: 3},
+		{name: "before anything was removed from it", turns: 3, removedBefore: 0, survivors: 5},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -745,11 +780,15 @@ func TestHeldSubdirectoryReplacedGetsAFreshDescent(t *testing.T) {
 			mkdir(t, held)
 			populate(t, held, 0, 0, 5)
 			d := f.open(t)
-			if n, done, err := d.Step(tt.limit, tt.budget); n != tt.removedBefore || done || err != nil {
+			if tt.turns > 0 {
+				if n := turn(t, d.(*deletion), tt.turns); n != tt.removedBefore {
+					t.Fatalf("turns before the swap removed %d, want %d", n, tt.removedBefore)
+				}
+			} else if n, done, err := d.Step(tt.limit, time.Minute, 1); n != tt.removedBefore || done || err != nil {
 				t.Fatalf("Step before the swap = (%d, %v, %v), want (%d, false, nil)", n, done, err, tt.removedBefore)
 			}
-			if levels := len(d.(*deletion).stack); levels != 2 {
-				t.Fatalf("the deletion holds %d levels before the swap, want 2", levels)
+			if levels := len(d.(*deletion).live); levels != 2 {
+				t.Fatalf("the deletion holds %d directories before the swap, want 2", levels)
 			}
 			rescued := filepath.Join(f.outside, "rescued")
 			if err := os.Rename(held, rescued); err != nil {
@@ -760,7 +799,7 @@ func TestHeldSubdirectoryReplacedGetsAFreshDescent(t *testing.T) {
 			write(t, filepath.Join(held, "inner", "leaf"), "x")
 			before := f.snapshot(t, f.payload)
 
-			n, done, err := d.Step(100, time.Minute)
+			n, done, err := d.Step(100, time.Minute, 1)
 
 			if n != 8 || !done || err != nil {
 				t.Errorf("Step after the swap = (%d, %v, %v), want (8, true, nil)", n, done, err)
@@ -783,7 +822,7 @@ func TestPayloadRenamedOutOfTheJobFolderIsNotDeletedThrough(t *testing.T) {
 	}
 	before := f.snapshot(t, "")
 
-	n, done, err := d.Step(100, time.Second)
+	n, done, err := d.Step(100, time.Second, 1)
 
 	var failure *Error
 	if n != 0 || done || !errors.Is(err, cleanup.ErrIdentity) || !errors.As(err, &failure) {
@@ -869,14 +908,14 @@ func TestJobFolderDisplacedBetweenStepsIsNotDeletedThrough(t *testing.T) {
 			mkdir(t, f.payload)
 			populate(t, f.payload, 0, 0, 5)
 			d := f.open(t)
-			if n, done, err := d.Step(2, time.Minute); n != 2 || done || err != nil {
+			if n, done, err := d.Step(2, time.Minute, 1); n != 2 || done || err != nil {
 				t.Fatalf("Step before the displacement = (%d, %v, %v), want (2, false, nil)", n, done, err)
 			}
 			rescued := filepath.Join(f.outside, "rescued")
 			tt.displace(t, jobs, f.job, rescued)
 			before := f.snapshot(t, "")
 
-			n, done, err := d.Step(100, time.Minute)
+			n, done, err := d.Step(100, time.Minute, 1)
 
 			var failure *Error
 			if n != 0 || done || !errors.Is(err, cleanup.ErrIdentity) || !errors.As(err, &failure) {
@@ -905,7 +944,7 @@ func TestBudgetExpiryReturnsPartialProgress(t *testing.T) {
 	before := f.snapshot(t, f.payload)
 	d := f.open(t)
 
-	n, done, err := d.Step(1<<20, time.Nanosecond)
+	n, done, err := d.Step(1<<20, time.Nanosecond, 1)
 	if n != 1 || done || err != nil {
 		t.Fatalf("Step with a 1ns budget = (%d, %v, %v), want (1, false, nil)", n, done, err)
 	}
@@ -927,7 +966,7 @@ func TestReopenAfterCloseFinishesTheRest(t *testing.T) {
 	before := f.snapshot(t, f.payload)
 	d := f.open(t)
 
-	if n, done, err := d.Step(50, time.Minute); n != 50 || done || err != nil {
+	if n, done, err := d.Step(50, time.Minute, 1); n != 50 || done || err != nil {
 		t.Fatalf("Step(50) = (%d, %v, %v), want (50, false, nil)", n, done, err)
 	}
 	if err := d.Close(); err != nil {
@@ -1061,7 +1100,7 @@ func TestDepthLimit(t *testing.T) {
 		before := f.snapshot(t, f.payload)
 		d := f.open(t)
 
-		n, done, err := d.Step(100, time.Minute)
+		n, done, err := d.Step(100, time.Minute, 1)
 
 		var failure *Error
 		if n != 0 || done || !errors.Is(err, ErrDepth) || !errors.As(err, &failure) {
@@ -1093,17 +1132,25 @@ func TestPassWithoutProgressIsStuck(t *testing.T) {
 	write(t, filepath.Join(f.payload, "pinned"), "pinned")
 	before := f.snapshot(t, "")
 	d := f.open(t).(*deletion)
-	top := d.stack[0]
-
-	name, ok, err := d.next(top)
-	if name != "pinned" || !ok || err != nil {
-		t.Fatalf("first next = (%q, %v, %v), want (pinned, true, nil)", name, ok, err)
+	turn(t, d, 1)
+	d.mu.Lock()
+	if last := d.queue[len(d.queue)-1]; last.op != opUnlink || last.name != "pinned" {
+		d.mu.Unlock()
+		t.Fatalf("the first pass queued %+v, want the unlink of pinned", last)
 	}
-	name, ok, err = d.next(top)
+	d.queue = d.queue[:len(d.queue)-1]
+	d.release(d.root)
+	d.mu.Unlock()
+	turn(t, d, 1)
+	d.mu.Lock()
+	next := d.queue[len(d.queue)-1]
+	d.queue = d.queue[:len(d.queue)-1]
+	_, err := d.perform(next)
+	d.mu.Unlock()
 
 	var failure *Error
-	if name != "" || ok || !errors.Is(err, ErrStuck) || !errors.As(err, &failure) {
-		t.Fatalf("next after an unproductive pass = (%q, %v, %v), want an error wrapping ErrStuck", name, ok, err)
+	if next.op != opList || !errors.Is(err, ErrStuck) || !errors.As(err, &failure) {
+		t.Fatalf("the pass after an unproductive one = %+v, %v; want a list failing with ErrStuck", next, err)
 	}
 	if failure.Op != "read" || failure.Rel != "." {
 		t.Errorf("failure = %s %s, want read .", failure.Op, failure.Rel)
@@ -1118,15 +1165,11 @@ func TestEntryGoneAfterPassWithoutProgressIsNotStuck(t *testing.T) {
 	write(t, filepath.Join(f.payload, "fleeting"), "fleeting")
 	before := f.snapshot(t, f.payload)
 	d := f.open(t).(*deletion)
-
-	name, ok, err := d.next(d.stack[0])
-	if name != "fleeting" || !ok || err != nil {
-		t.Fatalf("first next = (%q, %v, %v), want (fleeting, true, nil)", name, ok, err)
-	}
+	turn(t, d, 1)
 	if err := os.Remove(filepath.Join(f.payload, "fleeting")); err != nil {
 		t.Fatalf("remove: %v", err)
 	}
-	n, done, err := d.Step(100, time.Minute)
+	n, done, err := d.Step(100, time.Minute, 1)
 
 	if n != 1 || !done || err != nil {
 		t.Errorf("Step after the unvisited entry vanished = (%d, %v, %v), want (1, true, nil)", n, done, err)
@@ -1141,11 +1184,11 @@ func TestNameListedButAbsentOnEveryPassIsStuck(t *testing.T) {
 	mkdir(t, listing)
 	write(t, filepath.Join(listing, "ghost"), "ghost")
 	d := f.open(t).(*deletion)
-	if n, done, err := d.advance(); n != 0 || done || err != nil || len(d.stack) != 2 {
-		t.Fatalf("advance into sub = (%d, %v, %v) holding %d levels, want (0, false, nil) holding 2", n, done, err, len(d.stack))
+	if n := turn(t, d, 2); n != 0 || len(d.live) != 2 {
+		t.Fatalf("turns into sub removed %d holding %d directories, want 0 holding 2", n, len(d.live))
 	}
-	held := d.stack[1]
-	emptied := held.dir
+	sub := held(d, "sub")
+	emptied := sub.dir
 	t.Cleanup(func() {
 		if err := emptied.Close(); err != nil {
 			t.Errorf("close sub: %v", err)
@@ -1155,10 +1198,10 @@ func TestNameListedButAbsentOnEveryPassIsStuck(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open listing: %v", err)
 	}
-	held.dir = ghosts
+	sub.dir = ghosts
 	before := f.snapshot(t, "")
 
-	n, done, err := d.Step(100, 5*time.Second)
+	n, done, err := d.Step(100, 5*time.Second, 1)
 
 	var failure *Error
 	if n != 0 || done || !errors.Is(err, ErrStuck) || !errors.As(err, &failure) {
@@ -1216,4 +1259,90 @@ func TestErrorMessageAndCause(t *testing.T) {
 	if !errors.Is(err, fs.ErrPermission) {
 		t.Errorf("errors.Is(%v, fs.ErrPermission) = false, want true", err)
 	}
+}
+
+func countEntries(t *testing.T, dir string) int {
+	t.Helper()
+	entries := 0
+	err := filepath.WalkDir(dir, func(_ string, _ fs.DirEntry, err error) error {
+		entries++
+		return err
+	})
+	if err != nil {
+		t.Fatalf("walk %s: %v", dir, err)
+	}
+	return entries
+}
+
+func TestParallelStepsRemoveExactCounts(t *testing.T) {
+	for _, workers := range []int{2, 8, 16} {
+		for _, limit := range []int{1, 7, 100} {
+			t.Run(fmt.Sprintf("workers-%d/limit-%d", workers, limit), func(t *testing.T) {
+				f := newFixture(t)
+				populate(t, f.payload, 3, 3, 4)
+				before := f.snapshot(t, f.payload)
+
+				total, steps := drainWith(t, f.open(t), limit, workers)
+
+				if total != 200 {
+					t.Errorf("removed %d entries, want 200", total)
+				}
+				if want := (200 + limit - 1) / limit; steps != want {
+					t.Errorf("took %d steps, want %d", steps, want)
+				}
+				f.assertOnlyPayloadGone(t, before)
+			})
+		}
+	}
+}
+
+func TestParallelDeletionFollowsNoSymlinkAndOpensLockedDirectories(t *testing.T) {
+	f := newFixture(t)
+	populate(t, f.payload, 4, 2, 6)
+	locked := filepath.Join(f.payload, "locked")
+	mkdir(t, filepath.Join(locked, "inner"))
+	write(t, filepath.Join(locked, "leaf"), "x")
+	write(t, filepath.Join(locked, "inner", "leaf"), "x")
+	symlink(t, filepath.Join(f.outside, "dir"), filepath.Join(f.payload, "to-dir"))
+	symlink(t, filepath.Join(f.outside, "file"), filepath.Join(f.payload, "dir-0", "to-file"))
+	symlink(t, "../../outside/dir", filepath.Join(f.payload, "dir-1", "relative"))
+	want := countEntries(t, f.payload)
+	before := f.snapshot(t, f.payload)
+	if err := os.Chmod(locked, 0o400); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) }) //nolint:gosec // restores a fixture directory so it can be removed
+
+	total, _ := drainWith(t, f.open(t), 50, 8)
+
+	if total != want {
+		t.Errorf("removed %d entries, want %d", total, want)
+	}
+	f.assertOnlyPayloadGone(t, before)
+}
+
+func TestParallelHeldDirectoryRenamedOutIsNotDeletedThrough(t *testing.T) {
+	f := newFixture(t)
+	leaf := filepath.Join(f.payload, "a", "b")
+	mkdir(t, leaf)
+	populate(t, leaf, 0, 0, 200)
+	d := f.open(t)
+	if n, done, err := d.Step(20, time.Minute, 8); n != 20 || done || err != nil {
+		t.Fatalf("Step before the rename = (%d, %v, %v), want (20, false, nil)", n, done, err)
+	}
+	rescued := filepath.Join(f.outside, "rescued")
+	if err := os.Rename(filepath.Join(f.payload, "a"), rescued); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+	before := f.snapshot(t, f.payload)
+
+	n, done, err := d.Step(1000, time.Minute, 8)
+
+	if n != 1 || !done || err != nil {
+		t.Errorf("Step after the rename = (%d, %v, %v), want (1, true, nil)", n, done, err)
+	}
+	if got := countFiles(t, rescued); got != 180 {
+		t.Errorf("the renamed subtree holds %d files, want 180", got)
+	}
+	f.assertOnlyPayloadGone(t, before)
 }

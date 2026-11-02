@@ -23,7 +23,7 @@ func legacyStatusAtFaae356(ctx context.Context, e *Engine, q cleanup.Query) (cle
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	report := cleanup.Report{Version: e.version, PID: os.Getpid(), Paused: e.halted(), Governor: e.governed, Jobs: []cleanup.Job{}, Damaged: slices.Clone(e.damaged)}
+	report := cleanup.Report{Version: e.version, PID: os.Getpid(), Paused: e.halted(), Governor: e.governed, Pace: e.pace, Jobs: []cleanup.Job{}, Damaged: slices.Clone(e.damaged)}
 	if q.JobID != "" {
 		job, ok := e.jobs[q.JobID]
 		if !ok {
@@ -34,6 +34,12 @@ func legacyStatusAtFaae356(ctx context.Context, e *Engine, q cleanup.Query) (cle
 		}
 		report.Jobs = append(report.Jobs, e.reported(job))
 		return report, nil
+	}
+	for _, job := range e.jobs {
+		if report.Counts == nil {
+			report.Counts = map[string]int{}
+		}
+		report.Counts[stateCount(job)]++
 	}
 	limit := q.Limit
 	if limit <= 0 {

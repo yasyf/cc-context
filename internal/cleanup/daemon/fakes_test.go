@@ -379,7 +379,7 @@ type fakeDeletion struct {
 	payload *payload
 }
 
-func (d *fakeDeletion) Step(limit int, _ time.Duration) (int, bool, error) {
+func (d *fakeDeletion) Step(limit int, _ time.Duration, _ int) (int, bool, error) {
 	d.deleter.h.rec.add("step:" + d.job)
 	d.deleter.mu.Lock()
 	gate := d.payload.gate
@@ -798,6 +798,6 @@ func (h *harness) names(jobs []cleanup.Job) []string {
 
 func paced() Tuning {
 	t := DefaultTuning()
-	t.Rate, t.FloorRate = 250, 250
+	t.Rate, t.FloorRate, t.Workers, t.FloorWorkers, t.Reconcile = 250, 250, 1, 1, 0
 	return t
 }
