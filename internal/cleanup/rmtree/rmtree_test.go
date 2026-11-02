@@ -1308,7 +1308,7 @@ func TestParallelDeletionFollowsNoSymlinkAndOpensLockedDirectories(t *testing.T)
 	symlink(t, "../../outside/dir", filepath.Join(f.payload, "dir-1", "relative"))
 	want := countEntries(t, f.payload)
 	before := f.snapshot(t, f.payload)
-	if err := os.Chmod(locked, 0o500); err != nil {
+	if err := os.Chmod(locked, 0o400); err != nil {
 		t.Fatalf("chmod: %v", err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) }) //nolint:gosec // restores a fixture directory so it can be removed
