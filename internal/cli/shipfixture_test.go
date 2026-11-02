@@ -1362,6 +1362,11 @@ func jjPlanArgv() [][]string {
 // every plain-git ship.
 var gitTrunkArgv = []string{"git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"}
 
+// shipSparseProbeArgv is the hook run's sparse-checkout read, which a git lane
+// makes before every prek run so a non-cone sparse lane checks out its root
+// configs even when no hook entry names a directory.
+var shipSparseProbeArgv = []string{"git", "config", "--bool", "--get", "core.sparseCheckout"}
+
 // gitForEachRefStdinArgv is the local tracking-ref read that follows a push's
 // ls-remote of its branch and trunk.
 var gitForEachRefStdinArgv = []string{"git", "for-each-ref", "--format=%(refname) %(objectname)", "--stdin"}
