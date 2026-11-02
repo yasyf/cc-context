@@ -219,6 +219,43 @@ func TestLoadConvertsALegacyCacheWithoutReembedding(t *testing.T) {
 	}
 }
 
+func TestLoadConvertsAnIndexTheRelocatedCacheMovedWithoutReembedding(t *testing.T) {
+	t.Parallel()
+	repo := writeIndexRepo(t)
+	data, moved := t.TempDir(), t.TempDir()
+	before := render.WithEnv(t.Context(), "CLAUDE_PLUGIN_DATA="+data, cacheEnv+"=")
+	emb := &countingEmbedder{}
+	content := []ContentType{ContentCode}
+	cold, err := Load(before, emb, repo, content, DefaultChunker(), "model-x")
+	if err != nil {
+		t.Fatalf("cold Load: %v", err)
+	}
+	want := append([]semsearch.Chunk(nil), cold.Chunks...)
+
+	after := render.WithEnv(t.Context(), "CLAUDE_PLUGIN_DATA="+data, cacheEnv+"="+moved)
+	emb.encoded = 0
+	relocated, err := Load(after, emb, repo, content, DefaultChunker(), "model-x")
+	if err != nil {
+		t.Fatalf("Load into the relocated cache: %v", err)
+	}
+	if emb.encoded != 0 {
+		t.Errorf("converting the moved index re-embedded %d chunks, want 0", emb.encoded)
+	}
+	if !reflect.DeepEqual(relocated.Chunks, want) {
+		t.Errorf("relocated chunks = %#v, want %#v", relocated.Chunks, want)
+	}
+	dir, err := CacheDir(after, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rel, err := filepath.Rel(moved, dir); err != nil || strings.HasPrefix(rel, "..") {
+		t.Errorf("CacheDir = %s, want it under the relocated cache %s", dir, moved)
+	}
+	if !hasManifest(filepath.Join(dir, variantKey(schemaVersion, "model-x", ContentKey(content), DefaultChunker().ID(), emb.Dims()))) {
+		t.Error("Load did not store the converted index in the relocated cache")
+	}
+}
+
 func writeLegacyCache(t *testing.T, dir string, man manifest, chunks []semsearch.Chunk, vectors [][]float32) {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0o750); err != nil {

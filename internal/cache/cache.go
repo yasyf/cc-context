@@ -20,13 +20,29 @@ func Dir(ctx context.Context, sub ...string) (string, error) {
 	return dirUnder(render.Getenv(ctx, "CLAUDE_PLUGIN_DATA"), sub...)
 }
 
+// Roots lists every root Dir can resolve under, the one it uses for ctx first:
+// the $CLAUDE_PLUGIN_DATA ctx carries when set, then the user cache dir's
+// "cc-context" when it resolves.
+func Roots(ctx context.Context) []string {
+	var roots []string
+	if data := render.Getenv(ctx, "CLAUDE_PLUGIN_DATA"); data != "" {
+		roots = append(roots, data)
+	}
+	if base, err := os.UserCacheDir(); err == nil {
+		roots = append(roots, filepath.Join(base, userDirName))
+	}
+	return roots
+}
+
+const userDirName = "cc-context"
+
 func dirUnder(root string, sub ...string) (string, error) {
 	if root == "" {
 		base, err := os.UserCacheDir()
 		if err != nil {
 			return "", fmt.Errorf("resolve user cache dir: %w", err)
 		}
-		root = filepath.Join(base, "cc-context")
+		root = filepath.Join(base, userDirName)
 	}
 	dir := filepath.Join(append([]string{root}, sub...)...)
 	if err := os.MkdirAll(dir, 0o750); err != nil { //nolint:gosec // rooted at CLAUDE_PLUGIN_DATA or the OS user cache dir, not user free-text

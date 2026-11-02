@@ -16,6 +16,7 @@ import (
 
 	"github.com/yasyf/cc-context/internal/cache"
 	"github.com/yasyf/cc-context/internal/gitdir"
+	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/semsearch"
 )
 
@@ -80,12 +81,49 @@ type persisted struct {
 	files    *mappedFiles
 }
 
+// cacheEnv names a directory that replaces cache.Dir(ctx, "semsearch") as the
+// index cache, so the indexes can live on a volume of their own and every
+// process naming it shares one cache whatever its $CLAUDE_PLUGIN_DATA.
+const cacheEnv = "CCX_SEMSEARCH_CACHE"
+
+// semsearchDir resolves (and creates) the index-cache directory joined from sub.
+func semsearchDir(ctx context.Context, sub ...string) (string, error) {
+	root := render.Getenv(ctx, cacheEnv)
+	if root == "" {
+		return cache.Dir(ctx, append([]string{"semsearch"}, sub...)...)
+	}
+	dir := filepath.Join(append([]string{root}, sub...)...)
+	if err := os.MkdirAll(dir, 0o750); err != nil { //nolint:gosec // rooted at the operator's CCX_SEMSEARCH_CACHE, not user free-text
+		return "", fmt.Errorf("create cache dir %q: %w", dir, err)
+	}
+	return dir, nil
+}
+
+// movedIndexes lists the variant dirs root's index occupied under every
+// cache.Dir root before cacheEnv relocated the cache, so a first Load converts
+// one instead of re-embedding the repo.
+func movedIndexes(ctx context.Context, rootKey string, vKeys ...string) []string {
+	if render.Getenv(ctx, cacheEnv) == "" {
+		return nil
+	}
+	var dirs []string
+	for _, base := range cache.Roots(ctx) {
+		for _, vKey := range vKeys {
+			dirs = append(dirs, filepath.Join(base, "semsearch", rootKey, vKey))
+		}
+	}
+	return dirs
+}
+
 // cacheDir resolves the per-repo cache directory, keyed by the sha256 of the
-// resolved absolute repo path under cache.Dir(ctx, "semsearch") — semble's
-// find_index_from_cache_folder scheme.
+// resolved absolute repo path — semble's find_index_from_cache_folder scheme.
 func cacheDir(ctx context.Context, root string) (string, error) {
+	return semsearchDir(ctx, rootKey(root))
+}
+
+func rootKey(root string) string {
 	sum := sha256.Sum256([]byte(root))
-	return cache.Dir(ctx, "semsearch", hex.EncodeToString(sum[:]))
+	return hex.EncodeToString(sum[:])
 }
 
 func variantKey(schema int, model, content, chunker string, dims int) string {
@@ -94,8 +132,7 @@ func variantKey(schema int, model, content, chunker string, dims int) string {
 }
 
 func variantCacheDir(ctx context.Context, root, vKey string) (string, error) {
-	repoKey := sha256.Sum256([]byte(root))
-	return cache.Dir(ctx, "semsearch", hex.EncodeToString(repoKey[:]), vKey)
+	return semsearchDir(ctx, rootKey(root), vKey)
 }
 
 // familyDir resolves the directory holding one pointer per worktree that shares
@@ -117,7 +154,7 @@ func familyDir(ctx context.Context, root, vKey string) (string, error) {
 		return "", fmt.Errorf("relativize %q to %q: %w", root, gitRoot, err)
 	}
 	sum := sha256.Sum256([]byte(common + "\x00" + filepath.ToSlash(rel)))
-	return cache.Dir(ctx, "semsearch", seedsDir, hex.EncodeToString(sum[:]), vKey)
+	return semsearchDir(ctx, seedsDir, hex.EncodeToString(sum[:]), vKey)
 }
 
 // siblingIndexes lists the most recently stored indexes a family's pointers name,

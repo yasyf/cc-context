@@ -34,6 +34,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`CCX_SEMSEARCH_CACHE` moves the semantic-search index cache to a directory
+  of your choosing.** Every ccx process that sees it keeps its indexes there,
+  whichever plugin launched it, so the CLI, cc-context's servers, and
+  captain-hook's no longer each build their own index of the same worktree.
+  Point it at a volume of its own to keep index writes and deletes off the
+  system volume. The first search after setting it converts each worktree's
+  index from the old location without re-embedding anything.
+
 - `ccx vcs fetch <branch>...` fetches remote branches into their
   remote-tracking refs, sharing one fetch among every worktree of the clone
   that asks at once. Callers queue on a lock in the git common dir, and one

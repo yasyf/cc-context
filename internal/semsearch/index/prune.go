@@ -16,7 +16,7 @@ const pruneLockWait = time.Second
 // Prune deletes the index files of caches whose worktree is gone or that went
 // unused for maxAge, skipping any another process holds locked.
 func Prune(ctx context.Context, maxAge time.Duration) error {
-	base, err := cache.Dir(ctx, "semsearch")
+	base, err := semsearchDir(ctx)
 	if err != nil {
 		return err
 	}
