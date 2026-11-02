@@ -19,6 +19,12 @@ type posting struct {
 	tf  int32
 }
 
+// BM25Posting identifies a document's term frequency in corpus order.
+type BM25Posting struct {
+	Document  int
+	Frequency int
+}
+
 // BM25 is a hand-rolled BM25 inverted index over a fixed set of documents,
 // mirroring semble/index/bm25.py. It is a distinct implementation from
 // internal/web/bm25.go, whose k1 and tokenizer differ. Scores accumulate in
@@ -48,6 +54,36 @@ func NewBM25() *BM25 {
 		ids:   map[string]int32{},
 		terms: map[string]int{},
 	}
+}
+
+// BM25FromPostings uses full corpus lengths with only the requested terms loaded.
+func BM25FromPostings(lengths []int, terms map[string][]BM25Posting) (*BM25, error) {
+	b := NewBM25()
+	b.docLengths = lengths
+	b.nDocs = int32(len(lengths))
+	b.nOrder = len(lengths)
+	b.positions = make([]int, len(lengths))
+	for i, length := range lengths {
+		if length < 0 {
+			return nil, fmt.Errorf("rank: negative document length at %d", i)
+		}
+		b.positions[i] = i
+		b.totalDocLen += length
+	}
+	for term, entries := range terms {
+		b.terms[term] = len(b.postings)
+		list := make([]posting, len(entries))
+		previous := -1
+		for i, entry := range entries {
+			if entry.Document <= previous || entry.Document >= len(lengths) || entry.Frequency <= 0 || entry.Frequency > lengths[entry.Document] {
+				return nil, fmt.Errorf("rank: invalid posting for %q", term)
+			}
+			list[i] = posting{doc: int32(entry.Document), tf: int32(entry.Frequency)}
+			previous = entry.Document
+		}
+		b.postings = append(b.postings, list)
+	}
+	return b, nil
 }
 
 // AddDocument indexes one document, panicking on a duplicate id.

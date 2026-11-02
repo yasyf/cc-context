@@ -1,0 +1,131 @@
+name: Native answer corpus components
+
+on:
+  pull_request:
+    paths:
+      - internal/semsearch/**
+      - .github/fixtures/native-answer-corpus/**
+      - .github/workflows/native-answer-corpus-components.yml
+      - .github/actions/wasm/**
+      - go.mod
+      - go.sum
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-answer-corpus-components-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  native-answer-corpus-components:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    env:
+      GOMAXPROCS: "2"
+      GOFLAGS: -p=2
+      CARGO_BUILD_JOBS: "2"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: ./.github/actions/wasm
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          path: .ci-native-answer-corpus-before
+          persist-credentials: false
+      - name: Bind exact rollback fixtures and current dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/native-answer-corpus-components"
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, platform, shutil, subprocess
+          root = pathlib.Path.cwd()
+          before = root / ".ci-native-answer-corpus-before"
+          manifest = json.loads((root / ".github/fixtures/native-answer-corpus/baseline.json").read_text())
+          files = {}
+          for entry in manifest["files"]:
+              source = root / entry["fixture"]
+              digest = hashlib.sha256(source.read_bytes()).hexdigest()
+              assert digest == entry["sha256"], entry
+              shutil.copyfile(source, before / entry["original_path"])
+              files[entry["fixture"]] = digest
+          for name in ("go.mod", "go.sum"):
+              data = (root / name).read_bytes()
+              assert data == (before / name).read_bytes(), name
+              files[name] = hashlib.sha256(data).hexdigest()
+          for name in ("internal/semsearch/engine/owned_answers.go", "internal/semsearch/engine/owned_answers_test.go", "internal/semsearch/index/owned_answers.go", "internal/semsearch/index/owned_answers_test.go", "internal/semsearch/rank/bm25.go", "internal/semsearch/rank/bm25_snapshot_test.go", ".github/workflows/native-answer-corpus-components.yml"):
+              files[name] = hashlib.sha256((root / name).read_bytes()).hexdigest()
+          receipt = {"head": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(), "os": platform.system(), "baseline": manifest, "files": files, "GOMAXPROCS": os.environ["GOMAXPROCS"], "GOFLAGS": os.environ["GOFLAGS"]}
+          (pathlib.Path(os.environ["RUNNER_TEMP"]) / "native-answer-corpus-components/source.json").write_text(json.dumps(receipt, indent=2) + "\n")
+          PY
+          cp internal/format/formatcore.wasm .ci-native-answer-corpus-before/internal/format/
+          cp internal/semsearch/embed/embedcore.wasm .ci-native-answer-corpus-before/internal/semsearch/embed/
+          cp -R internal/semsearch/chunk/grammars .ci-native-answer-corpus-before/internal/semsearch/chunk/
+      - name: Authentic rollback held-reader negative
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd .ci-native-answer-corpus-before
+          status=0
+          go test -race -count=1 -json -run '^TestOwnedAnswersHeldReaderAllowsGenerationAdvance$' ./internal/semsearch/index > "$RUNNER_TEMP/native-answer-corpus-components/rollback.jsonl" 2>&1 || status=$?
+          cat "$RUNNER_TEMP/native-answer-corpus-components/rollback.jsonl"
+          python3 - "$status" <<'PY'
+          import json, os, pathlib, sys
+          root = pathlib.Path(os.environ["RUNNER_TEMP"]) / "native-answer-corpus-components"
+          events = [json.loads(line) for line in (root / "rollback.jsonl").read_text().splitlines()]
+          failed = [event["Test"] for event in events if event["Action"] == "fail" and "Test" in event]
+          skipped = [event["Test"] for event in events if event["Action"] == "skip" and "Test" in event]
+          output = "".join(event.get("Output", "") for event in events)
+          assert sys.argv[1] == "1", sys.argv[1]
+          assert failed == ["TestOwnedAnswersHeldReaderAllowsGenerationAdvance"], failed
+          assert not skipped, skipped
+          assert "generation advance blocked by held reader: SQLITE_BUSY (5):" in output, output
+          (root / "rollback-verdict.json").write_text(json.dumps({"exit_code": 1, "failed_tests": failed, "skipped_tests": skipped, "intended_sqlite_busy": True}, indent=2) + "\n")
+          PY
+      - name: Fixed components, cost counters and current scorer/chunker goldens
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test -race -count=1 -json ./internal/semsearch/index ./internal/semsearch/engine ./internal/semsearch/rank ./internal/semsearch/chunk | tee "$RUNNER_TEMP/native-answer-corpus-components/fixed.jsonl"
+          python3 - <<'PY'
+          import json, os, pathlib, re
+          root = pathlib.Path(os.environ["RUNNER_TEMP"]) / "native-answer-corpus-components"
+          events = [json.loads(line) for line in (root / "fixed.jsonl").read_text().splitlines()]
+          passed = {event["Test"] for event in events if event["Action"] == "pass" and "Test" in event}
+          required = {
+              "TestOwnedAnswersWorkCounts", "TestOwnedAnswersExactRankParity", "TestOwnedAnswersConcurrentCold",
+              "TestOwnedAnswersHeldReaderAllowsGenerationAdvance", "TestOwnedAnswersPublishedMainFileNeedsNoSidecars",
+              "TestOwnedAnswersFailureAtomicityAndCorruption", "TestOwnedAnswersCancellation", "TestOwnedAnswersSourceAndModelIdentity",
+              "TestOwnedAnswersFailedAdvanceRetainsPublishedGeneration", "TestOwnedAnswersDefaultChunkerLegacyParity",
+              "TestMatchAnswersExcludesAfterChunkTopK", "TestBM25QueryPostingsExactScores", "TestBM25RejectsInvalidPostings",
+              "TestGoldenBM25Tokens", "TestGoldenBM25Scores", "TestGoldenQueryClassification", "TestChunkCorpusGoldens",
+          }
+          assert required <= passed, sorted(required - passed)
+          pattern = re.compile(r"OWNED_ANSWER_WORK n=(\d+) generation=(\S+) canonical_text_reads=(\d+) chunker_inputs=(\d+) embedded_texts=(\d+) numeric_chunks=(\d+) vector_values=(\d+)")
+          counts = [match.groups() for event in events for match in pattern.finditer(event.get("Output", ""))]
+          for n in (32, 10000):
+              actual = [row for row in counts if int(row[0]) == n]
+              expected = [("generation-A", n), ("generation-A", 0), ("body-edit", 1), ("metadata-only-tip-edit", 0), ("delete", 0), ("restore", 0)]
+              assert [(row[1], int(row[2])) for row in actual] == expected, actual
+              assert all(row[2] == row[3] == row[4] for row in actual), actual
+          (root / "fixed-verdict.json").write_text(json.dumps({"required_passed": sorted(required), "work_counts": counts, "embedding_fixture": "deterministic fake embedders; model package tests excluded"}, indent=2) + "\n")
+          PY
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: native-answer-corpus-components-${{ matrix.os }}
+          path: ${{ runner.temp }}/native-answer-corpus-components
