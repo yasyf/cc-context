@@ -118,7 +118,6 @@ if [ -e %[2]s ]; then
 	read mode pattern < %[2]s
 	case " $* " in *" $pattern "*)
 		case $mode in
-		fail) exit 1 ;;
 		hold) echo x > %[3]s; read x < %[4]s ;;
 		esac
 	esac
@@ -156,8 +155,6 @@ func (f *gitFixture) write(path, content string) {
 }
 
 func (f *gitFixture) hold(pattern string) { f.write(f.marker, "hold "+pattern+"\n") }
-
-func (f *gitFixture) fail(pattern string) { f.write(f.marker, "fail "+pattern+"\n") }
 
 func (f *gitFixture) pass() {
 	f.t.Helper()
@@ -368,22 +365,6 @@ func (f *gitFixture) intend() cleanup.Job {
 		f.t.Fatalf("Intend() = %v", err)
 	}
 	return job
-}
-
-func (f *gitFixture) park(job *cleanup.Job, failing string, phase cleanup.Phase, reason string) {
-	f.t.Helper()
-	f.fail(failing)
-	if err := f.relocator().Advance(context.Background(), job); err != nil {
-		f.t.Fatalf("Advance() past the failing %s = %v", failing, err)
-	}
-	if job.Phase != phase || job.Blocked == nil || job.Blocked.Reason != reason {
-		f.t.Fatalf("the failing %s left the job at %s with blockage %+v, want %s blocked on %s", failing, job.Phase, job.Blocked, phase, reason)
-	}
-	job.Blocked = nil
-	if err := f.journal.Save(*job); err != nil {
-		f.t.Fatalf("Save() = %v", err)
-	}
-	f.pass()
 }
 
 func (f *gitFixture) journaled(id string) cleanup.Job {

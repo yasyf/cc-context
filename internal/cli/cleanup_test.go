@@ -1709,10 +1709,10 @@ func TestCleanupAdopt(t *testing.T) {
 	if want := "adopted " + legacyID + "-feat · legacy quarantine · " + source + " · deletion queued " + id + "\n"; out != want {
 		t.Errorf("adopt output = %q, want %q", out, want)
 	}
-	assertGone(t, source)
 	if _, err := runCleanupCmd(t, f, "wait", id); err != nil {
 		t.Fatalf("wait %s error = %v", id, err)
 	}
+	assertGone(t, source)
 	job := cleanupJob(t, f, h, id)
 	if !job.Adopted || job.Owner != legacyQuarantineOwner || job.Source != source || job.Phase != cleanup.PhaseDone {
 		t.Errorf("job adopted %v owner %q source %q phase %s, want an adopted %q job done from %s",
