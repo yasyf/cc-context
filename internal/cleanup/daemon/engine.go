@@ -283,7 +283,6 @@ func New(cfg Config) (*Engine, error) {
 		waiters:   make(map[string]int),
 		awaits:    make(map[string]time.Time),
 		kept:      make(map[string]cleanup.Job),
-		counts:    make(map[string]int),
 		governed:  gov.report(),
 		changed:   make(chan struct{}),
 		gov:       gov,
@@ -820,7 +819,7 @@ func (e *Engine) wake(physical bool) (time.Time, bool) {
 }
 
 func (e *Engine) reconciles() bool {
-	return e.tuning.Reconcile > 0 && e.hold == nil && e.blocked > 0
+	return e.tuning.Reconcile > 0 && !e.reconcileAt.IsZero() && e.hold == nil && e.blocked > 0
 }
 
 func (e *Engine) reconcileDue(now time.Time) bool {
@@ -1024,9 +1023,11 @@ func (e *Engine) slice(ctx context.Context, job cleanup.Job) error {
 	switch {
 	case err != nil:
 		e.active = nil
+		e.publishGovernor()
 		return e.block(job, err)
 	case done:
 		e.active = nil
+		e.publishGovernor()
 		if job.Phase == cleanup.PhaseDeletingAdmin {
 			job.Phase, job.Updated = cleanup.PhaseDeletingRetiredPayload, e.clock.Now()
 			return e.save(job)
@@ -1120,6 +1121,7 @@ func (e *Engine) park() error {
 	}
 	active := e.active
 	e.active = nil
+	e.publishGovernor()
 	if err := active.deletion.Close(); err != nil {
 		slog.Warn("cleanup daemon: close a paused deletion", "job", active.id, "error", err)
 	}
@@ -1542,6 +1544,9 @@ func stateCount(job cleanup.Job) string {
 
 func (e *Engine) count(job cleanup.Job, delta int) {
 	key := stateCount(job)
+	if e.counts == nil {
+		e.counts = make(map[string]int)
+	}
 	e.counts[key] += delta
 	if e.counts[key] == 0 {
 		delete(e.counts, key)

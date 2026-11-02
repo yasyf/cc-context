@@ -70,6 +70,7 @@ type task struct {
 	op   op
 	node *node
 	name string
+	more bool
 }
 
 func (t task) removes() bool { return t.op != opList }
@@ -215,7 +216,7 @@ func (d *deletion) push(t task) {
 func (d *deletion) perform(t task) (int, error) {
 	switch t.op {
 	case opList:
-		err := d.list(t.node)
+		err := d.list(t.node, t.more)
 		d.release(t.node)
 		return 0, err
 	case opUnlink:
@@ -361,35 +362,39 @@ func (d *deletion) rootReplaced(op string, got cleanup.FileID) error {
 	return &Error{Op: op, Rel: ".", Err: fmt.Errorf("%w: the payload name now holds dev %d ino %d, not dev %d ino %d", cleanup.ErrIdentity, got.Dev, got.Ino, want.Dev, want.Ino)}
 }
 
-func (d *deletion) list(n *node) error {
-	stalled := n.passes > 0 && n.progress == n.mark
-	n.mark, n.passes, n.empty = n.progress, n.passes+1, true
-	for {
-		var (
-			names []string
-			err   error
-		)
-		d.unlocked(func() { names, err = n.dir.Readdirnames(readBatch) })
-		if len(names) > 0 {
-			if stalled {
-				return fail("read", n, "", ErrStuck)
-			}
-			n.empty, n.refused = false, false
-			for _, name := range names {
-				d.push(task{op: opUnlink, node: n, name: name})
-			}
-			d.wake.Broadcast()
-		}
-		switch {
-		case errors.Is(err, io.EOF):
-			return d.rewind(n)
-		case errors.Is(err, unix.ENOENT):
-			// Linux fails getdents on a removed directory with ENOENT; Darwin lists it as empty.
-			return d.unlisted(n, err)
-		case err != nil:
-			return fail("read", n, "", err)
-		}
+func (d *deletion) list(n *node, more bool) error {
+	stalled := !more && n.passes > 0 && n.progress == n.mark
+	if !more {
+		n.mark, n.passes, n.empty = n.progress, n.passes+1, true
 	}
+	var (
+		names []string
+		err   error
+	)
+	d.unlocked(func() { names, err = n.dir.Readdirnames(readBatch) })
+	if len(names) > 0 {
+		if stalled {
+			return fail("read", n, "", ErrStuck)
+		}
+		n.empty, n.refused = false, false
+		if err == nil {
+			d.push(task{op: opList, node: n, more: true})
+		}
+		for _, name := range names {
+			d.push(task{op: opUnlink, node: n, name: name})
+		}
+		d.wake.Broadcast()
+	}
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, io.EOF):
+		return d.rewind(n)
+	case errors.Is(err, unix.ENOENT):
+		// Linux fails getdents on a removed directory with ENOENT; Darwin lists it as empty.
+		return d.unlisted(n, err)
+	}
+	return fail("read", n, "", err)
 }
 
 func (d *deletion) rewind(n *node) error {
