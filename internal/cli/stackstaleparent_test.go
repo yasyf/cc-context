@@ -41,8 +41,6 @@ func TestStackRebaseStartsPastTheParentsCopyNoReflogRemembers(t *testing.T) {
 
 func TestStackRebaseRefusesABranchThatCopiesNoneOfItsParent(t *testing.T) {
 	f := stackStaleParentRepo(t)
-	stale := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
-	published := gitAt(t, f.Env(), f.Dir, "rev-parse", "refs/remotes/origin/base")
 	own := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "--detach", "feature~1")
 	writeShipFile(t, f.Dir, "unrelated.txt", "unrelated\n")
@@ -58,13 +56,7 @@ func TestStackRebaseRefusesABranchThatCopiesNoneOfItsParent(t *testing.T) {
 	if err == nil {
 		t.Fatal("stack rebase replayed feature with no base it could tell from base's commits")
 	}
-	for _, want := range []string{
-		"feature carries no head of base",
-		"gt records it on " + shortSHA(stale),
-		"base is at " + shortSHA(stale) + " here and at " + shortSHA(published) + " on origin",
-		"git rebase --onto base",
-		"gt track --parent base feature",
-	} {
+	for _, want := range []string{"feature carries none of base's commits", "ccx vcs stack rebase --parent feature=<branch>"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("stack rebase = %v, want it to name %q", err, want)
 		}
