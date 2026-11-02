@@ -69,7 +69,7 @@ func LoadOwnedAnswers(ctx context.Context, emb Embedder, corpus OwnedAnswerCorpu
 	}
 	path := filepath.Join(dir, "index.sqlite")
 	matrixPath := filepath.Join(dir, contentHash(corpus.Generation)+".matrix")
-	idx, found, err := mapOwnedAnswers(ctx, matrixPath, identity, corpus.Generation, len(corpus.Documents), emb.Dims())
+	idx, found, err := mapRetainedOwnedAnswers(ctx, matrixPath, identity, corpus.Generation, len(corpus.Documents), emb.Dims())
 	if err != nil || found {
 		return idx, err
 	}
@@ -80,7 +80,7 @@ func LoadOwnedAnswers(ctx context.Context, emb Embedder, corpus OwnedAnswerCorpu
 	slices.SortFunc(members, func(a, b ownedAnswerMember) int { return strings.Compare(a.Path, b.Path) })
 	err = cache.WithLock(ctx, dir, "build", func() error {
 		var err error
-		idx, found, err = mapOwnedAnswers(ctx, matrixPath, identity, corpus.Generation, len(members), emb.Dims())
+		idx, found, err = mapRetainedOwnedAnswers(ctx, matrixPath, identity, corpus.Generation, len(members), emb.Dims())
 		if err != nil || found {
 			return err
 		}
@@ -106,10 +106,7 @@ func LoadOwnedAnswers(ctx context.Context, emb Embedder, corpus OwnedAnswerCorpu
 		if err != nil {
 			return err
 		}
-		if err := cache.Store(matrixPath, data, 0o600); err != nil {
-			return err
-		}
-		idx, found, err = mapOwnedAnswers(ctx, matrixPath, identity, corpus.Generation, len(members), emb.Dims())
+		idx, found, err = publishRetainedOwnedAnswers(ctx, matrixPath, identity, corpus.Generation, len(members), emb.Dims(), data)
 		if err != nil {
 			return err
 		}

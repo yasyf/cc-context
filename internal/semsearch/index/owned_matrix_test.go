@@ -61,6 +61,15 @@ func TestOwnedAnswersMappedWarmProcess(t *testing.T) {
 			if err := os.WriteFile(copyPath, data, 0o600); err != nil {
 				t.Fatal(err)
 			}
+			if runtime.GOOS != "windows" {
+				manifest, err := os.ReadFile(filepath.Join(filepath.Dir(paths[0]), "generations.json"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(filepath.Dir(copyPath), "generations.json"), manifest, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
 			executable, err := os.Executable()
 			if err != nil {
 				t.Fatal(err)
