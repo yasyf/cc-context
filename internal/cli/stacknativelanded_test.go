@@ -74,3 +74,75 @@ func TestNativeStackReplaysAChildFromItsPublishedBaseAfterItsParentsSquashLand(t
 		t.Errorf("c replays from %s, want b's last head %s, past a's and b's commits", shortOID(got), shortOID(b))
 	}
 }
+
+func TestNativeStackParentIsTheOpenMemberGitHubHoldsThePullRequestOn(t *testing.T) {
+	tests := []struct {
+		name   string
+		stack  int
+		parent string
+	}{
+		{name: "in a native stack", stack: 46, parent: "a"},
+		{name: "outside one", parent: "main"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := shipRepo(t, vcstest.Remote())
+			f.Decorate(func(ctx context.Context) context.Context { return withStackProvider(ctx, true) })
+			mustRun(t, f.Env(), f.Dir, "git", "config", "ccx.stack", "github")
+			common := filepath.Join(f.Dir, ".git")
+			trunk := shipHead(t, f)
+			for _, name := range []string{"a", "b"} {
+				shipGTUntracked(t, f, name)
+			}
+			a := gitAt(t, f.Env(), f.Dir, "rev-parse", "a")
+			published := gitAt(t, f.Env(), f.Dir, "rev-parse", "b")
+			payload, err := json.Marshal(stackPublication{Branch: "b", Source: published, SourceBase: a, Head: published, Base: a, Parent: "a"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			oid, err := render.RunCLIStdin(f.Context(), render.Dir(f.Dir), "git", []string{"hash-object", "-w", "--stdin"}, payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mustRun(t, f.Env(), f.Dir, "git", "update-ref", stackPublicationRef("b", "receipt"), strings.TrimSpace(oid))
+			writeShipFile(t, f.Dir, "b2.txt", "b2\n")
+			mustRun(t, f.Env(), f.Dir, "git", "add", "b2.txt")
+			mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "b2")
+			shipped := gitAt(t, f.Env(), f.Dir, "rev-parse", "b")
+			mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "a", "b")
+			if err := nativemeta.Init(f.Context(), common, "main"); err != nil {
+				t.Fatal(err)
+			}
+			for _, link := range []struct{ branch, parent, fork, head string }{{"a", "main", trunk, a}, {"b", "a", a, shipped}} {
+				if err := nativemeta.AdoptRoot(f.Context(), common, link.branch, link.parent, link.fork, link.head); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := nativemeta.RecordSubmitted(f.Context(), common, map[string]nativemeta.Version{"b": {HeadSha: shipped, BaseSha: trunk, BaseName: "main"}}); err != nil {
+				t.Fatal(err)
+			}
+			api := newGTAPIStub(t)
+			api.openPRs("a", "b")
+			api.bases["a"], api.bases["b"] = "main", "a"
+			api.stacks["a"], api.stacks["b"] = tt.stack, tt.stack
+			f.Decorate(api.ctx)
+			stubOpenPRs(t, f, map[string]*stackPR{
+				"a": {Number: 9000, Title: "a", State: "OPEN", Base: "main", Head: a, NativeStack: tt.stack},
+				"b": {Number: 9001, Title: "b", State: "OPEN", Base: "a", Head: shipped, NativeStack: tt.stack},
+			})
+			stubStackStanding(t, f, nil)
+			l, err := resolveLane(f.Context(), "stack rebase", f.Dir, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			run, err := stackPlan(f.Context(), l, common, stackRebaseOpts{tip: "b", submit: true, dryRun: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := run.branch("b").Parent; got != tt.parent {
+				t.Errorf("b's parent = %s, want %s", got, tt.parent)
+			}
+		})
+	}
+}

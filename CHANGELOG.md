@@ -88,6 +88,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ccx vcs stack submit` reads a pull request's parent from its native GitHub
+  stack. When GitHub holds the pull request on an open member of the same
+  native stack, that member is its parent, whatever an older submit record or
+  gt says, unless `--parent` names another. A ship GitHub kept on trunk used to
+  leave a record that made every later submit retarget the pull request onto
+  trunk. The native stack refused, and the submit offered `--move`, which would
+  have closed the pull request and opened a replacement.
 - `ccx vcs stack new` refuses to cut a child on a branch that is in no native
   stack, naming `--parent <trunk>` and the ship that tracks the parent. The
   first adoption into an empty native catalog used to skip that check, so a
