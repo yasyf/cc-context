@@ -19,7 +19,9 @@ func TestMissingGlobAnchorKeepsExplicitOperand(t *testing.T) {
 	}{
 		{"absolute file", filepath.Join(root, "missing.go"), filepath.Join(root, "missing.go")},
 		{"absolute directory", filepath.Join(root, "missing", "*.go"), filepath.Join(root, "missing")},
+		{"absolute recursive directory", filepath.Join(root, "missing", "**"), filepath.Join(root, "missing")},
 		{"relative directory", "missing/*.go", "missing"},
+		{"relative recursive directory", "missing/**", "missing"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			for _, eng := range []engine{engineRipgrep, engineGrep} {

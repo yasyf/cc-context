@@ -98,7 +98,7 @@ func TestGrepArgv(t *testing.T) {
 		{"after and before flags", backend.Args{Query: "foo", After: 2, Before: 1}, []string{"-rnHFI", "--null", "-A", "2", "-B", "1", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "-e", "foo", "--", "."}, false},
 		{"context and after flags", backend.Args{Query: "foo", Context: 1, After: 3}, []string{"-rnHFI", "--null", "-C", "1", "-A", "3", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "-e", "foo", "--", "."}, false},
 		{"basename glob", backend.Args{Query: "foo", Globs: []string{"*.go"}}, []string{"-rnHFI", "--null", "--include=*.go", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "-e", "foo", "--", "."}, false},
-		{"dir recurse glob", backend.Args{Query: "foo", Globs: []string{"src/**"}}, []string{"-rnHFI", "--null", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "-e", "foo", "--", "src"}, false},
+		{"missing recurse glob stays scoped", backend.Args{Query: "foo", Globs: []string{"src/**"}}, []string{"-rnHFI", "--null", "--include=**", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "-e", "foo", "--", "src"}, false},
 		{"dir + ext glob", backend.Args{Query: "foo", Globs: []string{"src/**/*.go"}}, []string{"-rnHFI", "--null", "--include=*.go", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "-e", "foo", "--", "src"}, false},
 		{"leading-dash pattern", backend.Args{Query: "-foo"}, []string{"-rnHFI", "--null", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "-e", "-foo", "--", "."}, false},
 		{"regex swaps -rnFI for -rnEI", backend.Args{Query: "foo", Regex: true}, []string{"-rnHEI", "--null", "--exclude-dir=.[!./]*", "--exclude=.[!./]*", "-e", "foo", "--", "."}, false},
