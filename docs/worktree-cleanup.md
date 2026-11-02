@@ -310,6 +310,13 @@ after a pass over it lists nothing. Each slice first proves that every held
 directory still sits where the deletion found it, and lets go of one that
 moved.
 
+Every 10s of a running deletion, the daemon checks the job again without Git:
+the captured inode is still where it sits, the registration still carries the
+job's lock and no other claim, and no watcher or live process is in the tree.
+When one fails, the deletion stops and the job blocks, with everything removed
+so far kept. The full proof, Git included, runs again the next time the
+deletion opens.
+
 The daemon rests after each slice for the larger share it used of either
 bound. A slice that spends its time on directories and removes little rests as
 long as a full one. The `cleanup status` header names the worker count and the
