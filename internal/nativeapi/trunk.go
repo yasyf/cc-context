@@ -9,6 +9,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/yasyf/cc-context/internal/ghapi"
 )
 
 type trunkPage[T any] struct {
@@ -29,7 +31,7 @@ func (c *Client) queueGet(ctx context.Context, path string, query url.Values, ou
 	if err != nil {
 		return err
 	}
-	payload, err := c.request(ctx, c.queueBase, token, http.MethodGet, path+"?"+query.Encode(), nil)
+	payload, err := c.request(ctx, c.queueBase, token, ghapi.IdentityUser, http.MethodGet, path+"?"+query.Encode(), nil)
 	if err != nil {
 		return err
 	}
@@ -92,7 +94,7 @@ func (c *Client) githubQueueStatuses(ctx context.Context, owner, repo string, nu
 		var response struct {
 			Repository map[string]*struct{ MergeQueueEntry *struct{ State string } }
 		}
-		if err := c.graphql(ctx, query, &response); err != nil {
+		if err := c.readGraphQL(ctx, owner, repo, query, &response); err != nil {
 			return nil, err
 		}
 		if response.Repository == nil {

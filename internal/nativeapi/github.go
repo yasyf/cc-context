@@ -103,7 +103,7 @@ func (c *Client) PullRequestInfo(ctx context.Context, req PullRequestInfoRequest
 		}
 		query := fmt.Sprintf("{repository(owner:%s,name:%s){%s}}", strconv.Quote(req.RepoOwner), strconv.Quote(req.RepoName), fields.String())
 		var result struct{ Repository map[string]json.RawMessage }
-		if err := c.graphql(ctx, query, &result); err != nil {
+		if err := c.readGraphQL(ctx, req.RepoOwner, req.RepoName, query, &result); err != nil {
 			return nil, err
 		}
 		if result.Repository == nil {
