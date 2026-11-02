@@ -1,9 +1,14 @@
 package cli
 
 import (
+	"encoding/json"
+	"fmt"
 	"maps"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/yasyf/cc-context/internal/gtapi"
@@ -41,6 +46,53 @@ func TestStackQueueStatesSkipsPullRequestsNotAskedAbout(t *testing.T) {
 	}
 	if !maps.Equal(states, want) {
 		t.Errorf("states = %v, want %v", states, want)
+	}
+}
+
+// TestStackQueueStatesOnANativeLaneAsksOnlyTheQueue is git-efficiency's push
+// in Forge-AI/monorepo on 2026-11-02: GitHub refused the queue read's GraphQL
+// pull-request lookup, "API rate limit already exceeded for user ID 709645",
+// and a plain fast-forward push stopped there. The stack's own read already
+// names each open pull request, so only the queue itself is asked.
+func TestStackQueueStatesOnANativeLaneAsksOnlyTheQueue(t *testing.T) {
+	var mu sync.Mutex
+	var queries []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Query string `json:"query"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		mu.Lock()
+		queries = append(queries, body.Query)
+		mu.Unlock()
+		if strings.Contains(body.Query, "headRefName:") {
+			_, _ = fmt.Fprint(w, `{"errors":[{"type":"RATE_LIMITED","message":"API rate limit already exceeded for user ID 709645."}]}`)
+			return
+		}
+		_, _ = fmt.Fprint(w, `{"data":{"repository":{"p0":{"mergeQueueEntry":null},"p1":{"mergeQueueEntry":{"state":"AWAITING_CHECKS"}}}}}`)
+	}))
+	t.Cleanup(srv.Close)
+	stubPRState(t, prPoll(`"p0":`+prNode(101, "OPEN", prComments())))
+	byName := map[string]*stackRebaseBranch{
+		"base":    {Name: "base", PR: &stackPR{Number: 100, State: "OPEN", Base: "main"}},
+		"feature": {Name: "feature", PR: &stackPR{Number: 101, State: "OPEN", Base: "base"}},
+	}
+	l := lane{native: true, repo: &vcs.Repo{NameWithOwner: "Forge-AI/monorepo"}}
+
+	states, err := stackQueueStates(withGTAPI(t.Context(), gtapi.NewNativeWithToken(srv.URL, "stub")), l, false, byName)
+	if err != nil {
+		t.Fatalf("stackQueueStates: %v", err)
+	}
+	want := map[string]prQueueState{"base": prQueueNotQueued, "feature": prQueueQueued}
+	if !maps.Equal(states, want) {
+		t.Errorf("states = %v, want %v", states, want)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(queries) != 1 || !strings.Contains(queries[0], "mergeQueueEntry") {
+		t.Errorf("queries = %q, want the one merge queue read", queries)
 	}
 }
 

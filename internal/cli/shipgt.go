@@ -1383,8 +1383,9 @@ func gtTrunkParent(ctx context.Context, l lane, c *gtCache, branch string) (pare
 
 // gtInferParent names the parent gt track -f would pick for a branch stacked
 // on a tracked one: its nearest tracked ancestor above the remote trunk, read
-// from branches whose refs exist, rather than gt's own walk over every tracked
-// branch, which dies on one another lane just deleted.
+// from branches whose refs exist at their local or published heads, rather than
+// gt's own walk over every tracked branch, which dies on one another lane just
+// deleted.
 func gtInferParent(ctx context.Context, c *gtCache, branch string) (string, error) {
 	state, err := c.at(ctx)
 	if err != nil {
@@ -1413,35 +1414,47 @@ func gtNearestTrackedAt(ctx context.Context, dir render.Dir, state gtState, trun
 		return trunk, nil
 	}
 	slices.Sort(candidates)
+	floor, remote := gtRestackRef(trunk), ""
+	tr, err := gtTrunkRefOffline(ctx, dir, "ship", trunk)
+	switch {
+	case err == nil:
+		floor, remote = string(tr.Ref()), tr.Remote()
+	case !errors.Is(err, vcs.ErrNoTrunk):
+		return "", err
+	}
+	heads := make(map[string]string, len(candidates))
+	published := make(map[string]string, len(candidates))
+	type lookup struct {
+		name, ref string
+		into      map[string]string
+	}
+	var lookups []lookup
 	var refs strings.Builder
 	for _, name := range candidates {
-		refs.WriteString(gtRestackRef(name) + "\n")
+		lookups = append(lookups, lookup{name: name, ref: gtRestackRef(name), into: heads})
+		if remote != "" {
+			lookups = append(lookups, lookup{name: name, ref: "refs/remotes/" + remote + "/" + name, into: published})
+		}
+	}
+	for _, l := range lookups {
+		refs.WriteString(l.ref + "\n")
 	}
 	out, err := render.RunCLIStdin(ctx, dir, "git", []string{"cat-file", "--batch-check=%(objectname) %(objecttype)"}, []byte(refs.String()))
 	if err != nil {
 		return "", fmt.Errorf("ship: resolve tracked parent refs: %w", err)
 	}
 	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
-	if len(lines) != len(candidates) {
-		return "", fmt.Errorf("ship: resolve tracked parent refs: got %d results for %d refs", len(lines), len(candidates))
+	if len(lines) != len(lookups) {
+		return "", fmt.Errorf("ship: resolve tracked parent refs: got %d results for %d refs", len(lines), len(lookups))
 	}
-	heads := make(map[string]string, len(candidates))
 	for i, line := range lines {
 		fields := strings.Fields(line)
-		if len(fields) != 2 || (fields[1] != "commit" && (fields[0] != gtRestackRef(candidates[i]) || fields[1] != "missing")) {
-			return "", fmt.Errorf("ship: resolve tracked parent ref %s: %q", candidates[i], line)
+		if len(fields) != 2 || (fields[1] != "commit" && (fields[0] != lookups[i].ref || fields[1] != "missing")) {
+			return "", fmt.Errorf("ship: resolve tracked parent ref %s: %q", lookups[i].ref, line)
 		}
 		if fields[1] == "commit" {
-			heads[candidates[i]] = fields[0]
+			lookups[i].into[lookups[i].name] = fields[0]
 		}
-	}
-	floor := gtRestackRef(trunk)
-	tr, err := gtTrunkRefOffline(ctx, dir, "ship", trunk)
-	switch {
-	case err == nil:
-		floor = string(tr.Ref())
-	case !errors.Is(err, vcs.ErrNoTrunk):
-		return "", err
 	}
 	out, err = render.RunCLI(ctx, dir, "git", []string{"rev-list", floor + ".." + tip})
 	if err != nil {
@@ -1472,20 +1485,25 @@ func gtNearestTrackedAt(ctx context.Context, dir render.Dir, state gtState, trun
 	nearest, nearestAt := "", ""
 	for _, name := range present {
 		held := append([]string{heads[name]}, former[name]...)
-		at := slices.IndexFunc(held, func(head string) bool { return contained[head] })
-		if at < 0 {
-			continue
+		var at []string
+		if i := slices.IndexFunc(held, func(head string) bool { return contained[head] }); i >= 0 {
+			at = append(at, held[i])
 		}
-		if nearest != "" {
-			ahead, err := gitIsAncestor(ctx, dir, "ship", nearestAt, held[at])
-			if err != nil {
-				return "", err
-			}
-			if !ahead {
-				continue
-			}
+		if contained[published[name]] {
+			at = append(at, published[name])
 		}
-		nearest, nearestAt = name, held[at]
+		for _, head := range at {
+			if nearest != "" {
+				ahead, err := gitIsAncestor(ctx, dir, "ship", nearestAt, head)
+				if err != nil {
+					return "", err
+				}
+				if !ahead {
+					continue
+				}
+			}
+			nearest, nearestAt = name, head
+		}
 	}
 	return cmp.Or(nearest, trunk), nil
 }
