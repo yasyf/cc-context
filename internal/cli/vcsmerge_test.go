@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yasyf/cc-context/internal/gtapi"
 	"github.com/yasyf/cc-context/internal/nativeapi"
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
@@ -72,13 +73,18 @@ func TestVcsMergeRefusesToSkipAnExternalQueueWithoutAdmin(t *testing.T) {
 			f := shipRepo(t, vcstest.Remote())
 			mustRun(t, f.Env(), f.Dir, "git", "remote", "set-url", "origin", "git@github.com:yasyf/cc-context.git")
 			mustRun(t, f.Env(), f.Dir, "git", "config", "ccx.queue", "trunk")
+			client := gtapi.NewNativeWithToken("https://example.invalid", "unused")
+			previous := gtAPINativeDefault
+			gtAPINativeDefault = func() *gtapi.Client { return client }
+			t.Cleanup(func() { gtAPINativeDefault = previous })
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				t.Errorf("merge reached GitHub: %s %s", r.Method, r.URL.Path)
 				http.Error(w, "unexpected", http.StatusInternalServerError)
 			}))
 			defer srv.Close()
 
-			_, err := runMergeCmd(withMergeClient(f.Context(), nativeapi.NewWithToken(srv.URL, "key")), t, "7", "--repo", tc.repo)
+			ctx := withMergeClient(withStackProvider(f.Context(), true), nativeapi.NewWithToken(srv.URL, "key"))
+			_, err := runMergeCmd(ctx, t, "7", "--repo", tc.repo)
 			if err == nil || !strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), "--admin") {
 				t.Fatalf("merge = %v, want %q and --admin offered", err, tc.want)
 			}
