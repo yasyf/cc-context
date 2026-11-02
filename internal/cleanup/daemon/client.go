@@ -122,8 +122,9 @@ func (c *Client) Shutdown(ctx context.Context, verify func(cleanup.Peer) error) 
 	}
 }
 
-// Remove relocates and unregisters a worktree. The daemon finishes the ladder
-// step it is on even when this call is abandoned.
+// Remove proves a worktree safe to delete and claims it, locking its
+// registration in place. The daemon finishes the ladder step it is on even
+// when this call is abandoned.
 func (c *Client) Remove(ctx context.Context, r cleanup.Request) (cleanup.Receipt, error) {
 	return c.receipt(ctx, request{Op: opRemove, Remove: &r})
 }

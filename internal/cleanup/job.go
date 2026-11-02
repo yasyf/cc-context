@@ -30,15 +30,15 @@ const (
 type Phase string
 
 const (
-	// PhaseQueued is a deferred removal awaiting normal relocation.
+	// PhaseQueued is a deferred removal awaiting its claim.
 	PhaseQueued Phase = "queued"
 	// PhaseWaiting is a deferred removal that last awaited inactivity.
 	PhaseWaiting Phase = "waiting"
 	// PhasePending is a paused removal with a captured registration that has
-	// not passed the full relocation preflight.
+	// not passed the full preflight.
 	PhasePending Phase = "pending"
 	// PhasePrepared is journaled before the first mutation: from here watchers
-	// may be retired, the recovery ref written, and git's move attempted.
+	// may be retired, the recovery ref written, and the registration locked.
 	PhasePrepared Phase = "prepared"
 	// PhaseMoved means git registers the tree at Registered and the original
 	// path is free.
@@ -97,7 +97,7 @@ func (p Phase) Physical() bool { return !p.Logical() && p != PhaseDone }
 type Retirement string
 
 const (
-	// RetirementIntent marks a registration update that must finish before relocation.
+	// RetirementIntent marks a registration update that must finish before the job claims its tree.
 	RetirementIntent Retirement = "intent"
 	// RetirementComplete marks an unregistered checkout retained for physical deletion.
 	RetirementComplete Retirement = "retired"
@@ -207,7 +207,8 @@ type Job struct {
 	RetireAfter time.Time `json:"retire_after,omitzero"`
 	// Adopted marks a tree the retired janitor had already unregistered and
 	// parked at Source in its quarantine. It has no admin directory and no
-	// links to capture: the job takes the tree from Source straight to Payload.
+	// links to capture: the job deletes the tree at Source and has no
+	// registration to remove.
 	Adopted bool   `json:"adopted,omitempty"`
 	Source  string `json:"source,omitempty"`
 	Owner   string `json:"owner,omitempty"`

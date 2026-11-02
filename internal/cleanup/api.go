@@ -410,12 +410,13 @@ func (e *HeldError) Error() string {
 
 // Service is the daemon as a caller uses it, in process or over its socket.
 type Service interface {
-	// Remove relocates and unregisters a worktree and returns once the removal
-	// is logically complete. A preflight refusal is a *RefusedError or an
-	// *ActiveError with nothing journaled; a removal that stopped part-way is a
-	// *BlockedError. While the queue is paused it journals the removal at
-	// PhasePending after the preflight's checks that look for no live process,
-	// and returns with nothing moved; Resume runs the whole preflight again.
+	// Remove proves a worktree safe to delete and returns once the job has
+	// claimed it, its registration locked in place. A preflight refusal is a
+	// *RefusedError or an *ActiveError with nothing journaled; a removal that
+	// stopped part-way is a *BlockedError. While the queue is paused it
+	// journals the removal at PhasePending after the preflight's checks that
+	// look for no live process, and returns with nothing claimed; Resume runs
+	// the whole preflight again.
 	Remove(ctx context.Context, r Request) (Receipt, error)
 	// Defer journals a removal that waits for inactivity and returns without
 	// moving anything.
@@ -458,9 +459,9 @@ type Service interface {
 // Adopter is the operator's import path for the trees the retired janitor
 // left in its quarantine.
 type Adopter interface {
-	// Adopt verifies the parked tree and journals it, then relocates it into
-	// its job folder and queues its deletion. A refusal is a *RefusedError or
-	// an *ActiveError with nothing journaled and nothing moved.
+	// Adopt verifies the parked tree and journals it, then claims it for
+	// deletion where it sits. A refusal is a *RefusedError or an *ActiveError
+	// with nothing journaled and nothing claimed.
 	Adopt(ctx context.Context, r AdoptRequest) (Receipt, error)
 }
 

@@ -377,7 +377,7 @@ func (e *Engine) Stop(ctx context.Context) error {
 	}
 }
 
-// Remove relocates and unregisters a worktree on the worker. Once the worker
+// Remove proves and claims a worktree on the worker. Once the worker
 // has taken the request it runs to the end of its ladder step even when ctx is
 // cancelled; ctx bounds only the caller's wait, and lends the worker nothing
 // but the requester it names, which the job keeps for its later passes. A
@@ -385,7 +385,7 @@ func (e *Engine) Stop(ctx context.Context) error {
 // *cleanup.RefusedError naming that job, and a request without Force never
 // rejoins a job journaled with it: it is preflighted afresh. While the queue is
 // paused or held a new request is journaled pending and a repeat rejoins its
-// job, and either returns with nothing moved.
+// job, and either returns with nothing claimed.
 func (e *Engine) Remove(ctx context.Context, r cleanup.Request) (cleanup.Receipt, error) {
 	if err := r.Validate(); err != nil {
 		return cleanup.Receipt{}, fmt.Errorf("cleanup daemon: remove request: %w", err)
@@ -406,8 +406,8 @@ func (e *Engine) Defer(ctx context.Context, r cleanup.DeferRequest) (cleanup.Rec
 	return call(ctx, e, onBehalf(ctx, func(ctx context.Context) (cleanup.Receipt, error) { return e.intend(ctx, r) }))
 }
 
-// Adopt journals a tree the retired janitor parked and relocates it into its
-// job folder on the worker. A repeat of a request whose tree still sits at its
+// Adopt journals a tree the retired janitor parked and claims it for deletion
+// where it sits, on the worker. A repeat of a request whose tree still sits at its
 // source rejoins the job the first one journaled. While the queue is paused or
 // held it is cleanup.ErrPaused, before any preflight or record.
 func (e *Engine) Adopt(ctx context.Context, r cleanup.AdoptRequest) (cleanup.Receipt, error) {
