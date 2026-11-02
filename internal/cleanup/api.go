@@ -328,7 +328,7 @@ type Report struct {
 	// or a maintenance hold.
 	Paused   bool     `json:"paused"`
 	Governor Governor `json:"governor"`
-	Pace     Pace     `json:"pace"`
+	Pace     Pace     `json:"pace,omitzero"`
 	// Counts tallies every job of a queue report by state: its phase, or
 	// blocked:<reason> for a blocked job.
 	Counts map[string]int `json:"counts,omitempty"`
