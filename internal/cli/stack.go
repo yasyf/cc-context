@@ -73,7 +73,7 @@ the freshly fetched remote trunk, leaving the local trunk branch where it is.
 
 In a Git checkout every lane is sparse, whatever its storage: this checkout's
 sparse set, or root files alone when it has none, plus the tracked .claude,
-.agents, and tools directories. A Go lane names its module, as --include
+.agents, tools, and infra/ci/hooks directories. A Go lane names its module, as --include
 go/<module>. The summary names the "git -C <path> sparse-checkout add <dir>"
 command that widens the lane, just before its path.
 

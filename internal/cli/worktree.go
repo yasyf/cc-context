@@ -131,7 +131,8 @@ pool for new git worktrees ahead of both. Existing registered Git worktrees
 remain addressable.
 In a Git checkout the worktree is sparse: the sparse set of the checkout you
 run this from, or root files alone when it has none, plus the tracked .agents,
-.claude, and tools directories and each --include directory. The summary names
+.claude, tools, and infra/ci/hooks directories and each --include directory.
+The summary names
 the "git -C <path> sparse-checkout add <dir>" command that widens it.
 A branch-shaped name such as user/slug keeps its full branch name and mints the
 directory user-slug.

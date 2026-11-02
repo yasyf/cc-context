@@ -24,8 +24,9 @@ ccx creates the thin store on first use, then cuts the lane as a linked
 worktree of that store. From a store lane, every new lane is a linked
 worktree of the same store and is sparse like its caller, with or without
 `--thin` and regardless of the `CCX_STACK_NEW` default. Every lane also checks
-out tracked top-level `.claude`, `.agents`, and `tools` directories for project
-hooks, settings, skills, instructions, and repo tooling, alongside root files
+out tracked top-level `.claude`, `.agents`, and `tools` directories and
+`infra/ci/hooks` for project hooks, settings, skills, instructions, and repo
+tooling, alongside root files
 and inherited or `--include` directories. Only `--no-checkout` skips
 materializing files there; stacking works as usual. The summary line names the
 `git -C <path> sparse-checkout add <dir>` command that widens the lane.
@@ -113,7 +114,7 @@ requirements apply to the default too.
 Every Git lane is sparse, whatever its storage. It inherits the source
 checkout's per-worktree sparse patterns when active, else root files alone,
 and also checks out tracked top-level `.claude`, `.agents`, and `tools`
-directories; creation runs no hooks or setup scripts and installs no
+directories, plus `infra/ci/hooks`, which the monorepo's `tools/ci` sources; creation runs no hooks or setup scripts and installs no
 dependencies. `ccx vcs worktree add` cuts the same cone. For a repository
 with a `src` directory, include it when creating the lane:
 

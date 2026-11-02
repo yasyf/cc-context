@@ -48,7 +48,8 @@ caches can remain shared.
 Git `ccx vcs stack new <name>` defaults to thin lanes backed by
 `~/.claude/stores/<key>/<repo>`, except a child of a non-trunk branch the
 calling checkout holds, which is cut in that checkout's clone. Every Git lane
-is sparse: root files and tracked `.claude`, `.agents`, and `tools`, plus
+is sparse: root files and tracked `.claude`, `.agents`, `tools`, and
+`infra/ci/hooks`, plus
 each `--include <dir>`, checked out without running hooks or setup scripts. Thin stores share the
 source checkout's cc-notes records through `cc-notes storage bind`, which
 cc-notes must provide; existing unbound or differently bound stores are

@@ -37,6 +37,7 @@ type stackNewOpts struct {
 type stackSparse struct {
 	patterns []byte
 	cone     bool
+	dirs     []string
 }
 
 func runStackNew(cmd *cobra.Command, name string, options stackNewOpts) error {
@@ -568,7 +569,7 @@ func stackWithMetadata(s stackSparse) stackSparse {
 		}
 		patterns = append(patterns, pattern+"\n"...)
 	}
-	return stackSparse{patterns: patterns, cone: s.cone}
+	return stackSparse{patterns: patterns, cone: s.cone, dirs: slices.Concat(s.dirs, laneConeNested)}
 }
 
 func stackActiveSparse(ctx context.Context, dir render.Dir) (stackSparse, bool, error) {
@@ -615,7 +616,13 @@ func stackWriteSparse(ctx context.Context, dir render.Dir, prefix string, sparse
 			return err
 		}
 	}
-	return stackPopulateSparse(ctx, dir, prefix, head)
+	if err := stackPopulateSparse(ctx, dir, prefix, head); err != nil {
+		return err
+	}
+	if len(sparse.dirs) == 0 {
+		return nil
+	}
+	return stackAddCone(ctx, prefix, dir, sparse.dirs)
 }
 
 // stackEnableWorktreeConfig turns on extensions.worktreeConfig the way git's
