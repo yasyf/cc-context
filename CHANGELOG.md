@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Worktrees of one repository share one semantic-search index on disk.** Each
+  worktree used to store a full private copy of its index, so the lanes of one
+  repository held near-identical copies: 389 indexes took 46 GB on one machine,
+  though only 1 in 11 of their chunks was distinct. An index is now a manifest
+  over shared, immutable segments: the segment a sibling worktree already
+  stored, plus a small overlay of the files this worktree changed. When the
+  overlay or the base's unused part passes 10%, the worktree writes one fresh
+  segment of its own. A new lane writes only its overlay instead of a full
+  copy, and every lane maps the same segment files, so the kernel keeps one
+  copy of their pages. Search results are unchanged: a load assembles the same
+  corpus a full build of the tree produces. Pruning deletes a segment once no
+  index names it and an hour has passed. The first search after upgrading
+  converts each existing index without re-embedding.
+
 - **Semantic search reads its index in place, so every session on a worktree
   shares one copy of it.** A loaded index used to be decoded onto each
   process's heap: on the monorepo's 281,362 chunks that was 1,267 MB per `ccx

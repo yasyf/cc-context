@@ -17,10 +17,10 @@ import (
 
 func TestPersistedCacheRoundTrip(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
+	dir := variantDir(t)
 	man, chunks, vectors := cacheFixture()
 
-	if err := store(dir, man, chunks, vectors); err != nil {
+	if err := store(t.Context(), dir, man, chunks, vectors, nil); err != nil {
 		t.Fatalf("store: %v", err)
 	}
 	got := loadPersisted(dir, man.Model, man.Content, man.Chunker, man.Dims)
@@ -34,7 +34,10 @@ func TestPersistedCacheRoundTrip(t *testing.T) {
 		t.Fatalf("generation is not hex: %v", err)
 	}
 
-	man.Generation = got.manifest.Generation
+	if len(got.manifest.Segments) != 1 {
+		t.Fatalf("segments = %v, want one whole segment", got.manifest.Segments)
+	}
+	man.Generation, man.Segments = got.manifest.Generation, got.manifest.Segments
 	if !reflect.DeepEqual(got.manifest, man) || !reflect.DeepEqual(got.chunks, chunks) || !reflect.DeepEqual(got.vectors, vectors) {
 		t.Fatalf("loadPersisted() = %#v, %#v, %#v; want %#v, %#v, %#v", got.manifest, got.chunks, got.vectors, man, chunks, vectors)
 	}
@@ -49,9 +52,9 @@ func TestPersistedCacheRoundTrip(t *testing.T) {
 
 func TestLoadPersistedRejectsMixedGenerations(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
+	dir := variantDir(t)
 	man, chunks, vectors := cacheFixture()
-	if err := store(dir, man, chunks, vectors); err != nil {
+	if err := store(t.Context(), dir, man, chunks, vectors, nil); err != nil {
 		t.Fatalf("store: %v", err)
 	}
 
@@ -59,26 +62,29 @@ func TestLoadPersistedRejectsMixedGenerations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read manifest: %v", err)
 	}
-	generation := []byte(storedMan.Generation)
+	generation := []byte(storedMan.Segments[0])
 	if generation[0] == '0' {
 		generation[0] = '1'
 	} else {
 		generation[0] = '0'
 	}
-	storedMan.Generation = string(generation)
 	chunks[0].Content = "new content with the same chunk count"
 	var rewritten bytes.Buffer
-	if err := writeChunks(&rewritten, storedMan.Generation, chunks); err != nil {
+	if err := writeChunks(&rewritten, string(generation), chunks); err != nil {
 		t.Fatalf("write chunks: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, chunksFile), rewritten.Bytes(), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(segmentsFor(dir), storedMan.Segments[0], chunksFile), rewritten.Bytes(), 0o600); err != nil {
 		t.Fatalf("write chunks.bin: %v", err)
 	}
-	writeCacheJSON(t, filepath.Join(dir, manifestFile), storedMan)
 
 	if got := loadPersisted(dir, man.Model, man.Content, man.Chunker, man.Dims); got != nil {
 		t.Fatalf("loadPersisted() = %#v, want nil", got)
 	}
+}
+
+func variantDir(t *testing.T) string {
+	t.Helper()
+	return filepath.Join(t.TempDir(), "repo", "variant")
 }
 
 func cacheFixture() (manifest, []semsearch.Chunk, [][]float32) {
@@ -128,7 +134,7 @@ func TestCacheDirResolvesFromContext(t *testing.T) {
 
 func TestMappedTermsRankLikeTheBuiltBM25(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
+	dir := variantDir(t)
 	chunks := []semsearch.Chunk{
 		{Path: "auth/login.go", StartLine: 1, EndLine: 9, Content: "func Login(user, session string) error { return validateSession(session) }"},
 		{Path: "auth/login.go", StartLine: 10, EndLine: 14, Content: "func validateSession(s string) error { return nil }"},
@@ -146,7 +152,7 @@ func TestMappedTermsRankLikeTheBuiltBM25(t *testing.T) {
 		{Path: "docs/README.md", Start: 3, Count: 1},
 		{Path: "docs/empty.md", Start: 4, Count: 1},
 	}}
-	if err := store(dir, man, chunks, vectors); err != nil {
+	if err := store(t.Context(), dir, man, chunks, vectors, nil); err != nil {
 		t.Fatalf("store: %v", err)
 	}
 	p := loadPersisted(dir, man.Model, man.Content, man.Chunker, man.Dims)

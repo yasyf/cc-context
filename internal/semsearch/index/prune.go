@@ -14,7 +14,8 @@ import (
 const pruneLockWait = time.Second
 
 // Prune deletes the index files of caches whose worktree is gone or that went
-// unused for maxAge, skipping any another process holds locked.
+// unused for maxAge, skipping any another process holds locked, then the shared
+// segments no remaining index names.
 func Prune(ctx context.Context, maxAge time.Duration) error {
 	base, err := semsearchDir(ctx)
 	if err != nil {
@@ -34,6 +35,7 @@ func Prune(ctx context.Context, maxAge time.Duration) error {
 		}
 		pruneRepo(ctx, filepath.Join(base, repo.Name()), cutoff)
 	}
+	sweepSegments(ctx, base)
 	return nil
 }
 
@@ -80,7 +82,7 @@ func removeLocked(ctx context.Context, dir string, stale func() bool) {
 		if !stale() {
 			return nil
 		}
-		for _, name := range []string{manifestFile, chunksFile, vectorsFile, lastUsedFile} {
+		for _, name := range []string{manifestFile, chunksFile, legacyChunksFile, vectorsFile, termsFile, lastUsedFile} {
 			_ = os.Remove(filepath.Join(dir, name))
 		}
 		return nil
