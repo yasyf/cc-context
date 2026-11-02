@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/cobra"
 	"github.com/yasyf/cc-notes/model"
 	"github.com/yasyf/cc-notes/notes"
 
@@ -155,7 +156,13 @@ func TestNativeAnswerMatchFixtureProcess(t *testing.T) {
 	}
 	metrics := nativeMatchFixtureMetrics{Operation: config.Operation, ChunkerCalls: "UNKNOWN", CanonicalRefreshRecords: "UNKNOWN", PickRequestIDs: []string{}, ResultIDs: []string{}, EncodeBatchSizes: []int{}}
 	if err == nil {
-		err = runNativeMatchFixture(t.Context(), config, &metrics)
+		if config.Operation == "session" {
+			cmd := newMatchAnswersCmd()
+			cmd.SetContext(t.Context())
+			err = nativeMatchFixtureSession(t.Context(), config, &metrics, cmd)
+		} else {
+			err = runNativeMatchFixture(t.Context(), config, &metrics)
+		}
 	}
 	if err != nil {
 		metrics.Error = err.Error()
@@ -175,9 +182,6 @@ func TestNativeAnswerMatchFixtureProcess(t *testing.T) {
 }
 
 func runNativeMatchFixture(ctx context.Context, config nativeMatchFixtureConfig, metrics *nativeMatchFixtureMetrics) (err error) {
-	if config.Operation == "session" {
-		return nativeMatchFixtureSession(ctx, config, metrics)
-	}
 	if config.Operation == "search" {
 		start := time.Now()
 		results, err := engine.Search(ctx, nativeMatchFixtureEmbedder{metrics}, backend.Args{Path: config.Mirror, Query: config.Query, K: config.K, Kind: "docs", MaxSnippetLines: 1})
@@ -328,7 +332,7 @@ func nativeMatchFixtureMutate(ctx context.Context, client *notes.Client, mutatio
 	}
 }
 
-func nativeMatchFixtureSession(ctx context.Context, config nativeMatchFixtureConfig, metrics *nativeMatchFixtureMetrics) (err error) {
+func nativeMatchFixtureSession(ctx context.Context, config nativeMatchFixtureConfig, metrics *nativeMatchFixtureMetrics, cmd *cobra.Command) (err error) {
 	start := time.Now()
 	defer func() { metrics.SessionWallNanoseconds = time.Since(start).Nanoseconds() }()
 	if config.Mutation != nil && config.Mutation.Timing != "before_rank" && config.Mutation.Timing != "after_rank" {
@@ -338,8 +342,6 @@ func nativeMatchFixtureSession(ctx context.Context, config nativeMatchFixtureCon
 	if len(args) < 2 || args[0] != "code" || args[1] != "match-answers" {
 		return fmt.Errorf("fixture requires native match-answers arguments after --")
 	}
-	cmd := newMatchAnswersCmd()
-	cmd.SetContext(ctx)
 	if err := cmd.ParseFlags(args[2:]); err != nil {
 		return err
 	}
