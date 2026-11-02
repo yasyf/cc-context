@@ -9,7 +9,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +17,7 @@ import (
 	"github.com/yasyf/cc-notes/notes"
 
 	"github.com/yasyf/cc-context/internal/backend"
+	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/semsearch/engine"
 	"github.com/yasyf/cc-context/internal/semsearch/index"
 )
@@ -155,7 +155,7 @@ func TestNativeAnswerMatchFixtureProcess(t *testing.T) {
 	}
 	metrics := nativeMatchFixtureMetrics{Operation: config.Operation, ChunkerCalls: "UNKNOWN", CanonicalRefreshRecords: "UNKNOWN", PickRequestIDs: []string{}, ResultIDs: []string{}, EncodeBatchSizes: []int{}}
 	if err == nil {
-		err = runNativeMatchFixture(context.Background(), config, &metrics)
+		err = runNativeMatchFixture(t.Context(), config, &metrics)
 	}
 	if err != nil {
 		metrics.Error = err.Error()
@@ -228,14 +228,12 @@ func runNativeMatchFixture(ctx context.Context, config nativeMatchFixtureConfig,
 
 func nativeMatchFixtureGit(ctx context.Context, repo, input string, metrics *nativeMatchFixtureMetrics, args ...string) (string, error) {
 	metrics.SetupGitCalls++
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", repo}, args...)...)
-	cmd.Stdin = strings.NewReader(input)
-	cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=Native Match Fixture", "GIT_AUTHOR_EMAIL=fixture@example.com", "GIT_AUTHOR_DATE=1700000000 +0000", "GIT_COMMITTER_NAME=Native Match Fixture", "GIT_COMMITTER_EMAIL=fixture@example.com", "GIT_COMMITTER_DATE=1700000000 +0000")
-	output, err := cmd.Output()
+	env := []string{"GIT_AUTHOR_NAME=Native Match Fixture", "GIT_AUTHOR_EMAIL=fixture@example.com", "GIT_AUTHOR_DATE=1700000000 +0000", "GIT_COMMITTER_NAME=Native Match Fixture", "GIT_COMMITTER_EMAIL=fixture@example.com", "GIT_COMMITTER_DATE=1700000000 +0000"}
+	output, err := render.RunCLIStdinEnv(ctx, render.Dir(repo), "git", args, []byte(input), env)
 	if err != nil {
 		return "", fmt.Errorf("fixture git %v: %w", args, err)
 	}
-	return strings.TrimSpace(string(output)), nil
+	return strings.TrimSpace(output), nil
 }
 
 func nativeMatchFixtureSeed(ctx context.Context, client *notes.Client, config nativeMatchFixtureConfig, metrics *nativeMatchFixtureMetrics) error {
@@ -341,6 +339,7 @@ func nativeMatchFixtureSession(ctx context.Context, config nativeMatchFixtureCon
 		return fmt.Errorf("fixture requires native match-answers arguments after --")
 	}
 	cmd := newMatchAnswersCmd()
+	cmd.SetContext(ctx)
 	if err := cmd.ParseFlags(args[2:]); err != nil {
 		return err
 	}
