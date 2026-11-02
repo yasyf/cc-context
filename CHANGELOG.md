@@ -62,8 +62,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   open pull request below it, and the report prints one line per pull request,
   bottom-up, with its merge commit. `--admin` merges directly and bypasses the
   rules the caller may bypass. Without it, GitHub's merge queue takes the pull
-  request when the base branch has one, and the command refuses in a checkout
-  that lands through the Trunk or Graphite queue. `--squash` is the default, and `--merge` or
+  request when the base branch has one, and the command refuses when a checkout
+  of the repository names the Trunk or Graphite queue. `--squash` is the default, and `--merge` or
   `--rebase` picks another method. A merge still pending after ten minutes
   stops waiting; rerunning the command resumes the same request.
 

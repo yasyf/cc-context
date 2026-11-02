@@ -49,8 +49,9 @@ The merge requires the head GitHub holds when the command reads the pull
 request, so a push in between cancels it. Without --admin GitHub's merge queue
 takes the pull request when the base branch has one, and the report reads
 enqueued. --admin merges directly and bypasses the repository rules the caller
-may bypass. A checkout whose stack lands through the Trunk or Graphite queue
-refuses without --admin, since a direct merge skips that queue.
+may bypass. Without --admin the command reads the repository's merge queue
+from a checkout of it, and refuses when that queue is Trunk or Graphite, since
+a direct merge skips it.
 
 The merge method is squash unless --merge or --rebase says otherwise. A merge
 still pending after ten minutes stops waiting; rerunning the command resumes
@@ -79,9 +80,12 @@ func runVcsMerge(cmd *cobra.Command, args []string, o vcsMergeOpts) error {
 	case o.rebase:
 		req.Method = "rebase"
 	}
-	target := ""
 	if len(args) == 1 {
-		target = args[0]
+		if n, err := strconv.Atoi(strings.TrimPrefix(args[0], "#")); err == nil && n > 0 {
+			req.PRNumber = n
+		} else {
+			req.Head = args[0]
+		}
 	} else {
 		branch, err := gitCurrentBranch(ctx, dir, "merge")
 		if err != nil {
@@ -90,29 +94,24 @@ func runVcsMerge(cmd *cobra.Command, args []string, o vcsMergeOpts) error {
 		if branch == "" {
 			return fmt.Errorf("merge: HEAD is detached; name the pull request or branch to merge")
 		}
-		target = branch
-	}
-	if n, err := strconv.Atoi(strings.TrimPrefix(target, "#")); err == nil && n > 0 {
-		req.PRNumber = n
-	} else {
-		req.Head = target
+		req.Head = branch
 	}
 	repo := o.repo
 	if repo == "" {
-		if !o.admin {
-			client := gtAPI(ctx)
-			if err := client.ProviderError(); err != nil {
-				return fmt.Errorf("merge: %w", err)
-			}
-			if queue := client.QueueProvider(); queue == "trunk" || queue == "graphite" {
-				return fmt.Errorf("merge: this checkout lands through the %s queue, which a direct merge skips; enqueue it there, or pass --admin to merge past it", queue)
-			}
-		}
 		looked, err := vcs.LookupRepo(ctx, dir, false)
 		if err != nil {
 			return fmt.Errorf("merge: name the repository with --repo: %w", err)
 		}
 		repo = looked.NameWithOwner
+	}
+	if !o.admin {
+		client := gtAPIForRepo(ctx, repo)
+		if err := client.ProviderError(); err != nil {
+			return fmt.Errorf("merge: %w, or pass --admin to merge directly", err)
+		}
+		if queue := client.QueueProvider(); queue == "trunk" || queue == "graphite" || queue == "mixed" {
+			return fmt.Errorf("merge: %s lands through the %s queue, which a direct merge skips; enqueue it there, or pass --admin to merge past it", repo, queue)
+		}
 	}
 	owner, name, ok := strings.Cut(repo, "/")
 	if !ok || owner == "" || name == "" {
