@@ -34,6 +34,7 @@ env:
 
 jobs:
   cleanup-paused-nonterminal:
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     strategy:
@@ -64,6 +65,7 @@ jobs:
           path: ${{ runner.temp }}/cleanup-paused-nonterminal
 
   status-window-performance:
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
@@ -100,6 +102,7 @@ jobs:
           path: status-*.txt
 
   cleanup-cold-startup:
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     strategy:
@@ -170,6 +173,7 @@ jobs:
           path: ${{ runner.temp }}/headlabel-caller.log
 
   semantic-ancestor-scope:
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -216,6 +220,7 @@ jobs:
           path: ${{ runner.temp }}/semantic-ancestor-*.log
 
   literal-search-scope:
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -263,6 +268,7 @@ jobs:
           path: ${{ runner.temp }}/literal-search-scope
 
   coholder-path-cost:
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
@@ -329,7 +335,9 @@ jobs:
           python3 .github/scripts/test-go-hook-pins.py
 
   scheduler-performance:
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
     strategy:
       fail-fast: false
       matrix:
@@ -365,6 +373,7 @@ jobs:
 
   testbin:
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
@@ -398,6 +407,7 @@ jobs:
   test:
     needs: testbin
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
@@ -428,6 +438,7 @@ jobs:
 
   test-pkgs:
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -483,6 +494,7 @@ jobs:
 
   shard-coverage:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
         with:
@@ -498,6 +510,7 @@ jobs:
 
   rust:
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
     strategy:
       fail-fast: false
       matrix:
@@ -512,6 +525,7 @@ jobs:
 
   vet:
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
     strategy:
       fail-fast: false
       matrix:
@@ -531,6 +545,7 @@ jobs:
 
   build:
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
     strategy:
       fail-fast: false
       matrix:
@@ -550,6 +565,7 @@ jobs:
 
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
         with:
@@ -575,6 +591,7 @@ jobs:
 
   vuln:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
         with:
@@ -592,6 +609,7 @@ jobs:
 
   hook-tests:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
         with:
@@ -646,6 +664,7 @@ jobs:
 
   descriptor-agreement:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
         with:

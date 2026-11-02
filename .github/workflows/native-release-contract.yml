@@ -11,6 +11,7 @@ permissions:
 jobs:
   source:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       commit: ${{ steps.commit.outputs.sha }}
     steps:
