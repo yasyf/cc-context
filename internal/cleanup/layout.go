@@ -83,6 +83,9 @@ func (l Layout) ProgramPath() string { return filepath.Join(l.Root, "bin", "ccx"
 // LogPath is where launchd points the daemon's output.
 func (l Layout) LogPath() string { return filepath.Join(l.Root, "daemon.log") }
 
+// ProbeDir is where the daemon times file creates on its own volume.
+func (l Layout) ProbeDir() string { return filepath.Join(l.Root, "probe") }
+
 // SwitchPath is the durable queue-wide pause switch.
 func (l Layout) SwitchPath() string { return filepath.Join(l.Root, "switch.json") }
 

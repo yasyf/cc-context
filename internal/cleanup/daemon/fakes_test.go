@@ -121,6 +121,7 @@ type fakeRelocator struct {
 	entered  chan string
 	served   []string
 	admitted []string
+	away     map[string]bool
 }
 
 const clientStart = 1790000000
@@ -321,6 +322,15 @@ func (f *fakeRelocator) Admit(ctx context.Context, job *cleanup.Job) (cleanup.De
 	return cleanup.DeletionRoot{Dir: filepath.Dir(job.Payload), Name: filepath.Base(job.Payload), ID: job.Tree}, nil
 }
 
+func (f *fakeRelocator) Site(job cleanup.Job) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.away[f.h.rec.name(job.ID)] {
+		return "/dev"
+	}
+	return filepath.Dir(job.Payload)
+}
+
 func blockWith(clock *manualClock, reason, detail string) func(job *cleanup.Job) {
 	return func(job *cleanup.Job) { job.Block(clock.Now(), reason, detail) }
 }
@@ -456,6 +466,29 @@ func (f *fakeCPU) Sample(ctx context.Context) (time.Duration, error) {
 	return f.cpu, f.err
 }
 
+type fakeActivity struct {
+	h        *harness
+	mu       sync.Mutex
+	activity cleanup.Activity
+	err      error
+}
+
+func (f *fakeActivity) set(activity cleanup.Activity, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.activity, f.err = activity, err
+}
+
+func (f *fakeActivity) Sample(ctx context.Context) (cleanup.Activity, error) {
+	f.h.rec.add("activity")
+	if err := ctx.Err(); err != nil {
+		return cleanup.Activity{}, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.activity, f.err
+}
+
 type harness struct {
 	t         *testing.T
 	root      string
@@ -467,6 +500,7 @@ type harness struct {
 	relocator *fakeRelocator
 	deleter   *fakeDeleter
 	cpu       *fakeCPU
+	activity  *fakeActivity
 	band      *fakeBand
 	parent    *fakeParent
 	engine    *Engine
@@ -501,6 +535,7 @@ func newHarnessAt(t *testing.T, root string, tuning Tuning) *harness {
 		scripts: make(map[string]func(job *cleanup.Job)),
 		gates:   make(map[string]chan struct{}),
 		entered: make(chan string, 16),
+		away:    make(map[string]bool),
 	}
 	h.deleter = &fakeDeleter{h: h, payloads: make(map[string]*payload)}
 	h.cpu = &fakeCPU{h: h, err: errUnsampled, entered: make(chan struct{}, 16)}
@@ -705,7 +740,7 @@ func (h *harness) deferral(name string) cleanup.DeferRequest {
 
 func (h *harness) build() *Engine {
 	h.t.Helper()
-	engine, err := New(Config{
+	cfg := Config{
 		Journal:   h.journal,
 		Relocator: h.relocator,
 		Deleter:   h.deleter,
@@ -716,7 +751,11 @@ func (h *harness) build() *Engine {
 		Version:   "v1.2.3",
 		Clock:     h.clock,
 		Tuning:    h.tuning,
-	})
+	}
+	if h.activity != nil {
+		cfg.Activity = h.activity
+	}
+	engine, err := New(cfg)
 	if err != nil {
 		h.t.Fatalf("New() = %v", err)
 	}
