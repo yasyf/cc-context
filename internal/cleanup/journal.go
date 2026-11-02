@@ -62,7 +62,8 @@ func ViewJournal(layout Layout) (*Journal, error) {
 // Layout is the state tree the journal writes under.
 func (j *Journal) Layout() Layout { return j.layout }
 
-// Create makes job's private folder and publishes its first record.
+// Create makes job's private folder, and its area in a spool when its tree
+// waits on another volume, then publishes its first record.
 func (j *Journal) Create(job Job) error {
 	if err := j.check(job); err != nil {
 		return err
@@ -73,6 +74,17 @@ func (j *Journal) Create(job Job) error {
 	}
 	if err := durable.SyncDir(filepath.Dir(dir)); err != nil {
 		return err
+	}
+	if area := filepath.Dir(job.Payload); area != dir {
+		if err := ensureSpool(filepath.Dir(area)); err != nil {
+			return err
+		}
+		if err := os.Mkdir(area, 0o700); err != nil {
+			return fmt.Errorf("cleanup: create job area: %w", err)
+		}
+		if err := durable.SyncDir(filepath.Dir(area)); err != nil {
+			return err
+		}
 	}
 	return j.write(job)
 }
@@ -85,10 +97,30 @@ func (j *Journal) Save(job Job) error {
 	return j.write(job)
 }
 
-// Discard removes the record and folder of a job that holds nothing else: one
-// refused before it mutated anything, or one whose payload is gone. A folder
-// still holding a tree is an error and stays.
-func (j *Journal) Discard(id string) error {
+// Discard removes the record, folder and spool area of a job that holds
+// nothing else: one refused before it mutated anything, or one whose payload
+// is gone. A folder or area still holding a tree is an error and stays.
+func (j *Journal) Discard(job Job) error {
+	if !jobIDPattern.MatchString(job.ID) {
+		return fmt.Errorf("cleanup: %q is not a job id", job.ID)
+	}
+	if area := filepath.Dir(job.Payload); job.Payload != "" && area != j.layout.JobDir(job.ID) {
+		entries, err := os.ReadDir(area)
+		switch {
+		case err == nil && len(entries) > 0:
+			return fmt.Errorf("cleanup: job area %s still holds %s", area, entries[0].Name())
+		case err == nil:
+			if err := durable.Remove(area); err != nil {
+				return fmt.Errorf("cleanup: discard job area: %w", err)
+			}
+		case !errors.Is(err, fs.ErrNotExist):
+			return fmt.Errorf("cleanup: read job area: %w", err)
+		}
+	}
+	return j.discard(job.ID)
+}
+
+func (j *Journal) discard(id string) error {
 	if !jobIDPattern.MatchString(id) {
 		return fmt.Errorf("cleanup: %q is not a job id", id)
 	}
@@ -135,7 +167,7 @@ func (j *Journal) Load() ([]Job, []Damaged, error) {
 		id := entry.Name()
 		job, err := durable.ReadFile[Job](j.layout.RecordPath(id))
 		if errors.Is(err, fs.ErrNotExist) {
-			if err := j.Discard(id); err != nil {
+			if err := j.discard(id); err != nil {
 				damaged = append(damaged, Damaged{ID: id, Error: err.Error()})
 			}
 			continue
@@ -178,7 +210,9 @@ func (j *Journal) check(job Job) error {
 	if err := job.Validate(); err != nil {
 		return fmt.Errorf("cleanup: job record: %w", err)
 	}
-	if job.Registered != j.layout.Registered(job.ID) || job.Payload != j.layout.Payload(job.ID) {
+	jobs := filepath.Dir(filepath.Dir(job.Payload))
+	registered, payload := Area(jobs, job.ID)
+	if job.Registered != registered || job.Payload != payload || !j.layout.holds(jobs) {
 		return fmt.Errorf("cleanup: job %s names paths outside its folder under %s", job.ID, j.layout.JobsDir())
 	}
 	return nil

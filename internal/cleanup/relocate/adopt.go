@@ -321,7 +321,7 @@ func (r *Relocator) vouch(ctx context.Context, job *cleanup.Job) (reason, detail
 	if detail != "" {
 		return "reconcile", detail
 	}
-	jobDir := r.cfg.Journal.Layout().JobDir(job.ID)
+	jobDir := filepath.Dir(job.Payload)
 	entries, err := registered(job.Repo, jobDir)
 	if err != nil {
 		return "reconcile", err.Error()

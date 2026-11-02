@@ -237,8 +237,19 @@ func nearest(path string) (fs.FileInfo, error) {
 	}
 }
 
+// colocated refuses a tree that cannot move into a job folder with a rename:
+// one on another volume than the folder a new job of it would get.
 func (r *Relocator) colocated(tree string, id cleanup.FileID) error {
-	jobsDir := r.cfg.Journal.Layout().JobsDir()
+	return r.housed(tree, id, r.cfg.Journal.Layout().JobsFor(tree, id.Dev))
+}
+
+// colocatedIn refuses a journaled job's tree that sits on another volume than
+// the jobs folder its record names.
+func (r *Relocator) colocatedIn(job *cleanup.Job, tree string, id cleanup.FileID) error {
+	return r.housed(tree, id, filepath.Dir(filepath.Dir(job.Payload)))
+}
+
+func (r *Relocator) housed(tree string, id cleanup.FileID, jobsDir string) error {
 	jobsInfo, err := nearest(jobsDir)
 	if err != nil {
 		return fmt.Errorf("cleanup: inspect %s: %w", jobsDir, err)

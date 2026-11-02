@@ -434,7 +434,7 @@ func TestJournalDiscard(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(l.JobDir(testID), ".job.json.654321"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := j.Discard(testID); err != nil {
+	if err := j.Discard(job); err != nil {
 		t.Fatalf("Discard() = %v", err)
 	}
 	assertAbsent(t, l.JobDir(testID))
@@ -455,7 +455,7 @@ func TestJournalDiscardRefusesPayload(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := j.Discard(testID)
+	err := j.Discard(job)
 	if want := "cleanup: job folder " + l.JobDir(testID) + " still holds payload"; err == nil || err.Error() != want {
 		t.Fatalf("Discard() = %v, want %q", err, want)
 	}
@@ -470,7 +470,7 @@ func TestJournalDiscardRefusesPayload(t *testing.T) {
 
 func TestJournalDiscardAbsent(t *testing.T) {
 	j, l := openJournal(t)
-	if err := j.Discard(testID); err != nil {
+	if err := j.Discard(validJob(l, testID, 1)); err != nil {
 		t.Fatalf("Discard() of an absent job = %v, want nil", err)
 	}
 	assertPrivateDir(t, l.JobsDir())
@@ -481,7 +481,7 @@ func TestJournalDiscardRejectsID(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(l.Root, "victim"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	err := j.Discard("../victim")
+	err := j.Discard(Job{ID: "../victim"})
 	if want := `cleanup: "../victim" is not a job id`; err == nil || err.Error() != want {
 		t.Fatalf("Discard() = %v, want %q", err, want)
 	}

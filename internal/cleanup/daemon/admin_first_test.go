@@ -117,7 +117,7 @@ func TestEngineDeletesAdminBeforeRetiredPayloadAcrossRestarts(t *testing.T) {
 			t.Errorf("owned root remains at %s: %v", path, err)
 		}
 	}
-	if err := h.journal.Discard(job.ID); err != nil {
+	if err := h.journal.Discard(job); err != nil {
 		t.Fatalf("Discard() = %v", err)
 	}
 }
