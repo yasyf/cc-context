@@ -1,0 +1,23 @@
+{
+  "baseline_source_manifest_sha256": "6c82828e84d6a105e24d842f6c1a891e5d9c0bf0ad3b03255ff79538e6e80c6e",
+  "baseline_full_patch_sha256": "accdfd0f8a6fec8376da5be1e8be855d65eaa59470eb0011d8375576583e9a5d",
+  "baseline_base": "ed04ac56d856b03db58a6ebdcb73ec04edab733d",
+  "diagnostic_base": "a7347a6e4d3509b2eafd0be4bbca9e8748a477b3",
+  "files": [
+    {
+      "original_path": "internal/semsearch/index/owned_answers.go",
+      "fixture": ".github/fixtures/native-answer-corpus/rollback/owned_answers.go",
+      "sha256": "6428c96791e3c8f85fcc9fa9b0a169065067a2a07abcd28fc92112e02764b476"
+    },
+    {
+      "original_path": "internal/semsearch/index/owned_answers_test.go",
+      "fixture": ".github/fixtures/native-answer-corpus/rollback/owned_answers_test.go",
+      "sha256": "d96c0554a0e10bc459e8974fe17dd27d2773029801644a6734fe470d81c004e9"
+    }
+  ],
+  "negative_test": "TestOwnedAnswersHeldReaderAllowsGenerationAdvance",
+  "expected_failure": "generation advance blocked by held reader: SQLITE_BUSY (5):",
+  "expected_failed_tests": 1,
+  "expected_exit_code": 1,
+  "sdk_dependencies_added": false
+}
