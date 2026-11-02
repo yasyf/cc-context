@@ -115,6 +115,8 @@ func newWorktreeAddCmd() *cobra.Command {
 
 The path is minted at "$HOME/.claude/worktrees/<main-basename>/<name>",
 outside every repository tree so a worktree is never mistaken for repo content.
+For Git checkouts, "git config --global ccx.worktreeRoot <absolute-path>" sets
+the pool for new worktrees. Existing registered Git worktrees remain addressable.
 A branch-shaped name such as user/slug keeps its full branch name and mints the
 directory user-slug.
 --jj picks how the new copy attaches: "none" is a git worktree, "workspace" is a
@@ -483,7 +485,7 @@ func runWorktreeAdd(cmd *cobra.Command, name, requested string) error {
 	if err != nil {
 		return err
 	}
-	path, err := mintWorktreePath(ctx, "worktree add", l.checkout, name)
+	path, err := mintGitWorktreePath(ctx, "worktree add", l.checkout, name)
 	if err != nil {
 		return err
 	}
@@ -842,9 +844,9 @@ func worktreeShapeOf(mode string) string {
 // symlink-free — the spelling git canonicalizes every registered path to — so a
 // minted path equals its registry entry byte for byte.
 func mintWorktreePath(ctx context.Context, prefix string, c vcs.Checkout, name string) (string, error) {
-	elements := strings.Split(name, "/")
-	if slices.ContainsFunc(elements, func(e string) bool { return e == "" || e == "." || e == ".." }) {
-		return "", fmt.Errorf("%s: %q is not a worktree name — a name has no empty, \".\", or \"..\" /-separated element", prefix, name)
+	leaf, err := worktreeName(prefix, name)
+	if err != nil {
+		return "", err
 	}
 	home, err := canonicalHome(ctx, prefix)
 	if err != nil {
@@ -855,7 +857,15 @@ func mintWorktreePath(ctx context.Context, prefix string, c vcs.Checkout, name s
 	if filepath.Dir(filepath.Dir(c.MainRoot)) == pool {
 		repo = filepath.Base(filepath.Dir(c.MainRoot))
 	}
-	return filepath.Join(pool, repo, strings.Join(elements, "-")), nil
+	return filepath.Join(pool, repo, leaf), nil
+}
+
+func worktreeName(prefix, name string) (string, error) {
+	elements := strings.Split(name, "/")
+	if slices.ContainsFunc(elements, func(e string) bool { return e == "" || e == "." || e == ".." }) {
+		return "", fmt.Errorf("%s: %q is not a worktree name — a name has no empty, \".\", or \"..\" /-separated element", prefix, name)
+	}
+	return strings.Join(elements, "-"), nil
 }
 
 func canonicalHome(ctx context.Context, prefix string) (string, error) {
@@ -884,11 +894,15 @@ func runWorktreeRm(cmd *cobra.Command, name string, opts worktreeRmOptions) erro
 		return err
 	}
 	if l.checkout.CommonDir != "" {
+		paths, err := gitWorktreePaths(ctx, "worktree rm", l.checkout, name)
+		if err != nil {
+			return err
+		}
 		list, err := vcs.Worktrees(ctx, l.checkout)
 		if err != nil {
 			return fmt.Errorf("worktree rm: %w", err)
 		}
-		target, err := matchPoolWorktree(list, name, minted)
+		target, err := matchPoolWorktree(list, name, paths...)
 		if err != nil {
 			return err
 		}
@@ -904,7 +918,7 @@ func runWorktreeRm(cmd *cobra.Command, name string, opts worktreeRmOptions) erro
 			if err != nil {
 				return fmt.Errorf("worktree rm: %w", err)
 			}
-			if target, err = matchPoolWorktree(list, name, minted); err != nil || target != nil {
+			if target, err = matchPoolWorktree(list, name, paths...); err != nil || target != nil {
 				if err != nil {
 					return err
 				}
@@ -1182,20 +1196,23 @@ func missingWorktreePath(ctx context.Context, l lane, path string) error {
 	return fmt.Errorf("worktree rm: nothing exists at %s: %w", path, ErrNotFound)
 }
 
-// matchPoolWorktree finds the registered worktree at minted, the pool path add
-// mints for name: rm removes only what add created. A worktree merely named
-// name elsewhere is somebody else's checkout, refused by the path it lives at
-// rather than resolved by basename — resolving it would hand rm a tree the
-// user never pointed ccx at, and removing the wrong one is not undoable.
-func matchPoolWorktree(list []vcs.Worktree, name, minted string) (*vcs.Worktree, error) {
+func matchPoolWorktree(list []vcs.Worktree, name string, minted ...string) (*vcs.Worktree, error) {
 	var foreign []string
+	var target *vcs.Worktree
 	for i, wt := range list {
-		if wt.Path == minted {
-			return &list[i], nil
+		if slices.Contains(minted, wt.Path) {
+			if target != nil {
+				return nil, fmt.Errorf("worktree rm: %q names registered worktrees at both %s and %s — use ccx vcs worktree rm --path <absolute-path>", name, target.Path, wt.Path)
+			}
+			target = &list[i]
+			continue
 		}
-		if filepath.Base(wt.Path) == filepath.Base(minted) {
+		if filepath.Base(wt.Path) == filepath.Base(minted[0]) {
 			foreign = append(foreign, wt.Path)
 		}
+	}
+	if target != nil {
+		return target, nil
 	}
 	if len(foreign) > 0 {
 		return nil, fmt.Errorf("worktree rm: %q is not in this repository's pool — ccx never minted %s; use ccx vcs worktree rm --path <absolute-path> for working copies ccx does not manage",

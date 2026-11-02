@@ -365,11 +365,17 @@ func stackUndoNew(ctx context.Context, l lane, path, name, parent string, cause 
 }
 
 func stackNewPath(ctx context.Context, checkout vcs.Checkout, name, requested string, source vcs.Checkout) (string, error) {
-	path, err := mintWorktreePath(ctx, "stack new", checkout, name)
-	if err != nil {
-		return "", err
-	}
-	if requested != "" {
+	var path string
+	var err error
+	if requested == "" {
+		path, err = mintGitWorktreePath(ctx, "stack new", checkout, name)
+		if err != nil {
+			return "", err
+		}
+	} else {
+		if _, err := worktreeName("stack new", name); err != nil {
+			return "", err
+		}
 		if !filepath.IsAbs(requested) {
 			requested = filepath.Join(workingDir(ctx), requested)
 		}
@@ -377,19 +383,9 @@ func stackNewPath(ctx context.Context, checkout vcs.Checkout, name, requested st
 		if err != nil {
 			return "", err
 		}
-		ancestor := filepath.Dir(path)
-		tail := filepath.Base(path)
-		for {
-			resolved, err := filepath.EvalSymlinks(ancestor)
-			if err == nil {
-				path = filepath.Join(resolved, tail)
-				break
-			}
-			if !errors.Is(err, os.ErrNotExist) {
-				return "", err
-			}
-			tail = filepath.Join(filepath.Base(ancestor), tail)
-			ancestor = filepath.Dir(ancestor)
+		path, err = canonicalNewWorktreePath(path)
+		if err != nil {
+			return "", err
 		}
 	}
 	for _, root := range []string{checkout.Root, checkout.MainRoot, source.Root, source.MainRoot} {
