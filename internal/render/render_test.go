@@ -3,9 +3,12 @@ package render
 import (
 	"bytes"
 	"context"
+	"errors"
+	"os"
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -318,7 +321,10 @@ func TestWithEnvPATHResolvesTheChildsGit(t *testing.T) {
 	want := filepath.Join(dir, "git")
 	execstub.Write(t, want, "#!/bin/sh\n")
 	ctx := WithEnv(context.Background(), "PATH="+dir)
-	cmd, _, cancel := newCmd(ctx, Ambient, "git", nil, nil)
+	cmd, _, cancel, err := newCmd(ctx, Ambient, "git", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer cancel()
 	if cmd.Path != want {
 		t.Fatalf("spawned %q, want the context's git %q", cmd.Path, want)
@@ -339,12 +345,50 @@ func TestWithEnvPATHResolvesEveryBinary(t *testing.T) {
 			want := filepath.Join(dir, bin)
 			execstub.Write(t, want, "#!/bin/sh\n")
 			ctx := WithEnv(context.Background(), "PATH="+dir)
-			cmd, _, cancel := newCmd(ctx, Ambient, bin, nil, nil)
+			cmd, _, cancel, err := newCmd(ctx, Ambient, bin, nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
 			defer cancel()
 			if cmd.Path != want {
 				t.Fatalf("spawned %q, want the context's %s %q", cmd.Path, bin, want)
 			}
 		})
+	}
+}
+
+func TestAMeterSeesEachChildBeforeItRunsAndRefusesTheOnesItFails(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses /bin/sh to log the child's arguments")
+	}
+	t.Parallel()
+	dir := t.TempDir()
+	ran := filepath.Join(dir, "ran")
+	execstub.Write(t, filepath.Join(dir, "gh"), "#!/bin/sh\necho \"$@\" >> "+ran+"\n")
+	refusal := errors.New("ledger refused")
+	var metered [][]string
+	meter := func(_ context.Context, bin string, argv, env []string) error {
+		metered = append(metered, append([]string{bin}, append(argv, env...)...))
+		if argv[0] == "refused" {
+			return refusal
+		}
+		return nil
+	}
+	ctx := WithEnv(WithMeter(context.Background(), meter), "PATH="+dir)
+
+	if _, err := RunCLIEnv(ctx, Ambient, "gh", []string{"api", "user"}, []string{"GH_TOKEN=app"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := RunCLIProbe(ctx, Ambient, "gh", []string{"refused"}); !errors.Is(err, refusal) {
+		t.Fatalf("refused child err = %v, want the meter's refusal", err)
+	}
+
+	want := [][]string{{"gh", "api", "user", "PATH=" + dir, "GH_TOKEN=app"}, {"gh", "refused", "PATH=" + dir}}
+	if !slices.EqualFunc(metered, want, slices.Equal) {
+		t.Errorf("metered %q, want %q", metered, want)
+	}
+	if log, err := os.ReadFile(ran); err != nil || string(log) != "api user\n" {
+		t.Errorf("children ran %q (%v), want only the metered api user", log, err)
 	}
 }
 

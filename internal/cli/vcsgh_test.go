@@ -161,6 +161,32 @@ func TestGhResource(t *testing.T) {
 	}
 }
 
+func TestGhUserPoolChargesOnlyChildrenOnTheUsersToken(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		bin     string
+		argv    []string
+		env     []string
+		want    string
+		charged bool
+	}{
+		{bin: "gh", argv: []string{"api", "repos/o/r/pulls?head=o:b"}, want: ghapi.ResourceCore, charged: true},
+		{bin: "gh", argv: []string{"api", "graphql", "-f", "query={ viewer { login } }"}, env: []string{"GH_REPO=o/r"}, want: ghapi.ResourceGraphQL, charged: true},
+		{bin: "gh", argv: []string{"run", "watch", "7", "--exit-status"}, want: ghapi.ResourceCore, charged: true},
+		{bin: "gh", argv: []string{"run", "view", "7", "--log-failed"}, env: []string{"GH_TOKEN=app-token"}},
+		{bin: "gh", argv: []string{"auth", "token", "--hostname", "github.com"}},
+		{bin: "gh", argv: []string{"config", "get", "--host", "github.com", "user"}},
+		{bin: "gt", argv: []string{"track", "--parent", "main", "--no-interactive"}},
+		{bin: "git", argv: []string{"push", "origin", "b"}},
+	}
+	for _, tt := range tests {
+		got, charged := ghUserPool(tt.bin, tt.argv, tt.env)
+		if got != tt.want || charged != tt.charged {
+			t.Errorf("ghUserPool(%s %q, %q) = %q, %v; want %q, %v", tt.bin, tt.argv, tt.env, got, charged, tt.want, tt.charged)
+		}
+	}
+}
+
 func TestRunVcsGhRefusesAMerge(t *testing.T) {
 	t.Parallel()
 	for _, argv := range [][]string{
