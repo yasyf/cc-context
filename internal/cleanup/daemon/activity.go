@@ -108,6 +108,10 @@ func (e *Engine) yields(job cleanup.Job) bool {
 	return e.gate.held
 }
 
+func (e *Engine) holds(job cleanup.Job) bool {
+	return e.gate != nil && e.gate.held && e.contends(job)
+}
+
 func (e *Engine) sampleDue(now time.Time) bool {
 	if !e.wanted || (e.gate.sampled && now.Before(e.gate.at.Add(e.gate.every))) {
 		return false

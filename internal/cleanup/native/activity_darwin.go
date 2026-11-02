@@ -29,11 +29,17 @@ var (
 )
 
 type procTaskAllInfo struct {
-	_      procBSDInfo
+	bsd    procBSDInfo
 	_      [16]byte
 	user   uint64
 	system uint64
 	_      [64]byte
+}
+
+type session struct {
+	pid    int
+	start  uint64
+	micros uint64
 }
 
 // ActivitySampler reads how busy the Claude and Codex sessions sharing the
@@ -46,7 +52,7 @@ type ActivitySampler struct {
 
 	mu    sync.Mutex
 	at    time.Time
-	spent map[int]time.Duration
+	spent map[session]time.Duration
 }
 
 // NewActivitySampler returns a sampler that times creates in probe, which it
@@ -81,11 +87,8 @@ func (s *ActivitySampler) Sample(ctx context.Context) (cleanup.Activity, error) 
 		return cleanup.Activity{}, errPriming
 	}
 	activity := cleanup.Activity{Sessions: make([]float64, 0, len(spent)), Create: create}
-	for pid, cpu := range spent {
-		if before := previous[pid]; before <= cpu {
-			cpu -= before
-		}
-		activity.Sessions = append(activity.Sessions, float64(cpu)/float64(since)*100)
+	for process, cpu := range spent {
+		activity.Sessions = append(activity.Sessions, float64(cpu-previous[process])/float64(since)*100)
 	}
 	return activity, nil
 }
@@ -119,12 +122,12 @@ func timeCreates(dir string) (time.Duration, error) {
 	return took[len(took)/2], nil
 }
 
-func sessionCPU(ctx context.Context, lib *libSystem, timebase machTimebase) (map[int]time.Duration, error) {
+func sessionCPU(ctx context.Context, lib *libSystem, timebase machTimebase) (map[session]time.Duration, error) {
 	pids, err := lib.listPIDs(procUIDOnly, os.Getuid())
 	if err != nil {
 		return nil, err
 	}
-	spent := make(map[int]time.Duration)
+	spent := make(map[session]time.Duration)
 	for _, pid := range pids {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -142,7 +145,8 @@ func sessionCPU(ctx context.Context, lib *libSystem, timebase machTimebase) (map
 		}
 		hi, lo := bits.Mul64(task.user+task.system, uint64(timebase.numer))
 		nanos, _ := bits.Div64(hi, lo, uint64(timebase.denom))
-		spent[int(pid)] = time.Duration(nanos) //nolint:gosec // cumulative CPU time stays far below 292 years
+		process := session{pid: int(pid), start: task.bsd.start, micros: task.bsd.startMicros}
+		spent[process] = time.Duration(nanos) //nolint:gosec // cumulative CPU time stays far below 292 years
 	}
 	return spent, nil
 }

@@ -159,3 +159,19 @@ func TestJobsOffTheVolumeDeleteWhileSessionsAreBusy(t *testing.T) {
 		}
 	})
 }
+
+func TestHeldGateWaitsForTheNextSampleNotADueRetry(t *testing.T) {
+	bubble(t, gated(), func(_ *testing.T, h *harness) {
+		withActivity(h, busySessions)
+		h.seed("a", 1, cleanup.PhaseUnregistered, func(job *cleanup.Job) {
+			job.Block(h.clock.Now().Add(-time.Minute), "activity", "held by pid 7")
+		})
+		h.deleter.put("a", &payload{entries: 50})
+		h.start()
+		h.expectEvents("activity")
+		h.expectTimers(2 * time.Second)
+		h.clock.Advance(2 * time.Second)
+		h.expectEvents("activity")
+		h.expectTimers(2 * time.Second)
+	})
+}

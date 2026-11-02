@@ -860,13 +860,17 @@ func (e *Engine) wake(physical bool) (time.Time, bool) {
 		if e.paused && !e.retirementDue(job) {
 			continue
 		}
+		due := consider
+		if e.holds(job) {
+			due = func(at time.Time) { consider(later(at, e.gate.next(e.slicedAt))) }
+		}
 		if e.paused && job.Blocked == nil && !job.RetireAfter.IsZero() {
-			consider(job.RetireAfter)
+			due(job.RetireAfter)
 		} else if job.Phase == cleanup.PhaseWaiting && job.Blocked == nil {
-			consider(e.checked[job.ID].Add(e.tuning.Recheck))
+			due(e.checked[job.ID].Add(e.tuning.Recheck))
 		}
 		if at, ok := e.retryAt(job); ok {
-			consider(at)
+			due(at)
 		}
 	}
 	if physical {
@@ -1135,7 +1139,7 @@ func (e *Engine) open(ctx context.Context, job *cleanup.Job) error {
 		return &fatalError{fmt.Errorf("cleanup daemon: admit job %s: %w", job.ID, err)}
 	}
 	e.put(*job)
-	if job.Blocked != nil {
+	if job.Blocked != nil || e.holds(*job) {
 		return nil
 	}
 	deletion, err := e.deleter.Open(root.Dir, root.Name, root.ID)
