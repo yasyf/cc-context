@@ -451,7 +451,7 @@ func (r *Relocator) unlisted(ctx context.Context, job *cleanup.Job, vetted *bool
 	case pushErr != nil:
 		return gitReason(pushErr), pushErr.Error()
 	case !pushed:
-		return reason, fmt.Sprintf("%v; no remote-tracking ref holds %s's head %s", err, job.Original, job.Head)
+		return timeoutReason, fmt.Sprintf("%v; no remote-tracking ref holds %s's head %s", err, job.Original, job.Head)
 	}
 	*vetted = false
 	slog.Warn("cleanup: moving a pushed tree whose watchers could not be listed", "job", job.ID, "tree", job.Original, "check", reason, "error", err)

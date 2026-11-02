@@ -392,7 +392,7 @@ func (r *Relocator) resumeDisplaced(ctx context.Context, job *cleanup.Job) (bool
 		return true, err
 	}
 	if err := r.cfg.Watchers.CheckQuarantine(ctx, filepath.Dir(job.Payload)); err != nil {
-		_, err = r.block(ctx, job, "quarantine", err.Error())
+		_, err = r.block(ctx, job, probeReason("quarantine", err), err.Error())
 		return true, err
 	}
 	if failed, err := r.strictIdle(ctx, job, files.tree, files.admin); err != nil {
@@ -539,7 +539,7 @@ func (r *Relocator) admitAdmin(ctx context.Context, job *cleanup.Job) (cleanup.D
 	}
 	for _, dir := range directories {
 		if err := r.cfg.Watchers.CheckQuarantine(ctx, dir); err != nil {
-			return r.rejectRoot(ctx, job, "quarantine", err)
+			return r.rejectRoot(ctx, job, probeReason("quarantine", err), err)
 		}
 	}
 	job.Ignored = nil

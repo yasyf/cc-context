@@ -606,9 +606,52 @@ func TestAdvanceBlocksAnUnpushedTreeWhoseProcessListingTimedOut(t *testing.T) {
 
 	f.advance(&job)
 
-	f.blocked(&job, cleanup.PhasePrepared, "watchers", fmt.Sprintf("%v; no remote-tracking ref holds %s's head %s", errListingTimedOut, f.worktree, job.Head))
+	f.blocked(&job, cleanup.PhasePrepared, timeoutReason, fmt.Sprintf("%v; no remote-tracking ref holds %s's head %s", errListingTimedOut, f.worktree, job.Head))
 	if got := f.id(f.worktree); got != job.Tree {
 		t.Errorf("worktree identity = %v, want the tree %v", got, job.Tree)
+	}
+}
+
+func TestUnprobedQuarantineBlocksAsATimeout(t *testing.T) {
+	tests := []struct {
+		name    string
+		arrange func(f *fixture) cleanup.Job
+		run     func(f *fixture, job *cleanup.Job)
+		phase   cleanup.Phase
+		detail  func(f *fixture, job cleanup.Job) string
+	}{
+		{"before the move", func(f *fixture) cleanup.Job { return f.accept() }, (*fixture).advance, cleanup.PhasePrepared, func(f *fixture, job cleanup.Job) string {
+			return fmt.Sprintf("%v; no remote-tracking ref holds %s's head %s", errListingTimedOut, f.worktree, job.Head)
+		}},
+		{"payload admission", func(f *fixture) cleanup.Job { return f.unregistered() }, (*fixture).admit, cleanup.PhaseUnregistered, nil},
+		{"displaced resume", func(f *fixture) cleanup.Job {
+			job := f.intend()
+			moveCapturedAdmin(f.t, f, job)
+			retireFixture(f.t, f, &job)
+			return job
+		}, (*fixture).advance, cleanup.PhaseQueued, nil},
+		{"admin admission", func(f *fixture) cleanup.Job {
+			job := f.intend()
+			moveCapturedAdmin(f.t, f, job)
+			retireFixture(f.t, f, &job)
+			f.advance(&job)
+			return job
+		}, (*fixture).admit, cleanup.PhaseDeletingAdmin, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFixture(t)
+			job := tt.arrange(f)
+			f.watchers.quarantine = func(context.Context, string) error { return errListingTimedOut }
+			detail := errListingTimedOut.Error()
+			if tt.detail != nil {
+				detail = tt.detail(f, job)
+			}
+
+			tt.run(f, &job)
+
+			f.blocked(&job, tt.phase, timeoutReason, detail)
+		})
 	}
 }
 

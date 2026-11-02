@@ -338,7 +338,7 @@ func (r *Relocator) vouch(ctx context.Context, job *cleanup.Job) (reason, detail
 	}
 	for _, dir := range []string{job.Source, jobDir} {
 		if err := r.cfg.Watchers.CheckQuarantine(ctx, dir); err != nil {
-			return "quarantine", err.Error()
+			return probeReason("quarantine", err), err.Error()
 		}
 	}
 	if holders := r.held(ctx, job, job.Source); holders != "" {
