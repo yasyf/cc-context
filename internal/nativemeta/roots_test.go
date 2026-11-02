@@ -136,6 +136,32 @@ func TestNativePlannedReadKeepsCommonTrunkState(t *testing.T) {
 	}
 }
 
+// TestNativeTrunkIsTheDefaultBranchOverALoneStackOnAnotherBase is
+// cci-who-fast: the catalog's one stack sat on a pull request branch, and its
+// base, as the catalog's only root, became every lane's trunk.
+func TestNativeTrunkIsTheDefaultBranchOverALoneStackOnAnotherBase(t *testing.T) {
+	dir := repo(t)
+	common := filepath.Join(dir, ".git")
+	head := git(t, dir, "rev-parse", "main")
+	for _, branch := range []string{"open", "post"} {
+		git(t, dir, "branch", branch, head)
+	}
+	writeCatalog(t, common, catalog{SchemaVersion: 1, Stacks: []stack{
+		{Trunk: branchRef{Branch: "open", Head: head}, Branches: []branchRef{{Branch: "post", Base: head}}},
+	}})
+	trunk, err := ReadTrunk(t.Context(), common)
+	if err != nil || trunk != "main" {
+		t.Fatalf("trunk = %q, %v, want main, which origin/HEAD names", trunk, err)
+	}
+	state, orphans, err := ReadOriginPlannedOrphans(t.Context(), common)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := (State{"main": {Trunk: true, Head: head}}); !reflect.DeepEqual(state, want) || len(orphans) != 0 {
+		t.Fatalf("state=%+v orphans=%+v want=%+v", state, orphans, want)
+	}
+}
+
 func reverseRoots(branches []string) []string {
 	out := slices.Clone(branches)
 	slices.Reverse(out)

@@ -344,6 +344,9 @@ func ReadTrunk(ctx context.Context, commonDir string) (string, error) {
 }
 
 func trunkOf(ctx context.Context, commonDir string, r []branchRow) (string, error) {
+	if trunk, err := originHead(ctx, commonDir); err == nil {
+		return trunk, nil
+	}
 	var roots []string
 	for _, row := range r {
 		if row.parent == "" {
@@ -354,23 +357,23 @@ func trunkOf(ctx context.Context, commonDir string, r []branchRow) (string, erro
 		return roots[0], nil
 	}
 	trunk, err := originTrunk(ctx, commonDir)
-	if err == nil && (len(roots) == 0 || slices.Contains(roots, trunk)) {
-		return trunk, nil
+	if err != nil {
+		return "", fmt.Errorf("native stack catalog has %d roots, and origin/HEAD names no trunk; set it with git remote set-head origin <branch>: %w", len(roots), err)
 	}
-	return "", fmt.Errorf("native stack catalog has no unambiguous trunk; initialize it with gh stack init --base <branch>")
+	return trunk, nil
 }
 
 func originTrunk(ctx context.Context, commonDir string) (string, error) {
-	dir := render.Dir(commonDir)
-	head := []string{"--git-dir=" + commonDir, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"}
-	out, err := render.RunCLI(ctx, dir, "git", head)
+	if _, err := render.RunCLI(ctx, render.Dir(commonDir), "git", []string{"--git-dir=" + commonDir, "remote", "set-head", "origin", "--auto"}); err != nil {
+		return "", err
+	}
+	return originHead(ctx, commonDir)
+}
+
+func originHead(ctx context.Context, commonDir string) (string, error) {
+	out, err := render.RunCLI(ctx, render.Dir(commonDir), "git", []string{"--git-dir=" + commonDir, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"})
 	if err != nil {
-		if _, err := render.RunCLI(ctx, dir, "git", []string{"--git-dir=" + commonDir, "remote", "set-head", "origin", "--auto"}); err != nil {
-			return "", err
-		}
-		if out, err = render.RunCLI(ctx, dir, "git", head); err != nil {
-			return "", err
-		}
+		return "", err
 	}
 	return strings.TrimPrefix(strings.TrimSpace(out), "origin/"), nil
 }
@@ -490,6 +493,10 @@ func Rows(ctx context.Context, commonDir string) ([]Row, error) {
 }
 
 func mutate(ctx context.Context, commonDir string, change func(*catalog, *receipts) (bool, bool, error)) error {
+	return mutateKeeping(ctx, commonDir, "", change)
+}
+
+func mutateKeeping(ctx context.Context, commonDir, keep string, change func(*catalog, *receipts) (bool, bool, error)) error {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	operation, err := lockCatalog(ctx, commonDir, "gh-stack-operation.lock")
@@ -506,7 +513,7 @@ func mutate(ctx context.Context, commonDir string, change func(*catalog, *receip
 	if err != nil {
 		return err
 	}
-	healed, err := dropStrayRoots(ctx, commonDir, &c, &r)
+	healed, err := dropStrayRoots(ctx, commonDir, keep, &c, &r)
 	if err != nil {
 		return err
 	}
@@ -526,7 +533,7 @@ func mutate(ctx context.Context, commonDir string, change func(*catalog, *receip
 	return nil
 }
 
-func dropStrayRoots(ctx context.Context, commonDir string, c *catalog, r *receipts) (bool, error) {
+func dropStrayRoots(ctx context.Context, commonDir, keep string, c *catalog, r *receipts) (bool, error) {
 	all, err := rows(*c)
 	if err != nil {
 		return false, err
@@ -546,7 +553,7 @@ func dropStrayRoots(ctx context.Context, commonDir string, c *catalog, r *receip
 	}
 	stray := map[string]bool{}
 	for _, root := range roots {
-		if root == trunk {
+		if root == trunk || root == keep {
 			continue
 		}
 		onOrigin, headed, err := branchHistory(ctx, commonDir, root)
@@ -727,7 +734,7 @@ func RetargetRoot(ctx context.Context, commonDir, root, trunk string) error {
 	if err != nil {
 		return fmt.Errorf("resolve native stack trunk %s: %w", trunk, err)
 	}
-	return mutate(ctx, commonDir, func(c *catalog, _ *receipts) (bool, bool, error) {
+	return mutateKeeping(ctx, commonDir, root, func(c *catalog, _ *receipts) (bool, bool, error) {
 		moved := false
 		for i := range c.Stacks {
 			if c.Stacks[i].Trunk.Branch == root {

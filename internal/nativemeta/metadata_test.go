@@ -257,6 +257,23 @@ func TestNativeWritesDropARootThatWasAPullRequestHead(t *testing.T) {
 	}
 }
 
+func TestNativeRetargetKeepsALandedRootItMoves(t *testing.T) {
+	common, main := strayRootFixture(t, func(context.Context, string, string) (bool, bool, error) { return true, true, nil })
+	if err := RetargetRoot(t.Context(), common, "other", "main"); err != nil {
+		t.Fatal(err)
+	}
+	c, r, err := load(common)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Stacks) != 2 || c.Stacks[1].Trunk.Branch != "main" || c.Stacks[1].Branches[0] != (branchRef{Branch: "child", Base: main}) {
+		t.Fatalf("catalog = %+v; want child's stack moved onto main at its fork point", c.Stacks)
+	}
+	if !r.Frozen["child"] || r.Submitted["child"].HeadSha != main {
+		t.Fatalf("receipts = %+v; want child's kept", r)
+	}
+}
+
 func TestNativeWritesDropARootMissingFromOrigin(t *testing.T) {
 	common, main := strayRootFixture(t, func(context.Context, string, string) (bool, bool, error) { return false, false, nil })
 	if err := RecordSubmitted(t.Context(), common, map[string]Version{"feature": {HeadSha: main, BaseSha: main, BaseName: "main"}}); err != nil {

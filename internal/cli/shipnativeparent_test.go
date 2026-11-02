@@ -313,3 +313,44 @@ func TestShipParentOnANativeBranchShipsOnTheNativeLane(t *testing.T) {
 		t.Errorf("parent = %q, want child shipped onto base", got)
 	}
 }
+
+// TestShipOnTrunkPastALoneNativeStackOnAPullRequestBranch is cci-who-fast: the
+// one native stack in cc-inbox sat on store-bounded-open, a plain pull request
+// branch, so ccx read it as the trunk, and a ship of a branch cut from main
+// refused "gt state has no parent for main".
+func TestShipOnTrunkPastALoneNativeStackOnAPullRequestBranch(t *testing.T) {
+	for _, args := range [][]string{{"--parent", "main"}, nil} {
+		t.Run(strings.Join(append([]string{"ship"}, args...), " "), func(t *testing.T) {
+			f := shipRepo(t, vcstest.Remote())
+			f.Decorate(func(ctx context.Context) context.Context { return withStackProvider(ctx, true) })
+			mustRun(t, f.Env(), f.Dir, "git", "config", "ccx.stack", "github")
+			shipGTUntracked(t, f, "open")
+			shipGTUntracked(t, f, "post")
+			open := gitAt(t, f.Env(), f.Dir, "rev-parse", "open")
+			post := gitAt(t, f.Env(), f.Dir, "rev-parse", "post")
+			mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "open", "post")
+			catalog := fmt.Sprintf(`{"schemaVersion":1,"stacks":[{"trunk":{"branch":"open","head":%q},"branches":[{"branch":"post","base":%q,"head":%q}]}]}`, open, open, post)
+			if err := os.WriteFile(filepath.Join(f.Dir, ".git", "gh-stack"), []byte(catalog), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
+			shipGTUntracked(t, f, "mine")
+			api := stubGTAPI(t)
+			f.Decorate(api.ctx)
+			stubStackPRs(t, f, nil)
+			stubStackStanding(t, f, nil)
+
+			report := dryRunReport(t, f, append([]string{"--no-commit"}, args...)...)
+
+			if refusals := dryRunValues(report, "refuses"); len(refusals) != 0 {
+				t.Errorf("refuses = %q, want none", refusals)
+			}
+			if got := dryRunValues(report, "trunk"); len(got) != 1 || got[0] != "main" {
+				t.Errorf("trunk = %q, want main, the default branch, not the base of the one native stack\n%s", got, report)
+			}
+			if got := dryRunValues(report, "parent"); len(got) != 1 || !strings.HasPrefix(got[0], "main"+shipSep) {
+				t.Errorf("parent = %q, want mine shipped onto main\n%s", got, report)
+			}
+		})
+	}
+}
