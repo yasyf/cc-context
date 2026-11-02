@@ -2907,12 +2907,6 @@ func (d *deferCleanup) Defer(_ context.Context, r cleanup.DeferRequest) (cleanup
 	return d.receipt, d.err
 }
 
-func (d *deferCleanup) answer(receipt cleanup.Receipt, err error) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.receipt, d.err = receipt, err
-}
-
 func (d *deferCleanup) asked() []cleanup.DeferRequest {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -3010,7 +3004,7 @@ func TestStackContinueHandsTheWorkspaceToCleanup(t *testing.T) {
 			if err != nil {
 				t.Fatalf("continue: %v", err)
 			}
-			if want := "handed " + ws + " " + tt.want + "\n"; !strings.Contains(out, want) {
+			if want := "handed " + ws + " " + tt.want; !strings.HasSuffix(out, want) {
 				t.Errorf("continue output = %q, want %q", out, want)
 			}
 			if got, want := svc.asked(), []cleanup.DeferRequest{stackWantDefer(t, f, ws, registration, false)}; !slices.Equal(got, want) {
@@ -3102,84 +3096,85 @@ func TestStackAbortAndReclaimForceTheDeferredRemoval(t *testing.T) {
 	})
 }
 
-// TestStackCleanupRefusalKeepsTheRun pins that a removal the cleanup service
-// refuses promises nothing: the command fails with the service's own words,
-// the run still names its workspace, the workspace is untouched, no worktree
-// is pruned on the daemon's behalf, and the same command finishes once the
-// service accepts.
-func TestStackCleanupRefusalKeepsTheRun(t *testing.T) {
+// TestStackCleanupRefusalFinishesTheRun pins that a removal the cleanup
+// service refuses or never confirms leaves only the workspace behind: continue
+// still replays the stack and abort still drops it, each says where the
+// workspace was left and how to remove it, no run is kept to block the next
+// submit, and no worktree is pruned on the daemon's behalf. A workspace on
+// another volume than the cleanup folder is the refusal no retry clears.
+func TestStackCleanupRefusalFinishesTheRun(t *testing.T) {
 	t.Parallel()
-	refused := func(ws string) error {
-		return &cleanup.RefusedError{Worktree: ws, Reason: "dirty", Detail: "holds untracked files"}
-	}
-	errLost := errors.New("read the receipt: connection reset by peer")
-	lost := func(string) error { return errLost }
 	for _, tt := range []struct {
 		name   string
 		verb   string
 		answer func(ws string) error
-		tail   func(ws string) string
+		line   func(ws string) string
 	}{
-		{"continue refused", "continue", refused, stackRefusedTail},
-		{"abort refused", "abort", refused, stackRefusedTail},
-		{"continue unconfirmed", "continue", lost, stackLostTail},
-		{"abort unconfirmed", "abort", lost, stackLostTail},
+		{"continue refused", "continue", stackDirtyRefusal, stackDirtyLine},
+		{"abort refused", "abort", stackDirtyRefusal, stackDirtyLine},
+		{"continue across volumes", "continue", stackVolumeRefusal, stackVolumeLine},
+		{"abort across volumes", "abort", stackVolumeRefusal, stackVolumeLine},
+		{"continue unconfirmed", "continue", stackLostDefer, stackLostLine},
+		{"abort unconfirmed", "abort", stackLostDefer, stackLostLine},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			f, ws := stackResolvedConflict(t)
-			answer := tt.answer(ws)
-			svc := stackDeferTo(t, f, cleanup.Receipt{}, answer)
+			svc := stackDeferTo(t, f, cleanup.Receipt{}, tt.answer(ws))
 			registration := stackRunConflict(t, f).Registration
-			if registration != observedWorkspace(t, ws) {
-				t.Fatalf("run registration = %+v, want the one observed at %s", registration, ws)
-			}
 			feature := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")
-			verb := tt.verb
 
-			_, _, err := runStackCmd(t, f, verb)
-			if want := "stack rebase: cleanup defer " + ws + ": " + tt.tail(ws) + "; the run is kept, so " + verb + " can run again"; err == nil || err.Error() != want {
-				t.Fatalf("%s = %v, want %q", verb, err, want)
+			out, _, err := runStackCmd(t, f, tt.verb)
+			if err != nil {
+				t.Fatalf("%s: %v", tt.verb, err)
 			}
-			if !errors.Is(err, answer) {
-				t.Errorf("errors.Is(%v, %v) = false, want the service's own error", err, answer)
+			if want := tt.line(ws); !strings.Contains(out, want) {
+				t.Errorf("%s output = %q, want %q", tt.verb, out, want)
 			}
-			if c := stackRunConflict(t, f); c == nil || c.Workspace != ws || c.Registration != registration {
-				t.Errorf("run conflict = %+v, want it still naming %s with registration %+v", c, ws, registration)
+			if got, want := svc.asked(), []cleanup.DeferRequest{stackWantDefer(t, f, ws, registration, tt.verb == "abort")}; !slices.Equal(got, want) {
+				t.Errorf("defer requests = %+v, want %+v", got, want)
 			}
-			if head := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature"); head != feature {
-				t.Errorf("feature moved to %s, want %s until the run finishes", head, feature)
+			moved := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature") != feature
+			if want := tt.verb == "continue"; moved != want {
+				t.Errorf("%s moved feature = %v, want %v", tt.verb, moved, want)
+			}
+			if states, _ := filepath.Glob(filepath.Join(f.Dir, ".git", stackRebaseStateDir, "*", stackRebaseState)); len(states) != 0 {
+				t.Errorf("%s left run state behind: %q", tt.verb, states)
 			}
 			sparseAssertWorkspace(t, f, ws, true)
 			if removals := stackRemovals(t, f); len(removals) != 0 {
-				t.Errorf("%s removed worktrees itself: %q", verb, removals)
-			}
-
-			svc.answer(cleanup.Receipt{JobID: "18da0c79bf8acbd0-d6a2e1", State: cleanup.State(cleanup.PhaseQueued)}, nil)
-			out, _, err := runStackCmd(t, f, verb)
-			if err != nil {
-				t.Fatalf("%s after the service accepted: %v", verb, err)
-			}
-			if want := "handed " + ws + " to cleanup job 18da0c79bf8acbd0-d6a2e1, queued"; !strings.Contains(out, want) {
-				t.Errorf("%s output = %q, want %q", verb, out, want)
-			}
-			want := stackWantDefer(t, f, ws, registration, verb == "abort")
-			if got := svc.asked(); !slices.Equal(got, []cleanup.DeferRequest{want, want}) {
-				t.Errorf("defer requests = %+v, want %+v once per attempt", got, want)
-			}
-			if states, _ := filepath.Glob(filepath.Join(f.Dir, ".git", stackRebaseStateDir, "*", stackRebaseState)); len(states) != 0 {
-				t.Errorf("%s left run state behind: %q", verb, states)
+				t.Errorf("%s removed worktrees itself: %q", tt.verb, removals)
 			}
 		})
 	}
 }
 
-func stackRefusedTail(ws string) string {
-	return ws + ": holds untracked files — nothing was removed, and " + ws + " is left where it is"
+func stackDirtyRefusal(ws string) error {
+	return &cleanup.RefusedError{Worktree: ws, Reason: "dirty", Detail: "holds untracked files"}
 }
 
-func stackLostTail(ws string) string {
-	return "read the receipt: connection reset by peer — the cleanup daemon may already hold " + ws
+func stackDirtyLine(ws string) string {
+	return "left " + ws + " in place: holds untracked files — nothing was removed; ccx vcs worktree rm --path " + ws + " queues it once that is cleared"
+}
+
+func stackVolumeDetail(ws string) string {
+	return ws + " and the cleanup folder /Users/me/.daemonkit/a/ccx-cleanup/jobs are on different volumes"
+}
+
+func stackVolumeRefusal(ws string) error {
+	return &cleanup.RefusedError{Worktree: ws, Reason: "volume", Detail: stackVolumeDetail(ws)}
+}
+
+func stackVolumeLine(ws string) string {
+	return "left " + ws + " in place: " + stackVolumeDetail(ws) + " — nothing was removed; git worktree remove --force " + ws + " deletes it where it is"
+}
+
+func stackLostDefer(string) error {
+	return errors.New("read the receipt: connection reset by peer")
+}
+
+func stackLostLine(ws string) string {
+	return "left " + ws + " to the cleanup daemon, which may already hold it: cleanup defer " + ws + ": read the receipt: connection reset by peer — ccx vcs cleanup status shows whether it does"
 }
 
 func TestStackReleaseUnderAPausedQueue(t *testing.T) {
@@ -3226,11 +3221,11 @@ func TestStackReleaseOfAVanishedWorkspace(t *testing.T) {
 			f, ws := stackResolvedConflict(t)
 			svc := stackDeferTo(t, f, cleanup.Receipt{}, cleanup.ErrUnsupported)
 			if verb == "continue" {
-				svc.answer(cleanup.Receipt{}, &cleanup.RefusedError{Worktree: ws, Reason: "dirty", Detail: "holds untracked files"})
-				if _, _, err := runStackCmd(t, f, verb); err == nil {
-					t.Fatal("continue succeeded, want the refusal to keep the run")
+				mustRun(t, append(f.Env(), "GIT_EDITOR=true"), ws, "git", "rebase", "--continue")
+				writeShipFile(t, ws, "c.txt", "edited after the resolution\n")
+				if _, _, err := runStackCmd(t, f, verb); err == nil || !strings.Contains(err.Error(), "holds uncommitted changes to tracked files") {
+					t.Fatalf("continue = %v, want the uncommitted edit to keep the run past its resolved head", err)
 				}
-				svc.answer(cleanup.Receipt{}, cleanup.ErrUnsupported)
 			}
 			asked := len(svc.asked())
 			registration := stackRunConflict(t, f).Registration
@@ -3350,8 +3345,8 @@ func TestStackContinueDiscardsInlineOnlyWhereCleanupIsUnsupported(t *testing.T) 
 			if got, want := svc.asked(), []cleanup.DeferRequest{stackWantDefer(t, f, ws, registration, false)}; !slices.Equal(got, want) {
 				t.Errorf("defer requests = %+v, want %+v", got, want)
 			}
-			kept := "left " + ws + " in place, since this command runs inside it — remove it with ccx vcs worktree rm --path " + ws + " once you leave it\n"
-			if got := strings.Contains(out, kept); got != inside {
+			kept := "left " + ws + " in place, since this command runs inside it — remove it with ccx vcs worktree rm --path " + ws + " once you leave it"
+			if got := strings.HasSuffix(out, kept); got != inside {
 				t.Errorf("continue output = %q, names the kept workspace: %v, want %v", out, got, inside)
 			}
 			if strings.Contains(out, "cleanup job") {

@@ -696,6 +696,28 @@ func TestShipPREditOnlyStatedFields(t *testing.T) {
 	}
 }
 
+func TestShipPRReshipWithoutPRFlagsLeavesTheOpenPRAlone(t *testing.T) {
+	f := shipPRFixture(t, vcstest.Branch("feature"))
+	t.Setenv("GH_PULLS_JSON", ghStdout(t, "rest-pulls-head-open"))
+
+	got, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-watch")
+	if err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	var prCalls [][]string
+	for _, inv := range vcstest.Invocations(t, f.ArgvLog) {
+		if inv[0] == "gh" && (inv[1] == "pr" || isPREdit(inv) || isPRLookup(inv)) {
+			prCalls = append(prCalls, inv)
+		}
+	}
+	if len(prCalls) != 0 {
+		t.Errorf("pull request calls = %q, want none from a ship naming no PR field", prCalls)
+	}
+	if strings.Contains(got, "updated PR") {
+		t.Errorf("summary = %q, want no pull request restated", got)
+	}
+}
+
 func TestShipPRBodyFromStdin(t *testing.T) {
 	f := shipPRFixture(t, vcstest.Branch("feature"))
 	pr := prFromListGolden(t, "rest-pulls-head-open")
