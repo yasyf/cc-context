@@ -50,7 +50,7 @@ func layeredFamily(t *testing.T) (main, linked string) {
 	return main, linked
 }
 
-func indexManifest(t *testing.T, ctx context.Context, repo string) manifest {
+func indexManifest(ctx context.Context, t *testing.T, repo string) manifest {
 	t.Helper()
 	dir, err := CacheDir(ctx, repo)
 	if err != nil {
@@ -86,7 +86,7 @@ func TestLayeredIndexSearchesLikeAFlatBuild(t *testing.T) {
 	if err != nil {
 		t.Fatalf("linked Load: %v", err)
 	}
-	mainMan, linkedMan := indexManifest(t, shared, main), indexManifest(t, shared, linked)
+	mainMan, linkedMan := indexManifest(shared, t, main), indexManifest(shared, t, linked)
 	if len(mainMan.Segments) != 1 || len(linkedMan.Segments) != 2 || linkedMan.Segments[0] != mainMan.Segments[0] {
 		t.Fatalf("segments: main %v, linked %v; want linked on main's segment plus one overlay", mainMan.Segments, linkedMan.Segments)
 	}
@@ -96,7 +96,7 @@ func TestLayeredIndexSearchesLikeAFlatBuild(t *testing.T) {
 	if err != nil {
 		t.Fatalf("flat Load: %v", err)
 	}
-	if got := indexManifest(t, isolated, linked).Segments; len(got) != 1 {
+	if got := indexManifest(isolated, t, linked).Segments; len(got) != 1 {
 		t.Fatalf("isolated segments = %v, want one whole segment", got)
 	}
 
@@ -138,7 +138,7 @@ func TestLoadRebasesPastTheOverlayShare(t *testing.T) {
 			t.Fatalf("Load %s: %v", repo, err)
 		}
 	}
-	mainMan, linkedMan := indexManifest(t, ctx, main), indexManifest(t, ctx, linked)
+	mainMan, linkedMan := indexManifest(ctx, t, main), indexManifest(ctx, t, linked)
 	if len(linkedMan.Segments) != 1 || linkedMan.Segments[0] == mainMan.Segments[0] {
 		t.Fatalf("segments: main %v, linked %v; want linked rebased onto a whole segment of its own", mainMan.Segments, linkedMan.Segments)
 	}
@@ -155,7 +155,7 @@ func TestPruneSweepsOnlyUnreferencedSegmentsPastTheirGrace(t *testing.T) {
 			t.Fatalf("Load %s: %v", repo, err)
 		}
 	}
-	liveSeg, goneSeg := indexManifest(t, ctx, live).Segments[0], indexManifest(t, ctx, gone).Segments[0]
+	liveSeg, goneSeg := indexManifest(ctx, t, live).Segments[0], indexManifest(ctx, t, gone).Segments[0]
 	root, err := semsearchDir(ctx, segmentsDir)
 	if err != nil {
 		t.Fatal(err)
