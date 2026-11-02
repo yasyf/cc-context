@@ -99,7 +99,7 @@ func (r *byteReader) u64() uint64 {
 
 func (r *byteReader) count(width int) int {
 	n := r.u64()
-	if r.err == nil && n > uint64(len(r.data)-r.off)/uint64(width) {
+	if r.err == nil && n > uint64(len(r.data)-r.off)/uint64(width) { //nolint:gosec // len minus a read offset that never passes it is non-negative
 		r.err = fmt.Errorf("count %d exceeds the remaining %d bytes", n, len(r.data)-r.off)
 	}
 	return int(n) //nolint:gosec // bounded by the mapping length above
@@ -192,7 +192,7 @@ func aliasString(b []byte) string {
 	if len(b) == 0 {
 		return ""
 	}
-	return unsafe.String(&b[0], len(b))
+	return unsafe.String(&b[0], len(b)) //nolint:gosec // aliases the read-only mapping the index owns until Close
 }
 
 func writeVectors(w io.Writer, generation string, vectors [][]float32) error {
@@ -210,7 +210,7 @@ func writeVectors(w io.Writer, generation string, vectors [][]float32) error {
 		if len(row) == 0 {
 			continue
 		}
-		if _, err := w.Write(unsafe.Slice((*byte)(unsafe.Pointer(&row[0])), 4*len(row))); err != nil {
+		if _, err := w.Write(unsafe.Slice((*byte)(unsafe.Pointer(&row[0])), 4*len(row))); err != nil { //nolint:gosec // a row is a contiguous float32 slice written in host little-endian order
 			return err
 		}
 	}
@@ -234,7 +234,7 @@ func readVectorsMapped(data []byte) (string, [][]float32, error) {
 	if rows == 0 || dims == 0 {
 		return generation, out, nil
 	}
-	flat := unsafe.Slice((*float32)(unsafe.Pointer(&data[r.off])), rows*dims)
+	flat := unsafe.Slice((*float32)(unsafe.Pointer(&data[r.off])), rows*dims) //nolint:gosec // vectors.bin rows alias the read-only mapping the index owns until Close
 	for i := range out {
 		out[i] = flat[i*dims : (i+1)*dims : (i+1)*dims]
 	}
@@ -326,7 +326,7 @@ func readTermsMapped(data []byte) (string, *termStore, error) {
 		return "", nil, fmt.Errorf("terms.bin: %w", r.err)
 	}
 	termBytes := binary.LittleEndian.Uint64(s.termOffsets[8*nTerms:])
-	if termBytes > uint64(len(data)-r.off) {
+	if termBytes > uint64(len(data)-r.off) { //nolint:gosec // len minus a read offset that never passes it is non-negative
 		return "", nil, fmt.Errorf("terms.bin: %d term bytes exceed the file", termBytes)
 	}
 	s.terms = r.take(int(termBytes)) //nolint:gosec // bounded by the file length above
@@ -337,7 +337,7 @@ func readTermsMapped(data []byte) (string, *termStore, error) {
 	if r.off != len(data) {
 		return "", nil, errors.New("terms.bin: trailing bytes after the postings")
 	}
-	if !ascendingTo(s.termOffsets, termBytes) || !ascendingTo(s.postingOffsets, uint64(nPostings)) {
+	if !ascendingTo(s.termOffsets, termBytes) || !ascendingTo(s.postingOffsets, uint64(nPostings)) { //nolint:gosec // a count bounded by the file length is non-negative
 		return "", nil, errors.New("terms.bin: offset tables are not ascending to their section ends")
 	}
 	for i := 1; i < nTerms; i++ {
