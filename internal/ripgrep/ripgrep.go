@@ -563,7 +563,7 @@ func buildArgv(eng engine, a backend.Args) ([]string, error) {
 // AnchorGrepArgs peels the anchor every include glob shares into the operand the
 // engine searches, so a glob anchored at a real directory is searched even under
 // ignore rules. A literal glob naming a regular file anchors to that file's
-// parent; an anchor missing from disk leaves a unchanged and yields no operand.
+// parent; a missing anchor stays an explicit operand so it cannot widen the search.
 func AnchorGrepArgs(a backend.Args) (backend.Args, string) {
 	dir := backend.SharedGlobAnchor(a.Globs)
 	if dir == "" {
@@ -571,7 +571,8 @@ func AnchorGrepArgs(a backend.Args) (backend.Args, string) {
 	}
 	info, err := os.Stat(dir)
 	if err != nil {
-		return a, ""
+		a.Globs = anchorGlobs(a.Globs, dir, dir)
+		return a, dir
 	}
 	switch {
 	case info.IsDir():

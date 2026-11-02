@@ -1,0 +1,101 @@
+name: Symbol lookup scope
+
+on:
+  pull_request:
+    paths:
+      - internal/symbol/**
+      - internal/ripgrep/**
+      - internal/backend/**
+      - internal/render/**
+      - internal/workspace/**
+      - internal/execstub/**
+      - .github/workflows/symbol-lookup-scope.yml
+      - go.mod
+      - go.sum
+  push:
+    branches: [main]
+    paths:
+      - internal/symbol/**
+      - internal/ripgrep/**
+      - internal/backend/**
+      - internal/render/**
+      - internal/workspace/**
+      - internal/execstub/**
+      - .github/workflows/symbol-lookup-scope.yml
+      - go.mod
+      - go.sum
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: symbol-lookup-scope-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  symbol-lookup-scope:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    env:
+      GOMAXPROCS: "2"
+      GOFLAGS: -p=2
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Fixed private scope controls
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/symbol-lookup-scope"
+          go test -race -count=1 -json ./internal/ripgrep ./internal/symbol -run '^(TestMissingGlobAnchorKeepsExplicitOperand|TestRunRejectsHomeScope|TestRunMissingScopeDoesNotSearchHome|TestRunScopePreservesBoundedLookups)$' 2> "$RUNNER_TEMP/symbol-lookup-scope/fixed.stderr.log" | tee "$RUNNER_TEMP/symbol-lookup-scope/fixed.jsonl"
+          python3 - <<'PY'
+          import json, os, pathlib
+          root = pathlib.Path(os.environ["RUNNER_TEMP"]) / "symbol-lookup-scope"
+          events = [json.loads(line) for line in (root / "fixed.jsonl").read_text().splitlines()]
+          passed = {event["Test"] for event in events if event["Action"] == "pass" and "Test" in event}
+          required = {"TestMissingGlobAnchorKeepsExplicitOperand", "TestRunRejectsHomeScope", "TestRunMissingScopeDoesNotSearchHome", "TestRunScopePreservesBoundedLookups"}
+          assert required <= passed, required - passed
+          assert not any(event["Action"] in {"skip", "fail"} for event in events)
+          PY
+      - name: Immutable old source fails the same private controls
+        shell: bash
+        run: |
+          set -euo pipefail
+          legacy="$RUNNER_TEMP/symbol-lookup-scope-legacy"
+          git worktree add --detach "$legacy" f270de58ba187cc4964c64902435abdd4bef8236
+          cp internal/ripgrep/missing_scope_test.go "$legacy/internal/ripgrep/"
+          cp internal/symbol/scope_test.go "$legacy/internal/symbol/"
+          cd "$legacy"
+          test "$(git rev-parse HEAD)" = f270de58ba187cc4964c64902435abdd4bef8236
+          status=0
+          go test -race -count=1 -json ./internal/ripgrep ./internal/symbol -run '^(TestMissingGlobAnchorKeepsExplicitOperand|TestRunRejectsHomeScope)$' > "$RUNNER_TEMP/symbol-lookup-scope/legacy.jsonl" 2> "$RUNNER_TEMP/symbol-lookup-scope/legacy.stderr.log" || status=$?
+          cat "$RUNNER_TEMP/symbol-lookup-scope/legacy.jsonl"
+          python3 - "$status" <<'PY'
+          import json, os, pathlib, sys
+          root = pathlib.Path(os.environ["RUNNER_TEMP"]) / "symbol-lookup-scope"
+          events = [json.loads(line) for line in (root / "legacy.jsonl").read_text().splitlines()]
+          failed = {event["Test"] for event in events if event["Action"] == "fail" and "Test" in event and "/" not in event["Test"]}
+          output = "".join(event.get("Output", "") for event in events)
+          assert sys.argv[1] == "1", sys.argv[1]
+          assert failed == {"TestMissingGlobAnchorKeepsExplicitOperand", "TestRunRejectsHomeScope"}, failed
+          assert not any(event["Action"] == "skip" for event in events)
+          assert "want only operand" in output, output
+          assert "expected home scope refusal" in output, output
+          (root / "legacy-verdict.json").write_text(json.dumps({"exit": 1, "failed": sorted(failed), "private_argv_controls_only": True}, indent=2) + "\n")
+          PY
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: symbol-lookup-scope-${{ matrix.os }}
+          path: ${{ runner.temp }}/symbol-lookup-scope

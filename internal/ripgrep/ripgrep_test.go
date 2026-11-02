@@ -40,7 +40,7 @@ func TestRipgrepArgv(t *testing.T) {
 		{"anchored existing-dir glob relativizes to rest + operand", backend.Args{Query: "foo", Globs: []string{sub + "/*.go"}}, []string{"--json", "--fixed-strings", "--glob", "*.go", "--no-ignore-parent", "-e", "foo", "--", sub}},
 		{"dir-literal glob drops -g, operand alone filters", backend.Args{Query: "foo", Globs: []string{sub}}, []string{"--json", "--fixed-strings", "--no-ignore-parent", "-e", "foo", "--", sub}},
 		{"literal file glob → parent operand + basename", backend.Args{Query: "foo", Globs: []string{file}}, []string{"--json", "--fixed-strings", "--glob", "file.go", "--no-ignore-parent", "-e", "foo", "--", sub}},
-		{"nonexistent anchor unchanged", backend.Args{Query: "foo", Globs: []string{missing + "/*.go"}}, []string{"--json", "--fixed-strings", "--glob", missing + "/*.go", "-e", "foo"}},
+		{"nonexistent anchor stays explicit", backend.Args{Query: "foo", Globs: []string{missing + "/*.go"}}, []string{"--json", "--fixed-strings", "--glob", "*.go", "--no-ignore-parent", "-e", "foo", "--", missing}},
 		{"relative dir glob is the --scope replacement: operand + full-path -g", backend.Args{Query: "foo", Globs: []string{"pkg/**"}}, []string{"--json", "--fixed-strings", "--glob", "pkg/**", "--no-ignore-parent", "-e", "foo", "--", "pkg"}},
 		{"leading-dash pattern", backend.Args{Query: "-foo"}, []string{"--json", "--fixed-strings", "-e", "-foo"}},
 		{"regex drops --fixed-strings", backend.Args{Query: "foo", Regex: true}, []string{"--json", "-e", "foo"}},
@@ -988,7 +988,7 @@ func TestAnchorGrepArgs(t *testing.T) {
 		wantAnchor string
 	}{
 		{"anchored existing dir → anchor, absolute prefix dropped", backend.Args{Query: "foo", Globs: []string{sub + "/*.go"}}, []string{"*.go"}, sub},
-		{"nonexistent prefix → unchanged", backend.Args{Query: "foo", Globs: []string{missing + "/*.go"}}, []string{missing + "/*.go"}, ""},
+		{"nonexistent prefix → explicit operand", backend.Args{Query: "foo", Globs: []string{missing + "/*.go"}}, []string{"*.go"}, missing},
 		{"literal file glob → parent anchor + basename", backend.Args{Query: "foo", Globs: []string{file}}, []string{"file.go"}, sub},
 		{"slash-less glob → unchanged", backend.Args{Query: "foo", Globs: []string{"*.go"}}, []string{"*.go"}, ""},
 		{"exclusion rides through the anchor untouched", backend.Args{Query: "foo", Globs: []string{sub + "/*.go", "!*_test.go"}}, []string{"*.go", "!*_test.go"}, sub},
