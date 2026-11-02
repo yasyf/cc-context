@@ -85,9 +85,9 @@ ccx vcs stack new full-work --full-history
 ```
 
 `--full-history` creates a linked worktree of the checkout you run it from.
-It shares that checkout's history, not its full working tree: the lane is
-sparse like every other Git lane. The flag is refused inside the ccx thin
-store.
+It shares that checkout's history. In a repository tracking more than 5,000
+files, or with `--include`, it is sparse like a thin lane. The flag is refused
+inside the ccx thin store.
 
 ## Choose full history
 
@@ -111,12 +111,16 @@ requirements apply to the default too.
 
 ## Check out more directories
 
-Every Git lane is sparse, whatever its storage. It inherits the source
-checkout's per-worktree sparse patterns when active, else root files alone,
-and also checks out tracked top-level `.claude`, `.agents`, and `tools`
-directories, plus `infra/ci/hooks`, which the monorepo's `tools/ci` sources; creation runs no hooks or setup scripts and installs no
-dependencies. `ccx vcs worktree add` cuts the same cone. For a repository
-with a `src` directory, include it when creating the lane:
+A thin lane is always sparse. A lane in the caller's own clone, and a
+`ccx vcs worktree add` worktree, is sparse when the repository tracks more
+than 5,000 files at `HEAD` or `--include` is given; a smaller repository gets
+a full checkout, since a cone saves it nothing. A sparse lane inherits the
+source checkout's per-worktree sparse patterns when active, else root files
+alone. It also checks out the tracked top-level `.claude`, `.agents`, and
+`tools` directories, plus `infra/ci/hooks`, which the monorepo's `tools/ci`
+sources. Creation runs no hooks or setup scripts and installs no
+dependencies. For a repository with a `src` directory, include it when
+creating the lane:
 
 ```sh
 ccx vcs stack new agent-files --include src

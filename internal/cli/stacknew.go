@@ -71,7 +71,12 @@ func runStackNew(cmd *cobra.Command, name string, options stackNewOpts) error {
 		return fmt.Errorf("stack new: %s is a thin store, so no lane cut here carries full history — run --full-history from a full checkout of the repository", src.root)
 	}
 	thin := storage == storageThin && !inStore
-	sparseLane := options.sparse || src.checkout.Kind == vcs.Git && !options.noCheckout
+	sparseLane := options.sparse || (storage == storageThin || inStore || len(options.includes) > 0) && !options.noCheckout
+	if !sparseLane && !options.noCheckout && src.checkout.Kind == vcs.Git {
+		if sparseLane, err = laneLarge(ctx, src.dir()); err != nil {
+			return err
+		}
+	}
 	if options.published && !src.gt {
 		return errors.New("stack new: --published-parent requires a stack-managed lane")
 	}
@@ -81,7 +86,7 @@ func runStackNew(cmd *cobra.Command, name string, options stackNewOpts) error {
 	if options.noCheckout && thin {
 		return errors.New("stack new: a thin lane is a sparse checkout, so --no-checkout conflicts with thin storage; pass --full-history from a full checkout")
 	}
-	if len(options.includes) > 0 && !sparseLane {
+	if len(options.includes) > 0 && (options.noCheckout || src.checkout.Kind != vcs.Git) {
 		return errors.New("stack new: --include checks out directories in a sparse lane, which needs a Git checkout and no --no-checkout")
 	}
 	if (options.depthSet || options.deepen) && !thin {
@@ -527,6 +532,17 @@ func stackReadSparse(ctx context.Context, dir render.Dir) (stackSparse, error) {
 		return stackSparse{}, errors.New("stack new: --sparse requires active per-worktree sparse configuration in the caller")
 	}
 	return sparse, nil
+}
+
+// laneLarge reports whether the checkout at dir tracks more than
+// laneSparseFiles files at HEAD, past which a lane is cut sparse by default; a
+// smaller repository gains nothing from a cone and loses every source dir.
+func laneLarge(ctx context.Context, dir render.Dir) (bool, error) {
+	out, err := render.RunCLI(ctx, dir, "git", []string{"ls-tree", "-r", "--name-only", "-z", "HEAD"})
+	if err != nil {
+		return false, err
+	}
+	return strings.Count(out, "\x00") > laneSparseFiles, nil
 }
 
 // laneSparse is the cone a lane cut from dir checks out by default: dir's own

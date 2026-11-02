@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -272,7 +273,7 @@ func TestWorktreeAddCutsFromFetchedTrunk(t *testing.T) {
 		t.Fatalf("add error = %v", err)
 	}
 	path := worktreeSummaryPath(t, out)
-	want := strings.Join([]string{"added feat", "git worktree", "from origin/main " + shortOID(tip), laneWiden(path), path}, shipSep) + "\n"
+	want := strings.Join([]string{"added feat", "git worktree", "from origin/main " + shortOID(tip), path}, shipSep) + "\n"
 	if out != want {
 		t.Errorf("summary = %q, want %q", out, want)
 	}
@@ -326,6 +327,28 @@ func TestWorktreeAddCutsASparseCone(t *testing.T) {
 	}
 }
 
+func TestLaneLargeCountsTrackedFiles(t *testing.T) {
+	t.Parallel()
+	f := vcstest.Repo(t)
+	if large, err := laneLarge(f.Context(), render.Dir(f.Dir)); err != nil || large {
+		t.Fatalf("laneLarge of the fixture = %v, %v, want a small repository", large, err)
+	}
+	blob := gitAt(t, f.Env(), f.Dir, "hash-object", "-w", "f.txt")
+	var info strings.Builder
+	for i := range laneSparseFiles + 1 {
+		fmt.Fprintf(&info, "100644 %s\tbulk/%d.txt\n", blob, i)
+	}
+	index := exec.Command("git", "update-index", "--index-info")
+	index.Dir, index.Env, index.Stdin = f.Dir, f.Env(), strings.NewReader(info.String())
+	if out, err := index.CombinedOutput(); err != nil {
+		t.Fatalf("git update-index: %v\n%s", err, out)
+	}
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "bulk")
+	if large, err := laneLarge(f.Context(), render.Dir(f.Dir)); err != nil || !large {
+		t.Fatalf("laneLarge past %d files = %v, %v, want a large repository", laneSparseFiles, large, err)
+	}
+}
+
 func TestWorktreeAddChecksOutExistingBranch(t *testing.T) {
 	f := vcstest.Repo(t, vcstest.Remote())
 	f.Isolate(t)
@@ -338,7 +361,7 @@ func TestWorktreeAddChecksOutExistingBranch(t *testing.T) {
 		t.Fatalf("add error = %v", err)
 	}
 	path := worktreeSummaryPath(t, out)
-	want := strings.Join([]string{"added feat", "git worktree", "existing feat at " + shortOID(head), laneWiden(path), path}, shipSep) + "\n"
+	want := strings.Join([]string{"added feat", "git worktree", "existing feat at " + shortOID(head), path}, shipSep) + "\n"
 	if out != want {
 		t.Errorf("summary = %q, want %q", out, want)
 	}
@@ -404,7 +427,7 @@ func TestWorktreeAddReclaimsAnInterruptedAdd(t *testing.T) {
 			if err != nil {
 				t.Fatalf("re-add error = %v", err)
 			}
-			want := strings.Join([]string{"added feat", "git worktree", "existing feat at " + shortOID(head), "cleared an interrupted add", laneWiden(path), path}, shipSep) + "\n"
+			want := strings.Join([]string{"added feat", "git worktree", "existing feat at " + shortOID(head), "cleared an interrupted add", path}, shipSep) + "\n"
 			if out != want {
 				t.Errorf("summary = %q, want %q", out, want)
 			}
@@ -433,7 +456,7 @@ func TestWorktreeAddChecksOutTheRemoteBranch(t *testing.T) {
 		t.Fatalf("add error = %v", err)
 	}
 	path := worktreeSummaryPath(t, out)
-	want := strings.Join([]string{"added feat", "git worktree", "existing origin/feat at " + shortOID(published), laneWiden(path), path}, shipSep) + "\n"
+	want := strings.Join([]string{"added feat", "git worktree", "existing origin/feat at " + shortOID(published), path}, shipSep) + "\n"
 	if out != want {
 		t.Errorf("summary = %q, want %q", out, want)
 	}
@@ -458,7 +481,7 @@ func TestWorktreeAddWithoutRemoteCutsFromHead(t *testing.T) {
 		t.Fatalf("add error = %v", err)
 	}
 	path := worktreeSummaryPath(t, out)
-	want := strings.Join([]string{"added feat", "git worktree", "from HEAD " + shortOID(head), laneWiden(path), path}, shipSep) + "\n"
+	want := strings.Join([]string{"added feat", "git worktree", "from HEAD " + shortOID(head), path}, shipSep) + "\n"
 	if out != want {
 		t.Errorf("summary = %q, want %q", out, want)
 	}

@@ -71,9 +71,10 @@ works the lane. A slash in the branch name becomes a dash in the working copy's
 directory name: owner/topic becomes owner-topic. A lane cut onto trunk starts at
 the freshly fetched remote trunk, leaving the local trunk branch where it is.
 
-In a Git checkout every lane is sparse, whatever its storage: this checkout's
-sparse set, or root files alone when it has none, plus the tracked .claude,
-.agents, tools, and infra/ci/hooks directories. A Go lane names its module, as --include
+In a Git checkout a thin lane, a lane given --include, and any lane of a
+repository tracking more than 5,000 files at HEAD is sparse, whatever its
+storage: this checkout's sparse set, or root files alone when it has none, plus
+the tracked .claude, .agents, tools, and infra/ci/hooks directories. A Go lane names its module, as --include
 go/<module>. The summary names the "git -C <path> sparse-checkout add <dir>"
 command that widens the lane, just before its path.
 

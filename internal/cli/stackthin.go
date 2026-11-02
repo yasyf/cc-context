@@ -33,6 +33,8 @@ const (
 	thinNotesKey        = "cc-notes.storage"
 )
 
+const laneSparseFiles = 5000
+
 var (
 	thinStoreConfig    = []string{"feature.experimental=true", "feature.manyFiles=true", "pack.threads=2"}
 	thinMirroredConfig = []string{"user.name", "user.email", "user.signingkey", "commit.gpgsign", nogtKey}

@@ -130,10 +130,10 @@ always is: outside every repository tree, so a worktree is never mistaken for
 repo content. "git config --global ccx.worktreeRoot <absolute-path>" sets the
 pool for new git worktrees ahead of both. Existing registered Git worktrees
 remain addressable.
-In a Git checkout the worktree is sparse: the sparse set of the checkout you
-run this from, or root files alone when it has none, plus the tracked .agents,
-.claude, tools, and infra/ci/hooks directories and each --include directory.
-The summary names
+In a Git checkout tracking more than 5,000 files at HEAD, or given --include,
+the worktree is sparse: the sparse set of the checkout you run this from, or
+root files alone when it has none, plus the tracked .agents, .claude, tools,
+and infra/ci/hooks directories and each --include directory. The summary names
 the "git -C <path> sparse-checkout add <dir>" command that widens it.
 A branch-shaped name such as user/slug keeps its full branch name and mints the
 directory user-slug.
@@ -508,6 +508,11 @@ func runWorktreeAdd(cmd *cobra.Command, name, requested string, includes []strin
 	sparseLane := mode != jjModeWorkspace && l.checkout.Kind == vcs.Git
 	if len(includes) > 0 && !sparseLane {
 		return errors.New("worktree add: --include checks out directories in a sparse git worktree, which needs a Git checkout")
+	}
+	if sparseLane && len(includes) == 0 {
+		if sparseLane, err = laneLarge(ctx, l.dir()); err != nil {
+			return err
+		}
 	}
 	var sparse stackSparse
 	if sparseLane {
