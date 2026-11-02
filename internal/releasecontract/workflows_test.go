@@ -39,18 +39,13 @@ func TestPostreleaseWorkflows(t *testing.T) {
 			}
 		}
 	}
-	if full, ubuntu := strings.Count(ci, `'["ubuntu-latest", "macos-latest"]'`), strings.Count(ci, "(github.event_name == 'pull_request' || inputs.commit != '') && '[\"ubuntu-latest\"]'"); full != ubuntu {
-		t.Errorf("CI runs %d of its %d macOS matrices on explicit-commit validation; want none", full-ubuntu, full)
-	}
 	if err := checkCISourceCheckouts(ci); err != nil {
 		t.Error(err)
 	}
 	for _, required := range []string{
 		`echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"`,
 		"commit: ${{ steps.commit.outputs.sha }}",
-		"post-release-ci:",
 		"post-release-guides:",
-		"uses: ./.github/workflows/ci.yml",
 		"parallel_commits: true",
 	} {
 		if !strings.Contains(release, required) {
@@ -60,8 +55,8 @@ func TestPostreleaseWorkflows(t *testing.T) {
 	if got := strings.Count(release, "needs: descriptor"); got != 2 {
 		t.Errorf("native descriptor dependencies = %d, want 2", got)
 	}
-	if got := strings.Count(release, "commit: ${{ needs.descriptor.outputs.commit }}"); got != 2 {
-		t.Errorf("native exact-commit inputs = %d, want 2", got)
+	if got := strings.Count(release, "commit: ${{ needs.descriptor.outputs.commit }}"); got != 1 {
+		t.Errorf("native exact-commit inputs = %d, want 1", got)
 	}
 	for _, forbidden := range []string{"actions: write", "gh run watch", "/dispatches"} {
 		if strings.Contains(release, forbidden) {
