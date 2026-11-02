@@ -56,6 +56,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   system volume. The first search after setting it converts each worktree's
   index from the old location without re-embedding anything.
 
+- `ccx vcs merge [<pr|branch>]` merges a pull request through GitHub's
+  asynchronous merge API, which native stacked pull requests require and `gh
+  pr merge` doesn't use. A stacked pull request merges together with every
+  open pull request below it, and the report prints one line per pull request,
+  bottom-up, with its merge commit. `--admin` merges directly and bypasses the
+  rules the caller may bypass. Without it, GitHub's merge queue takes the pull
+  request when the base branch has one, and the command refuses when a checkout
+  of the repository names the Trunk or Graphite queue. `--squash` is the default, and `--merge` or
+  `--rebase` picks another method. A merge still pending after ten minutes
+  stops waiting; rerunning the command resumes the same request.
+
 - `ccx vcs fetch <branch>...` fetches remote branches into their
   remote-tracking refs, sharing one fetch among every worktree of the clone
   that asks at once. Callers queue on a lock in the git common dir, and one
@@ -75,6 +86,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with no remedy.
 
 ### Fixed
+
+- `ccx vcs stack new` refuses to cut a child on a branch that is in no native
+  stack, naming `--parent <trunk>` and the ship that tracks the parent. The
+  first adoption into an empty native catalog used to skip that check, so a
+  child of a plain pull request branch rooted a stack on that branch, which
+  then read as the trunk for every lane of the repository. A repository with
+  no `origin/HEAD` still roots its first stack on the parent it names.
 
 - A ccx process sending many GitHub requests at once, such as `ccx vcs pr
   status` over 150 pull requests, no longer times out on the shared quota

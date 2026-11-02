@@ -200,6 +200,44 @@ func TestNativeAdoptRefusesToMintATrunkFromAnUntrackedParent(t *testing.T) {
 	}
 }
 
+// TestNativeAdoptIntoAnEmptyCatalogRefusesAnUntrackedParent is how
+// store-bounded-open became cc-inbox's only native root: the first adoption
+// into an empty catalog skipped the check that refuses an untracked parent.
+func TestNativeAdoptIntoAnEmptyCatalogRefusesAnUntrackedParent(t *testing.T) {
+	dir := repo(t)
+	common := filepath.Join(dir, ".git")
+	main := git(t, dir, "rev-parse", "main")
+	for _, branch := range []string{"feature", "child"} {
+		git(t, dir, "branch", branch)
+	}
+	err := AdoptRoot(t.Context(), common, "child", "feature", main, main)
+	if err == nil || !strings.Contains(err.Error(), "feature is in no native stack on main") {
+		t.Fatalf("adopt onto untracked feature = %v, want it refused", err)
+	}
+	if _, err := os.Stat(filepath.Join(common, "gh-stack")); !os.IsNotExist(err) {
+		t.Fatalf("refused adoption wrote a catalog: %v", err)
+	}
+	if err := AdoptRoot(t.Context(), common, "child", "main", main, main); err != nil {
+		t.Fatalf("adopt onto main = %v", err)
+	}
+}
+
+func TestNativeAdoptIntoAnEmptyCatalogWithoutOriginHeadRootsOnItsParent(t *testing.T) {
+	dir := repo(t)
+	common := filepath.Join(dir, ".git")
+	main := git(t, dir, "rev-parse", "main")
+	git(t, dir, "symbolic-ref", "--delete", "refs/remotes/origin/HEAD")
+	for _, branch := range []string{"feature", "child"} {
+		git(t, dir, "branch", branch)
+	}
+	if err := AdoptRoot(t.Context(), common, "child", "feature", main, main); err != nil {
+		t.Fatalf("adopt with no origin/HEAD = %v, want feature to root the first stack", err)
+	}
+	if trunk, err := ReadTrunk(t.Context(), common); err != nil || trunk != "feature" {
+		t.Fatalf("trunk = %q, %v, want feature", trunk, err)
+	}
+}
+
 func strayRootFixture(t *testing.T, history func(context.Context, string, string) (bool, bool, error)) (string, string) {
 	t.Helper()
 	dir := repo(t)

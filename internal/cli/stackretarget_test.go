@@ -2,10 +2,11 @@ package cli
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 
-	"github.com/yasyf/cc-context/internal/nativemeta"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcs"
 	"github.com/yasyf/cc-context/internal/vcstest"
@@ -26,7 +27,8 @@ func TestStackRetargetMovesAStackOffABaseThatLanded(t *testing.T) {
 	common := filepath.Join(f.Dir, ".git")
 	landed := gitAt(t, f.Env(), f.Dir, "rev-parse", "landed")
 	child := gitAt(t, f.Env(), f.Dir, "rev-parse", "child")
-	if err := nativemeta.AdoptRoot(f.Context(), common, "child", "landed", landed, child); err != nil {
+	catalog := fmt.Sprintf(`{"schemaVersion":1,"stacks":[{"trunk":{"branch":"landed","head":%q},"branches":[{"branch":"child","base":%q,"head":%q}]}]}`, landed, landed, child)
+	if err := os.WriteFile(filepath.Join(common, "gh-stack"), []byte(catalog), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	api := stubGTAPI(t)

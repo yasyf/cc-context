@@ -154,14 +154,16 @@ func (c *Client) PullRequestInfo(ctx context.Context, req PullRequestInfoRequest
 }
 
 type restPull struct {
-	Title   string `json:"title"`
-	Body    string `json:"body"`
-	Number  int    `json:"number"`
-	NodeID  string `json:"node_id"`
-	HTMLURL string `json:"html_url"`
-	State   string `json:"state"`
-	Draft   bool   `json:"draft"`
-	Head    struct {
+	Title          string `json:"title"`
+	Body           string `json:"body"`
+	Number         int    `json:"number"`
+	NodeID         string `json:"node_id"`
+	HTMLURL        string `json:"html_url"`
+	State          string `json:"state"`
+	Draft          bool   `json:"draft"`
+	Merged         bool   `json:"merged"`
+	MergeCommitSHA string `json:"merge_commit_sha"`
+	Head           struct {
 		Repo struct {
 			FullName string `json:"full_name"`
 		} `json:"repo"`

@@ -450,10 +450,11 @@ func rootOf(byName map[string]branchRow, branch string) string {
 }
 
 func plannedOn(ctx context.Context, commonDir string, byName map[string]branchRow, branches ...string) error {
-	if len(byName) == 0 {
-		return nil
+	known := slices.Collect(maps.Values(byName))
+	if len(known) == 0 {
+		known = []branchRow{{branch: branches[0]}}
 	}
-	trunk, err := trunkOf(ctx, commonDir, slices.Collect(maps.Values(byName)))
+	trunk, err := trunkOf(ctx, commonDir, known)
 	if err != nil {
 		return err
 	}
