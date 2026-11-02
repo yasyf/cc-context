@@ -36,7 +36,7 @@ func sharedFetch(ctx context.Context, dir render.Dir, prefix, remote, branch str
 	if maxAge > 0 && sharedFetchCovers(stamp, since) {
 		return false, nil
 	}
-	if err := os.MkdirAll(filepath.Dir(stamp), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(stamp), 0o750); err != nil {
 		return false, fmt.Errorf("%s: %w", prefix, err)
 	}
 	lockCtx, cancel := context.WithTimeout(ctx, sharedFetchMaxWait)
@@ -53,7 +53,7 @@ func sharedFetch(ctx context.Context, dir render.Dir, prefix, remote, branch str
 	if err := fetch(); err != nil {
 		return false, err
 	}
-	if err := os.WriteFile(stamp, []byte(started.UTC().Format(time.RFC3339Nano)+"\n"), 0o644); err != nil { //nolint:gosec // a ccx-owned file in the git common dir
+	if err := os.WriteFile(stamp, []byte(started.UTC().Format(time.RFC3339Nano)+"\n"), 0o600); err != nil {
 		return true, fmt.Errorf("%s: record the shared fetch of %s/%s: %w", prefix, remote, branch, err)
 	}
 	return true, nil

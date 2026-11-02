@@ -33,7 +33,7 @@ func TestSharedFetchServesOnlyAFetchBegunInsideTheWindow(t *testing.T) {
 			common := strings.TrimSpace(f.Out(t, "git", "-C", f.Dir, "rev-parse", "--path-format=absolute", "--git-common-dir"))
 			stamp := filepath.Join(common, sharedFetchDir, fmt.Sprintf("%x", sha256.Sum256([]byte("origin\x00main"))))
 			if tt.stamp != 0 {
-				if err := os.MkdirAll(filepath.Dir(stamp), 0o755); err != nil {
+				if err := os.MkdirAll(filepath.Dir(stamp), 0o750); err != nil {
 					t.Fatal(err)
 				}
 				if err := os.WriteFile(stamp, []byte(time.Now().Add(tt.stamp).UTC().Format(time.RFC3339Nano)+"\n"), 0o600); err != nil {
