@@ -573,15 +573,12 @@ func stackWithMetadata(s stackSparse) stackSparse {
 
 func stackActiveSparse(ctx context.Context, dir render.Dir) (stackSparse, bool, error) {
 	perWorktree, err := stackConfigBool(ctx, dir, "extensions.worktreeConfig", false)
-	if err != nil {
+	if err != nil || !perWorktree {
 		return stackSparse{}, false, err
 	}
 	active, err := stackConfigBool(ctx, dir, "core.sparseCheckout", true)
-	if err != nil {
+	if err != nil || !active {
 		return stackSparse{}, false, err
-	}
-	if !perWorktree || !active {
-		return stackSparse{}, false, nil
 	}
 	cone, err := stackConfigBool(ctx, dir, "core.sparseCheckoutCone", true)
 	if err != nil {
