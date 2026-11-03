@@ -20,6 +20,11 @@ func (c *Client) WithBranchProviders(providers map[string]string) *Client {
 	return &selected
 }
 
+// LegacyOwned reports whether Graphite's metadata describes branch in a mixed repository.
+func (c *Client) LegacyOwned(branch string) bool {
+	return c.branchProviders[branch] == "graphite"
+}
+
 func (c *Client) nativeInfo(info PullRequestInfo) bool {
 	return info.StackNumber != 0 || c.branchProviders[info.HeadRefName] != "graphite"
 }

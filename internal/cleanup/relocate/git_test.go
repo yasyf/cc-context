@@ -79,6 +79,8 @@ func TestEveryGitChildOfARemovalIsIsolatedFromTheProject(t *testing.T) {
 		"-C " + f.worktree + " symbolic-ref --quiet --short HEAD",
 		"--git-dir=" + f.adminDir + " rev-parse --verify --quiet HEAD^{commit}",
 		"--git-dir=" + f.adminDir + " symbolic-ref --quiet --short HEAD",
+		"--git-dir=" + f.adminDir + " rev-parse --verify --quiet HEAD^{commit}",
+		"--git-dir=" + f.adminDir + " symbolic-ref --quiet --short HEAD",
 		"--git-dir=" + f.adminDir + " --work-tree=" + f.worktree + status,
 		"--git-dir=" + f.adminDir + " --work-tree=" + f.worktree + status,
 		"--git-dir=" + f.common + " update-ref " + job.RecoveryRef + " " + job.Head,

@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A repository with both Graphite and native stacks keeps one pull request
+  cache.** The cache path hashed every branch's stack owner, so any stack change
+  on the machine started an empty cache with its own poll. One drive made 1,275
+  caches for one repository and refetched every pull request almost every pass.
+  An empty cache also knew no lanes, so a rate limit could not fall back to REST
+  and failed the read. Now one cache serves the repository, and a record polled
+  before its branch changed owner no longer answers a read, so a converted branch
+  still never shows its old stack or queue. Old caches under
+  `prstate/providers/mixed-stack--*--<hash>` are unused from this release on.
+
 - **Worktrees of one repository share one semantic-search index on disk.** Each
   worktree used to store a full private copy of its index, so the lanes of one
   repository held near-identical copies: 389 indexes took 46 GB on one machine,

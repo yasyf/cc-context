@@ -154,6 +154,41 @@ func TestReadSharesOnePollAcrossStoresWithinTheMinimumInterval(t *testing.T) {
 	}
 }
 
+func TestARecordPolledBeforeItsBranchChangedOwnerAnswersNoRead(t *testing.T) {
+	t.Parallel()
+	const branch = "yasyf/gh-budget/pr-190"
+	mixed := func(provider string) *gtapi.Client {
+		return gtapi.NewNativeWithToken("https://example.invalid", "stub").WithBranchProviders(map[string]string{branch: provider})
+	}
+	dir := t.TempDir()
+	c := &clock{now: epoch}
+	writer, _ := newStore(t, dir, c, mixed("graphite"))
+	prs := map[int]PR{190: {Number: 190, State: "OPEN", HeadRefName: branch, PolledAt: epoch}}
+	writer.src.stampOwners(prs)
+	if _, err := writer.commit(testCtx(t), func(st *State) bool { st.PRs = prs; return true }); err != nil {
+		t.Fatal(err)
+	}
+	want := Want{PRs: []int{190}}
+
+	same, _ := newStore(t, dir, c, mixed("graphite"))
+	st, err := same.load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !st.fresh(want, epoch) {
+		t.Errorf("#190 = %+v, want a reader under the same owner to share the poll", st.PRs[190])
+	}
+
+	converted, _ := newStore(t, dir, c, mixed("github"))
+	st, err = converted.load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.fresh(want, epoch) {
+		t.Errorf("#190 = %+v, want the old owner's record stale once the branch converts", st.PRs[190])
+	}
+}
+
 func TestAReadWithAMaxAgeAnswersFromAnOlderPollWithoutWaiting(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

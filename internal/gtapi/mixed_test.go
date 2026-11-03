@@ -9,7 +9,6 @@ import (
 	"reflect"
 	"regexp"
 	"strconv"
-	"strings"
 	"sync"
 	"testing"
 
@@ -98,7 +97,7 @@ func TestMixedReaderUsesEachPRProviderAndQueue(t *testing.T) {
 	if !reflect.DeepEqual(metadataBatch, []int{2}) || !reflect.DeepEqual(queueBatch, []int{2}) {
 		t.Fatalf("legacy batches metadata=%v queue=%v", metadataBatch, queueBatch)
 	}
-	if !strings.HasPrefix(client.CacheNamespace(), "mixed-stack--mixed") || !strings.HasPrefix(client.WithQueueProvider("none").CacheNamespace(), "mixed-stack--none--") {
+	if client.CacheNamespace() != "mixed-stack--mixed" || client.WithQueueProvider("none").CacheNamespace() != "mixed-stack--none" {
 		t.Fatal("mixed cache namespace collision")
 	}
 	for _, provider := range []string{"github", "graphite", "none"} {
@@ -130,18 +129,22 @@ func TestMixedReaderUsesEachPRProviderAndQueue(t *testing.T) {
 	}
 }
 
-func TestMixedCacheTracksOwnershipAndIgnoresMapOrder(t *testing.T) {
+func TestMixedCacheIsOneNamespaceWhateverTheBranchesOwners(t *testing.T) {
 	base := New("https://example.invalid")
 	first := base.WithBranchProviders(map[string]string{"a": "graphite", "b": "github"})
-	reordered := base.WithBranchProviders(map[string]string{"b": "github", "a": "graphite"})
-	converted := base.WithBranchProviders(map[string]string{"a": "github", "b": "github"})
-	for _, queue := range []string{"", "github", "graphite", "trunk", "none"} {
-		before := first.WithQueueProvider(queue).CacheNamespace()
-		if before != reordered.WithQueueProvider(queue).CacheNamespace() {
-			t.Fatalf("map order changed namespace for %q", queue)
+	converted := base.WithBranchProviders(map[string]string{"a": "github", "b": "github", "c": "graphite"})
+	seen := map[string]bool{}
+	for _, queue := range []string{"github", "graphite", "trunk", "none"} {
+		namespace := first.WithQueueProvider(queue).CacheNamespace()
+		if namespace != converted.WithQueueProvider(queue).CacheNamespace() {
+			t.Fatalf("a branch changing owner moved the %q namespace", queue)
 		}
-		if before == converted.WithQueueProvider(queue).CacheNamespace() {
-			t.Fatalf("conversion reused namespace for %q", queue)
+		if seen[namespace] {
+			t.Fatalf("queue %q shares namespace %q", queue, namespace)
 		}
+		seen[namespace] = true
+	}
+	if !first.LegacyOwned("a") || first.LegacyOwned("b") || first.LegacyOwned("untracked") || converted.LegacyOwned("a") {
+		t.Fatal("legacy ownership follows the branch's provider")
 	}
 }

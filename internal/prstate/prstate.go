@@ -118,9 +118,12 @@ type PR struct {
 	Rollup           *Rollup                `json:"rollup,omitempty"`
 	Activity         string                 `json:"activity,omitempty"`
 	Graphite         *gtapi.PullRequestInfo `json:"graphite,omitempty"`
-	Mergeability     string                 `json:"mergeability,omitempty"`
-	SquashOn         []string               `json:"squashOn,omitempty"`
-	PolledAt         time.Time              `json:"polledAt"`
+	// LegacyOwned is who owned the branch's stack metadata at the poll; a
+	// reader that finds another owner now does not trust this record.
+	LegacyOwned  bool      `json:"legacyOwned,omitempty"`
+	Mergeability string    `json:"mergeability,omitempty"`
+	SquashOn     []string  `json:"squashOn,omitempty"`
+	PolledAt     time.Time `json:"polledAt"`
 	// PushedHead is the head this machine pushed at PushedAt, kept while
 	// GitHub still shows another; HeadRefOid and the checks stay GitHub's.
 	PushedHead string    `json:"pushedHead,omitempty"`
@@ -477,6 +480,7 @@ func (s *Store) degrade(ctx context.Context, st State, want Want, asked, now tim
 		}
 		return st, 0, fmt.Errorf("%w; the REST fallback failed too: %w", cause, err)
 	}
+	s.src.stampOwners(p.prs)
 	st, err = s.commit(ctx, func(st *State) bool {
 		st.merge(p, now)
 		st.RESTBackoff = nil
@@ -537,6 +541,7 @@ func (s *Store) claim(ctx context.Context, want Want, asked, now time.Time) (Sta
 
 func (s *Store) fetch(ctx context.Context, req Want, prev map[int]PR, now time.Time, attempt bool) (State, error) {
 	p, err := s.src.poll(ctx, req, prev)
+	s.src.stampOwners(p.prs)
 	wait, limited := ghapi.RateLimited(err)
 	st, cerr := s.commit(ctx, func(st *State) bool {
 		switch {
@@ -587,6 +592,12 @@ func (s *Store) load() (State, error) {
 	default:
 		if err := json.Unmarshal(data, &st); err != nil {
 			return State{}, fmt.Errorf("prstate: parse %s: %w", path, err)
+		}
+	}
+	for n, pr := range st.PRs {
+		if pr.LegacyOwned != s.src.legacyOwned(pr.HeadRefName) {
+			pr.PolledAt = time.Time{}
+			st.PRs[n] = pr
 		}
 	}
 	st.Leases, err = s.leases()
