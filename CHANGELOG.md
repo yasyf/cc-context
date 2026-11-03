@@ -98,6 +98,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A semantic-search index build can no longer take over the machine.** A
+  first search of a large repository ran 8 chunking workers plus the embedder
+  and the garbage collector at normal priority: one `ccx mcp` server held 9
+  cores for minutes while it indexed a 41,000-file checkout. Semantic search now
+  caps its process at 4 cores and 4 chunking workers, and macOS runs the build
+  in the background band with throttled disk I/O. A search with nothing to
+  index keeps normal priority. The first search of an unindexed repository takes
+  longer on a busy machine.
+- **Semantic search refuses to index the home directory or anything outside a
+  checkout.** With no path, a search indexed the working directory, so a server
+  started in the home directory walked everything under it. A root that is the
+  home directory, holds it, or isn't inside a git or jj checkout now gets an
+  error naming the fix, before any model loads.
+
 - `ccx vcs ship` and `ccx vcs stack submit` no longer treat a branch only the
   remote holds as a parent. A ref pushed for its own reasons, such as a
   throwaway branch for a CI run, could refuse the ship when it sat at the
