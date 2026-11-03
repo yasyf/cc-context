@@ -15,8 +15,8 @@ import (
 )
 
 // heldPushNativeStack publishes base and feature as a native stack, checked
-// out on feature, then lands a trunk commit beside feature's change, so a
-// restack of feature applies cleanly with a different patch.
+// out on feature, then lands a trunk commit two lines above feature's change,
+// so a restack of feature applies cleanly with a different patch.
 func heldPushNativeStack(t *testing.T) *vcstest.Fixture {
 	t.Helper()
 	f := shipRepo(t, vcstest.Remote())
@@ -52,7 +52,7 @@ func heldPushNativeStack(t *testing.T) *vcstest.Fixture {
 	if _, errOut, err := runStackCmd(t, f, "submit"); err != nil {
 		t.Fatalf("stack submit = %v (stderr=%q)", err, errOut)
 	}
-	restackAdvanceRemote(t, f, "main", "notes.txt", "one\nTWO\nthree\nfour\nfive\n")
+	restackAdvanceRemote(t, f, "main", "notes.txt", "ONE\ntwo\nthree\nfour\nfive\n")
 	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
 	return f
 }
@@ -91,7 +91,7 @@ func TestStackSubmitRefusesAnotherLanesPushOverARestackedHead(t *testing.T) {
 	}
 	other := filepath.Join(t.TempDir(), "other-lane")
 	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", "--detach", other, "origin/feature")
-	writeShipFile(t, other, "notes.txt", "one\nTWO\nthree, rewritten elsewhere\nfour\nfive\n")
+	writeShipFile(t, other, "notes.txt", "ONE\ntwo\nthree, rewritten elsewhere\nfour\nfive\n")
 	mustRun(t, f.Env(), other, "git", "commit", "-qa", "--amend", "-m", "feature, rewritten elsewhere")
 	mustRun(t, f.Env(), other, "git", "push", "-qf", "origin", "HEAD:feature")
 	foreign := gitAt(t, f.Env(), other, "rev-parse", "HEAD")
