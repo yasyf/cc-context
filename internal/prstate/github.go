@@ -56,6 +56,17 @@ func NewGitHub(gh *ghapi.Client, gt *gtapi.Client, repo string, warn io.Writer) 
 	return &GitHub{gh: gh.Unwaiting(), gt: gt, owner: owner, name: name, warn: warn}, nil
 }
 
+func (g *GitHub) legacyOwned(branch string) bool {
+	return g.gt != nil && g.gt.LegacyOwned(branch)
+}
+
+func (g *GitHub) stampOwners(prs map[int]PR) {
+	for n, pr := range prs {
+		pr.LegacyOwned = g.legacyOwned(pr.HeadRefName)
+		prs[n] = pr
+	}
+}
+
 type poll struct {
 	trunk   Trunk
 	lanes   map[string][]int

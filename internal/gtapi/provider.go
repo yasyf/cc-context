@@ -2,12 +2,8 @@ package gtapi
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
-	"maps"
-	"slices"
-	"strings"
 
 	"github.com/yasyf/cc-context/internal/nativeapi"
 )
@@ -75,7 +71,7 @@ func (c *Client) QueueProvider() string {
 	return "graphite"
 }
 
-// CacheNamespace separates snapshots whose metadata or queue ownership differs.
+// CacheNamespace separates snapshots whose queue or kind of stack metadata differs. One branch changing owner stays in its namespace: the record polled under the old owner goes stale instead.
 func (c *Client) CacheNamespace() string {
 	if c.providerErr != nil {
 		return "invalid"
@@ -89,12 +85,7 @@ func (c *Client) CacheNamespace() string {
 		stack = "github-stack"
 	}
 	if c.legacy != nil {
-		ownership := make([]string, 0, 2*len(c.branchProviders))
-		for _, branch := range slices.Sorted(maps.Keys(c.branchProviders)) {
-			ownership = append(ownership, branch, c.branchProviders[branch])
-		}
-		fingerprint := sha256.Sum256([]byte(strings.Join(ownership, "\x00")))
-		return fmt.Sprintf("mixed-stack--%s--%x", queue, fingerprint)
+		return "mixed-stack--" + queue
 	}
 	return stack + "--" + queue
 }
