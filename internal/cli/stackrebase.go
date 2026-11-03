@@ -1442,6 +1442,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	}
 	outside := map[string]bool{}
 	landedPast := map[string]error{}
+	diverged := map[string]error{}
 	byName := map[string]*stackRebaseBranch{}
 	for _, name := range members {
 		if parent := retargeted[name].Parents[0].Ref; outside[parent] {
@@ -1515,6 +1516,9 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 			run.left = append(run.left, stackLeft{branch: name, why: strings.TrimPrefix(err.Error(), stackRebasePrefix+": ")})
 			continue
 		}
+		if errors.As(err, new(stackDivergedError)) {
+			diverged[name], err = err, nil
+		}
 		if err != nil {
 			return nil, stackTipOnlyHint(o, name, err)
 		}
@@ -1541,7 +1545,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 				}
 			} else if retracked {
 				b.Publication = receipt
-			} else if err := stackUsePublication(ctx, l.dir(), &b, receipt, pin, published, own[name] && name != current); err != nil {
+			} else if err := stackUsePublication(ctx, l.dir(), &b, receipt, pin, published || diverged[name] != nil, own[name] && name != current); err != nil {
 				return nil, err
 			} else if receipt != nil && b.OldBase == receipt.Base && b.Head == receipt.Head {
 				stale, err := stackBaseInTrunk(ctx, l.dir(), receipt.Base, receipt.Head, pin)
@@ -1662,6 +1666,11 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 		}
 		kept[name] = b.Kept
 		b.Evicts = evicts && !b.Kept
+	}
+	for _, name := range order {
+		if err := diverged[name]; err != nil && !byName[name].Kept {
+			return nil, stackTipOnlyHint(o, name, err)
+		}
 	}
 	ordered := make([]*stackRebaseBranch, len(order))
 	for i, name := range order {
@@ -2662,84 +2671,25 @@ func stackFetchRemoteHeads(ctx context.Context, dir render.Dir, prefix, remote s
 	return nil
 }
 
-// stackSnapshot takes a remote that equals the branch's last submitted head
-// as ours even when local no longer contains it: every rewrite a rebase or
-// restack makes diverges from the head it last pushed. A branch the run reads
-// at its published head is taken at that head, its local one never compared.
+// stackSnapshot takes a branch the run reads at its published head at that
+// head, its local one never compared. A branch whose local head diverged from
+// its published one is taken at the published head too, and the divergence is
+// returned with it: only a branch the plan goes on to move is refused for it.
 func stackSnapshot(ctx context.Context, dir render.Dir, tr vcs.Trunk, s gtBranchState, name, remote, submitted string, pr *stackPR, declared bool, pin string, dropCommits, published bool) (stackRebaseBranch, error) {
 	ctx = context.WithValue(ctx, stackPatchSeriesKey{}, map[stackPatchRange][]string{})
 	b := stackRebaseBranch{
 		Name: name, WasParent: s.Parents[0].Ref, Local: s.Head, Remote: remote,
 		Head: s.Head, PR: pr, Held: s.State,
 	}
+	var diverged error
 	if published && remote != "" {
 		b.Head = remote
 	} else if b.Held == "" && remote != "" && remote != s.Head && (pr == nil || !pr.abandoned()) {
-		ahead, err := gitIsAncestor(ctx, dir, stackRebasePrefix, remote, s.Head)
-		if err != nil {
-			return b, err
-		}
-		behind, err := gitIsAncestor(ctx, dir, stackRebasePrefix, s.Head, remote)
-		if err != nil {
-			return b, err
-		}
-		switch {
-		case behind:
-			if !dropCommits {
-				b.Head = remote
-			}
-		case !ahead && remote != submitted:
-			if s.Head == submitted {
-				restacked, err := stackQueueRestackBase(ctx, dir, pin, remote, submitted)
-				if err != nil {
-					return b, err
-				}
-				if restacked != "" {
-					b.Head = remote
-					break
-				}
-			}
-			replay, err := stackRemoteReplays(ctx, dir, remote, submitted, pin)
-			if err != nil {
+		if err := stackTakeRemote(ctx, dir, tr, s, &b, name, remote, submitted, pr, pin, dropCommits); err != nil {
+			if !errors.As(err, new(stackDivergedError)) {
 				return b, err
 			}
-			if !replay {
-				if replay, err = stackOwnRemote(ctx, dir, name, s.Head, remote, pin); err != nil {
-					return b, err
-				}
-			}
-			if !replay {
-				replayed, err := stackReplayedOnto(ctx, dir, remote, s.Parents[0].SHA, s.Head)
-				if err != nil {
-					return b, err
-				}
-				replay = replayed != ""
-			}
-			if !replay {
-				if replay, err = gitOnlyCopies(ctx, dir, stackRebasePrefix, remote, s.Head, pin); err != nil {
-					return b, err
-				}
-			}
-			if replay {
-				break
-			}
-			return b, stackDivergedError{fmt.Errorf("stack rebase: %s has diverged from %s/%s (local %.12s, remote %.12s) — someone pushed to it; reconcile the two by hand, then re-run", name, tr.Remote(), name, s.Head, remote)}
-		}
-		if !ahead && !behind && !dropCommits {
-			returned, err := gitReflogReturned(ctx, dir, stackRebasePrefix, name, s.Head, remote)
-			if err != nil {
-				return b, err
-			}
-			if returned {
-				return b, stackDivergedError{fmt.Errorf("stack rebase: %s's local head %.12s is one it held before its published head %s/%s (%.12s) — a reset onto an older head; git reset --keep %s/%s to take the published head, or pass --drop-commits to publish the local head anyway", name, s.Head, tr.Remote(), name, remote, tr.Remote(), name)}
-			}
-			left, err := stackLeftBase(ctx, dir, tr, s, pr)
-			if err != nil {
-				return b, err
-			}
-			if err := stackRefuseDroppedCommits(ctx, dir, tr, name, s.Head, remote, pin, left); err != nil {
-				return b, stackDivergedError{err}
-			}
+			diverged, b.Head = err, remote
 		}
 	}
 	contained, err := gitIsAncestor(ctx, dir, stackRebasePrefix, b.Head, pin)
@@ -2777,7 +2727,80 @@ func stackSnapshot(ctx context.Context, dir render.Dir, tr vcs.Trunk, s gtBranch
 	case pr != nil && pr.abandoned():
 		b.Landed = pr.closedLanding()
 	}
-	return b, nil
+	return b, diverged
+}
+
+// stackTakeRemote takes a remote that equals the branch's last submitted head
+// as ours even when local no longer contains it: every rewrite a rebase or
+// restack makes diverges from the head it last pushed.
+func stackTakeRemote(ctx context.Context, dir render.Dir, tr vcs.Trunk, s gtBranchState, b *stackRebaseBranch, name, remote, submitted string, pr *stackPR, pin string, dropCommits bool) error {
+	ahead, err := gitIsAncestor(ctx, dir, stackRebasePrefix, remote, s.Head)
+	if err != nil {
+		return err
+	}
+	behind, err := gitIsAncestor(ctx, dir, stackRebasePrefix, s.Head, remote)
+	if err != nil {
+		return err
+	}
+	switch {
+	case behind:
+		if !dropCommits {
+			b.Head = remote
+		}
+	case !ahead && remote != submitted:
+		if s.Head == submitted {
+			restacked, err := stackQueueRestackBase(ctx, dir, pin, remote, submitted)
+			if err != nil {
+				return err
+			}
+			if restacked != "" {
+				b.Head = remote
+				break
+			}
+		}
+		replay, err := stackRemoteReplays(ctx, dir, remote, submitted, pin)
+		if err != nil {
+			return err
+		}
+		if !replay {
+			if replay, err = stackOwnRemote(ctx, dir, name, s.Head, remote, pin); err != nil {
+				return err
+			}
+		}
+		if !replay {
+			replayed, err := stackReplayedOnto(ctx, dir, remote, s.Parents[0].SHA, s.Head)
+			if err != nil {
+				return err
+			}
+			replay = replayed != ""
+		}
+		if !replay {
+			if replay, err = gitOnlyCopies(ctx, dir, stackRebasePrefix, remote, s.Head, pin); err != nil {
+				return err
+			}
+		}
+		if replay {
+			break
+		}
+		return stackDivergedError{fmt.Errorf("stack rebase: %s has diverged from %s/%s (local %.12s, remote %.12s) — someone pushed to it; reconcile the two by hand, then re-run", name, tr.Remote(), name, s.Head, remote)}
+	}
+	if !ahead && !behind && !dropCommits {
+		returned, err := gitReflogReturned(ctx, dir, stackRebasePrefix, name, s.Head, remote)
+		if err != nil {
+			return err
+		}
+		if returned {
+			return stackDivergedError{fmt.Errorf("stack rebase: %s's local head %.12s is one it held before its published head %s/%s (%.12s) — a reset onto an older head; git reset --keep %s/%s to take the published head, or pass --drop-commits to publish the local head anyway", name, s.Head, tr.Remote(), name, remote, tr.Remote(), name)}
+		}
+		left, err := stackLeftBase(ctx, dir, tr, s, pr)
+		if err != nil {
+			return err
+		}
+		if err := stackRefuseDroppedCommits(ctx, dir, tr, name, s.Head, remote, pin, left); err != nil {
+			return stackDivergedError{err}
+		}
+	}
+	return nil
 }
 
 // reopens reports a branch whose pull request GitHub closed when its base was
