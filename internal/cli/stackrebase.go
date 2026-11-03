@@ -2610,8 +2610,8 @@ func stackRemoteHeads(ctx context.Context, dir render.Dir, prefix, remote string
 }
 
 func stackListRemoteHeads(ctx context.Context, dir render.Dir, prefix, remote string, branches []string) (map[string]string, error) {
-	argv := make([]string, 0, 2+len(branches))
-	argv = append(argv, "ls-remote", remote)
+	argv := make([]string, 0, 3+len(branches))
+	argv = append(argv, "ls-remote", "--heads", remote)
 	wanted := make(map[string]string, len(branches))
 	for _, b := range branches {
 		wanted[gtRestackRef(b)] = b

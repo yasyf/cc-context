@@ -1905,7 +1905,7 @@ func gtOntoHead(ctx context.Context, dir render.Dir, o shipOpts, parent string) 
 		return "", fmt.Errorf("ship: %w", err)
 	}
 	ref := "refs/heads/" + parent
-	out, err := runRemoteGit(ctx, dir, []string{"ls-remote", remote, ref})
+	out, err := runRemoteGit(ctx, dir, []string{"ls-remote", "--heads", remote, ref})
 	if err != nil {
 		return "", fmt.Errorf("ship: git ls-remote %s %s: %w", remote, ref, err)
 	}

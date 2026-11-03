@@ -88,7 +88,7 @@ func shipPRPushed(branch string) [][]string {
 		{"git", "branch", "--show-current"},
 		{"git", "log", "-1", "--format=%h%x00%s"},
 		{"git", "config", "--get", "branch." + branch + ".remote"},
-		{"git", "ls-remote", "origin", "refs/heads/" + branch, "refs/heads/main"},
+		{"git", "ls-remote", "--heads", "origin", "refs/heads/" + branch, "refs/heads/main"},
 		gitForEachRefStdinArgv,
 		{"git", "push", "--no-follow-tags", "--quiet", "--no-thin", "origin", branch},
 		gitRecordPushArgv,
@@ -224,7 +224,7 @@ func TestShipPRCreateGitLane(t *testing.T) {
 	invocations := vcstest.Invocations(t, f.ArgvLog)
 	assertInvocations(t, invocations, append(shipPRPushed("feature"),
 		append([]string{"gh"}, ghPullsByHeadArgv(fakePRRepo, "feature", "open")...),
-		[]string{"git", "ls-remote", "origin", "refs/heads/main"},
+		[]string{"git", "ls-remote", "--heads", "origin", "refs/heads/main"},
 		gitForEachRefStdinArgv,
 		shipPRBaseArgv,
 		[]string{"gh", "api", "-X", "POST", "repos/" + fakePRRepo + "/pulls", "-f", "head=feature", "-f", "base=main", "-f", "title=Better title", "-F", "body=@" + body},
@@ -328,7 +328,7 @@ func TestShipPRCreateRefused(t *testing.T) {
 		lookup := append([]string{"gh"}, ghPullsByHeadArgv(fakePRRepo, "feature", "open")...)
 		assertInvocations(t, vcstest.Invocations(t, f.ArgvLog), append(shipPRPushed("feature"),
 			lookup,
-			[]string{"git", "ls-remote", "origin", "refs/heads/main"},
+			[]string{"git", "ls-remote", "--heads", "origin", "refs/heads/main"},
 			gitForEachRefStdinArgv,
 			shipPRBaseArgv,
 			[]string{"gh", "api", "-X", "POST", "repos/" + fakePRRepo + "/pulls", "-f", "head=feature", "-f", "base=main", "-f", "title=Better title", "-F", "body=@" + body},
@@ -391,7 +391,7 @@ func TestShipPRCreateRateLimitedFallsBackToGraphQL(t *testing.T) {
 		lookup := append([]string{"gh"}, ghPullsByHeadArgv(fakePRRepo, "feature", "open")...)
 		assertInvocations(t, vcstest.Invocations(t, f.ArgvLog), append(shipPRPushed("feature"),
 			lookup,
-			[]string{"git", "ls-remote", "origin", "refs/heads/main"},
+			[]string{"git", "ls-remote", "--heads", "origin", "refs/heads/main"},
 			gitForEachRefStdinArgv,
 			shipPRBaseArgv,
 			[]string{"gh", "api", "-X", "POST", "repos/" + fakePRRepo + "/pulls", "-f", "head=feature", "-f", "base=main", "-f", "title=Better title", "-F", "body=@" + body, "-F", "draft=true"},
