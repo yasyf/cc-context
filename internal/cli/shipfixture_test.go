@@ -922,7 +922,7 @@ exit 0
   "rebase --abort") : ;;
   "diff --name-only") printf 'f.txt\n' ;;
   "reflog show") printf 'cafecafecafecafecafecafecafecafecafecafe fetch: fast-forward\n' ;;
-  "ls-remote origin") : ;;
+  "ls-remote --heads") : ;;
   "push"*)
     case "$*" in
       *--force-with-lease=*)

@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`ccx vcs ship` and stack rebase read a branch head without paying for every
+  remote ref.** `git ls-remote origin refs/heads/<x>` sends no ref prefix, so on
+  a remote with 112,000 refs each read parsed all of them. These reads now pass
+  `--heads`, which limits the advertisement to branches.
 - **A repository with both Graphite and native stacks keeps one pull request
   cache.** The cache path hashed every branch's stack owner, so any stack change
   on the machine started an empty cache with its own poll. One drive made 1,275

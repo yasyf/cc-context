@@ -2249,7 +2249,7 @@ func shipPushGitAmend(ctx context.Context, dir render.Dir, remote, branch, preAm
 // leaves it. Empty when the remote holds anything else.
 func shipAmendLease(ctx context.Context, dir render.Dir, remote, branch, preAmendSHA string) (string, error) {
 	ref := "refs/heads/" + branch
-	out, err := runRemoteGit(ctx, dir, []string{"ls-remote", remote, ref})
+	out, err := runRemoteGit(ctx, dir, []string{"ls-remote", "--heads", remote, ref})
 	if err != nil {
 		return "", fmt.Errorf("ship: git ls-remote %s %s: %w", remote, ref, err)
 	}
