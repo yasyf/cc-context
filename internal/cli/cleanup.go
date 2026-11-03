@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io/fs"
 	"maps"
+	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -180,6 +181,7 @@ inline and runs no daemon.`,
 		newCleanupCancelCmd(),
 		newCleanupServeCmd(),
 		newCleanupAdoptCmd(),
+		newCleanupRetiredCmd(),
 		newCleanupWatchersCmd(),
 	)
 	return cmd
@@ -782,6 +784,89 @@ and no manifest is read; any condition that fails refuses with nothing moved.`,
 		_ = cmd.MarkFlagRequired(name)
 	}
 	return cmd
+}
+
+func newCleanupRetiredCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "retired <admin-dir>...",
+		Short: "Queue the trees an older ccx retired without a job",
+		Long: `Queue the trees an older ccx retired without a job.
+
+Each argument is an admin directory under a repository's retired-worktrees
+whose gitdir backlink still names a tree. The tree joins the queue as an
+ordinary removal: the daemon proves it clean against that directory's commit,
+idle and unwatched, then deletes the tree and the directory where they sit. A
+tree it refuses stays where it is, reported on its own line.`,
+		Args: cobra.MinimumNArgs(1),
+		RunE: runCleanupRetired,
+	}
+}
+
+func runCleanupRetired(cmd *cobra.Command, admins []string) error {
+	ctx := cmd.Context()
+	git, err := cleanupGit(ctx, "cleanup retired")
+	if err != nil {
+		return err
+	}
+	svc, err := cleanupService(ctx)
+	if err != nil {
+		return fmt.Errorf("cleanup retired: %w", err)
+	}
+	orphaner, ok := svc.(cleanup.Orphaner)
+	if !ok {
+		return fmt.Errorf("cleanup retired: %T deletes no retired tree", svc)
+	}
+	refused := 0
+	for _, admin := range admins {
+		tree, receipt, err := queueRetiredTree(ctx, orphaner, git, admin)
+		if err != nil {
+			refused++
+			cmd.Println(strings.Join([]string{"refused " + filepath.Base(admin), admin, err.Error()}, shipSep))
+			continue
+		}
+		cmd.Println(strings.Join([]string{"queued " + filepath.Base(tree), tree, "deletion queued " + receipt.JobID}, shipSep))
+	}
+	if refused > 0 {
+		return fmt.Errorf("cleanup retired: refused %d of %d", refused, len(admins))
+	}
+	return nil
+}
+
+func queueRetiredTree(ctx context.Context, orphaner cleanup.Orphaner, git, admin string) (string, cleanup.Receipt, error) {
+	resolved, err := filepath.EvalSymlinks(admin)
+	if err != nil {
+		return "", cleanup.Receipt{}, err
+	}
+	adminID, _, err := cleanup.LstatID(resolved)
+	if err != nil {
+		return "", cleanup.Receipt{}, err
+	}
+	back, err := os.ReadFile(filepath.Join(resolved, "gitdir")) //nolint:gosec // the admin directory the operator named
+	if err != nil {
+		return "", cleanup.Receipt{}, err
+	}
+	tree, err := filepath.EvalSymlinks(filepath.Dir(strings.TrimSpace(string(back))))
+	if err != nil {
+		return "", cleanup.Receipt{}, err
+	}
+	treeID, _, err := cleanup.LstatID(tree)
+	if err != nil {
+		return "", cleanup.Receipt{}, err
+	}
+	parent, err := os.Stat(filepath.Dir(tree)) //nolint:gosec // the parent of the tree the named admin directory registers
+	if err != nil {
+		return "", cleanup.Receipt{}, err
+	}
+	receipt, err := orphaner.Orphan(ctx, cleanup.OrphanRequest{
+		Path:      tree,
+		Tree:      treeID,
+		Parent:    cleanup.IDOf(parent),
+		CommonDir: filepath.Dir(filepath.Dir(resolved)),
+		Git:       git,
+		Admin:     resolved,
+		AdminID:   adminID,
+	})
+	return tree, receipt, err
 }
 
 func runCleanupAdopt(cmd *cobra.Command, r cleanup.AdoptRequest) error {

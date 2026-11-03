@@ -291,7 +291,9 @@ nothing with the tree, so the job follows it and pins the new commit. A commit
 no ref holds keeps the job blocked. An admin directory an older daemon
 retired under `<common>/retired-worktrees/` is deleted with the job once its
 tree is gone, when it has the captured inode and its backlink names nothing
-that exists.
+that exists. `ccx vcs cleanup retired <admin-dir>...` queues a tree such a
+directory still names but no job remembers, as an ordinary removal with every
+proof a removal gets.
 
 A directory counts as the job's when it has the captured inode on the device
 its parent sits on at that moment, so a volume renumbered since capture still

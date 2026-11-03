@@ -1465,8 +1465,8 @@ func parkedAt(r cleanup.AdoptRequest) rejoinable {
 
 func orphanedAt(r cleanup.OrphanRequest) rejoinable {
 	return func(job cleanup.Job) bool {
-		untouched := job.Phase == cleanup.PhasePrepared || job.Phase == cleanup.PhaseClaimed
-		return job.Orphaned && untouched && job.Original == r.Path && holds(job.Original, job.Tree)
+		untouched := job.Phase == cleanup.PhasePending || job.Phase == cleanup.PhasePrepared || job.Phase == cleanup.PhaseClaimed
+		return job.Orphaned == (r.Admin == "") && untouched && job.Original == r.Path && holds(job.Original, job.Tree)
 	}
 }
 

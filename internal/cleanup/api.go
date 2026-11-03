@@ -184,6 +184,10 @@ func (r AdoptRequest) Validate() error {
 	return LegacyBinding(r.Source, r.RecoveryRef)
 }
 
+// RetiredWorktrees is the directory under a repository's common directory where
+// an older ccx moved the admin directories it retired.
+const RetiredWorktrees = "retired-worktrees"
+
 // OrphanRequest asks for one orphaned pool worktree to be deleted where it
 // sits: a tree whose .git names an admin directory that no longer exists and
 // that no registration of its repository claims. No saved head is left to
@@ -201,13 +205,28 @@ type OrphanRequest struct {
 	CommonDir string `json:"common_dir"`
 	// Git is the absolute git binary the caller resolved.
 	Git string `json:"git"`
+	// Admin is the admin directory an older ccx retired under CommonDir, for a
+	// tree that kept its commit but lost its job. Empty for a tree whose admin
+	// directory is gone.
+	Admin string `json:"admin,omitempty"`
+	// AdminID is the identity the caller saw at Admin.
+	AdminID FileID `json:"admin_id,omitzero"`
 }
 
-// Validate rejects a request that leaves an identity unset or names a path by
-// anything but a clean absolute path.
+// Validate rejects a request that leaves an identity unset, names a path by
+// anything but a clean absolute path, or names an Admin outside CommonDir's
+// retired worktrees.
 func (r OrphanRequest) Validate() error {
 	if r.Tree.Zero() || r.Parent.Zero() {
 		return errors.New("tree or parent identity is unset")
+	}
+	if r.Admin != "" {
+		switch {
+		case r.AdminID.Zero():
+			return errors.New("admin identity is unset")
+		case filepath.Dir(r.Admin) != filepath.Join(r.CommonDir, RetiredWorktrees):
+			return fmt.Errorf("admin %q is not under %q", r.Admin, filepath.Join(r.CommonDir, RetiredWorktrees))
+		}
 	}
 	return validatePaths(map[string]string{"path": r.Path, "common_dir": r.CommonDir, "git": r.Git})
 }
