@@ -12,7 +12,7 @@ on:
   pull_request:
     branches: [main]
   schedule:
-    - cron: "17 9 * * *"
+    - cron: "17 2 * * *"
   workflow_dispatch:
     inputs:
       commit:
