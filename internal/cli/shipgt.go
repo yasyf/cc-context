@@ -2915,12 +2915,20 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 		if err := stackPushPublication(ctx, l.dir(), s, plan); err != nil {
 			return nil, nil, err
 		}
+		if err := stackRecordPublication(ctx, l.dir(), s.publication, plan); err != nil {
+			return nil, nil, err
+		}
 		pushed := gtPushedHeads(plan)
 		for i := range posted {
 			posted[i].head = pushed[posted[i].name]
 		}
-	} else if err := gtPushStack(ctx, l.dir(), s, plan); err != nil {
-		return nil, nil, err
+	} else {
+		if err := gtPushStack(ctx, l.dir(), s, plan); err != nil {
+			return nil, nil, err
+		}
+		if err := gtRecordPushedPublication(ctx, l.dir(), plan); err != nil {
+			return nil, nil, err
+		}
 	}
 	heads.post(ctx, errW, l.dir(), s, owner+"/"+name, plan, known)
 	versions := make(map[string]gtmeta.Version, len(posted))
@@ -2929,13 +2937,6 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 	}
 	if err := gtmeta.RecordSubmitted(ctx, commonDir, versions); err != nil {
 		return nil, nil, gtSubmitFailure(err, s)
-	}
-	if s.publication != nil {
-		if err := stackRecordPublication(ctx, l.dir(), s.publication, plan); err != nil {
-			return nil, nil, err
-		}
-	} else if err := gtRecordPushedPublication(ctx, l.dir(), plan); err != nil {
-		return nil, nil, err
 	}
 
 	var landed []gtapi.SubmittedPR
