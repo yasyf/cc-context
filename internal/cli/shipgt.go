@@ -543,16 +543,6 @@ func shipPreflightGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, c 
 		plan.moveOntoParent, plan.commitBeforeMove = true, true
 		return plan, "", nil
 	}
-	if o.parent != "" {
-		if seg, err = gtAdoptRecordedParent(ctx, errW, l, c, state, o.parent); err != nil {
-			return branchPlan{}, "", err
-		}
-		if seg != "" {
-			if state, err = c.at(ctx); err != nil {
-				return branchPlan{}, "", err
-			}
-		}
-	}
 
 	moves := false
 	switch s, tracked := state[branch]; {
@@ -645,7 +635,7 @@ func gtMoveOntoParent(ctx context.Context, errW io.Writer, l lane, o shipOpts, c
 	var seg string
 	if s, tracked := state[branch]; tracked {
 		undo.from, undo.base = s.Parents[0].Ref, s.Parents[0].SHA
-		state, seg, err = gtReparent(ctx, l, o, branch, o.parent, c)
+		state, seg, err = gtReparent(ctx, errW, l, o, branch, o.parent, c)
 	} else {
 		state, seg, err = gtTrack(ctx, errW, l, o, branch, c)
 	}
@@ -1663,11 +1653,9 @@ func gtReplayable(ctx context.Context, dir render.Dir, state gtState, parent str
 }
 
 // gtReparentRefusal is every refusal moving a tracked branch onto parent can
-// make, checked before anything moves; it returns the move's replay.
+// make, checked before anything moves; it returns the move's replay. A parent
+// gt does not track is left for gtReparent to adopt, then check again.
 func gtReparentRefusal(ctx context.Context, l lane, o shipOpts, state gtState, branch, parent string, c *gtCache) (gtOntoMove, error) {
-	if _, tracked := state[parent]; !tracked {
-		return gtOntoMove{}, refuse("ship: --parent %s names a branch neither this checkout nor origin holds, so %s cannot be recorded on it", parent, branch)
-	}
 	if held := state[branch].State; held != "" {
 		return gtOntoMove{}, refuse("ship: %s is %s, so ship leaves it on %s — release it, then ship again", branch, held, state[branch].Parents[0].Ref)
 	}
@@ -1677,6 +1665,9 @@ func gtReparentRefusal(ctx context.Context, l lane, o shipOpts, state gtState, b
 	}
 	if parent == branch || slices.Contains(up, parent) {
 		return gtOntoMove{}, refuse("ship: --parent %s names %s or a branch stacked above it, so %s cannot move onto it", parent, branch, branch)
+	}
+	if _, tracked := state[parent]; !tracked {
+		return gtOntoMove{}, nil
 	}
 	if err := gtRefuseLandedParent(ctx, c.dir, state, branch, parent); err != nil {
 		return gtOntoMove{}, err
@@ -1693,10 +1684,22 @@ func gtReparentRefusal(ctx context.Context, l lane, o shipOpts, state gtState, b
 // replayed onto the parent when the parent is no longer in its history, and the
 // record then names the parent at the head the branch now sits on. The branches
 // above it are left for their own lanes to restack.
-func gtReparent(ctx context.Context, l lane, o shipOpts, branch, parent string, c *gtCache) (gtState, string, error) {
+func gtReparent(ctx context.Context, errW io.Writer, l lane, o shipOpts, branch, parent string, c *gtCache) (gtState, string, error) {
 	state, err := c.at(ctx)
 	if err != nil {
 		return nil, "", err
+	}
+	adopted, err := gtAdoptRecordedParent(ctx, errW, l, c, state, parent)
+	if err != nil {
+		return nil, "", err
+	}
+	if adopted != "" {
+		if state, err = c.at(ctx); err != nil {
+			return nil, "", err
+		}
+	}
+	if _, tracked := state[parent]; !tracked {
+		return nil, "", refuse("ship: --parent %s names a branch neither this checkout nor origin holds, so %s cannot be recorded on it", parent, branch)
 	}
 	if _, err := gtReparentRefusal(ctx, l, o, state, branch, parent, c); err != nil {
 		return nil, "", err
@@ -1727,7 +1730,7 @@ func gtReparent(ctx context.Context, l lane, o shipOpts, branch, parent string, 
 	if state, err = c.at(ctx); err != nil {
 		return nil, "", err
 	}
-	return state, "reparented " + branch + " from " + was + " onto " + parent + replayed, nil
+	return state, adopted + "reparented " + branch + " from " + was + " onto " + parent + replayed, nil
 }
 
 // gtStackedParent is the parent gt records for a tracked branch when it is a

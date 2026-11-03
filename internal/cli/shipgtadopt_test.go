@@ -63,7 +63,6 @@ func TestShipGTReparentsOntoAParentAnotherLanePushedWithPlainGit(t *testing.T) {
 	api.prs["parent"] = 2000
 	api.recorded["parent"] = "main"
 	shipGTStack(t, f, "feature")
-	shipGTReady(t, f)
 
 	report := dryRunReport(t, f, "--no-commit", "--parent", "parent")
 	if refusals := dryRunValues(report, "refuses"); len(refusals) != 0 {
@@ -73,6 +72,7 @@ func TestShipGTReparentsOntoAParentAnotherLanePushedWithPlainGit(t *testing.T) {
 	if got := dryRunValues(report, "parent"); len(got) != 1 || got[0] != want {
 		t.Errorf("dry run parent = %q, want %q", got, want)
 	}
+	shipGTReady(t, f)
 
 	out, errOut, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--no-push", "--parent", "parent")
 	if err != nil {

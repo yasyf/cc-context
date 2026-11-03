@@ -5,17 +5,18 @@ import (
 	"testing"
 )
 
-// TestStackNewRemovesALaneGTWillNotAdopt is target-regroup's refusal: a parent
-// that dropped out of Graphite tracking left the new worktree behind, so the
-// retry refused on the existing destination.
+// TestStackNewRemovesALaneGTWillNotAdopt is target-regroup's refusal: a gt
+// track that refused the new lane left its worktree behind, so the retry
+// refused on the existing destination.
 func TestStackNewRemovesALaneGTWillNotAdopt(t *testing.T) {
 	f := shipGTRepo(t)
-	shipGTUntracked(t, f, "loose")
+	shipGTStack(t, f, "loose")
+	shipGTIntercept(t, f, "track", "echo 'ERROR: refused' >&2\nexit 1\n")
 
 	for range 2 {
 		_, _, err := runStackCmd(t, f, "new", "--full-history", "child", "--parent", "loose")
-		if err == nil || !strings.Contains(err.Error(), "track loose first with gt track --parent <its parent> loose") {
-			t.Fatalf("stack new onto untracked loose = %v, want the lane removed and the parent named", err)
+		if err == nil || !strings.Contains(err.Error(), "since gt could not adopt it onto loose") {
+			t.Fatalf("stack new onto loose = %v, want the lane removed and the parent named", err)
 		}
 		if gitBranchExists(t, f.Env(), f.Dir, "child") {
 			t.Fatal("child branch left behind")

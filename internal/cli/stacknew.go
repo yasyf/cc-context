@@ -380,7 +380,7 @@ func stackUndoNew(ctx context.Context, l lane, path, name, parent string, cause 
 	if _, err := render.RunCLI(ctx, l.dir(), "git", []string{"branch", "-D", name}); err != nil {
 		return fmt.Errorf("stack new: gt could not adopt %s onto %s, and deleting the branch failed: %w (adoption: %w)", name, parent, err, cause)
 	}
-	return fmt.Errorf("%w %s and its worktree, since gt could not adopt it onto %s — track %s first with gt track --parent <its parent> %s, or name a tracked parent with --parent: %w", errStackNewUndone, name, parent, parent, parent, cause)
+	return fmt.Errorf("%w %s and its worktree, since gt could not adopt it onto %s: %w", errStackNewUndone, name, parent, cause)
 }
 
 func stackNewPath(ctx context.Context, checkout vcs.Checkout, name, requested string, source vcs.Checkout) (string, error) {

@@ -3646,20 +3646,28 @@ func TestStackRebaseParentAdoptsAnUntrackedParent(t *testing.T) {
 	}
 }
 
-func TestStackRebaseParentNamesTheFetchForAParentOnlyTheRemoteHolds(t *testing.T) {
+func TestStackRebaseParentCutsAParentOnlyTheRemoteHolds(t *testing.T) {
 	f := stackRebaseRepo(t, "a")
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "theirs", "main")
 	stackCommit(t, f, "theirs.txt")
+	theirs := gitAt(t, f.Env(), f.Dir, "rev-parse", "theirs")
 	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "theirs")
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "a")
 	mustRun(t, f.Env(), f.Dir, "git", "branch", "-qD", "theirs")
+	mustRun(t, f.Env(), f.Dir, "git", "update-ref", "-d", "refs/remotes/origin/theirs")
 
-	_, errOut, err := runStackCmd(t, f, "rebase", "--no-push", "--parent", "a=theirs")
-	if err == nil {
-		t.Fatal("stack rebase --parent a=theirs succeeded with no local theirs")
+	out, errOut, err := runStackCmd(t, f, "rebase", "--no-push", "--parent", "a=theirs")
+	if err != nil {
+		t.Fatalf("stack rebase --parent a=theirs: %v\n%s%s", err, out, errOut)
 	}
-	if want := "git fetch origin refs/heads/theirs:refs/heads/theirs"; !strings.Contains(errOut+err.Error(), want) {
-		t.Errorf("refusal = %q, want it to name %q", errOut+err.Error(), want)
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "theirs"); got != theirs {
+		t.Errorf("local theirs = %.12s, want origin's head %.12s", got, theirs)
+	}
+	if got := stackParent(t, f, "a"); got != "theirs" {
+		t.Errorf("gt parent of a = %s, want theirs", got)
+	}
+	if n := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", "theirs..a"); n != "1" {
+		t.Errorf("a holds %s commits over theirs, want its own one", n)
 	}
 }
 
