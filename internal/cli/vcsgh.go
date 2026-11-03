@@ -161,7 +161,19 @@ func runVcsGh(cmd *cobra.Command, argv []string, maxAge time.Duration) error {
 			err = ghRun(ctx, cmd, dir, args, env, stdin, cmd.OutOrStdout(), cmd.ErrOrStderr())
 		} else {
 			var stdout, stderr bytes.Buffer
-			err = ghRun(ctx, cmd, dir, args, env, stdin, &stdout, &stderr)
+			var tries int
+			tries, err = retryTransient(ctx, func() error {
+				stdout.Reset()
+				stderr.Reset()
+				err := ghRun(ctx, cmd, dir, args, env, stdin, &stdout, &stderr)
+				if err == nil || stderr.Len() == 0 {
+					return err
+				}
+				return fmt.Errorf("%w: %s", err, stderr.Bytes())
+			})
+			if err != nil && tries > 1 {
+				_, _ = fmt.Fprintf(&stderr, "ccx: gh failed after %d tries\n", tries)
+			}
 			if err != nil && identity == ghapi.IdentityApp && ghForbidden(stdout.Bytes()) {
 				userToken = true
 				continue

@@ -164,7 +164,7 @@ func shipPushGitExpected(ctx context.Context, dir render.Dir, remote, branch, ex
 	}
 	ref := gtRestackRef(branch)
 	lease := "--force-with-lease=" + ref + ":" + expected
-	_, err = render.RunCLI(ctx, dir, "git", gitPushArgv(noVerify, remote, lease, source+":"+ref))
+	_, err = runRemoteGit(ctx, dir, gitPushArgv(noVerify, remote, lease, source+":"+ref))
 	if err != nil {
 		return fmt.Errorf("ship: publish %s/%s with expected remote %s failed; the pinned lease was not refreshed — inspect and reconcile before retrying: %w", remote, branch, expected, err)
 	}

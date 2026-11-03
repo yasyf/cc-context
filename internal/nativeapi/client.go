@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -24,7 +25,10 @@ const (
 	requestTimeout = 30 * time.Second
 )
 
-var secondaryLimitWaits = []time.Duration{time.Minute, 2 * time.Minute}
+var (
+	secondaryLimitWaits = []time.Duration{time.Minute, 2 * time.Minute}
+	transientWaits      = []time.Duration{2 * time.Second, 5 * time.Second, 15 * time.Second}
+)
 
 // Client publishes GitHub PRs and reads the explicitly selected merge queue.
 type Client struct {
@@ -100,19 +104,36 @@ func (c *Client) do(ctx context.Context, method, path string, body []byte) ([]by
 }
 
 func (c *Client) request(ctx context.Context, base, token, identity, method, path string, body []byte) ([]byte, error) {
-	for _, wait := range secondaryLimitWaits {
+	limited, failed := 0, 0
+	for {
 		payload, retryAfter, err := c.attempt(ctx, base, token, identity, method, path, body)
-		if retryAfter < 0 {
+		var wait time.Duration
+		switch {
+		case retryAfter >= 0 && limited < len(secondaryLimitWaits):
+			wait = max(secondaryLimitWaits[limited], retryAfter)
+			limited++
+		case failed < len(transientWaits) && method != http.MethodPost && ctx.Err() == nil && transient(err):
+			wait = transientWaits[failed]
+			failed++
+		case err != nil && failed > 0:
+			return payload, fmt.Errorf("%w (after %d tries)", err, limited+failed+1)
+		default:
 			return payload, err
 		}
 		select {
 		case <-ctx.Done():
 			return nil, errors.Join(err, ctx.Err())
-		case <-time.After(max(wait, retryAfter)):
+		case <-time.After(wait):
 		}
 	}
-	payload, _, err := c.attempt(ctx, base, token, identity, method, path, body)
-	return payload, err
+}
+
+func transient(err error) bool {
+	var status *StatusError
+	if errors.As(err, &status) {
+		return status.Status >= http.StatusInternalServerError
+	}
+	return errors.As(err, new(net.Error)) || errors.Is(err, io.ErrUnexpectedEOF)
 }
 
 func (c *Client) attempt(ctx context.Context, base, token, identity, method, path string, body []byte) ([]byte, time.Duration, error) {

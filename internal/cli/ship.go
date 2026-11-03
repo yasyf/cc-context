@@ -2219,7 +2219,7 @@ func shipAmendKept(ctx context.Context, dir render.Dir, preAmendSHA string, err 
 // reflog holds: its own last push, before a local rebase and amend. A head the
 // branch never held, or a stale or rejected lease, is terminal.
 func shipPushGitAmend(ctx context.Context, dir render.Dir, remote, branch, preAmendSHA string, noVerify bool) error {
-	_, err := render.RunCLI(ctx, dir, "git", gitPushArgv(noVerify, remote, branch))
+	_, err := runRemoteGit(ctx, dir, gitPushArgv(noVerify, remote, branch))
 	if err == nil {
 		return gitRecordBranchPush(ctx, dir, remote, branch)
 	}
@@ -2235,7 +2235,7 @@ func shipPushGitAmend(ctx context.Context, dir render.Dir, remote, branch, preAm
 		return errors.New(refusal)
 	}
 	lease := fmt.Sprintf("--force-with-lease=%s:%s", branch, tip)
-	if _, err := render.RunCLI(ctx, dir, "git", gitPushArgv(noVerify, remote, lease, branch)); err != nil {
+	if _, err := runRemoteGit(ctx, dir, gitPushArgv(noVerify, remote, lease, branch)); err != nil {
 		if gitPushStaleLease(err) || gitPushRejected(err) {
 			return fmt.Errorf("%s: %w", refusal, err)
 		}
@@ -2249,7 +2249,7 @@ func shipPushGitAmend(ctx context.Context, dir render.Dir, remote, branch, preAm
 // leaves it. Empty when the remote holds anything else.
 func shipAmendLease(ctx context.Context, dir render.Dir, remote, branch, preAmendSHA string) (string, error) {
 	ref := "refs/heads/" + branch
-	out, err := render.RunCLI(ctx, dir, "git", []string{"ls-remote", remote, ref})
+	out, err := runRemoteGit(ctx, dir, []string{"ls-remote", remote, ref})
 	if err != nil {
 		return "", fmt.Errorf("ship: git ls-remote %s %s: %w", remote, ref, err)
 	}
@@ -2313,7 +2313,7 @@ func shipPushGitOnce(ctx context.Context, dir render.Dir, remote, branch, trunk 
 			}
 		}
 	}
-	if _, err := render.RunCLI(ctx, dir, "git", argv); err != nil {
+	if _, err := runRemoteGit(ctx, dir, argv); err != nil {
 		raw := fmt.Errorf("ship: git push: %w", err)
 		if gitPushRejected(raw) || gitPushStaleLease(raw) {
 			return rebased, "", &pushRejectedError{err: raw}

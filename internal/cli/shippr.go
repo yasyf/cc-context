@@ -312,7 +312,7 @@ func shipPRBase(ctx context.Context, dir render.Dir, remote, branch, trunk strin
 	if _, err := stackRemoteHeads(ctx, dir, "ship", remote, []string{trunk}, ""); err != nil {
 		return "", err
 	}
-	out, err := render.RunCLI(ctx, dir, "git", []string{"ls-remote", "--heads", remote})
+	out, err := runRemoteGit(ctx, dir, []string{"ls-remote", "--heads", remote})
 	if err != nil {
 		return "", fmt.Errorf("ship: git ls-remote --heads %s: %w", remote, err)
 	}
