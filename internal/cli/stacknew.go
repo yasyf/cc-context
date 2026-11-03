@@ -184,7 +184,7 @@ func runStackNew(cmd *cobra.Command, name string, options stackNewOpts) error {
 		if err != nil {
 			return err
 		}
-		tracked, err := stackNewNativeParent(ctx, l, parent, t)
+		tracked, err := stackNewParent(ctx, l, parent, t)
 		if err != nil {
 			return err
 		}
@@ -498,13 +498,24 @@ func stackNewStart(ctx context.Context, l lane, parent, trunk string) (string, e
 	return gtTrunkHead(ctx, l.dir(), "stack new", tr)
 }
 
-func stackNewNativeParent(ctx context.Context, l lane, parent, trunk string) ([]string, error) {
-	if !l.native || parent == trunk {
+func stackNewParent(ctx context.Context, l lane, parent, trunk string) ([]string, error) {
+	if !l.gt || parent == trunk {
 		return nil, nil
 	}
-	member, err := gtmeta.NativeMembership(l.checkout.CommonDir, parent)
-	if err != nil || member {
+	if l.native {
+		member, err := gtmeta.NativeMembership(l.checkout.CommonDir, parent)
+		if err != nil || member {
+			return nil, err
+		}
+	}
+	present, err := gitRefExists(ctx, l.dir(), "stack new", gtRestackRef(parent))
+	if err != nil {
 		return nil, err
+	}
+	if !present {
+		if present, err = gtBranchFromRemote(ctx, l.dir(), "stack new", "origin", parent); err != nil || !present {
+			return nil, err
+		}
 	}
 	return gtAdoptUntracked(ctx, l.dir(), "stack new", parent)
 }

@@ -224,7 +224,15 @@ func dryRunNativeStack(ctx context.Context, l lane, o shipOpts, c *gtCache, r *s
 func dryRunReparent(ctx context.Context, l lane, o shipOpts, state gtState, was string, r *shipDryRun) error {
 	r.parent = o.parent
 	if _, tracked := state[o.parent]; !tracked {
-		r.refusals = append(r.refusals, fmt.Sprintf("ship: --parent %s names a branch graphite does not track, so %s cannot be recorded on it — track %s first", o.parent, r.branch, o.parent))
+		recorded, err := gtRecordedBase(ctx, l, o.parent)
+		if err != nil {
+			return err
+		}
+		if recorded.base == "" {
+			r.refusals = append(r.refusals, fmt.Sprintf("ship: %s is a branch graphite does not track here, and Graphite records no open pull request for it — track it with gt track %s --parent <its parent>, or pass --no-gt", o.parent, o.parent))
+			return nil
+		}
+		r.because = fmt.Sprintf("graphite tracks %s on %s, so ship tracks %s onto %s, the base of its open #%d, then re-parents %s onto it", r.branch, was, o.parent, recorded.base, recorded.pr, r.branch)
 		return nil
 	}
 	if held := state[r.branch].State; held != "" {

@@ -543,6 +543,16 @@ func shipPreflightGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, c 
 		plan.moveOntoParent, plan.commitBeforeMove = true, true
 		return plan, "", nil
 	}
+	if o.parent != "" {
+		if seg, err = gtAdoptRecordedParent(ctx, errW, l, c, state, o.parent); err != nil {
+			return branchPlan{}, "", err
+		}
+		if seg != "" {
+			if state, err = c.at(ctx); err != nil {
+				return branchPlan{}, "", err
+			}
+		}
+	}
 
 	moves := false
 	switch s, tracked := state[branch]; {
@@ -1211,11 +1221,16 @@ func gtAdoptRecordedParent(ctx context.Context, errW io.Writer, l lane, c *gtCac
 		if err != nil {
 			return "", err
 		}
+		if !local {
+			if local, err = gtBranchFromRemote(ctx, c.dir, "ship", "origin", name); err != nil {
+				return "", err
+			}
+		}
 		if !local && name == parent {
 			return "", nil
 		}
 		if !local {
-			return "", refuse("ship: %s, the parent Graphite records for %s, is no local branch — fetch it, or pass --no-gt", name, chain[len(chain)-1].name)
+			return "", refuse("ship: %s, the parent Graphite records for %s, is a branch neither this checkout nor origin holds — pass --no-gt", name, chain[len(chain)-1].name)
 		}
 		recorded, err := gtRecordedBase(ctx, l, name)
 		if err != nil {
@@ -1240,6 +1255,20 @@ func gtAdoptRecordedParent(ctx context.Context, errW io.Writer, l lane, c *gtCac
 		segs = append(segs, fmt.Sprintf("tracked %s onto %s from Graphite's record of #%d", b.name, b.base, b.pr)+shipSep)
 	}
 	return strings.Join(segs, ""), nil
+}
+
+// gtBranchFromRemote cuts a local branch at remote's head of name, the only
+// copy of a branch another lane pushed with plain git, and reports whether
+// remote holds one.
+func gtBranchFromRemote(ctx context.Context, dir render.Dir, prefix, remote, name string) (bool, error) {
+	heads, err := stackRemoteHeads(ctx, dir, prefix, remote, []string{name}, "")
+	if err != nil || heads[name] == "" {
+		return false, err
+	}
+	if _, err := render.RunCLI(ctx, dir, "git", []string{"branch", "--no-track", name, heads[name]}); err != nil {
+		return false, fmt.Errorf("%s: git branch %s %s: %w", prefix, name, shortOID(heads[name]), err)
+	}
+	return true, nil
 }
 
 func gtTrackFailed(l lane, branch, advice string, runErr error) error {
@@ -1637,7 +1666,7 @@ func gtReplayable(ctx context.Context, dir render.Dir, state gtState, parent str
 // make, checked before anything moves; it returns the move's replay.
 func gtReparentRefusal(ctx context.Context, l lane, o shipOpts, state gtState, branch, parent string, c *gtCache) (gtOntoMove, error) {
 	if _, tracked := state[parent]; !tracked {
-		return gtOntoMove{}, refuse("ship: --parent %s names a branch graphite does not track, so %s cannot be recorded on it — track %s first", parent, branch, parent)
+		return gtOntoMove{}, refuse("ship: --parent %s names a branch neither this checkout nor origin holds, so %s cannot be recorded on it", parent, branch)
 	}
 	if held := state[branch].State; held != "" {
 		return gtOntoMove{}, refuse("ship: %s is %s, so ship leaves it on %s — release it, then ship again", branch, held, state[branch].Parents[0].Ref)
