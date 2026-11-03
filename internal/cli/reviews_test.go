@@ -312,7 +312,7 @@ func stubReviewsAPI(t *testing.T) *reviewsServer {
 	ts := httptest.NewServer(s)
 	t.Cleanup(ts.Close)
 	prior := reviewsAPI
-	reviewsAPI = func() *ghapi.Client { return ghapi.New(ts.URL) }
+	reviewsAPI = func() *ghapi.Client { return ghapi.New(ts.URL).Unwaiting() }
 	t.Cleanup(func() { reviewsAPI = prior })
 	return s
 }

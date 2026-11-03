@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -489,5 +490,76 @@ func TestRateLimitedTypesEachRefusal(t *testing.T) {
 				t.Errorf("RateLimited = (%s, %v), want (%s, %v)", wait, limited, tt.wait, tt.limited)
 			}
 		})
+	}
+}
+
+func failingFirst(t *testing.T, failures int32, status int) (*httptest.Server, *atomic.Int32) {
+	t.Helper()
+	var requests atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if requests.Add(1) <= failures {
+			w.WriteHeader(status)
+			_, _ = fmt.Fprint(w, `{"message":"Server Error"}`)
+			return
+		}
+		_, _ = fmt.Fprint(w, `{"number":3,"body":"after the retry"}`)
+	}))
+	t.Cleanup(ts.Close)
+	return ts, &requests
+}
+
+func instantRetries(c *Client) *Client {
+	c.transient = make([]time.Duration, len(transientWaits))
+	return c
+}
+
+func TestAReadGitHubAnswers5xxIsRetriedUntilItPasses(t *testing.T) {
+	t.Parallel()
+	ts, requests := failingFirst(t, 2, http.StatusBadGateway)
+
+	got, err := Get[item](context.Background(), instantRetries(testClient(ts.URL, fixedToken("tok"))), "/repos/o/r/pulls/3")
+
+	if err != nil || got.Body != "after the retry" || requests.Load() != 3 {
+		t.Fatalf("Get = %+v, %v after %d requests, want the third request's item", got, err, requests.Load())
+	}
+}
+
+func TestAReadThatStaysDownNamesItsTriesAndLastStatus(t *testing.T) {
+	t.Parallel()
+	ts, requests := failingFirst(t, 99, http.StatusServiceUnavailable)
+
+	_, err := Get[item](context.Background(), instantRetries(testClient(ts.URL, fixedToken("tok"))), "/repos/o/r/pulls/3")
+
+	want := int32(len(transientWaits) + 1)
+	if err == nil || requests.Load() != want || !strings.Contains(err.Error(), fmt.Sprintf("(after %d tries)", want)) || !strings.Contains(err.Error(), "503") {
+		t.Fatalf("err = %v after %d requests, want the 503 named after %d tries", err, requests.Load(), want)
+	}
+}
+
+func TestAMutationOrAnUnwaitingReadIsNeverRetriedOn5xx(t *testing.T) {
+	t.Parallel()
+	for name, call := range map[string]func(*Client) error{
+		"mutation": func(c *Client) error {
+			_, err := GraphQL[item](context.Background(), instantRetries(c), "mutation { addComment }", nil)
+			return err
+		},
+		"unwaiting read": func(c *Client) error {
+			_, err := Get[item](context.Background(), instantRetries(c).Unwaiting(), "/repos/o/r/pulls/3")
+			return err
+		},
+	} {
+		ts, requests := failingFirst(t, 1, http.StatusInternalServerError)
+		if err := call(testClient(ts.URL, fixedToken("tok"))); err == nil || requests.Load() != 1 {
+			t.Fatalf("%s: err = %v after %d requests, want one failed request", name, err, requests.Load())
+		}
+	}
+}
+
+func TestARefusalThatMeansNoIsNeverRetried(t *testing.T) {
+	t.Parallel()
+	ts, requests := failingFirst(t, 1, http.StatusNotFound)
+
+	if _, err := Get[item](context.Background(), instantRetries(testClient(ts.URL, fixedToken("tok"))), "/repos/o/r/pulls/3"); err == nil || requests.Load() != 1 {
+		t.Fatalf("err = %v after %d requests, want one failed request", err, requests.Load())
 	}
 }

@@ -22,6 +22,8 @@ const maxRateLimitWait = 60 * time.Second
 // answering 429 forever fails instead of looping.
 const maxRateLimitRetries = 3
 
+var transientWaits = []time.Duration{2 * time.Second, 5 * time.Second, 15 * time.Second}
+
 // retryDelay reports how long to wait before resending, and whether waiting is
 // worth it: only a 403/429 whose Retry-After — or whose exhausted-quota reset —
 // lands within maxRateLimitWait is waited on.
@@ -89,7 +91,7 @@ func sleep(ctx context.Context, d time.Duration) error {
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
-		return fmt.Errorf("ghapi: waiting out rate limit: %w", ctx.Err())
+		return fmt.Errorf("ghapi: waiting to retry: %w", ctx.Err())
 	case <-timer.C:
 		return nil
 	}

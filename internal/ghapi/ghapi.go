@@ -38,6 +38,7 @@ type Client struct {
 	apps      *appLoader
 	repo      string
 	retries   int
+	transient []time.Duration
 	quota     *ledger
 	floorless bool
 }
@@ -57,11 +58,12 @@ func Default() *Client { return defaultClient() }
 // point baseURL at an httptest.Server; production callers want Default.
 func New(baseURL string) *Client {
 	return &Client{
-		base:    strings.TrimSuffix(baseURL, "/"),
-		http:    &http.Client{},
-		tokens:  &tokenSource{resolve: resolveToken},
-		apps:    &appLoader{load: func(context.Context) (*appSource, error) { return nil, nil }},
-		retries: maxRateLimitRetries,
+		base:      strings.TrimSuffix(baseURL, "/"),
+		http:      &http.Client{},
+		tokens:    &tokenSource{resolve: resolveToken},
+		apps:      &appLoader{load: func(context.Context) (*appSource, error) { return nil, nil }},
+		retries:   maxRateLimitRetries,
+		transient: transientWaits,
 	}
 }
 
@@ -89,12 +91,13 @@ func (c *Client) Unfloored() *Client {
 	return &unfloored
 }
 
-// Unwaiting returns a copy of c that hands a rate-limited response straight
-// back instead of sitting out a short Retry-After, for a caller that keeps its
-// own backoff across processes.
+// Unwaiting returns a copy of c that hands a rate-limited or failed response
+// straight back instead of sitting out a short Retry-After or retrying a 5xx,
+// for a caller that keeps its own backoff across processes.
 func (c *Client) Unwaiting() *Client {
 	unwaiting := *c
 	unwaiting.retries = 0
+	unwaiting.transient = nil
 	return &unwaiting
 }
 
@@ -186,7 +189,7 @@ func (c *Client) do(ctx context.Context, method, ref string, body []byte, read b
 		}
 	}
 	reresolved := false
-	waits := 0
+	waits, failures := 0, 0
 	for {
 		asApp := cred != credential(c.tokens)
 		identity := IdentityUser
@@ -209,8 +212,15 @@ func (c *Client) do(ctx context.Context, method, ref string, body []byte, read b
 		stop := render.Slow(ctx, "GitHub "+method+" "+target)
 		status, header, payload, err := c.send(ctx, method, target, body, token)
 		stop()
+		if read && failures < len(c.transient) && ctx.Err() == nil && (err != nil || status >= http.StatusInternalServerError) {
+			if err := sleep(ctx, c.transient[failures]); err != nil {
+				return nil, nil, false, err
+			}
+			failures++
+			continue
+		}
 		if err != nil {
-			return nil, nil, false, err
+			return nil, nil, false, afterTries(err, failures)
 		}
 		if c.quota != nil {
 			if err := c.quota.charge(ctx, principal, Resource(target), CallerName(ctx), header); err != nil {
@@ -239,10 +249,17 @@ func (c *Client) do(ctx context.Context, method, ref string, body []byte, read b
 		if status < 200 || status > 299 {
 			refusal := statusError(method, target, status, header, payload, time.Now())
 			refusal.AsApp = asApp
-			return nil, nil, false, refusal
+			return nil, nil, false, afterTries(refusal, failures)
 		}
 		return payload, header, asApp, nil
 	}
+}
+
+func afterTries(err error, failures int) error {
+	if failures == 0 {
+		return err
+	}
+	return fmt.Errorf("%w (after %d tries)", err, failures+1)
 }
 
 type credential interface {
