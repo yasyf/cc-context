@@ -85,6 +85,10 @@ type Tuning struct {
 	MaxBusy      int
 	MaxCreate    time.Duration
 	QuietSamples int
+	// PhysicalShare is how many times as long as a logical step deletion runs
+	// before the next one, while deletion is due: a logical step proves a tree
+	// through git, and deletion frees the disk.
+	PhysicalShare int
 	// Readmit is how long a deletion runs on one admission before the engine
 	// admits its job again, so a process that enters the tree, or a
 	// registration that changes hands, stops the deletion within Readmit. Zero
@@ -138,6 +142,7 @@ func DefaultTuning() Tuning {
 		MaxBusy:       3,
 		MaxCreate:     3 * time.Millisecond,
 		QuietSamples:  2,
+		PhysicalShare: 10,
 		Readmit:       10 * time.Second,
 		Recheck:       30 * time.Second,
 		RetryAfter:    30 * time.Second,
@@ -160,6 +165,8 @@ func (t Tuning) validate() error {
 		return fmt.Errorf("floor workers %d must be positive and at most the workers %d", t.FloorWorkers, t.Workers)
 	case t.ActivityEvery <= 0, t.ProbeSettle < 0, t.BusyPercent <= 0, t.MaxBusy < 0, t.MaxCreate <= 0, t.QuietSamples <= 0:
 		return fmt.Errorf("activity sampled every %s after %s of rest, %d sessions over %v%% and creates over %s held until %d quiet samples: the interval, threshold, create bound and samples must be positive, the rest and sessions not negative", t.ActivityEvery, t.ProbeSettle, t.MaxBusy, t.BusyPercent, t.MaxCreate, t.QuietSamples)
+	case t.PhysicalShare <= 0:
+		return fmt.Errorf("physical share %d must be positive", t.PhysicalShare)
 	case t.Readmit < 0:
 		return fmt.Errorf("readmit interval %s must not be negative", t.Readmit)
 	case t.Reconcile < 0:
@@ -802,7 +809,7 @@ func (e *Engine) work(ctx context.Context) error {
 				return err
 			}
 			finished := e.clock.Now()
-			e.physicalUntil = finished.Add(finished.Sub(now))
+			e.physicalUntil = finished.Add(time.Duration(e.tuning.PhysicalShare) * finished.Sub(now))
 			continue
 		}
 		job, physical := e.physicalDue(now)
@@ -1656,6 +1663,9 @@ func (e *Engine) publishGovernor() {
 		job = e.active.id
 	} else if e.deferred {
 		report, pace = e.gate.report(), cleanup.Pace{}
+	}
+	if e.gate != nil {
+		report.Gate = e.gate.label()
 	}
 	if report == e.governed && pace == e.pace && job == e.paceJob {
 		return

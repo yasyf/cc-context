@@ -153,9 +153,6 @@ func (r *Relocator) retiredTree(ctx context.Context, seq uint64, req cleanup.Orp
 	if claim != "" {
 		return cleanup.Job{}, refuse(path, "reconcile", "%s", claim)
 	}
-	if err := r.cfg.Watchers.CheckQuarantine(ctx, path); err != nil {
-		return cleanup.Job{}, refuse(path, "watched", "%v", err)
-	}
 	if err := idle(path, r.unserved(ctx, path)); err != nil {
 		return cleanup.Job{}, err
 	}

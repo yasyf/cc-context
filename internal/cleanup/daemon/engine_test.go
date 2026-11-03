@@ -2149,7 +2149,9 @@ func TestFreshRemoveStillRejoinsOwnedRetirementAndNonidentityBlocks(t *testing.T
 }
 
 func TestLogicalBacklogSharesTimeWithADeletion(t *testing.T) {
-	bubble(t, paced(), func(_ *testing.T, h *harness) {
+	tuning := paced()
+	tuning.PhysicalShare = 1
+	bubble(t, tuning, func(_ *testing.T, h *harness) {
 		h.seed("p", 1, cleanup.PhaseUnregistered)
 		h.deleter.put("p", &payload{entries: 1000})
 		h.seed("l1", 2, cleanup.PhasePrepared)
