@@ -77,6 +77,9 @@ func TestStackSnapshotPatchReadControl(t *testing.T) {
 			ctx := f.Context()
 			b, err := stackSnapshot(ctx, dir, tr, s, "feature", remote, submitted, nil, false, pin, true, false)
 			wantBranch := stackRebaseBranch{Name: "feature", WasParent: "main", Local: local, Remote: remote, Head: local}
+			if !replay {
+				wantBranch.Head = remote
+			}
 			if !reflect.DeepEqual(b, wantBranch) {
 				t.Fatalf("snapshot = %+v, want %+v", b, wantBranch)
 			}

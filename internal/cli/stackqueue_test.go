@@ -163,6 +163,48 @@ func TestStackSubmitNeverPushesAQueuedBranch(t *testing.T) {
 	}
 }
 
+// TestStackRebaseKeepsAQueuedBranchWhoseLocalRefDiverged is
+// spinning-chats-land-1's rebase: its dry run kept one branch at its published
+// head, and the run then refused it because the branch's stale local ref had
+// diverged from what another lane pushed over it.
+func TestStackRebaseKeepsAQueuedBranchWhoseLocalRefDiverged(t *testing.T) {
+	f := stackRebaseRepo(t, "base", "feature")
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("stack submit: %v", err)
+	}
+	api.prs["base"], api.prs["feature"] = 100, 101
+	api.queued["base"] = true
+	stubPRState(t, prPoll(`"p0":`+prNode(100, "OPEN", prComments())))
+	stubStackPRs(t, f, map[string]*stackPR{
+		"base":    {Number: 100, Title: "base", State: "OPEN", Base: "main"},
+		"feature": {Number: 101, Title: "feature", State: "OPEN", Base: "base"},
+	})
+	stackForeignPush(t, f, "base", "pushed.txt", false)
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "base")
+	stackCommit(t, f, "stale.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "feature")
+	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	queued := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base")
+
+	for _, args := range [][]string{{"rebase", "--dry-run"}, {"rebase"}} {
+		out, _, err := runStackCmd(t, f, args...)
+		if err != nil {
+			t.Fatalf("stack %s keeping a queued base whose local ref diverged = %v, want no refusal", strings.Join(args, " "), err)
+		}
+		if want := "base · kept at its published head " + queued[:12]; !strings.Contains(out, want) {
+			t.Errorf("stack %s plan = %q, want %q", strings.Join(args, " "), out, want)
+		}
+	}
+	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "base"); got != queued {
+		t.Errorf("origin base moved to %s while queued at %s", got, queued)
+	}
+	if !stackOnto(t, f, queued, gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature")) {
+		t.Error("origin feature does not sit on base's published head")
+	}
+}
+
 // TestStackSubmitEvictQueuedMovesAQueuedBranch is the Graphite queue outage of
 // 2026-10-29: with the queue ruled out, a lane had no way to rebase a queued
 // pull request onto trunk short of a raw rebase and force-push.
