@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -293,6 +294,33 @@ func (c *Client) AppToken(ctx context.Context, margin time.Duration) (string, ti
 		return "", time.Time{}, nil
 	}
 	return tok.Token, tok.ExpiresAt, nil
+}
+
+// InstallationToken returns the read-only installation token AppToken would
+// hand a gh subprocess reading c's repository, with at least margin left,
+// whether or not GH_TOKEN or GITHUB_TOKEN is set. It fails naming why when no
+// app is configured, the app is not installed on the repository, or minting
+// fails.
+func (c *Client) InstallationToken(ctx context.Context, margin time.Duration) (string, error) {
+	src, err := c.apps.get(ctx)
+	if err != nil {
+		return "", err
+	}
+	if src == nil {
+		path, err := AppConfigPath(ctx)
+		if err != nil {
+			return "", err
+		}
+		return "", fmt.Errorf("ghapi: no GitHub App configured in %s", path)
+	}
+	tok, _, err := src.token(ctx, c.repo, margin, "")
+	if errors.Is(err, errNotInstalled) {
+		return "", fmt.Errorf("ghapi: %s is not installed on %s: %w", src.cfg.Name, c.repo, err)
+	}
+	if err != nil {
+		return "", fmt.Errorf("ghapi: %s: mint an installation token for %s: %w", src.cfg.Name, c.repo, err)
+	}
+	return tok.Token, nil
 }
 
 func userTokenPinned(ctx context.Context) bool {

@@ -539,3 +539,52 @@ func TestProcessesWaitingOnAFailingMintSkipTheKeyCommand(t *testing.T) {
 		t.Errorf("key runs = %d, want 1: readers queued on the mint lock must see the outage it recorded", n)
 	}
 }
+
+func TestInstallationTokenIsTheAppsWhateverGHTokenHolds(t *testing.T) {
+	t.Parallel()
+	_, ts := newFakeGitHub(t)
+	c := appClient(ts.URL, testAppSource(ts.URL, t.TempDir())).ForRepo("O/R")
+	got, err := c.InstallationToken(render.WithEnv(context.Background(), "GH_TOKEN=pinned"), AppWatchMargin)
+	if err != nil || got != "app-1" {
+		t.Fatalf("InstallationToken = %q, %v, want app-1", got, err)
+	}
+}
+
+func TestInstallationTokenNamesWhyItCannotMint(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		repo string
+		app  bool
+		key  func(context.Context) ([]byte, error)
+		want string
+	}{
+		{name: "no app configured", repo: "o/r", want: "no GitHub App configured in "},
+		{name: "app not installed on the repository", repo: "o/elsewhere", app: true, want: "test-app is not installed on o/elsewhere"},
+		{name: "minting fails", repo: "o/r", app: true, key: func(context.Context) ([]byte, error) {
+			return nil, errors.New("aws sso session expired")
+		}, want: "aws sso session expired"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f, ts := newFakeGitHub(t)
+			c := testClient(ts.URL, fixedToken("user-token"))
+			if tt.app {
+				src := testAppSource(ts.URL, t.TempDir())
+				if tt.key != nil {
+					src.key = tt.key
+				}
+				c = appClient(ts.URL, src)
+			}
+			ctx := render.WithEnv(context.Background(), "XDG_CONFIG_HOME="+t.TempDir())
+			got, err := c.ForRepo(tt.repo).InstallationToken(ctx, AppWatchMargin)
+			if err == nil || got != "" || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("InstallationToken = %q, %v, want no token and an error naming %q", got, err, tt.want)
+			}
+			if f.mints.Load() != 0 {
+				t.Errorf("mints = %d, want 0", f.mints.Load())
+			}
+		})
+	}
+}

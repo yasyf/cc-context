@@ -433,6 +433,10 @@ callers. Back off until that reset. `ccx vcs pr status` and `pr state` read thro
 refused, and stop when REST is at its floor too. `ccx vcs auth status` prints
 each pool's remainder, reset, and top callers; `--json` carries them as
 `pools`.
+`ccx vcs auth token [<owner/name>]` prints the app's installation token for
+the repository alone on stdout, for a script that exports it as `GH_TOKEN`,
+and exits 1 naming why when no app is configured or installed or minting
+fails.
 
 A write other than a merge, such as `gh pr close`, runs on the user's token
 as plain `gh` would, charged to its pool. `vcs gh` refuses a merge before it
@@ -465,6 +469,7 @@ ccx vcs pr recreate 123                          # replace a PR Graphite's stale
 ccx vcs gh -- pr checks 123                      # a gh read on the app's quota
 CCX_CALLER=watch.sh ccx vcs gh --max-age 5m -- pr view 123 --json state  # a cached, accounted poll
 ccx vcs auth status                              # every pool's remainder, reset, and top callers
+GH_TOKEN=$(ccx vcs auth token o/r)               # the app's installation token, or exit 1 naming why
 ccx vcs guidelines                               # PR templates + contribution rules, verbatim
 ```
 
