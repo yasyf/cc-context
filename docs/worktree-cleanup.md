@@ -306,7 +306,9 @@ quarantine probe that cannot answer blocks the same way. Captured
 Git error output has a byte limit. Cancellation signals only the direct
 child, never a process group.
 
-The daemon deletes in bounded slices and yields to new logical removals. While
+The daemon deletes in bounded slices. A logical step runs first, and deletion
+then gets as long as that step took, so a backlog of logical work cannot starve
+deletion and a new removal waits on at most that turn. While
 the governor is clear, 16 workers remove entries in parallel at up to 4,000
 entries a second, and a slice ends after 1,600 entries or 800ms. The workers
 remove entries through directory descriptors the deletion holds open. They

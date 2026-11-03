@@ -279,6 +279,7 @@ type Engine struct {
 	checked         map[string]time.Time
 	active          *activeDeletion
 	paceUntil       time.Time
+	physicalUntil   time.Time
 	reconcileAt     time.Time
 	loud            bool
 }
@@ -790,7 +791,7 @@ func (e *Engine) work(ctx context.Context) error {
 			}
 			continue
 		}
-		if logical {
+		if logical && e.logicalTurn(now) {
 			if job.Blocked != nil {
 				var err error
 				if job, err = e.unblock(job); err != nil {
@@ -800,6 +801,8 @@ func (e *Engine) work(ctx context.Context) error {
 			if _, err := e.advance(ctx, job); isFatal(err) {
 				return err
 			}
+			finished := e.clock.Now()
+			e.physicalUntil = finished.Add(finished.Sub(now))
 			continue
 		}
 		job, physical := e.physicalDue(now)
@@ -839,6 +842,10 @@ func (e *Engine) work(ctx context.Context) error {
 				if err := e.park(); err != nil {
 					return err
 				}
+				if logical {
+					e.physicalUntil = time.Time{}
+					continue
+				}
 			case !now.Before(e.paceUntil):
 				e.loud = e.loud || e.gov.rate() > e.tuning.FloorRate
 				if err := e.slice(ctx, job); err != nil {
@@ -863,6 +870,14 @@ func (e *Engine) work(ctx context.Context) error {
 		case <-timer:
 		}
 	}
+}
+
+func (e *Engine) logicalTurn(now time.Time) bool {
+	if !now.Before(e.physicalUntil) {
+		return true
+	}
+	_, physical := e.physicalDue(now)
+	return !physical
 }
 
 func (e *Engine) wake(physical bool) (time.Time, bool) {
