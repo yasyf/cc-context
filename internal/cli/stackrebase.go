@@ -2120,7 +2120,12 @@ func stackAdoptUntrackedParents(ctx context.Context, dir render.Dir, tr vcs.Trun
 			return nil, err
 		}
 		if !present {
-			return nil, fmt.Errorf("stack rebase: --parent %s=%s names a branch with no local copy: git fetch %s refs/heads/%s:refs/heads/%s, then re-run", child, parent, tr.Remote(), parent, parent)
+			if present, err = gtBranchFromRemote(ctx, dir, stackRebasePrefix, tr.Remote(), parent); err != nil {
+				return nil, err
+			}
+		}
+		if !present {
+			return nil, fmt.Errorf("stack rebase: --parent %s=%s names a branch neither this checkout nor %s holds", child, parent, tr.Remote())
 		}
 		below, err := infer(parent)
 		if err != nil {

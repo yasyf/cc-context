@@ -79,6 +79,28 @@ func TestStackNewTracksTheParent(t *testing.T) {
 	}
 }
 
+// TestStackNewTracksAParentOnlyOriginHolds cuts a lane onto a branch another
+// lane pushed with plain git: gt track --parent refused the untracked parent,
+// and no local copy of it existed to cut from.
+func TestStackNewTracksAParentOnlyOriginHolds(t *testing.T) {
+	f := shipGTRepo(t)
+	shipGTPushedElsewhere(t, f, "theirs")
+	child := filepath.Join(t.TempDir(), "child")
+
+	out, errOut, err := runStackCmd(t, f, "new", "child", "--full-history", "--parent", "theirs", "--path", child)
+	if err != nil {
+		t.Fatalf("stack new --parent theirs: %v\n%s%s", err, out, errOut)
+	}
+	if !strings.Contains(out, "tracked theirs onto main"+shipSep+"cut child onto theirs") {
+		t.Errorf("stack new = %q, want theirs tracked onto main before child is cut onto it", out)
+	}
+	for branch, want := range map[string]string{"theirs": "main", "child": "theirs"} {
+		if got := thinGTParent(t, f, f.Dir, branch); got != want {
+			t.Errorf("%s's gt parent = %q, want %s", branch, got, want)
+		}
+	}
+}
+
 // TestStackListNamesTheWorkingCopyHoldingEachBranch pins the answer the listing
 // exists for: which lane a branch has to be worked from. It runs from the bottom
 // of the stack on purpose — the branch above is held by another working copy,
