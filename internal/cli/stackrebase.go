@@ -3082,10 +3082,6 @@ func stackQueueOf(ctx context.Context, owner, name string, infos []gtapi.PullReq
 }
 
 func stackOwnRemote(ctx context.Context, dir render.Dir, name, local, remote, pin string) (bool, error) {
-	pushed, err := gtPushedHere(ctx, dir, stackRebasePrefix, name)
-	if err != nil || pushed == remote {
-		return pushed == remote, err
-	}
 	held, err := gitReflogHolds(ctx, dir, stackRebasePrefix, "refs/heads/"+name, remote)
 	if err != nil || held {
 		return held, err

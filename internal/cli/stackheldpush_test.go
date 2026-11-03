@@ -2,9 +2,12 @@ package cli
 
 import (
 	"context"
+	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yasyf/cc-context/internal/nativemeta"
 	"github.com/yasyf/cc-context/internal/render"
@@ -41,6 +44,8 @@ func heldPushNativeStack(t *testing.T) *vcstest.Fixture {
 	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "feature")
 	api := stubGTAPI(t)
 	api.openPRs("base", "feature")
+	api.bases["base"], api.stacks["base"] = "main", 47
+	api.bases["feature"], api.stacks["feature"] = "base", 47
 	f.Decorate(api.ctx)
 	stubOpenPRs(t, f, nil, "base", "feature")
 	stubStackStanding(t, f, nil)
@@ -79,59 +84,69 @@ func TestStackSubmitAfterARestackPushesNothingTheSecondTime(t *testing.T) {
 	}
 }
 
-// TestStackSubmitBuildsOnARestackOnlyThisClonePushed leaves no publication
-// record naming the restacked heads, so only who pushed them tells this
-// lane's push from a foreign one.
-func TestStackSubmitBuildsOnARestackOnlyThisClonePushed(t *testing.T) {
-	for _, tt := range []struct {
-		name      string
-		elsewhere bool
-	}{
-		{name: "pushed from this clone"},
-		{name: "pushed from another clone", elsewhere: true},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			f := heldPushNativeStack(t)
-			other := filepath.Join(t.TempDir(), "other")
-			mustRun(t, f.Env(), filepath.Dir(other), "git", "clone", "-q", f.RemoteDir, other)
-			mustRun(t, f.Env(), other, "git", "config", "user.email", "t@t.t")
-			mustRun(t, f.Env(), other, "git", "config", "user.name", "t")
-			mustRun(t, f.Env(), other, "git", "config", "commit.gpgsign", "false")
-			mustRun(t, f.Env(), other, "git", "switch", "-q", "--detach", "origin/main")
-			mustRun(t, f.Env(), other, "git", "cherry-pick", "origin/main..origin/feature")
-			pushed := map[string]string{"base": gitAt(t, f.Env(), other, "rev-parse", "HEAD~1"), "feature": gitAt(t, f.Env(), other, "rev-parse", "HEAD")}
-			restacked := pushed["feature"]
-			pusher := other
-			if !tt.elsewhere {
-				mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", other, "HEAD")
-				pusher = f.Dir
-			}
-			mustRun(t, f.Env(), pusher, "git", "push", "-q", "--force", "origin", pushed["base"]+":refs/heads/base", restacked+":refs/heads/feature")
-			if !tt.elsewhere {
-				if err := gitRecordPush(f.Context(), render.Dir(f.Dir), "origin", pushed); err != nil {
-					t.Fatal(err)
-				}
-			}
-			writeShipFile(t, f.Dir, "more.txt", "more\n")
-			mustRun(t, f.Env(), f.Dir, "git", "add", "more.txt")
-			mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "more")
+func TestStackSubmitRefusesAnotherLanesPushOverARestackedHead(t *testing.T) {
+	f := heldPushNativeStack(t)
+	if _, errOut, err := runStackCmd(t, f, "submit", "--restack"); err != nil {
+		t.Fatalf("stack submit --restack = %v (stderr=%q)", err, errOut)
+	}
+	other := filepath.Join(t.TempDir(), "other-lane")
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", "--detach", other, "origin/feature")
+	writeShipFile(t, other, "notes.txt", "one\nTWO\nthree, rewritten elsewhere\nfour\nfive\n")
+	mustRun(t, f.Env(), other, "git", "commit", "-qa", "--amend", "-m", "feature, rewritten elsewhere")
+	mustRun(t, f.Env(), other, "git", "push", "-qf", "origin", "HEAD:feature")
+	foreign := gitAt(t, f.Env(), other, "rev-parse", "HEAD")
 
-			_, errOut, err := runStackCmd(t, f, "submit")
-			if tt.elsewhere {
-				if err == nil || !strings.Contains(err.Error(), "feature") {
-					t.Fatalf("stack submit over another clone's push = %v (stderr=%q), want a refusal naming feature", err, errOut)
-				}
-				if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature"); got != restacked {
-					t.Errorf("origin feature = %s, want the other clone's %s left in place", shortOID(got), shortOID(restacked))
-				}
+	_, errOut, err := runStackCmd(t, f, "submit")
+	if err == nil || !strings.Contains(err.Error(), "feature") {
+		t.Fatalf("stack submit over another lane's push = %v (stderr=%q), want a refusal naming feature", err, errOut)
+	}
+	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature"); got != foreign {
+		t.Errorf("origin feature = %s, want the other lane's %s left in place", shortOID(got), shortOID(foreign))
+	}
+}
+
+// TestStackSubmitRecordsItsPushBeforePostingTheHead interrupts a restacking
+// submit while it posts the cci HEAD record, the first step after its push.
+func TestStackSubmitRecordsItsPushBeforePostingTheHead(t *testing.T) {
+	f := heldPushNativeStack(t)
+	before := heldPushOrigin(t, f)
+	posting := filepath.Join(t.TempDir(), "posting")
+	writeShipExecutable(t, f.ShimBin, "cci", "#!/bin/sh\ncase \"$*\" in *'--kind head'*) : > '"+posting+"'; exec sleep 30;; esac\nexit 0\n")
+	f.Setenv(envCodexThreadKey, "")
+	f.Setenv(envCCIDrive, "drive")
+	f.Setenv(envCCILane, "lane")
+	ctx, cancel := context.WithCancel(f.ContextIn(f.Dir))
+	defer cancel()
+	go func() {
+		for {
+			if _, err := os.Stat(posting); err == nil {
+				cancel()
 				return
 			}
-			if err != nil {
-				t.Fatalf("stack submit over this clone's push = %v (stderr=%q), want it built on as this lane's", err, errOut)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(10 * time.Millisecond):
 			}
-			if got := gitAt(t, f.Env(), f.RemoteDir, "log", "-1", "--format=%s", "feature"); got != "more" {
-				t.Errorf("origin feature's head commit = %q, want the lane's new commit published", got)
-			}
-		})
+		}
+	}()
+	cmd := newStackCmd()
+	cmd.SilenceUsage, cmd.SilenceErrors = true, true
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"submit", "--restack"})
+	_ = cmd.ExecuteContext(ctx)
+
+	for name, head := range heldPushOrigin(t, f) {
+		if head == before[name] {
+			t.Fatalf("origin %s did not move, want the restack pushed before the HEAD post", name)
+		}
+		receipt, err := stackReadPublication(f.Context(), render.Dir(f.Dir), name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if receipt == nil || receipt.Head != head {
+			t.Errorf("%s's publication receipt = %+v, want it naming the pushed head %s", name, receipt, shortOID(head))
+		}
 	}
 }
