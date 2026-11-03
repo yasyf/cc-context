@@ -2147,3 +2147,24 @@ func TestFreshRemoveStillRejoinsOwnedRetirementAndNonidentityBlocks(t *testing.T
 		})
 	}
 }
+
+func TestLogicalBacklogSharesTimeWithADeletion(t *testing.T) {
+	bubble(t, paced(), func(_ *testing.T, h *harness) {
+		h.seed("p", 1, cleanup.PhaseUnregistered)
+		h.deleter.put("p", &payload{entries: 1000})
+		h.seed("l1", 2, cleanup.PhasePrepared)
+		h.seed("l2", 3, cleanup.PhasePrepared)
+		h.relocator.script("l1", func(job *cleanup.Job) {
+			h.clock.Advance(time.Second)
+			job.Phase = cleanup.PhaseUnregistered
+		})
+		h.start()
+		h.expectEvents("advance:l1@prepared", "sample", "admit:p", "open:p", "step:p")
+		for range 2 {
+			h.clock.Advance(400 * time.Millisecond)
+			h.expectEvents("step:p")
+		}
+		h.clock.Advance(400 * time.Millisecond)
+		h.expectEvents("advance:l2@prepared", "step:p")
+	})
+}
