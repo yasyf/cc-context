@@ -3665,6 +3665,7 @@ func TestStackRebaseParentNamesTheFetchForAParentOnlyTheRemoteHolds(t *testing.T
 
 func TestStackRebaseIncludeTakesAnotherLanesKeptBranchIntoTheRun(t *testing.T) {
 	f := stackRebaseRepo(t, "me/p", "you/x", "me/c")
+	stackForgetCheckouts(t, f)
 	if _, _, err := runStackCmd(t, f, "rebase", "--all-lanes"); err != nil {
 		t.Fatalf("publish the stack: %v", err)
 	}
