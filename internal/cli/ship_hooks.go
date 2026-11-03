@@ -292,8 +292,9 @@ func shipMissingRootFiles(ctx context.Context, dir render.Dir) ([]string, error)
 }
 
 func shipHookIDs(config []byte) []string {
-	var ids []string
-	for _, match := range shipHookIDLine.FindAllSubmatch(config, -1) {
+	matches := shipHookIDLine.FindAllSubmatch(config, -1)
+	ids := make([]string, 0, len(matches))
+	for _, match := range matches {
 		ids = append(ids, string(match[1]))
 	}
 	return ids
