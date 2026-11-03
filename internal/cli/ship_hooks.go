@@ -26,6 +26,8 @@ var shipHookConfigNames = []string{".pre-commit-config.yaml", ".pre-commit-confi
 
 var shipHookEntryLine = regexp.MustCompile(`(?m)^[\s-]*entry\s*[:=]\s*(.+)$`)
 
+var shipHookIDLine = regexp.MustCompile(`(?m)^[\s-]*id\s*[:=]\s*["']?([^\s"'#]+)`)
+
 // shipHookIndexLock is the lock git holds over the index it is rewriting. It
 // sits beside the index, which sibling worktrees do not share: each linked
 // worktree's index lives under its own admin dir, so a commit contends over the
@@ -42,8 +44,9 @@ const shipHookFindingsLead = "ship: hooks: prek reported the following; any auto
 // stream. Off a terminal the first pass is discarded, so without this line a
 // prek suite whose Go linters take minutes is indistinguishable from a hang —
 // and the caller that concludes "hung", kills ship, and finishes the commit by
-// hand gets a commit no linter ever saw.
-const shipHookStartNotice = "ship: hooks: running prek over %d file(s) — a cold Go lint pass can take several minutes\n"
+// hand gets a commit no linter ever saw. It names the config's own hooks, so a
+// repo with no linter in its suite is never told a lint pass is running.
+const shipHookStartNotice = "ship: hooks: running prek's %s over %d file(s); a whole-module hook can take minutes\n"
 
 // shipRunHooks runs prek (via uvx) over the files ship is about to commit, once:
 // it adopts whatever the hooks fixed in place and lets the commit proceed, and
@@ -104,8 +107,14 @@ func shipRunHooks(ctx context.Context, errW io.Writer, dir render.Dir, kind vcs.
 	var passW io.Writer = &buf
 	if streamed {
 		passW = io.MultiWriter(errW, &buf)
-	} else if _, werr := fmt.Fprintf(errW, shipHookStartNotice, len(files)); werr != nil {
-		return "", false, fmt.Errorf("ship: hooks: announce the run: %w", werr)
+	} else {
+		data, rerr := os.ReadFile(config) //nolint:gosec // the path is one of shipHookConfigNames under the repo root, not untrusted input
+		if rerr != nil {
+			return "", false, fmt.Errorf("ship: hooks: read %s: %w", filepath.Base(config), rerr)
+		}
+		if _, werr := fmt.Fprintf(errW, shipHookStartNotice, strings.Join(shipHookIDs(data), ", "), len(files)); werr != nil {
+			return "", false, fmt.Errorf("ship: hooks: announce the run: %w", werr)
+		}
 	}
 	before := shipHookSnapshot(dir, files)
 	// Leading-dash filenames intentionally reach prek unchanged so it fails loudly.
@@ -280,6 +289,14 @@ func shipMissingRootFiles(ctx context.Context, dir render.Dir) ([]string, error)
 		}
 	}
 	return missing, nil
+}
+
+func shipHookIDs(config []byte) []string {
+	var ids []string
+	for _, match := range shipHookIDLine.FindAllSubmatch(config, -1) {
+		ids = append(ids, string(match[1]))
+	}
+	return ids
 }
 
 func shipHookEntryPaths(config []byte) []string {
