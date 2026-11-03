@@ -79,7 +79,7 @@ func gtUntrackedChain(ctx context.Context, dir render.Dir, prefix string, state 
 		local[name] = true
 		candidate(name, head)
 	}
-	if remote != "" {
+	if remote != "" && !local[branch] {
 		heads, err := render.RunCLI(ctx, dir, "git", []string{"ls-remote", "--heads", remote})
 		if err != nil {
 			return nil, fmt.Errorf("%s: git ls-remote --heads %s: %w", prefix, remote, err)
@@ -87,7 +87,7 @@ func gtUntrackedChain(ctx context.Context, dir render.Dir, prefix string, state 
 		for row := range strings.Lines(heads) {
 			head, ref, _ := strings.Cut(strings.TrimSpace(row), "\t")
 			name := strings.TrimPrefix(ref, "refs/heads/")
-			if local[name] || strings.HasPrefix(name, "graphite-base/") || strings.HasPrefix(name, gtSegmentPrefix) {
+			if local[name] || head == tipHead || strings.HasPrefix(name, "graphite-base/") || strings.HasPrefix(name, gtSegmentPrefix) {
 				continue
 			}
 			remoteOnly[name] = true
@@ -95,7 +95,7 @@ func gtUntrackedChain(ctx context.Context, dir render.Dir, prefix string, state 
 		}
 	}
 	if len(level) > 0 {
-		cut, err := gtLevelParent(ctx, dir, prefix, branch, remote, level, remoteOnly)
+		cut, err := gtLevelParent(ctx, dir, prefix, branch, remote, level)
 		if err != nil {
 			return nil, err
 		}
@@ -137,7 +137,7 @@ func gtUntrackedChain(ctx context.Context, dir render.Dir, prefix string, state 
 	return append(chain, gtChainLink{name: branch, parent: parent, base: fork, head: tipHead}), nil
 }
 
-func gtLevelParent(ctx context.Context, dir render.Dir, prefix, branch, remote string, level []string, remoteOnly map[string]bool) (string, error) {
+func gtLevelParent(ctx context.Context, dir render.Dir, prefix, branch, remote string, level []string) (string, error) {
 	from, err := gtCreatedFrom(ctx, dir, prefix, branch)
 	if err != nil {
 		return "", err
@@ -146,10 +146,6 @@ func gtLevelParent(ctx context.Context, dir render.Dir, prefix, branch, remote s
 	for _, name := range level {
 		if from == name || remote != "" && from == remote+"/"+name {
 			return name, nil
-		}
-		if remoteOnly[name] {
-			unknown = append(unknown, name)
-			continue
 		}
 		cut, err := gtCreatedFrom(ctx, dir, prefix, name)
 		if err != nil {

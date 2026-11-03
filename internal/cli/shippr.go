@@ -302,7 +302,9 @@ func shipPR(ctx context.Context, errW io.Writer, l lane, nwo, remote, branch, tr
 // the remote trunk does not carry, else the remote branch it forked from, and
 // trunk when there is neither. A branch cut
 // from an unlanded one holds that branch's commits, so a pull request based on
-// trunk proposes them as its own and only the file count says so.
+// trunk proposes them as its own and only the file count says so. A remote
+// branch with no local branch of its name is never a candidate: it is a ref
+// pushed for its own reasons, not a parent this clone stacked on.
 func shipPRBase(ctx context.Context, dir render.Dir, remote, branch, trunk string) (string, error) {
 	if remote == "" || trunk == "" {
 		return trunk, nil
@@ -314,11 +316,24 @@ func shipPRBase(ctx context.Context, dir render.Dir, remote, branch, trunk strin
 	if err != nil {
 		return "", fmt.Errorf("ship: git ls-remote --heads %s: %w", remote, err)
 	}
-	heads := map[string][]string{}
+	pushed := map[string]string{}
 	for line := range strings.Lines(out) {
 		sha, ref, _ := strings.Cut(strings.TrimSpace(line), "\t")
 		name, ok := strings.CutPrefix(ref, "refs/heads/")
 		if ok && name != branch && name != trunk {
+			pushed[name] = sha
+		}
+	}
+	if len(pushed) == 0 {
+		return trunk, nil
+	}
+	out, err = render.RunCLI(ctx, dir, "git", []string{"for-each-ref", "--format=%(refname:lstrip=2)", "refs/heads/"})
+	if err != nil {
+		return "", fmt.Errorf("ship: git for-each-ref refs/heads/: %w", err)
+	}
+	heads := map[string][]string{}
+	for _, name := range strings.Fields(out) {
+		if sha, ok := pushed[name]; ok {
 			heads[sha] = append(heads[sha], name)
 		}
 	}

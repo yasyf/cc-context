@@ -51,24 +51,74 @@ func assertGTChainAdopted(t *testing.T, f *vcstest.Fixture, heads map[string]str
 }
 
 func TestStackSubmitAdoptsAnUntrackedChain(t *testing.T) {
-	for name, remoteOnly := range map[string][]string{"local": nil, "remote-only": {"a", "b"}} {
-		t.Run(name, func(t *testing.T) {
-			f, heads := gtUntrackedChainRepo(t, remoteOnly...)
-			if len(remoteOnly) > 0 {
-				mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "c")
-			}
-			var out bytes.Buffer
-			cmd := &cobra.Command{}
-			cmd.SetOut(&out)
-			cmd.SetContext(f.Context())
+	f, heads := gtUntrackedChainRepo(t)
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&out)
+	cmd.SetContext(f.Context())
 
-			if err := stackAdoptChain(cmd, render.Dir(f.Dir)); err != nil {
-				t.Fatalf("adopt: %v", err)
+	if err := stackAdoptChain(cmd, render.Dir(f.Dir)); err != nil {
+		t.Fatalf("adopt: %v", err)
+	}
+	if want := strings.Join([]string{"tracked a onto main", "tracked b onto a", "tracked c onto b"}, shipSep) + "\n"; out.String() != want {
+		t.Errorf("report = %q, want %q", out.String(), want)
+	}
+	assertGTChainAdopted(t, f, heads)
+}
+
+func TestStackSubmitNeverAdoptsARemoteOnlyBranchBelowTheTip(t *testing.T) {
+	f, heads := gtUntrackedChainRepo(t, "a", "b")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "c")
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&out)
+	cmd.SetContext(f.Context())
+
+	if err := stackAdoptChain(cmd, render.Dir(f.Dir)); err != nil {
+		t.Fatalf("adopt: %v", err)
+	}
+	if want := "tracked c onto main\n"; out.String() != want {
+		t.Errorf("report = %q, want %q", out.String(), want)
+	}
+	state, err := gtStateQuery(t.Context(), render.Dir(f.Dir), "test")
+	if err != nil {
+		t.Fatalf("gt state: %v", err)
+	}
+	if s := state["c"]; len(s.Parents) != 1 || s.Parents[0].Ref != "main" || s.Parents[0].SHA != heads["main"] {
+		t.Errorf("gt state c parents = %v, want main at %s", s.Parents, shortOID(heads["main"]))
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "for-each-ref", "--format=%(refname)", "refs/heads/a", "refs/heads/b"); got != "" {
+		t.Errorf("local refs = %q, want no local copy of a remote-only branch", got)
+	}
+}
+
+func TestShipTracksABranchOnTrunkBesideARemoteOnlyRef(t *testing.T) {
+	for name, past := range map[string]bool{"at its commit": false, "below its commit": true} {
+		t.Run(name, func(t *testing.T) {
+			f := shipGTRepo(t)
+			shipGTUntracked(t, f, "feature")
+			mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "HEAD:refs/heads/feature-red")
+			if past {
+				writeShipFile(t, f.Dir, "fix.txt", "fix\n")
+				mustRun(t, f.Env(), f.Dir, "git", "add", "fix.txt")
+				mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "fix")
 			}
-			if want := strings.Join([]string{"tracked a onto main", "tracked b onto a", "tracked c onto b"}, shipSep) + "\n"; out.String() != want {
-				t.Errorf("report = %q, want %q", out.String(), want)
+			shipGTReady(t, f)
+
+			got, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push")
+			if err != nil {
+				t.Fatalf("ship: %v", err)
 			}
-			assertGTChainAdopted(t, f, heads)
+			if want := "tracked feature onto main" + shipSep; !strings.HasPrefix(got, want) {
+				t.Errorf("summary = %q, want it to open %q", got, want)
+			}
+			state, err := gtStateQuery(t.Context(), render.Dir(f.Dir), "test")
+			if err != nil {
+				t.Fatalf("gt state: %v", err)
+			}
+			if _, tracked := state["feature-red"]; tracked {
+				t.Error("gt tracks feature-red, a branch only the remote holds")
+			}
 		})
 	}
 }
@@ -94,7 +144,7 @@ func TestWorktreeAddAdoptsARemoteOnlyChain(t *testing.T) {
 
 func TestStackSubmitRefusesTwoUntrackedBranchesAtOneCommit(t *testing.T) {
 	f, _ := gtUntrackedChainRepo(t)
-	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "a:refs/heads/a-twin")
+	mustRun(t, f.Env(), f.Dir, "git", "branch", "a-twin", "a")
 	cmd := &cobra.Command{}
 	cmd.SetContext(f.Context())
 

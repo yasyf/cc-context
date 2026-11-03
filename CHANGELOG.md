@@ -88,6 +88,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ccx vcs ship` and `ccx vcs stack submit` no longer treat a branch only the
+  remote holds as a parent. A ref pushed for its own reasons, such as a
+  throwaway branch for a CI run, could refuse the ship when it sat at the
+  branch's own commit, and could become the base of the new pull request when
+  it sat below it. A branch with no local copy now counts only when `--parent`
+  names it; `ccx vcs worktree add` of a pushed branch still adopts the pushed
+  branches below it.
+
 - `ccx vcs stack submit` records the heads it pushes in the same step as the
   push. It wrote its publication records only after posting the cci HEAD
   record and the pull request versions, so a run that stopped in between left
