@@ -1545,7 +1545,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 				}
 			} else if retracked {
 				b.Publication = receipt
-			} else if err := stackUsePublication(ctx, l.dir(), &b, receipt, pin, published, own[name] && name != current); err != nil {
+			} else if err := stackUsePublication(ctx, l.dir(), &b, receipt, pin, published || diverged[name] != nil, own[name] && name != current); err != nil {
 				return nil, err
 			} else if receipt != nil && b.OldBase == receipt.Base && b.Head == receipt.Head {
 				stale, err := stackBaseInTrunk(ctx, l.dir(), receipt.Base, receipt.Head, pin)
