@@ -307,7 +307,7 @@ func seedIndex(job *cleanup.Job, index string) (bool, error) {
 		if err != nil {
 			return false, fmt.Errorf("read the tree's last index: %w", err)
 		}
-		if err := os.WriteFile(index, body, 0o600); err != nil {
+		if err := os.WriteFile(index, body, 0o600); err != nil { //nolint:gosec // the journal layout names this path
 			return false, fmt.Errorf("seed the scratch index: %w", err)
 		}
 		if err := os.Chtimes(index, info.ModTime(), info.ModTime()); err != nil {
