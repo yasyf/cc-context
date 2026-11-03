@@ -88,6 +88,13 @@ func (g *gate) report() cleanup.Governor {
 	return cleanup.Governor{State: governorHeld, Detail: g.detail}
 }
 
+func (g *gate) label() string {
+	if g.held {
+		return g.detail
+	}
+	return "open"
+}
+
 func (e *Engine) contends(job cleanup.Job) bool {
 	path := e.relocator.Site(job)
 	if known, ok := e.sites[job.ID]; ok && known.path == path {
