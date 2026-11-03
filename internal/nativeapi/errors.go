@@ -13,6 +13,8 @@ var (
 	ErrUnauthorized = errors.New("unauthorized")
 	// ErrNoToken identifies missing GitHub authentication.
 	ErrNoToken = errors.New("no GitHub token")
+	// ErrNoTrunkKey identifies a Trunk API key no source yields without a sign-in.
+	ErrNoTrunkKey = errors.New("no Trunk key: set TRUNK_MERGE_API_KEY, add the trunk-merge-api-key Keychain item, or sign in to the [trunk] aws_profile")
 )
 
 // StatusError retains the refused HTTP operation and the server diagnostic.

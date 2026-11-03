@@ -29,6 +29,9 @@ func NewNativeWithToken(baseURL, token string) *Client {
 // TrunkSSMConfig locates a scoped Trunk queue credential in AWS Parameter Store.
 type TrunkSSMConfig = nativeapi.TrunkSSMConfig
 
+// ErrNoTrunkKey reports that no Trunk API key is reachable without a sign-in.
+var ErrNoTrunkKey = nativeapi.ErrNoTrunkKey
+
 // WithTrunkSSM supplies developer credential lookup without changing queue selection.
 func (c *Client) WithTrunkSSM(config TrunkSSMConfig) *Client {
 	selected := *c

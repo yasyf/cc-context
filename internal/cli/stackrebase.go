@@ -3051,7 +3051,7 @@ func stackQueueOf(ctx context.Context, owner, name string, infos []gtapi.PullReq
 	if len(numbers) == 0 {
 		return map[string]prQueueState{}, nil
 	}
-	mergeability, err := gtAPI(ctx).MergeabilityStatuses(ctx, owner, name, numbers)
+	mergeability, err := shipQueueStatuses(ctx, gtAPI(ctx), owner, name, numbers)
 	if err != nil {
 		return nil, fmt.Errorf("stack rebase: read the merge queue before pushing: %w", err)
 	}

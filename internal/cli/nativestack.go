@@ -3,10 +3,12 @@ package cli
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/yasyf/cc-context/internal/gtapi"
 	"github.com/yasyf/cc-context/internal/gtmeta"
@@ -126,6 +128,24 @@ func nativeStackRun(ctx context.Context, dir render.Dir, argv []string, extraEnv
 	return gtResult{Output: output.String()}, err
 }
 
+var noTrunkKeyAnnounced sync.Once
+
+// shipQueueStatuses reads the merge queue state a ship or submit checks before
+// it pushes, reading every pull request as not queued when no Trunk key is
+// reachable so the push never waits on a sign-in.
+func shipQueueStatuses(ctx context.Context, client *gtapi.Client, owner, name string, numbers []int) (map[int]string, error) {
+	statuses, err := client.MergeabilityStatuses(ctx, owner, name, numbers)
+	if !errors.Is(err, gtapi.ErrNoTrunkKey) {
+		return statuses, err
+	}
+	noTrunkKeyAnnounced.Do(func() { render.Announce(ctx, "Trunk queue state: unknown (no Trunk key)") })
+	known := make(map[int]string, len(numbers))
+	for _, number := range numbers {
+		known[number] = cmp.Or(statuses[number], "notQueued")
+	}
+	return known, nil
+}
+
 func nativeRefuseQueuedChanges(ctx context.Context, client *gtapi.Client, owner, name, prefix string, plan []gtSubmitBranch, known map[string]gtapi.PullRequestInfo) error {
 	var numbers []int
 	for _, branch := range plan {
@@ -136,7 +156,7 @@ func nativeRefuseQueuedChanges(ctx context.Context, client *gtapi.Client, owner,
 	if len(numbers) == 0 {
 		return nil
 	}
-	statuses, err := client.MergeabilityStatuses(ctx, owner, name, numbers)
+	statuses, err := shipQueueStatuses(ctx, client, owner, name, numbers)
 	if err != nil {
 		return fmt.Errorf("%s: read the merge queue before changing published pull requests: %w", prefix, err)
 	}

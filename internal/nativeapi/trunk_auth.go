@@ -55,14 +55,18 @@ func (c *Client) trunkToken(ctx context.Context) (string, error) {
 	if token := os.Getenv("TRUNK_MERGE_API_KEY"); token != "" {
 		return token, nil
 	}
-	if c.trunkSSM != nil && c.trunkSSM.config != (TrunkSSMConfig{}) {
-		return c.trunkSSM.get(ctx)
+	token, keychainErr := keychainTrunkKey()
+	if token != "" {
+		return token, nil
 	}
-	token, err := keychainTrunkKey()
-	if err != nil || token != "" {
-		return token, err
+	if c.trunkSSM == nil || c.trunkSSM.config == (TrunkSSMConfig{}) {
+		return "", errors.Join(ErrNoTrunkKey, keychainErr)
 	}
-	return "", fmt.Errorf("trunk queue status requires TRUNK_MERGE_API_KEY, the trunk-merge-api-key Keychain item, or [trunk] ssm_parameter, aws_profile, and aws_region")
+	token, err := c.trunkSSM.get(ctx)
+	if err != nil && ctx.Err() == nil {
+		return "", errors.Join(ErrNoTrunkKey, keychainErr, err)
+	}
+	return token, err
 }
 
 const keychainItemNotFound = 44

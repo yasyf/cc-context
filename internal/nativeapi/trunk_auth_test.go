@@ -24,6 +24,9 @@ func fakeTrunkAWS(t *testing.T, script string) (TrunkSSMConfig, string) {
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("CCX_FAKE_AWS_CALLS", calls)
 	t.Setenv("TRUNK_MERGE_API_KEY", "")
+	keychain := keychainTrunkKey
+	t.Cleanup(func() { keychainTrunkKey = keychain })
+	keychainTrunkKey = func() (string, error) { return "", nil }
 	return TrunkSSMConfig{SSMParameter: "/ccx/" + t.Name(), AWSProfile: "developer", AWSRegion: "us-east-2"}, calls
 }
 
@@ -203,7 +206,7 @@ func TestTrunkSSMFailureDoesNotInferQueueAbsenceFromComments(t *testing.T) {
 			client := NewWithToken(srv.URL, "github-key").WithTrunkSSM(config).WithQueueProvider("trunk")
 			client.queueBase = srv.URL
 			states, err := client.MergeabilityStatuses(context.Background(), "org", "repo", []int{1})
-			if err == nil || !strings.Contains(err.Error(), "exit code 42") || strings.Contains(err.Error(), "credential-output") || len(states) != 0 || githubReads != 0 || queueReads != 0 {
+			if !errors.Is(err, ErrNoTrunkKey) || !strings.Contains(err.Error(), "exit code 42") || strings.Contains(err.Error(), "credential-output") || len(states) != 0 || githubReads != 0 || queueReads != 0 {
 				t.Fatalf("states=%v error=%v github reads=%d queue reads=%d", states, err, githubReads, queueReads)
 			}
 		})
