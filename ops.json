@@ -1,0 +1,1 @@
+{"v":1,"lamport":1,"session":"5e8f3c06-f8e9-4d26-860b-25c4fd89685e","ops":[{"kind":"create_investigation","nonce":"316149921e63595013cc1c79e256651e","title":"PR 744 red test shards","premise":"ship --parent untracked-parent adoption broke tests in shards 2,4,6,7 of yasyf/cc-context#744","tags":null,"anchors":[]}]}
