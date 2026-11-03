@@ -285,7 +285,10 @@ instead; a file the tree no longer holds is one that commit restores, so it is
 not dirt. The same proof covers a tree that lost `.git` but keeps its
 registration, a tree whose branch was deleted after the job captured it, and a
 deletion that resumes. A `.gitignore` the tree lost still applies, read from
-that commit, so the files it ignores never count as dirt. An admin directory an older daemon
+that commit, so the files it ignores never count as dirt. A tree someone moved after the
+removal was requested, to a commit a branch or remote-tracking ref holds, loses
+nothing with the tree, so the job follows it and pins the new commit. A commit
+no ref holds keeps the job blocked. An admin directory an older daemon
 retired under `<common>/retired-worktrees/` is deleted with the job once its
 tree is gone, when it has the captured inode and its backlink names nothing
 that exists.

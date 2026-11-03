@@ -450,6 +450,53 @@ func TestAdvanceClaimsATreeWhoseBranchWasDeleted(t *testing.T) {
 	}
 }
 
+func TestAdvanceFollowsAMovedTreeARefHolds(t *testing.T) {
+	tests := []struct {
+		name    string
+		arrange func(f *fixture)
+		branch  string
+		dirt    string
+	}{
+		{"a commit on its branch", func(f *fixture) {
+			f.run(f.worktree, "commit", "-q", "--allow-empty", "-m", "late")
+		}, "feature", ""},
+		{"another branch", func(f *fixture) {
+			f.run(f.worktree, "switch", "-q", "-c", "other")
+			f.run(f.worktree, "commit", "-q", "--allow-empty", "-m", "late")
+		}, "other", ""},
+		{"detached at the commit its branch holds", func(f *fixture) {
+			f.run(f.worktree, "switch", "-q", "--detach")
+		}, "", ""},
+		{"a commit and an edit", func(f *fixture) {
+			f.run(f.worktree, "commit", "-q", "--allow-empty", "-m", "late")
+			f.write(filepath.Join(f.worktree, "feature.txt"), "edited\n")
+		}, "feature", "uncommitted changes: feature.txt"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFixture(t)
+			job := f.accept()
+			tt.arrange(f)
+			head := f.run(f.worktree, "rev-parse", "HEAD")
+
+			f.advance(&job)
+
+			if job.Head != head || job.Branch != tt.branch {
+				t.Fatalf("job follows %s on %q, want %s on %q", job.Head, job.Branch, head, tt.branch)
+			}
+			if tt.dirt != "" {
+				f.blocked(&job, cleanup.PhasePrepared, "dirty", tt.dirt)
+				return
+			}
+			f.claimed(&job)
+			if got := f.run(f.repo, "rev-parse", job.RecoveryRef); got != head {
+				t.Errorf("recovery ref = %s, want %s", got, head)
+			}
+			f.admitted(&job, cleanup.PhaseDeletingTree, f.worktree, job.Tree)
+		})
+	}
+}
+
 func TestAdvanceClaimsAPartialTreeStillRegistered(t *testing.T) {
 	f := newFixture(t)
 	job := f.accept()
@@ -894,7 +941,8 @@ func TestAdvanceDeferredBlocks(t *testing.T) {
 		arrange func(f *fixture, job cleanup.Job) (detail string)
 		reason  string
 	}{
-		{"a commit landed after the intent", func(f *fixture, job cleanup.Job) string {
+		{"a commit no ref holds landed after the intent", func(f *fixture, job cleanup.Job) string {
+			f.run(f.worktree, "switch", "-q", "--detach")
 			f.run(f.worktree, "commit", "-q", "--allow-empty", "-m", "late")
 			return fmt.Sprintf("HEAD changed: the job captured %q, %s now reads %q", job.Head, f.worktree, f.run(f.worktree, "rev-parse", "HEAD"))
 		}, "identity"},
