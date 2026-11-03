@@ -157,6 +157,9 @@ func worktreeOf(admin string) (string, error) {
 		return "", fmt.Errorf("read %s gitdir link: %w", admin, err)
 	}
 	link := strings.TrimSpace(string(b))
+	if link == "" {
+		return "", nil
+	}
 	if !filepath.IsAbs(link) {
 		link = filepath.Join(admin, link)
 	}
@@ -252,7 +255,7 @@ func (d Deps) gitOwnership(ctx context.Context, worktree string, own *ownership)
 	switch {
 	case err != nil:
 		own.Blockers = append(own.Blockers, fmt.Sprintf("git metadata of %s: %v", worktree, err))
-	case !sameFile(linked, worktree):
+	case linked != "" && !sameFile(linked, worktree):
 		own.Blockers = append(own.Blockers, fmt.Sprintf("git dir %s links back to %s, not %s", own.GitDir, linked, worktree))
 	}
 	own.Sockets, err = d.expectedSockets(ctx, worktree, own.GitDir)

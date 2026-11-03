@@ -338,6 +338,13 @@ func TestPlanRefusesEveryUnclearConsumer(t *testing.T) {
 			},
 		},
 		{
+			name: "a registration an older daemon emptied names no other tree",
+			setup: func(f fixture) {
+				f.w.daemons = nil
+				f.w.write(filepath.Join(f.w.repos[f.wt].Admin, "gitdir"), "")
+			},
+		},
+		{
 			name: "a daemon outliving the .git still refuses",
 			setup: func(f fixture) {
 				delete(f.w.repos, f.wt)
