@@ -88,6 +88,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ccx vcs stack submit` and `stack rebase` build on a head this clone pushed.
+  A submit wrote its publication records only after posting the cci HEAD
+  record and the pull request versions, so a run that stopped in between left
+  its restacked heads on origin with no record naming them. The next run
+  refused them with "holds commits this lane has never held", and the lane had
+  to reset onto origin by hand. The records are now written in the same step
+  as the push, and a remote head this clone's last push left on its
+  remote-tracking ref counts as this lane's, as it already did for the push
+  lease. A head another clone pushed, which arrives by fetch, is still refused.
 - `ccx vcs stack submit`, `stack rebase`, `stack restack` and `ship` treat a
   branch this working copy has checked out as this lane's, whichever lane cut
   it or opened its pull request. The checkout is read from the working copy's
