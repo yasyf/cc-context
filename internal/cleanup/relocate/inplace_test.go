@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yasyf/cc-context/internal/cleanup"
 )
@@ -379,6 +381,74 @@ func (f *fixture) ignoreBuildOutput() {
 		f.t.Fatal(err)
 	}
 	f.write(filepath.Join(f.worktree, "build", "out.bin"), "out\n")
+}
+
+func TestAdvanceProvesATreeFromTheStatDataOfItsLastIndex(t *testing.T) {
+	retiredTree := func(f *fixture, job cleanup.Job) string {
+		f.t.Helper()
+		earlier := time.Now().Add(-time.Hour)
+		for _, name := range []string{"base.txt", "feature.txt"} {
+			if err := os.Chtimes(filepath.Join(f.worktree, name), earlier, earlier); err != nil {
+				f.t.Fatal(err)
+			}
+		}
+		f.run(f.worktree, "update-index", "--refresh")
+		parent := filepath.Join(job.Repo, cleanup.RetiredWorktrees)
+		if err := os.MkdirAll(parent, 0o700); err != nil {
+			f.t.Fatal(err)
+		}
+		retired := filepath.Join(parent, filepath.Base(job.AdminDir))
+		if err := os.Rename(job.AdminDir, retired); err != nil {
+			f.t.Fatal(err)
+		}
+		if err := os.Remove(filepath.Join(job.Original, ".git")); err != nil {
+			f.t.Fatal(err)
+		}
+		return retired
+	}
+	spy := func(f *fixture) string {
+		f.t.Helper()
+		cleaned := filepath.Join(f.t.TempDir(), "cleaned")
+		f.run(f.repo, "config", "filter.spy.clean", "echo read >>"+cleaned+"; cat")
+		if err := os.MkdirAll(filepath.Join(f.common, "info"), 0o700); err != nil {
+			f.t.Fatal(err)
+		}
+		f.write(filepath.Join(f.common, "info", "attributes"), "*.txt filter=spy\n")
+		return cleaned
+	}
+	t.Run("reads no file the index holds as unchanged", func(t *testing.T) {
+		f := newFixture(t)
+		job := f.accept()
+		retiredTree(f, job)
+		cleaned := spy(f)
+
+		f.advance(&job)
+
+		f.claimed(&job)
+		if _, err := os.Stat(cleaned); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("the proof read a file through its clean filter: %v", err)
+		}
+	})
+	t.Run("still finds an edit", func(t *testing.T) {
+		f := newFixture(t)
+		job := f.accept()
+		retiredTree(f, job)
+		f.write(filepath.Join(f.worktree, "feature.txt"), "edited\n")
+
+		f.advance(&job)
+
+		f.blocked(&job, cleanup.PhasePrepared, "dirty", "uncommitted changes: feature.txt")
+	})
+	t.Run("falls back to the saved HEAD past an index git refuses", func(t *testing.T) {
+		f := newFixture(t)
+		job := f.accept()
+		retired := retiredTree(f, job)
+		f.write(filepath.Join(retired, "index"), "not an index")
+
+		f.advance(&job)
+
+		f.claimed(&job)
+	})
 }
 
 func TestAdvanceReadsIgnoreRulesThePartialTreeLost(t *testing.T) {
