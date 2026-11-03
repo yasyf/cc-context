@@ -330,11 +330,22 @@ func TestPlanRefusesEveryUnclearConsumer(t *testing.T) {
 		{
 			name: "a tree that lost its .git has no git to ask",
 			setup: func(f fixture) {
+				f.w.daemons = nil
 				delete(f.w.repos, f.wt)
 				if err := os.Remove(filepath.Join(f.wt, ".git")); err != nil {
 					f.w.t.Fatal(err)
 				}
 			},
+		},
+		{
+			name: "a daemon outliving the .git still refuses",
+			setup: func(f fixture) {
+				delete(f.w.repos, f.wt)
+				if err := os.Remove(filepath.Join(f.wt, ".git")); err != nil {
+					f.w.t.Fatal(err)
+				}
+			},
+			want: []string{"fsmonitor daemon 101 has an unresolved worktree"},
 		},
 	}
 	for _, tt := range tests {
