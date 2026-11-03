@@ -276,6 +276,48 @@ func restorable(status, name []byte) bool {
 	return dropping(status, name) || len(status) == 2 && (status[1] == ' ' || status[1] == 'D')
 }
 
+func (r *Relocator) readHead(ctx context.Context, job *cleanup.Job, index string, location []string) error {
+	seeded, err := seedIndex(job, index)
+	if err != nil {
+		return err
+	}
+	if seeded {
+		if _, err := r.git(ctx, job.Git, append(slices.Clip(location), "read-tree", "-m", job.Head)...); err == nil {
+			return nil
+		}
+		if err := discardIndex(index); err != nil {
+			return err
+		}
+	}
+	_, err = r.git(ctx, job.Git, append(slices.Clip(location), "read-tree", job.Head)...)
+	return err
+}
+
+func seedIndex(job *cleanup.Job, index string) (bool, error) {
+	for _, admin := range []string{job.AdminDir, filepath.Join(job.Repo, cleanup.RetiredWorktrees, filepath.Base(job.AdminDir))} {
+		last := filepath.Join(admin, "index")
+		info, err := os.Stat(last)
+		if gone(err) {
+			continue
+		}
+		if err != nil {
+			return false, fmt.Errorf("read the tree's last index: %w", err)
+		}
+		body, err := os.ReadFile(last)
+		if err != nil {
+			return false, fmt.Errorf("read the tree's last index: %w", err)
+		}
+		if err := os.WriteFile(index, body, 0o600); err != nil {
+			return false, fmt.Errorf("seed the scratch index: %w", err)
+		}
+		if err := os.Chtimes(index, info.ModTime(), info.ModTime()); err != nil {
+			return false, fmt.Errorf("seed the scratch index: %w", err)
+		}
+		return true, nil
+	}
+	return false, nil
+}
+
 func (r *Relocator) keepLostIgnores(ctx context.Context, git string, location []string) error {
 	lost, err := r.git(ctx, git, append(slices.Clip(location), "ls-files", "--deleted", "-z", "--", ":(glob)**/.gitignore")...)
 	if err != nil || lost == "" {
@@ -299,7 +341,7 @@ func (r *Relocator) matchesHead(ctx context.Context, job *cleanup.Job, tree stri
 	scratch := r.indexed(index)
 	location := []string{"--git-dir=" + job.Repo, "--work-tree=" + tree, "-c", "core.splitIndex=false"}
 	if job.Head != "" {
-		if _, err := scratch.git(ctx, job.Git, append(location, "read-tree", job.Head)...); err != nil {
+		if err := scratch.readHead(ctx, job, index, location); err != nil {
 			return gitReason(err), err.Error()
 		}
 		if err := scratch.keepLostIgnores(ctx, job.Git, location); err != nil {

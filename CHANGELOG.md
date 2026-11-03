@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A cleanup proof no longer re-reads every file of a tree whose index
+  survives.** Proving a retired tree against its saved `HEAD` used an empty
+  index, so `git status` hashed all tracked files and sent each Git LFS file
+  through `git-lfs`: about 381 MiB read and 211 MiB written per monorepo tree.
+  The throwaway index now keeps the stat data of the tree's last index.
 - **`ccx vcs ship` and stack rebase read a branch head without paying for every
   remote ref.** `git ls-remote origin refs/heads/<x>` sends no ref prefix, so on
   a remote with 112,000 refs each read parsed all of them. These reads now pass
