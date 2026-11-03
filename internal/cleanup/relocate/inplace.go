@@ -303,7 +303,7 @@ func seedIndex(job *cleanup.Job, index string) (bool, error) {
 		if err != nil {
 			return false, fmt.Errorf("read the tree's last index: %w", err)
 		}
-		body, err := os.ReadFile(last)
+		body, err := os.ReadFile(last) //nolint:gosec // the job owns this admin directory
 		if err != nil {
 			return false, fmt.Errorf("read the tree's last index: %w", err)
 		}
