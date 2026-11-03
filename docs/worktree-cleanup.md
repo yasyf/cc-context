@@ -282,7 +282,13 @@ since the deletion itself may already have removed `locked`. A tree whose
 `.git` and admin directory were
 lost is proven against the job's saved `HEAD` through a throwaway index
 instead; a file the tree no longer holds is one that commit restores, so it is
-not dirt.
+not dirt. The same proof covers a tree that lost `.git` but keeps its
+registration, a tree whose branch was deleted after the job captured it, and a
+deletion that resumes. A `.gitignore` the tree lost still applies, read from
+that commit, so the files it ignores never count as dirt. An admin directory an older daemon
+retired under `<common>/retired-worktrees/` is deleted with the job once its
+tree is gone, when it has the captured inode and its backlink names nothing
+that exists.
 
 A directory counts as the job's when it has the captured inode on the device
 its parent sits on at that moment, so a volume renumbered since capture still

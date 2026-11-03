@@ -370,6 +370,156 @@ func TestAdvanceProvesAnOrphanAgainstItsSavedHead(t *testing.T) {
 	}
 }
 
+func (f *fixture) ignoreBuildOutput() {
+	f.t.Helper()
+	f.write(filepath.Join(f.worktree, ".gitignore"), "build/\n")
+	f.run(f.worktree, "add", ".gitignore")
+	f.run(f.worktree, "commit", "-m", "ignore build")
+	if err := os.Mkdir(filepath.Join(f.worktree, "build"), 0o700); err != nil {
+		f.t.Fatal(err)
+	}
+	f.write(filepath.Join(f.worktree, "build", "out.bin"), "out\n")
+}
+
+func TestAdvanceReadsIgnoreRulesThePartialTreeLost(t *testing.T) {
+	f := newFixture(t)
+	f.ignoreBuildOutput()
+	job, err := f.relocator.Accept(context.Background(), 1, f.request(false))
+	if err != nil {
+		t.Fatalf("Accept() error = %v", err)
+	}
+	f.orphan(job)
+	if err := os.Remove(filepath.Join(f.worktree, ".gitignore")); err != nil {
+		t.Fatal(err)
+	}
+
+	f.advance(&job)
+
+	f.claimed(&job)
+}
+
+func TestAdmitReadsIgnoreRulesTheDeletionRemoved(t *testing.T) {
+	f := newFixture(t)
+	f.ignoreBuildOutput()
+	job := f.claim()
+	root := f.admitted(&job, cleanup.PhaseDeletingTree, f.worktree, job.Tree)
+	if err := os.Remove(filepath.Join(f.worktree, ".gitignore")); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := f.admitted(&job, cleanup.PhaseDeletingTree, f.worktree, job.Tree); got != root {
+		t.Errorf("Admit() = %+v, want the same root %+v", got, root)
+	}
+	f.write(filepath.Join(f.worktree, "late.txt"), "late\n")
+	f.admit(&job)
+	f.blocked(&job, cleanup.PhaseDeletingTree, "dirty", "uncommitted changes: late.txt")
+}
+
+func TestAdvanceClaimsATreeWhoseBranchWasDeleted(t *testing.T) {
+	tests := []struct {
+		name    string
+		arrange func(f *fixture)
+		dirt    string
+	}{
+		{"clean", func(*fixture) {}, ""},
+		{"an edit", func(f *fixture) { f.write(filepath.Join(f.worktree, "feature.txt"), "edited\n") }, "uncommitted changes: feature.txt"},
+		{"an untracked file", func(f *fixture) { f.write(filepath.Join(f.worktree, "scratch.txt"), "scratch\n") }, "uncommitted changes: scratch.txt"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFixture(t)
+			job := f.accept()
+			if job.Branch == "" {
+				t.Fatal("fixture worktree has no branch")
+			}
+			f.run(f.repo, "update-ref", "-d", "refs/heads/"+job.Branch)
+			tt.arrange(f)
+
+			f.advance(&job)
+
+			if tt.dirt != "" {
+				f.blocked(&job, cleanup.PhasePrepared, "dirty", tt.dirt)
+				return
+			}
+			f.claimed(&job)
+			if got := f.run(f.repo, "rev-parse", job.RecoveryRef); got != job.Head {
+				t.Errorf("recovery ref = %s, want %s", got, job.Head)
+			}
+			f.admitted(&job, cleanup.PhaseDeletingTree, f.worktree, job.Tree)
+		})
+	}
+}
+
+func TestAdvanceClaimsAPartialTreeStillRegistered(t *testing.T) {
+	f := newFixture(t)
+	job := f.accept()
+	if err := os.Remove(filepath.Join(f.worktree, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(f.worktree, "feature.txt")); err != nil {
+		t.Fatal(err)
+	}
+
+	f.advance(&job)
+
+	f.claimed(&job)
+	if got := f.lockOf(); got == "" {
+		t.Error("the registration carries no lock of the job")
+	}
+}
+
+func TestAdvanceDeletesTheAdminOldRetirementLeftBehind(t *testing.T) {
+	retire := func(f *fixture, job cleanup.Job) string {
+		f.t.Helper()
+		parent := filepath.Join(job.Repo, "retired-worktrees")
+		if err := os.MkdirAll(parent, 0o700); err != nil {
+			f.t.Fatal(err)
+		}
+		retired := filepath.Join(parent, filepath.Base(job.AdminDir))
+		if err := os.Rename(job.AdminDir, retired); err != nil {
+			f.t.Fatal(err)
+		}
+		return retired
+	}
+	t.Run("once its tree is gone", func(t *testing.T) {
+		f := newFixture(t)
+		job := f.accept()
+		retired := retire(f, job)
+		if err := os.RemoveAll(f.worktree); err != nil {
+			t.Fatal(err)
+		}
+
+		f.advance(&job)
+
+		if job.Phase != cleanup.PhaseDeletingRegistration || job.Blocked != nil {
+			t.Fatalf("job = phase %s, blockage %+v; want deleting_registration", job.Phase, job.Blocked)
+		}
+		deleteRoot(t, f.admitted(&job, cleanup.PhaseDeletingRegistration, retired, job.Admin))
+		if _, err := f.relocator.Admit(context.Background(), &job); err != nil || job.Phase != cleanup.PhaseDone {
+			t.Fatalf("Admit() after the deletion = %+v, %v, want the job done", job, err)
+		}
+	})
+	t.Run("never one whose backlink still names a tree", func(t *testing.T) {
+		f := newFixture(t)
+		job := f.accept()
+		retired := retire(f, job)
+		moved := f.worktree + "-moved"
+		if err := os.Rename(f.worktree, moved); err != nil {
+			t.Fatal(err)
+		}
+		f.write(filepath.Join(retired, "gitdir"), filepath.Join(moved, ".git")+"\n")
+
+		f.advance(&job)
+
+		if job.Phase != cleanup.PhaseDone || job.Blocked != nil {
+			t.Fatalf("job = phase %s, blockage %+v; want done", job.Phase, job.Blocked)
+		}
+		if got := f.id(retired); got != job.Admin {
+			t.Errorf("retired admin = %v, want it left as %v", got, job.Admin)
+		}
+	})
+}
+
 func TestAdvanceRefusesAnOrphanSomeoneRegisteredAgain(t *testing.T) {
 	f := newFixture(t)
 	job := f.accept()

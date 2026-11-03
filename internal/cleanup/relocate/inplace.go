@@ -45,9 +45,10 @@ func locate(job *cleanup.Job) (spot, bool, error) {
 }
 
 type bond struct {
-	native bool
-	owned  bool
-	admin  cleanup.FileID
+	native  bool
+	owned   bool
+	severed bool
+	admin   cleanup.FileID
 }
 
 func openAdmin(job *cleanup.Job, admin cleanup.FileID) (*os.Root, error) {
@@ -154,8 +155,9 @@ func bind(job *cleanup.Job, tree spot) (bond, string, string) {
 	}
 	dotGitPath := filepath.Join(tree.path, ".git")
 	dotGit, err := readLinkage(dotGitPath)
+	severed := gone(err)
 	switch {
-	case gone(err):
+	case severed:
 	case err != nil:
 		return bond{}, "identity", err.Error()
 	default:
@@ -166,7 +168,7 @@ func bind(job *cleanup.Job, tree spot) (bond, string, string) {
 			return bond{}, "identity", fmt.Sprintf("%s no longer names %s", dotGitPath, job.AdminDir)
 		}
 	}
-	return bond{native: true, owned: owned, admin: admin}, "", ""
+	return bond{native: true, owned: owned, severed: severed, admin: admin}, "", ""
 }
 
 func claims(job *cleanup.Job, tree string, native bool) (string, error) {
@@ -187,30 +189,31 @@ func claims(job *cleanup.Job, tree string, native bool) (string, error) {
 	return carried(job, entries, tree)
 }
 
-func (r *Relocator) native(ctx context.Context, job *cleanup.Job, tree string) (string, string) {
+func (r *Relocator) native(ctx context.Context, job *cleanup.Job, tree string) (bool, string, string) {
 	location := []string{"--git-dir=" + job.AdminDir, "--work-tree=" + tree}
 	head, err := r.resolveHead(ctx, job.Git, location[0])
 	if err != nil {
-		return gitReason(err), err.Error()
+		return false, gitReason(err), err.Error()
 	}
-	if head != job.Head {
-		return "identity", headChanged(job, tree, head)
+	branchGone := head == "" && job.Branch != ""
+	if head != job.Head && !branchGone {
+		return false, "identity", headChanged(job, tree, head)
 	}
 	branch, err := r.resolveBranch(ctx, job.Git, location[0])
 	if err != nil {
-		return gitReason(err), err.Error()
+		return false, gitReason(err), err.Error()
 	}
 	if branch != job.Branch {
-		return "identity", fmt.Sprintf("branch changed: the job captured %q, %s now holds %q", job.Branch, tree, branch)
+		return false, "identity", fmt.Sprintf("branch changed: the job captured %q, %s now holds %q", job.Branch, tree, branch)
 	}
 	if err := r.submodules(ctx, job.Git, job.AdminDir, tree, location...); err != nil {
 		var refused *cleanup.RefusedError
 		if errors.As(err, &refused) {
-			return refused.Reason, refused.Detail
+			return false, refused.Reason, refused.Detail
 		}
-		return gitReason(err), err.Error()
+		return false, gitReason(err), err.Error()
 	}
-	return "", ""
+	return branchGone, "", ""
 }
 
 func (r *Relocator) clean(ctx context.Context, job *cleanup.Job, tree string, skip func(status, name []byte) bool) (string, string) {
@@ -250,7 +253,17 @@ func restorable(status, name []byte) bool {
 	return dropping(status, name) || len(status) == 2 && (status[1] == ' ' || status[1] == 'D')
 }
 
-func (r *Relocator) orphaned(ctx context.Context, job *cleanup.Job, tree string) (string, string) {
+func (r *Relocator) keepLostIgnores(ctx context.Context, git string, location []string) error {
+	lost, err := r.git(ctx, git, append(slices.Clip(location), "ls-files", "--deleted", "-z", "--", ":(glob)**/.gitignore")...)
+	if err != nil || lost == "" {
+		return err
+	}
+	names := strings.Split(strings.TrimSuffix(lost, "\x00"), "\x00")
+	_, err = r.git(ctx, git, append(append(slices.Clip(location), "update-index", "--skip-worktree", "--"), names...)...)
+	return err
+}
+
+func (r *Relocator) matchesHead(ctx context.Context, job *cleanup.Job, tree string) (string, string) {
 	index := r.cfg.Journal.Layout().ScratchIndex(job.ID)
 	if err := discardIndex(index); err != nil {
 		return "reconcile", err.Error()
@@ -264,6 +277,9 @@ func (r *Relocator) orphaned(ctx context.Context, job *cleanup.Job, tree string)
 	location := []string{"--git-dir=" + job.Repo, "--work-tree=" + tree, "-c", "core.splitIndex=false"}
 	if job.Head != "" {
 		if _, err := scratch.git(ctx, job.Git, append(location, "read-tree", job.Head)...); err != nil {
+			return gitReason(err), err.Error()
+		}
+		if err := scratch.keepLostIgnores(ctx, job.Git, location); err != nil {
 			return gitReason(err), err.Error()
 		}
 	}
@@ -330,16 +346,19 @@ func (r *Relocator) prove(ctx context.Context, job *cleanup.Job, tree spot, clai
 			return held, "identity", unpinned
 		}
 	}
-	dirt := func() (string, string) {
-		if held.native {
-			return r.clean(ctx, job, tree.path, dropping)
-		}
-		return r.orphaned(ctx, job, tree.path)
-	}
+	againstHead := !held.native || held.severed
 	if held.native {
-		if reason, detail := r.native(ctx, job, tree.path); reason != "" {
+		branchGone, reason, detail := r.native(ctx, job, tree.path)
+		if reason != "" {
 			return held, reason, detail
 		}
+		againstHead = againstHead || branchGone
+	}
+	dirt := func() (string, string) {
+		if againstHead {
+			return r.matchesHead(ctx, job, tree.path)
+		}
+		return r.clean(ctx, job, tree.path, dropping)
 	}
 	if claiming {
 		if reason, detail := dirt(); reason != "" {
@@ -421,6 +440,24 @@ func registeredAway(job *cleanup.Job) string {
 	return filepath.Dir(target)
 }
 
+func abandonedAdmin(job *cleanup.Job) (spot, bool, error) {
+	path := filepath.Join(job.Repo, "retired-worktrees", filepath.Base(job.AdminDir))
+	id, ok, err := cleanup.Placed(path, job.Admin)
+	if err != nil || !ok {
+		return spot{}, false, err
+	}
+	back, err := readLinkage(filepath.Join(path, "gitdir"))
+	if err != nil && !gone(err) {
+		return spot{}, false, err
+	}
+	if target, named := linkTarget(back, path); err == nil && named {
+		if _, err := os.Lstat(target); !gone(err) {
+			return spot{}, false, nil
+		}
+	}
+	return spot{path: path, id: id}, true, nil
+}
+
 func (r *Relocator) settle(ctx context.Context, job *cleanup.Job) (bool, error) {
 	if job.Unbound() {
 		return r.enter(job, cleanup.PhaseDone)
@@ -430,6 +467,13 @@ func (r *Relocator) settle(ctx context.Context, job *cleanup.Job) (bool, error) 
 		return r.block(ctx, job, "identity", err.Error())
 	}
 	if !ok {
+		_, abandoned, err := abandonedAdmin(job)
+		switch {
+		case err != nil:
+			return r.block(ctx, job, "identity", err.Error())
+		case abandoned:
+			return r.enter(job, cleanup.PhaseDeletingRegistration)
+		}
 		return r.enter(job, cleanup.PhaseDone)
 	}
 	owned, err := owns(job, admin)
@@ -551,16 +595,18 @@ func (r *Relocator) residue(ctx context.Context, job *cleanup.Job, tree spot, he
 			return "identity", unpinned
 		}
 	}
-	switch {
-	case job.Unbound():
+	if job.Unbound() {
 		return "", ""
-	case held.native:
-		if reason, detail := r.native(ctx, job, tree.path); reason != "" {
+	}
+	if held.native {
+		if _, reason, detail := r.native(ctx, job, tree.path); reason != "" {
 			return reason, detail
 		}
-		return r.clean(ctx, job, tree.path, deleted)
+		if job.Head == "" {
+			return r.clean(ctx, job, tree.path, deleted)
+		}
 	}
-	return r.orphaned(ctx, job, tree.path)
+	return r.matchesHead(ctx, job, tree.path)
 }
 
 func (r *Relocator) admitRegistration(ctx context.Context, job *cleanup.Job) (cleanup.DeletionRoot, error) {
@@ -581,11 +627,22 @@ func (r *Relocator) admitRegistration(ctx context.Context, job *cleanup.Job) (cl
 	if err != nil {
 		return r.rejectRoot(ctx, job, "identity", err)
 	}
-	if !ok {
+	if ok {
+		return r.adminRoot(ctx, job, admin)
+	}
+	abandoned, found, err := abandonedAdmin(job)
+	if err != nil {
+		return r.rejectRoot(ctx, job, "identity", err)
+	}
+	if !found {
 		_, err := r.enter(job, cleanup.PhaseDone)
 		return cleanup.DeletionRoot{}, err
 	}
-	return r.adminRoot(ctx, job, admin)
+	if holders := r.quiet(ctx, job, abandoned.path, false); holders != "" {
+		_, err := r.block(ctx, job, "activity", holders)
+		return cleanup.DeletionRoot{}, err
+	}
+	return abandoned.root(), ctx.Err()
 }
 
 func (r *Relocator) adminRoot(ctx context.Context, job *cleanup.Job, admin cleanup.FileID) (cleanup.DeletionRoot, error) {

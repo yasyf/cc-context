@@ -194,27 +194,8 @@ type ownership struct {
 
 func (d Deps) fsmonitorOwnership(ctx context.Context, worktree string) (ownership, error) {
 	var own ownership
-	gitDir, top, err := d.revParse(ctx, worktree)
-	var exitErr *ExitError
-	switch {
-	case errors.As(err, &exitErr):
-		own.Blockers = append(own.Blockers, fmt.Sprintf("git cannot resolve %s: %s", worktree, strings.TrimSpace(exitErr.Stderr)))
-	case err != nil:
-		return ownership{}, fmt.Errorf("git dir of %s: %w", worktree, err)
-	default:
-		own.GitDir = canonicalOrSelf(gitDir)
-		if !sameFile(top, worktree) {
-			own.Blockers = append(own.Blockers, fmt.Sprintf("git resolves %s to worktree %s", worktree, top))
-		}
-		linked, err := worktreeOf(own.GitDir)
-		switch {
-		case err != nil:
-			own.Blockers = append(own.Blockers, fmt.Sprintf("git metadata of %s: %v", worktree, err))
-		case !sameFile(linked, worktree):
-			own.Blockers = append(own.Blockers, fmt.Sprintf("git dir %s links back to %s, not %s", own.GitDir, linked, worktree))
-		}
-		own.Sockets, err = d.expectedSockets(ctx, worktree, own.GitDir)
-		if err != nil {
+	if _, err := os.Lstat(filepath.Join(worktree, ".git")); !errors.Is(err, fs.ErrNotExist) {
+		if err := d.gitOwnership(ctx, worktree, &own); err != nil {
 			return ownership{}, err
 		}
 	}
@@ -251,6 +232,31 @@ func (d Deps) fsmonitorOwnership(ctx context.Context, worktree string) (ownershi
 		own.Owner.Config = config
 	}
 	return own, nil
+}
+
+func (d Deps) gitOwnership(ctx context.Context, worktree string, own *ownership) error {
+	gitDir, top, err := d.revParse(ctx, worktree)
+	var exitErr *ExitError
+	switch {
+	case errors.As(err, &exitErr):
+		own.Blockers = append(own.Blockers, fmt.Sprintf("git cannot resolve %s: %s", worktree, strings.TrimSpace(exitErr.Stderr)))
+		return nil
+	case err != nil:
+		return fmt.Errorf("git dir of %s: %w", worktree, err)
+	}
+	own.GitDir = canonicalOrSelf(gitDir)
+	if !sameFile(top, worktree) {
+		own.Blockers = append(own.Blockers, fmt.Sprintf("git resolves %s to worktree %s", worktree, top))
+	}
+	linked, err := worktreeOf(own.GitDir)
+	switch {
+	case err != nil:
+		own.Blockers = append(own.Blockers, fmt.Sprintf("git metadata of %s: %v", worktree, err))
+	case !sameFile(linked, worktree):
+		own.Blockers = append(own.Blockers, fmt.Sprintf("git dir %s links back to %s, not %s", own.GitDir, linked, worktree))
+	}
+	own.Sockets, err = d.expectedSockets(ctx, worktree, own.GitDir)
+	return err
 }
 
 func ownsSocket(sockets []string, dm Daemon) bool {
