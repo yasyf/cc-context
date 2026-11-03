@@ -314,6 +314,28 @@ func TestShipHookEntryPaths(t *testing.T) {
 	}
 }
 
+func TestShipHookIDs(t *testing.T) {
+	t.Parallel()
+	yaml := `repos:
+- repo: local
+  hooks:
+  - id: biome
+    entry: ./tools/hooks/hook-biome.sh
+  - entry: gofmt -w
+    id: "gofmt"
+- repo: https://github.com/pre-commit/pre-commit-hooks
+  hooks:
+  - id: check-added-large-files # big blobs
+`
+	if got, want := shipHookIDs([]byte(yaml)), []string{"biome", "gofmt", "check-added-large-files"}; !slices.Equal(got, want) {
+		t.Errorf("yaml ids = %q, want %q", got, want)
+	}
+	toml := "[[repos.hooks]]\nid = \"golangci-lint\"\nentry = \"golangci-lint run\"\n"
+	if got, want := shipHookIDs([]byte(toml)), []string{"golangci-lint"}; !slices.Equal(got, want) {
+		t.Errorf("toml ids = %q, want %q", got, want)
+	}
+}
+
 func TestShipMaterializeHookEntriesWidensASparseLane(t *testing.T) {
 	t.Parallel()
 	f := vcstest.Repo(t)
