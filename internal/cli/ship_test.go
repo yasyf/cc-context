@@ -5915,7 +5915,6 @@ func TestShipGTRefusals(t *testing.T) {
 			{"git", "rev-parse", "--verify", "refs/heads/feature"},
 			{"git", "rev-list", "--parents", "refs/remotes/origin/main.." + oldFeature},
 			{"git", "for-each-ref", "--format=%(objectname) %(refname:lstrip=2)", "refs/heads/"},
-			{"git", "ls-remote", "--heads", "origin"},
 			{"git", "merge-base", oldFeature, "refs/remotes/origin/main"},
 			{"git", "rev-parse", "--verify", "--quiet", "refs/heads/main"},
 			{"git", "rev-parse", "--path-format=absolute", "--git-path", "rebase-merge"},

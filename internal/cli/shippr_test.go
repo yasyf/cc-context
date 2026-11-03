@@ -1778,6 +1778,31 @@ func TestShipPRCreateGitLaneBasesOnTrunkWithoutAPushedAncestor(t *testing.T) {
 	}
 }
 
+func TestShipPRCreateGitLaneBasesOnTrunkPastARemoteOnlyRef(t *testing.T) {
+	for name, movedOn := range map[string]bool{"below the branch": false, "moved on after the cut": true} {
+		t.Run(name, func(t *testing.T) {
+			f := shipPRFixture(t)
+			mustRun(t, f.Env(), f.Dir, "git", "checkout", "-q", "-b", "feature")
+			writeShipFile(t, f.Dir, "feature.txt", "feature\n")
+			mustRun(t, f.Env(), f.Dir, "git", "add", "feature.txt")
+			mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "feature")
+			mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "HEAD:refs/heads/feature-red")
+			if movedOn {
+				mustRun(t, f.Env(), f.Dir, "git", "checkout", "-q", "--detach")
+				writeShipFile(t, f.Dir, "later.txt", "later\n")
+				mustRun(t, f.Env(), f.Dir, "git", "add", "later.txt")
+				mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "later")
+				mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "HEAD:refs/heads/feature-red")
+				mustRun(t, f.Env(), f.Dir, "git", "checkout", "-q", "feature")
+			}
+
+			if base := shipPRCreateNoParent(t, f); base != "main" {
+				t.Errorf("base = %q, want trunk: feature-red has no local branch and no tracking", base)
+			}
+		})
+	}
+}
+
 func TestShipPRCreateGitLaneAmendMeasuresAgainstTheRemoteTrunk(t *testing.T) {
 	f := shipPRFixture(t)
 	shipCutPushedParent(t, f, "base", "feature")

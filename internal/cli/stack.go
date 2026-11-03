@@ -188,9 +188,9 @@ whose parent landed is replayed onto its current parent; --restack also replays
 clean published branches. The plan closes with an "old base kept" line naming
 every branch left on an older trunk and --restack. The local trunk branch and other working copies are
 left untouched. A branch here Graphite does not track is adopted first, with
-every untracked branch below it down to its nearest tracked ancestor, local or
-only on the remote, bottom-up, each onto the one below it; one only the remote
-holds gets its local branch at the remote head. Two at one commit, or one off
+every untracked local branch below it down to its nearest tracked ancestor,
+bottom-up, each onto the one below it; a branch only the remote holds is never
+adopted as its parent. Two at one commit, or one off
 the first-parent line, form no single chain, and submit refuses naming them. A branch whose pull
 request landed through a merge queue squash is dropped, and its children move
 onto what it sat on, leaving its squashed commits behind.
