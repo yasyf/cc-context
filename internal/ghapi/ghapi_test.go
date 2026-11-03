@@ -530,8 +530,8 @@ func TestAReadThatStaysDownNamesItsTriesAndLastStatus(t *testing.T) {
 
 	_, err := Get[item](context.Background(), instantRetries(testClient(ts.URL, fixedToken("tok"))), "/repos/o/r/pulls/3")
 
-	want := int32(len(transientWaits) + 1)
-	if err == nil || requests.Load() != want || !strings.Contains(err.Error(), fmt.Sprintf("(after %d tries)", want)) || !strings.Contains(err.Error(), "503") {
+	want := len(transientWaits) + 1
+	if err == nil || int(requests.Load()) != want || !strings.Contains(err.Error(), fmt.Sprintf("(after %d tries)", want)) || !strings.Contains(err.Error(), "503") {
 		t.Fatalf("err = %v after %d requests, want the 503 named after %d tries", err, requests.Load(), want)
 	}
 }
