@@ -405,7 +405,7 @@ func vcsPushGit(ctx context.Context, dir render.Dir, remote, branch, head string
 	}
 	tip := heads[branch]
 	if tip == "" {
-		if _, err := render.RunCLI(ctx, dir, "git", gitPushArgv(noVerify, remote, refspec)); err != nil {
+		if _, err := runRemoteGit(ctx, dir, gitPushArgv(noVerify, remote, refspec)); err != nil {
 			return "", fmt.Errorf("push: git push: %w", err)
 		}
 		if err := gitRecordPush(ctx, dir, remote, map[string]string{branch: head}); err != nil {
@@ -421,7 +421,7 @@ func vcsPushGit(ctx context.Context, dir render.Dir, remote, branch, head string
 		return "", err
 	}
 	if ancestor {
-		if _, err := render.RunCLI(ctx, dir, "git", gitPushArgv(noVerify, remote, refspec)); err != nil {
+		if _, err := runRemoteGit(ctx, dir, gitPushArgv(noVerify, remote, refspec)); err != nil {
 			return "", fmt.Errorf("push: git push: %w", err)
 		}
 		if err := gitRecordPush(ctx, dir, remote, map[string]string{branch: head}); err != nil {
@@ -447,7 +447,7 @@ func vcsPushGit(ctx context.Context, dir render.Dir, remote, branch, head string
 			remote, branch, len(unheld), branch, strings.Join(unheld, "\n"), remote, remote, branch)
 	}
 	lease := fmt.Sprintf("--force-with-lease=%s:%s", ref, tip)
-	if _, err := render.RunCLI(ctx, dir, "git", gitPushArgv(noVerify, remote, lease, refspec)); err != nil {
+	if _, err := runRemoteGit(ctx, dir, gitPushArgv(noVerify, remote, lease, refspec)); err != nil {
 		if gitPushStaleLease(err) || gitPushRejected(err) {
 			return "", fmt.Errorf("push: %s/%s moved off %s after this run graded it — someone pushed mid-run; fetch and reconcile before moving it again: %w", remote, branch, shortOID(tip), err)
 		}
@@ -621,7 +621,7 @@ func gitRemoteHead(ctx context.Context, dir render.Dir, prefix, remote string) (
 		}
 		return name, true, nil
 	}
-	out, err = render.RunCLI(ctx, dir, "git", []string{"ls-remote", "--symref", remote, "HEAD"})
+	out, err = runRemoteGit(ctx, dir, []string{"ls-remote", "--symref", remote, "HEAD"})
 	if err != nil {
 		return "", false, fmt.Errorf("%s: git ls-remote --symref %s HEAD: %w", prefix, remote, err)
 	}

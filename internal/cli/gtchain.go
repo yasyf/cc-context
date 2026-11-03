@@ -80,7 +80,7 @@ func gtUntrackedChain(ctx context.Context, dir render.Dir, prefix string, state 
 		candidate(name, head)
 	}
 	if remote != "" && !local[branch] {
-		heads, err := render.RunCLI(ctx, dir, "git", []string{"ls-remote", "--heads", remote})
+		heads, err := runRemoteGit(ctx, dir, []string{"ls-remote", "--heads", remote})
 		if err != nil {
 			return nil, fmt.Errorf("%s: git ls-remote --heads %s: %w", prefix, remote, err)
 		}

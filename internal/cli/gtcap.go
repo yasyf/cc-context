@@ -65,7 +65,7 @@ func gtPushSegment(ctx context.Context, dir render.Dir, prefix string, pr gtapi.
 	argv := pushArgv("origin", "--no-verify", "--atomic",
 		"--force-with-lease="+gtRestackRef(pr.Head)+":"+pr.HeadSha, pr.HeadSha+":"+gtRestackRef(pr.Head),
 		"--force-with-lease="+gtRestackRef(segment)+":"+heads[segment], pr.BaseSha+":"+gtRestackRef(segment))
-	if _, err := render.RunCLI(ctx, dir, "git", argv); err != nil {
+	if _, err := runRemoteGit(ctx, dir, argv); err != nil {
 		return fmt.Errorf("%s: push segment base %s at %s under %s at %s: %w", prefix, segment, shortOID(pr.BaseSha), pr.Head, shortOID(pr.HeadSha), err)
 	}
 	return nil

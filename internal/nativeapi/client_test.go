@@ -1158,6 +1158,8 @@ func TestTrunkEmptyQueueReadDoesNotResolveCredentials(t *testing.T) {
 }
 
 func TestBranchHistoryReadsOriginPresenceAndPullRequestHeads(t *testing.T) {
+	transientWaits = []time.Duration{time.Millisecond, time.Millisecond, time.Millisecond}
+	t.Cleanup(func() { transientWaits = []time.Duration{2 * time.Second, 5 * time.Second, 15 * time.Second} })
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/repos/org/repo", "/repos/org/repo/branches/release", "/repos/org/repo/branches/feature":
@@ -1230,6 +1232,57 @@ func TestASecondaryRateLimitIsRetriedAndAPrimaryOneOrAPermissionRefusalIsNot(t *
 			_, err := NewWithToken(srv.URL, "github-key").post(context.Background(), "/repos/org/repo/pulls", map[string]any{"head": "feature"})
 			if calls != tc.calls || (err == nil) != tc.created {
 				t.Fatalf("calls=%d err=%v, want calls=%d created=%v", calls, err, tc.calls, tc.created)
+			}
+		})
+	}
+}
+
+func TestAServerErrorIsRetriedOnAnIdempotentRequestAndNeverOnAPostOrAClientError(t *testing.T) {
+	transientWaits = []time.Duration{time.Millisecond, time.Millisecond, time.Millisecond}
+	t.Cleanup(func() { transientWaits = []time.Duration{2 * time.Second, 5 * time.Second, 15 * time.Second} })
+	cases := []struct {
+		name       string
+		method     string
+		status     int
+		fails      int
+		calls      int
+		wantStatus int
+		wantTries  string
+	}{
+		{"a GET retries a 502 and succeeds", http.MethodGet, http.StatusBadGateway, 1, 2, 0, ""},
+		{"a PUT retries a 503 twice and succeeds", http.MethodPut, http.StatusServiceUnavailable, 2, 3, 0, ""},
+		{"a POST is never retried on a 502", http.MethodPost, http.StatusBadGateway, 1, 1, http.StatusBadGateway, ""},
+		{"a 404 is never retried", http.MethodGet, http.StatusNotFound, 1, 1, http.StatusNotFound, ""},
+		{"an exhausted retry names its tries and the last error", http.MethodPatch, http.StatusInternalServerError, 9, 4, http.StatusInternalServerError, "(after 4 tries)"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				calls++
+				if calls <= tc.fails {
+					http.Error(w, `{"message":"boom"}`, tc.status)
+					return
+				}
+				_, _ = w.Write([]byte(`{"number":46512}`))
+			}))
+			defer srv.Close()
+			_, err := NewWithToken(srv.URL, "github-key").send(context.Background(), tc.method, "/repos/org/repo/pulls/46512", map[string]any{"base": "main"})
+			if calls != tc.calls {
+				t.Fatalf("calls = %d, want %d (err = %v)", calls, tc.calls, err)
+			}
+			if tc.wantStatus == 0 {
+				if err != nil {
+					t.Fatalf("err = %v, want the retried request to succeed", err)
+				}
+				return
+			}
+			var status *StatusError
+			if !errors.As(err, &status) || status.Status != tc.wantStatus || !strings.Contains(err.Error(), "boom") {
+				t.Fatalf("err = %v, want the %d naming boom", err, tc.wantStatus)
+			}
+			if got := strings.HasSuffix(err.Error(), " (after 4 tries)"); got != (tc.wantTries != "") {
+				t.Errorf("err = %q, want the try count only on an exhausted retry", err)
 			}
 		})
 	}

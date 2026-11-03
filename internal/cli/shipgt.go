@@ -1905,7 +1905,7 @@ func gtOntoHead(ctx context.Context, dir render.Dir, o shipOpts, parent string) 
 		return "", fmt.Errorf("ship: %w", err)
 	}
 	ref := "refs/heads/" + parent
-	out, err := render.RunCLI(ctx, dir, "git", []string{"ls-remote", remote, ref})
+	out, err := runRemoteGit(ctx, dir, []string{"ls-remote", remote, ref})
 	if err != nil {
 		return "", fmt.Errorf("ship: git ls-remote %s %s: %w", remote, ref, err)
 	}
@@ -3473,7 +3473,7 @@ func gitFetch(ctx context.Context, dir render.Dir, args ...string) error {
 	}
 	delay := 100 * time.Millisecond
 	for attempt := 1; ; attempt++ {
-		_, err := render.RunCLI(ctx, dir, "git", append([]string{"fetch"}, args...))
+		_, err := runRemoteGit(ctx, dir, append([]string{"fetch"}, args...))
 		if err == nil {
 			if captureErr == nil {
 				if err := packs.Publish(ctx, dir); err != nil {
@@ -3492,6 +3492,43 @@ func gitFetch(ctx context.Context, dir render.Dir, args ...string) error {
 		}
 		delay *= 2
 	}
+}
+
+var (
+	remoteRetryWaits       = []time.Duration{2 * time.Second, 5 * time.Second, 15 * time.Second}
+	transientRemotePattern = regexp.MustCompile(`HTTP (5\d\d|429)|returned error: (5\d\d|429)|early EOF|the remote end hung up unexpectedly|(?i:connection reset)|unexpected disconnect while reading sideband packet|(Operation|Connection) timed out|i/o timeout|overloaded`)
+	transientRemoteVeto    = regexp.MustCompile(`\[(remote )?rejected\]|(HTTP|returned error:) 4([01]\d|2[0-8]|[3-9]\d)`)
+)
+
+func transientRemote(failure string) bool {
+	return transientRemotePattern.MatchString(failure) && !transientRemoteVeto.MatchString(failure)
+}
+
+func retryTransient(ctx context.Context, run func() error) (int, error) {
+	for tries := 1; ; tries++ {
+		err := run()
+		if err == nil || tries > len(remoteRetryWaits) || !transientRemote(err.Error()) {
+			return tries, err
+		}
+		select {
+		case <-ctx.Done():
+			return tries, errors.Join(err, ctx.Err())
+		case <-time.After(remoteRetryWaits[tries-1]):
+		}
+	}
+}
+
+func runRemoteGit(ctx context.Context, dir render.Dir, argv []string) (string, error) {
+	var out string
+	tries, err := retryTransient(ctx, func() error {
+		var err error
+		out, err = render.RunCLI(ctx, dir, "git", argv)
+		return err
+	})
+	if err != nil && tries > 1 {
+		return "", fmt.Errorf("%w (after %d tries)", err, tries)
+	}
+	return out, err
 }
 
 // gtTrunkFetch is one gtTrunkRef in flight, so the round trip runs under the
@@ -3845,9 +3882,9 @@ func gtPushStack(ctx context.Context, dir render.Dir, s gtSubmit, plan []gtSubmi
 
 func gtRunPush(ctx context.Context, dir render.Dir, s gtSubmit, plan []gtSubmitBranch) error {
 	argv := gtPushArgv(s, plan)
-	_, err := render.RunCLI(ctx, dir, "git", argv)
+	_, err := runRemoteGit(ctx, dir, argv)
 	if err != nil && gitPushRemoteFailed(err) {
-		_, err = render.RunCLI(ctx, dir, "git", argv)
+		_, err = runRemoteGit(ctx, dir, argv)
 	}
 	return err
 }

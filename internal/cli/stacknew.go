@@ -795,7 +795,7 @@ func stackVerifyNewRemote(ctx context.Context, dir render.Dir, receipt *stackPub
 	if err != nil {
 		return err
 	}
-	out, err := render.RunCLI(ctx, dir, "git", []string{"ls-remote", "--heads", remote, gtRestackRef(receipt.Branch)})
+	out, err := runRemoteGit(ctx, dir, []string{"ls-remote", "--heads", remote, gtRestackRef(receipt.Branch)})
 	if err != nil {
 		return err
 	}

@@ -820,7 +820,7 @@ func worktreeGitBase(ctx context.Context, dir render.Dir, name string) (worktree
 // remote-tracking ref to consult.
 func worktreeRemoteHas(ctx context.Context, dir render.Dir, remote, name string) (string, error) {
 	ref := "refs/heads/" + name
-	out, err := render.RunCLI(ctx, dir, "git", []string{"ls-remote", "--heads", remote, ref})
+	out, err := runRemoteGit(ctx, dir, []string{"ls-remote", "--heads", remote, ref})
 	if err != nil {
 		return "", fmt.Errorf("worktree add: git ls-remote %s %s: %w", remote, ref, err)
 	}

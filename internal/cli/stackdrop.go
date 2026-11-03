@@ -902,7 +902,7 @@ func dropRepairReport(jobs []repairJob, dryRun bool) string {
 // under.
 func dropPushRef(ctx context.Context, l lane, remote, ref, base string) (string, error) {
 	argv := pushArgv(remote, "--force-with-lease="+gtRestackRef(ref)+":", gtRestackRef(base)+":"+gtRestackRef(ref))
-	if _, err := render.RunCLI(ctx, l.dir(), "git", argv); err != nil {
+	if _, err := runRemoteGit(ctx, l.dir(), argv); err != nil {
 		return "", fmt.Errorf("%s: git push %s %s:%s: %w", dropPrefix, remote, gtRestackRef(base), gtRestackRef(ref), err)
 	}
 	return gtRestackHead(ctx, dropPrefix, l.dir(), base)
@@ -927,7 +927,7 @@ func dropDeleteRef(ctx context.Context, l lane, remote, ref, lease string) error
 // exist there decides both whether a delete has anything to do and which pull
 // requests a repair reaches, and asking per ref costs a round trip each.
 func dropRemoteHeads(ctx context.Context, dir render.Dir, remote string) (map[string]string, error) {
-	out, err := render.RunCLI(ctx, dir, "git", []string{"ls-remote", "--heads", remote})
+	out, err := runRemoteGit(ctx, dir, []string{"ls-remote", "--heads", remote})
 	if err != nil {
 		return nil, fmt.Errorf("%s: git ls-remote --heads %s: %w", dropPrefix, remote, err)
 	}

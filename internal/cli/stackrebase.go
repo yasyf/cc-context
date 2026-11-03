@@ -2617,7 +2617,7 @@ func stackListRemoteHeads(ctx context.Context, dir render.Dir, prefix, remote st
 		wanted[gtRestackRef(b)] = b
 		argv = append(argv, gtRestackRef(b))
 	}
-	out, err := render.RunCLI(ctx, dir, "git", argv)
+	out, err := runRemoteGit(ctx, dir, argv)
 	if err != nil {
 		return nil, fmt.Errorf("%s: git ls-remote %s: %w", prefix, remote, err)
 	}
@@ -5773,7 +5773,7 @@ func stackMarkBaseGone(ctx context.Context, dir render.Dir, tr vcs.Trunk, prs ma
 	if len(closed) == 0 {
 		return nil
 	}
-	out, err := render.RunCLI(ctx, dir, "git", argv)
+	out, err := runRemoteGit(ctx, dir, argv)
 	if err != nil {
 		return fmt.Errorf("stack rebase: git ls-remote --heads %s: %w", tr.Remote(), err)
 	}
