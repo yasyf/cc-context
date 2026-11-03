@@ -254,3 +254,136 @@ func TestAdvanceSettlesAnOrphanWhoseTreeIsGone(t *testing.T) {
 	}
 	f.stored(&job)
 }
+
+func (f *fixture) retireAdmin() string {
+	f.t.Helper()
+	parent := filepath.Join(f.common, cleanup.RetiredWorktrees)
+	if err := os.MkdirAll(parent, 0o700); err != nil {
+		f.t.Fatal(err)
+	}
+	retired := filepath.Join(parent, filepath.Base(f.adminDir))
+	if err := os.Rename(f.adminDir, retired); err != nil {
+		f.t.Fatal(err)
+	}
+	f.write(filepath.Join(f.worktree, ".git"), "gitdir: "+retired+"\n")
+	return retired
+}
+
+func (f *fixture) retiredRequest(retired string) cleanup.OrphanRequest {
+	f.t.Helper()
+	req := f.orphanRequest(f.worktree)
+	req.Admin, req.AdminID = retired, f.id(retired)
+	return req
+}
+
+func TestOrphanQueuesATreeAnOlderCcxRetired(t *testing.T) {
+	tests := []struct {
+		name    string
+		arrange func(f *fixture)
+	}{
+		{"with its .git naming the retired admin", func(*fixture) {}},
+		{"with its .git gone", func(f *fixture) {
+			if err := os.Remove(filepath.Join(f.worktree, ".git")); err != nil {
+				f.t.Fatal(err)
+			}
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFixture(t)
+			head := f.run(f.worktree, "rev-parse", "HEAD")
+			retired := f.retireAdmin()
+			tt.arrange(f)
+			admin := f.id(retired)
+
+			job, err := f.relocator.Orphan(context.Background(), 1, f.retiredRequest(retired))
+			if err != nil {
+				t.Fatalf("Orphan() error = %v", err)
+			}
+			if job.Phase != cleanup.PhasePending || job.Orphaned || job.Head != head || job.Branch != "feature" || job.Admin != admin {
+				t.Fatalf("job = %+v, want a pending removal of %s on feature with admin %v", job, head, admin)
+			}
+
+			f.advance(&job)
+			f.claimed(&job)
+			if got := f.run(f.repo, "rev-parse", job.RecoveryRef); got != head {
+				t.Errorf("recovery ref = %s, want %s", got, head)
+			}
+			deleteRoot(t, f.admitted(&job, cleanup.PhaseDeletingTree, f.worktree, job.Tree))
+			deleteRoot(t, f.admitted(&job, cleanup.PhaseDeletingRegistration, retired, admin))
+			if _, err := f.relocator.Admit(context.Background(), &job); err != nil || job.Phase != cleanup.PhaseDone {
+				t.Fatalf("Admit() after the deletions = %+v, %v, want the job done", job, err)
+			}
+			f.absent(retired)
+		})
+	}
+}
+
+func TestOrphanHoldsARetiredTreeWithUncommittedWork(t *testing.T) {
+	f := newFixture(t)
+	retired := f.retireAdmin()
+	f.write(filepath.Join(f.worktree, "feature.txt"), "edited\n")
+	job, err := f.relocator.Orphan(context.Background(), 1, f.retiredRequest(retired))
+	if err != nil {
+		t.Fatalf("Orphan() error = %v", err)
+	}
+
+	f.advance(&job)
+
+	f.blocked(&job, cleanup.PhasePending, "dirty", "uncommitted changes: feature.txt")
+}
+
+func TestOrphanRefusesARetiredTreeItCannotBind(t *testing.T) {
+	tests := []struct {
+		name    string
+		arrange func(f *fixture, retired string, req *cleanup.OrphanRequest)
+		reason  string
+	}{
+		{"a backlink naming another tree", func(f *fixture, retired string, _ *cleanup.OrphanRequest) {
+			other := t.TempDir()
+			f.write(filepath.Join(retired, "gitdir"), filepath.Join(other, ".git")+"\n")
+		}, "mismatch"},
+		{"a .git naming another admin", func(f *fixture, _ string, _ *cleanup.OrphanRequest) {
+			f.write(filepath.Join(f.worktree, ".git"), "gitdir: "+filepath.Join(f.common, "worktrees", "other")+"\n")
+		}, "mismatch"},
+		{"another admin at that path", func(f *fixture, _ string, req *cleanup.OrphanRequest) {
+			req.AdminID = f.id(f.worktree)
+		}, "identity"},
+		{"a registration claiming the tree", func(f *fixture, _ string, _ *cleanup.OrphanRequest) {
+			f.enroll("other", filepath.Join(f.worktree, ".git"))
+		}, "reconcile"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFixture(t)
+			retired := f.retireAdmin()
+			req := f.retiredRequest(retired)
+			tt.arrange(f, retired, &req)
+
+			_, err := f.relocator.Orphan(context.Background(), 1, req)
+
+			var refused *cleanup.RefusedError
+			if !errors.As(err, &refused) || refused.Reason != tt.reason {
+				t.Fatalf("Orphan() error = %v, want a %s refusal", err, tt.reason)
+			}
+		})
+	}
+	t.Run("a live process", func(t *testing.T) {
+		f := newFixture(t)
+		retired := f.retireAdmin()
+		active := f.holdAt(f.worktree)
+
+		_, err := f.relocator.Orphan(context.Background(), 1, f.retiredRequest(retired))
+
+		if err == nil || err.Error() != active.Error() {
+			t.Fatalf("Orphan() error = %v, want %v", err, active)
+		}
+	})
+	t.Run("an admin outside the retired worktrees", func(t *testing.T) {
+		f := newFixture(t)
+		req := f.retiredRequest(f.adminDir)
+		if err := req.Validate(); err == nil {
+			t.Fatal("Validate() = nil, want an error")
+		}
+	})
+}

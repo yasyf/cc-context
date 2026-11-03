@@ -469,7 +469,7 @@ func registeredAway(job *cleanup.Job) string {
 }
 
 func abandonedAdmin(job *cleanup.Job) (spot, bool, error) {
-	path := filepath.Join(job.Repo, "retired-worktrees", filepath.Base(job.AdminDir))
+	path := filepath.Join(job.Repo, cleanup.RetiredWorktrees, filepath.Base(job.AdminDir))
 	id, ok, err := cleanup.Placed(path, job.Admin)
 	if err != nil || !ok {
 		return spot{}, false, err

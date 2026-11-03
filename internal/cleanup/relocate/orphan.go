@@ -18,6 +18,10 @@ import (
 // exists, and no registration of that repository may name the tree. No head is
 // left to prove the tree clean against, so the request itself authorizes the
 // deletion; the tree must still be idle and unwatched.
+//
+// A request naming Admin is for a tree whose admin directory an older ccx
+// retired: that directory still holds the commit, so the tree is journaled at
+// PhasePending as an ordinary removal, with every proof a removal gets.
 func (r *Relocator) Orphan(ctx context.Context, seq uint64, req cleanup.OrphanRequest) (cleanup.Job, error) {
 	if err := req.Validate(); err != nil {
 		return cleanup.Job{}, fmt.Errorf("cleanup: orphan request: %w", err)
@@ -49,6 +53,9 @@ func (r *Relocator) Orphan(ctx context.Context, seq uint64, req cleanup.OrphanRe
 	case err != nil:
 		return cleanup.Job{}, fmt.Errorf("cleanup: inspect %s: %w", req.CommonDir, err)
 	}
+	if req.Admin != "" {
+		return r.retiredTree(ctx, seq, req, repo, tree)
+	}
 	reason, detail, err := registration(repo, path)
 	if err != nil {
 		return cleanup.Job{}, fmt.Errorf("cleanup: inspect %s: %w", path, err)
@@ -79,6 +86,80 @@ func (r *Relocator) Orphan(ctx context.Context, seq uint64, req cleanup.OrphanRe
 		Git:      req.Git,
 	}
 	r.stamp(&job, seq, cleanup.PhasePrepared)
+	if err := r.cfg.Journal.Create(job); err != nil {
+		return cleanup.Job{}, err
+	}
+	return job, nil
+}
+
+func (r *Relocator) retiredTree(ctx context.Context, seq uint64, req cleanup.OrphanRequest, repo string, tree cleanup.FileID) (cleanup.Job, error) {
+	path := req.Path
+	retired := filepath.Join(repo, cleanup.RetiredWorktrees, filepath.Base(req.Admin))
+	admin, ok, err := cleanup.Placed(retired, req.AdminID)
+	if err != nil {
+		return cleanup.Job{}, fmt.Errorf("cleanup: inspect %s: %w", retired, err)
+	}
+	if !ok {
+		return cleanup.Job{}, refuse(path, "identity", "%s is not the admin directory %s the request names", retired, label(req.AdminID))
+	}
+	back, err := readLinkage(filepath.Join(retired, "gitdir"))
+	if err != nil {
+		return cleanup.Job{}, refuse(path, "mismatch", "%s has no backlink: %v", retired, err)
+	}
+	if detail := liveElsewhere(back, retired, path); detail != "" {
+		return cleanup.Job{}, refuse(path, "mismatch", "%s", detail)
+	}
+	dotGit, err := readLinkage(filepath.Join(path, ".git"))
+	switch {
+	case gone(err):
+		dotGit = "gitdir: " + retired + "\n"
+	case err != nil:
+		return cleanup.Job{}, fmt.Errorf("cleanup: inspect %s: %w", path, err)
+	default:
+		pointer, isLink := strings.CutPrefix(dotGit, "gitdir: ")
+		target, valid := linkTarget(pointer, path)
+		resolved, resolveErr := filepath.EvalSymlinks(target)
+		if !isLink || !valid || resolveErr != nil || resolved != retired {
+			return cleanup.Job{}, refuse(path, "mismatch", "%s/.git does not name %s", path, retired)
+		}
+	}
+	location := "--git-dir=" + retired
+	head, err := r.resolveHead(ctx, req.Git, location)
+	if err != nil {
+		return cleanup.Job{}, refuse(path, gitReason(err), "%v", err)
+	}
+	if head == "" {
+		return cleanup.Job{}, refuse(path, "identity", "%s holds no commit to prove the tree against", retired)
+	}
+	branch, err := r.resolveBranch(ctx, req.Git, location)
+	if err != nil {
+		return cleanup.Job{}, refuse(path, gitReason(err), "%v", err)
+	}
+	job := cleanup.Job{
+		Repo:     repo,
+		AdminDir: filepath.Join(repo, "worktrees", filepath.Base(retired)),
+		Admin:    admin,
+		Original: path,
+		Tree:     tree,
+		Head:     head,
+		Branch:   branch,
+		Git:      req.Git,
+		Links:    cleanup.Links{DotGit: dotGit, AdminGitdir: back},
+	}
+	claim, err := claims(&job, path, false)
+	if err != nil {
+		return cleanup.Job{}, fmt.Errorf("cleanup: inspect %s: %w", path, err)
+	}
+	if claim != "" {
+		return cleanup.Job{}, refuse(path, "reconcile", "%s", claim)
+	}
+	if err := r.cfg.Watchers.CheckQuarantine(ctx, path); err != nil {
+		return cleanup.Job{}, refuse(path, "watched", "%v", err)
+	}
+	if err := idle(path, r.unserved(ctx, path)); err != nil {
+		return cleanup.Job{}, err
+	}
+	r.stamp(&job, seq, cleanup.PhasePending)
 	if err := r.cfg.Journal.Create(job); err != nil {
 		return cleanup.Job{}, err
 	}
