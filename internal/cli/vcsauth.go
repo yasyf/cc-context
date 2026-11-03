@@ -20,7 +20,7 @@ func newVcsAuthCmd() *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE:  groupHelp,
 	}
-	cmd.AddCommand(newVcsAuthStatusCmd())
+	cmd.AddCommand(newVcsAuthStatusCmd(), newVcsAuthTokenCmd())
 	return cmd
 }
 
@@ -62,6 +62,46 @@ With no repository named, reports the current checkout's.`,
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "emit the report as JSON")
 	return cmd
+}
+
+func newVcsAuthTokenCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "token [<owner/name>]",
+		Short: "Print the GitHub App installation token ccx vcs gh reads a repository with",
+		Long: `Print the read-only GitHub App installation token ccx vcs gh hands a gh read
+of the repository, alone on stdout, so a script can export it as GH_TOKEN:
+
+  GH_TOKEN=$(ccx vcs auth token o/r)
+
+The token comes from the machine-wide cache ccx's reads share, minted again
+when it has under 50 minutes left. It is the app's token whatever GH_TOKEN or
+GITHUB_TOKEN holds, and no rate limit floor applies, since minting draws on
+no installation quota. When no app is configured, the app is not installed on
+the repository, or minting fails, it prints nothing on stdout and exits 1
+naming why. A failed mint keeps reads on the gh user for five minutes, and
+this command fails for those five minutes too, naming the failure.
+
+With no repository named, reads the current checkout's.`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: runVcsAuthToken,
+	}
+}
+
+func runVcsAuthToken(cmd *cobra.Command, args []string) error {
+	ctx := cmd.Context()
+	if len(args) == 0 {
+		looked, err := vcs.LookupRepo(ctx, render.Dir(workingDir(ctx)), false)
+		if err != nil {
+			return fmt.Errorf("auth token: name the repository: %w", err)
+		}
+		args = []string{looked.NameWithOwner}
+	}
+	token, err := reviewsAPI().ForRepo(args[0]).InstallationToken(ctx, ghapi.AppWatchMargin)
+	if err != nil {
+		return fmt.Errorf("auth token: %w", err)
+	}
+	_, err = fmt.Fprintln(cmd.OutOrStdout(), token)
+	return err
 }
 
 func runVcsAuthStatus(cmd *cobra.Command, repos []string, asJSON bool) error {
