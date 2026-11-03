@@ -341,7 +341,7 @@ func stackRecordOffSegments(cmd *cobra.Command, l lane, tracking *stackTracking)
 func stackAwaitTracking(ctx context.Context, client *gtapi.Client, owner, repo string, numbers []int) ([]int, error) {
 	deadline := time.Now().Add(stackTrackingWait)
 	for {
-		statuses, err := client.MergeabilityStatuses(ctx, owner, repo, numbers)
+		statuses, err := shipQueueStatuses(ctx, client, owner, repo, numbers)
 		if err != nil {
 			return nil, err
 		}

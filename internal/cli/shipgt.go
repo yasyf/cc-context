@@ -3267,7 +3267,7 @@ func gtRefuseQueueRestack(ctx context.Context, dir render.Dir, client *gtapi.Cli
 	for _, branch := range slices.Sorted(maps.Keys(known)) {
 		numbers = append(numbers, known[branch].PRNumber)
 	}
-	statuses, err := client.MergeabilityStatuses(ctx, owner, name, numbers)
+	statuses, err := shipQueueStatuses(ctx, client, owner, name, numbers)
 	if err != nil {
 		return fmt.Errorf("%s: read whether Graphite is restacking the stack's pull requests: %w", prefix, err)
 	}

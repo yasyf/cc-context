@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/yasyf/cc-context/internal/gtapi"
@@ -102,6 +103,23 @@ func TestNativePublicationRequiresKnownUnqueuedStateForChanges(t *testing.T) {
 				t.Fatalf("unchanged published head polled queue: %d", calls)
 			}
 		})
+	}
+}
+
+func TestShipPublishesWithoutATrunkKeyAndSaysTheQueueStateIsUnknown(t *testing.T) {
+	noTrunkKeyAnnounced = sync.Once{}
+	var notices strings.Builder
+	ctx := render.WithSlowWriter(context.Background(), &notices)
+	client := gtapi.NewNativeWithToken("https://unused.invalid", "stub").WithProviderError(fmt.Errorf("read the merge queue: %w", gtapi.ErrNoTrunkKey))
+	known := map[string]gtapi.PullRequestInfo{"feature": {PRNumber: 42, BaseRefName: "main", Versions: []gtapi.PRVersion{{HeadSha: "published"}}}}
+	plan := []gtSubmitBranch{{name: "feature", head: "new-head", base: "main"}}
+	for range 2 {
+		if err := nativeRefuseQueuedChanges(ctx, client, "org", "repo", "ship", plan, known); err != nil {
+			t.Fatalf("ship refused without a Trunk key: %v", err)
+		}
+	}
+	if got := notices.String(); got != "ccx: Trunk queue state: unknown (no Trunk key)\n" {
+		t.Fatalf("notices=%q, want the unknown queue state announced once", got)
 	}
 }
 
