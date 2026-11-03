@@ -327,6 +327,15 @@ func TestPlanRefusesEveryUnclearConsumer(t *testing.T) {
 			setup: func(f fixture) { delete(f.w.repos, f.wt) },
 			want:  []string{"git cannot resolve WT: fatal: not a git repository"},
 		},
+		{
+			name: "a tree that lost its .git has no git to ask",
+			setup: func(f fixture) {
+				delete(f.w.repos, f.wt)
+				if err := os.Remove(filepath.Join(f.wt, ".git")); err != nil {
+					f.w.t.Fatal(err)
+				}
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
