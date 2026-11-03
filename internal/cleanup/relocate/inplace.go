@@ -189,6 +189,29 @@ func claims(job *cleanup.Job, tree string, native bool) (string, error) {
 	return carried(job, entries, tree)
 }
 
+func (r *Relocator) followHead(ctx context.Context, job *cleanup.Job) error {
+	location := "--git-dir=" + job.AdminDir
+	head, err := r.resolveHead(ctx, job.Git, location)
+	if err != nil {
+		return err
+	}
+	branch, err := r.resolveBranch(ctx, job.Git, location)
+	if err != nil {
+		return err
+	}
+	if head == "" || head == job.Head && branch == job.Branch {
+		return nil
+	}
+	holder, err := r.git(ctx, job.Git, "--git-dir="+job.Repo, "for-each-ref", "--count=1", "--contains="+head, "--format=%(refname)", "refs/heads", "refs/remotes")
+	if err != nil || strings.TrimSpace(holder) == "" {
+		return err
+	}
+	now := r.cfg.Now()
+	job.Note(now, fmt.Sprintf("the tree moved from %s to %s after the removal was requested; %s holds it", job.Head, head, strings.TrimSpace(holder)))
+	job.Head, job.Branch, job.Updated = head, branch, now
+	return r.cfg.Journal.Save(*job)
+}
+
 func (r *Relocator) native(ctx context.Context, job *cleanup.Job, tree string) (bool, string, string) {
 	location := []string{"--git-dir=" + job.AdminDir, "--work-tree=" + tree}
 	head, err := r.resolveHead(ctx, job.Git, location[0])
@@ -348,6 +371,11 @@ func (r *Relocator) prove(ctx context.Context, job *cleanup.Job, tree spot, clai
 	}
 	againstHead := !held.native || held.severed
 	if held.native {
+		if claiming {
+			if err := r.followHead(ctx, job); err != nil {
+				return held, gitReason(err), err.Error()
+			}
+		}
 		branchGone, reason, detail := r.native(ctx, job, tree.path)
 		if reason != "" {
 			return held, reason, detail

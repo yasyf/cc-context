@@ -91,13 +91,15 @@ func TestAdvanceBlocksAPendingJobItsPreflightNoLongerPasses(t *testing.T) {
 			f.run(f.repo, "worktree", "lock", "--reason", "in use by ci", f.worktree)
 			return "worktree is locked: in use by ci"
 		}},
-		{"head moved", "identity", func(f *fixture, job cleanup.Job) string {
+		{"head moved to a commit no ref holds", "identity", func(f *fixture, job cleanup.Job) string {
+			f.run(f.worktree, "switch", "-q", "--detach")
 			f.run(f.worktree, "commit", "-q", "--allow-empty", "-m", "late")
 			return fmt.Sprintf("HEAD changed: the job captured %q, %s now reads %q", job.Head, f.worktree, f.run(f.worktree, "rev-parse", "HEAD"))
 		}},
-		{"branch switched", "identity", func(f *fixture, job cleanup.Job) string {
-			f.run(f.worktree, "switch", "-q", "-c", "other")
-			return fmt.Sprintf("branch changed: the job captured %q, %s now holds %q", job.Branch, f.worktree, "other")
+		{"branch left a commit no ref holds", "identity", func(f *fixture, job cleanup.Job) string {
+			f.run(f.worktree, "switch", "-q", "--detach")
+			f.run(f.repo, "update-ref", "-d", "refs/heads/"+job.Branch)
+			return fmt.Sprintf("branch changed: the job captured %q, %s now holds %q", job.Branch, f.worktree, "")
 		}},
 	}
 	for _, tt := range tests {
