@@ -2,12 +2,14 @@ package dispatch
 
 import (
 	"context"
+	"errors"
 	"hash/fnv"
 	"io"
 	"math"
 	"math/rand"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -57,6 +59,9 @@ func dispatchUnitVec(s string, dims int) []float32 {
 func writeDispatchRepo(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, ".git"), 0o750); err != nil {
+		t.Fatal(err)
+	}
 	body := "package auth\n\nfunc Login(user, session string) error {\n\treturn nil\n}\n"
 	if err := os.WriteFile(filepath.Join(dir, "auth.go"), []byte(body), 0o600); err != nil {
 		t.Fatalf("write repo: %v", err)
@@ -197,5 +202,98 @@ func TestSweepIdleFreesOnlyPastTheCutoff(t *testing.T) {
 	}
 	if len(emb.cutoffs) != 2 || !emb.cutoffs[0].Equal(before) || !emb.cutoffs[1].Equal(after) {
 		t.Errorf("embedder saw cutoffs %v, want [%v %v]", emb.cutoffs, before, after)
+	}
+}
+
+func TestRunSemanticRefusesAnythingButACheckout(t *testing.T) {
+	realHome := func(t *testing.T) string {
+		t.Helper()
+		home, err := filepath.EvalSymlinks(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("HOME", home)
+		return home
+	}
+	mkdir := func(t *testing.T, parts ...string) string {
+		t.Helper()
+		dir := filepath.Join(parts...)
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	tests := []struct {
+		name    string
+		root    func(t *testing.T, home string) string
+		refused bool
+	}{
+		{"the home directory", func(_ *testing.T, home string) string { return home }, true},
+		{"a directory holding the home directory", func(_ *testing.T, home string) string { return filepath.Dir(home) }, true},
+		{"a folder of repositories under home", func(t *testing.T, home string) string { return mkdir(t, home, "Code") }, true},
+		{"a directory outside any repository", func(t *testing.T, _ string) string { return t.TempDir() }, true},
+		{"the home directory when it is a dotfiles repository", func(t *testing.T, home string) string {
+			mkdir(t, home, ".git")
+			return home
+		}, true},
+		{"a folder under a dotfiles home", func(t *testing.T, home string) string {
+			mkdir(t, home, ".git")
+			return mkdir(t, home, "Code")
+		}, true},
+		{"a git checkout under home", func(t *testing.T, home string) string {
+			repo := mkdir(t, home, "Code", "repo")
+			mkdir(t, repo, ".git")
+			return repo
+		}, false},
+		{"a directory inside a git checkout", func(t *testing.T, home string) string {
+			repo := mkdir(t, home, "Code", "repo")
+			mkdir(t, repo, ".git")
+			return mkdir(t, repo, "pkg")
+		}, false},
+		{"a jj checkout", func(t *testing.T, home string) string {
+			repo := mkdir(t, home, "Code", "repo")
+			mkdir(t, repo, ".jj")
+			return repo
+		}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := realHome(t)
+			err := requireCheckout(tt.root(t, home))
+			if got := errors.Is(err, errNotCheckout); got != tt.refused {
+				t.Errorf("requireCheckout() = %v, want refused %t", err, tt.refused)
+			}
+		})
+	}
+}
+
+func TestRunSemanticRefusalNeverLoadsTheEmbedder(t *testing.T) {
+	root := t.TempDir()
+	restore := SetEmbedderProvider(func(context.Context) (index.Embedder, error) {
+		t.Fatal("a refused root constructed the embedder")
+		return nil, nil
+	})
+	t.Cleanup(restore)
+	for _, op := range []backend.Op{backend.OpSearch, backend.OpRelated} {
+		if _, err := Run(context.Background(), op, backend.Args{Query: "login", Path: root}); !errors.Is(err, errNotCheckout) {
+			t.Errorf("Run(%s) = %v, want %v", op, err, errNotCheckout)
+		}
+	}
+}
+
+func TestRunSemanticCapsTheProcessCPU(t *testing.T) {
+	prev := runtime.GOMAXPROCS(maxSemanticProcs * 2)
+	t.Cleanup(func() { runtime.GOMAXPROCS(prev) })
+	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	engine.CloseIndexCache()
+	t.Cleanup(engine.CloseIndexCache)
+	restore := SetEmbedderProvider(func(context.Context) (index.Embedder, error) { return slowFakeEmbedder{}, nil })
+	t.Cleanup(restore)
+
+	if _, err := Run(context.Background(), backend.OpSearch, backend.Args{Query: "login user session", Path: writeDispatchRepo(t), K: 3}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := runtime.GOMAXPROCS(0); got != maxSemanticProcs {
+		t.Errorf("GOMAXPROCS after a semantic search = %d, want %d", got, maxSemanticProcs)
 	}
 }

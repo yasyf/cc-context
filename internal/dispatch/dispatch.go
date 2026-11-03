@@ -8,7 +8,11 @@ package dispatch
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -30,6 +34,7 @@ import (
 	"github.com/yasyf/cc-context/internal/semsearch/engine"
 	"github.com/yasyf/cc-context/internal/semsearch/index"
 	"github.com/yasyf/cc-context/internal/symbol"
+	"github.com/yasyf/cc-context/internal/vcs"
 	"github.com/yasyf/cc-context/internal/web"
 	"github.com/yasyf/cc-context/internal/workspace"
 )
@@ -139,15 +144,21 @@ func runSemantic(ctx context.Context, op backend.Op, a backend.Args) (string, er
 	// weight download, WASM compile, and model load, and the slow-search note must
 	// reflect that latency rather than excluding it.
 	start := time.Now()
-	emb, err := sharedEmbedder(ctx)
-	if err != nil {
-		return "", err
-	}
 	repo := a.Path
 	if repo == "" {
+		var err error
 		if repo, err = workspace.RootFrom(ctx); err != nil {
 			return "", fmt.Errorf("dispatch: resolve cwd: %w", err)
 		}
+	}
+	if err := requireCheckout(repo); err != nil {
+		return "", err
+	}
+	runtime.GOMAXPROCS(min(runtime.GOMAXPROCS(0), maxSemanticProcs))
+	ctx = index.WithBand(ctx, indexingBand)
+	emb, err := sharedEmbedder(ctx)
+	if err != nil {
+		return "", err
 	}
 
 	var results []semsearch.Result
@@ -165,6 +176,34 @@ func runSemantic(ctx context.Context, op backend.Op, a backend.Args) (string, er
 	out = render.Cap(out, a.Budget)
 	out = render.WithWeakResultsNote(out, results)
 	return render.WithSlowSearchNote(out, elapsed), nil
+}
+
+const maxSemanticProcs = 4
+
+var errNotCheckout = errors.New("semantic search only indexes a checkout")
+
+func requireCheckout(repo string) error {
+	root, err := index.ResolveRoot(repo)
+	if err != nil {
+		return err
+	}
+	_, checkout := vcs.DetectRoot(root)
+	if checkout == "" || holdsHome(root, checkout) {
+		return fmt.Errorf("%w: %s is the home directory or not inside a repository; name a repository path, or search it literally with ccx code grep", errNotCheckout, root)
+	}
+	return nil
+}
+
+func holdsHome(root, checkout string) bool {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+	if home, err = index.ResolveRoot(home); err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(root, home)
+	return checkout == home || (err == nil && !strings.HasPrefix(rel, ".."))
 }
 
 // embedder state: one resident model2vec engine per process, shared by every

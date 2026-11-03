@@ -370,6 +370,9 @@ func writeSemanticRepo(t *testing.T) string {
 	t.Helper()
 	t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
 	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, ".git"), 0o750); err != nil {
+		t.Fatal(err)
+	}
 	files := map[string]string{
 		"auth.go":   "package auth\n\n// Login authenticates a user session flow.\nfunc Login(user string) error {\n\treturn nil\n}\n",
 		"parse.go":  "package parse\n\n// Parse reads the auth token flow from input.\nfunc Parse(in string) string {\n\treturn in\n}\n",

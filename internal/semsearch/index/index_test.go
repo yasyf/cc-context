@@ -9,6 +9,8 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sync"
 	"testing"
 	"time"
 
@@ -401,4 +403,52 @@ func TestChunkFileWarmHitDoesNotReadContent(t *testing.T) {
 	if !got.valid || !got.reuse || got.prev != previous {
 		t.Fatalf("warm unreadable file = %+v, want cached contents without reading", got)
 	}
+}
+
+type recordingBand struct {
+	mu    sync.Mutex
+	calls []string
+}
+
+func (b *recordingBand) record(call string) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.calls = append(b.calls, call)
+	return nil
+}
+
+func (b *recordingBand) Background() error { return b.record("background") }
+
+func (b *recordingBand) Foreground() error { return b.record("foreground") }
+
+func TestLoadIndexesInTheBackgroundBandAndServesWarmInTheForeground(t *testing.T) {
+	t.Parallel()
+	band := &recordingBand{}
+	ctx := WithBand(render.WithEnv(t.Context(), "CLAUDE_PLUGIN_DATA="+t.TempDir(), cacheEnv+"="), band)
+	repo := writeIndexRepo(t)
+	emb := &countingEmbedder{}
+	load := func(step string, want []string) {
+		t.Helper()
+		band.calls = nil
+		if _, err := Load(ctx, emb, repo, []ContentType{ContentCode}, DefaultChunker(), "model-x"); err != nil {
+			t.Fatalf("%s Load: %v", step, err)
+		}
+		if !reflect.DeepEqual(band.calls, want) {
+			t.Errorf("%s Load band calls = %v, want %v", step, band.calls, want)
+		}
+	}
+	indexed := []string{"background", "foreground"}
+	load("cold", indexed)
+	load("warm", nil)
+
+	path := filepath.Join(repo, "a.go")
+	if err := os.WriteFile(path, []byte("package a\n\nfunc Alpha() string { return \"edited\" }\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	later := time.Now().Add(time.Hour)
+	if err := os.Chtimes(path, later, later); err != nil {
+		t.Fatal(err)
+	}
+	load("changed", indexed)
+	load("warm again", nil)
 }

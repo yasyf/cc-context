@@ -21,11 +21,7 @@ import (
 // split does not change any vector.
 const embedBatchSize = 512
 
-// maxChunkWorkers caps the parallel chunking fan-out. Embedding downstream
-// serializes on one shared WASM instance, so chunking wider than a handful of cores
-// buys little — while one MCP server per session taking runtime.NumCPU() each
-// oversubscribes the machine by an order of magnitude.
-const maxChunkWorkers = 8
+const maxChunkWorkers = 4
 
 // Embedder embeds raw text into fixed-width L2-normalized vectors — the resident
 // model2vec engine (internal/semsearch/embed) satisfies it.
@@ -106,12 +102,18 @@ func Load(ctx context.Context, emb Embedder, root string, content []ContentType,
 	}
 	exts := Extensions(content)
 
+	ctx, leaveBand := withLoadBand(ctx)
+	defer leaveBand()
+
 	var idx *Index
 	err = cache.WithLock(ctx, dir, "index", func() error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		prev := loadPersisted(dir, modelID, contentK, chunkerID, emb.Dims())
+		if prev == nil {
+			enterBackground(ctx)
+		}
 		base, trustMtime := prev, true
 		var priors []string
 		for _, k := range priorKeys {
@@ -153,6 +155,7 @@ func Load(ctx context.Context, emb Embedder, root string, content []ContentType,
 		}
 		stored := !unchanged(built, prev)
 		if stored {
+			enterBackground(ctx)
 			var segments []string
 			if prev != nil {
 				segments = append(segments, prev.manifest.Segments...)
@@ -410,6 +413,7 @@ func chunkFile(ctx context.Context, abs, root string, chunker Chunker, prevEntri
 		return fileResult{rel: rel, mtime: mtime, hash: prev.Hash, valid: true, reuse: true, prev: prev}
 	}
 
+	enterBackground(ctx)
 	text, err := readFileText(abs)
 	if err != nil || (fi.Size() < emptyFileBytes && strings.TrimSpace(text) == "") {
 		return fileResult{}
