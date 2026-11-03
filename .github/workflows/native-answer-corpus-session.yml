@@ -2,7 +2,7 @@ name: Native answer corpus session
 
 on:
   schedule:
-    - cron: "17 9 * * *"
+    - cron: "17 3 * * *"
   pull_request:
     branches: [main]
     paths:
