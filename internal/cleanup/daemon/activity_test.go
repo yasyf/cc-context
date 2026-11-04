@@ -148,6 +148,56 @@ func TestBusySessionsHoldLogicalWork(t *testing.T) {
 	})
 }
 
+func TestBusyDeletesRunOutsideQuietRootsAtTheirRate(t *testing.T) {
+	bubble(t, gated(), func(t *testing.T, h *harness) {
+		withActivity(h, busySessions)
+		quiet := h.seed("a", 1, cleanup.PhaseUnregistered)
+		free := h.seed("b", 2, cleanup.PhaseUnregistered)
+		h.deleter.put("a", &payload{entries: 1000})
+		h.deleter.put("b", &payload{entries: 1000})
+		h.busy = cleanup.BusyDeletes{Rate: 100, Quiet: []string{quiet.Payload}}
+		h.start()
+		h.expectEvents("activity", "sample", "admit:b", "open:b", "step:b")
+		if got := h.status(free.ID).Removed; got != 100 {
+			t.Errorf("free job removed %d in a slice, want 100", got)
+		}
+		if got := h.status(quiet.ID).Removed; got != 0 {
+			t.Errorf("quiet job removed %d while sessions are busy, want 0", got)
+		}
+	})
+}
+
+func TestSlowCreatesHoldBusyDeletes(t *testing.T) {
+	bubble(t, gated(), func(t *testing.T, h *harness) {
+		slow := busySessions
+		slow.Create = time.Second
+		withActivity(h, slow)
+		job := h.seed("a", 1, cleanup.PhaseUnregistered)
+		h.deleter.put("a", &payload{entries: 1000})
+		h.busy = cleanup.BusyDeletes{Rate: 100}
+		h.start()
+		h.expectEvents("activity")
+		if got := h.status(job.ID).Removed; got != 0 {
+			t.Errorf("job removed %d while creates are slow, want 0", got)
+		}
+	})
+}
+
+func TestBusyDeletesProveAndRetireByRoot(t *testing.T) {
+	tuning := gated()
+	tuning.RetireEvery = time.Minute
+	bubble(t, tuning, func(_ *testing.T, h *harness) {
+		withActivity(h, busySessions)
+		quiet := h.seed("a", 1, cleanup.PhasePrepared)
+		h.seed("b", 2, cleanup.PhasePrepared)
+		h.deleter.put("a", &payload{entries: 50})
+		h.deleter.put("b", &payload{entries: 50})
+		h.busy = cleanup.BusyDeletes{Rate: 100, Quiet: []string{quiet.Original}}
+		h.start()
+		h.expectEvents("activity", "retire:a@prepared", "advance:b@prepared", "sample", "admit:b", "open:b", "step:b")
+	})
+}
+
 func TestRemoveRecordsTheTreeAndLeavesItsProofToTheGate(t *testing.T) {
 	bubble(t, gated(), func(t *testing.T, h *harness) {
 		withActivity(h, busySessions)

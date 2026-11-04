@@ -192,6 +192,8 @@ type Config struct {
 	CPU       cleanup.CPUSampler
 	// Caps slow deletion under named directories.
 	Caps []cleanup.RateCap
+	// Busy names the removals that keep running while Activity holds the rest.
+	Busy cleanup.BusyDeletes
 	// Activity is what all work yields to; nil yields to nothing.
 	Activity cleanup.ActivitySampler
 	// Band runs commands and paused registration retirement in the default
@@ -242,6 +244,7 @@ type Engine struct {
 	activity  cleanup.ActivitySampler
 	band      cleanup.Band
 	caps      []cleanup.RateCap
+	busy      cleanup.BusyDeletes
 	parent    func(pid int) (int, []string, error)
 	identify  func(pid int) (cleanup.ProcessID, error)
 	version   string
@@ -330,6 +333,7 @@ func New(cfg Config) (*Engine, error) {
 		activity:  cfg.Activity,
 		band:      cfg.Band,
 		caps:      cfg.Caps,
+		busy:      cfg.Busy,
 		parent:    cfg.Parent,
 		identify:  cfg.Identify,
 		version:   cfg.Version,
@@ -891,7 +895,7 @@ func (e *Engine) retirementTurn(now time.Time) (cleanup.Job, bool) {
 		return cleanup.Job{}, false
 	}
 	for job := range e.orderedKeys(e.retirementOrder) {
-		if job.Blocked == nil && !now.Before(job.RetireAfter) {
+		if job.Blocked == nil && !now.Before(job.RetireAfter) && e.rests(job) {
 			return clone(job), true
 		}
 	}
@@ -1024,7 +1028,7 @@ func (e *Engine) logicalDue(now time.Time) (cleanup.Job, bool) {
 		} else if at, ok := e.checked[job.ID]; ok && job.Phase == cleanup.PhaseWaiting && now.Before(at.Add(e.tuning.Recheck)) {
 			continue
 		}
-		if e.yields() {
+		if e.yields(job) {
 			continue
 		}
 		if e.awaited(job.ID, now) {
@@ -1103,7 +1107,7 @@ func (e *Engine) physicalDue(now time.Time) (cleanup.Job, bool) {
 				continue
 			}
 		}
-		if e.yields() {
+		if e.yields(job) {
 			continue
 		}
 		if e.awaited(job.ID, now) {
@@ -1134,7 +1138,7 @@ func (e *Engine) advance(ctx context.Context, job cleanup.Job) (cleanup.Job, err
 	switch {
 	case e.paused:
 		step = e.retire
-	case e.holds():
+	case e.rests(job):
 		step = e.relocator.Retire
 	}
 	err := step(ctx, &job)
@@ -1148,7 +1152,7 @@ func (e *Engine) advance(ctx context.Context, job cleanup.Job) (cleanup.Job, err
 	case job.Phase == cleanup.PhaseDone:
 		delete(e.checked, job.ID)
 		return job, e.finish(job)
-	case job.Blocked != nil, !job.Phase.Logical(), (e.paused || e.holds()) && (job.Retirement == cleanup.RetirementComplete || !job.RetireAfter.IsZero()):
+	case job.Blocked != nil, !job.Phase.Logical(), (e.paused || e.rests(job)) && (job.Retirement == cleanup.RetirementComplete || !job.RetireAfter.IsZero()):
 		delete(e.checked, job.ID)
 	case job.Phase == cleanup.PhaseWaiting:
 		e.checked[job.ID] = e.clock.Now()
@@ -1180,6 +1184,9 @@ func (e *Engine) slice(ctx context.Context, job cleanup.Job) error {
 		}
 	}
 	rate, workers := e.gov.rate(), e.gov.workers()
+	if e.holds() && e.busy.Rate < rate {
+		rate, workers = e.busy.Rate, 1
+	}
 	if capped, ok := cleanup.CappedRate(e.caps, filepath.Join(e.active.root.Dir, e.active.root.Name)); ok && capped < rate {
 		rate, workers = capped, 1
 	}
@@ -1243,7 +1250,7 @@ func (e *Engine) open(ctx context.Context, job *cleanup.Job) error {
 		return nil
 	case job.Phase == cleanup.PhaseDone:
 		return e.finish(*job)
-	case e.holds():
+	case e.rests(*job):
 		return nil
 	}
 	deletion, err := e.deleter.Open(root.Dir, root.Name, root.ID)

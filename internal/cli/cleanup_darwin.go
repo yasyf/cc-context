@@ -51,21 +51,41 @@ func previewCleanup(ctx context.Context, r cleanup.Request) (cleanup.Job, error)
 }
 
 func cleanupRateCaps(ctx context.Context) ([]cleanup.RateCap, error) {
-	home, err := os.UserHomeDir()
+	out, err := cleanupGlobalConfig(ctx, cleanupRateCapKey)
 	if err != nil {
-		return nil, fmt.Errorf("find the home directory: %w", err)
-	}
-	out, code, stderr, err := render.RunCLIExitCode(ctx, render.Dir(home), "git", []string{"config", "--global", "--get-all", cleanupRateCapKey})
-	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", cleanupRateCapKey, err)
-	}
-	if code == 1 {
-		return nil, nil
-	}
-	if code != 0 {
-		return nil, fmt.Errorf("read %s: exit %d: %s", cleanupRateCapKey, code, strings.TrimSpace(stderr))
+		return nil, err
 	}
 	return parseCleanupRateCaps(out)
+}
+
+func cleanupBusy(ctx context.Context) (cleanup.BusyDeletes, error) {
+	rate, err := cleanupGlobalConfig(ctx, cleanupBusyRateKey)
+	if err != nil {
+		return cleanup.BusyDeletes{}, err
+	}
+	quiet, err := cleanupGlobalConfig(ctx, cleanupQuietRootKey)
+	if err != nil {
+		return cleanup.BusyDeletes{}, err
+	}
+	return parseCleanupBusyDeletes(rate, quiet)
+}
+
+func cleanupGlobalConfig(ctx context.Context, key string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("find the home directory: %w", err)
+	}
+	out, code, stderr, err := render.RunCLIExitCode(ctx, render.Dir(home), "git", []string{"config", "--global", "--get-all", key})
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", key, err)
+	}
+	if code == 1 {
+		return "", nil
+	}
+	if code != 0 {
+		return "", fmt.Errorf("read %s: exit %d: %s", key, code, strings.TrimSpace(stderr))
+	}
+	return out, nil
 }
 
 func runCleanupServe(ctx context.Context) error {
@@ -85,6 +105,10 @@ func runCleanupServe(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("cleanup serve: %w", err)
 	}
+	busy, err := cleanupBusy(ctx)
+	if err != nil {
+		return fmt.Errorf("cleanup serve: %w", err)
+	}
 	layout := cleanup.DefaultLayout()
 	journal, err := cleanup.OpenJournal(layout)
 	if err != nil {
@@ -93,6 +117,7 @@ func runCleanupServe(ctx context.Context) error {
 	engine, err := daemon.New(daemon.Config{
 		Journal: journal,
 		Caps:    caps,
+		Busy:    busy,
 		Relocator: relocate.New(relocate.Config{
 			Journal:  journal,
 			Guard:    native.GuardRoots,
