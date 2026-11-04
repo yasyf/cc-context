@@ -2123,11 +2123,6 @@ func stackAdoptUntracked(ctx context.Context, dir render.Dir, tr vcs.Trunk, stat
 		if err != nil {
 			return nil, err
 		}
-		if overrides[child] != tr.Name() {
-			if base, err = stackPastRewrittenParent(ctx, dir, tr.Remote(), overrides[child], head, base); err != nil {
-				return nil, err
-			}
-		}
 		adopted[child] = gtBranchState{Head: head, Parents: []gtRef{{Ref: overrides[child], SHA: base}}}
 		state[child] = adopted[child]
 	}
