@@ -13,7 +13,7 @@ func schedulerFixture(n int) (*Engine, time.Time) {
 	e := &Engine{
 		jobs: make(map[string]cleanup.Job, n), checked: make(map[string]time.Time),
 		changed: make(chan struct{}), tuning: DefaultTuning(), booted: now,
-		paused: true,
+		paused: true, clock: &manualClock{now: now},
 	}
 	for seq := 1; seq <= n; seq++ {
 		job := cleanup.Job{ID: fmt.Sprintf("job-%d", seq), Seq: uint64(seq), Phase: cleanup.PhaseUnregistered}

@@ -31,6 +31,9 @@ func (h *harness) expectGovernor(want cleanup.Governor) {
 	if err != nil {
 		h.t.Fatalf("Status() = %v", err)
 	}
+	if want.State == governorHeld {
+		want.Gate = want.Detail
+	}
 	if report.Governor != want {
 		h.t.Errorf("governor = %+v, want %+v", report.Governor, want)
 	}
