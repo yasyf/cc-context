@@ -13,6 +13,10 @@ import (
 // outright: a user who names a binary has already decided.
 const GitEnv = "CCX_GIT"
 
+// GhEnv names the gh ccx and its children run. A machine whose gh on PATH is a
+// shim into ccx vcs gh names the real one here, or ccx would call itself.
+const GhEnv = "CCX_GH"
+
 // stubDirs are skipped while another git is reachable. /usr/bin/git on macOS is
 // a stub that execs the real git inside Xcode.app, and an endpoint-security
 // agent scans every exec off the sealed system volume, so it pays that scan
@@ -28,6 +32,7 @@ var gitCache sync.Map
 // resolves against that one rather than the process's.
 type Env struct {
 	Git  string
+	Gh   string
 	PATH string
 }
 
@@ -39,6 +44,8 @@ func For(env []string) Env {
 		switch key, value, _ := strings.Cut(kv, "="); key {
 		case GitEnv:
 			e.Git = value
+		case GhEnv:
+			e.Gh = value
 		case "PATH":
 			e.PATH = value
 		}
@@ -53,6 +60,9 @@ func For(env []string) Env {
 // here rather than leaving it to exec is what makes e.PATH govern at all —
 // exec.Command searches the process's PATH, never the one on cmd.Env.
 func (e Env) Bin(name string) string {
+	if name == "gh" && e.Gh != "" {
+		return e.Gh
+	}
 	if name != "git" {
 		return e.find(name)
 	}
@@ -69,6 +79,9 @@ func (e Env) Bin(name string) string {
 // executable. It is the presence check matching what [Env.Bin] would spawn,
 // for a caller that has to know a tool is absent before it runs it.
 func (e Env) Find(name string) string {
+	if name == "gh" && e.Gh != "" {
+		return e.Gh
+	}
 	if resolved := e.find(name); resolved != name {
 		return resolved
 	}
