@@ -213,10 +213,13 @@ func unscopedPRValue(values []string) string {
 	return ""
 }
 
-func shipMessageFromPR(o shipOpts) (string, error) {
+func shipMessageFromPR(o shipOpts, warn io.Writer) (string, error) {
 	title := unscopedPRValue(o.prTitle)
 	if title == "" {
 		return "", errShipMessageRequired
+	}
+	if marker := workflowSkipMarkerRE.FindString(title); marker != "" {
+		_, _ = fmt.Fprintf(warn, "ship: the title names %s, so GitHub skips every workflow on this commit; reword it unless that is the point\n", marker)
 	}
 	path := unscopedPRValue(o.prBodyFile)
 	if path == "" {
@@ -226,15 +229,21 @@ func shipMessageFromPR(o shipOpts) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("ship: --pr-body-file %s: %w", path, err)
 	}
-	if prose := commitBodyFromPR(string(body)); prose != "" {
+	prose := commitBodyFromPR(string(body))
+	if marker := workflowSkipMarkerRE.FindString(prose); marker != "" {
+		_, _ = fmt.Fprintf(warn, "ship: the pull request body names %s, which would make GitHub skip every workflow on this commit, so the commit message leaves the body out\n", marker)
+		return title, nil
+	}
+	if prose != "" {
 		return title + "\n\n" + prose, nil
 	}
 	return title, nil
 }
 
 var (
-	prHeadingRE = regexp.MustCompile(`^#{1,6}\s+(.*\S)\s*$`)
-	prSummaryRE = regexp.MustCompile(`^<summary>.*</summary>$`)
+	prHeadingRE          = regexp.MustCompile(`^#{1,6}\s+(.*\S)\s*$`)
+	prSummaryRE          = regexp.MustCompile(`^<summary>.*</summary>$`)
+	workflowSkipMarkerRE = regexp.MustCompile(`(?i)\[(?:skip ci|ci skip|no ci|skip actions|actions skip)\]`)
 )
 
 func commitBodyFromPR(body string) string {

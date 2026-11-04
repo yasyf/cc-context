@@ -352,7 +352,7 @@ func runShip(cmd *cobra.Command, o shipOpts) (err error) {
 		return err
 	}
 	if !o.amend && !o.noCommit && len(o.messages) == 0 {
-		if o.message, err = shipMessageFromPR(o); err != nil {
+		if o.message, err = shipMessageFromPR(o, cmd.ErrOrStderr()); err != nil {
 			return err
 		}
 	}
