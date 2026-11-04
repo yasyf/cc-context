@@ -597,6 +597,11 @@ func tolerated(code int, okCodes []int) bool {
 	return false
 }
 
+// BudgetBytes is the output size budgetTokens covers, at Cap's estimate.
+func BudgetBytes(budgetTokens int) int {
+	return budgetTokens * charsPerToken
+}
+
 // Cap trims s to budgetTokens (estimated as len/4). When it trims, it cuts at a
 // line boundary and appends an explicit footer naming the omitted volume; it
 // never silently truncates. A non-positive budget returns s unchanged.

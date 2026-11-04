@@ -21,8 +21,9 @@ import (
 // classifies each changed file a.Globs select, and renders the structural diff,
 // each file's section secret-masked in that file's path context unless
 // a.RevealSecrets. The fired rule ids come back in file order — the caller
-// appends the shared footer after its cap. Output is uncapped — the caller
-// budget-caps it — and a.Full inlines per-file hunks.
+// appends the shared footer after its cap. The caller budget-caps the output, and
+// rendering stops once it has enough for that cap, so masking a huge diff costs
+// only what the budget keeps. a.Full inlines per-file hunks.
 func Run(ctx context.Context, a backend.Args) (string, []string, error) {
 	cwd, err := workspace.RootFrom(ctx)
 	if err != nil {
@@ -40,7 +41,7 @@ func Run(ctx context.Context, a backend.Args) (string, []string, error) {
 	if err != nil {
 		return "", nil, err
 	}
-	out, ids := render(model, a.Full, a.RevealSecrets)
+	out, ids := render(model, a.Full, a.RevealSecrets, a.Budget)
 	return out, ids, nil
 }
 
