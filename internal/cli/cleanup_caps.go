@@ -14,11 +14,12 @@ import (
 )
 
 const (
-	cleanupRateCapKey   = "ccx.cleanupRateCap"
-	cleanupBusyRateKey  = "ccx.cleanupBusyRate"
-	cleanupQuietRootKey = "ccx.cleanupQuietRoot"
-	cleanupMoveRootKey  = "ccx.cleanupMoveRoot"
-	cleanupMoveEveryKey = "ccx.cleanupMoveEvery"
+	cleanupRateCapKey     = "ccx.cleanupRateCap"
+	cleanupBusyRateKey    = "ccx.cleanupBusyRate"
+	cleanupBusyWorkersKey = "ccx.cleanupBusyWorkers"
+	cleanupQuietRootKey   = "ccx.cleanupQuietRoot"
+	cleanupMoveRootKey    = "ccx.cleanupMoveRoot"
+	cleanupMoveEveryKey   = "ccx.cleanupMoveEvery"
 
 	cleanupMoveEveryDefault = 5 * time.Second
 )
@@ -44,8 +45,15 @@ func parseCleanupRateCaps(values string) ([]cleanup.RateCap, error) {
 	return caps, nil
 }
 
-func parseCleanupBusyDeletes(rate, quiet, move, every string) (cleanup.BusyDeletes, error) {
-	var busy cleanup.BusyDeletes
+func parseCleanupBusyDeletes(rate, workers, quiet, move, every string) (cleanup.BusyDeletes, error) {
+	busy := cleanup.BusyDeletes{Workers: 1}
+	if workers = strings.TrimSpace(workers); workers != "" {
+		parsed, err := strconv.Atoi(workers)
+		if err != nil || parsed <= 0 {
+			return cleanup.BusyDeletes{}, fmt.Errorf("%s must be a positive count, got %q", cleanupBusyWorkersKey, workers)
+		}
+		busy.Workers = parsed
+	}
 	if rate = strings.TrimSpace(rate); rate != "" {
 		parsed, err := strconv.Atoi(rate)
 		if err != nil || parsed <= 0 {

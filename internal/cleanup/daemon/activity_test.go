@@ -155,7 +155,7 @@ func TestBusyDeletesRunOutsideQuietRootsAtTheirRate(t *testing.T) {
 		free := h.seed("b", 2, cleanup.PhaseUnregistered)
 		h.deleter.put("a", &payload{entries: 1000})
 		h.deleter.put("b", &payload{entries: 1000})
-		h.busy = cleanup.BusyDeletes{Rate: 100, Quiet: []string{quiet.Payload}}
+		h.busy = cleanup.BusyDeletes{Rate: 100, Workers: 1, Quiet: []string{quiet.Payload}}
 		h.start()
 		h.expectEvents("activity", "sample", "admit:b", "open:b", "step:b")
 		if got := h.status(free.ID).Removed; got != 100 {
@@ -219,7 +219,7 @@ func TestBusySessionsDeleteAQuietRootOnlyAfterItMoves(t *testing.T) {
 		withActivity(h, busySessions)
 		job := h.seed("a", 1, cleanup.PhaseClaimed)
 		h.deleter.put("a", &payload{entries: 1000})
-		h.busy = cleanup.BusyDeletes{Rate: 100, Quiet: []string{job.Original}, Move: []string{job.Original}, MoveEvery: time.Minute}
+		h.busy = cleanup.BusyDeletes{Rate: 100, Workers: 1, Quiet: []string{job.Original}, Move: []string{job.Original}, MoveEvery: time.Minute}
 		h.start()
 		h.expectEvents("activity", "sample", "admit:a", "open:a", "step:a")
 	})
@@ -250,6 +250,22 @@ func TestBusyDeletesCoverARootQuietRoot(t *testing.T) {
 	}
 }
 
+func TestBusyDeletesRunTheirWorkers(t *testing.T) {
+	tuning := gated()
+	tuning.Rate, tuning.Workers = 1000, 4
+	bubble(t, tuning, func(t *testing.T, h *harness) {
+		withActivity(h, busySessions)
+		job := h.seed("a", 1, cleanup.PhaseUnregistered)
+		h.deleter.put("a", &payload{entries: 1000})
+		h.busy = cleanup.BusyDeletes{Rate: 500, Workers: 2}
+		h.start()
+		h.expectEvents("activity", "sample", "admit:a", "open:a", "step:a")
+		if got := h.status(job.ID).Removed; got != 200 {
+			t.Errorf("job removed %d in a slice of two workers, want 200", got)
+		}
+	})
+}
+
 func TestSlowCreatesHoldBusyDeletes(t *testing.T) {
 	bubble(t, gated(), func(t *testing.T, h *harness) {
 		slow := busySessions
@@ -257,7 +273,7 @@ func TestSlowCreatesHoldBusyDeletes(t *testing.T) {
 		withActivity(h, slow)
 		job := h.seed("a", 1, cleanup.PhaseUnregistered)
 		h.deleter.put("a", &payload{entries: 1000})
-		h.busy = cleanup.BusyDeletes{Rate: 100}
+		h.busy = cleanup.BusyDeletes{Rate: 100, Workers: 1}
 		h.start()
 		h.expectEvents("activity")
 		if got := h.status(job.ID).Removed; got != 0 {
@@ -275,7 +291,7 @@ func TestBusyDeletesProveAndRetireByRoot(t *testing.T) {
 		h.seed("b", 2, cleanup.PhasePrepared)
 		h.deleter.put("a", &payload{entries: 50})
 		h.deleter.put("b", &payload{entries: 50})
-		h.busy = cleanup.BusyDeletes{Rate: 100, Quiet: []string{quiet.Original}}
+		h.busy = cleanup.BusyDeletes{Rate: 100, Workers: 1, Quiet: []string{quiet.Original}}
 		h.start()
 		h.expectEvents("activity", "retire:a@prepared", "advance:b@prepared", "sample", "admit:b", "open:b", "step:b")
 	})

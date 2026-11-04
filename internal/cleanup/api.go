@@ -384,12 +384,13 @@ func CappedRate(caps []RateCap, path string) (int, bool) {
 }
 
 // BusyDeletes lets a removal keep running while sessions are busy, at up to Rate
-// entries a second, one removal at a time, unless its tree sits under a Quiet
+// entries a second, Workers removals at a time, unless its tree sits under a Quiet
 // directory. A proved tree under a Move directory is renamed into the journal
 // first, at most once every MoveEvery, and deletes from there. The zero value
 // holds every removal until sessions are quiet.
 type BusyDeletes struct {
 	Rate      int
+	Workers   int
 	Quiet     []string
 	Move      []string
 	MoveEvery time.Duration
