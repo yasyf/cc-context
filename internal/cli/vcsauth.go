@@ -31,6 +31,8 @@ func newVcsAuthStatusCmd() *cobra.Command {
 		Short: "Report the identity each repository's GitHub reads and writes resolve to, with its quota",
 		Long: `Report the identity each repository's GitHub reads and writes resolve to,
 and the GraphQL quota each identity has left.
+Each pool's callers clear when it resets; every finished window stays in
+ledger-history.jsonl beside the ledger, as one JSON object per line.
 
 Reads (ccx vcs status, vcs pr status, vcs reviews, and ship's CI watch) go
 through a GitHub App installation token when ~/.config/ccx/github-app.toml
