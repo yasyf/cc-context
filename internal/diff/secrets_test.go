@@ -68,7 +68,7 @@ func TestRenderMasksSecrets(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			m := diffModel{label: "uncommitted", files: tt.files}
-			raw, rawIDs := render(m, false, true, 0)
+			raw, rawIDs := render(m, false, true)
 			if rawIDs != nil {
 				t.Errorf("render(reveal) ids = %v, want nil", rawIDs)
 			}
@@ -76,7 +76,7 @@ func TestRenderMasksSecrets(t *testing.T) {
 				t.Fatalf("reveal render missing the fixture secret:\n%s", raw)
 			}
 
-			got, ids := render(m, false, false, 0)
+			got, ids := render(m, false, false)
 			want := raw
 			if tt.secret != "" {
 				want = strings.Replace(raw, tt.secret, tt.masked, 1)
