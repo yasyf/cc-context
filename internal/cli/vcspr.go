@@ -414,7 +414,7 @@ func collectPRQueue(ctx context.Context, repo string, numbers []int, maxAge time
 func prStatusOf(ctx context.Context, warn io.Writer, repo string, number int, pr prstate.PR, limited *prstate.Backoff) (prStatusReport, error) {
 	if pr.Graphite == nil && pr.State != "" {
 		r := prQueueWithoutGraphite(pr)
-		if r.Queue == prQueueNotQueued && pr.State == string(gtapi.PROpen) {
+		if r.Queue == prQueueNotQueued && pr.State != "MERGED" {
 			if squash := prLeftOpenSquash(ctx, render.Dir(workingDir(ctx)), pr.BaseRefName, number, pr.HeadRefOid); squash != "" {
 				r.Queue, r.Squash = prQueueLanded, squash
 			}
