@@ -28,6 +28,8 @@ const (
 	prWatchUntilClosed = "closed"
 	prWatchUntilNever  = "never"
 
+	prWatchJobAbsent = "ABSENT"
+
 	prWatchDefaultInterval = 60 * time.Second
 	prWatchMaxFails        = 10
 )
@@ -42,11 +44,16 @@ type prWatchSnapshot struct {
 	Queued    bool     `json:"queued,omitempty"`
 	Evicted   string   `json:"evicted,omitempty"`
 	Squash    string   `json:"squash,omitempty"`
+	Job       string   `json:"job,omitempty"`
 }
 
 func (s prWatchSnapshot) terminal() bool { return s.State != "" && s.State != "OPEN" }
 
 func (s prWatchSnapshot) landed() bool { return s.terminal() && s.Squash != "" }
+
+func (s prWatchSnapshot) jobSettled() bool {
+	return s.Job != "" && statusClassify(s.Job) != statusRunning
+}
 
 type prWatchEvent struct {
 	At     time.Time `json:"at"`
@@ -142,6 +149,7 @@ type prWatchPoller interface {
 type prWatchSource struct {
 	store  *prstate.Store
 	prefix string
+	job    string
 	once   bool
 }
 
@@ -163,9 +171,35 @@ func (s prWatchSource) poll(ctx context.Context, numbers []int, prev map[int]prW
 		tick.discovered = st.Lanes[s.prefix].PRs
 	}
 	for _, number := range numbers {
-		tick.snapshots[number] = prWatchSnapshotOf(number, st.PRs[number], st.Trunk, prev[number])
+		snap := prWatchSnapshotOf(number, st.PRs[number], st.Trunk, prev[number])
+		if s.job != "" {
+			snap.Job = prWatchJobState(st.PRs[number].Rollup, s.job)
+		}
+		tick.snapshots[number] = snap
 	}
 	return tick, nil
+}
+
+// prWatchJobState reads one check off the head's rollup. A finished rollup that
+// never names the check means the name is wrong or the check does not run on
+// this head, and waiting on it would never end.
+func prWatchJobState(rollup *statusRollup, job string) string {
+	if rollup == nil {
+		return ""
+	}
+	state := ""
+	for _, check := range statusChecks(rollup) {
+		if check.Name != job {
+			continue
+		}
+		if state == "" || statusClassify(check.State) == statusRunning || statusClassify(check.State) == statusFailed && statusClassify(state) != statusRunning {
+			state = check.State
+		}
+	}
+	if state == "" && rollup.State != "" && statusClassify(rollup.State) != statusRunning {
+		return prWatchJobAbsent
+	}
+	return state
 }
 
 func prWatchSnapshotOf(number int, pr prstate.PR, trunk prstate.Trunk, prev prWatchSnapshot) prWatchSnapshot {
@@ -277,6 +311,7 @@ type prWatchOpts struct {
 	once     bool
 	state    string
 	prefix   string
+	job      string
 }
 
 type prWatchRun struct {
@@ -359,6 +394,9 @@ func (r prWatchRun) watch(ctx context.Context, numbers []int, snaps map[int]prWa
 		fails = 0
 		for _, n := range open {
 			settled, events := prWatchStep(n, snaps[n], tick.snapshots[n])
+			if settled.jobSettled() && (settled.Job != snaps[n].Job || settled.Head != snaps[n].Head) {
+				events = append(events, prWatchEvent{PR: n, Event: "job", Detail: r.opts.job + " " + strings.ToLower(settled.Job), Head: settled.Head})
+			}
 			snaps[n] = settled
 			for _, event := range events {
 				if err := r.emit(event); err != nil {
@@ -398,7 +436,32 @@ func (r prWatchRun) kept(watched []int, snaps map[int]prWatchSnapshot) map[int]p
 	return kept
 }
 
+func (r prWatchRun) reachedJob(watched []int, snaps map[int]prWatchSnapshot) (bool, error) {
+	var unmet []string
+	for _, n := range watched {
+		snap := snaps[n]
+		switch {
+		case snap.jobSettled() && snap.Job == prWatchJobAbsent:
+			unmet = append(unmet, fmt.Sprintf("#%d finished its checks without %s", n, r.opts.job))
+		case snap.jobSettled() && statusClassify(snap.Job) == statusFailed:
+			unmet = append(unmet, fmt.Sprintf("#%d %s", n, strings.ToLower(snap.Job)))
+		case snap.jobSettled():
+		case snap.terminal():
+			unmet = append(unmet, fmt.Sprintf("#%d closed before %s settled", n, r.opts.job))
+		default:
+			return false, nil
+		}
+	}
+	if len(unmet) > 0 {
+		return true, fmt.Errorf("pr watch: job %s: %s", r.opts.job, strings.Join(unmet, "; "))
+	}
+	return true, nil
+}
+
 func (r prWatchRun) reached(watched []int, snaps map[int]prWatchSnapshot) (bool, error) {
+	if len(watched) > 0 && r.opts.job != "" {
+		return r.reachedJob(watched, snaps)
+	}
 	if r.opts.until == prWatchUntilNever || len(watched) == 0 {
 		return false, nil
 	}
@@ -450,6 +513,12 @@ list on every poll so new pull requests join. --until landed exits 0 once every
 watched pull request landed and 1 when one closed without landing; closed
 exits 0 once every one closed either way; never keeps watching.
 
+--job <name> watches one named check on each pull request's current head instead
+of --until: one "job <name> <state>" line when it settles, exit 0 when it passed,
+skipped or went neutral, and 1 when it failed, when the pull request closed first,
+or when the rest of the head's checks finished without that name. A new head starts
+the check over.
+
 --state persists the last snapshot so a restarted watch resumes without
 replaying state it already reported, and --once polls a single time, for a
 caller that drives the loop itself: it answers from the shared cache rather
@@ -465,8 +534,10 @@ Output is line-buffered for Monitor.`,
 	cmd.Flags().BoolVar(&o.json, "json", false, "emit one JSON object per event")
 	cmd.Flags().BoolVar(&stack, "stack", false, "watch every pull request in the current Graphite downstack")
 	cmd.Flags().StringVar(&o.prefix, "lane-prefix", "", "watch every open pull request whose branch starts with this prefix")
+	cmd.Flags().StringVar(&o.job, "job", "", "exit once this one check settles on every watched pull request's head")
 	cmd.Flags().StringVar(&o.state, "state", "", "file that carries snapshots across runs")
 	cmd.Flags().BoolVar(&o.once, "once", false, "poll once and exit")
+	cmd.MarkFlagsMutuallyExclusive("job", "state")
 	return cmd
 }
 
@@ -517,7 +588,7 @@ func runVcsPRWatch(cmd *cobra.Command, args []string, repo string, stack bool, o
 		return fmt.Errorf("pr watch: %w", err)
 	}
 	run := prWatchRun{
-		poller: prWatchSource{store: store, prefix: o.prefix, once: o.once},
+		poller: prWatchSource{store: store, prefix: o.prefix, job: o.job, once: o.once},
 		opts:   o,
 		out:    cmd.OutOrStdout(),
 		warn:   cmd.ErrOrStderr(),
