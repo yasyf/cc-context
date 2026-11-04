@@ -758,28 +758,6 @@ func TestAdvanceAndAdmitMatchByInodeUnderARenumberedVolume(t *testing.T) {
 	f.admitted(&job, cleanup.PhaseDeletingTree, f.worktree, current)
 }
 
-func TestSiteNamesTheVolumeOfTheNextRoot(t *testing.T) {
-	f := newFixture(t)
-	job := f.accept()
-	for _, tt := range []struct {
-		phase cleanup.Phase
-		want  string
-	}{
-		{cleanup.PhasePending, filepath.Dir(job.Original)},
-		{cleanup.PhaseClaimed, filepath.Dir(job.Original)},
-		{cleanup.PhaseDeletingTree, filepath.Dir(job.Original)},
-		{cleanup.PhaseDeletingRegistration, filepath.Dir(job.AdminDir)},
-		{cleanup.PhaseDeletingAdmin, filepath.Dir(job.AdminDir)},
-		{cleanup.PhaseDeleting, f.layout.JobDir(job.ID)},
-		{cleanup.PhaseDeletingRetiredPayload, f.layout.JobDir(job.ID)},
-	} {
-		job.Phase = tt.phase
-		if got := f.relocator.Site(job); got != tt.want {
-			t.Errorf("Site() at %s = %s, want %s", tt.phase, got, tt.want)
-		}
-	}
-}
-
 var errListingTimedOut = fmt.Errorf("list processes: %w: ps: %w", cleanup.ErrUnprobed, context.DeadlineExceeded)
 
 var errArgumentsUnread = fmt.Errorf("%w: native: inspect pid 97627 (binrun): read its arguments: input/output error", cleanup.ErrUnprobed)

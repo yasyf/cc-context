@@ -150,10 +150,6 @@ type Relocator interface {
 	// or holds the root. It returns that same root, the zero root once the root
 	// is gone, or blocks the job, and never moves it to another phase.
 	Readmit(ctx context.Context, job *Job) (DeletionRoot, error)
-	// Site names, from the record alone, the directory whose volume the job's
-	// next step works on, so the scheduler can tell which jobs contend with
-	// the volume it guards.
-	Site(job Job) string
 }
 
 // DeletionRoot names one captured directory admitted for descriptor-safe deletion.

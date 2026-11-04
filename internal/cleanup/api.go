@@ -354,8 +354,8 @@ type Governor struct {
 	// Detail names what an unavailable sampler failed on, or says that slices
 	// stalled past twice their time budget, whether or not CPU throttles too.
 	Detail string `json:"detail,omitempty"`
-	// Gate says whether the activity gate lets work on the guarded volume run:
-	// "open", or why it holds that work. Empty without a gate.
+	// Gate says whether the activity gate lets work run: "open", or why it
+	// holds all of it. Empty without a gate.
 	Gate string `json:"gate,omitempty"`
 }
 

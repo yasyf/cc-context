@@ -121,7 +121,6 @@ type fakeRelocator struct {
 	entered  chan string
 	served   []string
 	admitted []string
-	away     map[string]bool
 }
 
 const clientStart = 1790000000
@@ -363,15 +362,6 @@ func (f *fakeRelocator) admit(ctx context.Context, op string, job *cleanup.Job) 
 	return cleanup.DeletionRoot{Dir: filepath.Dir(job.Payload), Name: filepath.Base(job.Payload), ID: job.Tree}, nil
 }
 
-func (f *fakeRelocator) Site(job cleanup.Job) string {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.away[f.h.rec.name(job.ID)] {
-		return "/dev"
-	}
-	return filepath.Dir(job.Payload)
-}
-
 func blockWith(clock *manualClock, reason, detail string) func(job *cleanup.Job) {
 	return func(job *cleanup.Job) { job.Block(clock.Now(), reason, detail) }
 }
@@ -576,7 +566,6 @@ func newHarnessAt(t *testing.T, root string, tuning Tuning) *harness {
 		scripts: make(map[string]func(job *cleanup.Job)),
 		gates:   make(map[string]chan struct{}),
 		entered: make(chan string, 16),
-		away:    make(map[string]bool),
 	}
 	h.deleter = &fakeDeleter{h: h, payloads: make(map[string]*payload)}
 	h.cpu = &fakeCPU{h: h, err: errUnsampled, entered: make(chan struct{}, 16)}
@@ -901,6 +890,6 @@ func (h *harness) names(jobs []cleanup.Job) []string {
 
 func paced() Tuning {
 	t := DefaultTuning()
-	t.Rate, t.FloorRate, t.Workers, t.FloorWorkers, t.Reconcile, t.Readmit = 250, 250, 1, 1, 0, 0
+	t.Rate, t.Workers, t.Reconcile, t.Readmit = 250, 1, 0, 0
 	return t
 }
