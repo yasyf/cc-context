@@ -545,6 +545,57 @@ func TestStackDropRepairMovesAPullRequestOutOfItsNativeStack(t *testing.T) {
 	}
 }
 
+func TestStackDropRepairLinksANativeStackOnlyAfterEveryDeletedBase(t *testing.T) {
+	f := dropNativeFixture(t, "mid", "top")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "top")
+	gh := installDropGH(t, f, map[string]dropSeed{
+		"low": {number: 1, state: "MERGED", base: "main"},
+		"mid": {number: 2, state: "CLOSED", base: "low"},
+		"top": {number: 3, state: "CLOSED", base: "gone"},
+	})
+	gh.stack(46, 1, 2, 3)
+	gh.markDeleted("low")
+	gh.markDeleted("gone")
+	shipResetLog(t, f)
+
+	if _, _, err := runStackCmd(t, f, "drop", "--repair"); err != nil {
+		t.Fatalf("stack drop --repair: %v", err)
+	}
+
+	if got := gh.pr(2); got != "OPEN main" {
+		t.Errorf("mid's PR = %q, want %q", got, "OPEN main")
+	}
+	if got := gh.pr(3); got != "OPEN mid" {
+		t.Errorf("top's PR = %q, want %q", got, "OPEN mid")
+	}
+	if got := gh.stacks(); got != "2 3" {
+		t.Errorf("native stacks = %q, want mid and top in one", got)
+	}
+}
+
+func TestStackDropRepairNamesTheLinkItStillOwes(t *testing.T) {
+	f := dropNativeFixture(t, "mid", "top")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "top")
+	gh := installDropGH(t, f, map[string]dropSeed{
+		"low": {number: 1, state: "MERGED", base: "main"},
+		"mid": {number: 2, state: "CLOSED", base: "low"},
+		"top": {number: 3, state: "OPEN", base: "mid"},
+	})
+	gh.stack(46, 1, 2, 3)
+	gh.markDeleted("low")
+	t.Setenv("DROP_GH_EDIT_NOOP", "1")
+
+	_, _, err := runStackCmd(t, f, "drop", "--repair")
+	if err == nil {
+		t.Fatal("stack drop --repair succeeded with a retarget that did not take")
+	}
+	for _, want := range []string{"took native stacks apart", "pull_requests[]=2", "pull_requests[]=3", "--delete low"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want it to name %q", err, want)
+		}
+	}
+}
+
 func TestStackReopenBaseGoneMovesAPullRequestOutOfItsNativeStack(t *testing.T) {
 	for _, tc := range []struct {
 		name string
