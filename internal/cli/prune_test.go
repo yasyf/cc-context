@@ -339,8 +339,10 @@ func TestPruneSeesSquashLandings(t *testing.T) {
 	api := stubGTAPI(t)
 	for i, branch := range []string{"landed", "held", "diverged"} {
 		api.merged[branch] = gtStubMerged{number: 10 + i, head: gitAt(t, f.Env(), f.Dir, "rev-parse", branch)}
+		prunePublishPull(t, f, branch, 10+i)
 	}
 	api.merged["moved"] = gtStubMerged{number: 20, head: gitAt(t, f.Env(), f.Dir, "rev-parse", "moved")}
+	prunePublishPull(t, f, "moved", 20)
 	gitAt(t, f.Env(), f.Dir, "switch", "-q", "moved")
 	gitAt(t, f.Env(), f.Dir, "commit", "-q", "--allow-empty", "-m", "past the merge")
 	gitAt(t, f.Env(), f.Dir, "switch", "-q", "main")
@@ -397,6 +399,8 @@ func TestPruneSeesAQueueLandingGraphiteRecordsClosed(t *testing.T) {
 	api := stubGTAPI(t)
 	api.merged["queued"] = gtStubMerged{number: 30, head: gitAt(t, f.Env(), f.Dir, "rev-parse", "queued"), state: gtapi.PRClosed}
 	api.merged["abandoned"] = gtStubMerged{number: 31, head: gitAt(t, f.Env(), f.Dir, "rev-parse", "abandoned"), state: gtapi.PRClosed}
+	prunePublishPull(t, f, "queued", 30)
+	prunePublishPull(t, f, "abandoned", 31)
 	restackSquashRemote(t, f, "main", "queued (#30)", "queued")
 	gitAt(t, f.Env(), f.Dir, "fetch", "-q", "origin")
 	gitAt(t, f.Env(), f.Dir, "config", "branch.queued.remote", "origin")
@@ -430,6 +434,7 @@ func TestPruneRefusesASquashBranchThatMoved(t *testing.T) {
 	f, dir, trunk, commonDir := pruneSquashFixture(t, "landed")
 	api := stubGTAPI(t)
 	api.merged["landed"] = gtStubMerged{number: 10, head: gitAt(t, f.Env(), f.Dir, "rev-parse", "landed")}
+	prunePublishPull(t, f, "landed", 10)
 
 	plan, err := prunePlanFor(api.ctx(t.Context()), dir, pruneGTLane, trunk, commonDir)
 	if err != nil {
@@ -454,6 +459,7 @@ func TestPruneRefusesASquashBranchCheckedOutAfterThePlan(t *testing.T) {
 	f, dir, trunk, commonDir := pruneSquashFixture(t, "landed")
 	api := stubGTAPI(t)
 	api.merged["landed"] = gtStubMerged{number: 10, head: gitAt(t, f.Env(), f.Dir, "rev-parse", "landed")}
+	prunePublishPull(t, f, "landed", 10)
 
 	plan, err := prunePlanFor(api.ctx(t.Context()), dir, pruneGTLane, trunk, commonDir)
 	if err != nil {
@@ -478,6 +484,7 @@ func TestPruneBatchesTheSquashLookup(t *testing.T) {
 	for i := range pruneLandedBatch + 50 {
 		gitAt(t, f.Env(), f.Dir, "branch", fmt.Sprintf("b%03d", i), head)
 	}
+	prunePublishPull(t, f, "seed", 1)
 	api := stubGTAPI(t)
 
 	if _, err := prunePlanFor(api.ctx(t.Context()), dir, pruneGTLane, trunk, commonDir); err != nil {
@@ -494,6 +501,91 @@ func TestPruneBatchesTheSquashLookup(t *testing.T) {
 	if len(requests) != 2 || asked != pruneLandedBatch+51 {
 		t.Errorf("%d requests naming %d branches, want 2 naming %d", len(requests), asked, pruneLandedBatch+51)
 	}
+}
+
+// TestPruneAsksNothingOfABranchTheRemoteAndTrunkDecide pins the cost of a sweep:
+// a head no pull request carries and a squash already on trunk cost no read
+// however many branches there are.
+func TestPruneAsksNothingOfABranchTheRemoteAndTrunkDecide(t *testing.T) {
+	for _, n := range []int{1, 300} {
+		f, dir, trunk, commonDir := pruneSquashFixture(t, "queued", "unpublished")
+		for i := range n {
+			gitAt(t, f.Env(), f.Dir, "branch", fmt.Sprintf("b%03d", i), "unpublished")
+		}
+		prunePublishPull(t, f, "queued", 30)
+		restackSquashRemote(t, f, "main", "queued (#30)", "queued")
+		gitAt(t, f.Env(), f.Dir, "fetch", "-q", "origin")
+		api := stubGTAPI(t)
+
+		plan, err := prunePlanFor(api.ctx(t.Context()), dir, pruneGTLane, trunk, commonDir)
+		if err != nil {
+			t.Fatalf("prunePlanFor: %v", err)
+		}
+		if got := pruneSquashedNames(plan); !slices.Equal(got, []string{"queued"}) {
+			t.Errorf("n=%d: squashed = %v, want [queued]", n, got)
+		}
+		if got := api.infoRequests(); len(got) != 0 {
+			t.Errorf("n=%d: %d pull request reads, want none", n, len(got))
+		}
+	}
+}
+
+// TestPruneDeletesABranchMergedToTrunkThatHEADLacks pins the checkout prune runs
+// from out of the verdict: a stack worktree behind trunk does not hold a branch
+// that landed since it forked, which git branch -d refuses.
+func TestPruneDeletesABranchMergedToTrunkThatHEADLacks(t *testing.T) {
+	f, dir, trunk, commonDir := pruneSquashFixture(t, "landed")
+	gitAt(t, f.Env(), f.Dir, "switch", "-qc", "behind", "main")
+	gitAt(t, f.Env(), f.Dir, "commit", "-q", "--allow-empty", "-m", "behind")
+	gitAt(t, f.Env(), f.Dir, "push", "-q", "origin", "landed:main")
+	gitAt(t, f.Env(), f.Dir, "fetch", "-q", "origin")
+	api := stubGTAPI(t)
+
+	plan, err := prunePlanFor(api.ctx(t.Context()), dir, pruneGTLane, trunk, commonDir)
+	if err != nil {
+		t.Fatalf("prunePlanFor: %v", err)
+	}
+	if !slices.Contains(plan.merged, "landed") {
+		t.Fatalf("merged = %q, want landed", plan.merged)
+	}
+	if err := pruneApply(api.ctx(t.Context()), dir, pruneGTLane, plan, commonDir); err != nil {
+		t.Fatalf("pruneApply: %v", err)
+	}
+	if gitBranchExists(t, f.Env(), f.Dir, "landed") {
+		t.Error("landed survived the prune")
+	}
+}
+
+// TestPruneDeletesASymbolicBranchNotItsTarget pins the delete to the ref the plan
+// named: a symbolic branch is merged whenever its target is, and following it
+// would delete the checked-out branch it points at.
+func TestPruneDeletesASymbolicBranchNotItsTarget(t *testing.T) {
+	f, dir, trunk, commonDir := pruneSquashFixture(t, "held")
+	gitAt(t, f.Env(), f.Dir, "switch", "-qc", "current", "main")
+	gitAt(t, f.Env(), f.Dir, "symbolic-ref", "refs/heads/alias", "refs/heads/current")
+	api := stubGTAPI(t)
+
+	plan, err := prunePlanFor(api.ctx(t.Context()), dir, pruneGTLane, trunk, commonDir)
+	if err != nil {
+		t.Fatalf("prunePlanFor: %v", err)
+	}
+	if !slices.Contains(plan.merged, "alias") {
+		t.Fatalf("merged = %q, want alias", plan.merged)
+	}
+	if err := pruneApply(api.ctx(t.Context()), dir, pruneGTLane, plan, commonDir); err != nil {
+		t.Fatalf("pruneApply: %v", err)
+	}
+	if gitBranchExists(t, f.Env(), f.Dir, "alias") {
+		t.Error("alias survived the prune")
+	}
+	if !gitBranchExists(t, f.Env(), f.Dir, "current") {
+		t.Error("the prune followed alias and deleted the checked-out current")
+	}
+}
+
+func prunePublishPull(t *testing.T, f *vcstest.Fixture, branch string, number int) {
+	t.Helper()
+	gitAt(t, f.Env(), f.Dir, "push", "-q", "origin", fmt.Sprintf("%s:refs/pull/%d/head", branch, number))
 }
 
 func pruneMarkDiverged(t *testing.T, commonDir, branch string) {

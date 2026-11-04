@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ccx vcs prune` decides a squash landing from one `git ls-remote` of `refs/pull/*/head` and one walk of trunk, asking the API only about
+  pull requests with no squash there, and names what it waits on: 213 s to 13 s on a checkout of 9,833 branches. A branch at a landed pull
+  request's head now counts as landed under any name. Every delete goes in one `git update-ref` transaction, so a worktree behind trunk no
+  longer refuses a branch merged to trunk.
 - `ccx vcs gh` stops moving app reads onto the user's pool once that pool is under half its limit.
   A spent installation used to spend the user's own quota down to the 1,000 floor as well.
 - `ccx vcs diff --budget` stops reading, classifying, rendering and masking once it has what the
