@@ -63,7 +63,7 @@ that reset.
 --max-age serves an identical read (same repository, arguments, and stdin)
 from the machine-wide cache while its stored answer is younger than DUR. Only
 a read that exited 0 is stored, nothing expires a stored answer but a later
-read, a later write to its repository, or a day's age, and a watch is never
+read, a later write to its repository, or an hour's age, and a watch is never
 cached. GH_TOKEN, GITHUB_TOKEN, or GH_HOST keeps a read out of the cache. A read is cached only when its answer cannot depend on the checkout: it
 names its repository, or it is a gh api call with no {owner}, {repo}, or {branch}
 placeholder. --web, --log, --log-failed, gh api rate_limit, and an answer over

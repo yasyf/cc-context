@@ -19,7 +19,7 @@ import (
 
 const (
 	ghCacheMaxAnswer = 1 << 20
-	ghCacheRetention = 24 * time.Hour
+	ghCacheRetention = time.Hour
 	ghEveryRepo      = "_all"
 	ghAnyWrite       = "_any"
 )
