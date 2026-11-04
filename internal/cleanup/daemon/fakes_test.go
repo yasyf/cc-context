@@ -892,6 +892,6 @@ func (h *harness) names(jobs []cleanup.Job) []string {
 
 func paced() Tuning {
 	t := DefaultTuning()
-	t.Rate, t.Workers, t.Reconcile, t.Readmit = 250, 1, 0, 0
+	t.Rate, t.Workers, t.Reconcile, t.Readmit, t.RetireEvery = 250, 1, 0, 0, 0
 	return t
 }
