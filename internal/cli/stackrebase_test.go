@@ -2087,7 +2087,7 @@ func TestStackSnapshotTakesAServerRestackOfItsOwnCommitsPastAStalePin(t *testing
 	remote := gitAt(t, f.Env(), f.Dir, "rev-parse", "origin/feature")
 	s := gtBranchState{Head: local, Parents: []gtRef{{Ref: "base", SHA: gitAt(t, f.Env(), f.Dir, "rev-parse", "base")}}}
 
-	if _, err := stackSnapshot(f.Context(), dir, tr, s, "feature", remote, local, nil, false, pin, false, false); err != nil {
+	if _, err := stackSnapshot(f.Context(), dir, tr, s, "feature", remote, local, nil, false, pin, "", false, false); err != nil {
 		t.Fatalf("stackSnapshot = %v, want the server restack of feature's own commits taken as a rewrite", err)
 	}
 }
@@ -2139,7 +2139,7 @@ func TestStackSnapshotRefusesALocalHeadResetBehindItsPublishedAmend(t *testing.T
 			remote := gitAt(t, f.Env(), f.Dir, "rev-parse", "origin/feature")
 			s := gtBranchState{Head: local, Parents: []gtRef{{Ref: "main", SHA: pin}}}
 
-			_, err = stackSnapshot(f.Context(), dir, tr, s, "feature", remote, remote, nil, false, pin, false, false)
+			_, err = stackSnapshot(f.Context(), dir, tr, s, "feature", remote, remote, nil, false, pin, "", false, false)
 			var diverged stackDivergedError
 			if got := errors.As(err, &diverged); got != tc.diverged {
 				t.Fatalf("stackSnapshot = %v, want diverged %v", err, tc.diverged)
@@ -2147,10 +2147,133 @@ func TestStackSnapshotRefusesALocalHeadResetBehindItsPublishedAmend(t *testing.T
 			if !tc.diverged && err != nil {
 				t.Fatalf("stackSnapshot = %v, want an amend past the published head taken as a rewrite", err)
 			}
-			if _, err := stackSnapshot(f.Context(), dir, tr, s, "feature", remote, remote, nil, false, pin, true, false); err != nil {
+			if _, err := stackSnapshot(f.Context(), dir, tr, s, "feature", remote, remote, nil, false, pin, "", true, false); err != nil {
 				t.Fatalf("stackSnapshot with --drop-commits = %v, want the local head published", err)
 			}
 		})
+	}
+}
+
+func TestStackSnapshotReadsADroppedCommitByItsChangeNotItsSubject(t *testing.T) {
+	t.Parallel()
+	replaceNext := func(subject string) func(t *testing.T, f *vcstest.Fixture) {
+		return func(t *testing.T, f *vcstest.Fixture) {
+			t.Helper()
+			mustRun(t, f.Env(), f.Dir, "git", "reset", "-q", "--hard", "HEAD~1")
+			pushCommit(t, f, "other.txt", "other\n", subject)
+		}
+	}
+	for _, tc := range []struct {
+		name    string
+		rewrite func(t *testing.T, f *vcstest.Fixture)
+		refused bool
+	}{
+		{
+			name: "a reworded subject",
+			rewrite: func(t *testing.T, f *vcstest.Fixture) {
+				t.Helper()
+				mustRun(t, f.Env(), f.Dir, "git", "commit", "-q", "--amend", "-m", "next, reworded")
+			},
+		},
+		{
+			name: "a reworded subject with more change",
+			rewrite: func(t *testing.T, f *vcstest.Fixture) {
+				t.Helper()
+				writeShipFile(t, f.Dir, "more.txt", "more\n")
+				mustRun(t, f.Env(), f.Dir, "git", "add", "more.txt")
+				mustRun(t, f.Env(), f.Dir, "git", "commit", "-q", "--amend", "-m", "next, reworded")
+			},
+		},
+		{
+			name: "folded into the tip",
+			rewrite: func(t *testing.T, f *vcstest.Fixture) {
+				t.Helper()
+				mustRun(t, f.Env(), f.Dir, "git", "reset", "-q", "--soft", "HEAD~2")
+				mustRun(t, f.Env(), f.Dir, "git", "commit", "-q", "--amend", "-m", "feature, with next")
+			},
+		},
+		{
+			name: "folded into the tip with more change",
+			rewrite: func(t *testing.T, f *vcstest.Fixture) {
+				t.Helper()
+				mustRun(t, f.Env(), f.Dir, "git", "reset", "-q", "--soft", "HEAD~2")
+				writeShipFile(t, f.Dir, "more.txt", "more\n")
+				mustRun(t, f.Env(), f.Dir, "git", "add", "more.txt")
+				mustRun(t, f.Env(), f.Dir, "git", "commit", "-q", "--amend", "-m", "feature, with next")
+			},
+		},
+		{
+			name: "rewritten in place",
+			rewrite: func(t *testing.T, f *vcstest.Fixture) {
+				t.Helper()
+				writeShipFile(t, f.Dir, "next.txt", "rewritten\n")
+				mustRun(t, f.Env(), f.Dir, "git", "add", "next.txt")
+				mustRun(t, f.Env(), f.Dir, "git", "commit", "-q", "--amend", "-m", "next, rewritten")
+			},
+		},
+		{
+			name: "part of the change taken back",
+			rewrite: func(t *testing.T, f *vcstest.Fixture) {
+				t.Helper()
+				mustRun(t, f.Env(), f.Dir, "git", "rm", "-q", "debug.txt")
+				mustRun(t, f.Env(), f.Dir, "git", "commit", "-q", "--amend", "-m", "next, without debug")
+			},
+		},
+		{name: "removed outright, another commit in its place", rewrite: replaceNext("other"), refused: true},
+		{name: "removed outright under its own subject", rewrite: replaceNext("next"), refused: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f := stackRebaseRepo(t, "feature")
+			mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "feature")
+			mustRun(t, f.Env(), f.Dir, "git", "commit", "-q", "--allow-empty", "-m", "retrigger")
+			writeShipFile(t, f.Dir, "debug.txt", "debug\n")
+			pushCommit(t, f, "next.txt", "next\n", "next")
+			mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "feature")
+			mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
+			tc.rewrite(t, f)
+			dir := render.Dir(f.Dir)
+			tr, err := gtTrunkRefOffline(f.Context(), dir, stackRebasePrefix, "main")
+			if err != nil {
+				t.Fatal(err)
+			}
+			pin := gitAt(t, f.Env(), f.Dir, "rev-parse", "origin/main")
+			local := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")
+			remote := gitAt(t, f.Env(), f.Dir, "rev-parse", "origin/feature")
+			s := gtBranchState{Head: local, Parents: []gtRef{{Ref: "main", SHA: pin}}}
+
+			_, err = stackSnapshot(f.Context(), dir, tr, s, "feature", remote, remote, nil, false, pin, "", false, false)
+			if !tc.refused {
+				if err != nil {
+					t.Fatalf("stackSnapshot = %v, want the rewrite passed", err)
+				}
+				return
+			}
+			var diverged stackDivergedError
+			if !errors.As(err, &diverged) || !strings.Contains(err.Error(), `drops 1 commit(s) its published head origin/feature`) || !strings.Contains(err.Error(), `"next"`) {
+				t.Fatalf("stackSnapshot = %v, want a refusal naming the dropped commit", err)
+			}
+		})
+	}
+}
+
+func TestStackRefuseDroppedCommitsPassesCommitsThatCancelOut(t *testing.T) {
+	t.Parallel()
+	f := stackRebaseRepo(t, "feature")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "feature")
+	pushCommit(t, f, "next.txt", "next\n", "next")
+	mustRun(t, f.Env(), f.Dir, "git", "revert", "--no-edit", "HEAD")
+	remote := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD")
+	mustRun(t, f.Env(), f.Dir, "git", "reset", "-q", "--soft", "HEAD~2")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-q", "--amend", "-m", "feature, folded")
+	dir := render.Dir(f.Dir)
+	tr, err := gtTrunkRefOffline(f.Context(), dir, stackRebasePrefix, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	local := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD")
+	if err := stackRefuseDroppedCommits(f.Context(), dir, tr, "feature", local, remote, "main", ""); err != nil {
+		t.Fatalf("stackRefuseDroppedCommits = %v, want a fold with the published tree passed", err)
 	}
 }
 
@@ -2182,7 +2305,7 @@ func TestStackSnapshotPublishesALocalHeadBehindItsPublishedHeadOnlyWithDropCommi
 		{"without --drop-commits the published head wins", false, remote},
 		{"--drop-commits publishes the local head", true, earlier},
 	} {
-		b, err := stackSnapshot(f.Context(), dir, tr, s, "feature", remote, remote, nil, false, pin, tc.dropCommits, false)
+		b, err := stackSnapshot(f.Context(), dir, tr, s, "feature", remote, remote, nil, false, pin, "", tc.dropCommits, false)
 		if err != nil {
 			t.Fatalf("%s: stackSnapshot = %v", tc.name, err)
 		}
@@ -2245,7 +2368,7 @@ func TestStackSnapshotComparesAServerRestackOntoARestackedParentByPatch(t *testi
 			remote := gitAt(t, f.Env(), f.Dir, "rev-parse", "origin/top")
 			s := gtBranchState{Head: local, Parents: []gtRef{{Ref: "mid", SHA: cut}}}
 
-			_, err = stackSnapshot(f.Context(), dir, tr, s, "top", remote, local, nil, false, pin, false, false)
+			_, err = stackSnapshot(f.Context(), dir, tr, s, "top", remote, local, nil, false, pin, "", false, false)
 			var diverged stackDivergedError
 			if got := errors.As(err, &diverged); got != tc.diverged {
 				t.Fatalf("stackSnapshot = %v, want diverged %v", err, tc.diverged)
