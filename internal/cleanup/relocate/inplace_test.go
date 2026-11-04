@@ -491,6 +491,8 @@ func TestAdvanceFindsAnEditThatKeepsSizeAndMtimeUnderRelaxedStatSettings(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Git compares ctime in whole seconds, so only a later second can show this edit.
+	time.Sleep(time.Until(time.Now().Truncate(time.Second).Add(time.Second + 50*time.Millisecond)))
 	f.write(feature, strings.Repeat("x", int(info.Size())))
 	if err := os.Chtimes(feature, info.ModTime(), info.ModTime()); err != nil {
 		t.Fatal(err)

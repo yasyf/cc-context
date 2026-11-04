@@ -287,7 +287,9 @@ reads every tracked file, Git LFS files included; later proofs re-read only file
 that changed. When the tree's last index survives, in its admin directory or under
 `<common>/retired-worktrees/`, and no entry is marked skip-worktree or
 assume-unchanged, the first proof starts from its stat data too. A marked entry
-would hide an edit, so such an index is ignored. The daemon's git children read
+would hide an edit, so such an index is ignored. Git compares ctime in whole
+seconds, so a rewrite that keeps a file's size and mtime and lands in the same
+second as the proof's last read of that file goes unseen. The daemon's git children read
 each Git LFS file through a clean filter built into `ccx`, which hashes the file
 as it streams and writes no temporary copy, so a proof reads an LFS file without
 writing it again and still sees an edit to it. The same proof covers a tree that lost `.git` but keeps its
