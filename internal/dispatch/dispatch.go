@@ -199,8 +199,8 @@ var (
 var buildsConfined atomic.Bool
 
 // ConfineIndexBuilds limits every later semantic op in this process to building
-// the index of the checkout the process started in, which is the root its MCP
-// client declared, else its working directory. Any other root answers from the
+// the index of the checkout the process started in, which is the first root its
+// MCP client declared, else its working directory. Any other root answers from the
 // index it already has, unrefreshed, or is refused; a process started in the home
 // directory or outside a checkout builds nothing. It returns a func restoring the
 // previous limit.
@@ -213,7 +213,7 @@ func confineBuild(ctx context.Context, a backend.Args, repo string) (context.Con
 	if !buildsConfined.Load() {
 		return ctx, false, nil
 	}
-	start, err := workspace.Root()
+	start, err := workspace.Started()
 	if err != nil {
 		return ctx, false, fmt.Errorf("dispatch: resolve cwd: %w", err)
 	}

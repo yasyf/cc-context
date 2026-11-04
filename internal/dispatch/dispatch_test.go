@@ -302,10 +302,19 @@ func confinedServer(t *testing.T, start string) string {
 	t.Setenv("CLAUDE_PLUGIN_DATA", data)
 	engine.CloseIndexCache()
 	t.Cleanup(engine.CloseIndexCache)
-	workspace.SetRoot(start)
-	t.Cleanup(func() { workspace.SetRoot("") })
-	t.Cleanup(ConfineIndexBuilds())
+	serveFrom(t, start)
 	return filepath.Join(data, "semsearch")
+}
+
+func serveFrom(t *testing.T, start string) {
+	t.Helper()
+	workspace.SetRoot(start)
+	workspace.SetStarted(start)
+	t.Cleanup(func() {
+		workspace.SetRoot("")
+		workspace.SetStarted("")
+	})
+	t.Cleanup(ConfineIndexBuilds())
 }
 
 func fakeHome(t *testing.T) string {
@@ -324,6 +333,7 @@ func TestConfinedServerRefusesToBuildAnotherRoot(t *testing.T) {
 		start func(t *testing.T, home string) string
 		ctx   func(ctx context.Context, repo string) context.Context
 		path  func(repo string) string
+		moved bool
 	}{
 		{name: "a home start naming a repo", start: func(_ *testing.T, home string) string { return home }},
 		{name: "a dotfiles home start naming a repo", start: func(t *testing.T, home string) string {
@@ -339,6 +349,18 @@ func TestConfinedServerRefusesToBuildAnotherRoot(t *testing.T) {
 			start: func(t *testing.T, _ string) string { return writeDispatchRepo(t) },
 			ctx:   workspace.WithRoot,
 			path:  func(string) string { return "" },
+		},
+		{
+			name:  "repo A whose client later moved its declared root to repo B",
+			start: func(t *testing.T, _ string) string { return writeDispatchRepo(t) },
+			path:  func(string) string { return "" },
+			moved: true,
+		},
+		{
+			name:  "a home start whose client later moved its declared root to repo B",
+			start: func(_ *testing.T, home string) string { return home },
+			path:  func(string) string { return "" },
+			moved: true,
 		},
 	}
 	for _, tt := range tests {
@@ -357,6 +379,9 @@ func TestConfinedServerRefusesToBuildAnotherRoot(t *testing.T) {
 			}
 			if tt.path != nil {
 				path = tt.path(repo)
+			}
+			if tt.moved {
+				workspace.SetRoot(repo)
 			}
 
 			for op, query := range map[backend.Op]string{backend.OpSearch: "login", backend.OpRelated: "auth.go:3"} {
@@ -444,9 +469,7 @@ func TestConfinedServerAnswersFromAnExistingIndex(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(repo, "added.go"), []byte("package auth\n\nfunc Added() {}\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			workspace.SetRoot(start)
-			t.Cleanup(func() { workspace.SetRoot("") })
-			t.Cleanup(ConfineIndexBuilds())
+			serveFrom(t, start)
 			texts.Store(0)
 
 			out, err := Run(context.Background(), backend.OpSearch, backend.Args{Query: "login user session", Path: repo, K: 3})

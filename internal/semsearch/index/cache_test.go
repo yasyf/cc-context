@@ -2,8 +2,10 @@ package index
 
 import (
 	"bytes"
+	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -259,6 +261,81 @@ func TestLoadConvertsAnIndexTheRelocatedCacheMovedWithoutReembedding(t *testing.
 	}
 	if !hasManifest(filepath.Join(dir, variantKey(schemaVersion, "model-x", ContentKey(content), DefaultChunker().ID(), emb.Dims()))) {
 		t.Error("Load did not store the converted index in the relocated cache")
+	}
+}
+
+func TestExistingOnlyLoadsWithoutBuilding(t *testing.T) {
+	t.Parallel()
+	content := []ContentType{ContentCode}
+	setup := func(t *testing.T) (ctx context.Context, repo, base string, emb *countingEmbedder) {
+		t.Helper()
+		data := t.TempDir()
+		ctx = render.WithEnv(t.Context(), "CLAUDE_PLUGIN_DATA="+data, cacheEnv+"=")
+		repo, err := ResolveRoot(writeIndexRepo(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ctx, repo, filepath.Join(data, "semsearch", rootKey(repo)), &countingEmbedder{}
+	}
+
+	t.Run("no index refuses and leaves no cache directory", func(t *testing.T) {
+		t.Parallel()
+		ctx, repo, base, emb := setup(t)
+		if has, err := HasExisting(ctx, repo, content, DefaultChunker(), "model-x"); err != nil || has {
+			t.Errorf("HasExisting = %v, %v, want false", has, err)
+		}
+		if _, err := Load(WithExistingOnly(ctx), emb, repo, content, DefaultChunker(), "model-x"); !errors.Is(err, ErrNoIndex) {
+			t.Errorf("Load = %v, want %v", err, ErrNoIndex)
+		}
+		if _, err := os.Stat(base); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("stat %s = %v, want no cache directory", base, err)
+		}
+	})
+
+	for _, tt := range []struct {
+		name   string
+		legacy bool
+	}{{"a current index", false}, {"an older schema's index", true}} {
+		t.Run(tt.name+" answers unrefreshed", func(t *testing.T) {
+			t.Parallel()
+			ctx, repo, base, emb := setup(t)
+			cold, err := Load(ctx, emb, repo, content, DefaultChunker(), "model-x")
+			if err != nil {
+				t.Fatalf("cold Load: %v", err)
+			}
+			want := append([]semsearch.Chunk(nil), cold.Chunks...)
+			contentK, chunkerID := ContentKey(content), DefaultChunker().ID()
+			dir := filepath.Join(base, variantKey(schemaVersion, "model-x", contentK, chunkerID, emb.Dims()))
+			if tt.legacy {
+				stored := loadPersisted(dir, "model-x", contentK, chunkerID, emb.Dims())
+				if stored == nil {
+					t.Fatal("no stored index after the cold Load")
+				}
+				writeLegacyCache(t, filepath.Join(base, variantKey(legacySchemaVersion, "model-x", contentK, chunkerID, emb.Dims())), stored.manifest, stored.chunks, stored.vectors)
+				if err := os.RemoveAll(dir); err != nil {
+					t.Fatal(err)
+				}
+			}
+			writeLayeredFile(t, repo, "added.go", "package added\n\nfunc Added() {}\n")
+
+			if has, err := HasExisting(ctx, repo, content, DefaultChunker(), "model-x"); err != nil || !has {
+				t.Errorf("HasExisting = %v, %v, want true", has, err)
+			}
+			emb.encoded = 0
+			got, err := Load(WithExistingOnly(ctx), emb, repo, content, DefaultChunker(), "model-x")
+			if err != nil {
+				t.Fatalf("existing-only Load: %v", err)
+			}
+			if emb.encoded != 0 {
+				t.Errorf("existing-only Load embedded %d chunks, want 0", emb.encoded)
+			}
+			if !reflect.DeepEqual(got.Chunks, want) {
+				t.Errorf("chunks = %#v, want the stored %#v", got.Chunks, want)
+			}
+			if tt.legacy && hasManifest(dir) {
+				t.Error("existing-only Load converted the older index")
+			}
+		})
 	}
 }
 

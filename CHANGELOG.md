@@ -16,8 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   longer builds repo B. A root with an existing index still answers from it,
   unrefreshed and with a note saying so. Otherwise the call errors before any
   model loads and points at `ccx code grep` or running `ccx code search` from that
-  repository. The root a client declares counts as where it started. The `ccx`
-  CLI is unchanged.
+  repository. The first root a client declares counts as where it started, and
+  later moves don't change it. The `ccx` CLI is unchanged.
 - **A cleanup proof no longer misses an edit its seed index hid.** The previous
   release copied the tree's last index with its skip-worktree and
   assume-unchanged marks, so an edit to a marked file read as clean. An index

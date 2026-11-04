@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
+	"slices"
 	"strings"
 
 	"golang.org/x/sync/errgroup"
@@ -229,7 +230,7 @@ func existingOnly(ctx context.Context) bool {
 	return only
 }
 
-// HasExisting reports whether root has a current-schema index for these
+// HasExisting reports whether root has an index in a readable schema for these
 // parameters, leaving no cache directory behind when it does not. It needs no
 // embedder, so it answers before a refusal would load the model.
 func HasExisting(ctx context.Context, root string, content []ContentType, chunker Chunker, modelID string) (bool, error) {
@@ -252,7 +253,7 @@ func HasExisting(ctx context.Context, root string, content []ContentType, chunke
 	contentK, chunkerID := ContentKey(content), chunker.ID()
 	for _, variant := range variants {
 		man, err := readManifest(filepath.Join(dir, variant.Name()))
-		if err == nil && man.Schema == schemaVersion && man.Model == modelID && man.Content == contentK && man.Chunker == chunkerID {
+		if err == nil && slices.Contains(readableSchemas(), man.Schema) && man.Model == modelID && man.Content == contentK && man.Chunker == chunkerID {
 			return true, nil
 		}
 	}
@@ -265,35 +266,44 @@ func loadExisting(ctx context.Context, emb Embedder, root string, content []Cont
 		return nil, err
 	}
 	contentK, chunkerID := ContentKey(content), chunker.ID()
-	dir := filepath.Join(base, rootKey(root), variantKey(schemaVersion, modelID, contentK, chunkerID, emb.Dims()))
-	if !hasManifest(dir) {
-		return nil, ErrNoIndex
+	for _, schema := range readableSchemas() {
+		dir := filepath.Join(base, rootKey(root), variantKey(schema, modelID, contentK, chunkerID, emb.Dims()))
+		if !hasManifest(dir) {
+			continue
+		}
+		var idx *Index
+		err := cache.WithLock(ctx, dir, "index", func() error {
+			current := loadPersisted(dir, modelID, contentK, chunkerID, emb.Dims())
+			if current == nil {
+				return nil
+			}
+			if err := touchLastUsed(dir); err != nil {
+				current.unmap()
+				return err
+			}
+			idx = &Index{
+				Root:       root,
+				Chunks:     current.chunks,
+				Vectors:    current.vectors,
+				TotalFiles: len(current.manifest.Files),
+				terms:      current.terms,
+				files:      current.files,
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+		if idx != nil {
+			debug.FreeOSMemory()
+			return idx, nil
+		}
 	}
-	var idx *Index
-	err = cache.WithLock(ctx, dir, "index", func() error {
-		current := loadPersisted(dir, modelID, contentK, chunkerID, emb.Dims())
-		if current == nil {
-			return ErrNoIndex
-		}
-		if err := touchLastUsed(dir); err != nil {
-			current.unmap()
-			return err
-		}
-		idx = &Index{
-			Root:       root,
-			Chunks:     current.chunks,
-			Vectors:    current.vectors,
-			TotalFiles: len(current.manifest.Files),
-			terms:      current.terms,
-			files:      current.files,
-		}
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	debug.FreeOSMemory()
-	return idx, nil
+	return nil, ErrNoIndex
+}
+
+func readableSchemas() []int {
+	return append([]int{schemaVersion}, priorSchemaVersions...)
 }
 
 // unchanged reports whether built reproduces prev exactly, so rewriting the cache
