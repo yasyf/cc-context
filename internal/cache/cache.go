@@ -20,6 +20,12 @@ func Dir(ctx context.Context, sub ...string) (string, error) {
 	return dirUnder(render.Getenv(ctx, "CLAUDE_PLUGIN_DATA"), sub...)
 }
 
+// UserDir is [Dir] without the CLAUDE_PLUGIN_DATA override, for state every ccx
+// invocation of this user must agree on wherever it was launched from.
+func UserDir(sub ...string) (string, error) {
+	return dirUnder("", sub...)
+}
+
 // Roots lists every root Dir can resolve under, the one it uses for ctx first:
 // the $CLAUDE_PLUGIN_DATA ctx carries when set, then the user cache dir's
 // "cc-context" when it resolves.

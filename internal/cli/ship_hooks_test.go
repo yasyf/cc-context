@@ -1,6 +1,9 @@
 package cli
 
 import (
+	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -8,9 +11,11 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/yasyf/cc-context/internal/cache"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcs"
 	"github.com/yasyf/cc-context/internal/vcstest"
@@ -289,6 +294,253 @@ func TestShipHooksStreamingSeam(t *testing.T) {
 			}
 		})
 	}
+}
+
+const shipLintConfig = "repos:\n- repo: local\n  hooks:\n  - id: golangci-lint\n    entry: golangci-lint run\n"
+
+func shipHookFailure(id string, exit int, output string) string {
+	return fmt.Sprintf("printf '%%s\\n' '- hook id: %s' '- exit code: %d' '' '  %s'\nexit 1", id, exit, output)
+}
+
+func shipLintFailure(exit int, output string) string {
+	return shipHookFailure("golangci-lint", exit, output)
+}
+
+type shipWriteFunc func([]byte) (int, error)
+
+func (f shipWriteFunc) Write(p []byte) (int, error) { return f(p) }
+
+// shipLintRepo commits a prek config that runs golangci-lint and leaves name
+// pending, with uvx scripted through passes in order, the last one repeating.
+func shipLintRepo(t *testing.T, name string, passes ...string) *vcstest.Fixture {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	delay := shipHookLintRetryDelay
+	t.Cleanup(func() { shipHookLintRetryDelay = delay })
+	shipHookLintRetryDelay = time.Millisecond
+
+	f := shipRepo(t, vcstest.Remote())
+	f.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+	writeShipFile(t, f.Dir, ".pre-commit-config.yaml", shipLintConfig)
+	mustRun(t, f.Env(), f.Dir, "git", "add", "-A")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "hooks")
+	writeShipFile(t, f.Dir, name, "x")
+
+	marker := filepath.Join(t.TempDir(), "prek.marker")
+	if err := os.WriteFile(marker, []byte("0"), 0o600); err != nil {
+		t.Fatalf("write prek marker: %v", err)
+	}
+	f.Setenv("SHIP_PREK_MARKER", marker)
+	var steps strings.Builder
+	for i, pass := range passes {
+		label := strconv.Itoa(i)
+		if i == len(passes)-1 {
+			label = "*"
+		}
+		fmt.Fprintf(&steps, "%s)\n%s\n;;\n", label, pass)
+	}
+	writeShipExecutable(t, f.ShimBin, "uvx", "#!/bin/sh\n"+vcstest.RecordArgv("uvx")+`n=$(cat "$SHIP_PREK_MARKER")
+printf '%s' "$((n + 1))" > "$SHIP_PREK_MARKER"
+case "$n" in
+`+steps.String()+`esac
+`)
+	shipResetLog(t, f)
+	return f
+}
+
+func shipUvxRuns(t *testing.T, f *vcstest.Fixture) int {
+	t.Helper()
+	return len(shipInvocationsOf(vcstest.Invocations(t, f.ArgvLog), "uvx"))
+}
+
+// TestShipHooksLintVerdict pins which golangci-lint outcomes let the commit
+// proceed. A finding is a verdict CI can grade; a lint that never ran is not.
+func TestShipHooksLintVerdict(t *testing.T) {
+	busy := shipLintFailure(3, "Error: "+shipHookLintBusy)
+	for _, tt := range []struct {
+		name     string
+		passes   []string
+		wantSeg  string
+		wantErr  string
+		wantOut  string
+		wantRuns int
+	}{
+		{name: "a finding is a verdict, so the commit proceeds", passes: []string{shipLintFailure(1, "f1.go:1:1: finding")}, wantSeg: "hooks failed", wantOut: "f1.go:1:1: finding", wantRuns: 1},
+		{name: "another hook's finding is a verdict too", passes: []string{shipHookFailure("biome", 1, "a finding")}, wantSeg: "hooks failed", wantOut: "a finding", wantRuns: 1},
+		{name: "a busy lock is retried until the lint runs", passes: []string{busy, "exit 0"}, wantSeg: "hooks ok", wantOut: "attempt 1 of 6", wantRuns: 2},
+		{name: "a lock that stays busy commits nothing", passes: []string{busy}, wantErr: "held its lock through 6 attempts", wantOut: shipHookLintBusy, wantRuns: shipHookLintAttempts},
+		{name: "a timeout commits nothing", passes: []string{shipLintFailure(4, "Timeout exceeded")}, wantErr: "its hook exited 4", wantOut: "Timeout exceeded", wantRuns: 1},
+		{name: "a load failure commits nothing", passes: []string{shipLintFailure(3, "context loading failed")}, wantErr: "its hook exited 3", wantOut: "context loading failed", wantRuns: 1},
+		{name: "a prek that reached no hook commits nothing", passes: []string{"printf 'error: Failed to parse config\\n'\nexit 2"}, wantErr: "prek reported no hook", wantOut: "Failed to parse config", wantRuns: 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := shipLintRepo(t, "f1.go", tt.passes...)
+			head := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD")
+
+			out, errStr, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--no-push")
+			if !strings.Contains(errStr, tt.wantOut) {
+				t.Errorf("stderr = %q, want it to carry %q", errStr, tt.wantOut)
+			}
+			if got := shipUvxRuns(t, f); got != tt.wantRuns {
+				t.Errorf("uvx runs = %d, want %d", got, tt.wantRuns)
+			}
+			if tt.wantErr != "" {
+				if !errors.Is(err, errShipHookLintNoVerdict) || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("ship error = %v, want a no-verdict refusal carrying %q", err, tt.wantErr)
+				}
+				if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD"); got != head {
+					t.Errorf("HEAD moved to %s, want it left at %s", got, head)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ship error = %v (stderr=%q)", err, errStr)
+			}
+			if !strings.Contains(out, tt.wantSeg) {
+				t.Errorf("summary = %q, want it to carry %q", out, tt.wantSeg)
+			}
+			if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD"); got == head {
+				t.Errorf("HEAD stayed at %s, want a new commit", got)
+			}
+		})
+	}
+}
+
+// TestShipHooksLintRetryKeepsFixes pins that a fix made by a pass whose lint
+// could not run is committed even though the retry that follows comes back clean.
+func TestShipHooksLintRetryKeepsFixes(t *testing.T) {
+	f := shipLintRepo(t, "f1.go", "printf fixed > f1.go\n"+shipLintFailure(3, "Error: "+shipHookLintBusy), "exit 0")
+
+	out, errStr, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--no-push")
+	if err != nil {
+		t.Fatalf("ship error = %v (stderr=%q)", err, errStr)
+	}
+	if !strings.Contains(out, "hooks fixed") {
+		t.Errorf("summary = %q, want it to carry %q", out, "hooks fixed")
+	}
+	if strings.Contains(errStr, shipHookFindingsLead) {
+		t.Errorf("stderr = %q, want no findings lead-in for a clean last pass", errStr)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "show", "HEAD:f1.go"); got != "fixed" {
+		t.Errorf("committed f1.go = %q, want the fix", got)
+	}
+}
+
+// TestShipHooksLintRetryAdoptsOtherFiles pins that a retry whose clean pass
+// leaves the pending file alone still stages a fix made elsewhere in the module
+// by the attempt before it, as a whole-module hook does.
+func TestShipHooksLintRetryAdoptsOtherFiles(t *testing.T) {
+	f := shipLintRepo(t, "f1.go", "printf fixed > f2.go\n"+shipLintFailure(3, "Error: "+shipHookLintBusy), "exit 0")
+
+	out, errStr, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--no-push")
+	if err != nil {
+		t.Fatalf("ship error = %v (stderr=%q)", err, errStr)
+	}
+	if !strings.Contains(out, "hooks fixed") {
+		t.Errorf("summary = %q, want it to carry %q", out, "hooks fixed")
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "show", "HEAD:f2.go"); got != "fixed" {
+		t.Errorf("committed f2.go = %q, want the fix", got)
+	}
+}
+
+// TestShipHooksLintLock pins the machine-wide queue: a pass that runs the lint
+// waits for the one in front of it, gives up with nothing committed when that
+// one never finishes, and a commit with no Go file never joins the queue.
+func TestShipHooksLintLock(t *testing.T) {
+	hold := func(t *testing.T) (release func()) {
+		t.Helper()
+		dir, err := cache.UserDir(shipHookLockDir)
+		if err != nil {
+			t.Fatalf("lock dir: %v", err)
+		}
+		held, freed := make(chan struct{}), make(chan struct{})
+		done := make(chan error, 1)
+		go func() {
+			done <- cache.WithLock(context.Background(), dir, shipHookLintLock, func() error {
+				close(held)
+				<-freed
+				return nil
+			})
+		}()
+		<-held
+		var once sync.Once
+		release = func() {
+			once.Do(func() {
+				close(freed)
+				if err := <-done; err != nil {
+					t.Errorf("holder: %v", err)
+				}
+			})
+		}
+		t.Cleanup(release)
+		return release
+	}
+	const waiting = "another ship is running golangci-lint"
+
+	t.Run("a pass waits for the lint in front of it", func(t *testing.T) {
+		f := shipLintRepo(t, "f1.go", "exit 0")
+		release := hold(t)
+		announced := false
+		errW := shipWriteFunc(func(p []byte) (int, error) {
+			if strings.Contains(string(p), waiting) {
+				announced = true
+				release()
+			}
+			return len(p), nil
+		})
+
+		var buf bytes.Buffer
+		if _, err := shipRunLintPass(f.Context(), errW, render.Dir(f.Dir), []string{"prek", "run"}, &buf, &buf); err != nil {
+			t.Fatalf("lint pass error = %v", err)
+		}
+		if !announced {
+			t.Error("lint pass ran without announcing the wait")
+		}
+		if got := shipUvxRuns(t, f); got != 1 {
+			t.Errorf("uvx runs = %d, want 1", got)
+		}
+	})
+
+	t.Run("a holder that never finishes commits nothing", func(t *testing.T) {
+		f := shipLintRepo(t, "f1.go", "exit 0")
+		head := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD")
+		hold(t)
+		wait := shipHookLintWait
+		t.Cleanup(func() { shipHookLintWait = wait })
+		shipHookLintWait = 10 * time.Millisecond
+
+		_, errStr, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--no-push")
+		if !errors.Is(err, errShipHookLintNoVerdict) {
+			t.Fatalf("ship error = %v (stderr=%q), want a no-verdict refusal", err, errStr)
+		}
+		if !strings.Contains(errStr, waiting) {
+			t.Errorf("stderr = %q, want it to announce the wait", errStr)
+		}
+		if got := shipUvxRuns(t, f); got != 0 {
+			t.Errorf("uvx runs = %d, want 0", got)
+		}
+		if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD"); got != head {
+			t.Errorf("HEAD moved to %s, want it left at %s", got, head)
+		}
+	})
+
+	t.Run("a commit with no Go file skips the queue", func(t *testing.T) {
+		f := shipLintRepo(t, "notes.md", "exit 0")
+		hold(t)
+
+		out, errStr, err := runShipCmdFull(f.Context(), t, "-m", "docs: frobnicate", "--no-push")
+		if err != nil {
+			t.Fatalf("ship error = %v (stderr=%q)", err, errStr)
+		}
+		if !strings.Contains(out, "hooks ok") {
+			t.Errorf("summary = %q, want it to carry %q", out, "hooks ok")
+		}
+		if strings.Contains(errStr, waiting) {
+			t.Errorf("stderr = %q, want no wait", errStr)
+		}
+	})
 }
 
 func TestShipHookEntryPaths(t *testing.T) {

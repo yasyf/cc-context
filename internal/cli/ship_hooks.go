@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yasyf/cc-context/internal/cache"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcs"
 )
@@ -48,6 +49,34 @@ const shipHookFindingsLead = "ship: hooks: prek reported the following; any auto
 // repo with no linter in its suite is never told a lint pass is running.
 const shipHookStartNotice = "ship: hooks: running prek's %s over %d file(s); a whole-module hook can take minutes\n"
 
+// shipHookLintLock serializes ship's golangci-lint passes across the machine.
+// golangci-lint's own lock cannot: it unlinks the file on release, so a waiter
+// holding the old inode and a newcomer creating the next one both run.
+const shipHookLintLock = "golangci-lint"
+
+const (
+	shipHookLockDir        = "ship-hooks"
+	shipHookLintBusy       = "parallel golangci-lint is running"
+	shipHookReportLine     = "- hook id: "
+	shipHookLintIssuesExit = "1"
+	shipHookLintAttempts   = 6
+	shipHookLintPeek       = time.Second
+
+	shipHookLintWaitNotice  = "ship: hooks: another ship is running golangci-lint; waiting up to %s for it to finish\n"
+	shipHookLintRetryNotice = "ship: hooks: another golangci-lint holds its lock; retrying in %s (attempt %d of %d)\n"
+)
+
+var (
+	shipHookLintWait       = 8 * time.Minute
+	shipHookLintRetryDelay = 30 * time.Second
+)
+
+// prek folds every hook's exit code into its own, so its report is the only
+// place golangci-lint's survives.
+var shipHookLintExit = regexp.MustCompile(`(?m)^- hook id: \S*golangci\S*\n- exit code: (\d+)$`)
+
+var errShipHookLintNoVerdict = errors.New("nothing was committed; rerun ship, or pass --no-verify to commit without the lint and let CI grade it")
+
 // shipRunHooks runs prek (via uvx) over the files ship is about to commit, once:
 // it adopts whatever the hooks fixed in place and lets the commit proceed, and
 // CI grades what remains. prek's exit code cannot separate a genuine finding
@@ -58,7 +87,11 @@ const shipHookStartNotice = "ship: hooks: running prek's %s over %d file(s); a w
 // changed the files it was handed reports "hooks fixed"; one that left them
 // byte-for-byte as they were fixed nothing and reports "hooks failed". Either
 // way its output is surfaced rather than swallowed, since it is the only place
-// a real finding is shown. External hook execution retains
+// a real finding is shown. The exception is a golangci-lint that never gave a
+// verdict: a pass that runs it waits its turn behind shipRunLintPass, and one
+// that still got no verdict stops the ship with nothing committed, because CI
+// grading a finding is no substitute for a typecheck that never happened.
+// External hook execution retains
 // the same staging window as a manual git add followed by git commit. A later jj
 // push-time auto-rebase may incorporate upstream content the hooks did not
 // inspect; upstream CI covers that boundary. The covered result reports whether
@@ -101,25 +134,38 @@ func shipRunHooks(ctx context.Context, errW io.Writer, dir render.Dir, kind vcs.
 			return "", false, err
 		}
 	}
+	data, err := os.ReadFile(config) //nolint:gosec // the path is one of shipHookConfigNames under the repo root, not untrusted input
+	if err != nil {
+		return "", false, fmt.Errorf("ship: hooks: read %s: %w", filepath.Base(config), err)
+	}
 
 	streamed := shipStreamCI(errW)
 	var buf bytes.Buffer
 	var passW io.Writer = &buf
 	if streamed {
 		passW = io.MultiWriter(errW, &buf)
-	} else {
-		data, rerr := os.ReadFile(config) //nolint:gosec // the path is one of shipHookConfigNames under the repo root, not untrusted input
-		if rerr != nil {
-			return "", false, fmt.Errorf("ship: hooks: read %s: %w", filepath.Base(config), rerr)
-		}
-		if _, werr := fmt.Fprintf(errW, shipHookStartNotice, strings.Join(shipHookIDs(data), ", "), len(files)); werr != nil {
-			return "", false, fmt.Errorf("ship: hooks: announce the run: %w", werr)
-		}
+	} else if _, werr := fmt.Fprintf(errW, shipHookStartNotice, strings.Join(shipHookIDs(data), ", "), len(files)); werr != nil {
+		return "", false, fmt.Errorf("ship: hooks: announce the run: %w", werr)
 	}
 	before := shipHookSnapshot(dir, files)
 	// Leading-dash filenames intentionally reach prek unchanged so it fails loudly.
 	argv := append([]string{"prek", "run", "--cd", string(dir), "--files"}, files...)
-	if err := shipRunPrek(ctx, dir, argv, passW); err == nil {
+	var passErr error
+	retried := false
+	if shipHookRunsLint(data, files) {
+		retried, passErr = shipRunLintPass(ctx, errW, dir, argv, &buf, passW)
+	} else {
+		passErr = shipRunPrek(ctx, dir, argv, passW)
+	}
+	if errors.Is(passErr, errShipHookLintNoVerdict) {
+		if !streamed {
+			if _, werr := errW.Write(buf.Bytes()); werr != nil {
+				return "", false, fmt.Errorf("ship: hooks: report the lint failure: %w", werr)
+			}
+		}
+		return "", false, passErr
+	}
+	if passErr == nil && !retried {
 		return "hooks ok", covered, nil
 	}
 	after := shipHookSnapshot(dir, files)
@@ -135,7 +181,7 @@ func shipRunHooks(ctx context.Context, errW io.Writer, dir render.Dir, kind vcs.
 	if len(rederived) == 0 {
 		return "", false, errors.New("ship: hooks: auto-fixes reverted every pending change; nothing to commit")
 	}
-	if !streamed {
+	if !streamed && passErr != nil {
 		if _, werr := io.WriteString(errW, shipHookFindingsLead); werr != nil {
 			return "", false, fmt.Errorf("ship: hooks: report the findings: %w", werr)
 		}
@@ -144,6 +190,9 @@ func shipRunHooks(ctx context.Context, errW io.Writer, dir render.Dir, kind vcs.
 		}
 	}
 	if maps.Equal(before, after) && slices.Equal(files, rederived) {
+		if passErr == nil {
+			return "hooks ok", covered, nil
+		}
 		return "hooks failed", covered, nil
 	}
 	return "hooks fixed", covered, nil
@@ -161,16 +210,89 @@ func shipHookSnapshot(dir render.Dir, files []string) map[string][sha256.Size]by
 	return sums
 }
 
+func shipHookRunsLint(config []byte, files []string) bool {
+	return bytes.Contains(config, []byte("golangci")) &&
+		slices.ContainsFunc(files, func(f string) bool { return strings.HasSuffix(f, ".go") })
+}
+
+func shipHookLintNoVerdict(cause error) error {
+	return fmt.Errorf("ship: hooks: golangci-lint gave no verdict (%w): %w", cause, errShipHookLintNoVerdict)
+}
+
+func shipRunLintPass(ctx context.Context, errW io.Writer, dir render.Dir, argv []string, buf *bytes.Buffer, passW io.Writer) (retried bool, err error) {
+	lockDir, err := cache.UserDir(shipHookLockDir)
+	if err != nil {
+		return false, shipHookLintNoVerdict(err)
+	}
+	ran := false
+	pass := func() error {
+		ran = true
+		var passErr error
+		retried, passErr = shipRunPrekUntilLinted(ctx, errW, dir, argv, buf, passW)
+		return passErr
+	}
+	peek, cancelPeek := context.WithTimeout(ctx, shipHookLintPeek)
+	defer cancelPeek()
+	err = cache.WithLock(peek, lockDir, shipHookLintLock, pass)
+	if !ran && errors.Is(err, context.DeadlineExceeded) {
+		if _, werr := fmt.Fprintf(errW, shipHookLintWaitNotice, shipHookLintWait); werr != nil {
+			return false, fmt.Errorf("ship: hooks: announce the wait: %w", werr)
+		}
+		wait, cancelWait := context.WithTimeout(ctx, shipHookLintWait)
+		defer cancelWait()
+		err = cache.WithLock(wait, lockDir, shipHookLintLock, pass)
+	}
+	if !ran {
+		return false, shipHookLintNoVerdict(fmt.Errorf("wait for another ship's lint: %w", err))
+	}
+	return retried, err
+}
+
+func shipRunPrekUntilLinted(ctx context.Context, errW io.Writer, dir render.Dir, argv []string, buf *bytes.Buffer, passW io.Writer) (retried bool, err error) {
+	for attempt := 1; ; attempt++ {
+		buf.Reset()
+		err := shipRunPrek(ctx, dir, argv, passW)
+		if err == nil {
+			return retried, nil
+		}
+		busy := bytes.Contains(buf.Bytes(), []byte(shipHookLintBusy))
+		exit := shipHookLintFailedExit(buf.Bytes())
+		switch {
+		case !busy && exit != "":
+			return retried, shipHookLintNoVerdict(fmt.Errorf("its hook exited %s", exit))
+		case !busy && !bytes.Contains(buf.Bytes(), []byte(shipHookReportLine)):
+			return retried, shipHookLintNoVerdict(fmt.Errorf("prek reported no hook: %w", err))
+		case !busy:
+			return retried, err
+		case attempt == shipHookLintAttempts:
+			return retried, shipHookLintNoVerdict(fmt.Errorf("another golangci-lint held its lock through %d attempts", attempt))
+		}
+		if _, werr := fmt.Fprintf(errW, shipHookLintRetryNotice, shipHookLintRetryDelay, attempt, shipHookLintAttempts); werr != nil {
+			return retried, fmt.Errorf("ship: hooks: announce the retry: %w", werr)
+		}
+		select {
+		case <-ctx.Done():
+			return retried, shipHookLintNoVerdict(ctx.Err())
+		case <-time.After(shipHookLintRetryDelay):
+		}
+		retried = true
+	}
+}
+
+func shipHookLintFailedExit(output []byte) string {
+	for _, m := range shipHookLintExit.FindAllSubmatch(output, -1) {
+		if string(m[1]) != shipHookLintIssuesExit {
+			return string(m[1])
+		}
+	}
+	return ""
+}
+
 // shipRunPrek spawns prek with uvx in dir, whose pin is what keeps GIT_DIR and
 // GIT_WORK_TREE off the hook child — each would otherwise point git at whatever
 // checkout invoked ccx, which from a linked worktree is not the one being
-// committed. Output goes to w on the pass a human can watch, and a nil w
-// discards it: off a terminal the only reader is a capture, which would take
-// the first pass's pre-fix failures for the verdict the retry pass decides.
+// committed.
 func shipRunPrek(ctx context.Context, dir render.Dir, argv []string, w io.Writer) error {
-	if w == nil {
-		w = io.Discard
-	}
 	return render.RunCLIStream(ctx, dir, "uvx", argv, w)
 }
 
