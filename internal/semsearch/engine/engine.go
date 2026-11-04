@@ -76,6 +76,16 @@ func SearchLoaded(ctx context.Context, emb index.Embedder, idx *index.Index, con
 	return results, nil
 }
 
+// HasIndex reports whether repo already has an index for a's content types,
+// without loading the embedder or building anything.
+func HasIndex(ctx context.Context, a backend.Args, repo string) (bool, error) {
+	content, err := index.ParseContent(a.Kind)
+	if err != nil {
+		return false, err
+	}
+	return index.HasExisting(ctx, repo, content, index.DefaultChunker(), ModelID)
+}
+
 // Warm builds or refreshes the persistent index for the requested repo.
 func Warm(ctx context.Context, emb index.Embedder, a backend.Args) (*index.Index, error) {
 	idx, _, err := load(ctx, emb, a)

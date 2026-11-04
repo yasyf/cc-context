@@ -17,6 +17,7 @@ type rootLister func(context.Context) ([]*mcp.Root, error)
 type rootTracker struct {
 	mu      sync.Mutex
 	pending bool
+	started bool
 }
 
 func newRootTracker() *rootTracker { return &rootTracker{pending: true} }
@@ -47,7 +48,12 @@ func (t *rootTracker) sync(ctx context.Context, roots rootLister) {
 		return
 	}
 	t.pending = false
-	workspace.SetRoot(firstLocalRoot(list))
+	root := firstLocalRoot(list)
+	workspace.SetRoot(root)
+	if !t.started {
+		t.started = true
+		workspace.SetStarted(root)
+	}
 }
 
 func sessionRoots(ss *mcp.ServerSession) rootLister {

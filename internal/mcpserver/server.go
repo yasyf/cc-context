@@ -15,6 +15,7 @@ import (
 	"github.com/yasyf/cc-context/internal/backend"
 	"github.com/yasyf/cc-context/internal/codeexec"
 	"github.com/yasyf/cc-context/internal/deps"
+	"github.com/yasyf/cc-context/internal/dispatch"
 	"github.com/yasyf/cc-context/internal/find"
 	"github.com/yasyf/cc-context/internal/format"
 	"github.com/yasyf/cc-context/internal/outline"
@@ -263,6 +264,7 @@ const serverInstructions = "Single question → the matching ccx_* tool; pipelin
 // resident sandbox engine, registers the static ccx_* tools, and serves them
 // over stdio until ctx is cancelled or the transport closes.
 func Serve(ctx context.Context) error {
+	dispatch.ConfineIndexBuilds()
 	p := proxy.New()
 	defer func() { _ = p.Close(context.WithoutCancel(ctx)) }()
 	p.StartIdleSweeper(ctx)
@@ -310,7 +312,7 @@ var alwaysLoad = mcp.Meta{metaAlwaysLoad: true}
 func register(s *mcp.Server, p *proxy.Proxy, eng *codeexec.Engine) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "ccx_code_search",
-		Description: "Search code by intent (semantic), ast-grep structural pattern, or literal text — routed by query kind. Prefer over grep for where/how. Semantic search covers code+docs by default; pass content to narrow (code|docs|config|all).",
+		Description: "Search code by intent (semantic), ast-grep structural pattern, or literal text — routed by query kind. Prefer over grep for where/how. Semantic search covers code+docs by default; pass content to narrow (code|docs|config|all). This server only builds the semantic index of the checkout it started in: any other repo answers from the index it already has, or errors and points at ccx code grep.",
 		Meta:        alwaysLoad,
 	}, searchHandler(p))
 
@@ -337,7 +339,7 @@ func register(s *mcp.Server, p *proxy.Proxy, eng *codeexec.Engine) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "ccx_code_related",
-		Description: "Find code semantically related to a file:line — follow-up to a search hit. Takes an anchored location too (f.go:12#a3fk). Covers code+docs by default; pass content to narrow (code|docs|config|all).",
+		Description: "Find code semantically related to a file:line — follow-up to a search hit. Takes an anchored location too (f.go:12#a3fk). Covers code+docs by default; pass content to narrow (code|docs|config|all). This server only builds the semantic index of the checkout it started in: any other repo answers from the index it already has, or errors.",
 	}, rootedHandler(p, backend.OpRelated, func(ctx context.Context, in RelatedIn) (backend.Args, error) {
 		repo, err := rootedPath(ctx, "", in.Repo)
 		if err != nil {

@@ -9,8 +9,9 @@ import (
 )
 
 var (
-	mu     sync.RWMutex
-	pinned string
+	mu      sync.RWMutex
+	pinned  string
+	started string
 )
 
 // rootKey keys the declared root one request carries.
@@ -22,6 +23,27 @@ func SetRoot(dir string) {
 	mu.Lock()
 	defer mu.Unlock()
 	pinned = dir
+}
+
+// SetStarted records the root this process started in. The MCP server calls it
+// once, with the first answer its client gives; SetRoot's later moves leave it
+// where it is.
+func SetStarted(dir string) {
+	mu.Lock()
+	defer mu.Unlock()
+	started = dir
+}
+
+// Started returns the root this process started in, which is the working
+// directory when the client declared none. No request context or later pin
+// changes it.
+func Started() (string, error) {
+	mu.RLock()
+	defer mu.RUnlock()
+	if started != "" {
+		return started, nil
+	}
+	return os.Getwd()
 }
 
 // WithRoot returns a copy of ctx carrying dir as the declared project root for

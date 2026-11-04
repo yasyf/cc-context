@@ -184,3 +184,51 @@ func TestServerLeavesRootUnsetWithoutRootsCapability(t *testing.T) {
 		t.Errorf("workspace.Root() = %q, want the working directory %q", got, cwd)
 	}
 }
+
+func TestRootTrackerFreezesTheStartedRootAtTheFirstAnswer(t *testing.T) {
+	t.Cleanup(func() {
+		workspace.SetRoot("")
+		workspace.SetStarted("")
+	})
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	list := func(uris ...string) rootLister {
+		return func(context.Context) ([]*mcp.Root, error) {
+			roots := make([]*mcp.Root, len(uris))
+			for i, uri := range uris {
+				roots[i] = &mcp.Root{URI: uri}
+			}
+			return roots, nil
+		}
+	}
+	tests := []struct {
+		name  string
+		first rootLister
+		want  string
+	}{
+		{"a declared first root", list("file:///repo/a"), "/repo/a"},
+		{"no declared first root", list(), cwd},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			workspace.SetStarted("")
+			tracker := newRootTracker()
+			tracker.sync(t.Context(), tt.first)
+			tracker.rearm(t.Context(), &mcp.RootsListChangedRequest{})
+			tracker.sync(t.Context(), list("file:///repo/b"))
+
+			if got := workspace.Declared(); got != "/repo/b" {
+				t.Errorf("Declared() = %q, want the moved root", got)
+			}
+			got, err := workspace.Started()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tt.want {
+				t.Errorf("Started() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
