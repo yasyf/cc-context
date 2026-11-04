@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ccx vcs stack submit` and `ccx vcs stack drop --repair` recover a pull request
+  that GitHub closed when its merged parent's branch was deleted, even if it is
+  still in the parent's native stack. GitHub refuses to change the base of a
+  stack member, so the repair failed with HTTP 422 and left the deleted branch
+  back on origin. The repair now takes the stack apart before it moves the base,
+  then links the remaining open pull requests again.
+- `ccx vcs merge --admin` merges past the merge queue on a repository your own
+  account owns, from any checkout. A leftover Graphite config read as a `mixed`
+  queue and blocked every merge on such a repository. On any other repository
+  the command still refuses to skip a Trunk, Graphite or mixed queue, with or
+  without `--admin`.
 - **The semantic index builds for Windows again.** Its mapped cache called
   `syscall.Mmap`, which Windows doesn't have, so a Windows build of
   `internal/semsearch/index` failed from the release that mapped the cache. It now
