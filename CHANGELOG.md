@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `ccx vcs ship --pr-title-file` and `ccx vcs stack submit --pr-title-file` read the pull request
+  title from a one-line file, scoped by branch like `--pr-body-file`, with `-` reading stdin.
+  Claude Code's worktree-isolation sandbox refuses an argument that pairs a quote with the word
+  git, so a title such as "find the merge base over git instead of GitHub's compare API" could not
+  ship from an isolated agent. Naming the same branch's title through both `--pr-title` and
+  `--pr-title-file` is refused, as are blank and multi-line title files.
+
 ### Fixed
 
 - `ccx vcs diff --budget` stops reading, classifying, rendering and masking once it has what the

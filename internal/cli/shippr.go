@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -92,7 +93,7 @@ func shipPRRequested(cmd *cobra.Command, l lane, o shipOpts) bool {
 	}
 }
 
-func materializePRBodyStdin(cmd *cobra.Command, o *shipOpts) (func(), error) {
+func materializePRFiles(cmd *cobra.Command, o *shipOpts) (func(), error) {
 	cleanup := func() {}
 	taken := false
 	values := slices.Clone(o.prBodyFile)
@@ -114,6 +115,44 @@ func materializePRBodyStdin(cmd *cobra.Command, o *shipOpts) (func(), error) {
 		cleanup, taken = remove, true
 	}
 	o.prBodyFile = values
+
+	titled := map[string]string{}
+	for _, value := range o.prTitle {
+		branch, _ := splitPRValue(value, "")
+		titled[branch] = "--pr-title"
+	}
+	for _, value := range o.prTitleFile {
+		branch, path := splitPRValue(value, "")
+		if flag, ok := titled[branch]; ok {
+			return cleanup, fmt.Errorf("ship: --pr-title-file and %s both set the title for %s", flag, cmp.Or(branch, "the tip"))
+		}
+		titled[branch] = "--pr-title-file"
+		var raw []byte
+		var err error
+		if path == prBodyStdin {
+			switch {
+			case taken:
+				return cleanup, errors.New(`ship: only one --pr-body-file or --pr-title-file may read stdin ("-")`)
+			case !stdinPiped(cmd):
+				return cleanup, errors.New(`ship: --pr-title-file - reads the title from stdin, which is a terminal — pipe the title in or pass a path`)
+			}
+			taken = true
+			raw, err = io.ReadAll(cmd.InOrStdin())
+		} else {
+			raw, err = os.ReadFile(path) //nolint:gosec // the caller names the title file
+		}
+		if err != nil {
+			return cleanup, fmt.Errorf("ship: --pr-title-file %s: %w", path, err)
+		}
+		title := strings.TrimSpace(string(raw))
+		switch {
+		case title == "":
+			return cleanup, fmt.Errorf("ship: --pr-title-file %s holds no title", path)
+		case strings.ContainsAny(title, "\r\n"):
+			return cleanup, fmt.Errorf("ship: --pr-title-file %s holds more than one line; a title is one line", path)
+		}
+		o.prTitle = append(o.prTitle, strings.TrimSuffix(value, path)+title)
+	}
 	return cleanup, nil
 }
 
