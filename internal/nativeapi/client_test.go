@@ -51,6 +51,35 @@ func TestPullRequestInfoBatchesGitHubReadsInInputOrder(t *testing.T) {
 	}
 }
 
+func TestPullRequestInfoNamesOnlyTheOpenPullRequestsAboveInTheStack(t *testing.T) {
+	entry := func(position, number int, state, head string) map[string]any {
+		return map[string]any{"position": position, "pullRequest": map[string]any{"number": number, "state": state, "headRefName": head}}
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		response := map[string]any{"data": map[string]any{"repository": map[string]any{
+			"p0": map[string]any{"number": 2, "state": "OPEN", "headRefName": "card", "stackEntry": map[string]any{"position": 2}, "stack": map[string]any{"number": 8, "baseRefName": "dev", "entries": map[string]any{"nodes": []any{
+				entry(1, 1, "MERGED", "landed"),
+				entry(2, 2, "OPEN", "card"),
+				entry(3, 3, "OPEN", "claim"),
+				entry(4, 4, "CLOSED", "abandoned"),
+				entry(5, 5, "OPEN", "claim-2"),
+			}}}},
+		}}}
+		if err := json.NewEncoder(w).Encode(response); err != nil {
+			t.Errorf("write fixture response: %v", err)
+		}
+	}))
+	defer srv.Close()
+	infos, err := NewWithToken(srv.URL, "github-key").PullRequestInfo(context.Background(), PullRequestInfoRequest{RepoOwner: "org", RepoName: "repo", PRNumbers: []int{2}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []StackPull{{Number: 3, Head: "claim"}, {Number: 5, Head: "claim-2"}}
+	if len(infos) != 1 || !reflect.DeepEqual(infos[0].OpenAbove, want) {
+		t.Fatalf("infos=%+v, want OpenAbove %+v", infos, want)
+	}
+}
+
 func TestPullRequestInfoLeavesOutANumberGitHubCannotResolveAndReadsTheRest(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		if _, err := fmt.Fprint(w, `{"data":{"repository":{"p0":{"number":3,"state":"OPEN","headRefName":"feature"},"p1":null}},"errors":[{"type":"NOT_FOUND","path":["repository","p1"],"message":"Could not resolve to a PullRequest with the number of 45976."}]}`); err != nil {

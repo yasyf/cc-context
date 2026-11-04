@@ -78,8 +78,15 @@ type PullRequestInfo struct {
 	IsDraft            bool              `json:"isDraft"`
 	Versions           []PRVersion       `json:"versions"`
 	DependentPRNumber  int               `json:"dependentPrNumber"`
+	OpenAbove          []StackPull       `json:"openAbove,omitempty"`
 	MergeCommitSha     string            `json:"mergeCommitSha"`
 	CliTrunk           string            `json:"cliTrunk"`
+}
+
+// StackPull names an open pull request a native stack holds.
+type StackPull struct {
+	Number int
+	Head   string
 }
 
 // SubmitAction distinguishes opening a PR from changing its existing metadata.

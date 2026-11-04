@@ -172,6 +172,7 @@ type PullRequestInfo struct {
 	IsDraft               bool              `json:"isDraft"`
 	Versions              []PRVersion       `json:"versions"`
 	DependentPRNumber     int               `json:"dependentPrNumber"`
+	OpenAbove             []StackPull       `json:"-"`
 	MergeCommitSha        string            `json:"mergeCommitSha"`
 	CliTrunk              string            `json:"cliTrunk"`
 }

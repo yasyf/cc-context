@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ccx vcs ship` and `ccx vcs stack rebase`/`submit` refuse a lone fork off a native stack before anything moves, naming both pull requests
+  and the next command, where it used to end in `native GitHub stack registration incomplete` after the push. The bottom of a fork stack
+  no longer reads as incomplete.
 - `ccx vcs prune` decides a squash landing from one `git ls-remote` of `refs/pull/*/head` and one walk of trunk, asking the API only about
   pull requests with no squash there, and names what it waits on: 213 s to 13 s on a checkout of 9,833 branches. A branch at a landed pull
   request's head now counts as landed under any name. Every delete goes in one `git update-ref` transaction, so a worktree behind trunk no

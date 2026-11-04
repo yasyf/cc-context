@@ -41,14 +41,18 @@ type githubPull struct {
 		Entries     struct {
 			Nodes []struct {
 				Position    int
-				PullRequest *struct{ Number int }
+				PullRequest *struct {
+					Number      int
+					State       PRState
+					HeadRefName string
+				}
 			}
 			PageInfo struct{ HasNextPage bool }
 		}
 	}
 }
 
-const pullFields = "id number isCrossRepository title body state reviewDecision headRefName headRefOid baseRefName baseRefOid url isDraft updatedAt author{login} mergeCommit{oid} mergeQueueEntry{state headCommit{oid}} stackEntry{position} stack{number baseRefName entries(first:100){nodes{position pullRequest{number}} pageInfo{hasNextPage}}}"
+const pullFields = "id number isCrossRepository title body state reviewDecision headRefName headRefOid baseRefName baseRefOid url isDraft updatedAt author{login} mergeCommit{oid} mergeQueueEntry{state headCommit{oid}} stackEntry{position} stack{number baseRefName entries(first:100){nodes{position pullRequest{number state headRefName}} pageInfo{hasNextPage}}}"
 
 func (p githubPull) info() (PullRequestInfo, error) {
 	out := PullRequestInfo{PRID: p.ID, PRNumber: p.Number, Title: p.Title, Body: p.Body, State: p.State, ReviewDecision: p.ReviewDecision, HeadRefName: p.HeadRefName, BaseRefName: p.BaseRefName, URL: p.URL, IsDraft: p.IsDraft, AuthorGithubHandle: p.Author.Login, CliTrunk: p.BaseRefName, Versions: []PRVersion{{HeadSha: p.HeadRefOid, BaseSha: p.BaseRefOid, BaseName: p.BaseRefName, CreatedAt: p.UpdatedAt, AuthorGithubHandle: p.Author.Login}}}
@@ -69,8 +73,14 @@ func (p githubPull) info() (PullRequestInfo, error) {
 		}
 		if p.StackEntry != nil {
 			for _, e := range p.Stack.Entries.Nodes {
-				if e.Position == p.StackEntry.Position-1 && e.PullRequest != nil {
+				if e.PullRequest == nil {
+					continue
+				}
+				if e.Position == p.StackEntry.Position-1 {
 					out.DependentPRNumber = e.PullRequest.Number
+				}
+				if e.Position > p.StackEntry.Position && e.PullRequest.State == PROpen {
+					out.OpenAbove = append(out.OpenAbove, StackPull{Number: e.PullRequest.Number, Head: e.PullRequest.HeadRefName})
 				}
 			}
 		}
