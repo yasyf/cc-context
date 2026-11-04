@@ -531,6 +531,7 @@ type harness struct {
 	relocator *fakeRelocator
 	deleter   *fakeDeleter
 	cpu       *fakeCPU
+	caps      []cleanup.RateCap
 	activity  *fakeActivity
 	band      *fakeBand
 	parent    *fakeParent
@@ -804,6 +805,7 @@ func (h *harness) build() *Engine {
 		Version:   "v1.2.3",
 		Clock:     h.clock,
 		Tuning:    h.tuning,
+		Caps:      h.caps,
 	}
 	if h.activity != nil {
 		cfg.Activity = h.activity

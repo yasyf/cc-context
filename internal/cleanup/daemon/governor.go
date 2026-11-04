@@ -59,6 +59,7 @@ type governor struct {
 	hot     hold
 	stalled hold
 	window  tally
+	crew    int
 	ambient float64
 	learned bool
 	settled bool
@@ -97,6 +98,7 @@ func (g *governor) throttled() bool { return g.state == governorThrottled }
 func (g *governor) workers() int { return g.crews[g.state] }
 
 func (g *governor) sliced(took time.Duration, workers, removed int) {
+	g.crew = workers
 	g.window.removed += removed
 	if took < 2*g.sliceBudget*time.Duration(workers) {
 		return
@@ -154,7 +156,7 @@ func (g *governor) observe(now time.Time, cpu time.Duration, err error, quiet bo
 
 func (g *governor) reset() {
 	g.state, g.percent, g.detail, g.counted, g.pace = governorIdle, 0, "", false, 0
-	g.hot, g.stalled, g.window = hold{}, hold{}, tally{}
+	g.hot, g.stalled, g.window, g.crew = hold{}, hold{}, tally{}, 0
 }
 
 func (g *governor) report() cleanup.Governor {
@@ -162,5 +164,9 @@ func (g *governor) report() cleanup.Governor {
 }
 
 func (g *governor) paced() cleanup.Pace {
-	return cleanup.Pace{Workers: g.workers(), Rate: g.pace}
+	workers := g.workers()
+	if workers > 0 && g.crew > 0 {
+		workers = g.crew
+	}
+	return cleanup.Pace{Workers: workers, Rate: g.pace}
 }

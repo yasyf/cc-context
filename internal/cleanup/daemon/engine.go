@@ -182,6 +182,8 @@ type Config struct {
 	Relocator cleanup.Relocator
 	Deleter   cleanup.Deleter
 	CPU       cleanup.CPUSampler
+	// Caps slow deletion under named directories.
+	Caps []cleanup.RateCap
 	// Activity is what all work yields to; nil yields to nothing.
 	Activity cleanup.ActivitySampler
 	// Band runs commands and paused registration retirement in the default
@@ -231,6 +233,7 @@ type Engine struct {
 	cpu       cleanup.CPUSampler
 	activity  cleanup.ActivitySampler
 	band      cleanup.Band
+	caps      []cleanup.RateCap
 	parent    func(pid int) (int, []string, error)
 	identify  func(pid int) (cleanup.ProcessID, error)
 	version   string
@@ -317,6 +320,7 @@ func New(cfg Config) (*Engine, error) {
 		cpu:       cfg.CPU,
 		activity:  cfg.Activity,
 		band:      cfg.Band,
+		caps:      cfg.Caps,
 		parent:    cfg.Parent,
 		identify:  cfg.Identify,
 		version:   cfg.Version,
@@ -1129,7 +1133,10 @@ func (e *Engine) slice(ctx context.Context, job cleanup.Job) error {
 			return err
 		}
 	}
-	workers := e.gov.workers()
+	rate, workers := e.gov.rate(), e.gov.workers()
+	if capped, ok := cleanup.CappedRate(e.caps, filepath.Join(e.active.root.Dir, e.active.root.Name)); ok && capped < rate {
+		rate, workers = capped, 1
+	}
 	limit, budget := e.tuning.SliceEntries*workers, e.tuning.SliceBudget*time.Duration(workers)
 	start := e.clock.Now()
 	removed, done, err := e.active.deletion.Step(limit, budget, workers)
@@ -1137,7 +1144,7 @@ func (e *Engine) slice(ctx context.Context, job cleanup.Job) error {
 	if job.Phase != cleanup.PhaseDeletingAdmin && job.Phase != cleanup.PhaseDeletingRegistration {
 		job.Removed += uint64(removed) //nolint:gosec // a step never removes a negative count
 	}
-	e.paceUntil = start.Add(e.rest(removed, end.Sub(start), limit, budget))
+	e.paceUntil = start.Add(rest(rate, removed, end.Sub(start), limit, budget))
 	e.gov.sliced(end.Sub(start), workers, removed)
 	e.slicedAt = end
 	e.publishGovernor()
@@ -1163,10 +1170,9 @@ func (e *Engine) slice(ctx context.Context, job cleanup.Job) error {
 	return nil
 }
 
-func (e *Engine) rest(removed int, took time.Duration, limit int, budget time.Duration) time.Duration {
-	rate := time.Duration(e.gov.rate())
-	whole := time.Duration(limit) * time.Second / rate
-	byEntries := time.Duration(removed) * time.Second / rate
+func rest(rate, removed int, took time.Duration, limit int, budget time.Duration) time.Duration {
+	whole := time.Duration(limit) * time.Second / time.Duration(rate)
+	byEntries := time.Duration(removed) * time.Second / time.Duration(rate)
 	byTime := time.Duration(min(float64(took)/float64(budget), 1) * float64(whole))
 	return max(byEntries, byTime)
 }

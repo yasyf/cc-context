@@ -405,6 +405,47 @@ func TestADueRetryAwaitsItsLogicalTurnWithoutSpinning(t *testing.T) {
 	})
 }
 
+func TestRateCapSlowsOnlyTheJobsUnderIt(t *testing.T) {
+	tuning := paced()
+	tuning.Rate, tuning.Workers = 1000, 4
+	bubble(t, tuning, func(t *testing.T, h *harness) {
+		expectWorkers := func(want int) {
+			t.Helper()
+			report, err := h.engine.Status(context.Background(), cleanup.Query{})
+			if err != nil {
+				t.Fatalf("Status() = %v", err)
+			}
+			if report.Pace.Workers != want {
+				t.Errorf("pace workers = %d, want %d", report.Pace.Workers, want)
+			}
+		}
+		capped := h.seed("a", 1, cleanup.PhaseUnregistered)
+		free := h.seed("b", 2, cleanup.PhaseUnregistered)
+		h.deleter.put("a", &payload{entries: 200})
+		h.deleter.put("b", &payload{entries: 1000})
+		h.caps = []cleanup.RateCap{{Root: capped.Payload, Rate: 100}}
+		h.start()
+		h.expectEvents("sample", "admit:a", "open:a", "step:a")
+		h.expectTimers(time.Second)
+		expectWorkers(1)
+		if got := h.status(capped.ID).Removed; got != 100 {
+			t.Errorf("capped job removed %d in a slice, want 100", got)
+		}
+
+		h.clock.Advance(time.Second)
+		h.expectEvents("step:a")
+		h.expectTimers(time.Second)
+
+		h.clock.Advance(time.Second)
+		h.expectEvents("admit:b", "open:b", "step:b")
+		h.expectTimers(400 * time.Millisecond)
+		expectWorkers(4)
+		if got := h.status(free.ID).Removed; got != 400 {
+			t.Errorf("uncapped job removed %d in a slice, want 400", got)
+		}
+	})
+}
+
 func TestAwaitLapsesWithoutAnotherAwaitingRead(t *testing.T) {
 	bubble(t, paced(), func(t *testing.T, h *harness) {
 		h.cpu.set(0, nil)

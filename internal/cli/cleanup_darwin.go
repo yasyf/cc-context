@@ -8,6 +8,7 @@ import (
 	"os"
 	"runtime"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/yasyf/cc-context/internal/cleanup"
@@ -49,6 +50,24 @@ func previewCleanup(ctx context.Context, r cleanup.Request) (cleanup.Job, error)
 	}).Preview(ctx, r)
 }
 
+func cleanupRateCaps(ctx context.Context) ([]cleanup.RateCap, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("find the home directory: %w", err)
+	}
+	out, code, stderr, err := render.RunCLIExitCode(ctx, render.Dir(home), "git", []string{"config", "--global", "--get-all", cleanupRateCapKey})
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", cleanupRateCapKey, err)
+	}
+	if code == 1 {
+		return nil, nil
+	}
+	if code != 0 {
+		return nil, fmt.Errorf("read %s: exit %d: %s", cleanupRateCapKey, code, strings.TrimSpace(stderr))
+	}
+	return parseCleanupRateCaps(out)
+}
+
 func runCleanupServe(ctx context.Context) error {
 	runtime.GOMAXPROCS(cleanupServeProcs)
 	band := native.Band{}
@@ -62,6 +81,10 @@ func runCleanupServe(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("cleanup serve: find this binary: %w", err)
 	}
+	caps, err := cleanupRateCaps(ctx)
+	if err != nil {
+		return fmt.Errorf("cleanup serve: %w", err)
+	}
 	layout := cleanup.DefaultLayout()
 	journal, err := cleanup.OpenJournal(layout)
 	if err != nil {
@@ -69,6 +92,7 @@ func runCleanupServe(ctx context.Context) error {
 	}
 	engine, err := daemon.New(daemon.Config{
 		Journal: journal,
+		Caps:    caps,
 		Relocator: relocate.New(relocate.Config{
 			Journal:  journal,
 			Guard:    native.GuardRoots,
