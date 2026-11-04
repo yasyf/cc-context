@@ -414,11 +414,7 @@ func collectPRQueue(ctx context.Context, repo string, numbers []int, maxAge time
 func prStatusOf(ctx context.Context, warn io.Writer, repo string, number int, pr prstate.PR, limited *prstate.Backoff) (prStatusReport, error) {
 	if pr.Graphite == nil && pr.State != "" {
 		r := prQueueWithoutGraphite(pr)
-		if r.Queue == prQueueNotQueued && pr.State != "MERGED" {
-			if squash := prLeftOpenSquash(ctx, render.Dir(workingDir(ctx)), pr.BaseRefName, number, pr.HeadRefOid); squash != "" {
-				r.Queue, r.Squash = prQueueLanded, squash
-			}
-		}
+		prReadSquashed(ctx, &r, pr)
 		r.Stale = staleAt(limited, pr.PolledAt)
 		r.Source = pr.Source
 		return newPRStatusReport(ctx, warn, repo, r, pr, 0), nil
@@ -438,6 +434,7 @@ func prStatusOf(ctx context.Context, warn io.Writer, repo string, number int, pr
 		landedOn = pr.SquashOn[0]
 	}
 	r := prQueueOf(info, pr, landedOn)
+	prReadSquashed(ctx, &r, pr)
 	if r.State == string(gtapi.PROpen) && (r.Queue == prQueueNotQueued || r.Queue == prQueueEvicted) && (limited != nil || pr.Mergeable == statusUnknown) {
 		mergeable, state, err := prReadMergeable(ctx, repo, number)
 		if err != nil {
@@ -450,6 +447,15 @@ func prStatusOf(ctx context.Context, warn io.Writer, repo string, number int, pr
 	r.Stale = staleAt(limited, pr.PolledAt)
 	r.Source = pr.Source
 	return newPRStatusReport(ctx, warn, repo, r, pr, info.DependentPRNumber), nil
+}
+
+func prReadSquashed(ctx context.Context, r *prQueueReport, pr prstate.PR) {
+	if r.Queue != prQueueNotQueued || pr.State == "MERGED" {
+		return
+	}
+	if squash := prLeftOpenSquash(ctx, render.Dir(workingDir(ctx)), pr.BaseRefName, pr.Number, pr.HeadRefOid); squash != "" {
+		r.Queue, r.Squash = prQueueLanded, squash
+	}
 }
 
 func prUnread(number int, reason string) prStatusReport {

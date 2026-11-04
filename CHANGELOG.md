@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ccx vcs pr status` also applies the landed-while-unmerged read to a pull request Graphite or the native lane answers for, which is where Forge-AI/monorepo#49847 stayed `not queued` after the first fix.
 - `ccx vcs pr status` reads an open or closed pull request as landed when its own squash `(#N)` is on the base
   branch and carries every change its head makes. Trunk can merge a pull request, report an error, and
   leave it open; the status read it as not queued with CI red.
