@@ -2,7 +2,9 @@ package index
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -76,6 +78,9 @@ func Load(ctx context.Context, emb Embedder, root string, content []ContentType,
 	root, err := ResolveRoot(root)
 	if err != nil {
 		return nil, err
+	}
+	if existingOnly(ctx) {
+		return loadExisting(ctx, emb, root, content, chunker, modelID)
 	}
 	fi, err := os.Stat(root)
 	if err != nil {
@@ -203,6 +208,90 @@ func Load(ctx context.Context, emb Embedder, root string, content []ContentType,
 	}
 	// A build's peak and a warm load's decode buffers both dwarf the index left
 	// behind; Go's scavenger would return those pages only over many minutes.
+	debug.FreeOSMemory()
+	return idx, nil
+}
+
+// ErrNoIndex is a Load under [WithExistingOnly] finding no usable index.
+var ErrNoIndex = errors.New("semsearch: no usable index exists")
+
+type existingOnlyKey struct{}
+
+// WithExistingOnly has Load answer from the index root already has: it walks
+// nothing, embeds nothing, writes only the last-used stamp, and returns
+// [ErrNoIndex] when there is no usable index.
+func WithExistingOnly(ctx context.Context) context.Context {
+	return context.WithValue(ctx, existingOnlyKey{}, true)
+}
+
+func existingOnly(ctx context.Context) bool {
+	only, _ := ctx.Value(existingOnlyKey{}).(bool)
+	return only
+}
+
+// HasExisting reports whether root has a current-schema index for these
+// parameters, leaving no cache directory behind when it does not. It needs no
+// embedder, so it answers before a refusal would load the model.
+func HasExisting(ctx context.Context, root string, content []ContentType, chunker Chunker, modelID string) (bool, error) {
+	root, err := ResolveRoot(root)
+	if err != nil {
+		return false, err
+	}
+	base, err := semsearchDir(ctx)
+	if err != nil {
+		return false, err
+	}
+	dir := filepath.Join(base, rootKey(root))
+	variants, err := os.ReadDir(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read index cache %q: %w", dir, err)
+	}
+	contentK, chunkerID := ContentKey(content), chunker.ID()
+	for _, variant := range variants {
+		man, err := readManifest(filepath.Join(dir, variant.Name()))
+		if err == nil && man.Schema == schemaVersion && man.Model == modelID && man.Content == contentK && man.Chunker == chunkerID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func loadExisting(ctx context.Context, emb Embedder, root string, content []ContentType, chunker Chunker, modelID string) (*Index, error) {
+	base, err := semsearchDir(ctx)
+	if err != nil {
+		return nil, err
+	}
+	contentK, chunkerID := ContentKey(content), chunker.ID()
+	dir := filepath.Join(base, rootKey(root), variantKey(schemaVersion, modelID, contentK, chunkerID, emb.Dims()))
+	if !hasManifest(dir) {
+		return nil, ErrNoIndex
+	}
+	var idx *Index
+	err = cache.WithLock(ctx, dir, "index", func() error {
+		current := loadPersisted(dir, modelID, contentK, chunkerID, emb.Dims())
+		if current == nil {
+			return ErrNoIndex
+		}
+		if err := touchLastUsed(dir); err != nil {
+			current.unmap()
+			return err
+		}
+		idx = &Index{
+			Root:       root,
+			Chunks:     current.chunks,
+			Vectors:    current.vectors,
+			TotalFiles: len(current.manifest.Files),
+			terms:      current.terms,
+			files:      current.files,
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
 	debug.FreeOSMemory()
 	return idx, nil
 }

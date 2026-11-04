@@ -143,6 +143,8 @@ It also watches for JSON. A command flagged for JSON output (`--json`, `-o json`
 
 When Claude Code defers MCP tools behind tool search (`ENABLE_TOOL_SEARCH`), the everyday tools — `ccx_code_read`, `ccx_code_grep`, `ccx_code_outline`, `ccx_code_search` — are marked `alwaysLoad`, so they stay in the prompt from the first turn and a guard redirect to one costs no tool-search round-trip. The rest of the surface stays deferred, loaded on demand.
 
+A `ccx mcp` server only builds the semantic index of the checkout it started in, which is the root its client declares, else its working directory. Search another repository with `repo=` and it answers from the index that repository already has, unrefreshed. With no index, the call errors and points at `ccx code grep`, or at running `ccx code search` from that repository. A server started in the home directory or outside a checkout builds nothing. The CLI builds wherever you run it.
+
 ## Commands
 
 Each command is a token-bounded stand-in for a primitive an agent would otherwise reach for. Structural output is capped at `--budget` tokens, cut on a line boundary, with an explicit marker saying how much was dropped. The daily drivers:

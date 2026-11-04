@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/yasyf/cc-context/internal/ripgrep"
 	"github.com/yasyf/cc-context/internal/semsearch/engine"
 	"github.com/yasyf/cc-context/internal/semsearch/index"
+	"github.com/yasyf/cc-context/internal/workspace"
 )
 
 // slowFakeEmbedder maps each text to a deterministic unit vector, standing in for
@@ -278,6 +280,192 @@ func TestRunSemanticRefusalNeverLoadsTheEmbedder(t *testing.T) {
 		if _, err := Run(context.Background(), op, backend.Args{Query: "login", Path: root}); !errors.Is(err, errNotCheckout) {
 			t.Errorf("Run(%s) = %v, want %v", op, err, errNotCheckout)
 		}
+	}
+}
+
+type countingEmbedder struct {
+	slowFakeEmbedder
+	texts *atomic.Int64
+}
+
+func (e countingEmbedder) Encode(ctx context.Context, texts []string) ([][]float32, error) {
+	e.texts.Add(int64(len(texts)))
+	return e.slowFakeEmbedder.Encode(ctx, texts)
+}
+
+// confinedServer stands in for a ccx mcp server started in start: builds are
+// confined, the client declared start, and the index cache is empty and private.
+// It returns the cache's semsearch directory.
+func confinedServer(t *testing.T, start string) string {
+	t.Helper()
+	data := t.TempDir()
+	t.Setenv("CLAUDE_PLUGIN_DATA", data)
+	engine.CloseIndexCache()
+	t.Cleanup(engine.CloseIndexCache)
+	workspace.SetRoot(start)
+	t.Cleanup(func() { workspace.SetRoot("") })
+	t.Cleanup(ConfineIndexBuilds())
+	return filepath.Join(data, "semsearch")
+}
+
+func fakeHome(t *testing.T) string {
+	t.Helper()
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	return home
+}
+
+func TestConfinedServerRefusesToBuildAnotherRoot(t *testing.T) {
+	tests := []struct {
+		name  string
+		start func(t *testing.T, home string) string
+		ctx   func(ctx context.Context, repo string) context.Context
+		path  func(repo string) string
+	}{
+		{name: "a home start naming a repo", start: func(_ *testing.T, home string) string { return home }},
+		{name: "a dotfiles home start naming a repo", start: func(t *testing.T, home string) string {
+			if err := os.Mkdir(filepath.Join(home, ".git"), 0o750); err != nil {
+				t.Fatal(err)
+			}
+			return home
+		}},
+		{name: "a start outside any checkout naming a repo", start: func(t *testing.T, _ string) string { return t.TempDir() }},
+		{name: "repo A naming repo B", start: func(t *testing.T, _ string) string { return writeDispatchRepo(t) }},
+		{
+			name:  "repo A with repo B pinned as the call's root",
+			start: func(t *testing.T, _ string) string { return writeDispatchRepo(t) },
+			ctx:   workspace.WithRoot,
+			path:  func(string) string { return "" },
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cacheDir := confinedServer(t, tt.start(t, fakeHome(t)))
+			repo := writeDispatchRepo(t)
+			restore := SetEmbedderProvider(func(context.Context) (index.Embedder, error) {
+				t.Fatal("a refused root constructed the embedder")
+				return nil, nil
+			})
+			t.Cleanup(restore)
+			ctx := context.Background()
+			path := repo
+			if tt.ctx != nil {
+				ctx = tt.ctx(ctx, repo)
+			}
+			if tt.path != nil {
+				path = tt.path(repo)
+			}
+
+			for op, query := range map[backend.Op]string{backend.OpSearch: "login", backend.OpRelated: "auth.go:3"} {
+				_, err := Run(ctx, op, backend.Args{Query: query, Path: path})
+				if !errors.Is(err, errNotStartedCheckout) {
+					t.Fatalf("Run(%s) = %v, want %v", op, err, errNotStartedCheckout)
+				}
+				if !strings.Contains(err.Error(), "ccx code grep") {
+					t.Errorf("Run(%s) error = %q, want it to point at ccx code grep", op, err)
+				}
+			}
+			entries, err := os.ReadDir(cacheDir)
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
+				t.Fatal(err)
+			}
+			if len(entries) != 0 {
+				t.Errorf("index cache holds %d entries after a refusal, want none", len(entries))
+			}
+		})
+	}
+}
+
+func TestConfinedServerBuildsItsOwnCheckout(t *testing.T) {
+	repo := writeDispatchRepo(t)
+	sub := filepath.Join(repo, "pkg")
+	if err := os.Mkdir(sub, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "login.go"), []byte("package pkg\n\nfunc Login() {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name string
+		path string
+	}{
+		{"with no repo named", ""},
+		{"naming itself", repo},
+		{"naming a directory inside itself", sub},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			confinedServer(t, repo)
+			restore := SetEmbedderProvider(func(context.Context) (index.Embedder, error) { return slowFakeEmbedder{}, nil })
+			t.Cleanup(restore)
+
+			out, err := Run(context.Background(), backend.OpSearch, backend.Args{Query: "login user session", Path: tt.path, K: 3})
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if !strings.Contains(out, "login.go") && !strings.Contains(out, "auth.go") {
+				t.Errorf("output = %q, want a hit from the built index", out)
+			}
+			if strings.Contains(out, "existing index") {
+				t.Errorf("output = %q, want no unrefreshed-index note on the server's own checkout", out)
+			}
+		})
+	}
+}
+
+func TestConfinedServerAnswersFromAnExistingIndex(t *testing.T) {
+	tests := []struct {
+		name  string
+		start func(t *testing.T, home string) string
+	}{
+		{"from a home start", func(_ *testing.T, home string) string { return home }},
+		{"from another repo", func(t *testing.T, _ string) string { return writeDispatchRepo(t) }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := fakeHome(t)
+			repo := writeDispatchRepo(t)
+			start := tt.start(t, home)
+			t.Setenv("CLAUDE_PLUGIN_DATA", t.TempDir())
+			engine.CloseIndexCache()
+			t.Cleanup(engine.CloseIndexCache)
+			texts := &atomic.Int64{}
+			restore := SetEmbedderProvider(func(context.Context) (index.Embedder, error) {
+				return countingEmbedder{texts: texts}, nil
+			})
+			t.Cleanup(restore)
+			if _, err := Run(context.Background(), backend.OpSearch, backend.Args{Query: "login user session", Path: repo, K: 3}); err != nil {
+				t.Fatalf("build the index unconfined: %v", err)
+			}
+			engine.CloseIndexCache()
+			if err := os.WriteFile(filepath.Join(repo, "added.go"), []byte("package auth\n\nfunc Added() {}\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			workspace.SetRoot(start)
+			t.Cleanup(func() { workspace.SetRoot("") })
+			t.Cleanup(ConfineIndexBuilds())
+			texts.Store(0)
+
+			out, err := Run(context.Background(), backend.OpSearch, backend.Args{Query: "login user session", Path: repo, K: 3})
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if !strings.Contains(out, "auth.go") {
+				t.Errorf("output = %q, want a hit from the existing index", out)
+			}
+			if strings.Contains(out, "added.go") {
+				t.Errorf("output = %q, want the existing index unrefreshed", out)
+			}
+			if !strings.Contains(out, "existing index") {
+				t.Errorf("output = %q, want the unrefreshed-index note", out)
+			}
+			if got := texts.Load(); got != 1 {
+				t.Errorf("embedded %d texts, want only the query", got)
+			}
+		})
 	}
 }
 

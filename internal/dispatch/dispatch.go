@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/yasyf/cc-context/anchor"
@@ -154,6 +155,10 @@ func runSemantic(ctx context.Context, op backend.Op, a backend.Args) (string, er
 	if err := requireCheckout(repo); err != nil {
 		return "", err
 	}
+	ctx, existingOnly, err := confineBuild(ctx, a, repo)
+	if err != nil {
+		return "", err
+	}
 	runtime.GOMAXPROCS(min(runtime.GOMAXPROCS(0), maxSemanticProcs))
 	ctx = index.WithBand(ctx, indexingBand)
 	emb, err := sharedEmbedder(ctx)
@@ -167,6 +172,9 @@ func runSemantic(ctx context.Context, op backend.Op, a backend.Args) (string, er
 	} else {
 		results, err = engine.Related(ctx, emb, a)
 	}
+	if errors.Is(err, index.ErrNoIndex) {
+		return "", refuseBuild(repo)
+	}
 	if err != nil {
 		return "", err
 	}
@@ -175,23 +183,86 @@ func runSemantic(ctx context.Context, op backend.Op, a backend.Args) (string, er
 	out := render.SearchResults(op, results, anchor.NewFiles(repo))
 	out = render.Cap(out, a.Budget)
 	out = render.WithWeakResultsNote(out, results)
+	if existingOnly {
+		out = render.WithExistingIndexNote(out)
+	}
 	return render.WithSlowSearchNote(out, elapsed), nil
 }
 
 const maxSemanticProcs = 4
 
-var errNotCheckout = errors.New("semantic search only indexes a checkout")
+var (
+	errNotCheckout        = errors.New("semantic search only indexes a checkout")
+	errNotStartedCheckout = errors.New("this ccx mcp server only builds the semantic index of the checkout it started in")
+)
+
+var buildsConfined atomic.Bool
+
+// ConfineIndexBuilds limits every later semantic op in this process to building
+// the index of the checkout the process started in, which is the root its MCP
+// client declared, else its working directory. Any other root answers from the
+// index it already has, unrefreshed, or is refused; a process started in the home
+// directory or outside a checkout builds nothing. It returns a func restoring the
+// previous limit.
+func ConfineIndexBuilds() (restore func()) {
+	prev := buildsConfined.Swap(true)
+	return func() { buildsConfined.Store(prev) }
+}
+
+func confineBuild(ctx context.Context, a backend.Args, repo string) (context.Context, bool, error) {
+	if !buildsConfined.Load() {
+		return ctx, false, nil
+	}
+	start, err := workspace.Root()
+	if err != nil {
+		return ctx, false, fmt.Errorf("dispatch: resolve cwd: %w", err)
+	}
+	started, err := checkoutOf(start)
+	if err != nil {
+		return ctx, false, err
+	}
+	target, err := checkoutOf(repo)
+	if err != nil {
+		return ctx, false, err
+	}
+	if started != "" && started == target {
+		return ctx, false, nil
+	}
+	has, err := engine.HasIndex(ctx, a, repo)
+	if err != nil {
+		return ctx, false, err
+	}
+	if !has {
+		return ctx, false, refuseBuild(repo)
+	}
+	return index.WithExistingOnly(ctx), true, nil
+}
+
+func refuseBuild(repo string) error {
+	return fmt.Errorf("%w: %s has no usable index and this server did not start in it; search it literally with ccx code grep, or run ccx code search from that repository", errNotStartedCheckout, repo)
+}
 
 func requireCheckout(repo string) error {
-	root, err := index.ResolveRoot(repo)
+	checkout, err := checkoutOf(repo)
 	if err != nil {
 		return err
 	}
-	_, checkout := vcs.DetectRoot(root)
-	if checkout == "" || holdsHome(root, checkout) {
-		return fmt.Errorf("%w: %s is the home directory or not inside a repository; name a repository path, or search it literally with ccx code grep", errNotCheckout, root)
+	if checkout == "" {
+		return fmt.Errorf("%w: %s is the home directory or not inside a repository; name a repository path, or search it literally with ccx code grep", errNotCheckout, repo)
 	}
 	return nil
+}
+
+func checkoutOf(dir string) (string, error) {
+	root, err := index.ResolveRoot(dir)
+	if err != nil {
+		return "", err
+	}
+	_, checkout := vcs.DetectRoot(root)
+	if checkout == "" || holdsHome(root, checkout) {
+		return "", nil
+	}
+	return checkout, nil
 }
 
 func holdsHome(root, checkout string) bool {

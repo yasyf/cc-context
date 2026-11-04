@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A `ccx mcp` server only builds the semantic index of the checkout it started
+  in.** The earlier guard checked the requested root, so a session started in the
+  home directory could still pass `repo=` and cold-build another repository: one
+  such build of a large checkout held 9 cores. A server started in the home
+  directory or outside a checkout now builds nothing, and a server in repo A no
+  longer builds repo B. A root with an existing index still answers from it,
+  unrefreshed and with a note saying so. Otherwise the call errors before any
+  model loads and points at `ccx code grep` or running `ccx code search` from that
+  repository. The root a client declares counts as where it started. The `ccx`
+  CLI is unchanged.
 - **A cleanup proof no longer misses an edit its seed index hid.** The previous
   release copied the tree's last index with its skip-worktree and
   assume-unchanged marks, so an edit to a marked file read as clean. An index

@@ -98,6 +98,15 @@ func bestCosine(results []semsearch.Result) (float64, bool) {
 // SlowSearchThreshold controls when semantic search latency guidance appears.
 var SlowSearchThreshold = 10 * time.Second
 
+// WithExistingIndexNote appends the note that an index was served without a
+// refresh, after any cap so it is never truncated away.
+func WithExistingIndexNote(out string) string {
+	if !strings.HasSuffix(out, "\n") {
+		out += "\n"
+	}
+	return out + "# note: answered from this repository's existing index, which this server does not refresh; run ccx code search from it for current results\n"
+}
+
 // WithSlowSearchNote appends guidance when a semantic search exceeds the
 // expected warm-index latency — the first search builds the index.
 func WithSlowSearchNote(out string, elapsed time.Duration) string {
