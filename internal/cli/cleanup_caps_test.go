@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -48,6 +50,7 @@ func TestParseCleanupBusyDeletes(t *testing.T) {
 		{name: "zero rate", rate: "0", wantErr: true},
 		{name: "not a number", rate: "fast", wantErr: true},
 		{name: "relative root", rate: "500", quiet: "a/b", wantErr: true},
+		{name: "a root holding a space", rate: "500", quiet: "/Volumes/Quiet Disk\n", want: cleanup.BusyDeletes{Rate: 500, Quiet: []string{"/Volumes/Quiet Disk"}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -59,5 +62,30 @@ func TestParseCleanupBusyDeletes(t *testing.T) {
 				t.Errorf("parseCleanupBusyDeletes(%q, %q) = %+v, want %+v", tt.rate, tt.quiet, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestCleanupRootsResolveSymlinks(t *testing.T) {
+	target, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	busy, err := parseCleanupBusyDeletes("500", link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{target}; !reflect.DeepEqual(busy.Quiet, want) {
+		t.Errorf("quiet roots = %v, want %v", busy.Quiet, want)
+	}
+	caps, err := parseCleanupRateCaps(link + "=100")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(caps) != 1 || caps[0].Root != target {
+		t.Errorf("caps = %+v, want root %s", caps, target)
 	}
 }

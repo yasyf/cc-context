@@ -1184,8 +1184,8 @@ func (e *Engine) slice(ctx context.Context, job cleanup.Job) error {
 		}
 	}
 	rate, workers := e.gov.rate(), e.gov.workers()
-	if e.holds() && e.busy.Rate < rate {
-		rate, workers = e.busy.Rate, 1
+	if e.holds() {
+		rate, workers = min(rate, e.busy.Rate), 1
 	}
 	if capped, ok := cleanup.CappedRate(e.caps, filepath.Join(e.active.root.Dir, e.active.root.Name)); ok && capped < rate {
 		rate, workers = capped, 1
@@ -1278,7 +1278,7 @@ func (e *Engine) readmit(ctx context.Context, job *cleanup.Job) (bool, error) {
 		return true, &fatalError{fmt.Errorf("cleanup daemon: readmit job %s: %w", job.ID, err)}
 	}
 	e.put(*job)
-	if job.Blocked != nil || job.Phase == cleanup.PhaseDone || root != e.active.root || e.holds() {
+	if job.Blocked != nil || job.Phase == cleanup.PhaseDone || root != e.active.root || e.rests(*job) {
 		return true, e.park()
 	}
 	e.active.admitted = e.clock.Now()
