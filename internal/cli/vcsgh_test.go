@@ -374,7 +374,7 @@ func TestRunVcsGhKeepsATokenCallerOutOfTheCache(t *testing.T) {
 	cmd, out := ghGatewayFixture(t)
 	cmd.SetContext(render.WithEnv(cmd.Context(), "GH_TOKEN=other"))
 	read := []string{"pr", "view", "1", "--repo", "o/r"}
-	var answers []string
+	answers := make([]string, 0, 2)
 	for range 2 {
 		out.Reset()
 		if err := runVcsGh(cmd, read, time.Minute); err != nil {
