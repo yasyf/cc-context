@@ -307,7 +307,7 @@ func TestSubmitLinksAnUnstackedGraphiteChainIntoOneNativeStack(t *testing.T) {
 	}
 }
 
-func TestSubmitNamesTheMoveOntoTrunkWhenAParentBaseHasNoOpenPullRequest(t *testing.T) {
+func TestSubmitWarnsAndSucceedsWhenAParentBaseHasNoOpenPullRequest(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if publishedHeadFixture(t, w, r, "tip-head") {
 			return
@@ -332,9 +332,46 @@ func TestSubmitNamesTheMoveOntoTrunkWhenAParentBaseHasNoOpenPullRequest(t *testi
 		}
 	}))
 	defer srv.Close()
-	_, err := NewWithToken(srv.URL, "key").SubmitPullRequests(context.Background(), SubmitRequest{RepoOwner: "org", RepoName: "repo", TrunkBranchName: "dev", PRs: []SubmitPR{{Action: SubmitUpdate, PRNumber: 3, Head: "tip", HeadSha: "tip-head", Base: "middle"}}})
-	if err == nil || !strings.Contains(err.Error(), "ccx vcs stack submit --parent middle=dev") {
-		t.Fatalf("submit over a parent based on a branch with no open PR = %v, want the --parent middle=dev remedy", err)
+	got, err := NewWithToken(srv.URL, "key").SubmitPullRequests(context.Background(), SubmitRequest{RepoOwner: "org", RepoName: "repo", TrunkBranchName: "dev", PRs: []SubmitPR{{Action: SubmitUpdate, PRNumber: 3, Head: "tip", HeadSha: "tip-head", Base: "middle"}}})
+	if err != nil {
+		t.Fatalf("submit over a parent based on a branch with no open PR = %v, want a warning and no failure", err)
+	}
+	if len(got) != 1 || got[0].PRNumber != 3 || got[0].StackNumber != 0 || len(got[0].Warnings) != 1 {
+		t.Fatalf("got=%+v, want PR #3 outside any stack with one warning", got)
+	}
+	for _, want := range []string{"PR #3 stays out of any native stack", "ccx vcs stack submit --parent middle=dev"} {
+		if !strings.Contains(got[0].Warnings[0], want) {
+			t.Errorf("warning %q lacks %q", got[0].Warnings[0], want)
+		}
+	}
+}
+
+func TestSubmitRefusesAStackedPullRequestWhoseParentBaseHasNoOpenPullRequest(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if publishedHeadFixture(t, w, r, "tip-head") {
+			return
+		}
+		reply := func(body string) {
+			if _, err := fmt.Fprint(w, body); err != nil {
+				t.Errorf("write fixture response: %v", err)
+			}
+		}
+		switch r.Method + " " + r.URL.Path + "?" + r.URL.Query().Get("head") {
+		case "GET /repos/org/repo/pulls/3?":
+			reply(`{"number":3,"state":"open","head":{"repo":{"full_name":"org/repo"},"ref":"tip","sha":"tip-head"},"base":{"ref":"gone"},"stack":{"number":7,"position":2,"size":2,"base":{"ref":"dev"}}}`)
+		case "GET /repos/org/repo/pulls?org:gone":
+			reply(`[]`)
+		case "GET /repos/org/repo?":
+			reply(`{"default_branch":"dev"}`)
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL)
+			http.Error(w, "unexpected", 500)
+		}
+	}))
+	defer srv.Close()
+	_, err := NewWithToken(srv.URL, "key").SubmitPullRequests(context.Background(), SubmitRequest{RepoOwner: "org", RepoName: "repo", TrunkBranchName: "dev", PRs: []SubmitPR{{Action: SubmitUpdate, PRNumber: 3, Head: "tip", HeadSha: "tip-head", Base: "gone"}}})
+	if err == nil || !strings.Contains(err.Error(), "ccx vcs stack submit --parent tip=dev --move tip") {
+		t.Fatalf("submit of a stacked PR over a base with no open PR = %v, want the --move remedy", err)
 	}
 }
 
@@ -511,11 +548,7 @@ func TestNativeStackRegistrationFailureReportsCreatedPullRequest(t *testing.T) {
 			}
 			return
 		}
-		body := `[]`
-		if r.URL.Path == "/repos/org/repo" {
-			body = `{"default_branch":"dev"}`
-		}
-		if _, err := fmt.Fprint(w, body); err != nil {
+		if _, err := fmt.Fprint(w, `[{"number":1},{"number":3}]`); err != nil {
 			t.Errorf("write fixture response: %v", err)
 		}
 	}))
