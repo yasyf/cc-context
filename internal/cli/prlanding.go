@@ -97,6 +97,8 @@ func (l prLanding) closedBy() string {
 // prSquashSubject matches the subject the queue leaves on the squash it writes.
 // The anchor earns its keep: unanchored, the number also matches a longer pull
 // request number and a cross-reference somewhere in another commit's message.
+var prSquashNumber = regexp.MustCompile(`\(#(\d+)\)$`)
+
 func prSquashSubject(number int) *regexp.Regexp {
 	return regexp.MustCompile(fmt.Sprintf(`\(#%d\)$`, number))
 }
@@ -118,9 +120,9 @@ func prSquashesOnBase(ctx context.Context, dir render.Dir, base string, numbers 
 	if base == "" || len(numbers) == 0 {
 		return squashes
 	}
-	subjects := make(map[int]*regexp.Regexp, len(numbers))
+	wanted := make(map[int]bool, len(numbers))
 	for _, number := range numbers {
-		subjects[number] = prSquashSubject(number)
+		wanted[number] = true
 	}
 	out, err := render.RunCLI(ctx, dir, "git", []string{
 		"log", "--format=%H%x09%s", "-" + strconv.Itoa(prSquashCandidates*len(numbers)), "origin/" + base,
@@ -133,10 +135,13 @@ func prSquashesOnBase(ctx context.Context, dir render.Dir, base string, numbers 
 		if !found {
 			continue
 		}
-		for number, subject := range subjects {
-			if _, seen := squashes[number]; !seen && subject.MatchString(message) {
-				squashes[number] = sha
-			}
+		match := prSquashNumber.FindStringSubmatch(message)
+		if match == nil {
+			continue
+		}
+		number, _ := strconv.Atoi(match[1])
+		if _, seen := squashes[number]; wanted[number] && !seen {
+			squashes[number] = sha
 		}
 	}
 	return squashes

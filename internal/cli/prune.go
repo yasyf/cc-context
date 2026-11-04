@@ -320,7 +320,7 @@ func gtMergedHeads(ctx context.Context, dir render.Dir, l lane, prefix, trunk st
 	}
 	client := gtAPI(ctx)
 	var mu sync.Mutex
-	merged := map[string]string{}
+	var found []gtapi.PullRequestInfo
 	g, gctx := errgroup.WithContext(ctx)
 	g.SetLimit(4)
 	for batch := range slices.Chunk(branches, pruneLandedBatch) {
@@ -338,8 +338,8 @@ func gtMergedHeads(ctx context.Context, dir render.Dir, l lane, prefix, trunk st
 			mu.Lock()
 			defer mu.Unlock()
 			for _, pr := range infos {
-				if slices.Contains(batch, pr.HeadRefName) && pruneLanded(gctx, dir, trunk, pr) {
-					merged[pr.HeadRefName] = pruneMergedHead(pr)
+				if slices.Contains(batch, pr.HeadRefName) {
+					found = append(found, pr)
 				}
 			}
 			return nil
@@ -347,6 +347,10 @@ func gtMergedHeads(ctx context.Context, dir render.Dir, l lane, prefix, trunk st
 	}
 	if err := g.Wait(); err != nil {
 		return nil, err
+	}
+	merged := map[string]string{}
+	for _, pr := range pruneLandedPRs(ctx, dir, trunk, found) {
+		merged[pr.HeadRefName] = pruneMergedHead(pr)
 	}
 	return merged, nil
 }
@@ -357,14 +361,27 @@ func gtMergedHeads(ctx context.Context, dir render.Dir, l lane, prefix, trunk st
 // CLOSED pull request costs no request and one this checkout has not fetched
 // the landing of is left alone.
 func pruneLanded(ctx context.Context, dir render.Dir, trunk string, pr gtapi.PullRequestInfo) bool {
-	switch pr.State {
-	case gtapi.PRMerged:
-		return true
-	case gtapi.PRClosed:
-		return prSquashOnBase(ctx, dir, trunk, pr.PRNumber) != ""
-	default:
-		return false
+	return len(pruneLandedPRs(ctx, dir, trunk, []gtapi.PullRequestInfo{pr})) == 1
+}
+
+// pruneLandedPRs filters prs to the ones pruneLanded accepts, reading trunk
+// once for every CLOSED one: a repository with thousands of branches holds
+// thousands of them, and a walk of trunk apiece never finishes.
+func pruneLandedPRs(ctx context.Context, dir render.Dir, trunk string, prs []gtapi.PullRequestInfo) []gtapi.PullRequestInfo {
+	var closed []int
+	for _, pr := range prs {
+		if pr.State == gtapi.PRClosed {
+			closed = append(closed, pr.PRNumber)
+		}
 	}
+	squashes := prSquashesOnBase(ctx, dir, trunk, closed)
+	var landed []gtapi.PullRequestInfo
+	for _, pr := range prs {
+		if pr.State == gtapi.PRMerged || (pr.State == gtapi.PRClosed && squashes[pr.PRNumber] != "") {
+			landed = append(landed, pr)
+		}
+	}
+	return landed
 }
 
 // pruneMergedHead is the head of a pull request's newest version, empty when
