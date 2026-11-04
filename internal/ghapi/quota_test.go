@@ -60,6 +60,27 @@ func TestAdmitRefusesAPoolUnderTheFloorAndNamesItsCallers(t *testing.T) {
 	}
 }
 
+func TestAdmitSpillKeepsHalfTheUsersPool(t *testing.T) {
+	reset := time.Now().Add(30 * time.Minute).Truncate(time.Second)
+	for remaining, refused := range map[int]bool{2499: true, 2500: false} {
+		c, _ := quotaClient(t, func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = fmt.Fprint(w, rateLimitBody(remaining, remaining, reset))
+		})
+		ctx := t.Context()
+		if err := c.Admit(ctx, IdentityUser, ResourceCore); err != nil {
+			t.Fatalf("Admit at %d left = %v, want it admitted above the floor", remaining, err)
+		}
+		err := c.AdmitSpill(ctx, ResourceCore)
+		var floor *FloorError
+		if errors.As(err, &floor) != refused {
+			t.Errorf("AdmitSpill at %d left = %v, want refused=%v", remaining, err, refused)
+		}
+		if refused && floor.Pool.Floor != 2500 {
+			t.Errorf("refused pool floor = %d, want 2500", floor.Pool.Floor)
+		}
+	}
+}
+
 func TestAdmitReadsAPoolPastItsResetAgain(t *testing.T) {
 	past := time.Now().Add(-time.Minute)
 	c, l := quotaClient(t, func(w http.ResponseWriter, _ *http.Request) {
