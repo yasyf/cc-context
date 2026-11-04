@@ -57,6 +57,7 @@ const shipHookLintLock = "golangci-lint"
 const (
 	shipHookLockDir        = "ship-hooks"
 	shipHookLintBusy       = "parallel golangci-lint is running"
+	shipHookReportLine     = "- hook id: "
 	shipHookLintIssuesExit = "1"
 	shipHookLintAttempts   = 6
 	shipHookLintPeek       = time.Second
@@ -150,8 +151,9 @@ func shipRunHooks(ctx context.Context, errW io.Writer, dir render.Dir, kind vcs.
 	// Leading-dash filenames intentionally reach prek unchanged so it fails loudly.
 	argv := append([]string{"prek", "run", "--cd", string(dir), "--files"}, files...)
 	var passErr error
+	retried := false
 	if shipHookRunsLint(data, files) {
-		passErr = shipRunLintPass(ctx, errW, dir, argv, &buf, passW)
+		retried, passErr = shipRunLintPass(ctx, errW, dir, argv, &buf, passW)
 	} else {
 		passErr = shipRunPrek(ctx, dir, argv, passW)
 	}
@@ -163,10 +165,10 @@ func shipRunHooks(ctx context.Context, errW io.Writer, dir render.Dir, kind vcs.
 		}
 		return "", false, passErr
 	}
-	after := shipHookSnapshot(dir, files)
-	if passErr == nil && maps.Equal(before, after) {
+	if passErr == nil && !retried {
 		return "hooks ok", covered, nil
 	}
+	after := shipHookSnapshot(dir, files)
 	if kind == vcs.Git {
 		if _, err := shipGitAdd(ctx, dir, o); err != nil {
 			return "", false, err
@@ -188,6 +190,9 @@ func shipRunHooks(ctx context.Context, errW io.Writer, dir render.Dir, kind vcs.
 		}
 	}
 	if maps.Equal(before, after) && slices.Equal(files, rederived) {
+		if passErr == nil {
+			return "hooks ok", covered, nil
+		}
 		return "hooks failed", covered, nil
 	}
 	return "hooks fixed", covered, nil
@@ -214,58 +219,63 @@ func shipHookLintNoVerdict(cause error) error {
 	return fmt.Errorf("ship: hooks: golangci-lint gave no verdict (%w): %w", cause, errShipHookLintNoVerdict)
 }
 
-func shipRunLintPass(ctx context.Context, errW io.Writer, dir render.Dir, argv []string, buf *bytes.Buffer, passW io.Writer) error {
-	lockDir, err := cache.Dir(ctx, shipHookLockDir)
+func shipRunLintPass(ctx context.Context, errW io.Writer, dir render.Dir, argv []string, buf *bytes.Buffer, passW io.Writer) (retried bool, err error) {
+	lockDir, err := cache.UserDir(shipHookLockDir)
 	if err != nil {
-		return shipHookLintNoVerdict(err)
+		return false, shipHookLintNoVerdict(err)
 	}
 	ran := false
 	pass := func() error {
 		ran = true
-		return shipRunPrekUntilLinted(ctx, errW, dir, argv, buf, passW)
+		var passErr error
+		retried, passErr = shipRunPrekUntilLinted(ctx, errW, dir, argv, buf, passW)
+		return passErr
 	}
 	peek, cancelPeek := context.WithTimeout(ctx, shipHookLintPeek)
 	defer cancelPeek()
 	err = cache.WithLock(peek, lockDir, shipHookLintLock, pass)
 	if !ran && errors.Is(err, context.DeadlineExceeded) {
 		if _, werr := fmt.Fprintf(errW, shipHookLintWaitNotice, shipHookLintWait); werr != nil {
-			return fmt.Errorf("ship: hooks: announce the wait: %w", werr)
+			return false, fmt.Errorf("ship: hooks: announce the wait: %w", werr)
 		}
 		wait, cancelWait := context.WithTimeout(ctx, shipHookLintWait)
 		defer cancelWait()
 		err = cache.WithLock(wait, lockDir, shipHookLintLock, pass)
 	}
 	if !ran {
-		return shipHookLintNoVerdict(fmt.Errorf("wait for another ship's lint: %w", err))
+		return false, shipHookLintNoVerdict(fmt.Errorf("wait for another ship's lint: %w", err))
 	}
-	return err
+	return retried, err
 }
 
-func shipRunPrekUntilLinted(ctx context.Context, errW io.Writer, dir render.Dir, argv []string, buf *bytes.Buffer, passW io.Writer) error {
+func shipRunPrekUntilLinted(ctx context.Context, errW io.Writer, dir render.Dir, argv []string, buf *bytes.Buffer, passW io.Writer) (retried bool, err error) {
 	for attempt := 1; ; attempt++ {
 		buf.Reset()
 		err := shipRunPrek(ctx, dir, argv, passW)
 		if err == nil {
-			return nil
+			return retried, nil
 		}
 		busy := bytes.Contains(buf.Bytes(), []byte(shipHookLintBusy))
 		exit := shipHookLintFailedExit(buf.Bytes())
 		switch {
-		case !busy && exit == "":
-			return err
+		case !busy && exit != "":
+			return retried, shipHookLintNoVerdict(fmt.Errorf("its hook exited %s", exit))
+		case !busy && !bytes.Contains(buf.Bytes(), []byte(shipHookReportLine)):
+			return retried, shipHookLintNoVerdict(fmt.Errorf("prek reported no hook: %w", err))
 		case !busy:
-			return shipHookLintNoVerdict(fmt.Errorf("its hook exited %s", exit))
+			return retried, err
 		case attempt == shipHookLintAttempts:
-			return shipHookLintNoVerdict(fmt.Errorf("another golangci-lint held its lock through %d attempts", attempt))
+			return retried, shipHookLintNoVerdict(fmt.Errorf("another golangci-lint held its lock through %d attempts", attempt))
 		}
 		if _, werr := fmt.Fprintf(errW, shipHookLintRetryNotice, shipHookLintRetryDelay, attempt, shipHookLintAttempts); werr != nil {
-			return fmt.Errorf("ship: hooks: announce the retry: %w", werr)
+			return retried, fmt.Errorf("ship: hooks: announce the retry: %w", werr)
 		}
 		select {
 		case <-ctx.Done():
-			return shipHookLintNoVerdict(ctx.Err())
+			return retried, shipHookLintNoVerdict(ctx.Err())
 		case <-time.After(shipHookLintRetryDelay):
 		}
+		retried = true
 	}
 }
 
