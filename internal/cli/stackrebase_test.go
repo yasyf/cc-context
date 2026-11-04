@@ -402,7 +402,7 @@ func TestStackSubmitSetsDraftOnNewPullRequestsAlone(t *testing.T) {
 			api.prs["base"] = 9000
 			f.Decorate(api.ctx)
 			mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base")
-			args := []string{"submit", "--pr-title", "feature=Feature", "--pr-body-file", "feature=" + writePRBody(t, "feature.md", "feature body\n")}
+			args := []string{"submit", "--replace-pr-text", "--pr-title", "feature=Feature", "--pr-body-file", "feature=" + writePRBody(t, "feature.md", "feature body\n")}
 			if draft {
 				args = append(args, "--draft")
 			}

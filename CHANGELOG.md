@@ -17,9 +17,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `ccx vcs stack new` leads with the tree it leaves alone and where to work, as
-  `this tree stays on <parent>; work in <path>`, because a lane missed the old clipped line and
-  committed on the parent. The path stays the last thing printed.
+- `ccx vcs ship` and `ccx vcs stack submit` keep a title or body an open pull request already has,
+  warn on stderr, and replace them only with `--replace-pr-text`. A blank live body still fills
+  without the flag. A ship from a parent's tree, meant for a child `ccx vcs stack new` cut elsewhere,
+  had rewritten the parent's title and body.
+- `ccx vcs stack new` ends with the tree that holds the child and the tree it left alone, as
+  `<child> is in its own tree and this tree stays on <parent>; cd to it · <path>`, because a lane
+  missed the earlier line and committed on the parent. The path stays the last thing printed.
 - `ccx vcs ship` and `ccx vcs stack submit` warn and exit clean when a pull request's parent is a
   branch with no open pull request, such as a line branch. The push and pull request update had
   already succeeded, yet ship exited failed. A pull request already in a native stack is still

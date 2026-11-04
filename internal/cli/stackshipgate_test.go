@@ -148,7 +148,7 @@ func TestStackSubmitWithPRMetaStillRestacksAGreenPullRequest(t *testing.T) {
 	writeShipGH(t, f)
 	seedPRViews(t, map[string]string{"c": `{"number":102,"url":"https://github.com/x/pull/102","body":""}`})
 
-	if _, errStr, err := runStackCmd(t, f, "submit", "--pr-title", "c=c, retitled"); err != nil {
+	if _, errStr, err := runStackCmd(t, f, "submit", "--replace-pr-text", "--pr-title", "c=c, retitled"); err != nil {
 		t.Fatalf("stack submit --pr-title = %v (stderr=%q)", err, errStr)
 	}
 	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "b"); got == published {

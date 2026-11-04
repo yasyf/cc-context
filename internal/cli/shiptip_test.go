@@ -293,7 +293,7 @@ func TestShipTipOnlyPreviewsAndPublishesExplicitChildMeta(t *testing.T) {
 	if err := os.WriteFile(body, []byte("Exact body\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	args := []string{"--no-commit", "--no-watch", "--tip-only", "--pr-title", "Exact child title", "--pr-body-file", body}
+	args := []string{"--no-commit", "--no-watch", "--tip-only", "--replace-pr-text", "--pr-title", "Exact child title", "--pr-body-file", body}
 	report := dryRunReport(t, f, args...)
 	if refs := dryRunBranches(report, "push ref"); !slices.Equal(refs, []string{"feature"}) {
 		t.Errorf("preview push refs = %v, want only feature\n%s", refs, report)

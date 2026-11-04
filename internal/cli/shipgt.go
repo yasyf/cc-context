@@ -736,6 +736,9 @@ func gtResumeCmd(o shipOpts) string {
 	for _, value := range o.prBodyFile {
 		argv = append(argv, "--pr-body-file "+strconv.Quote(value))
 	}
+	if o.replacePRText {
+		argv = append(argv, "--replace-pr-text")
+	}
 	for _, branch := range o.newPRs {
 		argv = append(argv, "--new-pr "+strconv.Quote(branch))
 	}

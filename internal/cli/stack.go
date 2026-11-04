@@ -292,7 +292,8 @@ submitted, and named with the ccx vcs ship command that opens it. No flag opens
 one without them. --pr-title and --pr-body-file take ship's <branch>=<value> form; a bare
 value names the branch checked out here. They restate those pull requests after
 the push, carrying and retracting release trailers as ccx vcs ship --help
-describes, and survive a conflict stop. Naming a branch outside the stack, or one
+describes, and survive a conflict stop. A title or body the pull request already
+has stays, with a warning, unless --replace-pr-text is given. Naming a branch outside the stack, or one
 the run leaves out, is refused before anything moves.
 
 On plain git, submit is ccx vcs stack restack --parent for the branch checked out
@@ -322,6 +323,7 @@ head. --all-lanes takes in the branches those working copies hold. On a branch,
 	cmd.Flags().StringArrayVar(&o.prTitle, "pr-title", nil, "title for a pull request: <branch>=<title>, or a bare title for the branch checked out here (repeatable)")
 	cmd.Flags().StringArrayVar(&o.prTitleFile, "pr-title-file", nil, "one-line title file for a pull request: <branch>=<path>, or a bare path for the branch checked out here; - reads stdin (repeatable)")
 	cmd.Flags().StringArrayVar(&o.prBodyFile, "pr-body-file", nil, "body file for a pull request: <branch>=<path>, or a bare path for the branch checked out here; - reads stdin (repeatable)")
+	cmd.Flags().BoolVar(&o.replacePRText, "replace-pr-text", false, replacePRTextUsage)
 	cmd.Flags().StringArrayVar(&include, "include", nil, "submit this branch even though another lane's working copy has it checked out or it is another lane's; a published branch below every one named and the one checked out here stays at its published head (repeatable)")
 	cmd.Flags().BoolVar(&o.allLanes, "all-lanes", false, "submit the branches of other lanes too, a lane being the branch name before its last slash or the working copy holding the branch")
 	cmd.Flags().StringArrayVar(&o.landed, "landed", nil, "treat <branch> as landed and drop it (repeatable)")

@@ -11,9 +11,10 @@ import (
 )
 
 type stackShipMeta struct {
-	Title string  `json:"title,omitempty"`
-	Body  *string `json:"body,omitempty"`
-	Draft *bool   `json:"draft,omitempty"`
+	Title       string  `json:"title,omitempty"`
+	Body        *string `json:"body,omitempty"`
+	Draft       *bool   `json:"draft,omitempty"`
+	ReplaceText bool    `json:"replace_text,omitempty"`
 }
 
 type stackShipIntent struct {
@@ -41,7 +42,7 @@ func stackShipOptions(o shipOpts, meta map[string]prMeta, repo, branch string) (
 func stackShipPrepared(meta map[string]prMeta) (map[string]stackShipMeta, error) {
 	prepared := make(map[string]stackShipMeta, len(meta))
 	for name, m := range meta {
-		saved := stackShipMeta{Title: m.title, Draft: m.draft}
+		saved := stackShipMeta{Title: m.title, Draft: m.draft, ReplaceText: m.replaceText}
 		if m.bodyPath != "" {
 			body, err := os.ReadFile(m.bodyPath)
 			if err != nil {
@@ -59,7 +60,7 @@ func stackFinishShip(ctx context.Context, cmd *cobra.Command, l lane, run *stack
 	intent := run.Ship
 	meta := map[string]prMeta{}
 	for name, saved := range intent.Meta {
-		m := prMeta{title: saved.Title, draft: saved.Draft}
+		m := prMeta{title: saved.Title, draft: saved.Draft, replaceText: saved.ReplaceText}
 		if saved.Body != nil {
 			m.bodyPath = filepath.Join(run.dir, "body-"+strconv.Itoa(len(meta)))
 			if err := os.WriteFile(m.bodyPath, []byte(*saved.Body), 0o600); err != nil {
@@ -76,7 +77,7 @@ func stackFinishShip(ctx context.Context, cmd *cobra.Command, l lane, run *stack
 	}
 	_, _, entries := gtPRSegment(intent.Branch, chain, meta, submitted)
 	if len(meta) > 0 {
-		segment, err := shipPRGT(ctx, intent.Repo, meta, entries)
+		segment, err := shipPRGT(ctx, cmd.ErrOrStderr(), intent.Repo, meta, entries)
 		if err != nil {
 			return err
 		}

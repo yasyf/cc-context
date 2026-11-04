@@ -34,6 +34,8 @@ const prBodyTempPrefix = "ccx-pr-body-"
 // the retry to name.
 const prCarriedTempPrefix = "ccx-pr-carried-"
 
+const replacePRTextUsage = "let --pr-title, --pr-title-file and --pr-body-file overwrite the title and body an open pull request already has; without it ship warns and keeps them"
+
 // prURLMarker separates a pull request URL's repository from its number.
 const prURLMarker = "/pull/"
 
@@ -50,11 +52,12 @@ type prState struct {
 // prMeta is the caller's stated pull request metadata; an unset field is never
 // written, so a re-ship that passes neither leaves a human's edits alone.
 type prMeta struct {
-	title     string
-	bodyPath  string // materialized: a real path, never "-"
-	bodyBlank bool   // bodyPath holds nothing but whitespace
-	draft     *bool  // nil unless --draft/--publish was explicitly Changed
-	base      string
+	title       string
+	bodyPath    string // materialized: a real path, never "-"
+	bodyBlank   bool   // bodyPath holds nothing but whitespace
+	draft       *bool  // nil unless --draft/--publish was explicitly Changed
+	base        string
+	replaceText bool // --replace-pr-text: stated text overwrites what the pull request carries
 }
 
 func (m prMeta) writesBody() bool {
@@ -180,6 +183,11 @@ func resolvePRMeta(cmd *cobra.Command, o shipOpts, tip string) (map[string]prMet
 		}
 		entry.bodyPath = path
 		entry.bodyBlank = strings.TrimSpace(string(body)) == ""
+		meta[branch] = entry
+	}
+
+	for branch, entry := range meta {
+		entry.replaceText = o.replacePRText
 		meta[branch] = entry
 	}
 
@@ -309,12 +317,12 @@ func shipPRRepo(ctx context.Context, l lane, plan branchPlan, base string) (stri
 }
 
 // shipPR is the single pull-request-owning step for every lane. It opens the
-// branch's pull request when there is none and restates exactly the fields this
-// invocation named when there is, so a description someone edited by hand
-// survives a re-ship that does not mention it.
+// branch's pull request when there is none. When there is one, it writes the
+// fields this invocation named, except a title or body the pull request already
+// carries, which stays unless --replace-pr-text says otherwise.
 func shipPR(ctx context.Context, errW io.Writer, l lane, nwo, remote, branch, trunk, subject string, meta map[string]prMeta, stack []stackEntry) (string, error) {
 	if l.gt {
-		return shipPRGT(ctx, nwo, meta, stack)
+		return shipPRGT(ctx, errW, nwo, meta, stack)
 	}
 	// A pull request from trunk into trunk is not a thing, and on a personal
 	// repository that is the normal place to ship from.
@@ -328,7 +336,7 @@ func shipPR(ctx context.Context, errW io.Writer, l lane, nwo, remote, branch, tr
 	}
 	if found {
 		cciClaimPRs(ctx, errW, l.dir(), "ship", nwo, nil, []int{pr.Number})
-		return shipPREdit(ctx, nwo, pr, m)
+		return shipPREdit(ctx, errW, nwo, branch, pr, m)
 	}
 	base, picked := m.base, false
 	if base == "" {
@@ -622,14 +630,14 @@ func prCreateArgv(nwo, branch, trunk, title, bodyPath string, draft bool) []stri
 }
 
 // shipPREdit restates the fields this invocation named on an existing pull
-// request. Zero stated fields means zero calls.
-func shipPREdit(ctx context.Context, nwo string, pr prState, m prMeta) (string, error) {
+// request, less the text withLivePRText keeps. Zero stated fields means zero
+// calls.
+func shipPREdit(ctx context.Context, errW io.Writer, nwo, branch string, pr prState, m prMeta) (string, error) {
 	// GitHub refuses any base write to a pull request in a native stack, even
 	// one naming the base it already has, so an unchanged base is never sent.
 	if m.base == pr.Base.Ref {
 		m.base = ""
 	}
-	fields := m.stated()
 	// REST has no draft toggle, so a transition is gh pr ready's own verb — and
 	// only a real transition is worth a call.
 	var ready []string
@@ -654,12 +662,13 @@ func shipPREdit(ctx context.Context, nwo string, pr prState, m prMeta) (string, 
 		}
 		return prStepError("the push", "restate", retry, graphQL, err)
 	}
+	carried, cleanup, err := withLivePRText(ctx, errW, nwo, branch, pr.Number, m)
+	if err != nil {
+		return "", restateFailed(m, false, err)
+	}
+	fields := carried.stated()
 	viaGraphQL := false
 	if len(fields) > 0 {
-		carried, cleanup, err := withLiveReleaseTrailers(ctx, nwo, pr.Number, m)
-		if err != nil {
-			return "", restateFailed(m, false, err)
-		}
 		if viaGraphQL, err = restatePR(ctx, nwo, pr.Number, carried); err != nil {
 			return "", restateFailed(carried, viaGraphQL, err)
 		}
@@ -698,7 +707,7 @@ func prEditArgv(nwo string, number int, m prMeta) []string {
 // updatePullRequest when REST refuses with a rate limit: GitHub meters the two
 // apart, so a secondary limit on REST writes leaves GraphQL open. viaGraphQL
 // reports that the fallback ran. m's body already carries the live Release-*
-// trailers withLiveReleaseTrailers added.
+// trailers withLivePRText added.
 func restatePR(ctx context.Context, nwo string, number int, m prMeta) (viaGraphQL bool, err error) {
 	_, err = render.RunCLI(ctx, render.Ambient, "gh", prEditArgv(nwo, number, m))
 	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "rate limit") {
@@ -714,13 +723,16 @@ func restatePR(ctx context.Context, nwo string, number int, m prMeta) (viaGraphQ
 	return true, nil
 }
 
-// withLiveReleaseTrailers is m with its body carrying the release trailers
-// that close pull request number's live body and that m's body neither
-// restates nor retracts. A body that needed them is
-// written to a temp file, which cleanup removes once the restate lands.
-func withLiveReleaseTrailers(ctx context.Context, nwo string, number int, m prMeta) (carried prMeta, cleanup func(), err error) {
+// withLivePRText is m as it lands on pull request number. A title or body the
+// pull request already carries stays, with a warning naming it, unless
+// m.replaceText says otherwise, because a ship from the wrong branch must not
+// rewrite what a reviewer reads. A blank live body has nothing to protect, and
+// stated text that matches the live text needs no write. A body that does land
+// carries the release trailers closing the live body that it neither restates
+// nor retracts, in a temp file cleanup removes once the restate lands.
+func withLivePRText(ctx context.Context, errW io.Writer, nwo, branch string, number int, m prMeta) (carried prMeta, cleanup func(), err error) {
 	noop := func() {}
-	if m.bodyPath == "" {
+	if m.title == "" && m.bodyPath == "" {
 		return m, noop, nil
 	}
 	out, err := render.RunCLI(ctx, render.Ambient, "gh", prBodyArgv(nwo, number))
@@ -728,17 +740,39 @@ func withLiveReleaseTrailers(ctx context.Context, nwo string, number int, m prMe
 		return m, noop, fmt.Errorf("ship: read PR #%d body: %w", number, err)
 	}
 	var live struct {
-		Body string `json:"body"`
+		Title string `json:"title"`
+		Body  string `json:"body"`
 	}
 	if err := json.Unmarshal([]byte(out), &live); err != nil {
 		return m, noop, fmt.Errorf("ship: parse PR #%d body: %w", number, err)
 	}
-	next, err := os.ReadFile(m.bodyPath) //nolint:gosec // the caller names the body file
-	if err != nil {
-		return m, noop, fmt.Errorf("ship: --pr-body-file %s: %w", m.bodyPath, err)
+	var kept []string
+	switch {
+	case m.title == live.Title:
+		m.title = ""
+	case m.title != "" && !m.replaceText:
+		kept = append(kept, "title")
+		m.title = ""
 	}
-	body := carryReleaseTrailers(live.Body, string(next))
-	if body == string(next) {
+	var next []byte
+	var body string
+	if m.bodyPath != "" {
+		if next, err = os.ReadFile(m.bodyPath); err != nil { //nolint:gosec // the caller names the body file
+			return m, noop, fmt.Errorf("ship: --pr-body-file %s: %w", m.bodyPath, err)
+		}
+		body = carryReleaseTrailers(live.Body, string(next))
+		switch {
+		case strings.TrimSpace(body) == strings.TrimSpace(live.Body):
+			m.bodyPath = ""
+		case strings.TrimSpace(live.Body) != "" && !m.replaceText:
+			kept = append(kept, "body")
+			m.bodyPath = ""
+		}
+	}
+	if len(kept) > 0 {
+		_, _ = fmt.Fprintf(errW, "ship: kept the %s already on %s's PR #%d; pass --replace-pr-text to replace\n", strings.Join(kept, " and "), branch, number)
+	}
+	if m.bodyPath == "" || body == string(next) {
 		return m, noop, nil
 	}
 	f, err := os.CreateTemp("", prCarriedTempPrefix+"*")
@@ -916,9 +950,10 @@ func prStepError(done, step string, retry, graphQL []string, err error) error {
 
 // shipPRGT backfills the pull requests the submit just opened, over the
 // downstack the push step already resolved, restating exactly the branches
-// this invocation named. A branch the caller did not name has nothing to
-// write, so it is left alone whether or not it already has a body.
-func shipPRGT(ctx context.Context, nwo string, meta map[string]prMeta, stack []stackEntry) (string, error) {
+// this invocation named, less the text withLivePRText keeps. A branch the
+// caller did not name has nothing to write, so it is left alone whether or not
+// it already has a body.
+func shipPRGT(ctx context.Context, errW io.Writer, nwo string, meta map[string]prMeta, stack []stackEntry) (string, error) {
 	pending := make(map[string]prMeta, len(stack))
 	for _, entry := range stack {
 		if m := meta[entry.Branch]; !entry.metaApplied && entry.PR != 0 && len(m.stated()) > 0 {
@@ -933,7 +968,7 @@ func shipPRGT(ctx context.Context, nwo string, meta map[string]prMeta, stack []s
 		if !ok {
 			continue
 		}
-		c, cleanup, err := withLiveReleaseTrailers(ctx, nwo, entry.PR, m)
+		c, cleanup, err := withLivePRText(ctx, errW, nwo, entry.Branch, entry.PR, m)
 		if err != nil {
 			for _, cleanup := range cleanups {
 				cleanup()
@@ -941,7 +976,9 @@ func shipPRGT(ctx context.Context, nwo string, meta map[string]prMeta, stack []s
 			retry, _ := prRestatesLeft(nwo, pending, stack)
 			return "", prStepError("the push and graphite submit", "restate", retry, nil, err)
 		}
-		carried[entry.Branch], cleanups[entry.Branch] = c, cleanup
+		if len(c.stated()) > 0 {
+			carried[entry.Branch], cleanups[entry.Branch] = c, cleanup
+		}
 	}
 	segs := make([]string, 0, len(stack))
 	for i := len(stack) - 1; i >= 0; i-- {

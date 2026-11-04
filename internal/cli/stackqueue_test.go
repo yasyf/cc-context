@@ -407,7 +407,7 @@ func TestShipNewBranchOnAnOpenParentReadsTheQueue(t *testing.T) {
 	published := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "p")
 	shipGTReady(t, f)
 
-	if _, errStr, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--new-branch=bench", "--pr-body-file", writePRBody(t, "body.md", "why\n"), "f.txt"); err != nil {
+	if _, errStr, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--new-branch=bench", "--replace-pr-text", "--pr-body-file", writePRBody(t, "body.md", "why\n"), "f.txt"); err != nil {
 		t.Fatalf("ship --new-branch=bench = %v (stderr=%q)", err, errStr)
 	}
 	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "p"); got != published {

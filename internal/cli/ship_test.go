@@ -4402,7 +4402,7 @@ func TestShipGTBodylessPR(t *testing.T) {
 		gt.prs["feature"] = 7
 		body := writePRBody(t, "body.md", "why this change\n")
 
-		got, err := runShipCmd(gt.ctx(context.Background()), t, "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", body)
+		got, err := runShipCmd(gt.ctx(context.Background()), t, "-m", "fix: frobnicate", "--no-watch", "--replace-pr-text", "--pr-body-file", body)
 		if err != nil {
 			t.Fatalf("ship error = %v", err)
 		}
@@ -4417,7 +4417,7 @@ func TestShipGTBodylessPR(t *testing.T) {
 		gt.prs["feature"] = 7
 		body := writePRBody(t, "empty.md", "  \n\t\n")
 
-		got, err := runShipCmd(gt.ctx(context.Background()), t, "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", body)
+		got, err := runShipCmd(gt.ctx(context.Background()), t, "-m", "fix: frobnicate", "--no-watch", "--replace-pr-text", "--pr-body-file", body)
 		if err != nil {
 			t.Fatalf("ship error = %v", err)
 		}
@@ -5006,7 +5006,7 @@ func TestShipGTNewBranchFromAnUntrackedBaseLevelWithTrunk(t *testing.T) {
 	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
 	shipGTReady(t, f)
 
-	got, _, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--new-branch=lane-fix", "--pr-title", "Lane fix", "--no-watch")
+	got, _, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--new-branch=lane-fix", "--replace-pr-text", "--pr-title", "Lane fix", "--no-watch")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
@@ -6443,7 +6443,7 @@ func TestShipGTRefusalOfAPullRequestGitHubAlreadyServes(t *testing.T) {
 		t.Setenv("GH_PULLS_JSON", ghOpenPullAt(t, 41, vcstest.GraphiteLeafSHA, "main"))
 		body := writePRBody(t, "body.md", "why this change\n")
 
-		got, errStr, err := runShipCmdFull(api.ctx(context.Background()), t, "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", body)
+		got, errStr, err := runShipCmdFull(api.ctx(context.Background()), t, "-m", "fix: frobnicate", "--no-watch", "--replace-pr-text", "--pr-body-file", body)
 		if err != nil {
 			t.Fatalf("ship error = %v (stderr=%q)", err, errStr)
 		}
