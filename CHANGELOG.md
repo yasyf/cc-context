@@ -17,6 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A cleanup proof no longer writes a copy of each Git LFS file it reads.** The
+  daemon's git children now run a clean filter built into `ccx`. It hashes the
+  stream and returns the pointer `git-lfs` would, so an edit still shows as a
+  mismatch, and `.git/lfs/tmp` stays empty. This removes about 211 MiB of writes
+  per first proof of a monorepo tree; the 381 MiB read remains.
 - **A job proves its tree at the cost of one read.** The scratch index now lives
   until the job is done and is refreshed before each `git status`, so a job's
   later proofs and resumes re-read only the files that changed.

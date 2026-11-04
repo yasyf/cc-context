@@ -66,7 +66,11 @@ func (r *Relocator) budget() time.Duration {
 }
 
 func (r *Relocator) command(ctx context.Context, git string, args ...string) (*exec.Cmd, *capped) {
-	cmd := exec.CommandContext(ctx, git, append([]string{"-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "--no-optional-locks"}, args...)...) //nolint:gosec // git is the absolute path the request validated; the argv is the relocator's own
+	settings := []string{"-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "--no-optional-locks"}
+	if r.cfg.LFSClean != "" {
+		settings = append(settings, "-c", "filter.lfs.process="+r.cfg.LFSClean)
+	}
+	cmd := exec.CommandContext(ctx, git, append(settings, args...)...) //nolint:gosec // git is the absolute path the request validated; the argv is the relocator's own
 	cmd.Env = r.cfg.GitEnv
 	render.BoundChild(cmd)
 	stderr := &capped{limit: maxStderr}

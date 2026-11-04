@@ -287,7 +287,10 @@ reads every tracked file, Git LFS files included; later proofs re-read only file
 that changed. When the tree's last index survives, in its admin directory or under
 `<common>/retired-worktrees/`, and no entry is marked skip-worktree or
 assume-unchanged, the first proof starts from its stat data too. A marked entry
-would hide an edit, so such an index is ignored. The same proof covers a tree that lost `.git` but keeps its
+would hide an edit, so such an index is ignored. The daemon's git children read
+each Git LFS file through a clean filter built into `ccx`, which hashes the file
+as it streams and writes no temporary copy, so a proof reads an LFS file without
+writing it again and still sees an edit to it. The same proof covers a tree that lost `.git` but keeps its
 registration, a tree whose branch was deleted after the job captured it, and a
 deletion that resumes. A `.gitignore` the tree lost still applies, read from
 that commit, so the files it ignores never count as dirt. A tree someone moved after the
