@@ -6,8 +6,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A cleanup proof no longer misses an edit its seed index hid.** The previous
+  release copied the tree's last index with its skip-worktree and
+  assume-unchanged marks, so an edit to a marked file read as clean. An index
+  with a marked entry now seeds nothing, and the proof reads the tree from its
+  saved `HEAD`.
+
 ### Changed
 
+- **A job proves its tree at the cost of one read.** The scratch index now lives
+  until the job is done and is refreshed before each `git status`, so a job's
+  later proofs and resumes re-read only the files that changed.
 - **A cleanup proof no longer re-reads every file of a tree whose index
   survives.** Proving a retired tree against its saved `HEAD` used an empty
   index, so `git status` hashed all tracked files and sent each Git LFS file

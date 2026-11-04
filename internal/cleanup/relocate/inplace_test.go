@@ -352,7 +352,6 @@ func TestAdvanceProvesAnOrphanAgainstItsSavedHead(t *testing.T) {
 			} else {
 				f.claimed(&job)
 			}
-			f.absent(f.layout.ScratchIndex(job.ID))
 			f.absent(f.layout.ScratchIndex(job.ID) + ".lock")
 			if got := f.id(f.worktree); got != job.Tree {
 				t.Errorf("tree identity = %v, want the tree %v left at its path", got, job.Tree)
@@ -368,6 +367,7 @@ func TestAdvanceProvesAnOrphanAgainstItsSavedHead(t *testing.T) {
 				t.Fatalf("Admit() after the deletion = %+v, %v, want the job done", job, err)
 			}
 			f.stored(&job)
+			f.absent(f.layout.ScratchIndex(job.ID))
 		})
 	}
 }
@@ -383,44 +383,55 @@ func (f *fixture) ignoreBuildOutput() {
 	f.write(filepath.Join(f.worktree, "build", "out.bin"), "out\n")
 }
 
+func (f *fixture) ageTrackedFiles() {
+	f.t.Helper()
+	earlier := time.Now().Add(-time.Hour)
+	for _, name := range []string{"base.txt", "feature.txt"} {
+		if err := os.Chtimes(filepath.Join(f.worktree, name), earlier, earlier); err != nil {
+			f.t.Fatal(err)
+		}
+	}
+}
+
+func (f *fixture) retireTree(job cleanup.Job) string {
+	f.t.Helper()
+	parent := filepath.Join(job.Repo, cleanup.RetiredWorktrees)
+	if err := os.MkdirAll(parent, 0o700); err != nil {
+		f.t.Fatal(err)
+	}
+	retired := filepath.Join(parent, filepath.Base(job.AdminDir))
+	if err := os.Rename(job.AdminDir, retired); err != nil {
+		f.t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(job.Original, ".git")); err != nil {
+		f.t.Fatal(err)
+	}
+	return retired
+}
+
+func (f *fixture) spyOnCleanFilter() string {
+	f.t.Helper()
+	cleaned := filepath.Join(f.t.TempDir(), "cleaned")
+	f.run(f.repo, "config", "filter.spy.clean", "echo read >>"+cleaned+"; cat")
+	if err := os.MkdirAll(filepath.Join(f.common, "info"), 0o700); err != nil {
+		f.t.Fatal(err)
+	}
+	f.write(filepath.Join(f.common, "info", "attributes"), "*.txt filter=spy\n")
+	return cleaned
+}
+
 func TestAdvanceProvesATreeFromTheStatDataOfItsLastIndex(t *testing.T) {
 	retiredTree := func(f *fixture, job cleanup.Job) string {
 		f.t.Helper()
-		earlier := time.Now().Add(-time.Hour)
-		for _, name := range []string{"base.txt", "feature.txt"} {
-			if err := os.Chtimes(filepath.Join(f.worktree, name), earlier, earlier); err != nil {
-				f.t.Fatal(err)
-			}
-		}
+		f.ageTrackedFiles()
 		f.run(f.worktree, "update-index", "--refresh")
-		parent := filepath.Join(job.Repo, cleanup.RetiredWorktrees)
-		if err := os.MkdirAll(parent, 0o700); err != nil {
-			f.t.Fatal(err)
-		}
-		retired := filepath.Join(parent, filepath.Base(job.AdminDir))
-		if err := os.Rename(job.AdminDir, retired); err != nil {
-			f.t.Fatal(err)
-		}
-		if err := os.Remove(filepath.Join(job.Original, ".git")); err != nil {
-			f.t.Fatal(err)
-		}
-		return retired
-	}
-	spy := func(f *fixture) string {
-		f.t.Helper()
-		cleaned := filepath.Join(f.t.TempDir(), "cleaned")
-		f.run(f.repo, "config", "filter.spy.clean", "echo read >>"+cleaned+"; cat")
-		if err := os.MkdirAll(filepath.Join(f.common, "info"), 0o700); err != nil {
-			f.t.Fatal(err)
-		}
-		f.write(filepath.Join(f.common, "info", "attributes"), "*.txt filter=spy\n")
-		return cleaned
+		return f.retireTree(job)
 	}
 	t.Run("reads no file the index holds as unchanged", func(t *testing.T) {
 		f := newFixture(t)
 		job := f.accept()
 		retiredTree(f, job)
-		cleaned := spy(f)
+		cleaned := f.spyOnCleanFilter()
 
 		f.advance(&job)
 
@@ -439,6 +450,19 @@ func TestAdvanceProvesATreeFromTheStatDataOfItsLastIndex(t *testing.T) {
 
 		f.blocked(&job, cleanup.PhasePrepared, "dirty", "uncommitted changes: feature.txt")
 	})
+	for _, mark := range []string{"--skip-worktree", "--assume-unchanged"} {
+		t.Run("finds an edit an entry marked "+mark+" would hide", func(t *testing.T) {
+			f := newFixture(t)
+			job := f.accept()
+			f.run(f.worktree, "update-index", mark, "feature.txt")
+			f.write(filepath.Join(f.worktree, "feature.txt"), "edited\n")
+			f.retireTree(job)
+
+			f.advance(&job)
+
+			f.blocked(&job, cleanup.PhasePrepared, "dirty", "uncommitted changes: feature.txt")
+		})
+	}
 	t.Run("falls back to the saved HEAD past an index git refuses", func(t *testing.T) {
 		f := newFixture(t)
 		job := f.accept()
@@ -449,6 +473,22 @@ func TestAdvanceProvesATreeFromTheStatDataOfItsLastIndex(t *testing.T) {
 
 		f.claimed(&job)
 	})
+}
+
+func TestAdvanceReadsEachFileOnceAcrossAJobsProofs(t *testing.T) {
+	f := newFixture(t)
+	job := f.accept()
+	f.ageTrackedFiles()
+	f.orphan(job)
+	cleaned := f.spyOnCleanFilter()
+
+	f.advance(&job)
+
+	f.claimed(&job)
+	if got := strings.Count(f.read(cleaned), "read"); got != 2 {
+		t.Errorf("the clean filter read %d files, want each of the 2 tracked files once", got)
+	}
+	f.absent(f.layout.ScratchIndex(job.ID) + ".lock")
 }
 
 func TestAdvanceReadsIgnoreRulesThePartialTreeLost(t *testing.T) {

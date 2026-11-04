@@ -1,6 +1,7 @@
 package relocate
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -277,12 +278,23 @@ func restorable(status, name []byte) bool {
 }
 
 func (r *Relocator) readHead(ctx context.Context, job *cleanup.Job, index string, location []string) error {
-	seeded, err := seedIndex(job, index)
-	if err != nil {
-		return err
+	_, err := os.Stat(index)
+	if err != nil && !gone(err) {
+		return fmt.Errorf("read the scratch index: %w", err)
 	}
-	if seeded {
-		if _, err := r.git(ctx, job.Git, append(slices.Clip(location), "read-tree", "-m", job.Head)...); err == nil {
+	proven := err == nil
+	seeded := false
+	if !proven {
+		if seeded, err = seedIndex(job, index); err != nil {
+			return err
+		}
+	}
+	if proven || seeded {
+		usable, err := r.mergeHead(ctx, job, location, seeded)
+		if err != nil {
+			return err
+		}
+		if usable {
 			return nil
 		}
 		if err := discardIndex(index); err != nil {
@@ -290,6 +302,39 @@ func (r *Relocator) readHead(ctx context.Context, job *cleanup.Job, index string
 		}
 	}
 	_, err = r.git(ctx, job.Git, append(slices.Clip(location), "read-tree", job.Head)...)
+	return err
+}
+
+func (r *Relocator) mergeHead(ctx context.Context, job *cleanup.Job, location []string, seeded bool) (bool, error) {
+	if _, err := r.git(ctx, job.Git, append(slices.Clip(location), "read-tree", "-m", job.Head)...); err != nil {
+		slog.Info("cleanup: read the saved HEAD without an index git refuses", "job", job.ID, "error", err)
+		return false, nil //nolint:nilerr // the caller reads HEAD into an empty index instead
+	}
+	if !seeded {
+		return true, r.reviewLostIgnores(ctx, job.Git, location)
+	}
+	shown := true
+	err := r.stream(ctx, job.Git, 0, func(head []byte) {
+		shown = shown && bytes.HasPrefix(head, []byte("H "))
+	}, append(slices.Clip(location), "ls-files", "-v", "-z")...)
+	return shown, err
+}
+
+func (r *Relocator) reviewLostIgnores(ctx context.Context, git string, location []string) error {
+	listed, err := r.git(ctx, git, append(slices.Clip(location), "ls-files", "-v", "-z", "--", ":(glob)**/.gitignore")...)
+	if err != nil {
+		return err
+	}
+	var kept []string
+	for entry := range strings.SplitSeq(listed, "\x00") {
+		if name, ok := strings.CutPrefix(entry, "S "); ok {
+			kept = append(kept, name)
+		}
+	}
+	if len(kept) == 0 {
+		return nil
+	}
+	_, err = r.git(ctx, git, append(append(slices.Clip(location), "update-index", "--no-skip-worktree", "--"), kept...)...)
 	return err
 }
 
@@ -330,16 +375,11 @@ func (r *Relocator) keepLostIgnores(ctx context.Context, git string, location []
 
 func (r *Relocator) matchesHead(ctx context.Context, job *cleanup.Job, tree string) (string, string) {
 	index := r.cfg.Journal.Layout().ScratchIndex(job.ID)
-	if err := discardIndex(index); err != nil {
-		return "reconcile", err.Error()
+	if err := os.Remove(index + ".lock"); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return "reconcile", fmt.Sprintf("discard the scratch index's lock: %v", err)
 	}
-	defer func() {
-		if err := discardIndex(index); err != nil {
-			slog.Warn("cleanup: leave a scratch index behind", "job", job.ID, "error", err)
-		}
-	}()
 	scratch := r.indexed(index)
-	location := []string{"--git-dir=" + job.Repo, "--work-tree=" + tree, "-c", "core.splitIndex=false"}
+	location := []string{"--git-dir=" + job.Repo, "--work-tree=" + tree, "-c", "core.splitIndex=false", "-c", "core.untrackedCache=false"}
 	if job.Head != "" {
 		if err := scratch.readHead(ctx, job, index, location); err != nil {
 			return gitReason(err), err.Error()
@@ -362,6 +402,9 @@ func (r *Relocator) matchesHead(ctx context.Context, job *cleanup.Job, tree stri
 	}
 	if job.Force {
 		return "", ""
+	}
+	if _, err := scratch.git(ctx, job.Git, append(slices.Clip(location), "update-index", "-q", "--refresh")...); err != nil {
+		return gitReason(err), err.Error()
 	}
 	dirt, err := scratch.changes(ctx, job.Git, restorable, append(location, "status", "--porcelain=v1", "-z", "--untracked-files=normal", "--ignore-submodules=none", "--no-renames")...)
 	if err != nil {

@@ -63,9 +63,9 @@ func (l Layout) Registered(id string) string { return filepath.Join(l.JobDir(id)
 // Payload is where a relocated worktree waits for deletion.
 func (l Layout) Payload(id string) string { return filepath.Join(l.JobDir(id), PayloadName) }
 
-// ScratchIndex is the throwaway git index one job proves an orphaned tree
-// clean against. It lives for a single proof; git's lock beside it may outlive
-// a crash.
+// ScratchIndex is the git index one job proves a tree clean against. It lives
+// until the job is done, so a later proof re-reads only the files that changed;
+// git's lock beside it may outlive a crash.
 func (l Layout) ScratchIndex(id string) string { return filepath.Join(l.JobDir(id), scratchName) }
 
 // Socket is the daemon's control socket, refused when the kernel's sun_path
