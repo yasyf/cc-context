@@ -124,6 +124,12 @@ func TestAdvanceBlocksAPendingJobItsPreflightNoLongerPasses(t *testing.T) {
 func TestAdvanceSettlesAPendingJobWhoseWorktreeWasReplaced(t *testing.T) {
 	f := newFixture(t)
 	job := f.pend()
+	// Holding the removed tree open stops ext4 reusing its inode for the replacement.
+	removed, err := os.Open(f.worktree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = removed.Close() }()
 	f.run(f.repo, "worktree", "remove", "--force", f.worktree)
 	f.run(f.repo, "worktree", "add", "-q", "-b", "other", f.worktree)
 	replacement := f.observe(f.worktree)
