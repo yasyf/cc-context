@@ -22,7 +22,7 @@ func newGrepCmd() *cobra.Command {
 			return runOp(cmd, backend.OpGrep, a)
 		},
 	}
-	cmd.Flags().StringArrayVarP(&a.Globs, "glob", "g", nil, "restrict to files matching this glob (repeatable, ordered; ! excludes)")
+	cmd.Flags().StringArrayVarP(&a.Globs, "glob", "g", nil, globFlagUsage)
 	cmd.Flags().BoolVarP(&a.IgnoreCase, "ignore-case", "i", false, "case-insensitive match (ripgrep/grep engine)")
 	cmd.Flags().BoolVarP(&a.Word, "word", "w", false, "match whole words only (ripgrep/grep engine)")
 	cmd.Flags().BoolVarP(&a.Regex, "regex", "E", false, "treat the pattern as a regular expression (ripgrep/grep engine)")

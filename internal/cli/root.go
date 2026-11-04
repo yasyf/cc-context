@@ -82,7 +82,11 @@ var flagHints = []flagHint{
 	{"read", "glob", staticHint("grep takes --glob")},
 	{"outline", "glob", staticHint("grep takes --glob")},
 	{"", "budget", budgetHint},
+	{"", "path", pathSelectorHint},
+	{"", "scope", pathSelectorHint},
 }
+
+const globFlagUsage = "restrict to a file, directory or glob (repeatable, ordered; ! excludes)"
 
 var (
 	reUnknownFlag      = regexp.MustCompile(`^unknown flag: --(\S+)`)
@@ -166,6 +170,13 @@ func budgetHint(cmd *cobra.Command) string {
 	walk(cmd.Root())
 	sort.Strings(names)
 	return "commands with --budget: " + strings.Join(names, ", ")
+}
+
+func pathSelectorHint(cmd *cobra.Command) string {
+	if cmd.Flags().Lookup("glob") == nil {
+		return ""
+	}
+	return "narrow with -g/--glob, which takes a file, directory or glob"
 }
 
 // levenshtein returns the edit distance between a and b.
