@@ -107,6 +107,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs ship` no longer commits when golangci-lint never ran.** A lint gives
+  up after 5 seconds when another run holds its lock and exits 3, and ship
+  reported `hooks failed` and committed with no typecheck. Ship now queues its Go
+  lint passes behind one machine-wide lock, so 8 lanes shipping at once run one
+  lint at about 130% CPU rather than 8 of them, and says when it is waiting. It
+  retries a lock failure for up to 2.5 minutes, gives up on the queue after 8
+  minutes, and stops with nothing committed when the hook exits with anything
+  but a finding: a lock failure, a timeout, or a load failure. `--no-verify` is
+  the explicit way past. A commit with no Go file skips the queue.
 - **A semantic-search index build can no longer take over the machine.** A
   first search of a large repository ran 8 chunking workers plus the embedder
   and the garbage collector at normal priority: one `ccx mcp` server held 9
