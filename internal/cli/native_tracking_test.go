@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -36,6 +37,8 @@ func TestNativeStackTrackingRequiresCurrentIdentity(t *testing.T) {
 		{"missing native stack", func(p *gtapi.PullRequestInfo) { p.StackNumber = 0 }, false},
 		{"wrong native parent PR", func(p *gtapi.PullRequestInfo) { p.DependentPRNumber = 99 }, false},
 		{"closed PR", func(p *gtapi.PullRequestInfo) { p.State = gtapi.PRClosed }, false},
+		{"bottom of a fork stack on the parent", func(p *gtapi.PullRequestInfo) { p.DependentPRNumber, p.CliTrunk = 0, "base" }, true},
+		{"bottom of a stack on another base", func(p *gtapi.PullRequestInfo) { p.DependentPRNumber, p.CliTrunk = 0, "main" }, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			p := matching
@@ -44,6 +47,74 @@ func TestNativeStackTrackingRequiresCurrentIdentity(t *testing.T) {
 				t.Fatalf("tracks branch = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestNativeRefuseFork(t *testing.T) {
+	parent := gtapi.PullRequestInfo{PRNumber: 15, HeadRefName: "card", StackNumber: 16, OpenAbove: []gtapi.StackPull{{Number: 27, Head: "claim"}, {Number: 28, Head: "claim-2"}}}
+	for _, tt := range []struct {
+		name    string
+		parents map[string]string
+		known   map[string]gtapi.PullRequestInfo
+		want    string
+	}{
+		{
+			name:    "an open sibling names both pull requests and the stack's top",
+			parents: map[string]string{"card": "dev", "thread": "card"},
+			known:   map[string]gtapi.PullRequestInfo{"card": parent, "thread": {PRNumber: 34, HeadRefName: "thread"}},
+			want:    "stack rebase: #34 thread and #27 claim both sit on #15 card. Native GitHub stack #16 is a single chain and GitHub has no stack of one pull request for a fork, so #34 thread cannot register. Nothing was pushed. Chain it on the stack's top: ccx vcs stack rebase --parent thread=claim-2. Or take it off #15: ccx vcs stack rebase --parent thread=dev",
+		},
+		{
+			name:    "a branch with no pull request yet is named by branch",
+			parents: map[string]string{"thread": "card"},
+			known:   map[string]gtapi.PullRequestInfo{"card": parent},
+			want:    "stack rebase: thread and #27 claim both sit on #15 card. Native GitHub stack #16 is a single chain and GitHub has no stack of one pull request for a fork, so thread cannot register. Nothing was pushed. Chain it on the stack's top: ccx vcs stack rebase --parent thread=claim-2. Or take it off #15: ccx vcs stack rebase --parent thread=dev",
+		},
+		{
+			name:    "a landed or closed member above the parent leaves no sibling",
+			parents: map[string]string{"thread": "card"},
+			known:   map[string]gtapi.PullRequestInfo{"card": {PRNumber: 15, HeadRefName: "card", StackNumber: 16}},
+		},
+		{
+			name:    "the sibling already in the stack passes",
+			parents: map[string]string{"claim": "card"},
+			known:   map[string]gtapi.PullRequestInfo{"card": parent, "claim": {PRNumber: 27, HeadRefName: "claim", StackNumber: 16}},
+		},
+		{
+			name:    "a fork with a child of its own opens its own stack",
+			parents: map[string]string{"fork": "card", "fork-tip": "fork"},
+			known:   map[string]gtapi.PullRequestInfo{"card": parent},
+		},
+		{
+			name:    "a parent this run cannot read passes to the verdict",
+			parents: map[string]string{"thread": "card"},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			err := nativeRefuseFork("stack rebase", "dev", tt.parents, tt.known)
+			if tt.want == "" {
+				if err != nil {
+					t.Fatalf("refused: %v", err)
+				}
+				return
+			}
+			if err == nil || err.Error() != tt.want {
+				t.Fatalf("err = %v, want %s", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestStackPublishedParentsLeavesOutWhatTheRunWillNotRegister(t *testing.T) {
+	run := &stackRebaseRun{Trunk: "main", Branches: []stackRebaseBranch{
+		{Name: "bottom", Parent: "main"},
+		{Name: "landed", Parent: "bottom", Landed: "#7 landed"},
+		{Name: "tip", Parent: "bottom"},
+		{Name: "another-lane", Parent: "bottom", Pinned: true},
+		{Name: "unpublished", Parent: "bottom", LocalOnly: true},
+	}}
+	if got, want := stackPublishedParents(run), (map[string]string{"tip": "bottom"}); !maps.Equal(got, want) {
+		t.Fatalf("parents = %v, want %v", got, want)
 	}
 }
 

@@ -112,6 +112,9 @@ func (c *Client) WithQueueProvider(provider string) *Client {
 	return &selected
 }
 
+// StackPull names an open pull request a native stack holds.
+type StackPull = nativeapi.StackPull
+
 func (c *Client) nativePullRequestInfo(ctx context.Context, req PullRequestInfoRequest) ([]PullRequestInfo, error) {
 	infos, err := c.native.PullRequestInfo(ctx, nativeapi.PullRequestInfoRequest(req))
 	if err != nil {
@@ -119,7 +122,7 @@ func (c *Client) nativePullRequestInfo(ctx context.Context, req PullRequestInfoR
 	}
 	result := make([]PullRequestInfo, 0, len(infos))
 	for _, info := range infos {
-		p := PullRequestInfo{PRID: info.PRID, StackNumber: info.StackNumber, PRNumber: info.PRNumber, Title: info.Title, AuthorGithubHandle: info.AuthorGithubHandle, Body: info.Body, State: PRState(info.State), ReviewDecision: info.ReviewDecision, HeadRefName: info.HeadRefName, BaseRefName: info.BaseRefName, URL: info.URL, IsDraft: info.IsDraft, DependentPRNumber: info.DependentPRNumber, MergeCommitSha: info.MergeCommitSha, CliTrunk: info.CliTrunk}
+		p := PullRequestInfo{PRID: info.PRID, StackNumber: info.StackNumber, PRNumber: info.PRNumber, Title: info.Title, AuthorGithubHandle: info.AuthorGithubHandle, Body: info.Body, State: PRState(info.State), ReviewDecision: info.ReviewDecision, HeadRefName: info.HeadRefName, BaseRefName: info.BaseRefName, URL: info.URL, IsDraft: info.IsDraft, DependentPRNumber: info.DependentPRNumber, OpenAbove: info.OpenAbove, MergeCommitSha: info.MergeCommitSha, CliTrunk: info.CliTrunk}
 		for _, v := range info.Versions {
 			p.Versions = append(p.Versions, PRVersion{HeadSha: v.HeadSha, BaseSha: v.BaseSha, BaseName: v.BaseName, CreatedAt: v.CreatedAt, AuthorGithubHandle: v.AuthorGithubHandle})
 		}

@@ -2801,6 +2801,15 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 		}
 	}
 	if client.IsNative() {
+		if s.publication == nil {
+			parents := make(map[string]string, len(plan))
+			for _, b := range plan {
+				parents[b.name] = b.base
+			}
+			if err := nativeRefuseFork(s.prefix, tr.Name(), parents, known); err != nil {
+				return nil, nil, err
+			}
+		}
 		if err := nativeRefuseQueuedChanges(ctx, client, owner, name, s.prefix, plan, known); err != nil {
 			return nil, nil, err
 		}

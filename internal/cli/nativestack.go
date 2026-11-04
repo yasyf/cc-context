@@ -251,7 +251,67 @@ func nativeStackTracksBranch(info gtapi.PullRequestInfo, branch *stackRebaseBran
 	if branch.Parent == trunk {
 		return true
 	}
-	return info.StackNumber > 0 && parent != nil && info.DependentPRNumber == parent.Number
+	if info.StackNumber == 0 || parent == nil {
+		return false
+	}
+	return info.DependentPRNumber == parent.Number || info.DependentPRNumber == 0 && info.CliTrunk == branch.Parent
+}
+
+func nativeRefuseFork(prefix, trunk string, parents map[string]string, known map[string]gtapi.PullRequestInfo) error {
+	children := map[string]bool{}
+	for _, parent := range parents {
+		children[parent] = true
+	}
+	for _, branch := range slices.Sorted(maps.Keys(parents)) {
+		parent, self := known[parents[branch]], known[branch]
+		if len(parent.OpenAbove) == 0 || self.StackNumber != 0 || children[branch] {
+			continue
+		}
+		name := branch
+		if self.PRNumber != 0 {
+			name = fmt.Sprintf("#%d %s", self.PRNumber, branch)
+		}
+		sibling, top := parent.OpenAbove[0], parent.OpenAbove[len(parent.OpenAbove)-1]
+		return refuse("%s: %s and #%d %s both sit on #%d %s. Native GitHub stack #%d is a single chain and GitHub has no stack of one pull request for a fork, so %s cannot register. Nothing was pushed. Chain it on the stack's top: ccx vcs stack rebase --parent %s=%s. Or take it off #%d: ccx vcs stack rebase --parent %s=%s", prefix, name, sibling.Number, sibling.Head, parent.PRNumber, parent.HeadRefName, parent.StackNumber, name, branch, top.Head, parent.PRNumber, branch, trunk)
+	}
+	return nil
+}
+
+func stackRefuseFork(ctx context.Context, l lane, run *stackRebaseRun, o stackRebaseOpts) error {
+	if !l.native || o.noPush || run.NoPush {
+		return nil
+	}
+	parents := stackPublishedParents(run)
+	if len(parents) == 0 {
+		return nil
+	}
+	owner, repo, err := gtRepoOwnerName(ctx, l, stackRebasePrefix)
+	if err != nil {
+		return err
+	}
+	heads := slices.Concat(slices.Collect(maps.Keys(parents)), slices.Collect(maps.Values(parents)))
+	slices.Sort(heads)
+	infos, err := gtAPI(ctx).PullRequestInfo(ctx, gtapi.PullRequestInfoRequest{RepoOwner: owner, RepoName: repo, PRHeadRefNames: slices.Compact(heads), Callsite: "ccx"})
+	if err != nil {
+		return fmt.Errorf("%s: read the native stacks these branches join: %w", stackRebasePrefix, err)
+	}
+	known := make(map[string]gtapi.PullRequestInfo, len(infos))
+	for _, info := range infos {
+		if info.State == gtapi.PROpen {
+			known[info.HeadRefName] = info
+		}
+	}
+	return nativeRefuseFork(stackRebasePrefix, run.Trunk, parents, known)
+}
+
+func stackPublishedParents(run *stackRebaseRun) map[string]string {
+	parents := map[string]string{}
+	for _, b := range run.Branches {
+		if b.Parent != run.Trunk && !b.Pinned && !b.LocalOnly && b.Landed == "" {
+			parents[b.Name] = b.Parent
+		}
+	}
+	return parents
 }
 
 func nativeQueueProbe(ctx context.Context, l lane) *statusProbe {

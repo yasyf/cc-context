@@ -552,6 +552,9 @@ func stackBegin(ctx context.Context, cmd *cobra.Command, l lane, commonDir strin
 			return err
 		}
 	}
+	if err := stackRefuseFork(ctx, l, run, o); err != nil {
+		return err
+	}
 	if o.result != nil {
 		*o.result = run
 	}

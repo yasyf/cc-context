@@ -168,7 +168,11 @@ func (t *stackTracking) settled(cmd *cobra.Command) error {
 			return fmt.Errorf("native GitHub stack tracking: %w", t.err)
 		}
 		if len(t.untracked) > 0 {
-			return fmt.Errorf("native GitHub stack registration incomplete: %s", strings.Join(stackUntrackedBranches(t.untracked), ", "))
+			names := make([]string, len(t.untracked))
+			for i, u := range t.untracked {
+				names[i] = fmt.Sprintf("#%d %s on %s", u.PR, u.Branch, u.Parent)
+			}
+			return fmt.Errorf("native GitHub stack registration incomplete, so the merge queue cannot enqueue these until ccx vcs stack submit registers them: %s", strings.Join(names, ", "))
 		}
 		return nil
 	}
