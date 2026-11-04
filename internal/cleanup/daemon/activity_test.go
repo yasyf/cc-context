@@ -225,6 +225,32 @@ func TestBusySessionsDeleteAQuietRootOnlyAfterItMoves(t *testing.T) {
 	})
 }
 
+func TestMoveRootsCoverOnlyTreesThatCanMove(t *testing.T) {
+	root := "/root"
+	base := cleanup.Job{Original: root + "/tree", Repo: "/repo.git", AdminDir: root + "/admin", Payload: "/journal/payload"}
+	tests := []struct {
+		name   string
+		adjust func(*cleanup.Job)
+		want   bool
+	}{
+		{"claimed", func(j *cleanup.Job) { j.Phase = cleanup.PhaseClaimed }, true},
+		{"deleting its tree", func(j *cleanup.Job) { j.Phase = cleanup.PhaseDeletingTree }, true},
+		{"already moved", func(j *cleanup.Job) { j.Phase, j.Moved = cleanup.PhaseDeletingTree, true }, false},
+		{"deleting its registration", func(j *cleanup.Job) { j.Phase = cleanup.PhaseDeletingRegistration }, false},
+		{"adopted", func(j *cleanup.Job) { j.Phase, j.Adopted = cleanup.PhaseClaimed, true }, false},
+	}
+	e := &Engine{busy: cleanup.BusyDeletes{Rate: 100, Workers: 1, Quiet: []string{root}, Move: []string{root}}}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			job := base
+			tt.adjust(&job)
+			if got := e.movesOut(job); got != tt.want {
+				t.Errorf("movesOut = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestMovesOutWaitTheirPace(t *testing.T) {
 	bubble(t, gated(), func(t *testing.T, h *harness) {
 		job := h.seed("a", 1, cleanup.PhaseClaimed)

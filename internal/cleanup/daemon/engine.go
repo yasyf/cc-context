@@ -948,6 +948,10 @@ func (e *Engine) wake(physical bool) (time.Time, bool) {
 				}
 			}
 		}
+		if job.Phase.Physical() && e.movesOut(job) {
+			paced := due
+			due = func(at time.Time) { paced(later(at, e.moveAt)) }
+		}
 		if e.paused && job.Blocked == nil && !job.RetireAfter.IsZero() {
 			due(job.RetireAfter)
 		} else if job.Phase == cleanup.PhaseWaiting && job.Blocked == nil {

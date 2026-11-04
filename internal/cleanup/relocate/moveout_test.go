@@ -84,3 +84,45 @@ func TestAdmitLeavesATreeOutsideEveryMoveRoot(t *testing.T) {
 		t.Errorf("moved %t, deletion root %s/%s; want it deleted at %s", job.Moved, root.Dir, root.Name, job.Original)
 	}
 }
+
+func TestAdmitMovesATreeWhoseDeletionHadBegun(t *testing.T) {
+	f := newFixture(t)
+	job := f.accept()
+	f.advance(&job)
+	f.claimed(&job)
+	if _, err := f.relocator.Admit(t.Context(), &job); err != nil {
+		t.Fatal(err)
+	}
+	f.relocator.cfg.Move = []string{filepath.Dir(job.Original)}
+	root, err := f.relocator.Admit(t.Context(), &job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.Blocked != nil || job.Phase != cleanup.PhaseDeletingTree || !job.Moved || filepath.Join(root.Dir, root.Name) != job.Payload {
+		t.Fatalf("job = phase %s, blocked %+v, moved %t, root %s/%s; want it deleting from the payload", job.Phase, job.Blocked, job.Moved, root.Dir, root.Name)
+	}
+	f.stored(&job)
+}
+
+func TestAdmitBlocksARelativeLinkInsteadOfMovingIt(t *testing.T) {
+	f := newFixture(t)
+	f.relocator.cfg.Move = []string{filepath.Dir(f.worktree)}
+	job := f.accept()
+	f.advance(&job)
+	f.claimed(&job)
+	rel, err := filepath.Rel(job.Original, job.AdminDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.write(filepath.Join(job.Original, ".git"), "gitdir: "+rel+"\n")
+
+	if _, err := f.relocator.Admit(t.Context(), &job); err != nil {
+		t.Fatal(err)
+	}
+	if job.Blocked == nil || job.Moved {
+		t.Fatalf("job = blocked %+v, moved %t; want blocked, not moved", job.Blocked, job.Moved)
+	}
+	if _, err := os.Lstat(job.Original); err != nil {
+		t.Errorf("Lstat(original) = %v, want the tree where it sits", err)
+	}
+}
