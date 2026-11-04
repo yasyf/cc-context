@@ -319,6 +319,7 @@ head. --all-lanes takes in the branches those working copies hold. On a branch,
 	cmd.Flags().StringVar(&o.branch, "branch", "", stackBranchUsage)
 	cmd.Flags().BoolVar(&o.draft, "draft", false, "open new PRs as drafts")
 	cmd.Flags().StringArrayVar(&o.prTitle, "pr-title", nil, "title for a pull request: <branch>=<title>, or a bare title for the branch checked out here (repeatable)")
+	cmd.Flags().StringArrayVar(&o.prTitleFile, "pr-title-file", nil, "one-line title file for a pull request: <branch>=<path>, or a bare path for the branch checked out here; - reads stdin (repeatable)")
 	cmd.Flags().StringArrayVar(&o.prBodyFile, "pr-body-file", nil, "body file for a pull request: <branch>=<path>, or a bare path for the branch checked out here; - reads stdin (repeatable)")
 	cmd.Flags().StringArrayVar(&include, "include", nil, "submit this branch even though another lane's working copy has it checked out or it is another lane's; a published branch below every one named and the one checked out here stays at its published head (repeatable)")
 	cmd.Flags().BoolVar(&o.allLanes, "all-lanes", false, "submit the branches of other lanes too, a lane being the branch name before its last slash or the working copy holding the branch")
@@ -801,7 +802,7 @@ func stackRepairTracking(cmd *cobra.Command, l lane, opts stackRebaseOpts, track
 // field named means no intent and no restate.
 func stackSubmitIntent(cmd *cobra.Command, l lane, o shipOpts, stack []string) (*stackShipIntent, func(), error) {
 	ctx := cmd.Context()
-	cleanup, err := materializePRBodyStdin(cmd, &o)
+	cleanup, err := materializePRFiles(cmd, &o)
 	if err != nil {
 		return nil, cleanup, err
 	}

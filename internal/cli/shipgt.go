@@ -730,6 +730,9 @@ func gtResumeCmd(o shipOpts) string {
 	for _, value := range o.prTitle {
 		argv = append(argv, "--pr-title "+strconv.Quote(value))
 	}
+	for _, value := range o.prTitleFile {
+		argv = append(argv, "--pr-title-file "+strconv.Quote(value))
+	}
 	for _, value := range o.prBodyFile {
 		argv = append(argv, "--pr-body-file "+strconv.Quote(value))
 	}

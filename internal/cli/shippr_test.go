@@ -461,6 +461,53 @@ func TestShipMessageFromPRTitleAlone(t *testing.T) {
 	}
 }
 
+func TestShipPRTitleFromFile(t *testing.T) {
+	f := shipPRFixture(t, vcstest.Branch("feature"))
+	shipPRCreated(t)
+	const title = "ci: 🐛 find the merge base with dev over git instead of GitHub's compare API"
+	titleFile := writePRBody(t, "title.txt", title+"\n")
+
+	if _, err := runShipCmd(f.Context(), t, "--no-watch", "--pr-title-file", titleFile); err != nil {
+		t.Fatalf("ship error = %v", err)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "log", "-1", "--format=%B"); got != title {
+		t.Errorf("commit message = %q, want the file's title %q", got, title)
+	}
+}
+
+func TestShipPRTitleFileRefusals(t *testing.T) {
+	f := shipPRFixture(t, vcstest.Branch("feature"))
+	shipPRCreated(t)
+	for _, tt := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{
+			name: "beside --pr-title for the same branch",
+			args: []string{"--pr-title", "fix: frobnicate", "--pr-title-file", writePRBody(t, "same.txt", "fix: frobnicate\n")},
+			want: "ship: --pr-title-file and --pr-title both set the title for the tip",
+		},
+		{
+			name: "two lines",
+			args: []string{"--pr-title-file", writePRBody(t, "two.txt", "fix: one\nfix: two\n")},
+			want: "holds more than one line",
+		},
+		{
+			name: "blank",
+			args: []string{"--pr-title-file", writePRBody(t, "blank.txt", "\n")},
+			want: "holds no title",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := runShipCmd(f.Context(), t, append([]string{"--no-watch"}, tt.args...)...)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("error = %v, want one containing %q", err, tt.want)
+			}
+		})
+	}
+}
+
 func TestShipMessageFromPRBodyStdin(t *testing.T) {
 	f := shipPRFixture(t, vcstest.Branch("feature"))
 	shipPRCreated(t)
