@@ -94,6 +94,31 @@ func TestPullRequestInfoSelectsOpenBeforeNewestClosedHead(t *testing.T) {
 	}
 }
 
+func TestHeadPullRequestsReadsOnlyNumberStateAndHeadPerBranch(t *testing.T) {
+	var query string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct{ Query string }
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		query = body.Query
+		if _, err := fmt.Fprint(w, `{"data":{"repository":{"o0":{"nodes":[{"number":3,"state":"OPEN","headRefOid":"aaa"}]},"c0":{"nodes":[{"number":2,"state":"MERGED","headRefOid":"old"}]},"o1":{"nodes":[]},"c1":{"nodes":[{"number":9,"state":"MERGED","headRefOid":"bbb"}]},"o2":{"nodes":[]},"c2":{"nodes":[]}}}}`); err != nil {
+			t.Errorf("write fixture response: %v", err)
+		}
+	}))
+	defer srv.Close()
+	infos, err := NewWithToken(srv.URL, "key").HeadPullRequests(context.Background(), "org", "repo", []string{"open", "merged", "none"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(infos) != 2 || infos[0].PRNumber != 3 || infos[0].State != "OPEN" || infos[1].PRNumber != 9 || infos[1].HeadRefName != "merged" || infos[1].Versions[0].HeadSha != "bbb" {
+		t.Fatalf("infos=%+v, want the open #3 before the merged one it supersedes and #9, with nothing for a branch without a pull request", infos)
+	}
+	if strings.Contains(query, "body") || strings.Contains(query, "stack") {
+		t.Fatalf("query reads fields a landing check does not need: %s", query)
+	}
+}
+
 func TestGraphQLFailureDoesNotBecomeMissingPullRequest(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		if _, err := fmt.Fprint(w, `{"errors":[{"message":"rate limited"}],"data":null}`); err != nil {

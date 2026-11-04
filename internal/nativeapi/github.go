@@ -153,6 +153,61 @@ func (c *Client) PullRequestInfo(ctx context.Context, req PullRequestInfoRequest
 	return out, nil
 }
 
+const headPullFields = "number state headRefOid isCrossRepository"
+
+// HeadPullRequests reads, for each head branch, the open pull request or else
+// the newest closed or merged one, carrying only the number, state and head
+// commit. A branch with none is left out. It is the cheap read behind a sweep of
+// thousands of branches; PullRequestInfo's stack and body fields cost an order
+// of magnitude more per branch, enough to trip GitHub's secondary limit.
+func (c *Client) HeadPullRequests(ctx context.Context, owner, repo string, heads []string) ([]PullRequestInfo, error) {
+	var out []PullRequestInfo
+	for batch := range slices.Chunk(heads, headPullBatch) {
+		var fields strings.Builder
+		for i, head := range batch {
+			fmt.Fprintf(&fields, "o%d:pullRequests(headRefName:%s,states:OPEN,first:1){nodes{%s}} c%d:pullRequests(headRefName:%s,states:[CLOSED,MERGED],first:1,orderBy:{field:CREATED_AT,direction:DESC}){nodes{%s}} ", i, strconv.Quote(head), headPullFields, i, strconv.Quote(head), headPullFields)
+		}
+		query := fmt.Sprintf("{repository(owner:%s,name:%s){%s}}", strconv.Quote(owner), strconv.Quote(repo), fields.String())
+		var result struct{ Repository map[string]json.RawMessage }
+		if err := c.readGraphQL(ctx, owner, repo, query, &result); err != nil {
+			return nil, err
+		}
+		if result.Repository == nil {
+			return nil, &ResultError{Route: "pull requests", Message: "repository is not accessible"}
+		}
+		for i, head := range batch {
+			pull, err := firstHeadPull(result.Repository, fmt.Sprintf("o%d", i), fmt.Sprintf("c%d", i))
+			if err != nil {
+				return nil, err
+			}
+			if pull.Number == 0 {
+				continue
+			}
+			if pull.IsCrossRepository {
+				return nil, fmt.Errorf("head branch %s matched cross-repository PR #%d; native stack branches must belong to this repository", head, pull.Number)
+			}
+			out = append(out, PullRequestInfo{PRNumber: pull.Number, State: pull.State, HeadRefName: head, Versions: []PRVersion{{HeadSha: pull.HeadRefOid}}})
+		}
+	}
+	return out, nil
+}
+
+// headPullBatch bounds the branches one HeadPullRequests query names.
+const headPullBatch = 100
+
+func firstHeadPull(repository map[string]json.RawMessage, aliases ...string) (githubPull, error) {
+	for _, alias := range aliases {
+		var connection struct{ Nodes []githubPull }
+		if err := json.Unmarshal(repository[alias], &connection); err != nil {
+			return githubPull{}, err
+		}
+		if len(connection.Nodes) > 0 {
+			return connection.Nodes[0], nil
+		}
+	}
+	return githubPull{}, nil
+}
+
 type restPull struct {
 	Title          string `json:"title"`
 	Body           string `json:"body"`
