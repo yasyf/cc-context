@@ -346,6 +346,21 @@ func (f *fixture) commitLater() {
 	f.run(f.worktree, "commit", "-q", "-m", "later")
 }
 
+func TestPausedRetirementLeavesATreeWithoutItsGitLinkUnblocked(t *testing.T) {
+	f := newFixture(t)
+	job := f.intend()
+	if err := os.Remove(filepath.Join(f.worktree, ".git")); err != nil {
+		t.Fatal(err)
+	}
+
+	retireFixture(t, f, &job)
+
+	if job.Blocked != nil || job.Retirement != "" || job.RetireAfter.IsZero() {
+		t.Errorf("job = blocked %+v, retirement %q, retire after %s; want it waiting, unblocked", job.Blocked, job.Retirement, job.RetireAfter)
+	}
+	f.stored(&job)
+}
+
 func TestPausedRetirementWaitsForTheHeadToRest(t *testing.T) {
 	f := newFixture(t)
 	f.quiet = time.Hour
