@@ -1095,8 +1095,8 @@ func (e *Engine) physicalDue(now time.Time) (cleanup.Job, bool) {
 		return cleanup.Job{}, false
 	}
 	var (
-		next  cleanup.Job
-		found bool
+		next, relocated cleanup.Job
+		found, moved    bool
 	)
 	for job := range e.ordered() {
 		if !job.Phase.Physical() {
@@ -1110,14 +1110,33 @@ func (e *Engine) physicalDue(now time.Time) (cleanup.Job, bool) {
 		if e.yields(job) {
 			continue
 		}
-		if e.awaited(job.ID, now) {
+		switch {
+		case e.awaited(job.ID, now):
 			return clone(job), true
-		}
-		if !found {
+		case relocatedPhase(job.Phase):
+			if !moved {
+				relocated, moved = job, true
+			}
+		case !found:
 			next, found = job, true
 		}
 	}
-	return clone(next), found
+	if !found {
+		return clone(relocated), moved
+	}
+	return clone(next), true
+}
+
+// relocatedPhase is a legacy tree parked in the journal. Most of its blocks are
+// clones shared with its siblings, so deleting it frees far less per entry than
+// a tree that never moved, which goes first.
+func relocatedPhase(phase cleanup.Phase) bool {
+	switch phase {
+	case cleanup.PhaseUnregistered, cleanup.PhaseDeleting, cleanup.PhaseDeletingAdmin, cleanup.PhaseDeletingRetiredPayload:
+		return true
+	default:
+		return false
+	}
 }
 
 func (e *Engine) awaited(jobID string, now time.Time) bool {

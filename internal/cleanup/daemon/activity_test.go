@@ -167,6 +167,23 @@ func TestBusyDeletesRunOutsideQuietRootsAtTheirRate(t *testing.T) {
 	})
 }
 
+func TestTreesInPlaceDeleteAheadOfRelocatedOnes(t *testing.T) {
+	bubble(t, paced(), func(t *testing.T, h *harness) {
+		relocated := h.seed("a", 1, cleanup.PhaseDeleting)
+		inPlace := h.seed("b", 2, cleanup.PhaseClaimed)
+		h.deleter.put("a", &payload{entries: 1000})
+		h.deleter.put("b", &payload{entries: 1000})
+		h.start()
+		h.expectEvents("sample", "admit:b", "open:b", "step:b")
+		if got := h.status(relocated.ID).Removed; got != 0 {
+			t.Errorf("relocated job removed %d ahead of the tree in place, want 0", got)
+		}
+		if got := h.status(inPlace.ID).Removed; got == 0 {
+			t.Error("the tree in place removed nothing")
+		}
+	})
+}
+
 func TestDeletesAtFollowsTheNextDeletion(t *testing.T) {
 	job := cleanup.Job{Original: "/original", Source: "/source", Payload: "/payload", AdminDir: "/admin"}
 	tests := []struct {
