@@ -202,6 +202,9 @@ type Job struct {
 	// occupied: it waits for inactivity instead of refusing.
 	Deferred   bool       `json:"deferred,omitempty"`
 	Retirement Retirement `json:"retirement,omitempty"`
+	// Moved says a proved tree now sits at Payload, renamed out of its Original
+	// directory so that deleting it stays off that directory's file watchers.
+	Moved bool `json:"moved,omitempty"`
 	// RetireAfter is when a paused removal may retire its registration: its
 	// HEAD last moved too recently for the lane behind it to be done.
 	RetireAfter time.Time `json:"retire_after,omitzero"`

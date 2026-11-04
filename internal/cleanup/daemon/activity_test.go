@@ -208,6 +208,40 @@ func TestDeletesAtFollowsTheNextDeletion(t *testing.T) {
 			t.Errorf("deletesAt(%s, adopted %t) = %s, want %s", tt.phase, tt.adopted, got, tt.want)
 		}
 	}
+	job.Phase, job.Adopted, job.Moved = cleanup.PhaseDeletingTree, false, true
+	if got := deletesAt(job); got != "/payload" {
+		t.Errorf("deletesAt(moved) = %s, want /payload", got)
+	}
+}
+
+func TestBusySessionsDeleteAQuietRootOnlyAfterItMoves(t *testing.T) {
+	bubble(t, gated(), func(_ *testing.T, h *harness) {
+		withActivity(h, busySessions)
+		job := h.seed("a", 1, cleanup.PhaseClaimed)
+		h.deleter.put("a", &payload{entries: 1000})
+		h.busy = cleanup.BusyDeletes{Rate: 100, Quiet: []string{job.Original}, Move: []string{job.Original}, MoveEvery: time.Minute}
+		h.start()
+		h.expectEvents("activity", "sample", "admit:a", "open:a", "step:a")
+	})
+}
+
+func TestMovesOutWaitTheirPace(t *testing.T) {
+	bubble(t, gated(), func(t *testing.T, h *harness) {
+		job := h.seed("a", 1, cleanup.PhaseClaimed)
+		e := h.build()
+		if err := e.load(); err != nil {
+			t.Fatal(err)
+		}
+		e.busy = cleanup.BusyDeletes{Rate: 100, Move: []string{job.Original}, MoveEvery: time.Minute}
+		now := h.clock.Now()
+		e.moveAt = now.Add(time.Minute)
+		if _, ok := e.physicalDue(now); ok || !e.movePaced {
+			t.Errorf("physicalDue before the pace = %v, paced %v; want nothing due, paced", ok, e.movePaced)
+		}
+		if got, ok := e.physicalDue(now.Add(time.Minute)); !ok || got.ID != job.ID {
+			t.Errorf("physicalDue at the pace = %s, %v; want %s", got.ID, ok, job.ID)
+		}
+	})
 }
 
 func TestBusyDeletesCoverARootQuietRoot(t *testing.T) {

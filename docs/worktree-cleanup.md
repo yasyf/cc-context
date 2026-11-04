@@ -417,6 +417,21 @@ usual share. Creates over 3ms still stop them, until a sample reads under 3ms
 again. No rate is set by default, so every removal waits for quiet sessions, and
 a malformed value stops the daemon from starting.
 
+A directory where deleting is expensive, because other processes watch it, can
+hand its trees to the journal first. Name it, and optionally how often a tree
+may move, then restart the daemon:
+
+```sh
+git config --global --add ccx.cleanupMoveRoot /absolute/root
+git config --global ccx.cleanupMoveEvery 5s
+```
+
+This needs `ccx.cleanupBusyRate`, and the directory must share a volume with the
+journal. Once a tree there passes its proof, the daemon clears its registration
+from `git worktree list` and renames it to `jobs/<id>/payload` in one step, then
+deletes it from there under the busy rules. A tree that fails its proof never
+moves. Nothing moves by default.
+
 Trees deleted where they sit go ahead of older trees parked in the journal,
 oldest first within each group. A parked tree's blocks are mostly clones shared
 with its siblings, so it frees far less per entry.

@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/yasyf/cc-context/internal/cleanup"
 )
@@ -45,16 +46,16 @@ func TestParseCleanupBusyDeletes(t *testing.T) {
 		want        cleanup.BusyDeletes
 		wantErr     bool
 	}{
-		{name: "unset"},
-		{name: "rate and cleaned roots", rate: "500\n", quiet: "/a/b/\n/c\n", want: cleanup.BusyDeletes{Rate: 500, Quiet: []string{"/a/b", "/c"}}},
+		{name: "unset", want: cleanup.BusyDeletes{MoveEvery: cleanupMoveEveryDefault}},
+		{name: "rate and cleaned roots", rate: "500\n", quiet: "/a/b/\n/c\n", want: cleanup.BusyDeletes{Rate: 500, Quiet: []string{"/a/b", "/c"}, MoveEvery: cleanupMoveEveryDefault}},
 		{name: "zero rate", rate: "0", wantErr: true},
 		{name: "not a number", rate: "fast", wantErr: true},
 		{name: "relative root", rate: "500", quiet: "a/b", wantErr: true},
-		{name: "a root holding a space", rate: "500", quiet: "/Volumes/Quiet Disk\n", want: cleanup.BusyDeletes{Rate: 500, Quiet: []string{"/Volumes/Quiet Disk"}}},
+		{name: "a root holding a space", rate: "500", quiet: "/Volumes/Quiet Disk\n", want: cleanup.BusyDeletes{Rate: 500, Quiet: []string{"/Volumes/Quiet Disk"}, MoveEvery: cleanupMoveEveryDefault}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := parseCleanupBusyDeletes(tt.rate, tt.quiet)
+			got, err := parseCleanupBusyDeletes(tt.rate, tt.quiet, "", "")
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("parseCleanupBusyDeletes(%q, %q) error = %v, wantErr %t", tt.rate, tt.quiet, err, tt.wantErr)
 			}
@@ -74,12 +75,15 @@ func TestCleanupRootsResolveSymlinks(t *testing.T) {
 	if err := os.Symlink(target, link); err != nil {
 		t.Fatal(err)
 	}
-	busy, err := parseCleanupBusyDeletes("500", link)
+	busy, err := parseCleanupBusyDeletes("500", link, link, "1m")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{target}; !reflect.DeepEqual(busy.Quiet, want) {
-		t.Errorf("quiet roots = %v, want %v", busy.Quiet, want)
+	if want := []string{target}; !reflect.DeepEqual(busy.Quiet, want) || !reflect.DeepEqual(busy.Move, want) {
+		t.Errorf("quiet roots = %v, move roots = %v, want %v", busy.Quiet, busy.Move, want)
+	}
+	if busy.MoveEvery != time.Minute {
+		t.Errorf("move every = %s, want 1m", busy.MoveEvery)
 	}
 	caps, err := parseCleanupRateCaps(link + "=100")
 	if err != nil {

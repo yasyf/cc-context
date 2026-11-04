@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/yasyf/cc-context/internal/cleanup"
 )
@@ -16,6 +17,10 @@ const (
 	cleanupRateCapKey   = "ccx.cleanupRateCap"
 	cleanupBusyRateKey  = "ccx.cleanupBusyRate"
 	cleanupQuietRootKey = "ccx.cleanupQuietRoot"
+	cleanupMoveRootKey  = "ccx.cleanupMoveRoot"
+	cleanupMoveEveryKey = "ccx.cleanupMoveEvery"
+
+	cleanupMoveEveryDefault = 5 * time.Second
 )
 
 func parseCleanupRateCaps(values string) ([]cleanup.RateCap, error) {
@@ -39,7 +44,7 @@ func parseCleanupRateCaps(values string) ([]cleanup.RateCap, error) {
 	return caps, nil
 }
 
-func parseCleanupBusyDeletes(rate, quiet string) (cleanup.BusyDeletes, error) {
+func parseCleanupBusyDeletes(rate, quiet, move, every string) (cleanup.BusyDeletes, error) {
 	var busy cleanup.BusyDeletes
 	if rate = strings.TrimSpace(rate); rate != "" {
 		parsed, err := strconv.Atoi(rate)
@@ -57,6 +62,24 @@ func parseCleanupBusyDeletes(rate, quiet string) (cleanup.BusyDeletes, error) {
 			return cleanup.BusyDeletes{}, fmt.Errorf("%s: %w", cleanupQuietRootKey, err)
 		}
 		busy.Quiet = append(busy.Quiet, resolved)
+	}
+	for root := range configValues(move) {
+		if !filepath.IsAbs(root) {
+			return cleanup.BusyDeletes{}, fmt.Errorf("%s must be an absolute directory, got %q", cleanupMoveRootKey, root)
+		}
+		resolved, err := resolvedRoot(root)
+		if err != nil {
+			return cleanup.BusyDeletes{}, fmt.Errorf("%s: %w", cleanupMoveRootKey, err)
+		}
+		busy.Move = append(busy.Move, resolved)
+	}
+	busy.MoveEvery = cleanupMoveEveryDefault
+	if every = strings.TrimSpace(every); every != "" {
+		parsed, err := time.ParseDuration(every)
+		if err != nil || parsed <= 0 {
+			return cleanup.BusyDeletes{}, fmt.Errorf("%s must be a positive duration, got %q", cleanupMoveEveryKey, every)
+		}
+		busy.MoveEvery = parsed
 	}
 	return busy, nil
 }
