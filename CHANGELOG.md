@@ -24,6 +24,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   branch with no open pull request, such as a line branch. The push and pull request update had
   already succeeded, yet ship exited failed. A pull request already in a native stack is still
   refused, with its `--move` remedy.
+- `ccx vcs ship --parent <line>` and `ccx vcs stack rebase` no longer replay a long-lived line's own
+  commits when the local line branch trails its published head. A child's from point now moves up
+  to what it shares with the parent's published head, and the dry run titles a new pull request from
+  the child's own first commit instead of the line's. Lanes on `dashboard-fold-2b` hit conflicts in
+  11 files and a title taken from another pull request.
 - `ccx vcs stack rebase --above` and every other run reading a parent from a pull request's base no
   longer plan a branch with no recorded parent revision from its merge base when that parent was
   rewritten since it was cut. Forge-AI/monorepo#49305 was replayed onto `dev`, and the dry run for its child

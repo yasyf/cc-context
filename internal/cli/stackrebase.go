@@ -3371,7 +3371,7 @@ func stackRecordedBase(ctx context.Context, dir render.Dir, tr vcs.Trunk, pin st
 		if err != nil {
 			return "", err
 		}
-		return stackPastChain(ctx, dir, pin, self, byName, fork)
+		return stackPastChain(ctx, dir, pin, self, byName, fork, false)
 	}
 	candidates := []string{state[parent].Head, s.Parents[0].SHA}
 	if head := byName[parent]; head != nil {
@@ -3423,6 +3423,16 @@ func stackRecordedBase(ctx context.Context, dir render.Dir, tr vcs.Trunk, pin st
 			}
 		}
 	}
+	recorded := best
+	if head := byName[parent]; head != nil {
+		shared, err := stackMergeBase(ctx, dir, self.Head, head.Head)
+		if err != nil {
+			return "", err
+		}
+		if best, err = stackFurthest(ctx, dir, self.Head, []string{best, shared}); err != nil {
+			return "", err
+		}
+	}
 	if self.Parent != parent {
 		behind, err := gitIsAncestor(ctx, dir, stackRebasePrefix, best, onTrunk)
 		if err != nil {
@@ -3432,7 +3442,7 @@ func stackRecordedBase(ctx context.Context, dir render.Dir, tr vcs.Trunk, pin st
 			best = onTrunk
 		}
 	}
-	return stackPastChain(ctx, dir, pin, self, byName, best)
+	return stackPastChain(ctx, dir, pin, self, byName, best, best != recorded)
 }
 
 func stackPastCarried(ctx context.Context, dir render.Dir, state gtState, self *stackRebaseBranch) (string, error) {
@@ -3470,7 +3480,7 @@ func stackWasAbove(byName map[string]*stackRebaseBranch, name, self string) bool
 	return false
 }
 
-func stackPastChain(ctx context.Context, dir render.Dir, pin string, self *stackRebaseBranch, byName map[string]*stackRebaseBranch, base string) (string, error) {
+func stackPastChain(ctx context.Context, dir render.Dir, pin string, self *stackRebaseBranch, byName map[string]*stackRebaseBranch, base string, inferred bool) (string, error) {
 	var heads, parentHeads []string
 	for name := self.Parent; byName[name] != nil; name = byName[name].Parent {
 		if stackWasAbove(byName, name, self.Name) {
@@ -3494,7 +3504,7 @@ func stackPastChain(ctx context.Context, dir render.Dir, pin string, self *stack
 	if err != nil || slices.Contains(parentHeads, furthest) {
 		return furthest, err
 	}
-	if furthest == base {
+	if furthest == base && !inferred {
 		inTrunk, err := gitIsAncestor(ctx, dir, stackRebasePrefix, base, pin)
 		if err != nil || !inTrunk {
 			return base, err
