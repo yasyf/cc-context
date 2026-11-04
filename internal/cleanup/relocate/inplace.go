@@ -666,14 +666,11 @@ func (r *Relocator) moveOut(job *cleanup.Job, tree spot, held bond) (spot, strin
 		job.Moved = true
 		return tree, "", ""
 	}
-	if !cleanup.Within(tree.path, r.cfg.Move) {
+	if !job.Movable() || !cleanup.Within(tree.path, r.cfg.Move) {
 		return tree, "", ""
 	}
-	if held.native {
-		if err := unregister(job, held.admin); err != nil {
-			return tree, "reconcile", fmt.Sprintf("unregister %s: %v", job.AdminDir, err)
-		}
-		job.Retirement = cleanup.RetirementComplete
+	if detail := relativeLink(tree.path); detail != "" {
+		return tree, "identity", detail
 	}
 	if _, err := os.Lstat(job.Payload); !gone(err) {
 		return tree, "identity", fmt.Sprintf("%s is taken, want it absent: %v", job.Payload, err)
@@ -681,11 +678,28 @@ func (r *Relocator) moveOut(job *cleanup.Job, tree spot, held bond) (spot, strin
 	if id, ok, err := cleanup.Placed(tree.path, job.Tree); err != nil || !ok || id != tree.id {
 		return tree, "identity", fmt.Sprintf("%s changed before it moved: %v", tree.path, err)
 	}
+	if held.native {
+		if err := unregister(job, held.admin); err != nil {
+			return tree, "reconcile", fmt.Sprintf("unregister %s: %v", job.AdminDir, err)
+		}
+	}
 	if err := os.Rename(tree.path, job.Payload); err != nil {
 		return tree, "reconcile", fmt.Sprintf("move %s out: %v", tree.path, err)
 	}
 	job.Moved = true
 	return spot{path: job.Payload, id: tree.id}, "", ""
+}
+
+func relativeLink(tree string) string {
+	dotGit, err := readLinkage(filepath.Join(tree, ".git"))
+	if err != nil {
+		return ""
+	}
+	pointer, isLink := strings.CutPrefix(dotGit, "gitdir: ")
+	if isLink && !filepath.IsAbs(strings.TrimSpace(pointer)) {
+		return fmt.Sprintf("%s links its registration by a relative path, which a move would break", tree)
+	}
+	return ""
 }
 
 func unregister(job *cleanup.Job, admin cleanup.FileID) error {

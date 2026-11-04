@@ -439,6 +439,13 @@ func (j Job) validateOrphaned() error {
 	return nil
 }
 
+// Movable reports whether renaming the tree away keeps every later proof of it
+// valid: a registered tree, proved through its registration wherever it sits,
+// rather than an adopted or orphaned one, proved by the directory holding it.
+func (j Job) Movable() bool {
+	return !j.Moved && !j.Unbound() && (j.Phase.Logical() || j.Phase == PhaseClaimed || j.Phase == PhaseDeletingTree)
+}
+
 // Unbound reports whether no git registration names the job's tree, so its
 // deletion ends with the tree: an adopted tree or an orphaned one.
 func (j Job) Unbound() bool { return j.Adopted || j.Orphaned }

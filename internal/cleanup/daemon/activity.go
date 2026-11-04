@@ -109,12 +109,11 @@ func (e *Engine) rests(job cleanup.Job) bool {
 	if !e.holds() {
 		return false
 	}
-	at := deletesAt(job)
-	return e.gate.strained || !e.busy.Allows(at) && !e.busy.Moves(at)
+	return e.gate.strained || !e.busy.Allows(deletesAt(job)) && !e.movesOut(job)
 }
 
 func (e *Engine) movesOut(job cleanup.Job) bool {
-	return e.busy.Moves(deletesAt(job))
+	return job.Movable() && e.busy.Moves(job.Original)
 }
 
 func deletesAt(job cleanup.Job) string {
