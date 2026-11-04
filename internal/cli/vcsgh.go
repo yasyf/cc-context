@@ -64,7 +64,7 @@ that reset.
 from the machine-wide cache while its stored answer is younger than DUR. Only
 a read that exited 0 is stored, nothing expires a stored answer but a later
 read, a later write to its repository, or a day's age, and a watch is never
-cached. A read is cached only when its answer cannot depend on the checkout: it
+cached. GH_TOKEN, GITHUB_TOKEN, or GH_HOST keeps a read out of the cache. A read is cached only when its answer cannot depend on the checkout: it
 names its repository, or it is a gh api call with no {owner}, {repo}, or {branch}
 placeholder. --web, --log, --log-failed, gh api rate_limit, and an answer over
 1 MiB are never cached.
@@ -75,12 +75,14 @@ naming a viewer field, and any command outside pr, issue, run, workflow, release
 label, cache, ruleset, repo view, and search. So does a read with its stdout on
 a terminal, unless it watches. A read the app token is refused runs again on the
 user's. gh auth, config, alias, extension, completion, help, and --help send no
-request ccx charges.
+request ccx charges. A child ccx spawns carries CCX_CHILD=1, so a shim can pass
+it straight to the real gh.
 
 Anything else, such as gh pr close or a gh api write, runs on the user's
 token as plain gh would, charged to its pool but never refused or cached. It
 expires the cached reads of the repository it names, else of the checkout's,
-and of every repository when it is a GraphQL mutation naming none. A
+and of every repository when it is a GraphQL mutation naming none. Any write
+expires a cached read that names no one repository. A
 merge (gh pr merge, a write to repos/OWNER/REPO/pulls/N/merge or /merges, or a
 GraphQL mergePullRequest, enablePullRequestAutoMerge, enqueuePullRequest, or
 mergeBranch), and a write to a ruleset or
@@ -135,16 +137,17 @@ func runVcsGh(cmd *cobra.Command, argv []string, maxAge time.Duration) error {
 	scope := cmp.Or(ghTargetRepo(ctx, argv), ghGraphQLRepo(argv))
 	watches := ghWatches(argv)
 	interactive := !watches && ghTerminal(cmd.OutOrStdout())
-	userToken := interactive || ghReadsOutsideInstallation(argv)
-	cacheable := maxAge > 0 && !interactive && ghCacheable(argv, scope)
+	userToken := interactive || ghReadsOutsideInstallation(argv) || ghQueryReadsViewer(argv, stdin)
+	cacheable := maxAge > 0 && !interactive && !ghOtherIdentity(ctx) && ghCacheable(argv, scope)
 	key := ghCacheKey(cmp.Or(scope, dir), argv, stdin)
 	if cacheable {
-		if hit, ok := ghCached(key); ok && time.Since(hit.At) < maxAge && hit.At.After(ghInvalidatedAt(ctx, scope, dir)) {
+		if hit, ok := ghCached(key); ok && time.Since(hit.At) < maxAge && hit.At.After(ghInvalidatedAt(scope)) {
 			_, err := cmd.OutOrStdout().Write(hit.Stdout)
 			return err
 		}
 	}
-	capture := !watches && !interactive
+	capture := cacheable || resource == ghapi.ResourceGraphQL && argv[0] == "api"
+	live := watches || interactive
 	args := argv
 	spilled := false
 	for {
@@ -171,7 +174,7 @@ func runVcsGh(cmd *cobra.Command, argv []string, maxAge time.Duration) error {
 			admit = api.AdmitSpill(ctx, resource)
 		}
 		if err := admit; err != nil {
-			if hit, ok := ghCached(key); ok && errors.As(err, new(*ghapi.FloorError)) {
+			if hit, ok := ghCached(key); ok && hit.At.After(ghInvalidatedAt(scope)) && errors.As(err, new(*ghapi.FloorError)) {
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "ccx: serving the answer cached at %s; %v\n", hit.At.Local().Format(time.Kitchen), err)
 				_, werr := cmd.OutOrStdout().Write(hit.Stdout)
 				return werr
@@ -188,7 +191,19 @@ func runVcsGh(cmd *cobra.Command, argv []string, maxAge time.Duration) error {
 		ghNoteLedgerError(cmd, api.Charge(ctx, identity, resource))
 		started := time.Now()
 		if !capture {
-			err = ghRun(ctx, cmd, dir, args, env, stdin, cmd.OutOrStdout(), cmd.ErrOrStderr())
+			var stderr bytes.Buffer
+			sink := io.Writer(&stderr)
+			if live {
+				sink = io.MultiWriter(cmd.ErrOrStderr(), &stderr)
+			}
+			err = ghRun(ctx, cmd, dir, args, env, stdin, cmd.OutOrStdout(), sink)
+			if err != nil && identity == ghapi.IdentityApp && ghAppRefused(stderr.Bytes()) {
+				userToken = true
+				continue
+			}
+			if !live {
+				_, _ = cmd.ErrOrStderr().Write(stderr.Bytes())
+			}
 		} else {
 			var stdout, stderr bytes.Buffer
 			var tries int
@@ -225,7 +240,7 @@ func runVcsGh(cmd *cobra.Command, argv []string, maxAge time.Duration) error {
 const ghRunGuardedEnv = "CCX_GH_RUN_GUARDED"
 
 func ghRun(ctx context.Context, cmd *cobra.Command, dir string, args, env []string, stdin []byte, stdout, stderr io.Writer) error {
-	childEnv := slices.Concat(os.Environ(), render.EnvFrom(ctx), env)
+	childEnv := slices.Concat(os.Environ(), render.EnvFrom(ctx), env, []string{render.ChildEnv})
 	gh := exec.CommandContext(ctx, lookpath.For(childEnv).Bin("gh"), args...) //nolint:gosec // args is the caller's own gh command
 	gh.Dir = dir
 	gh.Env = childEnv
@@ -267,7 +282,25 @@ func ghTerminal(w io.Writer) bool {
 		return false
 	}
 	info, err := file.Stat()
-	return err == nil && info.Mode()&os.ModeCharDevice != 0
+	if err != nil || info.Mode()&os.ModeCharDevice == 0 {
+		return false
+	}
+	null, err := os.Stat(os.DevNull)
+	return err != nil || !os.SameFile(info, null)
+}
+
+// ghOtherIdentity reports whether this read may not run as the signed-in gh
+// user, so its answer must not reach, or come from, the shared cache.
+func ghOtherIdentity(ctx context.Context) bool {
+	return render.Getenv(ctx, "GH_TOKEN") != "" || render.Getenv(ctx, "GITHUB_TOKEN") != "" || render.Getenv(ctx, "GH_HOST") != ""
+}
+
+func ghQueryReadsViewer(argv []string, stdin []byte) bool {
+	if argv[0] != "api" {
+		return false
+	}
+	query, ok := ghGraphQLQuery(argv[1:], stdin)
+	return ok && strings.Contains(strings.ToLower(query), "viewer")
 }
 
 var ghAppRefusal = regexp.MustCompile(`(?i)not accessible by integration|could not resolve to a (user|repository)|HTTP 403`)
@@ -312,14 +345,11 @@ func ghGuarded(argv []string, stdin []byte) bool {
 }
 
 func ghCacheable(argv []string, scope string) bool {
-	if ghWatches(argv) || ghReadsFiles(argv) || slices.ContainsFunc(argv, ghUncachedFlag) {
+	if ghWatches(argv) || ghReadsFiles(argv) || slices.ContainsFunc(argv, ghUncachedFlag) || slices.ContainsFunc(argv, ghCheckoutPlaceholder) {
 		return false
 	}
-	if scope != "" {
-		return true
-	}
-	if argv[0] != "api" || slices.ContainsFunc(argv, ghCheckoutPlaceholder) {
-		return false
+	if argv[0] != "api" {
+		return scope != ""
 	}
 	_, endpoint := ghAPIRequest(argv[1:])
 	return strings.TrimPrefix(endpoint, "/") != "rate_limit"
@@ -368,7 +398,6 @@ func ghResource(argv []string) string {
 }
 
 func chargeGHChild(ctx context.Context, bin string, argv, env []string) error {
-	ghExpireForChild(ctx, bin, argv)
 	resource, ok := ghUserPool(bin, argv, env)
 	if !ok {
 		return nil
@@ -376,9 +405,8 @@ func chargeGHChild(ctx context.Context, bin string, argv, env []string) error {
 	return reviewsAPI().Charge(ctx, ghapi.IdentityUser, resource)
 }
 
-// ghExpireForChild expires the cached reads a child's gh write or git push is
-// about to change. It runs before the child, so a read that starts during the
-// write can still store the old answer for its max age.
+// ghExpireForChild expires the cached reads a finished child's gh write or git
+// push changed.
 func ghExpireForChild(ctx context.Context, bin string, argv []string) {
 	checkout := func() string { return vcs.CachedRepoName(ctx, render.Dir(workingDir(ctx))) }
 	switch {
@@ -397,14 +425,14 @@ func ghUserPool(bin string, argv, env []string) (string, bool) {
 	return ghResource(argv), true
 }
 
-var ghOffline = map[string]bool{"auth": true, "config": true, "alias": true, "extension": true, "completion": true, "help": true, "version": true}
+var ghOffline = map[string]bool{"auth": true, "config": true, "alias": true, "extension": true, "completion": true, "help": true, "version": true, "--version": true, "--help": true, "-h": true}
 
 func ghNoRequest(argv []string) bool {
-	return ghOffline[argv[0]] || strings.HasPrefix(argv[0], "-") || slices.Contains(argv, "--help")
+	return ghOffline[argv[0]] || slices.Contains(argv, "--help")
 }
 
 func ghStdin(cmd *cobra.Command, argv []string) ([]byte, error) {
-	if !slices.ContainsFunc(argv, func(arg string) bool { return arg == "-" || arg == "--input=-" || strings.HasSuffix(arg, "=@-") }) {
+	if argv[0] != "api" || !slices.ContainsFunc(argv, func(arg string) bool { return arg == "-" || arg == "--input=-" || strings.HasSuffix(arg, "=@-") }) {
 		return nil, nil
 	}
 	body, err := io.ReadAll(cmd.InOrStdin())
@@ -432,6 +460,13 @@ func ghResolveMe(ctx context.Context, dir render.Dir, argv []string) ([]string, 
 	return resolved, nil
 }
 
+// ghNamesViewerField reports whether arg asks for a gh field that expands to a
+// viewer field: each comment's viewerDidAuthor, each reaction's viewerHasReacted.
+func ghNamesViewerField(arg string) bool {
+	lower := strings.ToLower(arg)
+	return strings.Contains(lower, "comments") || strings.Contains(lower, "reactiongroups")
+}
+
 // ghAppCommands are the gh commands whose list, view, checks, diff, and watch
 // answer the same on the app's installation token as on the user's.
 var ghAppCommands = map[string]bool{"pr": true, "issue": true, "run": true, "workflow": true, "release": true, "label": true, "cache": true, "ruleset": true}
@@ -452,7 +487,7 @@ func ghReadsOutsideInstallation(argv []string) bool {
 		case "search":
 			return ghRepoFlag(argv) == ""
 		default:
-			return !ghAppCommands[argv[0]] || argv[1] == "status"
+			return !ghAppCommands[argv[0]] || argv[1] == "status" || slices.ContainsFunc(argv, ghNamesViewerField)
 		}
 	}
 	_, endpoint := ghAPIRequest(argv[1:])
@@ -485,10 +520,10 @@ func ghTargetRepo(ctx context.Context, argv []string) string {
 var ghGitHubURL = regexp.MustCompile(`^https://github\.com/([^/]+)/([^/#?]+)`)
 
 // ghURLRepo returns the OWNER/REPO of the github.com URL a gh command names as a
-// target, "" when it names none.
+// target, "" when it names none. A URL that follows a flag is that flag's value.
 func ghURLRepo(argv []string) string {
-	for _, arg := range argv {
-		if m := ghGitHubURL.FindStringSubmatch(arg); m != nil {
+	for i := 1; i < len(argv); i++ {
+		if m := ghGitHubURL.FindStringSubmatch(argv[i]); m != nil && !strings.HasPrefix(argv[i-1], "-") {
 			return m[1] + "/" + m[2]
 		}
 	}

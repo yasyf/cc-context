@@ -40,7 +40,7 @@ func NewRootCmd() *cobra.Command {
 		newMCPCmd(),
 	)
 	root.PersistentPreRun = func(cmd *cobra.Command, _ []string) {
-		cmd.SetContext(render.WithMeter(gtDedupe(cmd.Context()), chargeGHChild))
+		cmd.SetContext(render.WithChildDone(render.WithMeter(gtDedupe(cmd.Context()), chargeGHChild), ghExpireForChild))
 	}
 	root.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error {
 		if hint := flagErrorHint(cmd, err); hint != "" {

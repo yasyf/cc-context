@@ -53,6 +53,8 @@ func TestGhTargetRepo(t *testing.T) {
 		want   string
 	}{
 		{name: "none", argv: []string{"pr", "checks", "12"}},
+		{name: "url", argv: []string{"pr", "view", "https://github.com/o/r/pull/1"}, ghRepo: "g/h", want: "o/r"},
+		{name: "url in a flag", argv: []string{"pr", "close", "1", "--comment", "https://github.com/o/r/pull/2"}, ghRepo: "g/h", want: "g/h"},
 		{name: "repo flag", argv: []string{"run", "view", "1", "--log", "--repo", "o/r"}, ghRepo: "g/h", want: "o/r"},
 		{name: "GH_REPO", argv: []string{"run", "view", "1", "--log"}, ghRepo: "github.com/g/h", want: "g/h"},
 		{name: "api endpoint", argv: []string{"api", "--allow-escape-sequences", "repos/o/r/actions/jobs/1/logs"}, ghRepo: "g/h", want: "o/r"},
@@ -223,7 +225,9 @@ func TestGhCacheable(t *testing.T) {
 		{name: "reads the checkout", argv: []string{"pr", "view"}},
 		{name: "endpoint", argv: []string{"api", "user"}, want: true},
 		{name: "placeholder", argv: []string{"api", "repos/{owner}/{repo}/pulls"}},
+		{name: "branch placeholder with a repo", argv: []string{"api", "repos/o/r/commits/{branch}"}, scope: "o/r"},
 		{name: "rate limit", argv: []string{"api", "rate_limit"}},
+		{name: "rate limit with a repo", argv: []string{"api", "rate_limit"}, scope: "o/r"},
 		{name: "watch", argv: []string{"run", "watch", "1"}, scope: "o/r"},
 		{name: "web", argv: []string{"pr", "view", "1", "--web"}, scope: "o/r"},
 		{name: "log", argv: []string{"run", "view", "1", "--log"}, scope: "o/r"},
@@ -253,6 +257,24 @@ func TestGhGraphQLRepo(t *testing.T) {
 	for _, tt := range tests {
 		if got := ghGraphQLRepo(tt.argv); got != tt.want {
 			t.Errorf("ghGraphQLRepo(%q) = %q, want %q", tt.argv, got, tt.want)
+		}
+	}
+}
+
+func TestGhWrittenRepo(t *testing.T) {
+	t.Setenv("GH_REPO", "g/h")
+	checkout := func() string { return "c/d" }
+	for _, tt := range []struct {
+		argv []string
+		want string
+	}{
+		{argv: []string{"pr", "close", "1", "--repo", "o/r"}, want: "o/r"},
+		{argv: []string{"pr", "close", "1"}, want: "g/h"},
+		{argv: []string{"api", "graphql", "-f", "query=mutation { x }"}, want: ghEveryRepo},
+		{argv: []string{"api", "graphql", "-f", "query=mutation { x }", "-F", "owner=o", "-F", "name=r"}, want: "o/r"},
+	} {
+		if got := ghWrittenRepo(t.Context(), tt.argv, checkout); got != tt.want {
+			t.Errorf("ghWrittenRepo(%q) = %q, want %q", tt.argv, got, tt.want)
 		}
 	}
 }
@@ -324,6 +346,44 @@ func TestRunVcsGhWriteExpiresItsRepositorysCachedReads(t *testing.T) {
 	}
 	if got := run(other); got != otherFirst {
 		t.Errorf("read of another repo = %q, want its cached %q", got, otherFirst)
+	}
+}
+
+func TestRunVcsGhAnyWriteExpiresAReadNamingNoRepository(t *testing.T) {
+	cmd, out := ghGatewayFixture(t)
+	read := []string{"api", "search/issues?q=x"}
+	run := func(argv []string) string {
+		t.Helper()
+		out.Reset()
+		if err := runVcsGh(cmd, argv, time.Minute); err != nil {
+			t.Fatalf("runVcsGh(%q) = %v", argv, err)
+		}
+		return out.String()
+	}
+	first := run(read)
+	if got := run(read); got != first {
+		t.Fatalf("second read = %q, want the cached %q", got, first)
+	}
+	run([]string{"pr", "close", "1", "--repo", "o/r"})
+	if got := run(read); got == first {
+		t.Errorf("read after a write = %q, want a fresh answer", got)
+	}
+}
+
+func TestRunVcsGhKeepsATokenCallerOutOfTheCache(t *testing.T) {
+	cmd, out := ghGatewayFixture(t)
+	cmd.SetContext(render.WithEnv(cmd.Context(), "GH_TOKEN=other"))
+	read := []string{"pr", "view", "1", "--repo", "o/r"}
+	var answers []string
+	for range 2 {
+		out.Reset()
+		if err := runVcsGh(cmd, read, time.Minute); err != nil {
+			t.Fatal(err)
+		}
+		answers = append(answers, out.String())
+	}
+	if answers[0] == answers[1] {
+		t.Errorf("both reads answered %q, want gh run each time", answers[0])
 	}
 }
 
@@ -472,6 +532,8 @@ func TestGhReadsOutsideInstallation(t *testing.T) {
 		{name: "graphql", argv: []string{"api", "graphql", "-f", "query={ repository(owner: \"o\", name: \"r\") { name } }"}},
 		{name: "pr list", argv: []string{"pr", "list", "--author", "@me"}},
 		{name: "pr status", argv: []string{"pr", "status"}, want: true},
+		{name: "comments", argv: []string{"pr", "view", "1", "--json", "title,comments"}, want: true},
+		{name: "reactions", argv: []string{"issue", "view", "1", "--json", "reactionGroups"}, want: true},
 		{name: "viewer field", argv: []string{"repo", "view", "--json", "viewerPermission"}, want: true},
 		{name: "repo view", argv: []string{"repo", "view", "--json", "name"}},
 		{name: "repo list", argv: []string{"repo", "list", "o"}, want: true},

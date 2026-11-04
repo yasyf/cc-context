@@ -21,6 +21,7 @@ const (
 	ghCacheMaxAnswer = 1 << 20
 	ghCacheRetention = 24 * time.Hour
 	ghEveryRepo      = "_all"
+	ghAnyWrite       = "_any"
 )
 
 type ghCacheEntry struct {
@@ -103,33 +104,30 @@ func ghInvalidationPath(repo string) (string, error) {
 }
 
 // ghInvalidate expires every answer cached for repo, or for every repository
-// when repo is ghEveryRepo. A failure here costs at most one stale read inside
-// its max age, so it never fails the write that caused it.
+// when repo is ghEveryRepo, and every answer naming no one repository. A failure
+// here costs at most one stale read inside its max age, so it never fails the
+// write that caused it.
 func ghInvalidate(repo string) {
-	path, err := ghInvalidationPath(repo)
-	if err != nil {
-		return
+	for _, marker := range []string{repo, ghAnyWrite} {
+		path, err := ghInvalidationPath(marker)
+		if err != nil {
+			return
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			return
+		}
+		_ = cache.Store(path, nil, 0o600)
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return
-	}
-	_ = os.WriteFile(path, nil, 0o600)
-	now := time.Now()
-	_ = os.Chtimes(path, now, now)
 }
 
 // ghInvalidatedAt returns the last write that expires an answer scoped to scope,
-// or to dir's checkout when scope is "".
-func ghInvalidatedAt(ctx context.Context, scope, dir string) time.Time {
-	repo := scope
-	if repo == "" {
-		repo = ghCheckoutRepo(ctx, dir)
+// any write at all when scope is "", since such an answer may read any repository.
+func ghInvalidatedAt(scope string) time.Time {
+	if scope == "" {
+		return ghWrittenAt(ghAnyWrite)
 	}
-	at := ghWrittenAt(ghEveryRepo)
-	if repo == "" {
-		return at
-	}
-	if written := ghWrittenAt(repo); written.After(at) {
+	at, written := ghWrittenAt(ghEveryRepo), ghWrittenAt(scope)
+	if written.After(at) {
 		return written
 	}
 	return at
@@ -147,19 +145,16 @@ func ghWrittenAt(repo string) time.Time {
 	return info.ModTime()
 }
 
-// ghWrittenRepo returns the repository a gh write changes: the one it names,
-// else ghEveryRepo for a GraphQL mutation, which names its target by node id,
-// else the checkout's.
+// ghWrittenRepo returns the repository a gh write changes: for a GraphQL mutation
+// the one its arguments name, else ghEveryRepo, since a mutation names its target
+// by node id; for any other write the one it names, else the checkout's.
 func ghWrittenRepo(ctx context.Context, argv []string, checkout func() string) string {
-	if repo := cmp.Or(ghTargetRepo(ctx, argv), ghGraphQLRepo(argv)); repo != "" {
-		return repo
-	}
 	if argv[0] == "api" {
 		if _, endpoint := ghAPIRequest(argv[1:]); ghapi.Resource(endpoint) == ghapi.ResourceGraphQL {
-			return ghEveryRepo
+			return cmp.Or(ghGraphQLRepo(argv), ghEveryRepo)
 		}
 	}
-	return cmp.Or(checkout(), ghEveryRepo)
+	return cmp.Or(ghTargetRepo(ctx, argv), checkout(), ghEveryRepo)
 }
 
 var (
@@ -179,6 +174,9 @@ func ghGraphQLRepo(argv []string) string {
 	}
 	var owner, name string
 	for _, arg := range argv[1:] {
+		if strings.Count(arg, "repository(") > 1 {
+			return ""
+		}
 		if m := ghGraphQLLiteralRepo.FindStringSubmatch(arg); m != nil {
 			return m[1] + "/" + m[2]
 		}

@@ -121,10 +121,26 @@ func newCmd(ctx context.Context, dir Dir, bin string, argv, extraEnv []string) (
 		terminateOnCancel(cmd)
 	}
 	stop := Slow(ctx, describeChild(bin, argv))
+	done, _ := ctx.Value(childDoneKey{}).(func(context.Context, string, []string))
 	return cmd, runCtx, func() {
 		stop()
 		cancel()
+		if done != nil {
+			done(ctx, bin, argv)
+		}
 	}, nil
+}
+
+// ChildEnv marks every child ccx spawns, so a shim that routes a tool back into
+// ccx can tell ccx's own call from a caller's and pass it straight through.
+const ChildEnv = "CCX_CHILD=1"
+
+type childDoneKey struct{}
+
+// WithChildDone returns ctx running done after every child spawned through it
+// has finished, with its binary and arguments.
+func WithChildDone(ctx context.Context, done func(ctx context.Context, bin string, argv []string)) context.Context {
+	return context.WithValue(ctx, childDoneKey{}, done)
 }
 
 type meterKey struct{}
@@ -205,7 +221,7 @@ func childEnv(ctx context.Context, dir Dir, extraEnv []string) ([]string, lookpa
 	if path := resolve.GitPATH(); path != "" {
 		env = append(env, "PATH="+path)
 	}
-	env = slices.Concat(env, extraEnv)
+	env = slices.Concat(env, extraEnv, []string{ChildEnv})
 	return append(env, fetchConfig(env)...), resolve
 }
 
