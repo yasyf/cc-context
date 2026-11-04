@@ -417,6 +417,10 @@ usual share. Creates over 3ms still stop them, until a sample reads under 3ms
 again. No rate is set by default, so every removal waits for quiet sessions, and
 a malformed value stops the daemon from starting.
 
+Trees deleted where they sit go ahead of older trees parked in the journal,
+oldest first within each group. A parked tree's blocks are mostly clones shared
+with its siblings, so it frees far less per entry.
+
 A completed internal conflict workspace can wait for inactivity while other
 cleanup jobs proceed and stack completion succeeds. Interactive Claude,
 Codex, Orca, editor, and terminal sessions remain alive. Leave the workspace
