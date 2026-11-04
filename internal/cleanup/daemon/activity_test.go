@@ -130,7 +130,7 @@ func TestBusySessionsStopDeletionUntilTwoQuietSamples(t *testing.T) {
 	})
 }
 
-func TestBusySessionsHoldLogicalWorkOnTheVolume(t *testing.T) {
+func TestBusySessionsHoldLogicalWork(t *testing.T) {
 	bubble(t, gated(), func(_ *testing.T, h *harness) {
 		withActivity(h, busySessions)
 		h.seed("a", 1, cleanup.PhasePrepared)
@@ -142,21 +142,6 @@ func TestBusySessionsHoldLogicalWorkOnTheVolume(t *testing.T) {
 		h.expectEvents("activity")
 		h.clock.Advance(2 * time.Second)
 		h.expectEvents("activity", "advance:a@prepared", "sample", "admit:a", "open:a", "step:a")
-	})
-}
-
-func TestJobsOffTheVolumeDeleteWhileSessionsAreBusy(t *testing.T) {
-	bubble(t, gated(), func(t *testing.T, h *harness) {
-		withActivity(h, busySessions)
-		h.relocator.away["a"] = true
-		job := h.seed("a", 1, cleanup.PhaseUnregistered)
-		h.deleter.put("a", &payload{entries: 50})
-		h.start()
-		h.expectEvents("sample", "admit:a", "open:a", "step:a")
-		h.expectTimers()
-		if got := h.status(job.ID); got.Phase != cleanup.PhaseDone {
-			t.Errorf("job a phase = %s, want done", got.Phase)
-		}
 	})
 }
 

@@ -134,9 +134,9 @@ func TestDeletionPace(t *testing.T) {
 	}
 }
 
-func TestGovernorSlowsDeletionToTheFloorOverTheAmbientLoad(t *testing.T) {
+func TestGovernorStopsDeletionOverTheAmbientLoad(t *testing.T) {
 	tuning := paced()
-	tuning.Rate, tuning.FloorRate, tuning.SampleEvery = 100, 25, 2*time.Second
+	tuning.Rate, tuning.SampleEvery = 100, 2*time.Second
 	bubble(t, tuning, func(t *testing.T, h *harness) {
 		governor := func() cleanup.Governor {
 			t.Helper()
@@ -173,29 +173,25 @@ func TestGovernorSlowsDeletionToTheFloorOverTheAmbientLoad(t *testing.T) {
 
 		h.cpu.burn(3500 * time.Millisecond)
 		h.clock.Advance(time.Second)
-		h.expectEvents("sample", "step:a")
+		h.expectEvents("sample")
 		h.expectTimers(2 * time.Second)
 		expectGovernor(cleanup.Governor{State: "throttled", CPUPercent: 175})
 
-		h.cpu.burn(2 * time.Second)
-		h.clock.Advance(2 * time.Second)
-		h.expectEvents("sample")
-		h.expectTimers(2 * time.Second)
-		expectGovernor(cleanup.Governor{State: "throttled", CPUPercent: 100})
-
-		h.cpu.burn(2 * time.Second)
-		h.clock.Advance(2 * time.Second)
-		h.expectEvents("sample", "step:a")
-		h.expectTimers(2 * time.Second)
-		expectGovernor(cleanup.Governor{State: "throttled", CPUPercent: 100})
-		if got := h.status(job.ID); got.Removed != 400 || got.Phase != cleanup.PhaseDeleting {
-			t.Errorf("job under the throttle = phase %s, removed %d; want deleting, 400", got.Phase, got.Removed)
+		for range 2 {
+			h.cpu.burn(2 * time.Second)
+			h.clock.Advance(2 * time.Second)
+			h.expectEvents("sample")
+			h.expectTimers(2 * time.Second)
+			expectGovernor(cleanup.Governor{State: "throttled", CPUPercent: 100})
+		}
+		if got := h.status(job.ID); got.Removed != 200 || got.Phase != cleanup.PhaseDeleting {
+			t.Errorf("job under the throttle = phase %s, removed %d; want deleting, 200", got.Phase, got.Removed)
 		}
 
 		h.cpu.burn(2 * time.Second)
 		h.clock.Advance(2 * time.Second)
-		h.expectEvents("sample")
-		h.expectTimers(2 * time.Second)
+		h.expectEvents("sample", "step:a")
+		h.expectTimers(time.Second)
 		expectGovernor(cleanup.Governor{State: "clear", CPUPercent: 100})
 
 		if err := h.engine.Pause(context.Background()); err != nil {
@@ -207,10 +203,8 @@ func TestGovernorSlowsDeletionToTheFloorOverTheAmbientLoad(t *testing.T) {
 	})
 }
 
-func TestOnlyAStalledSliceHoldsTheFloorUntilThreeSamplesRunClean(t *testing.T) {
-	tuning := paced()
-	tuning.FloorRate = 100
-	bubble(t, tuning, func(t *testing.T, h *harness) {
+func TestAStalledSliceStopsDeletionForThreeSamples(t *testing.T) {
+	bubble(t, paced(), func(t *testing.T, h *harness) {
 		expectGovernor := func(want cleanup.Governor) {
 			t.Helper()
 			synctest.Wait()
@@ -245,24 +239,19 @@ func TestOnlyAStalledSliceHoldsTheFloorUntilThreeSamplesRunClean(t *testing.T) {
 		stepsTake(slow, 100*time.Millisecond)
 		h.clock.Advance(4950 * time.Millisecond)
 		h.expectEvents("sample", "step:a")
-		h.expectTimers(900 * time.Millisecond)
-		expectGovernor(stalled)
-
-		h.clock.Advance(4900 * time.Millisecond)
-		h.expectEvents("sample", "step:a")
-		h.expectTimers(900 * time.Millisecond)
+		h.expectTimers(4900 * time.Millisecond)
 		expectGovernor(stalled)
 
 		stepsTake(slow, 0)
 		h.clock.Advance(4900 * time.Millisecond)
-		h.expectEvents("sample", "step:a")
-		h.expectTimers(time.Second)
+		h.expectEvents("sample")
+		h.expectTimers(5 * time.Second)
 		expectGovernor(stalled)
 
 		for range 2 {
 			h.clock.Advance(5 * time.Second)
-			h.expectEvents("sample", "step:a")
-			h.expectTimers(time.Second)
+			h.expectEvents("sample")
+			h.expectTimers(5 * time.Second)
 			expectGovernor(stalled)
 		}
 
@@ -274,9 +263,7 @@ func TestOnlyAStalledSliceHoldsTheFloorUntilThreeSamplesRunClean(t *testing.T) {
 }
 
 func TestAwaitedJobJumpsTheQueueAtTheGovernedPace(t *testing.T) {
-	tuning := paced()
-	tuning.FloorRate = 100
-	bubble(t, tuning, func(t *testing.T, h *harness) {
+	bubble(t, paced(), func(t *testing.T, h *harness) {
 		h.cpu.set(0, nil)
 		queued := h.seed("a", 1, cleanup.PhaseUnregistered)
 		awaited := h.seed("b", 2, cleanup.PhaseUnregistered)
@@ -297,14 +284,13 @@ func TestAwaitedJobJumpsTheQueueAtTheGovernedPace(t *testing.T) {
 		if _, err := h.engine.Status(context.Background(), cleanup.Query{JobID: "0000000000000000-000000", Await: true}); !errors.Is(err, cleanup.ErrUnknownJob) {
 			t.Errorf("Status(await unknown) = %v, want ErrUnknownJob", err)
 		}
-		h.cpu.burn(5 * time.Second)
 		h.clock.Advance(5 * time.Second)
 		h.expectEvents("close:a", "sample", "admit:b", "open:b", "step:b")
-		h.expectTimers(time.Second)
+		h.expectTimers(400 * time.Millisecond)
 		for range 2 {
-			h.clock.Advance(time.Second)
+			h.clock.Advance(400 * time.Millisecond)
 			h.expectEvents("step:b")
-			h.expectTimers(time.Second)
+			h.expectTimers(400 * time.Millisecond)
 		}
 
 		if got := h.status(awaited.ID); got.Phase != cleanup.PhaseDone || got.Removed != 300 {
@@ -326,13 +312,92 @@ func TestAwaitedJobJumpsTheQueueAtTheGovernedPace(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Status() = %v", err)
 		}
-		if want := (cleanup.Governor{State: "throttled", CPUPercent: 100}); report.Governor != want {
+		if want := (cleanup.Governor{State: "clear"}); report.Governor != want {
 			t.Errorf("governor = %+v, want %+v", report.Governor, want)
 		}
 
-		h.clock.Advance(time.Second)
+		h.clock.Advance(400 * time.Millisecond)
 		h.expectEvents("admit:a", "open:a", "step:a")
-		h.expectTimers(time.Second)
+		h.expectTimers(400 * time.Millisecond)
+	})
+}
+
+func TestThrottleStopsAnAwaitedJobToo(t *testing.T) {
+	bubble(t, paced(), func(t *testing.T, h *harness) {
+		h.cpu.set(0, nil)
+		h.seed("a", 1, cleanup.PhaseUnregistered)
+		awaited := h.seed("b", 2, cleanup.PhaseUnregistered)
+		h.deleter.put("a", &payload{entries: 300})
+		h.deleter.put("b", &payload{entries: 300})
+		h.start()
+		h.expectEvents("sample")
+		h.clock.Advance(5 * time.Second)
+		h.expectEvents("sample", "admit:a", "open:a", "step:a")
+
+		if _, err := h.engine.Status(context.Background(), cleanup.Query{JobID: awaited.ID, Await: true}); err != nil {
+			t.Fatalf("Status(await) = %v", err)
+		}
+		h.cpu.burn(5 * time.Second)
+		h.clock.Advance(5 * time.Second)
+		h.expectEvents("close:a", "sample")
+		h.expectTimers(5 * time.Second)
+		if got := h.status(awaited.ID); got.Removed != 0 {
+			t.Errorf("awaited job removed %d under a throttle, want none", got.Removed)
+		}
+	})
+}
+
+func TestThrottleHoldsLogicalWorkBesideADeletion(t *testing.T) {
+	bubble(t, paced(), func(_ *testing.T, h *harness) {
+		h.cpu.set(0, nil)
+		h.seed("p", 1, cleanup.PhaseUnregistered)
+		h.deleter.put("p", &payload{entries: 100000})
+		h.seed("w", 2, cleanup.PhaseWaiting)
+		h.relocator.script("w", stayWaiting)
+		h.start()
+		h.expectEvents("advance:w@waiting", "sample")
+		h.clock.Advance(5 * time.Second)
+		h.expectEvents("sample", "admit:p", "open:p", "step:p")
+		for range 6 {
+			h.cpu.burn(5 * time.Second)
+			h.clock.Advance(5 * time.Second)
+			h.expectEvents("sample")
+			h.expectTimers(5 * time.Second)
+		}
+	})
+}
+
+func TestADueRetryDoesNotSpinTheWorkerBetweenSlices(t *testing.T) {
+	bubble(t, paced(), func(_ *testing.T, h *harness) {
+		h.seed("a", 1, cleanup.PhaseUnregistered)
+		h.deleter.put("a", &payload{entries: 1000})
+		h.seed("b", 2, cleanup.PhaseUnregistered, func(job *cleanup.Job) {
+			job.Block(h.clock.Now().Add(-time.Minute), "activity", "held by pid 7")
+		})
+		h.deleter.put("b", &payload{entries: 50})
+		h.start()
+		h.expectEvents("sample", "admit:a", "open:a", "step:a")
+		h.expectTimers(400 * time.Millisecond)
+	})
+}
+
+func TestADueRetryAwaitsItsLogicalTurnWithoutSpinning(t *testing.T) {
+	tuning := paced()
+	tuning.PhysicalShare = 1
+	bubble(t, tuning, func(_ *testing.T, h *harness) {
+		h.seed("p", 1, cleanup.PhaseUnregistered)
+		h.deleter.put("p", &payload{entries: 1000})
+		h.seed("l1", 2, cleanup.PhasePrepared)
+		h.seed("l2", 3, cleanup.PhasePrepared, func(job *cleanup.Job) {
+			job.Block(h.clock.Now().Add(-time.Minute), "activity", "held by pid 7")
+		})
+		h.relocator.script("l1", func(job *cleanup.Job) {
+			h.clock.Advance(time.Second)
+			job.Phase = cleanup.PhaseUnregistered
+		})
+		h.start()
+		h.expectEvents("advance:l1@prepared", "sample", "admit:p", "open:p", "step:p")
+		h.expectTimers(400 * time.Millisecond)
 	})
 }
 
@@ -356,15 +421,13 @@ func TestAwaitLapsesWithoutAnotherAwaitingRead(t *testing.T) {
 	})
 }
 
-func TestUnavailableSamplerHoldsTheFloorRateAndIsReported(t *testing.T) {
-	tuning := paced()
-	tuning.FloorRate = 100
-	bubble(t, tuning, func(t *testing.T, h *harness) {
+func TestUnavailableSamplerLeavesTheGateInChargeAndIsReported(t *testing.T) {
+	bubble(t, paced(), func(t *testing.T, h *harness) {
 		h.seed("a", 1, cleanup.PhaseUnregistered)
 		h.deleter.put("a", &payload{entries: 300})
 		h.start()
 		h.expectEvents("sample", "admit:a", "open:a", "step:a")
-		h.expectTimers(time.Second)
+		h.expectTimers(400 * time.Millisecond)
 		report, err := h.engine.Status(context.Background(), cleanup.Query{})
 		if err != nil {
 			t.Fatalf("Status() = %v", err)
@@ -378,7 +441,7 @@ func TestUnavailableSamplerHoldsTheFloorRateAndIsReported(t *testing.T) {
 
 func TestProgressIsJournaledAtMostOnceAMinute(t *testing.T) {
 	tuning := paced()
-	tuning.Rate, tuning.FloorRate = 100, 100
+	tuning.Rate = 100
 	bubble(t, tuning, func(t *testing.T, h *harness) {
 		job := h.seed("a", 1, cleanup.PhaseUnregistered)
 		h.deleter.put("a", &payload{entries: 100000})

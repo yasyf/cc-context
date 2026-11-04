@@ -37,7 +37,6 @@ func (h *hold) observe(tripped, calm bool, resumeSamples int) {
 }
 
 type tally struct {
-	slices  int
 	stalls  int
 	removed int
 }
@@ -75,13 +74,11 @@ func newGovernor(t Tuning) *governor {
 		resumeSamples: t.ResumeSamples,
 		rates: map[string]int{
 			governorClear:       t.Rate,
-			governorUnavailable: t.FloorRate,
-			governorThrottled:   t.FloorRate,
+			governorUnavailable: t.Rate,
 		},
 		crews: map[string]int{
 			governorClear:       t.Workers,
-			governorUnavailable: t.FloorWorkers,
-			governorThrottled:   t.FloorWorkers,
+			governorUnavailable: t.Workers,
 		},
 		state: governorIdle,
 	}
@@ -95,10 +92,11 @@ func (g *governor) next() time.Time { return g.at.Add(g.sampleEvery) }
 
 func (g *governor) rate() int { return g.rates[g.state] }
 
+func (g *governor) throttled() bool { return g.state == governorThrottled }
+
 func (g *governor) workers() int { return g.crews[g.state] }
 
 func (g *governor) sliced(took time.Duration, workers, removed int) {
-	g.window.slices++
 	g.window.removed += removed
 	if took < 2*g.sliceBudget*time.Duration(workers) {
 		return
@@ -113,9 +111,7 @@ func (g *governor) sliced(took time.Duration, workers, removed int) {
 func (g *governor) observe(now time.Time, cpu time.Duration, err error, quiet bool) {
 	previous, since, had, was, settled := g.cpu, now.Sub(g.at), g.counted, g.state, g.settled
 	g.at, g.settled = now, quiet
-	if g.window.slices > 0 {
-		g.stalled.observe(g.window.stalls > 0, g.window.stalls == 0, g.resumeSamples)
-	}
+	g.stalled.observe(g.window.stalls > 0, g.window.stalls == 0, g.resumeSamples)
 	g.pace = 0
 	if was != governorIdle && since > 0 {
 		g.pace = float64(g.window.removed) / since.Seconds()

@@ -3,7 +3,6 @@ package daemon
 import (
 	"context"
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/yasyf/cc-context/internal/cleanup"
@@ -28,11 +27,6 @@ type gate struct {
 	sampled bool
 	at      time.Time
 	detail  string
-}
-
-type site struct {
-	path      string
-	contended bool
 }
 
 func newGate(t Tuning) *gate {
@@ -95,19 +89,8 @@ func (g *gate) label() string {
 	return "open"
 }
 
-func (e *Engine) contends(job cleanup.Job) bool {
-	path := e.relocator.Site(job)
-	if known, ok := e.sites[job.ID]; ok && known.path == path {
-		return known.contended
-	}
-	info, err := os.Stat(path)
-	contended := err != nil || cleanup.IDOf(info).Dev == e.guarded
-	e.sites[job.ID] = site{path: path, contended: contended}
-	return contended
-}
-
-func (e *Engine) yields(job cleanup.Job) bool {
-	if e.gate == nil || !e.contends(job) {
+func (e *Engine) yields() bool {
+	if e.gate == nil {
 		return false
 	}
 	e.wanted = true
@@ -115,8 +98,8 @@ func (e *Engine) yields(job cleanup.Job) bool {
 	return e.gate.held
 }
 
-func (e *Engine) holds(job cleanup.Job) bool {
-	return e.gate != nil && e.gate.held && e.contends(job)
+func (e *Engine) holds() bool {
+	return e.gate != nil && e.gate.held
 }
 
 func (e *Engine) sampleDue(now time.Time) bool {

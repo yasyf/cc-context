@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"runtime"
 	"slices"
 	"time"
 
@@ -22,6 +23,7 @@ import (
 const (
 	cleanupDaemonized   = true
 	cleanupReachTimeout = 5 * time.Second
+	cleanupServeProcs   = 2
 )
 
 func reachCleanup(ctx context.Context) (cleanup.Service, error) {
@@ -47,6 +49,7 @@ func previewCleanup(ctx context.Context, r cleanup.Request) (cleanup.Job, error)
 }
 
 func runCleanupServe(ctx context.Context) error {
+	runtime.GOMAXPROCS(cleanupServeProcs)
 	band := native.Band{}
 	if err := band.Background(); err != nil {
 		return fmt.Errorf("cleanup serve: demote to background priority: %w", err)

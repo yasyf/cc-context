@@ -319,8 +319,11 @@ child, never a process group.
 The daemon deletes in bounded slices. A logical step proves a tree through git,
 so after one, deletion runs for ten times as long as that step took, and a
 backlog of logical work spends its time freeing disk. While
-the governor is clear, 16 workers remove entries in parallel at up to 4,000
-entries a second, and a slice ends after 1,600 entries or 800ms. The workers
+the governor is clear, 4 workers remove entries in parallel at up to 4,000
+entries a second, and a slice ends after 400 entries or 200ms. The daemon runs
+in the darwin background band with throttled disk I/O and two Go schedulers.
+Every git child it starts inherits the band. The worker count bounds the cores
+deletion can use. The workers
 remove entries through directory descriptors the deletion holds open. They
 never follow a symlink or cross onto another volume, they restore write access
 to a read-only directory before emptying it, and they remove a directory only
@@ -340,42 +343,37 @@ bound. A slice that spends its time on directories and removes little rests as
 long as a full one. The `cleanup status` header names the worker count and the
 entries deleted per second over the last sample, and the job being deleted
 carries the same rate. The daemon samples `fseventsd` every 5s and learns its ambient
-load from samples taken while deletion ran no faster than its floor. It does
-not run idle repository or process scans.
+load from samples taken while no slice ran. It does not run idle repository or
+process scans.
 
-The daemon drops to one worker and at most 100 entries a second, in slices of
-100 entries or 50ms, in three cases:
+While deletion is due, the governor can stop it and the logical steps beside it.
+The tree being deleted stays open, and the slices resume at the full rate:
 
 | `cleanup status` governor | Cause | Lifts |
 | --- | --- | --- |
-| `throttled at N% cpu` | Deletion pushed `fseventsd` more than half a core over its ambient load | After three samples within a quarter core of that load |
-| `throttled at N% cpu: slices stalled past twice their time budget` | A slice took twice its time budget or more, 1.6s with 16 workers and 100ms with one. The floor starts with that slice's own rest, not at the next sample | After three samples that each ran a slice, none of them stalled |
-| `unavailable: <error>` | `fseventsd` could not be sampled | One sample after `fseventsd` reads again; deletion waits out that 5s interval |
+| `throttled at N% cpu` | `fseventsd` sat more than half a core over its ambient load | After three samples within a quarter core of that load |
+| `throttled at N% cpu: slices stalled past twice their time budget` | A slice took twice its time budget or more, 400ms with 4 workers. The stop starts with that slice | After three samples with no stalled slice |
 
 A slice that ends at its time budget is the budget working, and does not throttle.
 Both throttles can hold at once. The status then names the stalled slices, and
-the full rate returns once each has lifted. At the floor, a slice that takes
-its whole 50ms rests a full second whatever it removed, so deletion can run
-below 100 entries a second.
+deletion resumes once each has lifted. A governor that reads
+`unavailable: <error>` could not sample `fseventsd`, so the activity gate alone
+decides whether deletion runs. A job a wait command is polling skips the queue
+only, and it stops under a throttle like any other.
 
-The floor keeps the queue draining on a machine whose `fseventsd` never goes
-quiet. A job a wait command is polling skips the queue only. It deletes at the
-rate the governor allows.
-
-Work on the daemon's own volume also waits for the Claude and Codex sessions
-that share it. Any parallel deletion there slows every file create on that
-volume roughly tenfold, background priority included. Every 15s while such
-work is pending, the daemon counts the processes of yours whose `argv[0]` is
+All work, on every volume, also waits for the Claude and Codex sessions on the
+machine. Any parallel deletion slows every file create on its volume roughly
+tenfold, background priority included. Every 15s while work is pending, the
+daemon counts the processes of yours whose `argv[0]` is
 `claude` or `codex` and that used over a tenth of a core since the last
 sample. It also times eight file creates in its `probe` directory after
 deletion has rested for a second.
 
 When more than three sessions are busy, or
 the median create takes over 3ms, the header reads `governor held: <counts>`.
-In that state no job on that volume deletes or advances, however long it
-waits. Work resumes at full speed after two quiet samples in a row, and the
-first sample after a start only sets the CPU baseline. A job whose tree sits
-on another volume does not wait.
+In that state no job deletes or advances, however long it waits. Work resumes
+at full speed after two quiet samples in a row, and the first sample after a
+start only sets the CPU baseline.
 
 A completed internal conflict workspace can wait for inactivity while other
 cleanup jobs proceed and stack completion succeeds. Interactive Claude,

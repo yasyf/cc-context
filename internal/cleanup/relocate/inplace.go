@@ -848,19 +848,3 @@ func (r *Relocator) Readmit(ctx context.Context, job *cleanup.Job) (cleanup.Dele
 	}
 	return r.Admit(ctx, job)
 }
-
-// Site is the directory whose volume holds job's next deletion root, read off
-// the record alone. A legacy relocation only ever moved a tree within its own
-// volume, so a tree it parked shares the volume of the parent it left.
-func (r *Relocator) Site(job cleanup.Job) string {
-	switch job.Phase {
-	case cleanup.PhaseDeletingRegistration, cleanup.PhaseDeletingAdmin:
-		return filepath.Dir(job.AdminDir)
-	case cleanup.PhaseUnregistered, cleanup.PhaseDeleting, cleanup.PhaseDeletingRetiredPayload:
-		return filepath.Dir(job.Payload)
-	}
-	if job.Adopted {
-		return filepath.Dir(job.Source)
-	}
-	return filepath.Dir(job.Original)
-}
