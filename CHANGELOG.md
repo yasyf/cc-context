@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ccx vcs diff --budget` stops rendering and masking once it has what the budget keeps. A worktree
+  with 50 MB of untracked text took 30 s for a 4,000-token answer.
 - `ccx vcs stack submit` and `ccx vcs stack drop --repair` recover a pull request
   that GitHub closed when its merged parent's branch was deleted, even if it is
   still in the parent's native stack. GitHub refuses to change the base of a

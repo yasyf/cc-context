@@ -6,6 +6,7 @@ import (
 
 	"github.com/yasyf/cc-context/anchor"
 	"github.com/yasyf/cc-context/internal/hunk"
+	ccrender "github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/secrets"
 )
 
@@ -72,10 +73,11 @@ type diffModel struct {
 // (a renamed file's under the pre-image path too) unless reveal is set, and
 // returning the fired rule ids in file order for the caller's footer. In full
 // mode each classified file also inlines its 3-context hunks; the trailer is
-// dropped.
-func render(m diffModel, full, reveal bool) (string, []string) {
+// dropped. A positive budget stops rendering, and masking, once the sections pass
+// what the caller's cap keeps, and the header counts the files left out.
+func render(m diffModel, full, reveal bool, budget int) (string, []string) {
 	var b strings.Builder
-	fmt.Fprintf(&b, "# diff %s %s %d files %s +%d ~%d %s%d symbols\n",
+	header := fmt.Sprintf("# diff %s %s %d files %s +%d ~%d %s%d symbols\n",
 		m.label, emDash, len(m.files), midDot, m.added, m.changed, sigilRemoved, m.removed)
 
 	capped := 0
@@ -87,7 +89,12 @@ func render(m diffModel, full, reveal bool) (string, []string) {
 
 	var ids []string
 	disclosed, hasSymbols := false, false
+	unrendered := 0
 	for _, r := range m.files {
+		if budget > 0 && b.Len() > ccrender.BudgetBytes(budget) {
+			unrendered++
+			continue
+		}
 		if r.kind == fileKindCapped && !disclosed {
 			fmt.Fprintf(&b, "# %s %d files beyond the %d-file classification cap %s hunk counts only:\n",
 				ellipsis, capped, classifyCap, emDash)
@@ -127,7 +134,10 @@ func render(m diffModel, full, reveal bool) (string, []string) {
 	if !full && hasSymbols {
 		fmt.Fprintf(&b, "hunks hidden %s --full inlines per-file hunks\n", emDash)
 	}
-	return b.String(), ids
+	if unrendered > 0 {
+		header += fmt.Sprintf("# %s %d files not rendered %s past --budget\n", ellipsis, unrendered, emDash)
+	}
+	return header + b.String(), ids
 }
 
 // symRow is one rendered symbol line before column alignment.
