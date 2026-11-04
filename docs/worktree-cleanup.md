@@ -366,6 +366,19 @@ deletion resumes once each has lifted. A governor that reads
 decides whether deletion runs. A job a wait command is polling skips the queue
 only, and it stops under a throttle like any other.
 
+Deleting under a directory many processes watch costs `fseventsd` far more per
+entry than deleting elsewhere, and the governor only reacts after the fact. To
+slow deletion under such a directory, set a cap in global git config, as often
+as you need, and restart the daemon:
+
+```sh
+git config --global --add ccx.cleanupRateCap /absolute/root=100
+```
+
+A tree under that root deletes one removal at a time at up to that many entries
+a second. Other trees keep the full rate. Nothing is capped by default, and a
+malformed value stops the daemon from starting.
+
 All work, on every volume, also waits for the Claude and Codex sessions on the
 machine. Any parallel deletion slows every file create on its volume roughly
 tenfold, background priority included. Every 15s while work is pending, the

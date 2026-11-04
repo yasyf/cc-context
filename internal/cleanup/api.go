@@ -359,6 +359,29 @@ type Governor struct {
 	Gate string `json:"gate,omitempty"`
 }
 
+// RateCap slows physical deletion under Root to Rate entries a second, one
+// removal at a time, for a directory whose deletions cost other processes more
+// than the governor can see.
+type RateCap struct {
+	Root string
+	Rate int
+}
+
+// CappedRate is the lowest rate caps set for path, and whether any of them
+// covers it.
+func CappedRate(caps []RateCap, path string) (int, bool) {
+	rate, capped := 0, false
+	for _, c := range caps {
+		if path != c.Root && !strings.HasPrefix(path, c.Root+string(filepath.Separator)) {
+			continue
+		}
+		if !capped || c.Rate < rate {
+			rate, capped = c.Rate, true
+		}
+	}
+	return rate, capped
+}
+
 // Pace is how fast physical deletion runs as an observer reads it.
 type Pace struct {
 	// Workers is how many removals a slice keeps in flight in the governor's
