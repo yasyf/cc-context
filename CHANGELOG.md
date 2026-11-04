@@ -17,9 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `ccx vcs stack rebase --above`, and `--parent` or a native stack's pull request bases, no longer
-  plan a branch with no recorded parent revision from its merge base when its parent was rewritten
-  since it was cut. Forge-AI/monorepo#49305 was replayed onto `dev`, and the dry run for its child
+- `ccx vcs stack rebase --above` and every other run reading a parent from a pull request's base no
+  longer plan a branch with no recorded parent revision from its merge base when that parent was
+  rewritten since it was cut. Forge-AI/monorepo#49305 was replayed onto `dev`, and the dry run for its child
   would have re-applied 37 commits. The branch now replays from the furthest head the parent's
   local and remote-tracking reflogs remember it holding. The plan also prints how many commits each
   branch replays.
