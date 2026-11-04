@@ -75,7 +75,7 @@ func TestStackSnapshotPatchReadControl(t *testing.T) {
 			output := recordStackPatchBytes(t, f)
 			s := gtBranchState{Head: local, Parents: []gtRef{{Ref: "main", SHA: pin}}}
 			ctx := f.Context()
-			b, err := stackSnapshot(ctx, dir, tr, s, "feature", remote, submitted, nil, false, pin, true, false)
+			b, err := stackSnapshot(ctx, dir, tr, s, "feature", remote, submitted, nil, false, pin, "", true, false)
 			wantBranch := stackRebaseBranch{Name: "feature", WasParent: "main", Local: local, Remote: remote, Head: local}
 			if !replay {
 				wantBranch.Head = remote
@@ -142,7 +142,7 @@ func TestStackSnapshotPatchReadControl(t *testing.T) {
 				seen[entry.Name()] = true
 			}
 			mustRun(t, f.Env(), f.Dir, "git", "config", "diff.noprefix", "true")
-			again, againErr := stackSnapshot(ctx, dir, tr, s, "feature", remote, submitted, nil, false, pin, true, false)
+			again, againErr := stackSnapshot(ctx, dir, tr, s, "feature", remote, submitted, nil, false, pin, "", true, false)
 			if !reflect.DeepEqual(again, b) || reflect.TypeOf(againErr) != reflect.TypeOf(firstErr) || fmt.Sprint(againErr) != fmt.Sprint(firstErr) {
 				t.Fatalf("second snapshot = %+v, %v; first = %+v, %v", again, againErr, b, firstErr)
 			}

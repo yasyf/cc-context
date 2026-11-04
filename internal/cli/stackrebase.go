@@ -1510,7 +1510,11 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 				o.pinned = append(o.pinned, name)
 			}
 		}
-		b, err := stackSnapshot(ctx, l.dir(), tr, effective, name, remotes[name], ours, prs[name], slices.Contains(o.landed, name), pin, o.dropCommits, published)
+		publishedBase := ""
+		if receipt != nil && receipt.Head == remotes[name] {
+			publishedBase = receipt.Base
+		}
+		b, err := stackSnapshot(ctx, l.dir(), tr, effective, name, remotes[name], ours, prs[name], slices.Contains(o.landed, name), pin, publishedBase, o.dropCommits, published)
 		if errors.As(err, new(stackLandedPastError)) && stackReadsPublished(o, name) {
 			landedPast[name], err = err, nil
 		}
@@ -2678,7 +2682,7 @@ func stackFetchRemoteHeads(ctx context.Context, dir render.Dir, prefix, remote s
 // head, its local one never compared. A branch whose local head diverged from
 // its published one is taken at the published head too, and the divergence is
 // returned with it: only a branch the plan goes on to move is refused for it.
-func stackSnapshot(ctx context.Context, dir render.Dir, tr vcs.Trunk, s gtBranchState, name, remote, submitted string, pr *stackPR, declared bool, pin string, dropCommits, published bool) (stackRebaseBranch, error) {
+func stackSnapshot(ctx context.Context, dir render.Dir, tr vcs.Trunk, s gtBranchState, name, remote, submitted string, pr *stackPR, declared bool, pin, publishedBase string, dropCommits, published bool) (stackRebaseBranch, error) {
 	ctx = context.WithValue(ctx, stackPatchSeriesKey{}, map[stackPatchRange][]string{})
 	b := stackRebaseBranch{
 		Name: name, WasParent: s.Parents[0].Ref, Local: s.Head, Remote: remote,
@@ -2688,7 +2692,7 @@ func stackSnapshot(ctx context.Context, dir render.Dir, tr vcs.Trunk, s gtBranch
 	if published && remote != "" {
 		b.Head = remote
 	} else if b.Held == "" && remote != "" && remote != s.Head && (pr == nil || !pr.abandoned()) {
-		if err := stackTakeRemote(ctx, dir, tr, s, &b, name, remote, submitted, pr, pin, dropCommits); err != nil {
+		if err := stackTakeRemote(ctx, dir, tr, s, &b, name, remote, submitted, pr, pin, publishedBase, dropCommits); err != nil {
 			if !errors.As(err, new(stackDivergedError)) {
 				return b, err
 			}
@@ -2736,7 +2740,7 @@ func stackSnapshot(ctx context.Context, dir render.Dir, tr vcs.Trunk, s gtBranch
 // stackTakeRemote takes a remote that equals the branch's last submitted head
 // as ours even when local no longer contains it: every rewrite a rebase or
 // restack makes diverges from the head it last pushed.
-func stackTakeRemote(ctx context.Context, dir render.Dir, tr vcs.Trunk, s gtBranchState, b *stackRebaseBranch, name, remote, submitted string, pr *stackPR, pin string, dropCommits bool) error {
+func stackTakeRemote(ctx context.Context, dir render.Dir, tr vcs.Trunk, s gtBranchState, b *stackRebaseBranch, name, remote, submitted string, pr *stackPR, pin, publishedBase string, dropCommits bool) error {
 	ahead, err := gitIsAncestor(ctx, dir, stackRebasePrefix, remote, s.Head)
 	if err != nil {
 		return err
@@ -2795,9 +2799,11 @@ func stackTakeRemote(ctx context.Context, dir render.Dir, tr vcs.Trunk, s gtBran
 		if returned {
 			return stackDivergedError{fmt.Errorf("stack rebase: %s's local head %.12s is one it held before its published head %s/%s (%.12s) — a reset onto an older head; git reset --keep %s/%s to take the published head, or pass --drop-commits to publish the local head anyway", name, s.Head, tr.Remote(), name, remote, tr.Remote(), name)}
 		}
-		left, err := stackLeftBase(ctx, dir, tr, s, pr)
-		if err != nil {
-			return err
+		left := publishedBase
+		if left == "" {
+			if left, err = stackLeftBase(ctx, dir, tr, s, pr); err != nil {
+				return err
+			}
 		}
 		if err := stackRefuseDroppedCommits(ctx, dir, tr, name, s.Head, remote, pin, left); err != nil {
 			return stackDivergedError{err}
@@ -2812,67 +2818,85 @@ func (b *stackRebaseBranch) reopens() bool {
 	return b.Landed == "" && b.Held == "" && b.PR != nil && b.PR.State == "CLOSED" && b.PR.BaseGone
 }
 
-// stackRefuseDroppedCommits refuses a local head that only loses work its
-// published head carries: one sharing none of its commits, or one holding a
-// strict subset of them, matched by subject so a rebase, an amend, or a rewrite
-// of a commit still passes. A hard reset onto the wrong commit would otherwise
-// force-push over the pull request's work. A published commit trunk already
-// landed as a squash, as the merge queue's replay of a landed parent leaves
-// one, is no work to lose.
+// stackRefuseDroppedCommits refuses a local head that lost the change of a
+// commit its published head carries. A hard reset onto the wrong commit would
+// otherwise force-push over the pull request's work. A commit's change is gone
+// when reverting it leaves the local head's tree as it is, so a reword, a fold
+// into another commit, or an edit of what the commit wrote all pass, whatever
+// their subjects say. Commits below left are the parent's, not the branch's to
+// drop. A published commit trunk already landed as a squash, as the merge
+// queue's replay of a landed parent leaves one, is no work to lose.
 func stackRefuseDroppedCommits(ctx context.Context, dir render.Dir, tr vcs.Trunk, name, local, remote, pin, left string) error {
-	commits := func(head string) ([]string, []string, error) {
-		args := []string{"log", "--no-merges", "--format=%H %s", head, "^" + pin}
-		if left != "" {
-			args = append(args, "^"+left)
-		}
-		out, err := render.RunCLI(ctx, dir, "git", args)
+	trees, err := render.RunCLI(ctx, dir, "git", []string{"rev-parse", local + "^{tree}", remote + "^{tree}"})
+	if err != nil {
+		return fmt.Errorf("%s: git rev-parse %.12s^{tree} %.12s^{tree}: %w", stackRebasePrefix, local, remote, err)
+	}
+	localTree, remoteTree, _ := strings.Cut(strings.TrimSpace(trees), "\n")
+	if localTree == remoteTree {
+		return nil
+	}
+	args := []string{"log", "--no-merges", "--format=%H %s", remote, "^" + pin}
+	if left != "" {
+		args = append(args, "^"+left)
+	}
+	published, err := render.RunCLI(ctx, dir, "git", args)
+	if err != nil {
+		return fmt.Errorf("%s: git log %.12s: %w", stackRebasePrefix, remote, err)
+	}
+	var gone []string
+	subjects := map[string]string{}
+	for line := range strings.Lines(published) {
+		sha, subject, _ := strings.Cut(strings.TrimSuffix(line, "\n"), " ")
+		isGone, err := stackChangeGone(ctx, dir, local, localTree, sha)
 		if err != nil {
-			return nil, nil, fmt.Errorf("%s: git log %.12s: %w", stackRebasePrefix, head, err)
-		}
-		var shas, subjects []string
-		for line := range strings.Lines(out) {
-			sha, subject, _ := strings.Cut(strings.TrimSuffix(line, "\n"), " ")
-			if subject == "" {
-				continue
-			}
-			shas = append(shas, sha)
-			subjects = append(subjects, subject)
-		}
-		return shas, subjects, nil
-	}
-	_, kept, err := commits(local)
-	if err != nil {
-		return err
-	}
-	shas, published, err := commits(remote)
-	if err != nil {
-		return err
-	}
-	var missing []string
-	for i, subject := range published {
-		if !slices.Contains(kept, subject) {
-			missing = append(missing, shas[i])
-		}
-	}
-	shared := len(published) - len(missing)
-	var landed []string
-	if len(missing) > 0 {
-		if landed, err = gitLandedReplays(ctx, dir, stackRebasePrefix, pin, missing); err != nil {
 			return err
 		}
-	}
-	var dropped []string
-	for i, sha := range shas {
-		if slices.Contains(missing, sha) && !slices.Contains(landed, sha) {
-			dropped = append(dropped, fmt.Sprintf("%q", published[i]))
+		if isGone {
+			gone = append(gone, sha)
+			subjects[sha] = subject
 		}
 	}
-	added := slices.ContainsFunc(kept, func(subject string) bool { return !slices.Contains(published, subject) })
-	if len(dropped) == 0 || (shared > 0 && added) {
+	if len(gone) == 0 {
+		return nil
+	}
+	landed, err := gitLandedReplays(ctx, dir, stackRebasePrefix, pin, gone)
+	if err != nil {
+		return err
+	}
+	var dropped []string
+	for _, sha := range gone {
+		if !slices.Contains(landed, sha) {
+			dropped = append(dropped, fmt.Sprintf("%q", subjects[sha]))
+		}
+	}
+	if len(dropped) == 0 {
 		return nil
 	}
 	return fmt.Errorf("stack rebase: %s's local head %.12s drops %d commit(s) its published head %s/%s (%.12s) carries: %s — restore them, or pass --drop-commits to publish the local head anyway",
 		name, local, len(dropped), tr.Remote(), name, remote, strings.Join(dropped, ", "))
+}
+
+func stackChangeGone(ctx context.Context, dir render.Dir, local, localTree, commit string) (bool, error) {
+	trees, err := render.RunCLI(ctx, dir, "git", []string{"rev-parse", commit + "^{tree}", commit + "^^{tree}"})
+	if err != nil {
+		return false, fmt.Errorf("%s: git rev-parse %.12s^{tree} %.12s^^{tree}: %w", stackRebasePrefix, commit, commit, err)
+	}
+	tree, parentTree, _ := strings.Cut(strings.TrimSpace(trees), "\n")
+	if tree == parentTree {
+		return false, nil
+	}
+	reverted, code, stderr, err := render.RunCLIExitCode(ctx, dir, "git", []string{"--attr-source=" + local, "merge-tree", "--write-tree", "--merge-base=" + commit, local, commit + "^"})
+	if err != nil {
+		return false, fmt.Errorf("%s: git merge-tree %.12s %.12s^: %w", stackRebasePrefix, local, commit, err)
+	}
+	switch code {
+	case 0:
+	case 1:
+		return false, nil
+	default:
+		return false, fmt.Errorf("%s: git merge-tree %.12s %.12s^: exit %d: %s", stackRebasePrefix, local, commit, code, strings.TrimSpace(stderr))
+	}
+	return strings.TrimSpace(reverted) == localTree, nil
 }
 
 // stackLeftBase is the published head of the base a branch's pull request

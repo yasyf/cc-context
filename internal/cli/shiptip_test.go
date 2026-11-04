@@ -86,6 +86,25 @@ func TestStackSubmitRefusesALocalHeadDroppingPublishedCommits(t *testing.T) {
 	}
 }
 
+func TestStackSubmitPublishesAnAmendThatRewordsTheSubject(t *testing.T) {
+	f := shipGTRepo(t)
+	shipGTStack(t, f, "feature")
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("stack submit: %v", err)
+	}
+	writeShipFile(t, f.Dir, "more.txt", "more\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "more.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-q", "--amend", "-m", "feature, reworded")
+	shipResetLog(t, f)
+
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("submit after a reworded amend: %v", err)
+	}
+	if got := gitAt(t, f.Env(), f.RemoteDir, "log", "-1", "--format=%s", "feature"); got != "feature, reworded" {
+		t.Errorf("origin feature tip = %q, want the reworded amend", got)
+	}
+}
+
 // stackMergeableBase is a submitted base, feature stack whose base pull request
 // is open and mergeable, with trunk moved on since.
 func stackMergeableBase(t *testing.T, mergeable string) (*vcstest.Fixture, *gtAPIStub, string) {
