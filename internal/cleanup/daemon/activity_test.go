@@ -167,6 +167,38 @@ func TestBusyDeletesRunOutsideQuietRootsAtTheirRate(t *testing.T) {
 	})
 }
 
+func TestDeletesAtFollowsTheNextDeletion(t *testing.T) {
+	job := cleanup.Job{Original: "/original", Source: "/source", Payload: "/payload", AdminDir: "/admin"}
+	tests := []struct {
+		phase   cleanup.Phase
+		adopted bool
+		want    string
+	}{
+		{cleanup.PhasePending, false, "/original"},
+		{cleanup.PhaseClaimed, false, "/original"},
+		{cleanup.PhaseDeletingTree, false, "/original"},
+		{cleanup.PhasePrepared, true, "/source"},
+		{cleanup.PhaseDeletingTree, true, "/source"},
+		{cleanup.PhaseUnregistered, false, "/payload"},
+		{cleanup.PhaseDeleting, false, "/payload"},
+		{cleanup.PhaseDeletingRetiredPayload, false, "/payload"},
+		{cleanup.PhaseDeletingAdmin, false, "/admin"},
+		{cleanup.PhaseDeletingRegistration, false, "/admin"},
+	}
+	for _, tt := range tests {
+		job.Phase, job.Adopted = tt.phase, tt.adopted
+		if got := deletesAt(job); got != tt.want {
+			t.Errorf("deletesAt(%s, adopted %t) = %s, want %s", tt.phase, tt.adopted, got, tt.want)
+		}
+	}
+}
+
+func TestBusyDeletesCoverARootQuietRoot(t *testing.T) {
+	if (cleanup.BusyDeletes{Rate: 100, Quiet: []string{"/"}}).Allows("/a/b") {
+		t.Error("a quiet root of / allowed /a/b")
+	}
+}
+
 func TestSlowCreatesHoldBusyDeletes(t *testing.T) {
 	bubble(t, gated(), func(t *testing.T, h *harness) {
 		slow := busySessions

@@ -405,7 +405,7 @@ func (b BusyDeletes) Allows(path string) bool {
 }
 
 func within(path, root string) bool {
-	return path == root || strings.HasPrefix(path, root+string(filepath.Separator))
+	return path == root || strings.HasPrefix(path, strings.TrimSuffix(root, string(filepath.Separator))+string(filepath.Separator))
 }
 
 // Pace is how fast physical deletion runs as an observer reads it.

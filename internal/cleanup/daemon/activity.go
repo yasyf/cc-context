@@ -111,13 +111,15 @@ func (e *Engine) rests(job cleanup.Job) bool {
 
 func deletesAt(job cleanup.Job) string {
 	switch job.Phase {
-	case cleanup.PhaseUnregistered, cleanup.PhaseDeleting, cleanup.PhaseDeletingAdmin, cleanup.PhaseDeletingRetiredPayload:
+	case cleanup.PhaseUnregistered, cleanup.PhaseDeleting, cleanup.PhaseDeletingRetiredPayload:
 		return job.Payload
-	case cleanup.PhaseDeletingRegistration:
+	case cleanup.PhaseDeletingAdmin, cleanup.PhaseDeletingRegistration:
 		return job.AdminDir
-	default:
-		return job.Original
 	}
+	if job.Adopted {
+		return job.Source
+	}
+	return job.Original
 }
 
 func (e *Engine) sampleDue(now time.Time) bool {
