@@ -325,6 +325,17 @@ func Resource(target string) string {
 // the pool is under its floor, re-reading a stale pool from rate_limit first.
 // The app identity is the installation on c's repository.
 func (c *Client) Admit(ctx context.Context, identity, resource string) error {
+	return c.admit(ctx, identity, resource, (*poolState).floor)
+}
+
+// AdmitSpill refuses an app read moved onto the user's resource pool once that
+// pool is under half its limit, so one spent installation cannot also spend
+// the user's own quota down to Floor.
+func (c *Client) AdmitSpill(ctx context.Context, resource string) error {
+	return c.admit(ctx, IdentityUser, resource, func(p *poolState) int { return p.Limit / 2 })
+}
+
+func (c *Client) admit(ctx context.Context, identity, resource string, floor func(*poolState) int) error {
 	if c.quota == nil || c.floorless {
 		return nil
 	}
@@ -349,10 +360,12 @@ func (c *Client) Admit(ctx context.Context, identity, resource string) error {
 			return nil
 		}
 	}
-	if p.Remaining >= p.floor() || !now.Before(p.ResetAt) {
+	if p.Remaining >= floor(p) || !now.Before(p.ResetAt) {
 		return nil
 	}
-	return &FloorError{Pool: p.public(principal, resource, now)}
+	pool := p.public(principal, resource, now)
+	pool.Floor = floor(p)
+	return &FloorError{Pool: pool}
 }
 
 // Charge counts one request by the calling process against identity's

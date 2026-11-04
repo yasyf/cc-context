@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ccx vcs gh` stops moving app reads onto the user's pool once that pool is under half its limit.
+  A spent installation used to spend the user's own quota down to the 1,000 floor as well.
 - `ccx vcs diff --budget` stops reading, classifying, rendering and masking once it has what the
   budget keeps. A worktree with 52 MB of untracked text took 30 s for a 4,000-token answer, and one
   with 625 changed files took 40 s; both now take under a second. The header counts the files left

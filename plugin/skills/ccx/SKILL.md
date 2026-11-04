@@ -426,7 +426,8 @@ core, graphql, or search. The charge goes to `CCX_CALLER`, which every script
 and daemon sets, else `CCI_AGENT_ID`, else the script that started ccx. A
 pool under 1000 left before its reset takes no more reads. `vcs gh` then
 serves the cached answer to the same read, however old. Without one it moves
-an app read onto the user's pool. When that pool is under the floor too, it
+an app read onto the user's pool while that pool has over half its limit left.
+Past that, it
 exits 1 without calling GitHub and prints one line starting
 `ccx: GitHub rate limit floor:`, naming the pool, its reset time, and the top
 callers. Back off until that reset. `ccx vcs pr status` and `pr state` read through REST when GraphQL is

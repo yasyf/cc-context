@@ -53,7 +53,8 @@ reset, and top callers. Before a read, ccx reads its pool's standing from
 GitHub's free rate_limit when the ledger's is over a minute old. A pool under
 1000 left before its reset takes no more reads: ccx serves the cached answer
 to the same read, however old, saying so on stderr; else a read on the app's
-pool runs on the user's pool instead; else ccx exits 1 without calling GitHub
+pool runs on the user's pool instead while that pool has over half its limit
+left; else ccx exits 1 without calling GitHub
 and prints one line starting "ccx: GitHub rate limit floor:" naming the pool,
 its remainder and limit, its reset time, and the top callers. Back off until
 that reset.
@@ -123,6 +124,7 @@ func runVcsGh(cmd *cobra.Command, argv []string, maxAge time.Duration) error {
 	}
 	capture := cacheable || resource == ghapi.ResourceGraphQL && argv[0] == "api"
 	args := argv
+	spilled := false
 	for {
 		var env []string
 		var expires time.Time
@@ -142,14 +144,18 @@ func runVcsGh(cmd *cobra.Command, argv []string, maxAge time.Duration) error {
 		if len(env) > 0 {
 			api, identity = reviewsAPI().ForRepo(cmp.Or(repo, ghCheckoutRepo(ctx, dir))), ghapi.IdentityApp
 		}
-		if err := api.Admit(ctx, identity, resource); err != nil {
+		admit := api.Admit(ctx, identity, resource)
+		if spilled && admit == nil {
+			admit = api.AdmitSpill(ctx, resource)
+		}
+		if err := admit; err != nil {
 			if hit, ok := ghCached(key); ok && errors.As(err, new(*ghapi.FloorError)) {
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "ccx: serving the answer cached at %s; %v\n", hit.At.Local().Format(time.Kitchen), err)
 				_, werr := cmd.OutOrStdout().Write(hit.Stdout)
 				return werr
 			}
 			if identity == ghapi.IdentityApp && errors.As(err, new(*ghapi.FloorError)) {
-				userToken = true
+				userToken, spilled = true, true
 				continue
 			}
 			return ghFloor(cmd, err)
