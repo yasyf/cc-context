@@ -332,13 +332,25 @@ func (r *Relocator) retirementBlocked(ctx context.Context, job *cleanup.Job, err
 	return r.block(ctx, job, probeReason("identity", err), err.Error())
 }
 
+func severed(job *cleanup.Job) bool {
+	for _, tree := range []string{job.Original, job.Registered, job.Payload} {
+		if tree == "" {
+			continue
+		}
+		if _, err := os.Lstat(filepath.Join(tree, ".git")); !gone(err) {
+			return false
+		}
+	}
+	return true
+}
+
 // Retire unregisters an idle queued tree in place while physical deletion is paused.
 // Worktree repair and move must be excluded until the operation completes.
 func (r *Relocator) Retire(ctx context.Context, job *cleanup.Job) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if _, err := os.Lstat(filepath.Join(job.Original, ".git")); gone(err) && job.Retirement == "" {
+	if job.Retirement == "" && severed(job) {
 		now := r.cfg.Now()
 		job.RetireAfter, job.Updated = now.Add(severedRecheck), now
 		return r.cfg.Journal.Save(*job)
