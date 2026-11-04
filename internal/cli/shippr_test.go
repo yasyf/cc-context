@@ -1602,7 +1602,7 @@ func TestShipPRRefusals(t *testing.T) {
 		head := shipHead(t, f)
 		shipResetLog(t, f)
 		_, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push", "--pr-title", "one")
-		wantErr := "ship: --pr-title/--pr-body-file require push (drop --no-push)"
+		wantErr := "ship: --pr-title/--pr-title-file/--pr-body-file require push (drop --no-push)"
 		if err == nil || err.Error() != wantErr {
 			t.Errorf("error = %v, want %q", err, wantErr)
 		}
