@@ -570,6 +570,32 @@ func TestCommitBodyFromPR(t *testing.T) {
 	}
 }
 
+func TestShipMessageFromPRKeepsAWorkflowSkipMarkerOutOfTheCommit(t *testing.T) {
+	for _, tt := range []struct {
+		name, title, body, want, warning string
+	}{
+		{name: "a clean body is copied", title: "fix: x", body: "why this change\n", want: "fix: x\n\nwhy this change"},
+		{name: "a body naming a marker stays out", title: "fix: x", body: "## Risk\n\nA body with [skip ci] skips.\n", want: "fix: x", warning: "body names [skip ci]"},
+		{name: "every marker GitHub reads", title: "fix: x", body: "see [Actions Skip]\n", want: "fix: x", warning: "body names [Actions Skip]"},
+		{name: "a bare word is no marker", title: "fix: x", body: "skip ci when asked\n", want: "fix: x\n\nskip ci when asked"},
+		{name: "a title naming a marker warns", title: "fix: x [no ci]", body: "why\n", want: "fix: x [no ci]\n\nwhy", warning: "title names [no ci]"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var warned strings.Builder
+			got, err := shipMessageFromPR(shipOpts{prTitle: []string{tt.title}, prBodyFile: []string{writePRBody(t, "body.md", tt.body)}}, &warned)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tt.want {
+				t.Errorf("message = %q, want %q", got, tt.want)
+			}
+			if tt.warning == "" && warned.Len() > 0 || !strings.Contains(warned.String(), tt.warning) {
+				t.Errorf("warning = %q, want %q", warned.String(), tt.warning)
+			}
+		})
+	}
+}
+
 // TestShipPRCreateDefaults pins the two defaults a create falls back on: the
 // commit subject as the title, and an explicitly empty body. the commit
 // message would publish the Claude-Session-Id trailer, so it is never the body.
