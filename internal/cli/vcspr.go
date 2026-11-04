@@ -550,6 +550,8 @@ func prCIOf(rollup *prstate.Rollup) prCIReport {
 		r.State = prCIPending
 	case rollup != nil && statusClassify(rollup.State) == statusFailed:
 		r.State, r.Rollup = prCIRed, rollup.State
+	case rollup != nil && rollup.UnfinishedActions > 0:
+		r.State, r.Running = prCIPending, rollup.UnfinishedActions
 	case statusGraded(checks) > 0:
 		r.State = prCIGreen
 	}

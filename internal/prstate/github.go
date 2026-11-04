@@ -31,7 +31,8 @@ const (
 	prFields = "number state title createdAt author { login } isDraft baseRefName headRefName headRefOid mergeable mergeStateStatus " +
 		"reviewDecision latestOpinionatedReviews(first: 20) { nodes { state author { login } } } changedFiles mergeCommit { oid } labels(first: 50) { nodes { name } } " +
 		"checks: commits(last: 1) { nodes { commit { status { state } statusCheckRollup { state contexts(last: 100) { totalCount nodes { __typename " +
-		"... on CheckRun { name title conclusion status startedAt databaseId } ... on StatusContext { context state targetUrl } } } } } } }"
+		"... on CheckRun { name title conclusion status startedAt databaseId } ... on StatusContext { context state targetUrl } } } } " +
+		"checkSuites(first: 50, filterBy: {appId: " + actionsAppID + "}) { nodes { status } } } } }"
 	activityFields = " comments(last: 100) { nodes { body } }"
 	probeQuery     = "query { viewer { login } rateLimit { remaining resetAt } }"
 )
@@ -129,6 +130,9 @@ type prNode struct {
 					State string `json:"state"`
 				} `json:"status"`
 				StatusCheckRollup *Rollup `json:"statusCheckRollup"`
+				CheckSuites       struct {
+					Nodes []checkSuite `json:"nodes"`
+				} `json:"checkSuites"`
 			} `json:"commit"`
 		} `json:"nodes"`
 	} `json:"checks"`
@@ -423,6 +427,7 @@ func (p *pass) record(node prNode, t target, i int, resp response) (PR, error) {
 	if len(node.Checks.Nodes) > 0 {
 		commit := node.Checks.Nodes[0].Commit
 		pr.Rollup = commit.StatusCheckRollup.Latest()
+		pr.Rollup.countUnfinishedActions(commit.CheckSuites.Nodes)
 		if commit.Status != nil {
 			pr.Status = commit.Status.State
 		}

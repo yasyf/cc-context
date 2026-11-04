@@ -148,6 +148,29 @@ type Rollup struct {
 		TotalCount int       `json:"totalCount,omitempty"`
 		Nodes      []Context `json:"nodes"`
 	} `json:"contexts"`
+	// UnfinishedActions counts the head's GitHub Actions check suites still
+	// open. A workflow run registers its suite before its jobs, so the contexts
+	// of a fresh head can all pass while a run has yet to report one.
+	UnfinishedActions int `json:"unfinished_actions,omitempty"`
+}
+
+// actionsAppID is GitHub Actions' app, the one whose suites all run: another
+// installed app that never runs leaves its suite queued with no check runs.
+const actionsAppID = "15368"
+
+type checkSuite struct {
+	Status string `json:"status"`
+}
+
+func (r *Rollup) countUnfinishedActions(suites []checkSuite) {
+	if r == nil {
+		return
+	}
+	for _, suite := range suites {
+		if !strings.EqualFold(suite.Status, "completed") {
+			r.UnfinishedActions++
+		}
+	}
 }
 
 // Context is one CheckRun or StatusContext of a Rollup.

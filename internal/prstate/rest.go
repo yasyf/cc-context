@@ -68,6 +68,10 @@ type restCheckRuns struct {
 	} `json:"check_runs"`
 }
 
+type restCheckSuites struct {
+	CheckSuites []checkSuite `json:"check_suites"`
+}
+
 type restStatus struct {
 	State      string `json:"state"`
 	TotalCount int    `json:"total_count"`
@@ -205,7 +209,12 @@ func (p *pass) restRecord(ctx context.Context, t target) (PR, error) {
 			return err
 		}
 		status, err := ghapi.Get[restStatus](gctx, p.gh, fmt.Sprintf("%s/commits/%s/status?per_page=100", repo, pull.Head.SHA))
+		if err != nil {
+			return err
+		}
+		suites, err := ghapi.Get[restCheckSuites](gctx, p.gh, fmt.Sprintf("%s/commits/%s/check-suites?app_id=%s&per_page=100", repo, pull.Head.SHA, actionsAppID))
 		pr.Rollup, pr.Status = restRollup(runs, status)
+		pr.Rollup.countUnfinishedActions(suites.CheckSuites)
 		return err
 	})
 	if t.activity {
