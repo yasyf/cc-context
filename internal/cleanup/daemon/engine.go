@@ -1014,12 +1014,10 @@ func (e *Engine) logicalDue(now time.Time) (cleanup.Job, bool) {
 			continue
 		}
 		if job.Blocked != nil {
-			if at, ok := e.retryAt(job); ok && !now.Before(at) && !e.yields() {
-				return clone(job), true
+			if at, ok := e.retryAt(job); !ok || now.Before(at) {
+				continue
 			}
-			continue
-		}
-		if e.paused && !job.RetireAfter.IsZero() {
+		} else if e.paused && !job.RetireAfter.IsZero() {
 			if now.Before(job.RetireAfter) {
 				continue
 			}

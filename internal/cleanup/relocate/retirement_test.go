@@ -347,18 +347,37 @@ func (f *fixture) commitLater() {
 }
 
 func TestPausedRetirementLeavesATreeWithoutItsGitLinkUnblocked(t *testing.T) {
-	f := newFixture(t)
-	job := f.intend()
-	if err := os.Remove(filepath.Join(f.worktree, ".git")); err != nil {
-		t.Fatal(err)
-	}
+	for _, tt := range []struct {
+		name    string
+		arrange func(t *testing.T, f *fixture)
+	}{
+		{"its admin in place", func(*testing.T, *fixture) {}},
+		{"its admin retired by an older ccx", func(t *testing.T, f *fixture) {
+			retired := filepath.Join(f.common, cleanup.RetiredWorktrees)
+			if err := os.MkdirAll(retired, 0o750); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Rename(f.adminDir, filepath.Join(retired, filepath.Base(f.adminDir))); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFixture(t)
+			job := f.intend()
+			if err := os.Remove(filepath.Join(f.worktree, ".git")); err != nil {
+				t.Fatal(err)
+			}
+			tt.arrange(t, f)
 
-	retireFixture(t, f, &job)
+			retireFixture(t, f, &job)
 
-	if job.Blocked != nil || job.Retirement != "" || job.RetireAfter.IsZero() {
-		t.Errorf("job = blocked %+v, retirement %q, retire after %s; want it waiting, unblocked", job.Blocked, job.Retirement, job.RetireAfter)
+			if job.Blocked != nil || job.Retirement != "" || job.RetireAfter.IsZero() {
+				t.Errorf("job = blocked %+v, retirement %q, retire after %s; want it waiting, unblocked", job.Blocked, job.Retirement, job.RetireAfter)
+			}
+			f.stored(&job)
+		})
 	}
-	f.stored(&job)
 }
 
 func TestPausedRetirementWaitsForTheHeadToRest(t *testing.T) {
