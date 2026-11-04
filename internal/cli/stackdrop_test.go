@@ -531,8 +531,8 @@ func TestStackDropRepairMovesAPullRequestOutOfItsNativeStack(t *testing.T) {
 	retargeted := dropStep(t, invocations, "gh", "api", "PATCH", "repos/yasyf/cc-context/pulls/2", "base=main")
 	relinked := dropStep(t, invocations, "gh", "api", "POST", "repos/yasyf/cc-context/stacks", "pull_requests[]=2", "pull_requests[]=3")
 	redeleted := dropStep(t, invocations, "git", "push", "--delete", "low")
-	if reopened >= unstacked || unstacked >= retargeted || retargeted >= relinked || relinked >= redeleted {
-		t.Errorf("steps ran at reopen=%d unstack=%d retarget=%d relink=%d delete=%d, want that order", reopened, unstacked, retargeted, relinked, redeleted)
+	if reopened >= unstacked || unstacked >= retargeted || retargeted >= redeleted || redeleted >= relinked {
+		t.Errorf("steps ran at reopen=%d unstack=%d retarget=%d delete=%d relink=%d, want that order", reopened, unstacked, retargeted, redeleted, relinked)
 	}
 	if got := gh.pr(2); got != "OPEN main" {
 		t.Errorf("mid's PR = %q, want %q", got, "OPEN main")
