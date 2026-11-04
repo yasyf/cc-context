@@ -222,6 +222,31 @@ func (c *Client) PullRequestInfo(ctx context.Context, req PullRequestInfoRequest
 	return result.Prs, nil
 }
 
+// HeadPullRequests answers which pull request each head branch last had, with
+// the number, state and head commit filled in and the rest left empty on the
+// native lane, which reads far less per branch than PullRequestInfo does.
+func (c *Client) HeadPullRequests(ctx context.Context, req PullRequestInfoRequest) ([]PullRequestInfo, error) {
+	if c.providerErr != nil {
+		return nil, c.providerErr
+	}
+	if c.legacy != nil || !c.IsNative() {
+		return c.PullRequestInfo(ctx, req)
+	}
+	infos, err := c.native.HeadPullRequests(ctx, req.RepoOwner, req.RepoName, req.PRHeadRefNames)
+	if err != nil {
+		return nil, commonNativeError(err)
+	}
+	result := make([]PullRequestInfo, 0, len(infos))
+	for _, info := range infos {
+		p := PullRequestInfo{PRNumber: info.PRNumber, State: PRState(info.State), HeadRefName: info.HeadRefName}
+		for _, v := range info.Versions {
+			p.Versions = append(p.Versions, PRVersion{HeadSha: v.HeadSha})
+		}
+		result = append(result, p)
+	}
+	return result, nil
+}
+
 // mergeabilityBatch bounds the pull requests one mergeability-status request
 // names: Graphite answers 413 to fifty.
 const mergeabilityBatch = 40

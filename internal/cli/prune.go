@@ -325,7 +325,7 @@ func gtMergedHeads(ctx context.Context, dir render.Dir, l lane, prefix, trunk st
 	g.SetLimit(4)
 	for batch := range slices.Chunk(branches, pruneLandedBatch) {
 		g.Go(func() error {
-			infos, err := client.PullRequestInfo(gctx, gtapi.PullRequestInfoRequest{
+			infos, err := client.HeadPullRequests(gctx, gtapi.PullRequestInfoRequest{
 				RepoOwner:        owner,
 				RepoName:         name,
 				PRHeadRefNames:   batch,
