@@ -475,6 +475,30 @@ func TestAdvanceProvesATreeFromTheStatDataOfItsLastIndex(t *testing.T) {
 	})
 }
 
+func TestAdvanceFindsAnEditThatKeepsSizeAndMtimeUnderRelaxedStatSettings(t *testing.T) {
+	f := newFixture(t)
+	f.run(f.repo, "config", "core.trustctime", "false")
+	f.run(f.repo, "config", "core.checkStat", "minimal")
+	job := f.accept()
+	f.ageTrackedFiles()
+	f.orphan(job)
+	feature := filepath.Join(f.worktree, "feature.txt")
+	f.advance(&job)
+	f.claimed(&job)
+
+	info, err := os.Stat(feature)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.write(feature, strings.Repeat("x", int(info.Size())))
+	if err := os.Chtimes(feature, info.ModTime(), info.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	f.admit(&job)
+
+	f.blocked(&job, cleanup.PhaseClaimed, "dirty", "uncommitted changes: feature.txt")
+}
+
 func TestAdvanceReadsEachFileOnceAcrossAJobsProofs(t *testing.T) {
 	f := newFixture(t)
 	job := f.accept()

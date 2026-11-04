@@ -12,7 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   release copied the tree's last index with its skip-worktree and
   assume-unchanged marks, so an edit to a marked file read as clean. An index
   with a marked entry now seeds nothing, and the proof reads the tree from its
-  saved `HEAD`.
+  saved `HEAD`. The proof also ignores repository settings such as
+  `core.trustctime` and `core.checkStat` that would relax its stat check.
 
 ### Changed
 
