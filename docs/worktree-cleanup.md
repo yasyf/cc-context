@@ -37,6 +37,12 @@ worktrees, and unsupported submodule layouts. Dirty work requires `--force`.
 That flag permits discarding uncommitted files only; it never overrides the
 other protections or stops a process holding the tree.
 
+The request runs those refusals at background priority and records a `prepared`
+job. The daemon proves and claims the tree later, under the activity gate
+described in [Completion and recovery](#completion-and-recovery), so the
+registration stays in `git worktree list` until a quiet period.
+`worktree rm --wait` moves its job to the front of the queue once the gate opens.
+
 Recovery refs preserve committed heads before deletion. They do not preserve
 dirty files discarded with `--force`.
 

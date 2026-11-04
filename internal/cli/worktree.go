@@ -1438,7 +1438,11 @@ func reportGitWorktreeRemoval(ctx context.Context, cmd *cobra.Command, name, sha
 	}
 	held := receipt.State != cleanup.StateBlocked && cleanup.Phase(receipt.State).Logical()
 	if held {
-		cmd.Println(strings.Join([]string{"queued " + name, shape, path, string(receipt.State) + " " + receipt.JobID, "physical deletion paused; inspect registration retirement with ccx vcs cleanup status"}, shipSep))
+		note := "physical deletion paused; inspect registration retirement with ccx vcs cleanup status"
+		if receipt.State != cleanup.State(cleanup.PhasePending) {
+			note = "the daemon claims it when sessions are quiet; inspect it with ccx vcs cleanup status"
+		}
+		cmd.Println(strings.Join([]string{"queued " + name, shape, path, string(receipt.State) + " " + receipt.JobID, note}, shipSep))
 	}
 	if !wait {
 		if !held {

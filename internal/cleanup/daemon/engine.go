@@ -396,7 +396,9 @@ func (e *Engine) Stop(ctx context.Context) error {
 // *cleanup.RefusedError naming that job, and a request without Force never
 // rejoins a job journaled with it: it is preflighted afresh. While the queue is
 // paused or held a new request is journaled pending and a repeat rejoins its
-// job, and either returns with nothing claimed.
+// job, and either returns with nothing claimed. With an activity gate, a request
+// runs in the background band and only journals its job, and the worker claims
+// the tree when the gate opens.
 func (e *Engine) Remove(ctx context.Context, r cleanup.Request) (cleanup.Receipt, error) {
 	if err := r.Validate(); err != nil {
 		return cleanup.Receipt{}, fmt.Errorf("cleanup daemon: remove request: %w", err)
@@ -965,6 +967,10 @@ func (e *Engine) logicalDue(now time.Time) (cleanup.Job, bool) {
 	if e.hold != nil {
 		return cleanup.Job{}, false
 	}
+	var (
+		next  cleanup.Job
+		found bool
+	)
 	order := e.logicalOrder
 	if e.paused {
 		order = e.retirementOrder
@@ -989,9 +995,14 @@ func (e *Engine) logicalDue(now time.Time) (cleanup.Job, bool) {
 		if e.yields() {
 			continue
 		}
-		return clone(job), true
+		if e.awaited(job.ID, now) {
+			return clone(job), true
+		}
+		if !found {
+			next, found = job, true
+		}
 	}
-	return cleanup.Job{}, false
+	return clone(next), found
 }
 
 // retryAt is when a job blocked on a transient inspection — a process census
@@ -1297,6 +1308,9 @@ func (e *Engine) park() error {
 }
 
 func (e *Engine) remove(ctx context.Context, r cleanup.Request) (cleanup.Receipt, error) {
+	if err := e.backgrounded(); err != nil {
+		return cleanup.Receipt{}, err
+	}
 	job, found, err := e.revive(sittingAt(r.Worktree, r.Force))
 	if err != nil {
 		return cleanup.Receipt{}, err
@@ -1325,6 +1339,9 @@ func (e *Engine) adopt(ctx context.Context, r cleanup.AdoptRequest) (cleanup.Rec
 	if e.halted() {
 		return cleanup.Receipt{}, cleanup.ErrPaused
 	}
+	if err := e.backgrounded(); err != nil {
+		return cleanup.Receipt{}, err
+	}
 	job, found, err := e.revive(parkedAt(r))
 	if err != nil {
 		return cleanup.Receipt{}, err
@@ -1341,6 +1358,9 @@ func (e *Engine) adopt(ctx context.Context, r cleanup.AdoptRequest) (cleanup.Rec
 func (e *Engine) orphan(ctx context.Context, r cleanup.OrphanRequest) (cleanup.Receipt, error) {
 	if e.halted() {
 		return cleanup.Receipt{}, cleanup.ErrPaused
+	}
+	if err := e.backgrounded(); err != nil {
+		return cleanup.Receipt{}, err
 	}
 	job, found, err := e.revive(orphanedAt(r))
 	if err != nil {
@@ -1362,7 +1382,23 @@ func requested(ctx context.Context, job cleanup.Job) cleanup.Job {
 	return job
 }
 
+func (e *Engine) backgrounded() error {
+	if e.gate == nil {
+		return nil
+	}
+	if err := e.band.Background(); err != nil {
+		return &fatalError{fmt.Errorf("cleanup daemon: return to the background band for a request: %w", err)}
+	}
+	return nil
+}
+
 func (e *Engine) relocate(ctx context.Context, job cleanup.Job) (cleanup.Receipt, error) {
+	if e.gate != nil {
+		if err := e.save(job); err != nil {
+			return cleanup.Receipt{}, err
+		}
+		return receiptOf(job), nil
+	}
 	job, err := e.advance(ctx, job)
 	switch {
 	case err != nil:

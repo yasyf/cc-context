@@ -148,6 +148,50 @@ func TestBusySessionsHoldLogicalWork(t *testing.T) {
 	})
 }
 
+func TestRemoveRecordsTheTreeAndLeavesItsProofToTheGate(t *testing.T) {
+	bubble(t, gated(), func(t *testing.T, h *harness) {
+		withActivity(h, busySessions)
+		h.deleter.put("a", &payload{entries: 50})
+		h.start()
+		receipt, err := h.engine.Remove(context.Background(), h.request("a"))
+		if err != nil {
+			t.Fatalf("Remove() = %v", err)
+		}
+		if got := cleanup.Phase(receipt.State); got != cleanup.PhasePrepared {
+			t.Errorf("receipt state = %s, want prepared", got)
+		}
+		if h.band.inForeground() {
+			t.Error("the request's preflight ran in the foreground band, want the background")
+		}
+		h.expectEvents("accept:a", "activity")
+		h.activity.set(quietSessions, nil)
+		h.clock.Advance(2 * time.Second)
+		h.expectEvents("activity")
+		h.clock.Advance(2 * time.Second)
+		h.expectEvents("activity", "advance:a@prepared", "sample", "admit:a", "open:a", "step:a")
+	})
+}
+
+func TestAwaitedLogicalJobJumpsTheQueueWhenTheGateOpens(t *testing.T) {
+	bubble(t, gated(), func(t *testing.T, h *harness) {
+		withActivity(h, busySessions)
+		h.seed("l1", 1, cleanup.PhasePrepared)
+		awaited := h.seed("l2", 2, cleanup.PhasePrepared)
+		h.deleter.put("l1", &payload{entries: 50})
+		h.deleter.put("l2", &payload{entries: 50})
+		h.start()
+		h.expectEvents("activity")
+		if _, err := h.engine.Status(context.Background(), cleanup.Query{JobID: awaited.ID, Await: true}); err != nil {
+			t.Fatalf("Status(await) = %v", err)
+		}
+		h.activity.set(quietSessions, nil)
+		h.clock.Advance(2 * time.Second)
+		h.expectEvents("activity")
+		h.clock.Advance(2 * time.Second)
+		h.expectEvents("activity", "advance:l2@prepared", "advance:l1@prepared", "sample", "admit:l2", "open:l2", "step:l2")
+	})
+}
+
 func TestHeldGateWaitsForTheNextSampleNotADueRetry(t *testing.T) {
 	bubble(t, gated(), func(_ *testing.T, h *harness) {
 		withActivity(h, busySessions)
