@@ -583,9 +583,11 @@ func TestLookupRepoUnresolvableName(t *testing.T) {
 
 func TestLookupRepoWithoutGH(t *testing.T) {
 	t.Parallel()
-	ctx := render.WithEnv(t.Context(), "CLAUDE_PLUGIN_DATA="+t.TempDir(), "PATH="+t.TempDir())
+	f := vcstest.Repo(t)
+	f.OnlyShimPATH(t)
+	ctx := f.Context()
 
-	_, err := LookupRepo(ctx, render.Dir(t.TempDir()), false)
+	_, err := LookupRepo(ctx, render.Dir(f.Dir), false)
 	if !errors.Is(err, ErrNoGitHub) {
 		t.Fatalf("error = %v, want it to wrap ErrNoGitHub", err)
 	}

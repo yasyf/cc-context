@@ -212,6 +212,15 @@ func repoRoutingContext(ctx context.Context, root render.Dir) (string, error) {
 	if parameters := render.Getenv(ctx, "GIT_CONFIG_PARAMETERS"); parameters != "" {
 		values = append(values, "GIT_CONFIG_PARAMETERS", parameters)
 	}
+	config, code, _, err := render.RunCLIExitCodeWithoutEnv(ctx, root, "git", []string{"config", "--null", "--list", "--includes"}, []string{"GIT_CONFIG"})
+	if err != nil {
+		return "", fmt.Errorf("%w: read effective git config: %w", ErrNoGitHub, err)
+	}
+	if code != 0 {
+		return "", fmt.Errorf("%w: read effective git config: exit %d", ErrNoGitHub, code)
+	}
+	sum := sha256.Sum256([]byte(config))
+	values = append(values, "git-config", hex.EncodeToString(sum[:]))
 	return strings.Join(values, "\x00"), nil
 }
 

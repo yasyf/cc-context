@@ -519,6 +519,21 @@ func RunCLIExitCodeEnv(ctx context.Context, dir Dir, bin string, argv, extraEnv 
 		return "", 0, "", err
 	}
 	defer cancel()
+	return runCLIExitCode(runCtx, cmd, bin)
+}
+
+// RunCLIExitCodeWithoutEnv removes named variables from this child alone after directory and context overrides.
+func RunCLIExitCodeWithoutEnv(ctx context.Context, dir Dir, bin string, argv, withoutEnv []string) (string, int, string, error) {
+	cmd, runCtx, cancel := newCmd(ctx, dir, bin, argv, nil)
+	defer cancel()
+	cmd.Env = slices.DeleteFunc(cmd.Env, func(kv string) bool {
+		key, _, _ := strings.Cut(kv, "=")
+		return slices.Contains(withoutEnv, key)
+	})
+	return runCLIExitCode(runCtx, cmd, bin)
+}
+
+func runCLIExitCode(runCtx context.Context, cmd *exec.Cmd, bin string) (string, int, string, error) {
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
