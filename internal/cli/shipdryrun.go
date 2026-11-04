@@ -764,6 +764,22 @@ func dryRunHeads(ctx context.Context, l lane, o shipOpts, state gtState, chain, 
 	return dryRunCreates(ctx, l, o, state, chain, parentLine, open, r)
 }
 
+func dryRunForkOn(ctx context.Context, dir render.Dir, remote, base, branch string) (string, error) {
+	refs, err := stackParentRefs(ctx, dir, remote, base)
+	if err != nil {
+		return "", err
+	}
+	forks := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		fork, err := stackMergeBase(ctx, dir, gtRestackRef(branch), ref)
+		if err != nil {
+			return "", err
+		}
+		forks = append(forks, fork)
+	}
+	return stackFurthest(ctx, dir, gtRestackRef(branch), forks)
+}
+
 func dryRunCreates(ctx context.Context, l lane, o shipOpts, state gtState, chain, parentLine []string, open map[string]bool, r *shipDryRun) error {
 	tr, err := gtTrunkRefOffline(ctx, l.dir(), "ship", r.trunk)
 	if errors.Is(err, vcs.ErrNoTrunk) {
@@ -786,9 +802,15 @@ func dryRunCreates(ctx context.Context, l lane, o shipOpts, state gtState, chain
 			continue
 		}
 		base := state[branch].Parents[0].Ref
-		from := base
-		if !stacked[base] {
-			base, from = tr.Name(), string(tr.Ref())
+		from := string(tr.Ref())
+		switch {
+		case base == tr.Name():
+		case !stacked[base] && base != o.parent:
+			base = tr.Name()
+		default:
+			if from, err = dryRunForkOn(ctx, l.dir(), tr.Remote(), base, branch); err != nil {
+				return err
+			}
 		}
 		if branch == r.branch && r.fork != "" {
 			from = r.fork

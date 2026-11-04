@@ -275,3 +275,87 @@ func TestStackRebaseAboveReadsAnUnmovedParentAsBefore(t *testing.T) {
 		}
 	}
 }
+
+func stackLineBehindItsPublishedHead(t *testing.T, open bool) (*vcstest.Fixture, string) {
+	t.Helper()
+	f := shipRepo(t, vcstest.Remote())
+	f.Decorate(func(ctx context.Context) context.Context { return withStackProvider(ctx, true) })
+	mustRun(t, f.Env(), f.Dir, "git", "config", "ccx.stack", "github")
+	trunk := shipHead(t, f)
+	shipGTUntracked(t, f, "line")
+	stale := gitAt(t, f.Env(), f.Dir, "rev-parse", "line")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "line")
+	restackAdvanceRemote(t, f, "line", "second.txt", "second\n")
+	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
+	shared := gitAt(t, f.Env(), f.Dir, "rev-parse", "origin/line")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "child", shared)
+	writeShipFile(t, f.Dir, "child.txt", "child\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "child.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "child subject", "-m", "why child")
+	restackAdvanceRemote(t, f, "line", "third.txt", "third\n")
+	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
+	common := filepath.Join(f.Dir, ".git")
+	if err := nativemeta.Init(f.Context(), common, "main"); err != nil {
+		t.Fatal(err)
+	}
+	if err := nativemeta.AdoptRoot(f.Context(), common, "line", "main", trunk, stale); err != nil {
+		t.Fatal(err)
+	}
+	api := stubGTAPI(t)
+	prs := map[string]*stackPR{}
+	if open {
+		mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "child")
+		api.openPRs("child")
+		api.bases["child"] = "line"
+		prs["child"] = &stackPR{Number: api.prs["child"], Title: "child subject", State: "OPEN", Base: "line"}
+	}
+	f.Decorate(api.ctx)
+	stubOpenPRs(t, f, prs)
+	stubStackStanding(t, f, nil)
+	return f, shared
+}
+
+func TestStackRebaseAboveReplaysOnlyAChildsOwnCommitsOffALineBehindItsPublishedHead(t *testing.T) {
+	f, shared := stackLineBehindItsPublishedHead(t, true)
+	line := gitAt(t, f.Env(), f.Dir, "rev-parse", "origin/line")
+
+	plan, errOut, err := runStackCmd(t, f, "rebase", "--dry-run", "--above", "line")
+	if err != nil {
+		t.Fatalf("stack rebase --dry-run --above line: %v\n%s%s", err, plan, errOut)
+	}
+	for _, want := range []string{
+		"line · kept at its published head " + line[:12],
+		"child · onto line · from " + shared[:12] + " · replays 1 commit",
+		"pushes child",
+	} {
+		if !strings.Contains(plan, want) {
+			t.Errorf("plan lacks %q:\n%s", want, plan)
+		}
+	}
+}
+
+func TestShipDryRunTitlesANewPullRequestFromItsOwnCommitOffALineBehindItsPublishedHead(t *testing.T) {
+	f, _ := stackLineBehindItsPublishedHead(t, false)
+
+	report := dryRunReport(t, f, "--no-commit", "--parent", "line")
+	if !strings.Contains(report, `opens a pull request titled "child subject"`) {
+		t.Errorf("dry run lacks the child's own title:\n%s", report)
+	}
+}
+
+func TestShipParentReplaysOnlyItsOwnCommitsOntoALineThatMovedPastIt(t *testing.T) {
+	f, _ := stackLineBehindItsPublishedHead(t, false)
+	mustRun(t, f.Env(), f.Dir, "git", "branch", "-f", "line", "origin/line")
+	line := gitAt(t, f.Env(), f.Dir, "rev-parse", "line")
+	shipGTReady(t, f)
+
+	if _, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--parent", "line", "--no-push"); err != nil {
+		t.Fatalf("ship --parent line: %v", err)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "line"); got != line {
+		t.Errorf("line moved from %s to %s", line, got)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "log", "--reverse", "--format=%s", "line..child"); got != "child subject\nfix: frobnicate" {
+		t.Errorf("commits above line = %q, want the child's own two", got)
+	}
+}
