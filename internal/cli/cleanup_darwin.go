@@ -67,7 +67,15 @@ func cleanupBusy(ctx context.Context) (cleanup.BusyDeletes, error) {
 	if err != nil {
 		return cleanup.BusyDeletes{}, err
 	}
-	return parseCleanupBusyDeletes(rate, quiet)
+	move, err := cleanupGlobalConfig(ctx, cleanupMoveRootKey)
+	if err != nil {
+		return cleanup.BusyDeletes{}, err
+	}
+	every, err := cleanupGlobalConfig(ctx, cleanupMoveEveryKey)
+	if err != nil {
+		return cleanup.BusyDeletes{}, err
+	}
+	return parseCleanupBusyDeletes(rate, quiet, move, every)
 }
 
 func cleanupGlobalConfig(ctx context.Context, key string) (string, error) {
@@ -124,6 +132,7 @@ func runCleanupServe(ctx context.Context) error {
 			Watchers: newCleanupWatchers(native.Guard),
 			GitEnv:   os.Environ(),
 			LFSClean: lfsclean.Command(executable),
+			Move:     busy.Move,
 			Quiet:    time.Hour,
 			Now:      time.Now,
 		}),

@@ -106,7 +106,15 @@ func (e *Engine) holds() bool {
 }
 
 func (e *Engine) rests(job cleanup.Job) bool {
-	return e.holds() && (e.gate.strained || !e.busy.Allows(deletesAt(job)))
+	if !e.holds() {
+		return false
+	}
+	at := deletesAt(job)
+	return e.gate.strained || !e.busy.Allows(at) && !e.busy.Moves(at)
+}
+
+func (e *Engine) movesOut(job cleanup.Job) bool {
+	return e.busy.Moves(deletesAt(job))
 }
 
 func deletesAt(job cleanup.Job) string {
@@ -116,10 +124,14 @@ func deletesAt(job cleanup.Job) string {
 	case cleanup.PhaseDeletingAdmin, cleanup.PhaseDeletingRegistration:
 		return job.AdminDir
 	}
-	if job.Adopted {
+	switch {
+	case job.Moved:
+		return job.Payload
+	case job.Adopted:
 		return job.Source
+	default:
+		return job.Original
 	}
-	return job.Original
 }
 
 func (e *Engine) sampleDue(now time.Time) bool {

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 
 	"github.com/yasyf/cc-context/internal/cleanup"
 )
@@ -635,15 +636,20 @@ func (r *Relocator) admitClaimed(ctx context.Context, job *cleanup.Job) (cleanup
 		}
 		return r.Admit(ctx, job)
 	}
-	var reason, detail string
+	var (
+		reason, detail string
+		held           bond
+	)
 	if job.Unbound() {
 		reason, detail = r.vouch(ctx, job, tree)
 	} else {
-		var held bond
 		held, reason, detail = r.prove(ctx, job, tree, false)
 		if reason == "" && held.native && !held.owned {
 			reason, detail = "identity", fmt.Sprintf("%s no longer carries job %s's lock", job.AdminDir, job.ID)
 		}
+	}
+	if reason == "" {
+		tree, reason, detail = r.moveOut(job, tree, held)
 	}
 	if reason != "" {
 		_, err := r.block(ctx, job, reason, detail)
@@ -653,6 +659,49 @@ func (r *Relocator) admitClaimed(ctx context.Context, job *cleanup.Job) (cleanup
 		return cleanup.DeletionRoot{}, err
 	}
 	return tree.root(), ctx.Err()
+}
+
+func (r *Relocator) moveOut(job *cleanup.Job, tree spot, held bond) (spot, string, string) {
+	if tree.path == job.Payload {
+		job.Moved = true
+		return tree, "", ""
+	}
+	if !cleanup.Within(tree.path, r.cfg.Move) {
+		return tree, "", ""
+	}
+	if held.native {
+		if err := unregister(job, held.admin); err != nil {
+			return tree, "reconcile", fmt.Sprintf("unregister %s: %v", job.AdminDir, err)
+		}
+		job.Retirement = cleanup.RetirementComplete
+	}
+	if _, err := os.Lstat(job.Payload); !gone(err) {
+		return tree, "identity", fmt.Sprintf("%s is taken, want it absent: %v", job.Payload, err)
+	}
+	if id, ok, err := cleanup.Placed(tree.path, job.Tree); err != nil || !ok || id != tree.id {
+		return tree, "identity", fmt.Sprintf("%s changed before it moved: %v", tree.path, err)
+	}
+	if err := os.Rename(tree.path, job.Payload); err != nil {
+		return tree, "reconcile", fmt.Sprintf("move %s out: %v", tree.path, err)
+	}
+	job.Moved = true
+	return spot{path: job.Payload, id: tree.id}, "", ""
+}
+
+func unregister(job *cleanup.Job, admin cleanup.FileID) error {
+	root, err := openAdmin(job, admin)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = root.Close() }()
+	back, err := root.OpenFile("gitdir", os.O_WRONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if gone(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return errors.Join(back.Truncate(0), back.Sync(), back.Close())
 }
 
 func (r *Relocator) admitTree(ctx context.Context, job *cleanup.Job) (cleanup.DeletionRoot, error) {
@@ -670,9 +719,19 @@ func (r *Relocator) admitTree(ctx context.Context, job *cleanup.Job) (cleanup.De
 	if reason == "" {
 		reason, detail = r.residue(ctx, job, tree, held)
 	}
+	moved := job.Moved
+	if reason == "" {
+		tree, reason, detail = r.moveOut(job, tree, held)
+	}
 	if reason != "" {
 		_, err := r.block(ctx, job, reason, detail)
 		return cleanup.DeletionRoot{}, err
+	}
+	if job.Moved != moved {
+		job.Updated = r.cfg.Now()
+		if err := r.cfg.Journal.Save(*job); err != nil {
+			return cleanup.DeletionRoot{}, err
+		}
 	}
 	return tree.root(), ctx.Err()
 }

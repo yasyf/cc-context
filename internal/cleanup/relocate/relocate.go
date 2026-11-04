@@ -31,6 +31,9 @@ type Config struct {
 	// GitBudget bounds each git child, read or mutation alike, and expiry
 	// blocks the job as a timeout; zero means one minute.
 	GitBudget time.Duration
+	// Move lists the directories whose proved trees are renamed to their
+	// Payload before deletion. It must share a volume with the journal.
+	Move []string
 	// Quiet is how long a registration's HEAD must rest before a paused
 	// removal retires it; zero retires at once.
 	Quiet time.Duration

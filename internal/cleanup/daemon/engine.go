@@ -289,6 +289,8 @@ type Engine struct {
 	checked         map[string]time.Time
 	active          *activeDeletion
 	paceUntil       time.Time
+	moveAt          time.Time
+	movePaced       bool
 	retireAt        time.Time
 	physicalUntil   time.Time
 	reconcileAt     time.Time
@@ -792,7 +794,7 @@ func (e *Engine) work(ctx context.Context) error {
 			}
 			continue
 		}
-		e.wanted, e.deferred = false, false
+		e.wanted, e.deferred, e.movePaced = false, false, false
 		job, logical := e.logicalDue(now)
 		if e.sampleDue(now) {
 			if e.sample(ctx, now) {
@@ -964,6 +966,9 @@ func (e *Engine) wake(physical bool) (time.Time, bool) {
 	if e.wanted {
 		consider(e.gate.next(e.slicedAt))
 	}
+	if e.movePaced {
+		consider(e.moveAt)
+	}
 	if at := later(now, e.retireAt); e.wanted {
 		if _, ok := e.retirementTurn(at); ok {
 			consider(at)
@@ -1108,6 +1113,10 @@ func (e *Engine) physicalDue(now time.Time) (cleanup.Job, bool) {
 			}
 		}
 		if e.yields(job) {
+			continue
+		}
+		if e.movesOut(job) && now.Before(e.moveAt) {
+			e.movePaced = true
 			continue
 		}
 		switch {
@@ -1256,12 +1265,16 @@ func (e *Engine) open(ctx context.Context, job *cleanup.Job) error {
 			return err
 		}
 	}
+	moving := e.movesOut(*job)
 	root, err := e.relocator.Admit(ctx, job)
 	if err != nil {
 		if cancelled(ctx, err) {
 			return nil
 		}
 		return &fatalError{fmt.Errorf("cleanup daemon: admit job %s: %w", job.ID, err)}
+	}
+	if moving {
+		e.moveAt = e.clock.Now().Add(e.busy.MoveEvery)
 	}
 	e.put(*job)
 	switch {

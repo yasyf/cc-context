@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 )
@@ -384,10 +385,14 @@ func CappedRate(caps []RateCap, path string) (int, bool) {
 
 // BusyDeletes lets a removal keep running while sessions are busy, at up to Rate
 // entries a second, one removal at a time, unless its tree sits under a Quiet
-// directory. The zero value holds every removal until sessions are quiet.
+// directory. A proved tree under a Move directory is renamed into the journal
+// first, at most once every MoveEvery, and deletes from there. The zero value
+// holds every removal until sessions are quiet.
 type BusyDeletes struct {
-	Rate  int
-	Quiet []string
+	Rate      int
+	Quiet     []string
+	Move      []string
+	MoveEvery time.Duration
 }
 
 // Allows reports whether a removal deleting path may run while sessions are
@@ -396,12 +401,17 @@ func (b BusyDeletes) Allows(path string) bool {
 	if b.Rate == 0 {
 		return false
 	}
-	for _, root := range b.Quiet {
-		if within(path, root) {
-			return false
-		}
-	}
-	return true
+	return !Within(path, b.Quiet)
+}
+
+// Moves reports whether a removal deleting path renames its tree away first.
+func (b BusyDeletes) Moves(path string) bool {
+	return b.Rate > 0 && Within(path, b.Move)
+}
+
+// Within reports whether path is, or sits under, any of roots.
+func Within(path string, roots []string) bool {
+	return slices.ContainsFunc(roots, func(root string) bool { return within(path, root) })
 }
 
 func within(path, root string) bool {
