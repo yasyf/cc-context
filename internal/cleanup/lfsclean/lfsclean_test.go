@@ -29,7 +29,7 @@ func gitIn(t *testing.T, dir, stdin string, args ...string) string {
 	cmd := exec.Command("git", args...) //nolint:gosec // the test names every git argument
 	cmd.Dir = dir
 	cmd.Stdin = strings.NewReader(stdin)
-	cmd.Env = append(os.Environ(), serveEnv+"=1", "HOME="+t.TempDir(), "GIT_CONFIG_NOSYSTEM=1")
+	cmd.Env = append(os.Environ(), serveEnv+"=1", "HOME="+t.TempDir(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+os.DevNull)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, out)
@@ -72,6 +72,7 @@ func TestGitReadsAnLFSFileThroughItsPointer(t *testing.T) {
 	}{
 		{"the real file", body, ""},
 		{"the pointer itself", []byte(pointerTo(body)), ""},
+		{"another pointer", []byte(pointerTo(edited)), " M big.bin\n"},
 		{"a same-size edit", edited, " M big.bin\n"},
 		{"a shorter file", body[:1024], " M big.bin\n"},
 		{"an empty file", nil, " M big.bin\n"},

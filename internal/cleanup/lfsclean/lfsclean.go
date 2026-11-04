@@ -20,7 +20,7 @@ import (
 
 const (
 	pointerLimit  = 1024
-	pointerHeader = "version https://git-lfs"
+	pointerHeader = "version https://"
 	packetHeader  = 4
 	maxPacket     = 65520
 )
@@ -121,7 +121,7 @@ func (f *file) write(data []byte) {
 }
 
 func (f *file) cleaned() []byte {
-	if f.size <= pointerLimit && (f.size == 0 || bytes.HasPrefix(f.head, []byte(pointerHeader))) {
+	if f.size <= pointerLimit && (f.size == 0 || bytes.HasPrefix(bytes.TrimSpace(f.head), []byte(pointerHeader))) {
 		return f.head
 	}
 	return fmt.Appendf(nil, "version https://git-lfs.github.com/spec/v1\noid sha256:%x\nsize %d\n", f.hash.Sum(nil), f.size)
@@ -154,7 +154,7 @@ func readPacket(reader *bufio.Reader, body []byte) ([]byte, error) {
 	if length == 0 {
 		return nil, nil
 	}
-	if length < packetHeader+1 || length > maxPacket {
+	if length < packetHeader || length > maxPacket {
 		return nil, fmt.Errorf("packet length %d", length)
 	}
 	data := body[:length-packetHeader]
