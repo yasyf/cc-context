@@ -1,12 +1,15 @@
 package diff
 
 import (
+	"context"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/yasyf/cc-context/anchor"
 	"github.com/yasyf/cc-context/internal/hunk"
+	"github.com/yasyf/cc-context/internal/vcs"
 )
 
 func TestRenderSymbols(t *testing.T) {
@@ -35,7 +38,7 @@ func TestRenderSymbols(t *testing.T) {
 		"… +2/−0 lines outside symbols\n" +
 		"hunks hidden — --full inlines per-file hunks\n"
 
-	if got, _ := render(m, false, false, 0); got != want {
+	if got, _ := render(m, false, false); got != want {
 		t.Errorf("render mismatch\n got: %q\nwant: %q", got, want)
 	}
 }
@@ -47,7 +50,7 @@ func TestRenderRenameNoContentChange(t *testing.T) {
 	}
 	want := "# diff uncommitted — 1 files · +0 ~0 −0 symbols\n" +
 		"## old.go → new.go — renamed, no content change\n"
-	if got, _ := render(m, false, false, 0); got != want {
+	if got, _ := render(m, false, false); got != want {
 		t.Errorf("rename render mismatch\n got: %q\nwant: %q", got, want)
 	}
 }
@@ -64,7 +67,7 @@ func TestRenderRenameWithEdits(t *testing.T) {
 		"## old.go → new.go (~1)\n" +
 		fmt.Sprintf("[~] Foo  L3#%s   body\n", h3) +
 		"hunks hidden — --full inlines per-file hunks\n"
-	if got, _ := render(m, false, false, 0); got != want {
+	if got, _ := render(m, false, false); got != want {
 		t.Errorf("rename-with-edits render mismatch\n got: %q\nwant: %q", got, want)
 	}
 }
@@ -81,14 +84,14 @@ func TestRenderRawHunks(t *testing.T) {
 	wantTerse := "# diff uncommitted — 1 files · +0 ~0 −0 symbols\n" +
 		"## config/foo.rb — no ast-grep rules for .rb; raw hunks\n" +
 		"@@ -2,1 +2,1 @@\n-b = 2\n+b = 3\n"
-	if got, _ := render(m, false, false, 0); got != wantTerse {
+	if got, _ := render(m, false, false); got != wantTerse {
 		t.Errorf("terse mismatch\n got: %q\nwant: %q", got, wantTerse)
 	}
 
 	wantFull := "# diff uncommitted — 1 files · +0 ~0 −0 symbols\n" +
 		"## config/foo.rb — no ast-grep rules for .rb; raw hunks\n" +
 		"@@ -1,2 +1,2 @@\n a = 1\n-b = 2\n+b = 3\n"
-	if got, _ := render(m, true, false, 0); got != wantFull {
+	if got, _ := render(m, true, false); got != wantFull {
 		t.Errorf("full mismatch\n got: %q\nwant: %q", got, wantFull)
 	}
 }
@@ -100,7 +103,7 @@ func TestRenderBinary(t *testing.T) {
 	}
 	want := "# diff uncommitted — 1 files · +0 ~0 −0 symbols\n" +
 		"## assets/logo.png — binary\n"
-	if got, _ := render(m, false, false, 0); got != want {
+	if got, _ := render(m, false, false); got != want {
 		t.Errorf("binary mismatch\n got: %q\nwant: %q", got, want)
 	}
 }
@@ -122,7 +125,7 @@ func TestRenderCapDisclosure(t *testing.T) {
 		"# … 2 files beyond the 30-file classification cap — hunk counts only:\n" +
 		"## x.go — 2 hunks (+3/−1)\n" +
 		"## y.go — 1 hunks (+1/−0)\n"
-	if got, _ := render(m, false, false, 0); got != want {
+	if got, _ := render(m, false, false); got != want {
 		t.Errorf("cap mismatch\n got: %q\nwant: %q", got, want)
 	}
 }
@@ -141,33 +144,38 @@ func TestRenderSymbolsFullInlinesHunks(t *testing.T) {
 		"## a.go (~1)\n" +
 		fmt.Sprintf("[~] Mod  L3-5#%s   body\n", h3) +
 		"@@ -1,5 +1,5 @@\n package a\n \n func Mod() {\n-\treturn 1\n+\treturn 2\n }\n"
-	if got, _ := render(m, true, false, 0); got != want {
+	if got, _ := render(m, true, false); got != want {
 		t.Errorf("full symbol mismatch\n got: %q\nwant: %q", got, want)
 	}
 }
 
-func TestRenderStopsMaskingPastTheBudget(t *testing.T) {
+func TestBuildModelStopsPastTheBudget(t *testing.T) {
 	big := strings.Repeat("+line\n", 100)
-	m := diffModel{label: "uncommitted", files: []fileReport{
-		{path: "a.txt", kind: fileKindRawText, raw: big},
-		{path: "b.env", kind: fileKindRawText, raw: "+" + rawEnvSecret + "\n"},
-		{path: "c.env", kind: fileKindRawText, raw: "+" + rawEnvSecret + "\n"},
+	var read []string
+	plan := vcs.DiffPlan{Label: "uncommitted", Raw: func(path string) (string, error) {
+		read = append(read, path)
+		return big, nil
 	}}
+	files := []string{"a.txt", "b.txt", "c.txt"}
 
-	got, ids := render(m, false, false, 10)
+	m, err := buildModel(context.Background(), plan, files, false, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(read, []string{"a.txt"}) {
+		t.Errorf("read %v, want only the file that fills the budget", read)
+	}
+	got, _ := render(m, false, false)
+	if want := "# diff uncommitted — 3 files · +0 ~0 −0 symbols\n# … 2 files left out past --budget — the symbol counts exclude them\n"; !strings.HasPrefix(got, want) {
+		t.Errorf("render = %q, want prefix %q", got[:min(len(got), 120)], want)
+	}
 
-	if !strings.HasPrefix(got, "# diff uncommitted — 3 files · +0 ~0 −0 symbols\n# … 2 files not rendered — past --budget\n") {
-		t.Errorf("header = %q", strings.SplitN(got, "\n", 3)[:2])
+	read = nil
+	m, err = buildModel(context.Background(), plan, files, false, 0)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if strings.Contains(got, "b.env") || strings.Contains(got, "c.env") {
-		t.Errorf("rendered a file past the budget: %q", got)
-	}
-	if len(ids) != 0 {
-		t.Errorf("masked a file past the budget: ids = %v", ids)
-	}
-
-	whole, ids := render(m, false, false, 0)
-	if !strings.Contains(whole, "c.env") || len(ids) != 2 {
-		t.Errorf("no budget must render every file: ids = %v", ids)
+	if len(read) != 3 || m.leftOut != 0 {
+		t.Errorf("no budget must read every file: read %v, leftOut %d", read, m.leftOut)
 	}
 }

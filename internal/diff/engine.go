@@ -22,7 +22,7 @@ import (
 // each file's section secret-masked in that file's path context unless
 // a.RevealSecrets. The fired rule ids come back in file order — the caller
 // appends the shared footer after its cap. The caller budget-caps the output, and
-// rendering stops once it has enough for that cap, so masking a huge diff costs
+// the model stops growing once it has enough for that cap, so a huge diff costs
 // only what the budget keeps. a.Full inlines per-file hunks.
 func Run(ctx context.Context, a backend.Args) (string, []string, error) {
 	cwd, err := workspace.RootFrom(ctx)
@@ -37,11 +37,11 @@ func Run(ctx context.Context, a backend.Args) (string, []string, error) {
 	if err != nil {
 		return "", nil, err
 	}
-	model, err := buildModel(ctx, plan, files)
+	model, err := buildModel(ctx, plan, files, a.Full, a.Budget)
 	if err != nil {
 		return "", nil, err
 	}
-	out, ids := render(model, a.Full, a.RevealSecrets, a.Budget)
+	out, ids := render(model, a.Full, a.RevealSecrets)
 	return out, ids, nil
 }
 
@@ -81,66 +81,81 @@ func ChangedSymbols(ctx context.Context, dir ccrender.Dir, source, path string) 
 	return syms, nil
 }
 
-// buildModel assembles the render model: per file it fetches blobs, computes
-// hunks, and either classifies (covered), emits raw hunks (uncovered), notes a
-// binary, or — beyond the classification cap — records hunk counts. A
-// non-symbolic plan renders each file's raw `jj diff --git` text.
-func buildModel(ctx context.Context, plan vcs.DiffPlan, files []string) (diffModel, error) {
+// buildModel assembles the render model from each file's report, stopping once
+// the rendered sections pass what a positive budget keeps, so a huge diff reads
+// and classifies only the files the caller's cap will show.
+func buildModel(ctx context.Context, plan vcs.DiffPlan, files []string, full bool, budget int) (diffModel, error) {
 	m := diffModel{label: plan.Label}
 	cache := outlineCache{}
-	classified := 0
-	for _, path := range files {
-		if !plan.Symbolic {
-			raw, err := plan.Raw(path)
-			if err != nil {
-				return diffModel{}, err
-			}
-			m.files = append(m.files, fileReport{path: path, kind: fileKindRawText, raw: raw})
-			continue
+	classified, size := 0, 0
+	for i, path := range files {
+		if budget > 0 && size > ccrender.BudgetBytes(budget) {
+			m.leftOut = len(files) - i
+			break
 		}
-
-		renamedFrom := plan.Renames[path]
-
-		before, after, err := blobs(plan, path)
+		r, changed, err := reportFile(ctx, plan, path, cache, classified)
 		if err != nil {
 			return diffModel{}, err
 		}
-		if blobBinary(before, after) {
-			m.files = append(m.files, fileReport{path: path, renamedFrom: renamedFrom, kind: fileKindBinary})
+		if !changed {
 			continue
 		}
-		hunks := hunk.Compute(before, after)
-		if len(hunks) == 0 {
-			// A rename with no content change still renders (with the "old → new"
-			// note); a non-rename no-op is nothing to report.
-			if renamedFrom != "" {
-				m.files = append(m.files, fileReport{path: path, renamedFrom: renamedFrom, kind: fileKindRenamed})
-			}
-			continue
-		}
-
-		lang, covered := outline.LangForExt(path)
-		switch {
-		case !covered:
-			m.files = append(m.files, fileReport{
-				path: path, renamedFrom: renamedFrom, kind: fileKindRawHunks, hunks: hunks, before: before, ext: filepath.Ext(path),
-			})
-		case classified >= classifyCap:
-			m.files = append(m.files, fileReport{path: path, renamedFrom: renamedFrom, kind: fileKindCapped, hunks: hunks})
-		default:
-			fc, err := classifyBlobs(ctx, before, after, lang, cache)
-			if err != nil {
-				return diffModel{}, err
-			}
+		if r.kind == fileKindSymbols {
 			classified++
-			added, changed, removed := countKinds(fc.symbols)
-			m.added, m.changed, m.removed = m.added+added, m.changed+changed, m.removed+removed
-			m.files = append(m.files, fileReport{
-				path: path, renamedFrom: renamedFrom, kind: fileKindSymbols, class: fc, hunks: hunks, before: before, after: after,
-			})
+			added, modified, removed := countKinds(r.class.symbols)
+			m.added, m.changed, m.removed = m.added+added, m.changed+modified, m.removed+removed
 		}
+		m.files = append(m.files, r)
+		size += len(fileSection(r, full))
 	}
 	return m, nil
+}
+
+// reportFile fetches path's blobs, computes hunks, and either classifies
+// (covered), emits raw hunks (uncovered), notes a binary, or — beyond the
+// classification cap — records hunk counts. A non-symbolic plan renders the
+// file's raw `jj diff --git` text. It reports false for a non-rename no-op.
+func reportFile(ctx context.Context, plan vcs.DiffPlan, path string, cache outlineCache, classified int) (fileReport, bool, error) {
+	if !plan.Symbolic {
+		raw, err := plan.Raw(path)
+		if err != nil {
+			return fileReport{}, false, err
+		}
+		return fileReport{path: path, kind: fileKindRawText, raw: raw}, true, nil
+	}
+
+	renamedFrom := plan.Renames[path]
+
+	before, after, err := blobs(plan, path)
+	if err != nil {
+		return fileReport{}, false, err
+	}
+	if blobBinary(before, after) {
+		return fileReport{path: path, renamedFrom: renamedFrom, kind: fileKindBinary}, true, nil
+	}
+	hunks := hunk.Compute(before, after)
+	if len(hunks) == 0 {
+		// A rename with no content change still renders (with the "old → new"
+		// note); a non-rename no-op is nothing to report.
+		return fileReport{path: path, renamedFrom: renamedFrom, kind: fileKindRenamed}, renamedFrom != "", nil
+	}
+
+	lang, covered := outline.LangForExt(path)
+	switch {
+	case !covered:
+		return fileReport{
+			path: path, renamedFrom: renamedFrom, kind: fileKindRawHunks, hunks: hunks, before: before, ext: filepath.Ext(path),
+		}, true, nil
+	case classified >= classifyCap:
+		return fileReport{path: path, renamedFrom: renamedFrom, kind: fileKindCapped, hunks: hunks}, true, nil
+	}
+	fc, err := classifyBlobs(ctx, before, after, lang, cache)
+	if err != nil {
+		return fileReport{}, false, err
+	}
+	return fileReport{
+		path: path, renamedFrom: renamedFrom, kind: fileKindSymbols, class: fc, hunks: hunks, before: before, after: after,
+	}, true, nil
 }
 
 // blobs reads path's before and after images from the plan.

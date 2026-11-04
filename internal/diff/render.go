@@ -6,7 +6,6 @@ import (
 
 	"github.com/yasyf/cc-context/anchor"
 	"github.com/yasyf/cc-context/internal/hunk"
-	ccrender "github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/secrets"
 )
 
@@ -60,11 +59,13 @@ func fileHeader(r fileReport) string {
 }
 
 // diffModel is the assembled, render-ready diff: the source label, the symbol
-// totals across classified files, and the per-file reports in VCS order.
+// totals across classified files, the per-file reports in VCS order, and how many
+// changed files were left out past the budget.
 type diffModel struct {
 	label                   string
 	added, changed, removed int
 	files                   []fileReport
+	leftOut                 int
 }
 
 // render emits the final diff shape from an assembled model — a header line, one
@@ -73,12 +74,14 @@ type diffModel struct {
 // (a renamed file's under the pre-image path too) unless reveal is set, and
 // returning the fired rule ids in file order for the caller's footer. In full
 // mode each classified file also inlines its 3-context hunks; the trailer is
-// dropped. A positive budget stops rendering, and masking, once the sections pass
-// what the caller's cap keeps, and the header counts the files left out.
-func render(m diffModel, full, reveal bool, budget int) (string, []string) {
+// dropped.
+func render(m diffModel, full, reveal bool) (string, []string) {
 	var b strings.Builder
-	header := fmt.Sprintf("# diff %s %s %d files %s +%d ~%d %s%d symbols\n",
-		m.label, emDash, len(m.files), midDot, m.added, m.changed, sigilRemoved, m.removed)
+	fmt.Fprintf(&b, "# diff %s %s %d files %s +%d ~%d %s%d symbols\n",
+		m.label, emDash, len(m.files)+m.leftOut, midDot, m.added, m.changed, sigilRemoved, m.removed)
+	if m.leftOut > 0 {
+		fmt.Fprintf(&b, "# %s %d files left out past --budget %s the symbol counts exclude them\n", ellipsis, m.leftOut, emDash)
+	}
 
 	capped := 0
 	for _, r := range m.files {
@@ -89,34 +92,14 @@ func render(m diffModel, full, reveal bool, budget int) (string, []string) {
 
 	var ids []string
 	disclosed, hasSymbols := false, false
-	unrendered := 0
 	for _, r := range m.files {
-		if budget > 0 && b.Len() > ccrender.BudgetBytes(budget) {
-			unrendered++
-			continue
-		}
 		if r.kind == fileKindCapped && !disclosed {
 			fmt.Fprintf(&b, "# %s %d files beyond the %d-file classification cap %s hunk counts only:\n",
 				ellipsis, capped, classifyCap, emDash)
 			disclosed = true
 		}
-		var fb strings.Builder
-		switch r.kind {
-		case fileKindSymbols:
-			renderSymbolFile(&fb, r, full)
-			hasSymbols = true
-		case fileKindRawHunks:
-			renderRawHunks(&fb, r, full)
-		case fileKindRawText:
-			renderRawText(&fb, r)
-		case fileKindBinary:
-			fmt.Fprintf(&fb, "## %s %s binary\n", fileHeader(r), emDash)
-		case fileKindCapped:
-			renderCapped(&fb, r)
-		case fileKindRenamed:
-			fmt.Fprintf(&fb, "## %s %s renamed, no content change\n", fileHeader(r), emDash)
-		}
-		section := fb.String()
+		hasSymbols = hasSymbols || r.kind == fileKindSymbols
+		section := fileSection(r, full)
 		if !reveal {
 			var fired []string
 			section, fired = secrets.Mask(section, r.path)
@@ -134,10 +117,27 @@ func render(m diffModel, full, reveal bool, budget int) (string, []string) {
 	if !full && hasSymbols {
 		fmt.Fprintf(&b, "hunks hidden %s --full inlines per-file hunks\n", emDash)
 	}
-	if unrendered > 0 {
-		header += fmt.Sprintf("# %s %d files not rendered %s past --budget\n", ellipsis, unrendered, emDash)
+	return b.String(), ids
+}
+
+// fileSection renders one file's unmasked section.
+func fileSection(r fileReport, full bool) string {
+	var fb strings.Builder
+	switch r.kind {
+	case fileKindSymbols:
+		renderSymbolFile(&fb, r, full)
+	case fileKindRawHunks:
+		renderRawHunks(&fb, r, full)
+	case fileKindRawText:
+		renderRawText(&fb, r)
+	case fileKindBinary:
+		fmt.Fprintf(&fb, "## %s %s binary\n", fileHeader(r), emDash)
+	case fileKindCapped:
+		renderCapped(&fb, r)
+	case fileKindRenamed:
+		fmt.Fprintf(&fb, "## %s %s renamed, no content change\n", fileHeader(r), emDash)
 	}
-	return header + b.String(), ids
+	return fb.String()
 }
 
 // symRow is one rendered symbol line before column alignment.
