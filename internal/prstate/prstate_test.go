@@ -701,8 +701,9 @@ func rest190() map[string]reply {
 			`{"state":"APPROVED","user":{"login":"bob[bot]"}},{"state":"APPROVED","user":{"login":"ann"}},{"state":"APPROVED","user":{"login":"cat"}},{"state":"DISMISSED","user":{"login":"cat"}}]`},
 		"/repos/yasyf/cc-context/commits/" + restHead + "/check-runs": {body: `{"total_count":2,"check_runs":[{"name":"test","status":"completed","conclusion":"success"},` +
 			`{"name":"lint","status":"in_progress","conclusion":null}]}`},
-		"/repos/yasyf/cc-context/commits/" + restHead + "/status": {body: `{"state":"success","total_count":1,"statuses":[{"context":"buildkite/test","state":"success"}]}`},
-		"/repos/yasyf/cc-context/issues/190/comments":             {body: `[{"body":"looks good"},{"body":"### Merge activity\n\n* queued"}]`},
+		"/repos/yasyf/cc-context/commits/" + restHead + "/status":       {body: `{"state":"success","total_count":1,"statuses":[{"context":"buildkite/test","state":"success"}]}`},
+		"/repos/yasyf/cc-context/commits/" + restHead + "/check-suites": {body: `{"total_count":2,"check_suites":[{"status":"completed"},{"status":"queued"}]}`},
+		"/repos/yasyf/cc-context/issues/190/comments":                   {body: `[{"body":"looks good"},{"body":"### Merge activity\n\n* queued"}]`},
 	}
 }
 
@@ -724,6 +725,9 @@ func TestAFailedPollReadsThroughRESTAndSpacesTheNextPoll(t *testing.T) {
 	if fmt.Sprint(pr.Reviews) != "[{ann APPROVED} {bob APPROVED}]" {
 		t.Errorf("reviews = %v, want each reviewer's latest opinion with the dismissed one dropped", pr.Reviews)
 	}
+	if pr.Rollup == nil || pr.Rollup.UnfinishedActions != 1 {
+		t.Errorf("rollup = %+v, want the one queued Actions suite counted", pr.Rollup)
+	}
 	if pr.Status != "SUCCESS" || pr.Rollup == nil || pr.Rollup.State != "PENDING" || len(pr.Rollup.Contexts.Nodes) != 3 ||
 		pr.Rollup.Contexts.Nodes[1] != (Context{Typename: "CheckRun", Name: "lint", Status: "IN_PROGRESS"}) {
 		t.Errorf("status %q, rollup %+v; want the check runs and statuses rolled up pending", pr.Status, pr.Rollup)
@@ -733,7 +737,7 @@ func TestAFailedPollReadsThroughRESTAndSpacesTheNextPoll(t *testing.T) {
 	}
 
 	c.now = epoch.Add(5 * time.Second)
-	if _, err := store.Read(testCtx(t), Want{PRs: []int{190}}); err != nil || gh.requests() != 1 || len(gh.reads) != 5 {
+	if _, err := store.Read(testCtx(t), Want{PRs: []int{190}}); err != nil || gh.requests() != 1 || len(gh.reads) != 6 {
 		t.Fatalf("read inside the interval = %v after %d polls and %d REST reads, want the REST record served", err, gh.requests(), len(gh.reads))
 	}
 	c.now = epoch.Add(MinInterval)

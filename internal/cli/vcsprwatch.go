@@ -176,7 +176,7 @@ func prWatchSnapshotOf(number int, pr prstate.PR, trunk prstate.Trunk, prev prWa
 		Approved:  pr.ReviewDecision == "APPROVED",
 	}
 	if rollup := pr.Rollup; rollup != nil {
-		snap.Green = rollup.State == "SUCCESS" || prCIOf(rollup).State == prCIGreen
+		snap.Green = rollup.UnfinishedActions == 0 && (rollup.State == "SUCCESS" || prCIOf(rollup).State == prCIGreen)
 		for _, check := range statusChecks(rollup) {
 			if statusClassify(check.State) == statusFailed {
 				snap.Failing = append(snap.Failing, check.Name)
@@ -430,7 +430,9 @@ Events: queued, ejected (was queued, now out of the queue and not landed,
 with the queue's reason when its merge activity comment gives one),
 conflicting, red <checks>, green, approved, approval-dismissed,
 new-head <sha9>, landed <squash sha9>, and closed-without-squash. The first
-poll reports each pull request's standing state the same way.
+poll reports each pull request's standing state the same way. Green waits for
+every GitHub Actions check suite on the head to finish, so a fresh head whose
+workflows have not reported yet does not read green on other apps' checks.
 
 Polls go through the machine-wide pull request cache every ccx vcs pr
 command shares: one batched GitHub GraphQL query and one Graphite request for

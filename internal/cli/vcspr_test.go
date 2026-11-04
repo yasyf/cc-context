@@ -780,6 +780,16 @@ func TestPRCIOf(t *testing.T) {
 			"ci green",
 		},
 		{
+			"every context green with a workflow still to report",
+			func() *prstate.Rollup {
+				rollup := rollupOf("SUCCESS", checkRun("Socket Security", "SUCCESS", "COMPLETED"))
+				rollup.UnfinishedActions = 2
+				return rollup
+			}(),
+			prCIReport{State: prCIPending, Running: 2},
+			"ci pending: 2 running",
+		},
+		{
 			"a failed rollup with nothing failing under it",
 			rollupOf("ERROR", checkRun("lint", "SUCCESS", "COMPLETED")),
 			prCIReport{State: prCIRed, Rollup: "ERROR"},

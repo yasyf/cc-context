@@ -442,6 +442,51 @@ func stubPRState(t *testing.T, responses ...string) *watchGitHub {
 	return github
 }
 
+func TestPRWatchHoldsGreenOnAFreshHeadUntilItsWorkflowsFinish(t *testing.T) {
+	pollAt := func(suite string) string {
+		return fmt.Sprintf(`{"data":{
+			"rateLimit":{"remaining":4900,"resetAt":"2026-09-30T07:00:00Z"},
+			"repository":{
+				"trunk":{"name":"dev","target":{"history":{"nodes":[]}}},
+				"p0":{"number":25131,"state":"OPEN","headRefOid":"%s","mergeable":"MERGEABLE",
+					"checks":{"nodes":[{"commit":{
+						"statusCheckRollup":{"state":"SUCCESS","contexts":{"nodes":[
+							{"__typename":"CheckRun","name":"Socket Security","conclusion":"SUCCESS","status":"COMPLETED"}]}},
+						"checkSuites":{"nodes":[{"status":"COMPLETED"},{"status":%q}]}}}]}}
+			}}}`, watchHeadB, suite)
+	}
+	greenAtOldHead := prWatchSnapshot{State: "OPEN", Head: watchHeadA, Mergeable: "MERGEABLE", Green: true}
+	for _, tc := range []struct {
+		suite string
+		want  []string
+	}{
+		{"QUEUED", []string{"#25131 new-head b2b2b2b2b"}},
+		{"COMPLETED", []string{"#25131 new-head b2b2b2b2b", "#25131 green"}},
+	} {
+		t.Run(tc.suite, func(t *testing.T) {
+			github := stubPRState(t, pollAt(tc.suite))
+			_, gt := stubPRInfo(t, prInfoOpen)
+			store, err := openPRState(withGTAPI(t.Context(), gt), "Forge-AI/monorepo", io.Discard)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			tick, err := prWatchSource{store: store}.poll(t.Context(), []int{25131}, map[int]prWatchSnapshot{25131: greenAtOldHead})
+			if err != nil {
+				t.Fatalf("poll: %v", err)
+			}
+
+			_, events := prWatchStep(25131, greenAtOldHead, tick.snapshots[25131])
+			if got := watchEvents(t, events); !slices.Equal(got, tc.want) {
+				t.Errorf("events = %q, want %q", got, tc.want)
+			}
+			if !strings.Contains(github.queries[0], "checkSuites(first: 50, filterBy: {appId: 15368})") {
+				t.Errorf("query reads no GitHub Actions check suites:\n%s", github.queries[0])
+			}
+		})
+	}
+}
+
 func TestPRWatchPollReadsQueueEvictionAndTrunkSquash(t *testing.T) {
 	github := stubPRState(t, fmt.Sprintf(`{"data":{
 		"rateLimit":{"remaining":4900,"resetAt":"2026-09-30T07:00:00Z"},
