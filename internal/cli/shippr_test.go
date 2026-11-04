@@ -745,7 +745,7 @@ func TestShipPREditOnlyStatedFields(t *testing.T) {
 	t.Setenv("GH_PULLS_JSON", ghStdout(t, "rest-pulls-head-open"))
 	body := writePRBody(t, "body.md", "regenerated\n")
 
-	got, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", body)
+	got, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--replace-pr-text", "--pr-body-file", body)
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
@@ -799,7 +799,7 @@ func TestShipPRBodyFromStdin(t *testing.T) {
 	t.Setenv("GH_PR_BODY_DUMP", bodyDump)
 	const piped = "piped body\n"
 
-	if _, err := runShipCmdStdin(t, f, strings.NewReader(piped), "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", "-"); err != nil {
+	if _, err := runShipCmdStdin(t, f, strings.NewReader(piped), "-m", "fix: frobnicate", "--no-watch", "--replace-pr-text", "--pr-body-file", "-"); err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
 	var edit []string
@@ -829,7 +829,7 @@ func TestShipPREditCarriesLiveReleaseTrailers(t *testing.T) {
 	t.Setenv("GH_PR_BODY_DUMP", bodyDump)
 	body := writePRBody(t, "body.md", "regenerated\n")
 
-	if _, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", body); err != nil {
+	if _, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--replace-pr-text", "--pr-body-file", body); err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
 	var gh [][]string
@@ -845,6 +845,131 @@ func TestShipPREditCarriesLiveReleaseTrailers(t *testing.T) {
 	if got, want := readFileStr(t, bodyDump), "regenerated\n\nRelease-With: dashboard api\nRelease-Order: api before dashboard\n"; got != want {
 		t.Errorf("gh read a body of %q, want %q", got, want)
 	}
+}
+
+func TestShipPREditKeepsLiveTextUnlessTold(t *testing.T) {
+	tests := []struct {
+		name     string
+		liveBody string
+		args     func(body string) []string
+		edit     func(body string) string
+		kept     string
+	}{
+		{
+			name:     "a title and body on the pull request stay",
+			liveBody: "live body",
+			args:     func(body string) []string { return []string{"--pr-title", "New title", "--pr-body-file", body} },
+			kept:     "title and body",
+		},
+		{
+			name:     "a title alone stays",
+			liveBody: "live body",
+			args:     func(string) []string { return []string{"--pr-title", "New title"} },
+			kept:     "title",
+		},
+		{
+			name:     "a body alone stays",
+			liveBody: "live body",
+			args:     func(body string) []string { return []string{"--pr-body-file", body} },
+			kept:     "body",
+		},
+		{
+			name:     "text matching the pull request needs no write or warning",
+			liveBody: "regenerated\n",
+			args:     func(body string) []string { return []string{"--pr-title", "live title", "--pr-body-file", body} },
+		},
+		{
+			name:     "a blank live body fills without the flag",
+			liveBody: "  \n",
+			args:     func(body string) []string { return []string{"--pr-body-file", body} },
+			edit:     func(body string) string { return "-F body=@" + body },
+		},
+		{
+			name:     "the flag replaces both",
+			liveBody: "live body",
+			args: func(body string) []string {
+				return []string{"--pr-title", "New title", "--pr-body-file", body, "--replace-pr-text"}
+			},
+			edit: func(body string) string { return "-f title=New title -F body=@" + body },
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := shipPRFixture(t, vcstest.Branch("feature"))
+			pr := prFromListGolden(t, "rest-pulls-head-open")
+			t.Setenv("GH_PULLS_JSON", ghStdout(t, "rest-pulls-head-open"))
+			f.Setenv("GH_PULL_JSON", livePullText(t, "live title", tt.liveBody))
+			body := writePRBody(t, "body.md", "regenerated\n")
+
+			got, errStr, err := runShipCmdFull(f.Context(), t, append([]string{"-m", "fix: frobnicate", "--no-watch"}, tt.args(body)...)...)
+			if err != nil {
+				t.Fatalf("ship error = %v (stderr=%q)", err, errStr)
+			}
+			var edits []string
+			for _, inv := range vcstest.Invocations(t, f.ArgvLog) {
+				if isPREdit(inv) {
+					edits = append(edits, strings.Join(inv[6:], " "))
+				}
+			}
+			var wantEdits []string
+			if tt.edit != nil {
+				wantEdits = []string{tt.edit(body)}
+			}
+			if !slices.Equal(edits, wantEdits) {
+				t.Errorf("restates = %q, want %q", edits, wantEdits)
+			}
+			if updated := strings.Contains(got, "updated PR"); updated != (tt.edit != nil) {
+				t.Errorf("summary = %q, want an update reported only when one was written", got)
+			}
+			warning := ""
+			if tt.kept != "" {
+				warning = fmt.Sprintf("ship: kept the %s already on feature's PR #%d; pass --replace-pr-text to replace\n", tt.kept, pr.Number)
+			}
+			if warned := strings.Contains(errStr, "ship: kept the "); warned != (warning != "") || !strings.Contains(errStr, warning) {
+				t.Errorf("stderr = %q, want warning %q", errStr, warning)
+			}
+		})
+	}
+}
+
+// TestShipPRGTKeepsLiveText is the ship that rewrote a parent's title and body
+// from the parent's tree, after stack new left the child in another one.
+func TestShipPRGTKeepsLiveText(t *testing.T) {
+	log, gt := setupShipGT(t, true)
+	gt.prs["feature"] = 7
+	t.Setenv("GH_PULL_JSON", livePullText(t, "parent title", "parent body"))
+	body := writePRBody(t, "body.md", "child body\n")
+
+	got, errStr, err := runShipCmdFull(gt.ctx(context.Background()), t, "-m", "fix: frobnicate", "--no-watch", "--pr-title", "Child title", "--pr-body-file", body)
+	if err != nil {
+		t.Fatalf("ship error = %v (stderr=%q)", err, errStr)
+	}
+	for _, inv := range readInvocations(t, log) {
+		if isPREdit(inv) {
+			t.Errorf("ship rewrote the open pull request: %v", inv)
+		}
+	}
+	if strings.Contains(got, "set PR") {
+		t.Errorf("summary = %q, want no restate reported", got)
+	}
+	if want := "ship: kept the title and body already on feature's PR #7; pass --replace-pr-text to replace\n"; !strings.Contains(errStr, want) {
+		t.Errorf("stderr = %q, want it to carry %q", errStr, want)
+	}
+}
+
+// livePullText is the recorded open pull request carrying title and body.
+func livePullText(t *testing.T, title, body string) string {
+	t.Helper()
+	var live map[string]any
+	if err := json.Unmarshal([]byte(ghStdout(t, "rest-pull-open")), &live); err != nil {
+		t.Fatalf("golden rest-pull-open: %v", err)
+	}
+	live["title"], live["body"] = title, body
+	payload, err := json.Marshal(live)
+	if err != nil {
+		t.Fatalf("marshal live pull: %v", err)
+	}
+	return string(payload)
 }
 
 // livePullWithReleaseTrailers is the recorded open pull request with a body the
@@ -948,7 +1073,7 @@ func TestShipPRGTWritesTheNewestPR(t *testing.T) {
 	gt.merged["feature"] = gtStubMerged{number: 3, head: "c0ffee"}
 	body := writePRBody(t, "body.md", "why this change\n")
 
-	got, err := runShipCmd(gt.ctx(context.Background()), t, "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", body)
+	got, err := runShipCmd(gt.ctx(context.Background()), t, "-m", "fix: frobnicate", "--no-watch", "--replace-pr-text", "--pr-body-file", body)
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
@@ -977,7 +1102,7 @@ func TestShipPRGTSkipsDownstackQuery(t *testing.T) {
 	api.prs["feature"] = 41
 	body := writePRBody(t, "body.md", "why this change\n")
 
-	got, err := runShipCmd(api.ctx(context.Background()), t, "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", body)
+	got, err := runShipCmd(api.ctx(context.Background()), t, "-m", "fix: frobnicate", "--no-watch", "--replace-pr-text", "--pr-body-file", body)
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
@@ -1005,7 +1130,7 @@ func TestShipPRGTWarnsFromGraphitesBody(t *testing.T) {
 		`"feature2":{"parents":[{"ref":"feature","sha":"beadfeed"}]}}`)
 	body := writePRBody(t, "body.md", "why this change\n")
 
-	got, err := runShipCmd(api.ctx(context.Background()), t, "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", body)
+	got, err := runShipCmd(api.ctx(context.Background()), t, "-m", "fix: frobnicate", "--no-watch", "--replace-pr-text", "--pr-body-file", body)
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
@@ -1024,7 +1149,7 @@ func TestShipPRGTBothFlags(t *testing.T) {
 	gt.prs["feature"] = 7
 	body := writePRBody(t, "body.md", "why this change\n")
 
-	got, err := runShipCmd(gt.ctx(context.Background()), t, "-m", "fix: frobnicate", "--no-watch", "--pr-title", "Better title", "--pr-body-file", body)
+	got, err := runShipCmd(gt.ctx(context.Background()), t, "-m", "fix: frobnicate", "--no-watch", "--replace-pr-text", "--pr-title", "Better title", "--pr-body-file", body)
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
@@ -1092,7 +1217,7 @@ func TestShipPRGTAlreadyCommitted(t *testing.T) {
 			body := writePRBody(t, "body.md", "why this change\n")
 			writeShipFile(t, ".", "src/a.go", "package a\n")
 
-			args := append([]string{"--no-watch", "--pr-title", "fix: 🐛 frobnicate the widget", "--pr-body-file", body}, tt.paths...)
+			args := append([]string{"--no-watch", "--replace-pr-text", "--pr-title", "fix: 🐛 frobnicate the widget", "--pr-body-file", body}, tt.paths...)
 			got, err := runShipCmd(gt.ctx(context.Background()), t, args...)
 			if err != nil {
 				t.Fatalf("ship error = %v", err)
@@ -1142,6 +1267,7 @@ func TestShipPRGTBackfill(t *testing.T) {
 		`"feature2":{"parents":[{"ref":"feature","sha":"feedface"}]}}`)
 	gt.prs["base"], gt.prs["feature"], gt.prs["feature2"] = 5, 6, 7
 	gt.bodies["base"] = "written by hand"
+	t.Setenv("GH_PULL_JSON", livePullText(t, "live title", ""))
 	tipBody := writePRBody(t, "tip.md", "tip body\n")
 	midBody := writePRBody(t, "mid.md", "mid body\n")
 
@@ -1187,7 +1313,7 @@ func TestShipPRGTOpensWithThePreparedBody(t *testing.T) {
 	baseBody := writePRBody(t, "base.md", "base body\n")
 
 	got, err := runShipCmd(gt.ctx(context.Background()), t, "-m", "fix: frobnicate\n\nContext: the commit message", "--no-watch",
-		"--pr-title", "Tip title", "--pr-body-file", tipBody, "--pr-title", "feature=Mid title", "--pr-body-file", "feature="+midBody, "--pr-body-file", "base="+baseBody)
+		"--replace-pr-text", "--pr-title", "Tip title", "--pr-body-file", tipBody, "--pr-title", "feature=Mid title", "--pr-body-file", "feature="+midBody, "--pr-body-file", "base="+baseBody)
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
@@ -1227,7 +1353,7 @@ func TestShipPRRestateFailureNamesTheRetry(t *testing.T) {
 		midBody := writePRBody(t, "mid.md", "mid body\n")
 
 		_, err := runShipCmd(gt.ctx(context.Background()), t, "-m", "fix: frobnicate", "--no-watch",
-			"--pr-title", "Tip title", "--pr-body-file", tipBody, "--pr-body-file", "feature="+midBody)
+			"--replace-pr-text", "--pr-title", "Tip title", "--pr-body-file", tipBody, "--pr-body-file", "feature="+midBody)
 		if err == nil {
 			t.Fatal("ship succeeded over a refused restate")
 		}
@@ -1252,7 +1378,7 @@ func TestShipPRRestateFailureNamesTheRetry(t *testing.T) {
 		t.Setenv("GH_PR_GRAPHQL_FAIL", "gh: API rate limit exceeded")
 		body := writePRBody(t, "body.md", "regenerated\n")
 
-		_, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", body)
+		_, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--replace-pr-text", "--pr-body-file", body)
 		if err == nil {
 			t.Fatal("ship succeeded over a refused restate")
 		}
@@ -1274,7 +1400,7 @@ func TestShipPRRestateFailureNamesTheRetry(t *testing.T) {
 		t.Setenv("GH_PR_NODE_ID", prNodeIDGolden(t))
 		t.Setenv("GH_PR_GRAPHQL_FAIL", "gh: API rate limit exceeded")
 
-		_, err := runShipCmdStdin(t, f, strings.NewReader("piped body\n"), "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", "-", "--publish")
+		_, err := runShipCmdStdin(t, f, strings.NewReader("piped body\n"), "-m", "fix: frobnicate", "--no-watch", "--replace-pr-text", "--pr-body-file", "-", "--publish")
 		if err == nil {
 			t.Fatal("ship succeeded over a refused restate")
 		}
@@ -1292,7 +1418,7 @@ func TestShipPRRestateFailureNamesTheRetry(t *testing.T) {
 		t.Setenv("GH_PR_EDIT_FAIL", "gh: Validation Failed (HTTP 422)")
 		body := writePRBody(t, "body.md", "regenerated\n")
 
-		_, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", body)
+		_, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--replace-pr-text", "--pr-body-file", body)
 		if err == nil {
 			t.Fatal("ship succeeded over a refused restate")
 		}
@@ -1334,7 +1460,7 @@ func TestShipPRRestateRetryCarriesLiveReleaseTrailers(t *testing.T) {
 		t.Setenv("GH_PR_EDIT_FAIL", "gh: Validation Failed (HTTP 422)")
 		body := writePRBody(t, "body.md", "regenerated\n")
 
-		_, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", body)
+		_, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--replace-pr-text", "--pr-body-file", body)
 		if err == nil {
 			t.Fatal("ship succeeded over a refused restate")
 		}
@@ -1352,7 +1478,7 @@ func TestShipPRRestateRetryCarriesLiveReleaseTrailers(t *testing.T) {
 		f.Setenv("GH_PULL_JSON", livePullWithReleaseTrailers(t))
 		t.Setenv("GH_PR_EDIT_FAIL", "gh: Validation Failed (HTTP 422)")
 
-		_, err := runShipCmdStdin(t, f, strings.NewReader("piped body\n"), "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", "-")
+		_, err := runShipCmdStdin(t, f, strings.NewReader("piped body\n"), "-m", "fix: frobnicate", "--no-watch", "--replace-pr-text", "--pr-body-file", "-")
 		if err == nil {
 			t.Fatal("ship succeeded over a refused restate")
 		}
@@ -1379,7 +1505,7 @@ func TestShipPRRestateRetryCarriesLiveReleaseTrailers(t *testing.T) {
 		midBody := writePRBody(t, "mid.md", "mid body\n")
 
 		_, err := runShipCmd(gt.ctx(context.Background()), t, "-m", "fix: frobnicate", "--no-watch",
-			"--pr-body-file", tipBody, "--pr-body-file", "feature="+midBody)
+			"--replace-pr-text", "--pr-body-file", tipBody, "--pr-body-file", "feature="+midBody)
 		if err == nil {
 			t.Fatal("ship succeeded over a refused restate")
 		}
@@ -1413,7 +1539,7 @@ func TestShipPRRestateFallsBackToGraphQL(t *testing.T) {
 		t.Setenv("GH_PR_NODE_ID", nodeID)
 		body := writePRBody(t, "body.md", "why this change\n")
 
-		got, err := runShipCmd(gt.ctx(context.Background()), t, "-m", "fix: frobnicate", "--no-watch", "--pr-title", "Better title", "--pr-body-file", body)
+		got, err := runShipCmd(gt.ctx(context.Background()), t, "-m", "fix: frobnicate", "--no-watch", "--replace-pr-text", "--pr-title", "Better title", "--pr-body-file", body)
 		if err != nil {
 			t.Fatalf("ship error = %v", err)
 		}
@@ -1441,7 +1567,7 @@ func TestShipPRRestateFallsBackToGraphQL(t *testing.T) {
 		t.Setenv("GH_PR_NODE_ID", nodeID)
 		body := writePRBody(t, "body.md", "regenerated\n")
 
-		got, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--pr-body-file", body)
+		got, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--replace-pr-text", "--pr-body-file", body)
 		if err != nil {
 			t.Fatalf("ship error = %v", err)
 		}

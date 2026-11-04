@@ -50,8 +50,8 @@ func TestStackNewCutsTheBranchInItsOwnWorkingCopy(t *testing.T) {
 	if base := filepath.Base(path); base != "feature" {
 		t.Errorf("minted %q, want a pool entry named feature", path)
 	}
-	if want := "this tree stays on base; work in " + path + "\n"; !strings.HasPrefix(out, want) {
-		t.Errorf("output = %q, want it to lead with %q", out, want)
+	if want := "\nfeature is in its own tree and this tree stays on base; cd to it" + shipSep + path; !strings.HasSuffix(out, want) {
+		t.Errorf("output = %q, want it to end with %q", out, want)
 	}
 	if here := gitAt(t, f.Env(), f.Dir, "branch", "--show-current"); here != "base" {
 		t.Errorf("the calling working copy is on %q, want base — stack new must not switch it", here)
@@ -1293,7 +1293,7 @@ func TestStackSubmitWritesPRTitlesAndBodies(t *testing.T) {
 	body := writePRBody(t, "base.md", "base body\n")
 	shipResetLog(t, f)
 
-	if _, _, err := runStackCmd(t, f, "submit", "--pr-title", "Feature title", "--pr-body-file", "base="+body); err != nil {
+	if _, _, err := runStackCmd(t, f, "submit", "--replace-pr-text", "--pr-title", "Feature title", "--pr-body-file", "base="+body); err != nil {
 		t.Fatalf("stack submit: %v", err)
 	}
 	var edits []string

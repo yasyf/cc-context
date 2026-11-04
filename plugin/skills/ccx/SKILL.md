@@ -260,8 +260,10 @@ own span: a yes a day, a no an hour, an unanswered probe a minute). `--no-gt`
 opts out. Ship owns the pull
 request in every lane: `--pr-title`/`--pr-body-file` (repeatable, branch-scoped as
 `<branch>=<value>`, a bare value applying to the tip, `-` reading stdin) create the
-branch's PR or edit exactly the fields restated — a hand-edited description
-survives a re-ship that does not mention it — `--draft`/`--publish` convert an
+branch's PR. On an open PR ship keeps a title or body it already has and warns,
+so a ship from the wrong tree cannot rewrite what a reviewer reads;
+`--replace-pr-text` replaces them, and a blank live body fills without it.
+`--draft`/`--publish` convert an
 existing PR in either direction, `--no-pr` opts out, and a ship naming no PR flag
 makes no `gh pr` call. `-m` is optional when an unscoped `--pr-title` is given: the
 title becomes the commit subject and an unscoped `--pr-body-file` its body, with the

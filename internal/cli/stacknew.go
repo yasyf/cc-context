@@ -283,8 +283,8 @@ func runStackNew(cmd *cobra.Command, name string, options stackNewOpts) error {
 	if current != "" {
 		here = "this tree stays on " + current
 	}
-	cmd.Println(here + "; work in " + path)
-	cmd.Println(strings.Join(append(segs, path), shipSep))
+	cmd.Println(strings.Join(segs, shipSep))
+	cmd.Println(name + " is in its own tree and " + here + "; cd to it" + shipSep + path)
 	return nil
 }
 
