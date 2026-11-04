@@ -355,7 +355,7 @@ type Governor struct {
 	// stalled past twice their time budget, whether or not CPU throttles too.
 	Detail string `json:"detail,omitempty"`
 	// Gate says whether the activity gate lets work run: "open", or why it
-	// holds all of it. Empty without a gate.
+	// holds all of it but what BusyDeletes allows. Empty without a gate.
 	Gate string `json:"gate,omitempty"`
 }
 
@@ -372,7 +372,7 @@ type RateCap struct {
 func CappedRate(caps []RateCap, path string) (int, bool) {
 	rate, capped := 0, false
 	for _, c := range caps {
-		if path != c.Root && !strings.HasPrefix(path, c.Root+string(filepath.Separator)) {
+		if !within(path, c.Root) {
 			continue
 		}
 		if !capped || c.Rate < rate {
@@ -380,6 +380,32 @@ func CappedRate(caps []RateCap, path string) (int, bool) {
 		}
 	}
 	return rate, capped
+}
+
+// BusyDeletes lets a removal keep running while sessions are busy, at up to Rate
+// entries a second, one removal at a time, unless its tree sits under a Quiet
+// directory. The zero value holds every removal until sessions are quiet.
+type BusyDeletes struct {
+	Rate  int
+	Quiet []string
+}
+
+// Allows reports whether a removal deleting path may run while sessions are
+// busy.
+func (b BusyDeletes) Allows(path string) bool {
+	if b.Rate == 0 {
+		return false
+	}
+	for _, root := range b.Quiet {
+		if within(path, root) {
+			return false
+		}
+	}
+	return true
+}
+
+func within(path, root string) bool {
+	return path == root || strings.HasPrefix(path, root+string(filepath.Separator))
 }
 
 // Pace is how fast physical deletion runs as an observer reads it.

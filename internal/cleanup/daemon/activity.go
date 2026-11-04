@@ -22,11 +22,12 @@ type gate struct {
 	create  time.Duration
 	resume  int
 
-	held    bool
-	quiet   int
-	sampled bool
-	at      time.Time
-	detail  string
+	held     bool
+	strained bool
+	quiet    int
+	sampled  bool
+	at       time.Time
+	detail   string
 }
 
 func newGate(t Tuning) *gate {
@@ -53,7 +54,7 @@ func (g *gate) next(slicedAt time.Time) time.Time {
 func (g *gate) observe(now time.Time, activity cleanup.Activity, err error) {
 	g.at, g.sampled = now, true
 	if err != nil {
-		g.held, g.quiet, g.detail = true, 0, err.Error()
+		g.held, g.strained, g.quiet, g.detail = true, true, 0, err.Error()
 		return
 	}
 	busy := 0
@@ -62,8 +63,9 @@ func (g *gate) observe(now time.Time, activity cleanup.Activity, err error) {
 			busy++
 		}
 	}
+	g.strained = activity.Create > g.create
 	switch {
-	case busy > g.busy || activity.Create > g.create:
+	case busy > g.busy || g.strained:
 		g.held, g.quiet = true, 0
 	case g.held:
 		g.quiet++
@@ -89,17 +91,33 @@ func (g *gate) label() string {
 	return "open"
 }
 
-func (e *Engine) yields() bool {
+func (e *Engine) yields(job cleanup.Job) bool {
 	if e.gate == nil {
 		return false
 	}
 	e.wanted = true
-	e.deferred = e.deferred || e.gate.held
-	return e.gate.held
+	rests := e.rests(job)
+	e.deferred = e.deferred || rests
+	return rests
 }
 
 func (e *Engine) holds() bool {
 	return e.gate != nil && e.gate.held
+}
+
+func (e *Engine) rests(job cleanup.Job) bool {
+	return e.holds() && (e.gate.strained || !e.busy.Allows(deletesAt(job)))
+}
+
+func deletesAt(job cleanup.Job) string {
+	switch job.Phase {
+	case cleanup.PhaseUnregistered, cleanup.PhaseDeleting, cleanup.PhaseDeletingAdmin, cleanup.PhaseDeletingRetiredPayload:
+		return job.Payload
+	case cleanup.PhaseDeletingRegistration:
+		return job.AdminDir
+	default:
+		return job.Original
+	}
 }
 
 func (e *Engine) sampleDue(now time.Time) bool {

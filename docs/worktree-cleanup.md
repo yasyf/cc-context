@@ -402,6 +402,21 @@ In that state no job deletes or advances, however long it waits. Work resumes
 at full speed after two quiet samples in a row, and the first sample after a
 start only sets the CPU baseline.
 
+To let removals keep running while sessions are busy, name a rate. Add any
+directory whose deletions must still wait for quiet sessions, as many as you
+need, and restart the daemon:
+
+```sh
+git config --global ccx.cleanupBusyRate 500
+git config --global --add ccx.cleanupQuietRoot /absolute/root
+```
+
+Trees outside those directories then delete one removal at a time at up to that
+many entries a second while sessions are busy, and take their proofs at the
+usual share. Creates over 3ms still stop them, until a sample reads under 3ms
+again. No rate is set by default, so every removal waits for quiet sessions, and
+a malformed value stops the daemon from starting.
+
 A completed internal conflict workspace can wait for inactivity while other
 cleanup jobs proceed and stack completion succeeds. Interactive Claude,
 Codex, Orca, editor, and terminal sessions remain alive. Leave the workspace
