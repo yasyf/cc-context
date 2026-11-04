@@ -17,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ccx vcs stack rebase --above`, and `--parent` or a native stack's pull request bases, no longer
+  plan a branch with no recorded parent revision from its merge base when its parent was rewritten
+  since it was cut. Forge-AI/monorepo#49305 was replayed onto `dev`, and the dry run for its child
+  would have re-applied 37 commits. The branch now replays from the furthest head the parent's
+  local and remote-tracking reflogs remember it holding. The plan also prints how many commits each
+  branch replays.
 - `ccx vcs pr status` also applies the landed-while-unmerged read to a pull request Graphite or the native lane answers for, which is where Forge-AI/monorepo#49847 stayed `not queued` after the first fix.
 - `ccx vcs pr status` reads an open or closed pull request as landed when its own squash `(#N)` is on the base
   branch and carries every change its head makes. Trunk can merge a pull request, report an error, and

@@ -1,10 +1,12 @@
 package cli
 
 import (
+	"context"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/yasyf/cc-context/internal/nativemeta"
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
@@ -37,6 +39,8 @@ func TestStackRebaseAboveMovesOnlyTheBranchesAboveIt(t *testing.T) {
 		heads[name] = gitAt(t, f.Env(), f.RemoteDir, "rev-parse", name)
 	}
 	localMain := gitAt(t, f.Env(), f.Dir, "rev-parse", "main")
+	oldB := gitAt(t, f.Env(), f.Dir, "rev-parse", "c^")
+	oldC := gitAt(t, f.Env(), f.Dir, "rev-parse", "c")
 
 	plan, errOut, err := runStackCmd(t, f, "rebase", "--dry-run", "--above", "b")
 	if err != nil {
@@ -45,8 +49,8 @@ func TestStackRebaseAboveMovesOnlyTheBranchesAboveIt(t *testing.T) {
 	for _, want := range []string{
 		"a · kept at its published head " + heads["a"][:12],
 		"b · kept at its published head " + heads["b"][:12],
-		"c · onto b",
-		"d · onto c",
+		"c · onto b · from " + oldB[:12] + " · replays 1 commit",
+		"d · onto c · from " + oldC[:12] + " · replays 1 commit",
 		"pushes c, d",
 	} {
 		if !strings.Contains(plan, want) {
@@ -135,6 +139,139 @@ func TestStackRebaseAboveRefusesABranchOutsideTheStack(t *testing.T) {
 		_, _, err := runStackCmd(t, f, "rebase", "--dry-run", "--above", above)
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("stack rebase --above %s = %v, want %q", above, err, want)
+		}
+	}
+}
+
+func stackNativeChain(t *testing.T, names ...string) *vcstest.Fixture {
+	t.Helper()
+	f := shipRepo(t, vcstest.Remote())
+	f.Decorate(func(ctx context.Context) context.Context { return withStackProvider(ctx, true) })
+	mustRun(t, f.Env(), f.Dir, "git", "config", "ccx.stack", "github")
+	for _, name := range names {
+		shipGTUntracked(t, f, name)
+	}
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "--all")
+	return f
+}
+
+func stackNativePRs(t *testing.T, f *vcstest.Fixture, bottom string, above ...string) {
+	t.Helper()
+	const stack = 46
+	api := stubGTAPI(t)
+	api.openPRs(append([]string{bottom}, above...)...)
+	prs := map[string]*stackPR{bottom: {Number: api.prs[bottom], Title: bottom, State: "OPEN", Base: "main", NativeStack: stack}}
+	api.bases[bottom], api.stacks[bottom] = "main", stack
+	parent := bottom
+	for _, name := range above {
+		api.bases[name], api.stacks[name] = parent, stack
+		prs[name] = &stackPR{Number: api.prs[name], Title: name, State: "OPEN", Base: parent, NativeStack: stack}
+		parent = name
+	}
+	f.Decorate(api.ctx)
+	stubOpenPRs(t, f, prs)
+	stubStackStanding(t, f, nil)
+	common := filepath.Join(f.Dir, ".git")
+	if err := nativemeta.Init(f.Context(), common, "main"); err != nil {
+		t.Fatal(err)
+	}
+	base := gitAt(t, f.Env(), f.Dir, "merge-base", bottom, "origin/main")
+	head := gitAt(t, f.Env(), f.Dir, "rev-parse", bottom)
+	if err := nativemeta.AdoptRoot(f.Context(), common, bottom, "main", base, head); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func stackReplayBottomOffLandedParent(t *testing.T, f *vcstest.Fixture, bottom, tip string) {
+	t.Helper()
+	old := gitAt(t, f.Env(), f.Dir, "rev-parse", bottom)
+	restackAdvanceRemote(t, f, "main", "landed-squash.txt", "landed\n")
+	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", bottom)
+	mustRun(t, f.Env(), f.Dir, "git", "reset", "-q", "--hard", "origin/main")
+	mustRun(t, f.Env(), f.Dir, "git", "cherry-pick", old)
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-qf", "origin", bottom)
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", tip)
+}
+
+func TestStackRebaseAboveReplaysAChildFromItsParentsHeadBeforeTheRewrite(t *testing.T) {
+	f := stackNativeChain(t, "landed", "a", "b", "c")
+	oldA := gitAt(t, f.Env(), f.Dir, "rev-parse", "a")
+	oldB := gitAt(t, f.Env(), f.Dir, "rev-parse", "b")
+	stackReplayBottomOffLandedParent(t, f, "a", "c")
+	stackNativePRs(t, f, "a", "b", "c")
+
+	plan, errOut, err := runStackCmd(t, f, "rebase", "--dry-run", "--above", "a")
+	if err != nil {
+		t.Fatalf("stack rebase --dry-run --above a: %v\n%s%s", err, plan, errOut)
+	}
+	for _, want := range []string{
+		"b · onto a · from " + oldA[:12] + " · replays 1 commit",
+		"c · onto b · from " + oldB[:12] + " · replays 1 commit",
+	} {
+		if !strings.Contains(plan, want) {
+			t.Errorf("plan lacks %q:\n%s", want, plan)
+		}
+	}
+
+	out, errOut, err := runStackCmd(t, f, "rebase", "--no-push", "--above", "a")
+	if err != nil {
+		t.Fatalf("stack rebase --no-push --above a: %v\n%s%s", err, out, errOut)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "log", "--reverse", "--format=%s", "origin/main..c"); got != "a\nb\nc" {
+		t.Errorf("commits above trunk = %q, want a, b, c, with the landed parent's commit left behind", got)
+	}
+}
+
+func TestStackRebaseAboveCountsTheCommitsWhenNoReflogKnowsTheParentsOldHead(t *testing.T) {
+	f := stackNativeChain(t, "landed", "a", "b", "c")
+	fork := gitAt(t, f.Env(), f.Dir, "merge-base", "c", "origin/main")
+	stackReplayBottomOffLandedParent(t, f, "a", "c")
+	mustRun(t, f.Env(), f.Dir, "git", "reflog", "expire", "--expire=now", "--all")
+	stackNativePRs(t, f, "a", "b", "c")
+
+	plan, errOut, err := runStackCmd(t, f, "rebase", "--dry-run", "--above", "a")
+	if err != nil {
+		t.Fatalf("stack rebase --dry-run --above a: %v\n%s%s", err, plan, errOut)
+	}
+	if want := "b · onto a · from " + fork[:12] + " · replays 3 commits"; !strings.Contains(plan, want) {
+		t.Errorf("plan lacks %q:\n%s", want, plan)
+	}
+}
+
+func TestStackRebaseAboveKeepsTheCommitsAChildsParentWasResetBelow(t *testing.T) {
+	f := stackNativeChain(t, "a", "moved", "b", "c")
+	a := gitAt(t, f.Env(), f.Dir, "rev-parse", "a")
+	mustRun(t, f.Env(), f.Dir, "git", "branch", "-f", "a", "moved")
+	mustRun(t, f.Env(), f.Dir, "git", "branch", "-f", "a", a)
+	mustRun(t, f.Env(), f.Dir, "git", "branch", "-qD", "moved")
+	stackNativePRs(t, f, "a", "b", "c")
+
+	plan, errOut, err := runStackCmd(t, f, "rebase", "--dry-run", "--above", "a")
+	if err != nil {
+		t.Fatalf("stack rebase --dry-run --above a: %v\n%s%s", err, plan, errOut)
+	}
+	if want := "b · onto a · from " + a[:12] + " · replays 2 commits"; !strings.Contains(plan, want) {
+		t.Errorf("plan lacks %q:\n%s", want, plan)
+	}
+}
+
+func TestStackRebaseAboveReadsAnUnmovedParentAsBefore(t *testing.T) {
+	f := stackNativeChain(t, "a", "b", "c")
+	a := gitAt(t, f.Env(), f.Dir, "rev-parse", "a")
+	b := gitAt(t, f.Env(), f.Dir, "rev-parse", "b")
+	stackNativePRs(t, f, "a", "b", "c")
+
+	plan, errOut, err := runStackCmd(t, f, "rebase", "--dry-run", "--above", "a")
+	if err != nil {
+		t.Fatalf("stack rebase --dry-run --above a: %v\n%s%s", err, plan, errOut)
+	}
+	for _, want := range []string{
+		"b · onto a · from " + a[:12] + " · replays 1 commit",
+		"c · onto b · from " + b[:12] + " · replays 1 commit",
+	} {
+		if !strings.Contains(plan, want) {
+			t.Errorf("plan lacks %q:\n%s", want, plan)
 		}
 	}
 }

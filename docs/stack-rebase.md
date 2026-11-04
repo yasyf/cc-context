@@ -50,6 +50,12 @@ ccx vcs stack rebase --above <branch>
 directly on `<branch>`. It refuses a `<branch>` outside the stack checked out
 here, trunk included, and one with nothing stacked on it.
 
+Each branch in the plan names the commit it replays from and how many commits
+that is, so a from point that would carry a landed parent's commits reads wrong
+before anything moves. A branch with no recorded parent revision, on a parent
+rewritten since it was cut, replays from the furthest head that parent's
+reflogs remember it holding, and from the merge base when no reflog does.
+
 gt does not need to track the other lane's branch already. The run tracks it
 on its nearest tracked ancestor, or on trunk, the way `ship` adopts a branch.
 A parent that exists only on the remote is refused with the fetch that brings
