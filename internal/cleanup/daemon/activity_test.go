@@ -220,6 +220,7 @@ func TestBusySessionsDeleteAQuietRootOnlyAfterItMoves(t *testing.T) {
 		job := h.seed("a", 1, cleanup.PhaseClaimed)
 		h.deleter.put("a", &payload{entries: 1000})
 		h.busy = cleanup.BusyDeletes{Rate: 100, Workers: 1, Quiet: []string{job.Original}, Move: []string{job.Original}, MoveEvery: time.Minute}
+		h.relocator.script("admit:a", func(j *cleanup.Job) { j.Moved = true })
 		h.start()
 		h.expectEvents("activity", "sample", "admit:a", "open:a", "step:a")
 	})
