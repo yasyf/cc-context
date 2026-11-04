@@ -63,6 +63,10 @@ func cleanupBusy(ctx context.Context) (cleanup.BusyDeletes, error) {
 	if err != nil {
 		return cleanup.BusyDeletes{}, err
 	}
+	workers, err := cleanupGlobalConfig(ctx, cleanupBusyWorkersKey)
+	if err != nil {
+		return cleanup.BusyDeletes{}, err
+	}
 	quiet, err := cleanupGlobalConfig(ctx, cleanupQuietRootKey)
 	if err != nil {
 		return cleanup.BusyDeletes{}, err
@@ -75,7 +79,7 @@ func cleanupBusy(ctx context.Context) (cleanup.BusyDeletes, error) {
 	if err != nil {
 		return cleanup.BusyDeletes{}, err
 	}
-	return parseCleanupBusyDeletes(rate, quiet, move, every)
+	return parseCleanupBusyDeletes(rate, workers, quiet, move, every)
 }
 
 func cleanupGlobalConfig(ctx context.Context, key string) (string, error) {

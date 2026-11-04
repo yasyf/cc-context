@@ -413,7 +413,7 @@ git config --global --add ccx.cleanupQuietRoot /absolute/root
 
 Trees outside those directories then delete one removal at a time at up to that
 many entries a second while sessions are busy, and take their proofs at the
-usual share. Creates over 3ms still stop them, until a sample reads under 3ms
+usual share. `ccx.cleanupBusyWorkers` raises the number of removals at a time. Creates over 3ms still stop them, until a sample reads under 3ms
 again. No rate is set by default, so every removal waits for quiet sessions, and
 a malformed value stops the daemon from starting.
 

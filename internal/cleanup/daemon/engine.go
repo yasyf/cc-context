@@ -1213,7 +1213,7 @@ func (e *Engine) slice(ctx context.Context, job cleanup.Job) error {
 	}
 	rate, workers := e.gov.rate(), e.gov.workers()
 	if e.holds() {
-		rate, workers = min(rate, e.busy.Rate), 1
+		rate, workers = min(rate, e.busy.Rate), min(workers, e.busy.Workers)
 	}
 	if capped, ok := cleanup.CappedRate(e.caps, filepath.Join(e.active.root.Dir, e.active.root.Name)); ok && capped < rate {
 		rate, workers = capped, 1

@@ -41,21 +41,23 @@ func TestParseCleanupRateCaps(t *testing.T) {
 
 func TestParseCleanupBusyDeletes(t *testing.T) {
 	tests := []struct {
-		name        string
-		rate, quiet string
-		want        cleanup.BusyDeletes
-		wantErr     bool
+		name                 string
+		rate, workers, quiet string
+		want                 cleanup.BusyDeletes
+		wantErr              bool
 	}{
-		{name: "unset", want: cleanup.BusyDeletes{MoveEvery: cleanupMoveEveryDefault}},
-		{name: "rate and cleaned roots", rate: "500\n", quiet: "/a/b/\n/c\n", want: cleanup.BusyDeletes{Rate: 500, Quiet: []string{"/a/b", "/c"}, MoveEvery: cleanupMoveEveryDefault}},
+		{name: "unset", want: cleanup.BusyDeletes{Workers: 1, MoveEvery: cleanupMoveEveryDefault}},
+		{name: "rate and cleaned roots", rate: "500\n", quiet: "/a/b/\n/c\n", want: cleanup.BusyDeletes{Rate: 500, Workers: 1, Quiet: []string{"/a/b", "/c"}, MoveEvery: cleanupMoveEveryDefault}},
+		{name: "workers", rate: "500", workers: "4\n", want: cleanup.BusyDeletes{Rate: 500, Workers: 4, MoveEvery: cleanupMoveEveryDefault}},
+		{name: "zero workers", workers: "0", wantErr: true},
 		{name: "zero rate", rate: "0", wantErr: true},
 		{name: "not a number", rate: "fast", wantErr: true},
 		{name: "relative root", rate: "500", quiet: "a/b", wantErr: true},
-		{name: "a root holding a space", rate: "500", quiet: "/Volumes/Quiet Disk\n", want: cleanup.BusyDeletes{Rate: 500, Quiet: []string{"/Volumes/Quiet Disk"}, MoveEvery: cleanupMoveEveryDefault}},
+		{name: "a root holding a space", rate: "500", quiet: "/Volumes/Quiet Disk\n", want: cleanup.BusyDeletes{Rate: 500, Workers: 1, Quiet: []string{"/Volumes/Quiet Disk"}, MoveEvery: cleanupMoveEveryDefault}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := parseCleanupBusyDeletes(tt.rate, tt.quiet, "", "")
+			got, err := parseCleanupBusyDeletes(tt.rate, tt.workers, tt.quiet, "", "")
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("parseCleanupBusyDeletes(%q, %q) error = %v, wantErr %t", tt.rate, tt.quiet, err, tt.wantErr)
 			}
@@ -75,7 +77,7 @@ func TestCleanupRootsResolveSymlinks(t *testing.T) {
 	if err := os.Symlink(target, link); err != nil {
 		t.Fatal(err)
 	}
-	busy, err := parseCleanupBusyDeletes("500", link, link, "1m")
+	busy, err := parseCleanupBusyDeletes("500", "", link, link, "1m")
 	if err != nil {
 		t.Fatal(err)
 	}
