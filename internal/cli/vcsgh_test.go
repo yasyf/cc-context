@@ -211,6 +211,168 @@ func TestRunVcsGhRefusesAMerge(t *testing.T) {
 	}
 }
 
+func TestGhCacheable(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		argv  []string
+		scope string
+		want  bool
+	}{
+		{name: "names its repo", argv: []string{"pr", "view", "1"}, scope: "o/r", want: true},
+		{name: "reads the checkout", argv: []string{"pr", "view"}},
+		{name: "endpoint", argv: []string{"api", "user"}, want: true},
+		{name: "placeholder", argv: []string{"api", "repos/{owner}/{repo}/pulls"}},
+		{name: "rate limit", argv: []string{"api", "rate_limit"}},
+		{name: "watch", argv: []string{"run", "watch", "1"}, scope: "o/r"},
+		{name: "web", argv: []string{"pr", "view", "1", "--web"}, scope: "o/r"},
+		{name: "log", argv: []string{"run", "view", "1", "--log"}, scope: "o/r"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := ghCacheable(tt.argv, tt.scope); got != tt.want {
+				t.Errorf("ghCacheable(%q, %q) = %v, want %v", tt.argv, tt.scope, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestGhGraphQLRepo(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		argv []string
+		want string
+	}{
+		{argv: []string{"api", "graphql", "-f", "query=query($owner: String!, $name: String!) { x }", "-F", "owner=o", "-F", "name=r"}, want: "o/r"},
+		{argv: []string{"api", "graphql", "-f", "query={ repository(owner: \"o\", name: \"r\") { name } }"}, want: "o/r"},
+		{argv: []string{"api", "graphql", "-F", "owner={owner}", "-F", "name={repo}", "-f", "query=x"}},
+		{argv: []string{"api", "repos/o/r"}},
+		{argv: []string{"pr", "view"}},
+	}
+	for _, tt := range tests {
+		if got := ghGraphQLRepo(tt.argv); got != tt.want {
+			t.Errorf("ghGraphQLRepo(%q) = %q, want %q", tt.argv, got, tt.want)
+		}
+	}
+}
+
+func TestGhAppRefused(t *testing.T) {
+	t.Parallel()
+	for stderr, want := range map[string]bool{
+		"failed to get secrets: HTTP 403: Resource not accessible by integration": true,
+		"GraphQL: Could not resolve to a User with the login of 'x[bot]'. (user)": true,
+		"HTTP 403: API rate limit exceeded for installation":                      false,
+		"HTTP 404: Not Found": false,
+	} {
+		if got := ghAppRefused([]byte(stderr)); got != want {
+			t.Errorf("ghAppRefused(%q) = %v, want %v", stderr, got, want)
+		}
+	}
+}
+
+// ghGatewayFixture isolates runVcsGh's cache under a temp home, with a gh stub
+// that prints how many times it has run.
+func ghGatewayFixture(t *testing.T) (*cobra.Command, *bytes.Buffer) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, "cache"))
+	t.Setenv("HOME", home)
+	shims := t.TempDir()
+	count := filepath.Join(home, "runs")
+	execstub.Write(t, filepath.Join(shims, "gh"), `#!/bin/sh
+echo run >> "`+count+`"
+wc -l < "`+count+`" | tr -d ' '
+`)
+	t.Setenv("PATH", shims+string(os.PathListSeparator)+os.Getenv("PATH"))
+	prior := reviewsAPI
+	reviewsAPI = func() *ghapi.Client { return ghapi.New("http://127.0.0.1:1") }
+	t.Cleanup(func() { reviewsAPI = prior })
+	ctx := render.WithEnv(workspace.WithRoot(t.Context(), t.TempDir()),
+		"HOME="+home,
+		"XDG_CONFIG_HOME="+filepath.Join(home, "config"),
+		"CLAUDE_PLUGIN_DATA="+filepath.Join(home, "data"),
+		"GH_TOKEN=", "GITHUB_TOKEN=", "GH_REPO=",
+	)
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetContext(ctx)
+	cmd.SetOut(&out)
+	return cmd, &out
+}
+
+func TestRunVcsGhWriteExpiresItsRepositorysCachedReads(t *testing.T) {
+	cmd, out := ghGatewayFixture(t)
+	read := []string{"pr", "view", "1", "--repo", "o/r"}
+	other := []string{"pr", "view", "1", "--repo", "o/other"}
+	run := func(argv []string) string {
+		t.Helper()
+		out.Reset()
+		if err := runVcsGh(cmd, argv, time.Minute); err != nil {
+			t.Fatalf("runVcsGh(%q) = %v", argv, err)
+		}
+		return out.String()
+	}
+	first := run(read)
+	otherFirst := run(other)
+	if got := run(read); got != first {
+		t.Fatalf("second read = %q, want the cached %q", got, first)
+	}
+	run([]string{"pr", "close", "1", "--repo", "o/r"})
+	if got := run(read); got == first {
+		t.Errorf("read after a write = %q, want a fresh answer", got)
+	}
+	if got := run(other); got != otherFirst {
+		t.Errorf("read of another repo = %q, want its cached %q", got, otherFirst)
+	}
+}
+
+func TestRunVcsGhRunsAGuardedCommandWhenTheShimAsks(t *testing.T) {
+	cmd, out := ghGatewayFixture(t)
+	t.Setenv(ghRunGuardedEnv, "1")
+	if err := runVcsGh(cmd, []string{"pr", "merge", "1", "--repo", "o/r"}, time.Minute); err != nil {
+		t.Fatalf("runVcsGh(pr merge) = %v, want it run", err)
+	}
+	if out.String() == "" {
+		t.Error("gh did not run")
+	}
+}
+
+func TestRunVcsGhRunsTheGhThatCCXGhNames(t *testing.T) {
+	cmd, out := ghGatewayFixture(t)
+	named := filepath.Join(t.TempDir(), "real-gh")
+	execstub.Write(t, named, "#!/bin/sh\necho real\n")
+	t.Setenv("CCX_GH", named)
+	if err := runVcsGh(cmd, []string{"pr", "close", "1", "--repo", "o/r"}, 0); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String(); got != "real\n" {
+		t.Errorf("gh printed %q, want the named gh", got)
+	}
+}
+
+func TestGhSweepShardRemovesOnlyOldAnswers(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	old, fresh := filepath.Join(dir, "old.json"), filepath.Join(dir, "fresh.json")
+	for _, path := range []string{old, fresh} {
+		if err := os.WriteFile(path, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	past := time.Now().Add(-2 * ghCacheRetention)
+	if err := os.Chtimes(old, past, past); err != nil {
+		t.Fatal(err)
+	}
+	ghSweepShard(dir, time.Now().Add(-ghCacheRetention))
+	if _, err := os.Stat(old); !os.IsNotExist(err) {
+		t.Errorf("old answer survived: %v", err)
+	}
+	if _, err := os.Stat(fresh); err != nil {
+		t.Errorf("fresh answer gone: %v", err)
+	}
+}
+
 func TestRunVcsGhRunsAWriteOnTheUserToken(t *testing.T) {
 	home := t.TempDir()
 	app := filepath.Join(home, "config", "ccx", "github-app.toml")
@@ -306,8 +468,17 @@ func TestGhReadsOutsideInstallation(t *testing.T) {
 		{name: "repo", argv: []string{"api", "repos/o/r/pulls/1"}},
 		{name: "repo placeholder", argv: []string{"api", "repos/{owner}/{repo}/pulls"}},
 		{name: "rate limit", argv: []string{"api", "rate_limit"}},
-		{name: "graphql", argv: []string{"api", "graphql", "-f", "query={ viewer { login } }"}},
+		{name: "graphql viewer", argv: []string{"api", "graphql", "-f", "query={ viewer { login } }"}, want: true},
+		{name: "graphql", argv: []string{"api", "graphql", "-f", "query={ repository(owner: \"o\", name: \"r\") { name } }"}},
 		{name: "pr list", argv: []string{"pr", "list", "--author", "@me"}},
+		{name: "pr status", argv: []string{"pr", "status"}, want: true},
+		{name: "viewer field", argv: []string{"repo", "view", "--json", "viewerPermission"}, want: true},
+		{name: "repo view", argv: []string{"repo", "view", "--json", "name"}},
+		{name: "repo list", argv: []string{"repo", "list", "o"}, want: true},
+		{name: "secret list", argv: []string{"secret", "list"}, want: true},
+		{name: "gist list", argv: []string{"gist", "list"}, want: true},
+		{name: "search", argv: []string{"search", "prs", "x"}, want: true},
+		{name: "search a repo", argv: []string{"search", "prs", "x", "--repo", "o/r"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

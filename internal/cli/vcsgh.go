@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/yasyf/cc-context/internal/ghapi"
+	"github.com/yasyf/cc-context/internal/lookpath"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcs"
 )
@@ -62,15 +63,31 @@ that reset.
 --max-age serves an identical read (same repository, arguments, and stdin)
 from the machine-wide cache while its stored answer is younger than DUR. Only
 a read that exited 0 is stored, nothing expires a stored answer but a later
-read, and a watch is never cached.
+read, a later write to its repository, or a day's age, and a watch is never
+cached. A read is cached only when its answer cannot depend on the checkout: it
+names its repository, or it is a gh api call with no {owner}, {repo}, or {branch}
+placeholder. --web, --log, --log-failed, gh api rate_limit, and an answer over
+1 MiB are never cached.
+
+A command that reads as a person rather than a repository runs on the user's
+token: gh's status commands, gh repo list, gh search with no --repo, anything
+naming a viewer field, and any command outside pr, issue, run, workflow, release,
+label, cache, ruleset, repo view, and search. So does a read with its stdout on
+a terminal, unless it watches. A read the app token is refused runs again on the
+user's. gh auth, config, alias, extension, completion, help, and --help send no
+request ccx charges.
 
 Anything else, such as gh pr close or a gh api write, runs on the user's
-token as plain gh would, charged to its pool but never refused or cached. A
+token as plain gh would, charged to its pool but never refused or cached. It
+expires the cached reads of the repository it names, else of the checkout's,
+and of every repository when it is a GraphQL mutation naming none. A
 merge (gh pr merge, a write to repos/OWNER/REPO/pulls/N/merge or /merges, or a
 GraphQL mergePullRequest, enablePullRequestAutoMerge, enqueuePullRequest, or
 mergeBranch), and a write to a ruleset or
 branch protection, is refused before it runs: those stay on plain gh, where
-the merge hooks gate them.
+the merge hooks gate them. CCX_GH_RUN_GUARDED=1 runs them instead, for a local
+shim that puts this gateway behind the name gh, so the hooks still read
+gh pr merge on the command line. CCX_GH names the real gh for such a machine.
 Every argument from the gh command on passes to gh untouched, so a gh flag
 such as --allow-escape-sequences needs no -- before it.
 Standard streams pass through, and ccx exits with gh's code. A read that fails
@@ -101,28 +118,33 @@ func runVcsGh(cmd *cobra.Command, argv []string, maxAge time.Duration) error {
 		return err
 	}
 	reads := ghReads(argv, stdin)
-	if !reads && ghGuarded(argv, stdin) {
+	if !reads && ghGuarded(argv, stdin) && os.Getenv(ghRunGuardedEnv) == "" {
 		return fmt.Errorf("vcs gh: merge with gh pr merge; the merge hooks gate that form: %s", ghCommand(argv))
 	}
 	dir := workingDir(ctx)
-	resource := ghResource(argv)
-	if !reads {
-		if err := reviewsAPI().Charge(ctx, ghapi.IdentityUser, resource); err != nil {
-			return err
-		}
+	if ghNoRequest(argv) {
 		return ghExit(ghRun(ctx, cmd, dir, argv, nil, stdin, cmd.OutOrStdout(), cmd.ErrOrStderr()))
 	}
-	repo := ghTargetRepo(ctx, argv)
-	userToken := ghReadsOutsideInstallation(argv)
-	cacheable := maxAge > 0 && !ghWatches(argv) && !ghReadsFiles(argv)
-	key := ghCacheKey(cmp.Or(repo, dir), argv, stdin)
+	resource := ghResource(argv)
+	if !reads {
+		ghNoteLedgerError(cmd, reviewsAPI().Charge(ctx, ghapi.IdentityUser, resource))
+		err := ghRun(ctx, cmd, dir, argv, nil, stdin, cmd.OutOrStdout(), cmd.ErrOrStderr())
+		ghInvalidate(ghWrittenRepo(ctx, argv, func() string { return ghCheckoutRepo(ctx, dir) }))
+		return ghExit(err)
+	}
+	scope := cmp.Or(ghTargetRepo(ctx, argv), ghGraphQLRepo(argv))
+	watches := ghWatches(argv)
+	interactive := !watches && ghTerminal(cmd.OutOrStdout())
+	userToken := interactive || ghReadsOutsideInstallation(argv)
+	cacheable := maxAge > 0 && !interactive && ghCacheable(argv, scope)
+	key := ghCacheKey(cmp.Or(scope, dir), argv, stdin)
 	if cacheable {
-		if hit, ok := ghCached(key); ok && time.Since(hit.At) < maxAge {
+		if hit, ok := ghCached(key); ok && time.Since(hit.At) < maxAge && hit.At.After(ghInvalidatedAt(ctx, scope, dir)) {
 			_, err := cmd.OutOrStdout().Write(hit.Stdout)
 			return err
 		}
 	}
-	capture := cacheable || resource == ghapi.ResourceGraphQL && argv[0] == "api"
+	capture := !watches && !interactive
 	args := argv
 	spilled := false
 	for {
@@ -130,10 +152,10 @@ func runVcsGh(cmd *cobra.Command, argv []string, maxAge time.Duration) error {
 		var expires time.Time
 		var err error
 		if !userToken {
-			env, expires, err = ghRepoReadEnv(ctx, render.Dir(dir), repo, ghapi.AppWatchMargin)
+			env, expires, err = ghRepoReadEnv(ctx, render.Dir(dir), scope, ghapi.AppWatchMargin)
 		}
 		if err != nil && !errors.Is(err, vcs.ErrNoGitHub) {
-			return err
+			ghNoteLedgerError(cmd, err)
 		}
 		if len(env) > 0 && slices.ContainsFunc(argv, ghMe.MatchString) {
 			if args, err = ghResolveMe(ctx, render.Dir(dir), argv); err != nil {
@@ -142,7 +164,7 @@ func runVcsGh(cmd *cobra.Command, argv []string, maxAge time.Duration) error {
 		}
 		api, identity := reviewsAPI().AsUser(), ghapi.IdentityUser
 		if len(env) > 0 {
-			api, identity = reviewsAPI().ForRepo(cmp.Or(repo, ghCheckoutRepo(ctx, dir))), ghapi.IdentityApp
+			api, identity = reviewsAPI().ForRepo(cmp.Or(scope, ghCheckoutRepo(ctx, dir))), ghapi.IdentityApp
 		}
 		admit := api.Admit(ctx, identity, resource)
 		if spilled && admit == nil {
@@ -158,11 +180,13 @@ func runVcsGh(cmd *cobra.Command, argv []string, maxAge time.Duration) error {
 				userToken, spilled = true, true
 				continue
 			}
-			return ghFloor(cmd, err)
+			if errors.As(err, new(*ghapi.FloorError)) {
+				return ghFloor(cmd, err)
+			}
+			ghNoteLedgerError(cmd, err)
 		}
-		if err := api.Charge(ctx, identity, resource); err != nil {
-			return err
-		}
+		ghNoteLedgerError(cmd, api.Charge(ctx, identity, resource))
+		started := time.Now()
 		if !capture {
 			err = ghRun(ctx, cmd, dir, args, env, stdin, cmd.OutOrStdout(), cmd.ErrOrStderr())
 		} else {
@@ -180,14 +204,12 @@ func runVcsGh(cmd *cobra.Command, argv []string, maxAge time.Duration) error {
 			if err != nil && tries > 1 {
 				_, _ = fmt.Fprintf(&stderr, "ccx: gh failed after %d tries\n", tries)
 			}
-			if err != nil && identity == ghapi.IdentityApp && ghForbidden(stdout.Bytes()) {
+			if err != nil && identity == ghapi.IdentityApp && (ghForbidden(stdout.Bytes()) || ghAppRefused(stderr.Bytes())) {
 				userToken = true
 				continue
 			}
-			if err == nil && cacheable {
-				if err := ghStore(key, stdout.Bytes()); err != nil {
-					return err
-				}
+			if err == nil && cacheable && stdout.Len() <= ghCacheMaxAnswer {
+				ghNoteLedgerError(cmd, ghStore(key, stdout.Bytes(), started))
 			}
 			_, _ = cmd.ErrOrStderr().Write(stderr.Bytes())
 			if _, werr := cmd.OutOrStdout().Write(stdout.Bytes()); werr != nil {
@@ -200,10 +222,13 @@ func runVcsGh(cmd *cobra.Command, argv []string, maxAge time.Duration) error {
 	}
 }
 
+const ghRunGuardedEnv = "CCX_GH_RUN_GUARDED"
+
 func ghRun(ctx context.Context, cmd *cobra.Command, dir string, args, env []string, stdin []byte, stdout, stderr io.Writer) error {
-	gh := exec.CommandContext(ctx, "gh", args...) //nolint:gosec // args is the caller's own gh command
+	childEnv := slices.Concat(os.Environ(), render.EnvFrom(ctx), env)
+	gh := exec.CommandContext(ctx, lookpath.For(childEnv).Bin("gh"), args...) //nolint:gosec // args is the caller's own gh command
 	gh.Dir = dir
-	gh.Env = slices.Concat(os.Environ(), render.EnvFrom(ctx), env)
+	gh.Env = childEnv
 	gh.Stdin, gh.Stdout, gh.Stderr = cmd.InOrStdin(), stdout, stderr
 	if stdin != nil {
 		gh.Stdin = bytes.NewReader(stdin)
@@ -226,6 +251,29 @@ func ghFloor(cmd *cobra.Command, err error) error {
 	}
 	_, _ = fmt.Fprintln(cmd.ErrOrStderr(), ghFloorPrefix+floor.Error())
 	return &ExitError{Code: 1}
+}
+
+// ghNoteLedgerError says on stderr that the quota ledger failed: a broken ledger
+// costs a count, never the gh command it was counting.
+func ghNoteLedgerError(cmd *cobra.Command, err error) {
+	if err != nil {
+		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "ccx: %v\n", err)
+	}
+}
+
+func ghTerminal(w io.Writer) bool {
+	file, ok := w.(*os.File)
+	if !ok {
+		return false
+	}
+	info, err := file.Stat()
+	return err == nil && info.Mode()&os.ModeCharDevice != 0
+}
+
+var ghAppRefusal = regexp.MustCompile(`(?i)not accessible by integration|could not resolve to a (user|repository)|HTTP 403`)
+
+func ghAppRefused(stderr []byte) bool {
+	return ghAppRefusal.Match(stderr) && !bytes.Contains(bytes.ToLower(stderr), []byte("rate limit"))
 }
 
 func ghCheckoutRepo(ctx context.Context, dir string) string {
@@ -263,6 +311,28 @@ func ghGuarded(argv []string, stdin []byte) bool {
 	return !ok || ghGuardedMutation.MatchString(query)
 }
 
+func ghCacheable(argv []string, scope string) bool {
+	if ghWatches(argv) || ghReadsFiles(argv) || slices.ContainsFunc(argv, ghUncachedFlag) {
+		return false
+	}
+	if scope != "" {
+		return true
+	}
+	if argv[0] != "api" || slices.ContainsFunc(argv, ghCheckoutPlaceholder) {
+		return false
+	}
+	_, endpoint := ghAPIRequest(argv[1:])
+	return strings.TrimPrefix(endpoint, "/") != "rate_limit"
+}
+
+func ghUncachedFlag(arg string) bool {
+	return arg == "--web" || arg == "-w" || arg == "--log" || arg == "--log-failed"
+}
+
+func ghCheckoutPlaceholder(arg string) bool {
+	return strings.Contains(arg, "{owner}") || strings.Contains(arg, "{repo}") || strings.Contains(arg, "{branch}")
+}
+
 func ghReadsFiles(argv []string) bool {
 	for i, arg := range argv {
 		switch {
@@ -298,6 +368,7 @@ func ghResource(argv []string) string {
 }
 
 func chargeGHChild(ctx context.Context, bin string, argv, env []string) error {
+	ghExpireForChild(ctx, bin, argv)
 	resource, ok := ghUserPool(bin, argv, env)
 	if !ok {
 		return nil
@@ -305,15 +376,32 @@ func chargeGHChild(ctx context.Context, bin string, argv, env []string) error {
 	return reviewsAPI().Charge(ctx, ghapi.IdentityUser, resource)
 }
 
+// ghExpireForChild expires the cached reads a child's gh write or git push is
+// about to change. It runs before the child, so a read that starts during the
+// write can still store the old answer for its max age.
+func ghExpireForChild(ctx context.Context, bin string, argv []string) {
+	checkout := func() string { return vcs.CachedRepoName(ctx, render.Dir(workingDir(ctx))) }
+	switch {
+	case bin == "gh" && len(argv) > 0 && !ghNoRequest(argv) && !ghReads(argv, nil):
+		ghInvalidate(ghWrittenRepo(ctx, argv, checkout))
+	case bin == "git" && len(argv) > 0 && argv[0] == "push":
+		ghInvalidate(cmp.Or(checkout(), ghEveryRepo))
+	}
+}
+
 func ghUserPool(bin string, argv, env []string) (string, bool) {
 	appToken := slices.ContainsFunc(env, func(kv string) bool { return strings.HasPrefix(kv, "GH_TOKEN=") })
-	if bin != "gh" || ghOffline[argv[0]] || appToken {
+	if bin != "gh" || ghNoRequest(argv) || appToken {
 		return "", false
 	}
 	return ghResource(argv), true
 }
 
-var ghOffline = map[string]bool{"auth": true, "config": true}
+var ghOffline = map[string]bool{"auth": true, "config": true, "alias": true, "extension": true, "completion": true, "help": true, "version": true}
+
+func ghNoRequest(argv []string) bool {
+	return ghOffline[argv[0]] || strings.HasPrefix(argv[0], "-") || slices.Contains(argv, "--help")
+}
 
 func ghStdin(cmd *cobra.Command, argv []string) ([]byte, error) {
 	if !slices.ContainsFunc(argv, func(arg string) bool { return arg == "-" || arg == "--input=-" || strings.HasSuffix(arg, "=@-") }) {
@@ -344,12 +432,28 @@ func ghResolveMe(ctx context.Context, dir render.Dir, argv []string) ([]string, 
 	return resolved, nil
 }
 
-// ghReadsOutsideInstallation reports whether argv is a gh api read of an
-// endpoint the app's installation token does not reach: anything but a
-// repository's repos/... endpoint, graphql, or the installation's own rate_limit.
+// ghAppCommands are the gh commands whose list, view, checks, diff, and watch
+// answer the same on the app's installation token as on the user's.
+var ghAppCommands = map[string]bool{"pr": true, "issue": true, "run": true, "workflow": true, "release": true, "label": true, "cache": true, "ruleset": true}
+
+// ghReadsOutsideInstallation reports whether argv is a read the app's
+// installation token cannot answer, or would answer for itself rather than the
+// user: a viewer field, gh's status commands, a command outside ghAppCommands,
+// gh repo list, a gh search with no --repo, or a gh api endpoint other than a
+// repository's repos/..., graphql, or the installation's own rate_limit.
 func ghReadsOutsideInstallation(argv []string) bool {
+	if slices.ContainsFunc(argv, func(arg string) bool { return strings.Contains(strings.ToLower(arg), "viewer") }) {
+		return true
+	}
 	if argv[0] != "api" {
-		return false
+		switch argv[0] {
+		case "repo":
+			return argv[1] != "view"
+		case "search":
+			return ghRepoFlag(argv) == ""
+		default:
+			return !ghAppCommands[argv[0]] || argv[1] == "status"
+		}
 	}
 	_, endpoint := ghAPIRequest(argv[1:])
 	u, err := url.Parse(endpoint)
@@ -361,18 +465,34 @@ func ghReadsOutsideInstallation(argv []string) bool {
 }
 
 // ghTargetRepo returns the repository argv's gh command reads: the one --repo
-// or -R names, else a gh api endpoint's repos/OWNER/REPO, else GH_REPO's, ""
-// when none names one.
+// or -R names, else a gh api endpoint's repos/OWNER/REPO, else a github.com URL's,
+// else GH_REPO's, "" when none names one.
 func ghTargetRepo(ctx context.Context, argv []string) string {
 	repo := ghRepoFlag(argv)
 	if repo == "" && argv[0] == "api" {
 		_, endpoint := ghAPIRequest(argv[1:])
 		repo = ghEndpointRepo(endpoint)
 	}
+	if repo == "" && argv[0] != "api" {
+		repo = ghURLRepo(argv)
+	}
 	if repo == "" {
 		repo = ghRepoName(render.Getenv(ctx, "GH_REPO"))
 	}
 	return repo
+}
+
+var ghGitHubURL = regexp.MustCompile(`^https://github\.com/([^/]+)/([^/#?]+)`)
+
+// ghURLRepo returns the OWNER/REPO of the github.com URL a gh command names as a
+// target, "" when it names none.
+func ghURLRepo(argv []string) string {
+	for _, arg := range argv {
+		if m := ghGitHubURL.FindStringSubmatch(arg); m != nil {
+			return m[1] + "/" + m[2]
+		}
+	}
+	return ""
 }
 
 // ghEndpointRepo returns OWNER/REPO for a gh api endpoint under

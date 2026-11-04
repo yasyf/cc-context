@@ -131,6 +131,20 @@ func LookupRepo(ctx context.Context, root render.Dir, refresh bool) (Repo, error
 	return repo, nil
 }
 
+// CachedRepoName returns root's OWNER/REPO from LookupRepo's record, "" when
+// none is stored. It never asks GitHub.
+func CachedRepoName(ctx context.Context, root render.Dir) string {
+	path, err := RepoCachePath(ctx, string(root))
+	if err != nil {
+		return ""
+	}
+	repo, ok := readRepo(path)
+	if !ok {
+		return ""
+	}
+	return repo.NameWithOwner
+}
+
 // RepoCachePath resolves the cached-record path for the GitHub metadata of the
 // repository root belongs to. Linked worktrees share a record when their
 // repository routing context matches. It is exported so tests can seed or
