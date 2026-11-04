@@ -72,7 +72,9 @@ placeholder. --web, --log, --log-failed, gh api rate_limit, and an answer over
 A command that reads as a person rather than a repository runs on the user's
 token: gh's status commands, gh repo list, gh search with no --repo, anything
 naming a viewer field, and any command outside pr, issue, run, workflow, release,
-label, cache, ruleset, repo view, and search. So does a read with its stdout on
+label, cache, ruleset, repo view, and search. So does gh pr, issue, or repo view
+with no --json, since the app's token reads a requested team reviewer's name as
+empty. So does a read with its stdout on
 a terminal, unless it watches. A read the app token is refused runs again on the
 user's. gh auth, config, alias, extension, completion, help, and --help send no
 request ccx charges. A child ccx spawns carries CCX_CHILD=1, so a shim can pass
@@ -460,11 +462,21 @@ func ghResolveMe(ctx context.Context, dir render.Dir, argv []string) ([]string, 
 	return resolved, nil
 }
 
-// ghNamesViewerField reports whether arg asks for a gh field that expands to a
-// viewer field: each comment's viewerDidAuthor, each reaction's viewerHasReacted.
+// ghNamesViewerField reports whether arg asks for a gh field the app's token
+// answers differently: each comment's viewerDidAuthor, each reaction's
+// viewerHasReacted, and a requested team reviewer's name, which it reads as empty.
 func ghNamesViewerField(arg string) bool {
 	lower := strings.ToLower(arg)
-	return strings.Contains(lower, "comments") || strings.Contains(lower, "reactiongroups")
+	return strings.Contains(lower, "comments") || strings.Contains(lower, "reactiongroups") || strings.Contains(lower, "reviewrequests")
+}
+
+// ghHumanView reports whether argv is gh pr, issue, or repo view's printed form,
+// which asks for those fields without naming them. --json names its own.
+func ghHumanView(argv []string) bool {
+	if argv[1] != "view" || argv[0] != "pr" && argv[0] != "issue" && argv[0] != "repo" {
+		return false
+	}
+	return !slices.ContainsFunc(argv, func(arg string) bool { return arg == "--json" || strings.HasPrefix(arg, "--json=") })
 }
 
 // ghAppCommands are the gh commands whose list, view, checks, diff, and watch
@@ -483,11 +495,11 @@ func ghReadsOutsideInstallation(argv []string) bool {
 	if argv[0] != "api" {
 		switch argv[0] {
 		case "repo":
-			return argv[1] != "view"
+			return argv[1] != "view" || ghHumanView(argv)
 		case "search":
 			return ghRepoFlag(argv) == ""
 		default:
-			return !ghAppCommands[argv[0]] || argv[1] == "status" || slices.ContainsFunc(argv, ghNamesViewerField)
+			return !ghAppCommands[argv[0]] || argv[1] == "status" || ghHumanView(argv) || slices.ContainsFunc(argv, ghNamesViewerField)
 		}
 	}
 	_, endpoint := ghAPIRequest(argv[1:])
