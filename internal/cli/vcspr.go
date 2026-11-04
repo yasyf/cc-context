@@ -211,7 +211,9 @@ When Graphite does not answer the poll, the queue reads unknown and the verdict
 adds queue-unknown, so the pull request is never landable. The cache never
 serves that unknown past the poll interval, whatever --max-age allows: a read
 that comes later polls again. A pull request GitHub
-itself shows merged still reads landed.
+itself shows merged still reads landed, and so does an open one whose own squash
+(#N) is on the base branch with every change its head makes, which Trunk leaves
+open when it reports an error after merging.
 
 The answer comes from Graphite's own record of the pull request, the one gt
 reads, and its mergeability status, so a pull request enqueued from the
@@ -412,6 +414,11 @@ func collectPRQueue(ctx context.Context, repo string, numbers []int, maxAge time
 func prStatusOf(ctx context.Context, warn io.Writer, repo string, number int, pr prstate.PR, limited *prstate.Backoff) (prStatusReport, error) {
 	if pr.Graphite == nil && pr.State != "" {
 		r := prQueueWithoutGraphite(pr)
+		if r.Queue == prQueueNotQueued && pr.State == string(gtapi.PROpen) {
+			if squash := prLeftOpenSquash(ctx, render.Dir(workingDir(ctx)), pr.BaseRefName, number, pr.HeadRefOid); squash != "" {
+				r.Queue, r.Squash = prQueueLanded, squash
+			}
+		}
 		r.Stale = staleAt(limited, pr.PolledAt)
 		r.Source = pr.Source
 		return newPRStatusReport(ctx, warn, repo, r, pr, 0), nil
@@ -731,6 +738,9 @@ func renderPRQueue(reports []prStatusReport) string {
 		switch r.Queue {
 		case prQueueLanded:
 			fmt.Fprintf(&b, " · squash %s on %s", shortSHA(r.Squash), r.Base)
+			if r.State == string(gtapi.PROpen) {
+				b.WriteString(" · PR left open, close it")
+			}
 		case prQueueQueued:
 			if r.Mergeability == gtapi.MergeabilityFailureHandling {
 				b.WriteString(" (failure handling)")

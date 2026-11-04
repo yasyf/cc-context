@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ccx vcs pr status` reads an open pull request as landed when its own squash `(#N)` is on the base
+  branch and carries every change its head makes. Trunk can merge a pull request, report an error, and
+  leave it open; the status read it as not queued with CI red.
 - `ccx vcs ship` and `ccx vcs stack rebase`/`submit` refuse a lone fork off a native stack before anything moves, naming both pull requests
   and the next command, where it used to end in `native GitHub stack registration incomplete` after the push. The bottom of a fork stack
   no longer reads as incomplete.

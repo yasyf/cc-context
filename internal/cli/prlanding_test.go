@@ -6,6 +6,7 @@ import (
 	"maps"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -154,6 +155,47 @@ func TestPRSquashesOnBaseWalksOnlyTheCandidateWindow(t *testing.T) {
 			got := prSquashesOnBase(f.Context(), render.Dir(f.Dir), "main", tt.numbers)
 			if !maps.Equal(got, tt.want) {
 				t.Errorf("prSquashesOnBase(%v) = %v, want %v", tt.numbers, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPRLeftOpenSquash(t *testing.T) {
+	f := shipRepo(t, vcstest.Remote())
+	git := func(args ...string) string { return gitAt(t, f.Env(), f.Dir, args...) }
+	write := func(name string) {
+		if err := os.WriteFile(filepath.Join(f.Dir, name), []byte(name+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		git("add", name)
+	}
+	git("checkout", "-q", "-b", "pr")
+	write("a.txt")
+	git("commit", "-q", "-m", "feat")
+	landed := git("rev-parse", "HEAD")
+	write("b.txt")
+	git("commit", "-q", "-m", "more")
+	pushedAfter := git("rev-parse", "HEAD")
+	git("checkout", "-q", "main")
+	git("merge", "-q", "--squash", landed)
+	git("commit", "-q", "-m", "feat (#42)")
+	squash := git("rev-parse", "HEAD")
+	git("update-ref", "refs/remotes/origin/main", squash)
+
+	tests := []struct {
+		name   string
+		number int
+		head   string
+		want   string
+	}{
+		{"its own squash carries the head", 42, landed, squash},
+		{"another number's squash is not its own", 43, landed, ""},
+		{"a push after the squash is not landed", 42, pushedAfter, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := prLeftOpenSquash(f.Context(), render.Dir(f.Dir), "main", tt.number, tt.head); got != tt.want {
+				t.Errorf("prLeftOpenSquash(%d, %s) = %q, want %q", tt.number, tt.head[:7], got, tt.want)
 			}
 		})
 	}
