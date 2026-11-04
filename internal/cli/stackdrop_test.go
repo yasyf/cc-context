@@ -505,6 +505,89 @@ func TestStackDropRepairWalksTheOrderGitHubAllows(t *testing.T) {
 	}
 }
 
+// TestStackDropRepairMovesAPullRequestOutOfItsNativeStack is yasyf/cc-skills
+// #2539: its parent merged and its branch went, GitHub closed the child, and
+// the retarget that recovers it hit "Cannot change the base branch because the
+// pull request is part of a stack", because a stack outlives its merged members.
+func TestStackDropRepairMovesAPullRequestOutOfItsNativeStack(t *testing.T) {
+	f := dropNativeFixture(t, "mid", "top")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "top")
+	gh := installDropGH(t, f, map[string]dropSeed{
+		"low": {number: 1, state: "MERGED", base: "main"},
+		"mid": {number: 2, state: "CLOSED", base: "low"},
+		"top": {number: 3, state: "OPEN", base: "mid"},
+	})
+	gh.stack(46, 1, 2, 3)
+	gh.markDeleted("low")
+	shipResetLog(t, f)
+
+	if _, _, err := runStackCmd(t, f, "drop", "--repair"); err != nil {
+		t.Fatalf("stack drop --repair: %v", err)
+	}
+
+	invocations := shipGTInvocations(t, f)
+	reopened := dropStep(t, invocations, "gh", "api", "PATCH", "repos/yasyf/cc-context/pulls/2", "state=open")
+	unstacked := dropStep(t, invocations, "gh", "api", "POST", "repos/yasyf/cc-context/stacks/46/unstack")
+	retargeted := dropStep(t, invocations, "gh", "api", "PATCH", "repos/yasyf/cc-context/pulls/2", "base=main")
+	relinked := dropStep(t, invocations, "gh", "api", "POST", "repos/yasyf/cc-context/stacks", "pull_requests[]=2", "pull_requests[]=3")
+	redeleted := dropStep(t, invocations, "git", "push", "--delete", "low")
+	if reopened >= unstacked || unstacked >= retargeted || retargeted >= relinked || relinked >= redeleted {
+		t.Errorf("steps ran at reopen=%d unstack=%d retarget=%d relink=%d delete=%d, want that order", reopened, unstacked, retargeted, relinked, redeleted)
+	}
+	if got := gh.pr(2); got != "OPEN main" {
+		t.Errorf("mid's PR = %q, want %q", got, "OPEN main")
+	}
+	if got := gh.stacks(); got != "2 3" {
+		t.Errorf("native stacks = %q, want mid and top in one", got)
+	}
+	if gitBranchExists(t, f.Env(), f.RemoteDir, "low") {
+		t.Error("origin still carries the resurrected low")
+	}
+}
+
+func TestStackReopenBaseGoneMovesAPullRequestOutOfItsNativeStack(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		back bool
+	}{
+		{"its base deleted", false},
+		{"its base recreated", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := dropNativeFixture(t, "mid")
+			gh := installDropGH(t, f, map[string]dropSeed{
+				"low": {number: 1, state: "MERGED", base: "main"},
+				"mid": {number: 2, state: "CLOSED", base: "low"},
+			})
+			gh.stack(46, 1, 2)
+			if tc.back {
+				mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "main:refs/heads/low")
+			} else {
+				gh.markDeleted("low")
+			}
+			l, err := resolveLane(f.Context(), "stack submit", f.Dir, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			run := &stackRebaseRun{Branches: []stackRebaseBranch{{Name: "mid", Parent: "main", PR: &stackPR{Number: 2, State: "CLOSED", Base: "low", BaseGone: true, BaseBack: tc.back}}}}
+
+			reopened, err := stackReopenBaseGone(f.Context(), l, "yasyf/cc-context", "origin", run)
+			if err != nil {
+				t.Fatalf("reopen: %v", err)
+			}
+			if _, ok := reopened["mid"]; !ok {
+				t.Errorf("reopened = %v, want mid", reopened)
+			}
+			if got := gh.pr(2); got != "OPEN main" {
+				t.Errorf("mid's PR = %q, want %q", got, "OPEN main")
+			}
+			if got := gh.stacks(); got != "" {
+				t.Errorf("native stacks = %q, want the dead stack gone and no stack of one left", got)
+			}
+		})
+	}
+}
+
 // TestStackDropRepairRefusesBeforeDeletingTheRefBack pins the repair's own
 // read-back. The resurrected ref is the one thing holding the pull request
 // open, so deleting it while a retarget has not taken closes the pull request

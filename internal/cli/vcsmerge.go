@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -52,9 +53,11 @@ enqueued. --admin merges directly and bypasses the repository rules the caller
 may bypass.
 
 The command reads the repository's merge queue from a checkout of it, and
-refuses, with or without --admin, when that queue is Trunk or Graphite: those
-queues land a pull request themselves, and a merge from here would skip them.
-Run it from a checkout of the repository so it can tell.
+refuses when that queue is Trunk or Graphite, or when legacy Graphite branches
+leave the repository's queue mixed: those queues land a pull request themselves,
+and a merge from here would skip them. Run it from a checkout of the repository
+so it can tell. On a repository your own account owns, --admin merges past that
+queue, from any checkout; on any other repository --admin never does.
 
 The merge method is squash unless --merge or --rebase says otherwise. A merge
 still pending after ten minutes stops waiting; rerunning the command resumes
@@ -107,16 +110,12 @@ func runVcsMerge(cmd *cobra.Command, args []string, o vcsMergeOpts) error {
 		}
 		repo = looked.NameWithOwner
 	}
-	client := gtAPIForRepo(ctx, repo)
-	if err := client.ProviderError(); err != nil {
-		return fmt.Errorf("merge: %w", err)
-	}
-	if queue := client.QueueProvider(); queue == "trunk" || queue == "graphite" || queue == "mixed" {
-		return fmt.Errorf("merge: %s lands through the %s queue, which merges its pull requests itself; enqueue it there", repo, queue)
-	}
 	owner, name, ok := strings.Cut(repo, "/")
 	if !ok || owner == "" || name == "" {
 		return fmt.Errorf("merge: %q is not an owner/name repository", repo)
+	}
+	if err := vcsMergeQueueRefusal(ctx, repo, owner, o.admin); err != nil {
+		return err
 	}
 	req.RepoOwner, req.RepoName = owner, name
 	merged, err := mergeClient(ctx).MergePullRequest(ctx, req)
@@ -136,4 +135,25 @@ func runVcsMerge(cmd *cobra.Command, args []string, o vcsMergeOpts) error {
 		return fmt.Errorf("merge: %w", err)
 	}
 	return nil
+}
+
+func vcsMergeQueueRefusal(ctx context.Context, repo, owner string, admin bool) error {
+	client := gtAPIForRepo(ctx, repo)
+	var refusal error
+	if err := client.ProviderError(); err != nil {
+		refusal = fmt.Errorf("merge: %w", err)
+	} else if queue := client.QueueProvider(); queue == "trunk" || queue == "graphite" || queue == "mixed" {
+		refusal = fmt.Errorf("merge: %s lands through the %s queue, which merges its pull requests itself; enqueue it there, since --admin merges past a queue only on a repository your own account owns", repo, queue)
+	}
+	if refusal == nil || !admin {
+		return refusal
+	}
+	login, err := mergeClient(ctx).ViewerLogin(ctx)
+	if err != nil {
+		return errors.Join(refusal, fmt.Errorf("merge: read the signed-in account to tell whether %s is its own: %w", repo, err))
+	}
+	if strings.EqualFold(login, owner) {
+		return nil
+	}
+	return refusal
 }

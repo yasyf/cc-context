@@ -43,6 +43,21 @@ type asyncMerge struct {
 	} `json:"details"`
 }
 
+// ViewerLogin reads the login of the account the client's token signs in as.
+func (c *Client) ViewerLogin(ctx context.Context) (string, error) {
+	payload, err := c.get(ctx, "/user", nil)
+	if err != nil {
+		return "", err
+	}
+	var user struct {
+		Login string `json:"login"`
+	}
+	if err := json.Unmarshal(payload, &user); err != nil {
+		return "", fmt.Errorf("parse the signed-in account: %w", err)
+	}
+	return user.Login, nil
+}
+
 // MergePullRequest merges through GitHub's asynchronous merge API, the one a
 // native stacked pull request requires. A stacked pull request merges with
 // every open pull request below it, reported bottom-up; Admin merges directly,
