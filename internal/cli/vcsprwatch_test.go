@@ -608,3 +608,124 @@ func TestPRWatchRunResumingSettledPRsExitsWithoutPolling(t *testing.T) {
 		t.Fatalf("asked %v slept %v, want an immediate exit", poller.asked, slept)
 	}
 }
+
+func TestPRWatchRunJobExitsOnTheNamedCheckOfTheCurrentHead(t *testing.T) {
+	t.Parallel()
+	failing := prWatchSnapshot{State: "OPEN", Head: watchHeadA, Job: "FAILURE"}
+	running := prWatchSnapshot{State: "OPEN", Head: watchHeadB, Job: "IN_PROGRESS"}
+	passed := prWatchSnapshot{State: "OPEN", Head: watchHeadB, Job: "SUCCESS", Failing: []string{"other"}}
+	tests := []struct {
+		name    string
+		ticks   []prWatchSnapshot
+		want    string
+		wantErr string
+	}{
+		{
+			name:  "a pass on the head exits zero though another check is red",
+			ticks: []prWatchSnapshot{running, passed},
+			want:  "#7 red other\n#7 job lint success\n",
+		},
+		{
+			name:    "a failure exits nonzero",
+			ticks:   []prWatchSnapshot{failing},
+			want:    "#7 job lint failure\n",
+			wantErr: "pr watch: job lint: #7 failure",
+		},
+		{
+			name:  "a skip settles it",
+			ticks: []prWatchSnapshot{{State: "OPEN", Head: watchHeadA, Job: "SKIPPED"}},
+			want:  "#7 job lint skipped\n",
+		},
+		{
+			name:    "a pull request closing first ends the wait",
+			ticks:   []prWatchSnapshot{{State: "CLOSED", Head: watchHeadA}},
+			want:    "#7 closed-without-squash\n",
+			wantErr: "#7 closed before lint settled",
+		},
+		{
+			name:    "a finished rollup without the name ends the wait",
+			ticks:   []prWatchSnapshot{{State: "OPEN", Head: watchHeadA, Job: prWatchJobAbsent}},
+			want:    "#7 job lint absent\n",
+			wantErr: "#7 finished its checks without lint",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ticks := make([]prWatchTick, 0, len(tt.ticks))
+			for _, snap := range tt.ticks {
+				ticks = append(ticks, watchTick(map[int]prWatchSnapshot{7: snap}))
+			}
+			var out bytes.Buffer
+			var slept []time.Duration
+			run := newTestWatchRun(&scriptedPoller{ticks: ticks}, prWatchOpts{interval: time.Minute, until: prWatchUntilLanded, job: "lint"}, &out, &slept)
+			err := run.watch(context.Background(), []int{7}, map[int]prWatchSnapshot{})
+			if tt.wantErr == "" && err != nil {
+				t.Fatalf("watch: %v", err)
+			}
+			if tt.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tt.wantErr)) {
+				t.Fatalf("err = %v, want %q", err, tt.wantErr)
+			}
+			if out.String() != tt.want {
+				t.Errorf("output =\n%s\nwant\n%s", out.String(), tt.want)
+			}
+		})
+	}
+}
+
+func TestPRWatchRunJobFollowsANewHead(t *testing.T) {
+	t.Parallel()
+	poller := &scriptedPoller{ticks: []prWatchTick{
+		watchTick(map[int]prWatchSnapshot{7: {State: "OPEN", Head: watchHeadB, Job: "QUEUED"}}),
+		watchTick(map[int]prWatchSnapshot{7: {State: "OPEN", Head: watchHeadB, Job: "SUCCESS"}}),
+	}}
+	var out bytes.Buffer
+	var slept []time.Duration
+	run := newTestWatchRun(poller, prWatchOpts{interval: time.Minute, until: prWatchUntilLanded, job: "lint"}, &out, &slept)
+	resumed := map[int]prWatchSnapshot{7: {State: "OPEN", Head: watchHeadA, Job: "QUEUED"}}
+	if err := run.watch(context.Background(), []int{7}, resumed); err != nil {
+		t.Fatalf("watch: %v", err)
+	}
+	if want := "#7 new-head b2b2b2b2b\n#7 job lint success\n"; out.String() != want {
+		t.Errorf("output =\n%s\nwant\n%s", out.String(), want)
+	}
+}
+
+func TestPRWatchJobStateReadsTheNamedCheck(t *testing.T) {
+	t.Parallel()
+	rollup := func(state string, contexts ...string) *statusRollup {
+		var body strings.Builder
+		for i, name := range contexts {
+			if i > 0 {
+				body.WriteString(",")
+			}
+			fmt.Fprintf(&body, `{"__typename":"StatusContext","context":%q,"state":%q}`, strings.Split(name, "=")[0], strings.Split(name, "=")[1])
+		}
+		var out statusRollup
+		raw := fmt.Sprintf(`{"state":%q,"contexts":{"nodes":[%s]}}`, state, body.String())
+		if err := json.Unmarshal([]byte(raw), &out); err != nil {
+			t.Fatal(err)
+		}
+		return &out
+	}
+	tests := []struct {
+		name   string
+		rollup *statusRollup
+		want   string
+	}{
+		{"no rollup yet", nil, ""},
+		{"not reported while others run", rollup("PENDING", "other=PENDING"), ""},
+		{"reported", rollup("PENDING", "lint=SUCCESS", "other=PENDING"), "SUCCESS"},
+		{"absent from a finished rollup", rollup("SUCCESS", "other=SUCCESS"), prWatchJobAbsent},
+		{"a rerun in flight outranks its old result", rollup("PENDING", "lint=FAILURE", "lint=PENDING"), "PENDING"},
+		{"a failure outranks a pass of the same name", rollup("FAILURE", "lint=SUCCESS", "lint=FAILURE"), "FAILURE"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := prWatchJobState(tt.rollup, "lint"); got != tt.want {
+				t.Errorf("state = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
