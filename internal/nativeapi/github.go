@@ -284,6 +284,11 @@ func (c *Client) SubmitPullRequests(ctx context.Context, req SubmitRequest) ([]S
 			return nil, &SubmitError{Cause: err, Submitted: result, Failed: []BranchSubmitError{{Head: entry.Head, Message: err.Error()}}}
 		}
 		stackNumber, err := c.linkPull(ctx, req.RepoOwner, req.RepoName, req.TrunkBranchName, pull)
+		var line lineBaseError
+		if errors.As(err, &line) {
+			result[len(result)-1].Warnings = append(result[len(result)-1].Warnings, fmt.Sprintf("PR #%d stays out of any native stack: %s", pull.Number, line.Error()))
+			err = nil
+		}
 		if err != nil {
 			return nil, &SubmitError{Cause: err, Submitted: result, Failed: []BranchSubmitError{{Head: entry.Head, Message: err.Error()}}}
 		}
@@ -464,11 +469,12 @@ func (c *Client) linkPull(ctx context.Context, owner, repo, trunk string, pull r
 		if repository.DefaultBranch == pull.Base.Ref {
 			return 0, nil
 		}
-		remedy := fmt.Sprintf("ccx vcs stack submit --parent %s=%s", pull.Head.Ref, trunk)
+		line := lineBaseError{number: pull.Number, base: pull.Base.Ref, remedy: fmt.Sprintf("ccx vcs stack submit --parent %s=%s", pull.Head.Ref, trunk)}
 		if pull.Stack != nil {
-			remedy += " --move " + pull.Head.Ref
+			line.remedy += " --move " + pull.Head.Ref
+			return 0, errors.New(line.Error())
 		}
-		return 0, fmt.Errorf("PR #%d parent branch %s has no open pull request, so it cannot join a native stack; move it onto trunk with %s", pull.Number, pull.Base.Ref, remedy)
+		return 0, line
 	}
 	if len(parents) != 1 {
 		return 0, fmt.Errorf("PR #%d parent branch %s has %d open pull requests; native stack registration requires one", pull.Number, pull.Base.Ref, len(parents))

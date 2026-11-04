@@ -50,6 +50,9 @@ func TestStackNewCutsTheBranchInItsOwnWorkingCopy(t *testing.T) {
 	if base := filepath.Base(path); base != "feature" {
 		t.Errorf("minted %q, want a pool entry named feature", path)
 	}
+	if want := "this tree stays on base; work in " + path + "\n"; !strings.HasPrefix(out, want) {
+		t.Errorf("output = %q, want it to lead with %q", out, want)
+	}
 	if here := gitAt(t, f.Env(), f.Dir, "branch", "--show-current"); here != "base" {
 		t.Errorf("the calling working copy is on %q, want base — stack new must not switch it", here)
 	}

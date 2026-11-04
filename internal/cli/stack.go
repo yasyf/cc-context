@@ -65,8 +65,9 @@ func newStackNewCmd() *cobra.Command {
 The branch is created directly in the new working copy, so the one you run this
 from never changes branch — which is what makes a stack workable by several
 agents at once, one lane each. The path is minted under the repository's pool,
-gt adopts the branch onto --parent (the branch checked out here by default), and
-the new working copy's path is the last thing printed, ready to hand to whoever
+gt adopts the branch onto --parent (the branch checked out here by default). The
+first line printed says this tree stays where it is and where to work, and the
+new working copy's path is the last thing printed, ready to hand to whoever
 works the lane. A slash in the branch name becomes a dash in the working copy's
 directory name: owner/topic becomes owner-topic. A lane cut onto trunk starts at
 the freshly fetched remote trunk, leaving the local trunk branch where it is.

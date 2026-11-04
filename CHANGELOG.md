@@ -17,6 +17,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ccx vcs stack new` leads with the tree it leaves alone and where to work, as
+  `this tree stays on <parent>; work in <path>`, because a lane missed the old clipped line and
+  committed on the parent. The path stays the last thing printed.
+- `ccx vcs ship` and `ccx vcs stack submit` warn and exit clean when a pull request's parent is a
+  branch with no open pull request, such as a line branch. The push and pull request update had
+  already succeeded, yet ship exited failed. A pull request already in a native stack is still
+  refused, with its `--move` remedy.
 - `ccx vcs stack rebase --above` and every other run reading a parent from a pull request's base no
   longer plan a branch with no recorded parent revision from its merge base when that parent was
   rewritten since it was cut. Forge-AI/monorepo#49305 was replayed onto `dev`, and the dry run for its child

@@ -279,6 +279,11 @@ func runStackNew(cmd *cobra.Command, name string, options stackNewOpts) error {
 	if sparse != nil {
 		segs = append(segs, laneWiden(path))
 	}
+	here := "this tree stays detached"
+	if current != "" {
+		here = "this tree stays on " + current
+	}
+	cmd.Println(here + "; work in " + path)
 	cmd.Println(strings.Join(append(segs, path), shipSep))
 	return nil
 }

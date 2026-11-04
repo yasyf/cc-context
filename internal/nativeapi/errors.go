@@ -17,6 +17,15 @@ var (
 	ErrNoTrunkKey = errors.New("no Trunk key: set TRUNK_MERGE_API_KEY, add the trunk-merge-api-key Keychain item, or sign in to the [trunk] aws_profile")
 )
 
+type lineBaseError struct {
+	number       int
+	base, remedy string
+}
+
+func (e lineBaseError) Error() string {
+	return fmt.Sprintf("PR #%d parent branch %s has no open pull request, so it cannot join a native stack; move it onto trunk with %s", e.number, e.base, e.remedy)
+}
+
 // StatusError retains the refused HTTP operation and the server diagnostic.
 type StatusError struct {
 	Method  string
