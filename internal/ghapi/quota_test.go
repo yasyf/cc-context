@@ -2,10 +2,13 @@ package ghapi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"testing"
@@ -271,5 +274,51 @@ func TestRecordChargesAnotherClientsRequestToItsCallerAndPool(t *testing.T) {
 	}
 	if len(pools) != 1 || pools[0].Resource != ResourceGraphQL || pools[0].Remaining != 4000 || len(pools[0].Callers) != 1 || pools[0].Callers[0] != (Caller{Caller: "stack-submit", Requests: 1}) {
 		t.Errorf("pools = %+v, want one graphql request by stack-submit with 4000 left", pools)
+	}
+}
+
+func TestLedgerKeepsAFinishedWindowsCallers(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	start := time.Date(2026, 11, 4, 1, 0, 0, 0, time.UTC)
+	now := start
+	l := &ledger{dir: dir, now: func() time.Time { return now }}
+	header := func(reset time.Time) http.Header {
+		return http.Header{
+			"X-Ratelimit-Limit":     {"5000"},
+			"X-Ratelimit-Remaining": {"4000"},
+			"X-Ratelimit-Reset":     {strconv.FormatInt(reset.Unix(), 10)},
+		}
+	}
+	first, second := start.Add(time.Hour), start.Add(2*time.Hour)
+	for _, caller := range []string{"a", "a", "b"} {
+		if err := l.charge(t.Context(), IdentityUser, ResourceCore, caller, header(first)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, HistoryFile)); !os.IsNotExist(err) {
+		t.Fatalf("history written before the window closed: %v", err)
+	}
+	now = first.Add(time.Minute)
+	if err := l.charge(t.Context(), IdentityUser, ResourceCore, "c", header(second)); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, HistoryFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var window closedWindow
+	if err := json.Unmarshal(data, &window); err != nil {
+		t.Fatalf("history %q: %v", data, err)
+	}
+	if window.Pool != poolKey(IdentityUser, ResourceCore) || window.Callers["a"] != 2 || window.Callers["b"] != 1 || !window.ResetAt.Equal(first) {
+		t.Errorf("window = %+v", window)
+	}
+	pools, err := l.load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := pools[poolKey(IdentityUser, ResourceCore)].Callers; got["c"] != 1 || got["a"] != 0 {
+		t.Errorf("live callers = %v, want the new window's only", got)
 	}
 }

@@ -83,10 +83,26 @@ type poolState struct {
 	ResetAt   time.Time      `json:"resetAt"`
 	ReadAt    time.Time      `json:"readAt"`
 	Callers   map[string]int `json:"callers,omitempty"`
+
+	closed []closedWindow
+}
+
+// closedWindow is one finished rate-limit window of a pool and who spent it, as
+// HistoryFile keeps it.
+type closedWindow struct {
+	Pool      string         `json:"pool"`
+	Limit     int            `json:"limit"`
+	Remaining int            `json:"remaining"`
+	ResetAt   time.Time      `json:"resetAt"`
+	ReadAt    time.Time      `json:"readAt"`
+	Callers   map[string]int `json:"callers"`
 }
 
 func (p *poolState) roll(now time.Time, reset time.Time) {
 	if !p.ResetAt.IsZero() && (!now.Before(p.ResetAt) || reset.After(p.ResetAt.Add(time.Minute))) {
+		if len(p.Callers) > 0 {
+			p.closed = append(p.closed, closedWindow{Limit: p.Limit, Remaining: p.Remaining, ResetAt: p.ResetAt, ReadAt: p.ReadAt, Callers: p.Callers})
+		}
 		p.Callers = nil
 	}
 }
@@ -208,12 +224,56 @@ func (l *ledger) flush(ctx context.Context, b *ledgerBatch) error {
 		for _, apply := range applies {
 			apply(pools)
 		}
+		if err := l.keepClosedWindows(pools); err != nil {
+			return err
+		}
 		data, err := json.Marshal(pools)
 		if err != nil {
 			return fmt.Errorf("ghapi: encode quota ledger: %w", err)
 		}
 		return cache.Store(filepath.Join(l.dir, "ledger.json"), data, 0o600)
 	})
+}
+
+// HistoryFile is the JSON Lines file under QuotaDir holding every finished
+// rate-limit window and its callers, since the ledger clears a pool's callers
+// when it resets. Past historyMaxBytes it moves to HistoryFile + ".1", replacing
+// the older one, which bounds the two at twice that.
+const HistoryFile = "ledger-history.jsonl"
+
+const historyMaxBytes = 16 << 20
+
+func (l *ledger) keepClosedWindows(pools map[string]*poolState) error {
+	var lines []byte
+	for key, p := range pools {
+		for _, window := range p.closed {
+			window.Pool = key
+			line, err := json.Marshal(window)
+			if err != nil {
+				return fmt.Errorf("ghapi: encode a finished window: %w", err)
+			}
+			lines = append(append(lines, line...), '\n')
+		}
+		p.closed = nil
+	}
+	if len(lines) == 0 {
+		return nil
+	}
+	path := filepath.Join(l.dir, HistoryFile)
+	if info, err := os.Stat(path); err == nil && info.Size() > historyMaxBytes {
+		if err := os.Rename(path, path+".1"); err != nil {
+			return fmt.Errorf("ghapi: rotate quota history: %w", err)
+		}
+	}
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600) //nolint:gosec // under the machine's own cache dir
+	if err != nil {
+		return fmt.Errorf("ghapi: open quota history: %w", err)
+	}
+	defer func() { _ = file.Close() }()
+	if _, err := file.Write(lines); err != nil {
+		return fmt.Errorf("ghapi: append quota history: %w", err)
+	}
+	return nil
 }
 
 func (l *ledger) pool(pools map[string]*poolState, identity, resource string) *poolState {
