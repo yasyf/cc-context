@@ -112,8 +112,6 @@ func publishMarker(root *os.Root, job *cleanup.Job) error {
 
 const severedRecheck = time.Hour
 
-var errSevered = errors.New("the tree has no .git link to retire")
-
 func (r *Relocator) retirementFiles(ctx context.Context, job *cleanup.Job) (*retirementFiles, error) {
 	captured, err := sight(job.AdminDir)
 	if err != nil {
@@ -161,9 +159,6 @@ func (r *Relocator) retirementFiles(ctx context.Context, job *cleanup.Job) (*ret
 		}
 	}
 	dotGit, err := readLinkage(filepath.Join(tree, ".git"))
-	if gone(err) {
-		return nil, errSevered
-	}
 	if err != nil {
 		return nil, err
 	}
@@ -343,12 +338,12 @@ func (r *Relocator) Retire(ctx context.Context, job *cleanup.Job) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	files, err := r.retirementFiles(ctx, job)
-	if errors.Is(err, errSevered) && job.Retirement == "" {
+	if _, err := os.Lstat(filepath.Join(job.Original, ".git")); gone(err) && job.Retirement == "" {
 		now := r.cfg.Now()
 		job.RetireAfter, job.Updated = now.Add(severedRecheck), now
 		return r.cfg.Journal.Save(*job)
 	}
+	files, err := r.retirementFiles(ctx, job)
 	if err != nil {
 		_, err = r.retirementBlocked(ctx, job, err)
 		return err
