@@ -124,6 +124,11 @@ func (r *Relocator) enter(job *cleanup.Job, phase cleanup.Phase) (bool, error) {
 	if !phase.Logical() {
 		job.Retirement, job.RetireAfter = "", time.Time{}
 	}
+	if phase == cleanup.PhaseDone {
+		if err := discardIndex(r.cfg.Journal.Layout().ScratchIndex(job.ID)); err != nil {
+			slog.Warn("cleanup: leave a scratch index behind", "job", job.ID, "error", err)
+		}
+	}
 	if err := r.cfg.Journal.Save(*job); err != nil {
 		return false, err
 	}
