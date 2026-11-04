@@ -147,6 +147,35 @@ func prSquashesOnBase(ctx context.Context, dir render.Dir, base string, numbers 
 	return squashes
 }
 
+// prLeftOpenSquash returns the squash on the base branch that carries every
+// change an open pull request makes, and is empty when there is none or the
+// head carries a change the squash lacks. Trunk's merge queue can land a pull
+// request and still report an error that leaves it open.
+func prLeftOpenSquash(ctx context.Context, dir render.Dir, base string, number int, head string) string {
+	squash := prSquashOnBase(ctx, dir, base, number)
+	if squash == "" {
+		return ""
+	}
+	if _, err := render.RunCLI(ctx, dir, "git", []string{"cat-file", "-e", head + "^{commit}"}); err != nil {
+		if _, err := render.RunCLI(ctx, dir, "git", []string{"fetch", "-q", "origin", fmt.Sprintf("refs/pull/%d/head", number)}); err != nil {
+			return ""
+		}
+	}
+	fork, err := render.RunCLI(ctx, dir, "git", []string{"merge-base", "origin/" + base, head})
+	if err != nil {
+		return ""
+	}
+	paths, err := render.RunCLI(ctx, dir, "git", []string{"diff", "--name-only", "-z", strings.TrimSpace(fork), head})
+	if err != nil || paths == "" {
+		return ""
+	}
+	argv := append([]string{"--literal-pathspecs", "diff", "--quiet", head, squash, "--"}, strings.Split(strings.TrimSuffix(paths, "\x00"), "\x00")...)
+	if _, err := render.RunCLI(ctx, dir, "git", argv); err != nil {
+		return ""
+	}
+	return squash
+}
+
 // prQueueClose is one pull request the Graphite merge queue closed, and the base
 // branch its squash would be on.
 type prQueueClose struct {
