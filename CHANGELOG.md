@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The semantic index builds for Windows again.** Its mapped cache called
+  `syscall.Mmap`, which Windows doesn't have, so a Windows build of
+  `internal/semsearch/index` failed from the release that mapped the cache. It now
+  shares the per-OS mapping the owned answer index already uses.
 - **A `ccx mcp` server only builds the semantic index of the checkout it started
   in.** The earlier guard checked the requested root, so a session started in the
   home directory could still pass `repo=` and cold-build another repository: one

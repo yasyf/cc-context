@@ -10,7 +10,6 @@ import (
 	"slices"
 	"sort"
 	"strings"
-	"syscall"
 	"unsafe"
 
 	"github.com/yasyf/cc-context/internal/semsearch"
@@ -18,7 +17,8 @@ import (
 )
 
 type mapping struct {
-	data []byte
+	data  []byte
+	unmap func() error
 }
 
 func mapFile(path string) (*mapping, error) {
@@ -34,11 +34,11 @@ func mapFile(path string) (*mapping, error) {
 	if fi.Size() == 0 {
 		return nil, fmt.Errorf("%s is empty", path)
 	}
-	data, err := syscall.Mmap(int(f.Fd()), 0, int(fi.Size()), syscall.PROT_READ, syscall.MAP_SHARED) //nolint:gosec // an fd always fits an int
+	data, unmap, err := mapOwnedFile(f, int(fi.Size()))
 	if err != nil {
 		return nil, fmt.Errorf("map %s: %w", path, err)
 	}
-	return &mapping{data: data}, nil
+	return &mapping{data: data, unmap: unmap}, nil
 }
 
 // mappedFiles owns the mapped cache files an index reads in place. Chunk
@@ -58,7 +58,7 @@ func (m *mappedFiles) unmap() {
 
 func unmapAll(maps []*mapping) {
 	for _, m := range maps {
-		_ = syscall.Munmap(m.data)
+		_ = m.unmap()
 	}
 }
 
