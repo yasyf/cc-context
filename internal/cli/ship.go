@@ -135,6 +135,7 @@ type shipOpts struct {
 	rootPaths  []string
 	indexOnly  bool
 	indexPaths []string
+	indexLeft  []string
 	skipHunks  []string
 	onlyHunks  []string
 
@@ -203,7 +204,7 @@ func newShipCmd() *cobra.Command {
 		Short: "Commit, push, and watch CI in one step",
 		Long: `Commit, push, and watch CI in one step.
 
-With no paths, ship commits exactly the index when anything is staged: untracked files and the unstaged half of a partially staged file stay in the working copy, and a hook's fixes to a fully staged file are staged with it. A tracked file with changes none of which are staged refuses that ship before anything moves, naming the file: an index that holds only what git rm or git mv staged would otherwise carry half the change out unnoticed. Stage it to ship everything, or name the paths to ship. With nothing staged it stages the whole working copy and names what it swept, holding back untracked machine-local files (*.local.*, .env*) unless they are named.
+With no paths, ship commits exactly the index when anything is staged: untracked files and the unstaged half of a partially staged file stay in the working copy, named in the summary as left uncommitted, and a hook's fixes to a fully staged file are staged with it. A tracked file with changes none of which are staged refuses that ship before anything moves, naming the file: an index that holds only what git rm or git mv staged would otherwise carry half the change out unnoticed. Stage it to ship everything, or name the paths to ship. With nothing staged it stages the whole working copy and names what it swept, holding back untracked machine-local files (*.local.*, .env*) unless they are named.
 
 Ship refuses an empty working copy only when the branch carries nothing above trunk either. Where it does carry commits trunk does not — work a delegate's worktree, a hand-made commit, or a codex lane already landed — there is nothing to cut and everything to submit, so ship skips the commit and goes on to push and the pull request, reporting "nothing to commit — shipping as --no-commit". A path-scoped ship whose scoped paths are clean takes that same path, naming them: scoping already declared everything else out, so finding them clean over a branch ahead of trunk means the work landed. --no-commit states the path outright and refuses a working copy holding changes to tracked files, which would otherwise be left out of the branch and the pull request this same run updates; git's untracked paths do not refuse it, since a run that cuts no commit was never going to carry a worktree's scratch into one, and the report names them as "left untracked: <paths>" instead. Under jj there is nothing to exempt: a new file is already part of the working-copy commit --no-commit pushes. --no-commit is refused alongside paths, where the two spellings contradict each other. Where the branch carries nothing above trunk there is nothing to submit either, and the refusal says so. Ship resolves the push target before committing, so a refusal leaves the working copy untouched. In the graphite lane that includes a branch whose pull request sits in Graphite's merge queue: the push would evict it, so ship refuses before the commit forms, unless --evict-queued asks for the eviction. After committing, ship fetches from the remote first and, when the target is no longer an ancestor of the local stack, rebases the stack onto it (jj: the target bookmark; git: origin/<branch>). On git, an origin/<branch> that is the branch's own history rewritten locally — a head its reflog reaches, its last publication, or commits the stack carries patch for patch — is not rebased onto: ship force-pushes over it with a lease on that exact head and reports "force-pushed … replaced <sha> under a lease". A rebase that would conflict is rolled back and reported instead of pushed. Uncommitted work the rebase has to move — every hunk a scoped ship deliberately left in the tree — is kept as a commit of its own rather than on refs/stash, which every working copy of a repository shares, and put back afterwards; work that will not go back leaves the commit holding it and the files in it named in the refusal. A push the remote rejects because it advanced again mid-ship re-fetches, re-rebases, and retries up to 3 attempts before failing with the manual recovery steps. --amend never retries a rejected push: the force-with-lease refusal is reported for manual reconciliation instead of overwriting the concurrent push.
 
@@ -980,15 +981,16 @@ func shipCommit(ctx context.Context, errW io.Writer, dir render.Dir, kind vcs.Ki
 // hold another lane's work.
 func shipGitAdd(ctx context.Context, dir render.Dir, o shipOpts) (string, error) {
 	if o.indexOnly {
+		left := shipPathsSegment("left uncommitted", o.indexLeft)
 		if len(o.indexPaths) == 0 {
-			return "", nil
+			return left, nil
 		}
 		argv := append([]string{"diff", "--name-only", "-z", "--"}, literalPathspecs(o.indexPaths)...)
 		paths, err := gitPathsZ(ctx, dir, argv...)
 		if err != nil {
 			return "", err
 		}
-		return "", gitAddPaths(ctx, dir, paths, nil)
+		return left, gitAddPaths(ctx, dir, paths, nil)
 	}
 	if len(o.rootPaths) > 0 {
 		paths, err := gitUnstagedPaths(ctx, dir, o.rootPaths)
@@ -1135,6 +1137,12 @@ func shipScopeToIndex(ctx context.Context, dir render.Dir, o shipOpts) (shipOpts
 			strings.Join(stagedPaths, ", "), strings.Join(left, ", "))
 	}
 	o.indexOnly = true
+	untracked, err := gitPathsZ(ctx, dir, "ls-files", "--others", "--exclude-standard", "-z")
+	if err != nil {
+		return o, err
+	}
+	partial := slices.DeleteFunc(slices.Clone(unstaged), func(p string) bool { return !slices.Contains(stagedPaths, p) })
+	o.indexLeft = slices.Sorted(slices.Values(slices.Concat(partial, untracked)))
 	for i := 0; i+1 < len(staged); i += 2 {
 		if status, path := staged[i], staged[i+1]; status != "D" && !slices.Contains(unstaged, path) {
 			o.indexPaths = append(o.indexPaths, path)
@@ -1208,6 +1216,10 @@ func parseAddVerbose(out string) []string {
 // sweptSegment names the paths an unscoped add staged, capped so a wide commit
 // still reports in one line.
 func sweptSegment(paths []string) string {
+	return shipPathsSegment("swept", paths)
+}
+
+func shipPathsSegment(verb string, paths []string) string {
 	if len(paths) == 0 {
 		return ""
 	}
@@ -1215,7 +1227,7 @@ func sweptSegment(paths []string) string {
 	if len(named) > shipSweptNamed {
 		named = named[:shipSweptNamed]
 	}
-	seg := fmt.Sprintf("swept %d path(s): %s", len(paths), strings.Join(named, ", "))
+	seg := fmt.Sprintf("%s %d path(s): %s", verb, len(paths), strings.Join(named, ", "))
 	if len(paths) > len(named) {
 		seg += fmt.Sprintf(", and %d more", len(paths)-len(named))
 	}
