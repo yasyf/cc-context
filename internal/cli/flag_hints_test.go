@@ -51,6 +51,27 @@ func TestFlagErrorHints(t *testing.T) {
 			want: "unknown flag: --budget (commands with --budget: ",
 		},
 		{
+			name: "path on symbol names the glob selector",
+			args: []string{"code", "symbol", "setMocks", "--body", "--path", "infra/lib/testing.ts"},
+			want: "unknown flag: --path (narrow with -g/--glob, which takes a file, directory or glob)",
+		},
+		{
+			name: "scope on symbol names the glob selector",
+			args: []string{"code", "symbol", "setMocks", "--scope", "infra/lib"},
+			want: "unknown flag: --scope (narrow with -g/--glob, which takes a file, directory or glob)",
+		},
+		{
+			name: "path on grep names the glob selector",
+			args: []string{"code", "grep", "foo", "--path", "internal"},
+			want: "unknown flag: --path (narrow with -g/--glob, which takes a file, directory or glob)",
+		},
+		{
+			name:    "path on a command without a glob flag gets no selector hint",
+			args:    []string{"code", "deps", "foo.go", "--path", "internal"},
+			want:    "unknown flag: --path",
+			notWant: "--glob",
+		},
+		{
 			name: "shorthand belongs elsewhere",
 			args: []string{"code", "read", "foo.go", "-A", "3"},
 			want: "unknown shorthand flag: 'A' in -A (-A belongs to code grep (--after-context))",

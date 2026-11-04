@@ -89,8 +89,9 @@ Pick the tool by what you know.
 
 `-g/--glob` is the only path selector. It is repeatable and ordered, and one set of
 rules governs it on `code grep`, `code symbol`, `code replace`, `vcs diff`, `vcs show`,
-and `repo find` (where the globs are positionals). There is no `--scope` — passing one
-is `unknown flag`.
+and `repo find` (where the globs are positionals). A value can be a file, a directory
+or a glob. There is no `--scope` or `--path`: passing either is `unknown flag`, with a
+hint naming `-g` on the commands that take it.
 
 ```
 ccx code grep "func New" -g "internal/**" -g "!*_test.go"   # subtree, minus tests
