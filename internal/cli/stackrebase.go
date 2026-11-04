@@ -162,6 +162,7 @@ type stackRebaseBranch struct {
 	PR          *stackPR          `json:"pr,omitempty"`
 	NewBase     string            `json:"new_base,omitempty"`
 	NewHead     string            `json:"new_head,omitempty"`
+	Replays     int               `json:"replays,omitempty"`
 }
 
 type stackConflict struct {
@@ -335,7 +336,11 @@ heads, or at their local heads in a run that does not push. --above <branch> is
 --parent <child>=<branch> for each branch stacked directly on <branch>: after
 Graphite moves the bottom of a stack, it replays only the branches above
 <branch> onto its head and leaves <branch> and those below it as published. A
-<branch> outside the stack of the branch checked out here is refused. --to <branch> stops the
+<branch> outside the stack of the branch checked out here is refused. Each
+branch the plan moves names the commit it replays from and how many commits
+that is. A branch with no recorded parent revision, on a parent rewritten since
+it was cut, replays from the furthest head that parent's reflogs remember it
+holding. --to <branch> stops the
 run at <branch>: of the branches stacked above a seed, only those <branch> sits
 on, and <branch> itself, join it. Every seed must be <branch> or sit below it;
 any other <branch> is refused, as is one a member was last published onto. --all-lanes widens the run to every branch gt
@@ -2118,6 +2123,11 @@ func stackAdoptUntracked(ctx context.Context, dir render.Dir, tr vcs.Trunk, stat
 		if err != nil {
 			return nil, err
 		}
+		if overrides[child] != tr.Name() {
+			if base, err = stackPastRewrittenParent(ctx, dir, tr.Remote(), overrides[child], head, base); err != nil {
+				return nil, err
+			}
+		}
 		adopted[child] = gtBranchState{Head: head, Parents: []gtRef{{Ref: overrides[child], SHA: base}}}
 		state[child] = adopted[child]
 	}
@@ -2278,6 +2288,11 @@ func stackAdoptRecordedParents(ctx context.Context, dir render.Dir, tr vcs.Trunk
 		base, err := stackMergeBase(ctx, dir, head, floor)
 		if err != nil {
 			return nil, err
+		}
+		if r.parent != tr.Name() {
+			if base, err = stackPastRewrittenParent(ctx, dir, tr.Remote(), r.parent, head, base); err != nil {
+				return nil, err
+			}
 		}
 		adopted[r.branch] = gtBranchState{Head: head, Parents: []gtRef{{Ref: r.parent, SHA: base}}}
 		state[r.branch] = adopted[r.branch]
@@ -3380,24 +3395,11 @@ func stackRecordedBase(ctx context.Context, dir render.Dir, tr vcs.Trunk, pin st
 		return "", err
 	}
 	if best == "" {
-		pushed := "refs/remotes/" + tr.Remote() + "/" + parent
-		published, err := gitRefExists(ctx, dir, stackRebasePrefix, pushed)
+		refs, err := stackParentRefs(ctx, dir, tr.Remote(), parent)
 		if err != nil {
 			return "", err
 		}
-		refs := []string{gtRestackRef(parent)}
-		if published {
-			refs = append(refs, pushed)
-		}
-		var forks []string
-		for _, ref := range refs {
-			fork, err := stackForkPoint(ctx, dir, ref, self.Head)
-			if err != nil {
-				return "", err
-			}
-			forks = append(forks, fork)
-		}
-		if best, err = stackFurthest(ctx, dir, self.Head, forks); err != nil {
+		if best, err = stackFurthestFork(ctx, dir, self.Head, refs); err != nil {
 			return "", err
 		}
 		if best != "" && best != onTrunk && self.Parent == parent {
@@ -3417,7 +3419,7 @@ func stackRecordedBase(ctx context.Context, dir render.Dir, tr vcs.Trunk, pin st
 				return "", err
 			}
 			if best == onTrunk {
-				return "", stackNoOldBase(ctx, dir, tr, state, self.Name, published)
+				return "", stackNoOldBase(ctx, dir, tr, state, self.Name)
 			}
 		}
 		if best == "" {
@@ -3579,11 +3581,16 @@ func stackRefuseStalePublished(ctx context.Context, dir render.Dir, self *stackR
 	return fmt.Errorf("stack rebase: %s stays at its published head %.12s, which does not sit on %s, while its local head %.12s does — a run that did not push moved it there; publish it first with ccx vcs stack submit --to %s, or name it with --parent %s=%s so this run moves it", self.Name, self.Head, self.Parent, self.Local, self.Name, self.Name, self.Parent)
 }
 
-func stackNoOldBase(ctx context.Context, dir render.Dir, tr vcs.Trunk, state gtState, name string, published bool) error {
+func stackNoOldBase(ctx context.Context, dir render.Dir, tr vcs.Trunk, state gtState, name string) error {
 	parent := state[name].Parents[0].Ref
+	tracking := "refs/remotes/" + tr.Remote() + "/" + parent
+	published, err := gitRefExists(ctx, dir, stackRebasePrefix, tracking)
+	if err != nil {
+		return err
+	}
 	pushed := "never pushed"
 	if published {
-		head, err := gitRevParse(ctx, dir, stackRebasePrefix, "refs/remotes/"+tr.Remote()+"/"+parent)
+		head, err := gitRevParse(ctx, dir, stackRebasePrefix, tracking)
 		if err != nil {
 			return err
 		}
@@ -3689,6 +3696,48 @@ func stackMergeBase(ctx context.Context, dir render.Dir, a, b string) (string, e
 	return strings.TrimSpace(out), nil
 }
 
+func stackParentRefs(ctx context.Context, dir render.Dir, remote, parent string) ([]string, error) {
+	var refs []string
+	for _, ref := range []string{gtRestackRef(parent), "refs/remotes/" + remote + "/" + parent} {
+		present, err := gitRefExists(ctx, dir, stackRebasePrefix, ref)
+		if err != nil {
+			return nil, err
+		}
+		if present {
+			refs = append(refs, ref)
+		}
+	}
+	return refs, nil
+}
+
+func stackFurthestFork(ctx context.Context, dir render.Dir, head string, refs []string) (string, error) {
+	forks := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		fork, err := stackForkPoint(ctx, dir, ref, head)
+		if err != nil {
+			return "", err
+		}
+		forks = append(forks, fork)
+	}
+	return stackFurthest(ctx, dir, head, forks)
+}
+
+func stackPastRewrittenParent(ctx context.Context, dir render.Dir, remote, parent, head, base string) (string, error) {
+	refs, err := stackParentRefs(ctx, dir, remote, parent)
+	if err != nil || len(refs) == 0 {
+		return base, err
+	}
+	onParent, err := gitIsAncestor(ctx, dir, stackRebasePrefix, refs[0], head)
+	if err != nil || onParent {
+		return base, err
+	}
+	fork, err := stackFurthestFork(ctx, dir, head, refs)
+	if err != nil {
+		return "", err
+	}
+	return stackFurthest(ctx, dir, head, []string{base, fork})
+}
+
 func stackForkPoint(ctx context.Context, dir render.Dir, ref, head string) (string, error) {
 	out, code, stderr, err := render.RunCLIExitCode(ctx, dir, "git", []string{"merge-base", "--fork-point", ref, head})
 	if err != nil {
@@ -3710,6 +3759,7 @@ func stackOwnWork(ctx context.Context, dir render.Dir, tr vcs.Trunk, pin string,
 	if err != nil {
 		return err
 	}
+	b.Replays = replayed
 	own, err := gtRevCount(ctx, stackRebasePrefix, dir, span, "--not", pin)
 	if err != nil {
 		return err
@@ -3774,7 +3824,11 @@ func stackPlanLines(run *stackRebaseRun) []string {
 			if b.Parent != b.WasParent {
 				parent += " (was " + b.WasParent + ")"
 			}
-			fields = append(fields, parent, fmt.Sprintf("from %.12s", b.OldBase))
+			commits := "commits"
+			if b.Replays == 1 {
+				commits = "commit"
+			}
+			fields = append(fields, parent, fmt.Sprintf("from %.12s", b.OldBase), fmt.Sprintf("replays %d %s", b.Replays, commits))
 			if len(b.Conflicts) > 0 {
 				fields = append(fields, fmt.Sprintf("conflicts with %s@%.12s in %s", run.Trunk, run.Pin, strings.Join(b.Conflicts, ", ")))
 			}

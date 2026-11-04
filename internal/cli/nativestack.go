@@ -477,6 +477,15 @@ func nativeStackParents(ctx context.Context, l lane, state gtState, from string)
 		if err != nil {
 			return nil, nil, err
 		}
+		if m.parent != trunk {
+			remote, err := vcs.GitRemoteFor(ctx, l.dir(), "HEAD")
+			if err != nil {
+				return nil, nil, fmt.Errorf("ship: %w", err)
+			}
+			if fork, err = stackPastRewrittenParent(ctx, l.dir(), remote, m.parent, head, fork); err != nil {
+				return nil, nil, err
+			}
+		}
 		moves[i].head, moves[i].fork = head, fork
 		planned[m.branch] = gtBranchState{Head: head, State: state[m.branch].State, NeedsRestack: fork != parentHead, Parents: []gtRef{{Ref: m.parent, SHA: fork}}}
 	}
@@ -515,6 +524,11 @@ func stackNativeAdopt(ctx context.Context, l lane, tr vcs.Trunk, state gtState, 
 		fork, err := stackMergeBase(ctx, l.dir(), head, floor)
 		if err != nil {
 			return nil, nil, err
+		}
+		if base != tr.Name() {
+			if fork, err = stackPastRewrittenParent(ctx, l.dir(), tr.Remote(), base, head, fork); err != nil {
+				return nil, nil, err
+			}
 		}
 		state = maps.Clone(state)
 		state[current] = gtBranchState{Head: head, Parents: []gtRef{{Ref: base, SHA: fork}}}

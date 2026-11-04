@@ -139,7 +139,7 @@ func TestStackSubmitRebasesWhenAChildConflictsBesideACleanMerge(t *testing.T) {
 	}
 	for _, want := range []string{
 		"base" + shipSep + "onto main" + shipSep + "from ",
-		"feature" + shipSep + "onto base" + shipSep + "from " + published["base"][:12] + shipSep + "conflicts with main@" + pin[:12] + " in a/x",
+		"feature" + shipSep + "onto base" + shipSep + "from " + published["base"][:12] + shipSep + "replays 1 commit" + shipSep + "conflicts with main@" + pin[:12] + " in a/x",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("plan = %q, want %q", out, want)
