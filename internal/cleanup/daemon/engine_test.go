@@ -331,8 +331,10 @@ func TestThrottleStopsAnAwaitedJobToo(t *testing.T) {
 		h.deleter.put("b", &payload{entries: 300})
 		h.start()
 		h.expectEvents("sample")
+		h.expectTimers(5 * time.Second)
 		h.clock.Advance(5 * time.Second)
 		h.expectEvents("sample", "admit:a", "open:a", "step:a")
+		h.expectTimers(400 * time.Millisecond)
 
 		if _, err := h.engine.Status(context.Background(), cleanup.Query{JobID: awaited.ID, Await: true}); err != nil {
 			t.Fatalf("Status(await) = %v", err)
@@ -356,8 +358,10 @@ func TestThrottleHoldsLogicalWorkBesideADeletion(t *testing.T) {
 		h.relocator.script("w", stayWaiting)
 		h.start()
 		h.expectEvents("advance:w@waiting", "sample")
+		h.expectTimers(5 * time.Second)
 		h.clock.Advance(5 * time.Second)
 		h.expectEvents("sample", "admit:p", "open:p", "step:p")
+		h.expectTimers(400 * time.Millisecond)
 		for range 6 {
 			h.cpu.burn(5 * time.Second)
 			h.clock.Advance(5 * time.Second)
