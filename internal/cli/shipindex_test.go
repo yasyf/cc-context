@@ -44,6 +44,9 @@ func TestShipWithAStagedIndexCommitsExactlyTheIndex(t *testing.T) {
 			if strings.Contains(got, "swept") {
 				t.Errorf("summary = %q, want no sweep over a staged index", got)
 			}
+			if want := "left uncommitted 4 path(s): pages/i.txt, partial.txt, retired.txt, untracked.txt"; !strings.Contains(got, want) {
+				t.Errorf("summary = %q, want it to name what stayed out: %q", got, want)
+			}
 			if files := gitAt(t, f.Env(), f.Dir, "show", "--name-only", "--format=", "HEAD"); files != "pages/[id].txt\npartial.txt\nretired.txt\nstaged.txt" {
 				t.Errorf("committed files = %q, want the page, partial.txt, the retired.txt removal, and staged.txt", files)
 			}

@@ -29,6 +29,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to what it shares with the parent's published head, and the dry run titles a new pull request from
   the child's own first commit instead of the line's. Lanes on `dashboard-fold-2b` hit conflicts in
   11 files and a title taken from another pull request.
+- `ccx vcs ship` with a staged index names what it left out, as `left uncommitted N path(s): ...`.
+  It commits exactly the index, so a lane's unstaged edit could miss the pull request with nothing in
+  the output to say so. Nothing is swept, and the work stays in the working copy.
 - `ccx vcs stack rebase --above` and every other run reading a parent from a pull request's base no
   longer plan a branch with no recorded parent revision from its merge base when that parent was
   rewritten since it was cut. Forge-AI/monorepo#49305 was replayed onto `dev`, and the dry run for its child
