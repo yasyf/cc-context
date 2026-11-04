@@ -172,6 +172,30 @@ func TestRemoveRecordsTheTreeAndLeavesItsProofToTheGate(t *testing.T) {
 	})
 }
 
+func TestHeldGateRetiresRegistrationsAtItsOwnPace(t *testing.T) {
+	tuning := gated()
+	tuning.RetireEvery = 3 * time.Second
+	bubble(t, tuning, func(t *testing.T, h *harness) {
+		withActivity(h, busySessions)
+		first := h.seed("a", 1, cleanup.PhaseQueued)
+		h.seed("b", 2, cleanup.PhaseQueued)
+		h.start()
+		h.expectEvents("activity", "retire:a@queued")
+		h.expectTimers(2 * time.Second)
+		if got := h.status(first.ID); got.Retirement != cleanup.RetirementComplete || got.Phase != cleanup.PhaseQueued {
+			t.Errorf("job a = phase %s, retirement %q; want queued, retired", got.Phase, got.Retirement)
+		}
+
+		h.clock.Advance(2 * time.Second)
+		h.expectEvents("activity")
+		h.expectTimers(time.Second)
+
+		h.clock.Advance(time.Second)
+		h.expectEvents("retire:b@queued")
+		h.expectTimers(time.Second)
+	})
+}
+
 func TestAwaitedLogicalJobJumpsTheQueueWhenTheGateOpens(t *testing.T) {
 	bubble(t, gated(), func(t *testing.T, h *harness) {
 		withActivity(h, busySessions)

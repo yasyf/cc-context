@@ -84,6 +84,11 @@ type Tuning struct {
 	MaxBusy      int
 	MaxCreate    time.Duration
 	QuietSamples int
+	// RetireEvery paces registration retirement while the activity gate holds
+	// everything else, so removed trees leave git's view without waiting for a
+	// quiet period: at most one a RetireEvery and at most a PhysicalShare'th of
+	// the time. Zero leaves retirement to a pause.
+	RetireEvery time.Duration
 	// PhysicalShare is how many times as long as a logical step deletion runs
 	// before the next one, while deletion is due: a logical step proves a tree
 	// through git, and deletion frees the disk.
@@ -138,6 +143,7 @@ func DefaultTuning() Tuning {
 		MaxBusy:       3,
 		MaxCreate:     3 * time.Millisecond,
 		QuietSamples:  2,
+		RetireEvery:   5 * time.Second,
 		PhysicalShare: 10,
 		Readmit:       10 * time.Second,
 		Recheck:       30 * time.Second,
@@ -157,6 +163,8 @@ func (t Tuning) validate() error {
 		return fmt.Errorf("rate %d, %d workers, slice of %d entries or %s: all must be positive", t.Rate, t.Workers, t.SliceEntries, t.SliceBudget)
 	case t.ActivityEvery <= 0, t.ProbeSettle < 0, t.BusyPercent <= 0, t.MaxBusy < 0, t.MaxCreate <= 0, t.QuietSamples <= 0:
 		return fmt.Errorf("activity sampled every %s after %s of rest, %d sessions over %v%% and creates over %s held until %d quiet samples: the interval, threshold, create bound and samples must be positive, the rest and sessions not negative", t.ActivityEvery, t.ProbeSettle, t.MaxBusy, t.BusyPercent, t.MaxCreate, t.QuietSamples)
+	case t.RetireEvery < 0:
+		return fmt.Errorf("retirement interval %s must not be negative", t.RetireEvery)
 	case t.PhysicalShare <= 0:
 		return fmt.Errorf("physical share %d must be positive", t.PhysicalShare)
 	case t.Readmit < 0:
@@ -278,6 +286,7 @@ type Engine struct {
 	checked         map[string]time.Time
 	active          *activeDeletion
 	paceUntil       time.Time
+	retireAt        time.Time
 	physicalUntil   time.Time
 	reconcileAt     time.Time
 	loud            bool
@@ -787,6 +796,14 @@ func (e *Engine) work(ctx context.Context) error {
 			}
 			continue
 		}
+		if retiring, ok := e.retirementTurn(now); ok {
+			if _, err := e.advance(ctx, retiring); isFatal(err) {
+				return err
+			}
+			finished := e.clock.Now()
+			e.retireAt = later(finished.Add(e.tuning.RetireEvery), finished.Add(time.Duration(e.tuning.PhysicalShare)*finished.Sub(now)))
+			continue
+		}
 		if logical && e.logicalTurn(now) {
 			if job.Blocked != nil {
 				var err error
@@ -869,6 +886,18 @@ func (e *Engine) work(ctx context.Context) error {
 	}
 }
 
+func (e *Engine) retirementTurn(now time.Time) (cleanup.Job, bool) {
+	if e.tuning.RetireEvery == 0 || !e.holds() || e.paused || e.hold != nil || now.Before(e.retireAt) {
+		return cleanup.Job{}, false
+	}
+	for job := range e.orderedKeys(e.retirementOrder) {
+		if job.Blocked == nil && !now.Before(job.RetireAfter) {
+			return clone(job), true
+		}
+	}
+	return cleanup.Job{}, false
+}
+
 func (e *Engine) logicalTurn(now time.Time) bool {
 	if !e.gov.throttled() && !now.Before(e.physicalUntil) {
 		return true
@@ -930,6 +959,11 @@ func (e *Engine) wake(physical bool) (time.Time, bool) {
 	}
 	if e.wanted {
 		consider(e.gate.next(e.slicedAt))
+	}
+	if at := later(now, e.retireAt); e.wanted {
+		if _, ok := e.retirementTurn(at); ok {
+			consider(at)
+		}
 	}
 	return wake, timed
 }
@@ -1099,8 +1133,11 @@ func (e *Engine) advance(ctx context.Context, job cleanup.Job) (cleanup.Job, err
 		ctx = cleanup.WithRequester(ctx, job.Requester)
 	}
 	step := e.relocator.Advance
-	if e.paused {
+	switch {
+	case e.paused:
 		step = e.retire
+	case e.holds():
+		step = e.relocator.Retire
 	}
 	err := step(ctx, &job)
 	if err != nil && (isFatal(err) || !cancelled(ctx, err)) {
@@ -1113,7 +1150,7 @@ func (e *Engine) advance(ctx context.Context, job cleanup.Job) (cleanup.Job, err
 	case job.Phase == cleanup.PhaseDone:
 		delete(e.checked, job.ID)
 		return job, e.finish(job)
-	case job.Blocked != nil, !job.Phase.Logical(), e.paused && (job.Retirement == cleanup.RetirementComplete || !job.RetireAfter.IsZero()):
+	case job.Blocked != nil, !job.Phase.Logical(), (e.paused || e.holds()) && (job.Retirement == cleanup.RetirementComplete || !job.RetireAfter.IsZero()):
 		delete(e.checked, job.ID)
 	case job.Phase == cleanup.PhaseWaiting:
 		e.checked[job.ID] = e.clock.Now()

@@ -39,8 +39,11 @@ other protections or stops a process holding the tree.
 
 The request runs those refusals at background priority and records a `prepared`
 job. The daemon proves and claims the tree later, under the activity gate
-described in [Completion and recovery](#completion-and-recovery), so the
-registration stays in `git worktree list` until a quiet period.
+described in [Completion and recovery](#completion-and-recovery). While that gate
+holds, the daemon still retires one registration every 5s, at most, once the
+tree's `HEAD` has rested for an hour and nothing is using it. Retiring empties
+the entry's `gitdir` file. Git then leaves the tree out of `git worktree list`
+and lets its branch be deleted, and the entry stays locked until the tree is gone.
 `worktree rm --wait` moves its job to the front of the queue once the gate opens.
 
 Recovery refs preserve committed heads before deletion. They do not preserve
