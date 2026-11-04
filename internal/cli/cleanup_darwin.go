@@ -13,6 +13,7 @@ import (
 	"github.com/yasyf/cc-context/internal/cleanup"
 	"github.com/yasyf/cc-context/internal/cleanup/agent"
 	"github.com/yasyf/cc-context/internal/cleanup/daemon"
+	"github.com/yasyf/cc-context/internal/cleanup/lfsclean"
 	"github.com/yasyf/cc-context/internal/cleanup/native"
 	"github.com/yasyf/cc-context/internal/cleanup/relocate"
 	"github.com/yasyf/cc-context/internal/cleanup/rmtree"
@@ -57,6 +58,10 @@ func runCleanupServe(ctx context.Context) error {
 	if err := native.RaiseFileLimit(); err != nil {
 		return fmt.Errorf("cleanup serve: raise the open-file limit: %w", err)
 	}
+	executable, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("cleanup serve: find this binary: %w", err)
+	}
 	layout := cleanup.DefaultLayout()
 	journal, err := cleanup.OpenJournal(layout)
 	if err != nil {
@@ -69,6 +74,7 @@ func runCleanupServe(ctx context.Context) error {
 			Guard:    native.GuardRoots,
 			Watchers: newCleanupWatchers(native.Guard),
 			GitEnv:   os.Environ(),
+			LFSClean: lfsclean.Command(executable),
 			Quiet:    time.Hour,
 			Now:      time.Now,
 		}),

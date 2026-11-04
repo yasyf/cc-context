@@ -25,6 +25,9 @@ type Config struct {
 	Watchers cleanup.Watchers
 	// GitEnv is the environment of every git child; nil inherits the process's.
 	GitEnv []string
+	// LFSClean, when set, is the filter.lfs.process every git child runs, so a
+	// proof reads an LFS file without git-lfs writing a temporary copy of it.
+	LFSClean string
 	// GitBudget bounds each git child, read or mutation alike, and expiry
 	// blocks the job as a timeout; zero means one minute.
 	GitBudget time.Duration

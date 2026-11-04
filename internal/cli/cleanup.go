@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/yasyf/cc-context/internal/cleanup"
+	"github.com/yasyf/cc-context/internal/cleanup/lfsclean"
 	"github.com/yasyf/cc-context/internal/cleanup/relocate"
 	"github.com/yasyf/cc-context/internal/render"
 )
@@ -180,6 +181,7 @@ inline and runs no daemon.`,
 		newCleanupRetryCmd(),
 		newCleanupCancelCmd(),
 		newCleanupServeCmd(),
+		newCleanupLFSCleanCmd(),
 		newCleanupAdoptCmd(),
 		newCleanupRetiredCmd(),
 		newCleanupWatchersCmd(),
@@ -752,6 +754,18 @@ func newCleanupServeCmd() *cobra.Command {
 		Args:   cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return cleanupServeDefault(cmd.Context())
+		},
+	}
+}
+
+func newCleanupLFSCleanCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:    "lfs-clean",
+		Short:  "Serve git's clean filter for LFS files; a cleanup proof runs it",
+		Hidden: true,
+		Args:   cobra.NoArgs,
+		RunE: func(*cobra.Command, []string) error {
+			return lfsclean.Serve(os.Stdin, os.Stdout)
 		},
 	}
 }

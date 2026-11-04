@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1182,5 +1183,24 @@ func TestAdvanceDeferredWhoseTreeVanished(t *testing.T) {
 	f.stored(&job)
 	if got, want := f.listing(), f.mainEntry(); got != want {
 		t.Errorf("worktree list = %q, want %q", got, want)
+	}
+}
+
+func TestGitChildrenRunTheConfiguredLFSCleanFilter(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		filter string
+		want   bool
+	}{
+		{"configured", "ccx vcs cleanup lfs-clean", true},
+		{"unset", "", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd, _ := New(Config{LFSClean: tt.filter}).command(t.Context(), "git", "status")
+			got := slices.Contains(cmd.Args, "filter.lfs.process="+tt.filter)
+			if got != tt.want {
+				t.Errorf("args %q carry the filter = %v, want %v", cmd.Args, got, tt.want)
+			}
+		})
 	}
 }
