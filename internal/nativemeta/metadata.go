@@ -498,7 +498,7 @@ func mutate(ctx context.Context, commonDir string, change func(*catalog, *receip
 }
 
 func mutateKeeping(ctx context.Context, commonDir, keep string, change func(*catalog, *receipts) (bool, bool, error)) error {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
 	operation, err := lockCatalog(ctx, commonDir, "gh-stack-operation.lock")
 	if err != nil {
