@@ -26,7 +26,7 @@ func TestMain(m *testing.M) {
 
 func gitIn(t *testing.T, dir, stdin string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command("git", args...)
+	cmd := exec.Command("git", args...) //nolint:gosec // the test names every git argument
 	cmd.Dir = dir
 	cmd.Stdin = strings.NewReader(stdin)
 	cmd.Env = append(os.Environ(), serveEnv+"=1", "HOME="+t.TempDir(), "GIT_CONFIG_NOSYSTEM=1")
