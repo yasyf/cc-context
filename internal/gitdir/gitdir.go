@@ -25,11 +25,10 @@ func Root(start string) string {
 	}
 }
 
-// CommonDir resolves the git directory holding the repo-wide info/, given a git
-// root: <gitRoot>/.git when that is a directory, and — when it is the gitdir
-// pointer file of a linked worktree — the common directory that worktree's
-// administrative dir names. It returns "" when the pointer does not resolve.
-func CommonDir(gitRoot string) string {
+// Dir resolves a git root's own git directory: <gitRoot>/.git when that is a
+// directory, else the administrative dir its gitdir pointer file names. It
+// returns "" when the pointer does not resolve.
+func Dir(gitRoot string) string {
 	dot := filepath.Join(gitRoot, ".git")
 	info, err := os.Stat(dot)
 	if err != nil {
@@ -48,6 +47,18 @@ func CommonDir(gitRoot string) string {
 	}
 	if !filepath.IsAbs(gitDir) {
 		gitDir = filepath.Join(gitRoot, gitDir)
+	}
+	return gitDir
+}
+
+// CommonDir resolves the git directory holding the repo-wide info/, given a git
+// root: <gitRoot>/.git when that is a directory, and — when it is the gitdir
+// pointer file of a linked worktree — the common directory that worktree's
+// administrative dir names. It returns "" when the pointer does not resolve.
+func CommonDir(gitRoot string) string {
+	gitDir := Dir(gitRoot)
+	if gitDir == "" {
+		return ""
 	}
 	common, err := os.ReadFile(filepath.Join(gitDir, "commondir")) //nolint:gosec // path is the caller's own repo git dir; reading it is intended
 	if err != nil {
