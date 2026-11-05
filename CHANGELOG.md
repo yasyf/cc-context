@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ccx vcs pr watch --until ci` exits 0 once every check on each pull request's current head has
+  finished and passed, and 1 once one finished failing, naming it, or when the pull request closed
+  first. It reads the head from a poll made after the watch began, as `--job` does, and gives a
+  fresh head its first minute for its workflows to register before it calls it green. A wait on one
+  `--job` passes while the head's other jobs still run; this waits on all of them.
 - `ccx vcs ship --pr-title-file` and `ccx vcs stack submit --pr-title-file` read the pull request
   title from a one-line file, scoped by branch like `--pr-body-file`, with `-` reading stdin.
   Claude Code's worktree-isolation sandbox refuses an argument that pairs a quote with the word
@@ -17,6 +22,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ccx vcs pr watch`, `ccx vcs pr status`, `ccx vcs status` and the ship gate no longer let a
+  passing check run hide a failed one of the same name. A later run replaced every earlier run of
+  its name, so on yasyf/cc-skills#3139 the watch printed green on two red heads and never printed a
+  red line: at 5049100dd live-dashboard CI's newest `test` pass hid both of long-running CI's
+  failed `test` runs, and at 66e5adfb6 long-running CI's `pull_request` pass hid its own failed
+  `push` run. A run now replaces only an earlier attempt in its own check suite, or a run of its
+  workflow cancelled for a newer one, so a re-run still clears a failure and a `cancel-in-progress`
+  cancel still grades nothing. The REST fallback reads the head's workflow runs in place of its
+  Actions check suites to learn each run's workflow.
 - `ccx vcs ship` takes a long-lived branch with no pull request as trunk, as `ccx vcs stack rebase`
   does since #829, when the shipped branch's pull request is based on it. On cc-skills'
   `dashboard-fold-2b` lanes, a `ship --amend` without `--tip-only` replayed another lane's

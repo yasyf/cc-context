@@ -1,6 +1,7 @@
 package prstate
 
 import (
+	"encoding/json"
 	"slices"
 	"testing"
 	"time"
@@ -15,6 +16,10 @@ func TestLatestLetsEachCheckNamesLatestRunStand(t *testing.T) {
 			status = "QUEUED"
 		}
 		return Context{Typename: "CheckRun", Name: name, Conclusion: conclusion, Status: status, StartedAt: started, DatabaseID: id}
+	}
+	inSuite := func(c Context, suite, workflow int64) Context {
+		c.CheckSuite.DatabaseID, c.CheckSuite.WorkflowRun.Workflow.DatabaseID = suite, workflow
+		return c
 	}
 	status := Context{Typename: "StatusContext", Context: "buildkite/test", State: "SUCCESS"}
 	tests := []struct {
@@ -82,6 +87,46 @@ func TestLatestLetsEachCheckNamesLatestRunStand(t *testing.T) {
 			want:      []Context{run("grade", "SUCCESS", at(16), 6)},
 		},
 		{
+			name:      "two workflows' jobs of one name",
+			state:     "FAILURE",
+			total:     2,
+			nodes:     []Context{inSuite(run("test", "FAILURE", at(2), 1), 71, 7), inSuite(run("test", "SUCCESS", at(5), 2), 81, 8)},
+			wantState: "FAILURE",
+			want:      []Context{inSuite(run("test", "FAILURE", at(2), 1), 71, 7), inSuite(run("test", "SUCCESS", at(5), 2), 81, 8)},
+		},
+		{
+			name:      "one workflow's push run failing under its later pull request run",
+			state:     "FAILURE",
+			total:     2,
+			nodes:     []Context{inSuite(run("test", "FAILURE", at(16), 1), 71, 7), inSuite(run("test", "SUCCESS", at(17), 2), 72, 7)},
+			wantState: "FAILURE",
+			want:      []Context{inSuite(run("test", "FAILURE", at(16), 1), 71, 7), inSuite(run("test", "SUCCESS", at(17), 2), 72, 7)},
+		},
+		{
+			name:      "re-run attempt in the failed run's suite",
+			state:     "FAILURE",
+			total:     2,
+			nodes:     []Context{inSuite(run("test", "FAILURE", at(16), 1), 71, 7), inSuite(run("test", "SUCCESS", at(20), 2), 71, 7)},
+			wantState: "SUCCESS",
+			want:      []Context{inSuite(run("test", "SUCCESS", at(20), 2), 71, 7)},
+		},
+		{
+			name:      "run cancelled for a newer run of its workflow",
+			state:     "FAILURE",
+			total:     2,
+			nodes:     []Context{inSuite(run("grade", "CANCELLED", at(16), 1), 71, 7), inSuite(run("grade", "SUCCESS", at(17), 2), 72, 7)},
+			wantState: "SUCCESS",
+			want:      []Context{inSuite(run("grade", "SUCCESS", at(17), 2), 72, 7)},
+		},
+		{
+			name:      "cancelled run beside another workflow's job of its name",
+			state:     "FAILURE",
+			total:     2,
+			nodes:     []Context{inSuite(run("test", "CANCELLED", at(16), 1), 71, 7), inSuite(run("test", "SUCCESS", at(17), 2), 81, 8)},
+			wantState: "FAILURE",
+			want:      []Context{inSuite(run("test", "CANCELLED", at(16), 1), 71, 7), inSuite(run("test", "SUCCESS", at(17), 2), 81, 8)},
+		},
+		{
 			name:      "truncated rollup keeps GitHub's state",
 			state:     "FAILURE",
 			total:     150,
@@ -103,5 +148,25 @@ func TestLatestLetsEachCheckNamesLatestRunStand(t *testing.T) {
 	}
 	if (*Rollup)(nil).Latest() != nil {
 		t.Error("Latest() of no rollup is not nil")
+	}
+}
+
+func TestRESTRollupGradesEachSuitesRunOfOneName(t *testing.T) {
+	t.Parallel()
+	var runs restCheckRuns
+	var workflows restWorkflowRuns
+	if err := json.Unmarshal([]byte(`{"check_runs":[
+		{"id":1,"name":"test","status":"completed","conclusion":"failure","started_at":"2026-11-05T08:02:56Z","check_suite":{"id":11}},
+		{"id":2,"name":"test","status":"completed","conclusion":"success","started_at":"2026-11-05T08:03:14Z","check_suite":{"id":12}}]}`), &runs); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(`{"workflow_runs":[
+		{"check_suite_id":11,"workflow_id":7,"status":"completed"},
+		{"check_suite_id":12,"workflow_id":7,"status":"in_progress"}]}`), &workflows); err != nil {
+		t.Fatal(err)
+	}
+	rollup, _ := restRollup(runs, restStatus{}, workflows)
+	if rollup.State != "FAILURE" || len(rollup.Contexts.Nodes) != 2 || rollup.UnfinishedActions != 1 {
+		t.Errorf("rollup = %+v, want both suites' test runs standing, graded FAILURE, with one run unfinished", rollup)
 	}
 }

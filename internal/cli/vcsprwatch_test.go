@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -460,6 +461,126 @@ func TestPRWatchHoldsGreenOnAFreshHeadUntilItsWorkflowsFinish(t *testing.T) {
 			}
 			if !strings.Contains(github.queries[0], "checkSuites(first: 50, filterBy: {appId: 15368})") {
 				t.Errorf("query reads no GitHub Actions check suites:\n%s", github.queries[0])
+			}
+		})
+	}
+}
+
+// GitHub's checks on yasyf/cc-skills#3139 on 2026-11-05, where two workflows
+// each run a job named test on push and on pull_request. At 5049100dd
+// long-running CI's runs both failed and live-dashboard CI's both passed, the
+// newest; at 66e5adfb6 long-running CI's push run failed and every later run
+// passed.
+func TestPRWatchGradesEverySuitesRunOfOneNameOnARealHead(t *testing.T) {
+	read := func(head string) string {
+		poll, err := os.ReadFile(filepath.Join(ghPkgDir, "testdata", "prwatch", "cc-skills-3139-"+head+".json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(poll)
+	}
+	for _, tc := range []struct {
+		name, poll, head, job, ci string
+		want                      []string
+	}{
+		{"5049100dd as GitHub answered", read("5049100dd"), "5049100ddbaf1cfa99dcf698e1f7f5e3b63e1ef5", "FAILURE", prWatchCIRed, []string{"#3139 red test"}},
+		{"66e5adfb6 as GitHub answered", read("66e5adfb6"), "66e5adfb6fe16c1f724e9b746d7b3558e9c57e7d", "FAILURE", prWatchCIRed, []string{"#3139 red test"}},
+		{"5049100dd with long-running CI passing", strings.ReplaceAll(read("5049100dd"), `"FAILURE"`, `"SUCCESS"`), "5049100ddbaf1cfa99dcf698e1f7f5e3b63e1ef5", "SUCCESS", "", []string{"#3139 green"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stubPRState(t, tc.poll)
+			_, gt := stubPRInfo(t, `{"prNumber":3139,"state":"OPEN","baseRefName":"main","mergeQueueStatus":null,"mergeCommitSha":null}`)
+			store, err := openPRState(withGTAPI(t.Context(), gt), "yasyf/cc-skills", io.Discard)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			tick, err := prWatchSource{store: store, job: "test", ci: true}.poll(t.Context(), []int{3139}, nil)
+			if err != nil {
+				t.Fatalf("poll: %v", err)
+			}
+
+			snap := tick.snapshots[3139]
+			running := prWatchSnapshot{State: "OPEN", Head: tc.head, Mergeable: "MERGEABLE"}
+			if _, events := prWatchStep(3139, running, snap); !slices.Equal(watchEvents(t, events), tc.want) {
+				t.Errorf("events = %q, want %q", watchEvents(t, events), tc.want)
+			}
+			if snap.Job != tc.job || snap.CI != tc.ci {
+				t.Errorf("--job test = %q and --until ci = %q, want %q and %q", snap.Job, snap.CI, tc.job, tc.ci)
+			}
+		})
+	}
+}
+
+func TestPRWatchCIStateWaitsForEveryCheckAndTheHeadsFirstMinute(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		snap   prWatchSnapshot
+		onHead time.Duration
+		want   string
+	}{
+		{"a finished failure is red at once", prWatchSnapshot{Failing: []string{"test"}}, 0, prWatchCIRed},
+		{"a failure beside a pass is red", prWatchSnapshot{Green: true, Failing: []string{"test"}}, time.Hour, prWatchCIRed},
+		{"every check passed after the first minute is green", prWatchSnapshot{Green: true}, prWatchJobRegister, prWatchCIGreen},
+		{"every check passed inside the first minute waits", prWatchSnapshot{Green: true}, prWatchJobRegister - time.Second, ""},
+		{"a check still running waits", prWatchSnapshot{}, time.Hour, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := prWatchCIState(tc.snap, tc.onHead); got != tc.want {
+				t.Errorf("prWatchCIState = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestPRWatchRunUntilCIExitsOnceTheHeadsChecksSettle(t *testing.T) {
+	t.Parallel()
+	running := prWatchSnapshot{State: "OPEN", Head: watchHeadA}
+	tests := []struct {
+		name    string
+		ticks   []prWatchSnapshot
+		want    string
+		wantErr string
+	}{
+		{
+			name:  "green exits zero",
+			ticks: []prWatchSnapshot{running, {State: "OPEN", Head: watchHeadA, Green: true, CI: prWatchCIGreen}},
+			want:  "#7 green\n",
+		},
+		{
+			name:    "red exits nonzero naming the failed checks",
+			ticks:   []prWatchSnapshot{running, {State: "OPEN", Head: watchHeadA, Failing: []string{"test"}, CI: prWatchCIRed}},
+			want:    "#7 red test\n",
+			wantErr: "pr watch: ci: #7 red on a1a1a1a1a: test",
+		},
+		{
+			name:    "a pull request closing first ends the wait",
+			ticks:   []prWatchSnapshot{{State: "CLOSED", Head: watchHeadA}},
+			want:    "#7 closed-without-squash\n",
+			wantErr: "#7 closed before its checks finished",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ticks := make([]prWatchTick, 0, len(tt.ticks))
+			for _, snap := range tt.ticks {
+				ticks = append(ticks, watchTick(map[int]prWatchSnapshot{7: snap}))
+			}
+			var out bytes.Buffer
+			var slept []time.Duration
+			run := newTestWatchRun(&scriptedPoller{ticks: ticks}, prWatchOpts{interval: time.Minute, until: prWatchUntilCI}, &out, &slept)
+			err := run.watch(context.Background(), []int{7}, map[int]prWatchSnapshot{})
+			if tt.wantErr == "" && err != nil {
+				t.Fatalf("watch: %v", err)
+			}
+			if tt.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tt.wantErr)) {
+				t.Fatalf("err = %v, want %q", err, tt.wantErr)
+			}
+			if out.String() != tt.want {
+				t.Errorf("output =\n%s\nwant\n%s", out.String(), tt.want)
 			}
 		})
 	}

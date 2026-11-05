@@ -701,9 +701,10 @@ func rest190() map[string]reply {
 			`{"state":"APPROVED","user":{"login":"bob[bot]"}},{"state":"APPROVED","user":{"login":"ann"}},{"state":"APPROVED","user":{"login":"cat"}},{"state":"DISMISSED","user":{"login":"cat"}}]`},
 		"/repos/yasyf/cc-context/commits/" + restHead + "/check-runs": {body: `{"total_count":2,"check_runs":[{"name":"test","status":"completed","conclusion":"success"},` +
 			`{"name":"lint","status":"in_progress","conclusion":null}]}`},
-		"/repos/yasyf/cc-context/commits/" + restHead + "/status":       {body: `{"state":"success","total_count":1,"statuses":[{"context":"buildkite/test","state":"success"}]}`},
-		"/repos/yasyf/cc-context/commits/" + restHead + "/check-suites": {body: `{"total_count":2,"check_suites":[{"status":"completed"},{"status":"queued"}]}`},
-		"/repos/yasyf/cc-context/issues/190/comments":                   {body: `[{"body":"looks good"},{"body":"### Merge activity\n\n* queued"}]`},
+		"/repos/yasyf/cc-context/commits/" + restHead + "/status": {body: `{"state":"success","total_count":1,"statuses":[{"context":"buildkite/test","state":"success"}]}`},
+		"/repos/yasyf/cc-context/actions/runs": {body: `{"total_count":2,"workflow_runs":[{"check_suite_id":1,"workflow_id":7,"status":"completed"},` +
+			`{"check_suite_id":2,"workflow_id":8,"status":"queued"}]}`},
+		"/repos/yasyf/cc-context/issues/190/comments": {body: `[{"body":"looks good"},{"body":"### Merge activity\n\n* queued"}]`},
 	}
 }
 

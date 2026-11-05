@@ -65,11 +65,18 @@ type restCheckRuns struct {
 		Output     struct {
 			Title string `json:"title"`
 		} `json:"output"`
+		CheckSuite struct {
+			ID int64 `json:"id"`
+		} `json:"check_suite"`
 	} `json:"check_runs"`
 }
 
-type restCheckSuites struct {
-	CheckSuites []checkSuite `json:"check_suites"`
+type restWorkflowRuns struct {
+	WorkflowRuns []struct {
+		CheckSuiteID int64  `json:"check_suite_id"`
+		WorkflowID   int64  `json:"workflow_id"`
+		Status       string `json:"status"`
+	} `json:"workflow_runs"`
 }
 
 type restStatus struct {
@@ -212,9 +219,8 @@ func (p *pass) restRecord(ctx context.Context, t target) (PR, error) {
 		if err != nil {
 			return err
 		}
-		suites, err := ghapi.Get[restCheckSuites](gctx, p.gh, fmt.Sprintf("%s/commits/%s/check-suites?app_id=%s&per_page=100", repo, pull.Head.SHA, actionsAppID))
-		pr.Rollup, pr.Status = restRollup(runs, status)
-		pr.Rollup.countUnfinishedActions(suites.CheckSuites)
+		workflows, err := ghapi.Get[restWorkflowRuns](gctx, p.gh, fmt.Sprintf("%s/actions/runs?head_sha=%s&per_page=100", repo, pull.Head.SHA))
+		pr.Rollup, pr.Status = restRollup(runs, status, workflows)
 		return err
 	})
 	if t.activity {
@@ -305,14 +311,20 @@ func restReviewDecision(reviews []Review, last PR, head string) string {
 	return ""
 }
 
-func restRollup(runs restCheckRuns, status restStatus) (*Rollup, string) {
+func restRollup(runs restCheckRuns, status restStatus, workflows restWorkflowRuns) (*Rollup, string) {
 	var combined string
 	if status.TotalCount > 0 {
 		combined = strings.ToUpper(status.State)
 	}
+	workflowOf := map[int64]int64{}
+	suites := make([]checkSuite, 0, len(workflows.WorkflowRuns))
+	for _, run := range workflows.WorkflowRuns {
+		workflowOf[run.CheckSuiteID] = run.WorkflowID
+		suites = append(suites, checkSuite{Status: run.Status})
+	}
 	rollup := &Rollup{}
 	for _, run := range runs.CheckRuns {
-		rollup.Contexts.Nodes = append(rollup.Contexts.Nodes, Context{
+		c := Context{
 			Typename:   "CheckRun",
 			Name:       run.Name,
 			Title:      run.Output.Title,
@@ -320,7 +332,10 @@ func restRollup(runs restCheckRuns, status restStatus) (*Rollup, string) {
 			Conclusion: strings.ToUpper(run.Conclusion),
 			StartedAt:  run.StartedAt,
 			DatabaseID: run.ID,
-		})
+		}
+		c.CheckSuite.DatabaseID = run.CheckSuite.ID
+		c.CheckSuite.WorkflowRun.Workflow.DatabaseID = workflowOf[run.CheckSuite.ID]
+		rollup.Contexts.Nodes = append(rollup.Contexts.Nodes, c)
 	}
 	for _, s := range status.Statuses {
 		rollup.Contexts.Nodes = append(rollup.Contexts.Nodes, Context{Typename: "StatusContext", Context: s.Context, State: strings.ToUpper(s.State), TargetURL: s.TargetURL})
@@ -329,6 +344,7 @@ func restRollup(runs restCheckRuns, status restStatus) (*Rollup, string) {
 		return nil, combined
 	}
 	rollup = rollup.Latest()
+	rollup.countUnfinishedActions(suites)
 	rollup.State = rollupState(rollup.Contexts.Nodes)
 	if combined == "FAILURE" || combined == "ERROR" {
 		rollup.State = "FAILURE"
