@@ -217,6 +217,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`ccx vcs merge` merges only the head you name, and refuses a red check.**
+  `--match-head-commit <sha>` is now required, and the merge refuses when the
+  pull request's head is any other commit. One GraphQL read takes the head, the
+  open pull requests below it in its native stack, and every check on each
+  head, and a finished failing check on any pull request the merge would land
+  refuses it. `--red-on-main <run>` lets it through when that GitHub Actions run
+  on the default branch failed the same jobs of the same workflow. A stack
+  member with open pull requests below it is refused unless `--with-downstack`
+  says to land them together, and the report names each one it landed with its
+  merge commit. A pull request outside any stack now goes through the plain
+  merge API; a stack member still goes through the asynchronous one. `--admin`
+  is refused on any repository your own account does not own. Lanes merging a
+  stack member in a yasyf repository used to hand-roll `gh api` calls against
+  `merge-async`, since `gh pr merge` refuses one.
 - **A cleanup proof no longer writes a copy of each Git LFS file it reads.** The
   daemon's git children now run a clean filter built into `ccx`. It hashes the
   stream and returns the pointer `git-lfs` would, so an edit still shows as a

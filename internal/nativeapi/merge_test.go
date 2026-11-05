@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -18,9 +19,55 @@ func fastMergePoll(t *testing.T) {
 	t.Cleanup(func() { mergePoll = poll })
 }
 
-func TestMergePullRequestMergesAStackedPullRequestWithEveryOpenOneBelow(t *testing.T) {
+func TestReadMergeListsTheOpenPullRequestsBelowAStackMemberBottomUp(t *testing.T) {
+	pull := func(n int, state string) string {
+		return fmt.Sprintf(`{"number":%d,"state":%q,"headRefName":"b%d","headRefOid":"h%d","commits":{"nodes":[{"commit":{"statusCheckRollup":null}}]}}`, n, state, n, n)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reply := func(body string) {
+			if _, err := fmt.Fprint(w, body); err != nil {
+				t.Errorf("write fixture response: %v", err)
+			}
+		}
+		switch call := r.Method + " " + r.URL.Path; call {
+		case "GET /repos/org/repo/pulls":
+			if got := r.URL.Query().Get("head"); got != "org:b5" {
+				t.Errorf("head lookup = %q, want org:b5", got)
+			}
+			reply(`[{"number":5,"state":"open"}]`)
+		case "POST /graphql":
+			query, err := io.ReadAll(r.Body)
+			if err != nil || !strings.Contains(string(query), "pullRequest(number:5)") {
+				t.Errorf("merge read = %s, %v; want PR #5", query, err)
+			}
+			reply(fmt.Sprintf(`{"data":{"repository":{"defaultBranchRef":{"name":"main"},"pullRequest":{"number":5,"state":"OPEN","headRefName":"b5","headRefOid":"h5","commits":{"nodes":[]},"mergeCommit":null,"stackEntry":{"position":4},"stack":{"entries":{"nodes":[%s,%s,%s,%s,%s],"pageInfo":{"hasNextPage":false}}}}}}}`,
+				`{"position":5,"pullRequest":`+pull(6, "OPEN")+`}`,
+				`{"position":3,"pullRequest":`+pull(4, "OPEN")+`}`,
+				`{"position":1,"pullRequest":`+pull(2, "MERGED")+`}`,
+				`{"position":2,"pullRequest":`+pull(3, "OPEN")+`}`,
+				`{"position":4,"pullRequest":`+pull(5, "OPEN")+`}`))
+		default:
+			t.Errorf("unexpected %s", call)
+			http.Error(w, "unexpected", http.StatusInternalServerError)
+		}
+	}))
+	defer srv.Close()
+
+	plan, err := NewWithToken(srv.URL, "key").ReadMerge(context.Background(), MergeRequest{RepoOwner: "org", RepoName: "repo", Head: "b5"})
+	if err != nil {
+		t.Fatalf("read merge: %v", err)
+	}
+	below := make([]string, 0, len(plan.Below))
+	for _, pr := range plan.Below {
+		below = append(below, fmt.Sprintf("#%d %s %s", pr.Number, pr.Head, pr.HeadSHA))
+	}
+	if want := []string{"#3 b3 h3", "#4 b4 h4"}; !reflect.DeepEqual(below, want) || !plan.Stacked || plan.Pull.HeadSHA != "h5" || plan.DefaultBranch != "main" {
+		t.Fatalf("plan = %+v, below %v, want stacked #5 at h5 on main over %v", plan, below, want)
+	}
+}
+
+func TestMergePullRequestLandsAStackMemberWithTheOpenOnesBelowAndReadsEachBack(t *testing.T) {
 	fastMergePoll(t)
-	var calls []string
 	var asked map[string]any
 	polls := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -29,25 +76,7 @@ func TestMergePullRequestMergesAStackedPullRequestWithEveryOpenOneBelow(t *testi
 				t.Errorf("write fixture response: %v", err)
 			}
 		}
-		call := r.Method + " " + r.URL.Path
-		calls = append(calls, call)
-		merged := polls > 1
-		switch call {
-		case "GET /repos/org/repo/pulls":
-			if got := r.URL.Query().Get("head"); got != "org:mid" {
-				t.Errorf("head lookup = %q, want org:mid", got)
-			}
-			reply(`[{"number":5,"state":"open","head":{"ref":"mid"}}]`)
-		case "GET /repos/org/repo/pulls/4":
-			reply(fmt.Sprintf(`{"number":4,"state":"closed","merged":%t,"merge_commit_sha":"m4","head":{"ref":"low"}}`, merged))
-		case "GET /repos/org/repo/pulls/5":
-			if merged {
-				reply(`{"number":5,"state":"closed","merged":true,"merge_commit_sha":"m5","head":{"ref":"mid","sha":"head5"}}`)
-				return
-			}
-			reply(`{"number":5,"state":"open","head":{"repo":{"full_name":"org/repo"},"ref":"mid","sha":"head5"},"base":{"ref":"low"},"stack":{"number":8,"position":2,"size":3,"base":{"ref":"main"}}}`)
-		case "GET /repos/org/repo/stacks/8":
-			reply(`{"number":8,"pull_requests":[{"number":3,"state":"closed"},{"number":4,"state":"open"},{"number":5,"state":"open"},{"number":6,"state":"open"}]}`)
+		switch call := r.Method + " " + r.URL.Path; call {
 		case "PUT /repos/org/repo/pulls/5/merge-async":
 			if err := json.NewDecoder(r.Body).Decode(&asked); err != nil {
 				t.Errorf("decode merge body: %v", err)
@@ -61,6 +90,10 @@ func TestMergePullRequestMergesAStackedPullRequestWithEveryOpenOneBelow(t *testi
 				return
 			}
 			reply(`{"status":"merged","details":{"message":"Pull request was merged.","sha":"m5"}}`)
+		case "GET /repos/org/repo/pulls/4":
+			reply(`{"number":4,"state":"closed","merged":true,"merge_commit_sha":"m4","head":{"ref":"low"}}`)
+		case "GET /repos/org/repo/pulls/5":
+			reply(`{"number":5,"state":"closed","merged":true,"merge_commit_sha":"m5","head":{"ref":"mid"}}`)
 		default:
 			t.Errorf("unexpected %s", call)
 			http.Error(w, "unexpected", http.StatusInternalServerError)
@@ -68,9 +101,10 @@ func TestMergePullRequestMergesAStackedPullRequestWithEveryOpenOneBelow(t *testi
 	}))
 	defer srv.Close()
 
-	got, err := NewWithToken(srv.URL, "key").MergePullRequest(context.Background(), MergeRequest{RepoOwner: "org", RepoName: "repo", Head: "mid", Method: "squash", Admin: true})
+	plan := MergePlan{Pull: MergeCandidate{Number: 5, Head: "mid", HeadSHA: "head5"}, State: PROpen, Stacked: true, Below: []MergeCandidate{{Number: 4, Head: "low", HeadSHA: "head4"}}}
+	got, err := NewWithToken(srv.URL, "key").MergePullRequest(context.Background(), MergeRequest{RepoOwner: "org", RepoName: "repo", Method: "squash", Admin: true}, plan)
 	if err != nil {
-		t.Fatalf("merge: %v (calls %v)", err, calls)
+		t.Fatalf("merge: %v", err)
 	}
 	want := []MergedPR{{Number: 4, Head: "low", Status: "merged", SHA: "m4"}, {Number: 5, Head: "mid", Status: "merged", SHA: "m5"}}
 	if !reflect.DeepEqual(got, want) {
@@ -101,8 +135,6 @@ func TestMergePullRequestResumesAPendingRequestAndReportsItsOutcome(t *testing.T
 					}
 				}
 				switch call := r.Method + " " + r.URL.Path; call {
-				case "GET /repos/org/repo/pulls/7":
-					reply(`{"number":7,"state":"open","head":{"ref":"tip","sha":"head7"},"base":{"ref":"main"}}`)
 				case "PUT /repos/org/repo/pulls/7/merge-async":
 					if err := json.NewDecoder(r.Body).Decode(&asked); err != nil {
 						t.Errorf("decode merge body: %v", err)
@@ -111,6 +143,8 @@ func TestMergePullRequestResumesAPendingRequestAndReportsItsOutcome(t *testing.T
 					reply(`{"status":"pending","details":{"message":"A merge request is already pending.","uuid":"u-2"}}`)
 				case "GET /repos/org/repo/pulls/7/merge-async/u-2":
 					reply(tc.result)
+				case "GET /repos/org/repo/pulls/7":
+					reply(`{"number":7,"state":"closed","merged":true,"merge_commit_sha":"m7","head":{"ref":"tip"}}`)
 				default:
 					t.Errorf("unexpected %s", call)
 					http.Error(w, "unexpected", http.StatusInternalServerError)
@@ -118,7 +152,8 @@ func TestMergePullRequestResumesAPendingRequestAndReportsItsOutcome(t *testing.T
 			}))
 			defer srv.Close()
 
-			got, err := NewWithToken(srv.URL, "key").MergePullRequest(context.Background(), MergeRequest{RepoOwner: "org", RepoName: "repo", PRNumber: 7, Method: "rebase"})
+			plan := MergePlan{Pull: MergeCandidate{Number: 7, Head: "tip", HeadSHA: "head7"}, State: PROpen, Stacked: true}
+			got, err := NewWithToken(srv.URL, "key").MergePullRequest(context.Background(), MergeRequest{RepoOwner: "org", RepoName: "repo", Method: "rebase"}, plan)
 			if tc.err != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.err) {
 					t.Fatalf("merge error = %v, want %q", err, tc.err)
@@ -135,21 +170,23 @@ func TestMergePullRequestResumesAPendingRequestAndReportsItsOutcome(t *testing.T
 	}
 }
 
-func TestMergePullRequestReportsAnAlreadyMergedPullRequestWithoutMergingAgain(t *testing.T) {
+func TestMergePullRequestReportsAPlainMergeGitHubRefused(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if call := r.Method + " " + r.URL.Path; call != "GET /repos/org/repo/pulls/9" {
+		if call := r.Method + " " + r.URL.Path; call != "PUT /repos/org/repo/pulls/9/merge" {
 			t.Errorf("unexpected %s", call)
 			http.Error(w, "unexpected", http.StatusInternalServerError)
 			return
 		}
-		if _, err := fmt.Fprint(w, `{"number":9,"state":"closed","merged":true,"merge_commit_sha":"m9","head":{"ref":"done"}}`); err != nil {
+		w.WriteHeader(http.StatusConflict)
+		if _, err := fmt.Fprint(w, `{"message":"Head branch was modified. Review and try the merge again."}`); err != nil {
 			t.Errorf("write fixture response: %v", err)
 		}
 	}))
 	defer srv.Close()
 
-	got, err := NewWithToken(srv.URL, "key").MergePullRequest(context.Background(), MergeRequest{RepoOwner: "org", RepoName: "repo", PRNumber: 9, Method: "squash"})
-	if want := []MergedPR{{Number: 9, Head: "done", Status: "merged", SHA: "m9"}}; err != nil || !reflect.DeepEqual(got, want) {
-		t.Fatalf("merged = %+v, %v, want %+v", got, err, want)
+	plan := MergePlan{Pull: MergeCandidate{Number: 9, Head: "tip", HeadSHA: "head9"}, State: PROpen}
+	_, err := NewWithToken(srv.URL, "key").MergePullRequest(context.Background(), MergeRequest{RepoOwner: "org", RepoName: "repo", Method: "squash"}, plan)
+	if err == nil || !strings.Contains(err.Error(), "merge PR #9") || !strings.Contains(err.Error(), "Head branch was modified") {
+		t.Fatalf("merge = %v, want GitHub's refusal of PR #9", err)
 	}
 }
