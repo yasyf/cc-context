@@ -9,11 +9,15 @@ import (
 	"slices"
 	"strings"
 	"syscall"
+
+	"github.com/yasyf/cc-context/internal/gitdir"
 )
 
 // ErrPathNotFound reports that a path op's target does not exist on disk;
 // internal/cli.ExitCode maps it to exit 3.
 var ErrPathNotFound = errors.New("path not found")
+
+const leftOutListed = 5
 
 // ErrOutsideSparseCheckout reports a path tracked in the index but left out of
 // the sparse checkout; it always arrives wrapped with ErrPathNotFound.
@@ -64,6 +68,13 @@ func ResolvePath(op Op, a Args) (Args, string, error) {
 			fmt.Fprintf(&note, "# note: %v; searched the other paths\n", err)
 		}
 		a.Paths = slices.DeleteFunc(a.Paths, func(p string) bool { return slices.Contains(unread, p) })
+		if len(a.Paths) == 0 {
+			note.WriteString(sparseScopeNote())
+		}
+	case OpSearch:
+		if a.Path == "" {
+			note.WriteString(sparseScopeNote())
+		}
 	default:
 		return a, "", nil
 	}
@@ -125,6 +136,45 @@ func resolveLenient(op Op, path string) (string, string, error) {
 	default:
 		return path, "", fmt.Errorf("%s %q: several extension matches: %s", op, path, strings.Join(candidates, ", "))
 	}
+}
+
+// sparseScopeNote names the tracked directories under the working directory
+// that a sparse checkout leaves out, which a search scoped to the working
+// directory cannot see.
+func sparseScopeNote() string {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	root := gitdir.Root(cwd)
+	if root == "" {
+		return ""
+	}
+	if _, err := os.Stat(filepath.Join(gitdir.Dir(root), "info", "sparse-checkout")); err != nil {
+		return ""
+	}
+	enabled, err := exec.Command("git", "config", "--type=bool", "core.sparseCheckout").Output()
+	if err != nil || strings.TrimSpace(string(enabled)) != "true" {
+		return ""
+	}
+	dirs, err := exec.Command("git", "ls-tree", "-d", "--name-only", "-z", "HEAD").Output()
+	if err != nil {
+		return ""
+	}
+	var leftOut []string
+	for dir := range strings.SplitSeq(string(dirs), "\x00") {
+		if _, err := os.Stat(dir); dir != "" && errors.Is(err, os.ErrNotExist) {
+			leftOut = append(leftOut, dir)
+		}
+	}
+	if len(leftOut) == 0 {
+		return ""
+	}
+	listed := strings.Join(leftOut[:min(len(leftOut), leftOutListed)], ", ")
+	if more := len(leftOut) - leftOutListed; more > 0 {
+		listed += fmt.Sprintf(" and %d more", more)
+	}
+	return fmt.Sprintf("# note: not searched, outside the sparse checkout: %s; git sparse-checkout add <dir> checks one out\n", listed)
 }
 
 // sparseExcludedDir reports whether path is tracked but outside the sparse

@@ -21,7 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tracked but outside a sparse checkout, and note the skipped path with the
   `git sparse-checkout add <dir>` that checks it out. One such path had refused the whole search.
   `ccx code read`, `ccx code outline` and `ccx code replace` still refuse that path, and now name
-  the same command. A path tracked nowhere refuses as before.
+  the same command. A path tracked nowhere refuses as before. Given no path, `ccx code grep`,
+  `ccx code search` and `ccx code replace` in a sparse checkout start with one note naming up to
+  five tracked directories the checkout leaves out, since the search cannot see them.
 - `ccx vcs ship` and `ccx vcs stack submit` keep a title or body an open pull request already has,
   warn on stderr, and replace them only with `--replace-pr-text`. A blank live body still fills
   without the flag. A ship from a parent's tree, meant for a child `ccx vcs stack new` cut elsewhere,

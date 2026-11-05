@@ -355,13 +355,14 @@ func TestResolvePath(t *testing.T) {
 
 // TestResolvePathSparseCheckout pins how a path the index tracks but the sparse
 // checkout leaves out reaches each op: a search skips it with a note naming the
-// directory to check out, while a single-path op and a rewrite refuse with that
-// same command.
+// directory to check out, a single-path op and a rewrite refuse with that same
+// command, and a search given no path names the directories it cannot see.
 func TestResolvePathSparseCheckout(t *testing.T) {
 	tests := []struct {
 		name         string
 		op           Op
 		sparse       bool
+		leftOut      []string
 		in           Args
 		want         Args
 		wantNote     string
@@ -429,6 +430,31 @@ func TestResolvePathSparseCheckout(t *testing.T) {
 			want:   Args{Paths: []string{"go", "top"}},
 		},
 		{
+			name:     "pathless grep names the directories outside the cone",
+			op:       OpGrep,
+			sparse:   true,
+			wantNote: "# note: not searched, outside the sparse checkout: api; git sparse-checkout add <dir> checks one out\n",
+		},
+		{
+			name:     "pathless semantic search names the directories outside the cone",
+			op:       OpSearch,
+			sparse:   true,
+			in:       Args{Query: "archive"},
+			want:     Args{Query: "archive"},
+			wantNote: "# note: not searched, outside the sparse checkout: api; git sparse-checkout add <dir> checks one out\n",
+		},
+		{
+			name:     "pathless note bounds the directories it lists",
+			op:       OpGrep,
+			sparse:   true,
+			leftOut:  []string{"d1", "d2", "d3", "d4", "d5", "d6"},
+			wantNote: "# note: not searched, outside the sparse checkout: api, d1, d2, d3, d4 and 2 more; git sparse-checkout add <dir> checks one out\n",
+		},
+		{
+			name: "pathless grep in a full checkout adds no note",
+			op:   OpGrep,
+		},
+		{
 			name:         "tracked path deleted from a full checkout refuses as before",
 			op:           OpGrep,
 			in:           Args{Paths: []string{"api", "go"}},
@@ -449,6 +475,12 @@ func TestResolvePathSparseCheckout(t *testing.T) {
 			writePathcheckFile(t, filepath.Join("api", "sub", "a.go"))
 			writePathcheckFile(t, filepath.Join("go", "b.go"))
 			writePathcheckFile(t, "top")
+			for _, dir := range tt.leftOut {
+				if err := os.Mkdir(dir, 0o750); err != nil {
+					t.Fatal(err)
+				}
+				writePathcheckFile(t, filepath.Join(dir, "f"))
+			}
 			runPathcheckGit(t, "init", "-q")
 			runPathcheckGit(t, "add", ".")
 			runPathcheckGit(t, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qm", "init")
