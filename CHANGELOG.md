@@ -26,6 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or said "rate limit", and then on GitHub's schedule of at least a minute and with no ceiling.
   `ccx vcs status` gives its queue read 20 seconds, so a limit shows as an error line there rather
   than a stall.
+- `ccx vcs ship` names each failed hook in its summary, as `hooks failed: biome`, beside the hook
+  output it already prints on stderr.
+- `ccx vcs ship` runs its hook pass with mise locked in a repository that has a `mise.lock`, so a
+  hook that installs its tools with an older mise no longer rewrites the lockfile into the commit.
 - `ccx vcs ship --new-branch` from trunk on the native GitHub stack lane cuts the branch before the
   repository's hooks run, so a hook that refuses commits on trunk sees the branch the commit lands
   on. The lane had run the hooks on trunk and cut the branch after, so such a hook reported a

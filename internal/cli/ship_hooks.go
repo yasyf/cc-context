@@ -75,6 +75,8 @@ var (
 // place golangci-lint's survives.
 var shipHookLintExit = regexp.MustCompile(`(?m)^- hook id: \S*golangci\S*\n- exit code: (\d+)$`)
 
+var shipHookFailedID = regexp.MustCompile(`(?m)Failed\n- hook id: (\S+)$`)
+
 var errShipHookLintNoVerdict = errors.New("nothing was committed; rerun ship, or pass --no-verify to commit without the lint and let CI grade it")
 
 // shipRunHooks runs prek (via uvx) over the files ship is about to commit, once:
@@ -193,9 +195,21 @@ func shipRunHooks(ctx context.Context, errW io.Writer, dir render.Dir, kind vcs.
 		if passErr == nil {
 			return "hooks ok", covered, nil
 		}
-		return "hooks failed", covered, nil
+		return shipHookFailedSegment(buf.Bytes()), covered, nil
 	}
 	return "hooks fixed", covered, nil
+}
+
+func shipHookFailedSegment(output []byte) string {
+	matches := shipHookFailedID.FindAllSubmatch(output, -1)
+	ids := make([]string, 0, len(matches))
+	for _, m := range matches {
+		ids = append(ids, string(m[1]))
+	}
+	if len(ids) == 0 {
+		return "hooks failed"
+	}
+	return "hooks failed: " + strings.Join(ids, ", ")
 }
 
 func shipHookSnapshot(dir render.Dir, files []string) map[string][sha256.Size]byte {
@@ -291,9 +305,17 @@ func shipHookLintFailedExit(output []byte) string {
 // shipRunPrek spawns prek with uvx in dir, whose pin is what keeps GIT_DIR and
 // GIT_WORK_TREE off the hook child — each would otherwise point git at whatever
 // checkout invoked ccx, which from a linked worktree is not the one being
-// committed.
+// committed. A hook that runs through mise installs what is missing, and a mise
+// older than the one that wrote a repository's mise.lock rewrites that file as it
+// installs, which ship would then commit; locked mode installs from the file as
+// written. It refuses a tool the file does not list, so it is set only where a
+// mise.lock exists.
 func shipRunPrek(ctx context.Context, dir render.Dir, argv []string, w io.Writer) error {
-	return render.RunCLIStream(ctx, dir, "uvx", argv, w)
+	var env []string
+	if _, err := os.Stat(filepath.Join(string(dir), "mise.lock")); err == nil {
+		env = []string{"MISE_LOCKED=1"}
+	}
+	return render.RunCLIStreamEnv(ctx, dir, "uvx", argv, w, env)
 }
 
 // shipRefuseIndexLock refuses while another process holds the index lock of the
