@@ -11,18 +11,19 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/yasyf/cc-context/internal/ghapi"
+	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/version"
 )
 
 const (
-	baseURLProd    = "https://api.github.com"
-	requestTimeout = 30 * time.Second
+	baseURLProd       = "https://api.github.com"
+	requestTimeout    = 30 * time.Second
+	rateLimitPatience = 3 * time.Minute
 )
 
 var (
@@ -112,6 +113,7 @@ func (c *Client) request(ctx context.Context, base, token, identity, method, pat
 		case retryAfter >= 0 && limited < len(secondaryLimitWaits):
 			wait = max(secondaryLimitWaits[limited], retryAfter)
 			limited++
+			render.Announce(ctx, "GitHub rate-limited %s %s, retrying in %s (wait %d of %d)", method, path, wait.Round(time.Second), limited, len(secondaryLimitWaits))
 		case failed < len(transientWaits) && method != http.MethodPost && ctx.Err() == nil && transient(err):
 			wait = transientWaits[failed]
 			failed++
@@ -170,19 +172,19 @@ func (c *Client) attempt(ctx context.Context, base, token, identity, method, pat
 		if base != c.base {
 			return nil, -1, refusal
 		}
-		return nil, secondaryLimit(resp, payload), refusal
+		return nil, limitWait(resp, payload), refusal
 	}
 	return payload, -1, nil
 }
 
-func secondaryLimit(resp *http.Response, payload []byte) time.Duration {
-	if resp.StatusCode != http.StatusForbidden && resp.StatusCode != http.StatusTooManyRequests {
-		return -1
+func limitWait(resp *http.Response, payload []byte) time.Duration {
+	if wait, named := ghapi.LimitWait(resp.StatusCode, resp.Header, time.Now()); named {
+		if wait > rateLimitPatience {
+			return -1
+		}
+		return wait
 	}
-	if seconds, err := strconv.Atoi(resp.Header.Get("Retry-After")); err == nil {
-		return time.Duration(seconds) * time.Second
-	}
-	if remaining := resp.Header.Get("X-RateLimit-Remaining"); remaining != "0" && strings.Contains(strings.ToLower(statusMessage(payload)), "rate limit") {
+	if (resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests) && strings.Contains(strings.ToLower(statusMessage(payload)), "rate limit") {
 		return 0
 	}
 	return -1

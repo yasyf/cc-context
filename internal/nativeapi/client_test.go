@@ -14,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/yasyf/cc-context/internal/render"
 )
 
 func TestPullRequestInfoBatchesGitHubReadsInInputOrder(t *testing.T) {
@@ -1366,19 +1368,22 @@ func TestBranchHistoryReadsOriginPresenceAndPullRequestHeads(t *testing.T) {
 	}
 }
 
-func TestASecondaryRateLimitIsRetriedAndAPrimaryOneOrAPermissionRefusalIsNot(t *testing.T) {
+func TestARateLimitNamingAShortWaitOrNoneIsWaitedOutAndALongResetOrAPermissionRefusalIsNot(t *testing.T) {
 	secondaryLimitWaits = []time.Duration{time.Millisecond, time.Millisecond}
 	t.Cleanup(func() { secondaryLimitWaits = []time.Duration{time.Minute, 2 * time.Minute} })
+	limitedMessage := "API rate limit exceeded for user ID 709645. If you reach out to GitHub Support for help, please include the request ID E0F4:127C7B:253205:2798AC:6AECE65F and timestamp 2026-11-05 20:26:07 UTC."
 	cases := []struct {
 		name      string
 		remaining string
+		reset     time.Duration
 		message   string
 		calls     int
 		created   bool
 	}{
-		{"secondary", "3297", "API rate limit exceeded for user ID 709645.", 2, true},
-		{"primary", "0", "API rate limit exceeded for user ID 709645.", 1, false},
-		{"permission", "4000", "Resource not accessible by integration", 1, false},
+		{"a secondary limit with quota left", "3297", 0, limitedMessage, 2, true},
+		{"a spent quota that resets within the patience", "0", time.Second, limitedMessage, 2, true},
+		{"a primary limit that resets in an hour", "0", time.Hour, limitedMessage, 1, false},
+		{"a permission refusal", "4000", 0, "Resource not accessible by integration", 1, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1387,6 +1392,9 @@ func TestASecondaryRateLimitIsRetriedAndAPrimaryOneOrAPermissionRefusalIsNot(t *
 				calls++
 				if calls == 1 {
 					w.Header().Set("X-RateLimit-Remaining", tc.remaining)
+					if tc.reset > 0 {
+						w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(time.Now().Add(tc.reset).Unix(), 10))
+					}
 					w.WriteHeader(http.StatusForbidden)
 					_, _ = w.Write([]byte(`{"message":"` + tc.message + `"}`))
 					return
@@ -1395,9 +1403,14 @@ func TestASecondaryRateLimitIsRetriedAndAPrimaryOneOrAPermissionRefusalIsNot(t *
 				_, _ = w.Write([]byte(`{"number":46512}`))
 			}))
 			defer srv.Close()
-			_, err := NewWithToken(srv.URL, "github-key").post(context.Background(), "/repos/org/repo/pulls", map[string]any{"head": "feature"})
+			var notice strings.Builder
+			ctx := render.WithSlowWriter(context.Background(), &notice)
+			_, err := NewWithToken(srv.URL, "github-key").post(ctx, "/repos/org/repo/pulls", map[string]any{"head": "feature"})
 			if calls != tc.calls || (err == nil) != tc.created {
 				t.Fatalf("calls=%d err=%v, want calls=%d created=%v", calls, err, tc.calls, tc.created)
+			}
+			if announced := strings.Contains(notice.String(), "GitHub rate-limited POST /repos/org/repo/pulls, retrying in"); announced != tc.created {
+				t.Fatalf("notice = %q, want a wait announced = %v", notice.String(), tc.created)
 			}
 		})
 	}
