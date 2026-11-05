@@ -368,13 +368,19 @@ func (c *Client) submitPull(ctx context.Context, owner, repo string, entry Submi
 			return restPull{}, err
 		}
 		pull, above = left, upper
-		if !unstacked && entry.Move {
+		switch {
+		case unstacked:
+		case entry.Move && entry.InPlace:
+			if pull, err = c.leaveLiveStack(ctx, owner, repo, pull); err != nil {
+				return pull, err
+			}
+		case entry.Move:
 			moved, err := c.movePull(ctx, owner, repo, pull, entry)
 			if err != nil {
 				return moved, err
 			}
 			pull, values = moved, nil
-		} else if !unstacked {
+		default:
 			delete(values, "base")
 		}
 	}
@@ -579,6 +585,45 @@ func (c *Client) leaveDeadStack(ctx context.Context, owner, repo string, pull re
 		return restPull{}, nil, false, fmt.Errorf("PR #%d is still in native GitHub stack #%d after unstacking #%d", pull.Number, left.Stack.Number, pull.Stack.Number)
 	}
 	return left, above, true, nil
+}
+
+func (c *Client) leaveLiveStack(ctx context.Context, owner, repo string, pull restPull) (restPull, error) {
+	stacks := fmt.Sprintf("/repos/%s/%s/stacks", url.PathEscape(owner), url.PathEscape(repo))
+	path := fmt.Sprintf("%s/%d", stacks, pull.Stack.Number)
+	payload, err := c.get(ctx, path, nil)
+	if err != nil {
+		return restPull{}, err
+	}
+	var stack nativeStack
+	if err := json.Unmarshal(payload, &stack); err != nil {
+		return restPull{}, err
+	}
+	at := slices.Index(stack.numbers(), pull.Number)
+	if at < 0 {
+		return restPull{}, fmt.Errorf("native GitHub stack #%d does not list PR #%d, which names it as its stack", pull.Stack.Number, pull.Number)
+	}
+	var below []int
+	for _, pr := range stack.PullRequests[:at] {
+		if pr.State != "closed" {
+			below = append(below, pr.Number)
+		}
+	}
+	if _, err := c.do(ctx, http.MethodPost, path+"/unstack", nil); err != nil {
+		return restPull{}, fmt.Errorf("unstack native GitHub stack #%d to move PR #%d out of it: %w", pull.Stack.Number, pull.Number, err)
+	}
+	if len(below) > 1 {
+		if _, err := c.post(ctx, stacks, map[string]any{"pull_requests": below}); err != nil {
+			return restPull{}, fmt.Errorf("unstacked native GitHub stack #%d to move PR #%d, but relinking %v as one stack failed, so they stay unstacked until ccx vcs stack submit links them again: %w", pull.Stack.Number, pull.Number, below, err)
+		}
+	}
+	left, err := c.readPull(ctx, owner, repo, pull.Number)
+	if err != nil {
+		return restPull{}, err
+	}
+	if left.Stack != nil {
+		return restPull{}, fmt.Errorf("PR #%d is still in native GitHub stack #%d after unstacking #%d", pull.Number, left.Stack.Number, pull.Stack.Number)
+	}
+	return left, nil
 }
 
 func (c *Client) restackAbove(ctx context.Context, owner, repo string, pull restPull, above []int) (restPull, error) {

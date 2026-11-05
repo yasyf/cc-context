@@ -115,6 +115,7 @@ type SubmitPR struct {
 	RebaseOnlyChange bool         `json:"rebaseOnlyChange,omitempty"`
 	MaintainRetarget bool         `json:"maintainRetarget,omitempty"`
 	Move             bool         `json:"move,omitempty"`
+	InPlace          bool         `json:"inPlace,omitempty"`
 }
 
 // SubmitRequest groups branch submissions under one repository and stack trunk.
