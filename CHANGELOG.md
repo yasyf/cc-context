@@ -33,6 +33,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ccx vcs ship` and `ccx vcs stack rebase` take the local head over a remote that holds only a
+  copy of the branch's last push, as GitHub leaves one after `gh stack merge` squash-lands the
+  parent and replays the child onto trunk. A lane that had amended the child since its last push
+  was refused with `has diverged from origin/<branch> — someone pushed to it`, though nobody had.
 - `ccx vcs ship` and `ccx vcs stack rebase` on a native GitHub stack lane cut a pull request's
   base from origin when this checkout has no local branch of it, then record the stack on it. They
   used to refuse with a `git fetch origin <base>:<base>` to run by hand, which lanes on a fresh

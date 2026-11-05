@@ -146,3 +146,66 @@ func TestNativeStackParentIsTheOpenMemberGitHubHoldsThePullRequestOn(t *testing.
 		})
 	}
 }
+
+// TestNativeStackTakesALocalAmendOverGitHubsRestackOfItsLastPush is
+// desk-runner-books: gh stack merge squash-landed a, GitHub replayed b's last
+// push onto the new trunk, and the lane had since amended b. The remote held
+// nothing but a copy of b's own submitted commit, and ship refused it as
+// someone else's push.
+func TestNativeStackTakesALocalAmendOverGitHubsRestackOfItsLastPush(t *testing.T) {
+	f := shipRepo(t, vcstest.Remote())
+	f.Decorate(func(ctx context.Context) context.Context { return withStackProvider(ctx, true) })
+	mustRun(t, f.Env(), f.Dir, "git", "config", "ccx.stack", "github")
+	common := filepath.Join(f.Dir, ".git")
+	trunk := shipHead(t, f)
+	for _, name := range []string{"a", "b"} {
+		shipGTUntracked(t, f, name)
+	}
+	a := gitAt(t, f.Env(), f.Dir, "rev-parse", "a")
+	shipped := gitAt(t, f.Env(), f.Dir, "rev-parse", "b")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "a", "b")
+	if err := nativemeta.Init(f.Context(), common, "main"); err != nil {
+		t.Fatal(err)
+	}
+	for _, link := range []struct{ branch, parent, fork, head string }{{"a", "main", trunk, a}, {"b", "a", a, shipped}} {
+		if err := nativemeta.AdoptRoot(f.Context(), common, link.branch, link.parent, link.fork, link.head); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := nativemeta.RecordSubmitted(f.Context(), common, map[string]nativemeta.Version{"b": {HeadSha: shipped, BaseSha: a, BaseName: "a"}}); err != nil {
+		t.Fatal(err)
+	}
+	restackSquashRemote(t, f, "main", "a (#41)", "a")
+	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
+	server := filepath.Join(t.TempDir(), "server")
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", "--detach", server, "origin/main")
+	mustRun(t, f.Env(), server, "git", "cherry-pick", shipped)
+	mustRun(t, f.Env(), server, "git", "push", "-qf", "origin", "HEAD:b")
+	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
+	restacked := gitAt(t, f.Env(), f.Dir, "rev-parse", "origin/b")
+	writeShipFile(t, f.Dir, "b2.txt", "b2\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "b2.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-q", "--amend", "--no-edit")
+	amended := gitAt(t, f.Env(), f.Dir, "rev-parse", "b")
+	api := newGTAPIStub(t)
+	api.openPRs("b")
+	api.bases["b"], api.stacks["b"] = "main", 46
+	f.Decorate(api.ctx)
+	stubOpenPRs(t, f, map[string]*stackPR{
+		"a": {Number: 41, Title: "a", State: "MERGED", Landed: true, Head: a},
+		"b": {Number: 42, Title: "b", State: "OPEN", Base: "main", Head: restacked, NativeStack: 46},
+	})
+	stubStackStanding(t, f, nil)
+	l, err := resolveLane(f.Context(), "stack rebase", f.Dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	run, err := stackPlan(f.Context(), l, common, stackRebaseOpts{tip: "b", submit: true, dryRun: true})
+	if err != nil {
+		t.Fatalf("plan over GitHub's restack of b's last push: %v", err)
+	}
+	if got := run.branch("b").Head; got != amended {
+		t.Errorf("b plans from %s, want the local amend %s over the remote restack %s", shortOID(got), shortOID(amended), shortOID(restacked))
+	}
+}
