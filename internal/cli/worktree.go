@@ -725,7 +725,7 @@ func worktreeUntrackedChain(ctx context.Context, l lane, name, tip string) ([]gt
 	if err != nil {
 		return nil, err
 	}
-	return gtUntrackedChain(ctx, l.dir(), "worktree add", state, trunk, base, name, tip)
+	return gtUntrackedChain(ctx, l.dir(), "worktree add", state, trunk, base, name, tip, true)
 }
 
 func worktreeTrack(ctx context.Context, errW io.Writer, l lane, parent, path string) error {

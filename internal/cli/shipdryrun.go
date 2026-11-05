@@ -204,7 +204,7 @@ func dryRunNativeStack(ctx context.Context, l lane, o shipOpts, c *gtCache, r *s
 	if _, tracked := state[r.branch]; !tracked && o.parent == "" {
 		from = nativeStackFrom(state, r.parent, "")
 	}
-	moves, planned, err := nativeStackParents(ctx, l, state, from)
+	moves, planned, err := nativeStackParents(ctx, l, state, from, "")
 	var refusal *shipRefusal
 	if errors.As(err, &refusal) {
 		r.refusals = append(r.refusals, refusal.Error())
@@ -221,6 +221,10 @@ func dryRunNativeStack(ctx context.Context, l lane, o shipOpts, c *gtCache, r *s
 		}
 	}
 	return nil
+}
+
+func dryRunUnfetchedBase(base, child string) error {
+	return refuse("ship: %s, the base of %s, is no local branch, and a dry run fetches nothing — ship itself cuts it at origin's head; git fetch origin %s:%s previews past it", base, child, base, base)
 }
 
 // dryRunReparent reports the move ship makes for --parent on a branch graphite
@@ -300,6 +304,16 @@ func dryRunTrack(ctx context.Context, l lane, o shipOpts, state gtState, r *ship
 		if err != nil {
 			return err
 		}
+		if recorded.base != "" {
+			local, err := gitRefExists(ctx, l.dir(), "ship", gtRestackRef(recorded.base))
+			if err != nil {
+				return err
+			}
+			if !local {
+				r.refusals = append(r.refusals, dryRunUnfetchedBase(recorded.base, r.branch).Error())
+				return nil
+			}
+		}
 		o.parent = recorded.base
 	}
 	if o.parent != "" {
@@ -332,7 +346,7 @@ func dryRunTrack(ctx context.Context, l lane, o shipOpts, state gtState, r *ship
 		if err != nil {
 			return err
 		}
-		chain, err := gtUntrackedChain(ctx, l.dir(), "ship", state, r.trunk, parent, r.branch, gtRestackRef(r.branch))
+		chain, err := gtUntrackedChain(ctx, l.dir(), "ship", state, r.trunk, parent, r.branch, gtRestackRef(r.branch), false)
 		if err != nil {
 			return err
 		}

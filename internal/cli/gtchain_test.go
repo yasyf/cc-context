@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -229,5 +230,35 @@ func TestStackSubmitRefusesAnUntrackedBranchAtTheTipsCommitWithNoCutRecorded(t *
 	err := stackAdoptChain(cmd, render.Dir(f.Dir))
 	if err == nil || !strings.Contains(err.Error(), "c sits at the same commit as untracked x") {
 		t.Fatalf("adopt = %v, want a refusal naming x", err)
+	}
+}
+
+func TestGTMergeBaseNamesWhyNoCommonCommitExists(t *testing.T) {
+	f := shipRepo(t, vcstest.Remote())
+	shipGTUntracked(t, f, "feat")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "feat")
+	shallow := filepath.Join(t.TempDir(), "shallow")
+	mustRun(t, f.Env(), filepath.Dir(shallow), "git", "clone", "-q", "--no-local", "--depth", "1", "--branch", "main", f.RemoteDir, shallow)
+	mustRun(t, f.Env(), shallow, "git", "fetch", "-q", "--depth", "1", "origin", "feat:feat")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "--orphan", "lone")
+	writeShipFile(t, f.Dir, "lone.txt", "lone\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "lone.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-q", "-m", "lone")
+
+	for _, tt := range []struct{ name, dir, branch, want string }{
+		{name: "shallow clone", dir: shallow, branch: "feat", want: "test: git merge-base main feat found no common commit in this shallow clone — fetch the missing history with git fetch --deepen=<commits>, then run again"},
+		{name: "unrelated histories", dir: f.Dir, branch: "lone", want: "test: git merge-base main lone found no common commit: the two share no history"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := gtMergeBase(f.Context(), render.Dir(tt.dir), "test", "main", tt.branch)
+			if err == nil || err.Error() != tt.want {
+				t.Errorf("gtMergeBase error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+
+	base, err := gtMergeBaseDeepening(f.Context(), render.Dir(shallow), "test", "origin", "main", "feat")
+	if want := gitAt(t, f.Env(), f.Dir, "rev-parse", "main"); err != nil || base != want {
+		t.Errorf("gtMergeBaseDeepening = %q, %v, want %s once the shallow clone is deepened", base, err, want)
 	}
 }

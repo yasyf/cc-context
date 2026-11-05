@@ -577,7 +577,7 @@ func shipPreflightGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, c 
 	if plan.commitBeforeMove, err = gtCommitBeforeMove(ctx, l, o, plan, err); err != nil {
 		return branchPlan{}, "", err
 	}
-	nativeMoves, planned, err := nativeStackParents(ctx, l, state, nativeStackFrom(state, branch, o.parent))
+	nativeMoves, planned, err := nativeStackParents(ctx, l, state, nativeStackFrom(state, branch, o.parent), "origin")
 	if err != nil {
 		return branchPlan{}, "", err
 	}
@@ -1345,18 +1345,7 @@ func gtNativeTrackParent(ctx context.Context, l lane, branch string) (gtRecorded
 	if recorded.base == "" || recorded.base == trunk {
 		return gtRecordedParent{}, nil
 	}
-	local, err := gitRefExists(ctx, l.dir(), "ship", gtRestackRef(recorded.base))
-	if err != nil {
-		return gtRecordedParent{}, err
-	}
-	switch {
-	case local:
-		return recorded, nil
-	case recorded.published:
-		return gtRecordedParent{}, refuse("ship: %s, the branch of open #%d that %s was cut from, is no local branch — fetch it with git fetch origin %s:%s, then ship again", recorded.base, recorded.pr, branch, recorded.base, recorded.base)
-	default:
-		return gtRecordedParent{}, refuse("ship: %s, the base of %s's open #%d, is no local branch — fetch it with git fetch origin %s:%s, then ship again", recorded.base, branch, recorded.pr, recorded.base, recorded.base)
-	}
+	return recorded, nil
 }
 
 // gtPublishedBelow names the remote branches whose heads are among branch's

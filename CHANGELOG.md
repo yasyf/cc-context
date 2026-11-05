@@ -33,6 +33,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ccx vcs ship` and `ccx vcs stack rebase` on a native GitHub stack lane cut a pull request's
+  base from origin when this checkout has no local branch of it, then record the stack on it. They
+  used to refuse with a `git fetch origin <base>:<base>` to run by hand, which lanes on a fresh
+  worktree hit on every stacked pull request. `ship --dry-run` still fetches nothing, so it names
+  the base the ship would cut and the fetch that previews past it.
+- In a shallow clone, `ccx vcs ship`, `stack new`, `stack rebase`, `stack submit` and
+  `worktree add` deepen the clone from origin, up to 4096 commits, when a branch they record has
+  no merge base with its parent yet. A branch cut from origin in a shallow checkout used to fail
+  with `git merge-base <a> <b>: git: exit status 1:`, since git prints nothing on that exit. A
+  merge base still missing after the deepen, or one a `--dry-run` would have to fetch, now names
+  the shallow clone and the fetch that fills it; two unrelated histories say they share none.
 - `ccx vcs stack rebase --no-push` leaves a branch above the one checked out here alone when
   another lane's working copy holds it, as the pushing run does. The no-push run skipped that check
   and rebased the branch, resetting the other lane's live worktree. `--dry-run --no-push` now prints
