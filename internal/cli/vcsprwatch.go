@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -45,6 +46,7 @@ type prWatchSnapshot struct {
 	Evicted   string   `json:"evicted,omitempty"`
 	Squash    string   `json:"squash,omitempty"`
 	Job       string   `json:"job,omitempty"`
+	JobID     int64    `json:"jobId,omitempty"`
 }
 
 func (s prWatchSnapshot) terminal() bool { return s.State != "" && s.State != "OPEN" }
@@ -55,8 +57,17 @@ func (s prWatchSnapshot) jobSettled() bool {
 	return s.Job != "" && statusClassify(s.Job) != statusRunning
 }
 
+func (s prWatchSnapshot) jobReport(repo string) string {
+	state := strings.ToLower(s.Job)
+	if statusClassify(s.Job) != statusFailed || s.JobID == 0 {
+		return state
+	}
+	return fmt.Sprintf("%s: ccx vcs job-log %d -R %s", state, s.JobID, repo)
+}
+
 type prWatchEvent struct {
 	At     time.Time `json:"at"`
+	Repo   string    `json:"repo,omitempty"`
 	PR     int       `json:"pr,omitempty"`
 	Event  string    `json:"event"`
 	Detail string    `json:"detail,omitempty"`
@@ -67,7 +78,7 @@ func (e prWatchEvent) String() string {
 	if e.PR == 0 {
 		return strings.TrimSpace(e.Event + " " + e.Detail)
 	}
-	line := fmt.Sprintf("#%d %s", e.PR, e.Event)
+	line := fmt.Sprintf("%s#%d %s", e.Repo, e.PR, e.Event)
 	switch {
 	case e.Detail == "":
 	case e.Event == "ejected":
@@ -173,7 +184,7 @@ func (s prWatchSource) poll(ctx context.Context, numbers []int, prev map[int]prW
 	for _, number := range numbers {
 		snap := prWatchSnapshotOf(number, st.PRs[number], st.Trunk, prev[number])
 		if s.job != "" {
-			snap.Job = prWatchJobState(st.PRs[number].Rollup, s.job)
+			snap.Job, snap.JobID = prWatchJobState(st.PRs[number].Rollup, s.job)
 		}
 		tick.snapshots[number] = snap
 	}
@@ -183,23 +194,23 @@ func (s prWatchSource) poll(ctx context.Context, numbers []int, prev map[int]prW
 // prWatchJobState reads one check off the head's rollup. A finished rollup that
 // never names the check means the name is wrong or the check does not run on
 // this head, and waiting on it would never end.
-func prWatchJobState(rollup *statusRollup, job string) string {
+func prWatchJobState(rollup *statusRollup, job string) (string, int64) {
 	if rollup == nil {
-		return ""
+		return "", 0
 	}
-	state := ""
+	state, id := "", int64(0)
 	for _, check := range statusChecks(rollup) {
 		if check.Name != job {
 			continue
 		}
 		if state == "" || statusClassify(check.State) == statusRunning || statusClassify(check.State) == statusFailed && statusClassify(state) != statusRunning {
-			state = check.State
+			state, id = check.State, check.ID
 		}
 	}
 	if state == "" && rollup.State != "" && statusClassify(rollup.State) != statusRunning {
-		return prWatchJobAbsent
+		return prWatchJobAbsent, 0
 	}
-	return state
+	return state, id
 }
 
 func prWatchSnapshotOf(number int, pr prstate.PR, trunk prstate.Trunk, prev prWatchSnapshot) prWatchSnapshot {
@@ -312,6 +323,7 @@ type prWatchOpts struct {
 	state    string
 	prefix   string
 	job      string
+	repo     string
 }
 
 type prWatchRun struct {
@@ -325,6 +337,9 @@ type prWatchRun struct {
 
 func (r prWatchRun) emit(event prWatchEvent) error {
 	event.At = r.now().UTC()
+	if event.PR != 0 {
+		event.Repo = r.opts.repo
+	}
 	line := event.String()
 	if r.opts.json {
 		data, err := json.Marshal(event)
@@ -395,7 +410,7 @@ func (r prWatchRun) watch(ctx context.Context, numbers []int, snaps map[int]prWa
 		for _, n := range open {
 			settled, events := prWatchStep(n, snaps[n], tick.snapshots[n])
 			if settled.jobSettled() && (settled.Job != snaps[n].Job || settled.Head != snaps[n].Head) {
-				events = append(events, prWatchEvent{PR: n, Event: "job", Detail: r.opts.job + " " + strings.ToLower(settled.Job), Head: settled.Head})
+				events = append(events, prWatchEvent{PR: n, Event: "job", Detail: r.opts.job + " " + settled.jobReport(r.opts.repo), Head: settled.Head})
 			}
 			snaps[n] = settled
 			for _, event := range events {
@@ -442,12 +457,12 @@ func (r prWatchRun) reachedJob(watched []int, snaps map[int]prWatchSnapshot) (bo
 		snap := snaps[n]
 		switch {
 		case snap.jobSettled() && snap.Job == prWatchJobAbsent:
-			unmet = append(unmet, fmt.Sprintf("#%d finished its checks without %s", n, r.opts.job))
+			unmet = append(unmet, fmt.Sprintf("%s#%d finished its checks without %s", r.opts.repo, n, r.opts.job))
 		case snap.jobSettled() && statusClassify(snap.Job) == statusFailed:
-			unmet = append(unmet, fmt.Sprintf("#%d %s", n, strings.ToLower(snap.Job)))
+			unmet = append(unmet, fmt.Sprintf("%s#%d %s", r.opts.repo, n, snap.jobReport(r.opts.repo)))
 		case snap.jobSettled():
 		case snap.terminal():
-			unmet = append(unmet, fmt.Sprintf("#%d closed before %s settled", n, r.opts.job))
+			unmet = append(unmet, fmt.Sprintf("%s#%d closed before %s settled", r.opts.repo, n, r.opts.job))
 		default:
 			return false, nil
 		}
@@ -471,7 +486,7 @@ func (r prWatchRun) reached(watched []int, snaps map[int]prWatchSnapshot) (bool,
 			return false, nil
 		}
 		if !snaps[n].landed() {
-			unlanded = append(unlanded, "#"+strconv.Itoa(n))
+			unlanded = append(unlanded, fmt.Sprintf("%s#%d", r.opts.repo, n))
 		}
 	}
 	if r.opts.until == prWatchUntilLanded && len(unlanded) > 0 {
@@ -485,7 +500,7 @@ func newVcsPRWatchCmd() *cobra.Command {
 	var repo string
 	var stack bool
 	cmd := &cobra.Command{
-		Use:   "watch [<number>...]",
+		Use:   "watch [<number> | <owner/name#number>...]",
 		Short: "Stream one line per state transition of each pull request until they land",
 		Long: `Stream one line per state transition of each pull request, and nothing else.
 
@@ -516,13 +531,18 @@ exits 0 once every one closed either way; never keeps watching.
 --job <name> watches one named check on each pull request's current head instead
 of --until: one "job <name> <state>" line when it settles, exit 0 when it passed,
 skipped or went neutral, and 1 when it failed, when the pull request closed first,
-or when the rest of the head's checks finished without that name. A new head starts
-the check over.
+or when the rest of the head's checks finished without that name. A failure names
+the ccx vcs job-log command that reads the job's log, while its run may still be
+going. A new head starts the check over.
 
 --state persists the last snapshot so a restarted watch resumes without
 replaying state it already reported, and --once polls a single time, for a
 caller that drives the loop itself: it answers from the shared cache rather
 than wait out the 30-second spacing, so it spends at most one poll's latency.
+Each pull request is a number, #number, or owner/name#number, the last being the
+same as --repo. Without either, the repository is the current checkout's, so
+every event line names the repository it read.
+
 Output is line-buffered for Monitor.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runVcsPRWatch(cmd, args, repo, stack, o)
@@ -551,7 +571,7 @@ func runVcsPRWatch(cmd *cobra.Command, args []string, repo string, stack bool, o
 	if o.interval <= 0 {
 		return errors.New("pr watch: --interval must be positive")
 	}
-	numbers, err := prNumbers(args)
+	repo, numbers, err := prRefs(args, repo)
 	if err != nil {
 		return fmt.Errorf("pr watch: %w", err)
 	}
@@ -574,6 +594,7 @@ func runVcsPRWatch(cmd *cobra.Command, args []string, repo string, stack bool, o
 		}
 		repo = looked.NameWithOwner
 	}
+	o.repo = repo
 	snaps, err := loadPRWatchState(o.state)
 	if err != nil {
 		return err
@@ -598,14 +619,25 @@ func runVcsPRWatch(cmd *cobra.Command, args []string, repo string, stack bool, o
 	return run.watch(ctx, numbers, snaps)
 }
 
-func prNumbers(args []string) ([]int, error) {
+// prRefs reads pull request arguments, each N, #N or owner/name#N, and returns
+// their numbers with the one repository that repo and the arguments name, "" when
+// none does.
+func prRefs(args []string, repo string) (string, []int, error) {
 	numbers := make([]int, 0, len(args))
 	for _, arg := range args {
-		n, err := strconv.Atoi(strings.TrimPrefix(arg, "#"))
-		if err != nil || n <= 0 {
-			return nil, fmt.Errorf("%q is not a pull request number", arg)
+		name, number, qualified := strings.Cut(arg, "#")
+		if !qualified {
+			name, number = "", arg
 		}
+		n, err := strconv.Atoi(number)
+		if err != nil || n <= 0 || name != "" && strings.Count(name, "/") != 1 {
+			return "", nil, fmt.Errorf("%q is not a pull request number or owner/name#number", arg)
+		}
+		if name != "" && repo != "" && !strings.EqualFold(name, repo) {
+			return "", nil, fmt.Errorf("%s is not in %s; one command reads one repository", arg, repo)
+		}
+		repo = cmp.Or(repo, name)
 		numbers = append(numbers, n)
 	}
-	return numbers, nil
+	return repo, numbers, nil
 }

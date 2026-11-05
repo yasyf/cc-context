@@ -673,6 +673,63 @@ func TestPRWatchRunJobExitsOnTheNamedCheckOfTheCurrentHead(t *testing.T) {
 	}
 }
 
+func TestPRWatchRunNamesItsRepositoryAndTheFailedJobsLogCommand(t *testing.T) {
+	t.Parallel()
+	failed := prWatchSnapshot{State: "OPEN", Head: watchHeadA, Job: "FAILURE", JobID: 456}
+	var out bytes.Buffer
+	var slept []time.Duration
+	poller := &scriptedPoller{ticks: []prWatchTick{watchTick(map[int]prWatchSnapshot{7: failed})}}
+	run := newTestWatchRun(poller, prWatchOpts{interval: time.Minute, until: prWatchUntilLanded, job: "lint", repo: "o/r"}, &out, &slept)
+	err := run.watch(context.Background(), []int{7}, map[int]prWatchSnapshot{})
+	wantErr := "pr watch: job lint: o/r#7 failure: ccx vcs job-log 456 -R o/r"
+	if err == nil || err.Error() != wantErr {
+		t.Errorf("err = %v, want %q", err, wantErr)
+	}
+	if want := "o/r#7 job lint failure: ccx vcs job-log 456 -R o/r\n"; out.String() != want {
+		t.Errorf("output = %q, want %q", out.String(), want)
+	}
+}
+
+func TestPRRefs(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		args        []string
+		repo        string
+		wantRepo    string
+		wantNumbers []int
+		wantErr     string
+	}{
+		{name: "bare numbers leave the repository open", args: []string{"1", "#2"}, wantNumbers: []int{1, 2}},
+		{name: "a flag names it", args: []string{"1"}, repo: "o/r", wantRepo: "o/r", wantNumbers: []int{1}},
+		{name: "an argument names it", args: []string{"o/r#3036", "5"}, wantRepo: "o/r", wantNumbers: []int{3036, 5}},
+		{name: "an argument agrees with the flag in any case", args: []string{"O/R#1"}, repo: "o/r", wantRepo: "o/r", wantNumbers: []int{1}},
+		{name: "an argument disagrees with the flag", args: []string{"o/other#1"}, repo: "o/r", wantErr: "o/other#1 is not in o/r"},
+		{name: "two repositories", args: []string{"o/a#1", "o/b#2"}, wantErr: "o/b#2 is not in o/a"},
+		{name: "not a number", args: []string{"o/r#x"}, wantErr: "not a pull request number"},
+		{name: "no owner", args: []string{"r#1"}, wantErr: "not a pull request number"},
+		{name: "zero", args: []string{"#0"}, wantErr: "not a pull request number"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			repo, numbers, err := prRefs(tt.args, tt.repo)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("err = %v, want %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if repo != tt.wantRepo || !slices.Equal(numbers, tt.wantNumbers) {
+				t.Errorf("prRefs = %q %v, want %q %v", repo, numbers, tt.wantRepo, tt.wantNumbers)
+			}
+		})
+	}
+}
+
 func TestPRWatchRunJobFollowsANewHead(t *testing.T) {
 	t.Parallel()
 	poller := &scriptedPoller{ticks: []prWatchTick{
@@ -723,9 +780,23 @@ func TestPRWatchJobStateReadsTheNamedCheck(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			if got := prWatchJobState(tt.rollup, "lint"); got != tt.want {
+			if got, _ := prWatchJobState(tt.rollup, "lint"); got != tt.want {
 				t.Errorf("state = %q, want %q", got, tt.want)
 			}
 		})
 	}
+	t.Run("the id comes from the run that sets the state", func(t *testing.T) {
+		t.Parallel()
+		var checks statusRollup
+		raw := `{"state":"FAILURE","contexts":{"nodes":[` +
+			`{"__typename":"CheckRun","name":"lint","conclusion":"SUCCESS","databaseId":1},` +
+			`{"__typename":"CheckRun","name":"lint","conclusion":"FAILURE","databaseId":2},` +
+			`{"__typename":"CheckRun","name":"other","conclusion":"SUCCESS","databaseId":3}]}}`
+		if err := json.Unmarshal([]byte(raw), &checks); err != nil {
+			t.Fatal(err)
+		}
+		if state, id := prWatchJobState(&checks, "lint"); state != "FAILURE" || id != 2 {
+			t.Errorf("job = %q %d, want FAILURE 2", state, id)
+		}
+	})
 }

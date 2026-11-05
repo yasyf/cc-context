@@ -107,6 +107,7 @@ type statusCheck struct {
 	State    string `json:"state"`
 	Required bool   `json:"required,omitempty"`
 	External bool   `json:"external,omitempty"`
+	ID       int64  `json:"-"`
 }
 
 // statusReview is one reviewer's standing verdict. Stale means it was cast on a

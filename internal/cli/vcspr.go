@@ -8,7 +8,6 @@ import (
 	"io"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -180,13 +179,15 @@ func newVcsPRCmd() *cobra.Command {
 func newVcsPRStatusCmd() *cobra.Command {
 	var o vcsPRStatusOpts
 	cmd := &cobra.Command{
-		Use:   "status <number>...",
+		Use:   "status <number | owner/name#number>...",
 		Short: "Report each pull request's queue state, CI, approval, and whether it can land",
 		Long: `Report whether each pull request is queued, evicted, not queued, or landed,
 along with the checks on its head, its approval, and a one-word verdict.
 
 Pass all pull request numbers in one invocation. The command fetches their
-statuses together and prints one line per pull request in input order.
+statuses together and prints one line per pull request in input order, each
+naming its repository: the one owner/name#number or --repo names, else the
+current checkout's.
 
 CI is red when any check on the head failed, naming the first few, pending
 while any has not finished, green once something passed and nothing failed or
@@ -277,7 +278,7 @@ func newVcsPRStateCmd() *cobra.Command {
 	var prefixes []string
 	var wait, maxAge time.Duration
 	cmd := &cobra.Command{
-		Use:   "state [<number>...]",
+		Use:   "state [<number> | <owner/name#number>...]",
 		Short: "Print the shared cache's record of each pull request and lane prefix as JSON",
 		Long: `Print the machine-wide pull request cache's record of each named pull request,
 and of each open pull request on a branch under a --lane-prefix, as one JSON
@@ -306,7 +307,7 @@ never held fail naming the next probe.`,
 
 func runVcsPRState(cmd *cobra.Command, args []string, repo string, prefixes []string, wait, maxAge time.Duration) error {
 	ctx := cmd.Context()
-	numbers, err := prNumbers(args)
+	repo, numbers, err := prRefs(args, repo)
 	if err != nil {
 		return fmt.Errorf("pr state: %w", err)
 	}
@@ -346,15 +347,10 @@ func runVcsPRState(cmd *cobra.Command, args []string, repo string, prefixes []st
 
 func runVcsPRStatus(cmd *cobra.Command, args []string, o vcsPRStatusOpts) error {
 	ctx := cmd.Context()
-	numbers := make([]int, 0, len(args))
-	for _, arg := range args {
-		n, err := strconv.Atoi(strings.TrimPrefix(arg, "#"))
-		if err != nil || n <= 0 {
-			return fmt.Errorf("pr status: %q is not a pull request number", arg)
-		}
-		numbers = append(numbers, n)
+	repo, numbers, err := prRefs(args, o.repo)
+	if err != nil {
+		return fmt.Errorf("pr status: %w", err)
 	}
-	repo := o.repo
 	if repo == "" {
 		looked, err := vcs.LookupRepo(ctx, render.Dir(workingDir(ctx)), false)
 		if err != nil {
@@ -373,7 +369,7 @@ func runVcsPRStatus(cmd *cobra.Command, args []string, o vcsPRStatusOpts) error 
 		}
 		cmd.Println(string(data))
 	} else {
-		cmd.Print(renderPRQueue(reports))
+		cmd.Print(renderPRQueue(repo, reports))
 	}
 	if !slices.ContainsFunc(reports, func(r prStatusReport) bool { return r.Unread == "" }) {
 		return fmt.Errorf("pr status: read none of the %d pull requests", len(reports))
@@ -735,14 +731,14 @@ func classifyPRQueue(info gtapi.PullRequestInfo, mergeability, landedOn, activit
 	return r
 }
 
-func renderPRQueue(reports []prStatusReport) string {
+func renderPRQueue(repo string, reports []prStatusReport) string {
 	var b strings.Builder
 	for _, r := range reports {
 		if r.Unread != "" {
-			fmt.Fprintf(&b, "#%d  %s · %s\n", r.Number, r.Verdict, r.Unread)
+			fmt.Fprintf(&b, "%s#%d  %s · %s\n", repo, r.Number, r.Verdict, r.Unread)
 			continue
 		}
-		fmt.Fprintf(&b, "#%d  %s", r.Number, r.Queue)
+		fmt.Fprintf(&b, "%s#%d  %s", repo, r.Number, r.Queue)
 		switch r.Queue {
 		case prQueueLanded:
 			fmt.Fprintf(&b, " · squash %s on %s", shortSHA(r.Squash), r.Base)

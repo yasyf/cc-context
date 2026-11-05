@@ -602,7 +602,7 @@ func statusChecks(rollup *statusRollup) []statusCheck {
 	for _, c := range rollup.Contexts.Nodes {
 		check := statusCheck{Name: c.Context, State: c.State, External: true}
 		if c.Typename == "CheckRun" {
-			check = statusCheck{Name: c.Name, State: c.Conclusion}
+			check = statusCheck{Name: c.Name, State: c.Conclusion, ID: c.DatabaseID}
 			if c.Conclusion == "" {
 				check.State = c.Status
 			}

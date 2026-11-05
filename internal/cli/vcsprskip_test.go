@@ -70,7 +70,7 @@ func TestPRStatusGradesARedundantSkipByTheFullRunItDeferredTo(t *testing.T) {
 			if err != nil {
 				t.Fatalf("pr status: %v", err)
 			}
-			if want := "#25131  not queued · open · " + tt.want + "\n"; !strings.HasSuffix(out, want) || strings.Contains(out, "kept GitHub's verdict") != (tt.token == "") {
+			if want := "Forge-AI/monorepo#25131  not queued · open · " + tt.want + "\n"; !strings.HasSuffix(out, want) || strings.Contains(out, "kept GitHub's verdict") != (tt.token == "") {
 				t.Errorf("report = %q, want it to end %q and warn only on an unreadable build", out, want)
 			}
 		})
