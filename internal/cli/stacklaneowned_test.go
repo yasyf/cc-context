@@ -95,6 +95,52 @@ func TestStackRebaseLeavesABranchAboveThatAnotherWorktreeHoldsUnpushed(t *testin
 	}
 }
 
+func TestStackRebaseLeavesABranchAboveThatAnotherWorktreeHoldsWithOrWithoutPushing(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name  string
+		args  []string
+		says  string
+		moves bool
+	}{
+		{name: "push", args: []string{"rebase"}, says: ", not pushed; its lane runs ccx vcs stack submit", moves: true},
+		{name: "no_push", args: []string{"rebase", "--no-push"}, moves: true},
+		{name: "dry_run_no_push", args: []string{"rebase", "--dry-run", "--no-push"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := stackRebaseRepo(t, "base", "mid", "top")
+			mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "mid", "top")
+			mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "base")
+			held := restackSiblingPath(t, "held")
+			mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", held, "mid")
+			before := stackHeads(t, f, "mid", "top")
+			stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+			shipResetLog(t, f)
+
+			out, errOut, err := runStackCmd(t, f, tt.args...)
+			if err != nil {
+				t.Fatalf("stack %s from base: %v\n%s", strings.Join(tt.args, " "), err, errOut)
+			}
+			for _, want := range []string{
+				"mid held by " + held + tt.says,
+				"top sits on mid, held by " + held + tt.says,
+			} {
+				if !strings.Contains(out, want+"\n") {
+					t.Errorf("output = %q, want a line ending %q", out, want)
+				}
+			}
+			stackAssertUntouched(t, f, before)
+			if got := gitAt(t, f.Env(), held, "rev-parse", "HEAD"); got != before["mid"] {
+				t.Errorf("%s HEAD = %.12s, want it left at %.12s", held, got, before["mid"])
+			}
+			if got := stackOnto(t, f, "origin/main", "base"); got != tt.moves {
+				t.Errorf("local base on the new trunk = %t, want %t", got, tt.moves)
+			}
+		})
+	}
+}
+
 func TestStackContinuePushesOnlyTheLanesOwnBranches(t *testing.T) {
 	t.Parallel()
 	f := shipGTRepo(t, vcstest.GTStack("low", "mid"))
