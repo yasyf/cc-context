@@ -115,3 +115,52 @@ func TestShipGTResubmitsUntilGraphiteRecordsThePushedHead(t *testing.T) {
 		})
 	}
 }
+
+func TestShipGTExpectRemoteTakesOverAHeadAnotherWorkingCopyPushed(t *testing.T) {
+	for _, scenario := range []string{"lease on the foreign head", "lease on a head the remote left"} {
+		t.Run(scenario, func(t *testing.T) {
+			f := shipGTRepo(t)
+			api := stubGTAPI(t)
+			f.Decorate(api.ctx)
+			writeShipGH(t, f)
+			api.prs["feature"] = 7
+			seedPRViews(t, map[string]string{"feature": `{"number":7,"url":"https://github.com/x/pull/7","body":""}`})
+			mustRun(t, f.Env(), f.Dir, "git", "config", "remote.origin.fetch", "+refs/heads/main:refs/remotes/origin/main")
+			shipGTStack(t, f, "feature")
+			mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "feature")
+			left := shipHead(t, f)
+			other := filepath.Join(t.TempDir(), "other")
+			mustRun(t, f.Env(), f.Dir, "git", "clone", "-q", "-b", "feature", f.RemoteDir, other)
+			mustRun(t, f.Env(), other, "git", "config", "user.email", "other@example.invalid")
+			mustRun(t, f.Env(), other, "git", "config", "user.name", "Other")
+			writeShipFile(t, other, "foreign.txt", "replace me\n")
+			mustRun(t, f.Env(), other, "git", "add", "foreign.txt")
+			mustRun(t, f.Env(), other, "git", "commit", "-qm", "foreign")
+			mustRun(t, f.Env(), other, "git", "push", "-q", "origin", "feature")
+			foreign := gitAt(t, f.Env(), other, "rev-parse", "HEAD")
+			shipGTReady(t, f)
+
+			lease := foreign
+			if scenario == "lease on a head the remote left" {
+				lease = left
+			}
+			out, _, err := runShipCmdFull(f.Context(), t, "-m", "fix: rebuild", "--no-watch", "--expect-remote", lease)
+			remote := gitAt(t, f.Env(), f.Dir, "--git-dir="+f.RemoteDir, "rev-parse", "feature")
+			if lease == left {
+				if err == nil || !strings.Contains(err.Error(), "remote feature changed since last submit") {
+					t.Fatalf("ship error = %v, want the remote-changed refusal; output = %s", err, out)
+				}
+				if remote != foreign {
+					t.Errorf("remote feature = %s, want the foreign head %s kept", remote, foreign)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ship error = %v; output = %s", err, out)
+			}
+			if head := shipHead(t, f); remote != head {
+				t.Errorf("remote feature = %s, want the shipped head %s replacing the foreign one", remote, head)
+			}
+		})
+	}
+}

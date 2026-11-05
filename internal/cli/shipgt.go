@@ -2687,6 +2687,13 @@ func shipPushGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, meta ma
 		}
 		sub.otherLanes = slices.DeleteFunc(slices.Clone(chain), func(name string) bool { return !others[name] })
 	}
+	if o.expectRemote != "" {
+		sub.leases = maps.Clone(sub.leases)
+		if sub.leases == nil {
+			sub.leases = map[string]string{}
+		}
+		sub.leases[branch] = o.expectRemote
+	}
 	commonDir, err := c.common(ctx)
 	if err != nil {
 		return "", nil, nil, err
