@@ -484,12 +484,14 @@ func TestLookupRepoCaches(t *testing.T) {
 		ViewerLogin:      "yasyf",
 		ViewerPermission: "ADMIN",
 		Affiliated:       true,
+		DefaultBranch:    "main",
 	}
 	foreign := Repo{
 		NameWithOwner:    "cli/cli",
 		Owner:            "cli",
 		ViewerLogin:      "yasyf",
 		ViewerPermission: "READ",
+		DefaultBranch:    "trunk",
 	}
 
 	cold, err := LookupRepo(ctx, render.Dir(f.Dir), false)
