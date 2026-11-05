@@ -635,6 +635,27 @@ func Cap(s string, budgetTokens int) string {
 	)
 }
 
+// CapTail is Cap for a log, whose last lines say why it failed: it keeps the end
+// of s, cut at a line boundary, and leads with the footer naming what it omitted.
+// A non-positive budget returns s unchanged.
+func CapTail(s string, budgetTokens int) string {
+	body := strings.TrimRight(s, "\n")
+	limit := budgetTokens * charsPerToken
+	if budgetTokens <= 0 || limit/charsPerToken != budgetTokens || len(body) <= limit {
+		return s
+	}
+	cut := snapRuneStart(body, len(body)-limit)
+	if line := strings.IndexByte(body[cut:], '\n'); line >= 0 {
+		cut += line + 1
+	}
+	omitted := body[:cut]
+
+	return fmt.Sprintf(
+		"… +%d lines, ~%d tokens omitted above — re-run with a larger --budget\n%s\n",
+		strings.Count(strings.Trim(omitted, "\n"), "\n")+1, len(omitted)/charsPerToken, body[cut:],
+	)
+}
+
 // CapContinuation serves a fixed-stride page of span for a paged web read: the
 // byte window [offset*charsPerToken, (offset+budget)*charsPerToken), each bound
 // snapped backward to a UTF-8 rune start so page N's end equals page N+1's start

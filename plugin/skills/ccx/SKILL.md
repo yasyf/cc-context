@@ -455,10 +455,10 @@ endpoint outside the installation, anything but `repos/…`, `graphql`, and
 token, since the app's token gets HTTP 403 from it.
 The guard pack rewrites a read-only `gh pr`, `gh run`, `gh issue`, or
 `gh api` GET call to `ccx vcs gh -- …` on its own; end the command with
-`# ccx:raw` to keep it on the user's token. gh's own flags pass through unchanged: a job
-log from `gh api repos/OWNER/REPO/actions/jobs/<id>/logs` holds terminal
-escape sequences gh refuses to print without `--allow-escape-sequences`, under
-`ccx vcs gh` or not.
+`# ccx:raw` to keep it on the user's token. gh's own flags pass through unchanged. Read a
+failed job's log with `ccx vcs job-log <job-id>`, which needs only that job to
+have settled, not its run, strips escape sequences, and keeps the tail under
+`--budget`; `gh run view --job` refuses until the run completes.
 
 `ccx vcs guidelines` (alias
 `contributing`) fetches and caches the repo's PR templates, `CONTRIBUTING.md`, code
@@ -469,9 +469,11 @@ template exactly:
 ccx vcs info                                     # which lane a ship would take, and why
 ccx vcs status                                   # every branch, its PR, and what blocks it
 ccx vcs status --json                            # the same report as a structure
-ccx vcs pr status 123 124                         # queue state, CI, approval, and verdict, per PR
+ccx vcs pr status 123 124                         # queue state, CI, approval, and verdict, per PR; each line names its repo
+ccx vcs pr watch o/r#123                          # owner/name#N or --repo reads that repo; a bare number reads the checkout's
 ccx vcs pr state 123 124 --lane-prefix yasyf/work/  # shared cache records and lane PRs, as JSON
-ccx vcs pr watch 123 --job lint                  # exit when that one check settles on the PR's head: 0 passed, 1 failed
+ccx vcs pr watch 123 --job lint                  # exit when that one check settles on the PR's head: 0 passed, 1 failed, naming the job-log command
+ccx vcs job-log 126958155452                     # one settled job's plain log, tail kept under --budget, while its run still goes
 ccx vcs pr recreate 123                          # replace a PR Graphite's stale stack record leaves untracked
 ccx vcs gh -- pr checks 123                      # a gh read on the app's quota
 CCX_CALLER=watch.sh ccx vcs gh --max-age 5m -- pr view 123 --json state  # a cached, accounted poll

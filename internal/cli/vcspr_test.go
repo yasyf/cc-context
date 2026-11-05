@@ -265,9 +265,9 @@ func TestPRStatusReportsEachQueueState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pr status: %v", err)
 	}
-	want := "#25121  queued · enqueued b103a576 into dev · ci none · approved · queued\n" +
-		"#25131  not queued · open · ci none · approved · blocked:no-ci\n" +
-		"#25116  landed · squash 9cc33f05 on dev · approved · landed\n"
+	want := "Forge-AI/monorepo#25121  queued · enqueued b103a576 into dev · ci none · approved · queued\n" +
+		"Forge-AI/monorepo#25131  not queued · open · ci none · approved · blocked:no-ci\n" +
+		"Forge-AI/monorepo#25116  landed · squash 9cc33f05 on dev · approved · landed\n"
 	if out != want {
 		t.Errorf("report =\n%s\nwant\n%s", out, want)
 	}
@@ -327,7 +327,7 @@ func TestPRStatusReadsALabelledPRTheQueueDropped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pr status: %v", err)
 	}
-	if want := "#26918  evicted: it had merge conflicts at Sep 28, 3:32 PM UTC · ci none · approved · blocked:no-ci\n"; out != want {
+	if want := "Forge-AI/monorepo#26918  evicted: it had merge conflicts at Sep 28, 3:32 PM UTC · ci none · approved · blocked:no-ci\n"; out != want {
 		t.Errorf("report = %q, want %q", out, want)
 	}
 }
@@ -340,7 +340,7 @@ func TestPRStatusIgnoresActivityOfAnUnlabelledPROutOfTheQueue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pr status: %v", err)
 	}
-	if want := "#26918  not queued · open · ci none · approved · blocked:no-ci\n"; out != want {
+	if want := "Forge-AI/monorepo#26918  not queued · open · ci none · approved · blocked:no-ci\n"; out != want {
 		t.Errorf("report = %q, want %q", out, want)
 	}
 }
@@ -353,7 +353,7 @@ func TestPRStatusReportsAnEviction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pr status: %v", err)
 	}
-	if want := "#26918  evicted: it had merge conflicts at Sep 28, 3:32 PM UTC · conflicting · ci none · approved · blocked:conflict,no-ci\n"; out != want {
+	if want := "Forge-AI/monorepo#26918  evicted: it had merge conflicts at Sep 28, 3:32 PM UTC · conflicting · ci none · approved · blocked:conflict,no-ci\n"; out != want {
 		t.Errorf("report = %q, want %q", out, want)
 	}
 }
@@ -399,8 +399,8 @@ func TestPRStatusReadsTheQueueAsUnknownWhenGraphiteDoesNotAnswer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pr status: %v", err)
 	}
-	want := "#25121  unknown · open · ci none · approved · blocked:queue-unknown,no-ci\n" +
-		"#25116  landed · squash 9cc33f05 on dev · approved · landed\n"
+	want := "Forge-AI/monorepo#25121  unknown · open · ci none · approved · blocked:queue-unknown,no-ci\n" +
+		"Forge-AI/monorepo#25116  landed · squash 9cc33f05 on dev · approved · landed\n"
 	if !strings.HasSuffix(out, want) || !strings.Contains(out, "this poll carries no queue state") {
 		t.Errorf("report =\n%s\nwant it to end with\n%s", out, want)
 	}
@@ -450,9 +450,9 @@ func TestPRStatusFailsTheRowItCannotReadAndReportsTheRest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pr status: %v", err)
 	}
-	want := "#25121  queued · enqueued b103a576 into dev · ci none · approved · queued\n" +
-		"#25130  not queued · open · ci none · approved · blocked:no-ci\n" +
-		"#99999  unread · Forge-AI/monorepo has no pull request #99999\n"
+	want := "Forge-AI/monorepo#25121  queued · enqueued b103a576 into dev · ci none · approved · queued\n" +
+		"Forge-AI/monorepo#25130  not queued · open · ci none · approved · blocked:no-ci\n" +
+		"Forge-AI/monorepo#99999  unread · Forge-AI/monorepo has no pull request #99999\n"
 	if out != want {
 		t.Errorf("report =\n%s\nwant\n%s", out, want)
 	}
@@ -523,7 +523,7 @@ func TestPRStatusServesTheCacheMarkedStaleWhileRateLimited(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pr status: %v", err)
 	}
-	if want := "#25121  queued · enqueued b103a576 into dev · ci none · approved · queued\n"; fresh != want {
+	if want := "Forge-AI/monorepo#25121  queued · enqueued b103a576 into dev · ci none · approved · queued\n"; fresh != want {
 		t.Errorf("fresh report = %q, want %q", fresh, want)
 	}
 	prStateBackdate(t, time.Minute)
@@ -532,7 +532,7 @@ func TestPRStatusServesTheCacheMarkedStaleWhileRateLimited(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pr status under the quota backoff: %v", err)
 	}
-	if !strings.HasPrefix(out, "#25121  queued · enqueued b103a576 into dev · ci none · approved · queued · stale, polled 20") || len(github.queries) != 1 {
+	if !strings.HasPrefix(out, "Forge-AI/monorepo#25121  queued · enqueued b103a576 into dev · ci none · approved · queued · stale, polled 20") || len(github.queries) != 1 {
 		t.Errorf("stale report = %q after %d polls, want the cached verdict marked stale with no new poll", out, len(github.queries))
 	}
 	jsonOut, err := runPRStatusCmd(t, client, "--repo", "Forge-AI/monorepo", "--json", "25121")
@@ -602,9 +602,9 @@ func TestPRStatusReadsCIAndApprovalFromARealPoll(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pr status: %v", err)
 	}
-	want := "#29551  not queued · open · ci green · approved by poetic-svc, forge-pr-reviewer · landable\n" +
-		"#29552  not queued · open · ci red: buildkite/test · approved by poetic-svc, forge-pr-reviewer · blocked:ci-red\n" +
-		"#29558  not queued · open · ci red: buildkite/test · approved by poetic-svc, forge-pr-reviewer · blocked:ci-red\n"
+	want := "Forge-AI/monorepo#29551  not queued · open · ci green · approved by poetic-svc, forge-pr-reviewer · landable\n" +
+		"Forge-AI/monorepo#29552  not queued · open · ci red: buildkite/test · approved by poetic-svc, forge-pr-reviewer · blocked:ci-red\n" +
+		"Forge-AI/monorepo#29558  not queued · open · ci red: buildkite/test · approved by poetic-svc, forge-pr-reviewer · blocked:ci-red\n"
 	if out != want {
 		t.Errorf("report =\n%s\nwant\n%s", out, want)
 	}
@@ -621,7 +621,7 @@ func TestPRStatusReadsFailureHandlingAsQueued(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pr status: %v", err)
 	}
-	if want := "#31667  queued (failure handling) · into dev · ci none · approved · queued\n"; out != want {
+	if want := "Forge-AI/monorepo#31667  queued (failure handling) · into dev · ci none · approved · queued\n"; out != want {
 		t.Errorf("report = %q, want %q", out, want)
 	}
 
@@ -660,9 +660,9 @@ func TestPRStatusReadsGraphitesStackStateOverItsHeldCheck(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pr status: %v", err)
 	}
-	want := "#31124  not queued · open · ci green · approved · blocked:needs-restack (parent landed)\n" +
-		"#31126  not queued · open · ci green · approved · blocked:waiting-on-downstack #31124\n" +
-		"#31129  not queued · open · ci green · approved · landable\n"
+	want := "Forge-AI/monorepo#31124  not queued · open · ci green · approved · blocked:needs-restack (parent landed)\n" +
+		"Forge-AI/monorepo#31126  not queued · open · ci green · approved · blocked:waiting-on-downstack #31124\n" +
+		"Forge-AI/monorepo#31129  not queued · open · ci green · approved · landable\n"
 	if out != want {
 		t.Errorf("report =\n%s\nwant\n%s", out, want)
 	}
@@ -694,7 +694,7 @@ func TestPRStatusReadsAnUnknownMergeabilityFromREST(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pr status: %v", err)
 	}
-	if want := "#31511  not queued · open · ci pending: 1 running · approved · blocked:conflict,ci-pending\n"; out != want {
+	if want := "Forge-AI/monorepo#31511  not queued · open · ci pending: 1 running · approved · blocked:conflict,ci-pending\n"; out != want {
 		t.Errorf("report = %q, want %q", out, want)
 	}
 	if len(github.reads) != 2 {
@@ -713,7 +713,7 @@ func TestPRStatusReadsAStaleMergeabilityFromREST(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pr status: %v", err)
 	}
-	if want := "#31511  not queued · open · ci pending: 1 running · approved · blocked:ci-pending\n"; fresh != want || len(github.reads) != 0 {
+	if want := "Forge-AI/monorepo#31511  not queued · open · ci pending: 1 running · approved · blocked:ci-pending\n"; fresh != want || len(github.reads) != 0 {
 		t.Errorf("fresh report = %q after %d REST reads, want %q from the poll alone", fresh, len(github.reads), want)
 	}
 	prStateBackdate(t, time.Minute)
@@ -722,7 +722,7 @@ func TestPRStatusReadsAStaleMergeabilityFromREST(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pr status under the quota backoff: %v", err)
 	}
-	if !strings.HasPrefix(out, "#31511  not queued · open · ci pending: 1 running · approved · blocked:conflict,ci-pending · stale, polled 20") {
+	if !strings.HasPrefix(out, "Forge-AI/monorepo#31511  not queued · open · ci pending: 1 running · approved · blocked:conflict,ci-pending · stale, polled 20") {
 		t.Errorf("stale report = %q, want the REST conflict ahead of ci-pending", out)
 	}
 	if len(github.queries) != 1 || len(github.reads) != 2 {
@@ -940,7 +940,7 @@ func TestPRStatusMarksALineReadThroughREST(t *testing.T) {
 		Approval:      prApprovalReport{State: prApproved, Approvers: []string{"poetic-svc"}},
 		Verdict:       prVerdictLandable,
 	}
-	if got, want := renderPRQueue([]prStatusReport{report}), "#37837  not queued · open · ci green · approved by poetic-svc · landable · via REST\n"; got != want {
+	if got, want := renderPRQueue("Forge-AI/monorepo", []prStatusReport{report}), "Forge-AI/monorepo#37837  not queued · open · ci green · approved by poetic-svc · landable · via REST\n"; got != want {
 		t.Errorf("line = %q, want %q", got, want)
 	}
 }

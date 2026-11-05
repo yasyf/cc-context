@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -501,6 +502,41 @@ func TestCapFooterText(t *testing.T) {
 	want := "aaaa\n… +4 lines, ~5 tokens omitted — re-run with a larger --budget\n"
 	if got != want {
 		t.Errorf("Cap footer\n got = %q\nwant = %q", got, want)
+	}
+}
+
+func TestCapTail(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		in     string
+		budget int
+		want   string
+	}{
+		{name: "no budget keeps everything", in: "a\nb\n", budget: 0, want: "a\nb\n"},
+		{name: "within budget keeps everything", in: "a\nb\n", budget: 10, want: "a\nb\n"},
+		{name: "trailing newlines do not count", in: "abcd\n\n\n\n\n\n", budget: 1, want: "abcd\n\n\n\n\n\n"},
+		{
+			name:   "keeps whole last lines",
+			in:     "first line\nsecond line\nend\n",
+			budget: 1,
+			want:   "… +2 lines, ~5 tokens omitted above — re-run with a larger --budget\nend\n",
+		},
+		{
+			name:   "a last line longer than the budget is cut on a rune",
+			in:     "aaaa\nbbbbbbécde",
+			budget: 1,
+			want:   "… +2 lines, ~2 tokens omitted above — re-run with a larger --budget\nécde\n",
+		},
+		{name: "an overflowing budget keeps everything", in: "a\nb\n", budget: math.MaxInt64, want: "a\nb\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := CapTail(tt.in, tt.budget); got != tt.want {
+				t.Errorf("CapTail(%q, %d) = %q, want %q", tt.in, tt.budget, got, tt.want)
+			}
+		})
 	}
 }
 

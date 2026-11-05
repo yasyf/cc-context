@@ -68,9 +68,10 @@ var (
 	shipCIWatchTimeout = 12 * time.Hour
 )
 
-// ansiRE matches CSI escape sequences (colour, cursor moves) so a captured log
-// can be stripped to plain text before it is budget-capped.
-var ansiRE = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
+// ansiRE matches terminal escape sequences (CSI colour and cursor moves, OSC
+// titles and links, and short charset escapes) so a captured log can be stripped
+// to plain text before it is budget-capped.
+var ansiRE = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[ -/]*[0-~]`)
 
 var errShipMessageRequired = errors.New("ship: -m/--message is required unless --amend, --no-commit, or --pr-title")
 
