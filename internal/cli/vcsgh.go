@@ -131,7 +131,7 @@ func runVcsGh(cmd *cobra.Command, argv []string, maxAge time.Duration) error {
 	}
 	resource := ghResource(argv)
 	if !reads {
-		ghNoteLedgerError(cmd, reviewsAPI().Charge(ctx, ghapi.IdentityUser, resource))
+		ghNoteLedgerError(cmd, reviewsAPI().Charge(ctx, ghapi.IdentityUser, resource, ghChargeTarget(argv)))
 		err := ghRun(ctx, cmd, dir, argv, nil, stdin, cmd.OutOrStdout(), cmd.ErrOrStderr())
 		ghInvalidate(ghWrittenRepo(ctx, argv, func() string { return ghCheckoutRepo(ctx, dir) }))
 		return ghExit(err)
@@ -190,7 +190,7 @@ func runVcsGh(cmd *cobra.Command, argv []string, maxAge time.Duration) error {
 			}
 			ghNoteLedgerError(cmd, err)
 		}
-		ghNoteLedgerError(cmd, api.Charge(ctx, identity, resource))
+		ghNoteLedgerError(cmd, api.Charge(ctx, identity, resource, ghChargeTarget(argv)))
 		started := time.Now()
 		if !capture {
 			var stderr bytes.Buffer
@@ -404,7 +404,15 @@ func chargeGHChild(ctx context.Context, bin string, argv, env []string) error {
 	if !ok {
 		return nil
 	}
-	return reviewsAPI().Charge(ctx, ghapi.IdentityUser, resource)
+	return reviewsAPI().Charge(ctx, ghapi.IdentityUser, resource, ghChargeTarget(argv))
+}
+
+func ghChargeTarget(argv []string) string {
+	if argv[0] == "api" {
+		_, endpoint := ghAPIRequest(argv[1:])
+		return endpoint
+	}
+	return "gh " + strings.Join(argv[:min(2, len(argv))], " ")
 }
 
 // ghExpireForChild expires the cached reads a finished child's gh write or git
