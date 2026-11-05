@@ -41,6 +41,7 @@ const (
 	appJWTLifetime  = 9 * time.Minute
 	appJWTBackdate  = time.Minute
 	appDownFor      = 5 * time.Minute
+	appMintTimeout  = 10 * time.Second
 )
 
 var writeOnlyPermissions = map[string]bool{"workflows": true}
@@ -121,17 +122,18 @@ func defaultAppLoader(base string) *appLoader {
 }
 
 type appSource struct {
-	cfg  appConfig
-	base string
-	dir  string
-	http *http.Client
-	now  func() time.Time
-	key  func(context.Context) ([]byte, error)
-	warn sync.Once
+	cfg         appConfig
+	base        string
+	dir         string
+	http        *http.Client
+	now         func() time.Time
+	key         func(context.Context) ([]byte, error)
+	mintTimeout time.Duration
+	warn        sync.Once
 }
 
 func newAppSource(cfg appConfig, base, dir string) *appSource {
-	a := &appSource{cfg: cfg, base: strings.TrimSuffix(base, "/"), dir: dir, http: &http.Client{}, now: time.Now}
+	a := &appSource{cfg: cfg, base: strings.TrimSuffix(base, "/"), dir: dir, http: &http.Client{}, now: time.Now, mintTimeout: appMintTimeout}
 	a.key = a.runKeyCommand
 	return a
 }
@@ -170,8 +172,10 @@ func (a *appSource) token(ctx context.Context, repo string, margin time.Duration
 		if err := a.outage(); err != nil {
 			return err
 		}
+		mintCtx, cancel := context.WithTimeout(ctx, a.mintTimeout)
+		defer cancel()
 		var err error
-		tok, id, err = a.mintLocked(ctx, repo, margin, stale)
+		tok, id, err = a.mintLocked(mintCtx, repo, margin, stale)
 		if err != nil && !errors.Is(err, errNotInstalled) && ctx.Err() == nil {
 			a.storeOutage(err)
 		}

@@ -540,6 +540,37 @@ func TestProcessesWaitingOnAFailingMintSkipTheKeyCommand(t *testing.T) {
 	}
 }
 
+func TestAHungMintGivesUpBeforeItsWaitersAndLeavesThemTheUserToken(t *testing.T) {
+	t.Parallel()
+	f, ts := newFakeGitHub(t)
+	dir := t.TempDir()
+	var keyRuns atomic.Int32
+	var wg sync.WaitGroup
+	for range 4 {
+		wg.Go(func() {
+			src := testAppSource(ts.URL, dir)
+			src.mintTimeout = 200 * time.Millisecond
+			src.key = func(ctx context.Context) ([]byte, error) {
+				keyRuns.Add(1)
+				<-ctx.Done()
+				return nil, ctx.Err()
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			if _, err := Paginate[item](ctx, appClient(ts.URL, src).ForRepo("o/r"), "/repos/o/r/pulls"); err != nil {
+				t.Errorf("Paginate: %v", err)
+			}
+		})
+	}
+	wg.Wait()
+	if n := keyRuns.Load(); n != 1 {
+		t.Errorf("key runs = %d, want 1: a mint that outlives its deadline must record the outage for the readers queued behind it", n)
+	}
+	if got := f.tokensSeen(); strings.Join(got, ",") != "user-token,user-token,user-token,user-token" {
+		t.Errorf("tokens = %v, want every read on the user token", got)
+	}
+}
+
 func TestInstallationTokenIsTheAppsWhateverGHTokenHolds(t *testing.T) {
 	t.Parallel()
 	_, ts := newFakeGitHub(t)
