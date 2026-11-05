@@ -169,7 +169,7 @@ raw_accept='Accept: application/vnd.github.raw'
 # that tells a pull request the graphite merge queue landed — closed, with a null
 # mergedAt — from one a human abandoned.
 landing_fields='state mergedAt timelineItems(last: 1, itemTypes: [CLOSED_EVENT]) { nodes { ... on ClosedEvent { actor { login } } } }'
-checks_fields='commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }'
+checks_fields='commits(last: 1) { nodes { commit { oid statusCheckRollup { state } } } }'
 
 downstack_query() {
 	local n="$1" decls fields i
@@ -177,7 +177,7 @@ downstack_query() {
 	fields=''
 	for ((i = 0; i < n; i++)); do
 		decls="$decls, \$b$i: String!"
-		fields="$fields    b$i: pullRequests(headRefName: \$b$i, first: 1, orderBy: {field: CREATED_AT, direction: DESC}) { nodes { number url body baseRefName $landing_fields $checks_fields } }
+		fields="$fields    b$i: pullRequests(headRefName: \$b$i, first: 1, orderBy: {field: CREATED_AT, direction: DESC}) { nodes { number url body baseRefName headRefOid $landing_fields $checks_fields } }
 "
 	done
 	printf 'query(%s) {\n  repository(owner: $owner, name: $repo) {\n%s  }\n}' "$decls" "$fields"
@@ -187,7 +187,7 @@ downstack_query() {
 # status_protection_fields its statusProtectionFields.
 # TestVcsStatusArgvIsTheRecordedOne fails if either drifts from the Go.
 status_rule_fields='rules(first: 50) { nodes { type parameters { __typename ... on RequiredStatusChecksParameters { requiredStatusChecks { context } } } } }'
-status_pr_fields="number url body isDraft baseRefName headRefOid mergeable mergeStateStatus reviewDecision $landing_fields baseRef { name $status_rule_fields } files(first: 100) { totalCount nodes { path } } labels(first: 20) { nodes { name } } latestOpinionatedReviews(first: 20) { nodes { state author { login __typename } commit { oid } } } history: commits(last: 50) { nodes { commit { oid committedDate messageHeadline } } } checks: commits(last: 1) { nodes { commit { statusCheckRollup { state contexts(first: 100) { totalCount nodes { __typename ... on CheckRun { name conclusion status startedAt databaseId } ... on StatusContext { context state } } } } } } } events: timelineItems(last: 100, itemTypes: [LABELED_EVENT, UNLABELED_EVENT, HEAD_REF_FORCE_PUSHED_EVENT]) { nodes { __typename ... on LabeledEvent { createdAt label { name } actor { login } } ... on UnlabeledEvent { createdAt label { name } actor { login } } ... on HeadRefForcePushedEvent { createdAt beforeCommit { oid } } } } comments(last: 40) { nodes { id author { login } } }"
+status_pr_fields="number url body isDraft baseRefName headRefOid mergeable mergeStateStatus reviewDecision $landing_fields baseRef { name $status_rule_fields } files(first: 100) { totalCount nodes { path } } labels(first: 20) { nodes { name } } latestOpinionatedReviews(first: 20) { nodes { state author { login __typename } commit { oid } } } history: commits(last: 50) { nodes { commit { oid committedDate messageHeadline } } } checks: commits(last: 1) { nodes { commit { oid statusCheckRollup { state contexts(first: 100) { totalCount nodes { __typename ... on CheckRun { name conclusion status startedAt databaseId checkSuite { databaseId workflowRun { workflow { databaseId } } } } ... on StatusContext { context state } } } } } } } events: timelineItems(last: 100, itemTypes: [LABELED_EVENT, UNLABELED_EVENT, HEAD_REF_FORCE_PUSHED_EVENT]) { nodes { __typename ... on LabeledEvent { createdAt label { name } actor { login } } ... on UnlabeledEvent { createdAt label { name } actor { login } } ... on HeadRefForcePushedEvent { createdAt beforeCommit { oid } } } } comments(last: 40) { nodes { id author { login } } }"
 status_protection_fields='branchProtectionRules(first: 20) { nodes { pattern requiredStatusChecks { context } } }'
 
 status_query() {

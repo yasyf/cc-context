@@ -389,9 +389,11 @@ func resolveDownstackPRs(ctx context.Context, l lane, entries []stackEntry) {
 					URL         string `json:"url"`
 					Body        string `json:"body"`
 					BaseRefName string `json:"baseRefName"`
+					HeadRefOid  string `json:"headRefOid"`
 					Commits     struct {
 						Nodes []struct {
 							Commit struct {
+								OID               string `json:"oid"`
 								StatusCheckRollup struct {
 									State string `json:"state"`
 								} `json:"statusCheckRollup"`
@@ -419,7 +421,7 @@ func resolveDownstackPRs(ctx context.Context, l lane, entries []stackEntry) {
 		entries[i].HasBody = strings.TrimSpace(node.Body) != ""
 		entries[i].State = node.State
 		entries[i].MergedAt = node.MergedAt
-		if commits := node.Commits.Nodes; len(commits) > 0 {
+		if commits := node.Commits.Nodes; len(commits) > 0 && commits[0].Commit.OID == node.HeadRefOid {
 			entries[i].Checks = commits[0].Commit.StatusCheckRollup.State
 		}
 		switch node.verdict(l.gt) {
@@ -458,7 +460,7 @@ func downstackPRQuery(n int) string {
 		alias := downstackPRAlias(i)
 		decls = append(decls, "$"+alias+": String!")
 		fmt.Fprintf(&fields, "    %s: pullRequests(headRefName: $%s, first: 1, orderBy: {field: CREATED_AT, direction: DESC})"+
-			" { nodes { number url body baseRefName %s commits(last: 1) { nodes { commit { statusCheckRollup { state } } } } } }\n",
+			" { nodes { number url body baseRefName headRefOid %s commits(last: 1) { nodes { commit { oid statusCheckRollup { state } } } } } }\n",
 			alias, alias, prLandingFields)
 	}
 	return fmt.Sprintf("query(%s) {\n  repository(owner: $owner, name: $repo) {\n%s  }\n}", strings.Join(decls, ", "), fields.String())

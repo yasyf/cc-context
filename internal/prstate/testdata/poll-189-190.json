@@ -49,6 +49,7 @@
      "nodes": [
       {
        "commit": {
+        "oid": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
         "status": {
          "state": "SUCCESS"
         },
@@ -102,6 +103,7 @@
      "nodes": [
       {
        "commit": {
+        "oid": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
         "status": {
          "state": "SUCCESS"
         },

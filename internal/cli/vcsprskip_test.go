@@ -38,7 +38,7 @@ func stubBuildkite(t *testing.T, token string) {
 }
 
 func prSkippedNode() string {
-	checks := `"checks":{"nodes":[{"commit":{"status":{"state":"SUCCESS"},"statusCheckRollup":{"state":"SUCCESS","contexts":{"nodes":[` +
+	checks := `"checks":{"nodes":[{"commit":{"oid":"` + prNodeHead + `","status":{"state":"SUCCESS"},"statusCheckRollup":{"state":"SUCCESS","contexts":{"nodes":[` +
 		`{"__typename":"StatusContext","context":"buildkite/test","state":"SUCCESS","targetUrl":"` + prSkipBuild + `"}]}}}}]}`
 	return strings.Replace(prNode(25131, "OPEN", prComments()), `"checks":{"nodes":[]}`, checks, 1)
 }

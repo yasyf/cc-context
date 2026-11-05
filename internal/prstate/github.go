@@ -30,7 +30,7 @@ const (
 
 	prFields = "number state title createdAt author { login } isDraft baseRefName headRefName headRefOid mergeable mergeStateStatus " +
 		"reviewDecision latestOpinionatedReviews(first: 20) { nodes { state author { login } } } changedFiles mergeCommit { oid } labels(first: 50) { nodes { name } } " +
-		"checks: commits(last: 1) { nodes { commit { status { state } statusCheckRollup { state contexts(last: 100) { totalCount nodes { __typename " +
+		"checks: commits(last: 1) { nodes { commit { oid status { state } statusCheckRollup { state contexts(last: 100) { totalCount nodes { __typename " +
 		"... on CheckRun { name title conclusion status startedAt databaseId checkSuite { databaseId workflowRun { workflow { databaseId } } } } ... on StatusContext { context state targetUrl } } } } " +
 		"checkSuites(first: 50, filterBy: {appId: " + actionsAppID + "}) { nodes { status } } } } }"
 	activityFields = " comments(last: 100) { nodes { body } }"
@@ -126,6 +126,7 @@ type prNode struct {
 	Checks struct {
 		Nodes []struct {
 			Commit struct {
+				OID    string `json:"oid"`
 				Status *struct {
 					State string `json:"state"`
 				} `json:"status"`
@@ -437,8 +438,8 @@ func (p *pass) record(node prNode, t target, i int, resp response) (PR, error) {
 		}
 		pr.Reviews = append(pr.Reviews, review)
 	}
-	if len(node.Checks.Nodes) > 0 {
-		commit := node.Checks.Nodes[0].Commit
+	if checks := node.Checks.Nodes; len(checks) > 0 && checks[0].Commit.OID == node.HeadRefOid {
+		commit := checks[0].Commit
 		pr.Rollup = commit.StatusCheckRollup.Latest()
 		pr.Rollup.countUnfinishedActions(commit.CheckSuites.Nodes)
 		if commit.Status != nil {

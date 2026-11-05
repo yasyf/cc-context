@@ -22,6 +22,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ccx vcs pr watch --job` and `--until ci`, `ccx vcs pr status` and `pr state`, `ccx vcs status`,
+  and `ccx vcs info` no longer grade a freshly pushed head with the previous commit's checks. They
+  read a pull request's checks off its last commit, and for a few seconds after a push GitHub
+  already names the new head while that last commit is still the old one: on yasyf/cc-context#836,
+  three seconds after a push, `gh pr checks` listed the old commit's 35 passing checks and exited
+  0 while the new head had no check run and no workflow run at all. A watch could then report the
+  job passed on the new head. Each reader now asks for that commit's oid and takes its checks
+  only when it is the head, so the head reads as having no checks yet until GitHub catches up.
 - `ccx vcs gh --max-age` no longer serves a cached answer about check, commit status, or workflow
   run state: `gh pr checks`, `gh pr status`, `gh run`, `gh workflow view`, a commit's check-runs,
   check-suites, or statuses, actions runs or jobs, and any field, `--jq`, or GraphQL query naming

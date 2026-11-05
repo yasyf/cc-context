@@ -26,6 +26,7 @@
      "nodes": [
       {
        "commit": {
+        "oid": "66e5adfb6fe16c1f724e9b746d7b3558e9c57e7d",
         "statusCheckRollup": {
          "state": "FAILURE",
          "contexts": {
