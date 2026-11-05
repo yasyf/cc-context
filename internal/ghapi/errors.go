@@ -97,7 +97,7 @@ func statusError(method, target string, status int, header http.Header, payload 
 		Message string `json:"message"`
 	}
 	_ = json.Unmarshal(payload, &body)
-	wait, named := limitWait(status, header, now)
+	wait, named := LimitWait(status, header, now)
 	limited := named || status == http.StatusTooManyRequests ||
 		status == http.StatusForbidden && strings.Contains(strings.ToLower(body.Message), "rate limit")
 	return &StatusError{Method: method, URL: target, Status: status, Message: body.Message, Limited: limited, RetryAfter: wait}

@@ -33,6 +33,7 @@ type StatusError struct {
 	Status  int
 	Message string
 	Payload []byte
+	Header  http.Header
 }
 
 // Error includes the refused operation and the server diagnostic.

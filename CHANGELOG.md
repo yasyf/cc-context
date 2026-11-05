@@ -17,6 +17,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ccx vcs ship` waits out a Trunk `429` on its merge-queue read instead of failing after it has
+  committed, which left a commit unpublished until someone reran the ship, as on
+  Forge-AI/monorepo #50704. A queue read now retries on `Retry-After`, in seconds or as a date, or
+  on a floor doubling from one second, with up to a quarter of jitter. It gives up with the `429`
+  after five waits or two minutes of waiting, whichever comes first, and a `Retry-After` past two
+  minutes fails at once. A Trunk `429` had waited only when it carried a whole-second `Retry-After`
+  or said "rate limit", and then on GitHub's schedule of at least a minute and with no ceiling.
+  `ccx vcs status` gives its queue read 20 seconds, so a limit shows as an error line there rather
+  than a stall.
 - `ccx vcs ship --new-branch` from trunk on the native GitHub stack lane cuts the branch before the
   repository's hooks run, so a hook that refuses commits on trunk sees the branch the commit lands
   on. The lane had run the hooks on trunk and cut the branch after, so such a hook reported a

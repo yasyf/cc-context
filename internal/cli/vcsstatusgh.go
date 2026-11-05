@@ -291,7 +291,9 @@ func statusFillMergeability(ctx context.Context, st *vcsStatus) {
 	if len(numbers) == 0 {
 		return
 	}
-	statuses, err := gtAPI(ctx).MergeabilityStatuses(ctx, owner, name, numbers)
+	queueCtx, cancel := context.WithTimeout(ctx, mqProbeTimeout)
+	defer cancel()
+	statuses, err := gtAPI(ctx).MergeabilityStatuses(queueCtx, owner, name, numbers)
 	if err != nil {
 		st.GTError = err.Error()
 		return

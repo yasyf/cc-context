@@ -3,14 +3,23 @@ package nativeapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"math/rand/v2"
 	"net/http"
 	"net/url"
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/yasyf/cc-context/internal/ghapi"
+	"github.com/yasyf/cc-context/internal/render"
+)
+
+const (
+	trunkLimitRetries  = 5
+	trunkLimitPatience = 2 * time.Minute
 )
 
 type trunkPage[T any] struct {
@@ -31,11 +40,30 @@ func (c *Client) queueGet(ctx context.Context, path string, query url.Values, ou
 	if err != nil {
 		return err
 	}
-	payload, err := c.request(ctx, c.queueBase, token, ghapi.IdentityUser, http.MethodGet, path+"?"+query.Encode(), nil)
-	if err != nil {
-		return err
+	var waited time.Duration
+	for attempt := 0; ; attempt++ {
+		payload, err := c.request(ctx, c.queueBase, token, ghapi.IdentityUser, http.MethodGet, path+"?"+query.Encode(), nil)
+		if err == nil {
+			return json.Unmarshal(payload, out)
+		}
+		var refused *StatusError
+		if !errors.As(err, &refused) || refused.Status != http.StatusTooManyRequests {
+			return err
+		}
+		named, _ := ghapi.LimitWait(refused.Status, refused.Header, time.Now())
+		wait := max(named, time.Second<<attempt)
+		pause := wait + rand.N(wait/4+1) //nolint:gosec // jitter only spreads retries; nothing relies on it being unguessable
+		waited += pause
+		if attempt == trunkLimitRetries || waited > trunkLimitPatience {
+			return err
+		}
+		render.Announce(ctx, "Trunk rate-limited GET %s, retrying in %s (wait %d of %d)", path, pause.Round(time.Second), attempt+1, trunkLimitRetries)
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("%w: %w", ctx.Err(), err)
+		case <-time.After(pause):
+		}
 	}
-	return json.Unmarshal(payload, out)
 }
 
 func (c *Client) queueRepository(ctx context.Context, owner, repo string) (string, error) {
