@@ -765,12 +765,15 @@ func TestPRWatchJobStateReadsTheNamedCheck(t *testing.T) {
 		}
 		return &out
 	}
+	withOpenSuite := rollup("SUCCESS", "Socket Security=SUCCESS")
+	withOpenSuite.UnfinishedActions = 1
 	tests := []struct {
 		name   string
 		rollup *statusRollup
 		want   string
 	}{
 		{"no rollup yet", nil, ""},
+		{"not reported while an Actions run is open though every reported check finished", withOpenSuite, ""},
 		{"not reported while others run", rollup("PENDING", "other=PENDING"), ""},
 		{"reported", rollup("PENDING", "lint=SUCCESS", "other=PENDING"), "SUCCESS"},
 		{"absent from a finished rollup", rollup("SUCCESS", "other=SUCCESS"), prWatchJobAbsent},

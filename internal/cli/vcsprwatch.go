@@ -192,8 +192,9 @@ func (s prWatchSource) poll(ctx context.Context, numbers []int, prev map[int]prW
 }
 
 // prWatchJobState reads one check off the head's rollup. A finished rollup that
-// never names the check means the name is wrong or the check does not run on
-// this head, and waiting on it would never end.
+// never names the check, with every Actions suite on the head finished too, means
+// the name is wrong or the check does not run on this head, and waiting on it
+// would never end. An open suite may yet report it, however finished the rollup.
 func prWatchJobState(rollup *statusRollup, job string) (string, int64) {
 	if rollup == nil {
 		return "", 0
@@ -207,7 +208,7 @@ func prWatchJobState(rollup *statusRollup, job string) (string, int64) {
 			state, id = check.State, check.ID
 		}
 	}
-	if state == "" && rollup.State != "" && statusClassify(rollup.State) != statusRunning {
+	if state == "" && rollup.UnfinishedActions == 0 && rollup.State != "" && statusClassify(rollup.State) != statusRunning {
 		return prWatchJobAbsent, 0
 	}
 	return state, id
@@ -531,7 +532,8 @@ exits 0 once every one closed either way; never keeps watching.
 --job <name> watches one named check on each pull request's current head instead
 of --until: one "job <name> <state>" line when it settles, exit 0 when it passed,
 skipped or went neutral, and 1 when it failed, when the pull request closed first,
-or when the rest of the head's checks finished without that name. A failure names
+or when the rest of the head's checks and every GitHub Actions run on it finished
+without that name. A failure names
 the ccx vcs job-log command that reads the job's log, while its run may still be
 going. A new head starts the check over.
 
