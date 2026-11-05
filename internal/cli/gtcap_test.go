@@ -177,10 +177,10 @@ func TestShipGTClearsTheCapMarkOnceGraphiteRecordsTheBranch(t *testing.T) {
 }
 
 func TestStackListLineNamesABranchGraphiteHasNoRecordOf(t *testing.T) {
-	if got := stackListLine("feature", "", "/root", gtBranchState{}, true); !strings.Contains(got, "needs stack submit") {
+	if got := stackListLine("feature", "", "/root", gtBranchState{}, true, false); !strings.Contains(got, "needs stack submit") {
 		t.Errorf("line = %q, want the stack submit it needs", got)
 	}
-	if got := stackListLine("feature", "", "/root", gtBranchState{}, false); strings.Contains(got, "needs stack submit") {
+	if got := stackListLine("feature", "", "/root", gtBranchState{}, false, false); strings.Contains(got, "needs stack submit") {
 		t.Errorf("line = %q, want no mark on a recorded branch", got)
 	}
 }
