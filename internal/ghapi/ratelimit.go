@@ -28,16 +28,16 @@ var transientWaits = []time.Duration{2 * time.Second, 5 * time.Second, 15 * time
 // worth it: only a 403/429 whose Retry-After — or whose exhausted-quota reset —
 // lands within maxRateLimitWait is waited on.
 func retryDelay(status int, header http.Header, now time.Time) (time.Duration, bool) {
-	wait, ok := limitWait(status, header, now)
+	wait, ok := LimitWait(status, header, now)
 	if !ok || wait > maxRateLimitWait {
 		return 0, false
 	}
 	return wait, true
 }
 
-// limitWait reads the wait a 403/429 names: its Retry-After, else its exhausted
+// LimitWait reads the wait a 403/429 names: its Retry-After, else its exhausted
 // quota's reset. It reports false when the response names no wait at all.
-func limitWait(status int, header http.Header, now time.Time) (time.Duration, bool) {
+func LimitWait(status int, header http.Header, now time.Time) (time.Duration, bool) {
 	if status != http.StatusForbidden && status != http.StatusTooManyRequests {
 		return 0, false
 	}

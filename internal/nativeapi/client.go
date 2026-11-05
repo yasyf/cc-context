@@ -165,7 +165,12 @@ func (c *Client) attempt(ctx context.Context, base, token, identity, method, pat
 		return nil, -1, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return nil, secondaryLimit(resp, payload), statusError(method, req.URL.String(), resp.StatusCode, payload)
+		refusal := statusError(method, req.URL.String(), resp.StatusCode, payload)
+		refusal.Header = resp.Header
+		if base != c.base {
+			return nil, -1, refusal
+		}
+		return nil, secondaryLimit(resp, payload), refusal
 	}
 	return payload, -1, nil
 }
