@@ -137,7 +137,7 @@ func (c *Client) nativePullRequestInfo(ctx context.Context, req PullRequestInfoR
 func (c *Client) nativeSubmitPullRequests(ctx context.Context, req SubmitRequest) ([]SubmittedPR, error) {
 	request := nativeapi.SubmitRequest{RepoOwner: req.RepoOwner, RepoName: req.RepoName, TrunkBranchName: req.TrunkBranchName, TargetTrunkBranchName: req.TargetTrunkBranchName, MergeWhenReady: req.MergeWhenReady, RerequestReview: req.RerequestReview}
 	for _, p := range req.PRs {
-		request.PRs = append(request.PRs, nativeapi.SubmitPR{Action: nativeapi.SubmitAction(p.Action), Head: p.Head, HeadSha: p.HeadSha, Base: p.Base, BaseSha: p.BaseSha, PRNumber: p.PRNumber, Title: p.Title, Body: p.Body, Draft: p.Draft, Reviewers: p.Reviewers, ShouldRetarget: p.ShouldRetarget, RebaseOnlyChange: p.RebaseOnlyChange, MaintainRetarget: p.MaintainRetarget, Move: p.Move})
+		request.PRs = append(request.PRs, nativeapi.SubmitPR{Action: nativeapi.SubmitAction(p.Action), Head: p.Head, HeadSha: p.HeadSha, Base: p.Base, BaseSha: p.BaseSha, PRNumber: p.PRNumber, Title: p.Title, Body: p.Body, Draft: p.Draft, Reviewers: p.Reviewers, ShouldRetarget: p.ShouldRetarget, RebaseOnlyChange: p.RebaseOnlyChange, MaintainRetarget: p.MaintainRetarget, Move: p.Move, InPlace: p.InPlace})
 	}
 	submitted, err := c.native.SubmitPullRequests(ctx, request)
 	return commonSubmitted(submitted), commonNativeError(err)

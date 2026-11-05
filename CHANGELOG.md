@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ccx vcs stack move --onto <parent>` moves the checked-out branch and the branches above it onto
+  a new parent on a native GitHub stack lane, keeping every pull request. A pull request a native
+  stack holds on its old base used to stay there, or `stack submit --move` opened a new pull
+  request and closed the old one; the verb unstacks, retargets the pull request in place, links
+  it into the parent's stack, and links the pull requests left below it again. A lane that had to
+  put a fix below an open pull request shipped the fix standalone with a recorded land order.
 - `ccx vcs diff --stat` prints each changed file's added and removed line counts, like
   `git diff --stat`, with a totals header. It reads each file's hunks and classifies no symbols, so
   it is cheap on a large diff, and it prints no file content, so it masks nothing. A lane that

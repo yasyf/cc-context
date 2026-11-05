@@ -49,6 +49,7 @@ func newStackCmd() *cobra.Command {
 		newRestackCmd(),
 		newStackSubmitCmd(),
 		newStackDropCmd(),
+		newStackMoveCmd(),
 		newStackRebaseCmd(),
 		newStackContinueCmd(),
 		newStackRegenerateCmd(),
@@ -667,7 +668,7 @@ func runStackSubmit(cmd *cobra.Command, o shipOpts, include, parents []string, t
 	}
 	tracking := &stackTracking{}
 	cmd.SetContext(withStackTracking(ctx, tracking))
-	opts := stackRebaseOpts{members: chain, pinned: append(stackSkipNames(pinned), stackUnderNames(under)...), owners: holders, parents: parents, landed: o.landed, newPRs: o.newPRs, moves: o.moves, draft: &o.draft, ship: intent, submit: true, dropCommits: o.dropCommits, evictQueued: o.evictQueued, stayClean: !o.restack, restack: o.restack, to: to, include: include, otherLanes: o.allLanes}
+	opts := stackRebaseOpts{members: chain, pinned: append(stackSkipNames(pinned), stackUnderNames(under)...), owners: holders, parents: parents, landed: o.landed, newPRs: o.newPRs, moves: o.moves, moveInPlace: o.moveInPlace, draft: &o.draft, ship: intent, submit: true, dropCommits: o.dropCommits, evictQueued: o.evictQueued, stayClean: !o.restack, restack: o.restack, dryRun: o.dryRun, to: to, include: include, otherLanes: o.allLanes}
 	if err := runStackRebase(cmd, opts); err != nil {
 		return err
 	}
