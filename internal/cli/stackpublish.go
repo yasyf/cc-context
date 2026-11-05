@@ -182,7 +182,7 @@ func stackReplayedOnto(ctx context.Context, dir render.Dir, remote, ownBase, own
 func stackPublicationState(state gtState, run *stackRebaseRun) gtState {
 	state = maps.Clone(state)
 	trunk := state[run.Trunk]
-	trunk.Head = run.Pin
+	trunk.Trunk, trunk.Head, trunk.Parents = true, run.Pin, nil
 	state[run.Trunk] = trunk
 	for _, b := range run.Branches {
 		if b.Landed != "" {

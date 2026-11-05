@@ -326,6 +326,49 @@ func TestStackRebaseRefusesAPullRequestLessBranchBelowOneWithAPullRequest(t *tes
 	}
 }
 
+// TestStackRebaseTakesAPullRequestLessLineAsTrunk is board-card-previews's
+// rebase in cc-skills on 2026-11-05: its pull request is based on
+// dashboard-fold-2b, a long-lived line other pull requests merge into that has
+// no pull request of its own, and the run refused it instead of rebasing onto
+// the line.
+func TestStackRebaseTakesAPullRequestLessLineAsTrunk(t *testing.T) {
+	t.Parallel()
+	f := shipGTRepo(t, vcstest.GTStack("line", "feature"))
+	stubOpenPRs(t, f, map[string]*stackPR{"feature": {Number: 9000, Title: "feature", State: "OPEN", Base: "line"}})
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	api.prs["feature"] = 9000
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "line", "feature")
+	restackAdvanceRemote(t, f, "line", "merged.txt", "merged\n")
+	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	line := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "line")
+	local := gitAt(t, f.Env(), f.Dir, "rev-parse", "line")
+
+	_, errOut, err := runStackCmd(t, f, "rebase")
+	if err != nil {
+		t.Fatalf("stack rebase = %v, want feature rebased onto the line", err)
+	}
+	if !strings.Contains(errOut, "line has no pull request and the pull request above it is based on it, so the run takes it as trunk") {
+		t.Errorf("stderr = %q, want the line named as trunk", errOut)
+	}
+	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "line"); got != line {
+		t.Errorf("origin line moved to %s, want it left at %s", got, line)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "line"); got != local {
+		t.Errorf("local line moved to %s, want it left at %s", got, local)
+	}
+	published := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature")
+	if n := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", line+".."+published); n != "1" || !stackOnto(t, f, line, published) {
+		t.Errorf("origin feature holds %s commits over the line's published head, want its own 1 on it", n)
+	}
+	if stackOnto(t, f, "origin/main", published) {
+		t.Error("origin feature carries trunk's new commit, want the line below it left off trunk")
+	}
+	if posts := api.submitHeads(); !slices.Equal(posts, []string{"feature"}) {
+		t.Errorf("submit posts = %v, want feature alone", posts)
+	}
+}
+
 func TestStackRebaseMovesEachSourceOntoItsPublishedHead(t *testing.T) {
 	t.Parallel()
 	f := stackRebaseRepo(t, "base", "feature")
