@@ -27,6 +27,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and rebased the branch, resetting the other lane's live worktree. `--dry-run --no-push` now prints
   the same held lines the real run acts on. `ccx vcs stack continue` applies the saved plan, so it
   inherits the held set.
+- `ccx vcs ship --dry-run` no longer refuses for want of `-m`, `--amend`, `--no-commit` or
+  `--pr-title`. A dry run writes no commit, so it has no message to need; the refusal made a lane
+  invent a title only to preview where a ship would go.
 - `ccx vcs pr watch --job` and `--until ci`, `ccx vcs pr status` and `pr state`, `ccx vcs status`,
   and `ccx vcs info` no longer grade a freshly pushed head with the previous commit's checks. They
   read a pull request's checks off its last commit, and for a few seconds after a push GitHub
