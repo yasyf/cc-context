@@ -4,7 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 )
@@ -12,6 +14,10 @@ import (
 // ErrPathNotFound reports that a path op's target does not exist on disk;
 // internal/cli.ExitCode maps it to exit 3.
 var ErrPathNotFound = errors.New("path not found")
+
+// ErrOutsideSparseCheckout reports a path tracked in the index but left out of
+// the sparse checkout; it always arrives wrapped with ErrPathNotFound.
+var ErrOutsideSparseCheckout = errors.New("outside the sparse checkout")
 
 // ResolvePath resolves filesystem operands before dispatch and returns a note
 // for each uniquely inferred sibling path.
@@ -36,14 +42,28 @@ func ResolvePath(op Op, a Args) (Args, string, error) {
 		}
 	case OpGrep, OpStructural, OpReplace:
 		a.Paths = append([]string(nil), a.Paths...)
+		var unread []string
+		var unreadErrs []error
 		for i, path := range a.Paths {
 			resolved, resolutionNote, err := resolveLenient(op, path)
+			if op != OpReplace && errors.Is(err, ErrOutsideSparseCheckout) {
+				unread = append(unread, path)
+				unreadErrs = append(unreadErrs, err)
+				continue
+			}
 			if err != nil {
 				return a, "", err
 			}
 			a.Paths[i] = resolved
 			note.WriteString(resolutionNote)
 		}
+		if len(unread) == len(a.Paths) && len(unread) > 0 {
+			return a, "", errors.Join(unreadErrs...)
+		}
+		for _, err := range unreadErrs {
+			fmt.Fprintf(&note, "# note: %v; searched the other paths\n", err)
+		}
+		a.Paths = slices.DeleteFunc(a.Paths, func(p string) bool { return slices.Contains(unread, p) })
 	default:
 		return a, "", nil
 	}
@@ -96,12 +116,36 @@ func resolveLenient(op Op, path string) (string, string, error) {
 	}
 	switch len(candidates) {
 	case 0:
+		if dir, ok := sparseExcludedDir(path); ok {
+			return path, "", fmt.Errorf("%s %q: %w: %w; git sparse-checkout add %s checks it out", op, path, ErrPathNotFound, ErrOutsideSparseCheckout, dir)
+		}
 		return path, "", fmt.Errorf("%s %q: %w: %w", op, path, ErrPathNotFound, err)
 	case 1:
 		return candidates[0], fmt.Sprintf("# note: %s → %s\n", path, candidates[0]), nil
 	default:
 		return path, "", fmt.Errorf("%s %q: several extension matches: %s", op, path, strings.Join(candidates, ", "))
 	}
+}
+
+// sparseExcludedDir reports whether path is tracked but outside the sparse
+// checkout, with the directory to name to "git sparse-checkout add", which in
+// cone mode takes a directory, never a file.
+func sparseExcludedDir(path string) (string, bool) {
+	if sparseExcluded(strings.TrimSuffix(path, "/") + "/") {
+		return path, true
+	}
+	if sparseExcluded(path) {
+		return filepath.Dir(path), true
+	}
+	return "", false
+}
+
+func sparseExcluded(pathspec string) bool {
+	out, err := exec.Command("git", "--literal-pathspecs", "ls-files", "-t", "-z", "--", pathspec).Output() //nolint:gosec // fixed git verb; the pathspec is literal
+	if err != nil {
+		return false
+	}
+	return slices.ContainsFunc(strings.Split(string(out), "\x00"), func(entry string) bool { return strings.HasPrefix(entry, "S ") })
 }
 
 func checkFile(op Op, path string) error {

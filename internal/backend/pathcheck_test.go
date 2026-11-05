@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -349,6 +350,153 @@ func TestResolvePath(t *testing.T) {
 				t.Errorf("error = %q, want containing expanded path %q", err, got.Path)
 			}
 		})
+	}
+}
+
+// TestResolvePathSparseCheckout pins how a path the index tracks but the sparse
+// checkout leaves out reaches each op: a search skips it with a note naming the
+// directory to check out, while a single-path op and a rewrite refuse with that
+// same command.
+func TestResolvePathSparseCheckout(t *testing.T) {
+	tests := []struct {
+		name         string
+		op           Op
+		sparse       bool
+		in           Args
+		want         Args
+		wantNote     string
+		wantErrIs    []error
+		wantNotErrIs []error
+		wantContains []string
+	}{
+		{
+			name:     "grep searches the cone and notes the directory outside it",
+			op:       OpGrep,
+			sparse:   true,
+			in:       Args{Paths: []string{"api", "go"}},
+			want:     Args{Paths: []string{"go"}},
+			wantNote: "# note: grep \"api\": path not found: outside the sparse checkout; git sparse-checkout add api checks it out; searched the other paths\n",
+		},
+		{
+			name:     "structural names the directory of a file outside the cone",
+			op:       OpStructural,
+			sparse:   true,
+			in:       Args{Paths: []string{"go", "api/sub/a.go"}},
+			want:     Args{Paths: []string{"go"}},
+			wantNote: "# note: structural \"api/sub/a.go\": path not found: outside the sparse checkout; git sparse-checkout add api/sub checks it out; searched the other paths\n",
+		},
+		{
+			name:         "grep refuses when every path is outside the cone",
+			op:           OpGrep,
+			sparse:       true,
+			in:           Args{Paths: []string{"api"}},
+			want:         Args{Paths: []string{"api"}},
+			wantErrIs:    []error{ErrPathNotFound, ErrOutsideSparseCheckout},
+			wantContains: []string{"git sparse-checkout add api"},
+		},
+		{
+			name:         "replace refuses a path outside the cone",
+			op:           OpReplace,
+			sparse:       true,
+			in:           Args{Paths: []string{"api", "go"}},
+			want:         Args{Paths: []string{"api", "go"}},
+			wantErrIs:    []error{ErrPathNotFound, ErrOutsideSparseCheckout},
+			wantContains: []string{"git sparse-checkout add api"},
+		},
+		{
+			name:         "read refuses a file outside the cone and names its directory",
+			op:           OpRead,
+			sparse:       true,
+			in:           Args{Path: "api/sub/a.go", Full: true},
+			want:         Args{Path: "api/sub/a.go", Full: true},
+			wantErrIs:    []error{ErrPathNotFound, ErrOutsideSparseCheckout},
+			wantContains: []string{"git sparse-checkout add api/sub"},
+		},
+		{
+			name:         "untracked path refuses without a sparse hint",
+			op:           OpGrep,
+			sparse:       true,
+			in:           Args{Paths: []string{"go", "nope"}},
+			want:         Args{Paths: []string{"go", "nope"}},
+			wantErrIs:    []error{ErrPathNotFound, fs.ErrNotExist},
+			wantNotErrIs: []error{ErrOutsideSparseCheckout},
+		},
+		{
+			name:   "paths inside the cone pass unchanged",
+			op:     OpGrep,
+			sparse: true,
+			in:     Args{Paths: []string{"go", "top"}},
+			want:   Args{Paths: []string{"go", "top"}},
+		},
+		{
+			name:         "tracked path deleted from a full checkout refuses as before",
+			op:           OpGrep,
+			in:           Args{Paths: []string{"api", "go"}},
+			want:         Args{Paths: []string{"api", "go"}},
+			wantErrIs:    []error{ErrPathNotFound, fs.ErrNotExist},
+			wantNotErrIs: []error{ErrOutsideSparseCheckout},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Chdir(t.TempDir())
+			if err := os.MkdirAll(filepath.Join("api", "sub"), 0o750); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir("go", 0o750); err != nil {
+				t.Fatal(err)
+			}
+			writePathcheckFile(t, filepath.Join("api", "sub", "a.go"))
+			writePathcheckFile(t, filepath.Join("go", "b.go"))
+			writePathcheckFile(t, "top")
+			runPathcheckGit(t, "init", "-q")
+			runPathcheckGit(t, "add", ".")
+			runPathcheckGit(t, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qm", "init")
+			if tt.sparse {
+				runPathcheckGit(t, "sparse-checkout", "set", "go")
+			} else if err := os.RemoveAll("api"); err != nil {
+				t.Fatal(err)
+			}
+
+			got, note, err := ResolvePath(tt.op, tt.in)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("ResolvePath() args = %+v, want %+v", got, tt.want)
+			}
+			if note != tt.wantNote {
+				t.Errorf("ResolvePath() note = %q, want %q", note, tt.wantNote)
+			}
+			if len(tt.wantErrIs) == 0 {
+				if err != nil {
+					t.Fatalf("ResolvePath() error = %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("ResolvePath() error = nil, want error")
+			}
+			for _, target := range tt.wantErrIs {
+				if !errors.Is(err, target) {
+					t.Errorf("errors.Is(%v, %v) = false, want true", err, target)
+				}
+			}
+			for _, target := range tt.wantNotErrIs {
+				if errors.Is(err, target) {
+					t.Errorf("errors.Is(%v, %v) = true, want false", err, target)
+				}
+			}
+			for _, want := range tt.wantContains {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error = %q, want containing %q", err, want)
+				}
+			}
+		})
+	}
+}
+
+func runPathcheckGit(t *testing.T, args ...string) {
+	t.Helper()
+	if out, err := exec.Command("git", args...).CombinedOutput(); err != nil { //nolint:gosec // the test names every git argument
+		t.Fatalf("git %v: %v\n%s", args, err, out)
 	}
 }
 
