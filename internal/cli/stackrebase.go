@@ -280,6 +280,7 @@ type stackRebaseOpts struct {
 	otherLanes  bool
 	include     []string
 	to          string
+	trunk       string
 	above       string
 	bump        []string
 	keepHeld    bool
@@ -421,7 +422,10 @@ stack rebase never opens a pull request. A stack none of whose branches has one
 is rebased locally as if --no-push were given. In a stack mixing the two, a
 branch without one that only branches without one sit on is rebased locally
 onto its parent's published head and not pushed, while the rest publish; one a
-branch with a pull request sits on is refused before anything moves.`,
+branch with a pull request sits on is refused before anything moves, unless
+that pull request is based on it: such a branch is a long-lived line other
+pull requests merge into, so the run takes it as trunk, rebases onto its
+published head, and leaves it and the branches below it where they are.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return stackSettleTracking(cmd, func() error { return runStackRebase(cmd, o) })
@@ -553,6 +557,13 @@ func stackBegin(ctx context.Context, cmd *cobra.Command, l lane, commonDir strin
 	case !o.submit && !o.noPush && run.NoPush:
 		cmd.Println("no branch this run moves has a pull request, and stack rebase never opens one, so it rebases locally without pushing")
 	case !o.submit && !o.noPush:
+		if line := stackLineBase(run); line != "" {
+			if _, err := fmt.Fprintf(cmd.ErrOrStderr(), "stack rebase: %s has no pull request and the pull request above it is based on it, so the run takes it as trunk, rebases onto its published head, and leaves it and the branches below it where they are\n", line); err != nil {
+				return err
+			}
+			o.trunk = line
+			return stackBegin(ctx, cmd, l, commonDir, others, o)
+		}
 		if err := stackKeepLocal(cmd, run); err != nil {
 			return err
 		}
@@ -698,6 +709,17 @@ func stackHeldLine(name, relation string, skip stackSkip, pushing bool) string {
 		line += ", not pushed; its lane runs ccx vcs stack submit"
 	}
 	return line
+}
+
+func stackLineBase(run *stackRebaseRun) string {
+	for _, b := range run.Branches {
+		p := run.branch(b.Parent)
+		if b.Landed == "" && b.Held == "" && !b.Kept && b.PR != nil && b.PR.State == "OPEN" && b.PR.Base == b.Parent &&
+			p != nil && p.Landed == "" && p.Held == "" && !p.Kept && p.PR == nil {
+			return p.Name
+		}
+	}
+	return ""
 }
 
 func stackBareBelow(run *stackRebaseRun, live, bare []string) []string {
@@ -1200,6 +1222,10 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	trunk, err := gtTrunkForBranch(prefix, state, o.tip)
 	if err != nil {
 		return nil, err
+	}
+	if o.trunk != "" && o.trunk != trunk {
+		state[o.trunk] = gtBranchState{Trunk: true, Head: state[o.trunk].Head}
+		trunk = o.trunk
 	}
 	tr, err := gtTrunkRef(ctx, l.dir(), prefix, trunk)
 	if err != nil {
@@ -5238,7 +5264,7 @@ func stackReplan(ctx context.Context, cmd *cobra.Command, l lane, commonDir stri
 	}
 	next, err := stackPlan(ctx, l, commonDir, stackRebaseOpts{
 		parents: parents, members: members, pinned: pinned, landed: landed, vetted: vetted, replayed: replayed, draft: run.Draft, draftAll: run.DraftAll, noVerify: run.NoVerify, ship: run.Ship,
-		tip: run.Tip, tipOnly: run.TipOnly, dropCommits: run.DropCommits, stayClean: run.StayClean, restack: run.Restack, allLanes: run.AllLanes, to: run.To, newPRs: run.NewPRs, moves: run.Moves,
+		tip: run.Tip, tipOnly: run.TipOnly, dropCommits: run.DropCommits, stayClean: run.StayClean, restack: run.Restack, allLanes: run.AllLanes, to: run.To, newPRs: run.NewPRs, moves: run.Moves, trunk: run.Trunk,
 	})
 	if err != nil {
 		return err

@@ -17,6 +17,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ccx vcs stack rebase` rebases a pull request whose base is a long-lived branch with no pull
+  request of its own, such as cc-skills' `dashboard-fold-2b`, onto that branch's published head
+  instead of refusing it. The run takes the branch as trunk and leaves it and the branches gt
+  records below it where they are. Before, every lane on such a line was refused once its base
+  moved, with "dashboard-fold-2, dashboard-fold-2b, dashboard-pages-needs have no pull request, and
+  stack rebase never opens one", and fell back to a raw rebase. A branch with no pull request that
+  sits below one whose pull request is based elsewhere is still refused.
 - `ccx vcs ship` waits out a Trunk `429` on its merge-queue read instead of failing after it has
   committed, which left a commit unpublished until someone reran the ship, as on
   Forge-AI/monorepo #50704. A queue read now retries on `Retry-After`, in seconds or as a date, or
