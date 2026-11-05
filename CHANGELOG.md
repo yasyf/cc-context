@@ -22,6 +22,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ccx vcs gh --max-age` no longer serves a cached answer about check, commit status, or workflow
+  run state: `gh pr checks`, `gh pr status`, `gh run`, `gh workflow view`, a commit's check-runs,
+  check-suites, or statuses, actions runs or jobs, and any field, `--jq`, or GraphQL query naming
+  `statusCheckRollup`, `checkRuns`, `checkSuites`, or a status field. Only a read that exited 0 was
+  stored, and `gh pr checks` exits 0 only when every check passed, so the cache held exactly the
+  green answer and served it for up to `--max-age` after a push from anywhere but this machine's
+  ccx moved the head. A lane that polled with `--max-age 5m`, as the long-running watcher rules
+  ask, could merge on that green while the new head's checks were still queued. These reads now
+  run every time; every other read still caches.
 - `ccx vcs ship` and the stack ship no longer report a run cancelled for a newer push as a CI
   failure. Every job of yasyf/cc-context run 41994242680 was cancelled because a newer head
   superseded it, and ship printed "failed: vet, build, lint, test..." and "CI failed". A cancelled

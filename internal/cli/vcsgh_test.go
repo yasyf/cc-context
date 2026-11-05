@@ -218,6 +218,7 @@ func TestGhCacheable(t *testing.T) {
 	tests := []struct {
 		name  string
 		argv  []string
+		stdin string
 		scope string
 		want  bool
 	}{
@@ -231,12 +232,23 @@ func TestGhCacheable(t *testing.T) {
 		{name: "watch", argv: []string{"run", "watch", "1"}, scope: "o/r"},
 		{name: "web", argv: []string{"pr", "view", "1", "--web"}, scope: "o/r"},
 		{name: "log", argv: []string{"run", "view", "1", "--log"}, scope: "o/r"},
+		{name: "pr checks", argv: []string{"pr", "checks", "1"}, scope: "o/r"},
+		{name: "run status", argv: []string{"run", "view", "1", "--json", "status,conclusion"}, scope: "o/r"},
+		{name: "run list", argv: []string{"run", "list", "--branch", "b"}, scope: "o/r"},
+		{name: "rollup field", argv: []string{"pr", "view", "1", "--json", "state,statusCheckRollup"}, scope: "o/r"},
+		{name: "check runs", argv: []string{"api", "repos/o/r/commits/abc/check-runs"}},
+		{name: "combined status", argv: []string{"api", "repos/o/r/commits/abc/status"}},
+		{name: "actions run", argv: []string{"api", "repos/o/r/actions/runs/1"}},
+		{name: "workflow runs", argv: []string{"api", "repos/o/r/actions/workflows/ci.yml/runs?head_sha=abc"}},
+		{name: "graphql rollup", argv: []string{"api", "graphql", "-f", "query={ repository(owner: \"o\", name: \"r\") { object(oid: \"abc\") { ... on Commit { statusCheckRollup { state } } } } }"}},
+		{name: "graphql rollup on stdin", argv: []string{"api", "graphql", "--input", "-"}, stdin: `{"query":"{ node(id: \"x\") { ... on Commit { status { state } } } }"}`},
+		{name: "pull request", argv: []string{"api", "repos/o/r/pulls/1"}, want: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			if got := ghCacheable(tt.argv, tt.scope); got != tt.want {
-				t.Errorf("ghCacheable(%q, %q) = %v, want %v", tt.argv, tt.scope, got, tt.want)
+			if got := ghCacheable(tt.argv, []byte(tt.stdin), tt.scope); got != tt.want {
+				t.Errorf("ghCacheable(%q, %q, %q) = %v, want %v", tt.argv, tt.stdin, tt.scope, got, tt.want)
 			}
 		})
 	}
@@ -367,6 +379,22 @@ func TestRunVcsGhAnyWriteExpiresAReadNamingNoRepository(t *testing.T) {
 	run([]string{"pr", "close", "1", "--repo", "o/r"})
 	if got := run(read); got == first {
 		t.Errorf("read after a write = %q, want a fresh answer", got)
+	}
+}
+
+func TestRunVcsGhAnswersEveryCheckReadFresh(t *testing.T) {
+	cmd, out := ghGatewayFixture(t)
+	read := []string{"pr", "checks", "1", "--repo", "o/r"}
+	answers := make([]string, 0, 2)
+	for range 2 {
+		out.Reset()
+		if err := runVcsGh(cmd, read, 5*time.Minute); err != nil {
+			t.Fatal(err)
+		}
+		answers = append(answers, out.String())
+	}
+	if answers[0] == answers[1] {
+		t.Errorf("both reads answered %q, want gh run each time so a pass on an old head never answers for a new one", answers[0])
 	}
 }
 
