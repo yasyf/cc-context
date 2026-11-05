@@ -38,6 +38,16 @@ rebasing that lane, run this from your branch's worktree:
 ccx vcs stack rebase --parent mine=theirs
 ```
 
+On a native GitHub stack lane, `--parent` and `ccx vcs stack submit --parent` leave
+a pull request in its native stack on the base it has, because GitHub fixes a
+stacked pull request's base. `ccx vcs stack move --onto <parent>` moves the
+checked-out branch and the branches above it onto `<parent>` and keeps every
+pull request: it unstacks the pull request's native stack, retargets the pull
+request, links it into `<parent>`'s stack, and links the pull requests left
+below it again. `--dry-run` names each retarget. To put a new branch below an
+open pull request, ship the new branch off trunk, then run `move --onto` from
+the open pull request's lane.
+
 When Graphite moves the bottom of a stack after a parent lands, restack only
 what sits above the moved branches, leaving their heads and their pull
 requests' approvals as they are:

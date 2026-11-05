@@ -3049,6 +3049,7 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 	defer func() { gtClaimPosted(ctx, errW, l.dir(), s.prefix, owner+"/"+name, submitted, entries) }()
 	for i, pr := range gtSubmitPRs(posted, s.createDraft(), s.updateDraft(tip)) {
 		pr.Move = s.publication != nil && slices.Contains(s.publication.Moves, pr.Head)
+		pr.InPlace = pr.Move && s.publication.MoveInPlace
 		out, err := client.SubmitPullRequests(ctx, gtapi.SubmitRequest{
 			RepoOwner:       owner,
 			RepoName:        name,

@@ -84,3 +84,33 @@ func TestStackSubmitRefusesMoveOnAGraphiteLane(t *testing.T) {
 		t.Fatalf("stack submit --move on a Graphite lane = %v, want the native-only refusal", err)
 	}
 }
+
+func TestStackMoveRefusesAGraphiteLane(t *testing.T) {
+	f := strayOnAnotherBaseRepo(t)
+	_, _, err := runStackCmd(t, f, "move", "--onto", "b")
+	if err == nil || !strings.Contains(err.Error(), "does not submit native GitHub stacks") || !strings.Contains(err.Error(), "stack submit --parent") {
+		t.Fatalf("stack move on a Graphite lane = %v, want the refusal naming stack submit --parent", err)
+	}
+}
+
+func TestStackPlanNamesTheInPlaceRetargetOfAMovedPullRequest(t *testing.T) {
+	branch := stackRebaseBranch{Name: "tip", Parent: "fix", WasParent: "lower", Replays: 2, PR: &stackPR{Number: 5, Title: "Tip", Base: "lower"}}
+	for _, tc := range []struct {
+		name    string
+		inPlace bool
+		moves   []string
+		want    bool
+	}{
+		{name: "moved in place", inPlace: true, moves: []string{"tip"}, want: true},
+		{name: "moved by a new pull request", moves: []string{"tip"}},
+		{name: "not moved", inPlace: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			run := &stackRebaseRun{Trunk: "main", Pin: "abc", Moves: tc.moves, MoveInPlace: tc.inPlace, Branches: []stackRebaseBranch{branch}}
+			got := strings.Join(stackPlanLines(run), "\n")
+			if has := strings.Contains(got, "retargets #5 from lower, relinking its native stack"); has != tc.want {
+				t.Fatalf("plan = %q, names the in-place retarget = %t, want %t", got, has, tc.want)
+			}
+		})
+	}
+}
