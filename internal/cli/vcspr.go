@@ -68,8 +68,9 @@ const (
 const reviewBotCheck = "ai-review"
 
 const (
-	prNamedFailures = 3
-	prStatusWorkers = 8
+	prNamedFailures    = 3
+	prStatusWorkers    = 8
+	prMergeabilityPage = 100
 )
 
 var prStatusRateLimitWait = 10 * time.Minute
@@ -392,6 +393,11 @@ func collectPRQueue(ctx context.Context, repo string, numbers []int, maxAge time
 	if err != nil && !errors.As(err, &missing) {
 		return nil, fmt.Errorf("pr status: %w", err)
 	}
+	if limited == nil {
+		if err := prReadUnknownMergeability(ctx, repo, st.PRs, numbers); err != nil {
+			_, _ = fmt.Fprintf(warn, "pr status: %v\n", err)
+		}
+	}
 	warn = &lockedWriter{w: warn}
 	reports := make([]prStatusReport, len(numbers))
 	group, gctx := errgroup.WithContext(ctx)
@@ -430,17 +436,9 @@ func prStatusOf(ctx context.Context, warn io.Writer, repo string, number int, pr
 		}
 		return prStatusReport{}, fmt.Errorf("pr status: the cache has no record of %s#%d", repo, number)
 	}
-	info := *pr.Graphite
-	landedOn := ""
-	switch {
-	case slices.Contains(pr.SquashOn, info.BaseRefName):
-		landedOn = info.BaseRefName
-	case len(pr.SquashOn) > 0:
-		landedOn = pr.SquashOn[0]
-	}
-	r := prQueueOf(info, pr, landedOn)
+	r := prGraphiteQueue(pr)
 	prReadSquashed(ctx, &r, pr)
-	if r.State == string(gtapi.PROpen) && (r.Queue == prQueueNotQueued || r.Queue == prQueueEvicted) && (limited != nil || pr.Mergeable == statusUnknown) {
+	if limited != nil && r.asksMergeability() {
 		mergeable, state, err := prReadMergeable(ctx, repo, number)
 		if err != nil {
 			_, _ = fmt.Fprintf(warn, "pr status: #%d: %v\n", number, err)
@@ -451,7 +449,23 @@ func prStatusOf(ctx context.Context, warn io.Writer, repo string, number int, pr
 	r.Conflicting = r.Queue == prQueueEvicted && pr.MergeStateStatus == "DIRTY"
 	r.Stale = staleAt(limited, pr.PolledAt)
 	r.Source = pr.Source
-	return newPRStatusReport(ctx, warn, repo, r, pr, info.DependentPRNumber), nil
+	return newPRStatusReport(ctx, warn, repo, r, pr, pr.Graphite.DependentPRNumber), nil
+}
+
+func prGraphiteQueue(pr prstate.PR) prQueueReport {
+	info := *pr.Graphite
+	landedOn := ""
+	switch {
+	case slices.Contains(pr.SquashOn, info.BaseRefName):
+		landedOn = info.BaseRefName
+	case len(pr.SquashOn) > 0:
+		landedOn = pr.SquashOn[0]
+	}
+	return prQueueOf(info, pr, landedOn)
+}
+
+func (r prQueueReport) asksMergeability() bool {
+	return r.State == string(gtapi.PROpen) && (r.Queue == prQueueNotQueued || r.Queue == prQueueEvicted)
 }
 
 func prReadSquashed(ctx context.Context, r *prQueueReport, pr prstate.PR) {
@@ -499,6 +513,70 @@ func prQueueWithoutGraphite(pr prstate.PR) prQueueReport {
 		r.Queue, r.Squash = prQueueLanded, pr.MergeCommit
 	}
 	return r
+}
+
+// GitHub answers UNKNOWN until it computes the merge commit the first ask
+// schedules, so what stays unknown is asked once more.
+func prReadUnknownMergeability(ctx context.Context, repo string, prs map[int]prstate.PR, numbers []int) error {
+	unknown := slices.DeleteFunc(slices.Clone(numbers), func(n int) bool {
+		pr := prs[n]
+		return pr.Mergeable != statusUnknown || pr.Graphite == nil || !prGraphiteQueue(pr).asksMergeability()
+	})
+	for asked := 1; len(unknown) > 0; asked++ {
+		read, err := prQueryMergeability(ctx, repo, unknown)
+		if err != nil {
+			return fmt.Errorf("read the mergeability of %d pull requests: %w", len(unknown), err)
+		}
+		for n, node := range read {
+			pr := prs[n]
+			pr.Mergeable, pr.MergeStateStatus = node.Mergeable, node.MergeStateStatus
+			prs[n] = pr
+		}
+		if asked == 2 {
+			return nil
+		}
+		unknown = slices.DeleteFunc(unknown, func(n int) bool { return prs[n].Mergeable != statusUnknown })
+		if len(unknown) == 0 {
+			return nil
+		}
+		if err := sleepCtx(ctx, statusMergeableRetry); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+type prMergeabilityNode struct {
+	Mergeable        string `json:"mergeable"`
+	MergeStateStatus string `json:"mergeStateStatus"`
+}
+
+func prQueryMergeability(ctx context.Context, repo string, numbers []int) (map[int]prMergeabilityNode, error) {
+	owner, name, ok := strings.Cut(repo, "/")
+	if !ok {
+		return nil, fmt.Errorf("repo %q is not owner/name", repo)
+	}
+	client := reviewsAPI().ForRepo(repo)
+	read := make(map[int]prMergeabilityNode, len(numbers))
+	for page := range slices.Chunk(numbers, prMergeabilityPage) {
+		var fields strings.Builder
+		for _, n := range page {
+			fmt.Fprintf(&fields, "p%d: pullRequest(number: %d) { mergeable mergeStateStatus } ", n, n)
+		}
+		query := fmt.Sprintf("query($owner: String!, $repo: String!) { repository(owner: $owner, name: $repo) { %s} }", fields.String())
+		resp, err := ghapi.GraphQL[struct {
+			Repository map[string]*prMergeabilityNode `json:"repository"`
+		}](ctx, client, query, map[string]any{"owner": owner, "repo": name})
+		if err != nil {
+			return nil, err
+		}
+		for _, n := range page {
+			if node := resp.Repository[fmt.Sprintf("p%d", n)]; node != nil {
+				read[n] = *node
+			}
+		}
+	}
+	return read, nil
 }
 
 // prReadMergeable asks GitHub's REST pull endpoint for a pull request's

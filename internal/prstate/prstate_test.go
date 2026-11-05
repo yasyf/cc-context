@@ -1144,8 +1144,8 @@ func TestAReaderThatLostItsSlotToAnotherClaimTakesThatPollPastItsBudget(t *testi
 	}
 }
 
-func TestAReaderNoPollAnswersWithinTheBudgetReadsThroughREST(t *testing.T) {
-	t.Parallel()
+func overBudgetStore(t *testing.T, replies ...reply) (*Store, *fakeGitHub, *clock) {
+	t.Helper()
 	dir := t.TempDir()
 	seed, err := Open(dir, &GitHub{owner: "yasyf", name: "cc-context"})
 	if err != nil {
@@ -1160,7 +1160,7 @@ func TestAReaderNoPollAnswersWithinTheBudgetReadsThroughREST(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := &clock{now: epoch.Add(5 * time.Second)}
-	store, gh := newStore(t, dir, c, nil)
+	store, gh := newStore(t, dir, c, nil, replies...)
 	gh.rest = rest190()
 	store.budget = time.Millisecond
 	store.sleep = func(ctx context.Context, d time.Duration) error {
@@ -1168,11 +1168,27 @@ func TestAReaderNoPollAnswersWithinTheBudgetReadsThroughREST(t *testing.T) {
 		<-ctx.Done()
 		return ctx.Err()
 	}
+	return store, gh, c
+}
+
+func TestAReaderNoPollAnswersWithinTheBudgetPollsWhatItWantsWithoutREST(t *testing.T) {
+	t.Parallel()
+	store, gh, c := overBudgetStore(t, ok(t, "poll-190.json"))
 
 	st, err := store.Read(testCtx(t), Want{PRs: []int{190}})
-	if err != nil || gh.requests() != 0 || fmt.Sprint(c.slept) != "[25s]" || st.PRs[190].Source != SourceREST || st.Failure != nil {
-		t.Errorf("read = %v after %d polls, slept %v, #190 from %q, failure %v; want REST once the budget ran out waiting on the poll in flight",
-			err, gh.requests(), c.slept, st.PRs[190].Source, st.Failure)
+	if err != nil || gh.requests() != 1 || len(gh.reads) != 0 || fmt.Sprint(c.slept) != "[25s]" || st.PRs[190].Source == SourceREST || st.Failure != nil {
+		t.Errorf("read = %v after %d polls and %d REST reads, slept %v, #190 from %q, failure %v; want its own poll once the budget ran out waiting on the poll in flight",
+			err, gh.requests(), len(gh.reads), c.slept, st.PRs[190].Source, st.Failure)
+	}
+}
+
+func TestAReaderWhoseOwnPollFailsReadsThroughREST(t *testing.T) {
+	t.Parallel()
+	store, gh, _ := overBudgetStore(t, reply{status: http.StatusBadGateway})
+
+	st, err := store.Read(testCtx(t), Want{PRs: []int{190}})
+	if err != nil || gh.requests() != 1 || st.PRs[190].Source != SourceREST {
+		t.Errorf("read = %v after %d polls, #190 from %q; want REST once its own poll failed", err, gh.requests(), st.PRs[190].Source)
 	}
 }
 

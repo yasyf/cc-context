@@ -717,8 +717,8 @@ func TestPRStatusReadsGraphitesStackStateOverItsHeldCheck(t *testing.T) {
 }
 
 // #31511 at head 7729a0ad on 2026-10-07: GitHub's GraphQL answered its
-// mergeability UNKNOWN while one check ran, and the REST pull endpoint read it
-// conflicting once GitHub computed the merge commit.
+// mergeability UNKNOWN while one check ran, and read it conflicting once GitHub
+// computed the merge commit.
 const (
 	prInfoConflicting = `{"prNumber":31511,"state":"OPEN","baseRefName":"dev","mergeQueueStatus":null,"mergeCommitSha":null}`
 	prRunning         = `"checks":{"nodes":[{"commit":{"statusCheckRollup":{"state":"PENDING","contexts":{"nodes":[` +
@@ -733,10 +733,21 @@ func prConflictingNode(mergeable, mergeState string) string {
 	return strings.Replace(node, `"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN"`, fmt.Sprintf(`"mergeable":%q,"mergeStateStatus":%q`, mergeable, mergeState), 1)
 }
 
-func TestPRStatusReadsAnUnknownMergeabilityFromREST(t *testing.T) {
+func prMergeabilityAnswer(mergeable, mergeState string, numbers ...int) string {
+	fields := make([]string, 0, len(numbers))
+	for _, n := range numbers {
+		fields = append(fields, fmt.Sprintf(`"p%d":{"mergeable":%q,"mergeStateStatus":%q}`, n, mergeable, mergeState))
+	}
+	return `{"data":{"repository":{` + strings.Join(fields, ",") + `}}}`
+}
+
+func TestPRStatusAsksAnUnknownMergeabilityOnceMoreWithoutREST(t *testing.T) {
 	_, client := stubPRInfo(t, prInfoConflicting)
-	github := stubPRState(t, prPoll(`"p0":`+prConflictingNode("UNKNOWN", "UNKNOWN")))
-	github.pull(prPullPath, prPullComputing, prPullConflicting)
+	github := stubPRState(t,
+		prPoll(`"p0":`+prConflictingNode("UNKNOWN", "UNKNOWN")),
+		prMergeabilityAnswer("UNKNOWN", "UNKNOWN", 31511),
+		prMergeabilityAnswer("CONFLICTING", "DIRTY", 31511),
+	)
 
 	out, err := runPRStatusCmd(t, client, "--repo", "Forge-AI/monorepo", "31511")
 	if err != nil {
@@ -745,8 +756,35 @@ func TestPRStatusReadsAnUnknownMergeabilityFromREST(t *testing.T) {
 	if want := "Forge-AI/monorepo#31511  not queued · open · ci pending: 1 running · approved · blocked:conflict,ci-pending\n"; out != want {
 		t.Errorf("report = %q, want %q", out, want)
 	}
-	if len(github.reads) != 2 {
-		t.Errorf("REST reads = %q, want the computing answer asked once more", github.reads)
+	if len(github.queries) != 3 || len(github.reads) != 0 {
+		t.Errorf("graphql queries = %d, REST reads = %d; want the poll and two asks, no REST", len(github.queries), len(github.reads))
+	}
+}
+
+func TestUnknownMergeabilityCostsAPagePerHundredPullRequests(t *testing.T) {
+	for _, c := range []struct{ prs, pages int }{{1, 1}, {1000, 10}} {
+		t.Run(fmt.Sprintf("%d pull requests", c.prs), func(t *testing.T) {
+			prs := make(map[int]prstate.PR, c.prs)
+			numbers := make([]int, 0, c.prs)
+			for n := 1; n <= c.prs; n++ {
+				numbers = append(numbers, n)
+				prs[n] = prstate.PR{Number: n, State: "OPEN", Mergeable: statusUnknown, Graphite: &gtapi.PullRequestInfo{PRNumber: n, State: gtapi.PROpen, BaseRefName: "dev"}}
+			}
+			responses := slices.Repeat([]string{prMergeabilityAnswer("UNKNOWN", "UNKNOWN", numbers...)}, c.pages)
+			github := stubPRState(t, append(responses, prMergeabilityAnswer("MERGEABLE", "CLEAN", numbers...))...)
+
+			if err := prReadUnknownMergeability(t.Context(), "Forge-AI/monorepo", prs, numbers); err != nil {
+				t.Fatalf("read: %v", err)
+			}
+			if len(github.queries) != 2*c.pages || len(github.reads) != 0 {
+				t.Errorf("graphql queries = %d, REST reads = %d; want %d queries, no REST", len(github.queries), len(github.reads), 2*c.pages)
+			}
+			for n, pr := range prs {
+				if pr.Mergeable != "MERGEABLE" || pr.MergeStateStatus != "CLEAN" {
+					t.Fatalf("#%d = %s %s, want the second ask's answer", n, pr.Mergeable, pr.MergeStateStatus)
+				}
+			}
+		})
 	}
 }
 
@@ -775,23 +813,6 @@ func TestPRStatusReadsAStaleMergeabilityFromREST(t *testing.T) {
 	}
 	if len(github.queries) != 1 || len(github.reads) != 2 {
 		t.Errorf("graphql queries = %d, REST reads = %d; want the one poll, the REST fallback's refused pass, and the conflict read", len(github.queries), len(github.reads))
-	}
-}
-
-func TestPRStatusReadsEachRESTMergeabilityAtOnce(t *testing.T) {
-	second := func(body string) string { return strings.ReplaceAll(body, "31511", "31512") }
-	_, client := stubPRInfo(t, prInfoConflicting, second(prInfoConflicting))
-	node := prConflictingNode("UNKNOWN", "UNKNOWN")
-	github := stubPRState(t, prPoll(`"p0":`+node, `"p1":`+second(node)))
-	github.pull(prPullPath, prPullConflicting)
-	github.pull(second(prPullPath), second(prPullConflicting))
-	github.overlap = 200 * time.Millisecond
-
-	if _, err := runPRStatusCmd(t, client, "--repo", "Forge-AI/monorepo", "31511", "31512"); err != nil {
-		t.Fatalf("pr status: %v", err)
-	}
-	if peak := github.peakReads(); peak != 2 {
-		t.Errorf("REST reads in flight at once = %d, want both pull requests read together", peak)
 	}
 }
 
