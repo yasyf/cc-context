@@ -2777,9 +2777,10 @@ func stackSnapshot(ctx context.Context, dir render.Dir, tr vcs.Trunk, s gtBranch
 	return b, diverged
 }
 
-// stackTakeRemote takes a remote that equals the branch's last submitted head
-// as ours even when local no longer contains it: every rewrite a rebase or
-// restack makes diverges from the head it last pushed.
+// stackTakeRemote takes a remote that equals the branch's last submitted head,
+// or holds only copies of it as a stack merge's restack does, as ours even when
+// local no longer contains it: every rewrite a rebase or restack makes diverges
+// from the head it last pushed.
 func stackTakeRemote(ctx context.Context, dir render.Dir, tr vcs.Trunk, s gtBranchState, b *stackRebaseBranch, name, remote, submitted string, pr *stackPR, pin, publishedBase string, dropCommits bool) error {
 	ahead, err := gitIsAncestor(ctx, dir, stackRebasePrefix, remote, s.Head)
 	if err != nil {
@@ -2820,6 +2821,11 @@ func stackTakeRemote(ctx context.Context, dir render.Dir, tr vcs.Trunk, s gtBran
 				return err
 			}
 			replay = replayed != ""
+		}
+		if !replay && submitted != "" {
+			if replay, err = gitOnlyCopies(ctx, dir, stackRebasePrefix, remote, submitted, pin); err != nil {
+				return err
+			}
 		}
 		if !replay {
 			if replay, err = gitOnlyCopies(ctx, dir, stackRebasePrefix, remote, s.Head, pin); err != nil {
