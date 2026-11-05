@@ -66,6 +66,10 @@ type Want struct {
 	// MaxAge is how long ago a record may have been polled and still answer
 	// the read; zero means MinInterval.
 	MaxAge time.Duration
+	// After is the earliest poll a pull request's record may come from and
+	// still answer the read, so a reader that began after a push never reads
+	// the head polled before it.
+	After time.Time
 }
 
 func (w Want) maxAge() time.Duration {
@@ -484,7 +488,7 @@ func (s *Store) degrade(ctx context.Context, st State, want Want, asked, now tim
 		prs = append(prs, lane.PRs...)
 	}
 	slices.Sort(prs)
-	prs = slices.DeleteFunc(slices.Compact(prs), func(n int) bool { return st.fresh(Want{PRs: []int{n}, MaxAge: want.MaxAge}, asked) })
+	prs = slices.DeleteFunc(slices.Compact(prs), func(n int) bool { return st.fresh(Want{PRs: []int{n}, MaxAge: want.MaxAge, After: want.After}, asked) })
 	if len(prs) == 0 {
 		return st, 0, s.verdict(st, want, asked)
 	}
@@ -753,13 +757,13 @@ func (l Leases) clone() Leases {
 // old, so a reader the budget refused can serve it labelled stale.
 func (st State) Covers(want Want) bool {
 	for _, n := range want.PRs {
-		if pr, ok := st.PRs[n]; !ok || pr.PolledAt.IsZero() {
+		if pr, ok := st.PRs[n]; !ok || pr.PolledAt.IsZero() || pr.PolledAt.Before(want.After) {
 			return false
 		}
 	}
 	for _, prefix := range want.Prefixes {
 		lane, ok := st.Lanes[prefix]
-		if !ok || !st.Covers(Want{PRs: lane.PRs}) {
+		if !ok || !st.Covers(Want{PRs: lane.PRs, After: want.After}) {
 			return false
 		}
 	}
@@ -769,13 +773,13 @@ func (st State) Covers(want Want) bool {
 func (st State) fresh(want Want, now time.Time) bool {
 	for _, n := range want.PRs {
 		pr, ok := st.PRs[n]
-		if !ok || pr.PushedAt.After(pr.PolledAt) || pr.QueueUnknown && now.Sub(pr.PolledAt) >= MinInterval || !pr.settled() && now.Sub(pr.PolledAt) >= want.maxAge() {
+		if !ok || pr.PushedAt.After(pr.PolledAt) || pr.PolledAt.Before(want.After) || pr.QueueUnknown && now.Sub(pr.PolledAt) >= MinInterval || !pr.settled() && now.Sub(pr.PolledAt) >= want.maxAge() {
 			return false
 		}
 	}
 	for _, prefix := range want.Prefixes {
 		lane, ok := st.Lanes[prefix]
-		if !ok || now.Sub(lane.PolledAt) >= want.maxAge() || !st.fresh(Want{PRs: lane.PRs, MaxAge: want.MaxAge}, now) {
+		if !ok || now.Sub(lane.PolledAt) >= want.maxAge() || !st.fresh(Want{PRs: lane.PRs, MaxAge: want.MaxAge, After: want.After}, now) {
 			return false
 		}
 	}
@@ -796,7 +800,7 @@ func (st State) unpolled(want Want, now time.Time) ([]int, bool) {
 		switch {
 		case !ok || pr.PushedAt.After(pr.PolledAt):
 			prs = append(prs, n)
-		case !st.fresh(Want{PRs: []int{n}, MaxAge: want.MaxAge}, now):
+		case !st.fresh(Want{PRs: []int{n}, MaxAge: want.MaxAge, After: want.After}, now):
 			return nil, false
 		}
 	}
@@ -838,7 +842,7 @@ func (st State) request(want Want, since, now time.Time) Want {
 		prs = append(prs, lane.PRs...)
 	}
 	for _, n := range prs {
-		if !st.fresh(Want{PRs: []int{n}}, now) {
+		if !st.fresh(Want{PRs: []int{n}, After: want.After}, now) {
 			req.PRs = append(req.PRs, n)
 		}
 	}
