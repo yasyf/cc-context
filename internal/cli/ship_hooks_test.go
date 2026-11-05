@@ -297,6 +297,61 @@ func TestShipHooksStreamingSeam(t *testing.T) {
 	}
 }
 
+func TestShipHooksSummaryNamesEachFailedHook(t *testing.T) {
+	t.Parallel()
+	f := shipRepo(t, vcstest.Remote())
+	report := `printf '%s\n' 'Check files with Biome....Failed' '- hook id: biome' '- exit code: 1' '' '  a finding' 'Format YAML.....Failed' '- hook id: yamlfmt' '- exit code: 1' 'Warn on ports....Passed' '- hook id: no-released-port' '- duration: 0.02s'`
+	shipHookRepo(t, f, vcs.Git, 1, report, "f1.go")
+
+	out, errStr, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--no-push")
+	if err != nil {
+		t.Fatalf("ship error = %v (stderr=%q)", err, errStr)
+	}
+	if !strings.Contains(out, "hooks failed: biome, yamlfmt ") {
+		t.Errorf("summary = %q, want it to name both failed hooks and not the one that passed", out)
+	}
+	if !strings.Contains(errStr, "a finding") {
+		t.Errorf("stderr = %q, want the hook's output", errStr)
+	}
+}
+
+func TestShipHookPassLocksMiseOnlyInARepositoryWithALockfile(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name         string
+		lockfile     bool
+		effect       string
+		wantUnlocked bool
+	}{
+		{"a tool install leaves a committed lockfile out of the commit", true, `[ -n "$MISE_LOCKED" ] || echo rewritten >> mise.lock`, false},
+		{"a repository with no lockfile can still install its tools", false, `[ -n "$MISE_LOCKED" ] || echo seen > unlocked`, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := shipRepo(t, vcstest.Remote())
+			if tt.lockfile {
+				writeShipFile(t, f.Dir, "mise.lock", "pinned\n")
+			}
+			shipHookRepo(t, f, vcs.Git, 1, tt.effect, "f1.go")
+
+			if _, errStr, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--no-push", "f1.go"); err != nil {
+				t.Fatalf("ship error = %v (stderr=%q)", err, errStr)
+			}
+			if got := gitAt(t, f.Env(), f.Dir, "show", "--name-only", "--format=", "HEAD"); got != "f1.go" {
+				t.Errorf("HEAD touched %q, want only f1.go", got)
+			}
+			if tt.lockfile {
+				if got := gitAt(t, f.Env(), f.Dir, "status", "--short", "--", "mise.lock"); got != "" {
+					t.Errorf("mise.lock status = %q, want it untouched", got)
+				}
+			}
+			if _, err := os.Stat(filepath.Join(f.Dir, "unlocked")); (err == nil) != tt.wantUnlocked {
+				t.Errorf("hook ran unlocked = %v, want %v", err == nil, tt.wantUnlocked)
+			}
+		})
+	}
+}
+
 const shipLintConfig = "repos:\n- repo: local\n  hooks:\n  - id: golangci-lint\n    entry: golangci-lint run\n"
 
 func shipHookFailure(id string, exit int, output string) string {
