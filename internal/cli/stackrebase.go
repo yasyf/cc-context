@@ -553,17 +553,17 @@ func stackBegin(ctx context.Context, cmd *cobra.Command, l lane, commonDir strin
 			return err
 		}
 	}
+	if line := stackLineBase(run); !o.noPush && line != "" {
+		if _, err := fmt.Fprintf(cmd.ErrOrStderr(), "stack rebase: %s has no pull request and the pull request above it is based on it, so the run takes it as trunk, rebases onto its published head, and leaves it and the branches below it where they are\n", line); err != nil {
+			return err
+		}
+		o.trunk = line
+		return stackBegin(ctx, cmd, l, commonDir, others, o)
+	}
 	switch {
 	case !o.submit && !o.noPush && run.NoPush:
 		cmd.Println("no branch this run moves has a pull request, and stack rebase never opens one, so it rebases locally without pushing")
 	case !o.submit && !o.noPush:
-		if line := stackLineBase(run); line != "" {
-			if _, err := fmt.Fprintf(cmd.ErrOrStderr(), "stack rebase: %s has no pull request and the pull request above it is based on it, so the run takes it as trunk, rebases onto its published head, and leaves it and the branches below it where they are\n", line); err != nil {
-				return err
-			}
-			o.trunk = line
-			return stackBegin(ctx, cmd, l, commonDir, others, o)
-		}
 		if err := stackKeepLocal(cmd, run); err != nil {
 			return err
 		}
@@ -1320,6 +1320,10 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 			_, tracked := retargeted[name]
 			return !tracked && slices.Contains(o.landed, name)
 		})
+		if i := slices.Index(members, trunk); i >= 0 {
+			o.pinned = slices.DeleteFunc(o.pinned, func(name string) bool { return slices.Contains(members[:i+1], name) })
+			members = members[i+1:]
+		}
 		for _, name := range members {
 			if len(retargeted[name].Parents) == 0 {
 				return nil, fmt.Errorf("%s: the stack metadata this lane reads does not track %s, a branch of this run — a Graphite branch on a native one converts with git config ccx.stack github; otherwise record its parent with ccx vcs ship --parent <branch> from its working copy, then re-run", prefix, name)
