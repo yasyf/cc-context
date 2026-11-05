@@ -1,0 +1,191 @@
+{
+ "data": {
+  "rateLimit": {
+   "remaining": 4800,
+   "resetAt": "2026-11-05T09:00:00Z"
+  },
+  "repository": {
+   "trunk": {
+    "name": "main",
+    "target": {
+     "history": {
+      "nodes": []
+     }
+    }
+   },
+   "p0": {
+    "number": 3139,
+    "state": "OPEN",
+    "isDraft": false,
+    "baseRefName": "main",
+    "headRefName": "lr/pr-3139",
+    "headRefOid": "66e5adfb6fe16c1f724e9b746d7b3558e9c57e7d",
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "UNSTABLE",
+    "checks": {
+     "nodes": [
+      {
+       "commit": {
+        "statusCheckRollup": {
+         "state": "FAILURE",
+         "contexts": {
+          "totalCount": 8,
+          "nodes": [
+           {
+            "__typename": "CheckRun",
+            "name": "test",
+            "title": null,
+            "conclusion": "FAILURE",
+            "status": "COMPLETED",
+            "startedAt": "2026-11-05T08:16:50Z",
+            "databaseId": 127128405647,
+            "checkSuite": {
+             "databaseId": 113787405118,
+             "workflowRun": {
+              "workflow": {
+               "databaseId": 366540480
+              }
+             }
+            }
+           },
+           {
+            "__typename": "CheckRun",
+            "name": "guides / render",
+            "title": null,
+            "conclusion": "SKIPPED",
+            "status": "COMPLETED",
+            "startedAt": "2026-11-05T08:12:30Z",
+            "databaseId": 127128430740,
+            "checkSuite": {
+             "databaseId": 113787422365,
+             "workflowRun": {
+              "workflow": {
+               "databaseId": 310890487
+              }
+             }
+            }
+           },
+           {
+            "__typename": "CheckRun",
+            "name": "test",
+            "title": null,
+            "conclusion": "SUCCESS",
+            "status": "COMPLETED",
+            "startedAt": "2026-11-05T08:19:37Z",
+            "databaseId": 127128426502,
+            "checkSuite": {
+             "databaseId": 113787421406,
+             "workflowRun": {
+              "workflow": {
+               "databaseId": 377002111
+              }
+             }
+            }
+           },
+           {
+            "__typename": "CheckRun",
+            "name": "test",
+            "title": null,
+            "conclusion": "SUCCESS",
+            "status": "COMPLETED",
+            "startedAt": "2026-11-05T08:16:39Z",
+            "databaseId": 127128404899,
+            "checkSuite": {
+             "databaseId": 113787404626,
+             "workflowRun": {
+              "workflow": {
+               "databaseId": 377002111
+              }
+             }
+            }
+           },
+           {
+            "__typename": "CheckRun",
+            "name": "test",
+            "title": null,
+            "conclusion": "SUCCESS",
+            "status": "COMPLETED",
+            "startedAt": "2026-11-05T08:17:28Z",
+            "databaseId": 127128426623,
+            "checkSuite": {
+             "databaseId": 113787421375,
+             "workflowRun": {
+              "workflow": {
+               "databaseId": 366540480
+              }
+             }
+            }
+           },
+           {
+            "__typename": "CheckRun",
+            "name": "guides / pr-check",
+            "title": null,
+            "conclusion": "SUCCESS",
+            "status": "COMPLETED",
+            "startedAt": "2026-11-05T08:17:41Z",
+            "databaseId": 127128428669,
+            "checkSuite": {
+             "databaseId": 113787422365,
+             "workflowRun": {
+              "workflow": {
+               "databaseId": 310890487
+              }
+             }
+            }
+           },
+           {
+            "__typename": "CheckRun",
+            "name": "Socket Security: Project Report",
+            "title": "Project Report: Success",
+            "conclusion": "SUCCESS",
+            "status": "COMPLETED",
+            "startedAt": "2026-11-05T08:12:28Z",
+            "databaseId": 127128423533,
+            "checkSuite": {
+             "databaseId": 113787400879,
+             "workflowRun": null
+            }
+           },
+           {
+            "__typename": "CheckRun",
+            "name": "Socket Security: Pull Request Alerts",
+            "title": "Pull Request #3139 Alerts: Skipped",
+            "conclusion": "SUCCESS",
+            "status": "COMPLETED",
+            "startedAt": "2026-11-05T08:12:31Z",
+            "databaseId": 127128445350,
+            "checkSuite": {
+             "databaseId": 113787400879,
+             "workflowRun": null
+            }
+           }
+          ]
+         }
+        },
+        "checkSuites": {
+         "nodes": [
+          {
+           "status": "COMPLETED"
+          },
+          {
+           "status": "COMPLETED"
+          },
+          {
+           "status": "COMPLETED"
+          },
+          {
+           "status": "COMPLETED"
+          },
+          {
+           "status": "COMPLETED"
+          }
+         ]
+        }
+       }
+      }
+     ]
+    }
+   }
+  }
+ }
+}

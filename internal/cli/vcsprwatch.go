@@ -28,6 +28,10 @@ const (
 	prWatchUntilLanded = "landed"
 	prWatchUntilClosed = "closed"
 	prWatchUntilNever  = "never"
+	prWatchUntilCI     = "ci"
+
+	prWatchCIGreen = "green"
+	prWatchCIRed   = "red"
 
 	prWatchJobAbsent = "ABSENT"
 
@@ -48,6 +52,7 @@ type prWatchSnapshot struct {
 	Evicted   string    `json:"evicted,omitempty"`
 	Squash    string    `json:"squash,omitempty"`
 	Job       string    `json:"job,omitempty"`
+	CI        string    `json:"ci,omitempty"`
 	JobID     int64     `json:"jobId,omitempty"`
 	HeadSince time.Time `json:"headSince,omitzero"`
 }
@@ -164,13 +169,14 @@ type prWatchSource struct {
 	store  *prstate.Store
 	prefix string
 	job    string
+	ci     bool
 	once   bool
 	since  time.Time
 }
 
 func (s prWatchSource) poll(ctx context.Context, numbers []int, prev map[int]prWatchSnapshot) (prWatchTick, error) {
 	want := prstate.Want{PRs: numbers}
-	if s.job != "" {
+	if s.job != "" || s.ci {
 		want.After = s.since
 	}
 	if s.prefix != "" {
@@ -194,12 +200,17 @@ func (s prWatchSource) poll(ctx context.Context, numbers []int, prev map[int]prW
 			pr.HeadRefOid, pr.Rollup, since = pr.PushedHead, nil, pr.PushedAt
 		}
 		snap := prWatchSnapshotOf(number, pr, st.Trunk, prev[number])
-		if s.job != "" {
+		if s.job != "" || s.ci {
 			snap.HeadSince = since
 			if was := prev[number]; was.Head == snap.Head && !was.HeadSince.IsZero() {
 				snap.HeadSince = was.HeadSince
 			}
+		}
+		if s.job != "" {
 			snap.Job, snap.JobID = prWatchJobState(pr.Rollup, s.job, pr.PolledAt.Sub(snap.HeadSince))
+		}
+		if s.ci {
+			snap.CI = prWatchCIState(snap, pr.PolledAt.Sub(snap.HeadSince))
 		}
 		tick.snapshots[number] = snap
 	}
@@ -236,6 +247,19 @@ func prWatchJobState(rollup *statusRollup, job string, onHead time.Duration) (st
 	return "", 0
 }
 
+// prWatchCIState settles the head's checks: red once one finished failing,
+// green once every one finished and passed, after the head has had
+// prWatchJobRegister for its workflows to register their suites.
+func prWatchCIState(snap prWatchSnapshot, onHead time.Duration) string {
+	switch {
+	case len(snap.Failing) > 0:
+		return prWatchCIRed
+	case snap.Green && onHead >= prWatchJobRegister:
+		return prWatchCIGreen
+	}
+	return ""
+}
+
 func prWatchSnapshotOf(number int, pr prstate.PR, trunk prstate.Trunk, prev prWatchSnapshot) prWatchSnapshot {
 	snap := prWatchSnapshot{
 		State:     pr.State,
@@ -254,6 +278,7 @@ func prWatchSnapshotOf(number int, pr prstate.PR, trunk prstate.Trunk, prev prWa
 			snap.Failing = []string{"rollup " + strings.ToLower(rollup.State)}
 		}
 		slices.Sort(snap.Failing)
+		snap.Failing = slices.Compact(snap.Failing)
 	}
 	known := pr.Graphite != nil
 	var info gtapi.PullRequestInfo
@@ -502,9 +527,32 @@ func (r prWatchRun) reachedJob(watched []int, snaps map[int]prWatchSnapshot) (bo
 	return true, nil
 }
 
+func (r prWatchRun) reachedCI(watched []int, snaps map[int]prWatchSnapshot) (bool, error) {
+	var unmet []string
+	for _, n := range watched {
+		snap := snaps[n]
+		switch {
+		case snap.CI == prWatchCIRed:
+			unmet = append(unmet, fmt.Sprintf("%s#%d red on %s: %s", r.opts.repo, n, sha9(snap.Head), strings.Join(snap.Failing, ", ")))
+		case snap.CI == prWatchCIGreen:
+		case snap.terminal():
+			unmet = append(unmet, fmt.Sprintf("%s#%d closed before its checks finished", r.opts.repo, n))
+		default:
+			return false, nil
+		}
+	}
+	if len(unmet) > 0 {
+		return true, fmt.Errorf("pr watch: ci: %s", strings.Join(unmet, "; "))
+	}
+	return true, nil
+}
+
 func (r prWatchRun) reached(watched []int, snaps map[int]prWatchSnapshot) (bool, error) {
 	if len(watched) > 0 && r.opts.job != "" {
 		return r.reachedJob(watched, snaps)
+	}
+	if len(watched) > 0 && r.opts.until == prWatchUntilCI {
+		return r.reachedCI(watched, snaps)
 	}
 	if r.opts.until == prWatchUntilNever || len(watched) == 0 {
 		return false, nil
@@ -555,7 +603,12 @@ branch, or the squash Graphite recorded is reachable from it.
 open pull request whose branch starts with the prefix, re-reading the branch
 list on every poll so new pull requests join. --until landed exits 0 once every
 watched pull request landed and 1 when one closed without landing; closed
-exits 0 once every one closed either way; never keeps watching.
+exits 0 once every one closed either way; ci exits 0 once every check on each
+pull request's current head finished and passed, and 1 once one finished
+failing, naming it, or when the pull request closed first; never keeps
+watching. Like --job, ci reads the current head from a poll made after the
+watch began, and gives a fresh head its first minute for its workflows to
+register before it calls the head green.
 
 --job <name> watches one named check on each pull request's current head instead
 of --until: one "job <name> <state> on <head sha9>" line when it settles on the
@@ -587,7 +640,7 @@ Output is line-buffered for Monitor.`,
 	}
 	cmd.Flags().StringVarP(&repo, "repo", "R", "", "the owner/name repository (default: the current checkout's)")
 	cmd.Flags().DurationVar(&o.interval, "interval", prWatchDefaultInterval, "time between polls")
-	cmd.Flags().StringVar(&o.until, "until", prWatchUntilLanded, "exit once every pull request is: landed, closed, or never")
+	cmd.Flags().StringVar(&o.until, "until", prWatchUntilLanded, "exit once every pull request is: landed, closed, ci (its head's checks all finished), or never")
 	cmd.Flags().BoolVar(&o.json, "json", false, "emit one JSON object per event")
 	cmd.Flags().BoolVar(&stack, "stack", false, "watch every pull request in the current Graphite downstack")
 	cmd.Flags().StringVar(&o.prefix, "lane-prefix", "", "watch every open pull request whose branch starts with this prefix")
@@ -601,9 +654,9 @@ Output is line-buffered for Monitor.`,
 func runVcsPRWatch(cmd *cobra.Command, args []string, repo string, stack bool, o prWatchOpts) error {
 	ctx := cmd.Context()
 	switch o.until {
-	case prWatchUntilLanded, prWatchUntilClosed, prWatchUntilNever:
+	case prWatchUntilLanded, prWatchUntilClosed, prWatchUntilCI, prWatchUntilNever:
 	default:
-		return fmt.Errorf("pr watch: --until must be landed, closed, or never, not %q", o.until)
+		return fmt.Errorf("pr watch: --until must be landed, closed, ci, or never, not %q", o.until)
 	}
 	if o.interval <= 0 {
 		return errors.New("pr watch: --interval must be positive")
@@ -647,7 +700,7 @@ func runVcsPRWatch(cmd *cobra.Command, args []string, repo string, stack bool, o
 		return fmt.Errorf("pr watch: %w", err)
 	}
 	run := prWatchRun{
-		poller: prWatchSource{store: store, prefix: o.prefix, job: o.job, once: o.once, since: time.Now().UTC()},
+		poller: prWatchSource{store: store, prefix: o.prefix, job: o.job, ci: o.until == prWatchUntilCI, once: o.once, since: time.Now().UTC()},
 		opts:   o,
 		out:    cmd.OutOrStdout(),
 		warn:   cmd.ErrOrStderr(),

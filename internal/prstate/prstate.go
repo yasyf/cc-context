@@ -179,39 +179,47 @@ func (r *Rollup) countUnfinishedActions(suites []checkSuite) {
 
 // Context is one CheckRun or StatusContext of a Rollup.
 type Context struct {
-	Typename   string    `json:"__typename"`
-	Name       string    `json:"name,omitempty"`
-	Title      string    `json:"title,omitempty"`
-	Conclusion string    `json:"conclusion,omitempty"`
-	Status     string    `json:"status,omitempty"`
-	StartedAt  time.Time `json:"startedAt,omitzero"`
-	DatabaseID int64     `json:"databaseId,omitempty"`
-	Context    string    `json:"context,omitempty"`
-	State      string    `json:"state,omitempty"`
-	TargetURL  string    `json:"targetUrl,omitempty"`
+	Typename   string     `json:"__typename"`
+	Name       string     `json:"name,omitempty"`
+	Title      string     `json:"title,omitempty"`
+	Conclusion string     `json:"conclusion,omitempty"`
+	Status     string     `json:"status,omitempty"`
+	StartedAt  time.Time  `json:"startedAt,omitzero"`
+	DatabaseID int64      `json:"databaseId,omitempty"`
+	Context    string     `json:"context,omitempty"`
+	State      string     `json:"state,omitempty"`
+	TargetURL  string     `json:"targetUrl,omitempty"`
+	CheckSuite CheckSuite `json:"checkSuite,omitzero"`
 }
 
-// Latest returns the rollup without the check runs a later run of the same
-// name replaced, so a run cancelled for a newer one grades nothing. A skipped
-// run replaces no run that was graded. A rollup that carries every context is
-// regraded from the runs left standing; GitHub's own state counts them all.
+// CheckSuite is the suite a CheckRun reports in: a re-run's attempt reports in
+// the suite of the run it repeats, and a GitHub Actions suite names the
+// workflow behind it.
+type CheckSuite struct {
+	DatabaseID  int64 `json:"databaseId,omitempty"`
+	WorkflowRun struct {
+		Workflow struct {
+			DatabaseID int64 `json:"databaseId,omitempty"`
+		} `json:"workflow"`
+	} `json:"workflowRun"`
+}
+
+// Latest returns the rollup without the check runs a later run replaced: a
+// later attempt of the same name in the same suite, or, for a run cancelled for
+// a newer one, a later run of its name in the same workflow. A run of one name
+// in another suite otherwise grades the head too, so a push run's failure
+// stands beside a pull request run's pass, and one workflow's job never hides
+// another's of the same name. A skipped run replaces no run that was graded. A
+// rollup that carries every context is regraded from the runs left standing;
+// GitHub's own state counts them all.
 func (r *Rollup) Latest() *Rollup {
 	if r == nil {
 		return nil
 	}
 	nodes := r.Contexts.Nodes
-	latest := map[string]int{}
-	for i, c := range nodes {
-		if j, seen := latest[c.Name]; c.Typename == "CheckRun" && (!seen || c.replaces(nodes[j])) {
-			latest[c.Name] = i
-		}
-	}
-	standing := make([]Context, 0, len(nodes))
-	for i, c := range nodes {
-		if c.Typename != "CheckRun" || latest[c.Name] == i {
-			standing = append(standing, c)
-		}
-	}
+	standing := slices.DeleteFunc(slices.Clone(nodes), func(c Context) bool {
+		return slices.ContainsFunc(nodes, func(later Context) bool { return later.supersedes(c) })
+	})
 	if len(standing) == len(nodes) {
 		return r
 	}
@@ -221,6 +229,15 @@ func (r *Rollup) Latest() *Rollup {
 		out.State = rollupState(standing)
 	}
 	return out
+}
+
+func (c Context) supersedes(prior Context) bool {
+	if c.Typename != "CheckRun" || prior.Typename != "CheckRun" || c.Name != prior.Name {
+		return false
+	}
+	sameSuite := c.CheckSuite.DatabaseID == prior.CheckSuite.DatabaseID
+	sameWorkflow := c.CheckSuite.WorkflowRun.Workflow.DatabaseID == prior.CheckSuite.WorkflowRun.Workflow.DatabaseID
+	return (sameSuite || sameWorkflow && prior.Conclusion == "CANCELLED") && c.replaces(prior)
 }
 
 func (c Context) replaces(prior Context) bool {

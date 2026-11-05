@@ -22,7 +22,7 @@ const statusPRFields = "number url body isDraft baseRefName headRefOid mergeable
 	"latestOpinionatedReviews(first: 20) { nodes { state author { login __typename } commit { oid } } } " +
 	"history: commits(last: 50) { nodes { commit { oid committedDate messageHeadline } } } " +
 	"checks: commits(last: 1) { nodes { commit { statusCheckRollup { state contexts(first: 100) { totalCount nodes { __typename " +
-	"... on CheckRun { name conclusion status startedAt databaseId } ... on StatusContext { context state } } } } } } } " +
+	"... on CheckRun { name conclusion status startedAt databaseId checkSuite { databaseId workflowRun { workflow { databaseId } } } } ... on StatusContext { context state } } } } } } } " +
 	"events: timelineItems(last: 100, itemTypes: [LABELED_EVENT, UNLABELED_EVENT, HEAD_REF_FORCE_PUSHED_EVENT]) " +
 	"{ nodes { __typename ... on LabeledEvent { createdAt label { name } actor { login } } " +
 	"... on UnlabeledEvent { createdAt label { name } actor { login } } " +
