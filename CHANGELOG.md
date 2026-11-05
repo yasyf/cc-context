@@ -17,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ccx vcs ship` takes a long-lived branch with no pull request as trunk, as `ccx vcs stack rebase`
+  does since #829, when the shipped branch's pull request is based on it. On cc-skills'
+  `dashboard-fold-2b` lanes, a `ship --amend` without `--tip-only` replayed another lane's
+  `dashboard-pages-needs`, below that line, onto the moved trunk and stopped in conflict. The ship
+  now publishes onto the line's published head and leaves the line and every branch below it where
+  they are.
 - `ccx vcs stack rebase` rebases a pull request whose base is a long-lived branch with no pull
   request of its own, such as cc-skills' `dashboard-fold-2b`, onto that branch's published head
   instead of refusing it. The run takes the branch as trunk and leaves it and the branches gt
