@@ -30,6 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   0 while the new head had no check run and no workflow run at all. A watch could then report the
   job passed on the new head. Each reader now asks for that commit's oid and takes its checks
   only when it is the head, so the head reads as having no checks yet until GitHub catches up.
+- `ccx vcs pr watch` stopped by a timeout or signal before its end now says so: one stderr line,
+  `pr watch: stopped with no verdict for <repo>#<n> on <head sha9>, …`, where it printed only
+  `ccx: context canceled`. A watch on a pending head prints nothing until something changes, so a
+  background watch killed mid-wait read as one that exited with nothing to report.
 - `ccx vcs gh --max-age` no longer serves a cached answer about check, commit status, or workflow
   run state: `gh pr checks`, `gh pr status`, `gh run`, `gh workflow view`, a commit's check-runs,
   check-suites, or statuses, actions runs or jobs, and any field, `--jq`, or GraphQL query naming

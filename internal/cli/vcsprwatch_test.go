@@ -211,6 +211,29 @@ func TestPRWatchRunReportsAnEjectionThenExitsWhenEveryPRLanded(t *testing.T) {
 	}
 }
 
+func TestPRWatchRunStoppedBeforeAVerdictNamesWhatItWaitedOn(t *testing.T) {
+	t.Parallel()
+	pending := prWatchSnapshot{State: "OPEN", Head: watchHeadB, Mergeable: "MERGEABLE"}
+	poller := &scriptedPoller{ticks: []prWatchTick{watchTick(map[int]prWatchSnapshot{836: pending})}}
+	var out bytes.Buffer
+	var slept []time.Duration
+	run := newTestWatchRun(poller, prWatchOpts{interval: time.Minute, until: prWatchUntilCI, repo: "o/r"}, &out, &slept)
+	ctx, cancel := context.WithCancel(context.Background())
+	run.sleep = func(context.Context, time.Duration) error {
+		cancel()
+		return ctx.Err()
+	}
+
+	err := run.watch(ctx, []int{836, 837}, map[int]prWatchSnapshot{})
+	want := "pr watch: stopped with no verdict for o/r#836 on b2b2b2b2b, o/r#837 on a head not yet read: context canceled"
+	if err == nil || err.Error() != want || !errors.Is(err, context.Canceled) {
+		t.Errorf("watch = %v, want %q", err, want)
+	}
+	if out.Len() != 0 {
+		t.Errorf("output = %q, want no event for a head still pending", out.String())
+	}
+}
+
 func TestPRWatchRunResumesFromStateWithoutReplaying(t *testing.T) {
 	t.Parallel()
 	queued := prWatchSnapshot{State: "OPEN", Head: watchHeadA, Queued: true, Green: true}

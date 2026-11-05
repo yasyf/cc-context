@@ -413,7 +413,27 @@ func (r prWatchRun) rateLimited(ctx context.Context, until time.Time) error {
 	return r.sleep(ctx, until.Sub(r.now()))
 }
 
+// watch follows numbers to the watch's end. A timeout or signal that stops it
+// first names each pull request and head it left without a verdict.
 func (r prWatchRun) watch(ctx context.Context, numbers []int, snaps map[int]prWatchSnapshot) error {
+	err := r.follow(ctx, numbers, snaps)
+	if ctx.Err() == nil || !errors.Is(err, ctx.Err()) {
+		return err
+	}
+	watched := slices.Sorted(maps.Keys(snaps))
+	for _, n := range numbers {
+		if _, seen := snaps[n]; !seen {
+			watched = append(watched, n)
+		}
+	}
+	left := make([]string, 0, len(watched))
+	for _, n := range watched {
+		left = append(left, fmt.Sprintf("%s#%d on %s", r.opts.repo, n, cmp.Or(sha9(snaps[n].Head), "a head not yet read")))
+	}
+	return fmt.Errorf("pr watch: stopped with no verdict for %s: %w", strings.Join(left, ", "), err)
+}
+
+func (r prWatchRun) follow(ctx context.Context, numbers []int, snaps map[int]prWatchSnapshot) error {
 	if r.opts.queueUnread {
 		if err := r.emit(prWatchEvent{Event: "queue-unread", Detail: r.opts.repo + ": not a checkout here, so no queued or ejected line can appear"}); err != nil {
 			return err
@@ -621,6 +641,8 @@ ccx pushed until GitHub shows it, else GitHub's, read from a poll made after the
 watch began, so a check that passed on the head before an amend never answers
 for the amended one. A failure names the ccx vcs job-log command that reads the
 job's log, while its run may still be going. A new head starts the check over.
+A watch a timeout or signal stops before its end exits 1 with one stderr line
+naming each pull request and head it left without a verdict.
 
 --state persists the last snapshot so a restarted watch resumes without
 replaying state it already reported, and --once polls a single time, for a
