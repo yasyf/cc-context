@@ -180,6 +180,11 @@ copies the receipt. The store's Graphite metadata records that parent as
 frozen: no submit from the store pushes or rewrites it. Only parents
 published onto trunk can be adopted.
 
+On the Graphite lane ccx first reads the parent's pull request. One that
+landed is read as trunk: the child is cut onto the fresh remote trunk, with no
+publication needed, and the first line names the landing. One closed without
+landing is refused.
+
 If the parent has no publication, ccx refuses and names both recovery commands.
 Run `ccx vcs stack submit` from the parent's working copy and retry, or run
 `ccx vcs stack new agent-child --parent parent-work --full-history` from the

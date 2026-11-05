@@ -91,6 +91,91 @@ func TestShipGTDropsALandedParent(t *testing.T) {
 	assertLandedPublished(t, f, api, "2")
 }
 
+// gtOtherLaneParent stacks mine/b on other/a, a branch another working copy cut
+// and pushed, so a ship from mine/b's lane leaves other/a out of its push.
+func gtOtherLaneParent(t *testing.T, f *vcstest.Fixture) {
+	t.Helper()
+	other := f.WorktreePath("other")
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", "-b", "other/a", other, "main")
+	writeShipFile(t, other, "a.txt", "a\n")
+	mustRun(t, f.Env(), other, "git", "add", "a.txt")
+	mustRun(t, f.Env(), other, "git", "commit", "-qm", "a")
+	mustRun(t, f.Env(), other, "gt", "track", "-f", "--no-interactive")
+	mustRun(t, f.Env(), other, "git", "push", "-q", "origin", "other/a")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "mine/b", "other/a")
+	writeShipFile(t, f.Dir, "b.txt", "b\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "b.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "b", "-m", "why b")
+	mustRun(t, f.Env(), f.Dir, "gt", "track", "-f", "--no-interactive")
+}
+
+// TestShipGTReadsAnotherLanesLandedParentAsTrunk is pass-length's lane: a ship
+// stacked on another lane's branch pushed, then failed to open its pull request
+// with a 422, because that branch's pull request had merged and the landing
+// deleted the branch it was based on.
+func TestShipGTReadsAnotherLanesLandedParentAsTrunk(t *testing.T) {
+	tests := []struct {
+		name   string
+		pr     stackPR
+		landed bool
+		base   string
+		err    string
+	}{
+		{"merged", stackPR{Number: 41, State: "MERGED", Landed: true}, true, "main", ""},
+		{"closed unmerged", stackPR{Number: 41, State: "CLOSED"}, false, "", "ship: other/a's pull request #41 was closed without merging"},
+		{"still open", stackPR{Number: 41, State: "OPEN"}, false, "other/a", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := shipGTRepo(t)
+			api := stubGTAPI(t)
+			f.Decorate(api.ctx)
+			gtOtherLaneParent(t, f)
+			if tt.pr.State != "OPEN" {
+				mustRun(t, f.Env(), f.RemoteDir, "git", "branch", "-q", "-D", "other/a")
+			}
+			if tt.landed {
+				restackSquashRemote(t, f, "main", "a (#41)", "a")
+			}
+			stubStackPRs(t, f, map[string]*stackPR{"other/a": &tt.pr})
+			before := gitAt(t, f.Env(), f.Dir, "rev-parse", "mine/b")
+			shipGTReady(t, f)
+
+			got, errStr, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--no-watch")
+			if tt.err != "" {
+				if err == nil || !strings.HasPrefix(err.Error(), tt.err) {
+					t.Fatalf("ship = %v, want %q", err, tt.err)
+				}
+				if refs := gtPushedRefs(shipGTInvocations(t, f)); refs != nil {
+					t.Errorf("pushed %v before the refusal", refs)
+				}
+				if after := gitAt(t, f.Env(), f.Dir, "rev-parse", "mine/b"); after != before {
+					t.Errorf("mine/b moved from %s to %s on a refusal", before, after)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ship = %v (stderr=%q)", err, errStr)
+			}
+			if want := "ship: other/a's pull request #41 landed, so mine/b moves onto main and its pull request bases there"; strings.Contains(errStr, want) != tt.landed {
+				t.Errorf("stderr = %q, want it to carry %q only when other/a landed", errStr, want)
+			}
+			if parent := shipParentOf(t, f, "mine/b"); parent != tt.base {
+				t.Errorf("mine/b's parent = %s, want %s (summary %q)", parent, tt.base, got)
+			}
+			if entry := api.submitEntry("mine/b"); entry.Base != tt.base {
+				t.Errorf("mine/b submitted onto %s, want %s", entry.Base, tt.base)
+			}
+			if refs := gtPushedRefs(shipGTInvocations(t, f)); !slices.Equal(refs, []string{"mine/b"}) {
+				t.Errorf("pushed %v, want mine/b alone", refs)
+			}
+			if subjects := gitAt(t, f.Env(), f.RemoteDir, "log", "--format=%s", tt.base+"..mine/b"); subjects != "fix: frobnicate\nb" {
+				t.Errorf("origin mine/b carries %q above %s, want its own commits alone", subjects, tt.base)
+			}
+		})
+	}
+}
+
 // TestShipGTLeavesAnUnchangedDownstackBranchAlone is the lane C incident: a
 // parent lane's Graphite error — "Pull request not found" on a pull request
 // that existed — failed the child's ship, though the child changed nothing of

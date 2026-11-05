@@ -284,6 +284,7 @@ func TestStackNewPrefersNativeForGitHubOriginWithoutCatalog(t *testing.T) {
 func TestStackNewTracksAnUntrackedNativeParentFirst(t *testing.T) {
 	f := shipRepo(t, vcstest.Remote())
 	f.Decorate(func(ctx context.Context) context.Context { return withStackProvider(ctx, true) })
+	stubStackPRs(t, f, nil)
 	mustRun(t, f.Env(), f.Dir, "git", "config", "ccx.stack", "github")
 	trunk := gitAt(t, f.Env(), f.Dir, "rev-parse", "main")
 	shipGTUntracked(t, f, "loose")

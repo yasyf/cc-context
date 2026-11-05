@@ -70,7 +70,9 @@ first line printed says this tree stays where it is and where to work, and the
 new working copy's path is the last thing printed, ready to hand to whoever
 works the lane. A slash in the branch name becomes a dash in the working copy's
 directory name: owner/topic becomes owner-topic. A lane cut onto trunk starts at
-the freshly fetched remote trunk, leaving the local trunk branch where it is.
+the freshly fetched remote trunk, leaving the local trunk branch where it is. A --parent
+whose pull request landed is read as trunk, and the first line says so; one
+closed without landing is refused.
 
 In a Git checkout a thin lane and a lane given --include are sparse, and once
 "git config ccx.sparseLanes true" is set so is any lane of a repository

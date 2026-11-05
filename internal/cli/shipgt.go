@@ -543,6 +543,10 @@ func shipPreflightGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, c 
 		plan.moveOntoParent, plan.commitBeforeMove = true, true
 		return plan, "", nil
 	}
+	if o.parent, err = gtOffLandedParent(ctx, errW, l, o, plan, state, branch, trunk); err != nil {
+		return branchPlan{}, "", err
+	}
+	plan.parent = o.parent
 
 	moves := false
 	switch s, tracked := state[branch]; {
@@ -590,6 +594,32 @@ func shipPreflightGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, c 
 	}
 	plan.needsRestack, err = gtNeedsRestack(state, branch, trunk)
 	return plan, seg, err
+}
+
+// gtOffLandedParent is the parent a pushing ship moves branch onto when the one
+// gt records is another lane's and its pull request landed: trunk, as --parent
+// <trunk> would, replaying only the commits above the head branch was cut from.
+// The submit leaves another lane's branch out of its push and bases the pull
+// request on it, and a landing deletes that branch.
+func gtOffLandedParent(ctx context.Context, errW io.Writer, l lane, o shipOpts, plan branchPlan, state gtState, branch, trunk string) (string, error) {
+	s, tracked := state[branch]
+	if !tracked || o.noPush || o.allLanes || plan.action == branchCreate {
+		return o.parent, nil
+	}
+	parent := s.Parents[0].Ref
+	if parent == trunk || o.parent != "" && o.parent != parent {
+		return o.parent, nil
+	}
+	others, err := stackOtherLanes(ctx, l.dir(), "ship", branch, []string{parent})
+	if err != nil || !others[parent] {
+		return o.parent, err
+	}
+	pr, err := stackLandedParent(ctx, l.dir(), "ship", trunk, parent)
+	if err != nil || pr == nil {
+		return o.parent, err
+	}
+	_, err = fmt.Fprintf(errW, "ship: %s's pull request #%d landed, so %s moves onto %s and its pull request bases there\n", parent, pr.Number, branch, trunk)
+	return trunk, err
 }
 
 func gtCutFromTrunk(ctx context.Context, dir render.Dir, o shipOpts, plan branchPlan, state gtState, branch, trunk string) (bool, error) {

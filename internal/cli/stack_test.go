@@ -104,6 +104,57 @@ func TestStackNewTracksAParentOnlyOriginHolds(t *testing.T) {
 	}
 }
 
+// TestStackNewReadsALandedParentAsTrunk is pass-length's lane: stack new onto
+// another lane's branch whose pull request had merged, and whose branch the
+// landing deleted, so nothing could be stacked on it.
+func TestStackNewReadsALandedParentAsTrunk(t *testing.T) {
+	tests := []struct {
+		name   string
+		pr     stackPR
+		parent string
+		out    string
+		err    string
+	}{
+		{"merged", stackPR{Number: 41, State: "MERGED", Landed: true}, "main", "base's pull request #41 landed, so child is cut onto main" + shipSep + "cut child onto main", ""},
+		{"closed unmerged", stackPR{Number: 41, State: "CLOSED"}, "", "", "stack new: base's pull request #41 was closed without merging"},
+		{"still open", stackPR{Number: 41, State: "OPEN"}, "base", "cut child onto base", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := shipGTRepo(t, vcstest.GTStack("base"))
+			stubStackPRs(t, f, map[string]*stackPR{"base": &tt.pr})
+			child := filepath.Join(t.TempDir(), "child")
+
+			out, errOut, err := runStackCmd(t, f, "new", "child", "--full-history", "--parent", "base", "--path", child)
+			if tt.err != "" {
+				if err == nil || !strings.HasPrefix(err.Error(), tt.err) {
+					t.Fatalf("stack new = %v, want %q", err, tt.err)
+				}
+				if _, statErr := os.Stat(child); !os.IsNotExist(statErr) {
+					t.Errorf("the refusal left a working copy at %s: %v", child, statErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("stack new: %v\n%s%s", err, out, errOut)
+			}
+			if !strings.Contains(out, tt.out) {
+				t.Errorf("stack new = %q, want it to carry %q", out, tt.out)
+			}
+			if got := thinGTParent(t, f, f.Dir, "child"); got != tt.parent {
+				t.Errorf("child's gt parent = %q, want %s", got, tt.parent)
+			}
+			want := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
+			if tt.parent == "main" {
+				want = gitAt(t, f.Env(), f.Dir, "rev-parse", "refs/remotes/origin/main")
+			}
+			if got := gitAt(t, f.Env(), child, "rev-parse", "HEAD"); got != want {
+				t.Errorf("child head = %s, want %s's %s", got, tt.parent, want)
+			}
+		})
+	}
+}
+
 // TestStackListNamesTheWorkingCopyHoldingEachBranch pins the answer the listing
 // exists for: which lane a branch has to be worked from. It runs from the bottom
 // of the stack on purpose — the branch above is held by another working copy,

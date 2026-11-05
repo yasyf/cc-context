@@ -59,6 +59,23 @@ func runStackNew(cmd *cobra.Command, name string, options stackNewOpts) error {
 	if parent == "" {
 		return errors.New("stack new: HEAD is detached here, so there is no branch to stack on — check one out, or name it with --parent")
 	}
+	var segs []string
+	if src.gt {
+		t, err := stackNewTrunk(ctx, src)
+		if err != nil {
+			return err
+		}
+		if parent != t {
+			pr, err := stackLandedParent(ctx, src.dir(), "stack new", t, parent)
+			if err != nil {
+				return err
+			}
+			if pr != nil {
+				segs = append(segs, fmt.Sprintf("%s's pull request #%d landed, so %s is cut onto %s", parent, pr.Number, name, t))
+				parent, options.published = t, false
+			}
+		}
+	}
 	storage, err := stackStorageOf(ctx, options, src, parent)
 	if err != nil {
 		return err
@@ -121,7 +138,6 @@ func runStackNew(cmd *cobra.Command, name string, options stackNewOpts) error {
 		}
 	}
 	l := src
-	var segs []string
 	var adopted *stackPublication
 	if thin {
 		s, err := thinSourceOf(ctx, src)
