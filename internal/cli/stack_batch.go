@@ -132,20 +132,24 @@ func (b *stackBatch) listQuery(ctx context.Context, query stackBatchQuery) (*sta
 	if err != nil {
 		return nil, err
 	}
+	var stack []string
 	_, err = gtDownstack("stack list", store.state, branch, trunk)
-	if untracked := (*errGTUntracked)(nil); errors.As(err, &untracked) {
+	untracked := errors.As(err, new(*errGTUntracked))
+	switch {
+	case untracked:
 		tracked, _, err := gtmeta.ReadOriginOrphans(ctx, common)
 		if err != nil {
 			return nil, fmt.Errorf("stack list: %w", err)
 		}
-		return nil, gtUntrackedRefusal(ctx, l.dir(), "stack list", gtBranchStates(tracked), trunk, branch)
-	}
-	if err != nil {
+		if stack, err = gtUntrackedStack(ctx, l.dir(), gtBranchStates(tracked), trunk, branch); err != nil {
+			return nil, err
+		}
+	case err != nil:
 		return nil, err
-	}
-	stack, err := gtStackFromState(ctx, l.dir(), "stack list", store.state, branch, store.children)
-	if err != nil {
-		return nil, err
+	default:
+		if stack, err = gtStackFromState(ctx, l.dir(), "stack list", store.state, branch, store.children); err != nil {
+			return nil, err
+		}
 	}
 	report := &stackListReport{Root: l.checkout.Root, Branches: make([]stackListEntry, 0, len(stack))}
 	holders, err := store.holdersFor(ctx, common, l.checkout)
@@ -164,6 +168,7 @@ func (b *stackBatch) listQuery(ctx context.Context, query stackBatchQuery) (*sta
 		report.Branches = append(report.Branches, stackListEntry{
 			Branch: name, Path: holders[name], Current: holders[name] == l.checkout.Root,
 			NeedsRestack: store.state[name].NeedsRestack, NeedsSubmit: unrecorded, State: store.state[name].State,
+			Untracked: untracked && name == branch,
 		})
 	}
 	return report, nil

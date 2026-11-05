@@ -184,16 +184,35 @@ func TestStackListNamesTheWorkingCopyHoldingEachBranch(t *testing.T) {
 	}
 }
 
-func TestStackListNamesTheParentToTrackAnUntrackedBranchOnto(t *testing.T) {
+func TestStackListListsAnUntrackedBranchAboveTheParentShipAdoptsItOnto(t *testing.T) {
 	f := shipGTRepo(t, vcstest.GTStack("base"))
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "loose", "base")
 	writeShipFile(t, f.Dir, "loose.txt", "loose\n")
 	mustRun(t, f.Env(), f.Dir, "git", "add", "-A")
 	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "loose")
 
-	_, _, err := runStackCmd(t, f, "list")
-	if err == nil || !strings.Contains(err.Error(), "loose is not tracked by Graphite") || !strings.Contains(err.Error(), "gt track loose --parent base") {
-		t.Fatalf("stack list on an untracked branch = %v, want a refusal naming gt track loose --parent base", err)
+	out, errOut, err := runStackCmd(t, f, "list")
+	if err != nil {
+		t.Fatalf("stack list on an untracked branch: %v\n%s", err, errOut)
+	}
+	want := "base" + shipSep + "no working copy\n" + "loose" + shipSep + "here" + shipSep + "untracked: ccx vcs ship adopts it onto the branch below"
+	if got := strings.TrimSpace(out); got != want {
+		t.Errorf("listing = %q, want %q", got, want)
+	}
+
+	report := stackSingleReport(t, f, f.Dir)
+	if len(report.Branches) != 2 {
+		t.Fatalf("stack list --json branches = %+v, want base then loose", report.Branches)
+	}
+	wantReport := stackListReport{Root: f.Dir, Branches: []stackListEntry{
+		{Branch: "base", State: report.Branches[0].State},
+		{Branch: "loose", Path: f.Dir, Current: true, Untracked: true},
+	}}
+	if !reflect.DeepEqual(report, wantReport) {
+		t.Errorf("stack list --json = %+v, want %+v", report, wantReport)
+	}
+	if results := stackBatchReports(t, f, f.Dir); len(results) != 1 || results[0].Listing == nil || !reflect.DeepEqual(*results[0].Listing, wantReport) {
+		t.Errorf("stack list-batch = %+v, want listing %+v", results, wantReport)
 	}
 }
 
