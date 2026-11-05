@@ -262,7 +262,9 @@ request in every lane: `--pr-title`/`--pr-body-file` (repeatable, branch-scoped 
 `<branch>=<value>`, a bare value applying to the tip, `-` reading stdin) create the
 branch's PR. On an open PR ship keeps a title or body it already has and warns,
 so a ship from the wrong tree cannot rewrite what a reviewer reads;
-`--replace-pr-text` replaces them, and a blank live body fills without it.
+`--replace-pr-text` replaces them, and a blank live body fills without it. A commit
+about to land on a branch whose child another working copy holds warns, naming that
+tree, and still lands.
 `--draft`/`--publish` convert an
 existing PR in either direction, `--no-pr` opts out, and a ship naming no PR flag
 makes no `gh pr` call. `-m` is optional when an unscoped `--pr-title` is given: the

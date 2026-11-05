@@ -21,6 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   warn on stderr, and replace them only with `--replace-pr-text`. A blank live body still fills
   without the flag. A ship from a parent's tree, meant for a child `ccx vcs stack new` cut elsewhere,
   had rewritten the parent's title and body.
+- `ccx vcs ship` warns before a commit lands on a branch whose child another working copy holds,
+  naming that tree, and `--dry-run` carries the same note. The commit still lands. A lane had
+  committed a child's work to the parent from the tree `ccx vcs stack new` left on the parent.
 - `ccx vcs stack new` ends with the tree that holds the child and the tree it left alone, as
   `<child> is in its own tree and this tree stays on <parent>; cd to it · <path>`, because a lane
   missed the earlier line and committed on the parent. The path stays the last thing printed.

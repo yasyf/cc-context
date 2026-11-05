@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -61,5 +62,53 @@ func TestShipLeavesTheBranchesAboveItThatOtherWorkingCopiesHold(t *testing.T) {
 	}
 	if strings.Contains(out, "resubmitted") {
 		t.Errorf("ship output = %q, want no branch above p resubmitted", out)
+	}
+	if want := "ship: this commit lands on p, and c, stacked on it, is in " + c + "; cd there if the work is c's\n"; !strings.Contains(errStr, want) {
+		t.Errorf("ship stderr = %q, want %q", errStr, want)
+	}
+}
+
+func TestShipWarnsOnlyWhenACommitLandsUnderAHeldChild(t *testing.T) {
+	const warning = "this commit lands on p, and c, stacked on it, is in "
+	tests := []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{"a commit on the parent warns", []string{"-m", "fix: frobnicate", "--no-push", "p.txt"}, true},
+		{"a commit on a new branch lands elsewhere", []string{"-m", "fix: frobnicate", "--no-push", "--new-branch=n", "p.txt"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := shipGTRepo(t)
+			f.Decorate(stubGTAPI(t).ctx)
+			shipGTStack(t, f, "p")
+			stackLaneHere(t, f, "c")
+			writeShipFile(t, f.Dir, "p.txt", "more\n")
+
+			_, errStr, err := runShipCmdFull(f.Context(), t, tt.args...)
+			if err != nil {
+				t.Fatalf("ship = %v (stderr=%q)", err, errStr)
+			}
+			if got := strings.Contains(errStr, warning); got != tt.want {
+				t.Errorf("stderr = %q, want the warning %v", errStr, tt.want)
+			}
+		})
+	}
+}
+
+func TestShipDryRunNotesAHeldChildOnlyForACommit(t *testing.T) {
+	f := shipGTRepo(t)
+	f.Decorate(stubGTAPI(t).ctx)
+	shipGTStack(t, f, "p")
+	c := stackLaneHere(t, f, "c")
+	want := "this commit lands on p, and c, stacked on it, is in " + c + "; cd there if the work is c's"
+
+	if notes := dryRunValues(dryRunReport(t, f, "--no-commit"), "note"); slices.Contains(notes, want) {
+		t.Errorf("--no-commit notes = %q, want no commit warning", notes)
+	}
+	writeShipFile(t, f.Dir, "p.txt", "more\n")
+	if notes := dryRunValues(dryRunReport(t, f, "-m", "fix: frobnicate", "p.txt"), "note"); !slices.Contains(notes, want) {
+		t.Errorf("notes = %q, want %q", notes, want)
 	}
 }

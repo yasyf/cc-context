@@ -2339,6 +2339,21 @@ func gtHeldUpstack(ctx context.Context, l lane, state gtState, branch string) ([
 	return held, nil
 }
 
+// gtHeldChildNotes says a commit about to land on branch sits under branches
+// other working copies hold. Stack new leaves its calling tree on the parent, so
+// the next ship from that tree can put a child's work on the parent.
+func gtHeldChildNotes(ctx context.Context, l lane, state gtState, branch string) ([]string, error) {
+	held, err := gtHeldUpstack(ctx, l, state, branch)
+	if err != nil {
+		return nil, err
+	}
+	notes := make([]string, len(held))
+	for i, h := range held {
+		notes[i] = fmt.Sprintf("this commit lands on %s, and %s, stacked on it, is in %s; cd there if the work is %s's", branch, h.branch, h.holder, h.branch)
+	}
+	return notes, nil
+}
+
 func gtHeldUpstackSegment(held []stackSkip) string {
 	names := make([]string, len(held))
 	for i, h := range held {
