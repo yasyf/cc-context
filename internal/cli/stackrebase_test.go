@@ -808,7 +808,7 @@ func TestStackRebaseRealignsABranchAnotherWorkingCopyHolds(t *testing.T) {
 	held := restackSiblingPath(t, "held")
 	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", held, "feature")
 	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
-	if _, _, err := runStackCmd(t, f, "rebase", "--no-push"); err != nil {
+	if _, _, err := runStackCmd(t, f, "rebase", "--no-push", "--include", "feature"); err != nil {
 		t.Fatalf("rebase with feature checked out in %s: %v", held, err)
 	}
 	if !stackOnto(t, f, "origin/main", "feature") {
@@ -829,7 +829,7 @@ func TestStackRebaseRefusesADirtyWorkingCopyHoldingAMover(t *testing.T) {
 	for _, branch := range []string{"base", "feature"} {
 		before[branch] = gitAt(t, f.Env(), f.Dir, "rev-parse", branch)
 	}
-	_, _, err := runStackCmd(t, f, "rebase", "--no-push")
+	_, _, err := runStackCmd(t, f, "rebase", "--no-push", "--include", "feature")
 	if err == nil || !strings.Contains(err.Error(), held+" has uncommitted work") {
 		t.Fatalf("rebase = %v, want the dirty holder refused", err)
 	}
