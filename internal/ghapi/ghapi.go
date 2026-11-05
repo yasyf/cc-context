@@ -224,7 +224,7 @@ func (c *Client) do(ctx context.Context, method, ref string, body []byte, read b
 			return nil, nil, false, afterTries(err, failures)
 		}
 		if c.quota != nil {
-			if err := c.quota.charge(ctx, principal, Resource(target), CallerName(ctx), header); err != nil {
+			if err := c.quota.charge(ctx, principal, Resource(target), CallerName(ctx), target, header); err != nil {
 				return nil, nil, false, err
 			}
 		}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -40,7 +41,7 @@ func TestAdmitRefusesAPoolUnderTheFloorAndNamesItsCallers(t *testing.T) {
 		_, _ = fmt.Fprint(w, rateLimitBody(Floor-1, Floor, reset))
 	})
 	ctx := render.WithEnv(t.Context(), "CCX_CALLER=desk-runner.py")
-	if err := l.charge(ctx, IdentityUser, ResourceGraphQL, CallerName(ctx), http.Header{}); err != nil {
+	if err := l.charge(ctx, IdentityUser, ResourceGraphQL, CallerName(ctx), "", http.Header{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -94,7 +95,7 @@ func TestAdmitReadsAPoolPastItsResetAgain(t *testing.T) {
 	header.Set("X-RateLimit-Remaining", "3")
 	header.Set("X-RateLimit-Reset", strconv.FormatInt(past.Unix(), 10))
 	header.Set("X-RateLimit-Resource", ResourceGraphQL)
-	if err := l.charge(t.Context(), IdentityUser, ResourceCore, "watch.sh", header); err != nil {
+	if err := l.charge(t.Context(), IdentityUser, ResourceCore, "watch.sh", "", header); err != nil {
 		t.Fatal(err)
 	}
 	if err := c.Admit(t.Context(), IdentityUser, ResourceGraphQL); err != nil {
@@ -199,7 +200,7 @@ func TestALateResponseNeverRaisesTheBalanceWithinAWindow(t *testing.T) {
 		header.Set("X-RateLimit-Limit", "5000")
 		header.Set("X-RateLimit-Remaining", remaining)
 		header.Set("X-RateLimit-Reset", strconv.FormatInt(reset.Unix(), 10))
-		if err := l.charge(t.Context(), IdentityUser, ResourceCore, "watch.sh", header); err != nil {
+		if err := l.charge(t.Context(), IdentityUser, ResourceCore, "watch.sh", "", header); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -235,7 +236,7 @@ func TestChargesQueuedBehindAnotherHolderAllLandInOneFlush(t *testing.T) {
 	errs := make(chan error, charges)
 	var wg sync.WaitGroup
 	for range charges {
-		wg.Go(func() { errs <- l.charge(ctx, IdentityUser, ResourceCore, "status.sh", header) })
+		wg.Go(func() { errs <- l.charge(ctx, IdentityUser, ResourceCore, "status.sh", "", header) })
 	}
 	time.Sleep(200 * time.Millisecond)
 	close(release)
@@ -292,7 +293,7 @@ func TestLedgerKeepsAFinishedWindowsCallers(t *testing.T) {
 	}
 	first, second := start.Add(time.Hour), start.Add(2*time.Hour)
 	for _, caller := range []string{"a", "a", "b"} {
-		if err := l.charge(t.Context(), IdentityUser, ResourceCore, caller, header(first)); err != nil {
+		if err := l.charge(t.Context(), IdentityUser, ResourceCore, caller, "", header(first)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -300,7 +301,7 @@ func TestLedgerKeepsAFinishedWindowsCallers(t *testing.T) {
 		t.Fatalf("history written before the window closed: %v", err)
 	}
 	now = first.Add(time.Minute)
-	if err := l.charge(t.Context(), IdentityUser, ResourceCore, "c", header(second)); err != nil {
+	if err := l.charge(t.Context(), IdentityUser, ResourceCore, "c", "", header(second)); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(filepath.Join(dir, HistoryFile))
@@ -320,5 +321,43 @@ func TestLedgerKeepsAFinishedWindowsCallers(t *testing.T) {
 	}
 	if got := pools[poolKey(IdentityUser, ResourceCore)].Callers; got["c"] != 1 || got["a"] != 0 {
 		t.Errorf("live callers = %v, want the new window's only", got)
+	}
+}
+
+func TestALedgerCountsEachCallersPathsFoldedAcrossPullRequests(t *testing.T) {
+	t.Parallel()
+	l := &ledger{dir: t.TempDir(), now: time.Now}
+	const sha = "a37cf143f3cf1022fcb1c106059b3fb336e44203"
+	for _, target := range []string{
+		"https://api.github.com/repos/o/r/pulls/1/reviews?per_page=100",
+		"/repos/o/r/pulls/2/reviews",
+		"/repos/o/r/commits/" + sha + "/status",
+		"gh pr view",
+	} {
+		if err := l.charge(t.Context(), IdentityUser, ResourceCore, "lr-facts", target, http.Header{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	states, err := l.load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := states[poolKey(IdentityUser, ResourceCore)].Paths["lr-facts"]
+	want := map[string]int{"repos/o/r/pulls/:n/reviews": 2, "repos/o/r/commits/:sha/status": 1, "gh pr view": 1}
+	if !maps.Equal(got, want) {
+		t.Errorf("paths = %v, want %v", got, want)
+	}
+}
+
+func TestFoldPathFoldsRefsSoAPathIsOneRow(t *testing.T) {
+	t.Parallel()
+	for target, want := range map[string]string{
+		"/repos/o/r/compare/dev...yasyf/feature": "repos/o/r/compare/:refs",
+		"repos/o/r/branches/yasyf/feature":       "repos/o/r/branches/:ref",
+		"graphql":                                "graphql",
+	} {
+		if got := FoldPath(target); got != want {
+			t.Errorf("FoldPath(%q) = %q, want %q", target, got, want)
+		}
 	}
 }

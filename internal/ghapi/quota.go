@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -78,11 +79,12 @@ func TopCallers(p Pool, n int) string {
 }
 
 type poolState struct {
-	Limit     int            `json:"limit"`
-	Remaining int            `json:"remaining"`
-	ResetAt   time.Time      `json:"resetAt"`
-	ReadAt    time.Time      `json:"readAt"`
-	Callers   map[string]int `json:"callers,omitempty"`
+	Limit     int                       `json:"limit"`
+	Remaining int                       `json:"remaining"`
+	ResetAt   time.Time                 `json:"resetAt"`
+	ReadAt    time.Time                 `json:"readAt"`
+	Callers   map[string]int            `json:"callers,omitempty"`
+	Paths     map[string]map[string]int `json:"paths,omitempty"`
 
 	closed []closedWindow
 }
@@ -90,20 +92,21 @@ type poolState struct {
 // closedWindow is one finished rate-limit window of a pool and who spent it, as
 // HistoryFile keeps it.
 type closedWindow struct {
-	Pool      string         `json:"pool"`
-	Limit     int            `json:"limit"`
-	Remaining int            `json:"remaining"`
-	ResetAt   time.Time      `json:"resetAt"`
-	ReadAt    time.Time      `json:"readAt"`
-	Callers   map[string]int `json:"callers"`
+	Pool      string                    `json:"pool"`
+	Limit     int                       `json:"limit"`
+	Remaining int                       `json:"remaining"`
+	ResetAt   time.Time                 `json:"resetAt"`
+	ReadAt    time.Time                 `json:"readAt"`
+	Callers   map[string]int            `json:"callers"`
+	Paths     map[string]map[string]int `json:"paths,omitempty"`
 }
 
 func (p *poolState) roll(now time.Time, reset time.Time) {
 	if !p.ResetAt.IsZero() && (!now.Before(p.ResetAt) || reset.After(p.ResetAt.Add(time.Minute))) {
 		if len(p.Callers) > 0 {
-			p.closed = append(p.closed, closedWindow{Limit: p.Limit, Remaining: p.Remaining, ResetAt: p.ResetAt, ReadAt: p.ReadAt, Callers: p.Callers})
+			p.closed = append(p.closed, closedWindow{Limit: p.Limit, Remaining: p.Remaining, ResetAt: p.ResetAt, ReadAt: p.ReadAt, Callers: p.Callers, Paths: p.Paths})
 		}
-		p.Callers = nil
+		p.Callers, p.Paths = nil, nil
 	}
 }
 
@@ -284,7 +287,7 @@ func (l *ledger) pool(pools map[string]*poolState, identity, resource string) *p
 	return pools[key]
 }
 
-func (l *ledger) charge(ctx context.Context, identity, resource, caller string, header http.Header) error {
+func (l *ledger) charge(ctx context.Context, identity, resource, caller, target string, header http.Header) error {
 	if r := header.Get("X-RateLimit-Resource"); r != "" {
 		resource = r
 	}
@@ -304,7 +307,80 @@ func (l *ledger) charge(ctx context.Context, identity, resource, caller string, 
 			p.Callers = map[string]int{}
 		}
 		p.Callers[caller]++
+		if target == "" {
+			return
+		}
+		if p.Paths == nil {
+			p.Paths = map[string]map[string]int{}
+		}
+		if p.Paths[caller] == nil {
+			p.Paths[caller] = map[string]int{}
+		}
+		p.Paths[caller][FoldPath(target)]++
 	})
+}
+
+var pathFolds = []struct {
+	pattern *regexp.Regexp
+	to      string
+}{
+	{regexp.MustCompile(`[?#].*$`), ""},
+	{regexp.MustCompile(`^[a-z]+://[^/]+`), ""},
+	{regexp.MustCompile(`/compare/.*$`), "/compare/:refs"},
+	{regexp.MustCompile(`/(branches|heads|refs?)/.*$`), "/$1/:ref"},
+	{regexp.MustCompile(`/[0-9a-f]{40}(/|$)`), "/:sha$1"},
+	{regexp.MustCompile(`/[0-9]+(/|$)`), "/:n$1"},
+}
+
+// FoldPath is target with its query, host, numbers, commits and refs folded
+// away, so one read counts as one path across every pull request it visits.
+func FoldPath(target string) string {
+	for _, fold := range pathFolds {
+		target = fold.pattern.ReplaceAllString(target, fold.to)
+	}
+	return strings.TrimPrefix(target, "/")
+}
+
+// Spend is one caller's requests against one open pool, and on one path when
+// the read asked for paths.
+type Spend struct {
+	Pool     string
+	Caller   string
+	Path     string
+	Requests int
+}
+
+// LedgerSpend reads who spent each open pool from this machine's ledger,
+// heaviest first, without a request to GitHub.
+func LedgerSpend(byPath bool) ([]Spend, error) {
+	l := defaultLedger()
+	if l == nil {
+		return nil, errors.New("ghapi: no user cache dir holds a quota ledger")
+	}
+	states, err := l.load()
+	if err != nil {
+		return nil, err
+	}
+	now := l.now()
+	var spends []Spend
+	for key, p := range states {
+		if !now.Before(p.ResetAt) {
+			continue
+		}
+		for caller, requests := range p.Callers {
+			if !byPath || len(p.Paths[caller]) == 0 {
+				spends = append(spends, Spend{Pool: key, Caller: caller, Requests: requests})
+				continue
+			}
+			for path, n := range p.Paths[caller] {
+				spends = append(spends, Spend{Pool: key, Caller: caller, Path: path, Requests: n})
+			}
+		}
+	}
+	slices.SortFunc(spends, func(a, b Spend) int {
+		return cmp.Or(cmp.Compare(b.Requests, a.Requests), cmp.Compare(a.Pool, b.Pool), cmp.Compare(a.Caller, b.Caller), cmp.Compare(a.Path, b.Path))
+	})
+	return spends, nil
 }
 
 type rateLimits struct {
@@ -429,8 +505,9 @@ func (c *Client) admit(ctx context.Context, identity, resource string, floor fun
 }
 
 // Charge counts one request by the calling process against identity's
-// resource pool, for a request ccx did not send itself, such as gh's.
-func (c *Client) Charge(ctx context.Context, identity, resource string) error {
+// resource pool, for a request ccx did not send itself, such as gh's. target
+// names what it asked for, a path or a gh command.
+func (c *Client) Charge(ctx context.Context, identity, resource, target string) error {
 	if c.quota == nil {
 		return nil
 	}
@@ -438,7 +515,7 @@ func (c *Client) Charge(ctx context.Context, identity, resource string) error {
 	if err != nil {
 		return err
 	}
-	return c.quota.charge(ctx, principal, resource, CallerName(ctx), http.Header{})
+	return c.quota.charge(ctx, principal, resource, CallerName(ctx), target, http.Header{})
 }
 
 // Record charges one request another client in this process sent to target
@@ -452,7 +529,7 @@ func (c *Client) Record(ctx context.Context, identity, target string, header htt
 	if err != nil {
 		return err
 	}
-	return c.quota.charge(ctx, principal, Resource(target), CallerName(ctx), header)
+	return c.quota.charge(ctx, principal, Resource(target), CallerName(ctx), target, header)
 }
 
 // Pools reads identity's pools fresh from rate_limit and returns them with
