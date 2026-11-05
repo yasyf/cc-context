@@ -3880,6 +3880,92 @@ func TestShipCISettleWatchesLateRuns(t *testing.T) {
 	}
 }
 
+func TestShipCISupersededRunFollowsTheNewHead(t *testing.T) {
+	const oldHead = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	const newHead = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	cancelledAt := time.Date(2026, 7, 8, 18, 0, 5, 0, time.UTC)
+	tests := []struct {
+		name     string
+		head     string
+		wantCI   string
+		wantErr  bool
+		wantRuns []string
+		wantText []string
+	}{
+		{
+			name:     "head moved on",
+			head:     newHead,
+			wantCI:   "CI success",
+			wantRuns: []string{"42", "43"},
+			wantText: []string{"ci · cancelled", "superseded by bbbbbbbb: watching its runs", "Guides · success"},
+		},
+		{
+			name:     "cancelled on the current head",
+			head:     oldHead,
+			wantCI:   "CI failure",
+			wantErr:  true,
+			wantRuns: []string{"42"},
+			wantText: []string{"ci · cancelled", "failed: vet"},
+		},
+		{
+			name:     "no pull request",
+			head:     "",
+			wantCI:   "CI failure",
+			wantErr:  true,
+			wantRuns: []string{"42"},
+			wantText: []string{"ci · cancelled", "failed: vet"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := shipRepo(t, vcstest.JJ(), vcstest.Remote(), vcstest.Dirty())
+			writeShipGH(t, f)
+			t.Setenv("GH_RUN_LIST_JSON_"+oldHead, `[{"databaseId":42,"workflowName":"ci","status":"completed","url":"https://x/42"}]`)
+			t.Setenv("GH_RUN_LIST_JSON_"+newHead, `[{"databaseId":43,"workflowName":"ci","status":"completed","url":"https://x/43"}]`)
+			t.Setenv("GH_RUN_VIEW_JSON_42", `{"workflowName":"ci","conclusion":"cancelled","startedAt":"2026-07-08T18:00:00Z","updatedAt":"2026-07-08T18:00:05Z","url":"https://x/42","jobs":[{"name":"vet","conclusion":"cancelled","steps":[]}]}`)
+			t.Setenv("GH_RUN_VIEW_JSON_43", ghStdout(t, "run-view-success"))
+			shipCIPollInterval = 0
+			var readAfter time.Time
+			prevHead := shipPRHead
+			shipPRHead = func(_ context.Context, pr ciPR, after time.Time) (string, error) {
+				if pr.nwo != "yasyf/cc-context" || pr.branch != "feature" {
+					t.Errorf("head read for %+v, want yasyf/cc-context feature", pr)
+				}
+				readAfter = after
+				return tt.head, nil
+			}
+			t.Cleanup(func() { shipPRHead = prevHead })
+
+			var errW bytes.Buffer
+			segment, report, err := shipWatchCIHead(f.Context(), &errW, render.Dir(f.Dir), ciPR{nwo: "yasyf/cc-context", branch: "feature"}, oldHead, 0)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("error = %v, want error %v", err, tt.wantErr)
+			}
+			if segment != tt.wantCI {
+				t.Errorf("segment = %q, want %q", segment, tt.wantCI)
+			}
+			if !readAfter.Equal(cancelledAt) {
+				t.Errorf("head read after %v, want the cancellation at %v", readAfter, cancelledAt)
+			}
+			out := strings.Join(report, "\n")
+			for _, want := range tt.wantText {
+				if !strings.Contains(out, want) {
+					t.Errorf("report missing %q\ngot:\n%s", want, out)
+				}
+			}
+			var watched []string
+			for _, inv := range vcstest.Invocations(t, f.ArgvLog) {
+				if len(inv) >= 4 && inv[0] == "gh" && inv[1] == "run" && inv[2] == "watch" {
+					watched = append(watched, inv[3])
+				}
+			}
+			if !slices.Equal(watched, tt.wantRuns) {
+				t.Errorf("watched runs = %v, want %v", watched, tt.wantRuns)
+			}
+		})
+	}
+}
+
 func TestShipCIBudgetFloorsPerRunShare(t *testing.T) {
 	f := shipRepo(t, vcstest.JJ(), vcstest.Remote(), vcstest.Dirty())
 	writeShipGH(t, f)
@@ -7565,10 +7651,10 @@ func TestShipWatchCIReadsContextPATH(t *testing.T) {
 		run  func() (string, []string, error)
 	}{
 		{"shipWatchCI", func() (string, []string, error) {
-			return shipWatchCI(ctx, &errW, dir, vcs.Git, 0)
+			return shipWatchCI(ctx, &errW, dir, vcs.Git, ciPR{}, 0)
 		}},
 		{"shipWatchCIHead", func() (string, []string, error) {
-			return shipWatchCIHead(ctx, &errW, dir, "deadbeef", 0)
+			return shipWatchCIHead(ctx, &errW, dir, ciPR{}, "deadbeef", 0)
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
