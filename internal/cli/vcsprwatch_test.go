@@ -690,6 +690,23 @@ func TestPRWatchRunNamesItsRepositoryAndTheFailedJobsLogCommand(t *testing.T) {
 	}
 }
 
+func TestPRWatchRunOpensByNamingAnUnreadQueue(t *testing.T) {
+	t.Parallel()
+	landed := prWatchSnapshot{State: "MERGED", Head: watchHeadA, Squash: watchSquash}
+	var out bytes.Buffer
+	var slept []time.Duration
+	poller := &scriptedPoller{ticks: []prWatchTick{watchTick(map[int]prWatchSnapshot{7: landed})}}
+	run := newTestWatchRun(poller, prWatchOpts{interval: time.Minute, until: prWatchUntilLanded, repo: "o/r", queueUnread: true}, &out, &slept)
+	if err := run.watch(context.Background(), []int{7}, map[int]prWatchSnapshot{}); err != nil {
+		t.Fatalf("watch: %v", err)
+	}
+	want := "queue-unread o/r: not a checkout here, so no queued or ejected line can appear\n" +
+		"o/r#7 landed 815d915c0\n"
+	if out.String() != want {
+		t.Errorf("output =\n%s\nwant\n%s", out.String(), want)
+	}
+}
+
 func TestPRRefs(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

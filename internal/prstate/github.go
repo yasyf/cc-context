@@ -482,7 +482,7 @@ func (g *GitHub) queueInfos(ctx context.Context, numbers []int) ([]gtapi.PullReq
 }
 
 func (g *GitHub) queueRecords(ctx context.Context, numbers []int) (map[int]*gtapi.PullRequestInfo, map[int]string) {
-	if len(numbers) == 0 || g.gt == nil {
+	if len(numbers) == 0 || g.gt == nil || g.gt.ProviderError() != nil {
 		return nil, nil
 	}
 	infos, err := g.queueInfos(ctx, numbers)

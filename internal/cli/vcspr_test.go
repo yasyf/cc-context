@@ -16,6 +16,7 @@ import (
 
 	"github.com/yasyf/cc-context/internal/gtapi"
 	"github.com/yasyf/cc-context/internal/prstate"
+	"github.com/yasyf/cc-context/internal/workspace"
 )
 
 // Graphite's pull-request-info answers for Forge-AI/monorepo on 2026-09-24:
@@ -386,6 +387,46 @@ func stubGraphiteDown(t *testing.T) *gtapi.Client {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusBadGateway) }))
 	t.Cleanup(srv.Close)
 	return gtapi.NewWithToken(srv.URL, "gt-stub-token")
+}
+
+func TestPRStatusOutsideACheckoutNamesTheUnreadQueueAndIsNeverLandable(t *testing.T) {
+	green := `"checks":{"nodes":[{"commit":{"statusCheckRollup":{"state":"SUCCESS","contexts":{"nodes":[` +
+		`{"__typename":"CheckRun","name":"lint","conclusion":"SUCCESS","status":"COMPLETED"}]}}}}]}`
+	stubPRState(t, prPoll(
+		`"p0":`+prNode(25116, "MERGED", `"mergeCommit":{"oid":"9cc33f055dc4db19da6eb13a210a810297ccdc05"}`),
+		`"p1":`+strings.Replace(prNode(25121, "OPEN", prComments()), `"checks":{"nodes":[]}`, green, 1),
+	))
+	native := gtapi.NewNativeWithToken("https://example.invalid", "unused")
+	previous := gtAPINativeDefault
+	gtAPINativeDefault = func() *gtapi.Client { return native }
+	t.Cleanup(func() { gtAPINativeDefault = previous })
+	run := func(args ...string) string {
+		t.Helper()
+		cmd := newVcsPRCmd()
+		cmd.SilenceUsage, cmd.SilenceErrors = true, true
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetErr(&out)
+		cmd.SetArgs(append([]string{"status"}, args...))
+		if err := cmd.ExecuteContext(workspace.WithRoot(t.Context(), t.TempDir())); err != nil {
+			t.Fatalf("pr status %v: %v", args, err)
+		}
+		return out.String()
+	}
+
+	want := "Forge-AI/monorepo#25121  unknown · open · ci green · approved · blocked:queue-unknown · queue not read outside a checkout of Forge-AI/monorepo\n" +
+		"Forge-AI/monorepo#25116  landed · squash 9cc33f05 on dev · approved · landed\n"
+	if got := run("Forge-AI/monorepo#25121", "25116"); got != want {
+		t.Errorf("report =\n%s\nwant\n%s", got, want)
+	}
+
+	var reports []prStatusReport
+	if err := json.Unmarshal([]byte(run("--json", "Forge-AI/monorepo#25121")), &reports); err != nil {
+		t.Fatal(err)
+	}
+	if len(reports) != 1 || !reports[0].QueueUnread || reports[0].Verdict != "blocked:queue-unknown" {
+		t.Errorf("report = %+v, want the unread queue named and a blocked verdict", reports)
+	}
 }
 
 func TestPRStatusReadsTheQueueAsUnknownWhenGraphiteDoesNotAnswer(t *testing.T) {

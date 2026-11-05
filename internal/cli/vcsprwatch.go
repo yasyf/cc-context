@@ -317,14 +317,15 @@ func savePRWatchState(path string, snaps map[int]prWatchSnapshot) error {
 }
 
 type prWatchOpts struct {
-	interval time.Duration
-	until    string
-	json     bool
-	once     bool
-	state    string
-	prefix   string
-	job      string
-	repo     string
+	interval    time.Duration
+	until       string
+	json        bool
+	once        bool
+	state       string
+	prefix      string
+	job         string
+	repo        string
+	queueUnread bool
 }
 
 type prWatchRun struct {
@@ -366,6 +367,11 @@ func (r prWatchRun) rateLimited(ctx context.Context, until time.Time) error {
 }
 
 func (r prWatchRun) watch(ctx context.Context, numbers []int, snaps map[int]prWatchSnapshot) error {
+	if r.opts.queueUnread {
+		if err := r.emit(prWatchEvent{Event: "queue-unread", Detail: r.opts.repo + ": not a checkout here, so no queued or ejected line can appear"}); err != nil {
+			return err
+		}
+	}
 	watched := slices.Clone(numbers)
 	fails := 0
 	for {
@@ -543,7 +549,9 @@ caller that drives the loop itself: it answers from the shared cache rather
 than wait out the 30-second spacing, so it spends at most one poll's latency.
 Each pull request is a number, #number, or owner/name#number, the last being the
 same as --repo. Without either, the repository is the current checkout's, so
-every event line names the repository it read.
+every event line names the repository it read. Outside a checkout of that
+repository the watch reads GitHub alone: it opens with a queue-unread line, and
+every event but queued and ejected still reports.
 
 Output is line-buffered for Monitor.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -597,6 +605,7 @@ func runVcsPRWatch(cmd *cobra.Command, args []string, repo string, stack bool, o
 		repo = looked.NameWithOwner
 	}
 	o.repo = repo
+	o.queueUnread = prQueueUnread(ctx, repo)
 	snaps, err := loadPRWatchState(o.state)
 	if err != nil {
 		return err

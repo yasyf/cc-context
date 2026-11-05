@@ -470,7 +470,7 @@ ccx vcs info                                     # which lane a ship would take,
 ccx vcs status                                   # every branch, its PR, and what blocks it
 ccx vcs status --json                            # the same report as a structure
 ccx vcs pr status 123 124                         # queue state, CI, approval, and verdict, per PR; each line names its repo
-ccx vcs pr watch o/r#123                          # owner/name#N or --repo reads that repo; a bare number reads the checkout's
+ccx vcs pr watch o/r#123                          # owner/name#N or --repo reads that repo; outside its checkout, GitHub alone: no queue lines, never landable
 ccx vcs pr state 123 124 --lane-prefix yasyf/work/  # shared cache records and lane PRs, as JSON
 ccx vcs pr watch 123 --job lint                  # exit when that one check settles on the PR's head: 0 passed, 1 failed, naming the job-log command
 ccx vcs job-log 126958155452                     # one settled job's plain log, tail kept under --budget, while its run still goes

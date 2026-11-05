@@ -203,7 +203,18 @@ func gtAPIForRepo(ctx context.Context, repo string) *gtapi.Client {
 			return client.WithBranchProviders(owners)
 		}
 	}
-	return gtAPINativeDefault().WithProviderError(fmt.Errorf("%s is not a checkout of %s, so ccx cannot tell which merge queue %s uses; run this from a checkout of %s", workingDir(ctx), repo, repo, repo))
+	return gtAPINativeDefault().WithProviderError(&notCheckoutError{dir: workingDir(ctx), repo: repo})
+}
+
+type notCheckoutError struct{ dir, repo string }
+
+func (e *notCheckoutError) Error() string {
+	return fmt.Sprintf("%s is not a checkout of %s, so ccx cannot tell which merge queue %s uses; run this from a checkout of %s", e.dir, e.repo, e.repo, e.repo)
+}
+
+func prQueueUnread(ctx context.Context, repo string) bool {
+	var outside *notCheckoutError
+	return errors.As(gtAPIForRepo(ctx, repo).ProviderError(), &outside)
 }
 
 func nativeReadTracking(ctx context.Context, l lane, run *stackRebaseRun, live []string, prs map[string]*stackPR) ([]stackUntracked, error) {
