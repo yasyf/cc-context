@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ccx vcs diff --stat` prints each changed file's added and removed line counts, like
+  `git diff --stat`, with a totals header. It reads each file's hunks and classifies no symbols, so
+  it is cheap on a large diff, and it prints no file content, so it masks nothing. A lane that
+  reached for `--stat` got `unknown flag` and fell back to plain git. It cannot combine with
+  `--full`.
 - `ccx vcs pr watch --until ci` exits 0 once every check on each pull request's current head has
   finished and passed, and 1 once one finished failing, naming it, or when the pull request closed
   first. It reads the head from a poll made after the watch began, as `--job` does, and gives a

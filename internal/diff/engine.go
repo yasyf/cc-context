@@ -23,7 +23,8 @@ import (
 // a.RevealSecrets. The fired rule ids come back in file order — the caller
 // appends the shared footer after its cap. The caller budget-caps the output, and
 // the model stops growing once it has enough for that cap, so a huge diff costs
-// only what the budget keeps. a.Full inlines per-file hunks.
+// only what the budget keeps. a.Full inlines per-file hunks; a.Stat renders per-file
+// line counts instead, classifying nothing.
 func Run(ctx context.Context, a backend.Args) (string, []string, error) {
 	cwd, err := workspace.RootFrom(ctx)
 	if err != nil {
@@ -36,6 +37,10 @@ func Run(ctx context.Context, a backend.Args) (string, []string, error) {
 	files, err := globFilter(plan.Files, a.Globs)
 	if err != nil {
 		return "", nil, err
+	}
+	if a.Stat {
+		out, err := runStat(plan, files)
+		return out, nil, err
 	}
 	model, err := buildModel(ctx, plan, files, a.Full, a.Budget)
 	if err != nil {

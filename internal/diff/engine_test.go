@@ -133,6 +133,55 @@ func TestRunRename(t *testing.T) {
 	}
 }
 
+func TestRunStat(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+
+	dir := t.TempDir()
+	e2eGit(t, dir, "init", "-q")
+	e2eGit(t, dir, "config", "user.email", "t@example.com")
+	e2eGit(t, dir, "config", "user.name", "Test")
+
+	e2eWrite(t, dir, "a.txt", []byte("one\ntwo\nthree\n"))
+	e2eWrite(t, dir, "logo.bin", []byte("\x00\x01\x02BIN\x00\x00payload"))
+	e2eWrite(t, dir, "clean.txt", []byte("same\n"))
+	e2eGit(t, dir, "add", "-A")
+	e2eGit(t, dir, "commit", "-qm", "init")
+
+	e2eWrite(t, dir, "a.txt", []byte("one\n2\nthree\nfour\n"))
+	e2eWrite(t, dir, "logo.bin", []byte("\x00\x01\x02BINX\x00\x00payload2"))
+	e2eGit(t, dir, "mv", "clean.txt", "renamed.txt")
+
+	t.Chdir(dir)
+	out, ids, err := Run(context.Background(), backend.Args{Source: "uncommitted", Stat: true})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(ids) != 0 {
+		t.Errorf("stat fired secret rules %v, want none: it prints no content", ids)
+	}
+
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if want := "# diff uncommitted — 3 files · +2/−1 lines"; lines[0] != want {
+		t.Errorf("header = %q, want %q", lines[0], want)
+	}
+	stats := map[string]string{}
+	for _, line := range lines[1:] {
+		name, stat, _ := strings.Cut(line, " | ")
+		stats[strings.TrimSpace(name)] = stat
+	}
+	want := map[string]string{"a.txt": "+2/−1", "logo.bin": "binary", "clean.txt → renamed.txt": "+0/−0"}
+	if len(stats) != len(want) {
+		t.Errorf("stat rows = %v, want %v", stats, want)
+	}
+	for name, stat := range want {
+		if stats[name] != stat {
+			t.Errorf("%s: stat = %q, want %q\n---\n%s", name, stats[name], stat, out)
+		}
+	}
+}
+
 // TestGlobFilter pins the changed-file selection, including the property the
 // diff surface depends on: no path is stat'd, so a file the diff deletes still
 // matches the glob naming it.

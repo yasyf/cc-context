@@ -60,6 +60,7 @@ type Args struct {
 	Paths            []string
 	Globs            []string
 	Full             bool
+	Stat             bool
 	RevealSecrets    bool
 	Apply            bool
 	Force            bool

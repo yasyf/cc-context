@@ -22,6 +22,8 @@ func newDiffCmd() *cobra.Command {
 	}
 	cmd.Flags().StringArrayVarP(&a.Globs, "glob", "g", nil, globFlagUsage)
 	cmd.Flags().BoolVar(&a.Full, "full", false, "inline per-file hunks")
+	cmd.Flags().BoolVar(&a.Stat, "stat", false, "per-file added and removed line counts, like git diff --stat")
+	cmd.MarkFlagsMutuallyExclusive("full", "stat")
 	cmd.Flags().BoolVar(&a.RevealSecrets, "reveal-secrets", false, "print detected secrets raw instead of masked")
 	cmd.Flags().IntVar(&a.Budget, "budget", 0, "token budget for the output")
 	return cmd
