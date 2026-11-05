@@ -163,6 +163,8 @@ type shipOpts struct {
 	prBodyFile    []string
 	noPR          bool
 	replacePRText bool
+	pushRemote    string
+	headOwner     string
 
 	landed      []string
 	newPRs      []string
@@ -447,8 +449,15 @@ func runShip(cmd *cobra.Command, o shipOpts) (err error) {
 	}
 	var prNWO string
 	if prRun && !o.noPush {
-		if prNWO, err = shipPRRepo(ctx, l, plan, meta[plan.name].base); err != nil {
+		repo, err := shipPRRepo(ctx, l, plan, meta[plan.name].base)
+		if err != nil {
 			return err
+		}
+		prNWO = repo.NameWithOwner
+		if kind == vcs.Git && !gtLane && repo.PushDenied() {
+			if o.pushRemote, o.headOwner, err = shipForkRemote(ctx, dir, plan.name, repo); err != nil {
+				return err
+			}
 		}
 	}
 	if gtLane && !o.noPush && !o.noCommit && !o.evictQueued && plan.action != branchCreate {
@@ -707,7 +716,7 @@ func runShip(cmd *cobra.Command, o shipOpts) (err error) {
 	}
 
 	if prRun {
-		seg, err := shipPR(ctx, cmd.ErrOrStderr(), l, prNWO, remote, branch, plan.trunk, subject, meta, gtStack)
+		seg, err := shipPR(ctx, cmd.ErrOrStderr(), l, prNWO, o.headOwner, remote, branch, plan.trunk, subject, meta, gtStack)
 		if err != nil {
 			return err
 		}
@@ -1885,10 +1894,11 @@ func gitCurrentBranch(ctx context.Context, dir render.Dir, prefix string) (strin
 	return "", nil
 }
 
-// gitTrunkBranch reads the remote's default branch, empty when origin/HEAD does
-// not resolve — a local-only repository has no trunk, which reads as "not on
-// trunk" and leaves ship appending where it stands. That empty answer is the
-// unresolved case alone: origin/HEAD may be pointed at any ref, and
+// gitTrunkBranch reads the remote's default branch. When origin/HEAD does not
+// resolve it asks GitHub for the repository's default branch, and answers empty
+// when GitHub cannot say — a local-only repository has no trunk, which reads as
+// "not on trunk" and leaves ship appending where it stands. That empty answer is
+// the unresolved case alone: origin/HEAD may be pointed at any ref, and
 // `git symbolic-ref --short refs/remotes/origin/HEAD` prints a tag as readily as
 // a branch at exit 0, so a target outside origin/ is an error the way
 // vcs.ResolveTrunk already treats it — reporting "" there would hand ship a tag
@@ -1900,7 +1910,7 @@ func gitTrunkBranch(ctx context.Context, dir render.Dir) (string, error) {
 		return "", fmt.Errorf("ship: git symbolic-ref %s: %w", ref, err)
 	}
 	if code != 0 {
-		return "", nil
+		return githubDefaultBranch(ctx, dir)
 	}
 	target := strings.TrimSpace(out)
 	trunk, ok := strings.CutPrefix(target, "origin/")
@@ -2196,9 +2206,12 @@ func shipPushJJReject(ctx context.Context, dir render.Dir, target, moveOp string
 }
 
 func shipPushGit(ctx context.Context, dir render.Dir, o shipOpts, branch, trunk, preAmendSHA string) (string, int, string, error) {
-	remote, err := vcs.GitRemoteFor(ctx, dir, branch)
-	if err != nil {
-		return "", 0, "", fmt.Errorf("ship: %w", err)
+	remote := o.pushRemote
+	if remote == "" {
+		var err error
+		if remote, err = vcs.GitRemoteFor(ctx, dir, branch); err != nil {
+			return "", 0, "", fmt.Errorf("ship: %w", err)
+		}
 	}
 	if err := thinRefuseAdoptedPush(ctx, dir, "ship", []string{branch}); err != nil {
 		return "", 0, "", err

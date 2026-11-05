@@ -24,7 +24,7 @@ var ErrNoGitHub = errors.New("github metadata unavailable")
 
 // githubSchema is the on-disk format version of the cached repo record; a
 // mismatch reads as a miss.
-const githubSchema = 2
+const githubSchema = 3
 
 // githubTTL bounds how long a cached record is served before a refetch.
 const githubTTL = 24 * time.Hour
@@ -44,6 +44,7 @@ type Repo struct {
 	ViewerLogin      string    `json:"viewer_login"`
 	ViewerPermission string    `json:"viewer_permission"`
 	Affiliated       bool      `json:"affiliated"`
+	DefaultBranch    string    `json:"default_branch,omitempty"`
 	Installation     bool      `json:"installation,omitempty"`
 	FetchedAt        time.Time `json:"fetched_at"`
 }
@@ -70,6 +71,10 @@ func (r Repo) Writable() bool {
 	default:
 		return false
 	}
+}
+
+func (r Repo) PushDenied() bool {
+	return !r.Installation && (r.ViewerPermission == "READ" || r.ViewerPermission == "TRIAGE")
 }
 
 // Mine reports whether the repository is the viewer's own to run a stacking
@@ -234,8 +239,9 @@ func fetchRepo(ctx context.Context, root render.Dir) (Repo, error) {
 			Login string `json:"login"`
 			Type  string `json:"type"`
 		} `json:"owner"`
-		Private     bool            `json:"private"`
-		Permissions restPermissions `json:"permissions"`
+		Private       bool            `json:"private"`
+		DefaultBranch string          `json:"default_branch"`
+		Permissions   restPermissions `json:"permissions"`
 	}
 	if err := json.Unmarshal([]byte(out), &payload); err != nil {
 		return Repo{}, fmt.Errorf("parse gh api repos/{owner}/{repo}: %w", err)
@@ -246,6 +252,7 @@ func fetchRepo(ctx context.Context, root render.Dir) (Repo, error) {
 		Owner:            payload.Owner.Login,
 		IsPrivate:        payload.Private,
 		ViewerPermission: payload.Permissions.role(),
+		DefaultBranch:    payload.DefaultBranch,
 		FetchedAt:        time.Now(),
 	}
 	if installationToken(ctx) {
