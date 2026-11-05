@@ -1359,15 +1359,13 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 			return nil, fmt.Errorf("stack rebase: %w", err)
 		}
 		heldBelow = stackHeldBelow(retargeted, current, members, o.include, stackWithClaims(holders, claims))
-		if !o.noPush {
-			foreign, err := vcs.ForeignBranchHolders(ctx, l.checkout)
-			if err != nil {
-				return nil, fmt.Errorf("stack rebase: %w", err)
-			}
-			foreign = stackWithClaims(foreign, claims)
-			if members, heldAbove, err = stackHeldAbove(retargeted, current, members, o.include, foreign, parentOverrides); err != nil {
-				return nil, err
-			}
+		foreign, err := vcs.ForeignBranchHolders(ctx, l.checkout)
+		if err != nil {
+			return nil, fmt.Errorf("stack rebase: %w", err)
+		}
+		foreign = stackWithClaims(foreign, claims)
+		if members, heldAbove, err = stackHeldAbove(retargeted, current, members, o.include, foreign, parentOverrides, !o.noPush); err != nil {
+			return nil, err
 		}
 	}
 	if !o.noPush && !o.allLanes && !o.otherLanes && o.replayed == nil && current != "" && current != trunk {
@@ -2380,7 +2378,7 @@ func stackHeldBelow(state gtState, current string, members, include []string, ho
 	return held
 }
 
-func stackHeldAbove(state gtState, current string, members, include []string, holders map[string]string, overrides map[string]string) ([]string, []string, error) {
+func stackHeldAbove(state gtState, current string, members, include []string, holders map[string]string, overrides map[string]string, pushing bool) ([]string, []string, error) {
 	up, err := gtUpstack(stackRebasePrefix, state, current)
 	if err != nil {
 		return nil, nil, err
@@ -2402,7 +2400,7 @@ func stackHeldAbove(state gtState, current string, members, include []string, ho
 			return nil, nil, fmt.Errorf("stack rebase: --include %s takes a branch stacked on %s, which %s holds — pass --include %s too, or run it from that working copy", name, skip.branch, skip.holder, skip.branch)
 		}
 		via[name] = skip
-		lines = append(lines, stackHeldLine(name, "on", skip, true))
+		lines = append(lines, stackHeldLine(name, "on", skip, pushing))
 	}
 	for _, child := range slices.Sorted(maps.Keys(overrides)) {
 		parent := overrides[child]

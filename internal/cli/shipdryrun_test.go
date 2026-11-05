@@ -61,6 +61,16 @@ func dryRunBranches(report, label string) []string {
 	return names
 }
 
+func TestShipDryRunNeedsNoMessage(t *testing.T) {
+	f := dryRunFixture(t)
+	withMessage := dryRunReport(t, f, "-m", "fix: frobnicate")
+	shipResetLog(t, f)
+
+	if got := dryRunReport(t, f); got != withMessage {
+		t.Errorf("report without -m = %q, want the report with -m %q", got, withMessage)
+	}
+}
+
 // TestShipDryRunMovesNoRef is the whole promise: the report costs the caller
 // nothing. Every ref and the working copy are compared byte for byte across the
 // run, and the invocation log is checked for a mutating verb as well, so a call
