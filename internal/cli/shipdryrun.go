@@ -538,6 +538,13 @@ func dryRunStack(ctx context.Context, l lane, o shipOpts, c *gtCache, r *shipDry
 	}
 	line := shipParentLine(o.parent != "" || onPublished, chain, r.branch)
 	dryRunMoves(moveState, chain, line, holders, o, r)
+	if !o.noCommit && r.plan.action != branchCreate {
+		notes, err := gtHeldChildNotes(ctx, l, state, r.plan.name)
+		if err != nil {
+			return err
+		}
+		r.notes = append(r.notes, notes...)
+	}
 	if err := dryRunRewrites(ctx, l, state, r); err != nil {
 		return err
 	}
