@@ -334,9 +334,12 @@ func Open(root string, src *GitHub) (*Store, error) {
 // schedule alone. Otherwise, inside MinInterval of the last poll a read sleeps,
 // so concurrent readers share the next poll, and a poll claimed after the read
 // began answers it the second it lands. A read whose poll failed, that finds
-// the last poll failed, that GraphQL's rate limit or ccx's floor refuses, or
-// that no poll answers within 30 seconds per round of pages reads what it
-// wants through REST instead, unless the REST pool is at its floor too. A poll claimed after the read
+// the last poll failed, or that GraphQL's rate limit or ccx's floor refuses
+// reads what it wants through REST instead, unless the REST pool is at its
+// floor too; the pages of a failed poll that answered are kept, so only the
+// failed pages' pull requests cost REST reads. A read no poll answers within 30
+// seconds per round of pages polls just what it wants, and reads through REST
+// only if that poll fails too. A poll claimed after the read
 // began runs to its own deadline of a minute per round of pages, and the read
 // waits for it past its own budget, so a read that spent its budget waiting for
 // its turn still lands the poll the other readers share, whoever claimed it. No
@@ -388,8 +391,32 @@ func (s *Store) overBudget(ctx context.Context, want Want, asked time.Time, budg
 	if err != nil {
 		return st, err
 	}
-	st, _, err = s.degrade(ctx, st, want, asked, s.now(), fmt.Errorf("no poll answered within %s: %w", budget, cause))
+	now := s.now()
+	cause = fmt.Errorf("no poll answered within %s: %w", budget, cause)
+	if prs, known := st.unanswered(want, asked); known && len(prs) > 0 && st.Failure == nil && st.Backoff == nil {
+		poll, cancel := context.WithTimeout(context.WithoutCancel(ctx), perRound(pollBudget, len(prs)))
+		defer cancel()
+		polled, err := s.fetch(poll, Want{PRs: prs}, st.PRs, now, false)
+		if err == nil {
+			return polled, s.verdict(polled, want, asked)
+		}
+		st, cause = polled, fmt.Errorf("%w; polling them failed too: %w", cause, err)
+	}
+	st, _, err = s.degrade(ctx, st, want, asked, now, cause)
 	return st, err
+}
+
+func (st State) unanswered(want Want, asked time.Time) ([]int, bool) {
+	prs := slices.Clone(want.PRs)
+	for _, prefix := range want.Prefixes {
+		lane, ok := st.Lanes[prefix]
+		if !ok {
+			return nil, false
+		}
+		prs = append(prs, lane.PRs...)
+	}
+	slices.Sort(prs)
+	return slices.DeleteFunc(slices.Compact(prs), func(n int) bool { return st.fresh(Want{PRs: []int{n}, MaxAge: want.MaxAge, After: want.After}, asked) }), true
 }
 
 // Pushed records the head this machine just pushed to each pull request, so
@@ -479,16 +506,10 @@ func (s *Store) degrade(ctx context.Context, st State, want Want, asked, now tim
 	if b := st.RESTBackoff; ctx.Err() != nil || b != nil && now.Before(b.ProbeAt) {
 		return st, 0, cause
 	}
-	prs := slices.Clone(want.PRs)
-	for _, prefix := range want.Prefixes {
-		lane, ok := st.Lanes[prefix]
-		if !ok {
-			return st, 0, cause
-		}
-		prs = append(prs, lane.PRs...)
+	prs, known := st.unanswered(want, asked)
+	if !known {
+		return st, 0, cause
 	}
-	slices.Sort(prs)
-	prs = slices.DeleteFunc(slices.Compact(prs), func(n int) bool { return st.fresh(Want{PRs: []int{n}, MaxAge: want.MaxAge, After: want.After}, asked) })
 	if len(prs) == 0 {
 		return st, 0, s.verdict(st, want, asked)
 	}
@@ -576,11 +597,13 @@ func (s *Store) fetch(ctx context.Context, req Want, prev map[int]PR, now time.T
 			st.Backoff = limitedAt(now, wait)
 		case err == nil:
 			st.absorb(p, now)
+			return true
 		case attempt && ctx.Err() == nil && st.AttemptedAt.Equal(now):
 			st.Failure = &Failure{At: now, Reason: err.Error()}
-		default:
+		case len(p.prs) == 0:
 			return false
 		}
+		st.merge(poll{prs: p.prs}, now)
 		return true
 	})
 	if limited {

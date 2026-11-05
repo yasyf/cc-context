@@ -193,18 +193,31 @@ func (g *GitHub) poll(ctx context.Context, req Want, prev map[int]PR) (poll, err
 		targets = append(targets, p.target(n))
 	}
 	pages := paginate(req.Prefixes, targets)
-	group, gctx := errgroup.WithContext(ctx)
+	gctx, stop := context.WithCancel(ctx)
+	defer stop()
+	var group errgroup.Group
 	group.SetLimit(pollWorkers)
+	failed := make([]error, len(pages))
 	for i := range pages {
-		group.Go(func() error { return g.send(gctx, &pages[i]) })
+		group.Go(func() error {
+			failed[i] = g.send(gctx, &pages[i])
+			if _, limited := ghapi.RateLimited(failed[i]); limited {
+				stop()
+			}
+			return nil
+		})
 	}
-	if err := group.Wait(); err != nil {
-		return poll{}, err
-	}
-	for _, pg := range pages {
+	_ = group.Wait()
+	for i, pg := range pages {
+		if failed[i] != nil {
+			continue
+		}
 		if err := p.collect(pg); err != nil {
 			return poll{}, err
 		}
+	}
+	if err := errors.Join(failed...); err != nil {
+		return p.out, err
 	}
 	if len(p.out.missing) == 0 {
 		return p.out, nil

@@ -366,3 +366,83 @@ func TestAPRTrunkStillHasNoRecordOfAfterARereadIsNotQueuedAndOnlyThere(t *testin
 		}
 	}
 }
+
+func TestAFailedPageCostsRESTReadsForItsOwnPullRequestsAlone(t *testing.T) {
+	t.Parallel()
+	node := func(n int) string {
+		return fmt.Sprintf(`"p%d":{"number":%d,"state":"OPEN","title":"t","createdAt":"2026-09-28T15:00:00Z","author":{"login":"yasyf"},`+
+			`"baseRefName":"main","headRefName":"pr-%d","headRefOid":"abc","mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","reviewDecision":"APPROVED",`+
+			`"changedFiles":1,"mergeCommit":null,"labels":{"nodes":[]},"checks":{"nodes":[]}}`, n-1, n, n)
+	}
+	var mu sync.Mutex
+	var restPaths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			mu.Lock()
+			restPaths = append(restPaths, r.URL.Path)
+			mu.Unlock()
+			switch {
+			case strings.HasSuffix(r.URL.Path, "/reviews"), strings.HasSuffix(r.URL.Path, "/comments"):
+				_, _ = io.WriteString(w, `[]`)
+			case strings.Contains(r.URL.Path, "/pulls/"):
+				_, _ = io.WriteString(w, `{"state":"open","head":{"ref":"pr","sha":"abc"},"base":{"ref":"main"}}`)
+			default:
+				_, _ = io.WriteString(w, `{}`)
+			}
+			return
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read request: %v", err)
+		}
+		if !strings.Contains(string(body), "trunk:") {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		fields := make([]string, 0, pageSize)
+		for n := 1; n <= pageSize; n++ {
+			fields = append(fields, node(n))
+		}
+		_, _ = fmt.Fprintf(w, `{"data":{"rateLimit":{"remaining":4900,"resetAt":"2026-09-30T08:00:00Z"},"repository":{"trunk":{"name":"main","target":{"history":{"nodes":[]}}},%s}}}`, strings.Join(fields, ","))
+	}))
+	t.Cleanup(srv.Close)
+	src, err := NewGitHub(ghapi.New(srv.URL), nil, "yasyf/cc-context", io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := Open(t.TempDir(), src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.now = func() time.Time { return epoch }
+
+	var want Want
+	for n := 1; n <= pageSize+5; n++ {
+		want.PRs = append(want.PRs, n)
+	}
+	st, err := store.Read(testCtx(t), want)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	for _, n := range want.PRs {
+		wantSource := ""
+		if n > pageSize {
+			wantSource = SourceREST
+		}
+		if got := st.PRs[n].Source; got != wantSource {
+			t.Errorf("#%d from %q, want %q", n, got, wantSource)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for _, path := range restPaths {
+		for n := 1; n <= pageSize; n++ {
+			if strings.HasSuffix(path, fmt.Sprintf("/pulls/%d", n)) {
+				t.Errorf("REST read %s, want only the failed page's pull requests read", path)
+			}
+		}
+	}
+	if st.Failure == nil {
+		t.Error("failure = nil, want the failed page recorded so the next read does not poll inside the interval")
+	}
+}
