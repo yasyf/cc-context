@@ -14,6 +14,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/yasyf/cc-context/internal/gtmeta"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcs"
 )
@@ -25,6 +26,7 @@ type stackListEntry struct {
 	NeedsRestack bool   `json:"needs_restack"`
 	NeedsSubmit  bool   `json:"needs_submit"`
 	State        string `json:"state"`
+	Untracked    bool   `json:"untracked,omitempty"`
 }
 
 type stackListReport struct {
@@ -163,7 +165,11 @@ func newStackListCmd() *cobra.Command {
 
 With --json, emit root and a bottom-up branches array. Each branch carries its
 name, path (empty when no working copy holds it), current flag, needs_restack
-flag, and Graphite state (including frozen).`,
+flag, and Graphite state (including frozen).
+
+A branch Graphite does not track is listed above the downstack of the parent
+ccx vcs ship would adopt it onto, marked untracked (untracked: true in
+--json).`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runStackList(cmd, asJSON)
@@ -393,7 +399,15 @@ func runStackList(cmd *cobra.Command, asJSON bool) error {
 	if err != nil {
 		return err
 	}
-	stack, state, err := gtStackAll(ctx, l.dir(), "stack list")
+	branch, state, err := gtCurrentState(ctx, l.dir(), "stack list")
+	if err != nil {
+		return err
+	}
+	commonDir, err := gtCommonDir(ctx, l.dir(), "stack list")
+	if err != nil {
+		return err
+	}
+	stack, untracked, err := gtListStack(ctx, l.dir(), commonDir, state, branch, nil)
 	if err != nil {
 		return err
 	}
@@ -401,26 +415,23 @@ func runStackList(cmd *cobra.Command, asJSON bool) error {
 	if err != nil {
 		return fmt.Errorf("stack list: %w", err)
 	}
-	commonDir, err := gtCommonDir(ctx, l.dir(), "stack list")
-	if err != nil {
-		return err
-	}
 	unrecorded := map[string]bool{}
-	for _, branch := range stack {
-		if unrecorded[branch], err = gtUnrecorded(commonDir, branch); err != nil {
+	for _, name := range stack {
+		if unrecorded[name], err = gtUnrecorded(commonDir, name); err != nil {
 			return fmt.Errorf("stack list: %w", err)
 		}
 	}
 	if asJSON {
 		report := stackListReport{Root: l.checkout.Root, Branches: make([]stackListEntry, 0, len(stack))}
-		for _, branch := range stack {
+		for _, name := range stack {
 			report.Branches = append(report.Branches, stackListEntry{
-				Branch:       branch,
-				Path:         holders[branch],
-				Current:      holders[branch] == l.checkout.Root,
-				NeedsRestack: state[branch].NeedsRestack,
-				NeedsSubmit:  unrecorded[branch],
-				State:        state[branch].State,
+				Branch:       name,
+				Path:         holders[name],
+				Current:      holders[name] == l.checkout.Root,
+				NeedsRestack: state[name].NeedsRestack,
+				NeedsSubmit:  unrecorded[name],
+				State:        state[name].State,
+				Untracked:    untracked && name == branch,
 			})
 		}
 		data, err := json.MarshalIndent(report, "", "  ")
@@ -430,8 +441,8 @@ func runStackList(cmd *cobra.Command, asJSON bool) error {
 		cmd.Println(string(data))
 		return nil
 	}
-	for _, branch := range stack {
-		cmd.Println(stackListLine(branch, holders[branch], l.checkout.Root, state[branch], unrecorded[branch]))
+	for _, name := range stack {
+		cmd.Println(stackListLine(name, holders[name], l.checkout.Root, state[name], unrecorded[name], untracked && name == branch))
 	}
 	return nil
 }
@@ -442,14 +453,7 @@ func runStackList(cmd *cobra.Command, asJSON bool) error {
 // with a working copy per branch, the branches above this one are exactly the
 // ones this working copy cannot check out to ask about.
 func gtStackAll(ctx context.Context, dir render.Dir, prefix string) ([]string, gtState, error) {
-	branch, err := gitCurrentBranch(ctx, dir, prefix)
-	if err != nil {
-		return nil, nil, err
-	}
-	if branch == "" {
-		return nil, nil, fmt.Errorf("%s: detached HEAD; no stack to resolve", prefix)
-	}
-	state, err := gtStateQueryFocused(ctx, dir, prefix, branch)
+	branch, state, err := gtCurrentState(ctx, dir, prefix)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -458,6 +462,61 @@ func gtStackAll(ctx context.Context, dir render.Dir, prefix string) ([]string, g
 		return nil, nil, err
 	}
 	return stack, state, nil
+}
+
+func gtCurrentState(ctx context.Context, dir render.Dir, prefix string) (string, gtState, error) {
+	branch, err := gitCurrentBranch(ctx, dir, prefix)
+	if err != nil {
+		return "", nil, err
+	}
+	if branch == "" {
+		return "", nil, fmt.Errorf("%s: detached HEAD; no stack to resolve", prefix)
+	}
+	state, err := gtStateQueryFocused(ctx, dir, prefix, branch)
+	if err != nil {
+		return "", nil, err
+	}
+	return branch, state, nil
+}
+
+// gtListStack is the stack stack list reports: gtStackFromState's, except that
+// a branch gt holds no record of is listed rather than refused, since ship
+// adopts it. A recorded branch whose parent vanished unlanded is still refused,
+// as ship refuses it.
+func gtListStack(ctx context.Context, dir render.Dir, commonDir string, state gtState, branch string, children map[string][]string) ([]string, bool, error) {
+	trunk, err := gtTrunkForBranch("stack list", state, branch)
+	if err != nil {
+		return nil, false, err
+	}
+	if _, err := gtDownstack("stack list", state, branch, trunk); !errors.As(err, new(*errGTUntracked)) {
+		stack, err := gtStackFromState(ctx, dir, "stack list", state, branch, children)
+		return stack, false, err
+	}
+	tracked, orphans, err := gtmeta.ReadOriginOrphans(ctx, commonDir)
+	if err != nil {
+		return nil, false, fmt.Errorf("stack list: %w", err)
+	}
+	recorded := gtBranchStates(tracked)
+	if _, ok := tracked[branch]; ok || slices.ContainsFunc(orphans, func(o gtmeta.Orphan) bool { return o.Branch == branch }) {
+		return nil, false, gtUntrackedRefusal(ctx, dir, "stack list", recorded, trunk, branch)
+	}
+	stack, err := gtUntrackedStack(ctx, dir, recorded, trunk, branch)
+	return stack, true, err
+}
+
+// gtUntrackedStack lists a branch gt never tracked where ship would publish
+// it: above the downstack of the parent ship adopts it onto.
+func gtUntrackedStack(ctx context.Context, dir render.Dir, state gtState, trunk, branch string) ([]string, error) {
+	parent, err := gtNearestTracked(ctx, dir, state, trunk, branch)
+	if err != nil {
+		return nil, err
+	}
+	down, err := gtDownstack("stack list", state, parent, trunk)
+	if err != nil {
+		return nil, err
+	}
+	slices.Reverse(down)
+	return append(down, branch), nil
 }
 
 func gtStackFromState(ctx context.Context, dir render.Dir, prefix string, state gtState, branch string, children map[string][]string) ([]string, error) {
@@ -518,7 +577,7 @@ func gtStackUpTo(ctx context.Context, dir render.Dir, prefix string, state gtSta
 // holding it — the answer to which lane a branch has to be worked from. A branch
 // no working copy holds is named as such rather than left blank, since "nowhere"
 // is the fact that decides whether a lane has to be cut for it.
-func stackListLine(branch, holder, root string, state gtBranchState, unrecorded bool) string {
+func stackListLine(branch, holder, root string, state gtBranchState, unrecorded, untracked bool) string {
 	where := "no working copy"
 	switch holder {
 	case "":
@@ -533,6 +592,9 @@ func stackListLine(branch, holder, root string, state gtBranchState, unrecorded 
 	}
 	if unrecorded {
 		fields = append(fields, "needs stack submit: Graphite has no record of its pull request")
+	}
+	if untracked {
+		fields = append(fields, "untracked: ccx vcs ship adopts it onto the branch below")
 	}
 	return strings.Join(fields, shipSep)
 }
