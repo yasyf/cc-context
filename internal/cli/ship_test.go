@@ -7031,8 +7031,11 @@ func TestShipGTLeavesAnotherLanesBranchUnpushed(t *testing.T) {
 			setGTState(t, `{"main":{"trunk":true},"l30/base":{"parents":[{"ref":"main","sha":"deadbeef"}]},`+
 				`"l18/feature":{"parents":[{"ref":"l30/base","sha":"beadfeed"}]}}`)
 			api.prs["l30/base"] = 41
+			ctx := withStackPRs(api.ctx(context.Background()), func(context.Context, render.Dir, string, []string) (map[string]*stackPR, error) {
+				return map[string]*stackPR{"l30/base": {Number: 41, State: "OPEN"}}, nil
+			})
 
-			_, errStr, err := runShipCmdFull(api.ctx(context.Background()), t, append([]string{"-m", "fix: frobnicate", "--no-watch"}, tt.args...)...)
+			_, errStr, err := runShipCmdFull(ctx, t, append([]string{"-m", "fix: frobnicate", "--no-watch"}, tt.args...)...)
 			if err != nil {
 				t.Fatalf("ship error = %v (stderr=%q)", err, errStr)
 			}

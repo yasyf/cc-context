@@ -219,3 +219,21 @@ func stackSquashedAfterHead(ctx context.Context, dir render.Dir, byNumber map[in
 	}
 	return landed
 }
+
+// stackLandedParent reads parent's pull request before a branch is stacked on
+// it. A landed one is returned so the caller stacks on trunk in its place: a
+// landing deletes the branch a pull request would otherwise base on. One closed
+// without landing refuses, since trunk holds none of the commits it carried.
+func stackLandedParent(ctx context.Context, dir render.Dir, prefix, trunk, parent string) (*stackPR, error) {
+	prs, err := stackPRs(ctx, dir, trunk, []string{parent})
+	if err != nil {
+		return nil, fmt.Errorf("%s: read %s's pull request: %w", prefix, parent, err)
+	}
+	switch pr := prs[parent]; {
+	case pr != nil && pr.Landed:
+		return pr, nil
+	case pr != nil && pr.State == "CLOSED":
+		return nil, fmt.Errorf("%s: %s's pull request #%d was closed without merging, so trunk holds none of its commits to stack on — reopen it with gh pr reopen %d, or name another parent with --parent", prefix, parent, pr.Number, pr.Number)
+	}
+	return nil, nil
+}
