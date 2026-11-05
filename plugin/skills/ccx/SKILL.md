@@ -472,7 +472,7 @@ ccx vcs status --json                            # the same report as a structur
 ccx vcs pr status 123 124                         # queue state, CI, approval, and verdict, per PR; each line names its repo
 ccx vcs pr watch o/r#123                          # owner/name#N or --repo reads that repo; outside its checkout, GitHub alone: no queue lines, never landable
 ccx vcs pr state 123 124 --lane-prefix yasyf/work/  # shared cache records and lane PRs, as JSON
-ccx vcs pr watch 123 --job lint                  # exit when that one check settles on the PR's head: 0 passed, 1 failed, naming the job-log command
+ccx vcs pr watch 123 --job lint                  # exit when that one check settles on the PR's current head, named on the line: 0 passed, 1 failed or absent, naming the job-log command
 ccx vcs job-log 126958155452                     # one settled job's plain log, tail kept under --budget, while its run still goes
 ccx vcs pr recreate 123                          # replace a PR Graphite's stale stack record leaves untracked
 ccx vcs gh -- pr checks 123                      # a gh read on the app's quota

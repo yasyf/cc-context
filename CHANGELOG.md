@@ -17,6 +17,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ccx vcs pr watch --job` grades the pull request's current head and names it, as
+  `job <name> <state> on <head sha9>`. It had answered from a shared-cache record polled before an
+  amend, so a check that passed on the old head read as passed on the new one while its run had
+  not finished. The watch now reads only polls made after it began, and a head this machine's ccx
+  pushed counts as the head before GitHub shows it. A check that never appears on the head reads
+  absent and exits 1 after ten minutes, and a fresh head gets a minute for its workflows to
+  register before a finished rollup without the check reads absent.
 - `ccx code grep` and a structural `ccx code search` search the paths they can when one is
   tracked but outside a sparse checkout, and note the skipped path with the
   `git sparse-checkout add <dir>` that checks it out. One such path had refused the whole search.

@@ -33,20 +33,23 @@ const (
 
 	prWatchDefaultInterval = 60 * time.Second
 	prWatchMaxFails        = 10
+	prWatchJobRegister     = time.Minute
+	prWatchJobAppear       = 10 * time.Minute
 )
 
 type prWatchSnapshot struct {
-	State     string   `json:"state,omitempty"`
-	Head      string   `json:"head,omitempty"`
-	Mergeable string   `json:"mergeable,omitempty"`
-	Green     bool     `json:"green,omitempty"`
-	Failing   []string `json:"failing,omitempty"`
-	Approved  bool     `json:"approved,omitempty"`
-	Queued    bool     `json:"queued,omitempty"`
-	Evicted   string   `json:"evicted,omitempty"`
-	Squash    string   `json:"squash,omitempty"`
-	Job       string   `json:"job,omitempty"`
-	JobID     int64    `json:"jobId,omitempty"`
+	State     string    `json:"state,omitempty"`
+	Head      string    `json:"head,omitempty"`
+	Mergeable string    `json:"mergeable,omitempty"`
+	Green     bool      `json:"green,omitempty"`
+	Failing   []string  `json:"failing,omitempty"`
+	Approved  bool      `json:"approved,omitempty"`
+	Queued    bool      `json:"queued,omitempty"`
+	Evicted   string    `json:"evicted,omitempty"`
+	Squash    string    `json:"squash,omitempty"`
+	Job       string    `json:"job,omitempty"`
+	JobID     int64     `json:"jobId,omitempty"`
+	HeadSince time.Time `json:"headSince,omitzero"`
 }
 
 func (s prWatchSnapshot) terminal() bool { return s.State != "" && s.State != "OPEN" }
@@ -58,7 +61,7 @@ func (s prWatchSnapshot) jobSettled() bool {
 }
 
 func (s prWatchSnapshot) jobReport(repo string) string {
-	state := strings.ToLower(s.Job)
+	state := strings.ToLower(s.Job) + " on " + sha9(s.Head)
 	if statusClassify(s.Job) != statusFailed || s.JobID == 0 {
 		return state
 	}
@@ -162,10 +165,14 @@ type prWatchSource struct {
 	prefix string
 	job    string
 	once   bool
+	since  time.Time
 }
 
 func (s prWatchSource) poll(ctx context.Context, numbers []int, prev map[int]prWatchSnapshot) (prWatchTick, error) {
 	want := prstate.Want{PRs: numbers}
+	if s.job != "" {
+		want.After = s.since
+	}
 	if s.prefix != "" {
 		want.Prefixes = []string{s.prefix}
 	}
@@ -182,36 +189,51 @@ func (s prWatchSource) poll(ctx context.Context, numbers []int, prev map[int]prW
 		tick.discovered = st.Lanes[s.prefix].PRs
 	}
 	for _, number := range numbers {
-		snap := prWatchSnapshotOf(number, st.PRs[number], st.Trunk, prev[number])
+		pr, since := st.PRs[number], st.PRs[number].PolledAt
+		if pr.PushedHead != "" && pr.PushedHead != pr.HeadRefOid {
+			pr.HeadRefOid, pr.Rollup, since = pr.PushedHead, nil, pr.PushedAt
+		}
+		snap := prWatchSnapshotOf(number, pr, st.Trunk, prev[number])
 		if s.job != "" {
-			snap.Job, snap.JobID = prWatchJobState(st.PRs[number].Rollup, s.job)
+			snap.HeadSince = since
+			if was := prev[number]; was.Head == snap.Head && !was.HeadSince.IsZero() {
+				snap.HeadSince = was.HeadSince
+			}
+			snap.Job, snap.JobID = prWatchJobState(pr.Rollup, s.job, pr.PolledAt.Sub(snap.HeadSince))
 		}
 		tick.snapshots[number] = snap
 	}
 	return tick, nil
 }
 
-// prWatchJobState reads one check off the head's rollup. A finished rollup that
-// never names the check, with every Actions suite on the head finished too, means
-// the name is wrong or the check does not run on this head, and waiting on it
-// would never end. An open suite may yet report it, however finished the rollup.
-func prWatchJobState(rollup *statusRollup, job string) (string, int64) {
-	if rollup == nil {
-		return "", 0
-	}
+// prWatchJobState reads one check off the head's rollup, onHead after the
+// watch first saw that head. A check the head has not named within
+// prWatchJobAppear never will. Sooner, a finished rollup that never names the
+// check, with every Actions suite on the head finished too, means the name is
+// wrong or the check does not run on this head, once the head has had
+// prWatchJobRegister for its workflows to register their suites. An open suite
+// may yet report it, however finished the rollup.
+func prWatchJobState(rollup *statusRollup, job string, onHead time.Duration) (string, int64) {
 	state, id := "", int64(0)
-	for _, check := range statusChecks(rollup) {
-		if check.Name != job {
-			continue
-		}
-		if state == "" || statusClassify(check.State) == statusRunning || statusClassify(check.State) == statusFailed && statusClassify(state) != statusRunning {
-			state, id = check.State, check.ID
+	if rollup != nil {
+		for _, check := range statusChecks(rollup) {
+			if check.Name != job {
+				continue
+			}
+			if state == "" || statusClassify(check.State) == statusRunning || statusClassify(check.State) == statusFailed && statusClassify(state) != statusRunning {
+				state, id = check.State, check.ID
+			}
 		}
 	}
-	if state == "" && rollup.UnfinishedActions == 0 && rollup.State != "" && statusClassify(rollup.State) != statusRunning {
+	switch {
+	case state != "":
+		return state, id
+	case onHead >= prWatchJobAppear:
+		return prWatchJobAbsent, 0
+	case onHead >= prWatchJobRegister && rollup != nil && rollup.UnfinishedActions == 0 && rollup.State != "" && statusClassify(rollup.State) != statusRunning:
 		return prWatchJobAbsent, 0
 	}
-	return state, id
+	return "", 0
 }
 
 func prWatchSnapshotOf(number int, pr prstate.PR, trunk prstate.Trunk, prev prWatchSnapshot) prWatchSnapshot {
@@ -464,7 +486,7 @@ func (r prWatchRun) reachedJob(watched []int, snaps map[int]prWatchSnapshot) (bo
 		snap := snaps[n]
 		switch {
 		case snap.jobSettled() && snap.Job == prWatchJobAbsent:
-			unmet = append(unmet, fmt.Sprintf("%s#%d finished its checks without %s", r.opts.repo, n, r.opts.job))
+			unmet = append(unmet, fmt.Sprintf("%s#%d head %s has no %s check", r.opts.repo, n, sha9(snap.Head), r.opts.job))
 		case snap.jobSettled() && statusClassify(snap.Job) == statusFailed:
 			unmet = append(unmet, fmt.Sprintf("%s#%d %s", r.opts.repo, n, snap.jobReport(r.opts.repo)))
 		case snap.jobSettled():
@@ -536,17 +558,22 @@ watched pull request landed and 1 when one closed without landing; closed
 exits 0 once every one closed either way; never keeps watching.
 
 --job <name> watches one named check on each pull request's current head instead
-of --until: one "job <name> <state>" line when it settles, exit 0 when it passed,
-skipped or went neutral, and 1 when it failed, when the pull request closed first,
-or when the rest of the head's checks and every GitHub Actions run on it finished
-without that name. A failure names
-the ccx vcs job-log command that reads the job's log, while its run may still be
-going. A new head starts the check over.
+of --until: one "job <name> <state> on <head sha9>" line when it settles on the
+head it names, exit 0 when it passed, skipped or went neutral, and 1 when it
+failed, when the pull request closed first, or when the head has no check of
+that name: none appeared within ten minutes of the watch seeing the head, or,
+after its first minute, the rest of the head's checks and every GitHub Actions
+run on it finished without it. The current head is the newest this machine's
+ccx pushed until GitHub shows it, else GitHub's, read from a poll made after the
+watch began, so a check that passed on the head before an amend never answers
+for the amended one. A failure names the ccx vcs job-log command that reads the
+job's log, while its run may still be going. A new head starts the check over.
 
 --state persists the last snapshot so a restarted watch resumes without
 replaying state it already reported, and --once polls a single time, for a
 caller that drives the loop itself: it answers from the shared cache rather
-than wait out the 30-second spacing, so it spends at most one poll's latency.
+than wait out the 30-second spacing, so it spends at most one poll's latency;
+with --job it waits for the first shared poll made after it began.
 Each pull request is a number, #number, or owner/name#number, the last being the
 same as --repo. Without either, the repository is the current checkout's, so
 every event line names the repository it read. Outside a checkout of that
@@ -620,7 +647,7 @@ func runVcsPRWatch(cmd *cobra.Command, args []string, repo string, stack bool, o
 		return fmt.Errorf("pr watch: %w", err)
 	}
 	run := prWatchRun{
-		poller: prWatchSource{store: store, prefix: o.prefix, job: o.job, once: o.once},
+		poller: prWatchSource{store: store, prefix: o.prefix, job: o.job, once: o.once, since: time.Now().UTC()},
 		opts:   o,
 		out:    cmd.OutOrStdout(),
 		warn:   cmd.ErrOrStderr(),

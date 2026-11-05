@@ -528,6 +528,17 @@ func TestPRStateReportsRecordsAndLanes(t *testing.T) {
 
 func prStateBackdate(t *testing.T, by time.Duration) {
 	t.Helper()
+	prStateEdit(t, func(st *prstate.State) {
+		st.PolledAt = st.PolledAt.Add(-by)
+		for n, pr := range st.PRs {
+			pr.PolledAt = pr.PolledAt.Add(-by)
+			st.PRs[n] = pr
+		}
+	})
+}
+
+func prStateEdit(t *testing.T, edit func(*prstate.State)) {
+	t.Helper()
 	root, err := prStateRoot()
 	if err != nil {
 		t.Fatal(err)
@@ -541,11 +552,7 @@ func prStateBackdate(t *testing.T, by time.Duration) {
 	if err := json.Unmarshal(data, &st); err != nil {
 		t.Fatal(err)
 	}
-	st.PolledAt = st.PolledAt.Add(-by)
-	for n, pr := range st.PRs {
-		pr.PolledAt = pr.PolledAt.Add(-by)
-		st.PRs[n] = pr
-	}
+	edit(&st)
 	if data, err = json.Marshal(st); err != nil {
 		t.Fatal(err)
 	}
