@@ -908,8 +908,8 @@ func (e *Engine) logicalTurn(now time.Time) bool {
 	if !e.gov.throttled() && !now.Before(e.physicalUntil) {
 		return true
 	}
-	_, physical := e.physicalDue(now)
-	return !physical
+	job, physical := e.physicalDue(now)
+	return !physical || !e.gov.throttled() && relocatedPhase(job.Phase)
 }
 
 func (e *Engine) wake(physical bool) (time.Time, bool) {

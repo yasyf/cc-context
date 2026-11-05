@@ -389,7 +389,7 @@ func TestADueRetryAwaitsItsLogicalTurnWithoutSpinning(t *testing.T) {
 	tuning := paced()
 	tuning.PhysicalShare = 1
 	bubble(t, tuning, func(_ *testing.T, h *harness) {
-		h.seed("p", 1, cleanup.PhaseUnregistered)
+		h.seed("p", 1, cleanup.PhaseClaimed)
 		h.deleter.put("p", &payload{entries: 1000})
 		h.seed("l1", 2, cleanup.PhasePrepared)
 		h.seed("l2", 3, cleanup.PhasePrepared, func(job *cleanup.Job) {
@@ -2256,11 +2256,30 @@ func TestFreshRemoveStillRejoinsOwnedRetirementAndNonidentityBlocks(t *testing.T
 	}
 }
 
-func TestLogicalBacklogSharesTimeWithADeletion(t *testing.T) {
+func TestProofsGoAheadOfARelocatedDeletion(t *testing.T) {
 	tuning := paced()
 	tuning.PhysicalShare = 1
 	bubble(t, tuning, func(_ *testing.T, h *harness) {
 		h.seed("p", 1, cleanup.PhaseUnregistered)
+		h.deleter.put("p", &payload{entries: 1000})
+		h.seed("l1", 2, cleanup.PhasePrepared)
+		h.seed("l2", 3, cleanup.PhasePrepared)
+		for _, name := range []string{"l1", "l2"} {
+			h.relocator.script(name, func(job *cleanup.Job) {
+				h.clock.Advance(time.Second)
+				job.Phase = cleanup.PhaseUnregistered
+			})
+		}
+		h.start()
+		h.expectEvents("advance:l1@prepared", "advance:l2@prepared", "sample", "admit:p", "open:p", "step:p")
+	})
+}
+
+func TestLogicalBacklogSharesTimeWithADeletion(t *testing.T) {
+	tuning := paced()
+	tuning.PhysicalShare = 1
+	bubble(t, tuning, func(_ *testing.T, h *harness) {
+		h.seed("p", 1, cleanup.PhaseClaimed)
 		h.deleter.put("p", &payload{entries: 1000})
 		h.seed("l1", 2, cleanup.PhasePrepared)
 		h.seed("l2", 3, cleanup.PhasePrepared)

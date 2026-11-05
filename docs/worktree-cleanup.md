@@ -434,7 +434,8 @@ moves. Nothing moves by default.
 
 Trees deleted where they sit go ahead of older trees parked in the journal,
 oldest first within each group. A parked tree's blocks are mostly clones shared
-with its siblings, so it frees far less per entry.
+with its siblings, so it frees far less per entry, and it also waits for every
+proof that is due.
 
 A completed internal conflict workspace can wait for inactivity while other
 cleanup jobs proceed and stack completion succeeds. Interactive Claude,
