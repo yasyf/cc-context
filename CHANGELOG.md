@@ -17,6 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ccx vcs ship --new-branch` from trunk on the native GitHub stack lane cuts the branch before the
+  repository's hooks run, so a hook that refuses commits on trunk sees the branch the commit lands
+  on. The lane had run the hooks on trunk and cut the branch after, so such a hook reported a
+  failure on every ship though the commit landed on the new branch. Graphite's commit-before-move
+  path cuts first too; a legacy Graphite `gt create` still cuts and commits in one call.
 - `ccx vcs pr watch --job` grades the pull request's current head and names it, as
   `job <name> <state> on <head sha9>`. It had answered from a shared-cache record polled before an
   amend, so a check that passed on the old head read as passed on the new one while its run had

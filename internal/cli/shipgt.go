@@ -2436,8 +2436,11 @@ func gtModifyRestack(ctx context.Context, l lane, o shipOpts, branch string) (st
 // shipCommitGT stages, refuses an empty commit, runs pre-commit hooks (or
 // reports "hooks hunk-skip" for a hunk selection), then places the commit.
 // Staging is shipGitAdd's job on both lanes, since gt add is a git-add
-// passthrough that costs a whole gt startup.
-func shipCommitGT(ctx context.Context, l lane, errW io.Writer, o shipOpts, sel *shipSelection, plan branchPlan) (string, error) {
+// passthrough that costs a whole gt startup. A new branch the lane cuts with
+// git is cut before the hooks run, so a hook guarding trunk sees the branch the
+// commit lands on; gt create cuts and commits in one call, so legacy Graphite's
+// hooks still run where ship started.
+func shipCommitGT(ctx context.Context, l lane, errW io.Writer, o shipOpts, sel *shipSelection, plan branchPlan) (seg string, err error) {
 	message, err := withSessionTrailer(ctx, l.root, o.message)
 	if err != nil {
 		return "", err
@@ -2473,14 +2476,48 @@ func shipCommitGT(ctx context.Context, l lane, errW io.Writer, o shipOpts, sel *
 			return "", err
 		}
 	}
+	native, _ := ctx.Value(stackProviderKey{}).(bool)
+	parent := cmp.Or(plan.parent, plan.from)
+	cut, landed := gtCreates(o, plan) && (native || plan.commitBeforeMove), false
+	if cut {
+		argv := []string{"switch", "-c", plan.name}
+		if native {
+			argv = append(argv, parent)
+		}
+		if _, err := render.RunCLI(ctx, l.dir(), "git", argv); err != nil {
+			return "", fmt.Errorf("ship: git switch -c %s: %w", plan.name, err)
+		}
+		defer func() {
+			if err != nil && !landed {
+				err = errors.Join(err, shipRestoreBranch(ctx, l.dir(), plan.from, plan.name))
+			}
+		}()
+	}
 	hookSeg, hooksRan, err := shipRunHooks(ctx, errW, l.dir(), vcs.Git, o)
 	if err != nil {
 		return "", err
 	}
 	o.hooksRan = hooksRan
-	heldSeg, err := gtCommit(ctx, l, errW, o, plan, nil)
-	if err != nil {
-		return "", err
+	var heldSeg string
+	switch {
+	case cut:
+		if _, err := render.RunCLI(ctx, l.dir(), "git", gtModifyArgv(o)); err != nil {
+			return "", fmt.Errorf("ship: git commit: %w", err)
+		}
+		landed = true
+		if native {
+			r, runErr := gtRun(ctx, l.dir(), []string{"track", plan.name, "--parent", parent}, errW)
+			if err := gtReport(ctx, errW, r); err != nil {
+				return "", err
+			}
+			if runErr != nil {
+				return "", fmt.Errorf("ship: %w", runErr)
+			}
+		}
+	default:
+		if heldSeg, err = gtCommit(ctx, l, errW, o, plan, nil); err != nil {
+			return "", err
+		}
 	}
 	segs := make([]string, 0, 3)
 	for _, seg := range []string{sweptSeg, hookSeg, heldSeg} {

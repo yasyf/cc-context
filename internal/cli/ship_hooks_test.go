@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/yasyf/cc-context/internal/cache"
+	"github.com/yasyf/cc-context/internal/nativemeta"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcs"
 	"github.com/yasyf/cc-context/internal/vcstest"
@@ -665,5 +666,50 @@ func TestShipMaterializeHookEntriesFillsANonConeLane(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(f.Dir, "other")); !os.IsNotExist(err) {
 		t.Errorf("other/ checked out: %v", err)
+	}
+}
+
+// TestShipNewBranchRunsHooksOnTheBranchItCuts ships --new-branch from trunk on
+// the native stack lane under a hook that refuses a commit on trunk. The lane
+// ran prek on main and cut the branch after, so the hook reported a failure on
+// every such ship though the commit landed on the new branch.
+func TestShipNewBranchRunsHooksOnTheBranchItCuts(t *testing.T) {
+	f := shipRepo(t, vcstest.Remote())
+	f.Decorate(func(ctx context.Context) context.Context { return withStackProvider(ctx, true) })
+	mustRun(t, f.Env(), f.Dir, "git", "config", "ccx.stack", "github")
+	if err := nativemeta.Init(f.Context(), filepath.Join(f.Dir, ".git"), "main"); err != nil {
+		t.Fatal(err)
+	}
+	shipHookRepo(t, f, vcs.Git, 0, "", "f1.go")
+	writeShipExecutable(t, f.ShimBin, "uvx", "#!/bin/sh\n"+vcstest.RecordArgv("uvx")+`if [ "$(git symbolic-ref --short HEAD)" = main ]; then
+  printf 'Direct commits to main are not allowed\n' >&2
+  exit 1
+fi
+exit 0
+`)
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	stubStackPRs(t, f, nil)
+	stubStackStanding(t, f, nil)
+
+	out, errStr, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--new-branch", "feat", "--no-push")
+	if err != nil {
+		t.Fatalf("ship error = %v (stderr=%q)", err, errStr)
+	}
+	if !strings.Contains(out, "hooks ok") || strings.Contains(errStr, "Direct commits to main") {
+		t.Errorf("summary = %q, stderr = %q, want the hooks passing on feat", out, errStr)
+	}
+	if branch := gitAt(t, f.Env(), f.Dir, "symbolic-ref", "--short", "HEAD"); branch != "feat" {
+		t.Errorf("working copy on %q, want feat", branch)
+	}
+	if committed := gitAt(t, f.Env(), f.Dir, "show", "--name-only", "--format=", "feat"); committed != "f1.go" {
+		t.Errorf("feat's commit holds %q, want the file the hooks ran over", committed)
+	}
+	state, err := gtStateQuery(f.Context(), render.Dir(f.Dir), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := state["feat"]; len(s.Parents) != 1 || s.Parents[0].Ref != "main" {
+		t.Errorf("feat = %+v, want it recorded on main", s)
 	}
 }
