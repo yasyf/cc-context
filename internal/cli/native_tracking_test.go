@@ -138,8 +138,11 @@ func TestAQueueReadOutsideACheckoutOfItsRepositoryRefusesAndNamesTheFix(t *testi
 	if got := gtAPIForRepo(ctx, "org/local").QueueProvider(); got != "trunk" {
 		t.Fatalf("local queue=%s", got)
 	}
-	if _, err := openPRState(ctx, "org/foreign", io.Discard); err == nil || !strings.Contains(err.Error(), "is not a checkout of org/foreign") || !strings.Contains(err.Error(), "run this from a checkout of org/foreign") {
-		t.Fatalf("queue read of org/foreign from an org/local checkout = %v, want a refusal naming the fix instead of GitHub's merge queue", err)
+	if !prQueueUnread(ctx, "org/foreign") || prQueueUnread(ctx, "org/local") {
+		t.Fatalf("queue unread: foreign=%v local=%v, want only the foreign repository unread", prQueueUnread(ctx, "org/foreign"), prQueueUnread(ctx, "org/local"))
+	}
+	if _, err := openPRState(ctx, "org/foreign", io.Discard); err != nil {
+		t.Fatalf("read of org/foreign from an org/local checkout = %v, want an answer from GitHub alone", err)
 	}
 }
 

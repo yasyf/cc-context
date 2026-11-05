@@ -100,6 +100,7 @@ type prStatusReport struct {
 	Downstack    int              `json:"downstack,omitempty"`
 	Verdict      string           `json:"verdict"`
 	Unread       string           `json:"unread,omitempty"`
+	QueueUnread  bool             `json:"queueUnread,omitempty"`
 }
 
 type prCIReport struct {
@@ -142,7 +143,8 @@ var prStateRoot = prstate.DefaultRoot
 
 func openPRState(ctx context.Context, repo string, warn io.Writer) (*prstate.Store, error) {
 	client := gtAPIForRepo(ctx, repo)
-	if err := client.ProviderError(); err != nil {
+	var outside *notCheckoutError
+	if err := client.ProviderError(); err != nil && !errors.As(err, &outside) {
 		return nil, err
 	}
 	src, err := prstate.NewGitHub(reviewsAPI().ForRepo(repo), client, repo, warn)
@@ -187,7 +189,9 @@ along with the checks on its head, its approval, and a one-word verdict.
 Pass all pull request numbers in one invocation. The command fetches their
 statuses together and prints one line per pull request in input order, each
 naming its repository: the one owner/name#number or --repo names, else the
-current checkout's.
+current checkout's. Outside a checkout of that repository the answer comes from
+GitHub alone: the queue reads unknown, the line says the queue was not read, and
+the verdict adds queue-unknown, so the pull request is never landable there.
 
 CI is red when any check on the head failed, naming the first few, pending
 while any has not finished, green once something passed and nothing failed or
@@ -361,6 +365,11 @@ func runVcsPRStatus(cmd *cobra.Command, args []string, o vcsPRStatusOpts) error 
 	reports, err := collectPRQueue(ctx, repo, numbers, o.maxAge, cmd.ErrOrStderr())
 	if err != nil {
 		return err
+	}
+	if prQueueUnread(ctx, repo) {
+		for i := range reports {
+			reports[i].QueueUnread = reports[i].Queue == prQueueUnknown
+		}
 	}
 	if o.json {
 		data, err := json.MarshalIndent(reports, "", "  ")
@@ -771,6 +780,9 @@ func renderPRQueue(repo string, reports []prStatusReport) string {
 		}
 		if r.Source != "" {
 			b.WriteString(" · via " + r.Source)
+		}
+		if r.QueueUnread {
+			b.WriteString(" · queue not read outside a checkout of " + repo)
 		}
 		b.WriteString("\n")
 	}
