@@ -211,6 +211,29 @@ func TestPRWatchRunReportsAnEjectionThenExitsWhenEveryPRLanded(t *testing.T) {
 	}
 }
 
+func TestPRWatchRunStoppedBeforeAVerdictNamesWhatItWaitedOn(t *testing.T) {
+	t.Parallel()
+	pending := prWatchSnapshot{State: "OPEN", Head: watchHeadB, Mergeable: "MERGEABLE"}
+	poller := &scriptedPoller{ticks: []prWatchTick{watchTick(map[int]prWatchSnapshot{836: pending})}}
+	var out bytes.Buffer
+	var slept []time.Duration
+	run := newTestWatchRun(poller, prWatchOpts{interval: time.Minute, until: prWatchUntilCI, repo: "o/r"}, &out, &slept)
+	ctx, cancel := context.WithCancel(context.Background())
+	run.sleep = func(context.Context, time.Duration) error {
+		cancel()
+		return ctx.Err()
+	}
+
+	err := run.watch(ctx, []int{836, 837}, map[int]prWatchSnapshot{})
+	want := "pr watch: stopped with no verdict for o/r#836 on b2b2b2b2b, o/r#837 on a head not yet read: context canceled"
+	if err == nil || err.Error() != want || !errors.Is(err, context.Canceled) {
+		t.Errorf("watch = %v, want %q", err, want)
+	}
+	if out.Len() != 0 {
+		t.Errorf("output = %q, want no event for a head still pending", out.String())
+	}
+}
+
 func TestPRWatchRunResumesFromStateWithoutReplaying(t *testing.T) {
 	t.Parallel()
 	queued := prWatchSnapshot{State: "OPEN", Head: watchHeadA, Queued: true, Green: true}
@@ -428,10 +451,10 @@ func TestPRWatchHoldsGreenOnAFreshHeadUntilItsWorkflowsFinish(t *testing.T) {
 			"repository":{
 				"trunk":{"name":"dev","target":{"history":{"nodes":[]}}},
 				"p0":{"number":25131,"state":"OPEN","headRefOid":"%s","mergeable":"MERGEABLE",
-					"checks":{"nodes":[{"commit":{
+					"checks":{"nodes":[{"commit":{"oid":"%[1]s",
 						"statusCheckRollup":{"state":"SUCCESS","contexts":{"nodes":[
 							{"__typename":"CheckRun","name":"Socket Security","conclusion":"SUCCESS","status":"COMPLETED"}]}},
-						"checkSuites":{"nodes":[{"status":"COMPLETED"},{"status":%q}]}}}]}}
+						"checkSuites":{"nodes":[{"status":"COMPLETED"},{"status":%[2]q}]}}}]}}
 			}}}`, watchHeadB, suite)
 	}
 	greenAtOldHead := prWatchSnapshot{State: "OPEN", Head: watchHeadA, Mergeable: "MERGEABLE", Green: true}
@@ -596,11 +619,11 @@ func TestPRWatchPollReadsQueueEvictionAndTrunkSquash(t *testing.T) {
 			"p0":{"number":25116,"state":"CLOSED","headRefOid":"%s","mergeable":"UNKNOWN","reviewDecision":"APPROVED",
 				"checks":{"nodes":[]}},
 			"t0":{"compare":{"status":"BEHIND"}},
-			"p1":{"number":26918,"state":"OPEN","headRefOid":"%s","mergeable":"CONFLICTING","reviewDecision":"APPROVED",
-				"checks":{"nodes":[{"commit":{"statusCheckRollup":{"state":"FAILURE","contexts":{"nodes":[
+			"p1":{"number":26918,"state":"OPEN","headRefOid":"%[3]s","mergeable":"CONFLICTING","reviewDecision":"APPROVED",
+				"checks":{"nodes":[{"commit":{"oid":"%[3]s","statusCheckRollup":{"state":"FAILURE","contexts":{"nodes":[
 					{"__typename":"CheckRun","name":"lint","conclusion":"SUCCESS","status":"COMPLETED"},
 					{"__typename":"StatusContext","context":"buildkite/tests","state":"FAILURE"}]}}}}]},
-				"comments":{"nodes":[{"body":"thanks"},{"body":%s}]}}
+				"comments":{"nodes":[{"body":"thanks"},{"body":%[4]s}]}}
 		}}}`, watchSquash, watchHeadB, watchHeadA, mustJSON(t, prActivityEvicted)))
 	_, gt := stubPRInfo(t, prInfoEvicted, prInfoLanded)
 	store, err := openPRState(withGTAPI(t.Context(), gt), "Forge-AI/monorepo", io.Discard)
@@ -925,7 +948,7 @@ func TestPRWatchJobStateReadsTheNamedCheck(t *testing.T) {
 }
 
 func TestPRWatchJobGradesTheHeadAnAmendPushed(t *testing.T) {
-	poll := func(head, rollup, lint, suites string) string {
+	poll := func(head, commit, rollup, lint, suites string) string {
 		if lint != "" {
 			lint = `,{"__typename":"CheckRun","name":"lint","databaseId":9,` + lint + `}`
 		}
@@ -934,13 +957,13 @@ func TestPRWatchJobGradesTheHeadAnAmendPushed(t *testing.T) {
 			"repository":{
 				"trunk":{"name":"dev","target":{"history":{"nodes":[]}}},
 				"p0":{"number":25131,"state":"OPEN","headRefOid":"%s","mergeable":"MERGEABLE",
-					"checks":{"nodes":[{"commit":{
+					"checks":{"nodes":[{"commit":{"oid":"%s",
 						"statusCheckRollup":{"state":%q,"contexts":{"nodes":[
 							{"__typename":"CheckRun","name":"Socket Security","conclusion":"SUCCESS","status":"COMPLETED"}%s]}},
 						"checkSuites":{"nodes":[%s]}}}]}}
-			}}}`, head, rollup, lint, suites)
+			}}}`, head, commit, rollup, lint, suites)
 	}
-	greenAtOldHead := poll(watchHeadA, "SUCCESS", `"status":"COMPLETED","conclusion":"SUCCESS"`, `{"status":"COMPLETED"}`)
+	greenAtOldHead := poll(watchHeadA, watchHeadA, "SUCCESS", `"status":"COMPLETED","conclusion":"SUCCESS"`, `{"status":"COMPLETED"}`)
 	readOldHead := func(t *testing.T, amended string) (*prstate.Store, *watchGitHub) {
 		t.Helper()
 		github := stubPRState(t, greenAtOldHead, amended)
@@ -959,10 +982,11 @@ func TestPRWatchJobGradesTheHeadAnAmendPushed(t *testing.T) {
 		amended string
 		want    string
 	}{
-		{"its run not registered yet", poll(watchHeadB, "SUCCESS", "", ""), ""},
-		{"its run in progress", poll(watchHeadB, "PENDING", `"status":"IN_PROGRESS"`, `{"status":"IN_PROGRESS"}`), "IN_PROGRESS"},
-		{"its run green", poll(watchHeadB, "SUCCESS", `"status":"COMPLETED","conclusion":"SUCCESS"`, `{"status":"COMPLETED"}`), "SUCCESS"},
-		{"its run red", poll(watchHeadB, "FAILURE", `"status":"COMPLETED","conclusion":"FAILURE"`, `{"status":"COMPLETED"}`), "FAILURE"},
+		{"its run not registered yet", poll(watchHeadB, watchHeadB, "SUCCESS", "", ""), ""},
+		{"its run in progress", poll(watchHeadB, watchHeadB, "PENDING", `"status":"IN_PROGRESS"`, `{"status":"IN_PROGRESS"}`), "IN_PROGRESS"},
+		{"its run green", poll(watchHeadB, watchHeadB, "SUCCESS", `"status":"COMPLETED","conclusion":"SUCCESS"`, `{"status":"COMPLETED"}`), "SUCCESS"},
+		{"its run red", poll(watchHeadB, watchHeadB, "FAILURE", `"status":"COMPLETED","conclusion":"FAILURE"`, `{"status":"COMPLETED"}`), "FAILURE"},
+		{"its pull request's last commit still the old head", poll(watchHeadB, watchHeadA, "SUCCESS", `"status":"COMPLETED","conclusion":"SUCCESS"`, `{"status":"COMPLETED"}`), ""},
 	} {
 		t.Run("a record polled before the watch began never answers it: "+tc.name, func(t *testing.T) {
 			store, github := readOldHead(t, tc.amended)

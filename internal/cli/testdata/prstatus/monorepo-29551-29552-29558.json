@@ -49,6 +49,7 @@
      "nodes": [
       {
        "commit": {
+        "oid": "eb8dbfd40a4c985e609484e5c29aac068267feb9",
         "status": {
          "state": "SUCCESS"
         },
@@ -133,6 +134,7 @@
      "nodes": [
       {
        "commit": {
+        "oid": "8cf1cf3d437a1d938a4a43c282800083d0aa8359",
         "status": {
          "state": "FAILURE"
         },
@@ -223,6 +225,7 @@
      "nodes": [
       {
        "commit": {
+        "oid": "db88469c23e7ddfdf809ec9ebfa615ee1a817769",
         "status": {
          "state": "FAILURE"
         },

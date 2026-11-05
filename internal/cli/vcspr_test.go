@@ -201,11 +201,13 @@ func stubGraphiteMergeability(t *testing.T, statuses map[int]string, payloads ..
 	return &asked, gtapi.NewWithToken(srv.URL, "gt-stub-token")
 }
 
+const prNodeHead = "a37cf143f3cf1022fcb1c106059b3fb336e44203"
+
 // prNode renders one pull request the way the shared poll's GraphQL query
 // answers it; extra is spliced in as further fields.
 func prNode(number int, state string, extra string) string {
 	node := fmt.Sprintf(`{"number":%d,"state":%q,"title":"t","createdAt":"2026-09-28T15:00:00Z","author":{"login":"yasyf"},`+
-		`"baseRefName":"dev","headRefName":"yasyf/pr-%d","headRefOid":"a37cf143f3cf1022fcb1c106059b3fb336e44203","mergeable":"MERGEABLE",`+
+		`"baseRefName":"dev","headRefName":"yasyf/pr-%d","headRefOid":"`+prNodeHead+`","mergeable":"MERGEABLE",`+
 		`"mergeStateStatus":"CLEAN","reviewDecision":"APPROVED","changedFiles":2,"mergeCommit":null,"labels":{"nodes":[]},`+
 		`"checks":{"nodes":[]}`, number, state, number)
 	if extra != "" {
@@ -248,7 +250,7 @@ func runPRStatusCmd(t *testing.T, client *gtapi.Client, args ...string) (string,
 	return out.String(), err
 }
 
-const prLandedThenCancelled = `"checks":{"nodes":[{"commit":{"statusCheckRollup":{"state":"FAILURE","contexts":{"nodes":[` +
+const prLandedThenCancelled = `"checks":{"nodes":[{"commit":{"oid":"` + prNodeHead + `","statusCheckRollup":{"state":"FAILURE","contexts":{"nodes":[` +
 	`{"__typename":"CheckRun","name":"deploy","conclusion":"CANCELLED","status":"COMPLETED"},` +
 	`{"__typename":"StatusContext","context":"buildkite/test","state":"SUCCESS"}]}}}}]}`
 
@@ -390,7 +392,7 @@ func stubGraphiteDown(t *testing.T) *gtapi.Client {
 }
 
 func TestPRStatusOutsideACheckoutNamesTheUnreadQueueAndIsNeverLandable(t *testing.T) {
-	green := `"checks":{"nodes":[{"commit":{"statusCheckRollup":{"state":"SUCCESS","contexts":{"nodes":[` +
+	green := `"checks":{"nodes":[{"commit":{"oid":"` + prNodeHead + `","statusCheckRollup":{"state":"SUCCESS","contexts":{"nodes":[` +
 		`{"__typename":"CheckRun","name":"lint","conclusion":"SUCCESS","status":"COMPLETED"}]}}}}]}`
 	stubPRState(t, prPoll(
 		`"p0":`+prNode(25116, "MERGED", `"mergeCommit":{"oid":"9cc33f055dc4db19da6eb13a210a810297ccdc05"}`),
@@ -695,7 +697,7 @@ func TestPRStatusReadsGraphitesStackStateOverItsHeldCheck(t *testing.T) {
 		`{"prNumber":31126,"state":"OPEN","baseRefName":"yasyf/iris-memory-v2-s4-store","mergeQueueStatus":null,"mergeCommitSha":null,"dependentPrNumber":31124}`,
 		`{"prNumber":31129,"state":"OPEN","baseRefName":"yasyf/iris-memory-v2-s5-flags","mergeQueueStatus":null,"mergeCommitSha":null,"dependentPrNumber":31126}`,
 	)
-	held := `"checks":{"nodes":[{"commit":{"statusCheckRollup":{"state":"PENDING","contexts":{"nodes":[` +
+	held := `"checks":{"nodes":[{"commit":{"oid":"` + prNodeHead + `","statusCheckRollup":{"state":"PENDING","contexts":{"nodes":[` +
 		`{"__typename":"CheckRun","name":"emergency-approve","conclusion":"SUCCESS","status":"COMPLETED"},` +
 		`{"__typename":"CheckRun","name":"Graphite / mergeability_check","conclusion":null,"status":"IN_PROGRESS"},` +
 		`{"__typename":"StatusContext","context":"buildkite/test","state":"SUCCESS"}]}}}}]}`
@@ -721,7 +723,7 @@ func TestPRStatusReadsGraphitesStackStateOverItsHeldCheck(t *testing.T) {
 // computed the merge commit.
 const (
 	prInfoConflicting = `{"prNumber":31511,"state":"OPEN","baseRefName":"dev","mergeQueueStatus":null,"mergeCommitSha":null}`
-	prRunning         = `"checks":{"nodes":[{"commit":{"statusCheckRollup":{"state":"PENDING","contexts":{"nodes":[` +
+	prRunning         = `"checks":{"nodes":[{"commit":{"oid":"` + prNodeHead + `","statusCheckRollup":{"state":"PENDING","contexts":{"nodes":[` +
 		`{"__typename":"CheckRun","name":"buildkite/test","conclusion":null,"status":"IN_PROGRESS"}]}}}}]}`
 	prPullPath        = "/repos/Forge-AI/monorepo/pulls/31511"
 	prPullComputing   = `{"number":31511,"state":"open","mergeable":null,"mergeable_state":"unknown"}`

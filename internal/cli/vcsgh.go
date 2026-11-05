@@ -67,7 +67,13 @@ read, a later write to its repository, or an hour's age, and a watch is never
 cached. GH_TOKEN, GITHUB_TOKEN, or GH_HOST keeps a read out of the cache. A read is cached only when its answer cannot depend on the checkout: it
 names its repository, or it is a gh api call with no {owner}, {repo}, or {branch}
 placeholder. --web, --log, --log-failed, gh api rate_limit, and an answer over
-1 MiB are never cached.
+1 MiB are never cached. Nor is a read of check, commit status, or workflow run
+state: gh pr checks, gh pr status, gh run, gh workflow view, a commit's
+check-runs, check-suites, or statuses, actions runs or jobs, or any argument or
+stdin naming statusCheckRollup, checkRuns, checkSuites, or a GraphQL status
+field. That state changes on a push or a finishing job, with no write here to
+expire it, and gh pr checks exits 0 only when every check passed, so a cached
+answer would be a green that outlives the head it graded.
 
 A command that reads as a person rather than a repository runs on the user's
 token: gh's status commands, gh repo list, gh search with no --repo, anything
@@ -140,7 +146,7 @@ func runVcsGh(cmd *cobra.Command, argv []string, maxAge time.Duration) error {
 	watches := ghWatches(argv)
 	interactive := !watches && ghTerminal(cmd.OutOrStdout())
 	userToken := interactive || ghReadsOutsideInstallation(argv) || ghQueryReadsViewer(argv, stdin)
-	cacheable := maxAge > 0 && !interactive && !ghOtherIdentity(ctx) && ghCacheable(argv, scope)
+	cacheable := maxAge > 0 && !interactive && !ghOtherIdentity(ctx) && ghCacheable(argv, stdin, scope)
 	key := ghCacheKey(cmp.Or(scope, dir), argv, stdin)
 	if cacheable {
 		if hit, ok := ghCached(key); ok && time.Since(hit.At) < maxAge && hit.At.After(ghInvalidatedAt(scope)) {
@@ -346,8 +352,8 @@ func ghGuarded(argv []string, stdin []byte) bool {
 	return !ok || ghGuardedMutation.MatchString(query)
 }
 
-func ghCacheable(argv []string, scope string) bool {
-	if ghWatches(argv) || ghReadsFiles(argv) || slices.ContainsFunc(argv, ghUncachedFlag) || slices.ContainsFunc(argv, ghCheckoutPlaceholder) {
+func ghCacheable(argv []string, stdin []byte, scope string) bool {
+	if ghWatches(argv) || ghReadsFiles(argv) || ghReadsCIState(argv, stdin) || slices.ContainsFunc(argv, ghUncachedFlag) || slices.ContainsFunc(argv, ghCheckoutPlaceholder) {
 		return false
 	}
 	if argv[0] != "api" {
@@ -355,6 +361,26 @@ func ghCacheable(argv []string, scope string) bool {
 	}
 	_, endpoint := ghAPIRequest(argv[1:])
 	return strings.TrimPrefix(endpoint, "/") != "rate_limit"
+}
+
+var (
+	ghCIStateCommands = map[string]bool{"pr checks": true, "pr status": true, "workflow view": true}
+	ghCIStateEndpoint = regexp.MustCompile(`(^|/)repos/[^/]+/[^/]+/(commits/[^/]+/(check-runs|check-suites|status|statuses)|statuses/[^/?]+|check-runs|check-suites|actions/(runs|jobs|workflows/[^/]+/runs))(/|$|\?)`)
+	ghCIStateField    = regexp.MustCompile(`(?i)statusCheckRollup|checkRuns|checkSuites|\bstatus\s*\{`)
+)
+
+// ghReadsCIState reports whether argv, given stdin, reads check, commit status,
+// or workflow run state.
+func ghReadsCIState(argv []string, stdin []byte) bool {
+	if argv[0] == "run" || len(argv) > 1 && ghCIStateCommands[argv[0]+" "+argv[1]] {
+		return true
+	}
+	if argv[0] == "api" {
+		if _, endpoint := ghAPIRequest(argv[1:]); ghCIStateEndpoint.MatchString(endpoint) {
+			return true
+		}
+	}
+	return slices.ContainsFunc(argv, ghCIStateField.MatchString) || ghCIStateField.Match(stdin)
 }
 
 func ghUncachedFlag(arg string) bool {

@@ -22,6 +22,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ccx vcs pr watch --job` and `--until ci`, `ccx vcs pr status` and `pr state`, `ccx vcs status`,
+  and `ccx vcs info` no longer grade a freshly pushed head with the previous commit's checks. They
+  read a pull request's checks off its last commit, and for a few seconds after a push GitHub
+  already names the new head while that last commit is still the old one: on yasyf/cc-context#836,
+  three seconds after a push, `gh pr checks` listed the old commit's 35 passing checks and exited
+  0 while the new head had no check run and no workflow run at all. A watch could then report the
+  job passed on the new head. Each reader now asks for that commit's oid and takes its checks
+  only when it is the head, so the head reads as having no checks yet until GitHub catches up.
+- `ccx vcs pr watch` stopped by a timeout or signal before its end now says so: one stderr line,
+  `pr watch: stopped with no verdict for <repo>#<n> on <head sha9>, …`, where it printed only
+  `ccx: context canceled`. A watch on a pending head prints nothing until something changes, so a
+  background watch killed mid-wait read as one that exited with nothing to report.
+- `ccx vcs gh --max-age` no longer serves a cached answer about check, commit status, or workflow
+  run state: `gh pr checks`, `gh pr status`, `gh run`, `gh workflow view`, a commit's check-runs,
+  check-suites, or statuses, actions runs or jobs, and any field, `--jq`, or GraphQL query naming
+  `statusCheckRollup`, `checkRuns`, `checkSuites`, or a status field. Only a read that exited 0 was
+  stored, and `gh pr checks` exits 0 only when every check passed, so the cache held exactly the
+  green answer and served it for up to `--max-age` after a push from anywhere but this machine's
+  ccx moved the head. A lane that polled with `--max-age 5m`, as the long-running watcher rules
+  ask, could merge on that green while the new head's checks were still queued. These reads now
+  run every time; every other read still caches.
 - `ccx vcs ship` and the stack ship no longer report a run cancelled for a newer push as a CI
   failure. Every job of yasyf/cc-context run 41994242680 was cancelled because a newer head
   superseded it, and ship printed "failed: vet, build, lint, test..." and "CI failed". A cancelled
