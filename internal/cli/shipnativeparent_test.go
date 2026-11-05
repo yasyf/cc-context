@@ -17,7 +17,7 @@ import (
 // still names main as mid's parent, with child cut off mid and left untracked:
 // the record a pull request retargeted on GitHub leaves behind. trackBase also
 // records base, which otherwise only GitHub knows as a stack member.
-func shipNativeStaleParent(t *testing.T, trackBase bool) *vcstest.Fixture {
+func shipNativeStaleParent(t *testing.T, trackBase, remoteBase bool) *vcstest.Fixture {
 	t.Helper()
 	f := shipRepo(t, vcstest.Remote())
 	f.Decorate(func(ctx context.Context) context.Context { return withStackProvider(ctx, true) })
@@ -29,6 +29,9 @@ func shipNativeStaleParent(t *testing.T, trackBase bool) *vcstest.Fixture {
 	base := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
 	mid := gitAt(t, f.Env(), f.Dir, "rev-parse", "mid")
 	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "mid")
+	if remoteBase {
+		mustRun(t, f.Env(), f.Dir, "git", "branch", "-qD", "base")
+	}
 	common := filepath.Join(f.Dir, ".git")
 	if err := nativemeta.Init(f.Context(), common, "main"); err != nil {
 		t.Fatal(err)
@@ -52,11 +55,13 @@ func shipNativeStaleParent(t *testing.T, trackBase bool) *vcstest.Fixture {
 }
 
 var shipNativeStaleCases = []struct {
-	name      string
-	trackBase bool
+	name       string
+	trackBase  bool
+	remoteBase bool
 }{
 	{name: "stale record", trackBase: true},
 	{name: "base untracked here", trackBase: false},
+	{name: "base only on origin", remoteBase: true},
 }
 
 // TestShipDryRunReadsTheNativeStackParent is a child of a branch whose pull
@@ -66,10 +71,20 @@ var shipNativeStaleCases = []struct {
 func TestShipDryRunReadsTheNativeStackParent(t *testing.T) {
 	for _, tt := range shipNativeStaleCases {
 		t.Run(tt.name, func(t *testing.T) {
-			f := shipNativeStaleParent(t, tt.trackBase)
+			f := shipNativeStaleParent(t, tt.trackBase, tt.remoteBase)
 			refs := dryRunRefs(t, f)
 
 			report := dryRunReport(t, f, "--no-commit")
+			if after := dryRunRefs(t, f); after != refs {
+				t.Errorf("the dry run moved refs:\n%s\nwant\n%s", after, refs)
+			}
+			if tt.remoteBase {
+				want := "ship: base, the base of mid, is no local branch, and a dry run fetches nothing — ship itself cuts it at origin's head; git fetch origin base:base previews past it"
+				if refusals := dryRunValues(report, "refuses"); len(refusals) != 1 || refusals[0] != want {
+					t.Errorf("refuses = %q, want %q", refusals, want)
+				}
+				return
+			}
 			if got := dryRunValues(report, "parent"); len(got) != 1 || !strings.HasPrefix(got[0], "mid"+shipSep) {
 				t.Errorf("parent = %q, want child adopted onto mid", got)
 			}
@@ -83,9 +98,6 @@ func TestShipDryRunReadsTheNativeStackParent(t *testing.T) {
 			if notes := dryRunValues(report, "note"); !strings.Contains(strings.Join(notes, "\n"), want) {
 				t.Errorf("note = %q, want %q", notes, want)
 			}
-			if after := dryRunRefs(t, f); after != refs {
-				t.Errorf("the dry run moved refs:\n%s\nwant\n%s", after, refs)
-			}
 		})
 	}
 }
@@ -96,7 +108,8 @@ func TestShipDryRunReadsTheNativeStackParent(t *testing.T) {
 func TestShipRecordsTheNativeStackParentBeforeRestacking(t *testing.T) {
 	for _, tt := range shipNativeStaleCases {
 		t.Run(tt.name, func(t *testing.T) {
-			f := shipNativeStaleParent(t, tt.trackBase)
+			f := shipNativeStaleParent(t, tt.trackBase, tt.remoteBase)
+			base := gitAt(t, f.Env(), f.Dir, "rev-parse", "origin/base")
 			mid := gitAt(t, f.Env(), f.Dir, "rev-parse", "mid")
 			shipGTReady(t, f)
 
@@ -105,6 +118,9 @@ func TestShipRecordsTheNativeStackParentBeforeRestacking(t *testing.T) {
 			}
 			if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "mid"); got != mid {
 				t.Errorf("mid moved from %s to %s, want it left on base", mid, got)
+			}
+			if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); got != base {
+				t.Errorf("base = %s, want it at origin's head %s", got, base)
 			}
 			state, err := gtStateQuery(f.Context(), render.Dir(f.Dir), "test")
 			if err != nil {
@@ -197,6 +213,7 @@ func TestShipTracksABranchCutFromAnotherLaneOnItsPullRequestBase(t *testing.T) {
 			f.Decorate(func(ctx context.Context) context.Context { return withStackProvider(ctx, true) })
 			mustRun(t, f.Env(), f.Dir, "git", "config", "ccx.stack", "github")
 			shipGTUntracked(t, f, "theirs")
+			theirs := gitAt(t, f.Env(), f.Dir, "rev-parse", "theirs")
 			mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "theirs")
 			shipGTUntracked(t, f, "mine")
 			mine := gitAt(t, f.Env(), f.Dir, "rev-parse", "mine")
@@ -214,23 +231,27 @@ func TestShipTracksABranchCutFromAnotherLaneOnItsPullRequestBase(t *testing.T) {
 			stubStackPRs(t, f, nil)
 			stubStackStanding(t, f, nil)
 			shipGTReady(t, f)
-
-			_, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push")
-			state, stateErr := gtStateQuery(f.Context(), render.Dir(f.Dir), "test")
-			if stateErr != nil {
-				t.Fatal(stateErr)
-			}
 			if !tt.local {
-				if err == nil || !strings.Contains(err.Error(), "theirs, the base of mine's open #") {
-					t.Fatalf("ship error = %v, want a refusal naming theirs as mine's base to fetch", err)
+				refs := dryRunRefs(t, f)
+				report := dryRunReport(t, f, "-m", "fix: frobnicate", "--no-push")
+				want := "ship: theirs, the base of mine, is no local branch, and a dry run fetches nothing — ship itself cuts it at origin's head; git fetch origin theirs:theirs previews past it"
+				if refusals := dryRunValues(report, "refuses"); len(refusals) != 1 || refusals[0] != want {
+					t.Errorf("dry run refuses = %q, want %q", refusals, want)
 				}
-				if s, tracked := state["mine"]; tracked {
-					t.Errorf("mine = %+v, want it left untracked rather than recorded on main", s)
+				if after := dryRunRefs(t, f); after != refs {
+					t.Errorf("the dry run moved refs:\n%s\nwant\n%s", after, refs)
 				}
-				return
 			}
-			if err != nil {
+
+			if _, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push"); err != nil {
 				t.Fatalf("ship: %v", err)
+			}
+			state, err := gtStateQuery(f.Context(), render.Dir(f.Dir), "test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "theirs"); got != theirs {
+				t.Errorf("theirs = %s, want it at origin's head %s", got, theirs)
 			}
 			if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "mine~1"); got != mine {
 				t.Errorf("mine was replayed: its commit before the new one is %s, want %s", got, mine)
@@ -264,6 +285,7 @@ func TestShipTracksABranchCutFromAnotherLanesPublishedHead(t *testing.T) {
 			f.Decorate(func(ctx context.Context) context.Context { return withStackProvider(ctx, true) })
 			mustRun(t, f.Env(), f.Dir, "git", "config", "ccx.stack", "github")
 			shipGTUntracked(t, f, "theirs")
+			theirs := gitAt(t, f.Env(), f.Dir, "rev-parse", "theirs")
 			mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "theirs")
 			shipGTUntracked(t, f, "mine")
 			mine := gitAt(t, f.Env(), f.Dir, "rev-parse", "mine")
@@ -281,22 +303,15 @@ func TestShipTracksABranchCutFromAnotherLanesPublishedHead(t *testing.T) {
 			stubStackStanding(t, f, nil)
 			shipGTReady(t, f)
 
-			_, err := runShipCmd(f.Context(), t, append([]string{"-m", "fix: frobnicate", "--no-push"}, tt.flags...)...)
-			state, stateErr := gtStateQuery(f.Context(), render.Dir(f.Dir), "test")
-			if stateErr != nil {
-				t.Fatal(stateErr)
-			}
-			if !tt.local {
-				if err == nil || !strings.Contains(err.Error(), "theirs, the branch of open #9000 that mine was cut from, is no local branch") {
-					t.Fatalf("ship error = %v, want a refusal naming theirs as the branch to fetch", err)
-				}
-				if s, tracked := state["mine"]; tracked {
-					t.Errorf("mine = %+v, want it left untracked rather than recorded on main", s)
-				}
-				return
-			}
-			if err != nil {
+			if _, err := runShipCmd(f.Context(), t, append([]string{"-m", "fix: frobnicate", "--no-push"}, tt.flags...)...); err != nil {
 				t.Fatalf("ship: %v", err)
+			}
+			state, err := gtStateQuery(f.Context(), render.Dir(f.Dir), "test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "theirs"); got != theirs {
+				t.Errorf("theirs = %s, want it at origin's head %s", got, theirs)
 			}
 			if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "mine~1"); got != mine {
 				t.Errorf("mine was replayed: its commit before the new one is %s, want %s", got, mine)

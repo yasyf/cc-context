@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/yasyf/cc-context/internal/gtmeta"
@@ -21,7 +22,7 @@ type gtChainLink struct {
 
 func (l gtChainLink) segment() string { return "tracked " + l.name + " onto " + l.parent }
 
-func gtUntrackedChain(ctx context.Context, dir render.Dir, prefix string, state gtState, trunk, base, branch, tip string) ([]gtChainLink, error) {
+func gtUntrackedChain(ctx context.Context, dir render.Dir, prefix string, state gtState, trunk, base, branch, tip string, deepen bool) ([]gtChainLink, error) {
 	floor, trunkFloor, remote := gtRestackRef(base), gtRestackRef(trunk), ""
 	tr, err := gtTrunkRefOffline(ctx, dir, prefix, trunk)
 	switch {
@@ -123,7 +124,11 @@ func gtUntrackedChain(ctx context.Context, dir render.Dir, prefix string, state 
 	if len(heads) > 0 {
 		bottom = heads[0]
 	}
-	fork, err := gtMergeBase(ctx, dir, prefix, bottom, floor)
+	deepenFrom := ""
+	if deepen {
+		deepenFrom = remote
+	}
+	fork, err := gtMergeBaseDeepening(ctx, dir, prefix, deepenFrom, bottom, floor)
 	if err != nil {
 		return nil, err
 	}
@@ -231,7 +236,7 @@ func gtAdoptBelow(ctx context.Context, dir render.Dir, prefix string, state gtSt
 	if err != nil {
 		return "", "", err
 	}
-	chain, err := gtUntrackedChain(ctx, dir, prefix, state, trunk, base, branch, gtRestackRef(branch))
+	chain, err := gtUntrackedChain(ctx, dir, prefix, state, trunk, base, branch, gtRestackRef(branch), true)
 	if err != nil {
 		return "", "", err
 	}
@@ -285,9 +290,60 @@ func gtNearestHeld(ctx context.Context, dir render.Dir, prefix string, held []st
 }
 
 func gtMergeBase(ctx context.Context, dir render.Dir, prefix, a, b string) (string, error) {
-	out, err := render.RunCLI(ctx, dir, "git", []string{"merge-base", a, b})
-	if err != nil {
+	out, code, stderr, err := render.RunCLIExitCode(ctx, dir, "git", []string{"merge-base", a, b})
+	switch {
+	case err != nil:
 		return "", fmt.Errorf("%s: git merge-base %s %s: %w", prefix, a, b, err)
+	case code == 1:
+		shallow, err := render.RunCLI(ctx, dir, "git", []string{"rev-parse", "--is-shallow-repository"})
+		if err != nil {
+			return "", fmt.Errorf("%s: git merge-base %s %s found no common commit, and git rev-parse --is-shallow-repository: %w", prefix, a, b, err)
+		}
+		return "", &gtNoMergeBase{prefix: prefix, a: a, b: b, shallow: strings.TrimSpace(shallow) == "true"}
+	case code != 0:
+		return "", fmt.Errorf("%s: git merge-base %s %s: exit %d: %s", prefix, a, b, code, strings.TrimSpace(stderr))
 	}
 	return strings.TrimSpace(out), nil
+}
+
+func gtMergeBaseDeepening(ctx context.Context, dir render.Dir, prefix, remote, a, b string) (string, error) {
+	deepened := 0
+	for step := thinDefaultDepth; ; step *= 2 {
+		base, err := gtMergeBase(ctx, dir, prefix, a, b)
+		var none *gtNoMergeBase
+		if !errors.As(err, &none) || !none.shallow || remote == "" {
+			return base, err
+		}
+		if deepened >= thinDefaultMaxDepth {
+			none.deepened = deepened
+			return "", none
+		}
+		step = min(step, thinDefaultMaxDepth-deepened)
+		out, err := render.RunCLI(ctx, dir, "git", []string{"rev-parse", a + "^{commit}", b + "^{commit}"})
+		if err != nil {
+			return "", fmt.Errorf("%s: git rev-parse %s %s: %w", prefix, a, b, err)
+		}
+		if err := gitFetch(ctx, dir, append([]string{"--quiet", "--no-tags", "--no-write-fetch-head", "--deepen=" + strconv.Itoa(step), remote}, strings.Fields(out)...)...); err != nil {
+			return "", fmt.Errorf("%s: deepen this shallow clone by %d commits to find where %s and %s meet: %w", prefix, step, a, b, err)
+		}
+		deepened += step
+	}
+}
+
+type gtNoMergeBase struct {
+	prefix, a, b string
+	shallow      bool
+	deepened     int
+}
+
+func (e *gtNoMergeBase) Error() string {
+	head := fmt.Sprintf("%s: git merge-base %s %s found no common commit", e.prefix, e.a, e.b)
+	switch {
+	case !e.shallow:
+		return head + ": the two share no history"
+	case e.deepened > 0:
+		return fmt.Sprintf("%s in this shallow clone after deepening it by %d commits — fetch the rest with git fetch --unshallow, then run again", head, e.deepened)
+	default:
+		return head + " in this shallow clone — fetch the missing history with git fetch --deepen=<commits>, then run again"
+	}
 }

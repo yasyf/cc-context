@@ -71,59 +71,74 @@ func TestStackRebaseAdoptsAnUntrackedBranchOntoItsNativeStackBase(t *testing.T) 
 // parallel-grep: its pull request sat on fix/discovery-index, which no native
 // stack tracked, and the restack refused the stack as unresolvable.
 func TestStackRebaseAdoptsAnUntrackedParentFromGitAncestry(t *testing.T) {
-	f := shipRepo(t, vcstest.Remote())
-	f.Decorate(func(ctx context.Context) context.Context { return withStackProvider(ctx, true) })
-	mustRun(t, f.Env(), f.Dir, "git", "config", "ccx.stack", "github")
-	trunk := gitAt(t, f.Env(), f.Dir, "rev-parse", "main")
-	for _, name := range []string{"base", "mid"} {
-		shipGTUntracked(t, f, name)
-	}
-	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "mid")
-	if err := nativemeta.Init(f.Context(), filepath.Join(f.Dir, ".git"), "main"); err != nil {
-		t.Fatal(err)
-	}
-	api := stubGTAPI(t)
-	api.openPRs("base", "mid")
-	api.bases["base"], api.bases["mid"] = "main", "base"
-	f.Decorate(api.ctx)
-	stubStackPRs(t, f, nil)
-	stubStackStanding(t, f, nil)
-	heads := map[string]string{"main": trunk}
-	for _, name := range []string{"base", "mid"} {
-		heads[name] = gitAt(t, f.Env(), f.Dir, "rev-parse", name)
-	}
-	recorded := func() gtState {
-		t.Helper()
-		state, err := gtStateQuery(f.Context(), render.Dir(f.Dir), "test")
-		if err != nil {
-			t.Fatal(err)
-		}
-		return state
-	}
+	for _, tt := range []struct {
+		name       string
+		remoteBase bool
+	}{
+		{name: "base is a local branch"},
+		{name: "base is only on origin", remoteBase: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := shipRepo(t, vcstest.Remote())
+			f.Decorate(func(ctx context.Context) context.Context { return withStackProvider(ctx, true) })
+			mustRun(t, f.Env(), f.Dir, "git", "config", "ccx.stack", "github")
+			trunk := gitAt(t, f.Env(), f.Dir, "rev-parse", "main")
+			for _, name := range []string{"base", "mid"} {
+				shipGTUntracked(t, f, name)
+			}
+			mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "mid")
+			heads := map[string]string{"main": trunk}
+			for _, name := range []string{"base", "mid"} {
+				heads[name] = gitAt(t, f.Env(), f.Dir, "rev-parse", name)
+			}
+			if tt.remoteBase {
+				mustRun(t, f.Env(), f.Dir, "git", "branch", "-qD", "base")
+			}
+			if err := nativemeta.Init(f.Context(), filepath.Join(f.Dir, ".git"), "main"); err != nil {
+				t.Fatal(err)
+			}
+			api := stubGTAPI(t)
+			api.openPRs("base", "mid")
+			api.bases["base"], api.bases["mid"] = "main", "base"
+			f.Decorate(api.ctx)
+			stubStackPRs(t, f, nil)
+			stubStackStanding(t, f, nil)
+			recorded := func() gtState {
+				t.Helper()
+				state, err := gtStateQuery(f.Context(), render.Dir(f.Dir), "test")
+				if err != nil {
+					t.Fatal(err)
+				}
+				return state
+			}
 
-	plan, errOut, err := runStackCmd(t, f, "rebase", "--dry-run", "--no-push")
-	if err != nil {
-		t.Fatalf("stack rebase --dry-run from mid on an untracked base: %v\n%s%s", err, plan, errOut)
-	}
-	if !strings.Contains(plan, "\nbase · ") || !strings.Contains(plan, "\nmid · ") || strings.Contains(plan, "mid · onto main") {
-		t.Errorf("plan = %s, want base planned on main and mid on base", plan)
-	}
-	for _, name := range []string{"base", "mid"} {
-		if _, tracked := recorded()[name]; tracked {
-			t.Errorf("the dry run recorded %s; it must write nothing", name)
-		}
-	}
+			if !tt.remoteBase {
+				plan, errOut, err := runStackCmd(t, f, "rebase", "--dry-run", "--no-push")
+				if err != nil {
+					t.Fatalf("stack rebase --dry-run from mid on an untracked base: %v\n%s%s", err, plan, errOut)
+				}
+				if !strings.Contains(plan, "\nbase · ") || !strings.Contains(plan, "\nmid · ") || strings.Contains(plan, "mid · onto main") {
+					t.Errorf("plan = %s, want base planned on main and mid on base", plan)
+				}
+				for _, name := range []string{"base", "mid"} {
+					if _, tracked := recorded()[name]; tracked {
+						t.Errorf("the dry run recorded %s; it must write nothing", name)
+					}
+				}
+			}
 
-	if out, errOut, err := runStackCmd(t, f, "rebase", "--no-push"); err != nil {
-		t.Fatalf("stack rebase from mid on an untracked base: %v\n%s%s", err, out, errOut)
-	}
-	state := recorded()
-	for branch, parent := range map[string]string{"base": "main", "mid": "base"} {
-		if s := state[branch]; len(s.Parents) != 1 || s.Parents[0] != (gtRef{Ref: parent, SHA: heads[parent]}) {
-			t.Errorf("%s = %+v, want it recorded on %s at %.12s", branch, s, parent, heads[parent])
-		}
-		if got := gitAt(t, f.Env(), f.Dir, "rev-parse", branch); got != heads[branch] {
-			t.Errorf("%s moved from %.12s to %.12s, want it left where it sits", branch, heads[branch], got)
-		}
+			if out, errOut, err := runStackCmd(t, f, "rebase", "--no-push"); err != nil {
+				t.Fatalf("stack rebase from mid on an untracked base: %v\n%s%s", err, out, errOut)
+			}
+			state := recorded()
+			for branch, parent := range map[string]string{"base": "main", "mid": "base"} {
+				if s := state[branch]; len(s.Parents) != 1 || s.Parents[0] != (gtRef{Ref: parent, SHA: heads[parent]}) {
+					t.Errorf("%s = %+v, want it recorded on %s at %.12s", branch, s, parent, heads[parent])
+				}
+				if got := gitAt(t, f.Env(), f.Dir, "rev-parse", branch); got != heads[branch] {
+					t.Errorf("%s moved from %.12s to %.12s, want it left where it sits", branch, heads[branch], got)
+				}
+			}
+		})
 	}
 }

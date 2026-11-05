@@ -116,11 +116,11 @@ func nativeStackRun(ctx context.Context, dir render.Dir, argv []string, extraEnv
 	if parent == "" {
 		parent = trunk
 	}
-	head, err := run("rev-parse", "--verify", "refs/heads/"+branch)
+	head, err := gtRestackHead(ctx, "native stack", dir, branch)
 	if err != nil {
 		return gtResult{Output: output.String()}, err
 	}
-	base, err := run("merge-base", parent, branch)
+	base, err := gtMergeBaseDeepening(ctx, dir, "native stack", "origin", parent, branch)
 	if err != nil {
 		return gtResult{Output: output.String()}, err
 	}
@@ -398,7 +398,7 @@ func (m nativeStackMove) String() string {
 // the branch onto. A base this checkout does not track is adopted from its own
 // pull request. Each level is one batched read, and the moves come bottom-up,
 // so applying them in order records every parent before its child.
-func nativeStackParents(ctx context.Context, l lane, state gtState, from string) ([]nativeStackMove, gtState, error) {
+func nativeStackParents(ctx context.Context, l lane, state gtState, from, fetchFrom string) ([]nativeStackMove, gtState, error) {
 	if !l.native || from == "" {
 		return nil, state, nil
 	}
@@ -467,7 +467,9 @@ func nativeStackParents(ctx context.Context, l lane, state gtState, from string)
 				return nil, nil, err
 			}
 			if !exists {
-				return nil, nil, refuse("ship: %s, the native stack base of %s, is no local branch — fetch it, then ship again", m.parent, branch)
+				if err := nativeStackCutBase(ctx, l.dir(), fetchFrom, m.parent, branch); err != nil {
+					return nil, nil, err
+				}
 			}
 			seen[m.parent], child[m.parent] = true, branch
 			next = append(next, m.parent)
@@ -484,7 +486,7 @@ func nativeStackParents(ctx context.Context, l lane, state gtState, from string)
 			}
 		}
 		parentHead := planned[m.parent].Head
-		fork, err := gtMergeBase(ctx, l.dir(), "ship", parentHead, head)
+		fork, err := gtMergeBaseDeepening(ctx, l.dir(), "ship", fetchFrom, parentHead, head)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -501,6 +503,17 @@ func nativeStackParents(ctx context.Context, l lane, state gtState, from string)
 		planned[m.branch] = gtBranchState{Head: head, State: state[m.branch].State, NeedsRestack: fork != parentHead, Parents: []gtRef{{Ref: m.parent, SHA: fork}}}
 	}
 	return moves, planned, nil
+}
+
+func nativeStackCutBase(ctx context.Context, dir render.Dir, remote, base, child string) error {
+	if remote == "" {
+		return dryRunUnfetchedBase(base, child)
+	}
+	present, err := gtBranchFromRemote(ctx, dir, "ship", remote, base)
+	if err != nil || present {
+		return err
+	}
+	return refuse("ship: %s, the native stack base of %s, is a branch neither this checkout nor %s holds", base, child, remote)
 }
 
 func stackNativeAdopt(ctx context.Context, l lane, tr vcs.Trunk, state gtState, current string) (gtState, gtState, error) {
@@ -524,7 +537,12 @@ func stackNativeAdopt(ctx context.Context, l lane, tr vcs.Trunk, state gtState, 
 				return nil, nil, err
 			}
 			if !exists {
-				return nil, nil, refuse("%s: %s, the base of %s's open #%d, is no local branch — fetch it with git fetch %s %s:%s, then re-run", stackRebasePrefix, base, current, pr.PRNumber, tr.Remote(), base, base)
+				if exists, err = gtBranchFromRemote(ctx, l.dir(), stackRebasePrefix, tr.Remote(), base); err != nil {
+					return nil, nil, err
+				}
+			}
+			if !exists {
+				return nil, nil, refuse("%s: %s, the base of %s's open #%d, is a branch neither this checkout nor %s holds", stackRebasePrefix, base, current, pr.PRNumber, tr.Remote())
 			}
 			floor = gtRestackRef(base)
 		}
@@ -532,7 +550,7 @@ func stackNativeAdopt(ctx context.Context, l lane, tr vcs.Trunk, state gtState, 
 		if err != nil {
 			return nil, nil, err
 		}
-		fork, err := stackMergeBase(ctx, l.dir(), head, floor)
+		fork, err := gtMergeBaseDeepening(ctx, l.dir(), stackRebasePrefix, tr.Remote(), head, floor)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -549,7 +567,7 @@ func stackNativeAdopt(ctx context.Context, l lane, tr vcs.Trunk, state gtState, 
 	if err != nil {
 		return nil, nil, err
 	}
-	moves, planned, err := nativeStackParents(ctx, l, state, current)
+	moves, planned, err := nativeStackParents(ctx, l, state, current, tr.Remote())
 	if err != nil {
 		return nil, nil, err
 	}

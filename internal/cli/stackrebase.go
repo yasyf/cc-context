@@ -2190,7 +2190,7 @@ func stackAdoptUntrackedParents(ctx context.Context, dir render.Dir, tr vcs.Trun
 		if below != tr.Name() {
 			floor = gtRestackRef(below)
 		}
-		base, err := stackMergeBase(ctx, dir, head, floor)
+		base, err := gtMergeBaseDeepening(ctx, dir, stackRebasePrefix, tr.Remote(), head, floor)
 		if err != nil {
 			return nil, err
 		}
@@ -3724,11 +3724,7 @@ func stackUpstack(order []string, byName map[string]*stackRebaseBranch, name str
 }
 
 func stackMergeBase(ctx context.Context, dir render.Dir, a, b string) (string, error) {
-	out, err := render.RunCLI(ctx, dir, "git", []string{"merge-base", a, b})
-	if err != nil {
-		return "", fmt.Errorf("stack rebase: git merge-base %.12s %.12s: %w", a, b, err)
-	}
-	return strings.TrimSpace(out), nil
+	return gtMergeBase(ctx, dir, stackRebasePrefix, a, b)
 }
 
 func stackParentRefs(ctx context.Context, dir render.Dir, remote, parent string) ([]string, error) {

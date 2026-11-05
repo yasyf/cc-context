@@ -818,7 +818,7 @@ func gtAdoptUntracked(ctx context.Context, dir render.Dir, prefix, branch string
 	if err != nil {
 		return nil, err
 	}
-	chain, err := gtUntrackedChain(ctx, dir, prefix, state, trunk, base, branch, gtRestackRef(branch))
+	chain, err := gtUntrackedChain(ctx, dir, prefix, state, trunk, base, branch, gtRestackRef(branch), true)
 	if err != nil {
 		return nil, err
 	}

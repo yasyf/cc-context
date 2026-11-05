@@ -308,3 +308,41 @@ func TestStackNewTracksAnUntrackedNativeParentFirst(t *testing.T) {
 		}
 	}
 }
+
+func TestStackNewDeepensAShallowCheckoutToReachAParentOnlyOriginHolds(t *testing.T) {
+	f := shipRepo(t, vcstest.Remote())
+	f.Decorate(func(ctx context.Context) context.Context { return withStackProvider(ctx, true) })
+	stubStackPRs(t, f, nil)
+	fork := gitAt(t, f.Env(), f.Dir, "rev-parse", "main")
+	shipGTUntracked(t, f, "theirs")
+	theirs := gitAt(t, f.Env(), f.Dir, "rev-parse", "theirs")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
+	for _, name := range []string{"one", "two"} {
+		writeShipFile(t, f.Dir, name+".txt", name+"\n")
+		mustRun(t, f.Env(), f.Dir, "git", "add", name+".txt")
+		mustRun(t, f.Env(), f.Dir, "git", "commit", "-q", "-m", name)
+	}
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "main", "theirs")
+	shallow := filepath.Join(t.TempDir(), "shallow")
+	mustRun(t, f.Env(), filepath.Dir(shallow), "git", "clone", "-q", "--no-local", "--depth", "1", "--branch", "main", f.RemoteDir, shallow)
+	mustRun(t, f.Env(), shallow, "git", "config", "ccx.stack", "github")
+	seedLaneRecords(f.ContextIn(shallow), t, shallow, laneSeed{})
+	child := filepath.Join(t.TempDir(), "child")
+
+	out, errOut, err := runStackCmdIn(t, f, shallow, "new", "child", "--full-history", "--parent", "theirs", "--path", child)
+	if err != nil {
+		t.Fatalf("stack new --parent theirs in a shallow clone: %v\n%s%s", err, out, errOut)
+	}
+	if !strings.Contains(out, "tracked theirs onto main"+shipSep+"cut child onto theirs") {
+		t.Errorf("stack new = %q, want theirs tracked onto main before child is cut onto it", out)
+	}
+	state, err := gtStateQuery(f.ContextIn(shallow), render.Dir(shallow), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for branch, want := range map[string]gtRef{"theirs": {Ref: "main", SHA: fork}, "child": {Ref: "theirs", SHA: theirs}} {
+		if s := state[branch]; len(s.Parents) != 1 || s.Parents[0] != want {
+			t.Errorf("%s = %+v, want it recorded on %s at %.12s", branch, s, want.Ref, want.SHA)
+		}
+	}
+}
