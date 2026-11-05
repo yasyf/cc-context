@@ -18,6 +18,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/yasyf/cc-context/internal/ghapi"
+	"github.com/yasyf/cc-context/internal/prstate"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcs"
 )
@@ -171,6 +172,11 @@ type shipOpts struct {
 	dropCommits bool
 	evictQueued bool
 	allLanes    bool
+}
+
+type ciPR struct {
+	nwo    string
+	branch string
 }
 
 type ciRun struct {
@@ -737,11 +743,11 @@ func runShip(cmd *cobra.Command, o shipOpts) (err error) {
 	var ciErr error
 	switch {
 	case gtLane && gtc.restack != nil:
-		ciSeg, report, ciErr = shipWatchCIHead(ctx, cmd.ErrOrStderr(), dir, gtc.restack.branch(branch).NewHead, o.budget)
+		ciSeg, report, ciErr = shipWatchCIHead(ctx, cmd.ErrOrStderr(), dir, ciPR{nwo: prNWO, branch: branch}, gtc.restack.branch(branch).NewHead, o.budget)
 	case elsewhere:
-		ciSeg, report, ciErr = shipWatchCIHead(ctx, cmd.ErrOrStderr(), dir, target.head, o.budget)
+		ciSeg, report, ciErr = shipWatchCIHead(ctx, cmd.ErrOrStderr(), dir, ciPR{nwo: prNWO, branch: branch}, target.head, o.budget)
 	default:
-		ciSeg, report, ciErr = shipWatchCI(ctx, cmd.ErrOrStderr(), dir, kind, o.budget)
+		ciSeg, report, ciErr = shipWatchCI(ctx, cmd.ErrOrStderr(), dir, kind, ciPR{nwo: prNWO, branch: branch}, o.budget)
 	}
 	if ciSeg == "" {
 		cmd.Println(strings.Join(segments, shipSep))
@@ -2670,7 +2676,7 @@ func jjRebaseOnto(ctx context.Context, dir render.Dir, target string) (int, erro
 // shipWatchCI watches every CI run on the pushed commit and builds a per-run
 // report. Only a shipHeadSHA failure yields an empty segment; infra failures
 // return a segment so the summary still prints before the nonzero exit.
-func shipWatchCI(ctx context.Context, errW io.Writer, dir render.Dir, kind vcs.Kind, budget int) (string, []string, error) {
+func shipWatchCI(ctx context.Context, errW io.Writer, dir render.Dir, kind vcs.Kind, pr ciPR, budget int) (string, []string, error) {
 	if render.LookPath(ctx, "gh") == "" {
 		return "CI gh-missing", nil, nil
 	}
@@ -2678,10 +2684,10 @@ func shipWatchCI(ctx context.Context, errW io.Writer, dir render.Dir, kind vcs.K
 	if err != nil {
 		return "", nil, err
 	}
-	return shipWatchCIHead(ctx, errW, dir, sha, budget)
+	return shipWatchCIHead(ctx, errW, dir, pr, sha, budget)
 }
 
-func shipWatchCIHead(ctx context.Context, errW io.Writer, dir render.Dir, sha string, budget int) (string, []string, error) {
+func shipWatchCIHead(ctx context.Context, errW io.Writer, dir render.Dir, pr ciPR, sha string, budget int) (string, []string, error) {
 	if render.LookPath(ctx, "gh") == "" {
 		return "CI gh-missing", nil, nil
 	}
@@ -2700,20 +2706,20 @@ func shipWatchCIHead(ctx context.Context, errW io.Writer, dir render.Dir, sha st
 		}
 		return "CI unconfirmed", nil, fmt.Errorf("ship: no CI run was registered for the pushed commit; workflows may be paths-filtered or dispatch-only (on: workflow_dispatch); confirm manually: gh run list --commit %s", sha)
 	}
-	return reportCIRuns(ctx, errW, dir, sha, runs, budget)
+	return reportCIRuns(ctx, errW, dir, pr, sha, runs, budget)
 }
 
 // reportCIRuns watches every run for sha and, after each batch, re-lists to catch
 // workflows that registered late; a run is watched, viewed, and reported exactly
 // once. A settle-time re-list failure takes the infra path with the report so far
 // preserved.
-func reportCIRuns(ctx context.Context, errW io.Writer, dir render.Dir, sha string, runs []ciRun, budget int) (string, []string, error) {
+func reportCIRuns(ctx context.Context, errW io.Writer, dir render.Dir, pr ciPR, sha string, runs []ciRun, budget int) (string, []string, error) {
 	type redRun struct {
 		id   string
 		view ciView
 	}
 	var report []string
-	var reds []redRun
+	var reds, cancelled []redRun
 	seen := map[string]bool{}
 	viewFailed := false
 
@@ -2745,7 +2751,10 @@ func reportCIRuns(ctx context.Context, errW io.Writer, dir render.Dir, sha strin
 				report = append(report, fmt.Sprintf("run %s has not concluded; check: gh run view %s", id, id))
 				continue
 			}
-			if !ciGreen(view.Conclusion) {
+			switch {
+			case view.Conclusion == "cancelled":
+				cancelled = append(cancelled, redRun{id: id, view: view})
+			case !ciGreen(view.Conclusion):
 				reds = append(reds, redRun{id: id, view: view})
 			}
 		}
@@ -2770,6 +2779,24 @@ func reportCIRuns(ctx context.Context, errW io.Writer, dir render.Dir, sha strin
 		}
 	}
 
+	if len(reds) == 0 && len(cancelled) > 0 {
+		var cancelledAt time.Time
+		for _, r := range cancelled {
+			if r.view.UpdatedAt.After(cancelledAt) {
+				cancelledAt = r.view.UpdatedAt
+			}
+		}
+		head, err := shipPRHead(ctx, pr, cancelledAt)
+		if err != nil {
+			return "CI error", report, err
+		}
+		if head != "" && head != sha {
+			report = append(report, fmt.Sprintf("superseded by %s: watching its runs", shortSHA(head)))
+			segment, more, err := shipWatchCIHead(ctx, errW, dir, pr, head, budget)
+			return segment, append(report, more...), err
+		}
+		reds = cancelled
+	}
 	if len(reds) > 0 {
 		per := budget / len(reds)
 		if budget > 0 && per < 1 {
@@ -2784,6 +2811,29 @@ func reportCIRuns(ctx context.Context, errW io.Writer, dir render.Dir, sha strin
 		return "CI error", report, errors.New("ship: gh run view could not read the CI run conclusion")
 	}
 	return "CI success", report, nil
+}
+
+// shipPRHead reads the head of the open pull request on pr's branch from a poll
+// made after the given time, the shared cache a read answers from, or "" when
+// the branch has none. It is a variable so tests can stand in for GitHub.
+var shipPRHead = func(ctx context.Context, pr ciPR, after time.Time) (string, error) {
+	if pr.nwo == "" {
+		return "", nil
+	}
+	store, err := openPRState(ctx, pr.nwo, io.Discard)
+	if err != nil {
+		return "", err
+	}
+	st, err := store.Read(ctx, prstate.Want{Prefixes: []string{pr.branch}, After: after})
+	if err != nil {
+		return "", err
+	}
+	for _, number := range st.Lanes[pr.branch].PRs {
+		if head := st.PRs[number]; head.HeadRefName == pr.branch {
+			return head.HeadRefOid, nil
+		}
+	}
+	return "", nil
 }
 
 // watchCIRun blocks until run id concludes, streaming gh's progress to errW on a

@@ -1117,6 +1117,10 @@ case "$1 $2" in
   "pr edit"|"pr ready") : ;;
   "run list")
     if [ -n "$GH_LIST_FAIL" ]; then printf 'gh: network timeout\n' >&2; exit 1; fi
+    commit=; prev=
+    for a in "$@"; do if [ "$prev" = --commit ]; then commit=$a; fi; prev=$a; done
+    eval "bycommit=\${GH_RUN_LIST_JSON_$commit}"
+    if [ -n "$bycommit" ]; then printf '%s' "$bycommit"; exit 0; fi
     if [ -n "$GH_LIST_FAIL_MARKER" ] && [ -s "$GH_LIST_FAIL_MARKER" ]; then
       : > "$GH_LIST_FAIL_MARKER"; printf 'gh: transient tls timeout\n' >&2; exit 1
     fi

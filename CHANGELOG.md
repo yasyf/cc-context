@@ -22,6 +22,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ccx vcs ship` and the stack ship no longer report a run cancelled for a newer push as a CI
+  failure. Every job of yasyf/cc-context run 41994242680 was cancelled because a newer head
+  superseded it, and ship printed "failed: vet, build, lint, test..." and "CI failed". A cancelled
+  run now reads from the shared pull request cache, after the cancellation, the head of the open
+  pull request on the shipped branch. When that head is no longer the shipped commit, ship prints
+  `superseded by <head>` and watches the new head's runs instead. A run cancelled on the pull
+  request's current head, or on a branch with no pull request, still fails the ship.
 - `ccx vcs pr watch`, `ccx vcs pr status`, `ccx vcs status` and the ship gate no longer let a
   passing check run hide a failed one of the same name. A later run replaced every earlier run of
   its name, so on yasyf/cc-skills#3139 the watch printed green on two red heads and never printed a

@@ -86,7 +86,7 @@ func stackFinishShip(ctx context.Context, cmd *cobra.Command, l lane, run *stack
 		}
 	}
 	if !intent.NoWatch {
-		segment, report, err := shipWatchCIHead(ctx, cmd.ErrOrStderr(), l.dir(), run.branch(intent.Branch).NewHead, intent.Budget)
+		segment, report, err := shipWatchCIHead(ctx, cmd.ErrOrStderr(), l.dir(), ciPR{nwo: intent.Repo, branch: intent.Branch}, run.branch(intent.Branch).NewHead, intent.Budget)
 		if segment != "" {
 			cmd.Println(segment)
 		}
