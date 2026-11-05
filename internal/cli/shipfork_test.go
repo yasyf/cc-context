@@ -1,0 +1,139 @@
+package cli
+
+import (
+	"io"
+	"slices"
+	"strconv"
+	"strings"
+	"testing"
+
+	"github.com/yasyf/cc-context/internal/render"
+	"github.com/yasyf/cc-context/internal/vcs"
+	"github.com/yasyf/cc-context/internal/vcstest"
+)
+
+func TestGitTrunkBranchFromGitHubDefault(t *testing.T) {
+	for _, tt := range []struct {
+		name          string
+		defaultBranch string
+	}{
+		{name: "github names the default branch", defaultBranch: "trunk"},
+		{name: "github cannot name it"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := shipRepo(t, vcstest.Remote(), vcstest.NoOriginHead())
+			seedLaneRecords(f.Context(), t, f.Dir, laneSeed{defaultBranch: tt.defaultBranch})
+
+			got, err := gitTrunkBranch(f.Context(), render.Dir(f.Dir))
+			if err != nil {
+				t.Fatalf("gitTrunkBranch: %v", err)
+			}
+			if got != tt.defaultBranch {
+				t.Errorf("gitTrunkBranch = %q, want %q", got, tt.defaultBranch)
+			}
+		})
+	}
+}
+
+func TestShipForkRemote(t *testing.T) {
+	repo := vcs.Repo{NameWithOwner: "maximhq/bifrost", ViewerLogin: "yasyf", ViewerPermission: "READ"}
+	for _, tt := range []struct {
+		name       string
+		remotes    map[string]string
+		config     [][]string
+		wantRemote string
+		wantOwner  string
+		wantErr    string
+	}{
+		{
+			name:       "the one remote of the viewer's",
+			remotes:    map[string]string{"upstream": "https://github.com/maximhq/bifrost.git", "fork": "git@github.com:yasyf/bifrost.git"},
+			wantRemote: "fork",
+			wantOwner:  "yasyf",
+		},
+		{
+			name:       "push default wins over the scan",
+			remotes:    map[string]string{"fork": "git@github.com:yasyf/bifrost.git", "mine": "git@github.com:yasyf/other.git"},
+			config:     [][]string{{"remote.pushDefault", "mine"}},
+			wantRemote: "mine",
+			wantOwner:  "yasyf",
+		},
+		{
+			name:       "branch push remote wins over push default",
+			remotes:    map[string]string{"fork": "git@github.com:yasyf/bifrost.git", "mine": "git@github.com:yasyf/other.git"},
+			config:     [][]string{{"remote.pushDefault", "mine"}, {"branch.feature.pushRemote", "fork"}},
+			wantRemote: "fork",
+			wantOwner:  "yasyf",
+		},
+		{
+			name:    "no fork",
+			remotes: map[string]string{"upstream": "https://github.com/maximhq/bifrost.git"},
+			wantErr: "gh repo fork",
+		},
+		{
+			name:    "several forks",
+			remotes: map[string]string{"a": "git@github.com:yasyf/bifrost.git", "b": "git@github.com:yasyf/other.git"},
+			wantErr: "remote.pushDefault",
+		},
+		{
+			name:    "configured remote with no owner",
+			config:  [][]string{{"remote.pushDefault", "origin"}},
+			wantErr: "names no GitHub owner",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := shipRepo(t, vcstest.Remote(), vcstest.Branch("feature"))
+			for name, url := range tt.remotes {
+				mustRun(t, f.Env(), f.Dir, "git", "remote", "add", name, url)
+			}
+			for _, kv := range tt.config {
+				mustRun(t, f.Env(), f.Dir, "git", "config", kv[0], kv[1])
+			}
+
+			remote, owner, err := shipForkRemote(f.Context(), render.Dir(f.Dir), "feature", repo)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("shipForkRemote error = %v, want one naming %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("shipForkRemote: %v", err)
+			}
+			if remote != tt.wantRemote || owner != tt.wantOwner {
+				t.Errorf("shipForkRemote = %q, %q; want %q, %q", remote, owner, tt.wantRemote, tt.wantOwner)
+			}
+		})
+	}
+}
+
+func TestShipPRCrossRepo(t *testing.T) {
+	f := shipPRFixture(t, vcstest.Branch("feature"))
+	created := shipPRCreated(t)
+	l, err := resolveLane(f.Context(), "ship", f.Dir, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shipResetLog(t, f)
+
+	seg, err := shipPR(f.Context(), io.Discard, l, fakePRRepo, "viewer", "fork", "feature", "main", "fix: frobnicate", nil, nil)
+	if err != nil {
+		t.Fatalf("shipPR: %v", err)
+	}
+	assertInvocations(t, vcstest.Invocations(t, f.ArgvLog), [][]string{
+		append([]string{"gh"}, ghPullsByHeadArgv(fakePRRepo, "viewer:feature", "open")...),
+		append([]string{"gh"}, prCreateArgv(fakePRRepo, "viewer:feature", "main", "fix: frobnicate", "", false)...),
+	})
+	if want := "opened PR #" + strconv.Itoa(created.Number) + " " + created.URL; seg != want {
+		t.Errorf("segment = %q, want %q", seg, want)
+	}
+}
+
+func TestGHPullsByHeadArgvNamesAForkOwner(t *testing.T) {
+	for head, want := range map[string]string{"feature": "head=yasyf:feature", "viewer:feature": "head=viewer:feature"} {
+		argv := ghPullsByHeadArgv("yasyf/cc-context", head, "open")
+		if !slices.Contains(argv, want) {
+			t.Errorf("ghPullsByHeadArgv(%q) = %v, want %s", head, argv, want)
+		}
+	}
+}

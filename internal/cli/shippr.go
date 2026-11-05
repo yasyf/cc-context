@@ -302,25 +302,25 @@ func materializeStdin(r io.Reader) (string, func(), error) {
 // does it before any mutation: an unreachable GitHub is a refusal, not a
 // half-finished ship. A plan that stays on trunk outside the graphite lane
 // opens no pull request, so it needs no repository.
-func shipPRRepo(ctx context.Context, l lane, plan branchPlan, base string) (string, error) {
+func shipPRRepo(ctx context.Context, l lane, plan branchPlan, base string) (vcs.Repo, error) {
 	if !l.gt && plan.trunk != "" && plan.name == plan.trunk {
-		return "", nil
+		return vcs.Repo{}, nil
 	}
 	repo, err := vcs.LookupRepo(ctx, l.dir(), false)
 	if err != nil {
-		return "", fmt.Errorf("ship: a pull request needs GitHub metadata: %w", err)
+		return vcs.Repo{}, fmt.Errorf("ship: a pull request needs GitHub metadata: %w", err)
 	}
 	if !l.gt && plan.trunk == "" && base == "" {
-		return "", fmt.Errorf("ship: %w; pass --parent <base-branch> to name the pull request base before publishing", vcs.ErrNoTrunk)
+		return vcs.Repo{}, fmt.Errorf("ship: %w; pass --parent <base-branch> to name the pull request base before publishing", vcs.ErrNoTrunk)
 	}
-	return repo.NameWithOwner, nil
+	return repo, nil
 }
 
 // shipPR is the single pull-request-owning step for every lane. It opens the
 // branch's pull request when there is none. When there is one, it writes the
 // fields this invocation named, except a title or body the pull request already
 // carries, which stays unless --replace-pr-text says otherwise.
-func shipPR(ctx context.Context, errW io.Writer, l lane, nwo, remote, branch, trunk, subject string, meta map[string]prMeta, stack []stackEntry) (string, error) {
+func shipPR(ctx context.Context, errW io.Writer, l lane, nwo, headOwner, remote, branch, trunk, subject string, meta map[string]prMeta, stack []stackEntry) (string, error) {
 	if l.gt {
 		return shipPRGT(ctx, errW, nwo, meta, stack)
 	}
@@ -330,7 +330,11 @@ func shipPR(ctx context.Context, errW io.Writer, l lane, nwo, remote, branch, tr
 		return "no PR (on trunk)", nil
 	}
 	m := meta[branch]
-	pr, found, err := lookupPR(ctx, nwo, branch)
+	head := branch
+	if headOwner != "" {
+		head = headOwner + ":" + branch
+	}
+	pr, found, err := lookupPR(ctx, nwo, head)
 	if err != nil {
 		return "", err
 	}
@@ -339,13 +343,16 @@ func shipPR(ctx context.Context, errW io.Writer, l lane, nwo, remote, branch, tr
 		return shipPREdit(ctx, errW, nwo, branch, pr, m)
 	}
 	base, picked := m.base, false
+	if base == "" && headOwner != "" {
+		base = trunk
+	}
 	if base == "" {
 		if base, err = shipPRBase(ctx, l.dir(), remote, branch, trunk); err != nil {
 			return "", err
 		}
 		picked = base != trunk
 	}
-	created, viaGraphQL, err := shipPRCreate(ctx, nwo, branch, base, subject, m)
+	created, viaGraphQL, err := shipPRCreate(ctx, nwo, head, base, subject, m)
 	if err != nil {
 		return "", err
 	}

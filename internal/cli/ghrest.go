@@ -293,12 +293,17 @@ func ghPatchPullArgv(nwo string, number int, fields ...string) []string {
 
 // ghPullsByHeadArgv lists branch's pull requests newest first, the one gh pr
 // list --limit 1 resolves to. REST filters a head by owner:branch, and the
-// owner is the repository's own because a stacked branch lives there.
+// owner is the repository's own because a stacked branch lives there, unless
+// the caller already names a fork's owner. A branch name holds no colon.
 func ghPullsByHeadArgv(nwo, branch, state string) []string {
 	owner, _, _ := strings.Cut(nwo, "/")
+	head := owner + ":" + branch
+	if strings.Contains(branch, ":") {
+		head = branch
+	}
 	return []string{
 		"api", "-X", "GET", "repos/" + nwo + "/pulls",
-		"-f", "head=" + owner + ":" + branch, "-f", "state=" + state,
+		"-f", "head=" + head, "-f", "state=" + state,
 		"-f", "sort=created", "-f", "direction=desc", "-f", "per_page=1",
 	}
 }

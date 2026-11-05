@@ -29,6 +29,7 @@ type laneSeed struct {
 	public        bool
 	permission    string
 	unaffiliated  bool
+	defaultBranch string
 	unreachable   bool
 	note          string
 }
@@ -58,8 +59,8 @@ func seedLaneRecords(ctx context.Context, t *testing.T, dir string, seed laneSee
 		}
 	}
 	write(repoPath, fmt.Sprintf(
-		`{"schema":2,"repo":{"name_with_owner":%q,"owner":%q,"is_private":%t,"viewer_login":"yasyf","viewer_permission":%q,"affiliated":%t,"fetched_at":%q}}`,
-		seed.nameWithOwner, seed.owner, !seed.public, seed.permission, !seed.unaffiliated, now))
+		`{"schema":3,"repo":{"name_with_owner":%q,"owner":%q,"is_private":%t,"viewer_login":"yasyf","viewer_permission":%q,"affiliated":%t,"default_branch":%q,"fetched_at":%q}}`,
+		seed.nameWithOwner, seed.owner, !seed.public, seed.permission, !seed.unaffiliated, seed.defaultBranch, now))
 	verdict := gtVerdictOK
 	if seed.unreachable {
 		verdict = gtVerdictDenied
