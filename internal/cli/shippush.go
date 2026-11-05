@@ -139,14 +139,12 @@ func shipPushRetry(ctx context.Context, ref, hint string, attempt func(context.C
 
 func validateShipExpectedRemote(o shipOpts, kind vcs.Kind, graphite bool) error {
 	switch {
-	case !o.noCommit:
-		return errors.New("ship: --expect-remote publishes a commit that already exists — pass --no-commit")
 	case o.noPush:
 		return errors.New("ship: --expect-remote pushes, and --no-push skips the push — drop one of them")
 	case kind != vcs.Git:
-		return fmt.Errorf("ship: --expect-remote runs in the plain Git lane, and this is a %s checkout", kindLabel(kind))
-	case graphite:
-		return errors.New("ship: --expect-remote runs in the plain Git lane, and this checkout is on the graphite lane — pass --no-gt to ship it as plain Git")
+		return fmt.Errorf("ship: --expect-remote runs on a git checkout, and this is a %s checkout", kindLabel(kind))
+	case !graphite && !o.noCommit:
+		return errors.New("ship: --expect-remote publishes a commit that already exists — pass --no-commit")
 	}
 	if len(o.expectRemote) != 40 && len(o.expectRemote) != 64 {
 		return errors.New("ship: --expect-remote requires a full 40- or 64-character hexadecimal commit ID")

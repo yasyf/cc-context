@@ -109,7 +109,11 @@ func runShipDryRun(ctx context.Context, cmd *cobra.Command, l lane, o shipOpts, 
 	} else {
 		r.notes = append(r.notes, "the restack, pr head and rewrite lines are graphite-lane facts, and this lane has none")
 	}
-	if o.expectRemote != "" {
+	switch {
+	case o.expectRemote == "":
+	case l.gt:
+		r.notes = append(r.notes, "push "+r.branch+" under the exact remote lease "+o.expectRemote+", replacing that head")
+	default:
 		r.notes = append(r.notes, "publish the existing Git commit with exact remote lease "+o.expectRemote+"; no fetch, rebase, or retry")
 	}
 	cmd.Print(render.Cap(renderShipDryRun(r), o.budget))

@@ -27,7 +27,9 @@ func TestShipExpectedRemoteValidation(t *testing.T) {
 		{name: "commit", opts: shipOpts{expectRemote: strings.Repeat("a", 40)}, kind: vcs.Git, refusal: "pass --no-commit"},
 		{name: "no push", opts: shipOpts{noCommit: true, noPush: true, expectRemote: strings.Repeat("a", 40)}, kind: vcs.Git, refusal: "--no-push skips the push"},
 		{name: "jj", opts: shipOpts{noCommit: true, expectRemote: strings.Repeat("a", 40)}, kind: vcs.JJ, refusal: "this is a jj checkout"},
-		{name: "graphite", opts: shipOpts{noCommit: true, expectRemote: strings.Repeat("a", 40)}, kind: vcs.Git, graphite: true, refusal: "on the graphite lane — pass --no-gt"},
+		{name: "graphite", opts: shipOpts{noCommit: true, expectRemote: strings.Repeat("a", 40)}, kind: vcs.Git, graphite: true},
+		{name: "graphite commit", opts: shipOpts{expectRemote: strings.Repeat("a", 40)}, kind: vcs.Git, graphite: true},
+		{name: "graphite no push", opts: shipOpts{noPush: true, expectRemote: strings.Repeat("a", 40)}, kind: vcs.Git, graphite: true, refusal: "--no-push skips the push"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			err := validateShipExpectedRemote(test.opts, test.kind, test.graphite)
