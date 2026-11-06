@@ -1,0 +1,8 @@
+name: Guides
+on:
+  pull_request:
+    branches: [main]
+jobs:
+  guides:
+    uses: yasyf/cc-guides/.github/workflows/guides.yml@main
+    secrets: inherit

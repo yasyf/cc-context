@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 from captain_hook import (
     Allow,
@@ -18,6 +19,22 @@ from captain_hook import (
     nudge,
     on,
 )
+
+CI_RENDER = re.compile(r"yasyf/cc-guides/\.github/workflows/guides\.yml@|cc-guides pr-check")
+CI_RENDERED_FIXTURE = Path(__file__).parent / "fixtures" / "ci-rendered"
+
+
+class CiRendered(CustomCondition):
+    def check(self, evt: BaseHookEvent) -> bool:
+        if (f := evt.file) is None:
+            return False
+        repo = next(
+            (p.parent.parent for p in f.path.resolve().parents if p.parts[-2:] == (".claude", "fragments")),
+            evt.ctx.repo_root,
+        )
+        if repo is None or not (workflow := repo / ".github" / "workflows" / "guides.yml").is_file():
+            return False
+        return bool(CI_RENDER.search(workflow.read_text(encoding="utf-8", errors="replace")))
 
 
 class RenderedArtifact(CustomCondition):
@@ -48,6 +65,11 @@ class RenderedArtifact(CustomCondition):
     },
 )
 def steer_rendered_artifact_edit(evt: PreToolUseEvent) -> HookResult:
+    if CiRendered().check(evt):
+        return evt.context(
+            "This file is a cc-guides rendered artifact that `.github/workflows/guides.yml` renders in CI, and its "
+            "pr-check refuses a hand edit. Edit the matching parts under `.claude/fragments/` and commit only those."
+        )
     return evt.context(
         "This file is a cc-guides rendered artifact, so a direct edit is discarded on the next render. "
         "Edit the matching parts under `.claude/fragments/`, then run `cc-guides render` and commit both together."
@@ -72,10 +94,30 @@ nudge(
     "This is a cc-guides render source, so the rendered artifact stays stale until re-rendered. "
     "Run `cc-guides render`, then commit the fragments and the artifact together.",
     only_if=[Tool("Edit", "Write", "MultiEdit", "NotebookEdit"), RenderSource()],
+    skip_if=[CiRendered()],
     events=Event.PreToolUse,
     max_fires=1,
     tests={
-        Input(tool="Edit", file="/x/cc-squash/.claude/fragments/AGENTS.md/part-1.fragment.md", content="hi"): Warn(),
+        Input(tool="Edit", file="/x/cc-squash/.claude/fragments/AGENTS.md/part-1.fragment.md", content="hi"): Warn(
+            pattern=r"Run `cc-guides render`, then commit the fragments and the artifact together"
+        ),
         Input(tool="Edit", file="/x/cc-squash/internal/cli/root.go", content="hi"): Allow(),
+        Input(
+            tool="Edit", file=str(CI_RENDERED_FIXTURE / ".claude/fragments/AGENTS.md/part-1.fragment.md"), content="hi"
+        ): Allow(),
+    },
+)
+
+nudge(
+    "This is a cc-guides render source, and `.github/workflows/guides.yml` renders the artifacts and lock in CI. "
+    "Commit only the source edits; never commit `cc-guides render` output.",
+    only_if=[Tool("Edit", "Write", "MultiEdit", "NotebookEdit"), RenderSource(), CiRendered()],
+    events=Event.PreToolUse,
+    max_fires=1,
+    tests={
+        Input(
+            tool="Edit", file=str(CI_RENDERED_FIXTURE / ".claude/fragments/AGENTS.md/part-1.fragment.md"), content="hi"
+        ): Warn(pattern=r"Commit only the source edits"),
+        Input(tool="Edit", file="/x/cc-squash/.claude/fragments/AGENTS.md/part-1.fragment.md", content="hi"): Allow(),
     },
 )
