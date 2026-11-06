@@ -489,6 +489,38 @@ func TestPRWatchHoldsGreenOnAFreshHeadUntilItsWorkflowsFinish(t *testing.T) {
 	}
 }
 
+func TestPRWatchUntilCIIsRedOnAFailedBuildkiteStatusWhileAnActionsRunIsOpen(t *testing.T) {
+	poll := fmt.Sprintf(`{"data":{
+		"rateLimit":{"remaining":4900,"resetAt":"2026-09-30T07:00:00Z"},
+		"repository":{
+			"trunk":{"name":"dev","target":{"history":{"nodes":[]}}},
+			"p0":{"number":52069,"state":"OPEN","headRefOid":"%s","mergeable":"MERGEABLE",
+				"checks":{"nodes":[{"commit":{"oid":"%[1]s",
+					"statusCheckRollup":{"state":"FAILURE","contexts":{"totalCount":4,"nodes":[
+						{"__typename":"CheckRun","name":"pr-events","conclusion":"SUCCESS","status":"COMPLETED","checkSuite":{"databaseId":1,"workflowRun":{"workflow":{"databaseId":7}}}},
+						{"__typename":"CheckRun","name":"ai-review","conclusion":null,"status":"IN_PROGRESS","checkSuite":{"databaseId":2,"workflowRun":{"workflow":{"databaseId":8}}}},
+						{"__typename":"StatusContext","context":"buildkite/test","state":"FAILURE","targetUrl":"https://buildkite.com/forge/test/builds/118056"},
+						{"__typename":"StatusContext","context":"emergency-head","state":"SUCCESS","targetUrl":"https://buildkite.com/forge/test/builds/118056"}]}},
+					"checkSuites":{"nodes":[{"status":"COMPLETED"},{"status":"IN_PROGRESS"}]}}}]}}
+		}}}`, watchHeadA)
+	stubPRState(t, poll)
+	_, gt := stubPRInfo(t, `{"prNumber":52069,"state":"OPEN","baseRefName":"dev","mergeQueueStatus":null,"mergeCommitSha":null}`)
+	store, err := openPRState(withGTAPI(t.Context(), gt), "Forge-AI/monorepo", io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tick, err := prWatchSource{store: store, ci: true}.poll(t.Context(), []int{52069}, nil)
+	if err != nil {
+		t.Fatalf("poll: %v", err)
+	}
+
+	snap := tick.snapshots[52069]
+	if snap.CI != prWatchCIRed || !slices.Equal(snap.Failing, []string{"buildkite/test"}) {
+		t.Errorf("--until ci = %q failing %q, want red on buildkite/test while ai-review still runs", snap.CI, snap.Failing)
+	}
+}
+
 // GitHub's checks on yasyf/cc-skills#3139 on 2026-11-05, where two workflows
 // each run a job named test on push and on pull_request. At 5049100dd
 // long-running CI's runs both failed and live-dashboard CI's both passed, the

@@ -64,6 +64,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   published onto dev and gt records it on dev, and neither is in this run" and
   was told to run `gt track` by hand. Without a named parent, that refusal is
   unchanged.
+- **`ccx vcs pr status` stops counting a failed Buildkite build behind another
+  status as a running check.** Forge-AI/monorepo#51823 read `ci pending: 1
+  running` for two hours at head 1a74d25 with every check finished. Its
+  `emergency-head` status passed while linking build 117631, which failed, and
+  the redundant-skip proof read every passing status with a Buildkite link as
+  that build's own verdict, so a build that never passed counted as one still
+  running. The proof now reads only the status a build reports for its own
+  pipeline, `buildkite/<pipeline>`. `ccx vcs ship` uses the same proof.
 - **`ccx vcs ship` reads its CI verdict off the pull request's checks, Buildkite
   included.** Ship printed `CI success` for Forge-AI/monorepo#52013 once its one
   GitHub Actions workflow passed, while `buildkite/test` on the same head was
