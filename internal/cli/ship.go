@@ -17,7 +17,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/yasyf/cc-context/internal/ghapi"
 	"github.com/yasyf/cc-context/internal/prstate"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcs"
@@ -58,15 +57,8 @@ const (
 var (
 	shipCIPollTries     = 12
 	shipCIPollInterval  = 5 * time.Second
-	shipCIWatchInterval = "60"
-
-	// shipCIWatchTimeout is the runaway guard on one gh run watch, which blocks
-	// until the run concludes and so is legitimately slower than any generic
-	// default. This repo runs only GitHub-hosted runners, which cap a job at 6h and
-	// a whole run at 35 days, so 12h sits past twice the longest job that can run
-	// and far short of the run's own cap: a watch still blocked here is a hung gh,
-	// not a build.
-	shipCIWatchTimeout = 12 * time.Hour
+	shipCIWatchInterval = time.Minute
+	shipCIWatchTimeout  = 12 * time.Hour
 )
 
 // ansiRE matches terminal escape sequences (CSI colour and cursor moves, OSC
@@ -755,13 +747,17 @@ func runShip(cmd *cobra.Command, o shipOpts) (err error) {
 	var ciSeg string
 	var report []string
 	var ciErr error
+	ci := ciPR{nwo: prNWO, branch: branch}
+	if ci.nwo == "" && l.repo != nil {
+		ci.nwo = l.repo.NameWithOwner
+	}
 	switch {
 	case gtLane && gtc.restack != nil:
-		ciSeg, report, ciErr = shipWatchCIHead(ctx, cmd.ErrOrStderr(), dir, ciPR{nwo: prNWO, branch: branch}, gtc.restack.branch(branch).NewHead, o.budget)
+		ciSeg, report, ciErr = shipWatchCIHead(ctx, cmd.ErrOrStderr(), dir, ci, gtc.restack.branch(branch).NewHead, o.budget)
 	case elsewhere:
-		ciSeg, report, ciErr = shipWatchCIHead(ctx, cmd.ErrOrStderr(), dir, ciPR{nwo: prNWO, branch: branch}, target.head, o.budget)
+		ciSeg, report, ciErr = shipWatchCIHead(ctx, cmd.ErrOrStderr(), dir, ci, target.head, o.budget)
 	default:
-		ciSeg, report, ciErr = shipWatchCI(ctx, cmd.ErrOrStderr(), dir, kind, ciPR{nwo: prNWO, branch: branch}, o.budget)
+		ciSeg, report, ciErr = shipWatchCI(ctx, cmd.ErrOrStderr(), dir, kind, ci, o.budget)
 	}
 	if ciSeg == "" {
 		cmd.Println(strings.Join(segments, shipSep))
@@ -2727,10 +2723,6 @@ func shipWatchCIHead(ctx context.Context, errW io.Writer, dir render.Dir, pr ciP
 	return reportCIRuns(ctx, errW, dir, pr, sha, runs, budget)
 }
 
-// reportCIRuns watches every run for sha and, after each batch, re-lists to catch
-// workflows that registered late; a run is watched, viewed, and reported exactly
-// once. A settle-time re-list failure takes the infra path with the report so far
-// preserved.
 func reportCIRuns(ctx context.Context, errW io.Writer, dir render.Dir, pr ciPR, sha string, runs []ciRun, budget int) (string, []string, error) {
 	type redRun struct {
 		id   string
@@ -2740,6 +2732,9 @@ func reportCIRuns(ctx context.Context, errW io.Writer, dir render.Dir, pr ciPR, 
 	var reds, cancelled []redRun
 	seen := map[string]bool{}
 	viewFailed := false
+	if err := shipAwaitChecks(ctx, errW, pr, sha); err != nil {
+		_, _ = fmt.Fprintf(errW, "ship: the shared pull request cache could not follow %s: %v; reading each run instead\n", shortSHA(sha), err)
+	}
 
 	process := func(batch []ciRun) int {
 		n := 0
@@ -2750,10 +2745,7 @@ func reportCIRuns(ctx context.Context, errW io.Writer, dir render.Dir, pr ciPR, 
 			}
 			seen[id] = true
 			n++
-			// Watch drives live progress; gh run view is the authoritative conclusion,
-			// so a dropped watch on a green run still passes.
-			_ = watchCIRun(ctx, errW, dir, id)
-			view, err := viewCIRun(ctx, dir, id)
+			view, err := awaitCIRun(ctx, dir, id)
 			if err != nil {
 				viewFailed = true
 				report = append(report,
@@ -2763,8 +2755,6 @@ func reportCIRuns(ctx context.Context, errW io.Writer, dir render.Dir, pr ciPR, 
 			}
 			report = append(report, ciRunLine(view))
 			if view.Conclusion == "" {
-				// Watch exited early (transient): the run has no conclusion yet, which
-				// is indeterminate, not red — take the infra path, not --log-failed.
 				viewFailed = true
 				report = append(report, fmt.Sprintf("run %s has not concluded; check: gh run view %s", id, id))
 				continue
@@ -2854,27 +2844,75 @@ var shipPRHead = func(ctx context.Context, pr ciPR, after time.Time) (string, er
 	return "", nil
 }
 
-// watchCIRun blocks until run id concludes, streaming gh's progress to errW on a
-// real terminal and otherwise buffering it away. The wait is bounded by
-// shipCIWatchTimeout, an explicit deadline render's generic guard defers to.
-//
-// The app token a watch carries cannot be swapped mid-watch, so a watch that
-// fails once its token has expired is started again on a fresh one.
-func watchCIRun(ctx context.Context, errW io.Writer, dir render.Dir, id string) error {
-	watchCtx, cancel := context.WithTimeout(ctx, shipCIWatchTimeout)
+var shipAwaitChecks = func(ctx context.Context, errW io.Writer, pr ciPR, sha string) error {
+	if pr.nwo == "" {
+		return nil
+	}
+	store, err := openPRState(ctx, pr.nwo, io.Discard)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(ctx, shipCIWatchTimeout)
 	defer cancel()
+	since, announced := time.Now().UTC(), false
 	for {
-		env, expires, err := ghReadEnv(watchCtx, dir, ghapi.AppWatchMargin)
+		st, err := store.Read(ctx, prstate.Want{Prefixes: []string{pr.branch}, After: since})
+		if limited := (*prstate.LimitedError)(nil); errors.As(err, &limited) {
+			if err := sleepCtx(ctx, time.Until(limited.ProbeAt)); err != nil {
+				return err
+			}
+			continue
+		}
 		if err != nil {
 			return err
 		}
-		if shipStreamCI(errW) {
-			err = render.RunCLIStreamEnv(watchCtx, dir, "gh", []string{"run", "watch", id, "--exit-status", "--interval", shipCIWatchInterval, "--compact"}, errW, env)
-		} else {
-			_, err = render.RunCLIEnv(watchCtx, dir, "gh", []string{"run", "watch", id, "--exit-status", "--interval", shipCIWatchInterval}, env)
+		var open prstate.PR
+		for _, number := range st.Lanes[pr.branch].PRs {
+			if candidate := st.PRs[number]; candidate.HeadRefName == pr.branch {
+				open = candidate
+			}
 		}
-		if err == nil || expires.IsZero() || time.Now().Before(expires) || watchCtx.Err() != nil {
+		if open.Number == 0 || shipChecksSettled(open, sha) {
+			return nil
+		}
+		if !announced && shipStreamCI(errW) {
+			_, _ = fmt.Fprintf(errW, "ship: waiting on %s#%d checks on %s through the shared pull request cache\n", pr.nwo, open.Number, shortSHA(sha))
+			announced = true
+		}
+		if err := sleepCtx(ctx, shipCIWatchInterval); err != nil {
 			return err
+		}
+	}
+}
+
+func shipChecksSettled(pr prstate.PR, sha string) bool {
+	head, rollup := pr.HeadRefOid, pr.Rollup
+	if pr.PushedHead != "" && pr.PushedHead != head {
+		head, rollup = pr.PushedHead, nil
+	}
+	if pr.State != "OPEN" || head != sha {
+		return true
+	}
+	return rollup != nil && rollup.UnfinishedActions == 0 && rollup.State != "" && statusClassify(rollup.State) != statusRunning
+}
+
+func awaitCIRun(ctx context.Context, dir render.Dir, id string) (ciView, error) {
+	ctx, cancel := context.WithTimeout(ctx, shipCIWatchTimeout)
+	defer cancel()
+	var view ciView
+	for {
+		next, err := viewCIRun(ctx, dir, id)
+		switch {
+		case ctx.Err() != nil:
+			return view, nil
+		case err != nil:
+			return view, err
+		case next.Conclusion != "":
+			return next, nil
+		}
+		view = next
+		if sleepCtx(ctx, shipCIWatchInterval) != nil {
+			return view, nil
 		}
 	}
 }

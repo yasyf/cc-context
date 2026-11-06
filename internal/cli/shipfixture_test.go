@@ -1135,17 +1135,15 @@ case "$1 $2" in
     else
       printf '%s' "$GH_RUN_LIST_JSON"
     fi ;;
-  "run watch")
-    id="$3"
-    eval "code=\${GH_WATCH_EXIT_$id:-\${GH_WATCH_EXIT:-0}}"
-    printf 'watch stream %s\n' "$id"
-    if [ "$code" != 0 ]; then printf 'run %s concluded failure\n' "$id" >&2; fi
-    exit "$code" ;;
   "run view")
     id="$3"
     case "$*" in
       *--log-failed*) eval "printf '%s' \"\${GH_LOG_FAILED_$id:-\$GH_LOG_FAILED}\"" ;;
-      *) eval "printf '%s' \"\${GH_RUN_VIEW_JSON_$id:-\$GH_RUN_VIEW_JSON}\"" ;;
+      *)
+        if [ -n "$GH_RUN_VIEW_PENDING_MARKER" ] && [ -s "$GH_RUN_VIEW_PENDING_MARKER" ]; then
+          : > "$GH_RUN_VIEW_PENDING_MARKER"; printf '%s' "$GH_RUN_VIEW_PENDING_JSON"; exit 0
+        fi
+        eval "printf '%s' \"\${GH_RUN_VIEW_JSON_$id:-\$GH_RUN_VIEW_JSON}\"" ;;
     esac ;;
   *) printf 'fake gh: unmatched argv: %s\n' "$*" >&2; exit 2 ;;
 esac
@@ -1385,12 +1383,9 @@ func shipFetchArgv(remote, branch string) []string {
 	}
 }
 
-// The CI watch's three gh calls, for want-lists long enough that spelling them
-// out buries the argv under test.
 var (
-	ghRunListArgv  = ghRunListArgvFor(fakeHeadSHA)
-	ghRunWatchArgv = []string{"gh", "run", "watch", "42", "--exit-status", "--interval", "60"}
-	ghRunViewArgv  = []string{"gh", "run", "view", "42", "--json", "workflowName,conclusion,startedAt,updatedAt,url,jobs"}
+	ghRunListArgv = ghRunListArgvFor(fakeHeadSHA)
+	ghRunViewArgv = []string{"gh", "run", "view", "42", "--json", "workflowName,conclusion,startedAt,updatedAt,url,jobs"}
 )
 
 // ghRunListArgvFor is the CI watch's registration poll for the commit ship

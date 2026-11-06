@@ -313,7 +313,10 @@ a `workflow · conclusion · duration · url` line,
 and a red run adds its failing jobs and a budget-capped `--log-failed` excerpt with a
 `full log:` pointer. `CI failure` means a run went red; `CI error` means the watch
 itself failed after a successful push (the `check:` line says how to resume — don't
-re-run ship, that cuts a new commit). On a terminal, progress streams live:
+re-run ship, that cuts a new commit). Ship waits in its own process and spawns no
+`gh run watch`: a branch with an open pull request waits through the shared pull
+request cache, then reads each run once; without one, ship reads each run once a
+minute until it concludes.
 
 ```
 ccx vcs ship -m "fix: budget overflow marker"   # commit + push + watch CI

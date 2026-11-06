@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,6 +22,7 @@ import (
 
 	"github.com/yasyf/cc-context/internal/gtapi"
 	"github.com/yasyf/cc-context/internal/gtmeta"
+	"github.com/yasyf/cc-context/internal/prstate"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcs"
 	"github.com/yasyf/cc-context/internal/vcstest"
@@ -176,7 +176,6 @@ func TestShipCommitPushWatch(t *testing.T) {
 					{"jj", "git", "push", "--bookmark", vcs.JJExactPattern("main")},
 					{"jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", "commit_id"},
 					ghRunListArgvFor(sha),
-					ghRunWatchArgv,
 					ghRunViewArgv,
 					ghRunListArgvFor(sha),
 					ghRunListArgvFor(sha),
@@ -203,7 +202,6 @@ func TestShipCommitPushWatch(t *testing.T) {
 					gitRecordPushArgv,
 					{"git", "rev-parse", "HEAD"},
 					ghRunListArgvFor(sha),
-					ghRunWatchArgv,
 					ghRunViewArgv,
 					ghRunListArgvFor(sha),
 					ghRunListArgvFor(sha),
@@ -2286,37 +2284,31 @@ func TestShipNoWatchSkipsCI(t *testing.T) {
 
 func TestShipCIStates(t *testing.T) {
 	tests := []struct {
-		name      string
-		withGh    bool
-		runList   string
-		viewJSON  string
-		watchExit string
-		ci        string
-		wantErr   bool
-		wantWatch bool
+		name     string
+		withGh   bool
+		runList  string
+		viewJSON string
+		ci       string
+		wantErr  bool
 	}{
 		{
-			name:      "gh missing",
-			withGh:    false,
-			ci:        "gh-missing",
-			wantWatch: false,
+			name:   "gh missing",
+			withGh: false,
+			ci:     "gh-missing",
 		},
 		{
-			name:      "no run",
-			withGh:    true,
-			runList:   "[]",
-			ci:        "no-run",
-			wantWatch: false,
+			name:    "no run",
+			withGh:  true,
+			runList: "[]",
+			ci:      "no-run",
 		},
 		{
-			name:      "failure",
-			withGh:    true,
-			runList:   fakeRunListJSON,
-			viewJSON:  ghStdout(t, "run-view-failed"),
-			watchExit: "1",
-			ci:        "failure",
-			wantErr:   true,
-			wantWatch: true,
+			name:     "failure",
+			withGh:   true,
+			runList:  fakeRunListJSON,
+			viewJSON: ghStdout(t, "run-view-failed"),
+			ci:       "failure",
+			wantErr:  true,
 		},
 	}
 	for _, tt := range tests {
@@ -2337,9 +2329,6 @@ func TestShipCIStates(t *testing.T) {
 			if tt.viewJSON != "" {
 				t.Setenv("GH_RUN_VIEW_JSON", tt.viewJSON)
 			}
-			if tt.watchExit != "" {
-				t.Setenv("GH_WATCH_EXIT", tt.watchExit)
-			}
 			shipCIPollInterval = 0
 
 			got, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate")
@@ -2352,14 +2341,10 @@ func TestShipCIStates(t *testing.T) {
 			if want := shipCommitted(t, f, vcs.JJ) + " · pushed main → origin · CI " + tt.ci; got != want {
 				t.Errorf("summary = %q, want %q", got, want)
 			}
-			watched := false
 			for _, inv := range vcstest.Invocations(t, f.ArgvLog) {
 				if len(inv) >= 3 && inv[0] == "gh" && inv[1] == "run" && inv[2] == "watch" {
-					watched = true
+					t.Errorf("ship spawned %v; it waits in-process", inv)
 				}
-			}
-			if watched != tt.wantWatch {
-				t.Errorf("gh run watch invoked = %v, want %v", watched, tt.wantWatch)
 			}
 			if n := remoteCount(t, f, "main"); n != 2 {
 				t.Errorf("origin main holds %d commits, want the pushed one on top of init", n)
@@ -3552,7 +3537,6 @@ func TestShipCIFailureDetail(t *testing.T) {
 	writeShipGH(t, f)
 	t.Setenv("GH_RUN_LIST_JSON", fakeRunListJSON)
 	t.Setenv("GH_RUN_VIEW_JSON", ghStdout(t, "run-view-failed"))
-	t.Setenv("GH_WATCH_EXIT", "1")
 	t.Setenv("GH_LOG_FAILED", ghStdout(t, "run-log-failed"))
 	shipCIPollInterval = 0
 
@@ -3720,23 +3704,45 @@ func TestShipCIViewFailureIsError(t *testing.T) {
 	}
 }
 
-func TestShipCIWatchErrViewGreenIsSuccess(t *testing.T) {
+func ghRunViews(t *testing.T, log string) map[string]int {
+	t.Helper()
+	views := map[string]int{}
+	for _, inv := range vcstest.Invocations(t, log) {
+		if len(inv) >= 3 && inv[0] == "gh" && inv[1] == "run" && inv[2] == "watch" {
+			t.Errorf("ship spawned %v; it waits in-process", inv)
+		}
+		if len(inv) >= 5 && inv[0] == "gh" && inv[1] == "run" && inv[2] == "view" && inv[4] == "--json" {
+			views[inv[3]]++
+		}
+	}
+	return views
+}
+
+func TestShipCIReadsARunUntilItConcludes(t *testing.T) {
 	f := shipRepo(t, vcstest.JJ(), vcstest.Remote(), vcstest.Dirty())
 	writeShipGH(t, f)
+	marker := filepath.Join(t.TempDir(), "pending")
+	if err := os.WriteFile(marker, []byte("1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("GH_RUN_LIST_JSON", fakeRunListJSON)
+	t.Setenv("GH_RUN_VIEW_PENDING_MARKER", marker)
+	t.Setenv("GH_RUN_VIEW_PENDING_JSON", `{"workflowName":"ci","conclusion":"","startedAt":"2026-07-08T18:00:00Z","updatedAt":"2026-07-08T18:00:05Z","url":"https://x/42","jobs":[]}`)
 	t.Setenv("GH_RUN_VIEW_JSON", ghStdout(t, "run-view-success"))
-	t.Setenv("GH_WATCH_EXIT", "1") // watch drops, view says success — view wins
 	shipCIPollInterval = 0
+	oldInterval := shipCIWatchInterval
+	shipCIWatchInterval = 0
+	t.Cleanup(func() { shipCIWatchInterval = oldInterval })
 
 	got, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate")
 	if err != nil {
-		t.Fatalf("view-green run should heal a dropped watch, got %v", err)
+		t.Fatalf("a run that concludes on its second read should pass, got %v", err)
 	}
 	if want := "· CI success"; !strings.Contains(got, want) {
 		t.Errorf("summary = %q, want it to contain %q", got, want)
 	}
-	if n := remoteCount(t, f, "main"); n != 2 {
-		t.Errorf("origin main holds %d commits, want the commit the view healed", n)
+	if views := ghRunViews(t, f.ArgvLog); views["42"] != 2 {
+		t.Errorf("run 42 read %d times, want the open read and the concluded one", views["42"])
 	}
 }
 
@@ -3748,7 +3754,6 @@ func TestShipCIMultiRunWatchesAll(t *testing.T) {
 		`{"databaseId":43,"workflowName":"cc-notes","status":"completed","url":"https://x/43"}]`)
 	t.Setenv("GH_RUN_VIEW_JSON_42", ghStdout(t, "run-view-success"))
 	t.Setenv("GH_RUN_VIEW_JSON_43", ghStdout(t, "run-view-failed"))
-	t.Setenv("GH_WATCH_EXIT_43", "1")
 	t.Setenv("GH_LOG_FAILED_43", ghStdout(t, "run-log-failed"))
 	shipCIPollInterval = 0
 
@@ -3756,14 +3761,8 @@ func TestShipCIMultiRunWatchesAll(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when one of several runs is red, got nil")
 	}
-	watched := map[string]bool{}
-	for _, inv := range vcstest.Invocations(t, f.ArgvLog) {
-		if len(inv) >= 4 && inv[0] == "gh" && inv[1] == "run" && inv[2] == "watch" {
-			watched[inv[3]] = true
-		}
-	}
-	if !watched["42"] || !watched["43"] {
-		t.Errorf("expected both runs watched, got %v", watched)
+	if views := ghRunViews(t, f.ArgvLog); views["42"] == 0 || views["43"] == 0 {
+		t.Errorf("expected both runs read, got %v", views)
 	}
 	for _, want := range []string{
 		"· CI failure",
@@ -3801,12 +3800,9 @@ func TestShipCIMoreThanTenRunsWatchesAll(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
-	watched := map[string]int{}
+	watched := ghRunViews(t, f.ArgvLog)
 	limit50 := false
 	for _, inv := range vcstest.Invocations(t, f.ArgvLog) {
-		if len(inv) >= 4 && inv[0] == "gh" && inv[1] == "run" && inv[2] == "watch" {
-			watched[inv[3]]++
-		}
 		if len(inv) >= 3 && inv[0] == "gh" && inv[1] == "run" && inv[2] == "list" {
 			for i := 3; i+1 < len(inv); i++ {
 				if inv[i] == "--limit" && inv[i+1] == "50" {
@@ -3819,12 +3815,12 @@ func TestShipCIMoreThanTenRunsWatchesAll(t *testing.T) {
 		t.Error("gh run list did not use --limit 50")
 	}
 	if len(watched) != 12 {
-		t.Errorf("watched %d runs, want 12: %v", len(watched), watched)
+		t.Errorf("read %d runs, want 12: %v", len(watched), watched)
 	}
 	for id := 100; id < 112; id++ {
 		key := fmt.Sprintf("%d", id)
 		if watched[key] != 1 {
-			t.Errorf("run %s watched %d times, want 1", key, watched[key])
+			t.Errorf("run %s read %d times, want 1", key, watched[key])
 		}
 		want := fmt.Sprintf("workflow-%d · success · 1s · https://x/%d", id, id)
 		if !strings.Contains(out, want) {
@@ -3854,21 +3850,17 @@ func TestShipCISettleWatchesLateRuns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
-	watched := map[string]bool{}
 	listCalls := 0
 	for _, inv := range vcstest.Invocations(t, f.ArgvLog) {
 		if len(inv) >= 3 && inv[0] == "gh" && inv[1] == "run" && inv[2] == "list" {
 			listCalls++
 		}
-		if len(inv) >= 4 && inv[0] == "gh" && inv[1] == "run" && inv[2] == "watch" {
-			watched[inv[3]] = true
-		}
 	}
 	if listCalls < 5 {
 		t.Errorf("expected initial discovery, a quiet re-list, the straggler, and the quiet horizon; got %d list calls", listCalls)
 	}
-	if !watched["42"] || !watched["44"] {
-		t.Errorf("expected the settle pass to watch both runs, got %v", watched)
+	if views := ghRunViews(t, f.ArgvLog); views["42"] == 0 || views["44"] == 0 {
+		t.Errorf("expected the settle pass to read both runs, got %v", views)
 	}
 	for _, want := range []string{"Guides · success", "settle-late · success"} {
 		if !strings.Contains(out, want) {
@@ -3953,14 +3945,14 @@ func TestShipCISupersededRunFollowsTheNewHead(t *testing.T) {
 					t.Errorf("report missing %q\ngot:\n%s", want, out)
 				}
 			}
-			var watched []string
+			var read []string
 			for _, inv := range vcstest.Invocations(t, f.ArgvLog) {
-				if len(inv) >= 4 && inv[0] == "gh" && inv[1] == "run" && inv[2] == "watch" {
-					watched = append(watched, inv[3])
+				if len(inv) >= 5 && inv[0] == "gh" && inv[1] == "run" && inv[2] == "view" && inv[4] == "--json" {
+					read = append(read, inv[3])
 				}
 			}
-			if !slices.Equal(watched, tt.wantRuns) {
-				t.Errorf("watched runs = %v, want %v", watched, tt.wantRuns)
+			if !slices.Equal(read, tt.wantRuns) {
+				t.Errorf("read runs = %v, want %v", read, tt.wantRuns)
 			}
 		})
 	}
@@ -4001,6 +3993,9 @@ func TestShipCIEmptyConclusionIsIndeterminate(t *testing.T) {
 	t.Setenv("GH_RUN_LIST_JSON", fakeRunListJSON)
 	t.Setenv("GH_RUN_VIEW_JSON", `{"workflowName":"ci","conclusion":"","startedAt":"2026-07-08T18:00:00Z","updatedAt":"2026-07-08T18:00:05Z","url":"https://x/42","jobs":[]}`)
 	shipCIPollInterval = 0
+	oldInterval, oldTimeout := shipCIWatchInterval, shipCIWatchTimeout
+	shipCIWatchInterval, shipCIWatchTimeout = 10*time.Millisecond, 200*time.Millisecond
+	t.Cleanup(func() { shipCIWatchInterval, shipCIWatchTimeout = oldInterval, oldTimeout })
 
 	out, _, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate")
 	if err == nil {
@@ -4028,61 +4023,7 @@ func TestShipCIEmptyConclusionIsIndeterminate(t *testing.T) {
 	}
 }
 
-func TestShipCIStreamingSeam(t *testing.T) {
-	tests := []struct {
-		name        string
-		stream      bool
-		wantCompact bool
-		wantErrText bool
-	}{
-		{"tty streams to stderr with --compact", true, true, true},
-		{"non-tty buffers watch output away", false, false, false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			f := shipRepo(t, vcstest.JJ(), vcstest.Remote(), vcstest.Dirty())
-			writeShipGH(t, f)
-			t.Setenv("GH_RUN_LIST_JSON", fakeRunListJSON)
-			t.Setenv("GH_RUN_VIEW_JSON", ghStdout(t, "run-view-success"))
-			shipCIPollInterval = 0
-
-			old := shipStreamCI
-			t.Cleanup(func() { shipStreamCI = old })
-			shipStreamCI = func(io.Writer) bool { return tt.stream }
-
-			_, errStr, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate")
-			if err != nil {
-				t.Fatalf("ship error = %v", err)
-			}
-			compact := false
-			for _, inv := range vcstest.Invocations(t, f.ArgvLog) {
-				if len(inv) >= 3 && inv[0] == "gh" && inv[1] == "run" && inv[2] == "watch" {
-					for _, a := range inv {
-						if a == "--compact" {
-							compact = true
-						}
-					}
-				}
-			}
-			if compact != tt.wantCompact {
-				t.Errorf("watch --compact = %v, want %v", compact, tt.wantCompact)
-			}
-			if got := strings.Contains(errStr, "watch stream 42"); got != tt.wantErrText {
-				t.Errorf("stderr carries watch stream = %v, want %v (stderr=%q)", got, tt.wantErrText, errStr)
-			}
-			if n := remoteCount(t, f, "main"); n != 2 {
-				t.Errorf("origin main holds %d commits, want the commit the watch streamed for", n)
-			}
-		})
-	}
-}
-
-// TestWatchCIRunBounded drives both branches of the watch against a gh that never
-// concludes: each must carry shipCIWatchTimeout, since gh run watch blocks until
-// the run is over and so outlives any generic bound by design — and the default
-// must stay past GitHub's own 6h job ceiling, or a long green build reports as a
-// CI error.
-func TestWatchCIRunBounded(t *testing.T) {
+func TestAwaitCIRunBounded(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("fake shell scripts are POSIX-only")
 	}
@@ -4090,35 +4031,62 @@ func TestWatchCIRunBounded(t *testing.T) {
 		t.Errorf("shipCIWatchTimeout = %s, want it past GitHub's 6h job ceiling", shipCIWatchTimeout)
 	}
 	tests := []struct {
-		name   string
-		stream bool
+		name string
+		gh   string
 	}{
-		{"buffered watch is bounded", false},
-		{"streaming watch is bounded", true},
+		{"a read that never answers", "#!/bin/sh\nexec /bin/sleep 30\n"},
+		{"a run that never concludes", "#!/bin/sh\nprintf '%s' '{\"workflowName\":\"ci\",\"conclusion\":\"\",\"url\":\"https://x/42\",\"jobs\":[]}'\n"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			binDir := t.TempDir()
-			gh := filepath.Join(binDir, "gh")
-			execstub.Write(t, gh, "#!/bin/sh\nsleep 30\n")
+			execstub.Write(t, filepath.Join(binDir, "gh"), tt.gh)
 			t.Setenv("PATH", binDir)
 
-			oldStream := shipStreamCI
-			t.Cleanup(func() { shipStreamCI = oldStream })
-			shipStreamCI = func(io.Writer) bool { return tt.stream }
-
-			oldTimeout := shipCIWatchTimeout
-			shipCIWatchTimeout = 100 * time.Millisecond
-			t.Cleanup(func() { shipCIWatchTimeout = oldTimeout })
+			oldInterval, oldTimeout := shipCIWatchInterval, shipCIWatchTimeout
+			shipCIWatchInterval, shipCIWatchTimeout = 10*time.Millisecond, 100*time.Millisecond
+			t.Cleanup(func() { shipCIWatchInterval, shipCIWatchTimeout = oldInterval, oldTimeout })
 
 			start := time.Now()
-			err := watchCIRun(context.Background(), io.Discard, render.Ambient, "42")
+			view, err := awaitCIRun(context.Background(), render.Ambient, "42")
 			elapsed := time.Since(start)
-			if err == nil {
-				t.Fatal("watchCIRun = nil, want the bound to kill a watch that never concludes")
+			if err != nil {
+				t.Fatalf("awaitCIRun = %v, want the deadline to end the wait with no error", err)
+			}
+			if view.Conclusion != "" {
+				t.Fatalf("conclusion = %q, want none from a run still open", view.Conclusion)
 			}
 			if elapsed > 10*time.Second {
-				t.Errorf("watchCIRun returned after %s; the watch outlived its bound", elapsed)
+				t.Errorf("awaitCIRun returned after %s; the wait outlived its bound", elapsed)
+			}
+		})
+	}
+}
+
+func TestShipChecksSettled(t *testing.T) {
+	const sha, other = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	rollup := func(state string, unfinished int) *prstate.Rollup {
+		return &prstate.Rollup{State: state, UnfinishedActions: unfinished}
+	}
+	tests := []struct {
+		name string
+		pr   prstate.PR
+		want bool
+	}{
+		{"closed", prstate.PR{State: "MERGED", HeadRefOid: sha}, true},
+		{"head moved on", prstate.PR{State: "OPEN", HeadRefOid: other, Rollup: rollup("PENDING", 1)}, true},
+		{"pushed head GitHub has not shown yet", prstate.PR{State: "OPEN", HeadRefOid: other, PushedHead: sha, Rollup: rollup("SUCCESS", 0)}, false},
+		{"no checks read yet", prstate.PR{State: "OPEN", HeadRefOid: sha}, false},
+		{"no check state yet", prstate.PR{State: "OPEN", HeadRefOid: sha, Rollup: rollup("", 0)}, false},
+		{"an Actions suite still open", prstate.PR{State: "OPEN", HeadRefOid: sha, Rollup: rollup("SUCCESS", 1)}, false},
+		{"checks still running", prstate.PR{State: "OPEN", HeadRefOid: sha, Rollup: rollup("PENDING", 0)}, false},
+		{"green", prstate.PR{State: "OPEN", HeadRefOid: sha, Rollup: rollup("SUCCESS", 0)}, true},
+		{"red", prstate.PR{State: "OPEN", HeadRefOid: sha, Rollup: rollup("FAILURE", 0)}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shipChecksSettled(tt.pr, sha); got != tt.want {
+				t.Errorf("shipChecksSettled = %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -4385,7 +4353,7 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 			want = append(want, tt.receiptInv...)
 			want = append(want,
 				[]string{"git", "rev-parse", "HEAD"},
-				ghRunListArgv, ghRunWatchArgv, ghRunViewArgv, ghRunListArgv, ghRunListArgv,
+				ghRunListArgv, ghRunViewArgv, ghRunListArgv, ghRunListArgv,
 			)
 			assertInvocations(t, gtDropTrunkInv(t, readInvocations(t, log), "main", tt.prBranches...), want)
 		})
@@ -4435,7 +4403,7 @@ func TestShipGTTrunkStacksBranch(t *testing.T) {
 		gtPushInv(gtHead("fix-frobnicate", vcstest.GraphiteLeafSHA)),
 	}, gtReceiptInv("fix-frobnicate"), [][]string{
 		{"git", "rev-parse", "HEAD"},
-		ghRunListArgv, ghRunWatchArgv, ghRunViewArgv, ghRunListArgv, ghRunListArgv,
+		ghRunListArgv, ghRunViewArgv, ghRunListArgv, ghRunListArgv,
 	})
 	assertInvocations(t, gtDropTrunkInv(t, readInvocations(t, log), "main", "fix-frobnicate"), wantInv)
 }
@@ -6937,7 +6905,6 @@ func TestShipReviewsWiring(t *testing.T) {
 		stubReviewsAPI(t)
 		t.Setenv("GH_RUN_LIST_JSON", fakeRunListJSON)
 		t.Setenv("GH_RUN_VIEW_JSON", ghStdout(t, "run-view-failed"))
-		t.Setenv("GH_WATCH_EXIT", "1")
 		t.Setenv("GH_LOG_FAILED", "go test failed\n")
 		t.Setenv("GH_PR_VIEW_NOT_FOUND", "1")
 		shipCIPollInterval = 0
