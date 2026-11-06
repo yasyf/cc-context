@@ -58,7 +58,8 @@ func prProveRedundantSkips(ctx context.Context, warn io.Writer, repo string, pr 
 	}
 	p := prSkipProof{ctx: ctx, client: reviewsAPI().ForRepo(repo), repo: repo}
 	for _, c := range pr.Rollup.Contexts.Nodes {
-		if c.Typename != "StatusContext" || c.State != "SUCCESS" || !buildkiteBuildURL.MatchString(c.TargetURL) {
+		build := buildkiteBuildURL.FindStringSubmatch(c.TargetURL)
+		if c.Typename != "StatusContext" || c.State != "SUCCESS" || build == nil || c.Context != "buildkite/"+build[2] {
 			continue
 		}
 		run, err := buildkiteRead(ctx, c.TargetURL)

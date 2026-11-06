@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"cmp"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -18,7 +19,10 @@ const (
 var prBuildkiteJobs = map[string]string{
 	"78197": `[{"name":":graphite: Redundant within its stack"},{"name":"label"}]`,
 	"78300": `[{"name":"unit"},{"name":"lint"},{"name":"label"}]`,
+	"78296": `[{"name":"unit"},{"name":"label"}]`,
 }
+
+var prBuildkiteStates = map[string]string{"78296": "failed"}
 
 func stubBuildkite(t *testing.T, token string) {
 	t.Helper()
@@ -28,7 +32,7 @@ func stubBuildkite(t *testing.T, token string) {
 			http.Error(w, "unexpected", http.StatusNotFound)
 			return
 		}
-		_, _ = fmt.Fprintf(w, `{"state":"passed","jobs":%s}`, prBuildkiteJobs[number])
+		_, _ = fmt.Fprintf(w, `{"state":%q,"jobs":%s}`, cmp.Or(prBuildkiteStates[number], "passed"), prBuildkiteJobs[number])
 	}))
 	t.Cleanup(ts.Close)
 	prior := buildkiteAPI
@@ -74,5 +78,23 @@ func TestPRStatusGradesARedundantSkipByTheFullRunItDeferredTo(t *testing.T) {
 				t.Errorf("report = %q, want it to end %q and warn only on an unreadable build", out, want)
 			}
 		})
+	}
+}
+
+func TestPRStatusProvesOnlyABuildkiteBuildsOwnStatus(t *testing.T) {
+	const failedBuild = "https://buildkite.com/forge/test/builds/78296"
+	checks := `"checks":{"nodes":[{"commit":{"oid":"` + prNodeHead + `","status":{"state":"SUCCESS"},"statusCheckRollup":{"state":"SUCCESS","contexts":{"nodes":[` +
+		`{"__typename":"StatusContext","context":"buildkite/test","state":"SUCCESS","targetUrl":"` + prFullBuild + `"},` +
+		`{"__typename":"StatusContext","context":"emergency-head","state":"SUCCESS","targetUrl":"` + failedBuild + `"}]}}}}]}`
+	_, client := stubPRInfo(t, prInfoOpen)
+	stubPRState(t, prPoll(`"p0":`+strings.Replace(prNode(25131, "OPEN", prComments()), `"checks":{"nodes":[]}`, checks, 1)))
+	stubBuildkite(t, "bk-test")
+
+	out, err := runPRStatusCmd(t, client, "--repo", "Forge-AI/monorepo", "25131")
+	if err != nil {
+		t.Fatalf("pr status: %v", err)
+	}
+	if want := "Forge-AI/monorepo#25131  not queued · open · ci green · approved · landable\n"; !strings.HasSuffix(out, want) {
+		t.Errorf("report = %q, want it to end %q: emergency-head links a failed build it did not report", out, want)
 	}
 }
