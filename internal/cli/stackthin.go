@@ -16,7 +16,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/yasyf/cc-context/internal/cache"
 	"github.com/yasyf/cc-context/internal/gtmeta"
@@ -28,6 +27,7 @@ const (
 	stackNewEnv         = "CCX_STACK_NEW"
 	thinDefaultDepth    = 256
 	thinDefaultMaxDepth = 4096
+	shallowMaxDeepen    = 1 << 14
 	thinRemote          = "origin"
 	thinAdoptedPrefix   = "refs/ccx/thin-adopted/"
 	thinNotesKey        = "cc-notes.storage"
@@ -576,23 +576,10 @@ func thinDeepen(ctx context.Context, store lane, trunk, base string, o stackNewO
 
 func thinFetchDeepen(ctx context.Context, store lane, trunk string, step int) error {
 	refspec := "+" + gtRestackRef(trunk) + ":refs/remotes/" + thinRemote + "/" + trunk
-	lock := filepath.Join(store.checkout.CommonDir, "shallow.lock")
-	delay := 100 * time.Millisecond
-	for attempt := 1; ; attempt++ {
-		err := gitFetch(ctx, store.dir(), "--no-tags", "--no-write-fetch-head", "--deepen="+strconv.Itoa(step), thinRemote, refspec)
-		if err == nil {
-			return nil
-		}
-		if _, statErr := os.Lstat(lock); statErr != nil || attempt == gitFetchAttempts {
-			return fmt.Errorf("stack new: deepen %s by %d commits in %s: %w", trunk, step, store.root, err)
-		}
-		select {
-		case <-ctx.Done():
-			return errors.Join(err, ctx.Err())
-		case <-time.After(delay):
-		}
-		delay *= 2
+	if err := gitFetch(ctx, store.dir(), "--no-tags", "--no-write-fetch-head", "--deepen="+strconv.Itoa(step), thinRemote, refspec); err != nil {
+		return fmt.Errorf("stack new: deepen %s by %d commits in %s: %w", trunk, step, store.root, err)
 	}
+	return nil
 }
 
 func thinReachable(ctx context.Context, dir render.Dir, commit, rev string) (bool, error) {
@@ -725,24 +712,75 @@ func stackRequireHistory(ctx context.Context, dir render.Dir, prefix, remote, tr
 		if heads[name] == "" {
 			continue
 		}
-		_, code, stderr, err := render.RunCLIExitCodeEnv(ctx, dir, "git", []string{"merge-base", heads[name], trunkRef}, gitRecordedHistoryEnv)
+		met, deepened, err := gitDeepenUntil(ctx, dir, prefix, remote, []string{heads[name], trunkRef}, func() (bool, error) {
+			return gitHistoryMeets(ctx, dir, ck.CommonDir, prefix, heads[name], trunkRef)
+		})
 		if err != nil {
 			return err
 		}
-		if code > 1 {
-			return fmt.Errorf("%s: git merge-base %s %s: exit %d: %s", prefix, heads[name], trunkRef, code, strings.TrimSpace(stderr))
-		}
-		whole := code == 0
-		if whole {
-			if whole, err = stackRangeWhole(ctx, dir, shallow, heads[name], "^"+trunkRef); err != nil {
-				return err
-			}
-		}
-		if !whole {
-			return fmt.Errorf("%s: %s's history in %s stops at its shallow boundary before it meets %s/%s; nothing moved — fetch the missing history explicitly with git -C %s fetch --deepen=<commits> %s %s, then run this again", prefix, name, ck.MainRoot, remote, trunk, ck.MainRoot, remote, trunk)
+		if !met {
+			return fmt.Errorf("%s: %s's history in %s stops at its shallow boundary before it meets %s/%s, even after deepening it by %d commits; nothing moved — fetch more with git -C %s fetch --deepen=<commits> %s %s, then run this again", prefix, name, ck.MainRoot, remote, trunk, deepened, ck.MainRoot, remote, trunk)
 		}
 	}
 	return nil
+}
+
+func gitHistoryMeets(ctx context.Context, dir render.Dir, commonDir, prefix, head, base string) (bool, error) {
+	_, code, stderr, err := render.RunCLIExitCodeEnv(ctx, dir, "git", []string{"merge-base", head, base}, gitRecordedHistoryEnv)
+	switch {
+	case err != nil:
+		return false, err
+	case code == 1:
+		return false, nil
+	case code != 0:
+		return false, fmt.Errorf("%s: git merge-base %s %s: exit %d: %s", prefix, head, base, code, strings.TrimSpace(stderr))
+	}
+	shallow, err := stackShallowSet(commonDir)
+	if err != nil {
+		return false, err
+	}
+	return stackRangeWhole(ctx, dir, shallow, head, "^"+base)
+}
+
+func gitDeepenUntil(ctx context.Context, dir render.Dir, prefix, remote string, revs []string, met func() (bool, error)) (bool, int, error) {
+	deepened := 0
+	for step := thinDefaultDepth; ; step *= 2 {
+		ok, err := met()
+		if err != nil || ok || deepened >= shallowMaxDeepen {
+			return ok, deepened, err
+		}
+		boundaries, err := gitShallowBoundaries(ctx, dir, revs)
+		if err != nil || len(boundaries) == 0 {
+			return false, deepened, err
+		}
+		step = min(step, shallowMaxDeepen-deepened)
+		if err := gitFetch(ctx, dir, append([]string{"--quiet", "--no-tags", "--no-write-fetch-head", "--deepen=" + strconv.Itoa(step), remote}, boundaries...)...); err != nil {
+			return false, deepened, fmt.Errorf("%s: deepen this shallow clone by %d commits below %s: %w", prefix, step, strings.Join(revs, " and "), err)
+		}
+		deepened += step
+	}
+}
+
+func gitShallowBoundaries(ctx context.Context, dir render.Dir, revs []string) ([]string, error) {
+	ck, err := vcs.ResolveCheckout(string(dir))
+	if err != nil {
+		return nil, err
+	}
+	shallow, err := stackShallowSet(ck.CommonDir)
+	if err != nil || shallow == nil {
+		return nil, err
+	}
+	out, err := render.RunCLIEnv(ctx, dir, "git", append([]string{"rev-list"}, revs...), gitRecordedHistoryEnv)
+	if err != nil {
+		return nil, err
+	}
+	var boundaries []string
+	for _, sha := range strings.Fields(out) {
+		if shallow[sha] {
+			boundaries = append(boundaries, sha)
+		}
+	}
+	return boundaries, nil
 }
 
 func thinDirIsStore(ctx context.Context, dir render.Dir) (vcs.Checkout, bool, error) {

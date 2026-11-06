@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"maps"
 	"slices"
-	"strconv"
 	"strings"
 
 	"github.com/yasyf/cc-context/internal/gtmeta"
@@ -307,27 +306,21 @@ func gtMergeBase(ctx context.Context, dir render.Dir, prefix, a, b string) (stri
 }
 
 func gtMergeBaseDeepening(ctx context.Context, dir render.Dir, prefix, remote, a, b string) (string, error) {
-	deepened := 0
-	for step := thinDefaultDepth; ; step *= 2 {
-		base, err := gtMergeBase(ctx, dir, prefix, a, b)
-		var none *gtNoMergeBase
-		if !errors.As(err, &none) || !none.shallow || remote == "" {
-			return base, err
+	var base string
+	var none *gtNoMergeBase
+	met, deepened, err := gitDeepenUntil(ctx, dir, prefix, remote, []string{a, b}, func() (bool, error) {
+		var err error
+		base, err = gtMergeBase(ctx, dir, prefix, a, b)
+		if errors.As(err, &none) && none.shallow && remote != "" {
+			return false, nil
 		}
-		if deepened >= thinDefaultMaxDepth {
-			none.deepened = deepened
-			return "", none
-		}
-		step = min(step, thinDefaultMaxDepth-deepened)
-		out, err := render.RunCLI(ctx, dir, "git", []string{"rev-parse", a + "^{commit}", b + "^{commit}"})
-		if err != nil {
-			return "", fmt.Errorf("%s: git rev-parse %s %s: %w", prefix, a, b, err)
-		}
-		if err := gitFetch(ctx, dir, append([]string{"--quiet", "--no-tags", "--no-write-fetch-head", "--deepen=" + strconv.Itoa(step), remote}, strings.Fields(out)...)...); err != nil {
-			return "", fmt.Errorf("%s: deepen this shallow clone by %d commits to find where %s and %s meet: %w", prefix, step, a, b, err)
-		}
-		deepened += step
+		return true, err
+	})
+	if !met && err == nil {
+		none.deepened = deepened
+		return "", none
 	}
+	return base, err
 }
 
 type gtNoMergeBase struct {
@@ -342,7 +335,7 @@ func (e *gtNoMergeBase) Error() string {
 	case !e.shallow:
 		return head + ": the two share no history"
 	case e.deepened > 0:
-		return fmt.Sprintf("%s in this shallow clone after deepening it by %d commits — fetch the rest with git fetch --unshallow, then run again", head, e.deepened)
+		return fmt.Sprintf("%s in this shallow clone after deepening it by %d commits — fetch more with git fetch --deepen=<commits>, then run again", head, e.deepened)
 	default:
 		return head + " in this shallow clone — fetch the missing history with git fetch --deepen=<commits>, then run again"
 	}

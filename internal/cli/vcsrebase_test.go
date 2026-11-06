@@ -3,9 +3,15 @@ package cli
 import (
 	"bytes"
 	"context"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
 func runVcsRebaseCmd(ctx context.Context, t *testing.T, args ...string) (string, error) {
@@ -117,6 +123,61 @@ func TestVcsRebaseContinueFetchesTheRemainingPicks(t *testing.T) {
 	}
 	if subjects := gitAt(t, f.Env(), s.dir, "log", "--format=%s", "origin/main..HEAD"); subjects != "feature 3\nfeature 2\nfeature 1" {
 		t.Errorf("rebased subjects = %q, want the three feature commits", subjects)
+	}
+}
+
+func TestVcsRebaseDeepensAShallowCloneToTheMergeBase(t *testing.T) {
+	t.Parallel()
+	f := shipRepo(t, vcstest.Remote())
+	var stream strings.Builder
+	commit := func(ref, head, from, path, body, subject string, at int) {
+		fmt.Fprintf(&stream, "commit %s\n%scommitter t <t@t.t> %d +0000\ndata %d\n%s\n%sM 100644 inline %s\ndata %d\n%s\n", ref, head, 1700000000+at, len(subject), subject, from, path, len(body), body)
+	}
+	for i := range 300 {
+		head, from := "", ""
+		if i == 0 {
+			from = "from " + gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "main") + "\n"
+		}
+		if i == 299 {
+			head = "mark :1\n"
+		}
+		commit("refs/heads/main", head, from, "trunk.txt", fmt.Sprintf("trunk %d\n", i), fmt.Sprintf("trunk %d", i), i)
+	}
+	commit("refs/heads/feature", "", "from :1\n", "feature.txt", "feature 1\n", "feature 1", 300)
+	commit("refs/heads/feature", "", "", "feature.txt", "feature 2\n", "feature 2", 301)
+	for i := 300; i < 320; i++ {
+		commit("refs/heads/main", "", "", "trunk.txt", fmt.Sprintf("trunk %d\n", i), fmt.Sprintf("trunk %d", i), i+2)
+	}
+	cmd := exec.Command("git", "fast-import", "--quiet")
+	cmd.Dir = f.RemoteDir
+	cmd.Env = append(os.Environ(), f.Env()...)
+	cmd.Stdin = strings.NewReader(stream.String())
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git fast-import: %v\n%s", err, out)
+	}
+	fork := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature~2")
+	shallow := filepath.Join(t.TempDir(), "shallow")
+	mustRun(t, f.Env(), filepath.Dir(shallow), "git", "clone", "-q", "--no-local", "--depth", "1", "--branch", "feature", f.RemoteDir, shallow)
+	for _, kv := range [][2]string{{"user.email", "t@t.t"}, {"user.name", "t"}, {"commit.gpgsign", "false"}} {
+		mustRun(t, f.Env(), shallow, "git", "config", kv[0], kv[1])
+	}
+	mustRun(t, f.Env(), shallow, "git", "fetch", "-q", "--depth", "1", "origin", "+refs/heads/main:refs/remotes/origin/main")
+
+	out, err := runVcsRebaseCmd(f.ContextIn(shallow), t, "--", "-q", "origin/main")
+	if err != nil {
+		t.Fatalf("vcs rebase in a depth-1 clone: %v\n%s", err, out)
+	}
+	if got := gitAt(t, f.Env(), shallow, "merge-base", "origin/feature", "origin/main"); got != fork {
+		t.Errorf("merge base = %s, want the fork %s below the depth-1 boundary", got, fork)
+	}
+	if subjects := gitAt(t, f.Env(), shallow, "log", "--format=%s", "origin/main..HEAD"); subjects != "feature 2\nfeature 1" {
+		t.Errorf("replayed subjects = %q, want only the branch's two commits", subjects)
+	}
+	if got, want := gitAt(t, f.Env(), shallow, "rev-parse", "HEAD~2"), gitAt(t, f.Env(), shallow, "rev-parse", "origin/main"); got != want {
+		t.Errorf("HEAD~2 = %s, want origin/main %s", got, want)
+	}
+	if got := gitAt(t, f.Env(), shallow, "rev-parse", "--is-shallow-repository"); got != "true" {
+		t.Errorf("is-shallow-repository = %s, want the clone still shallow: deepened to the fork, not unshallowed", got)
 	}
 }
 
