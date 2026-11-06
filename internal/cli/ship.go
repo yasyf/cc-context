@@ -2876,7 +2876,7 @@ func watchCIRun(ctx context.Context, errW io.Writer, dir render.Dir, id string) 
 }
 
 func viewCIRun(ctx context.Context, dir render.Dir, id string) (ciView, error) {
-	out, err := ghRead(ctx, dir, []string{"run", "view", id, "--json", "workflowName,conclusion,startedAt,updatedAt,url,jobs"})
+	out, err := ghReadWaiting(ctx, dir, []string{"run", "view", id, "--json", "workflowName,conclusion,startedAt,updatedAt,url,jobs"})
 	if err != nil {
 		return ciView{}, fmt.Errorf("ship: gh run view %s: %w", id, err)
 	}
@@ -2992,7 +2992,7 @@ func shipHeadSHA(ctx context.Context, dir render.Dir, kind vcs.Kind) (string, er
 func findCIRuns(ctx context.Context, dir render.Dir, sha string) ([]ciRun, error) {
 	var lastErr error
 	for i := 0; i < shipCIPollTries; i++ {
-		out, err := ghRead(ctx, dir, []string{"run", "list", "--commit", sha, "--limit", "50", "--json", "databaseId,workflowName,status,url"})
+		out, err := ghReadWaiting(ctx, dir, []string{"run", "list", "--commit", sha, "--limit", "50", "--json", "databaseId,workflowName,status,url"})
 		switch {
 		case err != nil:
 			lastErr = fmt.Errorf("ship: gh run list: %w", err)
