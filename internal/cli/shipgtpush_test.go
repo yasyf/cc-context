@@ -62,3 +62,31 @@ func TestGitPushVerdictNamesTheRejectedRefWithoutTransferProgress(t *testing.T) 
 		t.Errorf("gitPushVerdict = %q, want %q", got, want)
 	}
 }
+
+// TestShipGTRefusesABranchAtItsParentsHead is the graphite lane's side of
+// Forge-AI/monorepo#50896: a stacked branch reset onto its parent's head gives
+// its open pull request no commits over that parent, and GitHub closes it.
+func TestShipGTRefusesABranchAtItsParentsHead(t *testing.T) {
+	f := shipGTRepo(t)
+	api := stubGTAPI(t)
+	api.openPRs("base", "feature")
+	f.Decorate(api.ctx)
+	writeShipGH(t, f)
+	shipGTStack(t, f, "base", "feature")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "feature")
+	published := shipHead(t, f)
+	parent := gitAt(t, f.Env(), f.Dir, "rev-parse", "base")
+	mustRun(t, f.Env(), f.Dir, "git", "reset", "-q", "--hard", "base")
+	shipResetLog(t, f)
+
+	_, err := runShipCmd(f.Context(), t, "--no-commit", "--no-watch")
+	if want := "ship: feature sits at base's head " + shortOID(parent) + ", so pull request #9001"; err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("ship = %v, want %q", err, want)
+	}
+	if n := pushCount(t, f); n != 0 {
+		t.Errorf("ran %d pushes, want none", n)
+	}
+	if remote := shipRemoteTip(t, f, "origin", "feature"); remote != published {
+		t.Errorf("origin feature = %s, want the pull request's %s", remote, published)
+	}
+}

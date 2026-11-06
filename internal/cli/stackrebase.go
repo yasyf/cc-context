@@ -530,7 +530,7 @@ func runStackRebase(cmd *cobra.Command, o stackRebaseOpts) error {
 			gated = append(gated, other)
 		}
 	}
-	if err := stackRefuseForeignRebase(cmd.ErrOrStderr(), l, stackRebasePrefix); err != nil {
+	if err := stackRefuseStopped(cmd.ErrOrStderr(), l.checkout, stackRebasePrefix, gitRebaseStops, true); err != nil {
 		return err
 	}
 	rest := slices.DeleteFunc(slices.Clone(runs), func(other *stackRebaseRun) bool { return slices.Contains(gated, other) })
@@ -4695,36 +4695,51 @@ func stackRebasing(ctx context.Context, ws render.Dir) bool {
 	return false
 }
 
-// stackRefuseForeignRebase refuses to run in a working copy holding a git
-// rebase that no stack rebase of this repository stopped there, naming the
-// branch and base it was replaying, before that rebase's detached HEAD and
-// half-applied index mislead every check that follows.
-func stackRefuseForeignRebase(w io.Writer, l lane, prefix string) error {
-	var state string
-	for _, dir := range []string{"rebase-merge", "rebase-apply"} {
-		if _, err := os.Stat(filepath.Join(l.checkout.GitDir, dir)); err == nil {
-			state = filepath.Join(l.checkout.GitDir, dir)
-			break
+// gitStop marks a git operation a working copy can be stopped in: the entry
+// git keeps under the git dir while it runs, and the git command whose
+// --continue, --abort and --quit settle it.
+type gitStop struct{ marker, verb string }
+
+// gitRebaseStops mark a stopped rebase, which no commit concludes;
+// gitCommitStops mark the operations the next commit concludes.
+var (
+	gitRebaseStops = []gitStop{{"rebase-merge", "rebase"}, {"rebase-apply", "rebase"}}
+	gitCommitStops = []gitStop{{"MERGE_HEAD", "merge"}, {"CHERRY_PICK_HEAD", "cherry-pick"}, {"REVERT_HEAD", "revert"}}
+)
+
+// stackRefuseStopped refuses to run in a working copy where one of stops is in
+// progress, before its half-made HEAD misleads the checks that follow or goes
+// out as a pull request's head. A rebase that a stack rebase of this repository
+// stopped here is refused as that run, unless gated: the caller gates the run.
+func stackRefuseStopped(w io.Writer, ck vcs.Checkout, prefix string, stops []gitStop, gated bool) error {
+	i := slices.IndexFunc(stops, func(s gitStop) bool {
+		_, err := os.Stat(filepath.Join(ck.GitDir, s.marker))
+		return err == nil
+	})
+	if i < 0 {
+		return nil
+	}
+	stop, state := stops[i], filepath.Join(ck.GitDir, stops[i].marker)
+	what := "a git " + stop.verb
+	if stop.verb == "rebase" {
+		runs, err := stackRuns(w, ck.CommonDir)
+		if err != nil {
+			return err
+		}
+		if own := slices.IndexFunc(runs, func(run *stackRebaseRun) bool { return run.Conflict != nil && run.Conflict.Workspace == ck.Root }); own >= 0 {
+			if gated {
+				return nil
+			}
+			return stackInProgress(runs[own])
+		}
+		if head, err := os.ReadFile(filepath.Join(state, "head-name")); err == nil { //nolint:gosec // state is this checkout's own rebase directory
+			what += " of " + strings.TrimPrefix(strings.TrimSpace(string(head)), "refs/heads/")
+		}
+		if onto, err := os.ReadFile(filepath.Join(state, "onto")); err == nil { //nolint:gosec // state is this checkout's own rebase directory
+			what += fmt.Sprintf(" onto %.12s", strings.TrimSpace(string(onto)))
 		}
 	}
-	if state == "" {
-		return nil
-	}
-	runs, err := stackRuns(w, l.checkout.CommonDir)
-	if err != nil {
-		return err
-	}
-	if slices.ContainsFunc(runs, func(run *stackRebaseRun) bool { return run.Conflict != nil && run.Conflict.Workspace == l.root }) {
-		return nil
-	}
-	what := "a git rebase"
-	if head, err := os.ReadFile(filepath.Join(state, "head-name")); err == nil { //nolint:gosec // state is this checkout's own rebase directory
-		what += " of " + strings.TrimPrefix(strings.TrimSpace(string(head)), "refs/heads/")
-	}
-	if onto, err := os.ReadFile(filepath.Join(state, "onto")); err == nil { //nolint:gosec // state is this checkout's own rebase directory
-		what += fmt.Sprintf(" onto %.12s", strings.TrimSpace(string(onto)))
-	}
-	return fmt.Errorf("%s: %s is in progress in %s, and ccx did not start it — finish it with git rebase --continue, drop it with git rebase --abort, or keep the working tree with git rebase --quit, then re-run", prefix, what, l.root)
+	return fmt.Errorf("%s: %s is in progress in %s, and ccx did not start it — HEAD holds only the commits it has made so far, and a rebase stopped on its first sits on its base, which pushed as a pull request's head leaves it no commits, so GitHub closes it; finish it with git %s --continue, drop it with git %s --abort, or keep the working tree with git %s --quit, then re-run", prefix, what, ck.Root, stop.verb, stop.verb, stop.verb)
 }
 
 func stackRevParse(ctx context.Context, dir render.Dir, rev string) (string, error) {

@@ -2967,6 +2967,11 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 		if !contains {
 			return nil, nil, errors.New(gtStuck(s.prefix, gtOffParent(branch, state[branch].State), s.suffix))
 		}
+		if pr := open[branch]; pr != 0 && state[branch].Head == parentHead {
+			problem := fmt.Sprintf("%s sits at %s's head %s, so pull request #%d %s would carry no commits over its base %s, and GitHub closes a pull request with none — put %s's own commits back first (git reflog %s lists the heads it held), or close #%d if its work already landed",
+				branch, parent, shortOID(parentHead), pr, entries[branch].URL, parent, branch, branch, pr)
+			return nil, nil, errors.New(gtStuck(s.prefix, problem, s.suffix))
+		}
 	}
 	if len(submit) == 0 {
 		if s.publication != nil {

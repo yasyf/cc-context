@@ -49,6 +49,15 @@ a server-side restack of this branch's own commits, and a replay of a commit
 trunk landed as a squash titled with its subject and a pull request number, as
 the merge queue leaves beneath a child after its parent lands, are forced over.
 
+Push refuses to run while a git rebase, merge, cherry-pick or revert is stopped
+in the working copy, naming the command that settles it, since HEAD there holds
+only what the operation has made so far: a rebase stopped on its first commit
+sits on its base. A rewrite whose head the remote trunk, or the remote head of
+the gt parent, already holds is refused while the branch's open pull request is
+based there, naming the pull request: it would carry no commits, and GitHub
+closes a pull request with none. GitHub is asked only when one of them holds the
+head.
+
 A branch whose gt parent has an open pull request must hold the head the
 remote holds for that parent. A branch off it is refused before anything moves,
 naming the parent's pull request and head, since the branch's own pull request
@@ -93,6 +102,9 @@ func runVcsPush(cmd *cobra.Command, o vcsPushOpts) error {
 	case vcs.JJ:
 		return errors.New("push: jj git push already moves a rewritten bookmark under a lease of its own — run ccx vcs ship")
 	}
+	if err := stackRefuseStopped(cmd.ErrOrStderr(), ck, "push", slices.Concat(gitRebaseStops, gitCommitStops), false); err != nil {
+		return err
+	}
 	if err := refuseSharedBranch(ctx, "push", ck); err != nil {
 		return err
 	}
@@ -124,14 +136,15 @@ func runVcsPush(cmd *cobra.Command, o vcsPushOpts) error {
 	if err != nil {
 		return err
 	}
-	if err := vcsPushRefuseOffParent(ctx, ck, dir, remote, branch, head); err != nil {
+	parent, err := vcsPushRefuseOffParent(ctx, ck, dir, remote, branch, head)
+	if err != nil {
 		return err
 	}
 	receipt, prior, err := vcsPushPublication(ctx, dir, remote, branch, head, detached)
 	if err != nil {
 		return err
 	}
-	summary, err := vcsPushGit(ctx, dir, remote, branch, head, o.noVerify, detached)
+	summary, err := vcsPushGit(ctx, dir, remote, branch, parent, head, o.noVerify, detached)
 	if err != nil {
 		return err
 	}
@@ -262,31 +275,34 @@ func vcsPushRetrack(ctx context.Context, ck vcs.Checkout, dir render.Dir, remote
 	return fmt.Sprintf(" · re-tracked %s onto %s at %s", branch, parent, shortOID(fork)), nil
 }
 
-func vcsPushRefuseOffParent(ctx context.Context, ck vcs.Checkout, dir render.Dir, remote, branch, head string) error {
+// vcsPushRefuseOffParent refuses a push of a tracked branch off its parent's
+// pushed head and names the parent gt records for it, empty when gt tracks
+// none.
+func vcsPushRefuseOffParent(ctx context.Context, ck vcs.Checkout, dir render.Dir, remote, branch, head string) (string, error) {
 	tracked, err := stackMetadataPresent(ck)
 	if err != nil || !tracked {
-		return err
+		return "", err
 	}
 	provider, err := gtmeta.Provider(ctx, ck.CommonDir, branch)
 	if err != nil {
-		return err
+		return "", err
 	}
 	ctx = withStackProvider(ctx, provider == gtmeta.ProviderGitHub)
 
 	state, err := gtStateQueryFocused(ctx, dir, "push", branch)
 	if err != nil {
-		return err
+		return "", err
 	}
 	s, tracked := state[branch]
 	if !tracked || s.Trunk {
-		return nil
+		return "", nil
 	}
 	trunk, err := gtTrunkBranch("push", state)
 	if err != nil {
-		return err
+		return "", err
 	}
 	child := pushChild{branch: branch, head: head, parent: s.Parents[0].Ref}
-	return refuseOffParentPush(ctx, dir, "push", remote, trunk, []pushChild{child})
+	return child.parent, refuseOffParentPush(ctx, dir, "push", remote, trunk, []pushChild{child})
 }
 
 func vcsPushParentHeld(ctx context.Context, dir render.Dir, remote string, state gtState, parent, head string) (string, error) {
@@ -381,7 +397,7 @@ func vcsPushPublication(ctx context.Context, dir render.Dir, remote, branch, hea
 	return receipt, prior.OID, nil
 }
 
-func vcsPushGit(ctx context.Context, dir render.Dir, remote, branch, head string, noVerify, detached bool) (string, error) {
+func vcsPushGit(ctx context.Context, dir render.Dir, remote, branch, parent, head string, noVerify, detached bool) (string, error) {
 	if err := thinRefuseAdoptedPush(ctx, dir, "push", []string{branch}); err != nil {
 		return "", err
 	}
@@ -391,11 +407,13 @@ func vcsPushGit(ctx context.Context, dir render.Dir, remote, branch, head string
 	if err != nil {
 		return "", err
 	}
-	fetch := []string{branch}
-	if trunkName != "" && trunkName != branch {
-		fetch = append(fetch, trunkName)
+	var bases []string
+	for _, name := range []string{trunkName, parent} {
+		if name != "" && name != branch && !slices.Contains(bases, name) {
+			bases = append(bases, name)
+		}
 	}
-	heads, err := stackRemoteHeads(ctx, dir, "push", remote, fetch, head)
+	heads, err := stackRemoteHeads(ctx, dir, "push", remote, append([]string{branch}, bases...), head)
 	if err != nil {
 		return "", err
 	}
@@ -446,6 +464,9 @@ func vcsPushGit(ctx context.Context, dir render.Dir, remote, branch, head string
 		return "", fmt.Errorf("push: %s/%s carries %d commit(s) %s has never held, so this is a divergence, not a rewrite, and the force would drop them:\n%s\nfetch and reconcile first: git fetch %s && git rebase %s/%s",
 			remote, branch, len(unheld), branch, strings.Join(unheld, "\n"), remote, remote, branch)
 	}
+	if err := refuseEmptyPR(ctx, dir, "push", remote, branch, head, heads, bases); err != nil {
+		return "", err
+	}
 	lease := fmt.Sprintf("--force-with-lease=%s:%s", ref, tip)
 	if _, err := runRemoteGit(ctx, dir, gitPushArgv(noVerify, remote, lease, refspec)); err != nil {
 		if gitPushStaleLease(err) || gitPushRejected(err) {
@@ -457,6 +478,42 @@ func vcsPushGit(ctx context.Context, dir render.Dir, remote, branch, head string
 		return "", fmt.Errorf("push: %w", err)
 	}
 	return fmt.Sprintf("force-pushed %s → %s · replaced %s with %s", branch, remote, shortOID(tip), shortOID(head)), nil
+}
+
+// refuseEmptyPR refuses to force head onto branch when the remote head of one
+// of bases already holds head and branch's open pull request is based on it:
+// the pull request would carry no commits, and GitHub closes it. GitHub is
+// asked for the pull request only once a fetched base holds head.
+func refuseEmptyPR(ctx context.Context, dir render.Dir, prefix, remote, branch, head string, heads map[string]string, bases []string) error {
+	var holding []string
+	for _, base := range bases {
+		if base == branch || heads[base] == "" {
+			continue
+		}
+		held, err := gitIsAncestor(ctx, dir, prefix, head, heads[base])
+		if err != nil {
+			return err
+		}
+		if held {
+			holding = append(holding, base)
+		}
+	}
+	if len(holding) == 0 {
+		return nil
+	}
+	repo, err := vcs.LookupRepo(ctx, dir, false)
+	switch {
+	case errors.Is(err, vcs.ErrNoGitHub):
+		return nil
+	case err != nil:
+		return fmt.Errorf("%s: %w", prefix, err)
+	}
+	pr, open, err := lookupPR(ctx, repo.NameWithOwner, branch)
+	if err != nil || !open || !slices.Contains(holding, pr.Base.Ref) {
+		return err
+	}
+	return fmt.Errorf("%s: %s/%s already holds the head this push would give %s, so pull request #%d %s would carry no commits over its base %s, and GitHub closes a pull request with none — put %s's own commits back first (git reflog %s lists the heads it held), or close #%d if its work already landed",
+		prefix, remote, pr.Base.Ref, branch, pr.Number, pr.URL, pr.Base.Ref, branch, branch, pr.Number)
 }
 
 // gitRemoteRewritten reports whether remote head tip is branch's own history

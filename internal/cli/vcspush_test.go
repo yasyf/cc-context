@@ -630,3 +630,128 @@ func TestVcsPushRefusesAChildOffItsParentsPushedHead(t *testing.T) {
 		t.Errorf("origin feature moved from %s to %s, want the refused push left out", published, got)
 	}
 }
+
+// TestPushAndShipRefuseARebaseStoppedOnItsBase is Forge-AI/monorepo#50894: a
+// rebase of a branch with an open pull request stopped on a conflict in its first
+// commit, HEAD sat on the base, and a force push from there set the pull
+// request's head to its base, which GitHub closed.
+func TestPushAndShipRefuseARebaseStoppedOnItsBase(t *testing.T) {
+	f := shipRepo(t, vcstest.Remote())
+	writeShipGH(t, f)
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "feature")
+	published := pushCommit(t, f, "f.txt", "feature\n", "test: 🧪 feature")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "feature")
+	t.Setenv("GH_PULLS_JSON", ghOpenPullAt(t, 50894, published, "main"))
+	shipDivergeRemote(t, f, "main", "f.txt", "upstream\n")
+	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
+	base := gitAt(t, f.Env(), f.Dir, "rev-parse", "refs/remotes/origin/main")
+	if out, err := combinedRun(t, f.Env(), f.Dir, "git", "rebase", "refs/remotes/origin/main"); err == nil {
+		t.Fatalf("the seeded rebase did not conflict: %s", out)
+	}
+	if head := shipHead(t, f); head != base {
+		t.Fatalf("the stopped rebase left HEAD at %s, want the base %s", head, base)
+	}
+	shipResetLog(t, f)
+
+	stopped := fmt.Sprintf("a git rebase of feature onto %.12s is in progress in %s", base, f.Dir)
+	for _, tt := range []struct {
+		name, want string
+		run        func() error
+	}{
+		{"push", "push: " + stopped, func() error { _, err := runVcsPushCmd(f.Context(), t); return err }},
+		{"push --branch", "push: " + stopped, func() error { _, err := runVcsPushCmd(f.Context(), t, "--branch", "feature"); return err }},
+		{"ship --no-commit", "ship: " + stopped, func() error { _, err := runShipCmd(f.Context(), t, "--no-commit", "--no-watch"); return err }},
+	} {
+		if err := tt.run(); err == nil || !strings.Contains(err.Error(), tt.want) {
+			t.Errorf("%s = %v, want %q", tt.name, err, tt.want)
+		}
+	}
+	if n := pushCount(t, f); n != 0 {
+		t.Errorf("ran %d pushes, want none", n)
+	}
+	if remote := shipRemoteTip(t, f, "origin", "feature"); remote != published {
+		t.Errorf("origin feature = %s, want the pull request's %s", remote, published)
+	}
+}
+
+// TestPushRefusesAHeadThePullRequestsBaseHolds is Forge-AI/monorepo#50896: the
+// first push of a branch reset to dev's tip gave its open pull request no
+// commits over its base, and GitHub closed it.
+func TestPushRefusesAHeadThePullRequestsBaseHolds(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		build func(t *testing.T) (f *vcstest.Fixture, base string)
+	}{
+		{name: "trunk", build: func(t *testing.T) (*vcstest.Fixture, string) {
+			f := shipRepo(t, vcstest.Remote())
+			mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "feature")
+			pushCommit(t, f, "feature.txt", "feature\n", "test: 🧪 feature")
+			mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "feature")
+			shipDivergeRemote(t, f, "main", "upstream.txt", "upstream\n")
+			mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
+			mustRun(t, f.Env(), f.Dir, "git", "reset", "-q", "--hard", "refs/remotes/origin/main")
+			return f, "main"
+		}},
+		{name: "gt parent", build: func(t *testing.T) (*vcstest.Fixture, string) {
+			f := shipGTRepo(t)
+			shipGTStack(t, f, "base", "feature")
+			mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base", "feature")
+			mustRun(t, f.Env(), f.Dir, "git", "reset", "-q", "--hard", "base")
+			return f, "base"
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f, base := tt.build(t)
+			writeShipGH(t, f)
+			published := shipRemoteTip(t, f, "origin", "feature")
+			t.Setenv("GH_PULLS_JSON", ghOpenPullAt(t, 50896, published, base))
+			shipResetLog(t, f)
+
+			_, err := runVcsPushCmd(f.Context(), t)
+			want := fmt.Sprintf("push: origin/%s already holds the head this push would give feature, so pull request #50896 https://github.com/yasyf/cc-context/pull/50896 would carry no commits over its base %s", base, base)
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("push = %v, want %q", err, want)
+			}
+			if tt.name == "trunk" {
+				_, err := runShipCmd(f.Context(), t, "--no-commit", "--no-watch")
+				if want := strings.Replace(want, "push: ", "ship: ", 1); err == nil || !strings.Contains(err.Error(), want) {
+					t.Fatalf("ship = %v, want %q", err, want)
+				}
+			}
+			if n := pushCount(t, f); n != 0 {
+				t.Errorf("ran %d pushes, want none", n)
+			}
+			if remote := shipRemoteTip(t, f, "origin", "feature"); remote != published {
+				t.Errorf("origin feature = %s, want the pull request's %s", remote, published)
+			}
+		})
+	}
+}
+
+// TestPushOfARewriteOverItsBaseAsksGitHubNothing keeps the pull request read
+// off an ordinary push: a head carrying commits over trunk cannot empty a pull
+// request, so push forces it under its lease without a gh call.
+func TestPushOfARewriteOverItsBaseAsksGitHubNothing(t *testing.T) {
+	f := shipRepo(t, vcstest.Remote())
+	writeShipGH(t, f)
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "feature")
+	published := pushCommit(t, f, "feature.txt", "feature\n", "test: 🧪 feature")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "feature")
+	t.Setenv("GH_PULLS_JSON", ghOpenPullAt(t, 7, published, "main"))
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-q", "--amend", "-m", "test: 🧪 feature, amended")
+	head := shipHead(t, f)
+	shipResetLog(t, f)
+
+	got, err := runVcsPushCmd(f.Context(), t)
+	if err != nil {
+		t.Fatalf("push error = %v", err)
+	}
+	if want := "force-pushed feature → origin · replaced " + shortOID(published) + " with " + shortOID(head); got != want {
+		t.Errorf("summary = %q, want %q", got, want)
+	}
+	for _, inv := range vcstest.Invocations(t, f.ArgvLog) {
+		if len(inv) > 0 && inv[0] == "gh" {
+			t.Errorf("push ran %v, want no gh call for a head carrying commits over its base", inv)
+		}
+	}
+}
