@@ -55,6 +55,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ccx vcs stack move --onto <parent>` and `ccx vcs stack submit --parent
+  <branch>=<parent>` take a `<parent>` from outside the checked-out branch's
+  stack into the run. It stays at its published head, the branch is rebased onto
+  it, and gt records the new parent when the run finishes; `--dry-run` prints the
+  move as `onto <parent> (was <old parent>)`. A lane moving a branch published
+  onto trunk with `ccx vcs stack move --onto yasyf/upload-cleanup-class` got "was
+  published onto dev and gt records it on dev, and neither is in this run" and
+  was told to run `gt track` by hand. Without a named parent, that refusal is
+  unchanged.
 - **`ccx vcs ship` reads its CI verdict off the pull request's checks, Buildkite
   included.** Ship printed `CI success` for Forge-AI/monorepo#52013 once its one
   GitHub Actions workflow passed, while `buildkite/test` on the same head was

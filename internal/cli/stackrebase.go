@@ -1326,6 +1326,24 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 			o.pinned = slices.DeleteFunc(o.pinned, func(name string) bool { return slices.Contains(members[:i+1], name) })
 			members = members[i+1:]
 		}
+		var targets []string
+		for _, child := range slices.Sorted(maps.Keys(overrides)) {
+			if parent := overrides[child]; parent != trunk && slices.Contains(members, child) && !slices.Contains(members, parent) {
+				targets = append(targets, parent)
+			}
+		}
+		if len(targets) > 0 {
+			below, _, err := stackAncestry(retargeted, trunk, targets)
+			if err != nil {
+				return nil, err
+			}
+			for _, name := range members {
+				if !slices.Contains(below, name) {
+					below = append(below, name)
+				}
+			}
+			members = below
+		}
 		for _, name := range members {
 			if len(retargeted[name].Parents) == 0 {
 				return nil, fmt.Errorf("%s: the stack metadata this lane reads does not track %s, a branch of this run — a Graphite branch on a native one converts with git config ccx.stack github; otherwise record its parent with ccx vcs ship --parent <branch> from its working copy, then re-run", prefix, name)
