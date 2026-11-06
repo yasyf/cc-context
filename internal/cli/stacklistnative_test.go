@@ -2,6 +2,8 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -10,6 +12,39 @@ import (
 	"github.com/yasyf/cc-context/internal/nativemeta"
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
+
+func TestStackListWithNoStackMetadataListsTheBranchUntracked(t *testing.T) {
+	f := vcstest.Repo(t, vcstest.Remote())
+	common := filepath.Join(f.Dir, ".git")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "feature")
+	writeShipFile(t, f.Dir, "feature.txt", "feature\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "feature.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "feature")
+	out, _, err := runStackCmd(t, f, "list")
+	if err != nil {
+		t.Fatalf("list with no stack metadata: %v", err)
+	}
+	if want := "feature" + shipSep + "here" + shipSep + "untracked: ccx vcs ship adopts it onto the branch below"; out != want {
+		t.Fatalf("list=%q, want %q", out, want)
+	}
+	out, _, err = runStackCmd(t, f, "list", "--json")
+	if err != nil {
+		t.Fatalf("JSON list with no stack metadata: %v", err)
+	}
+	var report stackListReport
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatal(err)
+	}
+	expected := stackListReport{Root: f.Dir, Branches: []stackListEntry{{Branch: "feature", Path: f.Dir, Current: true, Untracked: true}}}
+	if !reflect.DeepEqual(report, expected) {
+		t.Fatalf("report=%+v, want %+v", report, expected)
+	}
+	for _, name := range []string{"gh-stack", ".graphite_repo_config", ".graphite_metadata.db"} {
+		if _, err := os.Stat(filepath.Join(common, name)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("listing created %s: %v", name, err)
+		}
+	}
+}
 
 func TestStackListReadsNativeCatalogWithoutGraphiteOrAuthentication(t *testing.T) {
 	f := vcstest.Repo(t, vcstest.Remote())

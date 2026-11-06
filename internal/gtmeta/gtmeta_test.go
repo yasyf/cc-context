@@ -368,11 +368,32 @@ func TestRecordSubmittedIsAllOrNothing(t *testing.T) {
 	}
 }
 
-func TestReadFailsWithoutGraphiteConfig(t *testing.T) {
-	f := vcstest.Repo(t)
-	_, err := gtmeta.Read(t.Context(), filepath.Join(f.Dir, ".git"))
-	if !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("read without graphite config: got %v, want a not-exist error", err)
+func TestReadWithoutStackMetadataReadsTheRemoteTrunk(t *testing.T) {
+	f := vcstest.Repo(t, vcstest.Remote())
+	common := filepath.Join(f.Dir, ".git")
+	state, err := gtmeta.ReadOrigin(t.Context(), common)
+	if err != nil {
+		t.Fatalf("read without stack metadata: %v", err)
+	}
+	if len(state) != 1 || !state["main"].Trunk {
+		t.Fatalf("state = %+v, want the remote trunk alone", state)
+	}
+	trunk, err := gtmeta.ReadTrunk(t.Context(), common)
+	if err != nil || trunk != "main" {
+		t.Fatalf("trunk = %q, %v; want main", trunk, err)
+	}
+	rows, err := gtmeta.Rows(t.Context(), common)
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("rows = %+v, %v; want none", rows, err)
+	}
+	submitted, err := gtmeta.LastSubmitted(t.Context(), common)
+	if err != nil || len(submitted) != 0 {
+		t.Fatalf("last submitted = %+v, %v; want none", submitted, err)
+	}
+	for _, name := range []string{"gh-stack", ".graphite_repo_config", ".graphite_metadata.db"} {
+		if _, err := os.Stat(filepath.Join(common, name)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("read created %s: %v", name, err)
+		}
 	}
 }
 
