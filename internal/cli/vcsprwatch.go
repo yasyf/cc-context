@@ -267,18 +267,8 @@ func prWatchSnapshotOf(number int, pr prstate.PR, trunk prstate.Trunk, prev prWa
 		Mergeable: pr.Mergeable,
 		Approved:  pr.ReviewDecision == "APPROVED",
 	}
-	if rollup := pr.Rollup; rollup != nil {
-		snap.Green = rollup.UnfinishedActions == 0 && (rollup.State == "SUCCESS" || prCIOf(rollup).State == prCIGreen)
-		for _, check := range statusChecks(rollup) {
-			if statusClassify(check.State) == statusFailed {
-				snap.Failing = append(snap.Failing, check.Name)
-			}
-		}
-		if len(snap.Failing) == 0 && (rollup.State == "FAILURE" || rollup.State == "ERROR") {
-			snap.Failing = []string{"rollup " + strings.ToLower(rollup.State)}
-		}
-		slices.Sort(snap.Failing)
-		snap.Failing = slices.Compact(snap.Failing)
+	if pr.Rollup != nil {
+		snap.Green, snap.Failing = prWatchChecks(pr.Rollup)
 	}
 	known := pr.Graphite != nil
 	var info gtapi.PullRequestInfo
@@ -302,6 +292,21 @@ func prWatchSnapshotOf(number int, pr prstate.PR, trunk prstate.Trunk, prev prWa
 	snap.Queued = report.Queue == prQueueQueued
 	snap.Evicted = mqPlain(report.Evicted)
 	return snap
+}
+
+func prWatchChecks(rollup *statusRollup) (bool, []string) {
+	green := rollup.UnfinishedActions == 0 && (rollup.State == "SUCCESS" || prCIOf(rollup).State == prCIGreen)
+	var failing []string
+	for _, check := range statusChecks(rollup) {
+		if statusClassify(check.State) == statusFailed {
+			failing = append(failing, check.Name)
+		}
+	}
+	if len(failing) == 0 && (rollup.State == "FAILURE" || rollup.State == "ERROR") {
+		failing = []string{"rollup " + strings.ToLower(rollup.State)}
+	}
+	slices.Sort(failing)
+	return green, slices.Compact(failing)
 }
 
 func prWatchSquash(number int, pr prstate.PR, trunk prstate.Trunk, info gtapi.PullRequestInfo) string {

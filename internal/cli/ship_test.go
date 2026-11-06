@@ -3958,6 +3958,73 @@ func TestShipCISupersededRunFollowsTheNewHead(t *testing.T) {
 	}
 }
 
+func TestShipCIVerdictIsTheHeadsStatusRollup(t *testing.T) {
+	const head = "cccccccccccccccccccccccccccccccccccccccc"
+	const redBuild = "https://buildkite.com/forge/test/builds/117948"
+	rollup := func(state, buildkite, url string) string {
+		return `{"state":"` + state + `","contexts":{"nodes":[` +
+			`{"__typename":"CheckRun","name":"PR Events","conclusion":"SUCCESS","status":"COMPLETED","checkSuite":{"databaseId":9,"workflowRun":{"workflow":{"databaseId":7}}}},` +
+			`{"__typename":"StatusContext","context":"buildkite/test","state":"` + buildkite + `","targetUrl":"` + url + `"}]}}`
+	}
+	red := rollup("FAILURE", "FAILURE", redBuild)
+	pending := rollup("PENDING", "PENDING", redBuild)
+	green := rollup("SUCCESS", "SUCCESS", prFullBuild)
+	tests := []struct {
+		name      string
+		reads     []string
+		wantCI    string
+		wantErr   bool
+		wantReads int
+		wantText  string
+	}{
+		{"Actions green, Buildkite red", []string{red}, "CI failure", true, 1, "buildkite/test · failure · " + redBuild},
+		{"Actions green, Buildkite pending", []string{pending, pending, red}, "CI failure", true, 3, "buildkite/test · failure · " + redBuild},
+		{"both green", []string{green}, "CI success", false, 2, "buildkite/test · success · " + prFullBuild},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := shipRepo(t, vcstest.JJ(), vcstest.Remote(), vcstest.Dirty())
+			writeShipGH(t, f)
+			t.Setenv("GH_RUN_LIST_JSON_"+head, `[{"databaseId":42,"workflowName":"PR Events","status":"completed","url":"https://x/42"}]`)
+			t.Setenv("GH_RUN_VIEW_JSON_42", ghStdout(t, "run-view-success"))
+			stubBuildkite(t, "bk-test")
+			priorPoll, priorWatch, priorCache := shipCIPollInterval, shipCIWatchInterval, shipPRCache
+			shipCIPollInterval, shipCIWatchInterval = 0, 0
+			reads := 0
+			shipPRCache = func(context.Context, string) (func(context.Context, prstate.Want) (prstate.State, error), error) {
+				return func(_ context.Context, want prstate.Want) (prstate.State, error) {
+					var r prstate.Rollup
+					if err := json.Unmarshal([]byte(tt.reads[min(reads, len(tt.reads)-1)]), &r); err != nil {
+						t.Fatal(err)
+					}
+					reads++
+					pr := prstate.PR{Number: 52013, State: "OPEN", HeadRefName: "feature", HeadRefOid: head, Rollup: &r, PolledAt: want.After.Add(time.Duration(reads) * time.Minute)}
+					return prstate.State{Lanes: map[string]prstate.Lane{"feature": {PRs: []int{52013}}}, PRs: map[int]prstate.PR{52013: pr}}, nil
+				}, nil
+			}
+			t.Cleanup(func() { shipCIPollInterval, shipCIWatchInterval, shipPRCache = priorPoll, priorWatch, priorCache })
+
+			var errW bytes.Buffer
+			segment, report, err := shipWatchCIHead(f.Context(), &errW, render.Dir(f.Dir), ciPR{nwo: "Forge-AI/monorepo", branch: "feature"}, head, 0)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("error = %v, want error %v", err, tt.wantErr)
+			}
+			if segment != tt.wantCI {
+				t.Errorf("segment = %q, want %q", segment, tt.wantCI)
+			}
+			if reads != tt.wantReads {
+				t.Errorf("read the rollup %d times, want %d", reads, tt.wantReads)
+			}
+			out := strings.Join(report, "\n")
+			for _, want := range []string{"Guides · success", tt.wantText} {
+				if !strings.Contains(out, want) {
+					t.Errorf("report missing %q\ngot:\n%s", want, out)
+				}
+			}
+		})
+	}
+}
+
 func TestShipCIBudgetFloorsPerRunShare(t *testing.T) {
 	f := shipRepo(t, vcstest.JJ(), vcstest.Remote(), vcstest.Dirty())
 	writeShipGH(t, f)
@@ -4063,30 +4130,53 @@ func TestAwaitCIRunBounded(t *testing.T) {
 	}
 }
 
-func TestShipChecksSettled(t *testing.T) {
+func TestShipAwaitChecks(t *testing.T) {
 	const sha, other = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-	rollup := func(state string, unfinished int) *prstate.Rollup {
-		return &prstate.Rollup{State: state, UnfinishedActions: unfinished}
+	rollup := func(state string, unfinished int, vet string) *prstate.Rollup {
+		r := &prstate.Rollup{State: state, UnfinishedActions: unfinished}
+		if vet != "" {
+			r.Contexts.Nodes = []prstate.Context{{Typename: "CheckRun", Name: "vet", Conclusion: vet}}
+		}
+		return r
 	}
 	tests := []struct {
-		name string
-		pr   prstate.PR
-		want bool
+		name     string
+		pr       prstate.PR
+		want     prCIState
+		wantWait bool
 	}{
-		{"closed", prstate.PR{State: "MERGED", HeadRefOid: sha}, true},
-		{"head moved on", prstate.PR{State: "OPEN", HeadRefOid: other, Rollup: rollup("PENDING", 1)}, true},
-		{"pushed head GitHub has not shown yet", prstate.PR{State: "OPEN", HeadRefOid: other, PushedHead: sha, Rollup: rollup("SUCCESS", 0)}, false},
-		{"no checks read yet", prstate.PR{State: "OPEN", HeadRefOid: sha}, false},
-		{"no check state yet", prstate.PR{State: "OPEN", HeadRefOid: sha, Rollup: rollup("", 0)}, false},
-		{"an Actions suite still open", prstate.PR{State: "OPEN", HeadRefOid: sha, Rollup: rollup("SUCCESS", 1)}, false},
-		{"checks still running", prstate.PR{State: "OPEN", HeadRefOid: sha, Rollup: rollup("PENDING", 0)}, false},
-		{"green", prstate.PR{State: "OPEN", HeadRefOid: sha, Rollup: rollup("SUCCESS", 0)}, true},
-		{"red", prstate.PR{State: "OPEN", HeadRefOid: sha, Rollup: rollup("FAILURE", 0)}, true},
+		{"closed", prstate.PR{State: "MERGED", HeadRefOid: sha}, "", false},
+		{"head moved on", prstate.PR{State: "OPEN", HeadRefOid: other, Rollup: rollup("PENDING", 1, "")}, "", false},
+		{"pushed head GitHub has not shown yet", prstate.PR{State: "OPEN", HeadRefOid: other, PushedHead: sha, Rollup: rollup("SUCCESS", 0, "SUCCESS")}, "", true},
+		{"no checks read yet", prstate.PR{State: "OPEN", HeadRefOid: sha}, "", true},
+		{"no check state yet", prstate.PR{State: "OPEN", HeadRefOid: sha, Rollup: rollup("", 0, "")}, "", true},
+		{"an Actions suite still open", prstate.PR{State: "OPEN", HeadRefOid: sha, Rollup: rollup("SUCCESS", 1, "SUCCESS")}, "", true},
+		{"checks still running", prstate.PR{State: "OPEN", HeadRefOid: sha, Rollup: rollup("PENDING", 0, "IN_PROGRESS")}, "", true},
+		{"green", prstate.PR{State: "OPEN", HeadRefOid: sha, Rollup: rollup("SUCCESS", 0, "SUCCESS")}, prCIGreen, false},
+		{"red", prstate.PR{State: "OPEN", HeadRefOid: sha, Rollup: rollup("FAILURE", 0, "FAILURE")}, prCIRed, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := shipChecksSettled(tt.pr, sha); got != tt.want {
-				t.Errorf("shipChecksSettled = %v, want %v", got, tt.want)
+			priorCache, priorInterval, priorTimeout := shipPRCache, shipCIWatchInterval, shipCIWatchTimeout
+			shipCIWatchInterval, shipCIWatchTimeout = time.Millisecond, 100*time.Millisecond
+			reads := 0
+			shipPRCache = func(context.Context, string) (func(context.Context, prstate.Want) (prstate.State, error), error) {
+				return func(_ context.Context, want prstate.Want) (prstate.State, error) {
+					reads++
+					pr := tt.pr
+					pr.Number, pr.HeadRefName, pr.PolledAt = 7, "feature", want.After.Add(time.Duration(reads)*time.Minute)
+					return prstate.State{Lanes: map[string]prstate.Lane{"feature": {PRs: []int{7}}}, PRs: map[int]prstate.PR{7: pr}}, nil
+				}, nil
+			}
+			t.Cleanup(func() { shipPRCache, shipCIWatchInterval, shipCIWatchTimeout = priorCache, priorInterval, priorTimeout })
+
+			var errW bytes.Buffer
+			_, ci, err := shipAwaitChecks(t.Context(), &errW, ciPR{nwo: "yasyf/cc-context", branch: "feature"}, sha)
+			if waited := errors.Is(err, context.DeadlineExceeded); waited != tt.wantWait || err != nil && !waited {
+				t.Fatalf("error = %v, want a wait to the deadline %v", err, tt.wantWait)
+			}
+			if ci.State != tt.want {
+				t.Errorf("verdict = %q, want %q", ci.State, tt.want)
 			}
 		})
 	}

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -2739,9 +2740,7 @@ func reportCIRuns(ctx context.Context, errW io.Writer, dir render.Dir, pr ciPR, 
 	var reds, cancelled []redRun
 	seen := map[string]bool{}
 	viewFailed := false
-	if err := shipAwaitChecks(ctx, errW, pr, sha); err != nil {
-		_, _ = fmt.Fprintf(errW, "ship: the shared pull request cache could not follow %s: %v; reading each run instead\n", shortSHA(sha), err)
-	}
+	open, checks, awaitErr := shipAwaitChecks(ctx, errW, pr, sha)
 
 	process := func(batch []ciRun) int {
 		n := 0
@@ -2812,6 +2811,7 @@ func reportCIRuns(ctx context.Context, errW io.Writer, dir render.Dir, pr ciPR, 
 		}
 		reds = cancelled
 	}
+	report = append(report, shipExternalChecks(open.Rollup)...)
 	if len(reds) > 0 {
 		per := budget / len(reds)
 		if budget > 0 && per < 1 {
@@ -2821,6 +2821,14 @@ func reportCIRuns(ctx context.Context, errW io.Writer, dir render.Dir, pr ciPR, 
 			report = append(report, ciFailureDetail(ctx, dir, r.id, r.view, per)...)
 		}
 		return "CI failure", report, fmt.Errorf("ship: CI failed for %d run(s) on the pushed commit", len(reds))
+	}
+	switch {
+	case checks.State == prCIRed:
+		return "CI failure", report, fmt.Errorf("ship: CI failed on the pushed commit: %s", strings.Join(checks.Failing, ", "))
+	case awaitErr != nil:
+		return "CI error", report, fmt.Errorf("ship: the shared pull request cache could not follow the checks on %s: %w", shortSHA(sha), awaitErr)
+	case checks.State == prCIUnproven:
+		return "CI unconfirmed", report, fmt.Errorf("ship: a Buildkite build on %s passed as a redundant skip, and no full run on a pull request above it holds the head", shortSHA(sha))
 	}
 	if viewFailed {
 		return "CI error", report, errors.New("ship: gh run view could not read the CI run conclusion")
@@ -2835,72 +2843,110 @@ var shipPRHead = func(ctx context.Context, pr ciPR, after time.Time) (string, er
 	if pr.nwo == "" {
 		return "", nil
 	}
-	store, err := openPRState(ctx, pr.nwo, io.Discard)
+	read, err := shipPRCache(ctx, pr.nwo)
 	if err != nil {
 		return "", err
 	}
-	st, err := store.Read(ctx, prstate.Want{Prefixes: []string{pr.branch}, After: after})
+	st, err := read(ctx, prstate.Want{Prefixes: []string{pr.branch}, After: after})
 	if err != nil {
 		return "", err
 	}
-	for _, number := range st.Lanes[pr.branch].PRs {
-		if head := st.PRs[number]; head.HeadRefName == pr.branch {
-			return head.HeadRefOid, nil
-		}
-	}
-	return "", nil
+	return shipOpenPR(st, pr.branch).HeadRefOid, nil
 }
 
-var shipAwaitChecks = func(ctx context.Context, errW io.Writer, pr ciPR, sha string) error {
-	if pr.nwo == "" {
-		return nil
-	}
-	store, err := openPRState(ctx, pr.nwo, io.Discard)
+var shipPRCache = func(ctx context.Context, nwo string) (func(context.Context, prstate.Want) (prstate.State, error), error) {
+	store, err := openPRState(ctx, nwo, io.Discard)
 	if err != nil {
-		return err
+		return nil, err
+	}
+	return store.Read, nil
+}
+
+func shipOpenPR(st prstate.State, branch string) prstate.PR {
+	for _, number := range st.Lanes[branch].PRs {
+		if open := st.PRs[number]; open.HeadRefName == branch {
+			return open
+		}
+	}
+	return prstate.PR{}
+}
+
+func shipAwaitChecks(ctx context.Context, errW io.Writer, pr ciPR, sha string) (prstate.PR, prCIReport, error) {
+	if pr.nwo == "" {
+		return prstate.PR{}, prCIReport{}, nil
+	}
+	read, err := shipPRCache(ctx, pr.nwo)
+	if err != nil {
+		return prstate.PR{}, prCIReport{}, err
 	}
 	ctx, cancel := context.WithTimeout(ctx, shipCIWatchTimeout)
 	defer cancel()
 	since, announced := time.Now().UTC(), false
+	var headSince time.Time
 	for {
-		st, err := store.Read(ctx, prstate.Want{Prefixes: []string{pr.branch}, After: since})
+		st, err := read(ctx, prstate.Want{Prefixes: []string{pr.branch}, After: since})
 		if limited := (*prstate.LimitedError)(nil); errors.As(err, &limited) {
 			if err := sleepCtx(ctx, time.Until(limited.ProbeAt)); err != nil {
-				return err
+				return prstate.PR{}, prCIReport{}, err
 			}
 			continue
 		}
 		if err != nil {
-			return err
+			return prstate.PR{}, prCIReport{}, err
 		}
-		var open prstate.PR
-		for _, number := range st.Lanes[pr.branch].PRs {
-			if candidate := st.PRs[number]; candidate.HeadRefName == pr.branch {
-				open = candidate
+		open := shipOpenPR(st, pr.branch)
+		seenAt := open.PolledAt
+		if open.PushedHead != "" && open.PushedHead != open.HeadRefOid {
+			open.HeadRefOid, open.Rollup, seenAt = open.PushedHead, nil, open.PushedAt
+		}
+		if open.State != "OPEN" || open.HeadRefOid != sha {
+			return prstate.PR{}, prCIReport{}, nil
+		}
+		if headSince.IsZero() {
+			headSince = seenAt
+		}
+		var snap prWatchSnapshot
+		if open.Rollup != nil {
+			snap.Green, snap.Failing = prWatchChecks(open.Rollup)
+		}
+		switch prWatchCIState(snap, open.PolledAt.Sub(headSince)) {
+		case prWatchCIRed:
+			return open, prCIReport{State: prCIRed, Failing: snap.Failing}, nil
+		case prWatchCIGreen:
+			ci := prCIOf(open.Rollup)
+			prProveRedundantSkips(ctx, errW, pr.nwo, open, &ci)
+			if ci.State != prCIPending {
+				return open, ci, nil
 			}
-		}
-		if open.Number == 0 || shipChecksSettled(open, sha) {
-			return nil
 		}
 		if !announced && shipStreamCI(errW) {
 			_, _ = fmt.Fprintf(errW, "ship: waiting on %s#%d checks on %s through the shared pull request cache\n", pr.nwo, open.Number, shortSHA(sha))
 			announced = true
 		}
 		if err := sleepCtx(ctx, shipCIWatchInterval); err != nil {
-			return err
+			return prstate.PR{}, prCIReport{}, err
 		}
 	}
 }
 
-func shipChecksSettled(pr prstate.PR, sha string) bool {
-	head, rollup := pr.HeadRefOid, pr.Rollup
-	if pr.PushedHead != "" && pr.PushedHead != head {
-		head, rollup = pr.PushedHead, nil
+func shipExternalChecks(rollup *prstate.Rollup) []string {
+	if rollup == nil {
+		return nil
 	}
-	if pr.State != "OPEN" || head != sha {
-		return true
+	var lines []string
+	for _, c := range rollup.Contexts.Nodes {
+		switch {
+		case c.Typename == "StatusContext":
+			line := c.Context + shipSep + strings.ToLower(c.State)
+			if c.TargetURL != "" {
+				line += shipSep + c.TargetURL
+			}
+			lines = append(lines, line)
+		case c.CheckSuite.WorkflowRun.Workflow.DatabaseID == 0 && c.Name != gtMergeabilityCheck:
+			lines = append(lines, c.Name+shipSep+strings.ToLower(cmp.Or(c.Conclusion, c.Status)))
+		}
 	}
-	return rollup != nil && rollup.UnfinishedActions == 0 && rollup.State != "" && statusClassify(rollup.State) != statusRunning
+	return lines
 }
 
 func awaitCIRun(ctx context.Context, dir render.Dir, id string) (ciView, error) {
