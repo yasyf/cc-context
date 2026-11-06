@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/spf13/cobra"
 
@@ -51,8 +52,13 @@ One read takes the pull request's head, the open pull requests below it in its
 native GitHub stack, and the checks on each one's head. The merge refuses when
 the head is not the one named, and when a finished check failed on any pull
 request it lands, unless --red-on-main names a GitHub Actions run on the default
-branch whose latest attempt failed the same jobs of the same workflow. A check
-still running never refuses.
+branch whose latest attempt fails it the same way in the same workflow. A red
+job whose log names failing pytest tests, read as ccx vcs job-log --failed-tests
+reads it, fails the same way when the run's failed jobs fail every one of those
+tests, in any job, since shards rebalance as the test set changes. A red job
+whose log names no test, or one whose tests the run does not all fail while a
+failed job of the run names none, fails the same way when the run fails the job
+of the same name. A check still running never refuses.
 
 A native stack member goes through GitHub's asynchronous merge API, the one
 gh pr merge cannot use. That API lands every open pull request below it in the
@@ -219,23 +225,83 @@ func vcsMergeGate(ctx context.Context, client *nativeapi.Client, req nativeapi.M
 		return fmt.Errorf("--red-on-main %d names a %s run of %s; it takes a run on %s itself", o.redOnMain, run.Event, run.Branch, plan.DefaultBranch)
 	}
 	failedOnMain := map[string]bool{}
+	var failedJobs []int64
 	for _, job := range run.Jobs {
 		if statusClassify(strings.ToUpper(cmp.Or(job.Conclusion, job.Status))) == statusFailed {
 			failedOnMain[job.Name] = true
+			failedJobs = append(failedJobs, job.ID)
 		}
 	}
-	own := slices.DeleteFunc(reds, func(r mergeRed) bool { return r.job && r.workflow == run.WorkflowID && failedOnMain[r.name] })
+	var compared []int64
+	for _, r := range reds {
+		if r.job && r.workflow == run.WorkflowID {
+			compared = append(compared, r.id)
+		}
+	}
+	tests := map[int64][]string{}
+	mergeFailedTests(ctx, client, req, compared, tests)
+	if slices.ContainsFunc(compared, func(id int64) bool { return len(tests[id]) > 0 }) {
+		mergeFailedTests(ctx, client, req, failedJobs, tests)
+	}
+	var own []mergeRed
+	for _, r := range reds {
+		if r.job && r.workflow == run.WorkflowID {
+			mine, read := ownTests(tests[r.id], failedJobs, tests)
+			if read && len(mine) == 0 || !read && failedOnMain[r.name] {
+				continue
+			}
+			r.tests = mine
+		}
+		own = append(own, r)
+	}
 	if len(own) > 0 {
-		return fmt.Errorf("%s failed, and run %d on %s does not fail the same job of the same workflow, so the failure is this change's own; fix it and merge the new head", mergeRedList(own), o.redOnMain, plan.DefaultBranch)
+		return fmt.Errorf("%s failed, and run %d on %s does not fail the same tests, or the same job where a log names no test, of the same workflow, so the failure is this change's own; fix it and merge the new head", mergeRedList(own), o.redOnMain, plan.DefaultBranch)
 	}
 	return nil
+}
+
+func mergeFailedTests(ctx context.Context, client *nativeapi.Client, req nativeapi.MergeRequest, jobs []int64, into map[int64][]string) {
+	jobs = slices.DeleteFunc(slices.Clone(jobs), func(id int64) bool {
+		_, done := into[id]
+		return done
+	})
+	found := make([][]string, len(jobs))
+	var reads sync.WaitGroup
+	for i, id := range jobs {
+		reads.Go(func() {
+			log, _ := client.ReadJobLog(ctx, req.RepoOwner, req.RepoName, id)
+			found[i] = failedTests(log)
+		})
+	}
+	reads.Wait()
+	for i, id := range jobs {
+		into[id] = found[i]
+	}
+}
+
+func ownTests(failing []string, onMain []int64, tests map[int64][]string) ([]string, bool) {
+	if len(failing) == 0 {
+		return nil, false
+	}
+	inherited := map[string]bool{}
+	named := true
+	for _, id := range onMain {
+		named = named && len(tests[id]) > 0
+		for _, test := range tests[id] {
+			inherited[test] = true
+		}
+	}
+	mine := slices.DeleteFunc(slices.Clone(failing), func(test string) bool { return inherited[test] })
+	return mine, named || len(mine) == 0
 }
 
 type mergeRed struct {
 	pr       int
 	name     string
 	job      bool
+	id       int64
 	workflow int64
+	tests    []string
 }
 
 func mergeReds(pr nativeapi.MergeCandidate) ([]mergeRed, error) {
@@ -254,7 +320,7 @@ func mergeReds(pr nativeapi.MergeCandidate) ([]mergeRed, error) {
 	for _, c := range rollup.Contexts.Nodes {
 		red, state := mergeRed{pr: pr.Number, name: c.Context}, c.State
 		if c.Typename == "CheckRun" {
-			red, state = mergeRed{pr: pr.Number, name: c.Name, job: true, workflow: c.CheckSuite.WorkflowRun.Workflow.DatabaseID}, cmp.Or(c.Conclusion, c.Status)
+			red, state = mergeRed{pr: pr.Number, name: c.Name, job: true, id: c.DatabaseID, workflow: c.CheckSuite.WorkflowRun.Workflow.DatabaseID}, cmp.Or(c.Conclusion, c.Status)
 		}
 		if red.name != gtMergeabilityCheck && statusClassify(state) == statusFailed {
 			reds = append(reds, red)
@@ -270,6 +336,9 @@ func mergeRedList(reds []mergeRed) string {
 	names := make([]string, len(reds))
 	for i, r := range reds {
 		names[i] = fmt.Sprintf("#%d %s", r.pr, r.name)
+		if len(r.tests) > 0 {
+			names[i] += fmt.Sprintf(" (%s)", strings.Join(r.tests, ", "))
+		}
 	}
 	return strings.Join(names, ", ")
 }

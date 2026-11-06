@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ccx vcs job-log <job-id> --failed-tests` prints, one per line, the pytest node
+  ids in the short test summary of the pytest run that failed the job's step, and
+  nothing when no such run ended it. A summary the job printed before other
+  output failed it, such as a negative control's expected failure, names no test.
+  `lr own-red` reads a red job through it.
+- `ccx vcs merge --red-on-main <run>` compares a red job's failing tests with the
+  run's failed jobs, read the same way, in any job: the PR's red is inherited when
+  the run fails every test it fails. Pytest shards rebalance as the test set
+  changes, so yasyf/cc-skills#3658 was refused for `pytest 1/12` while the one
+  test it failed was red on main in `pytest 12/12`. A refusal names the tests the
+  run does not fail. A red job whose log names no test still compares by job name.
 - The guard pack rewrites a raw `git rebase <args>` in a shallow clone to
   `ccx vcs rebase -- <args>`, with the same arguments and exit code, so the
   rebase first deepens to the merge base. A lane on a Sprite's depth-1 checkout
