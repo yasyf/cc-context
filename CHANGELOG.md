@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ccx code read`, `ccx code outline`, `ccx code deps` and `ccx vcs history` take
+  several paths, as `ccx vcs diff` and `ccx code grep` already do. Each path runs
+  under an even share of the one `--budget`, so a large file cannot spend the
+  budget the others need, and the reports print in argument order; `vcs history`
+  heads each file's commits with `# history <path>`. `--section` on `read` and
+  `outline` names lines of one file and is refused with more than one path.
+  `code search` and `code related` keep one `[path]`, since their semantic engine
+  reads it as the repository to search. A lane that passed two files to
+  `ccx code read --full` got "accepts 1 arg(s), received 2".
 - `ccx vcs diff` takes any number of paths after its optional source:
   `ccx vcs diff a.go b.go`, or `ccx vcs diff main a.go b.go`. They restrict the
   diff as `--glob` does, under one `--budget`. The first argument is the source

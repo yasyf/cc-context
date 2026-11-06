@@ -10,16 +10,19 @@ import (
 func newDepsCmd() *cobra.Command {
 	var a backend.Args
 	cmd := &cobra.Command{
-		Use:   "deps <path>",
-		Short: "Symbol dependencies and dependents of a file (sparse for entry points)",
-		Args:  cobra.ExactArgs(1),
+		Use:   "deps <path>...",
+		Short: "Symbol dependencies and dependents of a file (sparse for entry points); several share one budget",
+		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			a.Path = args[0]
 			// An unset flag gets the default; an explicit --budget 0 means unlimited.
 			if !cmd.Flags().Changed("budget") {
 				a.Budget = deps.DefaultBudget
 			}
-			return runOp(cmd, backend.OpDeps, a)
+			return runEachPath(cmd, args, a.Budget, func(path string, budget int) (string, error) {
+				one := a
+				one.Path, one.Budget = path, budget
+				return dispatchOp(cmd, backend.OpDeps, one)
+			})
 		},
 	}
 	cmd.Flags().IntVar(&a.Budget, "budget", 0, "token budget for the output")

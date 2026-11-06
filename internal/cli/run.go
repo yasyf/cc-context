@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"strings"
+
 	"github.com/spf13/cobra"
 
 	"github.com/yasyf/cc-context/anchor"
@@ -16,6 +18,24 @@ func runOp(cmd *cobra.Command, op backend.Op, a backend.Args) error {
 		return err
 	}
 	cmd.Print(out)
+	return nil
+}
+
+func runEachPath(cmd *cobra.Command, paths []string, budget int, run func(path string, budget int) (string, error)) error {
+	share := budget
+	if budget > 0 {
+		share = max(budget/len(paths), 1)
+	}
+	for _, path := range paths {
+		out, err := run(path, share)
+		if err != nil {
+			return err
+		}
+		if len(paths) > 1 && !strings.HasSuffix(out, "\n") {
+			out += "\n"
+		}
+		cmd.Print(out)
+	}
 	return nil
 }
 

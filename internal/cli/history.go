@@ -22,17 +22,21 @@ func newHistoryCmd() *cobra.Command {
 		reveal bool
 	)
 	cmd := &cobra.Command{
-		Use:   "history <path>",
-		Short: "Per-commit summary of a file's changed symbols (replaces git log -p)",
-		Args:  cobra.ExactArgs(1),
+		Use:   "history <path>...",
+		Short: "Per-commit summary of a file's changed symbols (replaces git log -p); several files share one budget",
+		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			path, note := resolveHistoryPath(args[0])
-			out, err := runHistory(cmd.Context(), path, number, budget, reveal)
-			if err != nil {
-				return err
-			}
-			cmd.Print(note + out)
-			return nil
+			return runEachPath(cmd, args, budget, func(arg string, budget int) (string, error) {
+				path, note := resolveHistoryPath(arg)
+				out, err := runHistory(cmd.Context(), path, number, budget, reveal)
+				if err != nil {
+					return "", err
+				}
+				if len(args) > 1 {
+					note = "# history " + path + "\n" + note
+				}
+				return note + out, nil
+			})
 		},
 	}
 	cmd.Flags().IntVarP(&number, "number", "n", 10, "max commits to summarize")

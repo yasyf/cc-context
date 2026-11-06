@@ -150,6 +150,15 @@ budget:
 ccx code read internal/router/router.go --full
 ```
 
+`code read`, `code outline`, `code deps` and `vcs history` each take several paths in
+one call, sharing one `--budget` evenly across them; `--section` names lines of one
+file, so it takes one path:
+
+```
+ccx code read --full internal/cli/read.go internal/cli/run.go
+ccx code outline internal/router/router.go internal/router/route.go
+```
+
 ### 4. Edit
 
 Write through the same anchor you read with. The hash is the verification: `ccx code
