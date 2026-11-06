@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The guard pack rewrites a raw `git rebase <args>` in a shallow clone to
+  `ccx vcs rebase -- <args>`, with the same arguments and exit code, so the
+  rebase first deepens to the merge base. A lane on a Sprite's depth-1 checkout
+  that typed `git rebase origin/dev` replayed an older branch from the initial
+  commit. The rewrite reaches a `git rebase` in a `&&` chain or after a `cd`.
+  It leaves alone `git -C <dir> rebase`, an env-prefixed rebase, a command
+  ending in `# ccx:raw`, and every rebase outside a shallow clone.
 - `ccx code read`, `ccx code outline`, `ccx code deps` and `ccx vcs history` take
   several paths, as `ccx vcs diff` and `ccx code grep` already do. Each path runs
   under an even share of the one `--budget`, so a large file cannot spend the
