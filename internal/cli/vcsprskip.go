@@ -170,7 +170,7 @@ func buildkiteRead(ctx context.Context, buildURL string) (buildkiteRun, error) {
 	}
 	token := render.Getenv(ctx, buildkiteEnv)
 	if token == "" {
-		return "", fmt.Errorf("no %s to read %s", buildkiteEnv, buildURL)
+		return "", fmt.Errorf("%s is unset on this host, so Buildkite build %s was not read and GitHub's status stands", buildkiteEnv, buildURL)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("%s/organizations/%s/pipelines/%s/builds/%s", buildkiteAPI, m[1], m[2], m[3]), nil)
 	if err != nil {
