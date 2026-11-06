@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"errors"
+
 	"github.com/spf13/cobra"
 
 	"github.com/yasyf/cc-context/internal/backend"
@@ -18,30 +20,34 @@ var outlineHeaders = map[backend.Op]string{
 func newOutlineCmd() *cobra.Command {
 	var a backend.Args
 	cmd := &cobra.Command{
-		Use:   "outline <path>",
-		Short: "Token-budgeted structural outline of a file or directory",
-		Args:  cobra.ExactArgs(1),
+		Use:   "outline <path>...",
+		Short: "Token-budgeted structural outline of a file or directory; several share one budget",
+		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			a.Path = args[0]
-			op, note, err := outline.Route(&a)
-			if err != nil {
-				return err
+			if a.Section != "" && len(args) > 1 {
+				return errors.New("outline: --section names lines of one file; pass one path with it")
 			}
-			// A binary target is skipped after path resolution, so a forced --lang
-			// still skips and the skip line carries no routing header.
-			if line, skipped := outline.BinarySkip(a.Path); skipped {
-				cmd.Printf("%s%s\n", note, line)
-				return nil
-			}
-			if _, _, err := outline.ValidateSection(a, op); err != nil {
-				return err
-			}
-			out, err := dispatchOp(cmd, op, a)
-			if err != nil {
-				return err
-			}
-			cmd.Printf("%s%s\n%s", note, outlineHeaders[op], out)
-			return nil
+			return runEachPath(cmd, args, a.Budget, func(path string, budget int) (string, error) {
+				one := a
+				one.Path, one.Budget = path, budget
+				op, note, err := outline.Route(&one)
+				if err != nil {
+					return "", err
+				}
+				// A binary target is skipped after path resolution, so a forced --lang
+				// still skips and the skip line carries no routing header.
+				if line, skipped := outline.BinarySkip(one.Path); skipped {
+					return note + line + "\n", nil
+				}
+				if _, _, err := outline.ValidateSection(one, op); err != nil {
+					return "", err
+				}
+				out, err := dispatchOp(cmd, op, one)
+				if err != nil {
+					return "", err
+				}
+				return note + outlineHeaders[op] + "\n" + out, nil
+			})
 		},
 	}
 	cmd.Flags().StringVar(&a.Section, "section", "", `restrict a single-file outline to items intersecting a line range ("40-95" or "40,95")`)

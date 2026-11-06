@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"errors"
+
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
@@ -20,15 +22,21 @@ func sectionAlias(_ *pflag.FlagSet, name string) pflag.NormalizedName {
 func newReadCmd() *cobra.Command {
 	var a backend.Args
 	cmd := &cobra.Command{
-		Use:   "read <path>",
-		Short: "Read a file: a section, a heading, or the whole thing",
-		Args:  cobra.ExactArgs(1),
+		Use:   "read <path>...",
+		Short: "Read a file: a section, a heading, or the whole thing; several files share one budget",
+		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			a.Path = args[0]
+			if a.Section != "" && len(args) > 1 {
+				return errors.New("read: --section names lines of one file; pass one path with it")
+			}
 			if a.Budget == 0 {
 				a.Budget = read.DefaultBudget
 			}
-			return runOp(cmd, backend.OpRead, a)
+			return runEachPath(cmd, args, a.Budget, func(path string, budget int) (string, error) {
+				one := a
+				one.Path, one.Budget = path, budget
+				return dispatchOp(cmd, backend.OpRead, one)
+			})
 		},
 	}
 	cmd.Flags().StringVar(&a.Section, "section", "", `range ("40-95"), heading ("## Heading"), or anchor ("15-27#k2fa" or bare "k2fa") echoed from a producer command`)
