@@ -328,7 +328,11 @@ func runShip(cmd *cobra.Command, o shipOpts) (err error) {
 		kind = vcs.Git
 	}
 	if gitBacked(l) {
-		if err := stackRefuseForeignRebase(cmd.ErrOrStderr(), l, "ship"); err != nil {
+		stops := gitRebaseStops
+		if o.noCommit {
+			stops = slices.Concat(gitRebaseStops, gitCommitStops)
+		}
+		if err := stackRefuseStopped(cmd.ErrOrStderr(), l.checkout, "ship", stops, false); err != nil {
 			return err
 		}
 	}
@@ -2355,6 +2359,9 @@ func shipPushGitOnce(ctx context.Context, dir render.Dir, remote, branch, trunk 
 		}
 		switch {
 		case rewritten:
+			if err := refuseEmptyPR(ctx, dir, "ship", remote, branch, "HEAD", heads, []string{trunk}); err != nil {
+				return 0, "", err
+			}
 			replaced = tip
 			argv = gitPushArgv(noVerify, remote, fmt.Sprintf("--force-with-lease=%s:%s", branch, tip), branch)
 		case !ancestor:

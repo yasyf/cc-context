@@ -55,6 +55,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs push` and `ccx vcs ship` refuse a push that would close an open
+  pull request.** A lane resolving a rebase conflict pushed while HEAD still sat
+  on the base, and GitHub closed Forge-AI/monorepo#50894 and #50896, since a pull
+  request whose head carries no commits over its base is closed on the push.
+  Push now refuses while a git rebase, merge, cherry-pick or revert is stopped in
+  the working copy, as ship already did for a rebase, naming the command that
+  finishes or drops it. Ship refuses a merge, cherry-pick or revert under
+  `--no-commit`, since its own commit would otherwise conclude one, and now
+  refuses a ccx stack rebase stopped on a conflict in its own working copy too,
+  pointing at `ccx vcs stack continue`. A force push whose head the remote trunk,
+  or the gt parent's remote head, already holds is refused while the branch's
+  open pull request is based there, naming the pull request and the base; GitHub
+  is asked for the pull request only when one of them holds the head. In the
+  graphite lane, a branch sitting at its parent's head with an open pull request
+  is refused before the submit pushes anything.
+
 - **`ccx vcs ship` no longer spawns `gh run watch`.** Its CI wait ran one
   `gh run watch <run> --interval 60` child per workflow run, outside the shared pull
   request cache, and a lane that wanted to stop the wait could not end a child its
