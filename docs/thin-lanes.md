@@ -246,14 +246,19 @@ segment. A refused deepen can leave the store deeper; history only grows.
 | An existing store has no cc-notes binding | Bind it once with the command the refusal names, `cc-notes -R <store> storage bind --source <checkout>`, then retry |
 | The store is bound to another checkout's records, as when two checkouts of one remote share a directory name | Cut the lane from the checkout the store is bound to, or use `--full-history`; ccx never rebinds a store |
 
-In a shallow repository, `ccx vcs stack rebase`, `submit`, `restack`, and
-`ship` refuse before anything moves when the shallow boundary cuts a
-branch's history. The refusal names the branch and the explicit command
+In a shallow repository, `ccx vcs stack rebase`, `submit`, `restack`,
+`ship`, and `ccx vcs rebase` deepen the history before anything moves when
+the shallow boundary cuts a branch's history before it meets trunk. They
+fetch 256 commits below each boundary the branch and trunk reach, then
+double the step until the two meet, so a branch that forked below the
+boundary replays only its own commits. They stop after 16384 commits and
+never unshallow the repository. A branch still cut there is refused, and
+the refusal names the branch and the command
 `git -C <store> fetch --deepen=<commits> origin <trunk>`, where `<store>` is
-the store's main checkout even when the refusal comes from a lane. Run that
-command to grow the available history before retrying. These operations
-never deepen an existing store implicitly. Object and history probes report
-Git failures as errors instead of treating them as missing commits.
+the store's main checkout even when the refusal comes from a lane. The store
+is shared, so a deepen from one lane deepens it for every lane. Object and
+history probes report Git failures as errors instead of treating them as
+missing commits.
 
 ## Remove a lane
 
@@ -294,7 +299,7 @@ call Orca.
   source. The binding names that repository on disk, so moving or replacing
   the source checkout breaks cc-notes in every lane of the store.
 - ccx downloads a remote branch head someone else based below the shallow
-  boundary before refusing for incomplete ancestry.
+  boundary, then deepens trunk until the two meet.
 - Reflog fork-point evidence in the store is thinner than in a long-lived
   full repository.
 - Run `ccx vcs stack list` from a store lane; the source checkout does not

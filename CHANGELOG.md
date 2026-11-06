@@ -65,6 +65,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   present only when its config is, and otherwise reads the native catalog, which
   takes its trunk from `origin/HEAD` while empty; the branch lists as untracked
   on that trunk. Nothing is written to the checkout's metadata.
+- **A rebase in a shallow clone deepens to the merge base instead of replaying
+  from the boundary.** `ccx vcs rebase`, `ccx vcs stack rebase`, `submit`,
+  `restack` and `ship` check whether the branch's history meets its target.
+  When the shallow boundary cuts it first, they fetch 256 commits below each
+  boundary the two reach, doubling the step until they meet, at most 16384
+  commits and never `--unshallow`. Only then does the rebase run, so it replays
+  only the branch's own commits. A branch still cut after the cap is refused
+  before anything moves. A Sprite's depth-1 monorepo checkout found no merge
+  base for an older branch, and a raw rebase replayed it from the initial
+  commit; ccx's own verbs refused and asked for a manual `git fetch --deepen`.
+  The deepen fetches the boundary commits themselves, so a local branch with
+  unpushed commits deepens too, and a fetch that meets another worktree's
+  `shallow.lock` retries.
 - **`ccx vcs ship -m` on a clean working copy says it left `-m` unused.** With
   nothing to commit over commits trunk lacks, ship goes on as `--no-commit` and
   never applies the message; the report now adds `-m left unused: --amend -m

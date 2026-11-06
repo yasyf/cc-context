@@ -16,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/yasyf/cc-context/internal/render"
+	"github.com/yasyf/cc-context/internal/vcs"
 )
 
 const vcsRebasePrefix = "vcs rebase"
@@ -38,8 +39,15 @@ func newVcsRebaseCmd() *cobra.Command {
 	var configs []string
 	cmd := &cobra.Command{
 		Use:   "rebase [-C <dir>] [-c <name>=<value>]... -- [<git rebase args>...]",
-		Short: "Run git rebase, fetching the blobs it merges in one batch first in a partial clone",
+		Short: "Run git rebase, first deepening a shallow clone to the merge base and batch-fetching a partial clone's blobs",
 		Long: `Run git rebase with the arguments after --, unchanged, and exit with its code.
+
+In a shallow clone whose history of the branch stops before it meets the
+upstream, git rebase finds no merge base and replays the branch from the
+shallow boundary. Before git rebase starts, ccx deepens the history below the
+boundaries the branch and the upstream reach, 256 commits first and doubling,
+until the two meet, fetching at most 16384 commits. When they still do not
+meet, ccx exits with an error and git rebase does not run.
 
 In a partial clone whose promisor remote filters blobs, git fetches the blobs
 a rebase merges one commit at a time, writing a promisor pack for each commit.
@@ -75,6 +83,9 @@ func runVcsRebase(cmd *cobra.Command, chdir string, configs, args []string) erro
 	case chdir != "":
 		dir = filepath.Join(dir, chdir)
 	}
+	if err := rebaseDeepen(ctx, render.Dir(dir), args); err != nil {
+		return err
+	}
 	if err := rebasePrefetch(ctx, render.Dir(dir), args); err != nil {
 		slog.Warn(vcsRebasePrefix+": batch-fetch the rebase's blobs from the promisor remote; git rebase fetches them commit by commit instead", "args", strings.Join(args, " "), "err", err)
 	}
@@ -87,6 +98,50 @@ func runVcsRebase(cmd *cobra.Command, chdir string, configs, args []string) erro
 	git.Env = slices.Concat(os.Environ(), render.EnvFrom(ctx))
 	git.Stdin, git.Stdout, git.Stderr = cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr()
 	return ghExit(git.Run())
+}
+
+func rebaseDeepen(ctx context.Context, dir render.Dir, args []string) error {
+	r := rebaseParse(args)
+	if r.resume || r.idle || r.root {
+		return nil
+	}
+	ck, err := vcs.ResolveCheckout(string(dir))
+	if err != nil {
+		return fmt.Errorf("%s: %w", vcsRebasePrefix, err)
+	}
+	shallow, err := stackShallowSet(ck.CommonDir)
+	if err != nil || shallow == nil {
+		return err
+	}
+	upstream, branch := cmp.Or(r.upstream, "@{upstream}"), cmp.Or(r.branch, "HEAD")
+	commits := make([]string, 0, 2)
+	for _, rev := range []string{branch, upstream} {
+		out, code, _, err := render.RunCLIExitCode(ctx, dir, "git", []string{"rev-parse", "--verify", "--quiet", "--end-of-options", rev + "^{commit}"})
+		if err != nil {
+			return fmt.Errorf("%s: git rev-parse %s: %w", vcsRebasePrefix, rev, err)
+		}
+		if code != 0 {
+			return nil
+		}
+		commits = append(commits, strings.TrimSpace(out))
+	}
+	name := branch
+	if branch == "HEAD" {
+		if name, err = gitCurrentBranch(ctx, dir, vcsRebasePrefix); err != nil {
+			return err
+		}
+	}
+	remote, err := vcs.GitRemoteFor(ctx, dir, cmp.Or(name, "HEAD"))
+	if err != nil {
+		return fmt.Errorf("%s: %w", vcsRebasePrefix, err)
+	}
+	met, deepened, err := gitDeepenUntil(ctx, dir, vcsRebasePrefix, remote, commits, func() (bool, error) {
+		return gitHistoryMeets(ctx, dir, ck.CommonDir, vcsRebasePrefix, commits[0], commits[1])
+	})
+	if err != nil || met {
+		return err
+	}
+	return fmt.Errorf("%s: %s's history stops at this shallow clone's boundary before it meets %s, even after deepening it by %d commits, so git rebase would replay it from that boundary and nothing ran — fetch more with git fetch --deepen=<commits> %s, then run again", vcsRebasePrefix, branch, upstream, deepened, remote)
 }
 
 func rebasePrefetch(ctx context.Context, dir render.Dir, args []string) error {

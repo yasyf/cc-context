@@ -1082,7 +1082,7 @@ func thinRequireNoChild(t *testing.T, f *vcstest.Fixture, store, child string) {
 	}
 }
 
-func TestStackRequireHistoryRefusesCutAncestry(t *testing.T) {
+func TestStackRequireHistoryDeepensCutAncestry(t *testing.T) {
 	t.Parallel()
 	f := thinRepo(t)
 	thinGrowTrunk(t, f, 12)
@@ -1095,28 +1095,28 @@ func TestStackRequireHistoryRefusesCutAncestry(t *testing.T) {
 	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "deep")
 	mustRun(t, f.Env(), store, "git", "fetch", "-q", "origin", "+refs/heads/deep:refs/heads/deep")
 	cut := gitAt(t, f.Env(), store, "rev-parse", "deep")
+	if _, code, _, err := render.RunCLIExitCode(f.ContextIn(store), render.Dir(store), "git", []string{"merge-base", cut, "origin/main"}); err != nil || code != 1 {
+		t.Fatalf("merge-base before = exit %d, %v; want the store's depth-%d trunk to miss deep's fork", code, err, thinTestDepth)
+	}
 
 	ctx := f.ContextIn(lane)
+	shipResetLog(t, f)
 	if err := stackRequireHistory(ctx, render.Dir(lane), "test", "origin", "main", map[string]string{"lane1": whole}); err != nil {
 		t.Errorf("whole lane refused: %v", err)
 	}
-	err := stackRequireHistory(ctx, render.Dir(lane), "test", "origin", "main", map[string]string{"lane1": whole, "deep": cut})
-	if err == nil || !strings.Contains(err.Error(), "deep's history") || !strings.Contains(err.Error(), "git -C "+store+" fetch --deepen=<commits> origin main") {
-		t.Fatalf("cut ancestry = %v, want a refusal naming the explicit deepen", err)
+	for _, argv := range vcstest.Invocations(t, f.ArgvLog) {
+		if len(argv) > 1 && argv[0] == "git" && argv[1] == "fetch" {
+			t.Errorf("whole lane fetched: %v", argv)
+		}
+	}
+	if err := stackRequireHistory(ctx, render.Dir(lane), "test", "origin", "main", map[string]string{"lane1": whole, "deep": cut}); err != nil {
+		t.Fatalf("cut ancestry = %v, want trunk deepened to deep's fork", err)
+	}
+	if got, want := gitAt(t, f.Env(), store, "merge-base", cut, "origin/main"), gitAt(t, f.Env(), f.Dir, "rev-parse", "origin/main~10"); got != want {
+		t.Errorf("merge-base after = %s, want deep's fork %s", got, want)
 	}
 	if err := stackRequireHistory(f.Context(), render.Dir(f.Dir), "test", "origin", "main", map[string]string{"deep": gitAt(t, f.Env(), f.Dir, "rev-parse", "deep")}); err != nil {
 		t.Errorf("full checkout refused: %v", err)
-	}
-
-	mustRun(t, f.Env(), lane, "git", "switch", "-q", "deep")
-	writeShipFile(t, lane, "deep.txt", "more deep\n")
-	remote := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "deep")
-	_, errOut, err := runShipCmdFull(f.ContextIn(lane), t, "--no-gt", "--no-watch", "--no-pr", "-m", "deep work")
-	if err == nil || !strings.Contains(err.Error(), "shallow boundary") {
-		t.Fatalf("ship over cut ancestry = %v\n%s, want the history refusal", err, errOut)
-	}
-	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "deep"); got != remote {
-		t.Errorf("refused ship pushed deep to %s", got)
 	}
 }
 

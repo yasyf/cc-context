@@ -3557,9 +3557,6 @@ func gtTrunkRef(ctx context.Context, dir render.Dir, prefix, trunk string) (vcs.
 
 const gitFetchAttempts = 6
 
-// gitFetch runs git fetch, retrying while a fetch in another worktree of the
-// shared clone holds the lock on a ref this one updates: that fetch moves the
-// same ref, so the retry finds it free.
 func gitFetch(ctx context.Context, dir render.Dir, args ...string) error {
 	packs, captureErr := vcs.CapturePackIndexes(ctx, dir)
 	if captureErr != nil {
@@ -3576,7 +3573,7 @@ func gitFetch(ctx context.Context, dir render.Dir, args ...string) error {
 			}
 			return nil
 		}
-		if attempt == gitFetchAttempts || !strings.Contains(err.Error(), "cannot lock ref") {
+		if attempt == gitFetchAttempts || !strings.Contains(err.Error(), "cannot lock ref") && !strings.Contains(err.Error(), "shallow.lock") {
 			return err
 		}
 		select {

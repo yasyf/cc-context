@@ -243,7 +243,7 @@ func TestStackSubmitReplaysANeverPublishedBranch(t *testing.T) {
 	}
 }
 
-func TestStackSubmitRefusesThinHistoryBeforeTheMergeProbe(t *testing.T) {
+func TestStackSubmitDeepensThinHistoryBeforeTheMergeProbe(t *testing.T) {
 	f := thinRepo(t)
 	thinGrowTrunk(t, f, 12)
 	store := thinTestStore(t, f)
@@ -256,17 +256,24 @@ func TestStackSubmitRefusesThinHistoryBeforeTheMergeProbe(t *testing.T) {
 	mustRun(t, f.Env(), lane, "git", "reset", "-q", "--keep", cut)
 	stubOpenPRs(t, f, nil, "lane1")
 	shipResetLog(t, f)
-	_, errStr, err := runStackCmdIn(t, f, lane, "submit")
-	if err == nil || !strings.Contains(err.Error(), "shallow boundary") {
-		t.Fatalf("submit over cut history = %v (stderr=%q), want the history refusal", err, errStr)
+	if _, errStr, err := runStackCmdIn(t, f, lane, "submit"); err != nil {
+		t.Fatalf("submit over cut history = %v (stderr=%q), want the history deepened", err, errStr)
 	}
+	deepened := false
 	for _, argv := range vcstest.Invocations(t, f.ArgvLog) {
-		if len(argv) > 1 && argv[0] == "git" && argv[1] == "merge-tree" {
-			t.Errorf("merge probe ran before the history refusal: %v", argv)
+		switch {
+		case len(argv) < 2 || argv[0] != "git":
+		case slices.Contains(argv, "fetch") && slices.ContainsFunc(argv, func(arg string) bool { return strings.HasPrefix(arg, "--deepen=") }):
+			deepened = true
+		case slices.Contains(argv, "merge-tree") && !deepened:
+			t.Errorf("merge probe ran before the history was deepened: %v", argv)
 		}
 	}
-	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "lane1"); got != cut {
-		t.Errorf("refused submit changed the remote to %s, want %s", got, cut)
+	if !deepened {
+		t.Error("submit never deepened the cut history")
+	}
+	if got, want := gitAt(t, f.Env(), store, "merge-base", cut, "origin/main"), gitAt(t, f.Env(), f.Dir, "rev-parse", "origin/main~10"); got != want {
+		t.Errorf("merge-base after submit = %s, want lane1's fork %s", got, want)
 	}
 }
 
