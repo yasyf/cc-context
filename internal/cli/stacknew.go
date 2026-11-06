@@ -440,7 +440,7 @@ func stackNewPath(ctx context.Context, checkout vcs.Checkout, name, requested st
 			return "", fmt.Errorf("stack new: destination %s is inside checkout %s", path, root)
 		}
 	}
-	if err := refuseUsedLane(ctx, "stack new", checkout, name, path); err != nil {
+	if err := refuseUsedLane(ctx, "stack new", name, path); err != nil {
 		return "", err
 	}
 	if _, err := os.Lstat(path); err == nil {

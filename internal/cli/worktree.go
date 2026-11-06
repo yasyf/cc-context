@@ -520,11 +520,15 @@ func runWorktreeAdd(cmd *cobra.Command, name, requested string, includes []strin
 			return err
 		}
 	}
-	path, err := mintGitWorktreePath(ctx, "worktree add", l.checkout, name)
+	mint := mintGitWorktreePath
+	if mode == jjModeWorkspace {
+		mint = mintWorktreePath
+	}
+	path, err := mint(ctx, "worktree add", l.checkout, name)
 	if err != nil {
 		return err
 	}
-	if err := refuseUsedLane(ctx, "worktree add", l.checkout, name, path); err != nil {
+	if err := refuseUsedLane(ctx, "worktree add", name, path); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {

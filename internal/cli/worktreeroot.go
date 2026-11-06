@@ -42,9 +42,6 @@ func gitWorktreePaths(ctx context.Context, prefix string, c vcs.Checkout, name s
 	if err != nil {
 		return nil, err
 	}
-	if c.Kind == vcs.JJ {
-		return []string{legacy}, nil
-	}
 	home, err := canonicalHome(ctx, prefix)
 	if err != nil {
 		return nil, err
