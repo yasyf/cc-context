@@ -20,7 +20,7 @@ from types import SimpleNamespace
 
 from captain_hook import File
 
-from hooks.render_guards import RenderedArtifact, RenderSource
+from hooks.render_guards import CiRendered, RenderedArtifact, RenderSource
 
 # A real rendered banner, first line of every migrated artifact (HTML-comment form).
 BANNER = (
@@ -135,3 +135,28 @@ class TestRenderSource:
 
     def test_unmanaged_source_allows(self, tmp_path: Path) -> None:
         assert RenderSource().check(make_evt(tmp_path / "internal" / "cli" / "root.go", tmp_path)) is False
+
+
+def guides_workflow(root: Path, body: str) -> None:
+    (workflows := root / ".github" / "workflows").mkdir(parents=True)
+    (workflows / "guides.yml").write_text(body)
+
+
+class TestCiRendered:
+    def test_fragment_in_another_checkout_reads_that_checkout(self, tmp_path: Path) -> None:
+        repo = tmp_path / "cc-slack"
+        guides_workflow(repo, "jobs:\n  guides:\n    uses: yasyf/cc-guides/.github/workflows/guides.yml@main\n")
+        fragment = repo / ".claude" / "fragments" / "AGENTS.md" / "part-1.fragment.md"
+        assert CiRendered().check(make_evt(fragment, tmp_path / "monorepo")) is True
+
+    def test_artifact_reads_the_repo_root(self, tmp_path: Path) -> None:
+        guides_workflow(tmp_path, "jobs:\n  pr-check:\n    steps:\n      - run: cc-guides pr-check origin/main\n")
+        assert CiRendered().check(make_evt(artifact(tmp_path, "AGENTS.md"), tmp_path)) is True
+
+    def test_guides_workflow_without_pr_check_renders_locally(self, tmp_path: Path) -> None:
+        guides_workflow(tmp_path, "jobs:\n  docs:\n    steps:\n      - run: make guides\n")
+        fragment = tmp_path / ".claude" / "fragments" / "AGENTS.md" / "part-1.fragment.md"
+        assert CiRendered().check(make_evt(fragment, tmp_path)) is False
+
+    def test_no_guides_workflow_renders_locally(self, tmp_path: Path) -> None:
+        assert CiRendered().check(make_evt(artifact(tmp_path, "AGENTS.md"), tmp_path)) is False
