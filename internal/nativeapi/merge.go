@@ -10,12 +10,14 @@ import (
 	"net/url"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 )
 
 var (
-	mergePoll = 2 * time.Second
-	mergeWait = 10 * time.Minute
+	mergePoll       = 2 * time.Second
+	mergeWait       = 10 * time.Minute
+	mergeLimitWaits = []time.Duration{time.Minute}
 )
 
 // MergeRequest names one pull request, by number or by head branch, and how to merge it.
@@ -41,6 +43,7 @@ type MergeCandidate struct {
 // MergePlan is what one read of a pull request says merging it would land.
 type MergePlan struct {
 	Pull          MergeCandidate
+	PullID        string
 	State         PRState
 	MergeCommit   string
 	DefaultBranch string
@@ -79,6 +82,7 @@ const mergeCandidateFields = "number state headRefName headRefOid commits(last:1
 	"...on CheckRun{name conclusion status startedAt databaseId checkSuite{databaseId workflowRun{workflow{databaseId}}}} ...on StatusContext{context state}}}}}}}"
 
 type mergePull struct {
+	ID          string
 	Number      int
 	State       PRState
 	HeadRefName string
@@ -122,17 +126,11 @@ type asyncMerge struct {
 
 // ViewerLogin reads the login of the account the client's token signs in as.
 func (c *Client) ViewerLogin(ctx context.Context) (string, error) {
-	payload, err := c.get(ctx, "/user", nil)
-	if err != nil {
+	var result struct{ Viewer struct{ Login string } }
+	if err := c.graphql(ctx, "{viewer{login}}", &result); err != nil {
 		return "", err
 	}
-	var user struct {
-		Login string `json:"login"`
-	}
-	if err := json.Unmarshal(payload, &user); err != nil {
-		return "", fmt.Errorf("parse the signed-in account: %w", err)
-	}
-	return user.Login, nil
+	return result.Viewer.Login, nil
 }
 
 // ReadMerge reads, in one GraphQL call, the pull request's state and head,
@@ -143,7 +141,7 @@ func (c *Client) ReadMerge(ctx context.Context, req MergeRequest) (MergePlan, er
 	if err != nil {
 		return MergePlan{}, err
 	}
-	query := fmt.Sprintf("{repository(owner:%s,name:%s){defaultBranchRef{name} pullRequest(number:%d){%s mergeCommit{oid} stackEntry{position} stack{entries(first:100){nodes{position pullRequest{%s}} pageInfo{hasNextPage}}}}}}",
+	query := fmt.Sprintf("{repository(owner:%s,name:%s){defaultBranchRef{name} pullRequest(number:%d){id %s mergeCommit{oid} stackEntry{position} stack{entries(first:100){nodes{position pullRequest{%s}} pageInfo{hasNextPage}}}}}}",
 		strconv.Quote(req.RepoOwner), strconv.Quote(req.RepoName), number, mergeCandidateFields, mergeCandidateFields)
 	var result struct {
 		Repository *struct {
@@ -158,7 +156,7 @@ func (c *Client) ReadMerge(ctx context.Context, req MergeRequest) (MergePlan, er
 		return MergePlan{}, fmt.Errorf("%s/%s has no PR #%d this account can read", req.RepoOwner, req.RepoName, number)
 	}
 	pull := result.Repository.PullRequest
-	plan := MergePlan{Pull: pull.candidate(), State: pull.State, DefaultBranch: result.Repository.DefaultBranchRef.Name, Stacked: pull.Stack != nil}
+	plan := MergePlan{Pull: pull.candidate(), PullID: pull.ID, State: pull.State, DefaultBranch: result.Repository.DefaultBranchRef.Name, Stacked: pull.Stack != nil}
 	if pull.MergeCommit != nil {
 		plan.MergeCommit = pull.MergeCommit.Oid
 	}
@@ -206,34 +204,38 @@ func (c *Client) ReadActionsRun(ctx context.Context, owner, repo string, id int6
 }
 
 // MergePullRequest merges the plan's pull request at the head the plan read
-// and reads back each pull request it landed, bottom-up. A native stack member
-// goes through the asynchronous merge API, which lands the open ones below it
-// too, and Admin there bypasses the rules the caller may bypass; any other
-// pull request goes through the plain merge API.
+// and reports each pull request it landed, bottom-up. A native stack member
+// goes through the asynchronous merge API, retried once past a secondary rate
+// limit, and lands the open ones below it; Admin there bypasses the rules the
+// caller may bypass. Any other pull request goes through GraphQL's
+// mergePullRequest, whose answer confirms it.
 func (c *Client) MergePullRequest(ctx context.Context, req MergeRequest, plan MergePlan) ([]MergedPR, error) {
-	repo := fmt.Sprintf("/repos/%s/%s", url.PathEscape(req.RepoOwner), url.PathEscape(req.RepoName))
-	landing := append(slices.Clone(plan.Below), plan.Pull)
 	if !plan.Stacked {
-		if err := c.mergePlain(ctx, repo, plan.Pull, req.Method); err != nil {
+		merged, err := c.mergePlain(ctx, plan, req.Method)
+		if err != nil {
 			return nil, err
 		}
-		return c.confirmMerged(ctx, req, plan.Pull.Number, landing)
+		return []MergedPR{merged}, nil
 	}
+	repo := fmt.Sprintf("/repos/%s/%s", url.PathEscape(req.RepoOwner), url.PathEscape(req.RepoName))
+	landing := append(slices.Clone(plan.Below), plan.Pull)
+	once := *c
+	once.limitWaits = mergeLimitWaits
 	action := "default"
 	if req.Admin {
 		action = "direct_merge"
 	}
 	path := fmt.Sprintf("%s/pulls/%d/merge-async", repo, plan.Pull.Number)
-	result, err := c.requestMerge(ctx, path, map[string]any{"sha": plan.Pull.HeadSHA, "merge_method": req.Method, "merge_action": action, "bypass_rules": req.Admin})
+	result, err := once.requestMerge(ctx, path, map[string]any{"sha": plan.Pull.HeadSHA, "merge_method": req.Method, "merge_action": action, "bypass_rules": req.Admin})
 	if err != nil {
 		return nil, fmt.Errorf("merge PR #%d: %w", plan.Pull.Number, err)
 	}
-	if result, err = c.settleMerge(ctx, path, plan.Pull.Number, result); err != nil {
+	if result, err = once.settleMerge(ctx, path, plan.Pull.Number, result); err != nil {
 		return nil, err
 	}
 	switch result.Status {
 	case "merged":
-		return c.confirmMerged(ctx, req, plan.Pull.Number, landing)
+		return once.confirmMerged(ctx, req, plan.Pull.Number, landing)
 	case "enqueued":
 		queued := make([]MergedPR, 0, len(landing))
 		for _, pr := range landing {
@@ -271,22 +273,26 @@ func (c *Client) mergeTarget(ctx context.Context, repo string, req MergeRequest)
 	return 0, fmt.Errorf("%s heads no pull request in %s/%s", req.Head, req.RepoOwner, req.RepoName)
 }
 
-func (c *Client) mergePlain(ctx context.Context, repo string, pull MergeCandidate, method string) error {
-	payload, err := c.send(ctx, http.MethodPut, fmt.Sprintf("%s/pulls/%d/merge", repo, pull.Number), map[string]any{"sha": pull.HeadSHA, "merge_method": method})
-	if err != nil {
-		return fmt.Errorf("merge PR #%d: %w", pull.Number, err)
-	}
+func (c *Client) mergePlain(ctx context.Context, plan MergePlan, method string) (MergedPR, error) {
+	mutation := fmt.Sprintf("mutation{mergePullRequest(input:{pullRequestId:%s,expectedHeadOid:%s,mergeMethod:%s}){pullRequest{merged headRefName mergeCommit{oid}}}}",
+		strconv.Quote(plan.PullID), strconv.Quote(plan.Pull.HeadSHA), strings.ToUpper(method))
 	var result struct {
-		Merged  bool   `json:"merged"`
-		Message string `json:"message"`
+		MergePullRequest struct {
+			PullRequest struct {
+				Merged      bool
+				HeadRefName string
+				MergeCommit *struct{ Oid string }
+			}
+		}
 	}
-	if err := json.Unmarshal(payload, &result); err != nil {
-		return fmt.Errorf("merge PR #%d: %w", pull.Number, err)
+	if err := c.graphql(ctx, mutation, &result); err != nil {
+		return MergedPR{}, fmt.Errorf("merge PR #%d: %w", plan.Pull.Number, err)
 	}
-	if !result.Merged {
-		return fmt.Errorf("merge PR #%d: %s", pull.Number, result.Message)
+	pull := result.MergePullRequest.PullRequest
+	if !pull.Merged || pull.MergeCommit == nil {
+		return MergedPR{}, fmt.Errorf("merge PR #%d: GitHub answered without merging it", plan.Pull.Number)
 	}
-	return nil
+	return MergedPR{Number: plan.Pull.Number, Head: pull.HeadRefName, Status: "merged", SHA: pull.MergeCommit.Oid}, nil
 }
 
 func (c *Client) confirmMerged(ctx context.Context, req MergeRequest, number int, landing []MergeCandidate) ([]MergedPR, error) {

@@ -41,6 +41,7 @@ type Client struct {
 	queueProvider string
 	charge        func(ctx context.Context, identity, target string, header http.Header) error
 	appToken      func(ctx context.Context, nameWithOwner string) (string, error)
+	limitWaits    []time.Duration
 }
 
 var defaultClient = sync.OnceValue(func() *Client {
@@ -106,14 +107,18 @@ func (c *Client) do(ctx context.Context, method, path string, body []byte) ([]by
 
 func (c *Client) request(ctx context.Context, base, token, identity, method, path string, body []byte) ([]byte, error) {
 	limited, failed := 0, 0
+	limitWaits := secondaryLimitWaits
+	if c.limitWaits != nil {
+		limitWaits = c.limitWaits
+	}
 	for {
 		payload, retryAfter, err := c.attempt(ctx, base, token, identity, method, path, body)
 		var wait time.Duration
 		switch {
-		case retryAfter >= 0 && limited < len(secondaryLimitWaits):
-			wait = max(secondaryLimitWaits[limited], retryAfter)
+		case retryAfter >= 0 && limited < len(limitWaits):
+			wait = max(limitWaits[limited], retryAfter)
 			limited++
-			render.Announce(ctx, "GitHub rate-limited %s %s, retrying in %s (wait %d of %d)", method, path, wait.Round(time.Second), limited, len(secondaryLimitWaits))
+			render.Announce(ctx, "GitHub rate-limited %s %s, retrying in %s (wait %d of %d)", method, path, wait.Round(time.Second), limited, len(limitWaits))
 		case failed < len(transientWaits) && method != http.MethodPost && ctx.Err() == nil && transient(err):
 			wait = transientWaits[failed]
 			failed++

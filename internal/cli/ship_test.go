@@ -7305,7 +7305,7 @@ func TestShipAlreadyCommittedSubmitsInPlace(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ship error = %v", err)
 			}
-			want := "nothing to commit" + tt.scope + " — shipping as --no-commit · already " + shipCommitted(t, f, kind)
+			want := "nothing to commit" + tt.scope + " — shipping as --no-commit · -m left unused: --amend -m rewords the tip · already " + shipCommitted(t, f, kind)
 			if !strings.HasPrefix(got, want) {
 				t.Errorf("summary = %q, want it to open with %q", got, want)
 			}
@@ -7378,7 +7378,7 @@ func TestShipPathScopedLandedIgnoresUnrelatedStaged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}
-	want := "nothing to commit in f.txt — shipping as --no-commit · already " + shipCommitted(t, f, vcs.Git)
+	want := "nothing to commit in f.txt — shipping as --no-commit · -m left unused: --amend -m rewords the tip · already " + shipCommitted(t, f, vcs.Git)
 	if !strings.HasPrefix(got, want) {
 		t.Errorf("summary = %q, want it to open with %q", got, want)
 	}

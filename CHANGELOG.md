@@ -33,6 +33,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs ship -m` on a clean working copy says it left `-m` unused.** With
+  nothing to commit over commits trunk lacks, ship goes on as `--no-commit` and
+  never applies the message; the report now adds `-m left unused: --amend -m
+  rewords the tip`. `--amend -m` rewords a published tip on a clean working copy
+  and pushes it in the git, jj, Graphite and GitHub stack lanes, now covered by
+  one test per lane. A lane that needed only a trailer on its pushed tip read the
+  `--no-commit` line as ship having no reword and amended with git by hand.
+- **`ccx vcs merge` merges a pull request outside any stack through GraphQL.** It
+  calls `mergePullRequest` with `expectedHeadOid` set to the pinned head, and the
+  mutation's answer carries the merge commit. The `--admin` account check reads
+  `viewer` through GraphQL too, so a plain merge makes no REST call.
+  A lane hit two REST secondary rate limits on `PUT /pulls/{n}/merge` while its
+  GraphQL quota still had room, and merged through GraphQL by hand. A stack
+  member still goes through `merge-async`, which only REST serves and GraphQL's
+  `mergePullRequest` refuses; a secondary limit there now waits out its
+  `Retry-After`, a minute at least, prints the wait, and retries once, where
+  the client used to wait twice for one and two minutes.
 - `ccx vcs ship` and `ccx vcs stack rebase` take the local head over a remote that holds only a
   copy of the branch's last push, as GitHub leaves one after `gh stack merge` squash-lands the
   parent and replays the child onto trunk. A lane that had amended the child since its last push

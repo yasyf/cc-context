@@ -52,19 +52,25 @@ func serveMergeGitHub(t *testing.T, routes map[string]string) (*mergeGitHub, *na
 	gh := &mergeGitHub{asked: map[string]map[string]any{}}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		call := r.Method + " " + r.URL.Path
+		var asked map[string]any
+		if r.Method != http.MethodGet {
+			if err := json.NewDecoder(r.Body).Decode(&asked); err != nil {
+				t.Errorf("decode %s body: %v", call, err)
+			}
+		}
+		switch query, _ := asked["query"].(string); {
+		case strings.HasPrefix(query, "mutation"):
+			call = mergeMutation
+		case query == "{viewer{login}}":
+			call = mergeViewer
+		}
 		gh.calls = append(gh.calls, call)
+		gh.asked[call] = asked
 		body, ok := routes[call]
 		if !ok {
 			t.Errorf("unexpected %s", call)
 			http.Error(w, "unexpected", http.StatusInternalServerError)
 			return
-		}
-		if r.Method == http.MethodPut {
-			var asked map[string]any
-			if err := json.NewDecoder(r.Body).Decode(&asked); err != nil {
-				t.Errorf("decode %s body: %v", call, err)
-			}
-			gh.asked[call] = asked
 		}
 		if _, err := fmt.Fprint(w, body); err != nil {
 			t.Errorf("write fixture response: %v", err)
@@ -74,8 +80,21 @@ func serveMergeGitHub(t *testing.T, routes map[string]string) (*mergeGitHub, *na
 	return gh, nativeapi.NewWithToken(srv.URL, "key")
 }
 
+const (
+	mergeMutation = "POST /graphql mergePullRequest"
+	mergeViewer   = "POST /graphql viewer"
+)
+
+func viewer(login string) string {
+	return fmt.Sprintf(`{"data":{"viewer":{"login":%q}}}`, login)
+}
+
 func (gh *mergeGitHub) merged() bool {
-	return slices.ContainsFunc(gh.calls, func(call string) bool { return strings.HasPrefix(call, "PUT ") })
+	return slices.ContainsFunc(gh.calls, func(call string) bool { return strings.HasPrefix(call, "PUT ") || call == mergeMutation })
+}
+
+func mergedByGraphQL(number int, head string) string {
+	return fmt.Sprintf(`{"data":{"mergePullRequest":{"pullRequest":{"merged":true,"headRefName":%q,"mergeCommit":{"oid":"m%d"}}}}}`, head, number)
 }
 
 func mergeCheck(name, conclusion string, workflow int64, started string) prstate.Context {
@@ -99,7 +118,7 @@ func mergePull(number int, state, head string, checks ...prstate.Context) string
 	if err != nil {
 		panic(err)
 	}
-	return fmt.Sprintf(`"number":%d,"state":%q,"headRefName":%q,"headRefOid":"head%d","commits":{"nodes":[{"commit":{"statusCheckRollup":%s}}]}`, number, state, head, number, encoded)
+	return fmt.Sprintf(`"id":"PR_%d","number":%d,"state":%q,"headRefName":%q,"headRefOid":"head%d","commits":{"nodes":[{"commit":{"statusCheckRollup":%s}}]}`, number, number, state, head, number, encoded)
 }
 
 func mergeRead(pull string, stack ...string) string {
@@ -121,16 +140,15 @@ func landedPull(number int, head string) string {
 	return fmt.Sprintf(`{"number":%d,"state":"closed","merged":true,"merge_commit_sha":"m%d","head":{"ref":%q}}`, number, number, head)
 }
 
-func TestVcsMergeLandsAPlainPullRequestThroughThePlainMergeAPI(t *testing.T) {
+func TestVcsMergeLandsAPlainPullRequestThroughGraphQLPinnedToItsHead(t *testing.T) {
 	f := shipRepo(t, vcstest.Remote())
 	ctx := stubMergeQueueRead(t, f, "git@github.com:org/repo.git")
 	shipGTUntracked(t, f, "tip")
 	gh, client := serveMergeGitHub(t, map[string]string{
-		"GET /user":                         `{"login":"org"}`,
-		"GET /repos/org/repo/pulls":         `[{"number":7,"state":"open"}]`,
-		"POST /graphql":                     mergeRead(mergePull(7, "OPEN", "tip", mergeCheck("test", "FAILURE", 11, "2026-11-05T10:00:00Z"), mergeCheck("test", "SUCCESS", 11, "2026-11-05T10:05:00Z"), runningCheck("lint"))),
-		"PUT /repos/org/repo/pulls/7/merge": `{"sha":"m7","merged":true,"message":"Pull Request successfully merged"}`,
-		"GET /repos/org/repo/pulls/7":       landedPull(7, "tip"),
+		mergeViewer:                 viewer("org"),
+		"GET /repos/org/repo/pulls": `[{"number":7,"state":"open"}]`,
+		"POST /graphql":             mergeRead(mergePull(7, "OPEN", "tip", mergeCheck("test", "FAILURE", 11, "2026-11-05T10:00:00Z"), mergeCheck("test", "SUCCESS", 11, "2026-11-05T10:05:00Z"), runningCheck("lint"))),
+		mergeMutation:               mergedByGraphQL(7, "tip"),
 	})
 
 	out, err := runMergeCmd(withMergeClient(ctx, client), t, "--repo", "org/repo", "--admin", "--match-head-commit", "head7")
@@ -140,8 +158,14 @@ func TestVcsMergeLandsAPlainPullRequestThroughThePlainMergeAPI(t *testing.T) {
 	if want := "merged #7 tip m7\n"; out != want {
 		t.Errorf("report = %q, want %q", out, want)
 	}
-	if want := (map[string]any{"sha": "head7", "merge_method": "squash"}); !reflect.DeepEqual(gh.asked["PUT /repos/org/repo/pulls/7/merge"], want) {
-		t.Errorf("merge body = %v, want %v", gh.asked["PUT /repos/org/repo/pulls/7/merge"], want)
+	mutation, _ := gh.asked[mergeMutation]["query"].(string)
+	for _, want := range []string{`pullRequestId:"PR_7"`, `expectedHeadOid:"head7"`, "mergeMethod:SQUASH"} {
+		if !strings.Contains(mutation, want) {
+			t.Errorf("merge mutation = %q, want it to carry %s", mutation, want)
+		}
+	}
+	if slices.ContainsFunc(gh.calls, func(call string) bool { return strings.HasPrefix(call, "PUT ") }) {
+		t.Errorf("a plain PR merged through REST: %v", gh.calls)
 	}
 }
 
@@ -149,7 +173,7 @@ func TestVcsMergeLandsAStackMemberThroughTheAsyncMergeAPI(t *testing.T) {
 	low := mergePull(4, "MERGED", "low")
 	mid := mergePull(5, "OPEN", "mid", mergeCheck("test", "SUCCESS", 11, "2026-11-05T10:00:00Z"))
 	gh, client := serveMergeGitHub(t, map[string]string{
-		"GET /user":     `{"login":"yasyf"}`,
+		mergeViewer:     viewer("yasyf"),
 		"POST /graphql": mergeRead(mid, low, mid, mergePull(6, "OPEN", "top")),
 		"PUT /repos/yasyf/cc-context/pulls/5/merge-async": `{"status":"merged","details":{"message":"Pull request was merged.","sha":"m5"}}`,
 		"GET /repos/yasyf/cc-context/pulls/5":             landedPull(5, "mid"),
@@ -171,7 +195,7 @@ func TestVcsMergeLandsAnOpenDownstackOnlyWhenAsked(t *testing.T) {
 	low := mergePull(4, "OPEN", "low", mergeCheck("test", "SUCCESS", 11, "2026-11-05T10:00:00Z"))
 	mid := mergePull(5, "OPEN", "mid")
 	routes := map[string]string{
-		"GET /user":     `{"login":"yasyf"}`,
+		mergeViewer:     viewer("yasyf"),
 		"POST /graphql": mergeRead(mid, mergePull(3, "MERGED", "base"), low, mid),
 		"PUT /repos/yasyf/cc-context/pulls/5/merge-async": `{"status":"merged","details":{"sha":"m5"}}`,
 		"GET /repos/yasyf/cc-context/pulls/4":             landedPull(4, "low"),
@@ -233,7 +257,7 @@ func TestVcsMergeRefusesARedItCannotProveInherited(t *testing.T) {
 				number = "5"
 			}
 			gh, client := serveMergeGitHub(t, map[string]string{
-				"GET /user":     `{"login":"yasyf"}`,
+				mergeViewer:     viewer("yasyf"),
 				"POST /graphql": tc.read,
 				"GET /repos/yasyf/cc-context/actions/runs/99":      tc.run,
 				"GET /repos/yasyf/cc-context/actions/runs/99/jobs": tc.jobs,
@@ -255,12 +279,11 @@ func TestVcsMergeRefusesARedItCannotProveInherited(t *testing.T) {
 
 func TestVcsMergeLandsPastARedTheMainRunFailsTheSameWay(t *testing.T) {
 	gh, client := serveMergeGitHub(t, map[string]string{
-		"GET /user":     `{"login":"yasyf"}`,
+		mergeViewer:     viewer("yasyf"),
 		"POST /graphql": mergeRead(mergePull(7, "OPEN", "tip", mergeCheck("test", "FAILURE", 11, "2026-11-05T10:00:00Z"), mergeCheck("lint", "SUCCESS", 11, "2026-11-05T10:00:00Z"))),
 		"GET /repos/yasyf/cc-context/actions/runs/99":      `{"head_branch":"main","event":"push","workflow_id":11}`,
 		"GET /repos/yasyf/cc-context/actions/runs/99/jobs": `{"jobs":[{"name":"lint","status":"completed","conclusion":"success"},{"name":"test","status":"completed","conclusion":"failure"}]}`,
-		"PUT /repos/yasyf/cc-context/pulls/7/merge":        `{"sha":"m7","merged":true}`,
-		"GET /repos/yasyf/cc-context/pulls/7":              landedPull(7, "tip"),
+		mergeMutation: mergedByGraphQL(7, "tip"),
 	})
 
 	out, err := runMergeCmd(withMergeClient(t.Context(), client), t, "7", "--repo", "yasyf/cc-context", "--admin", "--match-head-commit", "head7", "--red-on-main", "99")
@@ -270,7 +293,7 @@ func TestVcsMergeLandsPastARedTheMainRunFailsTheSameWay(t *testing.T) {
 	if want := "merged #7 tip m7\n"; out != want {
 		t.Errorf("report = %q, want %q", out, want)
 	}
-	if !slices.Contains(gh.calls, "PUT /repos/yasyf/cc-context/pulls/7/merge") {
+	if !slices.Contains(gh.calls, mergeMutation) {
 		t.Errorf("merge never reached GitHub: %v", gh.calls)
 	}
 }
@@ -301,12 +324,12 @@ func TestVcsMergeRefusesAQueueWithoutAdminAndAdminOnAnotherAccountsRepository(t 
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := vcsMergeQueueRepo(t, tc.queue)
-			gh, client := serveMergeGitHub(t, map[string]string{"GET /user": `{"login":"someone"}`})
+			gh, client := serveMergeGitHub(t, map[string]string{mergeViewer: viewer("someone")})
 			_, err := runMergeCmd(withMergeClient(ctx, client), t, append([]string{"7", "--repo", tc.repo, "--match-head-commit", "head7"}, tc.args...)...)
 			if err == nil || !strings.Contains(err.Error(), tc.want) || strings.Contains(err.Error(), "pass --admin") {
 				t.Fatalf("merge = %v, want %q with no --admin way past it", err, tc.want)
 			}
-			if slices.ContainsFunc(gh.calls, func(call string) bool { return call != "GET /user" }) {
+			if slices.ContainsFunc(gh.calls, func(call string) bool { return call != mergeViewer }) {
 				t.Errorf("merge reached GitHub: %v", gh.calls)
 			}
 		})
@@ -325,12 +348,10 @@ func TestVcsMergeAdminPassesTheQueueOfARepositoryTheViewerOwns(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := vcsMergeQueueRepo(t, tc.queue)
-			_, name, _ := strings.Cut(tc.repo, "/")
 			_, client := serveMergeGitHub(t, map[string]string{
-				"GET /user":     `{"login":"YASYF"}`,
+				mergeViewer:     viewer("YASYF"),
 				"POST /graphql": mergeRead(mergePull(7, "OPEN", "tip")),
-				"PUT /repos/yasyf/" + name + "/pulls/7/merge": `{"sha":"m7","merged":true}`,
-				"GET /repos/yasyf/" + name + "/pulls/7":       landedPull(7, "tip"),
+				mergeMutation:   mergedByGraphQL(7, "tip"),
 			})
 
 			out, err := runMergeCmd(withMergeClient(ctx, client), t, "7", "--repo", tc.repo, "--admin", "--match-head-commit", "head7")

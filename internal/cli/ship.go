@@ -83,7 +83,11 @@ var errShipMessageRequired = errors.New("ship: -m/--message is required unless -
 var errShipAlreadyCommitted = errors.New("ship: the branch already carries its commits")
 
 func shipLandedSegment(o shipOpts) string {
-	return "nothing to commit" + shipScope(o) + " — shipping as --no-commit"
+	seg := "nothing to commit" + shipScope(o) + " — shipping as --no-commit"
+	if len(o.messages) > 0 {
+		seg += shipSep + "-m left unused: --amend -m rewords the tip"
+	}
+	return seg
 }
 
 func shipScope(o shipOpts) string {
@@ -246,7 +250,7 @@ Ship owns the pull request in every lane. --pr-title, --pr-title-file and --pr-b
 	cmd.Flags().BoolVar(&o.noVerify, "no-verify", false, "skip the repository's hooks (uvx prek, and git's own) on the commit and every push")
 	cmd.Flags().BoolVar(&o.verify, "verify", false, "run the repository's hooks on the commit and every push (the default)")
 	cmd.Flags().BoolVar(&o.yolo, "yolo", false, "skip every hook and ship-side guard: implies --no-verify, and drops any guard ship adds of its own")
-	cmd.Flags().BoolVar(&o.amend, "amend", false, "fold the working copy into the parent commit")
+	cmd.Flags().BoolVar(&o.amend, "amend", false, "fold the working copy into the parent commit; with -m, reword it, on a clean working copy too")
 	cmd.Flags().BoolVar(&o.dryRun, "dry-run", false, "report what this ship would do — resolved parent, commit scope, the refs and pull request heads it would move — and do none of it")
 	cmd.Flags().IntVar(&o.budget, "budget", shipLogBudget, "token budget for the CI failure log excerpt, and for the --dry-run report (0 = uncapped)")
 	cmd.Flags().StringArrayVar(&o.skipHunks, "skip-hunk", nil, "commit everything except this hunk ref (repeatable; refs from ccx vcs hunks)")
