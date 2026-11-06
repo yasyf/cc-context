@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -58,7 +59,8 @@ reads it, fails the same way when the run's failed jobs fail every one of those
 tests, in any job, since shards rebalance as the test set changes. A red job
 whose log names no test, or one whose tests the run does not all fail while a
 failed job of the run names none, fails the same way when the run fails the job
-of the same name. A check still running never refuses.
+of the same name. A job log it cannot read refuses the merge with the read
+error. A check still running never refuses.
 
 A native stack member goes through GitHub's asynchronous merge API, the one
 gh pr merge cannot use. That API lands every open pull request below it in the
@@ -239,9 +241,13 @@ func vcsMergeGate(ctx context.Context, client *nativeapi.Client, req nativeapi.M
 		}
 	}
 	tests := map[int64][]string{}
-	mergeFailedTests(ctx, client, req, compared, tests)
+	if err := mergeFailedTests(ctx, client, req, compared, tests); err != nil {
+		return err
+	}
 	if slices.ContainsFunc(compared, func(id int64) bool { return len(tests[id]) > 0 }) {
-		mergeFailedTests(ctx, client, req, failedJobs, tests)
+		if err := mergeFailedTests(ctx, client, req, failedJobs, tests); err != nil {
+			return err
+		}
 	}
 	var own []mergeRed
 	for _, r := range reds {
@@ -260,16 +266,18 @@ func vcsMergeGate(ctx context.Context, client *nativeapi.Client, req nativeapi.M
 	return nil
 }
 
-func mergeFailedTests(ctx context.Context, client *nativeapi.Client, req nativeapi.MergeRequest, jobs []int64, into map[int64][]string) {
+func mergeFailedTests(ctx context.Context, client *nativeapi.Client, req nativeapi.MergeRequest, jobs []int64, into map[int64][]string) error {
 	jobs = slices.DeleteFunc(slices.Clone(jobs), func(id int64) bool {
 		_, done := into[id]
 		return done
 	})
 	found := make([][]string, len(jobs))
+	failures := make([]error, len(jobs))
 	var reads sync.WaitGroup
 	for i, id := range jobs {
 		reads.Go(func() {
-			log, _ := client.ReadJobLog(ctx, req.RepoOwner, req.RepoName, id)
+			var log string
+			log, failures[i] = client.ReadJobLog(ctx, req.RepoOwner, req.RepoName, id)
 			found[i] = failedTests(log)
 		})
 	}
@@ -277,6 +285,7 @@ func mergeFailedTests(ctx context.Context, client *nativeapi.Client, req nativea
 	for i, id := range jobs {
 		into[id] = found[i]
 	}
+	return errors.Join(failures...)
 }
 
 func ownTests(failing []string, onMain []int64, tests map[int64][]string) ([]string, bool) {

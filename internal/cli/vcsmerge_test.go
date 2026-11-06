@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -73,6 +74,15 @@ func serveMergeGitHub(t *testing.T, routes map[string]string) (*mergeGitHub, *na
 			http.Error(w, "unexpected", http.StatusInternalServerError)
 			return
 		}
+		if refusal, refused := strings.CutPrefix(body, mergeRefusalPrefix); refused {
+			code, text, _ := strings.Cut(refusal, " ")
+			status, err := strconv.Atoi(code)
+			if err != nil {
+				t.Errorf("route %s refuses with %q, not a status", call, refusal)
+			}
+			http.Error(w, text, status)
+			return
+		}
 		if _, err := fmt.Fprint(w, body); err != nil {
 			t.Errorf("write fixture response: %v", err)
 		}
@@ -82,9 +92,14 @@ func serveMergeGitHub(t *testing.T, routes map[string]string) (*mergeGitHub, *na
 }
 
 const (
-	mergeMutation = "POST /graphql mergePullRequest"
-	mergeViewer   = "POST /graphql viewer"
+	mergeMutation      = "POST /graphql mergePullRequest"
+	mergeViewer        = "POST /graphql viewer"
+	mergeRefusalPrefix = "refuse "
 )
+
+func refused(status int, text string) string {
+	return fmt.Sprintf("%s%d %s", mergeRefusalPrefix, status, text)
+}
 
 func viewer(login string) string {
 	return fmt.Sprintf(`{"data":{"viewer":{"login":%q}}}`, login)
@@ -317,6 +332,12 @@ func TestVcsMergeComparesARedJobsFailingTestsAcrossTheMainRunsJobs(t *testing.T)
 			refusal: "#7 pytest 1/12 (" + introduced + ") failed, and run 99 on main does not fail the same tests",
 		},
 		{name: "a PR log that names no test", onPR: "", onMain: pytestJobLog(inherited), refusal: "#7 pytest 1/12 failed, and run 99 on main does not fail the same tests"},
+		{
+			name: "a read PR log that names no test, its job red on main", onPR: "", onMain: pytestJobLog(inherited),
+			jobs: `{"jobs":[{"id":212,"name":"pytest 1/12","status":"completed","conclusion":"failure"}]}`,
+		},
+		{name: "a PR log it cannot read", onPR: refused(http.StatusGone, "Log expired"), onMain: pytestJobLog(inherited), refusal: "read job 101's log"},
+		{name: "a main log it cannot read", onPR: pytestJobLog(introduced), onMain: refused(http.StatusGone, "Log expired"), refusal: "read job 212's log"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			gh, client := serveMergeGitHub(t, map[string]string{

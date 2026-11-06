@@ -18,7 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the run fails every test it fails. Pytest shards rebalance as the test set
   changes, so yasyf/cc-skills#3658 was refused for `pytest 1/12` while the one
   test it failed was red on main in `pytest 12/12`. A refusal names the tests the
-  run does not fail. A red job whose log names no test still compares by job name.
+  run does not fail. A red job whose log names no test still compares by job name,
+  and a job log it cannot read refuses the merge with the read error.
 - The guard pack rewrites a raw `git rebase <args>` in a shallow clone to
   `ccx vcs rebase -- <args>`, with the same arguments and exit code, so the
   rebase first deepens to the merge base. A lane on a Sprite's depth-1 checkout
