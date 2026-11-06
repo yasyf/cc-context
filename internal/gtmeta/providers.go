@@ -364,7 +364,7 @@ func readRequestedOriginOrphans(ctx context.Context, commonDir string, branches 
 	if err != nil {
 		return nil, nil, err
 	}
-	if !native {
+	if legacy && !native {
 		return read(ctx, commonDir, true, branches)
 	}
 	if legacy {
@@ -425,7 +425,7 @@ func readProviders(ctx context.Context, commonDir string, remote bool) (State, [
 	if err != nil {
 		return nil, nil, err
 	}
-	if !native {
+	if legacy && !native {
 		return readStateOrphans(ctx, commonDir, remote)
 	}
 	if legacy {
@@ -472,7 +472,7 @@ func ReadTrunk(ctx context.Context, commonDir string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if !native && contextProvider(ctx) != ProviderGitHub {
+	if legacy && !native && contextProvider(ctx) != ProviderGitHub {
 		return graphiteReadTrunk(commonDir)
 	}
 	trunk, err := nativemeta.ReadTrunk(ctx, commonDir)
@@ -527,7 +527,7 @@ func Rows(ctx context.Context, commonDir string) ([]Row, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !native {
+	if legacy && !native {
 		return graphiteRows(ctx, commonDir)
 	}
 	byName := map[string]Row{}
@@ -773,7 +773,7 @@ func LastSubmitted(ctx context.Context, commonDir string) (map[string]Version, e
 	if err != nil {
 		return nil, err
 	}
-	if !native {
+	if legacy && !native {
 		return graphiteLastSubmitted(ctx, commonDir)
 	}
 	out := map[string]Version{}

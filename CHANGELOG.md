@@ -48,6 +48,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs stack list` works in a checkout with no stack metadata.** A clone
+  with neither a native `gh-stack` catalog nor a Graphite
+  `.graphite_repo_config`, as on a fresh Sprite, failed with `gtmeta: read
+  ".../.graphite_repo_config": no such file`. A stack read now treats Graphite as
+  present only when its config is, and otherwise reads the native catalog, which
+  takes its trunk from `origin/HEAD` while empty; the branch lists as untracked
+  on that trunk. Nothing is written to the checkout's metadata.
 - **`ccx vcs ship -m` on a clean working copy says it left `-m` unused.** With
   nothing to commit over commits trunk lacks, ship goes on as `--no-commit` and
   never applies the message; the report now adds `-m left unused: --amend -m
