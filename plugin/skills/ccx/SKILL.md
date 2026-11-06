@@ -238,7 +238,8 @@ deprecated alias of `--new-branch`).
 A branch someone else already committed — a delegate's worktree, a `git commit` by
 hand, a codex lane — ships without a flag: with nothing left to commit over commits
 trunk does not carry, ship skips the commit and goes on to track, push, and the PR,
-reporting `nothing to commit — shipping as --no-commit`. Trailing paths do not
+reporting `nothing to commit — shipping as --no-commit`, and a `-m` it was given
+is left unused, which the report says; `--amend -m` is the reword. Trailing paths do not
 block it: a scoped ship whose paths come up clean takes the same path, the report
 naming the paths. `--no-commit` states that path outright, takes no paths
 (`--no-commit takes no paths — a path scopes a commit, and --no-commit cuts none`),
@@ -310,6 +311,7 @@ ccx vcs hunks f.go                               # list pending hunks as file:A-
 ccx vcs ship -m "fix: x" --skip-hunk f.go:530-536#k2fa f.go  # ship f.go minus one hunk
 ccx vcs ship -m "wip" --no-push                  # commit only, skip push and CI
 ccx vcs ship --amend                             # fold the working copy into the parent
+ccx vcs ship --amend -m "fix: x"                 # reword the tip and push it, clean tree too
 ccx vcs ship -m "spike" --branch me/probe        # commit onto a named branch
 ccx vcs ship -m "feat: x" --new-branch --pr-title "Add X" --pr-body-file body.md
 ccx vcs ship --new-branch --pr-title "Add X" --pr-body-file body.md  # -m derived from them

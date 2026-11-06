@@ -1,6 +1,7 @@
 package nativeapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -10,6 +11,9 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/yasyf/cc-context/internal/render"
 )
 
 func fastMergePoll(t *testing.T) {
@@ -172,21 +176,82 @@ func TestMergePullRequestResumesAPendingRequestAndReportsItsOutcome(t *testing.T
 
 func TestMergePullRequestReportsAPlainMergeGitHubRefused(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if call := r.Method + " " + r.URL.Path; call != "PUT /repos/org/repo/pulls/9/merge" {
-			t.Errorf("unexpected %s", call)
+		query, err := io.ReadAll(r.Body)
+		if call := r.Method + " " + r.URL.Path; call != "POST /graphql" || err != nil || !strings.Contains(string(query), `expectedHeadOid:\"head9\"`) {
+			t.Errorf("unexpected %s %s (%v)", call, query, err)
 			http.Error(w, "unexpected", http.StatusInternalServerError)
 			return
 		}
-		w.WriteHeader(http.StatusConflict)
-		if _, err := fmt.Fprint(w, `{"message":"Head branch was modified. Review and try the merge again."}`); err != nil {
+		if _, err := fmt.Fprint(w, `{"data":{"mergePullRequest":null},"errors":[{"type":"UNPROCESSABLE","path":["mergePullRequest"],"message":"Head branch was modified. Review and try the merge again."}]}`); err != nil {
 			t.Errorf("write fixture response: %v", err)
 		}
 	}))
 	defer srv.Close()
 
-	plan := MergePlan{Pull: MergeCandidate{Number: 9, Head: "tip", HeadSHA: "head9"}, State: PROpen}
+	plan := MergePlan{Pull: MergeCandidate{Number: 9, Head: "tip", HeadSHA: "head9"}, PullID: "PR_9", State: PROpen}
 	_, err := NewWithToken(srv.URL, "key").MergePullRequest(context.Background(), MergeRequest{RepoOwner: "org", RepoName: "repo", Method: "squash"}, plan)
 	if err == nil || !strings.Contains(err.Error(), "merge PR #9") || !strings.Contains(err.Error(), "Head branch was modified") {
 		t.Fatalf("merge = %v, want GitHub's refusal of PR #9", err)
+	}
+}
+
+func TestMergePullRequestRetriesAStackMembersMergeOncePastASecondaryLimit(t *testing.T) {
+	limitWaits := mergeLimitWaits
+	mergeLimitWaits = []time.Duration{0}
+	t.Cleanup(func() { mergeLimitWaits = limitWaits })
+	for _, tc := range []struct {
+		name    string
+		limited int
+		err     string
+	}{
+		{name: "one limit", limited: 1},
+		{name: "a second limit", limited: 2, err: "secondary rate limit"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			puts := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				reply := func(body string) {
+					if _, err := fmt.Fprint(w, body); err != nil {
+						t.Errorf("write fixture response: %v", err)
+					}
+				}
+				switch call := r.Method + " " + r.URL.Path; call {
+				case "PUT /repos/org/repo/pulls/5/merge-async":
+					puts++
+					if puts <= tc.limited {
+						w.Header().Set("Retry-After", "0")
+						w.WriteHeader(http.StatusForbidden)
+						reply(`{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}`)
+						return
+					}
+					reply(`{"status":"merged","details":{"sha":"m5"}}`)
+				case "GET /repos/org/repo/pulls/5":
+					reply(`{"number":5,"state":"closed","merged":true,"merge_commit_sha":"m5","head":{"ref":"mid"}}`)
+				default:
+					t.Errorf("unexpected %s", call)
+					http.Error(w, "unexpected", http.StatusInternalServerError)
+				}
+			}))
+			defer srv.Close()
+
+			var announced bytes.Buffer
+			plan := MergePlan{Pull: MergeCandidate{Number: 5, Head: "mid", HeadSHA: "head5"}, State: PROpen, Stacked: true}
+			got, err := NewWithToken(srv.URL, "key").MergePullRequest(render.WithSlowWriter(context.Background(), &announced), MergeRequest{RepoOwner: "org", RepoName: "repo", Method: "squash", Admin: true}, plan)
+			if puts != 2 {
+				t.Errorf("merge-async PUTs = %d, want the request and one retry", puts)
+			}
+			if want := "ccx: GitHub rate-limited PUT /repos/org/repo/pulls/5/merge-async, retrying in 0s (wait 1 of 1)\n"; announced.String() != want {
+				t.Errorf("announced %q, want %q", announced.String(), want)
+			}
+			if tc.err != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.err) {
+					t.Fatalf("merge = %v, want the second limit's refusal", err)
+				}
+				return
+			}
+			if want := []MergedPR{{Number: 5, Head: "mid", Status: "merged", SHA: "m5"}}; err != nil || !reflect.DeepEqual(got, want) {
+				t.Fatalf("merged = %+v, %v, want %+v", got, err, want)
+			}
+		})
 	}
 }
