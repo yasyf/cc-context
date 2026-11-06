@@ -260,21 +260,26 @@ func TestGitWorktreeRootCanonicalRepoDirectory(t *testing.T) {
 	}
 }
 
-func TestGitWorktreeRootPreservesJJWorkspacePool(t *testing.T) {
+func TestGitWorktreeRootInColocatedJJRepo(t *testing.T) {
 	f := vcstest.Repo(t, vcstest.JJ())
 	f.Isolate(t)
-	configureGitWorktreeRoot(t, f, "relative-root-unused-by-jj")
-	out, err := runWorktreeCmd(t, f, "add", "feat", "--jj", "workspace")
-	if err != nil {
-		t.Fatal(err)
-	}
-	path := worktreeSummaryPath(t, out)
-	want := filepath.Join(fixtureHome(t, f), ".claude", "worktrees", filepath.Base(f.Dir), "feat")
-	if path != want {
-		t.Fatalf("JJ path = %s, want %s", path, want)
-	}
-	if _, err := runWorktreeCmd(t, f, "rm", "feat"); err != nil {
-		t.Fatalf("remove JJ workspace: %v", err)
+	home := fixtureHome(t, f)
+	root := filepath.Join(home, "repos", "worktrees")
+	configureGitWorktreeRoot(t, f, root)
+	for _, tt := range []struct{ name, mode, want string }{
+		{"workspace", "workspace", filepath.Join(worktreePool(home), filepath.Base(f.Dir), "workspace")},
+		{"git", "none", filepath.Join(root, filepath.Base(f.Dir), "git")},
+	} {
+		out, err := runWorktreeCmd(t, f, "add", tt.name, "--jj", tt.mode)
+		if err != nil {
+			t.Fatalf("add --jj %s: %v", tt.mode, err)
+		}
+		if got := worktreeSummaryPath(t, out); got != tt.want {
+			t.Fatalf("--jj %s minted %s, want %s", tt.mode, got, tt.want)
+		}
+		if _, err := runWorktreeCmd(t, f, "rm", tt.name); err != nil {
+			t.Fatalf("remove --jj %s copy: %v", tt.mode, err)
+		}
 	}
 }
 

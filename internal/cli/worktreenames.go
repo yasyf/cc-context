@@ -11,7 +11,6 @@ import (
 
 	"github.com/yasyf/cc-context/internal/cleanup"
 	"github.com/yasyf/cc-context/internal/render"
-	"github.com/yasyf/cc-context/internal/vcs"
 )
 
 func laneNames(ctx context.Context, prefix string) (cleanup.Names, error) {
@@ -37,12 +36,12 @@ func laneUsed(ctx context.Context, prefix, path string) (cleanup.Use, bool, erro
 // refuseUsedLane refuses path when ccx has cut or removed it, or another path
 // with its lane name, before: a removed lane deletes in place whenever the
 // cleanup queue reaches it, so its name is never cut again.
-func refuseUsedLane(ctx context.Context, prefix string, c vcs.Checkout, name, path string) error {
+func refuseUsedLane(ctx context.Context, prefix, name, path string) error {
 	use, used, err := laneUsed(ctx, prefix, path)
 	if err != nil || !used {
 		return err
 	}
-	fresh, err := freshLaneName(ctx, prefix, c, name)
+	fresh, err := freshLaneName(ctx, prefix, name, path)
 	if err != nil {
 		return err
 	}
@@ -50,16 +49,12 @@ func refuseUsedLane(ctx context.Context, prefix string, c vcs.Checkout, name, pa
 		prefix, cleanup.LaneName(path), use.By, use.At.Local().Format(time.RFC3339), use.Path, fresh)
 }
 
-func freshLaneName(ctx context.Context, prefix string, c vcs.Checkout, name string) (string, error) {
+func freshLaneName(ctx context.Context, prefix, name, path string) (string, error) {
 	for n := 2; ; n++ {
-		candidate := name + "-" + strconv.Itoa(n)
-		path, err := mintGitWorktreePath(ctx, prefix, c, candidate)
-		if err != nil {
-			return "", err
-		}
-		free, err := laneFree(ctx, prefix, path)
+		suffix := "-" + strconv.Itoa(n)
+		free, err := laneFree(ctx, prefix, path+suffix)
 		if err != nil || free {
-			return candidate, err
+			return name + suffix, err
 		}
 	}
 }
