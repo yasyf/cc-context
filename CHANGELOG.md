@@ -55,6 +55,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs ship` reads its CI verdict off the pull request's checks, Buildkite
+  included.** Ship printed `CI success` for Forge-AI/monorepo#52013 once its one
+  GitHub Actions workflow passed, while `buildkite/test` on the same head was
+  red, because the verdict counted only Actions runs. Ship waits for the verdict
+  `ccx vcs pr watch --until ci` gives the head. A pending Buildkite status keeps
+  it waiting, and a red one is `CI failure` with the build's URL in the report.
+  A Buildkite build that passed as a redundant skip, with no full run above it,
+  is `CI unconfirmed`. A shared pull request cache that cannot be read is
+  `CI error`, not a verdict from the Actions runs alone.
 - **`ccx vcs push` and `ccx vcs ship` refuse a push that would close an open
   pull request.** A lane resolving a rebase conflict pushed while HEAD still sat
   on the base, and GitHub closed Forge-AI/monorepo#50894 and #50896, since a pull

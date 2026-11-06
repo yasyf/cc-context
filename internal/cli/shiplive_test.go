@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,6 +16,7 @@ import (
 
 	"github.com/yasyf/cc-context/internal/cleanup"
 	"github.com/yasyf/cc-context/internal/gtapi"
+	"github.com/yasyf/cc-context/internal/prstate"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcs"
 	"github.com/yasyf/cc-context/internal/vcstest"
@@ -49,7 +49,9 @@ func TestMain(m *testing.M) {
 	cleanupServeDefault = func(context.Context) error {
 		panic("cli: the cleanup daemon was served from a test")
 	}
-	shipAwaitChecks = func(context.Context, io.Writer, ciPR, string) error { return nil }
+	shipPRCache = func(context.Context, string) (func(context.Context, prstate.Want) (prstate.State, error), error) {
+		return func(context.Context, prstate.Want) (prstate.State, error) { return prstate.State{}, nil }, nil
+	}
 	applySelection := os.Getenv("CCX_TEST_APPLY_SELECTION") == "1" && len(os.Args) > 2 && os.Args[1] == "vcs" && os.Args[2] == "apply-selection"
 	stackContinue := os.Getenv("CCX_TEST_STACK_CONTINUE") == "1" && len(os.Args) > 3 && os.Args[1] == "vcs" && os.Args[2] == "stack" && os.Args[3] == "continue"
 	if applySelection || stackContinue {

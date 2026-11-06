@@ -235,7 +235,9 @@ version — and the command exits 3 when nothing resolves.
 
 Commit, push, and watch CI in one call. `ship` runs a jj-aware commit (plain git
 otherwise), pushes, then watches every workflow run on the pushed commit — found via
-`gh run list --commit`, retrying registration for up to a minute. Trailing paths
+`gh run list --commit`, retrying registration for up to a minute — and, when an open
+pull request carries the commit, every check on its status rollup, Buildkite's
+commit statuses included. Trailing paths
 scope the commit to just those files; the rest of the working copy — a concurrent
 session's edits included — stays put. Where the commit goes is one decision,
 resolved before any mutation and reported as a `branch <name>` or `created <name>`
@@ -309,14 +311,18 @@ in-place replay, and its conflict refusal names `ccx vcs stack rebase`.
 today; it never drops a refusal git or gt would make anyway.
 
 The first line is the summary; each watched run adds
-a `workflow · conclusion · duration · url` line,
+a `workflow · conclusion · duration · url` line, each check another system reports,
+such as a Buildkite commit status, adds a `context · state · url` line,
 and a red run adds its failing jobs and a budget-capped `--log-failed` excerpt with a
-`full log:` pointer. `CI failure` means a run went red; `CI error` means the watch
+`full log:` pointer. `CI failure` means a run or a check went red. `CI unconfirmed`
+after a push means a Buildkite build passed as a redundant skip, and no full run on a
+pull request above it holds the head. `CI error` means the watch
 itself failed after a successful push (the `check:` line says how to resume — don't
 re-run ship, that cuts a new commit). Ship waits in its own process and spawns no
 `gh run watch`: a branch with an open pull request waits through the shared pull
-request cache, then reads each run once; without one, ship reads each run once a
-minute until it concludes.
+request cache until its head reaches the verdict `ccx vcs pr watch --until ci` gives,
+so a pending Buildkite status keeps it waiting, then reads each run once; without
+one, ship reads each run once a minute until it concludes.
 
 ```
 ccx vcs ship -m "fix: budget overflow marker"   # commit + push + watch CI
