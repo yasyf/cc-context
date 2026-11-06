@@ -48,6 +48,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs ship` no longer spawns `gh run watch`.** Its CI wait ran one
+  `gh run watch <run> --interval 60` child per workflow run, outside the shared pull
+  request cache, and a lane that wanted to stop the wait could not end a child its
+  process guard had no record of starting. A branch with an open pull request now
+  waits through the shared cache until every GitHub Actions suite on the pushed head
+  finishes, the head moves on, or the pull request closes, then reads each run once
+  for the report; a branch without one reads each run once a minute until it
+  concludes. The wait runs in ship's own process, so stopping ship stops it. The
+  live `gh run watch` stream on a terminal is gone; ship prints one line naming the
+  pull request it waits on.
 - **`ccx vcs stack list` works in a checkout with no stack metadata.** A clone
   with neither a native `gh-stack` catalog nor a Graphite
   `.graphite_repo_config`, as on a fresh Sprite, failed with `gtmeta: read
