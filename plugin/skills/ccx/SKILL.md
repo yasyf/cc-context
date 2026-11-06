@@ -195,6 +195,8 @@ Inspect changes without dumping the entire working tree:
 ccx vcs diff            # uncommitted
 ccx vcs diff staged
 ccx vcs diff main       # against a ref
+ccx vcs diff a.go b.go  # only these paths, one budget across them
+ccx vcs diff main a.go  # a ref, then paths; after -- every argument is a path
 ```
 
 Inspect a single commit — its message plus a structural per-file diff — with `show`,

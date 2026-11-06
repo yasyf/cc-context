@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ccx vcs diff` takes any number of paths after its optional source:
+  `ccx vcs diff a.go b.go`, or `ccx vcs diff main a.go b.go`. They restrict the
+  diff as `--glob` does, under one `--budget`. The first argument is the source
+  unless it names a file or directory; after `--` every argument is a path, which
+  names a deleted file. A lane that passed two files got "accepts at most 1
+  arg(s)" and fell back to the whole diff.
 - `ccx vcs stack move --onto <parent>` moves the checked-out branch and the branches above it onto
   a new parent on a native GitHub stack lane, keeping every pull request. A pull request a native
   stack holds on its old base used to stay there, or `stack submit --move` opened a new pull
