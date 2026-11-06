@@ -496,6 +496,7 @@ ccx vcs pr watch o/r#123                          # owner/name#N or --repo reads
 ccx vcs pr state 123 124 --lane-prefix yasyf/work/  # shared cache records and lane PRs, as JSON
 ccx vcs pr watch 123 --job lint                  # exit when that one check settles on the PR's current head, named on the line: 0 passed, 1 failed or absent, naming the job-log command
 ccx vcs job-log 126958155452                     # one settled job's plain log, tail kept under --budget, while its run still goes
+ccx vcs job-log 126958155452 --failed-tests      # the pytest node ids the run that failed the job's step names, one per line
 ccx vcs pr recreate 123                          # replace a PR Graphite's stale stack record leaves untracked
 ccx vcs gh -- pr checks 123                      # a gh read on the app's quota
 CCX_CALLER=watch.sh ccx vcs gh --max-age 5m -- pr view 123 --json state  # a cached, accounted poll

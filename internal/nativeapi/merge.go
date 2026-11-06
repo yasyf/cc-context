@@ -73,6 +73,7 @@ type ActionsRun struct {
 // ActionsJob is one job of a workflow run, with its conclusion once finished
 // and its status before.
 type ActionsJob struct {
+	ID         int64  `json:"id"`
 	Name       string `json:"name"`
 	Status     string `json:"status"`
 	Conclusion string `json:"conclusion"`
@@ -201,6 +202,15 @@ func (c *Client) ReadActionsRun(ctx context.Context, owner, repo string, id int6
 		return ActionsRun{}, fmt.Errorf("parse run %d's jobs: %w", id, err)
 	}
 	return ActionsRun{Branch: run.HeadBranch, Event: run.Event, WorkflowID: run.WorkflowID, Jobs: jobs.Jobs}, nil
+}
+
+// ReadJobLog reads one settled GitHub Actions job's log as GitHub serves it.
+func (c *Client) ReadJobLog(ctx context.Context, owner, repo string, id int64) (string, error) {
+	log, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/actions/jobs/%d/logs", url.PathEscape(owner), url.PathEscape(repo), id), nil)
+	if err != nil {
+		return "", fmt.Errorf("read job %d's log: %w", id, err)
+	}
+	return string(log), nil
 }
 
 // MergePullRequest merges the plan's pull request at the head the plan read

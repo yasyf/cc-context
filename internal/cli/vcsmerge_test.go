@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -243,12 +244,12 @@ func TestVcsMergeRefusesARedItCannotProveInherited(t *testing.T) {
 		{
 			name: "a run that passes the check", read: mergeRead(red), args: []string{"--red-on-main", "99"},
 			run: `{"head_branch":"main","event":"push","workflow_id":11}`, jobs: `{"jobs":[{"name":"test","status":"completed","conclusion":"success"},{"name":"lint","status":"completed","conclusion":"failure"}]}`,
-			want: "#7 test failed, and run 99 on main does not fail the same job",
+			want: "#7 test failed, and run 99 on main does not fail the same tests, or the same job where a log names no test",
 		},
 		{
 			name: "a run of another workflow", read: mergeRead(red), args: []string{"--red-on-main", "99"},
 			run: `{"head_branch":"main","event":"push","workflow_id":12}`, jobs: `{"jobs":[{"name":"test","status":"completed","conclusion":"failure"}]}`,
-			want: "#7 test failed, and run 99 on main does not fail the same job",
+			want: "#7 test failed, and run 99 on main does not fail the same tests, or the same job where a log names no test",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -261,6 +262,7 @@ func TestVcsMergeRefusesARedItCannotProveInherited(t *testing.T) {
 				"POST /graphql": tc.read,
 				"GET /repos/yasyf/cc-context/actions/runs/99":      tc.run,
 				"GET /repos/yasyf/cc-context/actions/runs/99/jobs": tc.jobs,
+				"GET /repos/yasyf/cc-context/actions/jobs/1/logs":  "",
 			})
 			args := []string{number, "--repo", "yasyf/cc-context", "--admin"}
 			if !slices.Contains(tc.args, "--match-head-commit") {
@@ -283,6 +285,7 @@ func TestVcsMergeLandsPastARedTheMainRunFailsTheSameWay(t *testing.T) {
 		"POST /graphql": mergeRead(mergePull(7, "OPEN", "tip", mergeCheck("test", "FAILURE", 11, "2026-11-05T10:00:00Z"), mergeCheck("lint", "SUCCESS", 11, "2026-11-05T10:00:00Z"))),
 		"GET /repos/yasyf/cc-context/actions/runs/99":      `{"head_branch":"main","event":"push","workflow_id":11}`,
 		"GET /repos/yasyf/cc-context/actions/runs/99/jobs": `{"jobs":[{"name":"lint","status":"completed","conclusion":"success"},{"name":"test","status":"completed","conclusion":"failure"}]}`,
+		"GET /repos/yasyf/cc-context/actions/jobs/1/logs":  "",
 		mergeMutation: mergedByGraphQL(7, "tip"),
 	})
 
@@ -295,6 +298,50 @@ func TestVcsMergeLandsPastARedTheMainRunFailsTheSameWay(t *testing.T) {
 	}
 	if !slices.Contains(gh.calls, mergeMutation) {
 		t.Errorf("merge never reached GitHub: %v", gh.calls)
+	}
+}
+
+func TestVcsMergeComparesARedJobsFailingTestsAcrossTheMainRunsJobs(t *testing.T) {
+	const inherited, introduced = "tests/test_fail_open.py::test_every_refusal[go_posts_parse - kept]", "tests/test_fail_open.py::test_every_refusal[go_posts_parse - new]"
+	shard := mergeCheck("pytest 1/12", "FAILURE", 11, "2026-11-05T10:00:00Z")
+	shard.DatabaseID = 101
+	jobs := `{"jobs":[{"id":201,"name":"pytest 1/12","status":"completed","conclusion":"success"},{"id":212,"name":"pytest 12/12","status":"completed","conclusion":"failure"}]}`
+	for _, tc := range []struct {
+		name, jobs, onPR, onMain, refusal string
+	}{
+		{name: "the same test red in another shard on main", onPR: pytestJobLog(inherited), onMain: pytestJobLog(inherited)},
+		{name: "a test red only on the PR", onPR: pytestJobLog(introduced), onMain: pytestJobLog(inherited), refusal: "#7 pytest 1/12 (" + introduced + ") failed, and run 99 on main does not fail the same tests"},
+		{
+			name: "a different test red in the same shard on main", onPR: pytestJobLog(introduced), onMain: pytestJobLog(inherited),
+			jobs:    `{"jobs":[{"id":212,"name":"pytest 1/12","status":"completed","conclusion":"failure"}]}`,
+			refusal: "#7 pytest 1/12 (" + introduced + ") failed, and run 99 on main does not fail the same tests",
+		},
+		{name: "a PR log that names no test", onPR: "", onMain: pytestJobLog(inherited), refusal: "#7 pytest 1/12 failed, and run 99 on main does not fail the same tests"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			gh, client := serveMergeGitHub(t, map[string]string{
+				mergeViewer:     viewer("yasyf"),
+				"POST /graphql": mergeRead(mergePull(7, "OPEN", "tip", shard)),
+				"GET /repos/yasyf/cc-context/actions/runs/99":       `{"head_branch":"main","event":"push","workflow_id":11}`,
+				"GET /repos/yasyf/cc-context/actions/runs/99/jobs":  cmp.Or(tc.jobs, jobs),
+				"GET /repos/yasyf/cc-context/actions/jobs/101/logs": tc.onPR,
+				"GET /repos/yasyf/cc-context/actions/jobs/212/logs": tc.onMain,
+				mergeMutation: mergedByGraphQL(7, "tip"),
+			})
+			out, err := runMergeCmd(withMergeClient(t.Context(), client), t, "7", "--repo", "yasyf/cc-context", "--admin", "--match-head-commit", "head7", "--red-on-main", "99")
+			if tc.refusal == "" {
+				if err != nil || out != "merged #7 tip m7\n" {
+					t.Fatalf("merge = %v, %q; want merged #7 tip m7", err, out)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.refusal) {
+				t.Fatalf("merge = %v, want %q", err, tc.refusal)
+			}
+			if gh.merged() {
+				t.Errorf("merge reached GitHub: %v", gh.calls)
+			}
+		})
 	}
 }
 
