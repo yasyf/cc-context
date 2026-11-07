@@ -309,3 +309,42 @@ func TestGitWorktreeRootDoesNotFollowFinalSymlinkForRemoval(t *testing.T) {
 		t.Fatalf("final symlink removed the foreign checkout: %v", err)
 	}
 }
+
+func TestWorktreeAddRefusesAClaudeCodePluginClone(t *testing.T) {
+	for _, tt := range []struct {
+		name, clone, kind string
+		stable            bool
+	}{
+		{"marketplace clone beside a stable clone", filepath.Join("marketplaces", "skills"), "marketplace", true},
+		{"plugin cache clone beside a stable clone", filepath.Join("cache", "skills", "doctor", "1.0.0"), "cache", true},
+		{"marketplace clone with no stable clone", filepath.Join("marketplaces", "skills"), "marketplace", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := vcstest.Repo(t, vcstest.Remote())
+			f.Isolate(t)
+			home := fixtureHome(t, f)
+			configureGitWorktreeRoot(t, f, filepath.Join(home, "repos", "worktrees"))
+			instead := "clone " + f.RemoteDir + " outside " + filepath.Join(home, ".claude", "plugins")
+			if tt.stable {
+				addPoolWorktree(t, f, "stable-lane")
+				stable, err := filepath.EvalSymlinks(f.Dir)
+				if err != nil {
+					t.Fatal(err)
+				}
+				instead = "run this from " + stable + ", a clone of the same remote"
+			}
+			plugin := filepath.Join(home, ".claude", "plugins", tt.clone)
+			mustRun(t, f.Env(), f.Dir, "git", "clone", "-q", f.RemoteDir, plugin)
+
+			_, err := runWorktreeCmdIn(f.ContextIn(plugin), t, "add", "lane")
+			for _, want := range []string{plugin + " is a Claude Code plugin " + tt.kind + " clone", instead} {
+				if err == nil || !strings.Contains(err.Error(), want) {
+					t.Fatalf("add from %s: error = %v, want it to name %q", plugin, err, want)
+				}
+			}
+			if _, err := os.Stat(filepath.Join(plugin, ".git", "worktrees")); !os.IsNotExist(err) {
+				t.Errorf("the refused add registered a worktree in the plugin clone: %v", err)
+			}
+		})
+	}
+}

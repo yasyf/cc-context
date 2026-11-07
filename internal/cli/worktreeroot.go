@@ -15,6 +15,9 @@ import (
 const worktreeRootKey = "ccx.worktreeRoot"
 
 func mintGitWorktreePath(ctx context.Context, prefix string, c vcs.Checkout, name string) (string, error) {
+	if err := refusePluginClone(ctx, prefix, c); err != nil {
+		return "", err
+	}
 	paths, err := gitWorktreePaths(ctx, prefix, c, name)
 	if err != nil {
 		return "", err

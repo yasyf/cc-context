@@ -67,6 +67,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs worktree add` refuses to add a worktree to a Claude Code plugin
+  clone.** A clone under Claude Code's `plugins/marketplaces` or
+  `plugins/cache` is replaced when Claude Code updates the plugin, and that
+  deletes its `.git/worktrees`. A lane added from
+  `~/.claude/plugins/marketplaces/skills` lost its worktree's registration at
+  5:11 PM on Nov 6, partway through a ship. The refusal names a clone of the
+  same remote whose worktrees sit in a worktree pool, or says to clone the
+  remote outside the plugins directory when there is none. `ccx vcs stack new`
+  and a stack rebase's conflict workspace refuse the same way, since they add
+  their worktrees through the same step.
 - **`ccx vcs ship` and the stack verbs no longer give a branch the pull request
   of an earlier branch with the same name.** They find a branch's pull request
   by its head branch name and, with no open one, took the newest closed or
