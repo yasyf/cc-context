@@ -408,7 +408,7 @@ func collectPRQueue(ctx context.Context, repo string, numbers []int, maxAge time
 				reports[i] = prUnread(number, fmt.Sprintf("%s has no pull request #%d", missing.Repo, number))
 				return nil
 			}
-			report, err := prStatusOf(gctx, warn, repo, number, st.PRs[number], limited)
+			report, err := prStatusOf(gctx, warn, repo, number, st.PRs[number], st.Trunk.Name, limited)
 			if err != nil {
 				report = prUnread(number, strings.TrimPrefix(err.Error(), "pr status: "))
 			}
@@ -422,9 +422,9 @@ func collectPRQueue(ctx context.Context, repo string, numbers []int, maxAge time
 	return reports, nil
 }
 
-func prStatusOf(ctx context.Context, warn io.Writer, repo string, number int, pr prstate.PR, limited *prstate.Backoff) (prStatusReport, error) {
+func prStatusOf(ctx context.Context, warn io.Writer, repo string, number int, pr prstate.PR, trunk string, limited *prstate.Backoff) (prStatusReport, error) {
 	if pr.Graphite == nil && pr.State != "" {
-		r := prQueueWithoutGraphite(pr)
+		r := prQueueWithoutGraphite(pr, trunk)
 		prReadSquashed(ctx, &r, pr)
 		r.Stale = staleAt(limited, pr.PolledAt)
 		r.Source = pr.Source
@@ -436,7 +436,7 @@ func prStatusOf(ctx context.Context, warn io.Writer, repo string, number int, pr
 		}
 		return prStatusReport{}, fmt.Errorf("pr status: the cache has no record of %s#%d", repo, number)
 	}
-	r := prGraphiteQueue(pr)
+	r := prGraphiteQueue(pr, trunk)
 	prReadSquashed(ctx, &r, pr)
 	if limited != nil && r.asksMergeability() {
 		mergeable, state, err := prReadMergeable(ctx, repo, number)
@@ -452,16 +452,21 @@ func prStatusOf(ctx context.Context, warn io.Writer, repo string, number int, pr
 	return newPRStatusReport(ctx, warn, repo, r, pr, pr.Graphite.DependentPRNumber), nil
 }
 
-func prGraphiteQueue(pr prstate.PR) prQueueReport {
-	info := *pr.Graphite
-	landedOn := ""
+func prLandedOn(pr prstate.PR, base, trunk string) string {
 	switch {
-	case slices.Contains(pr.SquashOn, info.BaseRefName):
-		landedOn = info.BaseRefName
+	case slices.Contains(pr.SquashOn, trunk):
+		return trunk
+	case slices.Contains(pr.SquashOn, base):
+		return base
 	case len(pr.SquashOn) > 0:
-		landedOn = pr.SquashOn[0]
+		return pr.SquashOn[0]
 	}
-	return prQueueOf(info, pr, landedOn)
+	return ""
+}
+
+func prGraphiteQueue(pr prstate.PR, trunk string) prQueueReport {
+	info := *pr.Graphite
+	return prQueueOf(info, pr, prLandedOn(pr, info.BaseRefName, trunk))
 }
 
 func (r prQueueReport) asksMergeability() bool {
@@ -504,13 +509,13 @@ func newPRStatusReport(ctx context.Context, warn io.Writer, repo string, r prQue
 	return report
 }
 
-func prQueueWithoutGraphite(pr prstate.PR) prQueueReport {
+func prQueueWithoutGraphite(pr prstate.PR, trunk string) prQueueReport {
 	r := prQueueReport{Number: pr.Number, Queue: prQueueNotQueued, State: pr.State, Base: pr.BaseRefName}
 	if pr.QueueUnknown {
 		r.Queue = prQueueUnknown
 	}
 	if pr.State == "MERGED" && len(pr.SquashOn) > 0 {
-		r.Queue, r.Squash = prQueueLanded, pr.MergeCommit
+		r.Queue, r.Squash, r.Base = prQueueLanded, pr.MergeCommit, prLandedOn(pr, pr.BaseRefName, trunk)
 	}
 	return r
 }
@@ -520,7 +525,7 @@ func prQueueWithoutGraphite(pr prstate.PR) prQueueReport {
 func prReadUnknownMergeability(ctx context.Context, repo string, prs map[int]prstate.PR, numbers []int) error {
 	unknown := slices.DeleteFunc(slices.Clone(numbers), func(n int) bool {
 		pr := prs[n]
-		return pr.Mergeable != statusUnknown || pr.Graphite == nil || !prGraphiteQueue(pr).asksMergeability()
+		return pr.Mergeable != statusUnknown || pr.Graphite == nil || !prGraphiteQueue(pr, "").asksMergeability()
 	})
 	for asked := 1; len(unknown) > 0; asked++ {
 		read, err := prQueryMergeability(ctx, repo, unknown)

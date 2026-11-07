@@ -1015,3 +1015,26 @@ func TestPRStatusMarksALineReadThroughREST(t *testing.T) {
 		t.Errorf("line = %q, want %q", got, want)
 	}
 }
+
+func TestPRStatusNamesTrunkForMergedPRWithStaleBase(t *testing.T) {
+	info := gtapi.PullRequestInfo{PRNumber: 52378, State: gtapi.PRMerged, BaseRefName: "test-sleeps-ts-timers", MergeCommitSha: "b0b8e354a1f2c3d4e5f60718293a4b5c6d7e8f90"}
+	for _, tc := range []struct {
+		name     string
+		squashOn []string
+		want     string
+	}{
+		{"on the trunk and the stale base", []string{"test-sleeps-ts-timers", "dev"}, "dev"},
+		{"on the trunk only", []string{"dev"}, "dev"},
+		{"on no trunk", []string{"test-sleeps-ts-timers"}, "test-sleeps-ts-timers"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pr := prstate.PR{Number: 52378, State: "MERGED", BaseRefName: info.BaseRefName, MergeCommit: info.MergeCommitSha, SquashOn: tc.squashOn, Graphite: &info}
+			if got := prGraphiteQueue(pr, "dev").Base; got != tc.want {
+				t.Errorf("graphite base = %q, want %q", got, tc.want)
+			}
+			if got := prQueueWithoutGraphite(pr, "dev").Base; got != tc.want {
+				t.Errorf("github base = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
