@@ -222,3 +222,60 @@ func TestStackQueryPRsLandsAPullRequestTheQueueClosedAfterSquashingIt(t *testing
 		t.Errorf("a = %+v, want #41 landed: the queue closed it after its squash reached main", pr)
 	}
 }
+
+func TestStackQueryPRsLeavesOutAnEarlierBranchsPullRequest(t *testing.T) {
+	authored := map[string]string{"a": "1000000000 +0000", "b": "1100000000 +0000"}
+	commit := func(t *testing.T, f *vcstest.Fixture, name string) string {
+		t.Helper()
+		writeShipFile(t, f.Dir, name+".txt", name+"\n")
+		mustRun(t, f.Env(), f.Dir, "git", "add", name+".txt")
+		mustRun(t, append(f.Env(), "GIT_AUTHOR_DATE="+authored[name]), f.Dir, "git", "commit", "-qm", name)
+		return gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD")
+	}
+	tests := []struct {
+		name  string
+		state string
+		head  func(t *testing.T, f *vcstest.Fixture) string
+		bound bool
+	}{
+		{"merged at the branch's tip", "MERGED", func(t *testing.T, f *vcstest.Fixture) string {
+			return commit(t, f, "a")
+		}, true},
+		{"merged at a head this checkout never fetched", "MERGED", func(t *testing.T, f *vcstest.Fixture) string {
+			commit(t, f, "b")
+			return strings.Repeat("1", 40)
+		}, false},
+		{"closed at the head of an earlier branch of the name", "CLOSED", func(t *testing.T, f *vcstest.Fixture) string {
+			earlier := commit(t, f, "a")
+			mustRun(t, f.Env(), f.Dir, "git", "switch", "-qC", "feature", "main")
+			commit(t, f, "b")
+			return earlier
+		}, false},
+		{"merged at the head the branch replays onto a newer trunk", "MERGED", func(t *testing.T, f *vcstest.Fixture) string {
+			published := commit(t, f, "a")
+			restackSquashRemote(t, f, "main", "b (#31)", "b")
+			mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
+			mustRun(t, f.Env(), f.Dir, "git", "rebase", "-q", "origin/main")
+			return published
+		}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := shipRepo(t, vcstest.Remote())
+			mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "feature")
+			head := tt.head(t, f)
+			serveGitHubStatus(t, http.StatusOK, fmt.Sprintf(`{"data":{"repository":{"p0":{"totalCount":1,"nodes":[{"number":30312,"state":%q,"isCrossRepository":false,"baseRefName":"main","headRefOid":%q,"timelineItems":{"nodes":[]}}]}}}}`, tt.state, head))
+
+			prs, err := stackQueryPRs(f.Context(), render.Dir(f.Dir), "main", []string{"feature"})
+			if err != nil {
+				t.Fatalf("stackQueryPRs: %v", err)
+			}
+			switch pr := prs["feature"]; {
+			case !tt.bound && pr != nil:
+				t.Errorf("feature = %+v, want no pull request: #30312 is an earlier branch's", pr)
+			case tt.bound && (pr == nil || pr.Number != 30312 || !pr.Landed):
+				t.Errorf("feature = %+v, want #30312 landed", pr)
+			}
+		})
+	}
+}

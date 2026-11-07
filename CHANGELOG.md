@@ -67,6 +67,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs ship` and the stack verbs no longer give a branch the pull request
+  of an earlier branch with the same name.** They find a branch's pull request
+  by its head branch name and, with no open one, took the newest closed or
+  merged one. In Forge-AI/monorepo, `release-simplify-2` picked up #30312,
+  merged months earlier from a branch of that name, and `ccx vcs ship` failed
+  in its stack rebase on that pull request's head, which the checkout did not
+  hold. A closed or merged pull request now belongs to the branch only when the
+  branch's tip holds its head, sits inside it, or carries its commits as a
+  rebase or merge-queue restack leaves them. Otherwise the branch has no pull
+  request, and ship opens a new one.
 - `ccx vcs stack move --onto <parent>` and `ccx vcs stack submit --parent
   <branch>=<parent>` take a `<parent>` from outside the checked-out branch's
   stack into the run. It stays at its published head, the branch is rebased onto
