@@ -65,7 +65,69 @@ func stackQueryPRs(ctx context.Context, dir render.Dir, trunk string, branches [
 	if err != nil {
 		return nil, err
 	}
-	return stackLandPRs(ctx, dir, trunk, reads), nil
+	kept := reads[:0]
+	for _, read := range reads {
+		reused, err := stackReusedName(ctx, dir, trunk, read.branch, read.pr)
+		if err != nil {
+			return nil, err
+		}
+		if !reused {
+			kept = append(kept, read)
+		}
+	}
+	return stackLandPRs(ctx, dir, trunk, kept), nil
+}
+
+func stackReusedName(ctx context.Context, dir render.Dir, trunk, branch string, pr *stackPR) (bool, error) {
+	if pr.State == "OPEN" || pr.Head == "" {
+		return false, nil
+	}
+	ref := "refs/heads/" + branch
+	out, code, stderr, err := render.RunCLIExitCode(ctx, dir, "git", []string{"rev-parse", "--verify", "--quiet", ref})
+	switch {
+	case err != nil:
+		return false, fmt.Errorf("%s: git rev-parse %s: %w", stackRebasePrefix, ref, err)
+	case code == 1:
+		return false, nil
+	case code != 0:
+		return false, fmt.Errorf("%s: git rev-parse %s: exit %d: %s", stackRebasePrefix, ref, code, strings.TrimSpace(stderr))
+	}
+	tip := strings.TrimSpace(out)
+	if tip == pr.Head {
+		return false, nil
+	}
+	_, code, stderr, err = render.RunCLIExitCodeEnv(ctx, dir, "git", []string{"cat-file", "-e", pr.Head}, gitRecordedHistoryEnv)
+	switch {
+	case err != nil:
+		return false, fmt.Errorf("%s: git cat-file -e %s: %w", stackRebasePrefix, shortOID(pr.Head), err)
+	case code == 1:
+		return true, nil
+	case code != 0:
+		return false, fmt.Errorf("%s: git cat-file -e %s: exit %d: %s", stackRebasePrefix, shortOID(pr.Head), code, strings.TrimSpace(stderr))
+	}
+	for _, pair := range [][2]string{{pr.Head, tip}, {tip, pr.Head}} {
+		if related, err := gitIsAncestor(ctx, dir, stackRebasePrefix, pair[0], pair[1]); err != nil || related {
+			return false, err
+		}
+	}
+	ours, err := stackAuthored(ctx, dir, trunk, tip)
+	if err != nil {
+		return false, err
+	}
+	theirs, err := stackAuthored(ctx, dir, trunk, pr.Head)
+	if err != nil {
+		return false, err
+	}
+	return !slices.ContainsFunc(ours, func(commit string) bool { return slices.Contains(theirs, commit) }), nil
+}
+
+func stackAuthored(ctx context.Context, dir render.Dir, trunk, rev string) ([]string, error) {
+	argv := []string{"log", "--no-merges", "-z", "--format=%an <%ae> %at", rev, "--not", "--remotes=*/" + trunk}
+	out, err := render.RunCLI(ctx, dir, "git", argv)
+	if err != nil {
+		return nil, fmt.Errorf("%s: git %s: %w", stackRebasePrefix, strings.Join(argv, " "), err)
+	}
+	return slices.DeleteFunc(strings.Split(out, "\x00"), func(commit string) bool { return commit == "" }), nil
 }
 
 func stackPRGraphQL(n int) string {
