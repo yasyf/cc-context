@@ -599,7 +599,11 @@ func runShip(cmd *cobra.Command, o shipOpts) (err error) {
 			if err != nil {
 				return err
 			}
-			if err := runStackRebase(cmd, stackRebaseOpts{members: append(gtBottomUp(chain), upstack...), pinned: shipParentLine(o.parent != "" || onPublished, chain, branch), landed: o.landed, newPRs: o.newPRs, draft: shipDraft(o), draftAll: o.draft || o.publish, noVerify: o.noVerify, deferPush: true, result: &gtc.restack, ship: intent, submit: true, owners: map[string]string{}, tip: branch, tipOnly: o.tipOnly, restack: o.restack, stayClean: !o.restack, dropCommits: o.dropCommits || o.yolo, evictQueued: o.evictQueued, otherLanes: o.allLanes, target: &target}); err != nil {
+			var parents []string
+			if o.parent != "" {
+				parents = []string{branch + "=" + o.parent}
+			}
+			if err := runStackRebase(cmd, stackRebaseOpts{members: append(gtBottomUp(chain), upstack...), parents: parents, pinned: shipParentLine(o.parent != "" || onPublished, chain, branch), landed: o.landed, newPRs: o.newPRs, draft: shipDraft(o), draftAll: o.draft || o.publish, noVerify: o.noVerify, deferPush: true, result: &gtc.restack, ship: intent, submit: true, owners: map[string]string{}, tip: branch, tipOnly: o.tipOnly, restack: o.restack, stayClean: !o.restack, dropCommits: o.dropCommits || o.yolo, evictQueued: o.evictQueued, otherLanes: o.allLanes, target: &target}); err != nil {
 				if preAmendSHA != "" && gtc.restack == nil {
 					return shipAmendKept(ctx, dir, preAmendSHA, err)
 				}

@@ -1605,7 +1605,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 				}
 			} else if retracked {
 				b.Publication = receipt
-			} else if err := stackUsePublication(ctx, l.dir(), &b, receipt, pin, published || diverged[name] != nil, own[name] && name != current); err != nil {
+			} else if err := stackUsePublication(ctx, l.dir(), tr.Remote(), &b, receipt, pin, published || diverged[name] != nil, own[name] && name != current); err != nil {
 				return nil, err
 			} else if receipt != nil && b.OldBase == receipt.Base && b.Head == receipt.Head {
 				stale, err := stackBaseInTrunk(ctx, l.dir(), receipt.Base, receipt.Head, pin)
@@ -2815,7 +2815,7 @@ func stackTakeRemote(ctx context.Context, dir render.Dir, tr vcs.Trunk, s gtBran
 		}
 	case !ahead && remote != submitted:
 		if s.Head == submitted {
-			restacked, err := stackQueueRestackBase(ctx, dir, pin, remote, submitted)
+			restacked, err := stackQueueRestackBase(ctx, dir, tr.Remote(), pin, remote, submitted)
 			if err != nil {
 				return err
 			}
@@ -2850,10 +2850,10 @@ func stackTakeRemote(ctx context.Context, dir render.Dir, tr vcs.Trunk, s gtBran
 				return err
 			}
 		}
-		if replay {
+		if replay || dropCommits {
 			break
 		}
-		return stackDivergedError{fmt.Errorf("stack rebase: %s has diverged from %s/%s (local %.12s, remote %.12s) — someone pushed to it; reconcile the two by hand, then re-run", name, tr.Remote(), name, s.Head, remote)}
+		return stackDivergedError{fmt.Errorf("stack rebase: %s has diverged from %s/%s (local %.12s, remote %.12s) — someone pushed to it; reconcile the two by hand, or pass --drop-commits to publish the local head over it, then re-run", name, tr.Remote(), name, s.Head, remote)}
 	}
 	if !ahead && !behind && !dropCommits {
 		returned, err := gitReflogReturned(ctx, dir, stackRebasePrefix, name, s.Head, remote)
@@ -3222,7 +3222,12 @@ func stackRemoteReplays(ctx context.Context, dir render.Dir, remote, submitted, 
 // ours restacked onto another trunk commit with every commit keeping its
 // author, author date and message, as the merge queue restacks a pull request
 // even where resolving a conflict changed a patch; it returns "" otherwise.
-func stackQueueRestackBase(ctx context.Context, dir render.Dir, pin, remote, ours string) (string, error) {
+func stackQueueRestackBase(ctx context.Context, dir render.Dir, fetchFrom, pin, remote, ours string) (string, error) {
+	for _, head := range []string{remote, ours} {
+		if _, err := gtMergeBaseDeepening(ctx, dir, stackRebasePrefix, fetchFrom, pin, head); err != nil {
+			return "", err
+		}
+	}
 	commits := func(head string) (string, int, error) {
 		span := pin + ".." + head
 		merges, err := render.RunCLI(ctx, dir, "git", []string{"rev-list", "--merges", span})

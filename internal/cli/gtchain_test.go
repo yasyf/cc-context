@@ -262,3 +262,30 @@ func TestGTMergeBaseNamesWhyNoCommonCommitExists(t *testing.T) {
 		t.Errorf("gtMergeBaseDeepening = %q, %v, want %s once the shallow clone is deepened", base, err, want)
 	}
 }
+
+func TestStackQueueRestackBaseDeepensAShallowCloneBeforeCountingCommits(t *testing.T) {
+	f := shipRepo(t, vcstest.Remote())
+	fork := gitAt(t, f.Env(), f.Dir, "rev-parse", "main")
+	for _, name := range []string{"t1", "t2", "t3"} {
+		writeShipFile(t, f.Dir, name+".txt", name+"\n")
+		mustRun(t, f.Env(), f.Dir, "git", "add", name+".txt")
+		mustRun(t, f.Env(), f.Dir, "git", "commit", "-q", "-m", name)
+	}
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "-c", "ours", fork)
+	for _, name := range []string{"f1", "f2"} {
+		writeShipFile(t, f.Dir, name+".txt", name+"\n")
+		mustRun(t, f.Env(), f.Dir, "git", "add", name+".txt")
+		mustRun(t, f.Env(), f.Dir, "git", "commit", "-q", "-m", name)
+	}
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "-c", "theirs", "main")
+	mustRun(t, f.Env(), f.Dir, "git", "cherry-pick", fork+"..ours")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "main", "ours", "theirs")
+	shallow := filepath.Join(t.TempDir(), "shallow")
+	mustRun(t, f.Env(), filepath.Dir(shallow), "git", "clone", "-q", "--no-local", "--depth", "1", "--branch", "main", f.RemoteDir, shallow)
+	mustRun(t, f.Env(), shallow, "git", "fetch", "-q", "--depth", "1", "origin", "ours:ours", "theirs:theirs")
+
+	base, err := stackQueueRestackBase(f.Context(), render.Dir(shallow), "origin", "main", "theirs", "ours")
+	if want := gitAt(t, f.Env(), f.Dir, "rev-parse", "main"); err != nil || base != want {
+		t.Errorf("stackQueueRestackBase = %q, %v, want main %s once the shallow clone reaches the fork", base, err, want)
+	}
+}
