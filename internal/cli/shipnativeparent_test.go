@@ -433,3 +433,19 @@ func TestShipOnTrunkPastALoneNativeStackOnAPullRequestBranch(t *testing.T) {
 		})
 	}
 }
+
+func TestShipParentRetargetsANativeBranchItsLaneRebuiltOffItsStackBase(t *testing.T) {
+	f := shipNativeStaleParent(t, false, false)
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "mid")
+	mustRun(t, f.Env(), f.Dir, "git", "reset", "-q", "--hard", "main")
+	writeShipFile(t, f.Dir, "rebuilt.txt", "rebuilt from main\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "rebuilt.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-q", "-m", "rebuilt")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "-f", "origin", "mid")
+	shipGTReady(t, f)
+	writeShipFile(t, f.Dir, "follow.txt", "follow-up\n")
+
+	if out, err := runShipCmd(f.Context(), t, "-m", "fix: follow up", "--parent", "main", "--no-push"); err != nil {
+		t.Fatalf("ship --parent main: %v\n%s", err, out)
+	}
+}

@@ -75,7 +75,7 @@ func TestStackSnapshotPatchReadControl(t *testing.T) {
 			output := recordStackPatchBytes(t, f)
 			s := gtBranchState{Head: local, Parents: []gtRef{{Ref: "main", SHA: pin}}}
 			ctx := f.Context()
-			b, err := stackSnapshot(ctx, dir, tr, s, "feature", remote, submitted, nil, false, pin, "", true, false)
+			b, err := stackSnapshot(ctx, dir, tr, s, "feature", remote, submitted, nil, false, pin, "", replay, false)
 			wantBranch := stackRebaseBranch{Name: "feature", WasParent: "main", Local: local, Remote: remote, Head: local}
 			if !replay {
 				wantBranch.Head = remote
@@ -89,7 +89,7 @@ func TestStackSnapshotPatchReadControl(t *testing.T) {
 				}
 			} else {
 				var diverged stackDivergedError
-				wantError := fmt.Sprintf("stack rebase: feature has diverged from origin/feature (local %.12s, remote %.12s) — someone pushed to it; reconcile the two by hand, then re-run", local, remote)
+				wantError := fmt.Sprintf("stack rebase: feature has diverged from origin/feature (local %.12s, remote %.12s) — someone pushed to it; reconcile the two by hand, or pass --drop-commits to publish the local head over it, then re-run", local, remote)
 				if !errors.As(err, &diverged) || err.Error() != wantError {
 					t.Fatalf("snapshot error = %v, want stackDivergedError %q", err, wantError)
 				}
@@ -142,7 +142,7 @@ func TestStackSnapshotPatchReadControl(t *testing.T) {
 				seen[entry.Name()] = true
 			}
 			mustRun(t, f.Env(), f.Dir, "git", "config", "diff.noprefix", "true")
-			again, againErr := stackSnapshot(ctx, dir, tr, s, "feature", remote, submitted, nil, false, pin, "", true, false)
+			again, againErr := stackSnapshot(ctx, dir, tr, s, "feature", remote, submitted, nil, false, pin, "", replay, false)
 			if !reflect.DeepEqual(again, b) || reflect.TypeOf(againErr) != reflect.TypeOf(firstErr) || fmt.Sprint(againErr) != fmt.Sprint(firstErr) {
 				t.Fatalf("second snapshot = %+v, %v; first = %+v, %v", again, againErr, b, firstErr)
 			}
@@ -285,5 +285,34 @@ func TestStackPatchSeriesDoesNotRetainReadErrors(t *testing.T) {
 		if err != nil || got != nil {
 			t.Fatalf("recovered empty-commit series = %#v, %v; want nil series without error", got, err)
 		}
+	}
+}
+
+func TestStackSnapshotDropCommitsPublishesALocalHeadOverADivergedRemote(t *testing.T) {
+	t.Parallel()
+	f := stackRebaseRepo(t, "feature")
+	pin := gitAt(t, f.Env(), f.Dir, "rev-parse", "main")
+	submitted := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "feature")
+	writeShipFile(t, f.Dir, "feature.txt", "rebuilt\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "feature.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "rebuilt", "--amend")
+	local := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "server", pin)
+	writeShipFile(t, f.Dir, "remote.txt", "an earlier push\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "remote.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "an earlier push")
+	remote := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "feature")
+	dir := render.Dir(f.Dir)
+	tr, err := gtTrunkRefOffline(f.Context(), dir, stackRebasePrefix, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := gtBranchState{Head: local, Parents: []gtRef{{Ref: "main", SHA: pin}}}
+
+	b, err := stackSnapshot(f.Context(), dir, tr, s, "feature", remote, submitted, nil, false, pin, "", true, false)
+	if err != nil || b.Head != local {
+		t.Fatalf("snapshot = %+v, %v, want the rebuilt local head %.12s published over the diverged remote", b, err, local)
 	}
 }
