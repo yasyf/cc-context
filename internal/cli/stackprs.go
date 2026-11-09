@@ -19,7 +19,9 @@ const stackPRCandidates = 10
 
 const stackPRChunk = 40
 
-const stackPRFields = "number url title body isCrossRepository baseRefName headRefOid mergeable labels(first: 20) { nodes { name } } stack { number } " + prLandingFields
+const stackPRFields = "number url title body isCrossRepository baseRefName headRefOid mergeable labels(first: 20) { nodes { name } } stack { number } " +
+	"retargets: timelineItems(last: 20, itemTypes: [BASE_REF_CHANGED_EVENT, AUTOMATIC_BASE_CHANGE_SUCCEEDED_EVENT, BASE_REF_FORCE_PUSHED_EVENT]) { nodes { __typename " +
+	"... on AutomaticBaseChangeSucceededEvent { oldBase newBase } ... on BaseRefForcePushedEvent { beforeCommit { oid } afterCommit { oid } } } } " + prLandingFields
 
 type stackPRNode struct {
 	Number            int    `json:"number"`
@@ -38,7 +40,45 @@ type stackPRNode struct {
 	Stack *struct {
 		Number int `json:"number"`
 	} `json:"stack"`
+	Retargets struct {
+		Nodes []stackRetarget `json:"nodes"`
+	} `json:"retargets"`
 	prLanding
+}
+
+type stackRetarget struct {
+	Typename     string       `json:"__typename"`
+	OldBase      string       `json:"oldBase"`
+	NewBase      string       `json:"newBase"`
+	BeforeCommit *ghCommitOID `json:"beforeCommit"`
+	AfterCommit  *ghCommitOID `json:"afterCommit"`
+}
+
+type ghCommitOID struct {
+	OID string `json:"oid"`
+}
+
+func stackLandedBase(base string, events []stackRetarget) (string, []string) {
+	var landed string
+	var heads, held []string
+	for _, e := range events {
+		switch e.Typename {
+		case "BaseRefForcePushedEvent":
+			for _, c := range []*ghCommitOID{e.BeforeCommit, e.AfterCommit} {
+				if c != nil {
+					held = append(held, c.OID)
+				}
+			}
+		case "AutomaticBaseChangeSucceededEvent":
+			landed, heads, held = e.OldBase, held, nil
+			if e.NewBase != base {
+				landed, heads = "", nil
+			}
+		default:
+			landed, heads, held = "", nil, nil
+		}
+	}
+	return landed, heads
 }
 
 type stackPRBatch struct {
@@ -189,6 +229,7 @@ func stackGraphQLRead(branch string, n stackPRNode) stackPRRead {
 	if n.Stack != nil {
 		pr.NativeStack = n.Stack.Number
 	}
+	pr.LandedBase, pr.LandedHeads = stackLandedBase(n.BaseRefName, n.Retargets.Nodes)
 	return stackPRRead{branch: branch, pr: pr, landing: n.prLanding}
 }
 
