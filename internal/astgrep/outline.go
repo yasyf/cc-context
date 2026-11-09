@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/yasyf/cc-context/anchor"
@@ -75,9 +76,9 @@ type OutlineOpts struct {
 }
 
 // OutlinePaths runs `ast-grep outline <paths...> --json=stream --view expanded`
-// over paths with the optional --items, --match, and -l filters, returning the
-// parsed outline files. outline exits 0 even on a no-match or a missing path (the
-// error rides stderr), so no exit is tolerated and an empty result parses to zero
+// with the optional --items, --match, and -l filters, outlinePathsPerRun paths a
+// run, and returns the parsed outline files. outline exits 0 even on a no-match
+// or a missing path (the error rides stderr), so an empty result parses to zero
 // files.
 func OutlinePaths(ctx context.Context, paths []string, o OutlineOpts) ([]OutlineFile, error) {
 	bin, err := resolveBin(ctx, "")
@@ -88,23 +89,36 @@ func OutlinePaths(ctx context.Context, paths []string, o OutlineOpts) ([]Outline
 	if err != nil {
 		return nil, err
 	}
-	argv := append([]string{"outline"}, paths...)
-	argv = append(argv, "--json=stream", "--view", "expanded")
+	var flags []string
 	if o.Items != "" {
-		argv = append(argv, "--items", o.Items)
+		flags = append(flags, "--items", o.Items)
 	}
 	if o.Match != "" {
-		argv = append(argv, "--match", o.Match)
+		flags = append(flags, "--match", o.Match)
 	}
 	if o.Lang != "" {
-		argv = append(argv, "-l", o.Lang)
+		flags = append(flags, "-l", o.Lang)
 	}
-	out, err := render.RunCLI(ctx, dir, bin, argv)
-	if err != nil {
-		return nil, err
+	var files []OutlineFile
+	for batch := range slices.Chunk(paths, outlinePathsPerRun) {
+		argv := append([]string{"outline"}, batch...)
+		argv = append(argv, "--json=stream", "--view", "expanded")
+		out, err := render.RunCLI(ctx, dir, bin, append(argv, flags...))
+		if err != nil {
+			return nil, err
+		}
+		parsed, err := ParseOutline([]byte(out))
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, parsed...)
 	}
-	return ParseOutline([]byte(out))
+	return files, nil
 }
+
+// outlinePathsPerRun bounds one outline argv: 512 paths of at most PATH_MAX
+// (1024 bytes on macOS) stay under macOS's 1 MiB ARG_MAX.
+const outlinePathsPerRun = 512
 
 // FlatItem is one entry of a flattened outline: the item's bare name, its
 // qualified name (Container.member for a nested member, the bare name at top
