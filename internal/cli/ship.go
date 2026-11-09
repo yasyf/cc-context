@@ -2911,7 +2911,7 @@ func shipAwaitChecks(ctx context.Context, errW io.Writer, pr ciPR, sha string) (
 		}
 		var snap prWatchSnapshot
 		if open.Rollup != nil {
-			snap.Green, snap.Failing = prWatchChecks(open.Rollup)
+			snap.Green, snap.Failing = prWatchChecks(open.Rollup, open.Required)
 		}
 		switch prWatchCIState(snap, open.PolledAt.Sub(headSince)) {
 		case prWatchCIRed:

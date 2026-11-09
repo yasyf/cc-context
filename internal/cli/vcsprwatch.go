@@ -268,7 +268,7 @@ func prWatchSnapshotOf(number int, pr prstate.PR, trunk prstate.Trunk, prev prWa
 		Approved:  pr.ReviewDecision == "APPROVED",
 	}
 	if pr.Rollup != nil {
-		snap.Green, snap.Failing = prWatchChecks(pr.Rollup)
+		snap.Green, snap.Failing = prWatchChecks(pr.Rollup, pr.Required)
 	}
 	known := pr.Graphite != nil
 	var info gtapi.PullRequestInfo
@@ -294,10 +294,15 @@ func prWatchSnapshotOf(number int, pr prstate.PR, trunk prstate.Trunk, prev prWa
 	return snap
 }
 
-func prWatchChecks(rollup *statusRollup) (bool, []string) {
-	green := rollup.UnfinishedActions == 0 && (rollup.State == "SUCCESS" || prCIOf(rollup).State == prCIGreen)
+// prWatchChecks reads the head green only once every status check the base
+// requires has reported on it: a build system that has not yet created its
+// build for the head leaves the rollup green on bookkeeping checks alone.
+func prWatchChecks(rollup *statusRollup, required []string) (bool, []string) {
+	checks := statusChecks(rollup)
+	green := rollup.UnfinishedActions == 0 && (rollup.State == "SUCCESS" || prCIOf(rollup).State == prCIGreen) &&
+		len(statusAbsentChecks(required, checks)) == 0
 	var failing []string
-	for _, check := range statusChecks(rollup) {
+	for _, check := range checks {
 		if statusClassify(check.State) == statusFailed {
 			failing = append(failing, check.Name)
 		}
@@ -611,8 +616,10 @@ with the queue's reason when its merge activity comment gives one),
 conflicting, red <checks>, green, approved, approval-dismissed,
 new-head <sha9>, landed <squash sha9>, and closed-without-squash. The first
 poll reports each pull request's standing state the same way. Green waits for
-every GitHub Actions check suite on the head to finish, so a fresh head whose
-workflows have not reported yet does not read green on other apps' checks.
+every GitHub Actions check suite on the head to finish and for every status
+check the base branch's protection or rulesets require to report, so a fresh
+head whose workflows or build system have not reported yet does not read green
+on other apps' checks.
 
 Polls go through the machine-wide pull request cache every ccx vcs pr
 command shares: one batched GitHub GraphQL query and one Graphite request for

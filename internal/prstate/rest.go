@@ -187,6 +187,7 @@ func (p *pass) restRecord(ctx context.Context, t target) (PR, error) {
 		MergeStateStatus: strings.ToUpper(pull.MergeableState),
 		Draft:            pull.Draft,
 		ChangedFiles:     pull.ChangedFiles,
+		Required:         p.prev[t.number].Required,
 		Activity:         p.prev[t.number].Activity,
 		Graphite:         p.infos[t.number],
 		Mergeability:     p.mergeability[t.number],

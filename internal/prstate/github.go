@@ -32,7 +32,9 @@ const (
 		"reviewDecision latestOpinionatedReviews(first: 20) { nodes { state author { login } } } changedFiles mergeCommit { oid } labels(first: 50) { nodes { name } } " +
 		"checks: commits(last: 1) { nodes { commit { oid status { state } statusCheckRollup { state contexts(last: 100) { totalCount nodes { __typename " +
 		"... on CheckRun { name title conclusion status startedAt databaseId checkSuite { databaseId workflowRun { workflow { databaseId } } } } ... on StatusContext { context state targetUrl } } } } " +
-		"checkSuites(first: 50, filterBy: {appId: " + actionsAppID + "}) { nodes { status } } } } }"
+		"checkSuites(first: 50, filterBy: {appId: " + actionsAppID + "}) { nodes { status } } } } } " +
+		"baseRef { branchProtectionRule { requiredStatusCheckContexts } rules(first: 50) { nodes { type parameters { " +
+		"... on RequiredStatusChecksParameters { requiredStatusChecks { context } } } } } }"
 	activityFields = " comments(last: 100) { nodes { body } }"
 	probeQuery     = "query { viewer { login } rateLimit { remaining resetAt } }"
 )
@@ -142,6 +144,45 @@ type prNode struct {
 			Body string `json:"body"`
 		} `json:"nodes"`
 	} `json:"comments"`
+	BaseRef *baseRefNode `json:"baseRef"`
+}
+
+type baseRefNode struct {
+	BranchProtectionRule *struct {
+		RequiredStatusCheckContexts []string `json:"requiredStatusCheckContexts"`
+	} `json:"branchProtectionRule"`
+	Rules struct {
+		Nodes []struct {
+			Type       string `json:"type"`
+			Parameters *struct {
+				RequiredStatusChecks []struct {
+					Context string `json:"context"`
+				} `json:"requiredStatusChecks"`
+			} `json:"parameters"`
+		} `json:"nodes"`
+	} `json:"rules"`
+}
+
+// required names the status checks the base branch's classic protection and
+// rulesets require; GitHub answers no base when the branch is gone.
+func (b *baseRefNode) required() []string {
+	if b == nil {
+		return nil
+	}
+	var out []string
+	if b.BranchProtectionRule != nil {
+		out = append(out, b.BranchProtectionRule.RequiredStatusCheckContexts...)
+	}
+	for _, rule := range b.Rules.Nodes {
+		if rule.Type != "REQUIRED_STATUS_CHECKS" || rule.Parameters == nil {
+			continue
+		}
+		for _, check := range rule.Parameters.RequiredStatusChecks {
+			out = append(out, check.Context)
+		}
+	}
+	slices.Sort(out)
+	return slices.Compact(out)
 }
 
 type trunkNode struct {
@@ -414,6 +455,7 @@ func (p *pass) record(node prNode, t target, i int, resp response) (PR, error) {
 		ReviewDecision:   node.ReviewDecision,
 		Draft:            node.IsDraft,
 		ChangedFiles:     node.ChangedFiles,
+		Required:         node.BaseRef.required(),
 		Activity:         last.Activity,
 		Graphite:         p.infos[t.number],
 		Mergeability:     p.mergeability[t.number],

@@ -122,6 +122,9 @@ type PR struct {
 	Rollup           *Rollup                `json:"rollup,omitempty"`
 	Activity         string                 `json:"activity,omitempty"`
 	Graphite         *gtapi.PullRequestInfo `json:"graphite,omitempty"`
+	// Required names the status checks the base branch requires; a REST read
+	// keeps the last GraphQL poll's.
+	Required []string `json:"required,omitempty"`
 	// LegacyOwned is who owned the branch's stack metadata at the poll; a
 	// reader that finds another owner now does not trust this record.
 	LegacyOwned  bool      `json:"legacyOwned,omitempty"`
