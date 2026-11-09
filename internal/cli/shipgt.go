@@ -1083,7 +1083,11 @@ func gtTrack(ctx context.Context, errW io.Writer, l lane, o shipOpts, branch str
 			}
 			if o.tipOnly {
 				if published, err := gtAdoptOntoPublished(ctx, c, state, branch, o.parent, onto); err != nil || published != nil {
-					return published, chained + adopted + "tracked " + branch + " onto " + o.parent + "'s published head " + shortSHA(onto) + replayed, err
+					at := "'s published head "
+					if o.parent == trunk {
+						at = " at "
+					}
+					return published, chained + adopted + "tracked " + branch + " onto " + o.parent + at + shortSHA(onto) + replayed, err
 				}
 			}
 		}
@@ -1771,7 +1775,9 @@ func gtStackedParent(state gtState, branch string) gtRef {
 
 // gtOntoMove is the replay that puts a branch on its parent's head, computed
 // without moving anything: git replay writes objects, never refs. A zero head
-// means the branch already carries the parent's head.
+// means the branch stays where it is: it already carries the parent's head, or
+// a pushing ship found its own commits on a commit the remote trunk holds,
+// which onto then names.
 type gtOntoMove struct {
 	onto    string
 	fork    string
@@ -1786,7 +1792,10 @@ type gtOntoMove struct {
 // parent's, a conflicting replay, and one that would overwrite uncommitted
 // work where the branch is held. Only the commits parent has no patch of, the
 // branch's own, are replayed; a branch moving off the stacked parent from names
-// none of from's commits as its own either.
+// none of from's commits as its own either. Trunk only moves forward, so a
+// pushing ship replays nothing onto it while the branch's own commits sit on a
+// commit the remote trunk holds: the stack rebase that follows decides that
+// base, keeping a published branch on it while it merges cleanly.
 func gtOntoPlan(ctx context.Context, l lane, o shipOpts, branch, parent, trunk string, from gtRef) (gtOntoMove, error) {
 	if stackRebasing(ctx, l.dir()) {
 		return gtOntoMove{}, refuse("ship: a rebase is in progress in %s: finish it with ccx vcs stack continue or drop it with git rebase --abort, then ship again", l.root)
@@ -1819,6 +1828,16 @@ func gtOntoPlan(ctx context.Context, l lane, o shipOpts, branch, parent, trunk s
 	fork, own, err := gtOwnFork(ctx, l.dir(), o, branch, parent, upstream, above, offTrunk)
 	if err != nil {
 		return gtOntoMove{}, err
+	}
+	if parent == trunk && !o.noPush && own > 0 {
+		onTrunk, err := gitIsAncestor(ctx, l.dir(), "ship", fork, onto)
+		if err != nil {
+			return gtOntoMove{}, err
+		}
+		if onTrunk {
+			base, err := gitRevParse(ctx, l.dir(), "ship", fork)
+			return gtOntoMove{onto: base}, err
+		}
 	}
 	was, err := gtRestackHead(ctx, "ship", l.dir(), branch)
 	if err != nil {
