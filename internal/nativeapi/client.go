@@ -71,9 +71,11 @@ func (c *Client) WithQueueProvider(provider string) *Client {
 	return &selected
 }
 
-// NewWithToken uses the supplied GitHub credential for an isolated API endpoint.
+// NewWithToken uses the supplied GitHub credential for an isolated API endpoint,
+// which answers Trunk's queue routes too.
 func NewWithToken(baseURL, token string) *Client {
 	c := New(baseURL)
+	c.queueBase = c.base
 	c.tokens.resolve = func() (string, error) { return token, nil }
 	return c
 }

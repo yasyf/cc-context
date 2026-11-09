@@ -3163,14 +3163,10 @@ func stackQueueStates(ctx context.Context, l lane, noPush bool, byName map[strin
 // stackQueueOf settles the queue state of each open pull request in infos,
 // where labels holds each head's GitHub labels.
 func stackQueueOf(ctx context.Context, owner, name string, infos []gtapi.PullRequestInfo, labels map[string][]string) (map[string]prQueueState, error) {
-	numbers := make([]int, 0, len(infos))
-	for _, info := range infos {
-		numbers = append(numbers, info.PRNumber)
-	}
-	if len(numbers) == 0 {
+	if len(infos) == 0 {
 		return map[string]prQueueState{}, nil
 	}
-	mergeability, err := shipQueueStatuses(ctx, gtAPI(ctx), owner, name, numbers)
+	mergeability, err := shipQueueStatuses(ctx, gtAPI(ctx), owner, name, infos)
 	if err != nil {
 		return nil, fmt.Errorf("stack rebase: read the merge queue before pushing: %w", err)
 	}

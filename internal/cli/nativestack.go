@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"slices"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/yasyf/cc-context/internal/gtapi"
 	"github.com/yasyf/cc-context/internal/gtmeta"
 	"github.com/yasyf/cc-context/internal/nativemeta"
+	"github.com/yasyf/cc-context/internal/prstate"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcs"
 )
@@ -131,10 +133,19 @@ func nativeStackRun(ctx context.Context, dir render.Dir, argv []string, extraEnv
 var noTrunkKeyAnnounced sync.Once
 
 // shipQueueStatuses reads the merge queue state a ship or submit checks before
-// it pushes, reading every pull request as not queued when no Trunk key is
-// reachable so the push never waits on a sign-in.
-func shipQueueStatuses(ctx context.Context, client *gtapi.Client, owner, name string, numbers []int) (map[int]string, error) {
-	statuses, err := client.MergeabilityStatuses(ctx, owner, name, numbers)
+// it pushes through the read pr status makes, so a pull request status reads as
+// not queued never blocks a push, and reads every one as not queued when no
+// Trunk key is reachable so the push never waits on a sign-in.
+func shipQueueStatuses(ctx context.Context, client *gtapi.Client, owner, name string, infos []gtapi.PullRequestInfo) (map[int]string, error) {
+	numbers := make([]int, 0, len(infos))
+	for _, info := range infos {
+		numbers = append(numbers, info.PRNumber)
+	}
+	statuses, err := prstate.QueueStates(ctx, client, owner, name, infos, numbers, io.Discard)
+	return notQueuedWithoutTrunkKey(ctx, statuses, numbers, err)
+}
+
+func notQueuedWithoutTrunkKey(ctx context.Context, statuses map[int]string, numbers []int, err error) (map[int]string, error) {
 	if !errors.Is(err, gtapi.ErrNoTrunkKey) {
 		return statuses, err
 	}
@@ -147,27 +158,23 @@ func shipQueueStatuses(ctx context.Context, client *gtapi.Client, owner, name st
 }
 
 func nativeRefuseQueuedChanges(ctx context.Context, client *gtapi.Client, owner, name, prefix string, plan []gtSubmitBranch, known map[string]gtapi.PullRequestInfo) error {
-	var numbers []int
+	var changed []gtapi.PullRequestInfo
 	for _, branch := range plan {
 		if pr, found := known[branch.name]; found && (branch.head != pr.Newest().HeadSha || branch.base != pr.BaseRefName) {
-			numbers = append(numbers, pr.PRNumber)
+			changed = append(changed, pr)
 		}
 	}
-	if len(numbers) == 0 {
+	if len(changed) == 0 {
 		return nil
 	}
-	statuses, err := shipQueueStatuses(ctx, client, owner, name, numbers)
+	statuses, err := shipQueueStatuses(ctx, client, owner, name, changed)
 	if err != nil {
-		return fmt.Errorf("%s: read the merge queue before changing published pull requests: %w", prefix, err)
+		return fmt.Errorf("%s: cannot change published pull requests without their merge queue state: %w", prefix, err)
 	}
 	var queued []string
-	for _, number := range numbers {
-		status, known := statuses[number]
-		if !known {
-			return fmt.Errorf("%s: merge queue state of #%d is unknown; cannot change its published head or base", prefix, number)
-		}
-		if gtapi.Restacking(status) {
-			queued = append(queued, fmt.Sprintf("#%d", number))
+	for _, pr := range changed {
+		if gtapi.Restacking(statuses[pr.PRNumber]) {
+			queued = append(queued, fmt.Sprintf("#%d", pr.PRNumber))
 		}
 	}
 	if len(queued) > 0 {
@@ -341,6 +348,7 @@ func nativeQueueProbe(ctx context.Context, l lane) *statusProbe {
 	if err != nil {
 		return &statusProbe{Verdict: queueUnknown, Detail: err.Error()}
 	}
+	var open []gtapi.PullRequestInfo
 	var numbers []int
 	for _, info := range infos {
 		if info.State == gtapi.PRMerged {
@@ -354,19 +362,16 @@ func nativeQueueProbe(ctx context.Context, l lane) *statusProbe {
 			return &statusProbe{Verdict: queueMerged}
 		}
 		if info.State == gtapi.PROpen {
+			open = append(open, info)
 			numbers = append(numbers, info.PRNumber)
 		}
 	}
-	statuses, err := client.MergeabilityStatuses(probeCtx, owner, repo, numbers)
+	statuses, err := prstate.QueueStates(probeCtx, client, owner, repo, open, numbers, io.Discard)
 	if err != nil {
 		return &statusProbe{Verdict: queueUnknown, Detail: err.Error()}
 	}
 	for _, number := range numbers {
-		state, known := statuses[number]
-		if !known {
-			return &statusProbe{Verdict: queueUnknown, Detail: fmt.Sprintf("queue state of #%d is unknown", number)}
-		}
-		if gtapi.Restacking(state) {
+		if state := statuses[number]; gtapi.Restacking(state) {
 			return &statusProbe{Verdict: queueMerging, Detail: state}
 		}
 	}
