@@ -57,15 +57,10 @@ func TestRunMissingScopeDoesNotSearchHome(t *testing.T) {
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("missing symbol error=%v", err)
 	}
-	data, err := os.ReadFile(outlineLog)
-	if err != nil {
-		t.Fatal(err)
+	if _, err := os.Stat(outlineLog); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("outline ran with no file holding the name: %v", err)
 	}
-	outline := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
-	if len(outline) < 2 || outline[0] != "outline" || outline[1] != target {
-		t.Fatalf("outline argv=%q, want literal scope %q", outline, target)
-	}
-	data, err = os.ReadFile(grepLog)
+	data, err := os.ReadFile(grepLog)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,5 +103,26 @@ func TestRunScopePreservesBoundedLookups(t *testing.T) {
 		if tc.operand != "" && (len(argv) < 2 || argv[len(argv)-2] != "--" || argv[len(argv)-1] != tc.operand) {
 			t.Fatalf("bounded lookup argv=%q, want %q", argv, tc.operand)
 		}
+	}
+}
+
+func TestRunOutlinesOnlyFilesHoldingTheName(t *testing.T) {
+	root := t.TempDir()
+	ctx, outlineLog, grepLog := scopeEngines(t, root)
+	bin := filepath.Dir(outlineLog)
+	execstub.Write(t, filepath.Join(bin, "rg"), "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$CCX_GREP_ARGS\"\nfor a in \"$@\"; do [ \"$a\" = --files-with-matches ] && printf 'pkg/hit.go\\n' && exit 0; done\nexit 1\n")
+	_, _, err := Run(ctx, backend.Args{Query: "WithScope"})
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Run: %v", err)
+	}
+	data, err := os.ReadFile(outlineLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n"); len(got) < 3 || got[0] != "outline" || got[1] != "pkg/hit.go" || got[2] != "--json=stream" {
+		t.Fatalf("outline argv=%q, want only the prefiltered pkg/hit.go", got)
+	}
+	if _, err := os.Stat(grepLog); err != nil {
+		t.Fatal(err)
 	}
 }

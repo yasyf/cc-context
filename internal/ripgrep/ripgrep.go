@@ -199,6 +199,23 @@ func Matches(ctx context.Context, a backend.Args) ([]FileMatch, error) {
 	return toFileMatches(groups), nil
 }
 
+// Files lists the paths of the files holding a.Query, searched as Matches
+// searches it but in files-with-matches mode, so only the paths cross the pipe.
+// A clean no-match yields no paths, not an error.
+func Files(ctx context.Context, a backend.Args) ([]string, error) {
+	eng, bin, err := resolveEngine(ctx)
+	if err != nil {
+		return nil, err
+	}
+	dir, err := searchDir(ctx)
+	if err != nil {
+		return nil, err
+	}
+	a.FilesWithMatches = true
+	paths, _, err := searchFilesWithMatches(ctx, eng, bin, dir, a, execEngine)
+	return paths, err
+}
+
 // toFileMatches projects the internal per-file groups onto the exported
 // FileMatch shape, preserving file and line order.
 func toFileMatches(groups []fileGroup) []FileMatch {

@@ -2,6 +2,7 @@ package astgrep
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -199,5 +200,24 @@ func TestPinnedRootIsWhereAstGrepRuns(t *testing.T) {
 	}
 	if got := topNames(t, files); !slices.Contains(got, "CwdOnly") {
 		t.Errorf("unpinned outline = %v, want it to name CwdOnly", got)
+	}
+}
+
+func TestOutlinePathsBatchesPastOneRun(t *testing.T) {
+	requireAstGrep(t)
+	dir := t.TempDir()
+	paths := make([]string, 2*outlinePathsPerRun+1)
+	for i := range paths {
+		paths[i] = fmt.Sprintf("f%d.go", i)
+		if err := os.WriteFile(filepath.Join(dir, paths[i]), []byte(fmt.Sprintf("package a\n\nfunc F%d() {}\n", i)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	files, err := OutlinePaths(workspace.WithRoot(t.Context(), dir), paths, OutlineOpts{})
+	if err != nil {
+		t.Fatalf("OutlinePaths: %v", err)
+	}
+	if len(files) != len(paths) {
+		t.Fatalf("outlined %d files, want %d", len(files), len(paths))
 	}
 }

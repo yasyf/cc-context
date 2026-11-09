@@ -18,6 +18,7 @@ import (
 	"github.com/yasyf/cc-context/anchor"
 	"github.com/yasyf/cc-context/internal/astgrep"
 	"github.com/yasyf/cc-context/internal/backend"
+	"github.com/yasyf/cc-context/internal/ripgrep"
 	"github.com/yasyf/cc-context/internal/workspace"
 )
 
@@ -36,8 +37,8 @@ var separators = []string{"::", "#", "."}
 
 // Run resolves a.Query, returning the rendered card and the secret-masking rule
 // ids that fired while rendering it (the caller appends the shared footer after
-// its cap). It runs a full outline over the anchor a.Globs share (else "."),
-// keeps the files a.Globs select, filters
+// its cap). It outlines only the files a.Globs select whose text holds the
+// query name, filters
 // flattened items to the query name including members, ranks the hits, and
 // renders the top hit's card with the requested expansions — the signature,
 // doc, body, callees, and sibling rows masked in the defining file's path
@@ -50,11 +51,7 @@ func Run(ctx context.Context, a backend.Args) (string, []string, error) {
 		return "", nil, fmt.Errorf("symbol: resolve cwd: %w", err)
 	}
 	qualifier, name := parseQuery(a.Query)
-	root := backend.SharedGlobAnchor(a.Globs)
-	if root == "" {
-		root = "."
-	}
-	if root == "." {
+	if root := backend.SharedGlobAnchor(a.Globs); root == "" || root == "." {
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return "", nil, fmt.Errorf("symbol: resolve home: %w", err)
@@ -74,7 +71,6 @@ func Run(ctx context.Context, a backend.Args) (string, []string, error) {
 	r := &resolver{
 		ctx:       ctx,
 		a:         a,
-		root:      root,
 		qualifier: qualifier,
 		name:      name,
 		files:     anchor.NewFiles(cwd),
@@ -87,14 +83,13 @@ func Run(ctx context.Context, a backend.Args) (string, []string, error) {
 	return out, r.maskedIDs, nil
 }
 
-// resolver holds one Run's state: the parsed query, the outline root, the
+// resolver holds one Run's state: the parsed query, the
 // per-response file cache resolving ast-grep's root-relative paths, and memoized
 // outlines. It is never shared across calls — a reused line table would resolve
 // anchors against stale content.
 type resolver struct {
 	ctx       context.Context
 	a         backend.Args
-	root      string // outline root ("." for the whole tree)
 	qualifier string
 	name      string
 	files     *anchor.Files
@@ -156,25 +151,18 @@ func parseQuery(query string) (qualifier, name string) {
 	return query[:best], name
 }
 
-// rootOutline outlines the glob anchor and keeps the files a.Globs select. The
-// anchor bounds what ast-grep walks; MatchGlobs decides membership, since a glob
-// narrower than its anchor (or one that only excludes) still selects a subset.
+// rootOutline outlines the files a.Globs select that hold the query name as a
+// case-insensitive word, the only files either rung of the miss ladder can hit,
+// so the outline grows with the name's spread rather than the tree's size.
 func (r *resolver) rootOutline() ([]astgrep.OutlineFile, error) {
-	files, err := r.outline([]string{r.root})
+	paths, err := ripgrep.Files(r.ctx, backend.Args{Query: r.name, IgnoreCase: true, Word: true, Globs: r.a.Globs})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("symbol: definition prefilter %q: %w", r.name, err)
 	}
-	kept := make([]astgrep.OutlineFile, 0, len(files))
-	for _, f := range files {
-		ok, err := backend.MatchGlobs(normPath(f.Path), r.a.Globs)
-		if err != nil {
-			return nil, fmt.Errorf("symbol: %w", err)
-		}
-		if ok {
-			kept = append(kept, f)
-		}
+	if len(paths) == 0 {
+		return nil, nil
 	}
-	return kept, nil
+	return r.outline(paths)
 }
 
 // outline runs a memoized `ast-grep outline` over paths. Both the root index and
