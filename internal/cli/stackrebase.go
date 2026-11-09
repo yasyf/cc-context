@@ -1750,7 +1750,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 		b := byName[name]
 		if b.Landed == "" && b.Held == "" {
 			if b.OldBase == "" {
-				if b.OldBase, err = stackOldBase(ctx, l.dir(), tr, pin, state, b, byName); err != nil {
+				if b.OldBase, err = stackOldBase(ctx, l.dir(), tr, pin, state, b, byName, o.landed); err != nil {
 					return nil, err
 				}
 				if _, moved := parentOverrides[name]; moved {
@@ -3394,8 +3394,8 @@ func stackOrder(trunk string, byName map[string]*stackRebaseBranch) ([]string, e
 // moved up to the base it was last published on when it still holds that base
 // and trunk does not, so a parent that squash-landed and left the state
 // recording the branch on trunk never replays its commits as the branch's own.
-func stackOldBase(ctx context.Context, dir render.Dir, tr vcs.Trunk, pin string, state gtState, self *stackRebaseBranch, byName map[string]*stackRebaseBranch) (string, error) {
-	recorded, err := stackRecordedBase(ctx, dir, tr, pin, state, self, byName)
+func stackOldBase(ctx context.Context, dir render.Dir, tr vcs.Trunk, pin string, state gtState, self *stackRebaseBranch, byName map[string]*stackRebaseBranch, landed []string) (string, error) {
+	recorded, err := stackRecordedBase(ctx, dir, tr, pin, state, self, byName, landed)
 	if err != nil || self.Publication == nil {
 		return recorded, err
 	}
@@ -3417,7 +3417,7 @@ func stackOldBase(ctx context.Context, dir render.Dir, tr vcs.Trunk, pin string,
 // holds. Unless that is its parent's, it also starts past each leading commit
 // copying one of theirs by patch or by author, date and message, as a branch
 // cut from a rewritten parent carries.
-func stackRecordedBase(ctx context.Context, dir render.Dir, tr vcs.Trunk, pin string, state gtState, self *stackRebaseBranch, byName map[string]*stackRebaseBranch) (string, error) {
+func stackRecordedBase(ctx context.Context, dir render.Dir, tr vcs.Trunk, pin string, state gtState, self *stackRebaseBranch, byName map[string]*stackRebaseBranch, landed []string) (string, error) {
 	s := state[self.Name]
 	onTrunk, err := stackMergeBase(ctx, dir, self.Head, pin)
 	if err != nil {
@@ -3429,7 +3429,7 @@ func stackRecordedBase(ctx context.Context, dir render.Dir, tr vcs.Trunk, pin st
 		if err != nil {
 			return "", err
 		}
-		if fork, err = stackPastLanded(ctx, dir, tr.Remote(), pin, self, byName, fork); err != nil {
+		if fork, err = stackPastLanded(ctx, dir, tr.Remote(), pin, self, byName, landed, fork); err != nil {
 			return "", err
 		}
 		return stackPastChain(ctx, dir, pin, self, byName, fork, false)
@@ -3700,8 +3700,9 @@ func stackPastFork(ctx context.Context, dir render.Dir, recorded, fork, head str
 	return recorded, nil
 }
 
-func stackPastLanded(ctx context.Context, dir render.Dir, remote, pin string, self *stackRebaseBranch, byName map[string]*stackRebaseBranch, base string) (string, error) {
-	var names, heads []string
+func stackPastLanded(ctx context.Context, dir render.Dir, remote, pin string, self *stackRebaseBranch, byName map[string]*stackRebaseBranch, landed []string, base string) (string, error) {
+	names := slices.Clone(landed)
+	var heads []string
 	for _, b := range byName {
 		if b.Landed == "" || b.Name == self.Name {
 			continue
