@@ -229,7 +229,8 @@ status_draft_query() {
 
 # stack_query is internal/cli/stackprs.go's stackPRGraphQL, the batched read
 # ccx vcs stack rebase makes before it falls back to REST.
-stack_pr_fields="number url title body isCrossRepository baseRefName headRefOid mergeable labels(first: 20) { nodes { name } } stack { number } $landing_fields"
+stack_retarget_fields='retargets: timelineItems(last: 20, itemTypes: [BASE_REF_CHANGED_EVENT, AUTOMATIC_BASE_CHANGE_SUCCEEDED_EVENT, BASE_REF_FORCE_PUSHED_EVENT]) { nodes { __typename ... on AutomaticBaseChangeSucceededEvent { oldBase newBase } ... on BaseRefForcePushedEvent { beforeCommit { oid } afterCommit { oid } } } }'
+stack_pr_fields="number url title body isCrossRepository baseRefName headRefOid mergeable labels(first: 20) { nodes { name } } stack { number } $stack_retarget_fields $landing_fields"
 
 stack_query() {
 	local n="$1" decls fields i
