@@ -521,6 +521,61 @@ func TestPRWatchUntilCIIsRedOnAFailedBuildkiteStatusWhileAnActionsRunIsOpen(t *t
 	}
 }
 
+// Forge-AI/monorepo#48311 at d7d8e1f on 2026-11-09, three minutes after its
+// push: dev's ruleset requires buildkite/test, and Buildkite had not yet
+// created the head's build, so only bookkeeping checks had reported.
+func TestPRWatchUntilCIHoldsAHeadWithOnlyBookkeepingChecksPending(t *testing.T) {
+	poll := func(buildkite string) string {
+		return fmt.Sprintf(`{"data":{
+			"rateLimit":{"remaining":4900,"resetAt":"2026-11-09T11:00:00Z"},
+			"repository":{
+				"trunk":{"name":"dev","target":{"history":{"nodes":[]}}},
+				"p0":{"number":48311,"state":"OPEN","headRefOid":"%s","mergeable":"MERGEABLE",
+					"baseRef":{"branchProtectionRule":null,"rules":{"nodes":[
+						{"type":"PULL_REQUEST","parameters":{}},
+						{"type":"REQUIRED_STATUS_CHECKS","parameters":{"requiredStatusChecks":[{"context":"buildkite/test"}]}},
+						{"type":"NON_FAST_FORWARD","parameters":null}]}},
+					"checks":{"nodes":[{"commit":{"oid":"%[1]s",
+						"statusCheckRollup":{"state":"SUCCESS","contexts":{"nodes":[
+							{"__typename":"CheckRun","name":"pr-events","conclusion":"SUCCESS","status":"COMPLETED"},
+							{"__typename":"CheckRun","name":"footers","conclusion":"SUCCESS","status":"COMPLETED"},
+							{"__typename":"CheckRun","name":"request","conclusion":"SUCCESS","status":"COMPLETED"},
+							{"__typename":"StatusContext","context":"emergency-head","state":"SUCCESS"}%[2]s]}},
+						"checkSuites":{"nodes":[{"status":"COMPLETED"},{"status":"COMPLETED"}]}}}]}}
+			}}}`, watchHeadA, buildkite)
+	}
+	for _, tc := range []struct {
+		name, buildkite, ci string
+		want                []string
+	}{
+		{"before buildkite/test reports", "", "", nil},
+		{"once buildkite/test passed", `,{"__typename":"StatusContext","context":"buildkite/test","state":"SUCCESS"}`, prWatchCIGreen, []string{"#48311 green"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stubPRState(t, poll(tc.buildkite))
+			_, gt := stubPRInfo(t, `{"prNumber":48311,"state":"OPEN","baseRefName":"dev","mergeQueueStatus":null,"mergeCommitSha":null}`)
+			store, err := openPRState(withGTAPI(t.Context(), gt), "Forge-AI/monorepo", io.Discard)
+			if err != nil {
+				t.Fatal(err)
+			}
+			running := prWatchSnapshot{State: "OPEN", Head: watchHeadA, Mergeable: "MERGEABLE", HeadSince: time.Now().Add(-3 * time.Minute)}
+
+			tick, err := prWatchSource{store: store, ci: true}.poll(t.Context(), []int{48311}, map[int]prWatchSnapshot{48311: running})
+			if err != nil {
+				t.Fatalf("poll: %v", err)
+			}
+
+			snap := tick.snapshots[48311]
+			if _, events := prWatchStep(48311, running, snap); !slices.Equal(watchEvents(t, events), tc.want) {
+				t.Errorf("events = %q, want %q", watchEvents(t, events), tc.want)
+			}
+			if snap.CI != tc.ci {
+				t.Errorf("--until ci = %q, want %q", snap.CI, tc.ci)
+			}
+		})
+	}
+}
+
 // GitHub's checks on yasyf/cc-skills#3139 on 2026-11-05, where two workflows
 // each run a job named test on push and on pull_request. At 5049100dd
 // long-running CI's runs both failed and live-dashboard CI's both passed, the
