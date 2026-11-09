@@ -1,0 +1,7 @@
+name: Release setup
+description: The setup the shared Go release runs before GoReleaser, restoring the go:embed'd WASM artifacts CI already built.
+
+runs:
+  using: composite
+  steps:
+    - uses: ./.github/actions/wasm
