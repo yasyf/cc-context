@@ -2887,7 +2887,9 @@ func (b *stackRebaseBranch) reopens() bool {
 
 // stackRefuseDroppedCommits refuses a local head that lost the change of a
 // commit its published head carries. A hard reset onto the wrong commit would
-// otherwise force-push over the pull request's work. A commit's change is gone
+// otherwise force-push over the pull request's work. A commit the local head
+// holds, or copies patch for patch, is carried, even when later work rewrote
+// what it wrote. Any other commit's change is gone
 // when reverting it leaves the local head's tree as it is, so a reword, a fold
 // into another commit, or an edit of what the commit wrote all pass, whatever
 // their subjects say. Commits below left are the parent's, not the branch's to
@@ -2902,25 +2904,38 @@ func stackRefuseDroppedCommits(ctx context.Context, dir render.Dir, tr vcs.Trunk
 	if localTree == remoteTree {
 		return nil
 	}
-	args := []string{"log", "--no-merges", "--format=%H %s", remote, "^" + pin}
+	revs := []string{remote, "^" + local, "^" + pin}
 	if left != "" {
-		args = append(args, "^"+left)
+		revs = append(revs, "^"+left)
 	}
-	published, err := render.RunCLI(ctx, dir, "git", args)
+	published, err := stackPatches(ctx, dir, revs...)
 	if err != nil {
-		return fmt.Errorf("%s: git log %.12s: %w", stackRebasePrefix, remote, err)
+		return err
 	}
+	copies, err := stackPatches(ctx, dir, local, "^"+remote, "^"+pin)
+	if err != nil {
+		return err
+	}
+	patches := map[string]bool{}
+	for _, c := range copies {
+		patches[c.patch] = true
+	}
+	delete(patches, "")
+	slices.Reverse(published)
 	var gone []string
 	subjects := map[string]string{}
-	for line := range strings.Lines(published) {
-		sha, subject, _ := strings.Cut(strings.TrimSuffix(line, "\n"), " ")
-		isGone, err := stackChangeGone(ctx, dir, local, localTree, sha)
+	for _, c := range published {
+		if patches[c.patch] {
+			continue
+		}
+		isGone, err := stackChangeGone(ctx, dir, local, localTree, c.sha)
 		if err != nil {
 			return err
 		}
 		if isGone {
-			gone = append(gone, sha)
-			subjects[sha] = subject
+			_, message, _ := strings.Cut(c.authored, "\n")
+			gone = append(gone, c.sha)
+			subjects[c.sha], _, _ = strings.Cut(message, "\n")
 		}
 	}
 	if len(gone) == 0 {

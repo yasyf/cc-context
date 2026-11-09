@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/yasyf/cc-context/internal/nativemeta"
+	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
@@ -77,6 +79,73 @@ func TestStackPlanReplaysAChildPastAParentRewrittenBeforeItLanded(t *testing.T) 
 			}
 			if got := run.branch("b").OldBase; got != cut {
 				t.Errorf("b replays from %s, want a's head before its rewrite %s, past a's commits", shortOID(got), shortOID(cut))
+			}
+		})
+	}
+}
+
+func TestStackRefuseDroppedCommitsCountsACommitTheLocalHeadHoldsAsCarried(t *testing.T) {
+	rewrite := func(t *testing.T, f *vcstest.Fixture) {
+		mustRun(t, f.Env(), f.Dir, "git", "rm", "-q", "c.txt", "d.txt")
+		mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "later work takes c and d out")
+	}
+	tests := []struct {
+		name    string
+		hold    func(t *testing.T, f *vcstest.Fixture, below, c, d string)
+		dropped []string
+	}{
+		{
+			name: "by sha, with a reworded copy of the next",
+			hold: func(t *testing.T, f *vcstest.Fixture, _, c, d string) {
+				mustRun(t, f.Env(), f.Dir, "git", "reset", "-q", "--hard", c)
+				mustRun(t, f.Env(), f.Dir, "git", "cherry-pick", d)
+				mustRun(t, f.Env(), f.Dir, "git", "commit", "-q", "--amend", "-m", "d, reworded")
+				rewrite(t, f)
+			},
+		},
+		{
+			name: "as rebased copies",
+			hold: func(t *testing.T, f *vcstest.Fixture, below, c, d string) {
+				mustRun(t, f.Env(), f.Dir, "git", "reset", "-q", "--hard", below)
+				pushCommit(t, f, "x.txt", "x\n", "x")
+				mustRun(t, f.Env(), f.Dir, "git", "cherry-pick", c, d)
+				rewrite(t, f)
+			},
+		},
+		{
+			name: "by neither, after a reset",
+			hold: func(t *testing.T, f *vcstest.Fixture, below, _, _ string) {
+				mustRun(t, f.Env(), f.Dir, "git", "reset", "-q", "--hard", below)
+				pushCommit(t, f, "x.txt", "x\n", "x")
+			},
+			dropped: []string{`"d"`, `"c"`},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := stackRebaseRepo(t, "feature")
+			mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "feature")
+			below := shipHead(t, f)
+			c := pushCommit(t, f, "c.txt", "c\n", "c")
+			remote := pushCommit(t, f, "d.txt", "d\n", "d")
+			tt.hold(t, f, below, c, remote)
+			dir := render.Dir(f.Dir)
+			tr, err := gtTrunkRefOffline(f.Context(), dir, stackRebasePrefix, "main")
+			if err != nil {
+				t.Fatal(err)
+			}
+			local := shipHead(t, f)
+
+			err = stackRefuseDroppedCommits(f.Context(), dir, tr, "feature", local, remote, "main", "")
+			if len(tt.dropped) == 0 {
+				if err != nil {
+					t.Fatalf("stackRefuseDroppedCommits = %v, want the commits the local head holds counted as carried", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), "drops 2 commit(s)") || !strings.Contains(err.Error(), strings.Join(tt.dropped, ", ")) {
+				t.Fatalf("stackRefuseDroppedCommits = %v, want a refusal naming %v", err, tt.dropped)
 			}
 		})
 	}
