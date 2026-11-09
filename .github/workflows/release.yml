@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   release:
-    uses: yasyf/homebrew-tap/.github/workflows/release-go.yml@41f8de6765b3b833ef333b0b98f5683f0e46685b
+    uses: yasyf/homebrew-tap/.github/workflows/release-go.yml@12c82844c146643f7d8d1fdf6aca69918ea4f7a8
     secrets: inherit
     with:
       # ccx ships as a formula (livecheck + `brew install --HEAD` source build +
@@ -19,24 +19,7 @@ jobs:
       render-formula: true
       formula-template: .github/formula/ccx.rb.tmpl
       formula-name: ccx
-      # Three WASM engines are go:embed'd and must exist before goreleaser
-      # builds: format-core, embed-core (model2vec), and the tree-sitter grammar
-      # modules (built with zig cc). pre-build runs after checkout+setup and
-      # before goreleaser, on the goreleaser host (linux/x86_64).
-      pre-build: |
-        set -euo pipefail
-        rustup target add wasm32-unknown-unknown
-        # Extract zig OUTSIDE the checkout — a tarball unpacked into the repo
-        # tree leaves an untracked dir that fails goreleaser's dirty-tree check.
-        zig_url=$(curl -fsSL https://ziglang.org/download/index.json \
-          | python3 -c "import sys,json;print(json.load(sys.stdin)['0.14.0']['x86_64-linux']['tarball'])")
-        zig_dir="${RUNNER_TEMP:-/tmp}/zig"
-        mkdir -p "$zig_dir"
-        curl -fsSL "$zig_url" | tar -xJ -C "$zig_dir" --strip-components=1
-        export PATH="$zig_dir:$PATH"
-        bash scripts/build-wasm.sh
-        bash scripts/build-embed-wasm.sh
-        bash scripts/build-chunk-grammars.sh
+      setup-action: true
 
   # Validates the released darwin_arm64 tarball end to end: the uv-provisioned
   # pydantic-monty sandbox driver behind `ccx exec`, and the wazero-run WASM
@@ -79,10 +62,6 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: main
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: true
       - name: Download release archives
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -98,7 +77,13 @@ jobs:
           jq --arg v "$version" '.version = $v' plugin/.claude-plugin/plugin.json > plugin/.claude-plugin/plugin.json.tmp
           mv plugin/.claude-plugin/plugin.json.tmp plugin/.claude-plugin/plugin.json
       - name: Validate descriptor
-        run: go run github.com/yasyf/binrun/cmd/binrun@v0.1.1 -- parse plugin/bin/ccx.binrun
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release download v0.9.0 --repo yasyf/binrun --pattern binrun_0.9.0_linux_amd64.tar.gz --dir "$RUNNER_TEMP"
+          echo "fa1991af7943c1465429de7792f88bdfe35174c6bfea5a13d91980cdab914870  $RUNNER_TEMP/binrun_0.9.0_linux_amd64.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/binrun_0.9.0_linux_amd64.tar.gz" -C "$RUNNER_TEMP" binrun
+          "$RUNNER_TEMP/binrun" -- parse plugin/bin/ccx.binrun
       - name: Commit refreshed descriptor and manifest to main
         id: commit
         run: |

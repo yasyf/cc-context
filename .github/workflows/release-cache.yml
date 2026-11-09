@@ -1,0 +1,15 @@
+name: Release cache
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  warm:
+    uses: yasyf/homebrew-tap/.github/workflows/go-release-cache.yml@12c82844c146643f7d8d1fdf6aca69918ea4f7a8
+    with:
+      setup-action: true
