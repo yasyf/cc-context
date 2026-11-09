@@ -1,0 +1,130 @@
+package cli
+
+import (
+	"context"
+	"encoding/json"
+	"path/filepath"
+	"slices"
+	"testing"
+
+	"github.com/yasyf/cc-context/internal/nativemeta"
+	"github.com/yasyf/cc-context/internal/vcstest"
+)
+
+func TestStackPlanReplaysAChildPastAParentRewrittenBeforeItLanded(t *testing.T) {
+	tests := []struct {
+		name     string
+		declared bool
+	}{
+		{name: "GitHub retargeted it off the landed parent"},
+		{name: "the parent is declared landed", declared: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := shipRepo(t, vcstest.Remote())
+			f.Decorate(func(ctx context.Context) context.Context { return withStackProvider(ctx, true) })
+			mustRun(t, f.Env(), f.Dir, "git", "config", "ccx.stack", "github")
+			common := filepath.Join(f.Dir, ".git")
+			trunk := shipHead(t, f)
+			shipGTUntracked(t, f, "a")
+			shipGTUntracked(t, f, "b")
+			cut := gitAt(t, f.Env(), f.Dir, "rev-parse", "a")
+			b := gitAt(t, f.Env(), f.Dir, "rev-parse", "b")
+			mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "a", "b")
+			mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "a")
+			writeShipFile(t, f.Dir, "a.txt", "a, rebased\n")
+			mustRun(t, f.Env(), f.Dir, "git", "commit", "-q", "-a", "--amend", "--no-edit")
+			rewritten := gitAt(t, f.Env(), f.Dir, "rev-parse", "a")
+			mustRun(t, f.Env(), f.Dir, "git", "push", "-qf", "origin", "a")
+			mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "b")
+			restackSquashRemote(t, f, "main", "a (#41)", "a")
+			mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
+			if err := nativemeta.Init(f.Context(), common, "main"); err != nil {
+				t.Fatal(err)
+			}
+			links := []struct{ branch, parent, fork, head string }{{"b", "main", trunk, b}}
+			prs := map[string]*stackPR{"b": {Number: 42, Title: "b", State: "OPEN", Base: "main", Head: b, NativeStack: 46}}
+			opts := stackRebaseOpts{tip: "b", submit: true, dryRun: true}
+			if tt.declared {
+				mustRun(t, f.Env(), f.Dir, "git", "branch", "-f", "a", cut)
+				links = append(links, struct{ branch, parent, fork, head string }{"a", "main", trunk, cut})
+				prs["a"] = &stackPR{Number: 41, Title: "a", State: "MERGED", Landed: true, Head: rewritten}
+				opts.landed = []string{"a"}
+			} else {
+				mustRun(t, f.Env(), f.Dir, "git", "branch", "-D", "a")
+				mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "--delete", "a")
+				prs["b"].LandedBase, prs["b"].LandedHeads = "a", []string{cut, rewritten}
+			}
+			for _, link := range links {
+				if err := nativemeta.AdoptRoot(f.Context(), common, link.branch, link.parent, link.fork, link.head); err != nil {
+					t.Fatal(err)
+				}
+			}
+			api := newGTAPIStub(t)
+			api.openPRs("b")
+			api.bases["b"], api.stacks["b"] = "main", 46
+			f.Decorate(api.ctx)
+			stubOpenPRs(t, f, prs)
+			stubStackStanding(t, f, nil)
+			l, err := resolveLane(f.Context(), "stack rebase", f.Dir, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			run, err := stackPlan(f.Context(), l, common, opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := run.branch("b").OldBase; got != cut {
+				t.Errorf("b replays from %s, want a's head before its rewrite %s, past a's commits", shortOID(got), shortOID(cut))
+			}
+		})
+	}
+}
+
+func TestStackGraphQLReadTakesTheLandedBaseFromThePullRequestsTimeline(t *testing.T) {
+	payload := `{"number": 52772, "baseRefName": "dev", "headRefOid": "17454031", "state": "OPEN", "retargets": {"nodes": [
+		{"__typename": "BaseRefChangedEvent"},
+		{"__typename": "BaseRefForcePushedEvent", "beforeCommit": {"oid": "49797e37"}, "afterCommit": {"oid": "ada43255"}},
+		{"__typename": "AutomaticBaseChangeSucceededEvent", "oldBase": "sandsql-joint-commit", "newBase": "dev"}]}}`
+	var n stackPRNode
+	if err := json.Unmarshal([]byte(payload), &n); err != nil {
+		t.Fatal(err)
+	}
+	pr := stackGraphQLRead("sharding-table-map", n).pr
+	if pr.LandedBase != "sandsql-joint-commit" || !slices.Equal(pr.LandedHeads, []string{"49797e37", "ada43255"}) {
+		t.Errorf("landed base = %q %v, want sandsql-joint-commit [49797e37 ada43255]", pr.LandedBase, pr.LandedHeads)
+	}
+}
+
+func TestStackLandedBaseKeepsOnlyTheBaseGitHubRetargetedOntoTheCurrentOne(t *testing.T) {
+	push := func(before, after string) stackRetarget {
+		return stackRetarget{Typename: "BaseRefForcePushedEvent", BeforeCommit: &ghCommitOID{before}, AfterCommit: &ghCommitOID{after}}
+	}
+	landed := func(old, base string) stackRetarget {
+		return stackRetarget{Typename: "AutomaticBaseChangeSucceededEvent", OldBase: old, NewBase: base}
+	}
+	changed := stackRetarget{Typename: "BaseRefChangedEvent"}
+	tests := []struct {
+		name   string
+		events []stackRetarget
+		base   string
+		heads  []string
+	}{
+		{name: "a base rewritten, then landed", events: []stackRetarget{push("old", "new"), landed("a", "main")}, base: "a", heads: []string{"old", "new"}},
+		{name: "a push onto an earlier base", events: []stackRetarget{push("x1", "x2"), changed, push("old", "new"), landed("a", "main")}, base: "a", heads: []string{"old", "new"}},
+		{name: "a base landed as it was", events: []stackRetarget{landed("a", "main")}, base: "a"},
+		{name: "a push GitHub kept one side of", events: []stackRetarget{{Typename: "BaseRefForcePushedEvent", AfterCommit: &ghCommitOID{"new"}}, landed("a", "main")}, base: "a", heads: []string{"new"}},
+		{name: "retargeted by hand since", events: []stackRetarget{push("old", "new"), landed("a", "main"), changed}},
+		{name: "landed onto a base it has left", events: []stackRetarget{landed("a", "b")}},
+		{name: "never retargeted"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			base, heads := stackLandedBase("main", tt.events)
+			if base != tt.base || !slices.Equal(heads, tt.heads) {
+				t.Errorf("stackLandedBase = %q %v, want %q %v", base, heads, tt.base, tt.heads)
+			}
+		})
+	}
+}
