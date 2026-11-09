@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   release:
-    uses: yasyf/homebrew-tap/.github/workflows/release-go.yml@12c82844c146643f7d8d1fdf6aca69918ea4f7a8
+    uses: yasyf/homebrew-tap/.github/workflows/release-go.yml@154dfcdd78e6c70b31d97779c047b16f8186cb69
     secrets: inherit
     with:
       # ccx ships as a formula (livecheck + `brew install --HEAD` source build +
