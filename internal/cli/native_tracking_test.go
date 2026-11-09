@@ -16,6 +16,7 @@ import (
 	"github.com/yasyf/cc-context/internal/gtapi"
 	"github.com/yasyf/cc-context/internal/gtmeta"
 	"github.com/yasyf/cc-context/internal/nativemeta"
+	"github.com/yasyf/cc-context/internal/prstate"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcs"
 	"github.com/yasyf/cc-context/internal/vcstest"
@@ -147,10 +148,13 @@ func TestAQueueReadOutsideACheckoutOfItsRepositoryRefusesAndNamesTheFix(t *testi
 }
 
 func TestNativePublicationRequiresKnownUnqueuedStateForChanges(t *testing.T) {
-	for _, tt := range []struct{ name, queue, want string }{
-		{"unqueued", `{"mergeQueueEntry":null}`, ""},
-		{"queued", `{"mergeQueueEntry":{"state":"AWAITING_CHECKS"}}`, "dequeue"},
-		{"missing PR", `null`, "unknown"},
+	for _, tt := range []struct {
+		name, queue, want string
+		reads             int
+	}{
+		{"unqueued", `{"mergeQueueEntry":null}`, "", 1},
+		{"queued", `{"mergeQueueEntry":{"state":"AWAITING_CHECKS"}}`, "dequeue", 1},
+		{"missing PR", `null`, "read the github queue state of #42: no record after a second read", 2},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			calls := 0
@@ -166,15 +170,59 @@ func TestNativePublicationRequiresKnownUnqueuedStateForChanges(t *testing.T) {
 			if tt.want == "" && err != nil || tt.want != "" && (err == nil || !strings.Contains(err.Error(), tt.want)) {
 				t.Fatalf("error=%v, want %q", err, tt.want)
 			}
-			if calls != 1 {
-				t.Fatalf("queue reads=%d", calls)
+			if calls != tt.reads {
+				t.Fatalf("queue reads=%d, want %d", calls, tt.reads)
 			}
 			plan[0].head = "published"
 			if err := nativeRefuseQueuedChanges(context.Background(), client, "org", "repo", "ship", plan, known); err != nil {
 				t.Fatal(err)
 			}
-			if calls != 1 {
+			if calls != tt.reads {
 				t.Fatalf("unchanged published head polled queue: %d", calls)
+			}
+		})
+	}
+}
+
+func TestShipPushesAPullRequestStatusReadsAsNotQueuedWhenTrunkHasNoRecordOfIt(t *testing.T) {
+	t.Setenv("TRUNK_MERGE_API_KEY", "trunk-fixture-key")
+	for _, tt := range []struct {
+		name, pulls string
+		status      int
+		refusal     string
+	}{
+		{"no record", `{"data":[],"hasMore":false,"nextCursor":null}`, http.StatusOK, ""},
+		{"unreadable", `{"message":"forbidden"}`, http.StatusForbidden, "read the trunk queue state of #41009"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/v2/repositories":
+					_, _ = fmt.Fprint(w, `{"data":[{"id":"repo-1"}],"hasMore":false,"nextCursor":null}`)
+				case "/v2/pull-requests":
+					w.WriteHeader(tt.status)
+					_, _ = fmt.Fprint(w, tt.pulls)
+				default:
+					t.Errorf("unexpected request %s", r.URL)
+				}
+			}))
+			defer server.Close()
+			client := gtapi.NewNativeWithToken(server.URL, "stub").WithQueueProvider("trunk")
+			info := gtapi.PullRequestInfo{PRNumber: 41009, HeadRefName: "yasyf/iris-dom-extract", BaseRefName: "dev", State: gtapi.PROpen, Versions: []gtapi.PRVersion{{HeadSha: "published"}}}
+			states, readErr := prstate.QueueStates(context.Background(), client, "Forge-AI", "monorepo", []gtapi.PullRequestInfo{info}, []int{41009}, io.Discard)
+			plan := []gtSubmitBranch{{name: info.HeadRefName, head: "new-head", base: "dev"}}
+			err := nativeRefuseQueuedChanges(context.Background(), client, "Forge-AI", "monorepo", "ship", plan, map[string]gtapi.PullRequestInfo{info.HeadRefName: info})
+			if tt.refusal == "" {
+				if readErr != nil || prQueueOf(info, prstate.PR{Mergeability: states[41009]}, "").Queue != prQueueNotQueued {
+					t.Fatalf("status read states=%v err=%v, want #41009 not queued", states, readErr)
+				}
+				if err != nil {
+					t.Fatalf("ship refused a pull request status reads as not queued: %v", err)
+				}
+				return
+			}
+			if readErr == nil || err == nil || !strings.Contains(err.Error(), tt.refusal) {
+				t.Fatalf("status read err=%v, ship err=%v; want both to fail and ship to name %q", readErr, err, tt.refusal)
 			}
 		})
 	}

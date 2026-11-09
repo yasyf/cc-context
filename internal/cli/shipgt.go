@@ -3395,11 +3395,11 @@ func gtRefuseQueueRestack(ctx context.Context, dir render.Dir, client *gtapi.Cli
 	if len(plan) == 0 || len(known) == 0 {
 		return nil
 	}
-	numbers := make([]int, 0, len(known))
+	stack := make([]gtapi.PullRequestInfo, 0, len(known))
 	for _, branch := range slices.Sorted(maps.Keys(known)) {
-		numbers = append(numbers, known[branch].PRNumber)
+		stack = append(stack, known[branch])
 	}
-	statuses, err := shipQueueStatuses(ctx, client, owner, name, numbers)
+	statuses, err := shipQueueStatuses(ctx, client, owner, name, stack)
 	if err != nil {
 		return fmt.Errorf("%s: read whether Graphite is restacking the stack's pull requests: %w", prefix, err)
 	}

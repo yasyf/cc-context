@@ -553,48 +553,89 @@ func (g *GitHub) queueRecords(ctx context.Context, numbers []int) (map[int]*gtap
 	}
 	mergeCtx, cancelMerge := context.WithTimeout(ctx, graphiteDeadline)
 	defer cancelMerge()
-	mergeability, err := g.gt.MergeabilityFor(mergeCtx, g.owner, g.name, infos, numbers)
-	if err != nil {
-		_, _ = fmt.Fprintf(g.warn, "prstate: %s: %v; this poll carries no mergeability\n", g.gt.QueueProvider(), err)
+	mergeability, err := QueueStates(mergeCtx, g.gt, g.owner, g.name, infos, numbers, g.warn)
+	var unread *QueueReadError
+	if errors.As(err, &unread) {
+		if len(unread.PRs) == 0 {
+			_, _ = fmt.Fprintf(g.warn, "prstate: %v; this poll carries no mergeability\n", err)
+		} else {
+			_, _ = fmt.Fprintf(g.warn, "prstate: %v; this poll carries no queue state for them\n", err)
+		}
+		for _, number := range unread.PRs {
+			delete(byNumber, number)
+		}
+	}
+	return byNumber, mergeability
+}
+
+// QueueReadError names the pull requests whose queue state a read left
+// unsettled, the queue provider it asked, and why.
+type QueueReadError struct {
+	Provider string
+	PRs      []int
+	Err      error
+}
+
+func (e *QueueReadError) Error() string {
+	if len(e.PRs) == 0 {
+		return fmt.Sprintf("read the %s queue: %v", e.Provider, e.Err)
+	}
+	named := make([]string, len(e.PRs))
+	for i, number := range e.PRs {
+		named[i] = "#" + strconv.Itoa(number)
+	}
+	return fmt.Sprintf("read the %s queue state of %s: %v", e.Provider, strings.Join(named, ", "), e.Err)
+}
+
+func (e *QueueReadError) Unwrap() error { return e.Err }
+
+var errNoQueueRecord = errors.New("no record after a second read")
+
+// QueueStates is every queue reader's one read of numbers' queue states: a
+// state the provider owes but omits is asked once more, and a pull request
+// Trunk still has no record of reads as not queued. An unsettled state is a
+// *QueueReadError; absent from the map with no error means not queued.
+func QueueStates(ctx context.Context, gt *gtapi.Client, owner, name string, infos []gtapi.PullRequestInfo, numbers []int, warn io.Writer) (map[int]string, error) {
+	states, err := gt.MergeabilityFor(ctx, owner, name, infos, numbers)
+	owed := make(map[int]bool, len(infos))
+	for _, info := range infos {
+		owed[info.PRNumber] = gt.QueueRequiresStatus(info)
 	}
 	var unread []int
 	for _, number := range numbers {
-		if info := byNumber[number]; info != nil && g.gt.QueueRequiresStatus(*info) {
-			if _, known := mergeability[number]; !known {
-				unread = append(unread, number)
-			}
+		if _, known := states[number]; owed[number] && !known {
+			unread = append(unread, number)
 		}
-	}
-	if len(unread) == 0 {
-		return byNumber, mergeability
-	}
-	reread := map[int]string{}
-	if err == nil {
-		reread, err = g.gt.MergeabilityFor(mergeCtx, g.owner, g.name, infos, unread)
 	}
 	if err != nil {
-		_, _ = fmt.Fprintf(g.warn, "prstate: %s: %v; this poll carries no queue state for %v\n", g.gt.QueueProvider(), err, unread)
-		for _, number := range unread {
-			delete(byNumber, number)
-		}
-		return byNumber, mergeability
+		return states, &QueueReadError{Provider: gt.QueueProvider(), PRs: unread, Err: err}
 	}
-	if mergeability == nil {
-		mergeability = make(map[int]string, len(unread))
+	if len(unread) == 0 {
+		return states, nil
 	}
+	reread, err := gt.MergeabilityFor(ctx, owner, name, infos, unread)
+	if err != nil {
+		return states, &QueueReadError{Provider: gt.QueueProvider(), PRs: unread, Err: err}
+	}
+	if states == nil {
+		states = make(map[int]string, len(unread))
+	}
+	var lost []int
 	for _, number := range unread {
-		state, known := settledQueue(g.gt.QueueProvider(), reread, number)
+		state, known := settledQueue(gt.QueueProvider(), reread, number)
 		if !known {
-			_, _ = fmt.Fprintf(g.warn, "prstate: %s: queue state of #%d is unknown after a second read; this poll carries no queue state\n", g.gt.QueueProvider(), number)
-			delete(byNumber, number)
+			lost = append(lost, number)
 			continue
 		}
 		if _, read := reread[number]; !read {
-			_, _ = fmt.Fprintf(g.warn, "prstate: trunk holds no record of #%d after a second read, so its queue never took it; read as not queued\n", number)
+			_, _ = fmt.Fprintf(warn, "prstate: trunk holds no record of #%d after a second read, so its queue never took it; read as not queued\n", number)
 		}
-		mergeability[number] = state
+		states[number] = state
 	}
-	return byNumber, mergeability
+	if len(lost) > 0 {
+		return states, &QueueReadError{Provider: gt.QueueProvider(), PRs: lost, Err: errNoQueueRecord}
+	}
+	return states, nil
 }
 
 func settledQueue(provider string, reread map[int]string, number int) (string, bool) {
