@@ -349,14 +349,19 @@ func TestShipGTRefusesABranchWithNoCommitOfItsOwnAndNothingToCommit(t *testing.T
 
 func TestShipGTAutoTrackMovesNothingWhenALaterCheckRefuses(t *testing.T) {
 	f := shipGTRepo(t)
-	shipBehindTrunk(t, f)
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "b")
+	pushCommit(t, f, "trunk.txt", "trunk\n", "trunk, before it landed")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
+	pushCommit(t, f, "trunk.txt", "trunk\n", "trunk")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "main")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "b")
 	writeShipFile(t, f.Dir, "own.txt", "own\n")
 	mustRun(t, f.Env(), f.Dir, "git", "add", "own.txt")
 	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "own")
 	before := gitAt(t, f.Env(), f.Dir, "rev-parse", "b")
 	writeShipFile(t, f.Dir, "own.txt", "own, edited\n")
 
-	_, err := runShipCmd(f.Context(), t, "--no-commit", "--no-push")
+	_, err := runShipCmd(f.Context(), t, "--no-commit")
 	if want := "ship: put b back at " + before[:12] + ", untracked as it was before the move onto main"; err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("ship over a dirty --no-commit checkout = %v, want it to carry %q", err, want)
 	}
