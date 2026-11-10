@@ -135,7 +135,7 @@ func dryRunPosition(ctx context.Context, l lane, o shipOpts, c *gtCache, r *ship
 		r.branch = strings.Join(names, " ")
 		return nil
 	}
-	branch, err := gitCurrentBranch(ctx, l.dir(), "ship")
+	branch, err := shipTargetBranch(ctx, l.dir(), o)
 	if err != nil {
 		return err
 	}
@@ -401,6 +401,14 @@ func dryRunPlace(ctx context.Context, l lane, o shipOpts, r *shipDryRun) error {
 		return nil
 	}
 	r.place = "append to " + plan.name
+	if !shipSwitches(l, o, plan) {
+		return nil
+	}
+	here, err := gitCurrentBranch(ctx, l.dir(), "ship")
+	if err != nil || here == plan.name {
+		return err
+	}
+	r.place += ", checked out from " + here + " for the commit and left again after it"
 	return nil
 }
 
@@ -421,9 +429,6 @@ func dryRunRefusals(ctx context.Context, l lane, o shipOpts, r *shipDryRun) erro
 	}
 	if l.gt {
 		checks = append(checks, func() error { return gtTrunkFlagRefusal(o, r.branch, r.trunk) })
-	}
-	if gitBacked(l) {
-		checks = append(checks, func() error { return refuseExistingBranch(ctx, l.dir(), o, r.plan) })
 	}
 	if gitBacked(l) && !o.noCommit && len(o.onlyHunks) == 0 && len(o.skipHunks) == 0 {
 		checks = append(checks, func() error { _, err := shipScopeToIndex(ctx, l.dir(), o); return err })
