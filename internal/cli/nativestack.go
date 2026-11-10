@@ -266,13 +266,11 @@ func nativeStackTracksBranch(info gtapi.PullRequestInfo, branch *stackRebaseBran
 	if info.State != gtapi.PROpen || info.HeadRefName != branch.Name || info.Newest().HeadSha != branch.NewHead || info.BaseRefName != branch.Parent {
 		return false
 	}
-	if branch.Parent == trunk {
-		return true
-	}
-	if info.StackNumber == 0 || parent == nil {
-		return false
-	}
-	return info.DependentPRNumber == parent.Number || info.DependentPRNumber == 0 && info.CliTrunk == branch.Parent
+	return branch.Parent == trunk || parent != nil && nativeStackLinksAbove(info, branch.Parent, parent.Number)
+}
+
+func nativeStackLinksAbove(info gtapi.PullRequestInfo, base string, parent int) bool {
+	return info.StackNumber != 0 && (info.DependentPRNumber == parent || info.DependentPRNumber == 0 && info.CliTrunk == base)
 }
 
 func nativeRefuseFork(prefix, trunk string, parents map[string]string, known map[string]gtapi.PullRequestInfo) error {
@@ -285,12 +283,14 @@ func nativeRefuseFork(prefix, trunk string, parents map[string]string, known map
 		if len(parent.OpenAbove) == 0 || self.StackNumber != 0 || children[branch] {
 			continue
 		}
+		sibling, top := parent.OpenAbove[0], parent.OpenAbove[len(parent.OpenAbove)-1]
 		name := branch
+		insert := fmt.Sprintf("ccx vcs stack submit --parent %s=%s --pr-title %s=<title> --pr-body-file %s=<body.md>", sibling.Head, branch, branch, branch)
 		if self.PRNumber != 0 {
 			name = fmt.Sprintf("#%d %s", self.PRNumber, branch)
+			insert = fmt.Sprintf("ccx vcs stack submit --parent %s=%s", sibling.Head, branch)
 		}
-		sibling, top := parent.OpenAbove[0], parent.OpenAbove[len(parent.OpenAbove)-1]
-		return refuse("%s: %s and #%d %s both sit on #%d %s. Native GitHub stack #%d is a single chain and GitHub has no stack of one pull request for a fork, so %s cannot register. Nothing was pushed. Chain it on the stack's top: ccx vcs stack rebase --parent %s=%s. Or take it off #%d: ccx vcs stack rebase --parent %s=%s", prefix, name, sibling.Number, sibling.Head, parent.PRNumber, parent.HeadRefName, parent.StackNumber, name, branch, top.Head, parent.PRNumber, branch, trunk)
+		return refuse("%s: %s and #%d %s both sit on #%d %s. Native GitHub stack #%d is a single chain and GitHub has no stack of one pull request for a fork, so %s cannot register. Nothing was pushed. Chain it on the stack's top: ccx vcs stack rebase --parent %s=%s. Or put it between #%d and #%d: %s from %s's working copy. Or take it off #%d: ccx vcs stack rebase --parent %s=%s", prefix, name, sibling.Number, sibling.Head, parent.PRNumber, parent.HeadRefName, parent.StackNumber, name, branch, top.Head, parent.PRNumber, sibling.Number, insert, sibling.Head, parent.PRNumber, branch, trunk)
 	}
 	return nil
 }

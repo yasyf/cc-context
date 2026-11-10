@@ -281,7 +281,10 @@ and ccx cannot tell which lane owns it.
 --parent <branch>=<parent> moves <branch> and the branches above it onto
 <parent> and retargets its pull request there, as ccx vcs stack rebase --parent
 does; --parent <branch>=<trunk> takes a branch out of a stack whose base branch
-has no open pull request left.
+has no open pull request left. On a native GitHub stack lane the pull request
+keeps its number: it leaves its stack, takes <parent> as its base and is linked
+above <parent>, so --parent <upper>=<new> with <new> cut on <upper>'s old base
+puts <new>'s pull request between the two.
 --to <branch> stops the run at <branch>, leaving every branch stacked above it
 out; a <branch> that is neither the one checked out here nor stacked above it
 is refused.
@@ -668,7 +671,7 @@ func runStackSubmit(cmd *cobra.Command, o shipOpts, include, parents []string, t
 	}
 	tracking := &stackTracking{}
 	cmd.SetContext(withStackTracking(ctx, tracking))
-	opts := stackRebaseOpts{members: chain, pinned: append(stackSkipNames(pinned), stackUnderNames(under)...), owners: holders, parents: parents, landed: o.landed, newPRs: o.newPRs, moves: o.moves, moveInPlace: o.moveInPlace, draft: &o.draft, ship: intent, submit: true, dropCommits: o.dropCommits, evictQueued: o.evictQueued, stayClean: !o.restack, restack: o.restack, dryRun: o.dryRun, to: to, include: include, otherLanes: o.allLanes}
+	opts := stackRebaseOpts{members: chain, pinned: append(stackSkipNames(pinned), stackUnderNames(under)...), owners: holders, parents: parents, landed: o.landed, newPRs: o.newPRs, moves: o.moves, draft: &o.draft, ship: intent, submit: true, dropCommits: o.dropCommits, evictQueued: o.evictQueued, stayClean: !o.restack, restack: o.restack, dryRun: o.dryRun, to: to, include: include, otherLanes: o.allLanes}
 	if err := runStackRebase(cmd, opts); err != nil {
 		return err
 	}

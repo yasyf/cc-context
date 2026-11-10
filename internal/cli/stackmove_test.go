@@ -200,20 +200,22 @@ func TestStackPlanTakesANamedParentOutsideItsMembersAndRefusesWithoutOne(t *test
 	}
 }
 
-func TestStackPlanNamesTheInPlaceRetargetOfAMovedPullRequest(t *testing.T) {
-	branch := stackRebaseBranch{Name: "tip", Parent: "fix", WasParent: "lower", Replays: 2, PR: &stackPR{Number: 5, Title: "Tip", Base: "lower"}}
+func TestStackPlanNamesTheInPlaceRetargetOfAReparentedPullRequest(t *testing.T) {
 	for _, tc := range []struct {
-		name    string
-		inPlace bool
-		moves   []string
-		want    bool
+		name        string
+		reparented  []string
+		moves       []string
+		nativeStack int
+		want        bool
 	}{
-		{name: "moved in place", inPlace: true, moves: []string{"tip"}, want: true},
-		{name: "moved by a new pull request", moves: []string{"tip"}},
-		{name: "not moved", inPlace: true},
+		{name: "reparented in a native stack", reparented: []string{"tip"}, nativeStack: 3, want: true},
+		{name: "moved by a new pull request", reparented: []string{"tip"}, moves: []string{"tip"}, nativeStack: 3},
+		{name: "reparented outside any native stack", reparented: []string{"tip"}},
+		{name: "not reparented", nativeStack: 3},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			run := &stackRebaseRun{Trunk: "main", Pin: "abc", Moves: tc.moves, MoveInPlace: tc.inPlace, Branches: []stackRebaseBranch{branch}}
+			branch := stackRebaseBranch{Name: "tip", Parent: "fix", WasParent: "lower", Replays: 2, PR: &stackPR{Number: 5, Title: "Tip", Base: "lower", NativeStack: tc.nativeStack}}
+			run := &stackRebaseRun{Trunk: "main", Pin: "abc", Reparented: tc.reparented, Moves: tc.moves, Branches: []stackRebaseBranch{branch}}
 			got := strings.Join(stackPlanLines(run), "\n")
 			if has := strings.Contains(got, "retargets #5 from lower, relinking its native stack"); has != tc.want {
 				t.Fatalf("plan = %q, names the in-place retarget = %t, want %t", got, has, tc.want)

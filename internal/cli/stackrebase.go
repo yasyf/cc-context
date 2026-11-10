@@ -194,7 +194,6 @@ type stackRebaseRun struct {
 	Reparented    []string `json:"reparented,omitempty"`
 	NewPRs        []string `json:"new_prs,omitempty"`
 	Moves         []string `json:"moves,omitempty"`
-	MoveInPlace   bool     `json:"move_in_place,omitempty"`
 	deferPush     bool
 	Ship          *stackShipIntent         `json:"ship,omitempty"`
 	Retarget      *restackRetarget         `json:"retarget,omitempty"`
@@ -244,6 +243,10 @@ func (r *stackRebaseRun) branch(name string) *stackRebaseBranch {
 	return nil
 }
 
+func (r *stackRebaseRun) retargetsInPlace(name string) bool {
+	return slices.Contains(r.Reparented, name) && !slices.Contains(r.Moves, name)
+}
+
 func (r *stackRebaseRun) leavesLocalRef(b stackRebaseBranch) bool {
 	return b.Kept && (b.Pinned || tipOnlyAncestor(r.TipOnly, r.Tip, b.Name))
 }
@@ -261,7 +264,6 @@ type stackRebaseOpts struct {
 	landed      []string
 	newPRs      []string
 	moves       []string
-	moveInPlace bool
 	dryRun      bool
 	noPush      bool
 	members     []string
@@ -1480,7 +1482,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	if err != nil {
 		return nil, fmt.Errorf("stack rebase: %w", err)
 	}
-	run := &stackRebaseRun{Trunk: trunk, Pin: pin, NoPush: o.noPush, Origin: l.checkout.Root, Draft: o.draft, DraftAll: o.draftAll, NoVerify: o.noVerify, Tip: o.tip, TipOnly: o.tipOnly, DropCommits: o.dropCommits, StayClean: o.stayClean, Restack: o.restack, AllLanes: o.allLanes, To: o.to, Reparented: slices.Sorted(maps.Keys(overrides)), NewPRs: o.newPRs, Moves: o.moves, MoveInPlace: o.moveInPlace, deferPush: o.deferPush, Ship: o.ship, Roots: roots, Pid: os.Getpid(), Started: stackProcStart(os.Getpid()), Host: host, left: left, lanePins: lanePins, heldBelow: heldBelow, heldAbove: heldAbove, owners: o.owners, adopted: adopted, recorded: o.recorded, rewound: rewound}
+	run := &stackRebaseRun{Trunk: trunk, Pin: pin, NoPush: o.noPush, Origin: l.checkout.Root, Draft: o.draft, DraftAll: o.draftAll, NoVerify: o.noVerify, Tip: o.tip, TipOnly: o.tipOnly, DropCommits: o.dropCommits, StayClean: o.stayClean, Restack: o.restack, AllLanes: o.allLanes, To: o.to, Reparented: slices.Sorted(maps.Keys(overrides)), NewPRs: o.newPRs, Moves: o.moves, deferPush: o.deferPush, Ship: o.ship, Roots: roots, Pid: os.Getpid(), Started: stackProcStart(os.Getpid()), Host: host, left: left, lanePins: lanePins, heldBelow: heldBelow, heldAbove: heldAbove, owners: o.owners, adopted: adopted, recorded: o.recorded, rewound: rewound}
 	own := map[string]bool{}
 	if current != "" && current != trunk {
 		down, err := gtDownstack(stackRebasePrefix, retargeted, current, trunk)
@@ -3969,7 +3971,7 @@ func stackPlanLines(run *stackRebaseRun) []string {
 			if b.reopens() && !run.NoPush {
 				fields = append(fields, "reopen (base "+b.PR.Base+" deleted)")
 			}
-			if run.MoveInPlace && slices.Contains(run.Moves, b.Name) && b.PR != nil && b.PR.Base != b.Parent && !run.NoPush {
+			if run.retargetsInPlace(b.Name) && b.PR != nil && b.PR.NativeStack != 0 && b.PR.Base != b.Parent && !run.NoPush {
 				fields = append(fields, fmt.Sprintf("retargets #%d from %s, relinking its native stack", b.PR.Number, b.PR.Base))
 			}
 			if b.Evicts && !run.NoPush {
@@ -5489,7 +5491,7 @@ func stackReplan(ctx context.Context, cmd *cobra.Command, l lane, commonDir stri
 	}
 	next, err := stackPlan(ctx, l, commonDir, stackRebaseOpts{
 		parents: parents, members: members, pinned: pinned, landed: landed, vetted: vetted, replayed: replayed, draft: run.Draft, draftAll: run.DraftAll, noVerify: run.NoVerify, ship: run.Ship,
-		tip: run.Tip, tipOnly: run.TipOnly, dropCommits: run.DropCommits, stayClean: run.StayClean, restack: run.Restack, allLanes: run.AllLanes, to: run.To, newPRs: run.NewPRs, moves: run.Moves, moveInPlace: run.MoveInPlace, trunk: run.Trunk,
+		tip: run.Tip, tipOnly: run.TipOnly, dropCommits: run.DropCommits, stayClean: run.StayClean, restack: run.Restack, allLanes: run.AllLanes, to: run.To, newPRs: run.NewPRs, moves: run.Moves, trunk: run.Trunk,
 	})
 	if err != nil {
 		return err

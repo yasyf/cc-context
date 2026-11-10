@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ccx vcs stack submit --parent <upper>=<new>` puts a new branch between two
+  pull requests of one native GitHub stack in a single submit. The upper pull
+  request keeps its number: it leaves the stack, takes `<new>` as its base, and
+  the stack is linked again as lower, new, upper. Before, the upper pull request
+  was retargeted but left out of every stack, and later submits called it
+  unchanged and never linked it; a native pull request now counts as unchanged
+  only while it sits right above its parent's. The fork refusal names the insert
+  command beside its other two remedies.
 - The cleanup daemon no longer deletes a worktree that something took up again
   after its removal was requested. A job follows a moved `HEAD` only when the
   move came within an hour of the request; a later move blocks the job
