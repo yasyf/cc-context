@@ -636,7 +636,13 @@ func runStackSubmit(cmd *cobra.Command, o shipOpts, include, parents []string, t
 			return err
 		}
 	}
-	intent, cleanup, err := stackSubmitIntent(cmd, l, o, stack)
+	named := slices.Clone(stack)
+	for _, pair := range parents {
+		if _, parent, ok := strings.Cut(pair, "="); ok {
+			named = append(named, parent)
+		}
+	}
+	intent, cleanup, err := stackSubmitIntent(cmd, l, o, named)
 	defer cleanup()
 	if err != nil {
 		return err
