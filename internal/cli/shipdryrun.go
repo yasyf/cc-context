@@ -685,7 +685,7 @@ func dryRunBases(ctx context.Context, l lane, o shipOpts, pin gtTrunkPinned, sta
 		if err != nil {
 			return nil, err
 		}
-		if base == "" && !state[parent.Ref].Trunk {
+		if base == "" && !state[parent.Ref].Trunk && (branch != r.branch || r.onto == "") {
 			if base, err = gtHeldParentHead(ctx, "ship", l.dir(), pin, branch, parent, onto); err != nil {
 				return nil, err
 			}
