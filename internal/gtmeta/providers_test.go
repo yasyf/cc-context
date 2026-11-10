@@ -190,6 +190,34 @@ func TestExplicitNativeContextDoesNotConvertTrackedGraphiteBranch(t *testing.T) 
 	}
 }
 
+func TestOwnershipSkipsARowGraphiteDoesNotTrack(t *testing.T) {
+	f, common, main := providerFixture(t)
+	f.Out(t, "git", "branch", "cached")
+	db, err := sql.Open("sqlite", filepath.Join(common, ".graphite_metadata.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	if _, err := db.Exec(`INSERT INTO branch_metadata(branch_name,branch_revision,children) VALUES('cached',?,'[]')`, main); err != nil {
+		t.Fatal(err)
+	}
+	for branch, want := range map[string]string{"cached": "github", "legacy": "graphite"} {
+		if got, err := gtmeta.Provider(f.Context(), common, branch); err != nil || got != want {
+			t.Fatalf("Provider(%s) = %q, %v; want %q", branch, got, err, want)
+		}
+	}
+	owners, err := gtmeta.BranchProviders(f.Context(), common)
+	if err != nil || owners["cached"] != "" || owners["legacy"] != "graphite" {
+		t.Fatalf("BranchProviders = %v, %v; want legacy alone owned by Graphite", owners, err)
+	}
+	if err := gtmeta.AdoptRoot(gtmeta.WithProvider(f.Context(), "github"), common, "cached", "main", main, main); err != nil {
+		t.Fatalf("native adopt of a branch Graphite does not track: %v", err)
+	}
+	if native, err := gtmeta.NativeMembership(common, "cached"); err != nil || !native {
+		t.Fatalf("cached native = %v, %v; want it adopted into the native stack", native, err)
+	}
+}
+
 func TestLegacyForestLeavesOutOnlyTheStackOnANativeParent(t *testing.T) {
 	f, common, main := providerFixture(t)
 	f.Out(t, "git", "branch", "stranded")

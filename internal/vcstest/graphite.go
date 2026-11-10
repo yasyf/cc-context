@@ -57,7 +57,8 @@ type GraphiteRef struct {
 // itself keeps in a git common dir: the repo config naming the trunk, the
 // SQLite database holding one branch_metadata row per branch, and a refs.txt a
 // fake git serves as for-each-ref. stateJSON is gt state's own object, mapping
-// each branch to {"trunk":true} or to its parents.
+// each branch to {"trunk":true}, to its parents, or to {} for the parentless
+// row gt keeps for a branch it does not track.
 //
 // A branch's head is whatever its children record as the revision they were
 // restacked onto: any other value reads as a stack needing a restack.
@@ -150,6 +151,12 @@ func writeGraphiteRows(t *testing.T, path string, state map[string]graphiteBranc
 		if branch.Trunk {
 			if _, err := db.Exec(insert, name, nil, nil, graphiteValidationTrunk, children[name]); err != nil {
 				t.Fatalf("insert trunk %s into %s: %v", name, path, err)
+			}
+			continue
+		}
+		if len(branch.Parents) == 0 {
+			if _, err := db.Exec(insert, name, nil, nil, nil, children[name]); err != nil {
+				t.Fatalf("insert untracked %s into %s: %v", name, path, err)
 			}
 			continue
 		}

@@ -142,3 +142,44 @@ func TestStackRebaseAdoptsAnUntrackedParentFromGitAncestry(t *testing.T) {
 		})
 	}
 }
+
+func TestStackRebaseTakesTheNativeLaneOverAGraphiteRowItDoesNotTrack(t *testing.T) {
+	f := vcstest.Repo(t, vcstest.Remote())
+	seedLaneRecords(f.Context(), t, f.Dir, laneSeed{})
+	f.Decorate(func(ctx context.Context) context.Context { return withCleanup(ctx, unsupportedCleanup{}) })
+	shipGTUntracked(t, f, "mid")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "mid")
+	common := filepath.Join(f.Dir, ".git")
+	vcstest.WriteGraphiteMeta(t, common, `{"main":{"trunk":true},"mid":{}}`)
+	if err := nativemeta.Init(f.Context(), common, "main"); err != nil {
+		t.Fatal(err)
+	}
+	api := stubGTAPI(t)
+	api.openPRs("mid")
+	api.bases["mid"] = "main"
+	f.Decorate(api.ctx)
+	stubStackPRs(t, f, nil)
+	stubStackStanding(t, f, nil)
+
+	plan, errOut, err := runStackCmd(t, f, "rebase", "--dry-run")
+	if err != nil {
+		t.Fatalf("stack rebase --dry-run over a parentless Graphite row: %v\n%s%s", err, plan, errOut)
+	}
+	if !strings.Contains(plan, "\nmid · ") {
+		t.Errorf("plan = %s, want mid planned on its pull request's base", plan)
+	}
+
+	if out, errOut, err := runStackCmd(t, f, "rebase", "--no-push"); err != nil {
+		t.Fatalf("stack rebase over a parentless Graphite row: %v\n%s%s", err, out, errOut)
+	}
+	if native, err := nativemeta.Membership(common, "mid"); err != nil || !native {
+		t.Errorf("mid native = %v, %v; want it recorded in the native stack", native, err)
+	}
+	state, err := gtStateQuery(f.Context(), render.Dir(f.Dir), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := state["mid"]; len(s.Parents) != 1 || s.Parents[0].Ref != "main" {
+		t.Errorf("mid = %+v, want it recorded on main", s)
+	}
+}

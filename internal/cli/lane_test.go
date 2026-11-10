@@ -17,6 +17,7 @@ import (
 
 	"github.com/yasyf/cc-context/internal/execstub"
 
+	"github.com/yasyf/cc-context/internal/nativemeta"
 	"github.com/yasyf/cc-context/internal/vcs"
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
@@ -825,6 +826,38 @@ func TestResolveLaneReadsTheTrackedStackOfAFreshCheckout(t *testing.T) {
 	}
 }
 
+func TestResolveLaneReadsGraphiteOwnershipOffTheBranchesGraphiteTracks(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		opts   []vcstest.Opt
+		native bool
+	}{
+		{name: "a parentless Graphite row takes the native lane", native: true},
+		{name: "a Graphite-tracked branch keeps the Graphite lane", opts: []vcstest.Opt{vcstest.GT(), vcstest.GTStack("feature")}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := vcstest.Repo(t, append([]vcstest.Opt{vcstest.Remote()}, tt.opts...)...)
+			seedLaneRecords(f.Context(), t, f.Dir, laneSeed{})
+			common := filepath.Join(f.Dir, ".git")
+			if tt.native {
+				runTool(t, f, "git", "branch", "feature")
+				vcstest.WriteGraphiteMeta(t, common, `{"main":{"trunk":true},"feature":{}}`)
+			}
+			runTool(t, f, "git", "switch", "-q", "feature")
+			if err := nativemeta.Init(f.Context(), common, "main"); err != nil {
+				t.Fatal(err)
+			}
+			l, err := resolveLane(f.Context(), "stack rebase", f.Dir, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !l.gt || l.native != tt.native {
+				t.Fatalf("resolveLane gt = %t, native = %t; want gt, native = %t", l.gt, l.native, tt.native)
+			}
+		})
+	}
+}
+
 // TestResolveLaneGTMissingFromContext pins the gt probe to the PATH the
 // context carries. The fixture's shim directory alone is that PATH and the gt
 // shim is gone from it, while the process keeps whatever gt the machine has —
@@ -840,7 +873,7 @@ func TestResolveLaneGTMissingFromContext(t *testing.T) {
 	}
 
 	_, err := resolveLane(f.Context(), "lane", f.Dir, false)
-	want := "lane: graphite config found but gt not on PATH — install graphite (brew install graphite) or pass --no-gt"
+	want := "lane: graphite config found but gt not on PATH — install graphite (brew install graphite) or git config ccx.nogt true"
 	if err == nil || err.Error() != want {
 		t.Fatalf("resolveLane error = %v, want %q", err, want)
 	}

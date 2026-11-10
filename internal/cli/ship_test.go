@@ -6260,7 +6260,7 @@ func TestShipGTSubmitFailures(t *testing.T) {
 		api.synced = gtapi.RepoNotSyncedAddable
 
 		_, err := runShipCmd(api.ctx(context.Background()), t, "-m", "fix: frobnicate")
-		want := submitAdvice("graphite does not sync yasyf/cc-context (NOT_SYNCED_ADDABLE) — add the repo at app.graphite.dev, or pass --no-gt")
+		want := submitAdvice("graphite does not sync yasyf/cc-context (NOT_SYNCED_ADDABLE) — add the repo at app.graphite.dev, or stack it on GitHub with git config ccx.stack github")
 		if err == nil || err.Error() != want {
 			t.Fatalf("error = %v, want %q", err, want)
 		}
