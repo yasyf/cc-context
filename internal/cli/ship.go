@@ -166,7 +166,6 @@ type shipOpts struct {
 	landed      []string
 	newPRs      []string
 	moves       []string
-	moveInPlace bool
 	tipOnly     bool
 	restack     bool
 	dropCommits bool

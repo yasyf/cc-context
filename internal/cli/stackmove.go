@@ -26,6 +26,12 @@ stacked on it.
 This is how a branch goes below an open pull request: cut it with ccx vcs stack
 new <name> --parent <trunk>, ship it, then run ccx vcs stack move --onto <name>
 from the pull request's lane. It is also how a published branch changes parent.
+The move is ccx vcs stack submit --parent <branch>=<parent> for the branch
+checked out here, so a new branch goes between two pull requests of one native
+stack in a single submit: cut it on the lower one with ccx vcs stack new, then
+from the upper one's lane run ccx vcs stack submit --parent <upper>=<name>
+--pr-title <name>=<title> --pr-body-file <name>=<body.md>, which opens its pull
+request and links the stack in the new order.
 
 --dry-run prints the plan, naming each pull request the run retargets, and moves
 nothing. A conflict stops the run in a conflict workspace; ccx vcs stack continue
@@ -56,8 +62,6 @@ a Graphite lane, ccx vcs stack submit --parent <branch>=<parent> does the move.`
 			if current == "" {
 				return errors.New("stack move: detached HEAD — check out the branch to move or name it with --branch")
 			}
-			o.moves = []string{current}
-			o.moveInPlace = true
 			return runStackSubmit(cmd, o, nil, []string{fmt.Sprintf("%s=%s", current, onto)}, "")
 		},
 	}

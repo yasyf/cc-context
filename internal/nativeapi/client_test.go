@@ -1218,6 +1218,100 @@ func TestSubmitMoveInPlaceRetargetsAPullRequestOutOfALiveNativeStackAndRelinksTh
 	}
 }
 
+func TestSubmitInsertsANewPullRequestBetweenTwoOfALiveNativeStack(t *testing.T) {
+	var calls []string
+	bodies := map[string]map[string]any{}
+	stacked, relinked := true, false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if publishedHeadFixture(t, w, r, "head") {
+			return
+		}
+		reply := func(body string) {
+			if _, err := fmt.Fprint(w, body); err != nil {
+				t.Errorf("write fixture response: %v", err)
+			}
+		}
+		call := r.Method + " " + r.URL.Path
+		if r.Method == http.MethodGet && r.URL.Path == "/repos/org/repo/pulls" {
+			call += "?head=" + r.URL.Query().Get("head")
+		}
+		calls = append(calls, call)
+		if r.Method != http.MethodGet {
+			var body map[string]any
+			if r.ContentLength > 0 {
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Errorf("%s: decode body: %v", call, err)
+				}
+			}
+			bodies[call] = body
+		}
+		switch call {
+		case "POST /repos/org/repo/pulls":
+			reply(`{"number":3,"state":"open","head":{"repo":{"full_name":"org/repo"},"ref":"mid","sha":"head"},"base":{"ref":"lower"}}`)
+		case "GET /repos/org/repo/pulls?head=org:lower":
+			stack := ""
+			if stacked {
+				stack = `,"stack":{"number":8,"position":1,"size":2,"base":{"ref":"dev"}}`
+			}
+			reply(`[{"number":1,"state":"open","head":{"repo":{"full_name":"org/repo"},"ref":"lower"},"base":{"ref":"dev"}` + stack + `}]`)
+		case "GET /repos/org/repo/stacks/8":
+			reply(`{"number":8,"pull_requests":[{"number":1,"state":"open","merged_at":null},{"number":2,"state":"open","merged_at":null}]}`)
+		case "GET /repos/org/repo/pulls/2":
+			stack := ""
+			if stacked {
+				stack = `,"stack":{"number":8,"position":2,"size":2,"base":{"ref":"dev"}}`
+			}
+			reply(`{"number":2,"title":"Upper","state":"open","head":{"repo":{"full_name":"org/repo"},"ref":"upper","sha":"head"},"base":{"ref":"lower"}` + stack + `}`)
+		case "POST /repos/org/repo/stacks/8/unstack":
+			stacked = false
+			w.WriteHeader(http.StatusNoContent)
+		case "PATCH /repos/org/repo/pulls/2":
+			if stacked {
+				http.Error(w, `{"message":"Validation Failed: Cannot change the base branch because the pull request is part of a stack."}`, http.StatusUnprocessableEntity)
+				return
+			}
+			reply(`{"number":2,"state":"open","head":{"repo":{"full_name":"org/repo"},"ref":"upper","sha":"head"},"base":{"ref":"mid"}}`)
+		case "GET /repos/org/repo/pulls?head=org:mid":
+			reply(`[{"number":3,"state":"open","head":{"repo":{"full_name":"org/repo"},"ref":"mid"},"base":{"ref":"lower"}}]`)
+		case "POST /repos/org/repo/stacks":
+			relinked = true
+			reply(`{"number":10}`)
+		case "GET /repos/org/repo/pulls/3":
+			stack := ""
+			if relinked {
+				stack = `,"stack":{"number":10,"position":2,"size":2,"base":{"ref":"dev"}}`
+			}
+			reply(`{"number":3,"state":"open","head":{"repo":{"full_name":"org/repo"},"ref":"mid","sha":"head"},"base":{"ref":"lower"}` + stack + `}`)
+		case "POST /repos/org/repo/stacks/10/add":
+			reply(`{"number":10}`)
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL)
+			http.Error(w, "unexpected", 500)
+		}
+	}))
+	defer srv.Close()
+	got, err := NewWithToken(srv.URL, "key").SubmitPullRequests(context.Background(), SubmitRequest{RepoOwner: "org", RepoName: "repo", TrunkBranchName: "dev", PRs: []SubmitPR{
+		{Action: SubmitCreate, Head: "mid", HeadSha: "head", Base: "lower", Title: "Mid", Body: "Between lower and upper."},
+		{Action: SubmitUpdate, PRNumber: 2, Head: "upper", HeadSha: "head", Base: "mid", Move: true, InPlace: true},
+	}})
+	if err != nil || len(got) != 2 {
+		t.Fatalf("got=%+v err=%v calls=%v", got, err, calls)
+	}
+	if got[1].PRNumber != 2 || got[1].Status != "updated" || got[1].StackNumber != 10 || len(got[1].Warnings) != 0 {
+		t.Fatalf("got=%+v, want PR #2 kept and linked into stack #10 above #3 without a warning", got[1])
+	}
+	if linked, _ := bodies["POST /repos/org/repo/stacks"]["pull_requests"].([]any); !reflect.DeepEqual(linked, []any{float64(1), float64(3)}) {
+		t.Errorf("new stack = %v, want #1 and the inserted #3", linked)
+	}
+	if added, _ := bodies["POST /repos/org/repo/stacks/10/add"]["pull_requests"].([]any); !reflect.DeepEqual(added, []any{float64(2)}) {
+		t.Errorf("added to stack #10 = %v, want #2", added)
+	}
+	unstack, retarget, relink, add := slices.Index(calls, "POST /repos/org/repo/stacks/8/unstack"), slices.Index(calls, "PATCH /repos/org/repo/pulls/2"), slices.Index(calls, "POST /repos/org/repo/stacks"), slices.Index(calls, "POST /repos/org/repo/stacks/10/add")
+	if unstack < 0 || retarget < unstack || relink < retarget || add < relink {
+		t.Errorf("calls=%v, want stack #8 unstacked, #2 retargeted onto mid, #1 and #3 linked, then #2 added", calls)
+	}
+}
+
 func TestTrunkTokenReadsTheKeychainItemWhenTheVariableIsUnset(t *testing.T) {
 	t.Setenv("TRUNK_MERGE_API_KEY", "")
 	keychain := keychainTrunkKey

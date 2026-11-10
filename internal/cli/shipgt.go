@@ -2951,7 +2951,7 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 			return nil, nil, fmt.Errorf("%s: %w", s.prefix, err)
 		}
 	}
-	submit, unchanged := gtDropUnchanged(plan, last, known, unrecorded, tip, s.updateDraft(tip), client.IsNative())
+	submit, unchanged := gtDropUnchanged(plan, last, known, unrecorded, tip, tr.Name(), s.updateDraft(tip), client.IsNative())
 	posted, unopened := gtHoldUnopened(submit, s)
 	if slices.ContainsFunc(posted, func(b gtSubmitBranch) bool {
 		return b.pr == 0 && b.name == s.shipTip && strings.TrimSpace(b.body) == ""
@@ -3061,8 +3061,8 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 	var unrecordable []string
 	defer func() { gtClaimPosted(ctx, errW, l.dir(), s.prefix, owner+"/"+name, submitted, entries) }()
 	for i, pr := range gtSubmitPRs(posted, s.createDraft(), s.updateDraft(tip)) {
-		pr.Move = s.publication != nil && slices.Contains(s.publication.Moves, pr.Head)
-		pr.InPlace = pr.Move && s.publication.MoveInPlace
+		pr.InPlace = s.publication != nil && s.publication.retargetsInPlace(pr.Head)
+		pr.Move = pr.InPlace || s.publication != nil && slices.Contains(s.publication.Moves, pr.Head)
 		out, err := client.SubmitPullRequests(ctx, gtapi.SubmitRequest{
 			RepoOwner:       owner,
 			RepoName:        name,
@@ -3338,11 +3338,11 @@ func gtTipOnlyPlan(plan []gtSubmitBranch, run *stackRebaseRun) ([]gtSubmitBranch
 }
 
 // gtDropUnchanged leaves out a branch whose open pull request already carries
-// this head and base, and whose newest Graphite version records the same
-// parent, unless its parent is resubmitted: Graphite's pre-submit
-// moves every open child of a submitted branch that the submit leaves out onto
-// a graphite-base branch.
-func gtDropUnchanged(plan []gtSubmitBranch, last map[string]gtmeta.Version, known map[string]gtapi.PullRequestInfo, unrecorded map[string]bool, tip string, update func(branch string) *bool, native bool) (submit []gtSubmitBranch, unchanged []string) {
+// this head and base, whose newest version records the same parent, and, on a
+// native lane, which sits right above its parent's in one native stack. Off a
+// native lane it keeps a branch whose parent is resubmitted: Graphite's
+// pre-submit moves every open child the submit leaves out onto a graphite-base.
+func gtDropUnchanged(plan []gtSubmitBranch, last map[string]gtmeta.Version, known map[string]gtapi.PullRequestInfo, unrecorded map[string]bool, tip, trunk string, update func(branch string) *bool, native bool) (submit []gtSubmitBranch, unchanged []string) {
 	resubmitted := map[string]bool{}
 	for _, b := range plan {
 		now := gtmeta.Version{HeadSha: b.head, BaseSha: b.baseSha, BaseName: b.base}
@@ -3353,7 +3353,9 @@ func gtDropUnchanged(plan []gtSubmitBranch, last map[string]gtmeta.Version, know
 		if !native && pr.BaseRefName == gtSegmentBase(b.name) && !unrecorded[b.name] {
 			base = pr.BaseRefName
 		}
-		if b.name != tip && (native || !resubmitted[b.base]) && b.pr != 0 && open && (draft == nil || pr.IsDraft == *draft) && last[b.name] == now && pr.BaseRefName == base && newest.BaseName == base && newest.HeadSha == b.head && newest.BaseSha == b.baseSha {
+		parent, parented := known[b.base]
+		linked := !native || b.base == trunk || !parented && pr.StackNumber != 0 || nativeStackLinksAbove(pr, b.base, parent.PRNumber)
+		if b.name != tip && (native || !resubmitted[b.base]) && b.pr != 0 && open && linked && (draft == nil || pr.IsDraft == *draft) && last[b.name] == now && pr.BaseRefName == base && newest.BaseName == base && newest.HeadSha == b.head && newest.BaseSha == b.baseSha {
 			unchanged = append(unchanged, b.name)
 			continue
 		}

@@ -63,13 +63,13 @@ func TestNativeRefuseFork(t *testing.T) {
 			name:    "an open sibling names both pull requests and the stack's top",
 			parents: map[string]string{"card": "dev", "thread": "card"},
 			known:   map[string]gtapi.PullRequestInfo{"card": parent, "thread": {PRNumber: 34, HeadRefName: "thread"}},
-			want:    "stack rebase: #34 thread and #27 claim both sit on #15 card. Native GitHub stack #16 is a single chain and GitHub has no stack of one pull request for a fork, so #34 thread cannot register. Nothing was pushed. Chain it on the stack's top: ccx vcs stack rebase --parent thread=claim-2. Or take it off #15: ccx vcs stack rebase --parent thread=dev",
+			want:    "stack rebase: #34 thread and #27 claim both sit on #15 card. Native GitHub stack #16 is a single chain and GitHub has no stack of one pull request for a fork, so #34 thread cannot register. Nothing was pushed. Chain it on the stack's top: ccx vcs stack rebase --parent thread=claim-2. Or put it between #15 and #27: ccx vcs stack submit --parent claim=thread from claim's working copy. Or take it off #15: ccx vcs stack rebase --parent thread=dev",
 		},
 		{
 			name:    "a branch with no pull request yet is named by branch",
 			parents: map[string]string{"thread": "card"},
 			known:   map[string]gtapi.PullRequestInfo{"card": parent},
-			want:    "stack rebase: thread and #27 claim both sit on #15 card. Native GitHub stack #16 is a single chain and GitHub has no stack of one pull request for a fork, so thread cannot register. Nothing was pushed. Chain it on the stack's top: ccx vcs stack rebase --parent thread=claim-2. Or take it off #15: ccx vcs stack rebase --parent thread=dev",
+			want:    "stack rebase: thread and #27 claim both sit on #15 card. Native GitHub stack #16 is a single chain and GitHub has no stack of one pull request for a fork, so thread cannot register. Nothing was pushed. Chain it on the stack's top: ccx vcs stack rebase --parent thread=claim-2. Or put it between #15 and #27: ccx vcs stack submit --parent claim=thread --pr-title thread=<title> --pr-body-file thread=<body.md> from claim's working copy. Or take it off #15: ccx vcs stack rebase --parent thread=dev",
 		},
 		{
 			name:    "a landed or closed member above the parent leaves no sibling",
@@ -101,6 +101,39 @@ func TestNativeRefuseFork(t *testing.T) {
 			}
 			if err == nil || err.Error() != tt.want {
 				t.Fatalf("err = %v, want %s", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestGTDropUnchangedResubmitsANativePullRequestOutsideItsParentsStack(t *testing.T) {
+	branch := gtSubmitBranch{name: "upper", head: "upper-head", base: "lower", baseSha: "lower-head", pr: 2}
+	parent := gtapi.PullRequestInfo{PRNumber: 4, HeadRefName: "lower", BaseRefName: "main", State: gtapi.PROpen, StackNumber: 5}
+	last := map[string]gtmeta.Version{"upper": {HeadSha: "upper-head", BaseSha: "lower-head", BaseName: "lower"}}
+	for _, tt := range []struct {
+		name      string
+		edit      func(*gtapi.PullRequestInfo)
+		orphaned  bool
+		graphite  bool
+		unchanged bool
+	}{
+		{name: "linked right above its parent", edit: func(p *gtapi.PullRequestInfo) { p.StackNumber, p.DependentPRNumber = 5, 4 }, unchanged: true},
+		{name: "in no native stack", edit: func(*gtapi.PullRequestInfo) {}},
+		{name: "above another pull request", edit: func(p *gtapi.PullRequestInfo) { p.StackNumber, p.DependentPRNumber = 5, 1 }},
+		{name: "bottom of a stack on its parent's branch", edit: func(p *gtapi.PullRequestInfo) { p.StackNumber, p.CliTrunk = 7, "lower" }, unchanged: true},
+		{name: "in a stack under a parent the run cannot read", edit: func(p *gtapi.PullRequestInfo) { p.StackNumber, p.DependentPRNumber = 5, 9 }, orphaned: true, unchanged: true},
+		{name: "on a Graphite lane", edit: func(*gtapi.PullRequestInfo) {}, graphite: true, unchanged: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			pr := gtapi.PullRequestInfo{PRNumber: 2, HeadRefName: "upper", BaseRefName: "lower", State: gtapi.PROpen, Versions: []gtapi.PRVersion{{HeadSha: "upper-head", BaseSha: "lower-head", BaseName: "lower"}}}
+			tt.edit(&pr)
+			known := map[string]gtapi.PullRequestInfo{"upper": pr, "lower": parent}
+			if tt.orphaned {
+				delete(known, "lower")
+			}
+			_, unchanged := gtDropUnchanged([]gtSubmitBranch{branch}, last, known, nil, "", "main", func(string) *bool { return nil }, !tt.graphite)
+			if got := len(unchanged) == 1; got != tt.unchanged {
+				t.Fatalf("unchanged = %v, want upper left out %v", unchanged, tt.unchanged)
 			}
 		})
 	}
