@@ -71,6 +71,9 @@ func (c *Client) QueueProvider() string {
 	return "graphite"
 }
 
+// ConfiguredQueue is the queue ccx.queue or .claude/ccx.toml names, empty when neither names one.
+func (c *Client) ConfiguredQueue() string { return c.queueProvider }
+
 // CacheNamespace separates snapshots whose queue or kind of stack metadata differs. One branch changing owner stays in its namespace: the record polled under the old owner goes stale instead.
 func (c *Client) CacheNamespace() string {
 	if c.providerErr != nil {
