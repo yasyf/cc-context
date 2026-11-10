@@ -618,7 +618,7 @@ func runStackSubmit(cmd *cobra.Command, o shipOpts, include, parents []string, t
 	if err != nil {
 		return err
 	}
-	if err := stackRetargetLandedRoot(cmd, l, "stack submit", current); err != nil {
+	if err := stackRetargetRoot(cmd, l, "stack submit", current); err != nil {
 		return err
 	}
 	if err := stackAdoptChain(cmd, l.dir()); err != nil {
@@ -780,8 +780,8 @@ func stackReportSaved(cmd *cobra.Command, commonDir string, since time.Time) err
 	return nil
 }
 
-func stackRetargetLandedRoot(cmd *cobra.Command, l lane, prefix, branch string) error {
-	moved, err := nativeRetargetLandedRoot(cmd.Context(), l, prefix, branch)
+func stackRetargetRoot(cmd *cobra.Command, l lane, prefix, branch string) error {
+	moved, err := nativeRetargetRoot(cmd.Context(), l, prefix, branch)
 	if moved != "" {
 		cmd.PrintErrln(prefix + ": " + moved)
 	}

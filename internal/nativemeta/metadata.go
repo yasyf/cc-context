@@ -347,20 +347,29 @@ func trunkOf(ctx context.Context, commonDir string, r []branchRow) (string, erro
 	if trunk, err := originHead(ctx, commonDir); err == nil {
 		return trunk, nil
 	}
+	_, code, stderr, err := render.RunCLIExitCode(ctx, render.Dir(commonDir), "git", []string{"--git-dir=" + commonDir, "config", "--get", "remote.origin.url"})
+	switch {
+	case err != nil:
+		return "", fmt.Errorf("read origin: %w", err)
+	case code == 0:
+		trunk, err := originTrunk(ctx, commonDir)
+		if err != nil {
+			return "", fmt.Errorf("origin/HEAD names no trunk, and origin did not name its default branch; set it with git remote set-head origin <branch>: %w", err)
+		}
+		return trunk, nil
+	case code != 1:
+		return "", fmt.Errorf("read origin: git config remote.origin.url: exit %d: %s", code, strings.TrimSpace(stderr))
+	}
 	var roots []string
 	for _, row := range r {
 		if row.parent == "" {
 			roots = append(roots, row.branch)
 		}
 	}
-	if len(roots) == 1 {
-		return roots[0], nil
+	if len(roots) != 1 {
+		return "", fmt.Errorf("native stack catalog has %d roots, and no origin names a trunk; set one with git remote set-head origin <branch>", len(roots))
 	}
-	trunk, err := originTrunk(ctx, commonDir)
-	if err != nil {
-		return "", fmt.Errorf("native stack catalog has %d roots, and origin/HEAD names no trunk; set it with git remote set-head origin <branch>: %w", len(roots), err)
-	}
-	return trunk, nil
+	return roots[0], nil
 }
 
 func originTrunk(ctx context.Context, commonDir string) (string, error) {
@@ -744,6 +753,29 @@ func RetargetRoot(ctx context.Context, commonDir, root, trunk string) error {
 			}
 		}
 		return moved, false, nil
+	})
+}
+
+// TrackRoot records root, which native stacks sit on though it is not the trunk, as a branch cut onto trunk at base, carried in the stack numbered number when one sits on root.
+func TrackRoot(ctx context.Context, commonDir, root, trunk, base, head string, number int) error {
+	return mutateKeeping(ctx, commonDir, root, func(c *catalog, _ *receipts) (bool, bool, error) {
+		all, err := rows(*c)
+		if err != nil {
+			return false, false, err
+		}
+		byName := index(all)
+		row, ok := byName[root]
+		if !ok || row.parent != "" {
+			return false, false, fmt.Errorf("no native stack sits on %s", root)
+		}
+		row.parent, row.parentRevision = trunk, base
+		row.ref = branchRef{Branch: root, Head: head}
+		row.owner = slices.IndexFunc(c.Stacks, func(s stack) bool { return number != 0 && s.Number == number && s.Trunk.Branch == root })
+		byName[root] = row
+		if _, ok := byName[trunk]; !ok {
+			byName[trunk] = branchRow{branch: trunk, ref: branchRef{Branch: trunk, Head: base}, owner: -1}
+		}
+		return true, false, rebuild(c, byName)
 	})
 }
 

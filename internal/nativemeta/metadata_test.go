@@ -3,6 +3,7 @@ package nativemeta
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -461,6 +462,33 @@ func TestEmptyCatalogOnAFreshCloneSeedsTheTrunkFromTheRemoteDefaultBranch(t *tes
 	}
 	if _, err := os.Stat(filepath.Join(common, "gh-stack")); !os.IsNotExist(err) {
 		t.Fatalf("reading the trunk created native metadata: %v", err)
+	}
+}
+
+func TestACatalogRootedOffTheDefaultBranchKeepsTheRemoteDefaultAsTrunk(t *testing.T) {
+	upstream := t.TempDir()
+	git(t, upstream, "init", "-q", "-b", "dev")
+	git(t, upstream, "config", "user.name", "test")
+	git(t, upstream, "config", "user.email", "test@example.com")
+	git(t, upstream, "commit", "--allow-empty", "-qm", "initial")
+	git(t, upstream, "branch", "runner")
+	dir := t.TempDir()
+	git(t, dir, "init", "-q", "-b", "scratch")
+	git(t, dir, "remote", "add", "origin", upstream)
+	git(t, dir, "fetch", "-q", "origin", "dev:refs/remotes/origin/dev", "runner:runner")
+	common := filepath.Join(dir, ".git")
+	runner := git(t, dir, "rev-parse", "runner")
+	catalog := fmt.Sprintf(`{"schemaVersion":1,"stacks":[{"trunk":{"branch":"runner","head":%q},"branches":[{"branch":"child","base":%q,"head":%q}]}]}`, runner, runner, runner)
+	if err := os.WriteFile(filepath.Join(common, "gh-stack"), []byte(catalog), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	trunk, err := ReadTrunk(t.Context(), common)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if trunk != "dev" {
+		t.Fatalf("trunk = %q, want the remote's default branch dev, not the catalog's lone root runner", trunk)
 	}
 }
 

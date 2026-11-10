@@ -667,14 +667,17 @@ func nativeStackFrom(state gtState, branch, parent string) string {
 	return branch
 }
 
-func nativeRetargetLandedRoot(ctx context.Context, l lane, prefix, branch string) (string, error) {
+func nativeRetargetRoot(ctx context.Context, l lane, prefix, branch string) (string, error) {
 	if !l.native || branch == "" {
 		return "", nil
 	}
 	ctx = withStackProvider(ctx, true)
-	trunk, err := gitTrunkBranch(ctx, l.dir())
-	if err != nil || trunk == "" || branch == trunk {
-		return "", err
+	trunk, err := nativemeta.ReadTrunk(ctx, l.checkout.CommonDir)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", prefix, err)
+	}
+	if branch == trunk {
+		return "", nil
 	}
 	state, _, err := nativemeta.ReadOriginOrphans(ctx, l.checkout.CommonDir)
 	if err != nil {
@@ -695,13 +698,28 @@ func nativeRetargetLandedRoot(ctx context.Context, l lane, prefix, branch string
 	if err != nil {
 		return "", fmt.Errorf("%s: read the pull request of %s, the base of %s's native stack: %w", prefix, root, branch, err)
 	}
-	if len(infos) == 0 || infos[0].State != gtapi.PRMerged {
+	if len(infos) == 0 {
 		return "", nil
 	}
-	if err := nativemeta.RetargetRoot(ctx, l.checkout.CommonDir, root, trunk); err != nil {
-		return "", fmt.Errorf("%s: %w", prefix, err)
+	pr := infos[0]
+	switch {
+	case pr.State == gtapi.PRMerged:
+		if err := nativemeta.RetargetRoot(ctx, l.checkout.CommonDir, root, trunk); err != nil {
+			return "", fmt.Errorf("%s: %w", prefix, err)
+		}
+		return fmt.Sprintf("moved the native stack of %s onto %s: its base %s landed as #%d", branch, trunk, root, pr.PRNumber), nil
+	case pr.State == gtapi.PROpen && pr.BaseRefName == trunk:
+		head := state[root].Head
+		base, err := gtMergeBaseDeepening(ctx, l.dir(), prefix, "origin", string(vcs.RemoteBranchRef("origin", trunk)), head)
+		if err != nil {
+			return "", err
+		}
+		if err := nativemeta.TrackRoot(ctx, l.checkout.CommonDir, root, trunk, base, head, pr.StackNumber); err != nil {
+			return "", fmt.Errorf("%s: %w", prefix, err)
+		}
+		return fmt.Sprintf("tracked %s onto %s: the native stack of %s sat on it as its trunk, and its pull request #%d is open on %s", root, trunk, branch, pr.PRNumber, trunk), nil
 	}
-	return fmt.Sprintf("moved the native stack of %s onto %s: its base %s landed as #%d", branch, trunk, root, infos[0].PRNumber), nil
+	return "", nil
 }
 
 // nativeStackRecord writes moves into this checkout's record, keeping a held
