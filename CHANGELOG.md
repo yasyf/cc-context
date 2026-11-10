@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ccx vcs stack submit --parent <upper>=<new> --pr-title <new>=<title>
+  --pr-body-file <new>=<body.md>` opens `<new>`'s pull request with that title
+  and body. Before, the title and body were refused as naming a branch outside
+  the stack, since the check ran before `--parent` took `<new>` into the run.
 - `ccx vcs stack submit --parent <upper>=<new>` puts a new branch between two
   pull requests of one native GitHub stack in a single submit. The upper pull
   request keeps its number: it leaves the stack, takes `<new>` as its base, and

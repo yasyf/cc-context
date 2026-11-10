@@ -168,6 +168,27 @@ func TestStackSubmitOntoABranchOutsideTheStackReparentsAndRebasesIt(t *testing.T
 	}
 }
 
+func TestStackSubmitOpensThePullRequestOfTheNewParentItNames(t *testing.T) {
+	f := shipGTRepo(t)
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	shipGTStack(t, f, "other")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
+	shipGTStack(t, f, "fix")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "fix")
+	api.openPRs("fix")
+	stubOpenPRs(t, f, nil, "fix")
+	body := writePRBody(t, "other.md", "Other body\n")
+
+	out, errOut, err := runStackCmd(t, f, "submit", "--parent", "fix=other", "--pr-title", "other=Other", "--pr-body-file", "other="+body)
+	if err != nil {
+		t.Fatalf("stack submit --parent fix=other --pr-title other=Other: %v\n%s%s", err, out, errOut)
+	}
+	if entry := api.submitEntry("other"); entry.Title == nil || *entry.Title != "Other" {
+		t.Errorf("other submitted with title %v, want Other", entry.Title)
+	}
+}
+
 func TestStackPlanTakesANamedParentOutsideItsMembersAndRefusesWithoutOne(t *testing.T) {
 	f := shipGTRepo(t)
 	api := stubGTAPI(t)
