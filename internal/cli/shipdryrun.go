@@ -552,8 +552,9 @@ func dryRunStack(ctx context.Context, l lane, o shipOpts, c *gtCache, r *shipDry
 	if err != nil {
 		return fmt.Errorf("ship: %w", err)
 	}
-	if state, err = dryRunBases(ctx, l, o, state, chain, r); err != nil {
-		return err
+	pin := gtTrunkPinned{name: r.trunk, sha: state[r.trunk].Head}
+	if state, err = dryRunBases(ctx, l, o, pin, state, chain, r); err != nil {
+		return dryRunRefused(err, r)
 	}
 	moveState := state
 	if o.noPush {
@@ -565,7 +566,9 @@ func dryRunStack(ctx context.Context, l lane, o shipOpts, c *gtCache, r *shipDry
 		return err
 	}
 	line := shipParentLine(o.parent != "" || onPublished, chain, r.branch)
-	dryRunMoves(moveState, chain, line, holders, o, r)
+	if err := dryRunMoves(ctx, l, pin, moveState, chain, line, holders, o, r); err != nil {
+		return dryRunRefused(err, r)
+	}
 	if !o.noCommit && r.plan.action != branchCreate {
 		notes, err := gtHeldChildNotes(ctx, l, state, r.plan.name)
 		if err != nil {
@@ -573,10 +576,19 @@ func dryRunStack(ctx context.Context, l lane, o shipOpts, c *gtCache, r *shipDry
 		}
 		r.notes = append(r.notes, notes...)
 	}
-	if err := dryRunRewrites(ctx, l, state, r); err != nil {
+	if err := dryRunRewrites(ctx, l, r); err != nil {
 		return err
 	}
 	return dryRunHeads(ctx, l, o, state, chain, line, holders, r)
+}
+
+func dryRunRefused(err error, r *shipDryRun) error {
+	var refusal *shipRefusal
+	if !errors.As(err, &refusal) {
+		return err
+	}
+	r.refusals = append(r.refusals, refusal.Error())
+	return nil
 }
 
 // dryRunOnPublishedParent is shipOnPublishedParent over the parent the report
@@ -639,7 +651,7 @@ func dryRunPlanned(ctx context.Context, l lane, state gtState, r *shipDryRun) (g
 	return planned, nil
 }
 
-func dryRunBases(ctx context.Context, l lane, o shipOpts, state gtState, chain []string, r *shipDryRun) (gtState, error) {
+func dryRunBases(ctx context.Context, l lane, o shipOpts, pin gtTrunkPinned, state gtState, chain []string, r *shipDryRun) (gtState, error) {
 	if o.noPush {
 		return state, nil
 	}
@@ -672,6 +684,11 @@ func dryRunBases(ctx context.Context, l lane, o shipOpts, state gtState, chain [
 		base, err := stackFurthest(ctx, l.dir(), s.Head, candidates)
 		if err != nil {
 			return nil, err
+		}
+		if base == "" && !state[parent.Ref].Trunk && (branch != r.branch || r.onto == "") {
+			if base, err = gtHeldParentHead(ctx, "ship", l.dir(), pin, branch, parent, onto); err != nil {
+				return nil, err
+			}
 		}
 		if base == "" {
 			continue
@@ -762,12 +779,12 @@ func dryRunPublishedHead(ctx context.Context, dir render.Dir, remote, branch str
 // downstack half is the restack gt asks for, which moves parents whose pull
 // requests are already open; the upstack half is what a commit onto this branch
 // does to the branches above it, which the run never announces.
-func dryRunMoves(state gtState, chain, parentLine []string, holders map[string]string, o shipOpts, r *shipDryRun) {
+func dryRunMoves(ctx context.Context, l lane, pin gtTrunkPinned, state gtState, chain, parentLine []string, holders map[string]string, o shipOpts, r *shipDryRun) error {
 	planned := gtBottomUp(chain)
 	if o.tipOnly {
 		r.notes = append(r.notes, "--tip-only ships "+r.branch+" on its base, or onto its parent's published head when the parent was rewritten, and pushes no ancestor")
 		if o.noPush {
-			return
+			return nil
 		}
 		planned = slices.DeleteFunc(planned, func(branch string) bool { return tipOnlyAncestor(o.tipOnly, r.branch, branch) })
 	}
@@ -785,7 +802,7 @@ func dryRunMoves(state gtState, chain, parentLine []string, holders map[string]s
 			branch: branch,
 			head:   shortSHA(state[branch].Head),
 			onto:   state[branch].Parents[0].Ref,
-			base:   shortSHA(state[branch].Parents[0].SHA),
+			base:   state[branch].Parents[0].SHA,
 			holder: statusHolder(holders[branch], r.root),
 			why:    why,
 		})
@@ -799,52 +816,57 @@ func dryRunMoves(state gtState, chain, parentLine []string, holders map[string]s
 		r.notes = append(r.notes, branch+" is "+held[branch]+", so the restack would leave it off its parent")
 	}
 	if o.noCommit || o.tipOnly || !strings.HasPrefix(r.place, "append") {
-		return
+		return nil
 	}
 	up, err := gtUpstack("ship", state, r.branch)
 	if err != nil {
 		r.notes = append(r.notes, err.Error())
-		return
+		return nil
 	}
 	carried := map[string]bool{r.branch: true}
 	for _, branch := range up {
-		if !carried[state[branch].Parents[0].Ref] {
+		parent := state[branch].Parents[0]
+		if !carried[parent.Ref] {
 			continue
 		}
 		if holder := holders[branch]; holder != "" && holder != r.root && !o.allLanes {
 			r.notes = append(r.notes, branch+" is "+gtHeldElsewhere+holder+", so the commit leaves it, and the branches above it, where they are; --all-lanes carries it")
 			continue
 		}
+		if frozen := state[branch].State; frozen != "" {
+			r.notes = append(r.notes, branch+" is "+frozen+", so the restack would leave it off its parent")
+			continue
+		}
+		base, err := gtRestackFrom(ctx, "ship", l.dir(), pin, branch, parent, state[parent.Ref].Head)
+		if err != nil {
+			return err
+		}
 		carried[branch] = true
 		r.moves = append(r.moves, dryRunMove{
 			branch: branch,
 			head:   shortSHA(state[branch].Head),
-			onto:   state[branch].Parents[0].Ref,
-			base:   shortSHA(state[branch].Parents[0].SHA),
+			onto:   parent.Ref,
+			base:   base,
 			holder: statusHolder(holders[branch], r.root),
 			why:    "the commit moves " + r.branch + " under it",
 		})
 	}
+	return nil
 }
 
 // dryRunRewrites names the paths a replay resolves anew: the ones this branch
-// changed above its recorded base that the base has changed since. They are
-// where a restack returns a different tree from the one measured — a generated
-// file re-taken from the base, or a rename detector pairing a deletion below
-// with an edit above.
-func dryRunRewrites(ctx context.Context, l lane, state gtState, r *shipDryRun) error {
+// changed above the base it replays from that its parent has changed since.
+// They are where a restack returns a different tree from the one measured — a
+// generated file re-taken from the base, or a rename detector pairing a
+// deletion below with an edit above.
+func dryRunRewrites(ctx context.Context, l lane, r *shipDryRun) error {
 	seen := map[string]bool{}
 	for _, m := range r.moves {
-		s := state[m.branch]
-		if len(s.Parents) == 0 {
-			continue
-		}
-		base := s.Parents[0].SHA
-		above, err := dryRunDiffNames(ctx, l, base, gtRestackRef(m.branch))
+		above, err := dryRunDiffNames(ctx, l, m.base, gtRestackRef(m.branch))
 		if err != nil {
 			return err
 		}
-		below, err := dryRunDiffNames(ctx, l, base, gtRestackRef(s.Parents[0].Ref))
+		below, err := dryRunDiffNames(ctx, l, m.base, gtRestackRef(m.onto))
 		if err != nil {
 			return err
 		}
@@ -1075,7 +1097,7 @@ func dryRunScopeValue(r shipDryRun) string {
 }
 
 func dryRunMoveValue(m dryRunMove) string {
-	return strings.Join([]string{m.branch, m.head + " onto " + m.onto, "replays " + m.base + ".." + m.head, m.holder, m.why}, shipSep)
+	return strings.Join([]string{m.branch, m.head + " onto " + m.onto, "replays " + shortSHA(m.base) + ".." + m.head, m.holder, m.why}, shipSep)
 }
 
 func dryRunPRValue(p dryRunPR) string {

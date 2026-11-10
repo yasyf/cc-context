@@ -253,7 +253,7 @@ func gtReplayChain(ctx context.Context, prefix string, dir render.Dir, state gtS
 			}
 			return moves, &errRestackMerged{Branch: branch}
 		}
-		from, err := gtRestackFrom(ctx, prefix, dir, branch, parent, state[parent.Ref].Head)
+		from, err := gtRestackFrom(ctx, prefix, dir, pin, branch, parent, state[parent.Ref].Head)
 		if err != nil {
 			return moves, err
 		}
@@ -273,25 +273,54 @@ func gtReplayChain(ctx context.Context, prefix string, dir render.Dir, state gtS
 	return moves, nil
 }
 
-// gtRestackFrom is where a branch's own commits start: the fork point from the
-// parent as it stands, which is where git rebase itself would start, unless the
-// parent revision gt recorded lies past it — a parent rewritten under a branch
-// still sitting on its old head.
-func gtRestackFrom(ctx context.Context, prefix string, dir render.Dir, branch string, parent gtRef, parentHead string) (string, error) {
+func gtRestackFrom(ctx context.Context, prefix string, dir render.Dir, pin gtTrunkPinned, branch string, parent gtRef, parentHead string) (string, error) {
+	recorded, err := gitIsAncestor(ctx, dir, prefix, parent.SHA, gtRestackRef(branch))
+	if err != nil {
+		return "", err
+	}
+	if !recorded && parent.Ref != pin.name {
+		return gtHeldParentHead(ctx, prefix, dir, pin, branch, parent, parentHead)
+	}
 	out, err := render.RunCLI(ctx, dir, "git", []string{"merge-base", gtRestackRef(branch), parentHead})
 	if err != nil {
 		return "", fmt.Errorf("%s: git merge-base %s %s: %w", prefix, branch, parent.Ref, err)
 	}
 	fork := strings.TrimSpace(out)
-	recorded, err := gitIsAncestor(ctx, dir, prefix, parent.SHA, gtRestackRef(branch))
-	if err != nil || !recorded {
-		return fork, err
+	if !recorded {
+		return fork, nil
 	}
 	behind, err := gitIsAncestor(ctx, dir, prefix, parent.SHA, fork)
 	if err != nil || behind {
 		return fork, err
 	}
 	return parent.SHA, nil
+}
+
+func gtHeldParentHead(ctx context.Context, prefix string, dir render.Dir, pin gtTrunkPinned, branch string, parent gtRef, parentHead string) (string, error) {
+	remote, err := vcs.GitRemoteFor(ctx, dir, parent.Ref)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", prefix, err)
+	}
+	refs, err := stackParentRefs(ctx, dir, remote, parent.Ref)
+	if err != nil {
+		return "", err
+	}
+	remembered, err := stackFurthestFork(ctx, dir, gtRestackRef(branch), refs)
+	if err != nil {
+		return "", err
+	}
+	held, err := stackFurthest(ctx, dir, gtRestackRef(branch), []string{parentHead, remembered})
+	if err != nil {
+		return "", err
+	}
+	if held != "" {
+		inTrunk, err := gitIsAncestor(ctx, dir, prefix, held, pin.sha)
+		if err != nil || !inTrunk {
+			return held, err
+		}
+	}
+	return "", refuse("%s: %s holds neither %.12s, the base its stack records on %s, nor %s's head %.12s or any earlier head of it, so its own commits cannot be told from %s's and none are replayed — move them with git rebase --onto %s <the last %s commit it holds> %s",
+		prefix, branch, parent.SHA, parent.Ref, parent.Ref, parentHead, parent.Ref, parent.Ref, parent.Ref, branch)
 }
 
 // gtTrunkPinned is the commit one restack lands every lane on: trunk's branch

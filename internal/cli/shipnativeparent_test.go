@@ -539,3 +539,105 @@ func TestShipPlansOnlyTheMidStackBranchAnotherCheckoutRestacked(t *testing.T) {
 		})
 	}
 }
+
+func shipNativeRewrittenBelow(t *testing.T) *vcstest.Fixture {
+	t.Helper()
+	f := shipRepo(t, vcstest.Remote())
+	f.Decorate(func(ctx context.Context) context.Context { return withStackProvider(ctx, true) })
+	mustRun(t, f.Env(), f.Dir, "git", "config", "ccx.stack", "github")
+	recorded := map[string]string{"main": shipHead(t, f)}
+	stack := []struct{ branch, parent string }{{"bottom", "main"}, {"middle", "bottom"}, {"top", "middle"}}
+	for _, link := range stack {
+		shipGTUntracked(t, f, link.branch)
+		recorded[link.branch] = shipHead(t, f)
+	}
+	common := filepath.Join(f.Dir, ".git")
+	if err := nativemeta.Init(f.Context(), common, "main"); err != nil {
+		t.Fatal(err)
+	}
+	api := stubGTAPI(t)
+	api.openPRs("bottom", "middle", "top")
+	for _, link := range stack {
+		if err := nativemeta.AdoptRoot(f.Context(), common, link.branch, link.parent, recorded[link.parent], recorded[link.branch]); err != nil {
+			t.Fatal(err)
+		}
+		api.bases[link.branch], api.stacks[link.branch] = link.parent, 49
+	}
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "bottom")
+	writeShipFile(t, f.Dir, "bottom.txt", "bottom, rewritten outside ccx\n")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-q", "-a", "--amend", "-m", "bottom", "-m", "why bottom")
+	mustRun(t, f.Env(), f.Dir, "git", "rebase", "-q", "--onto", "bottom", recorded["bottom"], "middle")
+	mustRun(t, f.Env(), f.Dir, "git", "rebase", "-q", "--onto", "middle", recorded["middle"], "top")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "bottom", "middle", "top")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "bottom")
+	f.Decorate(api.ctx)
+	stubStackPRs(t, f, nil)
+	stubStackStanding(t, f, nil)
+	return f
+}
+
+func TestShipReplaysOnlyTheOwnCommitsOfABranchRebasedOutsideCcx(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		flags []string
+	}{
+		{name: "append", flags: []string{"-m", "fix: follow up"}},
+		{name: "amend", flags: []string{"--amend"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := shipNativeRewrittenBelow(t)
+			bottom := gitAt(t, f.Env(), f.Dir, "rev-parse", "bottom")
+			middle := gitAt(t, f.Env(), f.Dir, "rev-parse", "middle")
+			shipGTReady(t, f)
+			writeShipFile(t, f.Dir, "bottom.txt", "bottom, edited by ship\n")
+			args := append([]string{"--no-push", "--no-watch"}, tt.flags...)
+
+			report := dryRunReport(t, f, args...)
+			want := "middle" + shipSep + shortSHA(middle) + " onto bottom" + shipSep + "replays " + shortSHA(bottom) + ".." + shortSHA(middle)
+			if moves := dryRunValues(report, "restack"); len(moves) != 2 || !strings.HasPrefix(moves[0], want) {
+				t.Errorf("restack = %q, want middle then top, middle replayed from bottom's head: %q\n%s", moves, want, report)
+			}
+			for _, label := range []string{"rewrites", "refuses"} {
+				if got := dryRunValues(report, label); len(got) != 0 {
+					t.Errorf("%s = %q, want none: middle changes no file bottom changed since it\n%s", label, got, report)
+				}
+			}
+
+			if _, errStr, err := runShipCmdFull(f.Context(), t, args...); err != nil {
+				t.Fatalf("ship = %v (stderr=%q)", err, errStr)
+			}
+			for _, link := range [][2]string{{"bottom", "middle"}, {"middle", "top"}} {
+				if got := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", link[0]+".."+link[1]); got != "1" {
+					t.Errorf("%s carries %s commits above %s, want only its own", link[1], got, link[0])
+				}
+			}
+		})
+	}
+}
+
+func TestShipRefusesABranchThatHoldsNoHeadOfItsParent(t *testing.T) {
+	f := shipNativeRewrittenBelow(t)
+	middle := gitAt(t, f.Env(), f.Dir, "rev-parse", "middle")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "--detach")
+	mustRun(t, f.Env(), f.Dir, "git", "branch", "-qD", "bottom")
+	mustRun(t, f.Env(), f.Dir, "git", "update-ref", "-d", "refs/remotes/origin/bottom")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "bottom", "main")
+	writeShipFile(t, f.Dir, "bottom.txt", "bottom, cut again\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "bottom.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-q", "-m", "bottom")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-qf", "origin", "bottom")
+	shipGTReady(t, f)
+	args := []string{"-m", "fix: follow up", "--no-push", "--no-watch"}
+	want := "ship: middle holds neither "
+
+	report := dryRunReport(t, f, args...)
+	if refusals := dryRunValues(report, "refuses"); len(refusals) != 1 || !strings.HasPrefix(refusals[0], want) {
+		t.Errorf("refuses = %q, want %q\n%s", refusals, want, report)
+	}
+	if _, errStr, err := runShipCmdFull(f.Context(), t, args...); err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("ship = %v (stderr=%q), want the refusal %q", err, errStr, want)
+	}
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "middle"); got != middle {
+		t.Errorf("middle moved from %s to %s, want it left where it is", middle, got)
+	}
+}
