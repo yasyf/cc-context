@@ -637,6 +637,39 @@ func TestAdvanceFollowsAMovedTreeARefHolds(t *testing.T) {
 	}
 }
 
+func TestAdvanceFollowsOnlyAMoveMadeSoonAfterTheRequest(t *testing.T) {
+	tests := []struct {
+		name  string
+		after time.Duration
+		taken bool
+	}{
+		{"the requester's own trailing move", 10 * time.Minute, false},
+		{"a lane that took the tree up later", 25 * time.Hour, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFixture(t)
+			f.quiet = time.Hour
+			f.over(f.journal)
+			job := f.accept()
+			f.run(f.worktree, "switch", "-q", "-c", "other")
+			f.run(f.worktree, "commit", "-q", "--allow-empty", "-m", "late")
+			head := f.run(f.worktree, "rev-parse", "HEAD")
+			moved := job.Created.Add(tt.after)
+			f.headMovedAt(moved)
+			f.clock = moved.Add(time.Minute)
+
+			f.advance(&job)
+
+			if !tt.taken {
+				f.claimed(&job)
+				return
+			}
+			f.blocked(&job, cleanup.PhasePrepared, "identity", fmt.Sprintf("%s moved to %s at %s, more than 1h0m0s after its removal was requested at %s: something works in it again; ccx vcs worktree rm --force removes it once that is done", f.worktree, head, moved.Local().Format(time.RFC3339), job.Created.Local().Format(time.RFC3339)))
+		})
+	}
+}
+
 func TestAdvanceClaimsAPartialTreeStillRegistered(t *testing.T) {
 	f := newFixture(t)
 	job := f.accept()

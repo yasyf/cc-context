@@ -305,10 +305,15 @@ as it streams and writes no temporary copy, so a proof reads an LFS file without
 writing it again and still sees an edit to it. The same proof covers a tree that lost `.git` but keeps its
 registration, a tree whose branch was deleted after the job captured it, and a
 deletion that resumes. A `.gitignore` the tree lost still applies, read from
-that commit, so the files it ignores never count as dirt. A tree someone moved after the
-removal was requested, to a commit a branch or remote-tracking ref holds, loses
-nothing with the tree, so the job follows it and pins the new commit. A commit
-no ref holds keeps the job blocked. An admin directory an older daemon
+that commit, so the files it ignores never count as dirt. A tree someone moved within an
+hour of the removal request, to a commit a branch or remote-tracking ref holds,
+loses nothing with the tree, so the job follows it and pins the new commit. A
+commit no ref holds keeps the job blocked. A move later than that hour means
+something took the tree up again, and a process scan cannot see a lane between
+its commands, so the job blocks `identity` rather than delete a tree in use;
+`ccx vcs worktree rm --force` removes it once that use is done. A lane that
+keeps working in a tree with no live process in it holds `git worktree lock` on
+it, which every removal refuses. An admin directory an older daemon
 retired under `<common>/retired-worktrees/` is deleted with the job once its
 tree is gone, when it has the captured inode and its backlink names nothing
 that exists. `ccx vcs cleanup retired <admin-dir>...` queues a tree such a
