@@ -74,11 +74,12 @@ else. On a stack member it merges directly, past GitHub's merge queue and the
 repository rules the account may bypass; without it GitHub's merge queue takes
 the stack member when the base branch has one, and the report reads enqueued.
 
-Without --admin the command reads the repository's merge queue from a checkout
-of it, and refuses when that queue is Trunk or Graphite, or when legacy Graphite
-branches leave the repository's queue mixed: those queues land a pull request
-themselves, and a merge from here would skip them. Run it from a checkout of the
-repository so it can tell.
+Without --admin the command reads the merge queue a checkout of the repository
+configures, in git config ccx.queue or the [vcs] queue of .claude/ccx.toml, and
+refuses when that queue is Trunk or Graphite: those queues land a pull request
+themselves, and a merge from here would skip them. Graphite stack metadata in
+the checkout configures no queue. Run it from a checkout of the repository so it
+can tell.
 
 The merge method is squash unless --merge or --rebase says otherwise. An
 asynchronous merge still pending after ten minutes stops waiting; rerunning the
@@ -191,7 +192,7 @@ func vcsMergeRefusal(ctx context.Context, repo, owner string, admin bool) error 
 	if err := client.ProviderError(); err != nil {
 		return fmt.Errorf("merge: %w", err)
 	}
-	if queue := client.QueueProvider(); queue == "trunk" || queue == "graphite" || queue == "mixed" {
+	if queue := client.ConfiguredQueue(); queue == "trunk" || queue == "graphite" {
 		return fmt.Errorf("merge: %s lands through the %s queue, which merges its pull requests itself; enqueue it there", repo, queue)
 	}
 	return nil

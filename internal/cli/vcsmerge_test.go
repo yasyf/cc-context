@@ -375,8 +375,36 @@ func vcsMergeQueueRepo(t *testing.T, queue string) context.Context {
 	}
 	f := shipRepo(t, vcstest.Remote())
 	ctx := stubMergeQueueRead(t, f, "git@github.com:yasyf/cc-context.git")
-	mustRun(t, f.Env(), f.Dir, "git", "config", "ccx.queue", queue)
+	if queue != "" {
+		mustRun(t, f.Env(), f.Dir, "git", "config", "ccx.queue", queue)
+	}
 	return ctx
+}
+
+func TestVcsMergeLandsWhereTheRepositoryConfiguresNoQueue(t *testing.T) {
+	for _, tc := range []struct{ name, queue string }{
+		{"leftover Graphite config", "mixed"},
+		{"native stacks only", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := vcsMergeQueueRepo(t, tc.queue)
+			gh, client := serveMergeGitHub(t, map[string]string{
+				"POST /graphql": mergeRead(mergePull(7, "OPEN", "tip")),
+				mergeMutation:   mergedByGraphQL(7, "tip"),
+			})
+
+			out, err := runMergeCmd(withMergeClient(ctx, client), t, "7", "--repo", "yasyf/cc-context", "--match-head-commit", "head7")
+			if err != nil {
+				t.Fatalf("merge: %v\n%s", err, out)
+			}
+			if want := "merged #7 tip m7\n"; out != want {
+				t.Errorf("report = %q, want %q", out, want)
+			}
+			if !gh.merged() {
+				t.Errorf("merge never reached GitHub: %v", gh.calls)
+			}
+		})
+	}
 }
 
 func TestVcsMergeRefusesAQueueWithoutAdminAndAdminOnAnotherAccountsRepository(t *testing.T) {
@@ -385,7 +413,7 @@ func TestVcsMergeRefusesAQueueWithoutAdminAndAdminOnAnotherAccountsRepository(t 
 		args                    []string
 	}{
 		{name: "this checkout's queue", queue: "trunk", repo: "yasyf/cc-context", want: "yasyf/cc-context lands through the trunk queue"},
-		{name: "a mixed queue", queue: "mixed", repo: "yasyf/cc-context", want: "yasyf/cc-context lands through the mixed queue"},
+		{name: "a configured Graphite queue", queue: "graphite", repo: "yasyf/cc-context", want: "yasyf/cc-context lands through the graphite queue"},
 		{name: "another repository", queue: "trunk", repo: "org/elsewhere", want: "is not a checkout of org/elsewhere"},
 		{name: "--admin on a repository another account owns", queue: "trunk", repo: "yasyf/cc-context", want: "--admin works only on a repository your own account owns, and yasyf/cc-context belongs to yasyf, not someone", args: []string{"--admin"}},
 		{name: "--admin on a repository outside this checkout", queue: "trunk", repo: "org/elsewhere", want: "--admin works only on a repository your own account owns", args: []string{"--admin"}},
