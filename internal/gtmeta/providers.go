@@ -73,18 +73,12 @@ func owners(ctx context.Context, commonDir string) (ownership, error) {
 		}
 	}
 	if o.graphiteStore {
-		trunk, err := graphiteReadTrunk(commonDir)
-		if err != nil {
-			return o, err
-		}
-		rows, err := readRows(ctx, filepath.Join(commonDir, metadataDB))
+		rows, err := queryRows(ctx, filepath.Join(commonDir, metadataDB), branchColumns+graphiteTrackedRows)
 		if err != nil {
 			return o, err
 		}
 		for _, row := range rows {
-			if row.branch != trunk {
-				o.graphite[row.branch] = true
-			}
+			o.graphite[row.branch] = true
 		}
 	}
 	return o, nil
@@ -166,11 +160,7 @@ func graphiteTracks(ctx context.Context, commonDir, branch string) (bool, error)
 	if err != nil || !legacy {
 		return false, err
 	}
-	trunk, err := graphiteReadTrunk(commonDir)
-	if err != nil || branch == trunk {
-		return false, err
-	}
-	rows, err := queryRows(ctx, filepath.Join(commonDir, metadataDB), branchColumns+" FROM branch_metadata WHERE branch_name = ?", branch)
+	rows, err := queryRows(ctx, filepath.Join(commonDir, metadataDB), branchColumns+graphiteTrackedRows+" AND branch_name = ?", branch)
 	return len(rows) > 0, err
 }
 
@@ -671,9 +661,13 @@ func Forget(ctx context.Context, commonDir string, branches []string) error {
 	if err != nil {
 		return err
 	}
-	native, legacy, err := partition(o, branches, false)
+	native, _, err := partition(o, branches, false)
 	if err != nil {
 		return err
+	}
+	var legacy []string
+	if o.graphiteStore {
+		legacy = slices.DeleteFunc(slices.Clone(branches), func(branch string) bool { return o.native[branch] })
 	}
 	if err := graphiteForget(ctx, commonDir, legacy); err != nil {
 		return err

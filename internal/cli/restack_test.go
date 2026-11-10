@@ -1300,7 +1300,7 @@ func TestRestackRefusesMissingGT(t *testing.T) {
 	if err == nil {
 		t.Fatal("restack succeeded, want missing-gt refusal")
 	}
-	want := "restack: graphite config found but gt not on PATH — install graphite (brew install graphite) or pass --no-gt"
+	want := "restack: graphite config found but gt not on PATH — install graphite (brew install graphite) or git config ccx.nogt true"
 	if err.Error() != want {
 		t.Fatalf("error = %q, want %q", err, want)
 	}

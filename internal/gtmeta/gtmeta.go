@@ -160,6 +160,8 @@ const branchColumns = `SELECT branch_name,
 	COALESCE(validation_result, ''),
 	COALESCE(state, '')`
 
+const graphiteTrackedRows = ` FROM branch_metadata WHERE parent_branch_name != ''`
+
 func readSelectedRows(ctx context.Context, path string, branches []string, trunk string) ([]branchRow, error) {
 	query, args := selectedRowsQuery(branches, trunk)
 	return queryRows(ctx, path, query, args...)

@@ -305,7 +305,7 @@ func resolveLaneRefresh(ctx context.Context, name, dir string, noGT, refresh boo
 		return l, nil
 	}
 	if render.LookPath(ctx, "gt") == "" {
-		return lane{}, fmt.Errorf("%s: graphite config found but gt not on PATH — install graphite (brew install graphite) or pass --no-gt", name)
+		return lane{}, fmt.Errorf("%s: graphite config found but gt not on PATH — install graphite (brew install graphite) or git config "+nogtKey+" true", name)
 	}
 
 	repo, err := vcs.LookupRepo(ctx, render.Dir(root), refresh)
