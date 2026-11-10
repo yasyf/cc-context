@@ -4987,8 +4987,8 @@ func TestShipValueWordBranchName(t *testing.T) {
 }
 
 // TestShipBranchFlag covers --branch's three outcomes: appending to the branch
-// already checked out, cutting one that does not exist, and refusing to switch
-// to one that exists elsewhere.
+// already checked out, committing onto another existing one from this working
+// copy, and cutting one that does not exist.
 func TestShipBranchFlag(t *testing.T) {
 	t.Parallel()
 	t.Run("naming the current branch appends", func(t *testing.T) {
@@ -5012,20 +5012,27 @@ func TestShipBranchFlag(t *testing.T) {
 		}
 	})
 
-	t.Run("naming an existing branch refuses", func(t *testing.T) {
+	t.Run("naming an existing branch commits onto it and comes back", func(t *testing.T) {
 		f := shipRepo(t, vcstest.Remote(), vcstest.Branch("feature"), vcstest.Dirty())
 		mustRun(t, f.Env(), f.Dir, "git", "branch", "other")
-		before := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD")
-		setup := len(vcstest.Invocations(t, f.ArgvLog))
+		before := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")
 
-		_, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push", "--branch", "other")
-		wantErr := "ship: branch other already exists — check it out first; ship does not switch branches mid-commit"
-		if err == nil || err.Error() != wantErr {
-			t.Fatalf("error = %v, want %q", err, wantErr)
+		got, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push", "--branch", "other")
+		if err != nil {
+			t.Fatalf("ship error = %v", err)
 		}
-		assertNoShipMutation(t, vcstest.Invocations(t, f.ArgvLog)[setup:])
-		if head := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD"); head != before {
-			t.Errorf("HEAD = %s, want it unmoved at %s", head, before)
+		head := gitAt(t, f.Env(), f.Dir, "log", "-1", "--format=%h", "other")
+		if want := swept(vcs.Git, "f.txt") + fmt.Sprintf(`committed %s "fix: frobnicate" · branch other · not pushed`, head); got != want {
+			t.Errorf("summary = %q, want %q", got, want)
+		}
+		if subject := gitAt(t, f.Env(), f.Dir, "log", "-1", "--format=%s", "other"); subject != "fix: frobnicate" {
+			t.Errorf("other tip = %q, want the shipped commit", subject)
+		}
+		if tip := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature"); tip != before {
+			t.Errorf("feature = %s, want it unmoved at %s", tip, before)
+		}
+		if branch := gitAt(t, f.Env(), f.Dir, "branch", "--show-current"); branch != "feature" {
+			t.Errorf("branch after ship = %q, want feature", branch)
 		}
 	})
 

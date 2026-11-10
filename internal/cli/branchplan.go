@@ -73,10 +73,10 @@ type branchPlan struct {
 // trunk").
 //
 // Two rows need a repository probe and so live with the lane that can make it:
-// a --branch naming an existing branch other than the current one (refused by
-// the git-backed preflights, since ship does not check branches out), and
-// several trunk candidates (refused where trunk is resolved, which is the only
-// place that can list them).
+// a --branch naming an existing branch other than the current one (passed in as
+// current by the git-backed preflights, since ship checks it out for the
+// commit), and several trunk candidates (refused where trunk is resolved, which
+// is the only place that can list them).
 func resolveBranchPlan(l lane, r vcs.Repo, o shipOpts, current, trunk string) (branchPlan, error) {
 	plan := branchPlan{name: current, from: current, parent: o.parent, trunk: trunk}
 	onTrunk := trunk != "" && current == trunk
