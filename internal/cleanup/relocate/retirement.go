@@ -313,13 +313,23 @@ func (r *Relocator) settled(files *retirementFiles) time.Time {
 	if r.cfg.Quiet == 0 {
 		return time.Time{}
 	}
+	moved, _ := lastMove(files.root)
+	return moved.Add(r.cfg.Quiet)
+}
+
+func lastMove(root *os.Root) (time.Time, error) {
 	var moved time.Time
 	for _, name := range []string{"HEAD", filepath.Join("logs", "HEAD")} {
-		if info, err := files.root.Stat(name); err == nil && info.ModTime().After(moved) {
+		info, err := root.Stat(name)
+		switch {
+		case gone(err):
+		case err != nil:
+			return moved, err
+		case info.ModTime().After(moved):
 			moved = info.ModTime()
 		}
 	}
-	return moved.Add(r.cfg.Quiet)
+	return moved, nil
 }
 
 func (r *Relocator) retirementState(job *cleanup.Job, state cleanup.Retirement) error {

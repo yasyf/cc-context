@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The cleanup daemon no longer deletes a worktree that something took up again
+  after its removal was requested. A job follows a moved `HEAD` only when the
+  move came within an hour of the request; a later move blocks the job
+  `identity`, because a lane polling from the tree between commands leaves no
+  process for the activity scan to see.
+
 ### Added
 
 - `ccx vcs job-log <job-id> --failed-tests` prints, one per line, the pytest node

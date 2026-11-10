@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/yasyf/cc-context/internal/cleanup"
 )
@@ -191,7 +192,7 @@ func claims(job *cleanup.Job, tree string, native bool) (string, error) {
 	return carried(job, entries, tree)
 }
 
-func (r *Relocator) followHead(ctx context.Context, job *cleanup.Job) error {
+func (r *Relocator) followHead(ctx context.Context, job *cleanup.Job, admin cleanup.FileID, tree string) error {
 	location := "--git-dir=" + job.AdminDir
 	head, err := r.resolveHead(ctx, job.Git, location)
 	if err != nil {
@@ -203,6 +204,20 @@ func (r *Relocator) followHead(ctx context.Context, job *cleanup.Job) error {
 	}
 	if head == "" || head == job.Head && branch == job.Branch {
 		return nil
+	}
+	if r.cfg.Quiet > 0 {
+		root, err := openAdmin(job, admin)
+		if err != nil {
+			return err
+		}
+		moved, err := lastMove(root)
+		_ = root.Close()
+		if err != nil {
+			return err
+		}
+		if requested := job.Created.Add(r.cfg.Quiet); moved.After(requested) {
+			return refuse(tree, "identity", "%s moved to %s at %s, more than %s after its removal was requested at %s: something works in it again; ccx vcs worktree rm --force removes it once that is done", tree, head, moved.Local().Format(time.RFC3339), r.cfg.Quiet, job.Created.Local().Format(time.RFC3339))
+		}
 	}
 	holder, err := r.git(ctx, job.Git, "--git-dir="+job.Repo, "for-each-ref", "--count=1", "--contains="+head, "--format=%(refname)", "refs/heads", "refs/remotes")
 	if err != nil || strings.TrimSpace(holder) == "" {
@@ -477,7 +492,11 @@ func (r *Relocator) prove(ctx context.Context, job *cleanup.Job, tree spot, clai
 	againstHead := !held.native || held.severed
 	if held.native {
 		if claiming {
-			if err := r.followHead(ctx, job); err != nil {
+			if err := r.followHead(ctx, job, held.admin, tree.path); err != nil {
+				var refused *cleanup.RefusedError
+				if errors.As(err, &refused) {
+					return held, refused.Reason, refused.Detail
+				}
 				return held, gitReason(err), err.Error()
 			}
 		}
