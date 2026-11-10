@@ -249,7 +249,7 @@ process running as the same user can release a hold whose ID it knows.
 
 | Reported outcome | Meaning |
 | --- | --- |
-| Claimed | The removal is proven and the job's lock holds the Git registration; the tree stays at its path until its deletion runs |
+| Claimed | The removal is proven, the job's lock holds the Git registration, and its emptied backlink keeps `git worktree list` from listing it; the tree stays at its path until its deletion runs |
 | Waiting for inactivity | A completed internal workspace remains at its original path while a session holds it |
 | Physical deletion in progress | The daemon is deleting the tree where it sits, then its registration, in bounded slices |
 | Paused | Preparation and deletion are held at the recorded phase |
@@ -278,7 +278,8 @@ the captured inode, the registration and links, and the pinned `HEAD`. The
 tree must also be clean unless `--force`, with no checked-out submodule, nested
 registration, watcher above or inside it, or live process. It then writes `ccx cleanup <job-id>` to the registration's `locked`
 file, which keeps `git worktree remove`, `prune`, and `move` off it, and
-proves all of it again before the deletion starts. A deletion that resumes
+empties the registration's `gitdir` backlink, so `git worktree list` stops
+listing the tree at once rather than after its deletion. It proves all of it again before the deletion starts. A deletion that resumes
 after a pause, a crash, or a block is proven again too. That proof counts
 files added or edited since the deletion began, and skips the ones it already
 removed.

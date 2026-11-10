@@ -555,6 +555,11 @@ func (r *Relocator) claim(ctx context.Context, job *cleanup.Job) (bool, error) {
 			return r.block(ctx, job, "identity", err.Error())
 		}
 	}
+	if held.native {
+		if err := unregister(job, held.admin); err != nil {
+			return r.block(ctx, job, "reconcile", fmt.Sprintf("unregister %s: %v", job.AdminDir, err))
+		}
+	}
 	return r.enter(job, cleanup.PhaseClaimed)
 }
 

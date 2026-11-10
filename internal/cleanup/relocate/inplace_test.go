@@ -76,8 +76,11 @@ func TestAdvanceClaimsATreeWhereItSits(t *testing.T) {
 	if got := f.lockOf(); got != retirementMarker(&job) {
 		t.Errorf("registration lock = %q, want %q", got, retirementMarker(&job))
 	}
-	if got := f.read(filepath.Join(f.adminDir, "gitdir")); got != job.Links.AdminGitdir {
-		t.Errorf("backlink = %q, want it untouched %q", got, job.Links.AdminGitdir)
+	if got := f.read(filepath.Join(f.adminDir, "gitdir")); got != "" {
+		t.Errorf("backlink = %q, want it emptied so git stops listing the tree", got)
+	}
+	if got, want := f.listing(), f.mainEntry(); got != want {
+		t.Errorf("worktree list = %q, want only %q", got, want)
 	}
 	if got := f.run(f.repo, "rev-parse", job.RecoveryRef); got != job.Head {
 		t.Errorf("recovery ref = %s, want %s", got, job.Head)
@@ -142,7 +145,7 @@ func TestAdmitReprovesAPartlyDeletedTree(t *testing.T) {
 			if err := os.Remove(filepath.Join(f.adminDir, "locked")); err != nil {
 				f.t.Fatal(err)
 			}
-			return "identity", fmt.Sprintf("%s no longer carries job %s's lock", f.adminDir, job.ID)
+			return "identity", fmt.Sprintf("%s has no backlink and no lock of job %s", f.adminDir, job.ID)
 		}},
 		{"a process holds it", func(f *fixture, _ cleanup.Job) (string, string) {
 			return "activity", f.holdAt(f.worktree).Error()
@@ -234,7 +237,7 @@ func TestAdmitReprovesAClaimedTree(t *testing.T) {
 			if err := os.Remove(filepath.Join(f.adminDir, "locked")); err != nil {
 				f.t.Fatalf("remove the lock: %v", err)
 			}
-			return fmt.Sprintf("%s no longer carries job %s's lock", f.adminDir, job.ID)
+			return fmt.Sprintf("%s has no backlink and no lock of job %s", f.adminDir, job.ID)
 		}, "identity"},
 		{"the recovery ref moved", func(f *fixture, job cleanup.Job) string {
 			base := f.run(f.repo, "rev-parse", "refs/heads/main")
