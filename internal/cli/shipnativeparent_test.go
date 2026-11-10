@@ -449,3 +449,93 @@ func TestShipParentRetargetsANativeBranchItsLaneRebuiltOffItsStackBase(t *testin
 		t.Fatalf("ship --parent main: %v\n%s", err, out)
 	}
 }
+
+func shipNativeRestackedElsewhere(t *testing.T) *vcstest.Fixture {
+	t.Helper()
+	f := shipRepo(t, vcstest.Remote())
+	f.Decorate(func(ctx context.Context) context.Context { return withStackProvider(ctx, true) })
+	mustRun(t, f.Env(), f.Dir, "git", "config", "ccx.stack", "github")
+	trunk := shipHead(t, f)
+	shipGTUntracked(t, f, "images")
+	shipGTUntracked(t, f, "plumbing")
+	recorded := shipHead(t, f)
+	writeShipFile(t, f.Dir, "plumbing.txt", "plumbing, rewritten elsewhere\n")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-q", "-a", "--amend", "-m", "plumbing", "-m", "why plumbing")
+	shipGTUntracked(t, f, "sand")
+	shipGTUntracked(t, f, "anti-bot")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "images", "plumbing", "sand", "anti-bot")
+	common := filepath.Join(f.Dir, ".git")
+	if err := nativemeta.Init(f.Context(), common, "main"); err != nil {
+		t.Fatal(err)
+	}
+	api := stubGTAPI(t)
+	api.openPRs("images", "plumbing", "sand", "anti-bot")
+	prs := map[string]*stackPR{}
+	for _, link := range []struct{ branch, parent string }{{"images", "main"}, {"plumbing", "images"}, {"sand", "plumbing"}, {"anti-bot", "sand"}} {
+		head := gitAt(t, f.Env(), f.Dir, "rev-parse", link.branch)
+		base := gitAt(t, f.Env(), f.Dir, "rev-parse", link.parent)
+		switch link.branch {
+		case "images":
+			base = trunk
+		case "sand":
+			base = recorded
+		}
+		if err := nativemeta.AdoptRoot(f.Context(), common, link.branch, link.parent, base, head); err != nil {
+			t.Fatal(err)
+		}
+		api.bases[link.branch], api.stacks[link.branch] = link.parent, 53276
+		prs[link.branch] = &stackPR{Number: api.prs[link.branch], Title: link.branch, State: "OPEN", Base: link.parent, Head: head, Mergeable: "MERGEABLE"}
+	}
+	f.Decorate(api.ctx)
+	stubStackPRs(t, f, prs)
+	stubStackStanding(t, f, nil)
+	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "sand")
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", f.WorktreePath("anti-bot"), "anti-bot")
+	return f
+}
+
+func TestShipPlansOnlyTheMidStackBranchAnotherCheckoutRestacked(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		flags []string
+		amend bool
+	}{
+		{name: "ship"},
+		{name: "tip only", flags: []string{"--tip-only"}},
+		{name: "amend", flags: []string{"--amend"}, amend: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := shipNativeRestackedElsewhere(t)
+			published := map[string]string{}
+			for _, branch := range []string{"images", "plumbing", "sand", "anti-bot"} {
+				published[branch] = gitAt(t, f.Env(), f.RemoteDir, "rev-parse", branch)
+			}
+			shipGTReady(t, f)
+			args := append([]string{"-m", "fix: frobnicate", "--no-watch"}, tt.flags...)
+
+			report := dryRunReport(t, f, args...)
+			for _, label := range []string{"restack", "rewrites", "refuses"} {
+				if got := dryRunValues(report, label); len(got) != 0 {
+					t.Errorf("%s = %q, want none: sand sits on plumbing's head and images stays where its pull request merges\n%s", label, got, report)
+				}
+			}
+
+			if _, errStr, err := runShipCmdFull(f.Context(), t, args...); err != nil {
+				t.Fatalf("ship = %v (stderr=%q)", err, errStr)
+			}
+			for _, branch := range []string{"images", "plumbing", "anti-bot"} {
+				if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", branch); got != published[branch] {
+					t.Errorf("origin %s moved from %s to %s, want sand pushed alone", branch, published[branch], got)
+				}
+			}
+			below := published["sand"]
+			if tt.amend {
+				below = published["plumbing"]
+			}
+			if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "sand^"); got != below {
+				t.Errorf("origin sand^ = %s, want %s: sand's own commit kept where it was, not replayed", got, below)
+			}
+		})
+	}
+}

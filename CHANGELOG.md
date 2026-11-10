@@ -67,6 +67,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ccx vcs ship --dry-run` on a mid-stack branch plans the restack the ship
+  makes.** The report read each branch's base from this checkout's stack record,
+  which a restack run in another checkout leaves naming a base the branch no
+  longer holds. From #41015, mid-stack in native stack #53276 of
+  Forge-AI/monorepo, `--tip-only` planned a restack of that one branch that
+  rewrote 17,779 paths, and a plain ship planned to move the green, approved pull
+  requests below it onto trunk. The ship itself reads the furthest of the
+  parent's head and the recorded base that the branch still holds, and keeps an
+  ancestor whose open pull request merges as it stands at its published head.
+  The report now reads both the same way, so on that stack it plans the shipped
+  branch alone. Each restack line names the commits its replay carries, as
+  `replays <base>..<head>`.
+
 - **`ccx vcs worktree add` refuses to add a worktree to a Claude Code plugin
   clone.** A clone under Claude Code's `plugins/marketplaces` or
   `plugins/cache` is replaced when Claude Code updates the plugin, and that
