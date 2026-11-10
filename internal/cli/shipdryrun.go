@@ -52,12 +52,11 @@ type shipDryRun struct {
 	meta     map[string]prMeta
 }
 
-// dryRunMove is one branch a restack would rewrite: where the ref stands now,
-// what it would be replayed onto, and the working copy holding it.
 type dryRunMove struct {
 	branch string
 	head   string
 	onto   string
+	base   string
 	holder string
 	why    string
 }
@@ -553,11 +552,17 @@ func dryRunStack(ctx context.Context, l lane, o shipOpts, c *gtCache, r *shipDry
 	if err != nil {
 		return fmt.Errorf("ship: %w", err)
 	}
+	if state, err = dryRunBases(ctx, l, o, state, chain, r); err != nil {
+		return err
+	}
 	moveState := state
 	if o.noPush {
 		if moveState, err = gtHoldPublished(ctx, l.dir(), state, chain); err != nil {
 			return err
 		}
+	}
+	if moveState, err = dryRunKeepMergeable(ctx, l, o, moveState, chain, r); err != nil {
+		return err
 	}
 	line := shipParentLine(o.parent != "" || onPublished, chain, r.branch)
 	dryRunMoves(moveState, chain, line, holders, o, r)
@@ -634,19 +639,139 @@ func dryRunPlanned(ctx context.Context, l lane, state gtState, r *shipDryRun) (g
 	return planned, nil
 }
 
+func dryRunBases(ctx context.Context, l lane, o shipOpts, state gtState, chain []string, r *shipDryRun) (gtState, error) {
+	if o.noPush {
+		return state, nil
+	}
+	based := maps.Clone(state)
+	for _, branch := range chain {
+		s := state[branch]
+		parent := s.Parents[0]
+		onto := state[parent.Ref].Head
+		candidates := []string{onto, parent.SHA}
+		if state[parent.Ref].Trunk {
+			fork, err := stackMergeBase(ctx, l.dir(), s.Head, onto)
+			if err != nil {
+				return nil, err
+			}
+			candidates[0] = fork
+		}
+		if o.tipOnly && branch == r.branch && !state[parent.Ref].Trunk {
+			remote, err := vcs.GitRemoteFor(ctx, l.dir(), "HEAD")
+			if err != nil {
+				return nil, fmt.Errorf("ship: %w", err)
+			}
+			published, err := dryRunPublishedHead(ctx, l.dir(), remote, parent.Ref)
+			if err != nil {
+				return nil, err
+			}
+			if published != "" {
+				onto, candidates = published, append([]string{published}, candidates...)
+			}
+		}
+		base, err := stackFurthest(ctx, l.dir(), s.Head, candidates)
+		if err != nil {
+			return nil, err
+		}
+		if base == "" {
+			continue
+		}
+		s.Parents = []gtRef{{Ref: parent.Ref, SHA: base}}
+		s.NeedsRestack = base != onto
+		based[branch] = s
+	}
+	return based, nil
+}
+
+const dryRunKeptAncestor = "kept at its published head, where its open pull request merges as it stands"
+
+func dryRunKeepMergeable(ctx context.Context, l lane, o shipOpts, state gtState, chain []string, r *shipDryRun) (gtState, error) {
+	if o.noPush || o.tipOnly || o.restack {
+		return state, nil
+	}
+	tr, err := gtTrunkRefOffline(ctx, l.dir(), "ship", r.trunk)
+	if errors.Is(err, vcs.ErrNoTrunk) {
+		return state, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	below := gtBottomUp(slices.DeleteFunc(slices.Clone(chain), func(name string) bool { return name == r.branch }))
+	published := map[string]string{}
+	for _, name := range below {
+		if published[name], err = dryRunPublishedHead(ctx, l.dir(), tr.Remote(), name); err != nil {
+			return nil, err
+		}
+	}
+	replayed := slices.ContainsFunc(below, func(name string) bool { return published[name] != "" && published[name] != state[name].Head })
+	if movers, _ := gtRestackPlan(state, below); len(movers) == 0 && !replayed {
+		return state, nil
+	}
+	pin, err := gtTrunkHead(ctx, l.dir(), "ship", tr)
+	if err != nil {
+		return nil, err
+	}
+	prs, err := stackPRs(ctx, l.dir(), r.trunk, below)
+	if err != nil {
+		r.notes = append(r.notes, "ship: read the pull requests below "+r.branch+": "+err.Error()+" — a restack line may name a branch the run keeps at its published head")
+		return state, nil
+	}
+	held := maps.Clone(state)
+	kept := map[string]bool{r.trunk: true}
+	inherits := map[string]bool{}
+	for _, name := range below {
+		s := state[name]
+		if s.State != "" {
+			continue
+		}
+		b := &stackRebaseBranch{Name: name, Parent: s.Parents[0].Ref, WasParent: s.Parents[0].Ref, Head: s.Head, Remote: published[name], PR: prs[name]}
+		if inherits[name], err = stackInheritsTrunk(ctx, l.dir(), r.trunk, pin, b, inherits); err != nil {
+			return nil, err
+		}
+		if inherits[name] {
+			continue
+		}
+		if kept[name], err = stackKeepsAncestor(ctx, l.dir(), pin, b, kept[b.Parent], false, nil); err != nil {
+			return nil, err
+		}
+		if kept[name] {
+			s.State, s.Head = dryRunKeptAncestor, b.Head
+			held[name] = s
+		}
+	}
+	for _, name := range gtBottomUp(chain) {
+		s := held[name]
+		if parent := s.Parents[0].Ref; held[parent].Head != state[parent].Head {
+			s.NeedsRestack = s.Parents[0].SHA != held[parent].Head
+			held[name] = s
+		}
+	}
+	return held, nil
+}
+
+func dryRunPublishedHead(ctx context.Context, dir render.Dir, remote, branch string) (string, error) {
+	ref := "refs/remotes/" + remote + "/" + branch
+	present, err := gitRefExists(ctx, dir, "ship", ref)
+	if err != nil || !present {
+		return "", err
+	}
+	return stackRevParse(ctx, dir, ref)
+}
+
 // dryRunMoves names every branch this ship rewrites, in both directions. The
 // downstack half is the restack gt asks for, which moves parents whose pull
 // requests are already open; the upstack half is what a commit onto this branch
 // does to the branches above it, which the run never announces.
 func dryRunMoves(state gtState, chain, parentLine []string, holders map[string]string, o shipOpts, r *shipDryRun) {
-	movers, held := gtRestackPlan(state, gtBottomUp(chain))
+	planned := gtBottomUp(chain)
 	if o.tipOnly {
 		r.notes = append(r.notes, "--tip-only ships "+r.branch+" on its base, or onto its parent's published head when the parent was rewritten, and pushes no ancestor")
 		if o.noPush {
 			return
 		}
-		movers = slices.DeleteFunc(movers, func(branch string) bool { return tipOnlyAncestor(o.tipOnly, r.branch, branch) })
+		planned = slices.DeleteFunc(planned, func(branch string) bool { return tipOnlyAncestor(o.tipOnly, r.branch, branch) })
 	}
+	movers, held := gtRestackPlan(state, planned)
 	movers = slices.DeleteFunc(movers, func(branch string) bool { return slices.Contains(parentLine, branch) })
 	for _, branch := range movers {
 		why := "its parent moves under it"
@@ -660,6 +785,7 @@ func dryRunMoves(state gtState, chain, parentLine []string, holders map[string]s
 			branch: branch,
 			head:   shortSHA(state[branch].Head),
 			onto:   state[branch].Parents[0].Ref,
+			base:   shortSHA(state[branch].Parents[0].SHA),
 			holder: statusHolder(holders[branch], r.root),
 			why:    why,
 		})
@@ -694,6 +820,7 @@ func dryRunMoves(state gtState, chain, parentLine []string, holders map[string]s
 			branch: branch,
 			head:   shortSHA(state[branch].Head),
 			onto:   state[branch].Parents[0].Ref,
+			base:   shortSHA(state[branch].Parents[0].SHA),
 			holder: statusHolder(holders[branch], r.root),
 			why:    "the commit moves " + r.branch + " under it",
 		})
@@ -948,7 +1075,7 @@ func dryRunScopeValue(r shipDryRun) string {
 }
 
 func dryRunMoveValue(m dryRunMove) string {
-	return strings.Join([]string{m.branch, m.head + " onto " + m.onto, m.holder, m.why}, shipSep)
+	return strings.Join([]string{m.branch, m.head + " onto " + m.onto, "replays " + m.base + ".." + m.head, m.holder, m.why}, shipSep)
 }
 
 func dryRunPRValue(p dryRunPR) string {
