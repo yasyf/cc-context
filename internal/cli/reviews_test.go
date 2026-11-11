@@ -61,6 +61,8 @@ type reviewsServer struct {
 	failREST map[int]int
 	requests []string
 	queries  []reviewsGraphQL
+	// graphQLSpent answers every GraphQL batch with GitHub's rate-limit refusal.
+	graphQLSpent bool
 }
 
 // pr registers a pull request. openAnswers state reads answer OPEN before the
@@ -114,6 +116,13 @@ func (s *reviewsServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.requests = append(s.requests, r.URL.String())
+	if pull, ok := s.restPull(r); ok {
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(pull); err != nil {
+			s.t.Errorf("encode %s: %v", r.URL, err)
+		}
+		return
+	}
 	number, kind, ok := reviewsFeed(r.URL.Path)
 	if !ok {
 		http.Error(w, "unmatched "+r.URL.Path, http.StatusNotFound)
@@ -148,6 +157,12 @@ func (s *reviewsServer) serveGraphQL(w http.ResponseWriter, r *http.Request) {
 	}
 	s.requests = append(s.requests, r.Method+" "+r.URL.Path)
 	s.queries = append(s.queries, reviewsGraphQL{query: req.Query, vars: req.Variables})
+	if s.graphQLSpent {
+		w.Header().Set("X-RateLimit-Remaining", "0")
+		w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10))
+		http.Error(w, `{"message":"API rate limit exceeded"}`, http.StatusForbidden)
+		return
+	}
 
 	fields := map[string]any{}
 	var missing []map[string]any
@@ -200,6 +215,45 @@ func (s *reviewsServer) serveGraphQL(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(body); err != nil {
 		s.t.Errorf("encode graphql response: %v", err)
+	}
+}
+
+// restPull answers the REST reads a watch falls back to when GraphQL is
+// spent: a pull request by number, a branch's newest by head, and who closed one.
+func (s *reviewsServer) restPull(r *http.Request) (any, bool) {
+	rest, ok := strings.CutPrefix(r.URL.Path, reviewsRepoPath)
+	if !ok {
+		return nil, false
+	}
+	kind, id, _ := strings.Cut(rest, "/")
+	number, err := strconv.Atoi(id)
+	switch {
+	case kind == "pulls" && id == "":
+		numbers := s.branches[strings.TrimPrefix(r.URL.Query().Get("head"), "acme:")]
+		if len(numbers) == 0 {
+			return []any{}, true
+		}
+		return []any{s.restAnswer(numbers[len(numbers)-1])}, true
+	case kind == "pulls" && err == nil:
+		return s.restAnswer(number), true
+	case kind == "issues" && err == nil:
+		return map[string]any{"closed_by": map[string]any{"login": s.prs[number].closer + "[bot]"}}, true
+	}
+	return nil, false
+}
+
+func (s *reviewsServer) restAnswer(number int) map[string]any {
+	read := s.answer(number, s.prs[number])
+	state := "closed"
+	if read["state"] == "OPEN" {
+		state = "open"
+	}
+	return map[string]any{
+		"number":    number,
+		"html_url":  read["url"],
+		"state":     state,
+		"merged_at": read["mergedAt"],
+		"base":      map[string]any{"ref": "main"},
 	}
 }
 
@@ -835,6 +889,28 @@ func TestReviewsBranchResolvesNewestPR(t *testing.T) {
 	}
 	if strings.Contains(out, "watching pr#1") {
 		t.Errorf("output = %q, want it to leave pr#1, the merged predecessor, alone", out)
+	}
+}
+
+// TestReviewsFallsBackToRESTWhenGraphQLIsSpent watches a branch while GitHub
+// refuses every GraphQL batch for rate: the watch resolves the branch and reads
+// its pull request's end over REST instead of failing.
+func TestReviewsFallsBackToRESTWhenGraphQLIsSpent(t *testing.T) {
+	srv := setupReviews(t)
+	srv.graphQLSpent = true
+	srv.pr(1, 0, "MERGED", true)
+	srv.pr(2, 1, "MERGED", true)
+	srv.branch("feature/resubmitted", 1, 2)
+
+	out, err := runReviewsCmd(context.Background(), t, "feature/resubmitted", "--since", "all")
+	if err != nil {
+		t.Fatalf("reviews error = %v", err)
+	}
+	if !strings.Contains(out, "watching pr#2") || !strings.Contains(out, "◆ pr#2 merged") {
+		t.Errorf("output = %q, want it to watch pr#2, the newest pull request of the branch, until it reads merged", out)
+	}
+	if log := srv.requestLog(); !slices.Contains(log, "/repos/acme/repo/pulls/2") {
+		t.Errorf("requests = %q, want pr#2's state read over REST", log)
 	}
 }
 

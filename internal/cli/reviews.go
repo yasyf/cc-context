@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -286,12 +287,32 @@ func (c reviewsClient) pullRequestsByNumber(ctx context.Context, numbers []int) 
 		vars[reviewsAlias(i)] = number
 	}
 	batch, err := ghapi.GraphQL[reviewsNumberBatch](ctx, c.api, reviewsNumberQuery(len(numbers)), vars)
+	if _, limited := ghapi.RateLimited(err); limited {
+		return c.pullRequestsByNumberREST(ctx, numbers)
+	}
 	if err != nil {
 		return nil, err
 	}
 	byNumber := make(map[int]ghPullRequest, len(numbers))
 	for i, number := range numbers {
 		byNumber[number] = batch.Repository[reviewsAlias(i)]
+	}
+	return byNumber, nil
+}
+
+// pullRequestsByNumberREST is pullRequestsByNumber over REST, one read per
+// number, for a batch GitHub refused over GraphQL for rate: the two budgets are
+// metered apart, so either one spent leaves the other.
+func (c reviewsClient) pullRequestsByNumberREST(ctx context.Context, numbers []int) (map[int]ghPullRequest, error) {
+	byNumber := make(map[int]ghPullRequest, len(numbers))
+	for _, number := range numbers {
+		pull, err := ghapi.Get[ghPull](ctx, c.api, fmt.Sprintf("/repos/%s/%s/pulls/%d", c.owner, c.repo, number))
+		if err != nil {
+			return nil, err
+		}
+		if byNumber[number], err = c.restPullRequest(ctx, pull); err != nil {
+			return nil, err
+		}
 	}
 	return byNumber, nil
 }
@@ -308,6 +329,9 @@ func (c reviewsClient) pullRequestsByBranch(ctx context.Context, branches []stri
 		vars[reviewsAlias(i)] = branch
 	}
 	batch, err := ghapi.GraphQL[reviewsBranchBatch](ctx, c.api, reviewsBranchQuery(len(branches)), vars)
+	if _, limited := ghapi.RateLimited(err); limited {
+		return c.pullRequestsByBranchREST(ctx, branches)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -320,6 +344,44 @@ func (c reviewsClient) pullRequestsByBranch(ctx context.Context, branches []stri
 		byBranch[branch] = nodes[0]
 	}
 	return byBranch, nil
+}
+
+// pullRequestsByBranchREST is pullRequestsByBranch over REST, one read per
+// branch, newest pull request first as the batched query orders them.
+func (c reviewsClient) pullRequestsByBranchREST(ctx context.Context, branches []string) (map[string]ghPullRequest, error) {
+	byBranch := make(map[string]ghPullRequest, len(branches))
+	for _, branch := range branches {
+		head := url.QueryEscape(c.owner + ":" + branch)
+		pulls, err := ghapi.Get[[]ghPull](ctx, c.api, fmt.Sprintf("/repos/%s/%s/pulls?head=%s&state=all&sort=created&direction=desc&per_page=1", c.owner, c.repo, head))
+		if err != nil {
+			return nil, err
+		}
+		if len(pulls) == 0 {
+			continue
+		}
+		if byBranch[branch], err = c.restPullRequest(ctx, pulls[0]); err != nil {
+			return nil, err
+		}
+	}
+	return byBranch, nil
+}
+
+// restPullRequest is a REST pull request in the shape the batched query
+// selects, reading who closed it only when that settles its landing.
+func (c reviewsClient) restPullRequest(ctx context.Context, pull ghPull) (ghPullRequest, error) {
+	closedBy := ""
+	if pull.closedByWhomMatters(c.gt) {
+		issue, err := ghapi.Get[struct {
+			ClosedBy struct {
+				Login string `json:"login"`
+			} `json:"closed_by"`
+		}](ctx, c.api, fmt.Sprintf("/repos/%s/%s/issues/%d", c.owner, c.repo, pull.Number))
+		if err != nil {
+			return ghPullRequest{}, err
+		}
+		closedBy = issue.ClosedBy.Login
+	}
+	return ghPullRequest{Number: pull.Number, URL: pull.HTMLURL, BaseRefName: pull.Base.Ref, prLanding: pull.landing(closedBy)}, nil
 }
 
 // reviewsResolveError maps GitHub's not-found onto the CLI's own sentinel, so a
