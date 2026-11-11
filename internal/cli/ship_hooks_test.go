@@ -828,27 +828,28 @@ func TestShipHooksStopOnAPublicHook(t *testing.T) {
 	}
 }
 
-func TestShipHookRefusalKeepsWhatYouStagedOfANamedPath(t *testing.T) {
+func TestShipHookRefusalUnstagesOnlyTheNamedPaths(t *testing.T) {
 	t.Parallel()
 	f := shipRepo(t, vcstest.Remote())
 	shipHookRepo(t, f, vcs.Git, 1, `printf '%s\n' 'Check....Failed' '- hook id: public-names' '- exit code: 1' '' '  public-check: f1.go:1 names Rowan (Rowan Vale)'`)
 	writeShipFile(t, f.Dir, "f1.go", "base")
-	mustRun(t, f.Env(), f.Dir, "git", "add", "f1.go")
+	writeShipFile(t, f.Dir, "g.go", "base")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "f1.go", "g.go")
 	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "base")
-	writeShipFile(t, f.Dir, "f1.go", "staged")
-	mustRun(t, f.Env(), f.Dir, "git", "add", "f1.go")
-	writeShipFile(t, f.Dir, "f1.go", "working")
+	writeShipFile(t, f.Dir, "g.go", "mine")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "g.go")
+	writeShipFile(t, f.Dir, "f1.go", "named")
 	writeShipFile(t, f.Dir, "f2.go", "new")
 
 	_, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push", "f1.go", "f2.go")
 	if err == nil || !strings.Contains(err.Error(), "public-names refused what this commit would make public") {
 		t.Fatalf("ship error = %v, want the public-names refusal", err)
 	}
-	if staged := gitAt(t, f.Env(), f.Dir, "show", ":f1.go"); staged != "staged" {
-		t.Errorf("index f1.go = %q, want the copy staged before the ship", staged)
+	if staged := gitAt(t, f.Env(), f.Dir, "diff", "--cached", "--name-only"); staged != "g.go" {
+		t.Errorf("staged = %q, want only g.go, which the ship did not name", staged)
 	}
-	if status := gitAt(t, f.Env(), f.Dir, "status", "--porcelain"); status != "MM f1.go\n?? f2.go" {
-		t.Errorf("status = %q, want f1.go staged as before and f2.go untracked", status)
+	if status := gitAt(t, f.Env(), f.Dir, "status", "--porcelain", "--", "f2.go"); status != "?? f2.go" {
+		t.Errorf("f2.go status = %q, want it untracked again", status)
 	}
 }
 

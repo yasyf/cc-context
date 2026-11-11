@@ -2496,15 +2496,7 @@ func shipCommitGT(ctx context.Context, l lane, errW io.Writer, o shipOpts, sel *
 	if len(beside) > 0 {
 		return "", stagedBesideRefusal(beside)
 	}
-	undo, err := shipIndexUndo(ctx, l.dir())
-	if err != nil {
-		return "", err
-	}
-	defer func() {
-		if err != nil {
-			err = errors.Join(err, undo())
-		}
-	}()
+	defer func() { err = shipUnstage(ctx, l.dir(), o, err) }()
 	sweptSeg, err := shipGitAdd(ctx, l.dir(), o)
 	if err != nil {
 		return "", err
