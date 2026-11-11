@@ -254,82 +254,34 @@ func nativeReadTracking(ctx context.Context, l lane, run *stackRebaseRun, live [
 		}
 		branch := run.branch(name)
 		info, found := byNumber[pr.Number]
-		if found && nativeStackTracksBranch(info, branch, run.Trunk, prs[branch.Parent]) {
-			continue
+		var parentInfo gtapi.PullRequestInfo
+		if parent := prs[branch.Parent]; parent != nil {
+			parentInfo = byNumber[parent.Number]
 		}
-		untracked = append(untracked, stackUntracked{Branch: name, PR: pr.Number, Parent: branch.Parent, Head: branch.NewHead, Stale: info.BaseRefName})
+		switch {
+		case !found || !nativeStackTracksBranch(info, branch, run.Trunk, prs[branch.Parent], parentInfo):
+			untracked = append(untracked, stackUntracked{Branch: name, PR: pr.Number, Parent: branch.Parent, Head: branch.NewHead, Stale: info.BaseRefName})
+		case nativeLoneFork(info, parentInfo):
+			sibling := parentInfo.OpenAbove[0]
+			render.Announce(ctx, "#%d %s sits on #%d %s outside native GitHub stack #%d, where #%d %s already follows #%d; GitHub has no stack of one pull request, so #%d opens a stack of its own once it has a child", pr.Number, name, parentInfo.PRNumber, branch.Parent, parentInfo.StackNumber, sibling.Number, sibling.Head, parentInfo.PRNumber, pr.Number)
+		}
 	}
 	return untracked, nil
 }
 
-func nativeStackTracksBranch(info gtapi.PullRequestInfo, branch *stackRebaseBranch, trunk string, parent *stackPR) bool {
+func nativeStackTracksBranch(info gtapi.PullRequestInfo, branch *stackRebaseBranch, trunk string, parent *stackPR, parentInfo gtapi.PullRequestInfo) bool {
 	if info.State != gtapi.PROpen || info.HeadRefName != branch.Name || info.Newest().HeadSha != branch.NewHead || info.BaseRefName != branch.Parent {
 		return false
 	}
-	return branch.Parent == trunk || parent != nil && nativeStackLinksAbove(info, branch.Parent, parent.Number)
+	return branch.Parent == trunk || parent != nil && nativeStackLinksAbove(info, branch.Parent, parent.Number) || nativeLoneFork(info, parentInfo)
 }
 
 func nativeStackLinksAbove(info gtapi.PullRequestInfo, base string, parent int) bool {
 	return info.StackNumber != 0 && (info.DependentPRNumber == parent || info.DependentPRNumber == 0 && info.CliTrunk == base)
 }
 
-func nativeRefuseFork(prefix, trunk string, parents map[string]string, known map[string]gtapi.PullRequestInfo) error {
-	children := map[string]bool{}
-	for _, parent := range parents {
-		children[parent] = true
-	}
-	for _, branch := range slices.Sorted(maps.Keys(parents)) {
-		parent, self := known[parents[branch]], known[branch]
-		if len(parent.OpenAbove) == 0 || self.StackNumber != 0 || children[branch] {
-			continue
-		}
-		sibling, top := parent.OpenAbove[0], parent.OpenAbove[len(parent.OpenAbove)-1]
-		name := branch
-		insert := fmt.Sprintf("ccx vcs stack submit --parent %s=%s --pr-title %s=<title> --pr-body-file %s=<body.md>", sibling.Head, branch, branch, branch)
-		if self.PRNumber != 0 {
-			name = fmt.Sprintf("#%d %s", self.PRNumber, branch)
-			insert = fmt.Sprintf("ccx vcs stack submit --parent %s=%s", sibling.Head, branch)
-		}
-		return refuse("%s: %s and #%d %s both sit on #%d %s. Native GitHub stack #%d is a single chain and GitHub has no stack of one pull request for a fork, so %s cannot register. Nothing was pushed. Chain it on the stack's top: ccx vcs stack rebase --parent %s=%s. Or put it between #%d and #%d: %s from %s's working copy. Or take it off #%d: ccx vcs stack rebase --parent %s=%s", prefix, name, sibling.Number, sibling.Head, parent.PRNumber, parent.HeadRefName, parent.StackNumber, name, branch, top.Head, parent.PRNumber, sibling.Number, insert, sibling.Head, parent.PRNumber, branch, trunk)
-	}
-	return nil
-}
-
-func stackRefuseFork(ctx context.Context, l lane, run *stackRebaseRun, o stackRebaseOpts) error {
-	if !l.native || o.noPush || run.NoPush {
-		return nil
-	}
-	parents := stackPublishedParents(run)
-	if len(parents) == 0 {
-		return nil
-	}
-	owner, repo, err := gtRepoOwnerName(ctx, l, stackRebasePrefix)
-	if err != nil {
-		return err
-	}
-	heads := slices.Concat(slices.Collect(maps.Keys(parents)), slices.Collect(maps.Values(parents)))
-	slices.Sort(heads)
-	infos, err := gtAPI(ctx).PullRequestInfo(ctx, gtapi.PullRequestInfoRequest{RepoOwner: owner, RepoName: repo, PRHeadRefNames: slices.Compact(heads), Callsite: "ccx"})
-	if err != nil {
-		return fmt.Errorf("%s: read the native stacks these branches join: %w", stackRebasePrefix, err)
-	}
-	known := make(map[string]gtapi.PullRequestInfo, len(infos))
-	for _, info := range infos {
-		if info.State == gtapi.PROpen {
-			known[info.HeadRefName] = info
-		}
-	}
-	return nativeRefuseFork(stackRebasePrefix, run.Trunk, parents, known)
-}
-
-func stackPublishedParents(run *stackRebaseRun) map[string]string {
-	parents := map[string]string{}
-	for _, b := range run.Branches {
-		if b.Parent != run.Trunk && !b.Pinned && !b.LocalOnly && b.Landed == "" {
-			parents[b.Name] = b.Parent
-		}
-	}
-	return parents
+func nativeLoneFork(info, parent gtapi.PullRequestInfo) bool {
+	return info.StackNumber == 0 && len(parent.OpenAbove) > 0
 }
 
 func nativeQueueProbe(ctx context.Context, l lane) *statusProbe {

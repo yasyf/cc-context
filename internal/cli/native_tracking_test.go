@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"maps"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -26,81 +25,33 @@ func TestNativeStackTrackingRequiresCurrentIdentity(t *testing.T) {
 	branch := &stackRebaseBranch{Name: "feature", Parent: "base", NewHead: "current-head"}
 	parent := &stackPR{Number: 41, State: "OPEN"}
 	matching := gtapi.PullRequestInfo{PRNumber: 42, HeadRefName: "feature", BaseRefName: "base", State: gtapi.PROpen, StackNumber: 50, DependentPRNumber: 41, Versions: []gtapi.PRVersion{{HeadSha: "current-head"}}}
+	sibling := []gtapi.StackPull{{Number: 43, Head: "sibling"}}
 	for _, tt := range []struct {
-		name string
-		edit func(*gtapi.PullRequestInfo)
-		want bool
+		name  string
+		edit  func(*gtapi.PullRequestInfo)
+		above []gtapi.StackPull
+		want  bool
 	}{
-		{"matches", func(*gtapi.PullRequestInfo) {}, true},
-		{"old head", func(p *gtapi.PullRequestInfo) { p.Versions = []gtapi.PRVersion{{HeadSha: "previous-head"}} }, false},
-		{"wrong branch", func(p *gtapi.PullRequestInfo) { p.HeadRefName = "other" }, false},
-		{"wrong parent branch", func(p *gtapi.PullRequestInfo) { p.BaseRefName = "main" }, false},
-		{"missing native stack", func(p *gtapi.PullRequestInfo) { p.StackNumber = 0 }, false},
-		{"wrong native parent PR", func(p *gtapi.PullRequestInfo) { p.DependentPRNumber = 99 }, false},
-		{"closed PR", func(p *gtapi.PullRequestInfo) { p.State = gtapi.PRClosed }, false},
-		{"bottom of a fork stack on the parent", func(p *gtapi.PullRequestInfo) { p.DependentPRNumber, p.CliTrunk = 0, "base" }, true},
-		{"bottom of a stack on another base", func(p *gtapi.PullRequestInfo) { p.DependentPRNumber, p.CliTrunk = 0, "main" }, false},
+		{"matches", func(*gtapi.PullRequestInfo) {}, nil, true},
+		{"old head", func(p *gtapi.PullRequestInfo) { p.Versions = []gtapi.PRVersion{{HeadSha: "previous-head"}} }, nil, false},
+		{"wrong branch", func(p *gtapi.PullRequestInfo) { p.HeadRefName = "other" }, nil, false},
+		{"wrong parent branch", func(p *gtapi.PullRequestInfo) { p.BaseRefName = "main" }, nil, false},
+		{"missing native stack", func(p *gtapi.PullRequestInfo) { p.StackNumber = 0 }, nil, false},
+		{"lone fork beside an open pull request above its parent", func(p *gtapi.PullRequestInfo) { p.StackNumber, p.DependentPRNumber = 0, 0 }, sibling, true},
+		{"lone fork on an old head", func(p *gtapi.PullRequestInfo) {
+			p.StackNumber, p.Versions = 0, []gtapi.PRVersion{{HeadSha: "previous-head"}}
+		}, sibling, false},
+		{"lone fork on another base", func(p *gtapi.PullRequestInfo) { p.StackNumber, p.BaseRefName = 0, "main" }, sibling, false},
+		{"wrong native parent PR", func(p *gtapi.PullRequestInfo) { p.DependentPRNumber = 99 }, nil, false},
+		{"closed PR", func(p *gtapi.PullRequestInfo) { p.State = gtapi.PRClosed }, nil, false},
+		{"bottom of a fork stack on the parent", func(p *gtapi.PullRequestInfo) { p.DependentPRNumber, p.CliTrunk = 0, "base" }, nil, true},
+		{"bottom of a stack on another base", func(p *gtapi.PullRequestInfo) { p.DependentPRNumber, p.CliTrunk = 0, "main" }, nil, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			p := matching
 			tt.edit(&p)
-			if got := nativeStackTracksBranch(p, branch, "main", parent); got != tt.want {
+			if got := nativeStackTracksBranch(p, branch, "main", parent, gtapi.PullRequestInfo{PRNumber: 41, HeadRefName: "base", StackNumber: 50, OpenAbove: tt.above}); got != tt.want {
 				t.Fatalf("tracks branch = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestNativeRefuseFork(t *testing.T) {
-	parent := gtapi.PullRequestInfo{PRNumber: 15, HeadRefName: "card", StackNumber: 16, OpenAbove: []gtapi.StackPull{{Number: 27, Head: "claim"}, {Number: 28, Head: "claim-2"}}}
-	for _, tt := range []struct {
-		name    string
-		parents map[string]string
-		known   map[string]gtapi.PullRequestInfo
-		want    string
-	}{
-		{
-			name:    "an open sibling names both pull requests and the stack's top",
-			parents: map[string]string{"card": "dev", "thread": "card"},
-			known:   map[string]gtapi.PullRequestInfo{"card": parent, "thread": {PRNumber: 34, HeadRefName: "thread"}},
-			want:    "stack rebase: #34 thread and #27 claim both sit on #15 card. Native GitHub stack #16 is a single chain and GitHub has no stack of one pull request for a fork, so #34 thread cannot register. Nothing was pushed. Chain it on the stack's top: ccx vcs stack rebase --parent thread=claim-2. Or put it between #15 and #27: ccx vcs stack submit --parent claim=thread from claim's working copy. Or take it off #15: ccx vcs stack rebase --parent thread=dev",
-		},
-		{
-			name:    "a branch with no pull request yet is named by branch",
-			parents: map[string]string{"thread": "card"},
-			known:   map[string]gtapi.PullRequestInfo{"card": parent},
-			want:    "stack rebase: thread and #27 claim both sit on #15 card. Native GitHub stack #16 is a single chain and GitHub has no stack of one pull request for a fork, so thread cannot register. Nothing was pushed. Chain it on the stack's top: ccx vcs stack rebase --parent thread=claim-2. Or put it between #15 and #27: ccx vcs stack submit --parent claim=thread --pr-title thread=<title> --pr-body-file thread=<body.md> from claim's working copy. Or take it off #15: ccx vcs stack rebase --parent thread=dev",
-		},
-		{
-			name:    "a landed or closed member above the parent leaves no sibling",
-			parents: map[string]string{"thread": "card"},
-			known:   map[string]gtapi.PullRequestInfo{"card": {PRNumber: 15, HeadRefName: "card", StackNumber: 16}},
-		},
-		{
-			name:    "the sibling already in the stack passes",
-			parents: map[string]string{"claim": "card"},
-			known:   map[string]gtapi.PullRequestInfo{"card": parent, "claim": {PRNumber: 27, HeadRefName: "claim", StackNumber: 16}},
-		},
-		{
-			name:    "a fork with a child of its own opens its own stack",
-			parents: map[string]string{"fork": "card", "fork-tip": "fork"},
-			known:   map[string]gtapi.PullRequestInfo{"card": parent},
-		},
-		{
-			name:    "a parent this run cannot read passes to the verdict",
-			parents: map[string]string{"thread": "card"},
-		},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			err := nativeRefuseFork("stack rebase", "dev", tt.parents, tt.known)
-			if tt.want == "" {
-				if err != nil {
-					t.Fatalf("refused: %v", err)
-				}
-				return
-			}
-			if err == nil || err.Error() != tt.want {
-				t.Fatalf("err = %v, want %s", err, tt.want)
 			}
 		})
 	}
@@ -114,11 +65,13 @@ func TestGTDropUnchangedResubmitsANativePullRequestOutsideItsParentsStack(t *tes
 		name      string
 		edit      func(*gtapi.PullRequestInfo)
 		orphaned  bool
+		above     bool
 		graphite  bool
 		unchanged bool
 	}{
 		{name: "linked right above its parent", edit: func(p *gtapi.PullRequestInfo) { p.StackNumber, p.DependentPRNumber = 5, 4 }, unchanged: true},
 		{name: "in no native stack", edit: func(*gtapi.PullRequestInfo) {}},
+		{name: "in no native stack beside an open pull request above its parent", edit: func(*gtapi.PullRequestInfo) {}, above: true, unchanged: true},
 		{name: "above another pull request", edit: func(p *gtapi.PullRequestInfo) { p.StackNumber, p.DependentPRNumber = 5, 1 }},
 		{name: "bottom of a stack on its parent's branch", edit: func(p *gtapi.PullRequestInfo) { p.StackNumber, p.CliTrunk = 7, "lower" }, unchanged: true},
 		{name: "in a stack under a parent the run cannot read", edit: func(p *gtapi.PullRequestInfo) { p.StackNumber, p.DependentPRNumber = 5, 9 }, orphaned: true, unchanged: true},
@@ -127,7 +80,11 @@ func TestGTDropUnchangedResubmitsANativePullRequestOutsideItsParentsStack(t *tes
 		t.Run(tt.name, func(t *testing.T) {
 			pr := gtapi.PullRequestInfo{PRNumber: 2, HeadRefName: "upper", BaseRefName: "lower", State: gtapi.PROpen, Versions: []gtapi.PRVersion{{HeadSha: "upper-head", BaseSha: "lower-head", BaseName: "lower"}}}
 			tt.edit(&pr)
-			known := map[string]gtapi.PullRequestInfo{"upper": pr, "lower": parent}
+			lower := parent
+			if tt.above {
+				lower.OpenAbove = []gtapi.StackPull{{Number: 3, Head: "sibling"}}
+			}
+			known := map[string]gtapi.PullRequestInfo{"upper": pr, "lower": lower}
 			if tt.orphaned {
 				delete(known, "lower")
 			}
@@ -139,24 +96,46 @@ func TestGTDropUnchangedResubmitsANativePullRequestOutsideItsParentsStack(t *tes
 	}
 }
 
-func TestStackPublishedParentsLeavesOutWhatTheRunWillNotRegister(t *testing.T) {
-	run := &stackRebaseRun{Trunk: "main", Branches: []stackRebaseBranch{
-		{Name: "bottom", Parent: "main"},
-		{Name: "landed", Parent: "bottom", Landed: "#7 landed"},
-		{Name: "tip", Parent: "bottom"},
-		{Name: "another-lane", Parent: "bottom", Pinned: true},
-		{Name: "unpublished", Parent: "bottom", LocalOnly: true},
-	}}
-	if got, want := stackPublishedParents(run), (map[string]string{"tip": "bottom"}); !maps.Equal(got, want) {
-		t.Fatalf("parents = %v, want %v", got, want)
-	}
-}
-
 func TestNativeTrackingAllowsAnOrdinaryRootPR(t *testing.T) {
 	branch := &stackRebaseBranch{Name: "feature", Parent: "main", NewHead: "current-head"}
 	info := gtapi.PullRequestInfo{PRNumber: 42, HeadRefName: "feature", BaseRefName: "main", State: gtapi.PROpen, Versions: []gtapi.PRVersion{{HeadSha: "current-head"}}}
-	if !nativeStackTracksBranch(info, branch, "main", nil) {
+	if !nativeStackTracksBranch(info, branch, "main", nil, gtapi.PullRequestInfo{}) {
 		t.Fatal("ordinary root PR should not require a multibranch native stack")
+	}
+}
+
+func TestNativeTrackingSettlesALoneForkOffALowerStackEntry(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		entries := `{"nodes":[` +
+			`{"position":1,"pullRequest":{"number":14,"state":"OPEN","headRefName":"base"}},` +
+			`{"position":2,"pullRequest":{"number":15,"state":"OPEN","headRefName":"card"}},` +
+			`{"position":3,"pullRequest":{"number":27,"state":"OPEN","headRefName":"claim"}}` +
+			`],"pageInfo":{"hasNextPage":false}}`
+		_, _ = fmt.Fprintf(w, `{"data":{"repository":{`+
+			`"p0":{"number":14,"state":"OPEN","headRefName":"base","headRefOid":"base-head","baseRefName":"main","stackEntry":{"position":1},"stack":{"number":16,"baseRefName":"main","entries":%[1]s}},`+
+			`"p1":{"number":15,"state":"OPEN","headRefName":"card","headRefOid":"card-head","baseRefName":"base","stackEntry":{"position":2},"stack":{"number":16,"baseRefName":"main","entries":%[1]s}},`+
+			`"p2":{"number":34,"state":"OPEN","headRefName":"thread","headRefOid":"thread-head","baseRefName":"card"}`+
+			`}}}`, entries)
+	}))
+	defer server.Close()
+	run := &stackRebaseRun{Trunk: "main", Branches: []stackRebaseBranch{
+		{Name: "base", Parent: "main", NewHead: "base-head", Pinned: true},
+		{Name: "card", Parent: "base", NewHead: "card-head", Pinned: true},
+		{Name: "thread", Parent: "card", NewHead: "thread-head"},
+	}}
+	prs := map[string]*stackPR{"base": {Number: 14, State: "OPEN"}, "card": {Number: 15, State: "OPEN"}, "thread": {Number: 34, State: "OPEN"}}
+	var notices strings.Builder
+	ctx := withGTAPI(render.WithSlowWriter(context.Background(), &notices), gtapi.NewNativeWithToken(server.URL, "stub"))
+	untracked, err := nativeReadTracking(ctx, lane{native: true, repo: &vcs.Repo{NameWithOwner: "org/repo"}}, run, []string{"base", "card", "thread"}, prs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(untracked) != 0 {
+		t.Fatalf("untracked = %+v, want #34 settled on #15 beside #27", untracked)
+	}
+	want := "ccx: #34 thread sits on #15 card outside native GitHub stack #16, where #27 claim already follows #15; GitHub has no stack of one pull request, so #34 opens a stack of its own once it has a child\n"
+	if got := notices.String(); got != want {
+		t.Fatalf("notices = %q, want %q", got, want)
 	}
 }
 
