@@ -91,12 +91,12 @@ func TestBinHonoursTheEnvOverride(t *testing.T) {
 }
 
 func TestFindPassesOverAMiseShim(t *testing.T) {
-	shims, real := t.TempDir(), t.TempDir()
+	shims, tools := t.TempDir(), t.TempDir()
 	fakeMiseShim(t, shims, "rg")
-	want := filepath.Join(real, "rg")
+	want := filepath.Join(tools, "rg")
 	execstub.Write(t, want, "#!/bin/sh\n")
 
-	if got := envFor(shims, real).Find("rg"); got != want {
+	if got := envFor(shims, tools).Find("rg"); got != want {
 		t.Fatalf("Find(rg) = %q, want %q", got, want)
 	}
 }
