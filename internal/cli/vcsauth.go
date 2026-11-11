@@ -58,8 +58,9 @@ to each since it last reset, heaviest first. GitHub can count one pool in two
 windows at once, each with its own reset: rate_limit reports one, and the
 rate-limit headers on GraphQL answers mostly report the other, so a pool's
 line names every open window, each reset to the second when there are two.
-A pool refuses reads only while every open
-window has under 1000 left; --json carries each open window as
+GitHub refuses a request counted in a spent window whatever the other has
+left, so a pool refuses reads while any open window has under 1000 left
+and marks its line "under the floor"; --json carries each open window as
 {"identity", "resource", "limit", "remaining", "floor", "resetAt", "readAt",
 "callers": [{"caller", "requests"}]}, a pool with two windows as two entries.
 
@@ -177,7 +178,7 @@ func writeAuth(w io.Writer, auth ghapi.Auth) {
 				windows = append(windows, fmt.Sprintf("%d/%d left, resets %s", p.Remaining, p.Limit, p.ResetAt.Local().Format(resets)))
 			}
 			line := fmt.Sprintf("%s %s %s", pools[0].Identity, pools[0].Resource, strings.Join(windows, " and "))
-			if !slices.ContainsFunc(pools[:n], func(p ghapi.Pool) bool { return p.Remaining >= p.Floor }) {
+			if slices.ContainsFunc(pools[:n], func(p ghapi.Pool) bool { return p.Remaining < p.Floor }) {
 				line += ", under the floor"
 			}
 			if top := ghapi.TopCallers(pools[:n], 5); top != "" {

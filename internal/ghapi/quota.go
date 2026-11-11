@@ -20,7 +20,7 @@ import (
 	"github.com/yasyf/cc-context/internal/render"
 )
 
-// Floor is how much of a pool ccx leaves unread: a read that finds every open
+// Floor is how much of a pool ccx leaves unread: a read that finds any open
 // window of its pool under Floor, or a fifth of a smaller window's limit, is
 // refused, so the rest stays for writes.
 const Floor = 1000
@@ -36,7 +36,8 @@ const (
 
 // Pool is one rate-limit window of one identity's GitHub resource, and the
 // callers charged against it since it opened, most requests first. GitHub can
-// count one resource in more than one window at once, each with its own reset.
+// count one resource in more than one window at once, each with its own reset,
+// and refuses a request counted in a spent window whatever another has left.
 type Pool struct {
 	Identity  string    `json:"identity"`
 	Resource  string    `json:"resource"`
@@ -54,10 +55,16 @@ type Caller struct {
 	Requests int    `json:"requests"`
 }
 
-// FloorError is a read refused because every open window of its pool is under
-// its floor. Windows lists them, the soonest reset first.
+// FloorError is a read refused because an open window of its pool is under
+// its floor. Windows lists those under it, the soonest reset first.
 type FloorError struct {
 	Windows []Pool
+}
+
+// Until is when the last window under the floor resets, the soonest the pool
+// admits a read again.
+func (e *FloorError) Until() time.Time {
+	return e.Windows[len(e.Windows)-1].ResetAt
 }
 
 func (e *FloorError) Error() string {
@@ -140,11 +147,14 @@ func (p *poolState) open(now time.Time) []*window {
 	return slices.DeleteFunc(slices.Clone(p.Windows), func(w *window) bool { return !now.Before(w.ResetAt) })
 }
 
-func (p *poolState) observe(now time.Time, limit, remaining int, reset time.Time) *window {
+func (p *poolState) observe(now time.Time, limit, remaining int, reset time.Time, authoritative bool) *window {
 	reset = reset.UTC()
 	for _, w := range p.Windows {
 		if reset.Sub(w.ResetAt).Abs() <= time.Second {
-			w.Limit, w.Remaining, w.ReadAt = limit, min(w.Remaining, remaining), now.UTC()
+			if !authoritative {
+				remaining = min(w.Remaining, remaining)
+			}
+			w.Limit, w.Remaining, w.ReadAt = limit, remaining, now.UTC()
 			return w
 		}
 	}
@@ -167,8 +177,7 @@ func (p *poolState) stale(now time.Time) bool {
 }
 
 func (p *poolState) admits(now time.Time, floor func(*window) int) bool {
-	open := p.open(now)
-	return len(open) == 0 || slices.ContainsFunc(open, func(w *window) bool { return w.Remaining >= floor(w) })
+	return !slices.ContainsFunc(p.open(now), func(w *window) bool { return w.Remaining < floor(w) })
 }
 
 type ledger struct {
@@ -346,7 +355,7 @@ func (l *ledger) charge(ctx context.Context, identity, resource, caller, target 
 		w := p.newest(now)
 		switch {
 		case limitErr == nil && remainingErr == nil && resetErr == nil && now.Before(time.Unix(reset, 0)):
-			w = p.observe(now, limit, remaining, time.Unix(reset, 0))
+			w = p.observe(now, limit, remaining, time.Unix(reset, 0), false)
 		case w == nil:
 			return
 		default:
@@ -451,7 +460,7 @@ func (l *ledger) record(ctx context.Context, identity string, limits rateLimits)
 			if resource != ResourceCore && resource != ResourceGraphQL && resource != ResourceSearch {
 				continue
 			}
-			l.pool(pools, identity, resource).observe(now, r.Limit, r.Remaining, time.Unix(r.Reset, 0))
+			l.pool(pools, identity, resource).observe(now, r.Limit, r.Remaining, time.Unix(r.Reset, 0), true)
 		}
 	})
 }
@@ -508,7 +517,7 @@ func Resource(target string) string {
 }
 
 // Admit refuses a read from identity's resource pool with a *FloorError when
-// every open window of the pool is under its floor. It reads rate_limit first
+// any open window of the pool is under its floor. It reads rate_limit first
 // when the pool is stale, and before any refusal, so a window that reset since
 // the last read is seen.
 // The app identity is the installation on c's repository.
@@ -516,7 +525,7 @@ func (c *Client) Admit(ctx context.Context, identity, resource string) error {
 	return c.admit(ctx, identity, resource, (*window).floor)
 }
 
-// AdmitSpill refuses an app read moved onto the user's resource pool once every
+// AdmitSpill refuses an app read moved onto the user's resource pool once any
 // open window of that pool is under half its limit, so one spent installation
 // cannot also spend the user's own quota down to Floor.
 func (c *Client) AdmitSpill(ctx context.Context, resource string) error {
@@ -550,7 +559,8 @@ func (c *Client) admit(ctx context.Context, identity, resource string, floor fun
 	if p == nil || p.admits(now, floor) {
 		return nil
 	}
-	return &FloorError{Windows: p.public(principal, resource, now, floor)}
+	under := slices.DeleteFunc(p.public(principal, resource, now, floor), func(w Pool) bool { return w.Remaining >= w.Floor })
+	return &FloorError{Windows: under}
 }
 
 // Charge counts one request by the calling process against identity's
