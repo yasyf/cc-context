@@ -236,10 +236,10 @@ jobs:
           go-version-file: go.mod
           cache: true
       - uses: ./.github/actions/wasm
-      - name: Install literal engine and syscall observer
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y ripgrep strace
+      - name: Install ripgrep from its GitHub release; strace ships in the runner image
+        uses: taiki-e/install-action@v2
+        with:
+          tool: ripgrep
       - name: Scoped literal output and unrelated-file opens
         env:
           CCX_LITERAL_SCOPE_PHASE: fixed
@@ -283,10 +283,6 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Install syscall observer
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y strace
       - name: Selected-branch ownership namespace cost
         env:
           CCX_COHOLDER_STRACE: fixed
