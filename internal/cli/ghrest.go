@@ -222,21 +222,33 @@ func ghPullAt(ctx context.Context, dir render.Dir, number int) (ghPull, error) {
 }
 
 func ghLanding(ctx context.Context, dir render.Dir, p ghPull, gt bool) (prLanding, error) {
-	landing := prLanding{State: p.graphQLState(), MergedAt: p.MergedAt}
-	if !gt || landing.State != "CLOSED" {
-		return landing, nil
+	if !p.closedByWhomMatters(gt) {
+		return p.landing(""), nil
 	}
 	out, err := ghAPI(ctx, dir, fmt.Sprintf("%s/issues/%d", ghRepoPath, p.Number), "--jq", `.closed_by.login // ""`)
 	if err != nil {
 		return prLanding{}, fmt.Errorf("gh api: read who closed PR #%d: %w", p.Number, err)
 	}
+	return p.landing(out), nil
+}
+
+// closedByWhomMatters reports whether p's landing needs the account that closed
+// it: a closed pull request in a Graphite lane, whose queue closes what it lands.
+func (p ghPull) closedByWhomMatters(gt bool) bool {
+	return gt && p.graphQLState() == "CLOSED"
+}
+
+// landing is p's landing as GraphQL's prLandingFields read it, closedBy being
+// the REST login of the account that closed it.
+func (p ghPull) landing(closedBy string) prLanding {
+	landing := prLanding{State: p.graphQLState(), MergedAt: p.MergedAt}
 	// REST names an app's account with the [bot] suffix GraphQL leaves off.
-	if login := strings.TrimSuffix(strings.TrimSpace(out), "[bot]"); login != "" {
+	if login := strings.TrimSuffix(strings.TrimSpace(closedBy), "[bot]"); login != "" {
 		var closed prCloseEvent
 		closed.Actor.Login = login
 		landing.TimelineItems.Nodes = []prCloseEvent{closed}
 	}
-	return landing, nil
+	return landing
 }
 
 // ghClosedByBaseDeletion reports a pull request GitHub closed because its base
