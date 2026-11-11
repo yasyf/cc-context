@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -402,10 +401,10 @@ func TestObserveKeepsEachWindowByItsReset(t *testing.T) {
 	}
 }
 
-func TestAdmitRefusesOnlyWhenEveryOpenWindowIsUnderTheFloor(t *testing.T) {
+func TestAdmitRefusesWhenAnyOpenWindowIsUnderTheFloor(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	rateLimit, headers := now.Add(3*time.Minute), now.Add(8*time.Minute)
-	listed, listedReset := 3498, rateLimit
+	listed, listedReset := 5791, rateLimit
 	rateReads := 0
 	c, l := quotaClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		rateReads++
@@ -413,46 +412,56 @@ func TestAdmitRefusesOnlyWhenEveryOpenWindowIsUnderTheFloor(t *testing.T) {
 	})
 	l.now = func() time.Time { return now }
 	ctx := t.Context()
-	if err := l.charge(ctx, IdentityUser, ResourceGraphQL, "cc-review", "", rateHeader(550, headers)); err != nil {
+	if err := l.charge(ctx, IdentityUser, ResourceGraphQL, "landing_guard.py", "", rateHeader(0, headers)); err != nil {
 		t.Fatal(err)
 	}
-	for range 2 {
-		if err := c.Admit(ctx, IdentityUser, ResourceGraphQL); err != nil {
-			t.Fatalf("Admit with 550 left in one window and %d in the other = %v, want it admitted", listed, err)
-		}
+	err := c.Admit(ctx, IdentityUser, ResourceGraphQL)
+	var floor *FloorError
+	if !errors.As(err, &floor) {
+		t.Fatalf("Admit with 0 left in the headers' window and %d in rate_limit's = %v, want a *FloorError", listed, err)
+	}
+	if len(floor.Windows) != 1 || !floor.Windows[0].ResetAt.Equal(headers) || !floor.Until().Equal(headers) {
+		t.Errorf("refused windows = %+v, want the spent one alone, resetting at %s", floor.Windows, headers)
 	}
 	if rateReads != 1 {
-		t.Errorf("rate_limit read %d times, want once: the window under the floor reads it, and the one it opens admits the next", rateReads)
+		t.Errorf("rate_limit read %d times, want once before the refusal", rateReads)
 	}
 
 	listed = 900
 	if err := l.charge(ctx, IdentityUser, ResourceGraphQL, "ccx", "", rateHeader(listed, rateLimit)); err != nil {
 		t.Fatal(err)
 	}
-	err := c.Admit(ctx, IdentityUser, ResourceGraphQL)
-	var floor *FloorError
-	if !errors.As(err, &floor) {
-		t.Fatalf("Admit with 550 and 900 left = %v, want a *FloorError", err)
+	err = c.Admit(ctx, IdentityUser, ResourceGraphQL)
+	if !errors.As(err, &floor) || len(floor.Windows) != 2 || !floor.Windows[0].ResetAt.Equal(rateLimit) || !floor.Until().Equal(headers) {
+		t.Fatalf("Admit with 900 and 0 left = %v, want both windows refused until %s", err, headers)
 	}
-	if len(floor.Windows) != 2 || !floor.Windows[0].ResetAt.Equal(rateLimit) || !floor.Windows[1].ResetAt.Equal(headers) {
-		t.Errorf("refused windows = %+v, want the one resetting at %s, then %s", floor.Windows, rateLimit, headers)
-	}
-	for _, reset := range []time.Time{rateLimit, headers} {
-		if msg := err.Error(); !strings.Contains(msg, reset.Local().Format(time.RFC3339)) {
-			t.Errorf("floor error %q names no reset at %s", msg, reset.Local().Format(time.RFC3339))
-		}
-	}
-	if wait, limited := RateLimited(err); !limited || wait > 3*time.Minute {
-		t.Errorf("RateLimited(floor) = %s, %v; want a wait until the sooner reset", wait, limited)
+	if wait, limited := RateLimited(err); !limited || wait <= 3*time.Minute {
+		t.Errorf("RateLimited(floor) = %s, %v; want a wait until the later reset", wait, limited)
 	}
 
-	now = rateLimit.Add(time.Second)
+	now = headers.Add(time.Second)
 	listed, listedReset = 5000, rateLimit.Add(time.Hour)
-	if err := l.charge(ctx, IdentityUser, ResourceGraphQL, "cc-review", "", rateHeader(500, headers)); err != nil {
+	if err := c.Admit(ctx, IdentityUser, ResourceGraphQL); err != nil {
+		t.Errorf("Admit once both windows reset = %v, want rate_limit read and its new window to admit", err)
+	}
+}
+
+func TestRateLimitReplacesABalanceHeaderlessChargesWore(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	reset := now.Add(10 * time.Minute)
+	c, l := quotaClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprint(w, rateLimitBody(4000, 5000, reset))
+	})
+	l.now = func() time.Time { return now }
+	ctx := t.Context()
+	if err := l.charge(ctx, IdentityUser, ResourceGraphQL, "ccx", "", rateHeader(Floor, reset)); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.charge(ctx, IdentityUser, ResourceGraphQL, "gh-shim", "gh pr view", http.Header{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := c.Admit(ctx, IdentityUser, ResourceGraphQL); err != nil {
-		t.Errorf("Admit after the 900 window reset, with 500 left in the other = %v, want rate_limit read and its new window to admit", err)
+		t.Errorf("Admit with rate_limit at 4000 after charges wore the ledger to %d = %v, want rate_limit's balance to admit", Floor-1, err)
 	}
 }
 

@@ -52,7 +52,7 @@ func TestWriteAuth(t *testing.T) {
   reads   user octocat
   writes  user octocat
   quota   user octocat: 4000/5000 GraphQL left, resets 8:00PM
-  pools   user graphql 3498/5000 left, resets 8:00:00PM and 550/5000 left, resets 8:04:00PM; top callers: cc-review 955, ccx 5
+  pools   user graphql 3498/5000 left, resets 8:00:00PM and 550/5000 left, resets 8:04:00PM, under the floor; top callers: cc-review 955, ccx 5
 `,
 		},
 		{

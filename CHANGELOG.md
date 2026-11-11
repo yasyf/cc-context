@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ccx vcs gh` refuses a read once any open rate-limit window of its pool is
+  under the floor, and moves an app read onto the user's pool only while every
+  window of that pool has over half its limit left. Before, one window with
+  room admitted the read, but GitHub refuses a request counted in a spent
+  window: on Nov 11 the app's GraphQL header window sat at 0 while
+  `rate_limit` reported 5791 left, so app reads spilled onto the user token,
+  spent its header window to 0 as well, and every `stack-enqueue` failed with
+  "API rate limit already exceeded" for 20 minutes. A fresh `rate_limit` read
+  now replaces the balance header-less charges wore down, so a false low
+  estimate no longer refuses either.
 - `ccx vcs ship` unstages what it staged when a commit check such as
   `public-names` refuses the ship, or anything else fails before its commit
   lands: the whole index after a sweep, the named paths after a path-scoped
