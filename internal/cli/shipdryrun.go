@@ -653,7 +653,7 @@ func dryRunPlanned(ctx context.Context, l lane, state gtState, r *shipDryRun) (g
 
 func dryRunBases(ctx context.Context, l lane, o shipOpts, pin gtTrunkPinned, state gtState, chain []string, r *shipDryRun) (gtState, error) {
 	if o.noPush {
-		return state, nil
+		return gtOnParentHead(ctx, l.dir(), state, chain)
 	}
 	based := maps.Clone(state)
 	for _, branch := range chain {

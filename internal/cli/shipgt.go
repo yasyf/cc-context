@@ -920,6 +920,9 @@ func gtRestack(ctx context.Context, l lane, suffix, branch string, c *gtCache) (
 	if err != nil {
 		return "", err
 	}
+	if state, err = gtOnParentHead(ctx, l.dir(), state, chain); err != nil {
+		return "", err
+	}
 	if state, err = gtHoldPublished(ctx, l.dir(), state, chain); err != nil {
 		return "", err
 	}
@@ -934,6 +937,9 @@ func gtRestack(ctx context.Context, l lane, suffix, branch string, c *gtCache) (
 	}
 	state, chain, err = gtStackChain(ctx, c, branch)
 	if err != nil {
+		return "", err
+	}
+	if state, err = gtOnParentHead(ctx, l.dir(), state, chain); err != nil {
 		return "", err
 	}
 	var segs, left []string
