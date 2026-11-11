@@ -23,6 +23,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- ccx's own GitHub reads go through its rate-limit ledger. The native stack
+  reads `ccx vcs ship`, `ccx vcs status` and the Graphite provider make are
+  admitted through the floor and charged. When GitHub answers one on the app's
+  token with a rate limit, or the installation's pool is under the floor, the
+  read runs again on the user's pool, and the pull request lookup then reads
+  REST. Every `gh` child ccx runs is admitted and charged too, and a
+  rate-limited one moves to the user's pool. A `GH_TOKEN` ccx minted for an
+  installation is charged to that installation's pool. Before, these reads
+  bypassed the ledger, so a spent installation pool failed `ccx vcs ship`
+  outright.
 - ccx passes over a mise shim on `PATH` while another executable of that name
   is reachable, for rg, gt, gh, jj, uv, git and every other tool it spawns, and
   falls back to the shim when it is the only one. Before, ccx ran the first

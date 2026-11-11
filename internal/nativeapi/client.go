@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -40,7 +41,7 @@ type Client struct {
 	trunkSSM      *trunkSSMSource
 	queueProvider string
 	charge        func(ctx context.Context, identity, target string, header http.Header) error
-	appToken      func(ctx context.Context, nameWithOwner string) (string, error)
+	gh            *ghapi.Client
 	limitWaits    []time.Duration
 }
 
@@ -49,10 +50,7 @@ var defaultClient = sync.OnceValue(func() *Client {
 	c.charge = func(ctx context.Context, identity, target string, header http.Header) error {
 		return ghapi.Default().Record(ctx, identity, target, header)
 	}
-	c.appToken = func(ctx context.Context, nameWithOwner string) (string, error) {
-		token, _, err := ghapi.Default().ForRepo(nameWithOwner).AppToken(ctx, ghapi.AppRefreshMargin)
-		return token, err
-	}
+	c.gh = ghapi.Default()
 	return c
 })
 
@@ -77,6 +75,7 @@ func NewWithToken(baseURL, token string) *Client {
 	c := New(baseURL)
 	c.queueBase = c.base
 	c.tokens.resolve = func() (string, error) { return token, nil }
+	c.gh = ghapi.NewWithToken(baseURL, token)
 	return c
 }
 
@@ -205,29 +204,29 @@ func (c *Client) graphql(ctx context.Context, query string, out any) error {
 	return decodeGraphQL(payload, out)
 }
 
-// readGraphQL runs a query against owner/repo on the GitHub App installation's
-// token when the app is installed there, so it draws on the installation's
-// quota instead of the user's, and on the user's token otherwise.
+// readGraphQL runs a query against owner/repo through ccx's GitHub gateway,
+// which reads on the GitHub App installation's pool when the app is installed
+// there and moves to the user's pool once the installation's is spent. A pull
+// request a query names that GitHub cannot resolve is left out of out.
 func (c *Client) readGraphQL(ctx context.Context, owner, repo, query string, out any) error {
-	token := ""
-	if c.appToken != nil {
-		var err error
-		if token, err = c.appToken(ctx, owner+"/"+repo); err != nil {
-			return err
+	data, err := ghapi.GraphQL[json.RawMessage](ctx, c.gh.ForRepo(owner+"/"+repo), query, nil)
+	var gql *ghapi.GraphQLError
+	if errors.As(err, &gql) {
+		failed := slices.IndexFunc(gql.Messages, func(m ghapi.GraphQLMessage) bool {
+			return m.Type != "NOT_FOUND" || len(m.Path) != 2 || m.Path[0] != "repository"
+		})
+		if failed >= 0 {
+			return &ResultError{Route: "graphql", Message: gql.Messages[failed].Message, Err: err}
 		}
+		err = nil
 	}
-	if token == "" {
-		return c.graphql(ctx, query, out)
-	}
-	body, err := json.Marshal(map[string]any{"query": query})
-	if err != nil {
-		return fmt.Errorf("github-stack: encode /graphql: %w", err)
-	}
-	payload, err := c.request(ctx, c.base, token, ghapi.IdentityApp, http.MethodPost, "/graphql", body)
 	if err != nil {
 		return err
 	}
-	return decodeGraphQL(payload, out)
+	if len(data) == 0 || string(data) == "null" {
+		return &ResultError{Route: "graphql", Message: "response contains no data"}
+	}
+	return json.Unmarshal(data, out)
 }
 
 func decodeGraphQL(payload []byte, out any) error {

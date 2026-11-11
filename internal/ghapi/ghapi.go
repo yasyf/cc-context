@@ -42,6 +42,7 @@ type Client struct {
 	transient []time.Duration
 	quota     *ledger
 	floorless bool
+	spilled   bool
 }
 
 var defaultClient = sync.OnceValue(func() *Client {
@@ -68,6 +69,14 @@ func New(baseURL string) *Client {
 	}
 }
 
+// NewWithToken is New with token in place of gh's, for a caller pointed at an
+// endpoint of its own.
+func NewWithToken(baseURL, token string) *Client {
+	c := New(baseURL)
+	c.tokens.resolve = func(context.Context) (string, error) { return token, nil }
+	return c
+}
+
 // ForRepo returns a copy of c whose reads authenticate as the GitHub App named
 // in AppConfigPath when the app is installed on nameWithOwner, so they draw on
 // the installation's quota instead of the user's. Writes keep the user's token.
@@ -90,6 +99,14 @@ func (c *Client) Unfloored() *Client {
 	unfloored := *c
 	unfloored.floorless = true
 	return &unfloored
+}
+
+// spill returns a copy of c whose reads keep the user's token under
+// AdmitSpill's floor, for a read the app's pool could not serve.
+func (c *Client) spill() *Client {
+	user := c.AsUser()
+	user.spilled = true
+	return user
 }
 
 // Unwaiting returns a copy of c that hands a rate-limited or failed response
@@ -143,8 +160,10 @@ func Get[T any](ctx context.Context, c *Client, ref string) (T, error) {
 }
 
 // GraphQL posts query with variables and decodes the response's data field into
-// T. A body carrying GraphQL errors returns *GraphQLError even though GitHub
-// answered 200.
+// T. A body carrying GraphQL errors returns *GraphQLError, beside whatever data
+// came back, even though GitHub answered 200. A query the app's pool cannot
+// serve, under its floor or answered RATE_LIMIT, runs again on the user's pool
+// while that pool has over half its limit left.
 func GraphQL[T any](ctx context.Context, c *Client, query string, variables map[string]any) (T, error) {
 	var out T
 	body, err := json.Marshal(graphQLRequest{Query: query, Variables: variables})
@@ -152,6 +171,10 @@ func GraphQL[T any](ctx context.Context, c *Client, query string, variables map[
 		return out, fmt.Errorf("ghapi: encode graphql request: %w", err)
 	}
 	payload, header, asApp, err := c.do(ctx, http.MethodPost, "/graphql", body, !isMutation(query))
+	var floor *FloorError
+	if errors.As(err, &floor) && floor.Windows[0].Identity == IdentityApp {
+		return GraphQL[T](ctx, c.spill(), query, variables)
+	}
 	if err != nil {
 		return out, err
 	}
@@ -165,10 +188,13 @@ func GraphQL[T any](ctx context.Context, c *Client, query string, variables map[
 	if asApp && slices.ContainsFunc(resp.Errors, func(m GraphQLMessage) bool { return m.Type == "FORBIDDEN" }) {
 		return GraphQL[T](ctx, c.AsUser(), query, variables)
 	}
+	if asApp && !c.floorless && slices.ContainsFunc(resp.Errors, rateLimitMessage) {
+		return GraphQL[T](ctx, c.spill(), query, variables)
+	}
 	if len(resp.Errors) > 0 {
 		wait, exhausted := quotaReset(header, time.Now())
 		limit, _ := strconv.Atoi(header.Get("X-RateLimit-Limit"))
-		return out, &GraphQLError{Messages: resp.Errors, Exhausted: exhausted, RetryAfter: wait, Limit: limit}
+		return resp.Data, &GraphQLError{Messages: resp.Errors, Exhausted: exhausted, RetryAfter: wait, Limit: limit}
 	}
 	return resp.Data, nil
 }
@@ -198,7 +224,11 @@ func (c *Client) do(ctx context.Context, method, ref string, body []byte, read b
 			identity = IdentityApp
 		}
 		if read {
-			if err := c.Admit(ctx, identity, Resource(target)); err != nil {
+			floor := (*window).floor
+			if c.spilled {
+				floor = spillFloor
+			}
+			if err := c.admit(ctx, identity, Resource(target), floor); err != nil {
 				return nil, nil, false, err
 			}
 		}

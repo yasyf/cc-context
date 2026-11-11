@@ -11,6 +11,9 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/yasyf/cc-context/internal/ghapi"
+	"github.com/yasyf/cc-context/internal/render"
 )
 
 type githubPull struct {
@@ -88,8 +91,20 @@ func (p githubPull) info() (PullRequestInfo, error) {
 	return out, nil
 }
 
-// PullRequestInfo batches current GitHub metadata and preserves the requested lookup order.
+// PullRequestInfo batches current GitHub metadata and preserves the requested
+// lookup order. While GitHub rate-limits its GraphQL read on every pool, it
+// reads REST's pulls instead, which carry no review decision or merge queue
+// entry.
 func (c *Client) PullRequestInfo(ctx context.Context, req PullRequestInfoRequest) ([]PullRequestInfo, error) {
+	out, err := c.graphQLPullRequestInfo(ctx, req)
+	if _, limited := ghapi.RateLimited(err); limited {
+		render.Announce(ctx, "%v; reading the pull requests from REST", err)
+		return c.restPullRequestInfo(ctx, req)
+	}
+	return out, err
+}
+
+func (c *Client) graphQLPullRequestInfo(ctx context.Context, req PullRequestInfoRequest) ([]PullRequestInfo, error) {
 	out := make([]PullRequestInfo, 0, len(req.PRNumbers)+len(req.PRHeadRefNames))
 	type lookup struct {
 		number int
@@ -218,6 +233,65 @@ func firstHeadPull(repository map[string]json.RawMessage, aliases ...string) (gi
 	return githubPull{}, nil
 }
 
+func (c *Client) restPullRequestInfo(ctx context.Context, req PullRequestInfoRequest) ([]PullRequestInfo, error) {
+	gh := c.gh.ForRepo(req.RepoOwner + "/" + req.RepoName)
+	repoPath := fmt.Sprintf("repos/%s/%s", url.PathEscape(req.RepoOwner), url.PathEscape(req.RepoName))
+	pulls := make([]restPull, 0, len(req.PRNumbers)+len(req.PRHeadRefNames))
+	for _, n := range req.PRNumbers {
+		pull, err := ghapi.Get[restPull](ctx, gh, fmt.Sprintf("%s/pulls/%d", repoPath, n))
+		switch {
+		case errors.Is(err, ghapi.ErrNotFound):
+			continue
+		case err != nil:
+			return nil, err
+		}
+		pulls = append(pulls, pull)
+	}
+	for _, head := range req.PRHeadRefNames {
+		found, err := ghapi.Get[[]restPull](ctx, gh, repoPath+"/pulls?"+url.Values{"head": {req.RepoOwner + ":" + head}, "state": {"all"}}.Encode())
+		if err != nil {
+			return nil, err
+		}
+		open := slices.DeleteFunc(slices.Clone(found), func(p restPull) bool { return p.State != "open" })
+		switch {
+		case len(open) > 1:
+			return nil, fmt.Errorf("head branch %s has %d open pull requests; select a pull request number to disambiguate", head, len(open))
+		case len(open) == 1:
+			pulls = append(pulls, open[0])
+		case len(found) > 0:
+			pulls = append(pulls, found[0])
+		}
+	}
+	stacks := map[int]nativeStack{}
+	out := make([]PullRequestInfo, 0, len(pulls))
+	for _, pull := range pulls {
+		info := pull.info()
+		if pull.Stack == nil {
+			out = append(out, info)
+			continue
+		}
+		stack, read := stacks[pull.Stack.Number]
+		if !read {
+			var err error
+			if stack, err = ghapi.Get[nativeStack](ctx, gh, fmt.Sprintf("%s/stacks/%d", repoPath, pull.Stack.Number)); err != nil {
+				return nil, err
+			}
+			stacks[pull.Stack.Number] = stack
+		}
+		at := pull.Stack.Position - 1
+		if at > 0 {
+			info.DependentPRNumber = stack.PullRequests[at-1].Number
+		}
+		for _, above := range stack.PullRequests[at+1:] {
+			if above.State == "open" {
+				info.OpenAbove = append(info.OpenAbove, StackPull{Number: above.Number, Head: above.Head.Ref})
+			}
+		}
+		out = append(out, info)
+	}
+	return out, nil
+}
+
 type restPull struct {
 	Title          string `json:"title"`
 	Body           string `json:"body"`
@@ -227,8 +301,13 @@ type restPull struct {
 	State          string `json:"state"`
 	Draft          bool   `json:"draft"`
 	Merged         bool   `json:"merged"`
+	MergedAt       string `json:"merged_at"`
 	MergeCommitSHA string `json:"merge_commit_sha"`
-	Head           struct {
+	UpdatedAt      string `json:"updated_at"`
+	User           struct {
+		Login string `json:"login"`
+	} `json:"user"`
+	Head struct {
 		Repo struct {
 			FullName string `json:"full_name"`
 		} `json:"repo"`
@@ -247,6 +326,20 @@ type restPull struct {
 			Ref string `json:"ref"`
 		} `json:"base"`
 	} `json:"stack"`
+}
+
+func (p restPull) info() PullRequestInfo {
+	out := PullRequestInfo{PRID: p.NodeID, PRNumber: p.Number, Title: p.Title, Body: p.Body, State: PROpen, HeadRefName: p.Head.Ref, BaseRefName: p.Base.Ref, URL: p.HTMLURL, IsDraft: p.Draft, AuthorGithubHandle: p.User.Login, CliTrunk: p.Base.Ref, Versions: []PRVersion{{HeadSha: p.Head.Sha, BaseSha: p.Base.Sha, BaseName: p.Base.Ref, CreatedAt: p.UpdatedAt, AuthorGithubHandle: p.User.Login}}}
+	switch {
+	case p.MergedAt != "":
+		out.State, out.MergeCommitSha = PRMerged, p.MergeCommitSHA
+	case p.State != "open":
+		out.State = PRClosed
+	}
+	if p.Stack != nil {
+		out.StackNumber, out.CliTrunk = p.Stack.Number, p.Stack.Base.Ref
+	}
+	return out
 }
 
 func (c *Client) readPull(ctx context.Context, owner, repo string, n int) (restPull, error) {
@@ -549,6 +642,9 @@ type nativeStackPull struct {
 	Number   int    `json:"number"`
 	State    string `json:"state"`
 	MergedAt string `json:"merged_at"`
+	Head     struct {
+		Ref string `json:"ref"`
+	} `json:"head"`
 }
 
 func (s nativeStack) numbers() []int {
