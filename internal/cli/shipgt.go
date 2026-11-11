@@ -2907,15 +2907,6 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 		}
 	}
 	if client.IsNative() {
-		if s.publication == nil {
-			parents := make(map[string]string, len(plan))
-			for _, b := range plan {
-				parents[b.name] = b.base
-			}
-			if err := nativeRefuseFork(s.prefix, tr.Name(), parents, known); err != nil {
-				return nil, nil, err
-			}
-		}
 		if err := nativeRefuseQueuedChanges(ctx, client, owner, name, s.prefix, plan, known); err != nil {
 			return nil, nil, err
 		}
@@ -3345,7 +3336,8 @@ func gtTipOnlyPlan(plan []gtSubmitBranch, run *stackRebaseRun) ([]gtSubmitBranch
 
 // gtDropUnchanged leaves out a branch whose open pull request already carries
 // this head and base, whose newest version records the same parent, and, on a
-// native lane, which sits right above its parent's in one native stack. Off a
+// native lane, which sits right above its parent's in one native stack, or in
+// none when another open pull request already follows its parent there. Off a
 // native lane it keeps a branch whose parent is resubmitted: Graphite's
 // pre-submit moves every open child the submit leaves out onto a graphite-base.
 func gtDropUnchanged(plan []gtSubmitBranch, last map[string]gtmeta.Version, known map[string]gtapi.PullRequestInfo, unrecorded map[string]bool, tip, trunk string, update func(branch string) *bool, native bool) (submit []gtSubmitBranch, unchanged []string) {
@@ -3360,7 +3352,7 @@ func gtDropUnchanged(plan []gtSubmitBranch, last map[string]gtmeta.Version, know
 			base = pr.BaseRefName
 		}
 		parent, parented := known[b.base]
-		linked := !native || b.base == trunk || !parented && pr.StackNumber != 0 || nativeStackLinksAbove(pr, b.base, parent.PRNumber)
+		linked := !native || b.base == trunk || !parented && pr.StackNumber != 0 || nativeStackLinksAbove(pr, b.base, parent.PRNumber) || nativeLoneFork(pr, parent)
 		if b.name != tip && (native || !resubmitted[b.base]) && b.pr != 0 && open && linked && (draft == nil || pr.IsDraft == *draft) && last[b.name] == now && pr.BaseRefName == base && newest.BaseName == base && newest.HeadSha == b.head && newest.BaseSha == b.baseSha {
 			unchanged = append(unchanged, b.name)
 			continue
