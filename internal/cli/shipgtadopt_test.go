@@ -46,6 +46,26 @@ func TestShipGTAdoptsAnUntrackedParentFromGraphitesRecord(t *testing.T) {
 	}
 }
 
+func TestShipGTDryRunPlansTheUntrackedBranchBelowAnUntrackedBranch(t *testing.T) {
+	f := shipGTRepo(t)
+	shipGTUntracked(t, f, "theirs")
+	shipGTUntracked(t, f, "mine")
+	shipGTReady(t, f)
+
+	refs := dryRunRefs(t, f)
+	report := dryRunReport(t, f, "-m", "fix: frobnicate", "--no-push")
+	if refusals := dryRunValues(report, "refuses"); len(refusals) != 0 {
+		t.Errorf("dry run refuses = %q, want none", refusals)
+	}
+	want := "theirs" + shipSep + "untracked, on untracked theirs, which ship tracks bottom-up onto main first"
+	if got := dryRunValues(report, "parent"); len(got) != 1 || got[0] != want {
+		t.Errorf("dry run parent = %q, want %q", got, want)
+	}
+	if after := dryRunRefs(t, f); after != refs {
+		t.Errorf("the dry run moved refs:\n%s\nwant\n%s", after, refs)
+	}
+}
+
 func TestShipGTRefusesAnUntrackedParentGraphiteHasNoRecordOf(t *testing.T) {
 	f := shipGTRepo(t)
 	api := stubGTAPI(t)

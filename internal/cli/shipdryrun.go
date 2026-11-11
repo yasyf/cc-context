@@ -369,6 +369,13 @@ func dryRunTrack(ctx context.Context, l lane, o shipOpts, c *gtCache, state gtSt
 			return err
 		}
 		below := chain[:len(chain)-1]
+		if len(below) > 0 {
+			planned := maps.Clone(state)
+			for _, link := range below {
+				planned[link.name] = gtBranchState{Head: link.head, Parents: []gtRef{{Ref: link.parent, SHA: link.base}}}
+			}
+			c.state = planned
+		}
 		r.parent = chain[len(chain)-1].parent
 		r.because = "untracked, so gt track -f takes the nearest tracked ancestor"
 		switch {
@@ -641,6 +648,9 @@ func dryRunAnchor(state gtState, tipOnly, parentNamed, onPublished bool, r *ship
 	}
 	if r.parent == "" || r.parent == r.trunk {
 		r.notes = append(r.notes, r.branch+" is untracked and would be adopted onto trunk, so the submit publishes it alone")
+		return ""
+	}
+	if _, planned := state[r.parent]; !planned && len(r.refusals) > 0 {
 		return ""
 	}
 	switch {

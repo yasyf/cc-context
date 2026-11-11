@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Before, the dry run refused "gt state has no parent for <parent>" while the
   ship itself went through. Both lanes now say "tracked <parent> onto <base>,
   the base of its open #N".
+- `ccx vcs ship --dry-run` on a branch cut from another untracked branch, with
+  no `--parent`, plans the untracked branches ship tracks bottom-up below it,
+  and a dry run that refuses an unfetched `--parent` stops there. Before, both
+  failed with "gt state has no parent for <parent>".
 - `ccx vcs ship --no-push` and its `--dry-run` read a branch that holds its
   parent's head as on its parent, whatever base its stack records. Before, a
   branch rebased by hand onto its parent's new head drew "kept <branch> on its
