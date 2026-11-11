@@ -393,10 +393,10 @@ func FoldPath(target string) string {
 // Spend is one caller's requests against one open pool, and on one path when
 // the read asked for paths.
 type Spend struct {
-	Pool     string
-	Caller   string
-	Path     string
-	Requests int
+	Pool     string `json:"pool"`
+	Caller   string `json:"caller"`
+	Path     string `json:"path,omitempty"`
+	Requests int    `json:"requests"`
 }
 
 // LedgerSpend reads who spent each open pool from this machine's ledger,
