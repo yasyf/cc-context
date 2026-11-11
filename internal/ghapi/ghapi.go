@@ -281,16 +281,16 @@ func (c *Client) readCredential(ctx context.Context) (credential, error) {
 }
 
 func (c *Client) readApp(ctx context.Context) (*appSource, error) {
-	if c.repo == "" || userTokenPinned(ctx) {
+	if c.repo == "" || UserTokenPinned(ctx) {
 		return nil, nil
 	}
 	return c.apps.get(ctx)
 }
 
 // AppConfigured reports whether reads may go through a GitHub App at all: one
-// is named in AppConfigPath and no GH_TOKEN or GITHUB_TOKEN pins the user's.
+// is named in AppConfigPath or AppTokenFileEnv, and UserTokenPinned is false.
 func (c *Client) AppConfigured(ctx context.Context) (bool, error) {
-	if userTokenPinned(ctx) {
+	if UserTokenPinned(ctx) {
 		return false, nil
 	}
 	src, err := c.apps.get(ctx)
@@ -315,33 +315,36 @@ func (c *Client) AppToken(ctx context.Context, margin time.Duration) (string, ti
 
 // InstallationToken returns the read-only installation token AppToken would
 // hand a gh subprocess reading c's repository, with at least margin left,
-// whether or not GH_TOKEN or GITHUB_TOKEN is set. It fails naming why when no
-// app is configured, the app is not installed on the repository, or minting
-// fails.
-func (c *Client) InstallationToken(ctx context.Context, margin time.Duration) (string, error) {
+// whether or not GH_TOKEN or GITHUB_TOKEN is set, as a PushedToken another
+// machine can read through. It fails naming why when no app is configured, the
+// app is not installed on the repository, or minting fails.
+func (c *Client) InstallationToken(ctx context.Context, margin time.Duration) (PushedToken, error) {
 	src, err := c.apps.get(ctx)
 	if err != nil {
-		return "", err
+		return PushedToken{}, err
 	}
 	if src == nil {
 		path, err := AppConfigPath(ctx)
 		if err != nil {
-			return "", err
+			return PushedToken{}, err
 		}
-		return "", fmt.Errorf("ghapi: no GitHub App configured in %s", path)
+		return PushedToken{}, fmt.Errorf("ghapi: no GitHub App configured in %s", path)
 	}
-	tok, _, err := src.token(ctx, c.repo, margin, "")
+	tok, id, err := src.token(ctx, c.repo, margin, "")
 	if errors.Is(err, errNotInstalled) {
-		return "", fmt.Errorf("ghapi: %s is not installed on %s: %w", src.cfg.Name, c.repo, err)
+		return PushedToken{}, fmt.Errorf("ghapi: %s is not installed on %s: %w", src.cfg.Name, c.repo, err)
 	}
 	if err != nil {
-		return "", fmt.Errorf("ghapi: %s: mint an installation token for %s: %w", src.cfg.Name, c.repo, err)
+		return PushedToken{}, fmt.Errorf("ghapi: %s: mint an installation token for %s: %w", src.cfg.Name, c.repo, err)
 	}
-	return tok.Token, nil
+	owner, _, _ := strings.Cut(c.repo, "/")
+	return PushedToken{App: src.cfg.Name, Account: owner, Installation: id, appToken: tok}, nil
 }
 
-func userTokenPinned(ctx context.Context) bool {
-	return slices.ContainsFunc(envTokens, func(name string) bool { return strings.TrimSpace(render.Getenv(ctx, name)) != "" })
+// UserTokenPinned reports whether GH_TOKEN or GITHUB_TOKEN keeps reads on the
+// user's token, which it does unless AppTokenFileEnv names a pushed token.
+func UserTokenPinned(ctx context.Context) bool {
+	return render.Getenv(ctx, AppTokenFileEnv) == "" && slices.ContainsFunc(envTokens, func(name string) bool { return strings.TrimSpace(render.Getenv(ctx, name)) != "" })
 }
 
 func isMutation(query string) bool {

@@ -42,7 +42,9 @@ checks, diff, or watch. The repository is the one --repo, a gh api endpoint
 under repos/OWNER/REPO, or GH_REPO names, else the current checkout's; set
 GH_REPO for a GraphQL query. With no repository to name, no app installed on
 it, or GH_TOKEN or GITHUB_TOKEN set, the read runs on the user's token as gh
-would alone. On the app token @me names the gh user, not the app. A gh api
+would alone. CCX_GITHUB_APP_TOKEN_FILE, which names a token ccx vcs auth token
+--json printed on another machine, reads through that token instead of minting
+one, and GH_TOKEN or GITHUB_TOKEN then pins nothing. On the app token @me names the gh user, not the app. A gh api
 endpoint outside the installation, such as user or orgs/ORG/installations,
 runs on the user's token, and so does a GraphQL query the app is forbidden.
 
@@ -64,7 +66,7 @@ that reset.
 from the machine-wide cache while its stored answer is younger than DUR. Only
 a read that exited 0 is stored, nothing expires a stored answer but a later
 read, a later write to its repository, or an hour's age, and a watch is never
-cached. GH_TOKEN, GITHUB_TOKEN, or GH_HOST keeps a read out of the cache. A read is cached only when its answer cannot depend on the checkout: it
+cached. GH_TOKEN or GITHUB_TOKEN while it pins the user's token, or GH_HOST, keeps a read out of the cache. A read is cached only when its answer cannot depend on the checkout: it
 names its repository, or it is a gh api call with no {owner}, {repo}, or {branch}
 placeholder. --web, --log, --log-failed, gh api rate_limit, and an answer over
 1 MiB are never cached. Nor is a read of check, commit status, or workflow run
@@ -300,7 +302,7 @@ func ghTerminal(w io.Writer) bool {
 // ghOtherIdentity reports whether this read may not run as the signed-in gh
 // user, so its answer must not reach, or come from, the shared cache.
 func ghOtherIdentity(ctx context.Context) bool {
-	return render.Getenv(ctx, "GH_TOKEN") != "" || render.Getenv(ctx, "GITHUB_TOKEN") != "" || render.Getenv(ctx, "GH_HOST") != ""
+	return ghapi.UserTokenPinned(ctx) || render.Getenv(ctx, "GH_HOST") != ""
 }
 
 func ghQueryReadsViewer(argv []string, stdin []byte) bool {
