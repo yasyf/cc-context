@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ccx vcs ship` puts the index back as it found it when a commit check such
+  as `public-names` refuses the ship, or anything else fails before its commit
+  lands. Before, a refused ship left its own sweep staged, and the next ship,
+  run after fixing the refused file, read that sweep as your staging: it
+  committed the refused copy and left the fix uncommitted.
+- `ccx vcs ship` with a staged index refuses while a tracked file has changes
+  the index does not stage, a partially staged file included, and names each
+  file. Before, it committed the staged half of such a file and named the rest
+  as left uncommitted, so an edit made after `git add` went out stale.
 - `ccx vcs ship --dry-run` plans the adoption `ccx vcs ship` makes of a parent
   Graphite and the native stack do not track, given by `--parent` or found as
   the open pull request a new branch was cut from: it tracks that parent, and
