@@ -462,7 +462,9 @@ exits 1 without calling GitHub and prints one line starting
 callers. Back off until that reset. `ccx vcs pr status` and `pr state` read through REST when GraphQL is
 refused, and stop when REST is at its floor too. `ccx vcs auth status` prints
 each pool's remainder, reset, and top callers; `--json` carries them as
-`pools`.
+`pools`. `ccx vcs quota` prints who spent each open pool on this machine, and
+`--json` prints those rows as an array, so a script reads spend there rather
+than parsing the ledger file, whose shape is ccx's own.
 `ccx vcs auth token [<owner/name>]` prints the app's installation token for
 the repository alone on stdout, for a script that exports it as `GH_TOKEN`,
 and exits 1 naming why when no app is configured or installed or minting

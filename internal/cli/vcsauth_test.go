@@ -52,7 +52,20 @@ func TestWriteAuth(t *testing.T) {
   reads   user octocat
   writes  user octocat
   quota   user octocat: 4000/5000 GraphQL left, resets 8:00PM
-  pools   user graphql 3498/5000 left, resets 8:00PM and 550/5000 left, resets 8:04PM; top callers: cc-review 955, ccx 5
+  pools   user graphql 3498/5000 left, resets 8:00:00PM and 550/5000 left, resets 8:04:00PM; top callers: cc-review 955, ccx 5
+`,
+		},
+		{
+			name: "two windows that reset in one minute",
+			auth: ghapi.Auth{Repo: "o/r", Reads: user, Writes: ghapi.Identity{Kind: "user", Name: "octocat", Quota: user.Quota, Pools: []ghapi.Pool{
+				{Identity: "user", Resource: "search", Limit: 30, Remaining: 30, Floor: 6, ResetAt: reset.Add(10 * time.Second)},
+				{Identity: "user", Resource: "search", Limit: 30, Remaining: 30, Floor: 6, ResetAt: reset.Add(40 * time.Second)},
+			}}},
+			want: `o/r
+  reads   user octocat
+  writes  user octocat
+  quota   user octocat: 4000/5000 GraphQL left, resets 8:00PM
+  pools   user search 30/30 left, resets 8:00:10PM and 30/30 left, resets 8:00:40PM
 `,
 		},
 		{
