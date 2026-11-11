@@ -53,12 +53,10 @@ func For(env []string) Env {
 	return e
 }
 
-// Bin returns the executable to spawn for name, resolved against e.PATH: the
-// preferred git for "git", and the first match on PATH otherwise. git is the
-// only binary ccx spawns with a stub in the system directories; gt, gh, jj, uv
-// and rg install outside them and already resolve to a real one. Resolving
-// here rather than leaving it to exec is what makes e.PATH govern at all —
-// exec.Command searches the process's PATH, never the one on cmd.Env.
+// Bin returns the executable to spawn for name, resolved against e.PATH by the
+// rule [Env.Find] states. Resolving here rather than leaving it to exec is what
+// makes e.PATH govern at all — exec.Command searches the process's PATH, never
+// the one on cmd.Env.
 func (e Env) Bin(name string) string {
 	if name == "gh" && e.Gh != "" {
 		return e.Gh
@@ -70,14 +68,19 @@ func (e Env) Bin(name string) string {
 	if hit, ok := gitCache.Load(key); ok {
 		return hit.(string)
 	}
-	git := e.resolveGit()
+	git := e.Git
+	if git == "" {
+		git = e.find("git")
+	}
 	gitCache.Store(key, git)
 	return git
 }
 
-// Find returns name resolved against e.PATH, or "" when PATH holds no such
-// executable. It is the presence check matching what [Env.Bin] would spawn,
-// for a caller that has to know a tool is absent before it runs it.
+// Find returns name's first match on e.PATH, passing over a launcher while
+// another match is reachable, or "" when PATH holds none. A launcher is a mise
+// shim, which refuses to start in a directory whose mise.toml is untrusted, or
+// a git in [stubDirs]. Find is the presence check matching what [Env.Bin] would
+// spawn, for a caller that has to know a tool is absent before it runs it.
 func (e Env) Find(name string) string {
 	if name == "gh" && e.Gh != "" {
 		return e.Gh
@@ -88,16 +91,29 @@ func (e Env) Find(name string) string {
 	return ""
 }
 
-// find returns name resolved against e.PATH, or name itself when PATH holds no
-// such executable, leaving exec to report the failure in its own words.
+// find returns name resolved by the rule [Env.Find] states, or name itself
+// when PATH holds no such executable, leaving exec to report the failure in its
+// own words. It reads the filesystem and nothing else — a resolution that
+// spawned anything would put an unbounded wait on every caller's exec path.
 func (e Env) find(name string) string {
 	if strings.ContainsRune(name, filepath.Separator) {
 		return name
 	}
+	var launcher string
 	for _, dir := range filepath.SplitList(e.PATH) {
-		if candidate := filepath.Join(dir, name); dir != "" && executable(candidate) {
+		candidate := filepath.Join(dir, name)
+		if dir == "" || !executable(candidate) {
+			continue
+		}
+		if !miseShim(candidate) && (name != "git" || !slices.Contains(stubDirs, dir)) {
 			return candidate
 		}
+		if launcher == "" {
+			launcher = candidate
+		}
+	}
+	if launcher != "" {
+		return launcher
 	}
 	return name
 }
@@ -119,35 +135,15 @@ func (e Env) GitPATH() string {
 	return strings.Join(append([]string{dir}, entries...), string(os.PathListSeparator))
 }
 
-// resolveGit returns the first git on PATH, passing over one in the system
-// directories while another is reachable and falling back to it when none is.
-// It reads the filesystem and nothing else — a resolution that spawned
-// anything would put an unbounded wait on every caller's exec path.
-func (e Env) resolveGit() string {
-	if e.Git != "" {
-		return e.Git
-	}
-	var stub string
-	for _, dir := range filepath.SplitList(e.PATH) {
-		candidate := filepath.Join(dir, "git")
-		if dir == "" || !executable(candidate) {
-			continue
-		}
-		if !slices.Contains(stubDirs, dir) {
-			return candidate
-		}
-		if stub == "" {
-			stub = candidate
-		}
-	}
-	if stub != "" {
-		return stub
-	}
-	return "git"
+// miseShim reports whether path is a mise shim: a symlink to mise itself, which
+// picks the tool's version from the working directory's mise.toml.
+func miseShim(path string) bool {
+	target, err := os.Readlink(path)
+	return err == nil && filepath.Base(target) == "mise"
 }
 
 // executable reports whether path is a runnable file.
 func executable(path string) bool {
-	info, err := os.Stat(path) //nolint:gosec // path is a PATH entry joined with "git", not user input
+	info, err := os.Stat(path) //nolint:gosec // path is a PATH entry joined with a binary name, not user input
 	return err == nil && !info.IsDir() && info.Mode()&0o111 != 0
 }
