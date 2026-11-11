@@ -302,6 +302,26 @@ func TestShipTracksABranchCutFromAnotherLanesPublishedHead(t *testing.T) {
 			stubStackPRs(t, f, nil)
 			stubStackStanding(t, f, nil)
 			shipGTReady(t, f)
+			refs := dryRunRefs(t, f)
+			for _, parent := range [][]string{nil, {"--parent", "theirs"}} {
+				report := dryRunReport(t, f, append(append([]string{"-m", "fix: frobnicate", "--no-push"}, tt.flags...), parent...)...)
+				refusals := dryRunValues(report, "refuses")
+				if !tt.local {
+					if want := dryRunUnfetchedBase("theirs", "mine").Error(); len(refusals) != 1 || refusals[0] != want {
+						t.Errorf("dry run %q refuses = %q, want %q", parent, refusals, want)
+					}
+					continue
+				}
+				if len(refusals) != 0 {
+					t.Errorf("dry run %q refuses = %q, want none", parent, refusals)
+				}
+				if got := dryRunValues(report, "parent"); len(got) != 1 || !strings.HasPrefix(got[0], "theirs"+shipSep) || !strings.HasSuffix(got[0], ", after ship tracks theirs onto main, the base of its open #9000") {
+					t.Errorf("dry run %q parent = %q, want mine on theirs, after ship tracks theirs onto main", parent, got)
+				}
+			}
+			if after := dryRunRefs(t, f); after != refs {
+				t.Errorf("the dry run moved refs:\n%s\nwant\n%s", after, refs)
+			}
 
 			if _, err := runShipCmd(f.Context(), t, append([]string{"-m", "fix: frobnicate", "--no-push"}, tt.flags...)...); err != nil {
 				t.Fatalf("ship: %v", err)

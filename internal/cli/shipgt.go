@@ -1056,7 +1056,7 @@ func gtTrack(ctx context.Context, errW io.Writer, l lane, o shipOpts, branch str
 		if err != nil {
 			return nil, "", err
 		}
-		if adopted, err = gtAdoptRecordedParent(ctx, errW, l, c, state, o.parent); err != nil {
+		if adopted, err = gtAdoptRecordedParent(ctx, errW, l, c, state, branch, o.parent); err != nil {
 			return nil, "", err
 		}
 		if !l.native {
@@ -1243,40 +1243,14 @@ type gtRecordedParent struct {
 	published  bool
 }
 
-func gtAdoptRecordedParent(ctx context.Context, errW io.Writer, l lane, c *gtCache, state gtState, parent string) (string, error) {
-	trunk, err := gtTrunkBranch("ship", state)
+func (p gtRecordedParent) onBase() string {
+	return fmt.Sprintf("%s onto %s, the base of its open #%d", p.name, p.base, p.pr)
+}
+
+func gtAdoptRecordedParent(ctx context.Context, errW io.Writer, l lane, c *gtCache, state gtState, branch, parent string) (string, error) {
+	chain, err := gtRecordedChain(ctx, l, state, branch, parent, "origin")
 	if err != nil {
 		return "", err
-	}
-	var chain []gtRecordedParent
-	for name := parent; name != trunk; {
-		if _, tracked := state[name]; tracked {
-			break
-		}
-		local, err := gitRefExists(ctx, c.dir, "ship", gtRestackRef(name))
-		if err != nil {
-			return "", err
-		}
-		if !local {
-			if local, err = gtBranchFromRemote(ctx, c.dir, "ship", "origin", name); err != nil {
-				return "", err
-			}
-		}
-		if !local && name == parent {
-			return "", nil
-		}
-		if !local {
-			return "", refuse("ship: %s, the parent Graphite records for %s, is a branch neither this checkout nor origin holds — pass --no-gt", name, chain[len(chain)-1].name)
-		}
-		recorded, err := gtRecordedBase(ctx, l, name)
-		if err != nil {
-			return "", err
-		}
-		if recorded.base == "" {
-			return "", refuse("ship: %s is a branch graphite does not track here, and Graphite records no open pull request for it — track it with gt track %s --parent <its parent>, or pass --no-gt", name, name)
-		}
-		chain = append(chain, recorded)
-		name = recorded.base
 	}
 	var segs []string
 	for _, b := range slices.Backward(chain) {
@@ -1286,11 +1260,52 @@ func gtAdoptRecordedParent(ctx context.Context, errW io.Writer, l lane, c *gtCac
 			return "", err
 		}
 		if runErr != nil {
-			return "", gtTrackFailed(l, b.name, fmt.Sprintf("ship: gt track could not adopt %s onto %s, its parent in Graphite's record of #%d — pass --no-gt to ship without graphite", b.name, b.base, b.pr), runErr)
+			return "", gtTrackFailed(l, b.name, fmt.Sprintf("ship: gt track could not adopt %s onto %s, the base of its open #%d — pass --no-gt to ship without graphite", b.name, b.base, b.pr), runErr)
 		}
-		segs = append(segs, fmt.Sprintf("tracked %s onto %s from Graphite's record of #%d", b.name, b.base, b.pr)+shipSep)
+		segs = append(segs, "tracked "+b.onBase()+shipSep)
 	}
 	return strings.Join(segs, ""), nil
+}
+
+func gtRecordedChain(ctx context.Context, l lane, state gtState, branch, parent, fetchFrom string) ([]gtRecordedParent, error) {
+	trunk, err := gtTrunkBranch("ship", state)
+	if err != nil {
+		return nil, err
+	}
+	var chain []gtRecordedParent
+	for name, child := parent, branch; name != trunk; {
+		if _, tracked := state[name]; tracked {
+			break
+		}
+		local, err := gitRefExists(ctx, l.dir(), "ship", gtRestackRef(name))
+		if err != nil {
+			return nil, err
+		}
+		if !local && fetchFrom == "" {
+			return nil, dryRunUnfetchedBase(name, child)
+		}
+		if !local {
+			if local, err = gtBranchFromRemote(ctx, l.dir(), "ship", fetchFrom, name); err != nil {
+				return nil, err
+			}
+		}
+		if !local && name == parent {
+			return nil, nil
+		}
+		if !local {
+			return nil, refuse("ship: %s, the parent Graphite records for %s, is a branch neither this checkout nor origin holds — pass --no-gt", name, child)
+		}
+		recorded, err := gtRecordedBase(ctx, l, name)
+		if err != nil {
+			return nil, err
+		}
+		if recorded.base == "" {
+			return nil, refuse("ship: %s is a branch graphite does not track here, and Graphite records no open pull request for it — track it with gt track %s --parent <its parent>, or pass --no-gt", name, name)
+		}
+		chain = append(chain, recorded)
+		name, child = recorded.base, name
+	}
+	return chain, nil
 }
 
 // gtBranchFromRemote cuts a local branch at remote's head of name, the only
@@ -1724,7 +1739,7 @@ func gtReparent(ctx context.Context, errW io.Writer, l lane, o shipOpts, branch,
 	if err != nil {
 		return nil, "", err
 	}
-	adopted, err := gtAdoptRecordedParent(ctx, errW, l, c, state, parent)
+	adopted, err := gtAdoptRecordedParent(ctx, errW, l, c, state, branch, parent)
 	if err != nil {
 		return nil, "", err
 	}
