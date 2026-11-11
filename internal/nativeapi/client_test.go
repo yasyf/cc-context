@@ -152,14 +152,14 @@ func TestHeadPullRequestsReadsOnlyNumberStateAndHeadPerBranch(t *testing.T) {
 
 func TestGraphQLFailureDoesNotBecomeMissingPullRequest(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		if _, err := fmt.Fprint(w, `{"errors":[{"message":"rate limited"}],"data":null}`); err != nil {
+		if _, err := fmt.Fprint(w, `{"errors":[{"message":"Something went wrong while executing your query."}],"data":null}`); err != nil {
 			t.Errorf("write fixture response: %v", err)
 		}
 	}))
 	defer srv.Close()
 	_, err := NewWithToken(srv.URL, "key").PullRequestInfo(context.Background(), PullRequestInfoRequest{RepoOwner: "org", RepoName: "repo", PRNumbers: []int{1}})
 	var result *ResultError
-	if !errors.As(err, &result) || !strings.Contains(err.Error(), "rate limited") {
+	if !errors.As(err, &result) || !strings.Contains(err.Error(), "Something went wrong") {
 		t.Fatalf("err=%v", err)
 	}
 }
@@ -1594,33 +1594,44 @@ func TestAServerErrorIsRetriedOnAnIdempotentRequestAndNeverOnAPostOrAClientError
 	}
 }
 
-func TestPullRequestInfoReadsOnTheAppTokenWhenTheAppIsInstalled(t *testing.T) {
-	for _, tc := range []struct {
-		name, app, auth, identity string
-	}{
-		{name: "app installed", app: "app-key", auth: "Bearer app-key", identity: "app"},
-		{name: "no app", auth: "Bearer github-key", identity: "user"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			var auth string
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				auth = r.Header.Get("Authorization")
-				_, _ = w.Write([]byte(`{"data":{"repository":{"p0":{"number":7,"state":"OPEN","headRefName":"b","baseRefName":"main"}}}}`))
-			}))
-			defer srv.Close()
-			c := NewWithToken(srv.URL, "github-key")
-			c.appToken = func(context.Context, string) (string, error) { return tc.app, nil }
-			var charged string
-			c.charge = func(_ context.Context, identity, _ string, _ http.Header) error {
-				charged = identity
-				return nil
-			}
-			if _, err := c.PullRequestInfo(t.Context(), PullRequestInfoRequest{RepoOwner: "o", RepoName: "r", PRNumbers: []int{7}}); err != nil {
-				t.Fatal(err)
-			}
-			if auth != tc.auth || charged != tc.identity {
-				t.Errorf("read on %q charged to %q, want %q charged to %q", auth, charged, tc.auth, tc.identity)
-			}
-		})
+func TestPullRequestInfoReadsRESTWhileGraphQLIsRateLimited(t *testing.T) {
+	var reads []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reads = append(reads, r.Method+" "+r.URL.RequestURI())
+		var body string
+		switch r.URL.Path {
+		case "/graphql":
+			body = `{"data":null,"errors":[{"type":"RATE_LIMIT","code":"graphql_rate_limit","message":"API rate limit already exceeded for installation ID 7."}]}`
+		case "/repos/o/r/pulls":
+			body = `[{"number":12,"state":"open","node_id":"PR_12","head":{"ref":"mid","sha":"mid-head"},"base":{"ref":"low"},"stack":{"number":5,"position":2,"size":3,"base":{"ref":"main"}}}]`
+		case "/repos/o/r/pulls/9":
+			body = `{"number":9,"state":"closed","merged_at":"2026-11-10T20:16:32Z","merge_commit_sha":"landed","head":{"ref":"old"},"base":{"ref":"main"}}`
+		case "/repos/o/r/pulls/404":
+			w.WriteHeader(http.StatusNotFound)
+			body = `{"message":"Not Found"}`
+		case "/repos/o/r/stacks/5":
+			body = `{"number":5,"pull_requests":[{"number":11,"state":"closed","head":{"ref":"low"}},{"number":12,"state":"open","head":{"ref":"mid"}},{"number":13,"state":"open","head":{"ref":"top"}}]}`
+		}
+		_, _ = fmt.Fprint(w, body)
+	}))
+	defer srv.Close()
+
+	infos, err := NewWithToken(srv.URL, "key").PullRequestInfo(t.Context(), PullRequestInfoRequest{RepoOwner: "o", RepoName: "r", PRNumbers: []int{9, 404}, PRHeadRefNames: []string{"mid"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []PullRequestInfo{
+		{PRNumber: 9, State: PRMerged, MergeCommitSha: "landed", HeadRefName: "old", BaseRefName: "main", CliTrunk: "main"},
+		{PRID: "PR_12", PRNumber: 12, State: PROpen, HeadRefName: "mid", BaseRefName: "low", StackNumber: 5, CliTrunk: "main", DependentPRNumber: 11, OpenAbove: []StackPull{{Number: 13, Head: "top"}}},
+	}
+	for i := range infos {
+		infos[i].Versions = nil
+	}
+	if !reflect.DeepEqual(infos, want) {
+		t.Errorf("infos = %+v, want %+v", infos, want)
+	}
+	wantReads := []string{"POST /graphql", "GET /repos/o/r/pulls/9", "GET /repos/o/r/pulls/404", "GET /repos/o/r/pulls?head=o%3Amid&state=all", "GET /repos/o/r/stacks/5"}
+	if !slices.Equal(reads, wantReads) {
+		t.Errorf("reads = %q, want %q", reads, wantReads)
 	}
 }

@@ -163,28 +163,25 @@ func TestGhResource(t *testing.T) {
 	}
 }
 
-func TestGhUserPoolChargesOnlyChildrenOnTheUsersToken(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		bin     string
-		argv    []string
-		env     []string
-		want    string
-		charged bool
+func TestChargeGHChildLeavesAChildThatSpendsNoPoolAlone(t *testing.T) {
+	prior := reviewsAPI
+	reviewsAPI = func() *ghapi.Client {
+		t.Fatal("a child that spends no pool reached the gateway")
+		return nil
+	}
+	t.Cleanup(func() { reviewsAPI = prior })
+	for _, child := range []struct {
+		bin  string
+		argv []string
 	}{
-		{bin: "gh", argv: []string{"api", "repos/o/r/pulls?head=o:b"}, want: ghapi.ResourceCore, charged: true},
-		{bin: "gh", argv: []string{"api", "graphql", "-f", "query={ viewer { login } }"}, env: []string{"GH_REPO=o/r"}, want: ghapi.ResourceGraphQL, charged: true},
-		{bin: "gh", argv: []string{"run", "watch", "7", "--exit-status"}, want: ghapi.ResourceCore, charged: true},
-		{bin: "gh", argv: []string{"run", "view", "7", "--log-failed"}, env: []string{"GH_TOKEN=app-token"}},
 		{bin: "gh", argv: []string{"auth", "token", "--hostname", "github.com"}},
 		{bin: "gh", argv: []string{"config", "get", "--host", "github.com", "user"}},
+		{bin: "gh", argv: []string{"api", "rate_limit", "--jq", ".resources.core.reset"}},
 		{bin: "gt", argv: []string{"track", "--parent", "main", "--no-interactive"}},
 		{bin: "git", argv: []string{"push", "origin", "b"}},
-	}
-	for _, tt := range tests {
-		got, charged := ghUserPool(tt.bin, tt.argv, tt.env)
-		if got != tt.want || charged != tt.charged {
-			t.Errorf("ghUserPool(%s %q, %q) = %q, %v; want %q, %v", tt.bin, tt.argv, tt.env, got, charged, tt.want, tt.charged)
+	} {
+		if err := chargeGHChild(t.Context(), child.bin, child.argv, []string{"GH_TOKEN=app-token"}); err != nil {
+			t.Errorf("chargeGHChild(%s %q) = %v, want nil", child.bin, child.argv, err)
 		}
 	}
 }
@@ -287,6 +284,24 @@ func TestGhWrittenRepo(t *testing.T) {
 	} {
 		if got := ghWrittenRepo(t.Context(), tt.argv, checkout); got != tt.want {
 			t.Errorf("ghWrittenRepo(%q) = %q, want %q", tt.argv, got, tt.want)
+		}
+	}
+}
+
+func TestGhAppRateLimited(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		stdout, stderr string
+		want           bool
+	}{
+		{stderr: "HTTP 403: API rate limit exceeded for installation ID 7.", want: true},
+		{stderr: "GraphQL: API rate limit already exceeded for installation ID 7.", want: true},
+		{stdout: `{"errors":[{"type":"RATE_LIMIT","code":"graphql_rate_limit","message":"exceeded"}]}`, stderr: "gh: exceeded", want: true},
+		{stdout: `{"errors":[{"type":"FORBIDDEN","message":"Resource not accessible by integration"}]}`, stderr: "gh: Resource not accessible by integration"},
+		{stderr: "HTTP 404: Not Found"},
+	} {
+		if got := ghAppRateLimited([]byte(tt.stdout), []byte(tt.stderr)); got != tt.want {
+			t.Errorf("ghAppRateLimited(%q, %q) = %v, want %v", tt.stdout, tt.stderr, got, tt.want)
 		}
 	}
 }

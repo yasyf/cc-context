@@ -359,6 +359,20 @@ func (a *appSource) cachedToken(id int64, margin time.Duration) (appToken, bool)
 	return tok, tok.ExpiresAt.Sub(a.now()) > margin
 }
 
+// installationOf names the installation whose token ccx minted as token.
+func (a *appSource) installationOf(token string) (int64, bool) {
+	if a.pushed != "" {
+		pushed, err := readPushedToken(a.pushed)
+		return pushed.Installation, err == nil && pushed.Token == token
+	}
+	for _, known := range a.readInstallations() {
+		if tok, _ := a.cachedToken(known.ID, 0); tok.Token == token {
+			return known.ID, true
+		}
+	}
+	return 0, false
+}
+
 func (a *appSource) storeToken(id int64, tok appToken) error {
 	raw, err := json.Marshal(tok)
 	if err != nil {

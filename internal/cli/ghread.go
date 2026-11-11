@@ -14,12 +14,19 @@ import (
 	"github.com/yasyf/cc-context/internal/vcs"
 )
 
+// ghRead runs a gh read on the app installation's token, and again on the
+// user's under AdmitSpill when the installation's pool is under its floor or
+// GitHub answers it with a rate limit.
 func ghRead(ctx context.Context, dir render.Dir, argv []string) (string, error) {
 	env, _, err := ghReadEnv(ctx, dir, 0)
 	if err != nil {
 		return "", err
 	}
-	return render.RunCLIEnv(ctx, dir, "gh", argv, env)
+	out, err := render.RunCLIEnv(ctx, dir, "gh", argv, env)
+	if len(env) > 0 && (errors.As(err, new(*ghapi.FloorError)) || ghRateLimited(err)) {
+		return render.RunCLIEnv(context.WithValue(ctx, ghSpillKey{}, true), dir, "gh", argv, nil)
+	}
+	return out, err
 }
 
 func ghReadEnv(ctx context.Context, dir render.Dir, margin time.Duration) ([]string, time.Time, error) {
@@ -59,17 +66,23 @@ func rateLimitUntil(now time.Time, reset string) time.Time {
 	return time.Unix(seconds, 0).Add(2 * time.Second)
 }
 
-// ghReadWaiting is ghRead for a read the CI watch cannot do without: GitHub's
-// rate limit does not end it, the read waits for the core quota's reset, says so
-// once, and goes on.
+// ghReadWaiting is ghRead for a read the CI watch cannot do without: neither
+// GitHub's rate limit nor ccx's floor ends it, the read waits for the refusing
+// pool's reset, says so once, and goes on.
 func ghReadWaiting(ctx context.Context, dir render.Dir, argv []string) (string, error) {
 	for {
 		out, err := ghRead(ctx, dir, argv)
-		if !ghRateLimited(err) {
+		var floor *ghapi.FloorError
+		var until time.Time
+		switch {
+		case errors.As(err, &floor):
+			until = floor.Until()
+		case ghRateLimited(err):
+			reset, _ := ghRead(ctx, dir, []string{"api", "rate_limit", "--jq", ".resources.core.reset"})
+			until = rateLimitUntil(time.Now(), reset)
+		default:
 			return out, err
 		}
-		reset, _ := ghRead(ctx, dir, []string{"api", "rate_limit", "--jq", ".resources.core.reset"})
-		until := rateLimitUntil(time.Now(), reset)
 		pacific, _ := time.LoadLocation("America/Los_Angeles")
 		fmt.Fprintf(os.Stderr, "ship: GitHub rate limit on gh %s; waiting until %s to go on\n", argv[0], until.In(pacific).Format("3:04 PM"))
 		if serr := sleepCtx(ctx, time.Until(until)); serr != nil {

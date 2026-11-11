@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/yasyf/cc-context/internal/cleanup"
+	"github.com/yasyf/cc-context/internal/ghapi"
 	"github.com/yasyf/cc-context/internal/gtapi"
 	"github.com/yasyf/cc-context/internal/prstate"
 	"github.com/yasyf/cc-context/internal/render"
@@ -49,6 +50,7 @@ func TestMain(m *testing.M) {
 	cleanupServeDefault = func(context.Context) error {
 		panic("cli: the cleanup daemon was served from a test")
 	}
+	reviewsAPI = func() *ghapi.Client { return ghapi.New("http://127.0.0.1:1") }
 	shipPRCache = func(context.Context, string) (func(context.Context, prstate.Want) (prstate.State, error), error) {
 		return func(context.Context, prstate.Want) (prstate.State, error) { return prstate.State{}, nil }, nil
 	}

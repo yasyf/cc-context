@@ -40,13 +40,16 @@ mutation (-f query=..., -F query=@file, or --input with a {"query", "variables"}
 body, - for stdin), a gh search, or a command whose verb is view, list, status,
 checks, diff, or watch. The repository is the one --repo, a gh api endpoint
 under repos/OWNER/REPO, or GH_REPO names, else the current checkout's; set
-GH_REPO for a GraphQL query. With no repository to name, no app installed on
-it, or GH_TOKEN or GITHUB_TOKEN set, the read runs on the user's token as gh
-would alone. CCX_GITHUB_APP_TOKEN_FILE, which names a token ccx vcs auth token
---json printed on another machine, reads through that token instead of minting
-one, and GH_TOKEN or GITHUB_TOKEN then pins nothing. On the app token @me names the gh user, not the app. A gh api
-endpoint outside the installation, such as user or orgs/ORG/installations,
-runs on the user's token, and so does a GraphQL query the app is forbidden.
+GH_REPO for a GraphQL query. With no repository to name or no app installed on
+it, the read runs on the user's token as gh would alone. With GH_TOKEN or
+GITHUB_TOKEN set, it runs on that token, charged to the pool the token spends:
+an installation's when ccx minted it for one, else the user's.
+CCX_GITHUB_APP_TOKEN_FILE, which names a token ccx vcs auth token --json
+printed on another machine, reads through that token instead of minting one,
+and GH_TOKEN or GITHUB_TOKEN then pins nothing. On the app token @me names the
+gh user, not the app. A gh api endpoint outside the installation, such as user
+or orgs/ORG/installations, runs on the user's token, and so does a GraphQL
+query the app is forbidden.
 
 Every request is charged to its pool (app or user, and core, graphql, or
 search) in a machine-wide ledger, under the caller CCX_CALLER names, else
@@ -54,10 +57,10 @@ CCI_AGENT_ID, else the script or command that started ccx; set CCX_CALLER in
 every script and daemon. ccx vcs auth status prints each pool's remainder,
 reset, and top callers. Before a read, ccx reads its pool's standing from
 GitHub's free rate_limit when the ledger's is over a minute old. A pool under
-1000 left before its reset takes no more reads: ccx serves the cached answer
+1000 left in any open window takes no more reads: ccx serves the cached answer
 to the same read, however old, saying so on stderr; else a read on the app's
-pool runs on the user's pool instead while that pool has over half its limit
-left; else ccx exits 1 without calling GitHub
+pool runs on the user's pool instead while every window of that pool has over
+half its limit left; else ccx exits 1 without calling GitHub
 and prints one line starting "ccx: GitHub rate limit floor:" naming the pool,
 its remainder and limit, its reset time, and the top callers. Back off until
 that reset.
@@ -84,9 +87,11 @@ label, cache, ruleset, repo view, and search. So does gh pr, issue, or repo view
 with no --json, since the app's token reads a requested team reviewer's name as
 empty. So does a read with its stdout on
 a terminal, unless it watches. A read the app token is refused runs again on the
-user's. gh auth, config, alias, extension, completion, help, and --help send no
-request ccx charges. A child ccx spawns carries CCX_CHILD=1, so a shim can pass
-it straight to the real gh.
+user's, and one GitHub refuses for rate there moves to the user's pool on the
+same terms as a spent app pool. gh auth, config, alias, extension, completion,
+help, and --help send no request ccx charges. A child ccx spawns carries
+CCX_CHILD=1, so a shim can pass it straight to the real gh; ccx admits and
+charges that child itself.
 
 Anything else, such as gh pr close or a gh api write, runs on the user's
 token as plain gh would, charged to its pool but never refused or cached. It
@@ -207,6 +212,10 @@ func runVcsGh(cmd *cobra.Command, argv []string, maxAge time.Duration) error {
 				sink = io.MultiWriter(cmd.ErrOrStderr(), &stderr)
 			}
 			err = ghRun(ctx, cmd, dir, args, env, stdin, cmd.OutOrStdout(), sink)
+			if err != nil && identity == ghapi.IdentityApp && ghAppRateLimited(nil, stderr.Bytes()) {
+				userToken, spilled = true, true
+				continue
+			}
 			if err != nil && identity == ghapi.IdentityApp && ghAppRefused(stderr.Bytes()) {
 				userToken = true
 				continue
@@ -229,7 +238,11 @@ func runVcsGh(cmd *cobra.Command, argv []string, maxAge time.Duration) error {
 			if err != nil && tries > 1 {
 				_, _ = fmt.Fprintf(&stderr, "ccx: gh failed after %d tries\n", tries)
 			}
-			if err != nil && identity == ghapi.IdentityApp && (ghForbidden(stdout.Bytes()) || ghAppRefused(stderr.Bytes())) {
+			if err != nil && identity == ghapi.IdentityApp && ghAppRateLimited(stdout.Bytes(), stderr.Bytes()) {
+				userToken, spilled = true, true
+				continue
+			}
+			if err != nil && identity == ghapi.IdentityApp && (ghGraphQLRefused(stdout.Bytes(), "FORBIDDEN") || ghAppRefused(stderr.Bytes())) {
 				userToken = true
 				continue
 			}
@@ -327,11 +340,17 @@ func ghCheckoutRepo(ctx context.Context, dir string) string {
 	return repo.NameWithOwner
 }
 
-func ghForbidden(stdout []byte) bool {
+// ghAppRateLimited reports whether GitHub refused a read on the app's token for
+// rate: gh's own error, or a GraphQL error typed RATE_LIMIT.
+func ghAppRateLimited(stdout, stderr []byte) bool {
+	return bytes.Contains(bytes.ToLower(stderr), []byte("rate limit")) || ghGraphQLRefused(stdout, "RATE_LIMIT")
+}
+
+func ghGraphQLRefused(stdout []byte, kind string) bool {
 	var body struct {
 		Errors []ghapi.GraphQLMessage `json:"errors"`
 	}
-	return json.Unmarshal(stdout, &body) == nil && slices.ContainsFunc(body.Errors, func(m ghapi.GraphQLMessage) bool { return m.Type == "FORBIDDEN" })
+	return json.Unmarshal(stdout, &body) == nil && slices.ContainsFunc(body.Errors, func(m ghapi.GraphQLMessage) bool { return strings.HasPrefix(m.Type, kind) })
 }
 
 var (
@@ -427,12 +446,37 @@ func ghResource(argv []string) string {
 	}
 }
 
+type ghSpillKey struct{}
+
+// chargeGHChild admits a gh child's read through the floor of the pool its
+// token spends, AdmitSpill's for a read ghRead moved off the app's pool, and
+// charges every gh request to that pool. gh api rate_limit spends none.
 func chargeGHChild(ctx context.Context, bin string, argv, env []string) error {
-	resource, ok := ghUserPool(bin, argv, env)
-	if !ok {
+	if bin != "gh" || ghNoRequest(argv) || ghReadsRateLimit(argv) {
 		return nil
 	}
-	return reviewsAPI().Charge(ctx, ghapi.IdentityUser, resource, ghChargeTarget(argv))
+	ctx = render.WithEnv(ctx, env...)
+	api, resource := reviewsAPI(), ghResource(argv)
+	switch {
+	case !ghReads(argv, nil):
+	case ctx.Value(ghSpillKey{}) != nil:
+		if err := api.AdmitSpill(ctx, resource); err != nil {
+			return err
+		}
+	default:
+		if err := api.Admit(ctx, ghapi.IdentityUser, resource); err != nil {
+			return err
+		}
+	}
+	return api.Charge(ctx, ghapi.IdentityUser, resource, ghChargeTarget(argv))
+}
+
+func ghReadsRateLimit(argv []string) bool {
+	if argv[0] != "api" {
+		return false
+	}
+	_, endpoint := ghAPIRequest(argv[1:])
+	return strings.TrimPrefix(endpoint, "/") == "rate_limit"
 }
 
 func ghChargeTarget(argv []string) string {
@@ -453,14 +497,6 @@ func ghExpireForChild(ctx context.Context, bin string, argv []string) {
 	case bin == "git" && len(argv) > 0 && argv[0] == "push":
 		ghInvalidate(cmp.Or(checkout(), ghEveryRepo))
 	}
-}
-
-func ghUserPool(bin string, argv, env []string) (string, bool) {
-	appToken := slices.ContainsFunc(env, func(kv string) bool { return strings.HasPrefix(kv, "GH_TOKEN=") })
-	if bin != "gh" || ghNoRequest(argv) || appToken {
-		return "", false
-	}
-	return ghResource(argv), true
 }
 
 var ghOffline = map[string]bool{"auth": true, "config": true, "alias": true, "extension": true, "completion": true, "help": true, "version": true, "--version": true, "--help": true, "-h": true}

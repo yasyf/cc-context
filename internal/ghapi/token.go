@@ -51,14 +51,29 @@ func (s *tokenSource) refresh(ctx context.Context, stale string) error {
 	return nil
 }
 
+// pinnedToken is the token GH_TOKEN, else GITHUB_TOKEN, pins for work ctx
+// drives, "" when neither does.
+func pinnedToken(ctx context.Context) string {
+	for _, name := range envTokens {
+		if token := strings.TrimSpace(render.Getenv(ctx, name)); token != "" {
+			return token
+		}
+	}
+	return ""
+}
+
+type pinnedCredential string
+
+func (p pinnedCredential) get(context.Context) (string, error) { return string(p), nil }
+
+func (p pinnedCredential) refresh(context.Context, string) error { return nil }
+
 // resolveToken reads GH_TOKEN, then GITHUB_TOKEN, then `gh auth token` — gh's
 // own precedence. The subprocess is the one place ccx shells out for auth; gh
 // stays the sole authority over the credential store.
 func resolveToken(ctx context.Context) (string, error) {
-	for _, name := range envTokens {
-		if token := strings.TrimSpace(render.Getenv(ctx, name)); token != "" {
-			return token, nil
-		}
+	if token := pinnedToken(ctx); token != "" {
+		return token, nil
 	}
 	gh := render.LookPath(ctx, "gh")
 	if gh == "" {

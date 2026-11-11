@@ -529,8 +529,10 @@ func (c *Client) Admit(ctx context.Context, identity, resource string) error {
 // open window of that pool is under half its limit, so one spent installation
 // cannot also spend the user's own quota down to Floor.
 func (c *Client) AdmitSpill(ctx context.Context, resource string) error {
-	return c.admit(ctx, IdentityUser, resource, func(w *window) int { return w.Limit / 2 })
+	return c.admit(ctx, IdentityUser, resource, spillFloor)
 }
+
+func spillFloor(w *window) int { return w.Limit / 2 }
 
 func (c *Client) admit(ctx context.Context, identity, resource string, floor func(*window) int) error {
 	if c.quota == nil || c.floorless {
@@ -608,9 +610,12 @@ func (c *Client) Pools(ctx context.Context, identity string) ([]Pool, error) {
 	return c.quota.pools(principal)
 }
 
+// principal names the pool identity's requests spend: the installation on c's
+// repository for the app, else the installation whose token GH_TOKEN or
+// GITHUB_TOKEN pins, else the user's.
 func (c *Client) principal(ctx context.Context, identity string) (string, error) {
 	if identity != IdentityApp {
-		return IdentityUser, nil
+		return c.pinnedPrincipal(ctx)
 	}
 	src, err := c.readApp(ctx)
 	if err != nil || src == nil {
@@ -623,8 +628,26 @@ func (c *Client) principal(ctx context.Context, identity string) (string, error)
 	return IdentityApp + "#" + strconv.FormatInt(id, 10), nil
 }
 
+func (c *Client) pinnedPrincipal(ctx context.Context) (string, error) {
+	pinned := pinnedToken(ctx)
+	if pinned == "" {
+		return IdentityUser, nil
+	}
+	src, err := c.apps.get(ctx)
+	if err != nil || src == nil {
+		return IdentityUser, err
+	}
+	if id, ok := src.installationOf(pinned); ok {
+		return IdentityApp + "#" + strconv.FormatInt(id, 10), nil
+	}
+	return IdentityUser, nil
+}
+
 func (c *Client) readQuota(ctx context.Context, identity, principal string) error {
 	var cred credential = c.tokens
+	if pinned := pinnedToken(ctx); pinned != "" {
+		cred = pinnedCredential(pinned)
+	}
 	if identity == IdentityApp {
 		src, err := c.readApp(ctx)
 		if err != nil {

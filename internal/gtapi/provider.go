@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/yasyf/cc-context/internal/ghapi"
 	"github.com/yasyf/cc-context/internal/nativeapi"
 )
 
@@ -177,10 +178,10 @@ func commonNativeError(err error) error {
 	if errors.As(err, &result) {
 		return &ResultError{Route: result.Route, Message: result.Message}
 	}
-	if errors.Is(err, nativeapi.ErrUnauthorized) {
+	if errors.Is(err, nativeapi.ErrUnauthorized) || errors.Is(err, ghapi.ErrUnauthorized) {
 		return fmt.Errorf("%w: %w", ErrUnauthorized, err)
 	}
-	if errors.Is(err, nativeapi.ErrNoToken) {
+	if errors.Is(err, nativeapi.ErrNoToken) || errors.Is(err, ghapi.ErrNoToken) {
 		return fmt.Errorf("%w: %w", ErrNoToken, err)
 	}
 	return err

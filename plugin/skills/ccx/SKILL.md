@@ -457,7 +457,10 @@ the other has left, so a pool with any open window under 1000 left takes no
 more reads, after one fresh read of `rate_limit` confirms it. `vcs gh` then
 serves the cached answer to the same read, however old. Without one it moves
 an app read onto the user's pool while every open window of that pool has over
-half its limit left.
+half its limit left, and so does a read GitHub answers with a rate limit on the
+app's token. ccx's own native stack reads take the same path and then read
+REST. A read on a `GH_TOKEN` ccx minted for an installation is charged to that
+installation's pool.
 Past that, it
 exits 1 without calling GitHub and prints one line starting
 `ccx: GitHub rate limit floor:`, naming the pool, its reset time, and the top

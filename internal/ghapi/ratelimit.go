@@ -76,11 +76,13 @@ func RateLimited(err error) (time.Duration, bool) {
 	}
 	var gql *GraphQLError
 	if errors.As(err, &gql) {
-		return gql.RetryAfter, gql.Exhausted || slices.ContainsFunc(gql.Messages, func(m GraphQLMessage) bool {
-			return strings.HasPrefix(m.Type, "RATE_LIMIT") || strings.Contains(strings.ToLower(m.Message), "rate limit")
-		})
+		return gql.RetryAfter, gql.Exhausted || slices.ContainsFunc(gql.Messages, rateLimitMessage)
 	}
 	return 0, false
+}
+
+func rateLimitMessage(m GraphQLMessage) bool {
+	return strings.HasPrefix(m.Type, "RATE_LIMIT") || strings.Contains(strings.ToLower(m.Message), "rate limit")
 }
 
 func sleep(ctx context.Context, d time.Duration) error {

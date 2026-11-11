@@ -17,6 +17,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -682,5 +683,93 @@ func TestAPushedTokenNearExpiryOrMissingLeavesReadsOnTheUser(t *testing.T) {
 				t.Errorf("tokens = %v, want the read on the user's token", got)
 			}
 		})
+	}
+}
+
+func TestARateLimitedAppQueryRunsAgainOnTheUsersPool(t *testing.T) {
+	t.Parallel()
+	f, ts := newFakeGitHub(t)
+	f.data = func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.Header.Get("Authorization"), "Bearer app-") {
+			_, _ = fmt.Fprint(w, `{"data":null,"errors":[{"type":"RATE_LIMIT","code":"graphql_rate_limit","message":"API rate limit already exceeded for installation ID 7."}]}`)
+			return
+		}
+		_, _ = fmt.Fprint(w, `{"data":{"ok":true}}`)
+	}
+	c := appClient(ts.URL, testAppSource(ts.URL, t.TempDir())).ForRepo("o/r")
+
+	got, err := GraphQL[struct {
+		OK bool `json:"ok"`
+	}](context.Background(), c, "query { ok }", nil)
+	if err != nil || !got.OK {
+		t.Fatalf("GraphQL = %+v, %v, want ok read on the user's pool", got, err)
+	}
+	if seen := f.tokensSeen(); strings.Join(seen, ",") != "app-1,user-token" {
+		t.Errorf("tokens = %v, want the app's refused, then the user's", seen)
+	}
+}
+
+func TestAnAppQueryUnderTheFloorMovesToTheUsersPoolWhileItHasHalfItsLimit(t *testing.T) {
+	t.Parallel()
+	reset := time.Now().Add(30 * time.Minute)
+	for user, moves := range map[int]bool{2500: true, 2499: false} {
+		f, ts := newFakeGitHub(t)
+		var queries atomic.Int32
+		f.data = func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/rate_limit" {
+				queries.Add(1)
+				_, _ = fmt.Fprint(w, `{"data":{"ok":true}}`)
+				return
+			}
+			remaining := user
+			if strings.HasPrefix(r.Header.Get("Authorization"), "Bearer app-") {
+				remaining = Floor - 1
+			}
+			_, _ = fmt.Fprint(w, rateLimitBody(remaining, 5000, reset))
+		}
+		c := appClient(ts.URL, testAppSource(ts.URL, t.TempDir())).ForRepo("o/r")
+		c.quota = &ledger{dir: t.TempDir(), now: time.Now}
+
+		_, err := GraphQL[struct{}](context.Background(), c, "query { ok }", nil)
+		var floor *FloorError
+		switch {
+		case moves && (err != nil || queries.Load() != 1):
+			t.Errorf("with the user's pool at %d, GraphQL = %v after %d queries, want one query on the user's pool", user, err, queries.Load())
+		case !moves && (!errors.As(err, &floor) || floor.Windows[0].Identity != IdentityUser || queries.Load() != 0):
+			t.Errorf("with the user's pool at %d, GraphQL = %v after %d queries, want the user's pool refused without a query", user, err, queries.Load())
+		}
+	}
+}
+
+func TestAPinnedInstallationTokenSpendsItsInstallationsPool(t *testing.T) {
+	t.Parallel()
+	f, ts := newFakeGitHub(t)
+	reset := time.Now().Add(30 * time.Minute)
+	f.data = func(w http.ResponseWriter, r *http.Request) {
+		remaining := 3000
+		if strings.HasPrefix(r.Header.Get("Authorization"), "Bearer app-") {
+			remaining = 4000
+		}
+		_, _ = fmt.Fprint(w, rateLimitBody(remaining, 5000, reset))
+	}
+	src := testAppSource(ts.URL, t.TempDir())
+	tok, _, err := src.token(context.Background(), "o/r", AppRefreshMargin, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for token, pool := range map[string]string{tok.Token: "app#7:graphql", "user-pat": "user:graphql"} {
+		c := appClient(ts.URL, src)
+		c.quota = &ledger{dir: t.TempDir(), now: time.Now}
+		ctx := render.WithEnv(context.Background(), "GH_TOKEN="+token)
+		if err := c.Admit(ctx, IdentityUser, ResourceGraphQL); err != nil {
+			t.Fatal(err)
+		}
+		states, err := c.quota.load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(states) != 2 || states[pool] == nil {
+			t.Errorf("GH_TOKEN=%s read the pools %v, want its own %s", token, slices.Collect(maps.Keys(states)), pool)
+		}
 	}
 }

@@ -62,16 +62,21 @@ func (e *StatusError) Unwrap() error {
 	return nil
 }
 
-// ResultError reports a GraphQL failure returned inside a successful HTTP response.
+// ResultError reports a GraphQL failure returned inside a successful HTTP
+// response. Err is the gateway's own error for it, when it read the response.
 type ResultError struct {
 	Route   string
 	Message string
+	Err     error
 }
 
 // Error names the GraphQL operation and its failure diagnostic.
 func (e *ResultError) Error() string {
 	return fmt.Sprintf("github-stack: %s: %s", e.Route, e.Message)
 }
+
+// Unwrap keeps a rate limit reachable through ghapi.RateLimited.
+func (e *ResultError) Unwrap() error { return e.Err }
 
 // BranchSubmitError identifies the branch whose submission could not finish.
 type BranchSubmitError struct {
