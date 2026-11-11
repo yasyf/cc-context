@@ -102,8 +102,8 @@ func (g *GitHub) pollREST(ctx context.Context, numbers []int, prev map[int]PR, t
 	var refusal *ghapi.StatusError
 	var floor *ghapi.FloorError
 	switch {
-	case errors.As(err, &floor) && floor.Pool.Identity == ghapi.IdentityApp:
-		refusal = &ghapi.StatusError{Method: http.MethodGet, Status: http.StatusTooManyRequests, Message: floor.Error(), Limited: true, RetryAfter: time.Until(floor.Pool.ResetAt), AsApp: true}
+	case errors.As(err, &floor) && floor.Windows[0].Identity == ghapi.IdentityApp:
+		refusal = &ghapi.StatusError{Method: http.MethodGet, Status: http.StatusTooManyRequests, Message: floor.Error(), Limited: true, RetryAfter: time.Until(floor.Windows[0].ResetAt), AsApp: true}
 	case !errors.As(err, &refusal) || !refusal.AsApp || !refusal.Limited:
 		return p, err
 	}
