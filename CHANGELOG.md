@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- ccx passes over a mise shim on `PATH` while another executable of that name
+  is reachable, for rg, gt, gh, jj, uv, git and every other tool it spawns, and
+  falls back to the shim when it is the only one. Before, ccx ran the first
+  match on `PATH`, which on a Mac with mise's shims directory ahead of
+  `/opt/homebrew/bin` is the shim, so `ccx code grep` in a checkout whose
+  `mise.toml` is untrusted exited 1 with mise's "Config files in ... are not
+  trusted" instead of searching.
 - `ccx vcs gh` refuses a read once any open rate-limit window of its pool is
   under the floor, and moves an app read onto the user's pool only while every
   window of that pool has over half its limit left. Before, one window with
