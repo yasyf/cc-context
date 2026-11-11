@@ -53,7 +53,7 @@ func TestSearchLiteralPathScope(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			wrapper := "#!/bin/sh\nprintf '%s\\0' \"$@\" > \"$CCX_SCOPE_ARGV\"\n/bin/pwd > \"$CCX_SCOPE_CWD\"\nif [ -n \"$CCX_SCOPE_STRACE\" ]; then\nexec \"$CCX_SCOPE_STRACE\" -f -e trace=openat -o \"$CCX_SCOPE_TRACE\" \"$CCX_SCOPE_RG\" \"$@\"\nfi\nexec \"$CCX_SCOPE_RG\" \"$@\"\n"
+			wrapper := "#!/bin/sh\nprintf '%s\\0' \"$@\" > \"$CCX_SCOPE_ARGV\"\n/bin/pwd > \"$CCX_SCOPE_CWD\"\nif [ -n \"$CCX_SCOPE_STRACE\" ]; then\nexec \"$CCX_SCOPE_STRACE\" -f -e trace=open,openat -o \"$CCX_SCOPE_TRACE\" \"$CCX_SCOPE_RG\" \"$@\"\nfi\nexec \"$CCX_SCOPE_RG\" \"$@\"\n"
 			writeExecutable(t, filepath.Join(root, "bin", "rg"), wrapper)
 			t.Chdir(root)
 			for _, query := range []string{"tail", "prepare_graph"} {
