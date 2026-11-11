@@ -77,6 +77,10 @@ var shipHookLintExit = regexp.MustCompile(`(?m)^- hook id: \S*golangci\S*\n- exi
 
 var shipHookFailedID = regexp.MustCompile(`(?m)Failed\n- hook id: (\S+)$`)
 
+var shipPublicHooks = []string{"public-names", shipPublicBodyHook}
+
+const shipPublicBodyHook = "public-pr-body"
+
 var errShipHookLintNoVerdict = errors.New("nothing was committed; rerun ship, or pass --no-verify to commit without the lint and let CI grade it")
 
 // shipRunHooks runs prek (via uvx) over the files ship is about to commit, once:
@@ -167,6 +171,14 @@ func shipRunHooks(ctx context.Context, errW io.Writer, dir render.Dir, kind vcs.
 		}
 		return "", false, passErr
 	}
+	if refused := slices.DeleteFunc(shipHookFailedIDs(buf.Bytes()), func(id string) bool { return !slices.Contains(shipPublicHooks, id) }); len(refused) > 0 {
+		if !streamed {
+			if _, werr := errW.Write(buf.Bytes()); werr != nil {
+				return "", false, fmt.Errorf("ship: hooks: report the refusal: %w", werr)
+			}
+		}
+		return "", false, fmt.Errorf("ship: hooks: %s refused what this commit would make public, so nothing was committed or pushed; reword each line it names above, then ship again", strings.Join(refused, ", "))
+	}
 	if passErr == nil && !retried {
 		return "hooks ok", covered, nil
 	}
@@ -201,15 +213,57 @@ func shipRunHooks(ctx context.Context, errW io.Writer, dir render.Dir, kind vcs.
 }
 
 func shipHookFailedSegment(output []byte) string {
+	ids := shipHookFailedIDs(output)
+	if len(ids) == 0 {
+		return "hooks failed"
+	}
+	return "hooks failed: " + strings.Join(ids, ", ")
+}
+
+func shipHookFailedIDs(output []byte) []string {
 	matches := shipHookFailedID.FindAllSubmatch(output, -1)
 	ids := make([]string, 0, len(matches))
 	for _, m := range matches {
 		ids = append(ids, string(m[1]))
 	}
-	if len(ids) == 0 {
-		return "hooks failed"
+	return ids
+}
+
+func shipCheckPRBodies(ctx context.Context, errW io.Writer, dir render.Dir, o shipOpts) error {
+	if o.noVerify || len(o.prBodyFile) == 0 {
+		return nil
 	}
-	return "hooks failed: " + strings.Join(ids, ", ")
+	config := shipHookConfigPath(string(dir))
+	if config == "" || render.LookPath(ctx, "uvx") == "" {
+		return nil
+	}
+	if _, err := os.Stat(filepath.Join(string(dir), ".git")); err != nil {
+		return nil
+	}
+	data, err := os.ReadFile(config) //nolint:gosec // the path is one of shipHookConfigNames under the repo root, not untrusted input
+	if err != nil {
+		return fmt.Errorf("ship: hooks: read %s: %w", filepath.Base(config), err)
+	}
+	if !slices.Contains(shipHookIDs(data), shipPublicBodyHook) {
+		return nil
+	}
+	argv := []string{"prek", "run", shipPublicBodyHook, "--hook-stage", "manual", "--cd", string(dir), "--files"}
+	for _, value := range o.prBodyFile {
+		_, path := splitPRValue(value, "")
+		abs, err := filepath.Abs(path)
+		if err != nil {
+			return fmt.Errorf("ship: --pr-body-file %s: %w", path, err)
+		}
+		argv = append(argv, abs)
+	}
+	var buf bytes.Buffer
+	if err := shipRunPrek(ctx, dir, argv, &buf); err != nil {
+		if _, werr := errW.Write(buf.Bytes()); werr != nil {
+			return fmt.Errorf("ship: hooks: report the refusal: %w", werr)
+		}
+		return fmt.Errorf("ship: hooks: %s did not pass the pull request body (%w), so nothing was committed or pushed; fix what it printed above, then ship again", shipPublicBodyHook, err)
+	}
+	return nil
 }
 
 func shipHookSnapshot(dir render.Dir, files []string) map[string][sha256.Size]byte {

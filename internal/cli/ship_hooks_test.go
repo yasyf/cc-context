@@ -768,3 +768,86 @@ exit 0
 		t.Errorf("feat = %+v, want it recorded on main", s)
 	}
 }
+
+func TestShipHooksStopOnAPublicHook(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name        string
+		id          string
+		wantRefused bool
+	}{
+		{"a teammate's name in the diff commits nothing", "public-names", true},
+		{"another hook's finding still commits", "biome", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := shipRepo(t, vcstest.Remote())
+			report := `printf '%s\n' 'Check....Failed' '- hook id: ` + tt.id + `' '- exit code: 1' '' '  public-check: f1.go:1 names Rowan (Rowan Vale)'`
+			shipHookRepo(t, f, vcs.Git, 1, report, "f1.go")
+			head := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD")
+
+			_, errStr, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--no-push")
+			if !strings.Contains(errStr, "names Rowan (Rowan Vale)") {
+				t.Errorf("stderr = %q, want the hook's finding", errStr)
+			}
+			committed := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD") != head
+			if !tt.wantRefused {
+				if err != nil || !committed {
+					t.Fatalf("ship error = %v, committed = %v, want a commit (stderr=%q)", err, committed, errStr)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), "public-names refused what this commit would make public") {
+				t.Fatalf("ship error = %v, want the public-names refusal", err)
+			}
+			if committed {
+				t.Errorf("HEAD moved off %s, want nothing committed", head)
+			}
+		})
+	}
+}
+
+func TestShipCheckPRBodies(t *testing.T) {
+	t.Parallel()
+	public := "repos:\n- repo: https://github.com/yasyf/cc-skills\n  rev: abc\n  hooks:\n  - id: public-names\n  - id: public-pr-body\n"
+	for _, tt := range []struct {
+		name        string
+		config      string
+		noVerify    bool
+		fail        int
+		wantRefused bool
+		wantRuns    int
+	}{
+		{"a body naming a teammate stops the ship", public, false, 1, true, 1},
+		{"a clean body passes", public, false, 0, false, 1},
+		{"a repository without the hook ships as before", "repos: []\n", false, 1, false, 0},
+		{"--no-verify skips it as it skips every hook", public, true, 1, false, 0},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := shipRepo(t, vcstest.Remote())
+			writeShipFile(t, f.Dir, ".pre-commit-config.yaml", tt.config)
+			writeShipUvx(t, f, tt.fail, `printf '%s\n' 'Public body....Failed' '- hook id: public-pr-body' '' '  public-check: body.md: names Rowan (Rowan Vale)'`)
+			shipResetLog(t, f)
+			bodies := t.TempDir()
+			writeShipFile(t, bodies, "body.md", "Rowan asked.\n")
+			body := filepath.Join(bodies, "body.md")
+
+			var errW bytes.Buffer
+			err := shipCheckPRBodies(f.Context(), &errW, render.Dir(f.Dir), shipOpts{prBodyFile: []string{"feature=" + body}, noVerify: tt.noVerify})
+			runs := shipInvocationsOf(vcstest.Invocations(t, f.ArgvLog), "uvx")
+			if len(runs) != tt.wantRuns {
+				t.Fatalf("uvx runs = %v, want %d", runs, tt.wantRuns)
+			}
+			if want := []string{"uvx", "prek", "run", "public-pr-body", "--hook-stage", "manual", "--cd", f.Dir, "--files", body}; tt.wantRuns > 0 && !slices.Equal(runs[0], want) {
+				t.Errorf("uvx argv = %q, want %q", runs[0], want)
+			}
+			if (err != nil) != tt.wantRefused {
+				t.Fatalf("error = %v, want refused = %v", err, tt.wantRefused)
+			}
+			if tt.wantRefused && !strings.Contains(errW.String(), "names Rowan (Rowan Vale)") {
+				t.Errorf("stderr = %q, want the hook's finding", errW.String())
+			}
+		})
+	}
+}
