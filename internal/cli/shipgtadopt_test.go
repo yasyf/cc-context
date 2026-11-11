@@ -19,6 +19,18 @@ func TestShipGTAdoptsAnUntrackedParentFromGraphitesRecord(t *testing.T) {
 	shipGTUntracked(t, f, "feature")
 	shipGTReady(t, f)
 
+	refs := dryRunRefs(t, f)
+	report := dryRunReport(t, f, "-m", "fix: frobnicate", "--no-push", "--parent", "parent")
+	if refusals := dryRunValues(report, "refuses"); len(refusals) != 0 {
+		t.Errorf("dry run refuses = %q, want none", refusals)
+	}
+	if got := dryRunValues(report, "parent"); len(got) != 1 || !strings.HasPrefix(got[0], "parent"+shipSep) || !strings.HasSuffix(got[0], ", after ship tracks parent onto base, the base of its open #50") {
+		t.Errorf("dry run parent = %q, want parent, after ship tracks it onto base", got)
+	}
+	if after := dryRunRefs(t, f); after != refs {
+		t.Errorf("the dry run moved refs:\n%s\nwant\n%s", after, refs)
+	}
+
 	out, errOut, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--no-push", "--parent", "parent")
 	if err != nil {
 		t.Fatalf("ship error = %v; stdout = %s; stderr = %s", err, out, errOut)
@@ -29,7 +41,7 @@ func TestShipGTAdoptsAnUntrackedParentFromGraphitesRecord(t *testing.T) {
 	if got := thinGTParent(t, f, f.Dir, "feature"); got != "parent" {
 		t.Errorf("feature's gt parent = %q, want parent", got)
 	}
-	if !strings.Contains(out, "tracked parent onto base from Graphite's record of #50") {
+	if !strings.Contains(out, "tracked parent onto base, the base of its open #50") {
 		t.Errorf("stdout = %q, want it to name the adoption", out)
 	}
 }
@@ -64,14 +76,20 @@ func TestShipGTReparentsOntoAParentAnotherLanePushedWithPlainGit(t *testing.T) {
 	api.recorded["parent"] = "main"
 	shipGTStack(t, f, "feature")
 
+	unfetched := dryRunUnfetchedBase("parent", "feature").Error()
+	if refusals := dryRunValues(dryRunReport(t, f, "--no-commit", "--parent", "parent"), "refuses"); len(refusals) != 1 || refusals[0] != unfetched {
+		t.Errorf("dry run refuses = %q, want %q", refusals, unfetched)
+	}
+	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin", "parent:parent")
 	report := dryRunReport(t, f, "--no-commit", "--parent", "parent")
 	if refusals := dryRunValues(report, "refuses"); len(refusals) != 0 {
-		t.Errorf("dry run refuses = %q, want none", refusals)
+		t.Errorf("fetched dry run refuses = %q, want none", refusals)
 	}
-	want := "parent" + shipSep + "graphite tracks feature on main, so ship tracks parent onto main, the base of its open #2000, then re-parents feature onto it"
-	if got := dryRunValues(report, "parent"); len(got) != 1 || got[0] != want {
-		t.Errorf("dry run parent = %q, want %q", got, want)
+	if got := dryRunValues(report, "parent"); len(got) != 1 || !strings.HasPrefix(got[0], "parent"+shipSep+"graphite tracks feature on main, so ship re-parents it") || !strings.HasSuffix(got[0], ", after ship tracks parent onto main, the base of its open #2000") {
+		t.Errorf("fetched dry run parent = %q, want feature re-parented onto parent, after ship tracks parent onto main", got)
 	}
+	mustRun(t, f.Env(), f.Dir, "git", "branch", "-qD", "parent")
+	mustRun(t, f.Env(), f.Dir, "git", "update-ref", "-d", "refs/remotes/origin/parent")
 	shipGTReady(t, f)
 
 	out, errOut, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--no-push", "--parent", "parent")
@@ -84,7 +102,7 @@ func TestShipGTReparentsOntoAParentAnotherLanePushedWithPlainGit(t *testing.T) {
 	if got := thinGTParent(t, f, f.Dir, "feature"); got != "parent" {
 		t.Errorf("feature's gt parent = %q, want parent", got)
 	}
-	for _, want := range []string{"tracked parent onto main from Graphite's record of #2000", "reparented feature from main onto parent"} {
+	for _, want := range []string{"tracked parent onto main, the base of its open #2000", "reparented feature from main onto parent"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("stdout = %q, want it to carry %q", out, want)
 		}

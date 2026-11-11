@@ -433,30 +433,39 @@ func nativeStackParents(ctx context.Context, l lane, state gtState, from, fetchF
 	slices.Reverse(moves)
 	planned := maps.Clone(state)
 	for i, m := range moves {
-		head := state[m.branch].Head
-		if head == "" {
-			if head, err = gtRestackHead(ctx, "ship", l.dir(), m.branch); err != nil {
-				return nil, nil, err
-			}
-		}
-		parentHead := planned[m.parent].Head
-		fork, err := gtMergeBaseDeepening(ctx, l.dir(), "ship", fetchFrom, parentHead, head)
+		s, err := gtPlannedOn(ctx, l.dir(), planned, m.branch, m.parent, trunk, fetchFrom)
 		if err != nil {
 			return nil, nil, err
 		}
-		if m.parent != trunk {
-			remote, err := vcs.GitRemoteFor(ctx, l.dir(), "HEAD")
-			if err != nil {
-				return nil, nil, fmt.Errorf("ship: %w", err)
-			}
-			if fork, err = stackPastRewrittenParent(ctx, l.dir(), remote, m.parent, head, fork); err != nil {
-				return nil, nil, err
-			}
-		}
-		moves[i].head, moves[i].fork = head, fork
-		planned[m.branch] = gtBranchState{Head: head, State: state[m.branch].State, NeedsRestack: fork != parentHead, Parents: []gtRef{{Ref: m.parent, SHA: fork}}}
+		moves[i].head, moves[i].fork = s.Head, s.Parents[0].SHA
+		planned[m.branch] = s
 	}
 	return moves, planned, nil
+}
+
+func gtPlannedOn(ctx context.Context, dir render.Dir, planned gtState, branch, parent, trunk, fetchFrom string) (gtBranchState, error) {
+	head := planned[branch].Head
+	if head == "" {
+		var err error
+		if head, err = gtRestackHead(ctx, "ship", dir, branch); err != nil {
+			return gtBranchState{}, err
+		}
+	}
+	parentHead := planned[parent].Head
+	fork, err := gtMergeBaseDeepening(ctx, dir, "ship", fetchFrom, parentHead, head)
+	if err != nil {
+		return gtBranchState{}, err
+	}
+	if parent != trunk {
+		remote, err := vcs.GitRemoteFor(ctx, dir, "HEAD")
+		if err != nil {
+			return gtBranchState{}, fmt.Errorf("ship: %w", err)
+		}
+		if fork, err = stackPastRewrittenParent(ctx, dir, remote, parent, head, fork); err != nil {
+			return gtBranchState{}, err
+		}
+	}
+	return gtBranchState{Head: head, State: planned[branch].State, NeedsRestack: fork != parentHead, Parents: []gtRef{{Ref: parent, SHA: fork}}}, nil
 }
 
 func nativeStackCutBase(ctx context.Context, dir render.Dir, remote, base, child string) error {

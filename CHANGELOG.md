@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ccx vcs ship --dry-run` plans the adoption `ccx vcs ship` makes of a parent
+  Graphite and the native stack do not track, given by `--parent` or found as
+  the open pull request a new branch was cut from: it tracks that parent, and
+  each untracked branch below it, onto its open pull request's base first.
+  Before, the dry run refused "gt state has no parent for <parent>" while the
+  ship itself went through. Both lanes now say "tracked <parent> onto <base>,
+  the base of its open #N".
 - `ccx vcs ship --no-push` and its `--dry-run` read a branch that holds its
   parent's head as on its parent, whatever base its stack records. Before, a
   branch rebased by hand onto its parent's new head drew "kept <branch> on its
