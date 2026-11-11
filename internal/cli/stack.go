@@ -883,6 +883,9 @@ func stackSubmitIntent(cmd *cobra.Command, l lane, o shipOpts, stack []string) (
 	if err != nil {
 		return nil, cleanup, err
 	}
+	if err := shipCheckPRBodies(ctx, cmd.ErrOrStderr(), l.dir(), o); err != nil {
+		return nil, cleanup, err
+	}
 	current, err := gitCurrentBranch(ctx, l.dir(), "stack submit")
 	if err != nil {
 		return nil, cleanup, err

@@ -365,6 +365,9 @@ func runShip(cmd *cobra.Command, o shipOpts) (err error) {
 	if err != nil {
 		return err
 	}
+	if err := shipCheckPRBodies(ctx, cmd.ErrOrStderr(), dir, o); err != nil {
+		return err
+	}
 	if !o.amend && !o.noCommit && !o.dryRun && len(o.messages) == 0 {
 		if o.message, err = shipMessageFromPR(o, cmd.ErrOrStderr()); err != nil {
 			return err
