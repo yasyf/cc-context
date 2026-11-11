@@ -26,6 +26,15 @@ func (e lineBaseError) Error() string {
 	return fmt.Sprintf("PR #%d parent branch %s has no open pull request, so it cannot join a native stack; move it onto trunk with %s", e.number, e.base, e.remedy)
 }
 
+type loneForkError struct {
+	number, parent, stack int
+	base                  string
+}
+
+func (e loneForkError) Error() string {
+	return fmt.Sprintf("PR #%d sits on #%d %s outside native GitHub stack #%d, where another open pull request already follows #%d; GitHub has no stack of one pull request, so #%d opens a stack of its own once it has a child", e.number, e.parent, e.base, e.stack, e.parent, e.number)
+}
+
 // StatusError retains the refused HTTP operation and the server diagnostic.
 type StatusError struct {
 	Method  string

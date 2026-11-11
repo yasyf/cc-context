@@ -521,6 +521,39 @@ func TestSubmitOpensASecondChildChainAsItsOwnNativeStackOnTheSharedParent(t *tes
 	}
 }
 
+func TestSubmitOpensALoneForkOffALowerStackEntryUnstackedAndSaysWhere(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if publishedHeadFixture(t, w, r, "fork-head") {
+			return
+		}
+		reply := func(body string) {
+			if _, err := fmt.Fprint(w, body); err != nil {
+				t.Errorf("write fixture response: %v", err)
+			}
+		}
+		switch r.Method + " " + r.URL.Path + "?" + r.URL.Query().Get("head") {
+		case "POST /repos/org/repo/pulls?":
+			reply(`{"number":4,"state":"open","head":{"repo":{"full_name":"org/repo"},"ref":"fork","sha":"fork-head"},"base":{"ref":"parent"}}`)
+		case "GET /repos/org/repo/pulls?org:parent":
+			reply(`[{"number":2,"state":"open","head":{"repo":{"full_name":"org/repo"},"ref":"parent"},"base":{"ref":"dev"},"stack":{"number":7,"position":1,"size":2,"base":{"ref":"dev"}}}]`)
+		case "GET /repos/org/repo/stacks/7?":
+			reply(`{"number":7,"pull_requests":[{"number":2,"state":"open"},{"number":3,"state":"open"}]}`)
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL)
+			http.Error(w, "unexpected", 500)
+		}
+	}))
+	defer srv.Close()
+	got, err := NewWithToken(srv.URL, "key").SubmitPullRequests(context.Background(), SubmitRequest{RepoOwner: "org", RepoName: "repo", TrunkBranchName: "dev", PRs: []SubmitPR{{Action: SubmitCreate, Head: "fork", HeadSha: "fork-head", Base: "parent", Title: "fork"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"PR #4 sits on #2 parent outside native GitHub stack #7, where another open pull request already follows #2; GitHub has no stack of one pull request, so #4 opens a stack of its own once it has a child"}
+	if len(got) != 1 || got[0].PRNumber != 4 || got[0].StackNumber != 0 || !reflect.DeepEqual(got[0].Warnings, want) {
+		t.Fatalf("got=%+v, want #4 open in no stack with warnings %q", got, want)
+	}
+}
+
 func TestSubmitRefusesChangedRemoteHeadBeforePatch(t *testing.T) {
 	var methods []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
