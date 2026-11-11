@@ -8,9 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `ccx vcs ship` puts the index back as it found it when a commit check such
-  as `public-names` refuses the ship, or anything else fails before its commit
-  lands. Before, a refused ship left its own sweep staged, and the next ship,
+- `ccx vcs ship` unstages what it staged when a commit check such as
+  `public-names` refuses the ship, or anything else fails before its commit
+  lands: the whole index after a sweep, the named paths after a path-scoped
+  ship. Before, a refused ship left its own sweep staged, and the next ship,
   run after fixing the refused file, read that sweep as your staging: it
   committed the refused copy and left the fix uncommitted.
 - `ccx vcs ship` with a staged index refuses while a tracked file has changes

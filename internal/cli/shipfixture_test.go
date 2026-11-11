@@ -942,7 +942,7 @@ exit 0
           fi
         fi ;;
     esac ;;
-  "add"*|"read-tree"*|"update-index"*|"restore"*) : ;;
+  "add"*|"read-tree"*|"update-index"*|"restore"*|"reset -q") : ;;
   "update-ref -m") cat >/dev/null ;;
   # Every path a scoped ship names reads as one untracked, unignored file.
   "ls-files -z")
