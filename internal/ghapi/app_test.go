@@ -576,8 +576,8 @@ func TestInstallationTokenIsTheAppsWhateverGHTokenHolds(t *testing.T) {
 	_, ts := newFakeGitHub(t)
 	c := appClient(ts.URL, testAppSource(ts.URL, t.TempDir())).ForRepo("O/R")
 	got, err := c.InstallationToken(render.WithEnv(context.Background(), "GH_TOKEN=pinned"), AppWatchMargin)
-	if err != nil || got != "app-1" {
-		t.Fatalf("InstallationToken = %q, %v, want app-1", got, err)
+	if err != nil || got.Token != "app-1" || got.Account != "o" || got.Installation != 7 || got.App != "test-app" {
+		t.Fatalf("InstallationToken = %+v, %v, want app-1 of test-app's installation 7 on o", got, err)
 	}
 }
 
@@ -610,11 +610,76 @@ func TestInstallationTokenNamesWhyItCannotMint(t *testing.T) {
 			}
 			ctx := render.WithEnv(context.Background(), "XDG_CONFIG_HOME="+t.TempDir())
 			got, err := c.ForRepo(tt.repo).InstallationToken(ctx, AppWatchMargin)
-			if err == nil || got != "" || !strings.Contains(err.Error(), tt.want) {
-				t.Fatalf("InstallationToken = %q, %v, want no token and an error naming %q", got, err, tt.want)
+			if err == nil || got.Token != "" || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("InstallationToken = %q, %v, want no token and an error naming %q", got.Token, err, tt.want)
 			}
 			if f.mints.Load() != 0 {
 				t.Errorf("mints = %d, want 0", f.mints.Load())
+			}
+		})
+	}
+}
+
+func writePushedToken(t *testing.T, pushed PushedToken) string {
+	t.Helper()
+	raw, err := json.Marshal(pushed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "github-app.json")
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestAPushedTokenServesReadsOfItsAccountDespiteGHToken(t *testing.T) {
+	t.Parallel()
+	f, ts := newFakeGitHub(t)
+	path := writePushedToken(t, PushedToken{App: "vulcan", Account: "O", Installation: 7, appToken: appToken{Token: "pushed", ExpiresAt: time.Now().Add(time.Hour)}})
+	ctx := render.WithEnv(context.Background(), "GH_TOKEN=user-token", AppTokenFileEnv+"="+path)
+	c := testClient(ts.URL, fixedToken("user-token"))
+	c.apps = defaultAppLoader(ts.URL)
+
+	for _, repo := range []string{"o/r", "elsewhere/r"} {
+		if _, err := Paginate[item](ctx, c.ForRepo(repo), "/repos/"+repo+"/pulls"); err != nil {
+			t.Fatalf("Paginate %s: %v", repo, err)
+		}
+	}
+	if got := f.tokensSeen(); strings.Join(got, ",") != "pushed,user-token" {
+		t.Errorf("tokens = %v, want the pushed token for its account and the user's elsewhere", got)
+	}
+	if f.lookups.Load() != 0 || f.mints.Load() != 0 {
+		t.Errorf("lookups, mints = %d, %d, want 0, 0: a pushed token is never minted here", f.lookups.Load(), f.mints.Load())
+	}
+	if UserTokenPinned(ctx) {
+		t.Error("UserTokenPinned = true, want false while a pushed token is named")
+	}
+}
+
+func TestAPushedTokenNearExpiryOrMissingLeavesReadsOnTheUser(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		path func(t *testing.T) string
+	}{
+		{name: "near expiry", path: func(t *testing.T) string {
+			return writePushedToken(t, PushedToken{App: "vulcan", Account: "o", Installation: 7, appToken: appToken{Token: "pushed", ExpiresAt: time.Now().Add(AppRefreshMargin - time.Minute)}})
+		}},
+		{name: "missing", path: func(t *testing.T) string { return filepath.Join(t.TempDir(), "github-app.json") }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f, ts := newFakeGitHub(t)
+			ctx := render.WithEnv(context.Background(), AppTokenFileEnv+"="+tt.path(t))
+			c := testClient(ts.URL, fixedToken("user-token"))
+			c.apps = defaultAppLoader(ts.URL)
+			if _, err := Paginate[item](ctx, c.ForRepo("o/r"), "/repos/o/r/pulls"); err != nil {
+				t.Fatalf("Paginate: %v", err)
+			}
+			if got := f.tokensSeen(); strings.Join(got, ",") != "user-token" {
+				t.Errorf("tokens = %v, want the read on the user's token", got)
 			}
 		})
 	}

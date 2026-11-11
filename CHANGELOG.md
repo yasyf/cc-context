@@ -6,6 +6,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- A machine with no GitHub App key reads on the app's quota through a token
+  another machine minted. `ccx vcs auth token --json o/r` prints the app's
+  read-only installation token for the repository's account, with its app,
+  installation, expiry, and permissions, on one line, minted again when it has
+  under 55 minutes left. When `CCX_GITHUB_APP_TOKEN_FILE` names a file holding
+  that line, ccx reads every repository of that account through its token and
+  mints none, and `GH_TOKEN` or `GITHUB_TOKEN` no longer pins reads to the
+  user's token, since a launcher that sets both, such as cc-remote's worker
+  terminal, sets `GH_TOKEN` for writes. A missing file, another account, or a
+  token near expiry keeps the read on the user's token. Before, a cc-remote
+  worker read everything on the user's token, uncached and unfloored, since
+  its `GH_TOKEN` pinned it and no app key was there to mint with.
+
 ### Fixed
 
 - ccx passes over a mise shim on `PATH` while another executable of that name

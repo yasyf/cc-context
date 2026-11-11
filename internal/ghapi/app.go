@@ -35,6 +35,15 @@ const (
 	AppWatchMargin = 50 * time.Minute
 	// AppRefreshMargin is the life left at which a cached token is replaced.
 	AppRefreshMargin = 5 * time.Minute
+	// AppPushMargin is the life a token printed for another machine keeps, so
+	// a pusher renewing it every few minutes keeps the copy over AppWatchMargin.
+	AppPushMargin = AppWatchMargin + 5*time.Minute
+	// AppTokenFileEnv names a file holding a PushedToken another machine
+	// minted. When set, ccx reads through that token instead of minting one, and
+	// GH_TOKEN or GITHUB_TOKEN no longer pins reads to the user's token: the
+	// launcher that set both, such as cc-remote's worker terminal, set GH_TOKEN
+	// for writes.
+	AppTokenFileEnv = "CCX_GITHUB_APP_TOKEN_FILE" //nolint:gosec // G101 false positive: the name of the variable that holds a file path, not a credential
 
 	installedTTL    = 24 * time.Hour
 	notInstalledTTL = time.Hour
@@ -109,6 +118,9 @@ func (l *appLoader) get(ctx context.Context) (*appSource, error) {
 
 func defaultAppLoader(base string) *appLoader {
 	return &appLoader{load: func(ctx context.Context) (*appSource, error) {
+		if path := render.Getenv(ctx, AppTokenFileEnv); path != "" {
+			return pushedAppSource(path), nil
+		}
 		cfg, err := loadAppConfig(ctx)
 		if err != nil || cfg == nil {
 			return nil, err
@@ -123,6 +135,7 @@ func defaultAppLoader(base string) *appLoader {
 
 type appSource struct {
 	cfg         appConfig
+	pushed      string
 	base        string
 	dir         string
 	http        *http.Client
@@ -154,7 +167,54 @@ type appToken struct {
 	Permissions map[string]string `json:"permissions"`
 }
 
+// PushedToken is an installation token minted on one machine for another,
+// the file AppTokenFileEnv names. It covers every repository of Account the
+// installation reaches.
+type PushedToken struct {
+	App          string `json:"app"`
+	Account      string `json:"account"`
+	Installation int64  `json:"installation"`
+	appToken
+}
+
+func pushedAppSource(path string) *appSource {
+	name := path
+	if pushed, err := readPushedToken(path); err == nil {
+		name = pushed.App
+	}
+	return &appSource{cfg: appConfig{Name: name}, pushed: path, now: time.Now}
+}
+
+func readPushedToken(path string) (PushedToken, error) {
+	raw, err := os.ReadFile(path) //nolint:gosec // the file the launcher named in AppTokenFileEnv
+	if err != nil {
+		return PushedToken{}, fmt.Errorf("ghapi: read %s: %w", path, err)
+	}
+	var pushed PushedToken
+	if err := json.Unmarshal(raw, &pushed); err != nil {
+		return PushedToken{}, fmt.Errorf("ghapi: parse %s: %w", path, err)
+	}
+	return pushed, nil
+}
+
+func (a *appSource) pushedToken(repo string, margin time.Duration, stale string) (appToken, int64, error) {
+	pushed, err := readPushedToken(a.pushed)
+	if err != nil {
+		return appToken{}, 0, err
+	}
+	if owner, _, _ := strings.Cut(repo, "/"); !strings.EqualFold(owner, pushed.Account) {
+		return appToken{}, 0, errNotInstalled
+	}
+	if pushed.Token == stale || pushed.ExpiresAt.Sub(a.now()) <= margin {
+		return appToken{}, 0, fmt.Errorf("ghapi: %s holds no token with %s left; its token expires at %s", a.pushed, margin, pushed.ExpiresAt.Local().Format(time.Kitchen))
+	}
+	return pushed.appToken, pushed.Installation, nil
+}
+
 func (a *appSource) token(ctx context.Context, repo string, margin time.Duration, stale string) (appToken, int64, error) {
+	if a.pushed != "" {
+		return a.pushedToken(repo, margin, stale)
+	}
 	if id, ok := a.cachedInstallation(repo); ok {
 		if id == 0 {
 			return appToken{}, 0, errNotInstalled

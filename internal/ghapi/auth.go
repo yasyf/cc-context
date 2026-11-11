@@ -60,7 +60,7 @@ func (c *Client) Auth(ctx context.Context) (Auth, error) {
 		return Auth{}, err
 	}
 	auth := Auth{Repo: c.repo, Reads: writes, Writes: writes}
-	if userTokenPinned(ctx) {
+	if UserTokenPinned(ctx) {
 		auth.Reason = "GH_TOKEN or GITHUB_TOKEN pins the user's token"
 		return auth, nil
 	}

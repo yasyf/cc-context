@@ -74,7 +74,8 @@ With no repository named, reports the current checkout's.`,
 }
 
 func newVcsAuthTokenCmd() *cobra.Command {
-	return &cobra.Command{
+	var asJSON bool
+	cmd := &cobra.Command{
 		Use:   "token [<owner/name>]",
 		Short: "Print the GitHub App installation token ccx vcs gh reads a repository with",
 		Long: `Print the read-only GitHub App installation token ccx vcs gh hands a gh read
@@ -90,13 +91,22 @@ the repository, or minting fails, it prints nothing on stdout and exits 1
 naming why. A failed mint keeps reads on the gh user for five minutes, and
 this command fails for those five minutes too, naming the failure.
 
+With --json it prints, on one line, the token with its app, account,
+installation, expiry, and permissions: the file another machine's ccx reads
+through when CCX_GITHUB_APP_TOKEN_FILE names it, in place of minting its own.
+That token has at least 55 minutes left, so a pusher that renews the file every
+few minutes keeps it over the 50 minutes a watch takes. It covers every
+repository of the account the installation reaches.
+
 With no repository named, reads the current checkout's.`,
 		Args: cobra.MaximumNArgs(1),
-		RunE: runVcsAuthToken,
+		RunE: func(cmd *cobra.Command, args []string) error { return runVcsAuthToken(cmd, args, asJSON) },
 	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "print the token with its expiry as the file CCX_GITHUB_APP_TOKEN_FILE names")
+	return cmd
 }
 
-func runVcsAuthToken(cmd *cobra.Command, args []string) error {
+func runVcsAuthToken(cmd *cobra.Command, args []string, asJSON bool) error {
 	ctx := cmd.Context()
 	if len(args) == 0 {
 		looked, err := vcs.LookupRepo(ctx, render.Dir(workingDir(ctx)), false)
@@ -105,11 +115,18 @@ func runVcsAuthToken(cmd *cobra.Command, args []string) error {
 		}
 		args = []string{looked.NameWithOwner}
 	}
-	token, err := reviewsAPI().ForRepo(args[0]).InstallationToken(ctx, ghapi.AppWatchMargin)
+	margin := ghapi.AppWatchMargin
+	if asJSON {
+		margin = ghapi.AppPushMargin
+	}
+	pushed, err := reviewsAPI().ForRepo(args[0]).InstallationToken(ctx, margin)
 	if err != nil {
 		return fmt.Errorf("auth token: %w", err)
 	}
-	_, err = fmt.Fprintln(cmd.OutOrStdout(), token)
+	if asJSON {
+		return json.NewEncoder(cmd.OutOrStdout()).Encode(pushed)
+	}
+	_, err = fmt.Fprintln(cmd.OutOrStdout(), pushed.Token)
 	return err
 }
 
