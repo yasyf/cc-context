@@ -774,14 +774,21 @@ func TestShipHooksStopOnAPublicHook(t *testing.T) {
 	for _, tt := range []struct {
 		name        string
 		id          string
+		gt          bool
 		wantRefused bool
 	}{
-		{"a teammate's name in the diff commits nothing", "public-names", true},
-		{"another hook's finding still commits", "biome", false},
+		{"a teammate's name in the diff commits nothing", "public-names", false, true},
+		{"a teammate's name in the diff commits nothing on the graphite lane", "public-names", true, true},
+		{"another hook's finding still commits", "biome", false, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			f := shipRepo(t, vcstest.Remote())
+			var f *vcstest.Fixture
+			if tt.gt {
+				f = shipGTRepo(t, vcstest.GTStack("base"))
+			} else {
+				f = shipRepo(t, vcstest.Remote())
+			}
 			report := `printf '%s\n' 'Check....Failed' '- hook id: ` + tt.id + `' '- exit code: 1' '' '  public-check: f1.go:1 names Rowan (Rowan Vale)'`
 			shipHookRepo(t, f, vcs.Git, 1, report, "f1.go")
 			head := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD")
@@ -803,7 +810,45 @@ func TestShipHooksStopOnAPublicHook(t *testing.T) {
 			if committed {
 				t.Errorf("HEAD moved off %s, want nothing committed", head)
 			}
+			if status := gitAt(t, f.Env(), f.Dir, "status", "--porcelain"); status != "?? f1.go" {
+				t.Errorf("status = %q, want the index as ship found it, f1.go unstaged", status)
+			}
+
+			writeShipFile(t, f.Dir, "f1.go", "reworded")
+			if _, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push"); err != nil {
+				t.Fatalf("ship after the rewording = %v", err)
+			}
+			if body := gitAt(t, f.Env(), f.Dir, "show", "HEAD:f1.go"); body != "reworded" {
+				t.Errorf("committed f1.go = %q, want the reworded copy", body)
+			}
+			if status := gitAt(t, f.Env(), f.Dir, "status", "--porcelain"); status != "" {
+				t.Errorf("status = %q, want nothing left uncommitted", status)
+			}
 		})
+	}
+}
+
+func TestShipHookRefusalKeepsWhatYouStagedOfANamedPath(t *testing.T) {
+	t.Parallel()
+	f := shipRepo(t, vcstest.Remote())
+	shipHookRepo(t, f, vcs.Git, 1, `printf '%s\n' 'Check....Failed' '- hook id: public-names' '- exit code: 1' '' '  public-check: f1.go:1 names Rowan (Rowan Vale)'`)
+	writeShipFile(t, f.Dir, "f1.go", "base")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "f1.go")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "base")
+	writeShipFile(t, f.Dir, "f1.go", "staged")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "f1.go")
+	writeShipFile(t, f.Dir, "f1.go", "working")
+	writeShipFile(t, f.Dir, "f2.go", "new")
+
+	_, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push", "f1.go", "f2.go")
+	if err == nil || !strings.Contains(err.Error(), "public-names refused what this commit would make public") {
+		t.Fatalf("ship error = %v, want the public-names refusal", err)
+	}
+	if staged := gitAt(t, f.Env(), f.Dir, "show", ":f1.go"); staged != "staged" {
+		t.Errorf("index f1.go = %q, want the copy staged before the ship", staged)
+	}
+	if status := gitAt(t, f.Env(), f.Dir, "status", "--porcelain"); status != "MM f1.go\n?? f2.go" {
+		t.Errorf("status = %q, want f1.go staged as before and f2.go untracked", status)
 	}
 }
 

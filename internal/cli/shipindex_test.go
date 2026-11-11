@@ -22,17 +22,16 @@ func TestShipWithAStagedIndexCommitsExactlyTheIndex(t *testing.T) {
 			} else {
 				f = shipRepo(t, vcstest.Remote())
 			}
-			writeShipFile(t, f.Dir, "partial.txt", "one\n")
+			writeShipFile(t, f.Dir, "edited.txt", "one\n")
 			writeShipFile(t, f.Dir, "retired.txt", "retired\n")
-			mustRun(t, f.Env(), f.Dir, "git", "add", "partial.txt", "retired.txt")
-			mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "partial")
+			mustRun(t, f.Env(), f.Dir, "git", "add", "edited.txt", "retired.txt")
+			mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "edited")
 			mustRun(t, f.Env(), f.Dir, "git", "rm", "-q", "--cached", "retired.txt")
 			writeShipFile(t, f.Dir, "pages/[id].txt", "page\n")
 			mustRun(t, f.Env(), f.Dir, "git", "add", "pages/[id].txt")
 			writeShipFile(t, f.Dir, "pages/i.txt", "unrelated\n")
-			writeShipFile(t, f.Dir, "partial.txt", "two\n")
-			mustRun(t, f.Env(), f.Dir, "git", "add", "partial.txt")
-			writeShipFile(t, f.Dir, "partial.txt", "three\n")
+			writeShipFile(t, f.Dir, "edited.txt", "two\n")
+			mustRun(t, f.Env(), f.Dir, "git", "add", "edited.txt")
 			writeShipFile(t, f.Dir, "staged.txt", "staged\n")
 			mustRun(t, f.Env(), f.Dir, "git", "add", "staged.txt")
 			writeShipFile(t, f.Dir, "untracked.txt", "wip\n")
@@ -44,17 +43,14 @@ func TestShipWithAStagedIndexCommitsExactlyTheIndex(t *testing.T) {
 			if strings.Contains(got, "swept") {
 				t.Errorf("summary = %q, want no sweep over a staged index", got)
 			}
-			if want := "left uncommitted 4 path(s): pages/i.txt, partial.txt, retired.txt, untracked.txt"; !strings.Contains(got, want) {
+			if want := "left uncommitted 3 path(s): pages/i.txt, retired.txt, untracked.txt"; !strings.Contains(got, want) {
 				t.Errorf("summary = %q, want it to name what stayed out: %q", got, want)
 			}
-			if files := gitAt(t, f.Env(), f.Dir, "show", "--name-only", "--format=", "HEAD"); files != "pages/[id].txt\npartial.txt\nretired.txt\nstaged.txt" {
-				t.Errorf("committed files = %q, want the page, partial.txt, the retired.txt removal, and staged.txt", files)
+			if files := gitAt(t, f.Env(), f.Dir, "show", "--name-only", "--format=", "HEAD"); files != "edited.txt\npages/[id].txt\nretired.txt\nstaged.txt" {
+				t.Errorf("committed files = %q, want edited.txt, the page, the retired.txt removal, and staged.txt", files)
 			}
-			if body := gitAt(t, f.Env(), f.Dir, "show", "HEAD:partial.txt"); body != "two" {
-				t.Errorf("committed partial.txt = %q, want the staged two", body)
-			}
-			if body, err := os.ReadFile(filepath.Join(f.Dir, "partial.txt")); err != nil || string(body) != "three\n" {
-				t.Errorf("working partial.txt = %q (%v), want the unstaged three kept", body, err)
+			if body := gitAt(t, f.Env(), f.Dir, "show", "HEAD:edited.txt"); body != "two" {
+				t.Errorf("committed edited.txt = %q, want the staged two", body)
 			}
 			for _, path := range []string{"untracked.txt", "retired.txt", "pages/i.txt"} {
 				if status := gitAt(t, f.Env(), f.Dir, "status", "--porcelain", "--untracked-files=all", "--", path); status != "?? "+path {
@@ -91,12 +87,12 @@ func TestShipRefusesAnIndexThatLeavesATrackedEditUnstaged(t *testing.T) {
 			writeShipFile(t, f.Dir, "edited.txt", "two\n")
 
 			refusals := dryRunValues(dryRunReport(t, f, "-m", "fix: retire gone.txt", "--no-push"), "refuses")
-			if len(refusals) != 1 || !strings.Contains(refusals[0], "tracked edited.txt,") {
-				t.Errorf("dry run refusals = %q, want one naming edited.txt", refusals)
+			if len(refusals) != 1 || !strings.Contains(refusals[0], "tracked edited.txt, partial.txt,") {
+				t.Errorf("dry run refusals = %q, want one naming edited.txt and partial.txt", refusals)
 			}
 			_, err := runShipCmd(f.Context(), t, "-m", "fix: retire gone.txt", "--no-push")
-			if err == nil || !strings.Contains(err.Error(), "the index stages gone.txt, partial.txt but none of the changes to tracked edited.txt,") {
-				t.Fatalf("ship = %v, want a refusal naming edited.txt and nothing else", err)
+			if err == nil || !strings.Contains(err.Error(), "the index stages gone.txt, partial.txt but not every change to tracked edited.txt, partial.txt,") {
+				t.Fatalf("ship = %v, want a refusal naming the unstaged edit and the unstaged half of partial.txt", err)
 			}
 			if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD"); got != head {
 				t.Errorf("HEAD = %s, want %s untouched by the refusal", got, head)
@@ -107,12 +103,15 @@ func TestShipRefusesAnIndexThatLeavesATrackedEditUnstaged(t *testing.T) {
 				}
 			}
 
-			mustRun(t, f.Env(), f.Dir, "git", "add", "edited.txt")
+			mustRun(t, f.Env(), f.Dir, "git", "add", "edited.txt", "partial.txt")
 			if _, err := runShipCmd(f.Context(), t, "-m", "fix: retire gone.txt", "--no-push"); err != nil {
-				t.Fatalf("ship after staging edited.txt = %v", err)
+				t.Fatalf("ship after staging edited.txt and partial.txt = %v", err)
 			}
 			if files := gitAt(t, f.Env(), f.Dir, "show", "--name-only", "--format=", "HEAD"); files != "edited.txt\ngone.txt\npartial.txt" {
-				t.Errorf("committed files = %q, want the edit, the removal, and the staged half of partial.txt", files)
+				t.Errorf("committed files = %q, want the edit, the removal, and partial.txt", files)
+			}
+			if body := gitAt(t, f.Env(), f.Dir, "show", "HEAD:partial.txt"); body != "three" {
+				t.Errorf("committed partial.txt = %q, want the working copy's three", body)
 			}
 		})
 	}
