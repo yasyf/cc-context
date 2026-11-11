@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ccx vcs ship --no-push` and its `--dry-run` read a branch that holds its
+  parent's head as on its parent, whatever base its stack records. Before, a
+  branch rebased by hand onto its parent's new head drew "kept <branch> on its
+  published base though <parent> moved — run ccx vcs stack rebase", or "is
+  published to the remote, so the restack would leave it off its parent", and
+  the rebase it named did nothing.
 - `ccx vcs stack submit --parent <upper>=<new> --pr-title <new>=<title>
   --pr-body-file <new>=<body.md>` opens `<new>`'s pull request with that title
   and body. Before, the title and body were refused as naming a branch outside

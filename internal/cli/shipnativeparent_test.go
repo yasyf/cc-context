@@ -641,3 +641,34 @@ func TestShipRefusesABranchThatHoldsNoHeadOfItsParent(t *testing.T) {
 		t.Errorf("middle moved from %s to %s, want it left where it is", middle, got)
 	}
 }
+
+func TestShipNoPushReadsABranchHoldingItsParentHeadAsOnItsParent(t *testing.T) {
+	f := shipNativeRewrittenBelow(t)
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "middle")
+	bottom := gitAt(t, f.Env(), f.Dir, "rev-parse", "bottom")
+	middle := gitAt(t, f.Env(), f.Dir, "rev-parse", "middle")
+	shipGTReady(t, f)
+	writeShipFile(t, f.Dir, "middle.txt", "middle, edited by ship\n")
+	args := []string{"-m", "fix: follow up", "--no-push", "--no-watch"}
+
+	report := dryRunReport(t, f, args...)
+	for _, note := range dryRunValues(report, "note") {
+		if strings.HasPrefix(note, "middle ") {
+			t.Errorf("note = %q, want none on middle: it holds bottom's head though its stack records bottom's first one\n%s", note, report)
+		}
+	}
+
+	got, errStr, err := runShipCmdFull(f.Context(), t, args...)
+	if err != nil {
+		t.Fatalf("ship = %v (stderr=%q)", err, errStr)
+	}
+	if strings.Contains(got, "kept middle") {
+		t.Errorf("summary = %q, want no rebase named for middle: it already holds bottom's head", got)
+	}
+	if parent := gitAt(t, f.Env(), f.Dir, "rev-parse", "middle^"); parent != middle {
+		t.Errorf("middle^ = %s, want middle's head %s: the commit lands on it", parent, middle)
+	}
+	if after := gitAt(t, f.Env(), f.Dir, "rev-parse", "bottom"); after != bottom {
+		t.Errorf("bottom moved from %s to %s, want it left where it is", bottom, after)
+	}
+}

@@ -161,6 +161,27 @@ func gtHoldPublished(ctx context.Context, dir render.Dir, state gtState, chain [
 	return held, nil
 }
 
+func gtOnParentHead(ctx context.Context, dir render.Dir, state gtState, chain []string) (gtState, error) {
+	read := maps.Clone(state)
+	for _, name := range chain {
+		s := read[name]
+		if !s.NeedsRestack {
+			continue
+		}
+		parent := state[s.Parents[0].Ref]
+		on, err := gitIsAncestor(ctx, dir, "ship", parent.Head, s.Head)
+		if err != nil {
+			return nil, err
+		}
+		if on {
+			s.Parents = []gtRef{{Ref: s.Parents[0].Ref, SHA: parent.Head}}
+			s.NeedsRestack = false
+			read[name] = s
+		}
+	}
+	return read, nil
+}
+
 func gtHoldEmptyUnderWork(ctx context.Context, state gtState, movers []string, holders map[string]string) (gtState, error) {
 	held := maps.Clone(state)
 	for _, name := range movers {
