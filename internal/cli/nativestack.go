@@ -258,13 +258,10 @@ func nativeReadTracking(ctx context.Context, l lane, run *stackRebaseRun, live [
 		if parent := prs[branch.Parent]; parent != nil {
 			parentInfo = byNumber[parent.Number]
 		}
-		switch {
-		case !found || !nativeStackTracksBranch(info, branch, run.Trunk, prs[branch.Parent], parentInfo):
-			untracked = append(untracked, stackUntracked{Branch: name, PR: pr.Number, Parent: branch.Parent, Head: branch.NewHead, Stale: info.BaseRefName})
-		case nativeLoneFork(info, parentInfo):
-			sibling := parentInfo.OpenAbove[0]
-			render.Announce(ctx, "#%d %s sits on #%d %s outside native GitHub stack #%d, where #%d %s already follows #%d; GitHub has no stack of one pull request, so #%d opens a stack of its own once it has a child", pr.Number, name, parentInfo.PRNumber, branch.Parent, parentInfo.StackNumber, sibling.Number, sibling.Head, parentInfo.PRNumber, pr.Number)
+		if found && nativeStackTracksBranch(info, branch, run.Trunk, prs[branch.Parent], parentInfo) {
+			continue
 		}
+		untracked = append(untracked, stackUntracked{Branch: name, PR: pr.Number, Parent: branch.Parent, Head: branch.NewHead, Stale: info.BaseRefName})
 	}
 	return untracked, nil
 }

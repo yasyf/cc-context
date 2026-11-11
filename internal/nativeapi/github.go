@@ -285,8 +285,13 @@ func (c *Client) SubmitPullRequests(ctx context.Context, req SubmitRequest) ([]S
 		}
 		stackNumber, err := c.linkPull(ctx, req.RepoOwner, req.RepoName, req.TrunkBranchName, pull)
 		var line lineBaseError
-		if errors.As(err, &line) {
+		var lone loneForkError
+		switch {
+		case errors.As(err, &line):
 			result[len(result)-1].Warnings = append(result[len(result)-1].Warnings, fmt.Sprintf("PR #%d stays out of any native stack: %s", pull.Number, line.Error()))
+			err = nil
+		case errors.As(err, &lone):
+			result[len(result)-1].Warnings = append(result[len(result)-1].Warnings, lone.Error())
 			err = nil
 		}
 		if err != nil {
@@ -500,7 +505,7 @@ func (c *Client) linkPull(ctx context.Context, owner, repo, trunk string, pull r
 		return number, err
 	}
 	if parent.Stack == nil && parent.Base.Ref != trunk {
-		if _, err := c.linkPull(ctx, owner, repo, trunk, parent); err != nil {
+		if _, err := c.linkPull(ctx, owner, repo, trunk, parent); err != nil && !errors.As(err, new(loneForkError)) {
 			return 0, err
 		}
 		parent, err = c.readPull(ctx, owner, repo, parent.Number)
@@ -513,7 +518,10 @@ func (c *Client) linkPull(ctx context.Context, owner, repo, trunk string, pull r
 		return parent.Stack.Number, err
 	}
 	if parent.Stack != nil {
-		number, _, err := c.relinkPastClosed(ctx, owner, repo, parent.Stack.Number, parent.Number, pull.Number)
+		number, relinked, err := c.relinkPastClosed(ctx, owner, repo, parent.Stack.Number, parent.Number, pull.Number)
+		if err == nil && !relinked {
+			err = loneForkError{number: pull.Number, parent: parent.Number, stack: parent.Stack.Number, base: pull.Base.Ref}
+		}
 		return number, err
 	}
 	payload, err = c.post(ctx, path+"/stacks", map[string]any{"pull_requests": []int{parent.Number, pull.Number}})

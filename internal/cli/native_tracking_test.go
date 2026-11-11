@@ -124,18 +124,13 @@ func TestNativeTrackingSettlesALoneForkOffALowerStackEntry(t *testing.T) {
 		{Name: "thread", Parent: "card", NewHead: "thread-head"},
 	}}
 	prs := map[string]*stackPR{"base": {Number: 14, State: "OPEN"}, "card": {Number: 15, State: "OPEN"}, "thread": {Number: 34, State: "OPEN"}}
-	var notices strings.Builder
-	ctx := withGTAPI(render.WithSlowWriter(context.Background(), &notices), gtapi.NewNativeWithToken(server.URL, "stub"))
+	ctx := withGTAPI(context.Background(), gtapi.NewNativeWithToken(server.URL, "stub"))
 	untracked, err := nativeReadTracking(ctx, lane{native: true, repo: &vcs.Repo{NameWithOwner: "org/repo"}}, run, []string{"base", "card", "thread"}, prs)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(untracked) != 0 {
 		t.Fatalf("untracked = %+v, want #34 settled on #15 beside #27", untracked)
-	}
-	want := "ccx: #34 thread sits on #15 card outside native GitHub stack #16, where #27 claim already follows #15; GitHub has no stack of one pull request, so #34 opens a stack of its own once it has a child\n"
-	if got := notices.String(); got != want {
-		t.Fatalf("notices = %q, want %q", got, want)
 	}
 }
 
