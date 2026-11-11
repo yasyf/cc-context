@@ -450,8 +450,10 @@ passes it.
 Every request, from `vcs gh` and from ccx's own reads, is charged to its pool
 in a machine-wide ledger. A pool is an identity, app or user, and a resource,
 core, graphql, or search. The charge goes to `CCX_CALLER`, which every script
-and daemon sets, else `CCI_AGENT_ID`, else the script that started ccx. A
-pool under 1000 left before its reset takes no more reads. `vcs gh` then
+and daemon sets, else `CCI_AGENT_ID`, else the script that started ccx. GitHub
+can count one pool in two windows at once, each with its own reset, and the
+ledger keeps each. A pool whose every open window is under 1000 left takes no
+more reads, after one fresh read of `rate_limit` confirms it. `vcs gh` then
 serves the cached answer to the same read, however old. Without one it moves
 an app read onto the user's pool while that pool has over half its limit left.
 Past that, it

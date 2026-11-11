@@ -68,7 +68,7 @@ func quotaReset(header http.Header, now time.Time) (time.Duration, bool) {
 func RateLimited(err error) (time.Duration, bool) {
 	var floor *FloorError
 	if errors.As(err, &floor) {
-		return max(time.Until(floor.Pool.ResetAt), 0), true
+		return max(time.Until(floor.Windows[0].ResetAt), 0), true
 	}
 	var status *StatusError
 	if errors.As(err, &status) {

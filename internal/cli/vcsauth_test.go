@@ -43,6 +43,19 @@ func TestWriteAuth(t *testing.T) {
 `,
 		},
 		{
+			name: "a pool counted in two windows",
+			auth: ghapi.Auth{Repo: "o/r", Reads: user, Writes: ghapi.Identity{Kind: "user", Name: "octocat", Quota: user.Quota, Pools: []ghapi.Pool{
+				{Identity: "user", Resource: "graphql", Limit: 5000, Remaining: 3498, Floor: 1000, ResetAt: reset, Callers: []ghapi.Caller{{Caller: "ccx", Requests: 3}}},
+				{Identity: "user", Resource: "graphql", Limit: 5000, Remaining: 550, Floor: 1000, ResetAt: reset.Add(4 * time.Minute), Callers: []ghapi.Caller{{Caller: "cc-review", Requests: 955}, {Caller: "ccx", Requests: 2}}},
+			}}},
+			want: `o/r
+  reads   user octocat
+  writes  user octocat
+  quota   user octocat: 4000/5000 GraphQL left, resets 8:00PM
+  pools   user graphql 3498/5000 left, resets 8:00PM and 550/5000 left, resets 8:04PM; top callers: cc-review 955, ccx 5
+`,
+		},
+		{
 			name: "reads on the user",
 			auth: ghapi.Auth{Repo: "o/elsewhere", Reads: user, Writes: user, Reason: "vulcan is not installed on o/elsewhere"},
 			want: `o/elsewhere

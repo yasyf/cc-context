@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -31,7 +33,7 @@ func newVcsAuthStatusCmd() *cobra.Command {
 		Short: "Report the identity each repository's GitHub reads and writes resolve to, with its quota",
 		Long: `Report the identity each repository's GitHub reads and writes resolve to,
 and the GraphQL quota each identity has left.
-Each pool's callers clear when it resets; every finished window stays in
+Each window's callers clear when it resets; every finished window stays in
 ledger-history.jsonl beside the ledger, as one JSON object per line.
 
 Reads (ccx vcs status, vcs pr status, vcs reviews, and ship's CI watch) go
@@ -52,10 +54,13 @@ fails, or when GH_TOKEN or GITHUB_TOKEN is set. Writes always use the gh user.
 
 Each identity's pools (core, graphql, search) come fresh from GitHub's
 rate_limit, which costs no quota, with the callers ccx and ccx vcs gh charged
-to each since it last reset, heaviest first. A pool under 1000 left refuses
-reads until its reset; --json carries each identity's pools as
-[{"identity", "resource", "limit", "remaining", "resetAt", "readAt",
-"callers": [{"caller", "requests"}]}].
+to each since it last reset, heaviest first. GitHub can count one pool in two
+windows at once, each with its own reset: rate_limit reports one, and the
+rate-limit headers on GraphQL answers mostly report the other, so a pool's
+line names every open window. A pool refuses reads only while every open
+window has under 1000 left; --json carries each open window as
+{"identity", "resource", "limit", "remaining", "floor", "resetAt", "readAt",
+"callers": [{"caller", "requests"}]}, a pool with two windows as two entries.
 
 With no repository named, reports the current checkout's.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -157,16 +162,25 @@ func writeAuth(w io.Writer, auth ghapi.Auth) {
 	}
 	label = "  pools   "
 	for _, id := range identities {
-		for _, p := range id.Pools {
-			line := fmt.Sprintf("%s %s %d/%d left, resets %s", p.Identity, p.Resource, p.Remaining, p.Limit, p.ResetAt.Local().Format(time.Kitchen))
-			if p.Remaining < p.Floor {
+		for pools := id.Pools; len(pools) > 0; {
+			n := 1
+			for n < len(pools) && pools[n].Resource == pools[0].Resource {
+				n++
+			}
+			windows := make([]string, 0, n)
+			for _, p := range pools[:n] {
+				windows = append(windows, fmt.Sprintf("%d/%d left, resets %s", p.Remaining, p.Limit, p.ResetAt.Local().Format(time.Kitchen)))
+			}
+			line := fmt.Sprintf("%s %s %s", pools[0].Identity, pools[0].Resource, strings.Join(windows, " and "))
+			if !slices.ContainsFunc(pools[:n], func(p ghapi.Pool) bool { return p.Remaining >= p.Floor }) {
 				line += ", under the floor"
 			}
-			if top := ghapi.TopCallers(p, 5); top != "" {
+			if top := ghapi.TopCallers(pools[:n], 5); top != "" {
 				line += "; top callers: " + top
 			}
 			_, _ = fmt.Fprintln(w, label+line)
 			label = "          "
+			pools = pools[n:]
 		}
 	}
 }
