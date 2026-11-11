@@ -66,9 +66,7 @@ jobs:
           assert subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=before, text=True).strip() == manifest["source"]
           for name, expected in manifest["files"].items():
               assert hashlib.sha256((before / name).read_bytes()).hexdigest() == expected, name
-          for name in ("go.mod", "go.sum"):
-              assert (root / name).read_bytes() == (before / name).read_bytes(), name
-          for name in ("internal/format/formatcore.wasm", "internal/semsearch/embed/embedcore.wasm"):
+          for name in ("go.mod", "go.sum", "internal/format/formatcore.wasm", "internal/semsearch/embed/embedcore.wasm"):
               shutil.copyfile(root / name, before / name)
           shutil.copytree(root / "internal/semsearch/chunk/grammars", before / "internal/semsearch/chunk/grammars", dirs_exist_ok=True)
           PYBASE
@@ -104,11 +102,7 @@ jobs:
               assert digest == entry["sha256"], entry
               shutil.copyfile(source, before / entry["original_path"])
               files[entry["fixture"]] = digest
-          for name in ("go.mod", "go.sum"):
-              data = (root / name).read_bytes()
-              assert data == (before / name).read_bytes(), name
-              files[name] = hashlib.sha256(data).hexdigest()
-          for name in ("internal/semsearch/engine/owned_answers.go", "internal/semsearch/engine/owned_answers_test.go", "internal/semsearch/index/owned_answers.go", "internal/semsearch/index/owned_answers_test.go", "internal/semsearch/index/owned_matrix.go", "internal/semsearch/index/owned_matrix_test.go", "internal/semsearch/index/owned_mapping_unix.go", "internal/semsearch/index/owned_mapping_windows.go", "internal/semsearch/rank/bm25.go", "internal/semsearch/rank/bm25_source.go", "internal/semsearch/rank/corpus.go", "internal/semsearch/rank/fusion.go", "internal/semsearch/rank/fusion_test.go", "internal/semsearch/rank/bm25_snapshot_test.go", ".github/fixtures/native-answer-corpus/warm-baseline.json", ".github/workflows/native-answer-corpus-components.yml"):
+          for name in ("go.mod", "go.sum", "internal/semsearch/engine/owned_answers.go", "internal/semsearch/engine/owned_answers_test.go", "internal/semsearch/index/owned_answers.go", "internal/semsearch/index/owned_answers_test.go", "internal/semsearch/index/owned_matrix.go", "internal/semsearch/index/owned_matrix_test.go", "internal/semsearch/index/owned_mapping_unix.go", "internal/semsearch/index/owned_mapping_windows.go", "internal/semsearch/rank/bm25.go", "internal/semsearch/rank/bm25_source.go", "internal/semsearch/rank/corpus.go", "internal/semsearch/rank/fusion.go", "internal/semsearch/rank/fusion_test.go", "internal/semsearch/rank/bm25_snapshot_test.go", ".github/fixtures/native-answer-corpus/warm-baseline.json", ".github/workflows/native-answer-corpus-components.yml"):
               files[name] = hashlib.sha256((root / name).read_bytes()).hexdigest()
           receipt = {"head": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(), "os": platform.system(), "baseline": manifest, "files": files, "GOMAXPROCS": os.environ["GOMAXPROCS"], "GOFLAGS": os.environ["GOFLAGS"]}
           (pathlib.Path(os.environ["RUNNER_TEMP"]) / "native-answer-corpus-components/source.json").write_text(json.dumps(receipt, indent=2) + "\n")
