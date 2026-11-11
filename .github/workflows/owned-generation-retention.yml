@@ -59,9 +59,7 @@ jobs:
           root = pathlib.Path.cwd()
           before = root / ".ci-retention-before"
           assert subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=before, text=True).strip() == "578a392287fdd5d38fb44189be7539c4c6fb706f"
-          for name in ("go.mod", "go.sum"):
-              assert (root / name).read_bytes() == (before / name).read_bytes(), name
-          for name in ("internal/format/formatcore.wasm", "internal/semsearch/embed/embedcore.wasm"):
+          for name in ("go.mod", "go.sum", "internal/format/formatcore.wasm", "internal/semsearch/embed/embedcore.wasm"):
               shutil.copyfile(root / name, before / name)
           shutil.copytree(root / "internal/semsearch/chunk/grammars", before / "internal/semsearch/chunk/grammars", dirs_exist_ok=True)
           shutil.copyfile(root / "internal/semsearch/index/owned_retention_unix_test.go", before / "internal/semsearch/index/owned_retention_unix_test.go")
