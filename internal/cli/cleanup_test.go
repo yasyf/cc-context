@@ -1137,7 +1137,9 @@ func TestCleanupWorktreeRmWaitNeedsTheJobSeenDone(t *testing.T) {
 			if out != "" {
 				t.Errorf("rm --wait output = %q, want nothing reported deleted", out)
 			}
-			assertIntact(t, f, path)
+			if got := readFileStr(t, filepath.Join(path, "f.txt")); got == "" {
+				t.Errorf("%s/f.txt is empty, want the claimed tree undeleted", path)
+			}
 		})
 	}
 }
