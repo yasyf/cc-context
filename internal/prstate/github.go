@@ -29,7 +29,7 @@ const (
 	graphiteDeadline = 10 * time.Second
 
 	prFields = "number state title createdAt author { login } isDraft baseRefName headRefName headRefOid mergeable mergeStateStatus " +
-		"reviewDecision latestOpinionatedReviews(first: 20) { nodes { state author { login } } } changedFiles mergeCommit { oid } labels(first: 50) { nodes { name } } " +
+		"reviewDecision latestOpinionatedReviews(first: 20) { nodes { state author { login } commit { oid } } } changedFiles mergeCommit { oid } labels(first: 50) { nodes { name } } " +
 		"checks: commits(last: 1) { nodes { commit { oid status { state } statusCheckRollup { state contexts(last: 100) { totalCount nodes { __typename " +
 		"... on CheckRun { name title conclusion status startedAt databaseId checkSuite { databaseId workflowRun { workflow { databaseId } } } } ... on StatusContext { context state targetUrl } } } } " +
 		"checkSuites(first: 50, filterBy: {appId: " + actionsAppID + "}) { nodes { status } } } } } " +
@@ -115,6 +115,9 @@ type prNode struct {
 			Author *struct {
 				Login string `json:"login"`
 			} `json:"author"`
+			Commit *struct {
+				OID string `json:"oid"`
+			} `json:"commit"`
 		} `json:"nodes"`
 	} `json:"latestOpinionatedReviews"`
 	MergeCommit *struct {
@@ -477,6 +480,9 @@ func (p *pass) record(node prNode, t target, i int, resp response) (PR, error) {
 		review := Review{State: r.State}
 		if r.Author != nil {
 			review.Author = r.Author.Login
+		}
+		if r.Commit != nil {
+			review.Commit = r.Commit.OID
 		}
 		pr.Reviews = append(pr.Reviews, review)
 	}

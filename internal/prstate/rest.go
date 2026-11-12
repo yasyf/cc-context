@@ -49,8 +49,9 @@ type restPull struct {
 }
 
 type restReview struct {
-	State string `json:"state"`
-	User  *struct {
+	State    string `json:"state"`
+	CommitID string `json:"commit_id"`
+	User     *struct {
 		Login string `json:"login"`
 	} `json:"user"`
 }
@@ -287,7 +288,7 @@ func latestOpinions(reviews []restReview) []Review {
 		if r.State != "APPROVED" && r.State != "CHANGES_REQUESTED" && r.State != "DISMISSED" {
 			continue
 		}
-		review := Review{State: r.State}
+		review := Review{State: r.State, Commit: r.CommitID}
 		if r.User != nil {
 			review.Author = graphQLLogin(r.User.Login)
 		}

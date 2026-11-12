@@ -48,6 +48,7 @@ type prApprovalState string
 
 const (
 	prApproved         prApprovalState = "approved"
+	prApprovedOlder    prApprovalState = "approved-on-older-head"
 	prChangesRequested prApprovalState = "changes-requested"
 	prReviewRequired   prApprovalState = "review-required"
 	prNoReview         prApprovalState = "none"
@@ -115,6 +116,7 @@ type prCIReport struct {
 type prApprovalReport struct {
 	State            prApprovalState `json:"state"`
 	Approvers        []string        `json:"approvers,omitempty"`
+	OlderHead        []string        `json:"approved_on_older_head_by,omitempty"`
 	ChangesRequested []string        `json:"changes_requested_by,omitempty"`
 	Bot              string          `json:"bot,omitempty"`
 }
@@ -204,7 +206,10 @@ Approval is GitHub's reviewDecision, which counts the reviews the base
 branch's protection counts, bot approvals included, followed by who approved or
 requested changes. While it reads review required, the newest ai-review check
 run on the head says why in its place: bot held: and what the bot blocks on,
-bot waiting for restack, bot reviewing, or bot not run. The verdict is landed, queued, landable for an open pull
+bot waiting for restack, bot reviewing, or bot not run. An approval counts
+only on the head: one a reviewer cast on an older commit, which GitHub's
+reviewDecision still counts, reads approved on an older head by that reviewer,
+followed by that same ai-review reason, and the verdict adds unapproved. The verdict is landed, queued, landable for an open pull
 request that is green, approved, not a draft, and not conflicting, and
 otherwise blocked: followed by every cause, such as blocked:conflict,ci-pending.
 Conflicting is GitHub's mergeable answer. While the cache holds it UNKNOWN, or
@@ -649,20 +654,24 @@ func prCIOf(rollup *prstate.Rollup) prCIReport {
 func prApprovalOf(pr prstate.PR) prApprovalReport {
 	var r prApprovalReport
 	for _, review := range pr.Reviews {
-		switch review.State {
-		case "APPROVED":
+		switch {
+		case review.State == "APPROVED" && review.Commit != pr.HeadRefOid:
+			r.OlderHead = append(r.OlderHead, review.Author)
+		case review.State == "APPROVED":
 			r.Approvers = append(r.Approvers, review.Author)
-		case "CHANGES_REQUESTED":
+		case review.State == "CHANGES_REQUESTED":
 			r.ChangesRequested = append(r.ChangesRequested, review.Author)
 		}
 	}
 	switch {
-	case pr.ReviewDecision == "APPROVED":
-		r.State = prApproved
 	case pr.ReviewDecision == "CHANGES_REQUESTED":
 		r.State = prChangesRequested
 	case pr.ReviewDecision == "REVIEW_REQUIRED":
 		r.State, r.Bot = prReviewRequired, prReviewBot(pr.Rollup)
+	case len(r.OlderHead) > 0:
+		r.State, r.Bot = prApprovedOlder, prReviewBot(pr.Rollup)
+	case pr.ReviewDecision == "APPROVED":
+		r.State = prApproved
 	case len(r.ChangesRequested) > 0:
 		r.State = prChangesRequested
 	case len(r.Approvers) > 0:
@@ -743,7 +752,7 @@ func prVerdict(r prStatusReport, pr prstate.PR) string {
 	switch r.Approval.State {
 	case prChangesRequested:
 		causes = append(causes, "changes-requested")
-	case prReviewRequired, prNoReview:
+	case prReviewRequired, prApprovedOlder, prNoReview:
 		causes = append(causes, "unapproved")
 	}
 	if len(causes) == 0 {
@@ -901,6 +910,12 @@ func prApprovalValue(a prApprovalReport) string {
 			return "approved"
 		}
 		return "approved by " + strings.Join(a.Approvers, ", ")
+	case prApprovedOlder:
+		older := "approved on an older head by " + strings.Join(a.OlderHead, ", ")
+		if a.Bot == "" {
+			return older
+		}
+		return older + "; " + a.Bot
 	case prChangesRequested:
 		return "changes requested by " + strings.Join(a.ChangesRequested, ", ")
 	case prReviewRequired:
