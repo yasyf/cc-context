@@ -1,8 +1,7 @@
 [tools]
-# Match go.mod's `go` directive. prek's golangci-lint hook env ships no Go of
-# its own and runs the ambient one under GOTOOLCHAIN=local, so a global
-# `go = "latest"` that lags go.mod fails the hook with "go.mod requires go >=
-# X (running go Y)" and silently disables the local lint gate.
+# Match go.mod's `go` directive. golangci-lint typechecks with the go on PATH,
+# so the commit hook and `task lint` select this one: an ambient go newer than
+# the one golangci-lint was built with fails every package's typecheck.
 go = "1.26.6"
 # Single source for the lint gate's version: ci.yml reads this pin back, so
 # neither lane floats onto a release the other does not run.

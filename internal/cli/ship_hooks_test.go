@@ -315,6 +315,55 @@ func TestShipHooksSummaryNamesEachFailedHook(t *testing.T) {
 	}
 }
 
+func TestShipHookSegmentNamesHooksThatNeverRan(t *testing.T) {
+	t.Parallel()
+	const (
+		finding   = "Check files with Biome....Failed\n- hook id: biome\n- exit code: 1\n\n  a.ts:1:1: a finding\n"
+		untrusted = "golangci-lint-fmt....Failed\n- hook id: golangci-lint-fmt\n- exit code: 1\n\n  mise ERROR Config files in ~/fresh/mise.toml are not trusted. Trust them with `mise trust`.\n"
+		missing   = "ensure go:embed WASM artifacts....Failed\n- hook id: ensure-wasm\n- exit code: 127\n\n  /usr/bin/bash: scripts/ensure-wasm.sh: No such file or directory\n"
+		typecheck = "golangci-lint....Failed\n- hook id: golangci-lint\n- exit code: 1\n\n  internal/format/engine.go:22:12: pattern formatcore.wasm: no matching files found (typecheck)\n  //go:embed formatcore.wasm\n             ^\n  1 issues:\n  * typecheck: 1\n"
+		linted    = "golangci-lint....Failed\n- hook id: golangci-lint\n- exit code: 1\n\n  a.go:1:1: pattern x.wasm: no matching files found (typecheck)\n  b.go:2:1: Error return value is not checked (errcheck)\n"
+		passed    = "ok hook....Passed\n"
+		aborted   = "error: Failed to run hook `golangci-lint`\n  caused by: Failed to run `mise`\n  caused by: No such file or directory (os error 2)\n"
+	)
+	for _, tt := range []struct {
+		name   string
+		output string
+		fixed  bool
+		want   string
+	}{
+		{"a finding is a failure", finding + passed, false, "hooks failed: biome"},
+		{"mise refusing the repository's config means the hook never ran", untrusted + passed, false, "hooks not run: golangci-lint-fmt"},
+		{"a missing command means the hook never ran", missing, false, "hooks not run: ensure-wasm"},
+		{"a lint whose packages never loaded never ran", typecheck, false, "hooks not run: golangci-lint"},
+		{"a lint with one linter's finding ran", linted, false, "hooks failed: golangci-lint"},
+		{"failures and hooks that never ran are named apart", finding + missing + untrusted + typecheck, false, "hooks failed: biome · hooks not run: ensure-wasm, golangci-lint-fmt, golangci-lint"},
+		{"an auto-fix still names the hooks that never ran", finding + typecheck, true, "hooks fixed · hooks not run: golangci-lint"},
+		{"an entry prek could not start never ran", aborted, false, "hooks not run: golangci-lint"},
+		{"a report naming no hook is a failure", "error: Failed to parse config\n", false, "hooks failed"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := shipHookFailedSegment([]byte(tt.output), tt.fixed); got != tt.want {
+				t.Errorf("segment = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestShipHookPassTrustsTheRepositoryMiseConfig(t *testing.T) {
+	t.Parallel()
+	f := shipRepo(t, vcstest.Remote())
+	shipHookRepo(t, f, vcs.Git, 1, `[ -n "$MISE_TRUSTED_CONFIG_PATHS" ] && [ "$(cd "$MISE_TRUSTED_CONFIG_PATHS" && pwd -P)" = "$(pwd -P)" ] || echo "$MISE_TRUSTED_CONFIG_PATHS" > untrusted`, "f1.go")
+
+	if _, errStr, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--no-push", "f1.go"); err != nil {
+		t.Fatalf("ship error = %v (stderr=%q)", err, errStr)
+	}
+	if got, err := os.ReadFile(filepath.Join(f.Dir, "untrusted")); err == nil {
+		t.Errorf("hook trusted %q, want the repository root %s", strings.TrimSpace(string(got)), f.Dir)
+	}
+}
+
 func TestShipHookPassLocksMiseOnlyInARepositoryWithALockfile(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {

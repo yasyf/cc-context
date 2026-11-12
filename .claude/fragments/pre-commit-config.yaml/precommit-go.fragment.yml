@@ -9,7 +9,7 @@
         pass_filenames: false
       - id: golangci-lint
         name: golangci-lint
-        entry: mise exec golangci-lint -- golangci-lint run --new-from-rev HEAD --fix
+        entry: mise exec go golangci-lint -- golangci-lint run --new-from-rev HEAD --fix
         language: system
         types: [go]
         require_serial: true

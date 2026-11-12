@@ -75,7 +75,17 @@ var (
 // place golangci-lint's survives.
 var shipHookLintExit = regexp.MustCompile(`(?m)^- hook id: \S*golangci\S*\n- exit code: (\d+)$`)
 
-var shipHookFailedID = regexp.MustCompile(`(?m)Failed\n- hook id: (\S+)$`)
+// shipHookFailedReport matches one hook prek reported Failed: its id, its
+// "- " metadata lines, then its output, which prek indents by two spaces.
+var shipHookFailedReport = regexp.MustCompile(`(?m)Failed\n- hook id: (\S+)\n(?:- .*\n)*((?:  .*\n|\n)*)`)
+
+// shipHookAborted is prek's report of a hook whose entry it could not start,
+// which ends the run before any hook's report.
+var shipHookAborted = regexp.MustCompile("(?m)^error: Failed to run hook `([^`]+)`")
+
+var shipHookUnstarted = regexp.MustCompile(`(?m)^- exit code: 12[67]$|mise ERROR .*not trusted`)
+
+var shipLintIssue = regexp.MustCompile(`(?m)^\s*\S+\.go:\d+(?::\d+)?: .* \(([\w-]+)\)$`)
 
 var shipPublicHooks = []string{"public-names", shipPublicBodyHook}
 
@@ -171,7 +181,8 @@ func shipRunHooks(ctx context.Context, errW io.Writer, dir render.Dir, kind vcs.
 		}
 		return "", false, passErr
 	}
-	if refused := slices.DeleteFunc(shipHookFailedIDs(buf.Bytes()), func(id string) bool { return !slices.Contains(shipPublicHooks, id) }); len(refused) > 0 {
+	failed, unrun := shipHookOutcomes(buf.Bytes())
+	if refused := slices.DeleteFunc(append(failed, unrun...), func(id string) bool { return !slices.Contains(shipPublicHooks, id) }); len(refused) > 0 {
 		if !streamed {
 			if _, werr := errW.Write(buf.Bytes()); werr != nil {
 				return "", false, fmt.Errorf("ship: hooks: report the refusal: %w", werr)
@@ -203,30 +214,58 @@ func shipRunHooks(ctx context.Context, errW io.Writer, dir render.Dir, kind vcs.
 			return "", false, fmt.Errorf("ship: hooks: report the findings: %w", werr)
 		}
 	}
-	if maps.Equal(before, after) && slices.Equal(files, rederived) {
-		if passErr == nil {
-			return "hooks ok", covered, nil
+	fixed := !maps.Equal(before, after) || !slices.Equal(files, rederived)
+	switch {
+	case passErr != nil:
+		return shipHookFailedSegment(buf.Bytes(), fixed), covered, nil
+	case fixed:
+		return "hooks fixed", covered, nil
+	}
+	return "hooks ok", covered, nil
+}
+
+// shipHookFailedSegment names, apart from the hooks that failed, each hook that
+// never ran, so a commit no linter saw does not read as one with findings.
+func shipHookFailedSegment(output []byte, fixed bool) string {
+	failed, unrun := shipHookOutcomes(output)
+	var segs []string
+	switch {
+	case fixed:
+		segs = append(segs, "hooks fixed")
+	case len(failed) > 0:
+		segs = append(segs, "hooks failed: "+strings.Join(failed, ", "))
+	case len(unrun) == 0:
+		segs = append(segs, "hooks failed")
+	}
+	if len(unrun) > 0 {
+		segs = append(segs, "hooks not run: "+strings.Join(unrun, ", "))
+	}
+	return strings.Join(segs, shipSep)
+}
+
+// shipHookOutcomes splits the hooks prek's output reports Failed into those
+// that gave a verdict and those that never ran: prek could not start its
+// entry, the shell could not (exit 126 or 127), mise refused the configuration
+// it runs under, or golangci-lint reported only typecheck issues, since then
+// its packages never loaded and no linter looked at them.
+func shipHookOutcomes(output []byte) (failed, unrun []string) {
+	for _, m := range shipHookFailedReport.FindAllSubmatch(output, -1) {
+		id := string(m[1])
+		if shipHookUnstarted.Match(m[0]) || strings.Contains(id, "golangci") && shipLintOnlyTypecheck(m[2]) {
+			unrun = append(unrun, id)
+			continue
 		}
-		return shipHookFailedSegment(buf.Bytes()), covered, nil
+		failed = append(failed, id)
 	}
-	return "hooks fixed", covered, nil
+	for _, m := range shipHookAborted.FindAllSubmatch(output, -1) {
+		unrun = append(unrun, string(m[1]))
+	}
+	return failed, unrun
 }
 
-func shipHookFailedSegment(output []byte) string {
-	ids := shipHookFailedIDs(output)
-	if len(ids) == 0 {
-		return "hooks failed"
-	}
-	return "hooks failed: " + strings.Join(ids, ", ")
-}
-
-func shipHookFailedIDs(output []byte) []string {
-	matches := shipHookFailedID.FindAllSubmatch(output, -1)
-	ids := make([]string, 0, len(matches))
-	for _, m := range matches {
-		ids = append(ids, string(m[1]))
-	}
-	return ids
+func shipLintOnlyTypecheck(output []byte) bool {
+	issues := shipLintIssue.FindAllSubmatch(output, -1)
+	return len(issues) > 0 && !slices.ContainsFunc(issues, func(m [][]byte) bool { return string(m[1]) != "typecheck" })
 }
 
 func shipCheckPRBodies(ctx context.Context, errW io.Writer, dir render.Dir, o shipOpts) error {
@@ -363,11 +402,12 @@ func shipHookLintFailedExit(output []byte) string {
 // older than the one that wrote a repository's mise.lock rewrites that file as it
 // installs, which ship would then commit; locked mode installs from the file as
 // written. It refuses a tool the file does not list, so it is set only where a
-// mise.lock exists.
+// mise.lock exists. The child trusts the repository's mise config, whose
+// scripts it runs anyway, or a fresh clone's hooks never start under mise.
 func shipRunPrek(ctx context.Context, dir render.Dir, argv []string, w io.Writer) error {
-	var env []string
+	env := []string{"MISE_TRUSTED_CONFIG_PATHS=" + string(dir)}
 	if _, err := os.Stat(filepath.Join(string(dir), "mise.lock")); err == nil {
-		env = []string{"MISE_LOCKED=1"}
+		env = append(env, "MISE_LOCKED=1")
 	}
 	return render.RunCLIStreamEnv(ctx, dir, "uvx", argv, w, env)
 }
