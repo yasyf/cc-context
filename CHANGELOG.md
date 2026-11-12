@@ -23,6 +23,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ccx vcs ship --parent <p>` on the gt lane publishes a branch below the tip
+  that this working copy checked out and amended, and another lane's working
+  copy does not hold now, with the run. Before, it kept every branch below the
+  tip at its published head and refused one carrying an unpublished amend as
+  another lane's, telling you to pass `--include`, a flag only `ccx vcs stack
+  rebase` and `ccx vcs stack submit` had. `ccx vcs ship` now takes
+  `--include <branch>` too, so that refusal names a flag the command has.
 - An MCP tool call whose `repo` is an https git URL runs in a shallow clone
   ccx keeps at `clones/<host>/<path>` under its cache. The first call clones
   the remote's HEAD and each later call fetches it again. Before, the URL was
