@@ -13,33 +13,33 @@ import (
 
 const jobLogStub = `#!/bin/sh
 case "$*" in
-"api repos/o/r/actions/jobs/7/logs --allow-escape-sequences")
+"api --allow-escape-sequences repos/o/r/actions/jobs/7/logs")
 	printf '\357\273\277setup\n\033[31mred\033[0m \033]8;;http://x\007link\033]8;;\007\033(B\nthe failure\n'
 	;;
-"api repos/o/r/actions/jobs/11/logs --allow-escape-sequences")
+"api --allow-escape-sequences repos/o/r/actions/jobs/11/logs")
 	printf '2026-11-06T19:36:17.6245033Z ===== short test summary info =====\n2026-11-06T19:36:17.6246128Z \033[31mFAILED\033[0m tests/test_a.py::test_b[x - y] - AssertionError\n2026-11-06T19:36:17.6248090Z 1 failed, 3 passed in 2.01s\n2026-11-06T19:36:17.6702454Z ##[error]Process completed with exit code 1.\n'
 	;;
-"api repos/o/r/actions/jobs/8/logs --allow-escape-sequences")
+"api --allow-escape-sequences repos/o/r/actions/jobs/8/logs")
 	echo '<Error>BlobNotFound</Error>'
 	echo 'gh: HTTP 404' >&2
 	exit 1
 	;;
-"api repos/o/r/actions/jobs/8 --jq .status")
+"api --allow-escape-sequences repos/o/r/actions/jobs/8 --jq .status")
 	echo in_progress
 	;;
-"api repos/o/r/actions/jobs/9/logs --allow-escape-sequences")
+"api --allow-escape-sequences repos/o/r/actions/jobs/9/logs")
 	echo 'gh: Not Found (HTTP 404)' >&2
 	exit 1
 	;;
-"api repos/o/r/actions/jobs/9 --jq .status")
+"api --allow-escape-sequences repos/o/r/actions/jobs/9 --jq .status")
 	echo 'gh: Not Found (HTTP 404)' >&2
 	exit 1
 	;;
-"api repos/o/r/actions/jobs/10/logs --allow-escape-sequences")
+"api --allow-escape-sequences repos/o/r/actions/jobs/10/logs")
 	echo 'gh: Log expired (HTTP 410)' >&2
 	exit 1
 	;;
-"api repos/o/r/actions/jobs/10 --jq .status")
+"api --allow-escape-sequences repos/o/r/actions/jobs/10 --jq .status")
 	echo completed
 	;;
 *)

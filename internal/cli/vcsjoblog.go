@@ -80,7 +80,7 @@ func runVcsJobLog(cmd *cobra.Command, id int64, repo string, budget int, failed 
 		repo = looked.NameWithOwner
 	}
 	job := fmt.Sprintf("repos/%s/actions/jobs/%d", repo, id)
-	log, err := jobLogRead(cmd, []string{"api", job + "/logs", "--allow-escape-sequences"})
+	log, err := jobLogRead(cmd, []string{"api", job + "/logs"})
 	if err != nil {
 		status, statusErr := jobLogRead(cmd, []string{"api", job, "--jq", ".status"})
 		if status = strings.TrimSpace(status); statusErr == nil && status != jobLogCompleted {
@@ -88,7 +88,7 @@ func runVcsJobLog(cmd *cobra.Command, id int64, repo string, budget int, failed 
 		}
 		return fmt.Errorf("vcs job-log: job %d in %s: %w", id, repo, err)
 	}
-	plain := strings.TrimPrefix(ansiRE.ReplaceAllString(log, ""), "\ufeff")
+	plain := strings.TrimPrefix(log, "\ufeff")
 	if failed {
 		for _, test := range failedTests(plain) {
 			if _, err := fmt.Fprintln(cmd.OutOrStdout(), test); err != nil {

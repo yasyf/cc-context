@@ -23,6 +23,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ccx vcs gh` off a terminal runs `gh api`, `gh pr diff`, `gh gist view`,
+  `gh repo read-file`, and `gh release download` with
+  `--allow-escape-sequences` and strips every terminal escape sequence from
+  what they print, so a job log, file, diff, gist, or asset saved to a file or
+  piped on keeps its text and no escape code. Output whose first 512 bytes
+  `http.DetectContentType`, the sniff gh's own guard uses, calls binary once
+  their escape sequences are gone passes through verbatim, so a release
+  asset is never corrupted, while the BEL closing an OSC hyperlink no longer
+  makes a log look binary. Before, gh since v2.97.0 refused such text
+  carrying an escape byte whatever its stdout was, so
+  `gh api repos/o/r/actions/jobs/N/logs > log.txt`, which the gh hook rewrites
+  into `ccx vcs gh`, saved nothing and printed `the response contains terminal
+  escape sequences; pass --allow-escape-sequences to output it anyway`.
+  `ccx vcs guidelines` reads a raw `CONTRIBUTING.md` the same way, and
+  `ccx vcs job-log` leaves both steps to the gateway.
 - `ccx vcs ship --parent <p>` on the gt lane publishes a branch below the tip
   that this working copy checked out and amended, and another lane's working
   copy does not hold now, with the run. Before, it kept every branch below the

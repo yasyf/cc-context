@@ -547,7 +547,7 @@ printf 'token=%s argv=%s\n' "${GH_TOKEN:-user}" "$*"
 	if err := runVcsGh(cmd, []string{"api", "rate_limit"}, 0); err != nil {
 		t.Fatalf("runVcsGh outside a checkout = %v, want gh run on the user's token", err)
 	}
-	if got, want := out.String(), "token=user argv=api rate_limit\n"; got != want {
+	if got, want := out.String(), "token=user argv=api --allow-escape-sequences rate_limit\n"; got != want {
 		t.Errorf("gh printed %q, want %q", got, want)
 	}
 }
@@ -654,7 +654,7 @@ printf 'token=%s argv=%s\n' "${GH_TOKEN:-user}" "$*"
 	if err := runVcsGh(cmd, []string{"api", "user", "--jq", ".login"}, 0); err != nil {
 		t.Fatalf("runVcsGh(api user) = %v, want gh run on the user's token", err)
 	}
-	if got, want := out.String(), "token=user argv=api user --jq .login\n"; got != want {
+	if got, want := out.String(), "token=user argv=api --allow-escape-sequences user --jq .login\n"; got != want {
 		t.Errorf("gh printed %q, want %q", got, want)
 	}
 }
@@ -688,6 +688,95 @@ func TestVcsGhPassesGhFlagsThrough(t *testing.T) {
 			}
 			if got, _ := cmd.Flags().GetDuration("max-age"); got != tt.maxAge {
 				t.Errorf("max-age = %s, want %s", got, tt.maxAge)
+			}
+		})
+	}
+}
+
+func TestRunVcsGhStripsEscapesOffATerminal(t *testing.T) {
+	cmd, _ := ghGatewayFixture(t)
+	shims := t.TempDir()
+	execstub.Write(t, filepath.Join(shims, "gh"), `#!/bin/sh
+printf '\033[31margv=%s\033[0m \033]8;;http://x\007link\033]8;;\007\n' "$*"
+`)
+	t.Setenv("PATH", shims+string(os.PathListSeparator)+os.Getenv("PATH"))
+	const jobLog = "argv=api --allow-escape-sequences repos/o/r/actions/jobs/1/logs link\n"
+	tests := []struct {
+		name string
+		argv []string
+		want string
+	}{
+		{name: "job log", argv: []string{"api", "repos/o/r/actions/jobs/1/logs"}, want: jobLog},
+		{name: "flag already given", argv: []string{"api", "--allow-escape-sequences", "repos/o/r/actions/jobs/1/logs"}, want: jobLog},
+		{name: "pr diff", argv: []string{"pr", "diff", "1", "-R", "o/r"}, want: "argv=pr diff --allow-escape-sequences 1 -R o/r link\n"},
+		{name: "gist view", argv: []string{"gist", "view", "abc", "--raw"}, want: "argv=gist view --allow-escape-sequences abc --raw link\n"},
+		{name: "repo read-file", argv: []string{"repo", "read-file", "README.md", "-R", "o/r"}, want: "argv=repo read-file --allow-escape-sequences README.md -R o/r link\n"},
+		{name: "release download", argv: []string{"release", "download", "v1", "-O", "-", "-R", "o/r"}, want: "argv=release download --allow-escape-sequences v1 -O - -R o/r link\n"},
+		{name: "a command gh never guards", argv: []string{"pr", "view", "1", "--json", "state", "-R", "o/r"}, want: "\x1b[31margv=pr view 1 --json state -R o/r\x1b[0m \x1b]8;;http://x\x07link\x1b]8;;\x07\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var pipe bytes.Buffer
+			cmd.SetOut(&pipe)
+			if err := runVcsGh(cmd, tt.argv, 0); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(t.TempDir(), "saved")
+			file, err := os.Create(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cmd.SetOut(file)
+			if err := runVcsGh(cmd, tt.argv, 0); err != nil {
+				t.Fatal(err)
+			}
+			if err := file.Close(); err != nil {
+				t.Fatal(err)
+			}
+			saved, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := pipe.String(); got != tt.want {
+				t.Errorf("piped %q, want %q", got, tt.want)
+			}
+			if got := string(saved); got != tt.want {
+				t.Errorf("saved %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestGhPlainWriter(t *testing.T) {
+	t.Parallel()
+	png := "\x89PNG\r\n\x1a\n\x1b[31m" + strings.Repeat("\x00\x1b", 300)
+	tests := []struct {
+		name   string
+		writes []string
+		want   string
+	}{
+		{name: "a sequence split across writes", writes: []string{"a \x1b[3", "1mred\x1b[0m\n"}, want: "a red\n"},
+		{name: "an OSC hyperlink closed by BEL", writes: []string{"\x1b]8;;http://x\x07link\x1b]8;;\x07\n"}, want: "link\n"},
+		{name: "text past the sniff length", writes: []string{strings.Repeat("x", 600), "\x1b[1mbold\x1b[0m\n"}, want: strings.Repeat("x", 600) + "bold\n"},
+		{name: "binary passes verbatim", writes: []string{png[:200], png[200:]}, want: png},
+		{name: "binary shorter than the sniff length", writes: []string{png[:12]}, want: png[:12]},
+		{name: "nothing", want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var out bytes.Buffer
+			plain := &ghPlainWriter{w: &out}
+			for _, w := range tt.writes {
+				if _, err := plain.Write([]byte(w)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := plain.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if got := out.String(); got != tt.want {
+				t.Errorf("wrote %q, want %q", got, tt.want)
 			}
 		})
 	}

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -105,11 +106,15 @@ branch protection, is refused before it runs: those stay on plain gh, where
 the merge hooks gate them. CCX_GH_RUN_GUARDED=1 runs them instead, for a local
 shim that puts this gateway behind the name gh, so the hooks still read
 gh pr merge on the command line. CCX_GH names the real gh for such a machine.
-Every argument from the gh command on passes to gh untouched, so a gh flag
-such as --allow-escape-sequences needs no -- before it.
-Standard streams pass through, and ccx exits with gh's code. A read that fails
-once its token has expired, such as a watch that outlived it, runs again on a
-fresh one.`,
+Every argument from the gh command on passes to gh, so a gh flag needs no --
+before it. Off a terminal, gh api, pr diff, gist view, repo read-file, and
+release download also get --allow-escape-sequences, and ccx strips every
+terminal escape sequence from what they print, so gh never refuses a log,
+file, diff, gist, or asset for carrying one and no saved read keeps one.
+Output whose first 512 bytes read as binary to gh's own content sniff, once
+their escape sequences are gone, passes verbatim. Standard streams otherwise
+pass through, and ccx exits with gh's code. A read that fails once its token
+has expired, such as a watch that outlived it, runs again on a fresh one.`,
 		Example: "  ccx vcs gh -- pr checks 123\n  ccx vcs gh --max-age 5m -- pr view 123 --json state\n" +
 			"  GH_REPO=o/r ccx vcs gh --max-age 1m -- api graphql -f query='{ repository(owner: \"o\", name: \"r\") { name } }'\n" +
 			"  ccx vcs gh -- run watch 456 --exit-status",
@@ -128,7 +133,7 @@ fresh one.`,
 
 const ghFloorPrefix = "ccx: GitHub rate limit floor: "
 
-func runVcsGh(cmd *cobra.Command, argv []string, maxAge time.Duration) error {
+func runVcsGh(cmd *cobra.Command, argv []string, maxAge time.Duration) (err error) {
 	ctx := cmd.Context()
 	stdin, err := ghStdin(cmd, argv)
 	if err != nil {
@@ -138,26 +143,32 @@ func runVcsGh(cmd *cobra.Command, argv []string, maxAge time.Duration) error {
 	if !reads && ghGuarded(argv, stdin) && os.Getenv(ghRunGuardedEnv) == "" {
 		return fmt.Errorf("vcs gh: merge with gh pr merge; the merge hooks gate that form: %s", ghCommand(argv))
 	}
+	out := cmd.OutOrStdout()
+	if !ghTerminal(out) && ghGuardsEscapes(argv) {
+		plain := &ghPlainWriter{w: out}
+		defer func() { err = cmp.Or(err, plain.Close()) }()
+		out, argv = plain, ghAllowEscapes(argv)
+	}
 	dir := workingDir(ctx)
 	if ghNoRequest(argv) {
-		return ghExit(ghRun(ctx, cmd, dir, argv, nil, stdin, cmd.OutOrStdout(), cmd.ErrOrStderr()))
+		return ghExit(ghRun(ctx, cmd, dir, argv, nil, stdin, out, cmd.ErrOrStderr()))
 	}
 	resource := ghResource(argv)
 	if !reads {
 		ghNoteLedgerError(cmd, reviewsAPI().Charge(ctx, ghapi.IdentityUser, resource, ghChargeTarget(argv)))
-		err := ghRun(ctx, cmd, dir, argv, nil, stdin, cmd.OutOrStdout(), cmd.ErrOrStderr())
+		err := ghRun(ctx, cmd, dir, argv, nil, stdin, out, cmd.ErrOrStderr())
 		ghInvalidate(ghWrittenRepo(ctx, argv, func() string { return ghCheckoutRepo(ctx, dir) }))
 		return ghExit(err)
 	}
 	scope := cmp.Or(ghTargetRepo(ctx, argv), ghGraphQLRepo(argv))
 	watches := ghWatches(argv)
-	interactive := !watches && ghTerminal(cmd.OutOrStdout())
+	interactive := !watches && ghTerminal(out)
 	userToken := interactive || ghReadsOutsideInstallation(argv) || ghQueryReadsViewer(argv, stdin)
 	cacheable := maxAge > 0 && !interactive && !ghOtherIdentity(ctx) && ghCacheable(argv, stdin, scope)
 	key := ghCacheKey(cmp.Or(scope, dir), argv, stdin)
 	if cacheable {
 		if hit, ok := ghCached(key); ok && time.Since(hit.At) < maxAge && hit.At.After(ghInvalidatedAt(scope)) {
-			_, err := cmd.OutOrStdout().Write(hit.Stdout)
+			_, err := out.Write(hit.Stdout)
 			return err
 		}
 	}
@@ -191,7 +202,7 @@ func runVcsGh(cmd *cobra.Command, argv []string, maxAge time.Duration) error {
 		if err := admit; err != nil {
 			if hit, ok := ghCached(key); ok && hit.At.After(ghInvalidatedAt(scope)) && errors.As(err, new(*ghapi.FloorError)) {
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "ccx: serving the answer cached at %s; %v\n", hit.At.Local().Format(time.Kitchen), err)
-				_, werr := cmd.OutOrStdout().Write(hit.Stdout)
+				_, werr := out.Write(hit.Stdout)
 				return werr
 			}
 			if identity == ghapi.IdentityApp && errors.As(err, new(*ghapi.FloorError)) {
@@ -211,7 +222,7 @@ func runVcsGh(cmd *cobra.Command, argv []string, maxAge time.Duration) error {
 			if live {
 				sink = io.MultiWriter(cmd.ErrOrStderr(), &stderr)
 			}
-			err = ghRun(ctx, cmd, dir, args, env, stdin, cmd.OutOrStdout(), sink)
+			err = ghRun(ctx, cmd, dir, args, env, stdin, out, sink)
 			if err != nil && identity == ghapi.IdentityApp && ghAppRateLimited(nil, stderr.Bytes()) {
 				userToken, spilled = true, true
 				continue
@@ -250,7 +261,7 @@ func runVcsGh(cmd *cobra.Command, argv []string, maxAge time.Duration) error {
 				ghNoteLedgerError(cmd, ghStore(key, stdout.Bytes(), started))
 			}
 			_, _ = cmd.ErrOrStderr().Write(stderr.Bytes())
-			if _, werr := cmd.OutOrStdout().Write(stdout.Bytes()); werr != nil {
+			if _, werr := out.Write(stdout.Bytes()); werr != nil {
 				return werr
 			}
 		}
@@ -310,6 +321,77 @@ func ghTerminal(w io.Writer) bool {
 	}
 	null, err := os.Stat(os.DevNull)
 	return err != nil || !os.SameFile(info, null)
+}
+
+const ghAllowEscapesFlag = "--allow-escape-sequences"
+
+// ghEscapeGuarded are the gh commands besides gh api that refuse content
+// carrying a terminal escape sequence unless given --allow-escape-sequences.
+var ghEscapeGuarded = map[string]bool{"pr diff": true, "gist view": true, "repo read-file": true, "release download": true}
+
+func ghGuardsEscapes(argv []string) bool {
+	return argv[0] == "api" || len(argv) > 1 && ghEscapeGuarded[argv[0]+" "+argv[1]]
+}
+
+// ghAllowEscapes returns argv with --allow-escape-sequences right after its gh
+// command, ahead of any --.
+func ghAllowEscapes(argv []string) []string {
+	if slices.Contains(argv, ghAllowEscapesFlag) {
+		return argv
+	}
+	at := 2
+	if argv[0] == "api" {
+		at = 1
+	}
+	return slices.Concat(argv[:at], []string{ghAllowEscapesFlag}, argv[at:])
+}
+
+// ghSniffLen is how much of a body http.DetectContentType reads, and so how much
+// gh's own guard reads to call it binary or text.
+const ghSniffLen = 512
+
+// ghPlainWriter strips every terminal escape sequence from the text gh prints,
+// holding it whole until Close as gh's own guard does. Output whose first
+// ghSniffLen bytes read as binary streams through verbatim, since gh never
+// refuses it off a terminal and a strip would corrupt it.
+type ghPlainWriter struct {
+	w      io.Writer
+	text   []byte
+	binary bool
+}
+
+func (p *ghPlainWriter) Write(b []byte) (int, error) {
+	if p.binary {
+		return p.w.Write(b)
+	}
+	sniffed := len(p.text) >= ghSniffLen
+	p.text = append(p.text, b...)
+	if sniffed || len(p.text) < ghSniffLen || !ghBinary(p.text[:ghSniffLen]) {
+		return len(b), nil
+	}
+	p.binary = true
+	if _, err := p.w.Write(p.text); err != nil {
+		return 0, err
+	}
+	return len(b), nil
+}
+
+func (p *ghPlainWriter) Close() error {
+	if p.binary {
+		return nil
+	}
+	if !ghBinary(p.text[:min(len(p.text), ghSniffLen)]) {
+		p.text = ansiRE.ReplaceAll(p.text, nil)
+	}
+	_, err := p.w.Write(p.text)
+	return err
+}
+
+// ghBinary reports whether head reads as binary to http.DetectContentType once
+// its escape sequences are gone, since the BEL closing an OSC hyperlink is a
+// control byte the sniff alone calls binary.
+func ghBinary(head []byte) bool {
+	return !strings.HasPrefix(http.DetectContentType(ansiRE.ReplaceAll(head, nil)), "text/")
 }
 
 // ghOtherIdentity reports whether this read may not run as the signed-in gh
