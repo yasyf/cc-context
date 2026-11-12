@@ -286,7 +286,7 @@ record guidelines-profile-none api "repos/$own_repo/community/profile"
 record guidelines-profile-found api "repos/$foreign_repo/community/profile"
 if wanted guidelines-contributing-raw; then
 	contributing_url="$(gh api "repos/$foreign_repo/community/profile" --jq '.files.contributing.url')"
-	record guidelines-contributing-raw api "$contributing_url" -H "$raw_accept"
+	record guidelines-contributing-raw api --allow-escape-sequences "$contributing_url" -H "$raw_accept"
 fi
 
 ### ship's pull request lookup — gh pr list

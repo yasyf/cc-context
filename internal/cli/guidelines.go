@@ -379,11 +379,11 @@ func fetchGuidelinesContributing(ctx context.Context, nwo string) (*guidelinesCo
 		return nil, nil
 	}
 	url := profile.Files.Contributing.URL
-	body, err := render.RunCLI(ctx, render.Ambient, "gh", []string{"api", url, "-H", guidelinesRawAccept})
+	body, err := render.RunCLI(ctx, render.Ambient, "gh", ghAllowEscapes([]string{"api", url, "-H", guidelinesRawAccept}))
 	if err != nil {
 		return nil, fmt.Errorf("gh api %s: %w", url, err)
 	}
-	return &guidelinesContributingFile{Path: guidelinesContentsPath(url), Body: body}, nil
+	return &guidelinesContributingFile{Path: guidelinesContentsPath(url), Body: ansiRE.ReplaceAllString(body, "")}, nil
 }
 
 // guidelinesContentsPath reads the repo-relative path out of a contents API URL

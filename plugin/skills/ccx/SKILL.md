@@ -488,7 +488,11 @@ endpoint outside the installation, anything but `repos/…`, `graphql`, and
 token, since the app's token gets HTTP 403 from it.
 The guard pack rewrites a read-only `gh pr`, `gh run`, `gh issue`, or
 `gh api` GET call to `ccx vcs gh -- …` on its own; end the command with
-`# ccx:raw` to keep it on the user's token. gh's own flags pass through unchanged. Read a
+`# ccx:raw` to keep it on the user's token. gh's own flags pass through unchanged.
+Off a terminal, `gh api`, `pr diff`, `gist view`, `repo read-file`, and
+`release download` run with `--allow-escape-sequences` and print with every
+terminal escape sequence stripped, binary output aside, so a job log
+redirected to a file saves whole instead of gh's refusal. Read a
 failed job's log with `ccx vcs job-log <job-id>`, which needs only that job to
 have settled, not its run, strips escape sequences, and keeps the tail under
 `--budget`; `gh run view --job` refuses until the run completes.
