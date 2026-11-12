@@ -23,6 +23,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- An MCP tool call whose `repo` is an https git URL runs in a shallow clone
+  ccx keeps at `clones/<host>/<path>` under its cache. The first call clones
+  the remote's HEAD and each later call fetches it again. Before, the URL was
+  joined to the declared root as a path, so `ccx_code_search` in literal or
+  structural mode ran `rg` or `ast-grep` in a directory that did not exist.
+  Semantic search of the clone answers only from an index it already has,
+  since a server builds only the index of the checkout it started in.
 - ccx's own GitHub reads go through its rate-limit ledger. The native stack
   reads `ccx vcs ship`, `ccx vcs status` and the Graphite provider make are
   admitted through the floor and charged. When GitHub answers one on the app's
