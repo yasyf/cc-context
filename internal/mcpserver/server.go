@@ -25,6 +25,7 @@ import (
 	"github.com/yasyf/cc-context/internal/ripgrep"
 	"github.com/yasyf/cc-context/internal/search"
 	"github.com/yasyf/cc-context/internal/symbol"
+	"github.com/yasyf/cc-context/internal/vcs"
 	"github.com/yasyf/cc-context/internal/version"
 	"github.com/yasyf/cc-context/internal/workspace"
 )
@@ -312,7 +313,7 @@ var alwaysLoad = mcp.Meta{metaAlwaysLoad: true}
 func register(s *mcp.Server, p *proxy.Proxy, eng *codeexec.Engine) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "ccx_code_search",
-		Description: "Search code by intent (semantic), ast-grep structural pattern, or literal text — routed by query kind. Prefer over grep for where/how. Semantic search covers code+docs by default; pass content to narrow (code|docs|config|all). This server only builds the semantic index of the checkout it started in: any other repo answers from the index it already has, or errors and points at ccx code grep.",
+		Description: "Search code by intent (semantic), ast-grep structural pattern, or literal text — routed by query kind. Prefer over grep for where/how. Semantic search covers code+docs by default; pass content to narrow (code|docs|config|all). An https git URL repo runs in a shallow clone ccx keeps and fetches on every call. This server only builds the semantic index of the checkout it started in: any other repo, such a clone included, answers from the index it already has, or errors and points at ccx code grep.",
 		Meta:        alwaysLoad,
 	}, searchHandler(p))
 
@@ -451,6 +452,10 @@ func register(s *mcp.Server, p *proxy.Proxy, eng *codeexec.Engine) {
 func searchHandler(p *proxy.Proxy) func(context.Context, *mcp.CallToolRequest, SearchIn) (*mcp.CallToolResult, any, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, in SearchIn) (*mcp.CallToolResult, any, error) {
 		ctx = pinCall(ctx)
+		in, err := cloneRepo(ctx, in)
+		if err != nil {
+			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
+		}
 		snippet := in.MaxSnippetLines
 		if snippet == 0 {
 			snippet = defaultSnippetLines
@@ -608,13 +613,56 @@ func pinCall(ctx context.Context) context.Context {
 // repoScoped is a tool input that names the repo root its call answers against.
 // The root line has to name the tree that actually answered, so a handler whose
 // input can redirect the call must surface that choice to the result.
-type repoScoped interface{ repoRoot() string }
+type repoScoped[In any] interface {
+	repoRoot() string
+	withRepo(repo string) In
+}
 
 func (in SearchIn) repoRoot() string  { return in.Repo }
 func (in RelatedIn) repoRoot() string { return in.Repo }
 func (in OutlineIn) repoRoot() string { return in.Repo }
 func (in ReadIn) repoRoot() string    { return in.Repo }
 func (in GrepIn) repoRoot() string    { return in.Repo }
+
+func (in SearchIn) withRepo(repo string) SearchIn {
+	in.Repo = repo
+	return in
+}
+
+func (in RelatedIn) withRepo(repo string) RelatedIn {
+	in.Repo = repo
+	return in
+}
+
+func (in OutlineIn) withRepo(repo string) OutlineIn {
+	in.Repo = repo
+	return in
+}
+
+func (in ReadIn) withRepo(repo string) ReadIn {
+	in.Repo = repo
+	return in
+}
+
+func (in GrepIn) withRepo(repo string) GrepIn {
+	in.Repo = repo
+	return in
+}
+
+// cloneRepo swaps an https git URL repo for the clone ccx keeps of it before
+// anything resolves against it, so every mode and every repo-scoped tool runs
+// in that clone rather than in the URL joined to the declared root as a path.
+func cloneRepo[In any](ctx context.Context, in In) (In, error) {
+	rs, ok := any(in).(repoScoped[In])
+	if !ok {
+		return in, nil
+	}
+	dir, ok, err := vcs.RemoteCheckout(ctx, rs.repoRoot())
+	if !ok || err != nil {
+		return in, err
+	}
+	return rs.withRepo(dir), nil
+}
 
 // pinRepo moves the root a call answers from into ctx, so the op runs in the
 // repo the caller named and the result line names the tree that answered. It
@@ -693,12 +741,16 @@ func handler[In any](p *proxy.Proxy, op backend.Op, args func(In) backend.Args) 
 func rootedHandler[In any](p *proxy.Proxy, op backend.Op, args func(context.Context, In) (backend.Args, error)) func(context.Context, *mcp.CallToolRequest, In) (*mcp.CallToolResult, any, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, in In) (*mcp.CallToolResult, any, error) {
 		ctx = pinCall(ctx)
+		in, err := cloneRepo(ctx, in)
+		if err != nil {
+			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
+		}
 		a, err := args(ctx, in)
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", req.Params.Name, err)
 		}
 		repo := ""
-		if rs, ok := any(in).(repoScoped); ok {
+		if rs, ok := any(in).(repoScoped[In]); ok {
 			repo = rs.repoRoot()
 		}
 		if ctx, err = pinRepo(ctx, repo); err != nil {

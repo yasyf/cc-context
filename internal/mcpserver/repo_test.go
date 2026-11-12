@@ -11,6 +11,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/yasyf/cc-context/internal/backend"
+	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/search"
 	"github.com/yasyf/cc-context/internal/workspace"
 )
@@ -272,6 +273,71 @@ func TestSearchToolLiteralSearchesNamedRepo(t *testing.T) {
 	requireCite(t, out, named, hit)
 	if strings.Contains(out, "declared.go") {
 		t.Errorf("literal search leaked into the declared root:\n%s", out)
+	}
+}
+
+// TestSearchToolSearchesAnHTTPSRepoInItsClone guards a repo given as an https
+// git URL. Joined to the declared root as a path, it named a directory that did
+// not exist, and literal and structural search ran their engine there. The
+// stub ast-grep answers only once the structural op reaches a real directory.
+func TestSearchToolSearchesAnHTTPSRepoInItsClone(t *testing.T) {
+	t.Parallel()
+	requireGrepEngine(t)
+	remote, _ := writeTree(t, "remote.go", "package remote\n\nfunc Needle() {}\n")
+	commitAll(t, remote)
+	declared, _ := writeTree(t, "declared.go", "package declared\n\nfunc Needle() {}\n")
+	data := t.TempDir()
+	const url = "https://git.test/yasyf/remote"
+	clone := filepath.Join(data, "clones", "git.test", "yasyf", "remote")
+
+	ctx := render.WithEnv(workspace.WithRoot(t.Context(), declared),
+		fakeAstGrepOnPath(t, []string{"remote.go"}),
+		"CLAUDE_PLUGIN_DATA="+data,
+		"GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0=url.file://"+remote+".insteadOf",
+		"GIT_CONFIG_VALUE_0="+url,
+	)
+	cs := connectTestServer(ctx, t)
+
+	for _, tt := range []struct{ mode, query, lang string }{
+		{mode: "literal", query: "func Needle"},
+		{mode: "structural", query: "func Needle() {}", lang: "go"},
+	} {
+		out, isErr := callText(t, cs, "ccx_code_search", map[string]any{"query": tt.query, "mode": tt.mode, "lang": tt.lang, "repo": url})
+		if isErr {
+			t.Fatalf("ccx_code_search %s is error: %s", tt.mode, out)
+		}
+		if !strings.Contains(out, "# root "+clone) || !strings.Contains(out, "remote.go") {
+			t.Errorf("%s search should answer from the clone at %s:\n%s", tt.mode, clone, out)
+		}
+		if strings.Contains(out, "declared.go") {
+			t.Errorf("%s search leaked into the declared root:\n%s", tt.mode, out)
+		}
+	}
+
+	writeUnder(t, remote, "later.go", "package remote\n\nfunc Later() {}\n")
+	commitAll(t, remote)
+	out, isErr := callText(t, cs, "ccx_code_search", map[string]any{"query": "func Later", "mode": "literal", "repo": url})
+	if isErr {
+		t.Fatalf("ccx_code_search after a push is error: %s", out)
+	}
+	requireCite(t, out, clone, filepath.Join(clone, "later.go"))
+}
+
+// commitAll commits every file under dir, making it a repository first when it
+// is not one.
+func commitAll(t *testing.T, dir string) {
+	t.Helper()
+	for _, args := range [][]string{
+		{"init", "--quiet"},
+		{"add", "--all"},
+		{"-c", "user.name=t", "-c", "user.email=t@t.t", "-c", "commit.gpgsign=false", "commit", "--quiet", "--message", "fixture"},
+	} {
+		cmd := exec.Command("git", args...) //nolint:gosec // args are fixture-authored, never user input
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
 	}
 }
 

@@ -145,6 +145,8 @@ When Claude Code defers MCP tools behind tool search (`ENABLE_TOOL_SEARCH`), the
 
 A `ccx mcp` server only builds the semantic index of the checkout it started in, which is the first root its client declares, else its working directory. Search another repository with `repo=` and it answers from the index that repository already has, unrefreshed. With no index, the call errors and points at `ccx code grep`, or at running `ccx code search` from that repository. A server started in the home directory or outside a checkout builds nothing. The CLI builds wherever you run it.
 
+A `repo=` given as an https git URL, such as `https://github.com/yasyf/cc-remote`, runs in a shallow clone ccx keeps under its cache at `clones/<host>/<path>`. The first call clones the remote's HEAD and every later call fetches it again, so literal, structural, and semantic search, along with read, outline, grep, and related, all answer from that clone. Semantic search of it follows the rule above, so a server that did not start there answers only from an index the clone already has.
+
 ## Commands
 
 Each command is a token-bounded stand-in for a primitive an agent would otherwise reach for. Structural output is capped at `--budget` tokens, cut on a line boundary, with an explicit marker saying how much was dropped. The daily drivers:
