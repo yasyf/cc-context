@@ -66,13 +66,12 @@ func stackAssertOriginalKept(t *testing.T, f *vcstest.Fixture, kept string, orig
 	}
 }
 
-// TestStackAbortLeavesAReplacedWorkspaceAlone pins the reused-path hazard: an
-// abort whose receipt was lost keeps the run, and once another worktree sits
-// at the workspace path the retry finishes by the saved registration instead
-// of deleting whatever the path holds now.
+// TestStackAbortLeavesAReplacedWorkspaceAlone pins the reused-path hazard on
+// the daemon's path: once another worktree sits at the workspace path, abort
+// hands the daemon the saved registration, the daemon refuses the replacement,
+// and abort finishes without deleting whatever the path holds now.
 func TestStackAbortLeavesAReplacedWorkspaceAlone(t *testing.T) {
 	requireCleanupDaemon(t)
-	errLost := errors.New("read the receipt: connection reset by peer")
 	for _, tt := range []struct {
 		name         string
 		replace      func(t *testing.T, f *vcstest.Fixture, ws string) (kept, marker string)
@@ -83,14 +82,7 @@ func TestStackAbortLeavesAReplacedWorkspaceAlone(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			f, ws := stackResolvedConflict(t)
-			stackDeferTo(t, f, cleanup.Receipt{}, errLost)
 			registration := stackRunConflict(t, f).Registration
-			if _, _, err := runStackCmd(t, f, "abort"); !errors.Is(err, errLost) {
-				t.Fatalf("abort = %v, want the lost receipt to keep the run", err)
-			}
-			if c := stackRunConflict(t, f); c.Workspace != ws || c.Registration != registration {
-				t.Fatalf("run conflict = %+v after the uncertain abort, want %s with %+v", c, ws, registration)
-			}
 			kept, marker := tt.replace(t, f, ws)
 			replacement := observedWorkspace(t, ws)
 			if replacement == registration || (replacement.AdminDir == registration.AdminDir) != tt.sameAdminDir {
@@ -137,21 +129,26 @@ func (s *lostReceiptCleanup) Defer(ctx context.Context, r cleanup.DeferRequest) 
 	return cleanup.Receipt{}, s.err
 }
 
-// TestStackAbortRejoinsTheLandedJobOverAReplacedWorkspace pins the other half
-// of a lost receipt: when the daemon did journal the removal, the retry gets
-// that job back by the saved registration, and the job itself blocks on
-// identity rather than deleting the worktree that replaced the original.
-func TestStackAbortRejoinsTheLandedJobOverAReplacedWorkspace(t *testing.T) {
+// TestStackAbortLeavesALostReceiptsJobToBlockOnAReplacedWorkspace pins the
+// other half of a lost receipt: abort still drops the run and says the daemon
+// may already hold the workspace, and when the daemon did journal the removal,
+// the job itself blocks on identity rather than deleting a worktree that
+// replaced the original afterwards.
+func TestStackAbortLeavesALostReceiptsJobToBlockOnAReplacedWorkspace(t *testing.T) {
 	requireCleanupDaemon(t)
 	f, ws := stackResolvedConflict(t)
 	h := fixtureCleanup(t, f)
 	h.active.Store(true)
-	lossy := &lostReceiptCleanup{Service: h.engine, err: errors.New("read the receipt: connection reset by peer")}
+	lossy := &lostReceiptCleanup{Service: h.engine, err: stackLostDefer(ws)}
 	f.Decorate(func(ctx context.Context) context.Context { return withCleanup(ctx, lossy) })
 	registration := stackRunConflict(t, f).Registration
 
-	if _, _, err := runStackCmd(t, f, "abort"); !errors.Is(err, lossy.err) {
-		t.Fatalf("abort = %v, want the lost receipt to keep the run", err)
+	out, _, err := runStackCmd(t, f, "abort")
+	if err != nil {
+		t.Fatalf("abort: %v", err)
+	}
+	if want := "aborted · no branch moved" + shipSep + stackLostLine(ws); out != want {
+		t.Errorf("abort output = %q, want %q", out, want)
 	}
 	first := lossy.first
 	if first.State != cleanup.State(cleanup.PhaseWaiting) {
@@ -160,23 +157,9 @@ func TestStackAbortRejoinsTheLandedJobOverAReplacedWorkspace(t *testing.T) {
 	if got := journaledJobs(t, h); !slices.Equal(got, []string{first.JobID}) {
 		t.Fatalf("journaled jobs = %v, want only %s", got, first.JobID)
 	}
-	if c := stackRunConflict(t, f); c.Workspace != ws || c.Registration != registration {
-		t.Fatalf("run conflict = %+v after the uncertain abort, want %s with %+v", c, ws, registration)
-	}
+	stackAssertCleared(t, f)
 	kept, marker := replaceWorkspace(t, f, ws)
 	replacement := observedWorkspace(t, ws)
-
-	out, _, err := runStackCmd(t, f, "abort")
-	if err != nil {
-		t.Fatalf("abort over the replacement: %v", err)
-	}
-	if want := "aborted · no branch moved" + shipSep + "handed " + ws + " to cleanup job " + first.JobID + ", waiting"; !strings.HasPrefix(out, want) {
-		t.Errorf("abort output = %q, want it to start with %q", out, want)
-	}
-	if got := journaledJobs(t, h); !slices.Equal(got, []string{first.JobID}) {
-		t.Errorf("journaled jobs = %v, want only the original %s", got, first.JobID)
-	}
-	stackAssertCleared(t, f)
 
 	h.active.Store(false)
 	ctx, cancel := context.WithTimeout(f.Context(), 10*time.Second)
@@ -434,10 +417,11 @@ func TestStackAbortLeavesAReplacedWorkspaceAloneInline(t *testing.T) {
 	stackAssertCleared(t, f)
 }
 
-// TestStackAbortKeepsTheRunWhenTheWorkspaceCannotBeInspected pins that only a
-// definite mismatch lets abort finish: a path that holds no worktree at all is
-// an inspection failure, and the run stays for a retry.
-func TestStackAbortKeepsTheRunWhenTheWorkspaceCannotBeInspected(t *testing.T) {
+// TestStackAbortLeavesAnUninspectableWorkspaceUntouched pins that abort
+// deletes nothing at a path that holds no worktree at all: inline, that is an
+// inspection failure and the run stays for a retry; through the daemon, the
+// daemon refuses the unregistered path, and abort finishes and names it.
+func TestStackAbortLeavesAnUninspectableWorkspaceUntouched(t *testing.T) {
 	t.Run("inline", func(t *testing.T) {
 		f, ws := stackResolvedConflict(t)
 		registration := stackRunConflict(t, f).Registration
@@ -466,23 +450,21 @@ func TestStackAbortKeepsTheRunWhenTheWorkspaceCannotBeInspected(t *testing.T) {
 		registration := stackRunConflict(t, f).Registration
 		kept, marker := stackDisplaceWorkspace(t, f, ws)
 
-		_, _, err := runStackCmd(t, f, "abort")
-		var refused *cleanup.RefusedError
-		if !errors.As(err, &refused) || refused.Reason != "unregistered" || refused.Worktree != ws {
-			t.Fatalf("abort = %v, want the daemon's unregistered refusal", err)
+		out, _, err := runStackCmd(t, f, "abort")
+		if err != nil {
+			t.Fatalf("abort: %v", err)
 		}
-		if want := " — nothing was removed, and " + ws + " is left where it is; the run is kept, so abort can run again"; !strings.HasSuffix(err.Error(), want) {
-			t.Errorf("abort = %v, want it to end with %q", err, want)
+		refusal := "not a registered linked worktree: stat " + filepath.Join(ws, ".git") + ": no such file or directory"
+		if want := "aborted · no branch moved" + shipSep + "left " + ws + " in place: " + refusal + " — nothing was removed; ccx vcs worktree rm --path " + ws + " queues it once that is cleared"; out != want {
+			t.Errorf("abort output = %q, want the daemon's unregistered refusal %q", out, want)
 		}
 		if jobs := journaledJobs(t, h); len(jobs) != 0 {
 			t.Errorf("journaled jobs = %v, want none", jobs)
-		}
-		if c := stackRunConflict(t, f); c.Workspace != ws || c.Registration != registration {
-			t.Errorf("run conflict = %+v, want it kept naming %s with %+v", c, ws, registration)
 		}
 		if got := readFileStr(t, marker); got != "plain\n" {
 			t.Errorf("%s = %q, want the directory untouched", marker, got)
 		}
 		stackAssertOriginalKept(t, f, kept, registration)
+		stackAssertCleared(t, f)
 	})
 }

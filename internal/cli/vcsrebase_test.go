@@ -84,7 +84,7 @@ func TestVcsRebaseFetchesTheRebaseInOneBatch(t *testing.T) {
 		baseline[dir] = replayPromisorPacks(t, dir)
 	}
 
-	mustRun(t, f.Env(), control, "git", "rebase", "-q", "origin/main")
+	mustRun(t, f.Env(), control, "git", "-c", "core.abbrev=40", "rebase", "-q", "origin/main")
 	if got := replayPromisorPacks(t, control); got < baseline[control]+2 {
 		t.Fatalf("raw git rebase wrote %d promisor packs, want a fixture whose rebase fetches per commit", got-baseline[control])
 	}
