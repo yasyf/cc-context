@@ -953,6 +953,29 @@ func TestPRApprovalNamesTheReviewBotsRunOnTheHead(t *testing.T) {
 	}
 }
 
+func TestPRApprovalCountsAnApprovalOnlyOnTheHead(t *testing.T) {
+	t.Parallel()
+	rollup := &prstate.Rollup{State: "SUCCESS"}
+	rollup.Contexts.TotalCount = 1
+	rollup.Contexts.Nodes = []prstate.Context{{Typename: "CheckRun", Name: reviewBotCheck, Status: "COMPLETED", Conclusion: "NEUTRAL", Title: "ℹ️ Waiting for restack — push or comment @forge-pr-reviewer review"}}
+	pr := prstate.PR{State: "OPEN", HeadRefOid: "34087d1264", ReviewDecision: "APPROVED", Mergeable: "MERGEABLE", Rollup: rollup, Reviews: []prstate.Review{
+		{Author: "forge-pr-reviewer", State: "APPROVED", Commit: "316c682c69"},
+		{Author: "poetic-svc", State: "APPROVED", Commit: "34087d1264"},
+	}}
+	open := prQueueReport{Queue: prQueueNotQueued, State: "OPEN"}
+	got := prApprovalOf(pr)
+	if line := prApprovalValue(got); got.State != prApprovedOlder || line != "approved on an older head by forge-pr-reviewer; bot waiting for restack" {
+		t.Errorf("prApprovalOf = %+v reading %q, want %s reading the reviewer on the older head and the bot's reason", got, line, prApprovedOlder)
+	}
+	if verdict := prVerdict(prStatusReport{prQueueReport: open, CI: &prCIReport{State: prCIGreen}, Approval: got}, pr); verdict != "blocked:unapproved" {
+		t.Errorf("prVerdict = %q, want blocked:unapproved", verdict)
+	}
+	pr.Reviews[0].Commit = pr.HeadRefOid
+	if got := prApprovalOf(pr); got.State != prApproved || prApprovalValue(got) != "approved by forge-pr-reviewer, poetic-svc" {
+		t.Errorf("prApprovalOf = %+v, want approved by both once both approvals are on the head", got)
+	}
+}
+
 func TestPRVerdict(t *testing.T) {
 	t.Parallel()
 	green := &prCIReport{State: prCIGreen}

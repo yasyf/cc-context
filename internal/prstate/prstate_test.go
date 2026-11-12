@@ -698,7 +698,7 @@ func rest190() map[string]reply {
 			`"draft":false,"changed_files":3,"mergeable":false,"mergeable_state":"dirty","merge_commit_sha":"d4d4","user":{"login":"yasyf"},` +
 			`"base":{"ref":"main"},"head":{"ref":"yasyf/gh-budget/pr-190","sha":"` + restHead + `"},"labels":[{"name":"merge"}]}`},
 		"/repos/yasyf/cc-context/pulls/190/reviews": {body: `[{"state":"CHANGES_REQUESTED","user":{"login":"ann"}},{"state":"COMMENTED","user":{"login":"bob[bot]"}},` +
-			`{"state":"APPROVED","user":{"login":"bob[bot]"}},{"state":"APPROVED","user":{"login":"ann"}},{"state":"APPROVED","user":{"login":"cat"}},{"state":"DISMISSED","user":{"login":"cat"}}]`},
+			`{"state":"APPROVED","user":{"login":"bob[bot]"},"commit_id":"b2b2"},{"state":"APPROVED","user":{"login":"ann"},"commit_id":"` + restHead + `"},{"state":"APPROVED","user":{"login":"cat"}},{"state":"DISMISSED","user":{"login":"cat"}}]`},
 		"/repos/yasyf/cc-context/commits/" + restHead + "/check-runs": {body: `{"total_count":2,"check_runs":[{"name":"test","status":"completed","conclusion":"success"},` +
 			`{"name":"lint","status":"in_progress","conclusion":null}]}`},
 		"/repos/yasyf/cc-context/commits/" + restHead + "/status": {body: `{"state":"success","total_count":1,"statuses":[{"context":"buildkite/test","state":"success"}]}`},
@@ -723,8 +723,8 @@ func TestAFailedPollReadsThroughRESTAndSpacesTheNextPoll(t *testing.T) {
 		pr.MergeCommit != "" || pr.Author != "yasyf" || !pr.QueueLabelled() || !strings.HasPrefix(pr.Activity, ActivityHeading) {
 		t.Errorf("#190 = %+v, want the REST record of the open pull request", pr)
 	}
-	if fmt.Sprint(pr.Reviews) != "[{ann APPROVED} {bob APPROVED}]" {
-		t.Errorf("reviews = %v, want each reviewer's latest opinion with the dismissed one dropped", pr.Reviews)
+	if fmt.Sprint(pr.Reviews) != "[{ann APPROVED "+restHead+"} {bob APPROVED b2b2}]" {
+		t.Errorf("reviews = %v, want each reviewer's latest opinion on its commit with the dismissed one dropped", pr.Reviews)
 	}
 	if pr.Rollup == nil || pr.Rollup.UnfinishedActions != 1 {
 		t.Errorf("rollup = %+v, want the one queued Actions suite counted", pr.Rollup)

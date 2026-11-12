@@ -141,10 +141,12 @@ type PR struct {
 	QueueUnknown bool `json:"queueUnknown,omitempty"`
 }
 
-// Review is one reviewer's latest approving or change-requesting review.
+// Review is one reviewer's latest approving or change-requesting review, and
+// the commit it was cast on, empty when that commit is gone.
 type Review struct {
 	Author string `json:"author"`
 	State  string `json:"state"`
+	Commit string `json:"commit,omitempty"`
 }
 
 // Rollup is the head commit's aggregate check state and the contexts behind
