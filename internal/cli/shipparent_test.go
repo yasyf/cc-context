@@ -614,6 +614,66 @@ func TestShipGTParentStacksOnAPublishedParentOverAnUnpushedBranchBelow(t *testin
 	}
 }
 
+// TestShipGTAmendWithParentPublishesAParentAmendedInThisWorkingCopy is
+// o246-ref-reset's ship --amend --parent o246-ref-pings on 2026-11-11: this
+// working copy amended the parent and replayed the tip onto it, and the ship
+// refused the parent as another lane's, naming an --include ship lacked.
+func TestShipGTAmendWithParentPublishesAParentAmendedInThisWorkingCopy(t *testing.T) {
+	f := shipGTRepo(t)
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	shipGTStack(t, f, "base", "mid", "top")
+	api.prs["base"], api.prs["mid"], api.prs["top"] = 7, 8, 9
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("publish the stack: %v", err)
+	}
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "mid")
+	writeShipFile(t, f.Dir, "mid.txt", "mid, amended\n")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qa", "--amend", "--no-edit")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "top")
+	mustRun(t, f.Env(), f.Dir, "git", "rebase", "-q", "--onto", "mid", "origin/mid")
+	writeShipFile(t, f.Dir, "top.txt", "top, amended\n")
+	shipResetLog(t, f)
+
+	if _, errStr, err := runShipCmdFull(f.Context(), t, "--amend", "--no-watch", "--parent", "mid", "top.txt"); err != nil {
+		t.Fatalf("ship --amend --parent mid = %v (stderr=%q), want mid published with top", err, errStr)
+	}
+	for _, name := range []string{"mid", "top"} {
+		if remote, local := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", name), gitAt(t, f.Env(), f.Dir, "rev-parse", name); remote != local {
+			t.Errorf("origin %s = %s, want the local head %s", name, remote, local)
+		}
+	}
+}
+
+// TestShipGTParentIncludeTakesAParentAnotherLaneHolds: mid sits in a sibling
+// lane's working copy with a fix that lane never pushed, and top carries it, so
+// ship --parent mid refuses to publish top on mid's published head until
+// --include mid takes mid into the run.
+func TestShipGTParentIncludeTakesAParentAnotherLaneHolds(t *testing.T) {
+	f := shipGTRepo(t)
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	mid, _ := stackHeldMidWithFix(t, f, api, true)
+	shipResetLog(t, f)
+
+	_, _, err := runShipCmdFull(f.Context(), t, "--no-commit", "--no-watch", "--parent", "mid")
+	if err == nil || !strings.Contains(err.Error(), "pass --include mid to take it into the run") {
+		t.Fatalf("ship --parent mid = %v, want a refusal naming --include mid", err)
+	}
+	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "mid"); got != mid {
+		t.Fatalf("origin mid = %s, want it left at %s", got, mid)
+	}
+
+	if _, errStr, err := runShipCmdFull(f.Context(), t, "--no-commit", "--no-watch", "--parent", "mid", "--include", "mid"); err != nil {
+		t.Fatalf("ship --parent mid --include mid = %v (stderr=%q), want mid published with top", err, errStr)
+	}
+	for _, name := range []string{"mid", "top"} {
+		if remote, local := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", name), gitAt(t, f.Env(), f.Dir, "rev-parse", name); remote != local {
+			t.Errorf("origin %s = %s, want the local head %s", name, remote, local)
+		}
+	}
+}
+
 // shipCutFromPublishedParent is cc-skills' dashboard-cci-polling on
 // 2026-11-02: base and p are published, local p is two pushes behind origin/p,
 // s is a sibling lane's branch tracked on p at the commit between them, and c

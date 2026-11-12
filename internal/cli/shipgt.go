@@ -2715,7 +2715,7 @@ func shipPushGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, meta ma
 		if err != nil {
 			return "", nil, nil, err
 		}
-		sub.otherLanes = slices.DeleteFunc(slices.Clone(chain), func(name string) bool { return !others[name] })
+		sub.otherLanes = slices.DeleteFunc(slices.Clone(chain), func(name string) bool { return !others[name] || slices.Contains(o.include, name) })
 	}
 	if o.expectRemote != "" {
 		sub.leases = maps.Clone(sub.leases)

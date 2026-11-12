@@ -292,7 +292,9 @@ head and resubmits them under their leases, reported as
 `resubmitted <branches> above <branch>`. One another working copy has checked
 out stays where it is, with the branches above it, reported as
 `left <branch> (checked out in <path>)`, unless `--all-lanes` carries it, and
-`--tip-only` leaves them all where they are. `--tip-only` reads every ancestor at its published head and never locks or
+`--tip-only` leaves them all where they are. `--parent` keeps each branch below the tip at its published
+head, except one this working copy checked out and amended, which publishes with
+the run, and one `--include <branch>` takes into it. `--tip-only` reads every ancestor at its published head and never locks or
 writes an ancestor's local ref, so it ships while another worktree amends the
 parent. It moves no ancestor: when the parent's published head has moved past
 the tip's base, the tip is pushed on that base as it is, and when the parent was

@@ -591,7 +591,14 @@ func dryRunStack(ctx context.Context, l lane, o shipOpts, c *gtCache, r *shipDry
 	if moveState, err = dryRunKeepMergeable(ctx, l, o, moveState, chain, r); err != nil {
 		return err
 	}
-	line := shipParentLine(o.parent != "" || onPublished, chain, r.branch)
+	tr, err := gtTrunkRefOffline(ctx, l.dir(), "ship", r.trunk)
+	if err != nil && !errors.Is(err, vcs.ErrNoTrunk) {
+		return err
+	}
+	line, err := shipParentLine(ctx, l, tr, o.parent != "" || onPublished, state, chain, r.branch, o.include)
+	if err != nil {
+		return err
+	}
 	if err := dryRunMoves(ctx, l, pin, moveState, chain, line, holders, o, r); err != nil {
 		return dryRunRefused(err, r)
 	}
