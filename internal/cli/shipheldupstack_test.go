@@ -1,15 +1,19 @@
 package cli
 
 import (
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 )
 
-// TestShipLeavesTheBranchesAboveItThatOtherWorkingCopiesHold is
-// oncall-card-actions-build's report: a plain ship from the bottom of a stack
-// cut with stack new replayed the branches other lanes' worktrees held.
-func TestShipLeavesTheBranchesAboveItThatOtherWorkingCopiesHold(t *testing.T) {
+// TestShipCarriesTheBranchesAboveItThatOtherWorkingCopiesHold is
+// oncall-card-actions-build's stack the other way round: leaving the branches
+// other lanes' worktrees held kept their pull requests on the parent's old
+// commit, and a server-side rebase after the parent landed replayed that commit
+// over a fix pushed above it.
+func TestShipCarriesTheBranchesAboveItThatOtherWorkingCopiesHold(t *testing.T) {
 	f := shipGTRepo(t)
 	api := stubGTAPI(t)
 	f.Decorate(api.ctx)
@@ -27,13 +31,6 @@ func TestShipLeavesTheBranchesAboveItThatOtherWorkingCopiesHold(t *testing.T) {
 	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
 		t.Fatalf("stack submit: %v", err)
 	}
-	heads := map[string]string{}
-	for _, name := range []string{"c", "g"} {
-		heads[name] = gitAt(t, f.Env(), f.RemoteDir, "rev-parse", name)
-		if local := gitAt(t, f.Env(), f.Dir, "rev-parse", name); local != heads[name] {
-			t.Fatalf("fixture: local %s = %s, want its published head %s", name, local, heads[name])
-		}
-	}
 	writeShipFile(t, f.Dir, "p.txt", "more\n")
 	shipResetLog(t, f)
 
@@ -41,30 +38,65 @@ func TestShipLeavesTheBranchesAboveItThatOtherWorkingCopiesHold(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ship = %v (stderr=%q)", err, errStr)
 	}
-	for _, name := range []string{"c", "g"} {
-		if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", name); got != heads[name] {
-			t.Errorf("origin %s moved from %s to %s", name, heads[name], got)
+	if !strings.Contains(out, "resubmitted c, g above p") {
+		t.Errorf("ship output = %q, want c and g resubmitted above p", out)
+	}
+	for holder, pair := range map[string][2]string{c: {"p", "c"}, g: {"c", "g"}} {
+		parent, name := pair[0], pair[1]
+		if got, want := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", name), gitAt(t, f.Env(), f.Dir, "rev-parse", name); got != want {
+			t.Errorf("origin %s = %s, want the carried %s", name, got, want)
 		}
-		if got := gitAt(t, f.Env(), f.Dir, "rev-parse", name); got != heads[name] {
-			t.Errorf("local %s moved from %s to %s", name, heads[name], got)
+		if !stackOnto(t, f, parent, name) {
+			t.Errorf("local %s does not sit on the new %s", name, parent)
 		}
-	}
-	for holder, name := range map[string]string{c: "c", g: "g"} {
-		if got := gitAt(t, f.Env(), holder, "rev-parse", "HEAD"); got != heads[name] {
-			t.Errorf("the working copy holding %s moved to %s", name, got)
+		if got, want := gitAt(t, f.Env(), holder, "rev-parse", "HEAD"), gitAt(t, f.Env(), f.Dir, "rev-parse", name); got != want {
+			t.Errorf("the working copy holding %s is at %s, want the carried %s", name, got, want)
 		}
-	}
-	if got, want := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "p"), gitAt(t, f.Env(), f.Dir, "rev-parse", "p"); got != want {
-		t.Errorf("origin p = %s, want the shipped head %s", got, want)
-	}
-	if want := "left c (checked out in " + c + ") where it is, with the branches above it, for that working copy to restack; --all-lanes carries it"; !strings.Contains(out, want) {
-		t.Errorf("ship output = %q, want %q", out, want)
-	}
-	if strings.Contains(out, "resubmitted") {
-		t.Errorf("ship output = %q, want no branch above p resubmitted", out)
 	}
 	if want := "ship: this commit lands on p, and c, stacked on it, is in " + c + "; cd there if the work is c's\n"; !strings.Contains(errStr, want) {
 		t.Errorf("ship stderr = %q, want %q", errStr, want)
+	}
+}
+
+func TestShipRefusesToMoveABranchAboveItOutFromUnderUncommittedWork(t *testing.T) {
+	f := shipGTRepo(t)
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	shipGTStack(t, f, "p")
+	c := stackLaneHere(t, f, "c")
+	api.openPRs("p", "c")
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("stack submit: %v", err)
+	}
+	heads := map[string]string{}
+	for _, name := range []string{"p", "c"} {
+		heads[name] = gitAt(t, f.Env(), f.RemoteDir, "rev-parse", name)
+	}
+	writeShipFile(t, c, "scratch.txt", "work in progress\n")
+	writeShipFile(t, f.Dir, "p.txt", "more\n")
+	want := "ship: c, stacked on p, is checked out in " + c + " with uncommitted work, and this commit would move it"
+
+	if refusals := dryRunValues(dryRunReport(t, f, "-m", "fix: frobnicate", "p.txt"), "refuses"); !slices.ContainsFunc(refusals, func(r string) bool { return strings.HasPrefix(r, want) }) {
+		t.Errorf("dry-run refusals = %q, want %q", refusals, want)
+	}
+	shipResetLog(t, f)
+	_, _, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "p.txt")
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("ship = %v, want %q", err, want)
+	}
+	for _, name := range []string{"p", "c"} {
+		if got := gitAt(t, f.Env(), f.Dir, "rev-parse", name); got != heads[name] {
+			t.Errorf("local %s moved from %s to %s", name, heads[name], got)
+		}
+		if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", name); got != heads[name] {
+			t.Errorf("origin %s moved from %s to %s", name, heads[name], got)
+		}
+	}
+	if dirt := gitAt(t, f.Env(), f.Dir, "status", "--porcelain"); !strings.Contains(dirt, "p.txt") {
+		t.Errorf("status = %q, want p.txt still uncommitted", dirt)
+	}
+	if body, err := os.ReadFile(filepath.Join(c, "scratch.txt")); err != nil || string(body) != "work in progress\n" {
+		t.Errorf("c's scratch.txt = %q (%v), want the uncommitted work kept", body, err)
 	}
 }
 

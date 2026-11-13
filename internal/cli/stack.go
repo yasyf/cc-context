@@ -223,8 +223,11 @@ onto its new head, still on that branch.
 A working copy stack new cut onto a branch of the stack checked out where it
 ran, or one worktree add checked out on such a branch, joins that working
 copy's lane, and a branch any working copy of this lane has checked
-out is submitted as if it were checked out here. A branch a working copy of
-another lane has checked out is that lane's. When one of this lane's branches
+out is submitted as if it were checked out here. Each published branch stacked
+on the branch checked out here, or on one the run takes in this way, is
+submitted with it whatever working copy holds it or session claims it, and a
+clean working copy holding one is moved onto its new head. Any other branch a
+working copy of another lane has checked out is that lane's. When one of this lane's branches
 sits on it, it stays in the run at its published head, neither pushed nor
 submitted, and this lane's branches are replayed onto that head and submitted,
 so after the parent's lane restacks the parent, the child lane resubmits onto it
@@ -657,7 +660,12 @@ func runStackSubmit(cmd *cobra.Command, o shipOpts, include, parents []string, t
 	}
 	taken := append(slices.Clone(include), landed...)
 	if slices.Contains(stack, current) {
+		above, err := gtPublishedUpstack(ctx, l.dir(), stackState, current)
+		if err != nil {
+			return err
+		}
 		taken = append(taken, current)
+		taken = append(taken, slices.DeleteFunc(above, func(name string) bool { return !slices.Contains(stack, name) })...)
 	}
 	if o.allLanes {
 		taken = stack
