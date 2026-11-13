@@ -47,6 +47,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   escape sequences; pass --allow-escape-sequences to output it anyway`.
   `ccx vcs guidelines` reads a raw `CONTRIBUTING.md` the same way, and
   `ccx vcs job-log` leaves both steps to the gateway.
+- `ccx vcs ship` runs its prek hooks with the repository's mise config
+  trusted, through `MISE_TRUSTED_CONFIG_PATHS` set to the repository root for
+  the hook child alone, so a hook whose entry is `mise exec` runs in a fresh
+  clone. Its summary names each hook that never ran apart from the ones that
+  failed, as `hooks failed: biome · hooks not run: golangci-lint`: a hook
+  prek could not start, one whose command was missing (exit 126 or 127), one
+  mise refused to start, and a golangci-lint that reported only typecheck
+  issues, since its packages never loaded. Before, mise refused every
+  untrusted clone's config with exit code 1, which ship read as
+  golangci-lint's "issues found", so it committed and pushed a change no
+  linter saw and its summary read `hooks failed: ensure-wasm,
+  golangci-lint-fmt, golangci-lint`.
+- The `golangci-lint` commit hook and `task lint` run under the Go that
+  `mise.toml` pins, through `mise exec go golangci-lint --`. Before, they ran
+  under the Go on `PATH`, and on a machine whose Go is newer than the one
+  golangci-lint was built with, such as a Sprite's Go 1.27.3 under
+  golangci-lint 2.13.2, every package failed its typecheck with "export data
+  version 5 is greater than maximum supported version 4".
 - `ccx vcs ship --parent <p>` on the gt lane publishes a branch below the tip
   that this working copy checked out and amended, and another lane's working
   copy does not hold now, with the run. Before, it kept every branch below the
