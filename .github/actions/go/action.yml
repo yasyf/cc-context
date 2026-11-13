@@ -1,0 +1,22 @@
+name: Go toolchain + full module cache
+description: Sets up go.mod's toolchain and restores the module cache, downloading every module first so whichever job saves the shared cache entry saves all of them.
+
+outputs:
+  go-version:
+    description: The Go version setup-go installed.
+    value: ${{ steps.setup.outputs.go-version }}
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-go@v6
+      id: setup
+      with:
+        go-version-file: go.mod
+        check-latest: true
+        cache: true
+        cache-dependency-path: |
+          go.mod
+          go.sum
+    - shell: bash
+      run: go mod download
