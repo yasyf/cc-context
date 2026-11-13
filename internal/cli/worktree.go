@@ -9,6 +9,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -133,8 +134,8 @@ Given --include, or in a Git checkout tracking more than 5,000 files at HEAD
 once "git config ccx.sparseLanes true" is set, the worktree is sparse: the
 sparse set of the checkout you run this from, or root files alone when it has
 none, plus the tracked .agents and .claude directories, every directory
-"git config --add ccx.sparseInclude <dir>" names, and each --include
-directory. The summary names
+"git config --add ccx.sparseInclude <dir>" names, each directory a go.mod
+replace line points to, and each --include directory. The summary names
 the "git -C <path> sparse-checkout add <dir>" command that widens it.
 A branch-shaped name such as user/slug keeps its full branch name and mints the
 directory user-slug.
@@ -617,7 +618,8 @@ func runWorktreeAdd(cmd *cobra.Command, name, requested string, includes []strin
 }
 
 // worktreeCheckOut materializes the sparse cone of the worktree git added at
-// dir with --no-checkout, then each directory includes names.
+// dir with --no-checkout, then each directory includes names and each
+// directory a go.mod replace line points to.
 func worktreeCheckOut(ctx context.Context, dir render.Dir, sparse stackSparse, includes []string) error {
 	head, err := stackRevParse(ctx, dir, "HEAD")
 	if err != nil {
@@ -626,10 +628,46 @@ func worktreeCheckOut(ctx context.Context, dir render.Dir, sparse stackSparse, i
 	if err := stackWriteSparse(ctx, dir, "worktree add", sparse, head); err != nil {
 		return err
 	}
-	if len(includes) == 0 {
+	replaced, err := goReplaceDirs(ctx, dir, head)
+	if err != nil {
+		return err
+	}
+	dirs := slices.Concat(includes, replaced)
+	if len(dirs) == 0 {
 		return nil
 	}
-	return stackAddCone(ctx, "worktree add", dir, includes)
+	return stackAddCone(ctx, "worktree add", dir, dirs)
+}
+
+// goReplaceDirs is each directory inside the repository that a replace line
+// of a go.mod at head points to, since a module the cone holds fails to load
+// without the modules it replaces.
+func goReplaceDirs(ctx context.Context, dir render.Dir, head string) ([]string, error) {
+	out, code, stderr, err := render.RunCLIExitCode(ctx, dir, "git", []string{"grep", "-z", "-E", `=>[[:space:]]*\.\.?/`, head, "--", ":(glob)**/go.mod"})
+	if err != nil {
+		return nil, err
+	}
+	if code == 1 {
+		return nil, nil
+	}
+	if code != 0 {
+		return nil, fmt.Errorf("worktree add: read the go.mod replace lines at %s: %s", head, strings.TrimSpace(stderr))
+	}
+	var dirs []string
+	for line := range strings.Lines(out) {
+		mod, directive, _ := strings.Cut(strings.TrimPrefix(line, head+":"), "\x00")
+		directive, _, _ = strings.Cut(directive, "//")
+		_, target, _ := strings.Cut(directive, "=>")
+		fields := strings.Fields(target)
+		if len(fields) == 0 || !strings.HasPrefix(fields[0], "./") && !strings.HasPrefix(fields[0], "../") {
+			continue
+		}
+		if d := path.Join(path.Dir(mod), fields[0]); d != "." && filepath.IsLocal(d) {
+			dirs = append(dirs, d)
+		}
+	}
+	slices.Sort(dirs)
+	return slices.Compact(dirs), nil
 }
 
 // worktreeReclaimInterrupted removes the registration a git worktree add killed
