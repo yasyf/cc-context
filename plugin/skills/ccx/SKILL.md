@@ -289,10 +289,10 @@ the fetched trunk runs the stack rebase machinery over its downstack after the
 commit, reported as `restacked in isolation`. Published branches stacked above
 it join that run: an amend or a new commit mid-stack replays them onto the new
 head and resubmits them under their leases, reported as
-`resubmitted <branches> above <branch>`. One another working copy has checked
-out stays where it is, with the branches above it, reported as
-`left <branch> (checked out in <path>)`, unless `--all-lanes` carries it, and
-`--tip-only` leaves them all where they are. `--parent` keeps each branch below the tip at its published
+`resubmitted <branches> above <branch>`, wherever they are checked out. One
+whose working copy holds uncommitted work refuses the ship before the commit
+forms, unless the branch has no commit of its own, and `--tip-only` leaves them
+all where they are. `--parent` keeps each branch below the tip at its published
 head, except one this working copy checked out and amended, which publishes with
 the run, and one `--include <branch>` takes into it. `--tip-only` reads every ancestor at its published head and never locks or
 writes an ancestor's local ref, so it ships while another worktree amends the

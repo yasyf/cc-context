@@ -9,18 +9,18 @@ import (
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
-// TestShipAmendWithAllLanesRestacksAChildCheckedOutElsewhere is
-// breakglass-land: amending the parent refused "feat/break-glass-extend is
-// checked out in …" because the child sat in a worktree of its own.
-func TestShipAmendWithAllLanesRestacksAChildCheckedOutElsewhere(t *testing.T) {
+// TestShipAmendRestacksAChildCheckedOutElsewhere is breakglass-land: amending
+// the parent refused "feat/break-glass-extend is checked out in …" because the
+// child sat in a worktree of its own.
+func TestShipAmendRestacksAChildCheckedOutElsewhere(t *testing.T) {
 	f := shipGTRepo(t, vcstest.GTStack("base", "feature"))
 	held := f.WorktreePath("held")
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "base")
 	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", held, "feature")
 	writeShipFile(t, f.Dir, "base.txt", "amended\n")
 
-	if _, err := runShipCmd(f.Context(), t, "--amend", "--all-lanes", "--no-push", "base.txt"); err != nil {
-		t.Fatalf("ship --amend --all-lanes = %v", err)
+	if _, err := runShipCmd(f.Context(), t, "--amend", "--no-push", "base.txt"); err != nil {
+		t.Fatalf("ship --amend = %v", err)
 	}
 	if !stackOnto(t, f, "base", "feature") {
 		t.Error("feature does not sit on the amended base")
@@ -36,43 +36,24 @@ func TestShipAmendWithAllLanesRestacksAChildCheckedOutElsewhere(t *testing.T) {
 	}
 }
 
-func TestShipAmendWithAllLanesKeepsADirtyChildCheckoutElsewhere(t *testing.T) {
+func TestShipAmendRefusesToMoveADirtyChildCheckedOutElsewhere(t *testing.T) {
 	f := shipGTRepo(t, vcstest.GTStack("base", "feature"))
 	held := f.WorktreePath("held")
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "base")
 	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", held, "feature")
 	writeShipFile(t, held, "scratch.txt", "work in progress\n")
-	before := gitAt(t, f.Env(), held, "rev-parse", "HEAD")
+	base, feature := gitAt(t, f.Env(), f.Dir, "rev-parse", "base"), gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")
 	writeShipFile(t, f.Dir, "base.txt", "amended\n")
 
-	if _, err := runShipCmd(f.Context(), t, "--amend", "--all-lanes", "--no-push", "base.txt"); err == nil {
-		t.Fatal("ship --amend --all-lanes moved a child under uncommitted work")
+	_, err := runShipCmd(f.Context(), t, "--amend", "--no-push", "base.txt")
+	if want := "feature, stacked on base, is checked out in " + held + " with uncommitted work"; err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("ship --amend = %v, want %q", err, want)
 	}
-	if head := gitAt(t, f.Env(), held, "rev-parse", "HEAD"); head != before {
-		t.Errorf("held HEAD moved to %s under uncommitted work", head)
-	}
-}
-
-func TestShipAmendLeavesAChildCheckedOutElsewhere(t *testing.T) {
-	f := shipGTRepo(t, vcstest.GTStack("base", "feature"))
-	held := f.WorktreePath("held")
-	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "base")
-	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", held, "feature")
-	feature := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")
-	writeShipFile(t, f.Dir, "base.txt", "amended\n")
-
-	out, err := runShipCmd(f.Context(), t, "--amend", "--no-push", "base.txt")
-	if err != nil {
-		t.Fatalf("ship --amend = %v", err)
-	}
-	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature"); got != feature {
-		t.Errorf("feature moved to %s, want it left at %s for the working copy holding it", got, feature)
+	if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "base"); got != base {
+		t.Errorf("base amended to %s, want the refusal before the commit", got)
 	}
 	if head := gitAt(t, f.Env(), held, "rev-parse", "HEAD"); head != feature {
-		t.Errorf("held HEAD = %s, want it untouched at %s", head, feature)
-	}
-	if !strings.Contains(out, "left feature ("+gtHeldElsewhere) {
-		t.Errorf("ship output = %q, want it to name feature as left", out)
+		t.Errorf("held HEAD moved to %s under uncommitted work", head)
 	}
 }
 

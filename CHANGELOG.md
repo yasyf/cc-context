@@ -35,6 +35,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Before, `git replay` was handed the parent of the shallow boundary, which the
   clone lacks, and the ship and its dry run failed with `fatal: ambiguous
   argument`.
+- **`ccx vcs ship` and `ccx vcs stack submit` carry the branches stacked
+  above them, wherever they are checked out.** Ship left a published branch
+  above the one it shipped where it was whenever another working copy had it
+  checked out, so that branch's pull request kept the parent's old commit.
+  Once the parent landed, a server-side rebase replayed the old commit over a
+  fix pushed above it. Ship now moves and resubmits every published branch
+  above the shipped one, moving each clean working copy that holds one onto
+  its new head. It refuses before the commit forms when one holds uncommitted
+  work, except over an empty branch, which stays put. `--tip-only` still
+  leaves them all where they are, and `--all-lanes` no longer changes what
+  ship carries. `stack submit` likewise submits a published branch stacked on
+  the branch checked out here that another lane's working copy holds or
+  another session claims, where it skipped it or kept it at its published
+  head.
 - `ccx vcs gh`, and each gh child of a ccx command, charges the ledger each
   request gh sent, once it exits, to the pool its URL draws from, read from
   the request lines `GH_DEBUG=1` has gh print, which never reach stderr.

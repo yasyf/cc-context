@@ -591,6 +591,11 @@ func dryRunStack(ctx context.Context, l lane, o shipOpts, c *gtCache, r *shipDry
 		return dryRunRefused(err, r)
 	}
 	if !o.noCommit && r.plan.action != branchCreate {
+		if !o.tipOnly {
+			if err := dryRunRefused(gtRefuseDirtyUpstack(ctx, l, state, r.plan.name), r); err != nil {
+				return err
+			}
+		}
 		notes, err := gtHeldChildNotes(ctx, l, state, r.plan.name)
 		if err != nil {
 			return err
@@ -851,10 +856,6 @@ func dryRunMoves(ctx context.Context, l lane, pin gtTrunkPinned, state gtState, 
 	for _, branch := range up {
 		parent := state[branch].Parents[0]
 		if !carried[parent.Ref] {
-			continue
-		}
-		if holder := holders[branch]; holder != "" && holder != r.root && !o.allLanes {
-			r.notes = append(r.notes, branch+" is "+gtHeldElsewhere+holder+", so the commit leaves it, and the branches above it, where they are; --all-lanes carries it")
 			continue
 		}
 		if frozen := state[branch].State; frozen != "" {

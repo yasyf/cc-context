@@ -884,6 +884,42 @@ func TestStackSubmitSkipsABranchAnotherWorkingCopyHolds(t *testing.T) {
 	}
 }
 
+func TestStackSubmitCarriesAPublishedBranchAboveThatAnotherWorkingCopyHolds(t *testing.T) {
+	f := shipGTRepo(t)
+	api := stubGTAPI(t)
+	f.Decorate(api.ctx)
+	shipGTStack(t, f, "base", "feature")
+	api.openPRs("base", "feature")
+	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+		t.Fatalf("stack submit: %v", err)
+	}
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "base")
+	held := restackSiblingPath(t, "held")
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", held, "feature")
+	writeShipFile(t, f.Dir, "base.txt", "more\n")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qam", "more")
+	shipResetLog(t, f)
+
+	out, _, err := runStackCmd(t, f, "submit")
+	if err != nil {
+		t.Fatalf("stack submit: %v", err)
+	}
+	for _, name := range []string{"base", "feature"} {
+		if got, want := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", name), gitAt(t, f.Env(), f.Dir, "rev-parse", name); got != want {
+			t.Errorf("origin %s = %s, want the submitted %s", name, got, want)
+		}
+	}
+	if !stackOnto(t, f, "base", "feature") {
+		t.Error("feature does not sit on the new base")
+	}
+	if got, want := gitAt(t, f.Env(), held, "rev-parse", "HEAD"), gitAt(t, f.Env(), f.Dir, "rev-parse", "feature"); got != want {
+		t.Errorf("the working copy holding feature is at %s, want the carried %s", got, want)
+	}
+	if strings.Contains(out, "skipping feature") {
+		t.Errorf("stdout = %q, want feature carried, not skipped", out)
+	}
+}
+
 func stackTakeover(t *testing.T) (*vcstest.Fixture, *gtAPIStub, string) {
 	t.Helper()
 	f := shipGTRepo(t)
