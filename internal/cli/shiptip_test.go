@@ -583,7 +583,7 @@ func TestShipNamesTipOnlyWhenAHeldParentDiverged(t *testing.T) {
 	mustRun(t, f.Env(), held, "git", "commit", "-qm", "other")
 	shipGTReady(t, f)
 
-	_, _, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--no-watch")
+	_, _, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--no-watch", "--include", "base")
 	want := "to ship feature alone onto base's published head, run ccx vcs ship --tip-only"
 	if err == nil || !strings.Contains(err.Error(), "drops 1 commit(s)") || !strings.Contains(err.Error(), want) {
 		t.Fatalf("ship over a diverged held parent = %v, want the refusal to name %q", err, want)

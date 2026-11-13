@@ -294,7 +294,10 @@ whose working copy holds uncommitted work refuses the ship before the commit
 forms, unless the branch has no commit of its own, and `--tip-only` leaves them
 all where they are. `--parent` keeps each branch below the tip at its published
 head, except one this working copy checked out and amended, which publishes with
-the run, and one `--include <branch>` takes into it. `--tip-only` reads every ancestor at its published head and never locks or
+the run, and one `--include <branch>` takes into it. A pushing ship keeps a
+branch below the tip that another lane's worktree holds at its published head,
+with every branch below it, and names it; `--include <branch>` takes that one
+into the run. `--tip-only` reads every ancestor at its published head and never locks or
 writes an ancestor's local ref, so it ships while another worktree amends the
 parent. It moves no ancestor: when the parent's published head has moved past
 the tip's base, the tip is pushed on that base as it is, and when the parent was

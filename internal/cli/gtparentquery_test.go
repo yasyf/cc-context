@@ -51,6 +51,30 @@ func TestGTNearestTrackedReadsOnlyUnresolvedHistory(t *testing.T) {
 			parent:  "b",
 			history: []string{"refs/heads/x"},
 		},
+		{
+			name: "a sibling grown past the shared cut is no parent",
+			setup: func(t *testing.T, f *vcstest.Fixture) {
+				shipGTStack(t, f, "a", "a-scan")
+				mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "a")
+				shipGTUntracked(t, f, "c")
+			},
+			parent:  "a",
+			history: []string{"refs/heads/a-scan"},
+		},
+		{
+			name: "a parent grown past the cut stays the parent",
+			setup: func(t *testing.T, f *vcstest.Fixture) {
+				shipGTStack(t, f, "a")
+				shipGTUntracked(t, f, "c")
+				mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "a")
+				writeShipFile(t, f.Dir, "a2.txt", "a2\n")
+				mustRun(t, f.Env(), f.Dir, "git", "add", "a2.txt")
+				mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "a2")
+				mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "c")
+			},
+			parent:  "a",
+			history: []string{"refs/heads/a"},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := shipGTRepo(t)

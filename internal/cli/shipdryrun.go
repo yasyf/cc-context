@@ -583,9 +583,14 @@ func dryRunStack(ctx context.Context, l lane, o shipOpts, c *gtCache, r *shipDry
 	if err != nil && !errors.Is(err, vcs.ErrNoTrunk) {
 		return err
 	}
-	line, err := shipParentLine(ctx, l, tr, o.parent != "" || onPublished, state, chain, r.branch, o.include)
+	line, held, err := shipParentLine(ctx, l, tr, o.parent != "" || onPublished, state, chain, r.branch, o)
 	if err != nil {
 		return err
+	}
+	for _, branch := range gtBottomUp(chain) {
+		if skip := held[branch]; skip.holder != "" {
+			r.notes = append(r.notes, stackHeldBelowLine(branch, skip, false))
+		}
 	}
 	if err := dryRunMoves(ctx, l, pin, moveState, chain, line, holders, o, r); err != nil {
 		return dryRunRefused(err, r)

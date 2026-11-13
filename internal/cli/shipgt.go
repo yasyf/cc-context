@@ -1614,7 +1614,7 @@ func gtNearestTrackedAt(ctx context.Context, dir render.Dir, state gtState, trun
 	}
 	present := slices.DeleteFunc(slices.Clone(candidates), func(name string) bool { return heads[name] == "" })
 	rewritten := slices.DeleteFunc(slices.Clone(present), func(name string) bool { return contained[heads[name]] })
-	former, err := gtReflogHeads(ctx, dir, "ship", rewritten)
+	former, err := gtReflogHeads(ctx, dir, "ship", rewritten, true)
 	if err != nil {
 		return "", err
 	}
@@ -1653,12 +1653,12 @@ func gtNearestTrackedAt(ctx context.Context, dir render.Dir, state gtState, trun
 	return cmp.Or(nearest, trunk), nil
 }
 
-func gtReflogHeads(ctx context.Context, dir render.Dir, prefix string, branches []string) (map[string][]string, error) {
+func gtReflogHeads(ctx context.Context, dir render.Dir, prefix string, branches []string, own bool) (map[string][]string, error) {
 	former := map[string][]string{}
 	if len(branches) == 0 {
 		return former, nil
 	}
-	argv := []string{"log", "--walk-reflogs", "--ignore-missing", "--format=%gD %H"}
+	argv := []string{"log", "--walk-reflogs", "--ignore-missing", "--format=%gD %H %gs"}
 	for _, branch := range branches {
 		argv = append(argv, gtRestackRef(branch))
 	}
@@ -1667,7 +1667,11 @@ func gtReflogHeads(ctx context.Context, dir render.Dir, prefix string, branches 
 		return nil, fmt.Errorf("%s: git log --walk-reflogs: %w", prefix, err)
 	}
 	for row := range strings.Lines(out) {
-		selector, head, _ := strings.Cut(strings.TrimSpace(row), " ")
+		selector, entry, _ := strings.Cut(strings.TrimSpace(row), " ")
+		head, subject, _ := strings.Cut(entry, " ")
+		if own && (strings.HasPrefix(subject, "branch: Created from ") || strings.HasPrefix(subject, "branch: Reset to ")) {
+			continue
+		}
 		ref, _, _ := strings.Cut(selector, "@{")
 		name := strings.TrimPrefix(ref, "refs/heads/")
 		former[name] = append(former[name], head)
@@ -2737,7 +2741,13 @@ func shipPushGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, meta ma
 		if err != nil {
 			return "", nil, nil, err
 		}
-		sub.otherLanes = slices.DeleteFunc(slices.Clone(chain), func(name string) bool { return !others[name] || slices.Contains(o.include, name) })
+		held, err := shipHeldBelow(ctx, l, o, state, chain, branch)
+		if err != nil {
+			return "", nil, nil, err
+		}
+		sub.otherLanes = slices.DeleteFunc(slices.Clone(chain), func(name string) bool {
+			return held[name].holder == "" && (!others[name] || slices.Contains(o.include, name))
+		})
 	}
 	if o.expectRemote != "" {
 		sub.leases = maps.Clone(sub.leases)

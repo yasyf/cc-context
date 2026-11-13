@@ -291,6 +291,7 @@ type stackRebaseOpts struct {
 	above       string
 	bump        []string
 	keepHeld    bool
+	heldBelow   map[string]stackSkip
 	evictQueued bool
 	recorded    map[string]stackRecordedParent
 	target      *shipTarget
@@ -686,14 +687,10 @@ func stackKeepLocal(cmd *cobra.Command, run *stackRebaseRun) error {
 }
 
 func stackAnnounceHeld(cmd *cobra.Command, run *stackRebaseRun) error {
-	head := "published"
-	if run.NoPush {
-		head = "local"
-	}
 	var lines []string
 	for _, b := range run.Branches {
 		if skip := run.heldBelow[b.Name]; skip.holder != "" && b.Kept {
-			lines = append(lines, fmt.Sprintf("%s · kept at its %s head; --include %s moves it", stackHeldLine(b.Name, "under", skip, !run.NoPush), head, b.Name))
+			lines = append(lines, stackHeldBelowLine(b.Name, skip, run.NoPush))
 		}
 	}
 	for _, line := range slices.Concat(lines, run.heldAbove) {
@@ -702,6 +699,14 @@ func stackAnnounceHeld(cmd *cobra.Command, run *stackRebaseRun) error {
 		}
 	}
 	return nil
+}
+
+func stackHeldBelowLine(name string, skip stackSkip, noPush bool) string {
+	head := "published"
+	if noPush {
+		head = "local"
+	}
+	return fmt.Sprintf("%s · kept at its %s head; --include %s moves it", stackHeldLine(name, "under", skip, !noPush), head, name)
 }
 
 func stackHeldLine(name, relation string, skip stackSkip, pushing bool) string {
@@ -1369,7 +1374,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 	}
 	var otherLanes []stackLeft
 	var lanePins []string
-	var heldBelow map[string]stackSkip
+	heldBelow := o.heldBelow
 	var heldAbove []string
 	if o.keepHeld && !o.allLanes && o.replayed == nil && current != "" && current != trunk {
 		holders, err := vcs.BranchHolders(ctx, l.checkout)
@@ -1380,7 +1385,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 		if err != nil {
 			return nil, fmt.Errorf("stack rebase: %w", err)
 		}
-		heldBelow = stackHeldBelow(retargeted, current, members, o.include, stackWithClaims(holders, claims))
+		heldBelow = stackHeldBelow(retargeted, retargeted[current].Parents[0].Ref, members, o.include, stackWithClaims(holders, claims))
 		foreign, err := vcs.ForeignBranchHolders(ctx, l.checkout)
 		if err != nil {
 			return nil, fmt.Errorf("stack rebase: %w", err)
@@ -2384,11 +2389,11 @@ func branchLane(branch string) string {
 	return branch[:max(strings.LastIndexByte(branch, '/'), 0)]
 }
 
-func stackHeldBelow(state gtState, current string, members, include []string, holders map[string]string) map[string]stackSkip {
+func stackHeldBelow(state gtState, start string, members, include []string, holders map[string]string) map[string]stackSkip {
 	held := map[string]stackSkip{}
 	seen := map[string]bool{}
 	var owner stackSkip
-	for name := state[current].Parents[0].Ref; slices.Contains(members, name) && !seen[name]; name = state[name].Parents[0].Ref {
+	for name := start; slices.Contains(members, name) && !seen[name]; name = state[name].Parents[0].Ref {
 		seen[name] = true
 		if holder := holders[name]; holder != "" {
 			owner = stackSkip{branch: name, holder: holder}
