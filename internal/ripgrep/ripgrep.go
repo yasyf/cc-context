@@ -251,13 +251,14 @@ func run(ctx context.Context, eng engine, bin string, dir render.Dir, a backend.
 			ra := a
 			ra.Regex = true
 			rgroups, _, rerr := searchGroups(ctx, eng, bin, dir, ra, exec)
-			if rerr != nil {
+			switch {
+			case objectedToPattern(rerr):
+			case rerr != nil:
 				return "", false, rerr
-			}
-			if anyMatch(rgroups) {
+			case anyMatch(rgroups):
 				groups = rgroups
 				esc = escAutoRegex
-			} else {
+			default:
 				esc = escBothMissed
 			}
 		}
@@ -345,7 +346,7 @@ func runFilesWithMatches(ctx context.Context, eng engine, bin string, dir render
 			ra := a
 			ra.Regex = true
 			rpaths, _, rerr := searchFilesWithMatches(ctx, eng, bin, dir, ra, exec)
-			if rerr != nil {
+			if rerr != nil && !objectedToPattern(rerr) {
 				return "", false, rerr
 			}
 			if len(rpaths) > 0 {

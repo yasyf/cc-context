@@ -58,3 +58,8 @@ func (w *searchOutputWriter) Write(p []byte) (int, error) {
 	}
 	return w.buffer.Write(p)
 }
+
+func objectedToPattern(err error) bool {
+	var exitErr *exec.ExitError
+	return errors.As(err, &exitErr) && exitErr.ExitCode() > 0
+}
