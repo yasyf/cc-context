@@ -1,0 +1,13 @@
+{
+  "argv": [
+    "api",
+    "-X",
+    "POST",
+    "repos/maximhq/bifrost/forks",
+    "--jq",
+    "[.clone_url, .ssh_url] | @tsv"
+  ],
+  "exit": 0,
+  "stdout": "https://github.com/yasyf/bifrost.git\tgit@github.com:yasyf/bifrost.git\n",
+  "stderr": ""
+}

@@ -41,8 +41,10 @@ func TestShipForkRemote(t *testing.T) {
 		name       string
 		remotes    map[string]string
 		config     [][]string
+		fork       string
 		wantRemote string
 		wantOwner  string
+		wantURL    string
 		wantErr    string
 	}{
 		{
@@ -66,9 +68,27 @@ func TestShipForkRemote(t *testing.T) {
 			wantOwner:  "yasyf",
 		},
 		{
-			name:    "no fork",
+			name:       "no fork remote adds one over ssh",
+			remotes:    map[string]string{"upstream": "https://github.com/maximhq/bifrost.git"},
+			fork:       "rest-fork-existing",
+			wantRemote: "fork",
+			wantOwner:  "yasyf",
+			wantURL:    "git@github.com:yasyf/bifrost.git",
+		},
+		{
+			name:       "no fork remote adds one over the upstream's https",
+			remotes:    map[string]string{"upstream": "https://github.com/maximhq/bifrost.git"},
+			config:     [][]string{{"branch.feature.remote", "upstream"}},
+			fork:       "rest-fork-existing",
+			wantRemote: "fork",
+			wantOwner:  "yasyf",
+			wantURL:    "https://github.com/yasyf/bifrost.git",
+		},
+		{
+			name:    "fork answer names no clone URLs",
 			remotes: map[string]string{"upstream": "https://github.com/maximhq/bifrost.git"},
-			wantErr: "gh repo fork",
+			fork:    "run-list-none",
+			wantErr: "not a fork's clone URLs",
 		},
 		{
 			name:    "several forks",
@@ -89,6 +109,10 @@ func TestShipForkRemote(t *testing.T) {
 			for _, kv := range tt.config {
 				mustRun(t, f.Env(), f.Dir, "git", "config", kv[0], kv[1])
 			}
+			if tt.fork != "" {
+				writeShipGH(t, f)
+				f.Setenv("GH_FORK_URLS", ghStdout(t, tt.fork))
+			}
 
 			remote, owner, err := shipForkRemote(f.Context(), render.Dir(f.Dir), "feature", repo)
 			if tt.wantErr != "" {
@@ -102,6 +126,11 @@ func TestShipForkRemote(t *testing.T) {
 			}
 			if remote != tt.wantRemote || owner != tt.wantOwner {
 				t.Errorf("shipForkRemote = %q, %q; want %q, %q", remote, owner, tt.wantRemote, tt.wantOwner)
+			}
+			if tt.wantURL != "" {
+				if got := gitAt(t, f.Env(), f.Dir, "remote", "get-url", tt.wantRemote); got != tt.wantURL {
+					t.Errorf("remote %s URL = %q, want %q", tt.wantRemote, got, tt.wantURL)
+				}
 			}
 		})
 	}

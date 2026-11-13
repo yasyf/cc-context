@@ -1062,6 +1062,7 @@ case "$1 $2" in
           fi
         fi
         printf '%s' "$GH_PULL_CREATE_JSON" ;;
+      "POST "*/forks) printf '%s' "$GH_FORK_URLS" ;;
       *) if [ -n "$GH_PR_EDIT_FAIL" ]; then printf '%s\n' "$GH_PR_EDIT_FAIL" >&2; exit 1; fi ;;
     esac ;;
   "api graphql")

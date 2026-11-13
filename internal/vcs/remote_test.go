@@ -94,3 +94,24 @@ func TestRepoPushDenied(t *testing.T) {
 		}
 	}
 }
+
+func TestRepoPushesThroughFork(t *testing.T) {
+	const nwo = "stablyai/orca"
+	for _, tt := range []struct {
+		repo Repo
+		want bool
+	}{
+		{repo: Repo{NameWithOwner: nwo, ViewerPermission: "READ"}, want: true},
+		{repo: Repo{NameWithOwner: nwo, ViewerPermission: "WRITE"}, want: true},
+		{repo: Repo{NameWithOwner: nwo, ViewerPermission: "WRITE", Affiliated: true}},
+		{repo: Repo{NameWithOwner: nwo, ViewerPermission: "READ", IsPrivate: true}, want: true},
+		{repo: Repo{NameWithOwner: nwo, ViewerPermission: "WRITE", IsPrivate: true}},
+		{repo: Repo{NameWithOwner: nwo, ViewerPermission: "ADMIN"}},
+		{repo: Repo{NameWithOwner: nwo, ViewerPermission: "READ", Installation: true}},
+		{repo: Repo{}},
+	} {
+		if got := tt.repo.PushesThroughFork(); got != tt.want {
+			t.Errorf("%+v.PushesThroughFork() = %v, want %v", tt.repo, got, tt.want)
+		}
+	}
+}

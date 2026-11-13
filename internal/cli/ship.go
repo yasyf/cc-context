@@ -453,13 +453,15 @@ func runShip(cmd *cobra.Command, o shipOpts) (err error) {
 		meta[plan.name] = entry
 	}
 	var prNWO string
-	if prRun && !o.noPush {
-		repo, err := shipPRRepo(ctx, l, plan, meta[plan.name].base)
+	if !o.noPush && (prRun || kind == vcs.Git && !gtLane) {
+		repo, err := shipPushRepo(ctx, l, plan, prRun, meta[plan.name].base)
 		if err != nil {
 			return err
 		}
-		prNWO = repo.NameWithOwner
-		if kind == vcs.Git && !gtLane && repo.PushDenied() {
+		if prRun {
+			prNWO = repo.NameWithOwner
+		}
+		if kind == vcs.Git && !gtLane && repo.PushesThroughFork() {
 			if o.pushRemote, o.headOwner, err = shipForkRemote(ctx, dir, plan.name, repo); err != nil {
 				return err
 			}

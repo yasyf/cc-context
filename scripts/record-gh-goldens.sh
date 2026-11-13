@@ -17,6 +17,9 @@ own_repo="yasyf/cc-context"
 foreign_repo="cli/cli"
 foreign_owner="${foreign_repo%%/*}"
 foreign_name="${foreign_repo##*/}"
+# $forked_repo is one the recording account already forked, so the fork POST
+# answers with that fork rather than creating one.
+forked_repo="maximhq/bifrost"
 # Two pull requests in $foreign_repo: an open one carrying inline comments, issue
 # comments, and a CHANGES_REQUESTED review, and a merged one whose mergedAt is
 # the non-null case reviewTerminalState reads.
@@ -269,6 +272,7 @@ reviews_query() {
 record repo-api-own api 'repos/{owner}/{repo}'
 record repo-api-foreign api "repos/$foreign_repo"
 record repo-api-missing api "repos/$own_repo-does-not-exist"
+record rest-fork-existing api -X POST "repos/$forked_repo/forks" --jq '[.clone_url, .ssh_url] | @tsv'
 record user-api-own api user
 record viewer-graphql-own api graphql -f "$viewer_query" -f "owner=${own_repo%%/*}"
 record viewer-graphql-member api graphql -f "$viewer_query" -f "owner=$member_owner"
