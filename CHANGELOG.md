@@ -23,6 +23,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ccx vcs gh` retries every read that is neither a watch nor on a terminal
+  when it fails on a transient network error, and a TLS handshake timeout now
+  counts as one. Before, only a cached read or a `gh api graphql` query was
+  retried, so a `gh pr view`, `gh pr checks`, or `gh api` REST read run with
+  `--max-age 0s`, as the long-running drive's lander and the monorepo's
+  `stack-enqueue` run them, failed on the first
+  `net/http: TLS handshake timeout` and ended the landing that made it.
 - `ccx vcs ship --dry-run` on a shallow clone previews a stack whose bases this
   checkout lacks. It fetches each missing base's published head into origin's
   remote-tracking refs and deepens the clone to each merge base, as the run

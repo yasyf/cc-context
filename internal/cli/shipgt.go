@@ -3659,7 +3659,7 @@ func gitFetch(ctx context.Context, dir render.Dir, args ...string) error {
 
 var (
 	remoteRetryWaits       = []time.Duration{2 * time.Second, 5 * time.Second, 15 * time.Second}
-	transientRemotePattern = regexp.MustCompile(`HTTP (5\d\d|429)|returned error: (5\d\d|429)|early EOF|the remote end hung up unexpectedly|(?i:connection reset)|unexpected disconnect while reading sideband packet|(Operation|Connection) timed out|i/o timeout|overloaded`)
+	transientRemotePattern = regexp.MustCompile(`HTTP (5\d\d|429)|returned error: (5\d\d|429)|early EOF|the remote end hung up unexpectedly|(?i:connection reset)|unexpected disconnect while reading sideband packet|(Operation|Connection) timed out|i/o timeout|TLS handshake timeout|overloaded`)
 	transientRemoteVeto    = regexp.MustCompile(`\[(remote )?rejected\]|(HTTP|returned error:) 4([01]\d|2[0-8]|[3-9]\d)`)
 )
 
