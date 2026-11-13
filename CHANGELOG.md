@@ -23,6 +23,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ccx vcs ship --dry-run` on a shallow clone previews a stack whose bases this
+  checkout lacks. It fetches each missing base's published head into origin's
+  remote-tracking refs and deepens the clone to each merge base, as the run
+  does, and plans from those refs without cutting a local branch. Before, it
+  fetched nothing, so it refused every base it found no local branch for and
+  failed `found no common commit in this shallow clone` on a depth-1 clone,
+  such as a cc-remote Sprite's, which the run itself ships from.
+- `ccx vcs ship` on a depth-1 branch deepens the clone to the merge base of the
+  branch and the head it moves onto before it reads the branch's own commits.
+  Before, `git replay` was handed the parent of the shallow boundary, which the
+  clone lacks, and the ship and its dry run failed with `fatal: ambiguous
+  argument`.
 - `ccx vcs gh`, and each gh child of a ccx command, charges the ledger each
   request gh sent, once it exits, to the pool its URL draws from, read from
   the request lines `GH_DEBUG=1` has gh print, which never reach stderr.

@@ -352,7 +352,7 @@ func (m nativeStackMove) String() string {
 // the branch onto. A base this checkout does not track is adopted from its own
 // pull request. Each level is one batched read, and the moves come bottom-up,
 // so applying them in order records every parent before its child.
-func nativeStackParents(ctx context.Context, l lane, state gtState, from, fetchFrom string) ([]nativeStackMove, gtState, error) {
+func nativeStackParents(ctx context.Context, l lane, state gtState, from, remote string, cut bool) ([]nativeStackMove, gtState, error) {
 	if !l.native || from == "" {
 		return nil, state, nil
 	}
@@ -421,7 +421,7 @@ func nativeStackParents(ctx context.Context, l lane, state gtState, from, fetchF
 				return nil, nil, err
 			}
 			if !exists {
-				if err := nativeStackCutBase(ctx, l.dir(), fetchFrom, m.parent, branch); err != nil {
+				if err := nativeStackCutBase(ctx, l.dir(), remote, m.parent, branch, cut); err != nil {
 					return nil, nil, err
 				}
 			}
@@ -433,7 +433,7 @@ func nativeStackParents(ctx context.Context, l lane, state gtState, from, fetchF
 	slices.Reverse(moves)
 	planned := maps.Clone(state)
 	for i, m := range moves {
-		s, err := gtPlannedOn(ctx, l.dir(), planned, m.branch, m.parent, trunk, fetchFrom)
+		s, err := gtPlannedOn(ctx, l.dir(), planned, m.branch, m.parent, trunk, remote)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -447,7 +447,7 @@ func gtPlannedOn(ctx context.Context, dir render.Dir, planned gtState, branch, p
 	head := planned[branch].Head
 	if head == "" {
 		var err error
-		if head, err = gtRestackHead(ctx, "ship", dir, branch); err != nil {
+		if head, err = gtPlanHead(ctx, dir, branch); err != nil {
 			return gtBranchState{}, err
 		}
 	}
@@ -468,11 +468,8 @@ func gtPlannedOn(ctx context.Context, dir render.Dir, planned gtState, branch, p
 	return gtBranchState{Head: head, State: planned[branch].State, NeedsRestack: fork != parentHead, Parents: []gtRef{{Ref: parent, SHA: fork}}}, nil
 }
 
-func nativeStackCutBase(ctx context.Context, dir render.Dir, remote, base, child string) error {
-	if remote == "" {
-		return dryRunUnfetchedBase(base, child)
-	}
-	present, err := gtBranchFromRemote(ctx, dir, "ship", remote, base)
+func nativeStackCutBase(ctx context.Context, dir render.Dir, remote, base, child string, cut bool) error {
+	present, err := gtBaseFromRemote(ctx, dir, "ship", remote, base, cut)
 	if err != nil || present {
 		return err
 	}
@@ -530,7 +527,7 @@ func stackNativeAdopt(ctx context.Context, l lane, tr vcs.Trunk, state gtState, 
 	if err != nil {
 		return nil, nil, err
 	}
-	moves, planned, err := nativeStackParents(ctx, l, state, current, tr.Remote())
+	moves, planned, err := nativeStackParents(ctx, l, state, current, tr.Remote(), true)
 	if err != nil {
 		return nil, nil, err
 	}

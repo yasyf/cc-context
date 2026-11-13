@@ -78,13 +78,6 @@ func TestShipDryRunReadsTheNativeStackParent(t *testing.T) {
 			if after := dryRunRefs(t, f); after != refs {
 				t.Errorf("the dry run moved refs:\n%s\nwant\n%s", after, refs)
 			}
-			if tt.remoteBase {
-				want := "ship: base, the base of mid, is no local branch, and a dry run fetches nothing — ship itself cuts it at origin's head; git fetch origin base:base previews past it"
-				if refusals := dryRunValues(report, "refuses"); len(refusals) != 1 || refusals[0] != want {
-					t.Errorf("refuses = %q, want %q", refusals, want)
-				}
-				return
-			}
 			if got := dryRunValues(report, "parent"); len(got) != 1 || !strings.HasPrefix(got[0], "mid"+shipSep) {
 				t.Errorf("parent = %q, want child adopted onto mid", got)
 			}
@@ -231,16 +224,16 @@ func TestShipTracksABranchCutFromAnotherLaneOnItsPullRequestBase(t *testing.T) {
 			stubStackPRs(t, f, nil)
 			stubStackStanding(t, f, nil)
 			shipGTReady(t, f)
-			if !tt.local {
-				refs := dryRunRefs(t, f)
-				report := dryRunReport(t, f, "-m", "fix: frobnicate", "--no-push")
-				want := "ship: theirs, the base of mine, is no local branch, and a dry run fetches nothing — ship itself cuts it at origin's head; git fetch origin theirs:theirs previews past it"
-				if refusals := dryRunValues(report, "refuses"); len(refusals) != 1 || refusals[0] != want {
-					t.Errorf("dry run refuses = %q, want %q", refusals, want)
-				}
-				if after := dryRunRefs(t, f); after != refs {
-					t.Errorf("the dry run moved refs:\n%s\nwant\n%s", after, refs)
-				}
+			refs := dryRunRefs(t, f)
+			report := dryRunReport(t, f, "-m", "fix: frobnicate", "--no-push")
+			if refusals := dryRunValues(report, "refuses"); len(refusals) != 0 {
+				t.Errorf("dry run refuses = %q, want none", refusals)
+			}
+			if got := dryRunValues(report, "parent"); len(got) != 1 || !strings.HasPrefix(got[0], "theirs"+shipSep) {
+				t.Errorf("dry run parent = %q, want mine on theirs", got)
+			}
+			if after := dryRunRefs(t, f); after != refs {
+				t.Errorf("the dry run moved refs:\n%s\nwant\n%s", after, refs)
 			}
 
 			if _, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push"); err != nil {
@@ -305,14 +298,7 @@ func TestShipTracksABranchCutFromAnotherLanesPublishedHead(t *testing.T) {
 			refs := dryRunRefs(t, f)
 			for _, parent := range [][]string{nil, {"--parent", "theirs"}} {
 				report := dryRunReport(t, f, append(append([]string{"-m", "fix: frobnicate", "--no-push"}, tt.flags...), parent...)...)
-				refusals := dryRunValues(report, "refuses")
-				if !tt.local {
-					if want := dryRunUnfetchedBase("theirs", "mine").Error(); len(refusals) != 1 || refusals[0] != want {
-						t.Errorf("dry run %q refuses = %q, want %q", parent, refusals, want)
-					}
-					continue
-				}
-				if len(refusals) != 0 {
+				if refusals := dryRunValues(report, "refuses"); len(refusals) != 0 {
 					t.Errorf("dry run %q refuses = %q, want none", parent, refusals)
 				}
 				if got := dryRunValues(report, "parent"); len(got) != 1 || !strings.HasPrefix(got[0], "theirs"+shipSep) || !strings.HasSuffix(got[0], ", after ship tracks theirs onto main, the base of its open #9000") {
@@ -340,6 +326,80 @@ func TestShipTracksABranchCutFromAnotherLanesPublishedHead(t *testing.T) {
 				t.Errorf("mine = %+v, want it recorded on theirs with nothing to restack", s)
 			}
 		})
+	}
+}
+
+// TestShipDeepensAShallowCloneToShipOnABaseOnlyOriginHolds is a depth-1 clone
+// of main checked out on mine, whose open pull request bases it on theirs,
+// another lane's branch the clone never fetched: a cc-remote Sprite's checkout.
+// The dry run refused theirs as no local branch, and with theirs fetched by
+// hand found no common commit in the shallow clone; the ship cut theirs, then
+// replayed mine from the parent of its shallow boundary, which the clone lacks.
+func TestShipDeepensAShallowCloneToShipOnABaseOnlyOriginHolds(t *testing.T) {
+	f := shipRepo(t, vcstest.Remote())
+	f.Decorate(func(ctx context.Context) context.Context { return withStackProvider(ctx, true) })
+	shipGTUntracked(t, f, "theirs")
+	theirs := gitAt(t, f.Env(), f.Dir, "rev-parse", "theirs")
+	shipGTUntracked(t, f, "mine")
+	mine := gitAt(t, f.Env(), f.Dir, "rev-parse", "mine")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
+	for _, name := range []string{"one", "two"} {
+		writeShipFile(t, f.Dir, name+".txt", name+"\n")
+		mustRun(t, f.Env(), f.Dir, "git", "add", name+".txt")
+		mustRun(t, f.Env(), f.Dir, "git", "commit", "-q", "-m", name)
+	}
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "main", "theirs", "mine")
+	clone := func() string {
+		dir := filepath.Join(t.TempDir(), "shallow")
+		mustRun(t, f.Env(), filepath.Dir(dir), "git", "clone", "-q", "--no-local", "--depth", "1", "--branch", "main", "--single-branch", f.RemoteDir, dir)
+		mustRun(t, f.Env(), dir, "git", "fetch", "-q", "--depth", "1", "origin", "mine:mine")
+		mustRun(t, f.Env(), dir, "git", "switch", "-q", "mine")
+		mustRun(t, f.Env(), dir, "git", "config", "ccx.stack", "github")
+		mustRun(t, f.Env(), dir, "git", "config", "user.email", "t@t.t")
+		mustRun(t, f.Env(), dir, "git", "config", "user.name", "t")
+		seedLaneRecords(f.ContextIn(dir), t, dir, laneSeed{})
+		if err := nativemeta.Init(f.ContextIn(dir), filepath.Join(dir, ".git"), "main"); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	shallow := clone()
+	api := stubGTAPI(t)
+	api.openPRs("theirs", "mine")
+	api.bases["theirs"], api.bases["mine"] = "main", "theirs"
+	api.recorded["theirs"], api.recorded["mine"] = "main", "theirs"
+	f.Decorate(api.ctx)
+	stubStackPRs(t, f, nil)
+	stubStackStanding(t, f, nil)
+	heads := gitAt(t, f.Env(), shallow, "for-each-ref", "--format=%(refname) %(objectname)", "refs/heads")
+
+	out, errOut, err := runShipCmdFull(f.ContextIn(shallow), t, "--dry-run", "--no-commit")
+	if err != nil {
+		t.Fatalf("ship --dry-run in a shallow clone: %v\n%s%s", err, out, errOut)
+	}
+	if refusals := dryRunValues(out, "refuses"); len(refusals) != 0 {
+		t.Errorf("dry run refuses = %q, want none", refusals)
+	}
+	if got := dryRunValues(out, "parent"); len(got) != 1 || !strings.HasPrefix(got[0], "theirs"+shipSep) || !strings.HasSuffix(got[0], ", after ship tracks theirs onto main, the base of its open #9000") {
+		t.Errorf("dry run parent = %q, want mine on theirs, after ship tracks theirs onto main", got)
+	}
+	if after := gitAt(t, f.Env(), shallow, "for-each-ref", "--format=%(refname) %(objectname)", "refs/heads"); after != heads {
+		t.Errorf("the dry run cut or moved a branch:\n%s\nwant\n%s", after, heads)
+	}
+	if got := gitAt(t, f.Env(), shallow, "rev-parse", "refs/remotes/origin/theirs"); got != theirs {
+		t.Errorf("origin/theirs = %s, want the dry run to fetch origin's head %s", got, theirs)
+	}
+
+	shallow = clone()
+	writeShipFile(t, shallow, "f.txt", "dirty\n")
+	if out, errOut, err := runShipCmdFull(f.ContextIn(shallow), t, "-m", "fix: frobnicate", "--no-push"); err != nil {
+		t.Fatalf("ship in a shallow clone: %v\n%s%s", err, out, errOut)
+	}
+	if got := gitAt(t, f.Env(), shallow, "rev-parse", "mine~1"); got != mine {
+		t.Errorf("mine was replayed: its commit before the new one is %s, want %s", got, mine)
+	}
+	if got := gitAt(t, f.Env(), shallow, "rev-parse", "theirs"); got != theirs {
+		t.Errorf("theirs = %s, want it cut at origin's head %s", got, theirs)
 	}
 }
 
