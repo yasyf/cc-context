@@ -252,7 +252,7 @@ func gtAdoptBelow(ctx context.Context, dir render.Dir, prefix string, state gtSt
 }
 
 func gtHeadUnder(ctx context.Context, dir render.Dir, prefix, branch, floor, tip string) (string, error) {
-	former, err := gtReflogHeads(ctx, dir, prefix, []string{branch})
+	former, err := gtReflogHeads(ctx, dir, prefix, []string{branch}, false)
 	if err != nil {
 		return "", err
 	}

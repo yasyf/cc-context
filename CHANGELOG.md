@@ -23,6 +23,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ccx vcs ship` adopts an untracked branch onto a tracked branch it was cut
+  from, never onto a sibling cut from the same commit. The nearest tracked
+  ancestor matched a branch's reflog, whose first entry is the commit the
+  branch was created from, its parent's commit. So a sibling grown past that
+  commit still matched it, the tie went to the name that sorts later, and an
+  untracked `spike-wire` cut from `spike` was adopted onto `spike-scan`. The
+  match now skips a branch's `branch: Created from` and `branch: Reset to`
+  entries, and still reads the heads a rewritten parent held (#343).
+- A pushing `ccx vcs ship` keeps each branch below the shipped one that another
+  lane's worktree holds, or another lane's cci claim names, at its published
+  head, with every branch below it, as `ccx vcs stack rebase` does since #380.
+  The ship leaves it out of its restack and its push, the dry run plans the
+  same, and both name it with the `--include <branch>` that takes it into the
+  run. Before, a ship from a branch cut on a parent another worktree held
+  restacked that parent onto trunk and pushed it, so a builder shipped with a
+  raw `git push`.
+
 - `ccx code grep` and the `ccx_code_grep` MCP tool answer "no matches" when
   literal text with no hits, such as `f"cci:{`, fails as the regular
   expression its automatic retry runs. The retry asks only Go's `regexp`

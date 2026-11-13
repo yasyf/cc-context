@@ -318,7 +318,7 @@ func vcsPushParentHeld(ctx context.Context, dir render.Dir, remote string, state
 	if head, ok := published[parent]; ok {
 		held = append(held, head)
 	}
-	former, err := gtReflogHeads(ctx, dir, "push", []string{parent})
+	former, err := gtReflogHeads(ctx, dir, "push", []string{parent}, false)
 	if err != nil {
 		return "", err
 	}
