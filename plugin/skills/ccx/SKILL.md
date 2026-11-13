@@ -450,7 +450,9 @@ stored answer is younger than five minutes; every loop that reads GitHub
 passes it.
 
 Every request, from `vcs gh` and from ccx's own reads, is charged to its pool
-in a machine-wide ledger. A pool is an identity, app or user, and a resource,
+in a machine-wide ledger. `vcs gh` charges what gh sent once it exits, read
+from the request lines `GH_DEBUG=1` prints, so a paginated read costs a
+request a page and a command that sends none costs nothing. A pool is an identity, app or user, and a resource,
 core, graphql, or search. The charge goes to `CCX_CALLER`, which every script
 and daemon sets, else `CCI_AGENT_ID`, else the script that started ccx. GitHub
 can count one pool in two windows at once, each with its own reset, and the

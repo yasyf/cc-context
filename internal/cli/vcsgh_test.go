@@ -180,9 +180,36 @@ func TestChargeGHChildLeavesAChildThatSpendsNoPoolAlone(t *testing.T) {
 		{bin: "gt", argv: []string{"track", "--parent", "main", "--no-interactive"}},
 		{bin: "git", argv: []string{"push", "origin", "b"}},
 	} {
-		if err := chargeGHChild(t.Context(), child.bin, child.argv, []string{"GH_TOKEN=app-token"}); err != nil {
-			t.Errorf("chargeGHChild(%s %q) = %v, want nil", child.bin, child.argv, err)
+		if tap, err := chargeGHChild(t.Context(), child.bin, child.argv, []string{"GH_TOKEN=app-token"}); tap != nil || err != nil {
+			t.Errorf("chargeGHChild(%s %q) = %v, %v, want nil", child.bin, child.argv, tap, err)
 		}
+	}
+}
+
+func TestGhRunReturnsEachRequestGhSentAndPassesOnTheRestOfItsStderr(t *testing.T) {
+	shims := t.TempDir()
+	execstub.Write(t, filepath.Join(shims, "gh"), `#!/bin/sh
+[ "$GH_DEBUG" = 1 ] || exit 3
+echo '[git remote -v]' >&2
+echo '* Request at 2026-11-13 01:00:00 +0000 UTC' >&2
+echo '* Request to https://api.github.com/repos/o/r/pulls?page=1' >&2
+echo '* Request took 120ms' >&2
+echo 'warning: kept' >&2
+echo '* Request to https://api.github.com/repos/o/r/pulls?page=2' >&2
+printf 'unfinished' >&2
+echo out
+`)
+	t.Setenv("PATH", shims+string(os.PathListSeparator)+os.Getenv("PATH"))
+	cmd := &cobra.Command{}
+	cmd.SetContext(t.Context())
+	var stdout, stderr bytes.Buffer
+	sent, err := ghRun(t.Context(), cmd, t.TempDir(), []string{"api", "--paginate", "repos/o/r/pulls"}, nil, nil, &stdout, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"https://api.github.com/repos/o/r/pulls?page=1", "https://api.github.com/repos/o/r/pulls?page=2"}
+	if !slices.Equal(sent, want) || stdout.String() != "out\n" || stderr.String() != "warning: kept\nunfinished" {
+		t.Errorf("ghRun sent %q, printed %q and %q, want %q, %q and %q", sent, stdout.String(), stderr.String(), want, "out\n", "warning: kept\nunfinished")
 	}
 }
 

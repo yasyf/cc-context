@@ -23,6 +23,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ccx vcs gh`, and each gh child of a ccx command, charges the ledger each
+  request gh sent, once it exits, to the pool its URL draws from, read from
+  the request lines `GH_DEBUG=1` has gh print, which never reach stderr.
+  Before, ccx charged one request before gh ran, so `gh api --paginate`
+  charged one for all its pages, and a command that sent none, such as
+  `gh api 'repos/{owner}/{repo}'` outside a checkout, charged one. An app
+  read with `--repo` no longer looks up the checkout's repository, a GitHub
+  read when its cache is cold.
+
 - `ccx vcs gh` off a terminal runs `gh api`, `gh pr diff`, `gh gist view`,
   `gh repo read-file`, and `gh release download` with
   `--allow-escape-sequences` and strips every terminal escape sequence from
