@@ -34,7 +34,17 @@ env:
   HEAVY_PKGS: internal/web|internal/semsearch/chunk|internal/semsearch/embed|internal/gtmeta
 
 jobs:
+  wasm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.commit || github.sha }}
+      - uses: ./.github/actions/wasm
+
   cleanup-paused-nonterminal:
+    needs: wasm
     if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
@@ -62,6 +72,7 @@ jobs:
           path: ${{ runner.temp }}/cleanup-paused-nonterminal
 
   status-window-performance:
+    needs: wasm
     if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
@@ -95,6 +106,7 @@ jobs:
           path: status-*.txt
 
   cleanup-cold-startup:
+    needs: wasm
     if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
@@ -162,6 +174,7 @@ jobs:
           path: ${{ runner.temp }}/headlabel-caller.log
 
   semantic-ancestor-scope:
+    needs: wasm
     if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -206,6 +219,7 @@ jobs:
           path: ${{ runner.temp }}/semantic-ancestor-*.log
 
   literal-search-scope:
+    needs: wasm
     if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -311,6 +325,7 @@ jobs:
           python3 .github/scripts/test-go-hook-pins.py
 
   scheduler-performance:
+    needs: wasm
     if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')
     runs-on: ${{ matrix.os }}
     timeout-minutes: 5
@@ -344,6 +359,7 @@ jobs:
           path: scheduler-*.txt
 
   testbin:
+    needs: wasm
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     strategy:
@@ -405,6 +421,7 @@ jobs:
           "$GITHUB_WORKSPACE/cli.test" -test.v "-test.timeout=30m" "-test.run=$run"
 
   test-pkgs:
+    needs: wasm
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
@@ -457,6 +474,7 @@ jobs:
           echo "$pkgs" | xargs go test -race -timeout 30m
 
   shard-coverage:
+    needs: wasm
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -484,6 +502,7 @@ jobs:
         run: cargo test --manifest-path format-core/Cargo.toml
 
   vet:
+    needs: wasm
     runs-on: ${{ matrix.os }}
     timeout-minutes: 5
     strategy:
@@ -500,6 +519,7 @@ jobs:
         run: go vet ./...
 
   build:
+    needs: wasm
     runs-on: ${{ matrix.os }}
     timeout-minutes: 5
     strategy:
@@ -516,6 +536,7 @@ jobs:
         run: go build ./...
 
   lint:
+    needs: wasm
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -538,6 +559,7 @@ jobs:
           version: ${{ steps.golangci.outputs.version }}
 
   vuln:
+    needs: wasm
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -552,6 +574,7 @@ jobs:
           govulncheck ./...
 
   hook-tests:
+    needs: wasm
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

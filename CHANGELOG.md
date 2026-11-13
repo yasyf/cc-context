@@ -23,6 +23,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A fresh machine's first `ccx vcs ship` in cc-context commits instead of
+  being killed mid-hooks. `scripts/build-chunk-grammars.sh` builds its 23
+  tree-sitter grammars at once, one single-threaded zig link per core, in 227
+  seconds instead of 442 on an 8-core Sprite, and a cold ship finishes in 445.
+  Before, it linked them one at a time, the cold hook run needed 646 seconds,
+  and the 10-minute `render.runTimeout` guard on ship's prek run killed it
+  with nothing committed. The modules are unchanged byte for byte.
+
 - Every ccx verb's `--dry-run` leaves `.git/gh-stack`,
   `ccx-stack-receipts.json` and `.graphite_metadata.db` as it found them and
   takes neither stack lock. `ccx vcs stack move --onto main --dry-run` on an
@@ -66,6 +74,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--max-age 0s`, as the long-running drive's lander and the monorepo's
   `stack-enqueue` run them, failed on the first
   `net/http: TLS handshake timeout` and ended the landing that made it.
+
 - `ccx vcs ship --dry-run` on a shallow clone previews a stack whose bases this
   checkout lacks. It fetches each missing base's published head into origin's
   remote-tracking refs and deepens the clone to each merge base, as the run

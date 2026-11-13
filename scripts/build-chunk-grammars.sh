@@ -58,29 +58,15 @@ fetch() { # dir repo rev
 
 fetch "$core" https://github.com/tree-sitter/tree-sitter "$TS_RUNTIME_REV"
 
-want=("$@")
-built=0
-for row in "${grammars[@]}"; do
-	IFS='|' read -r lang repo rev sub symbol gen <<<"$row"
-	if [ ${#want[@]} -gt 0 ] && [[ ! " ${want[*]} " == *" $lang "* ]]; then
-		continue
-	fi
+compile() { # row
+	IFS='|' read -r lang repo rev sub symbol gen <<<"$1"
 	dest="$out/$lang.wasm.gz"
-	# Sources are rev-pinned, so a staged module is stale only when the bridge
-	# or endian shim changed. Skip the fetch+compile otherwise.
-	if [ -f "$dest" ] && [ "$dest" -nt "$wasmdir/bridge.c" ] && [ "$dest" -nt "$wasmdir/wasm_endian.h" ]; then
-		continue
-	fi
 	gdir="$build/grammars/$lang"
 	fetch "$gdir" "$repo" "$rev"
 	srcdir="$gdir/$sub"
 	# generate=1 grammars are regenerated from src/grammar.json at --abi 14,
 	# matching language-pack (which ignores any committed parser.c for these).
 	if [ "${gen:-}" = "1" ]; then
-		if ! command -v npx >/dev/null 2>&1; then
-			echo "build-chunk-grammars: skipping $lang (needs npx/tree-sitter-cli to generate parser.c)" >&2
-			continue
-		fi
 		( cd "$gdir" && rm -f "$sub/parser.c" \
 			&& npx -y "tree-sitter-cli@$TS_CLI_VERSION" generate --abi 14 "$sub/grammar.json" >/dev/null 2>&1 )
 	fi
@@ -96,6 +82,36 @@ for row in "${grammars[@]}"; do
 	gzip -9 -c "$build/$lang.wasm" >"$dest"
 	printf 'build-chunk-grammars: %-11s raw=%8d gz=%8d\n' "$lang" \
 		"$(wc -c <"$build/$lang.wasm")" "$(wc -c <"$dest")"
-	built=$((built + 1))
+}
+
+want=("$@")
+rows=()
+generates=0
+for row in "${grammars[@]}"; do
+	IFS='|' read -r lang _ _ _ _ gen <<<"$row"
+	if [ ${#want[@]} -gt 0 ] && [[ ! " ${want[*]} " == *" $lang "* ]]; then
+		continue
+	fi
+	dest="$out/$lang.wasm.gz"
+	# Sources are rev-pinned, so a staged module is stale only when the bridge
+	# or endian shim changed. Skip the fetch+compile otherwise.
+	if [ -f "$dest" ] && [ "$dest" -nt "$wasmdir/bridge.c" ] && [ "$dest" -nt "$wasmdir/wasm_endian.h" ]; then
+		continue
+	fi
+	if [ "${gen:-}" = "1" ]; then
+		if ! command -v npx >/dev/null 2>&1; then
+			echo "build-chunk-grammars: skipping $lang (needs npx/tree-sitter-cli to generate parser.c)" >&2
+			continue
+		fi
+		generates=1
+	fi
+	rows+=("$row")
 done
-echo "build-chunk-grammars: staged $built module(s) into $out"
+# Two npx installing one package at once collide in npm's cache, so install it
+# before the grammars build in parallel.
+[ "$generates" = 0 ] || npx -y "tree-sitter-cli@$TS_CLI_VERSION" --version >/dev/null
+export -f compile fetch
+export build out wasmdir core TS_CLI_VERSION
+[ ${#rows[@]} -eq 0 ] || printf '%s\0' "${rows[@]}" |
+	xargs -0 -n 1 -P "$(getconf _NPROCESSORS_ONLN)" bash -c 'set -euo pipefail; compile "$1"' _
+echo "build-chunk-grammars: staged ${#rows[@]} module(s) into $out"
