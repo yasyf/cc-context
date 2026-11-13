@@ -577,7 +577,7 @@ func shipPreflightGT(ctx context.Context, errW io.Writer, l lane, o shipOpts, c 
 	if plan.commitBeforeMove, err = gtCommitBeforeMove(ctx, l, o, plan, err); err != nil {
 		return branchPlan{}, "", err
 	}
-	nativeMoves, planned, err := nativeStackParents(ctx, l, state, nativeStackFrom(state, branch, o.parent), "origin")
+	nativeMoves, planned, err := nativeStackParents(ctx, l, state, nativeStackFrom(state, branch, o.parent), "origin", true)
 	if err != nil {
 		return branchPlan{}, "", err
 	}
@@ -1248,7 +1248,7 @@ func (p gtRecordedParent) onBase() string {
 }
 
 func gtAdoptRecordedParent(ctx context.Context, errW io.Writer, l lane, c *gtCache, state gtState, branch, parent string) (string, error) {
-	chain, err := gtRecordedChain(ctx, l, state, branch, parent, "origin")
+	chain, err := gtRecordedChain(ctx, l, state, branch, parent, true)
 	if err != nil {
 		return "", err
 	}
@@ -1267,7 +1267,7 @@ func gtAdoptRecordedParent(ctx context.Context, errW io.Writer, l lane, c *gtCac
 	return strings.Join(segs, ""), nil
 }
 
-func gtRecordedChain(ctx context.Context, l lane, state gtState, branch, parent, fetchFrom string) ([]gtRecordedParent, error) {
+func gtRecordedChain(ctx context.Context, l lane, state gtState, branch, parent string, cut bool) ([]gtRecordedParent, error) {
 	trunk, err := gtTrunkBranch("ship", state)
 	if err != nil {
 		return nil, err
@@ -1281,11 +1281,8 @@ func gtRecordedChain(ctx context.Context, l lane, state gtState, branch, parent,
 		if err != nil {
 			return nil, err
 		}
-		if !local && fetchFrom == "" {
-			return nil, dryRunUnfetchedBase(name, child)
-		}
 		if !local {
-			if local, err = gtBranchFromRemote(ctx, l.dir(), "ship", fetchFrom, name); err != nil {
+			if local, err = gtBaseFromRemote(ctx, l.dir(), "ship", "origin", name, cut); err != nil {
 				return nil, err
 			}
 		}
@@ -1320,6 +1317,34 @@ func gtBranchFromRemote(ctx context.Context, dir render.Dir, prefix, remote, nam
 		return false, fmt.Errorf("%s: git branch %s %s: %w", prefix, name, shortOID(heads[name]), err)
 	}
 	return true, nil
+}
+
+// gtBaseFromRemote fetches remote's head of name into its remote-tracking ref,
+// where a dry run plans from it, and cuts the local branch ship records only
+// when cut; it reports whether remote holds one.
+func gtBaseFromRemote(ctx context.Context, dir render.Dir, prefix, remote, name string, cut bool) (bool, error) {
+	if cut {
+		return gtBranchFromRemote(ctx, dir, prefix, remote, name)
+	}
+	heads, err := stackRemoteHeads(ctx, dir, prefix, remote, []string{name}, "")
+	return heads[name] != "", err
+}
+
+// gtPlanHead is the head a plan reads branch at: its local branch, or origin's
+// copy of a base a dry run fetched without cutting it, where ship cuts it.
+func gtPlanHead(ctx context.Context, dir render.Dir, branch string) (string, error) {
+	out, code, stderr, err := render.RunCLIExitCode(ctx, dir, "git", []string{"rev-parse", "--verify", "--quiet", gtRestackRef(branch)})
+	if err != nil {
+		return "", fmt.Errorf("ship: git rev-parse %s: %w", branch, err)
+	}
+	switch code {
+	case 0:
+		return strings.TrimSpace(out), nil
+	case 1:
+		return gitRevParse(ctx, dir, "ship", "refs/remotes/origin/"+branch)
+	default:
+		return "", fmt.Errorf("ship: git rev-parse %s: exit %d: %s", branch, code, strings.TrimSpace(stderr))
+	}
 }
 
 func gtTrackFailed(l lane, branch, advice string, runErr error) error {
@@ -1825,6 +1850,9 @@ func gtOntoPlan(ctx context.Context, l lane, o shipOpts, branch, parent, trunk s
 	if err != nil {
 		return gtOntoMove{}, err
 	}
+	if _, err := gtMergeBaseDeepening(ctx, l.dir(), "ship", "origin", onto, gtRestackRef(branch)); err != nil {
+		return gtOntoMove{}, err
+	}
 	on, err := gitIsAncestor(ctx, l.dir(), "ship", onto, gtRestackRef(branch))
 	if err == nil && on && from.Ref != "" && from.Ref != parent {
 		on, err = gitIsAncestor(ctx, l.dir(), "ship", from.SHA, onto)
@@ -1960,10 +1988,10 @@ func gtOnto(ctx context.Context, l lane, o shipOpts, branch, parent, trunk strin
 // gtOntoHead is the parent head a branch moves onto: under --tip-only, which
 // pushes no ancestor, the parent's published head when it has one, read from
 // the remote and fetched, since a clone whose fetch refspec names only trunk
-// never refreshes the parent's tracking ref; else its local head.
+// never refreshes the parent's tracking ref; else the head gtPlanHead reads.
 func gtOntoHead(ctx context.Context, dir render.Dir, o shipOpts, parent string) (string, error) {
 	if !o.tipOnly {
-		return gtRestackHead(ctx, "ship", dir, parent)
+		return gtPlanHead(ctx, dir, parent)
 	}
 	remote, err := vcs.GitRemoteFor(ctx, dir, "HEAD")
 	if err != nil {
@@ -2253,7 +2281,11 @@ func gtRefuseLandedParent(ctx context.Context, dir render.Dir, state gtState, br
 	if err != nil {
 		return err
 	}
-	contained, err := gitIsAncestor(ctx, dir, "ship", gtRestackRef(parent), string(tr.Ref()))
+	head, err := gtPlanHead(ctx, dir, parent)
+	if err != nil {
+		return err
+	}
+	contained, err := gitIsAncestor(ctx, dir, "ship", head, string(tr.Ref()))
 	if err != nil {
 		return err
 	}

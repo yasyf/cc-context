@@ -96,19 +96,17 @@ func TestShipGTReparentsOntoAParentAnotherLanePushedWithPlainGit(t *testing.T) {
 	api.recorded["parent"] = "main"
 	shipGTStack(t, f, "feature")
 
-	unfetched := dryRunUnfetchedBase("parent", "feature").Error()
-	if refusals := dryRunValues(dryRunReport(t, f, "--no-commit", "--parent", "parent"), "refuses"); len(refusals) != 1 || refusals[0] != unfetched {
-		t.Errorf("dry run refuses = %q, want %q", refusals, unfetched)
-	}
-	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin", "parent:parent")
+	heads := gitAt(t, f.Env(), f.Dir, "for-each-ref", "--format=%(refname) %(objectname)", "refs/heads")
 	report := dryRunReport(t, f, "--no-commit", "--parent", "parent")
 	if refusals := dryRunValues(report, "refuses"); len(refusals) != 0 {
-		t.Errorf("fetched dry run refuses = %q, want none", refusals)
+		t.Errorf("dry run refuses = %q, want none", refusals)
 	}
 	if got := dryRunValues(report, "parent"); len(got) != 1 || !strings.HasPrefix(got[0], "parent"+shipSep+"graphite tracks feature on main, so ship re-parents it") || !strings.HasSuffix(got[0], ", after ship tracks parent onto main, the base of its open #2000") {
-		t.Errorf("fetched dry run parent = %q, want feature re-parented onto parent, after ship tracks parent onto main", got)
+		t.Errorf("dry run parent = %q, want feature re-parented onto parent, after ship tracks parent onto main", got)
 	}
-	mustRun(t, f.Env(), f.Dir, "git", "branch", "-qD", "parent")
+	if after := gitAt(t, f.Env(), f.Dir, "for-each-ref", "--format=%(refname) %(objectname)", "refs/heads"); after != heads {
+		t.Errorf("the dry run cut or moved a branch:\n%s\nwant\n%s", after, heads)
+	}
 	mustRun(t, f.Env(), f.Dir, "git", "update-ref", "-d", "refs/remotes/origin/parent")
 	shipGTReady(t, f)
 
