@@ -45,7 +45,7 @@ func TestNativeTrackAdoptsWithoutGraphiteDatabase(t *testing.T) {
 	if len(branch.Parents) != 1 || branch.Parents[0].Ref != "main" || branch.Head != head {
 		t.Fatalf("native branch was not adopted onto main: %+v", branch)
 	}
-	if native, err := nativemeta.Membership(common, "fresh"); err != nil || !native {
+	if native, err := nativemeta.Membership(t.Context(), common, "fresh"); err != nil || !native {
 		t.Fatalf("native membership=%v error=%v", native, err)
 	}
 	if got := strings.TrimSpace(f.Out(t, "git", "rev-parse", "fresh")); got != head {

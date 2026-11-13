@@ -64,7 +64,7 @@ func owners(ctx context.Context, commonDir string) (ownership, error) {
 		return o, err
 	}
 	if o.nativeStore {
-		names, err := nativemeta.BranchNames(commonDir)
+		names, err := nativemeta.BranchNames(ctx, commonDir)
 		if err != nil {
 			return o, err
 		}
@@ -101,13 +101,13 @@ func BranchProviders(ctx context.Context, commonDir string) (map[string]string, 
 }
 
 // NativeMembership reports actual native branch ownership, excluding trunk entries.
-func NativeMembership(commonDir, branch string) (bool, error) {
-	return nativemeta.Membership(commonDir, branch)
+func NativeMembership(ctx context.Context, commonDir, branch string) (bool, error) {
+	return nativemeta.Membership(ctx, commonDir, branch)
 }
 
 // Provider prefers native membership, then an explicit ccx.stack=github, then existing Graphite ownership, then the native default.
 func Provider(ctx context.Context, commonDir, branch string) (string, error) {
-	native, err := NativeMembership(commonDir, branch)
+	native, err := NativeMembership(ctx, commonDir, branch)
 	if err != nil {
 		return "", err
 	}
@@ -190,7 +190,7 @@ func retrack(ctx context.Context, commonDir, branch, parent string) error {
 	if err != nil || !tracked {
 		return err
 	}
-	native, err := nativemeta.BranchNames(commonDir)
+	native, err := nativemeta.BranchNames(ctx, commonDir)
 	if err != nil || slices.Contains(native, branch) {
 		return err
 	}
@@ -222,7 +222,7 @@ func convert(ctx context.Context, commonDir string, branches []string, explicit 
 	if err != nil {
 		return err
 	}
-	names, err := nativemeta.BranchNames(commonDir)
+	names, err := nativemeta.BranchNames(ctx, commonDir)
 	if err != nil {
 		return err
 	}
@@ -344,7 +344,7 @@ func readRequestedOriginOrphans(ctx context.Context, commonDir string, branches 
 		if err != nil {
 			return nil, nil, err
 		}
-		native, err := nativemeta.BranchNames(commonDir)
+		native, err := nativemeta.BranchNames(ctx, commonDir)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -391,7 +391,7 @@ func readProviders(ctx context.Context, commonDir string, remote bool) (State, [
 			if err != nil {
 				return nil, nil, err
 			}
-			native, err := nativemeta.BranchNames(commonDir)
+			native, err := nativemeta.BranchNames(ctx, commonDir)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -441,7 +441,7 @@ func readProviders(ctx context.Context, commonDir string, remote bool) (State, [
 	if err != nil {
 		return nil, nil, err
 	}
-	names, err := nativemeta.BranchNames(commonDir)
+	names, err := nativemeta.BranchNames(ctx, commonDir)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -488,7 +488,7 @@ func Rows(ctx context.Context, commonDir string) ([]Row, error) {
 		if err != nil {
 			return nil, err
 		}
-		names, err := nativemeta.BranchNames(commonDir)
+		names, err := nativemeta.BranchNames(ctx, commonDir)
 		if err != nil {
 			return nil, err
 		}
@@ -712,7 +712,7 @@ func Reparent(ctx context.Context, commonDir string, moves map[string]string) er
 // ReadPublishedChild reads a child from its selected owner for publication-receipt comparison.
 func ReadPublishedChild(ctx context.Context, commonDir, branch string) (PublishedChildState, error) {
 	if contextProvider(ctx) == ProviderGraphite {
-		native, err := NativeMembership(commonDir, branch)
+		native, err := NativeMembership(ctx, commonDir, branch)
 		if err != nil {
 			return PublishedChildState{}, err
 		}
@@ -725,7 +725,7 @@ func ReadPublishedChild(ctx context.Context, commonDir, branch string) (Publishe
 		row, err := nativemeta.ReadPublishedChild(ctx, commonDir, branch)
 		return PublishedChildState(row), err
 	}
-	native, err := NativeMembership(commonDir, branch)
+	native, err := NativeMembership(ctx, commonDir, branch)
 	if err != nil {
 		return PublishedChildState{}, err
 	}
@@ -743,7 +743,7 @@ func LastSubmitted(ctx context.Context, commonDir string) (map[string]Version, e
 		if err != nil {
 			return nil, err
 		}
-		names, err := nativemeta.BranchNames(commonDir)
+		names, err := nativemeta.BranchNames(ctx, commonDir)
 		if err != nil {
 			return nil, err
 		}
@@ -777,7 +777,7 @@ func LastSubmitted(ctx context.Context, commonDir string) (map[string]Version, e
 			return nil, err
 		}
 	}
-	names, err := nativemeta.BranchNames(commonDir)
+	names, err := nativemeta.BranchNames(ctx, commonDir)
 	if err != nil {
 		return nil, err
 	}

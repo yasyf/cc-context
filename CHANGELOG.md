@@ -23,6 +23,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Every ccx verb's `--dry-run` leaves `.git/gh-stack`,
+  `ccx-stack-receipts.json` and `.graphite_metadata.db` as it found them and
+  takes neither stack lock. `ccx vcs stack move --onto main --dry-run` on an
+  untracked branch tracked it onto main, and `ship`, `stack rebase` and
+  `stack drop` with `--dry-run` reparented a branch whose landed parent's ref
+  was gone, since each healed the catalog before the step that knew it was a
+  dry run. A dry run now keeps those writes in memory, where the rest of the
+  run reads them back, so it prints the plan it printed before.
 - `ccx vcs ship` adopts an untracked branch onto a tracked branch it was cut
   from, never onto a sibling cut from the same commit. The nearest tracked
   ancestor matched a branch's reflog, whose first entry is the commit the

@@ -74,7 +74,7 @@ func TestStackSubmitFromANativeParentConvertsItsGraphiteChild(t *testing.T) {
 	if b := run.branch("feature"); b == nil || b.Parent != "base" {
 		t.Fatalf("feature in the plan = %+v; want it restacked on base", b)
 	}
-	if native, err := gtmeta.NativeMembership(common, "feature"); err != nil || !native {
+	if native, err := gtmeta.NativeMembership(t.Context(), common, "feature"); err != nil || !native {
 		t.Fatalf("native membership of feature = %v, %v; want converted", native, err)
 	}
 }

@@ -172,7 +172,7 @@ func TestStackRebaseTakesTheNativeLaneOverAGraphiteRowItDoesNotTrack(t *testing.
 	if out, errOut, err := runStackCmd(t, f, "rebase", "--no-push"); err != nil {
 		t.Fatalf("stack rebase over a parentless Graphite row: %v\n%s%s", err, out, errOut)
 	}
-	if native, err := nativemeta.Membership(common, "mid"); err != nil || !native {
+	if native, err := nativemeta.Membership(t.Context(), common, "mid"); err != nil || !native {
 		t.Errorf("mid native = %v, %v; want it recorded in the native stack", native, err)
 	}
 	state, err := gtStateQuery(f.Context(), render.Dir(f.Dir), "test")

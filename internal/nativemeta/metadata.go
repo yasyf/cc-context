@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yasyf/cc-context/internal/dryrun"
 	"github.com/yasyf/cc-context/internal/nativeapi"
 	"github.com/yasyf/cc-context/internal/render"
 )
@@ -109,9 +110,9 @@ type branchRow struct {
 	owner          int
 }
 
-func readCatalog(commonDir string) (catalog, error) {
+func readCatalog(ctx context.Context, commonDir string) (catalog, error) {
 	c := catalog{SchemaVersion: 1, Stacks: []stack{}}
-	if err := readJSON(commonDir, "gh-stack", &c); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := readJSON(ctx, commonDir, "gh-stack", &c); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return c, err
 	}
 	if c.SchemaVersion != 1 {
@@ -120,30 +121,33 @@ func readCatalog(commonDir string) (catalog, error) {
 	return c, nil
 }
 
-func load(commonDir string) (catalog, receipts, error) {
-	c, err := readCatalog(commonDir)
+func load(ctx context.Context, commonDir string) (catalog, receipts, error) {
+	c, err := readCatalog(ctx, commonDir)
 	if err != nil {
 		return c, receipts{}, err
 	}
 	r := receipts{Frozen: map[string]bool{}, Submitted: map[string]Version{}}
-	if err := readJSON(commonDir, "ccx-stack-receipts.json", &r); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := readJSON(ctx, commonDir, "ccx-stack-receipts.json", &r); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return c, r, err
 	}
 	return c, r, nil
 }
 
-func readJSON(commonDir, name string, value any) error {
-	root, err := os.OpenRoot(commonDir)
-	if err != nil {
-		return fmt.Errorf("open metadata directory %s: %w", commonDir, err)
-	}
-	defer func() { _ = root.Close() }()
-	data, err := root.ReadFile(name)
-	if err != nil {
-		return fmt.Errorf("read %s: %w", filepath.Join(commonDir, name), err)
+func readJSON(ctx context.Context, commonDir, name string, value any) error {
+	path := filepath.Join(commonDir, name)
+	data, written := dryrun.Read(ctx, path)
+	if !written {
+		root, err := os.OpenRoot(commonDir)
+		if err != nil {
+			return fmt.Errorf("open metadata directory %s: %w", commonDir, err)
+		}
+		defer func() { _ = root.Close() }()
+		if data, err = root.ReadFile(name); err != nil {
+			return fmt.Errorf("read %s: %w", path, err)
+		}
 	}
 	if err := json.Unmarshal(data, value); err != nil {
-		return fmt.Errorf("parse %s: %w", filepath.Join(commonDir, name), err)
+		return fmt.Errorf("parse %s: %w", path, err)
 	}
 	return nil
 }
@@ -219,7 +223,7 @@ func ReadOriginPlannedOrphans(ctx context.Context, commonDir string) (State, []O
 
 // ReadOriginOrphansWithMembers binds live native state and catalog ownership to one metadata read.
 func ReadOriginOrphansWithMembers(ctx context.Context, commonDir string) (State, []Orphan, []string, error) {
-	r, receipts, err := loadRows(commonDir)
+	r, receipts, err := loadRows(ctx, commonDir)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -235,15 +239,15 @@ func ReadOriginOrphansWithMembers(ctx context.Context, commonDir string) (State,
 }
 
 func readState(ctx context.Context, commonDir string, remote, planned bool) (State, []Orphan, error) {
-	r, receipts, err := loadRows(commonDir)
+	r, receipts, err := loadRows(ctx, commonDir)
 	if err != nil {
 		return nil, nil, err
 	}
 	return readRowsState(ctx, commonDir, remote, planned, r, receipts)
 }
 
-func loadRows(commonDir string) ([]branchRow, receipts, error) {
-	c, r, err := load(commonDir)
+func loadRows(ctx context.Context, commonDir string) ([]branchRow, receipts, error) {
+	c, r, err := load(ctx, commonDir)
 	if err != nil {
 		return nil, r, err
 	}
@@ -336,7 +340,7 @@ func readHeads(ctx context.Context, commonDir string, rows []branchRow, remote b
 
 // ReadTrunk resolves a catalog trunk or the repository default before native initialization.
 func ReadTrunk(ctx context.Context, commonDir string) (string, error) {
-	r, _, err := loadRows(commonDir)
+	r, _, err := loadRows(ctx, commonDir)
 	if err != nil {
 		return "", err
 	}
@@ -483,7 +487,7 @@ func plannedOn(ctx context.Context, commonDir string, byName map[string]branchRo
 
 // Rows includes stale catalog entries that normal state reads omit.
 func Rows(ctx context.Context, commonDir string) ([]Row, error) {
-	c, _, err := load(commonDir)
+	c, _, err := load(ctx, commonDir)
 	if err != nil {
 		return nil, err
 	}
@@ -509,17 +513,19 @@ func mutate(ctx context.Context, commonDir string, change func(*catalog, *receip
 func mutateKeeping(ctx context.Context, commonDir, keep string, change func(*catalog, *receipts) (bool, bool, error)) error {
 	ctx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
-	operation, err := lockCatalog(ctx, commonDir, "gh-stack-operation.lock")
-	if err != nil {
-		return err
+	if !dryrun.Active(ctx) {
+		operation, err := lockCatalog(ctx, commonDir, "gh-stack-operation.lock")
+		if err != nil {
+			return err
+		}
+		defer func() { _ = operation.Close() }()
+		lock, err := lockCatalog(ctx, commonDir, "gh-stack.lock")
+		if err != nil {
+			return err
+		}
+		defer func() { _ = lock.Close() }()
 	}
-	defer func() { _ = operation.Close() }()
-	lock, err := lockCatalog(ctx, commonDir, "gh-stack.lock")
-	if err != nil {
-		return err
-	}
-	defer func() { _ = lock.Close() }()
-	c, r, err := load(commonDir)
+	c, r, err := load(ctx, commonDir)
 	if err != nil {
 		return err
 	}
@@ -533,12 +539,12 @@ func mutateKeeping(ctx context.Context, commonDir, keep string, change func(*cat
 	}
 	catalogChanged, receiptsChanged = catalogChanged || healed, receiptsChanged || healed
 	if receiptsChanged {
-		if err := writeJSON(commonDir, "ccx-stack-receipts.json", r); err != nil {
+		if err := writeJSON(ctx, commonDir, "ccx-stack-receipts.json", r); err != nil {
 			return err
 		}
 	}
 	if catalogChanged {
-		return writeJSON(commonDir, "gh-stack", c)
+		return writeJSON(ctx, commonDir, "gh-stack", c)
 	}
 	return nil
 }
@@ -634,17 +640,22 @@ func lockCatalog(ctx context.Context, commonDir, name string) (*os.File, error) 
 	return f, nil
 }
 
-func writeJSON(commonDir, name string, value any) error {
+func writeJSON(ctx context.Context, commonDir, name string, value any) error {
 	data, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
 		return err
+	}
+	data = append(data, '\n')
+	if dryrun.Active(ctx) {
+		dryrun.Write(ctx, filepath.Join(commonDir, name), data)
+		return nil
 	}
 	f, err := os.CreateTemp(commonDir, name+".tmp-*")
 	if err != nil {
 		return err
 	}
 	defer func() { _ = os.Remove(f.Name()) }()
-	if _, err := f.Write(append(data, '\n')); err != nil {
+	if _, err := f.Write(data); err != nil {
 		_ = f.Close()
 		return err
 	}
@@ -898,8 +909,8 @@ func trunkRef(row branchRow) branchRef {
 }
 
 // LastSubmitted returns the publication receipts retained independently of the native catalog.
-func LastSubmitted(_ context.Context, commonDir string) (map[string]Version, error) {
-	_, r, err := load(commonDir)
+func LastSubmitted(ctx context.Context, commonDir string) (map[string]Version, error) {
+	_, r, err := load(ctx, commonDir)
 	return r.Submitted, err
 }
 
@@ -952,7 +963,7 @@ func RecordRestacked(ctx context.Context, commonDir string, revisions map[string
 
 // ReadPublishedChild combines a catalog relationship with its local head and publication receipt.
 func ReadPublishedChild(ctx context.Context, commonDir, branch string) (PublishedChildState, error) {
-	c, r, err := load(commonDir)
+	c, r, err := load(ctx, commonDir)
 	if err != nil {
 		return PublishedChildState{}, err
 	}
@@ -1029,8 +1040,8 @@ func RecordPullRequests(ctx context.Context, commonDir string, published map[str
 }
 
 // BranchNames lists actual native catalog members without treating trunks as owned branches.
-func BranchNames(commonDir string) ([]string, error) {
-	c, err := readCatalog(commonDir)
+func BranchNames(ctx context.Context, commonDir string) ([]string, error) {
+	c, err := readCatalog(ctx, commonDir)
 	if err != nil {
 		return nil, err
 	}
@@ -1049,7 +1060,7 @@ func BranchNames(commonDir string) ([]string, error) {
 }
 
 // Membership reports catalog ownership independently of live refs or supplemental receipts.
-func Membership(commonDir, branch string) (bool, error) {
-	names, err := BranchNames(commonDir)
+func Membership(ctx context.Context, commonDir, branch string) (bool, error) {
+	names, err := BranchNames(ctx, commonDir)
 	return slices.Contains(names, branch), err
 }

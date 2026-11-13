@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
+	"github.com/yasyf/cc-context/internal/dryrun"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/version"
 )
@@ -40,7 +41,11 @@ func NewRootCmd() *cobra.Command {
 		newMCPCmd(),
 	)
 	root.PersistentPreRun = func(cmd *cobra.Command, _ []string) {
-		cmd.SetContext(render.WithChildDone(render.WithMeter(gtDedupe(cmd.Context()), chargeGHChild), ghExpireForChild))
+		ctx := render.WithChildDone(render.WithMeter(gtDedupe(cmd.Context()), chargeGHChild), ghExpireForChild)
+		if dry, err := cmd.Flags().GetBool("dry-run"); err == nil && dry {
+			ctx = dryrun.With(ctx)
+		}
+		cmd.SetContext(ctx)
 	}
 	root.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error {
 		if hint := flagErrorHint(cmd, err); hint != "" {

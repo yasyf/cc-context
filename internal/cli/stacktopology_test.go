@@ -108,7 +108,7 @@ func TestCompleteNativePlanConvertsOnlyRequestedGraphiteAncestry(t *testing.T) {
 	if entry.Head != head || len(entry.Parents) != 1 || entry.Parents[0].Ref != "base" || topology.retargeted["publication"].Head != head {
 		t.Fatalf("requested native ancestry = %+v", state)
 	}
-	names, err := nativemeta.BranchNames(common)
+	names, err := nativemeta.BranchNames(t.Context(), common)
 	if err != nil {
 		t.Fatal(err)
 	}

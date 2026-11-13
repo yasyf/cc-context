@@ -744,7 +744,7 @@ func worktreeUntrackedChain(ctx context.Context, l lane, name, tip string) ([]gt
 	if !tracked {
 		return nil, nil
 	}
-	native, err := gtmeta.NativeMembership(l.checkout.CommonDir, name)
+	native, err := gtmeta.NativeMembership(ctx, l.checkout.CommonDir, name)
 	if err != nil {
 		return nil, fmt.Errorf("worktree add: %w", err)
 	}

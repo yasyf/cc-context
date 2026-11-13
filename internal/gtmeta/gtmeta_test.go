@@ -1,6 +1,7 @@
 package gtmeta_test
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yasyf/cc-context/internal/dryrun"
 	"github.com/yasyf/cc-context/internal/gtmeta"
 	"github.com/yasyf/cc-context/internal/vcstest"
 
@@ -201,6 +203,42 @@ func TestAdoptRootRecordsBothSidesAtomically(t *testing.T) {
 	var count int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM branch_metadata WHERE branch_name = 'orphan'`).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("orphan rows = %d, %v", count, err)
+	}
+}
+
+func TestDryRunAdoptRootLeavesTheDatabaseAsItFoundIt(t *testing.T) {
+	for _, journal := range []string{"PRAGMA journal_mode = DELETE", "PRAGMA journal_mode = WAL"} {
+		t.Run(journal, func(t *testing.T) {
+			dir := t.TempDir()
+			vcstest.WriteGraphiteMeta(t, dir, `{"main":{"trunk":true}}`)
+			path := filepath.Join(dir, ".graphite_metadata.db")
+			db, err := sql.Open("sqlite", path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = db.Close() }()
+			if _, err := db.Exec(journal); err != nil {
+				t.Fatal(err)
+			}
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			dry := dryrun.With(t.Context())
+			if err := gtmeta.AdoptRoot(dry, dir, "feature", "main", "base", "head"); err != nil {
+				t.Fatal(err)
+			}
+			if row, err := gtmeta.ReadPublishedChild(dry, dir, "feature"); err != nil || row.Parent != "main" || row.BranchRevision != "head" {
+				t.Errorf("dry run's feature row = %+v, %v", row, err)
+			}
+			var count int
+			if err := db.QueryRow(`SELECT COUNT(*) FROM branch_metadata WHERE branch_name = 'feature'`).Scan(&count); err != nil || count != 0 {
+				t.Errorf("feature rows outside the dry run = %d, %v", count, err)
+			}
+			if after, err := os.ReadFile(path); err != nil || !bytes.Equal(after, before) {
+				t.Errorf("the dry run rewrote %s: %v", path, err)
+			}
+		})
 	}
 }
 

@@ -4439,7 +4439,11 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 			}
 			want = append(want, tt.parentInv...)
 			want = append(want, []string{"git", "log", "-1", "--format=%h%x00%s"})
-			want = append(want, tt.submitInv...)
+			submit := tt.submitInv
+			if len(tt.prBranches) > 1 {
+				submit = slices.Insert(slices.Clone(submit), 1, []string{"git", "--git-dir", filepath.Join(os.Getenv("SHIP_FAKE_ROOT"), ".git"), "config", "--bool", "core.bare"})
+			}
+			want = append(want, submit...)
 			want = append(want, tt.receiptInv...)
 			want = append(want,
 				[]string{"git", "rev-parse", "HEAD"},

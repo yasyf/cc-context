@@ -1,6 +1,7 @@
 package nativemeta
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -8,9 +9,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/yasyf/cc-context/internal/dryrun"
 )
 
 func TestNativeCatalogTracksParentMovementAndDeletedParents(t *testing.T) {
@@ -73,7 +77,7 @@ func TestNativeRestackRecordsForkpointAndPreservesPRIdentity(t *testing.T) {
 	if state["feature"].NeedsRestack || state["feature"].Parents[0].SHA != moved {
 		t.Fatalf("state = %+v", state)
 	}
-	c, _, err := load(common)
+	c, _, err := load(t.Context(), common)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +100,7 @@ func TestNativeAdoptOpensASecondChildChainAsItsOwnStackOnTheSharedParent(t *test
 	if err := AdoptRoot(t.Context(), common, "fork-tip", "fork", main, main); err != nil {
 		t.Fatal(err)
 	}
-	c, _, err := load(common)
+	c, _, err := load(t.Context(), common)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +144,7 @@ func TestNativeReparentOntoAStackedBranchOpensAForkStack(t *testing.T) {
 	if err := Reparent(t.Context(), common, map[string]string{"other": "base"}); err != nil {
 		t.Fatal(err)
 	}
-	c, _, err := load(common)
+	c, _, err := load(t.Context(), common)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,7 +252,7 @@ func strayRootFixture(t *testing.T, history func(context.Context, string, string
 		git(t, dir, "branch", branch)
 	}
 	writeCatalog(t, common, catalog{SchemaVersion: 1, Stacks: []stack{{Trunk: branchRef{Branch: "main", Head: main}, Branches: []branchRef{{Branch: "feature", Base: main}}}, {Trunk: branchRef{Branch: "other", Head: main}, Branches: []branchRef{{Branch: "child", Base: main}}}}})
-	if err := writeJSON(common, "ccx-stack-receipts.json", receipts{Frozen: map[string]bool{"child": true}, Submitted: map[string]Version{"child": {HeadSha: main}}}); err != nil {
+	if err := writeJSON(t.Context(), common, "ccx-stack-receipts.json", receipts{Frozen: map[string]bool{"child": true}, Submitted: map[string]Version{"child": {HeadSha: main}}}); err != nil {
 		t.Fatal(err)
 	}
 	judged := branchHistory
@@ -267,7 +271,7 @@ func TestNativeWritesKeepARootThatIsARealTrunk(t *testing.T) {
 	if err := RecordSubmitted(t.Context(), common, map[string]Version{"feature": {HeadSha: main, BaseSha: main, BaseName: "main"}}); err != nil {
 		t.Fatal(err)
 	}
-	c, r, err := load(common)
+	c, r, err := load(t.Context(), common)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -281,7 +285,7 @@ func TestNativeWritesDropARootThatWasAPullRequestHead(t *testing.T) {
 	if err := RecordSubmitted(t.Context(), common, map[string]Version{"feature": {HeadSha: main, BaseSha: main, BaseName: "main"}}); err != nil {
 		t.Fatal(err)
 	}
-	c, r, err := load(common)
+	c, r, err := load(t.Context(), common)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -301,7 +305,7 @@ func TestNativeRetargetKeepsALandedRootItMoves(t *testing.T) {
 	if err := RetargetRoot(t.Context(), common, "other", "main"); err != nil {
 		t.Fatal(err)
 	}
-	c, r, err := load(common)
+	c, r, err := load(t.Context(), common)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -318,7 +322,7 @@ func TestNativeWritesDropARootMissingFromOrigin(t *testing.T) {
 	if err := RecordSubmitted(t.Context(), common, map[string]Version{"feature": {HeadSha: main, BaseSha: main, BaseName: "main"}}); err != nil {
 		t.Fatal(err)
 	}
-	c, _, err := load(common)
+	c, _, err := load(t.Context(), common)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -407,7 +411,7 @@ func TestFrozenReceiptSurvivesNativeCatalogRewrite(t *testing.T) {
 	if err := AdoptFrozen(t.Context(), common, "feature", "main", main, main); err != nil {
 		t.Fatal(err)
 	}
-	c, _, err := load(common)
+	c, _, err := load(t.Context(), common)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -492,6 +496,43 @@ func TestACatalogRootedOffTheDefaultBranchKeepsTheRemoteDefaultAsTrunk(t *testin
 	}
 }
 
+func TestDryRunWritesStayInMemoryForTheRestOfTheRun(t *testing.T) {
+	dir := repo(t)
+	common := filepath.Join(dir, ".git")
+	main := git(t, dir, "rev-parse", "main")
+	git(t, dir, "branch", "feature")
+	writeCatalog(t, common, catalog{SchemaVersion: 1, Stacks: []stack{{Trunk: branchRef{Branch: "main", Head: main}}}})
+	before, err := os.ReadFile(filepath.Join(common, "gh-stack"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dry := dryrun.With(t.Context())
+	if err := AdoptRoot(dry, common, "feature", "main", main, main); err != nil {
+		t.Fatal(err)
+	}
+	wanted := map[string]Version{"feature": {HeadSha: main, BaseSha: main, BaseName: "main"}}
+	if err := RecordSubmitted(dry, common, wanted); err != nil {
+		t.Fatal(err)
+	}
+	if names, err := BranchNames(dry, common); err != nil || !slices.Contains(names, "feature") {
+		t.Errorf("dry run's branches = %v (%v), want the feature it adopted", names, err)
+	}
+	if got, err := LastSubmitted(dry, common); err != nil || !reflect.DeepEqual(got, wanted) {
+		t.Errorf("dry run's receipts = %+v (%v), want %+v", got, err, wanted)
+	}
+	if names, err := BranchNames(t.Context(), common); err != nil || slices.Contains(names, "feature") {
+		t.Errorf("branches outside the dry run = %v (%v), want no feature", names, err)
+	}
+	if after, err := os.ReadFile(filepath.Join(common, "gh-stack")); err != nil || !bytes.Equal(after, before) {
+		t.Errorf("gh-stack = %s (%v), want it as before:\n%s", after, err, before)
+	}
+	for _, name := range []string{"gh-stack.lock", "gh-stack-operation.lock", "ccx-stack-receipts.json"} {
+		if _, err := os.Stat(filepath.Join(common, name)); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("the dry run left %s: %v", name, err)
+		}
+	}
+}
+
 func TestCatalogMutationHonorsNativeOperationLock(t *testing.T) {
 	dir := repo(t)
 	common := filepath.Join(dir, ".git")
@@ -541,7 +582,7 @@ func commit(t *testing.T, dir, name string) {
 
 func writeCatalog(t *testing.T, common string, c catalog) {
 	t.Helper()
-	if err := writeJSON(common, "gh-stack", c); err != nil {
+	if err := writeJSON(t.Context(), common, "gh-stack", c); err != nil {
 		t.Fatal(err)
 	}
 }
