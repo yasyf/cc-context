@@ -524,7 +524,7 @@ func stackNewParent(ctx context.Context, l lane, parent, trunk string) ([]string
 		return nil, nil
 	}
 	if l.native {
-		member, err := gtmeta.NativeMembership(l.checkout.CommonDir, parent)
+		member, err := gtmeta.NativeMembership(ctx, l.checkout.CommonDir, parent)
 		if err != nil || member {
 			return nil, err
 		}

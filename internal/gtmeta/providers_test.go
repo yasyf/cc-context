@@ -58,7 +58,7 @@ func TestProviderPrefersActualMembershipOverExplicitDefault(t *testing.T) {
 	if got, err := gtmeta.Provider(f.Context(), common, "main"); err != nil || got != "github" {
 		t.Fatalf("legacy trunk forced new stack away from native default: %q, %v", got, err)
 	}
-	if tracked, err := gtmeta.NativeMembership(common, "main"); err != nil || tracked {
+	if tracked, err := gtmeta.NativeMembership(t.Context(), common, "main"); err != nil || tracked {
 		t.Fatalf("native trunk counted as branch membership: %v, %v", tracked, err)
 	}
 }
@@ -126,7 +126,7 @@ func TestMetadataWritesPartitionAndPreserveTheOtherStore(t *testing.T) {
 	if string(legacyAfter) != string(legacyBefore) {
 		t.Fatal("native prune wrote legacy metadata")
 	}
-	native, err := gtmeta.NativeMembership(common, "native")
+	native, err := gtmeta.NativeMembership(t.Context(), common, "native")
 	if err != nil || native {
 		t.Fatalf("native branch remains tracked after native prune: %v, %v", native, err)
 	}
@@ -213,7 +213,7 @@ func TestOwnershipSkipsARowGraphiteDoesNotTrack(t *testing.T) {
 	if err := gtmeta.AdoptRoot(gtmeta.WithProvider(f.Context(), "github"), common, "cached", "main", main, main); err != nil {
 		t.Fatalf("native adopt of a branch Graphite does not track: %v", err)
 	}
-	if native, err := gtmeta.NativeMembership(common, "cached"); err != nil || !native {
+	if native, err := gtmeta.NativeMembership(t.Context(), common, "cached"); err != nil || !native {
 		t.Fatalf("cached native = %v, %v; want it adopted into the native stack", native, err)
 	}
 }
@@ -336,7 +336,7 @@ func TestConvertMovesOnlyTheRequestedDownstackAndLeavesGraphiteUntouched(t *test
 		t.Fatal(err)
 	}
 	for branch, want := range map[string]bool{"bottom": true, "middle": false, "tip": false} {
-		if got, err := gtmeta.NativeMembership(common, branch); err != nil || got != want {
+		if got, err := gtmeta.NativeMembership(t.Context(), common, branch); err != nil || got != want {
 			t.Fatalf("native membership of %s = %v, %v; want %v", branch, got, err, want)
 		}
 	}
@@ -351,7 +351,7 @@ func TestConvertMovesOnlyTheRequestedDownstackAndLeavesGraphiteUntouched(t *test
 	if err := gtmeta.Convert(f.Context(), common, "middle"); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := gtmeta.NativeMembership(common, "middle"); err != nil || got {
+	if got, err := gtmeta.NativeMembership(t.Context(), common, "middle"); err != nil || got {
 		t.Fatalf("ccx.stack=graphite converted middle: %v, %v", got, err)
 	}
 }
@@ -362,7 +362,7 @@ func TestConvertOntoRetracksABranchWhoseGraphiteParentIsGoneOntoTheNamedParent(t
 	if err := gtmeta.ConvertOnto(f.Context(), common, "middle", "main"); err != nil {
 		t.Fatalf("ConvertOnto(middle onto main after bottom was deleted) = %v; want middle re-tracked and converted", err)
 	}
-	if got, err := gtmeta.NativeMembership(common, "middle"); err != nil || !got {
+	if got, err := gtmeta.NativeMembership(t.Context(), common, "middle"); err != nil || !got {
 		t.Fatalf("native membership of middle = %v, %v; want true", got, err)
 	}
 }

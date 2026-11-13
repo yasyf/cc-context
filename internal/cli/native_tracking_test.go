@@ -303,7 +303,7 @@ func TestStackNewInheritsExplicitLegacyParentFromNativeCheckout(t *testing.T) {
 	if err != nil || provider != gtmeta.ProviderGraphite {
 		t.Fatalf("child provider=%s error=%v", provider, err)
 	}
-	if native, err := gtmeta.NativeMembership(common, "legacy-child"); err != nil || native {
+	if native, err := gtmeta.NativeMembership(t.Context(), common, "legacy-child"); err != nil || native {
 		t.Fatalf("legacy child adopted as native: %v %v", native, err)
 	}
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "legacy-parent")
@@ -311,7 +311,7 @@ func TestStackNewInheritsExplicitLegacyParentFromNativeCheckout(t *testing.T) {
 	if _, _, err := runStackCmd(t, f, "new", "native-child", "--parent", "native-current", "--full-history", "--path", nativeChild); err != nil {
 		t.Fatal(err)
 	}
-	if native, err := gtmeta.NativeMembership(common, "native-child"); err != nil || !native {
+	if native, err := gtmeta.NativeMembership(t.Context(), common, "native-child"); err != nil || !native {
 		t.Fatalf("native parent produced nonnative child: %v %v", native, err)
 	}
 }
@@ -326,7 +326,7 @@ func TestStackNewPrefersNativeForGitHubOriginWithoutCatalog(t *testing.T) {
 	if _, _, err := runStackCmd(t, f, "new", "native-first", "--full-history", "--path", child); err != nil {
 		t.Fatal(err)
 	}
-	native, err := gtmeta.NativeMembership(filepath.Join(f.Dir, ".git"), "native-first")
+	native, err := gtmeta.NativeMembership(t.Context(), filepath.Join(f.Dir, ".git"), "native-first")
 	if err != nil || !native {
 		t.Fatalf("new GitHub stack native=%v error=%v", native, err)
 	}

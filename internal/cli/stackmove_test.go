@@ -1,7 +1,11 @@
 package cli
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -136,6 +140,98 @@ func TestStackMoveOntoABranchOutsideTheStackPrintsTheReparentAndWritesNothing(t 
 	if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "fix"); got != published {
 		t.Errorf("origin fix = %.12s after a dry run, want %.12s", got, published)
 	}
+}
+
+// TestStackVerbsDryRunWriteNothing is a dry run that tracked an untracked
+// branch, or reparented one whose landed parent was deleted, in .git/gh-stack
+// before the step that knew it was a dry run.
+func TestStackVerbsDryRunWriteNothing(t *testing.T) {
+	unwritten := []string{"gh-stack.lock", "gh-stack-operation.lock", "ccx-stack-receipts.json"}
+	for _, tt := range []struct {
+		name    string
+		fixture func(*testing.T) *vcstest.Fixture
+		args    []string
+		want    string
+	}{
+		{"stack move on an untracked branch", dryRunUntrackedRepo, []string{"stack", "move", "--onto", "main"}, "tracked fix onto main"},
+		{"ship on an orphan", dryRunOrphanRepo, []string{"ship", "--no-commit"}, "nothing below was done"},
+		{"stack rebase on an orphan", dryRunOrphanRepo, []string{"stack", "rebase"}, "rebases locally without pushing"},
+		{"stack drop on an orphan", dryRunOrphanRepo, []string{"stack", "drop", "fix"}, "git deletes no branch a working copy holds"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := tt.fixture(t)
+			common := filepath.Join(f.Dir, ".git")
+			for _, name := range unwritten {
+				if err := os.Remove(filepath.Join(common, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
+					t.Fatal(err)
+				}
+			}
+			before, err := os.ReadFile(filepath.Join(common, "gh-stack"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			root := NewRootCmd()
+			root.SilenceUsage, root.SilenceErrors = true, true
+			var out bytes.Buffer
+			root.SetOut(&out)
+			root.SetErr(&out)
+			root.SetArgs(append(append([]string{"vcs"}, tt.args...), "--dry-run"))
+			err = root.ExecuteContext(f.Context())
+			if got := fmt.Sprint(out.String(), err); !strings.Contains(got, tt.want) {
+				t.Errorf("%s --dry-run = %s, want %q", strings.Join(tt.args, " "), got, tt.want)
+			}
+			if after, err := os.ReadFile(filepath.Join(common, "gh-stack")); err != nil || !bytes.Equal(after, before) {
+				t.Errorf("gh-stack after the dry run = %s (%v), want it as before:\n%s", after, err, before)
+			}
+			for _, name := range unwritten {
+				if _, err := os.Stat(filepath.Join(common, name)); !errors.Is(err, os.ErrNotExist) {
+					t.Errorf("the dry run left %s: %v", name, err)
+				}
+			}
+		})
+	}
+}
+
+func dryRunNativeRepo(t *testing.T) *vcstest.Fixture {
+	t.Helper()
+	f := shipRepo(t, vcstest.Remote())
+	f.Decorate(func(ctx context.Context) context.Context { return withStackProvider(ctx, true) })
+	mustRun(t, f.Env(), f.Dir, "git", "config", "ccx.stack", "github")
+	if err := nativemeta.Init(f.Context(), filepath.Join(f.Dir, ".git"), "main"); err != nil {
+		t.Fatal(err)
+	}
+	f.Decorate(stubGTAPI(t).ctx)
+	stubStackPRs(t, f, nil)
+	stubStackStanding(t, f, nil)
+	return f
+}
+
+func dryRunUntrackedRepo(t *testing.T) *vcstest.Fixture {
+	t.Helper()
+	f := dryRunNativeRepo(t)
+	shipGTUntracked(t, f, "fix")
+	return f
+}
+
+func dryRunOrphanRepo(t *testing.T) *vcstest.Fixture {
+	t.Helper()
+	f := dryRunNativeRepo(t)
+	common := filepath.Join(f.Dir, ".git")
+	trunk := shipHead(t, f)
+	shipGTUntracked(t, f, "landed")
+	landed := shipHead(t, f)
+	shipGTUntracked(t, f, "fix")
+	if err := nativemeta.AdoptRoot(f.Context(), common, "landed", "main", trunk, landed); err != nil {
+		t.Fatal(err)
+	}
+	if err := nativemeta.AdoptRoot(f.Context(), common, "fix", "landed", landed, shipHead(t, f)); err != nil {
+		t.Fatal(err)
+	}
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "landed:main")
+	mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
+	mustRun(t, f.Env(), f.Dir, "git", "branch", "-qf", "main", "origin/main")
+	mustRun(t, f.Env(), f.Dir, "git", "branch", "-qD", "landed")
+	return f
 }
 
 func TestStackSubmitOntoABranchOutsideTheStackReparentsAndRebasesIt(t *testing.T) {

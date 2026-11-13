@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/yasyf/cc-context/internal/dryrun"
 	"github.com/yasyf/cc-context/internal/render"
 
 	// modernc.org/sqlite registers the "sqlite" driver, and is the pure-Go one:
@@ -211,7 +212,7 @@ func selectedRowsQuery(branches []string, trunk string) (string, []any) {
 }
 
 func queryRows(ctx context.Context, path, query string, args ...any) ([]branchRow, error) {
-	db, err := sql.Open("sqlite", dsn(path))
+	db, err := open(ctx, path, dsn)
 	if err != nil {
 		return nil, fmt.Errorf("gtmeta: open %q: %w", path, err)
 	}
@@ -239,6 +240,70 @@ func queryRows(ctx context.Context, path, query string, args ...any) ([]branchRo
 
 func dsn(path string) string {
 	return "file:" + (&url.URL{Path: path}).String() + "?mode=ro&_pragma=busy_timeout(5000)"
+}
+
+type serializer interface {
+	Serialize() ([]byte, error)
+	Deserialize([]byte) error
+}
+
+func open(ctx context.Context, path string, name func(string) string) (*sql.DB, error) {
+	if !dryrun.Active(ctx) {
+		return sql.Open("sqlite", name(path))
+	}
+	image, written := dryrun.Read(ctx, path)
+	if !written {
+		disk, err := sql.Open("sqlite", dsn(path))
+		if err != nil {
+			return nil, err
+		}
+		defer func() { _ = disk.Close() }()
+		if err := raw(ctx, disk, func(c serializer) error {
+			image, err = c.Serialize()
+			return err
+		}); err != nil {
+			return nil, err
+		}
+		// An in-memory database cannot open in WAL mode, so the copy's header
+		// names the rollback journal instead.
+		image[18], image[19] = 1, 1
+	}
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(1)
+	if err := raw(ctx, db, func(c serializer) error { return c.Deserialize(image) }); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return db, nil
+}
+
+func commit(ctx context.Context, path string, db *sql.DB, tx *sql.Tx) error {
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("gtmeta: commit to %q: %w", path, err)
+	}
+	if !dryrun.Active(ctx) {
+		return nil
+	}
+	return raw(ctx, db, func(c serializer) error {
+		image, err := c.Serialize()
+		if err != nil {
+			return fmt.Errorf("gtmeta: keep the dry run's %q: %w", path, err)
+		}
+		dryrun.Write(ctx, path, image)
+		return nil
+	})
+}
+
+func raw(ctx context.Context, db *sql.DB, use func(serializer) error) error {
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = conn.Close() }()
+	return conn.Raw(func(c any) error { return use(c.(serializer)) })
 }
 
 // ReadTrunk returns the trunk named in the repo config of the Graphite
@@ -380,7 +445,7 @@ func graphiteAdoptFrozen(ctx context.Context, commonDir, branch, trunk, base, he
 
 func adoptRoot(ctx context.Context, commonDir, branch, trunk, base, head, state string) error {
 	path := filepath.Join(commonDir, metadataDB)
-	db, err := sql.Open("sqlite", writableDSN(path))
+	db, err := open(ctx, path, writableDSN)
 	if err != nil {
 		return fmt.Errorf("gtmeta: open %q: %w", path, err)
 	}
@@ -428,8 +493,8 @@ func adoptRoot(ctx context.Context, commonDir, branch, trunk, base, head, state 
 	if !adopted {
 		return fmt.Errorf("gtmeta: %q has no branch_metadata row in %q", trunk, path)
 	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("gtmeta: commit to %q: %w", path, err)
+	if err := commit(ctx, path, db, tx); err != nil {
+		return err
 	}
 	return nil
 }
@@ -443,7 +508,7 @@ func graphiteForget(ctx context.Context, commonDir string, branches []string) er
 		return nil
 	}
 	path := filepath.Join(commonDir, metadataDB)
-	db, err := sql.Open("sqlite", writableDSN(path))
+	db, err := open(ctx, path, writableDSN)
 	if err != nil {
 		return fmt.Errorf("gtmeta: open %q: %w", path, err)
 	}
@@ -473,8 +538,8 @@ func graphiteForget(ctx context.Context, commonDir string, branches []string) er
 			return fmt.Errorf("gtmeta: forget %q in %q: %w", branch, path, err)
 		}
 	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("gtmeta: commit to %q: %w", path, err)
+	if err := commit(ctx, path, db, tx); err != nil {
+		return err
 	}
 	return nil
 }
@@ -489,7 +554,7 @@ func graphiteReparent(ctx context.Context, commonDir string, moves map[string]st
 		return nil
 	}
 	path := filepath.Join(commonDir, metadataDB)
-	db, err := sql.Open("sqlite", writableDSN(path))
+	db, err := open(ctx, path, writableDSN)
 	if err != nil {
 		return fmt.Errorf("gtmeta: open %q: %w", path, err)
 	}
@@ -506,8 +571,8 @@ func graphiteReparent(ctx context.Context, commonDir string, moves map[string]st
 			return err
 		}
 	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("gtmeta: commit to %q: %w", path, err)
+	if err := commit(ctx, path, db, tx); err != nil {
+		return err
 	}
 	return nil
 }
@@ -608,7 +673,7 @@ type PublishedChildState struct {
 // ReadPublishedChild reads a child's recorded identity even when Graphite marks its parent invalid.
 func graphiteReadPublishedChild(ctx context.Context, commonDir, branch string) (PublishedChildState, error) {
 	path := filepath.Join(commonDir, metadataDB)
-	db, err := sql.Open("sqlite", dsn(path))
+	db, err := open(ctx, path, dsn)
 	if err != nil {
 		return PublishedChildState{}, fmt.Errorf("gtmeta: open %q: %w", path, err)
 	}
@@ -629,7 +694,7 @@ func graphiteReadPublishedChild(ctx context.Context, commonDir, branch string) (
 // metadata database, skipping branches never submitted.
 func graphiteLastSubmitted(ctx context.Context, commonDir string) (map[string]Version, error) {
 	path := filepath.Join(commonDir, metadataDB)
-	db, err := sql.Open("sqlite", dsn(path))
+	db, err := open(ctx, path, dsn)
 	if err != nil {
 		return nil, fmt.Errorf("gtmeta: open %q: %w", path, err)
 	}
@@ -672,7 +737,7 @@ func graphiteRecordSubmitted(ctx context.Context, commonDir string, versions map
 		return nil
 	}
 	path := filepath.Join(commonDir, metadataDB)
-	db, err := sql.Open("sqlite", writableDSN(path))
+	db, err := open(ctx, path, writableDSN)
 	if err != nil {
 		return fmt.Errorf("gtmeta: open %q: %w", path, err)
 	}
@@ -701,8 +766,8 @@ func graphiteRecordSubmitted(ctx context.Context, commonDir string, versions map
 			return fmt.Errorf("gtmeta: %q has no branch_metadata row in %q", branch, path)
 		}
 	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("gtmeta: commit to %q: %w", path, err)
+	if err := commit(ctx, path, db, tx); err != nil {
+		return err
 	}
 	return nil
 }
@@ -717,7 +782,7 @@ func graphiteRecordRestacked(ctx context.Context, commonDir string, revisions ma
 		return nil
 	}
 	path := filepath.Join(commonDir, metadataDB)
-	db, err := sql.Open("sqlite", writableDSN(path))
+	db, err := open(ctx, path, writableDSN)
 	if err != nil {
 		return fmt.Errorf("gtmeta: open %q: %w", path, err)
 	}
@@ -742,8 +807,8 @@ func graphiteRecordRestacked(ctx context.Context, commonDir string, revisions ma
 			return fmt.Errorf("gtmeta: %q has no branch_metadata row in %q", branch, path)
 		}
 	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("gtmeta: commit to %q: %w", path, err)
+	if err := commit(ctx, path, db, tx); err != nil {
+		return err
 	}
 	return nil
 }
