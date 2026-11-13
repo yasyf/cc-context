@@ -31,11 +31,15 @@ runs:
       uses: mlugg/setup-zig@v2
       with:
         version: ${{ inputs.zig-version }}
+        use-cache: false
 
     - if: steps.cache.outputs.cache-hit != 'true'
       name: Build WASM engines + grammars (go:embed inputs)
       shell: bash
       run: |
+        # setup-zig points both caches at $GITHUB_WORKSPACE/.zig-cache, which
+        # leaves the release checkout dirty for goreleaser.
+        export ZIG_GLOBAL_CACHE_DIR="$RUNNER_TEMP/zig-cache" ZIG_LOCAL_CACHE_DIR="$RUNNER_TEMP/zig-cache"
         bash scripts/build-wasm.sh
         bash scripts/build-embed-wasm.sh
         bash scripts/build-chunk-grammars.sh
