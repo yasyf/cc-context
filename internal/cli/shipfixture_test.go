@@ -968,6 +968,7 @@ exit 0
         printf '%s' "$GIT_HOLDERS" | while IFS=' ' read -r name path || [ -n "$name" ]; do
           if [ -n "$name" ]; then printf 'worktree %s\0HEAD ` + fakeHeadSHA + `\0branch refs/heads/%s\0\0' "$path" "$name"; fi
         done ;;
+      config) if [ "$4 $5" = "--bool core.bare" ]; then printf 'false\n'; else printf 'fake git: unmatched --git-dir config: %s\n' "$*" >&2; exit 2; fi ;;
       *) printf 'fake git: unmatched --git-dir argv: %s\n' "$*" >&2; exit 2 ;;
     esac ;;
   *) printf 'fake git: unmatched argv: %s\n' "$*" >&2; exit 2 ;;
