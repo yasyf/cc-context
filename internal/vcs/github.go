@@ -79,6 +79,13 @@ func (r Repo) PushDenied() bool {
 	return !r.Installation && (r.ViewerPermission == "READ" || r.ViewerPermission == "TRIAGE")
 }
 
+// PushesThroughFork reports whether a branch for a pull request here belongs on
+// the viewer's fork: GitHub refuses the viewer's push, or the repository is not
+// theirs.
+func (r Repo) PushesThroughFork() bool {
+	return r.NameWithOwner != "" && (r.PushDenied() || !r.Mine())
+}
+
 // Mine reports whether the repository is the viewer's own to run a stacking
 // workflow on: any private repo they can read, one they administer or maintain,
 // or one owned by them or an organization they belong to.
