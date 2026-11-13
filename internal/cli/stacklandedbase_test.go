@@ -175,10 +175,11 @@ func TestStackLandedBaseKeepsOnlyTheBaseGitHubRetargetedOntoTheCurrentOne(t *tes
 	}
 	changed := stackRetarget{Typename: "BaseRefChangedEvent"}
 	tests := []struct {
-		name   string
-		events []stackRetarget
-		base   string
-		heads  []string
+		name      string
+		events    []stackRetarget
+		base      string
+		heads     []string
+		baseHeads []string
 	}{
 		{name: "a base rewritten, then landed", events: []stackRetarget{push("old", "new"), landed("a", "main")}, base: "a", heads: []string{"old", "new"}},
 		{name: "a push onto an earlier base", events: []stackRetarget{push("x1", "x2"), changed, push("old", "new"), landed("a", "main")}, base: "a", heads: []string{"old", "new"}},
@@ -187,13 +188,67 @@ func TestStackLandedBaseKeepsOnlyTheBaseGitHubRetargetedOntoTheCurrentOne(t *tes
 		{name: "retargeted by hand since", events: []stackRetarget{push("old", "new"), landed("a", "main"), changed}},
 		{name: "landed onto a base it has left", events: []stackRetarget{landed("a", "b")}},
 		{name: "never retargeted"},
+		{name: "a base rewritten in place", events: []stackRetarget{push("old", "new"), push("new", "newer")}, baseHeads: []string{"old", "new", "new", "newer"}},
+		{name: "a base rewritten after a retarget", events: []stackRetarget{push("x1", "x2"), changed, push("old", "new")}, baseHeads: []string{"old", "new"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			base, heads := stackLandedBase("main", tt.events)
-			if base != tt.base || !slices.Equal(heads, tt.heads) {
-				t.Errorf("stackLandedBase = %q %v, want %q %v", base, heads, tt.base, tt.heads)
+			base, heads, baseHeads := stackLandedBase("main", tt.events)
+			if base != tt.base || !slices.Equal(heads, tt.heads) || !slices.Equal(baseHeads, tt.baseHeads) {
+				t.Errorf("stackLandedBase = %q %v %v, want %q %v %v", base, heads, baseHeads, tt.base, tt.heads, tt.baseHeads)
 			}
 		})
+	}
+}
+
+func TestStackPlanReplaysAChildFromTheParentHeadGitHubRecordedBeforeItsRewrite(t *testing.T) {
+	f := shipRepo(t, vcstest.Remote())
+	f.Decorate(func(ctx context.Context) context.Context { return withStackProvider(ctx, true) })
+	mustRun(t, f.Env(), f.Dir, "git", "config", "ccx.stack", "github")
+	common := filepath.Join(f.Dir, ".git")
+	trunk := shipHead(t, f)
+	shipGTUntracked(t, f, "x")
+	x := gitAt(t, f.Env(), f.Dir, "rev-parse", "x")
+	shipGTUntracked(t, f, "a")
+	cut := gitAt(t, f.Env(), f.Dir, "rev-parse", "a")
+	shipGTUntracked(t, f, "b")
+	b := gitAt(t, f.Env(), f.Dir, "rev-parse", "b")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "a")
+	writeShipFile(t, f.Dir, "a.txt", "a, rebased\n")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-q", "-a", "--amend", "--no-edit")
+	rewritten := gitAt(t, f.Env(), f.Dir, "rev-parse", "a")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "x", "a", "b")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "b")
+	mustRun(t, f.Env(), f.Dir, "git", "reflog", "expire", "--expire=now", "--all")
+	if err := nativemeta.Init(f.Context(), common, "main"); err != nil {
+		t.Fatal(err)
+	}
+	for _, link := range []struct{ branch, parent, fork, head string }{{"x", "main", trunk, x}, {"a", "x", x, rewritten}, {"b", "a", x, b}} {
+		if err := nativemeta.AdoptRoot(f.Context(), common, link.branch, link.parent, link.fork, link.head); err != nil {
+			t.Fatal(err)
+		}
+	}
+	api := newGTAPIStub(t)
+	api.openPRs("x", "a", "b")
+	api.bases["x"], api.bases["a"], api.bases["b"] = "main", "x", "a"
+	api.stacks["x"], api.stacks["a"], api.stacks["b"] = 46, 46, 46
+	f.Decorate(api.ctx)
+	stubOpenPRs(t, f, map[string]*stackPR{
+		"x": {Number: 40, Title: "x", State: "OPEN", Base: "main", Head: x, NativeStack: 46},
+		"a": {Number: 41, Title: "a", State: "OPEN", Base: "x", Head: rewritten, NativeStack: 46},
+		"b": {Number: 42, Title: "b", State: "OPEN", Base: "a", Head: b, NativeStack: 46, BaseHeads: []string{cut, rewritten}},
+	})
+	stubStackStanding(t, f, nil)
+	l, err := resolveLane(f.Context(), "stack rebase", f.Dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	run, err := stackPlan(f.Context(), l, common, stackRebaseOpts{tip: "b", submit: true, dryRun: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := run.branch("b").OldBase; got != cut {
+		t.Errorf("b replays from %s, want a's head before its rewrite %s, which GitHub recorded on b's pull request", shortOID(got), shortOID(cut))
 	}
 }

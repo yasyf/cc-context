@@ -58,7 +58,7 @@ type ghCommitOID struct {
 	OID string `json:"oid"`
 }
 
-func stackLandedBase(base string, events []stackRetarget) (string, []string) {
+func stackLandedBase(base string, events []stackRetarget) (string, []string, []string) {
 	var landed string
 	var heads, held []string
 	for _, e := range events {
@@ -78,7 +78,7 @@ func stackLandedBase(base string, events []stackRetarget) (string, []string) {
 			landed, heads, held = "", nil, nil
 		}
 	}
-	return landed, heads
+	return landed, heads, held
 }
 
 type stackPRBatch struct {
@@ -229,7 +229,7 @@ func stackGraphQLRead(branch string, n stackPRNode) stackPRRead {
 	if n.Stack != nil {
 		pr.NativeStack = n.Stack.Number
 	}
-	pr.LandedBase, pr.LandedHeads = stackLandedBase(n.BaseRefName, n.Retargets.Nodes)
+	pr.LandedBase, pr.LandedHeads, pr.BaseHeads = stackLandedBase(n.BaseRefName, n.Retargets.Nodes)
 	return stackPRRead{branch: branch, pr: pr, landing: n.prLanding}
 }
 

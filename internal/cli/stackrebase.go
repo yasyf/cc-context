@@ -73,6 +73,7 @@ type stackPR struct {
 	NativeStack int      `json:"native_stack,omitempty"`
 	LandedBase  string   `json:"landed_base,omitempty"`
 	LandedHeads []string `json:"landed_heads,omitempty"`
+	BaseHeads   []string `json:"-"`
 }
 
 func (p *stackPR) base() string {
@@ -3426,7 +3427,8 @@ func stackOldBase(ctx context.Context, dir render.Dir, tr vcs.Trunk, pin string,
 }
 
 // stackRecordedBase is the base a branch's state records: the furthest recorded
-// parent head it contains, else the furthest fork point in the parent's local and
+// parent head it contains, the heads GitHub recorded for its pull request's base
+// among them, else the furthest fork point in the parent's local and
 // remote-tracking reflogs. A branch staying on the parent that holds neither,
 // or only a fork point trunk passed, starts past its leading commits above trunk
 // that copy the parent's, as a bot or merge queue restack of both leaves it, and
@@ -3464,6 +3466,13 @@ func stackRecordedBase(ctx context.Context, dir render.Dir, tr vcs.Trunk, pin st
 		if receipt != nil {
 			candidates = append([]string{receipt.Head}, candidates...)
 		}
+	}
+	if self.PR != nil && self.PR.Base == parent && len(self.PR.BaseHeads) > 0 {
+		missing, err := replayMissing(ctx, dir, self.PR.BaseHeads)
+		if err != nil {
+			return "", fmt.Errorf("%s: check the heads of %s GitHub recorded on %s's pull request: %w", stackRebasePrefix, parent, self.Name, err)
+		}
+		candidates = append(candidates, slices.DeleteFunc(slices.Clone(self.PR.BaseHeads), func(head string) bool { return slices.Contains(missing, head) })...)
 	}
 	best, err := stackFurthest(ctx, dir, self.Head, candidates)
 	if err != nil {
