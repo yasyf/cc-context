@@ -447,7 +447,10 @@ GraphQL quota for writes. A read is a `gh api` `GET` outside `graphql`, a
 `{"query", "variables"}`, with `GH_REPO` naming the repository.
 `--max-age 5m` answers an identical read from a machine-wide cache while the
 stored answer is younger than five minutes; every loop that reads GitHub
-passes it.
+passes it. A read that is neither a watch nor on a terminal and fails on a
+transient network error, such as an HTTP 5xx or 429, a reset connection, or a
+TLS handshake timeout, runs again after 2, 5, and 15 seconds, so a caller
+needs no retry loop of its own.
 
 Every request, from `vcs gh` and from ccx's own reads, is charged to its pool
 in a machine-wide ledger. `vcs gh` charges what gh sent once it exits, read

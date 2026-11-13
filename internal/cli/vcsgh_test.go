@@ -440,6 +440,29 @@ func TestRunVcsGhAnswersEveryCheckReadFresh(t *testing.T) {
 	}
 }
 
+func TestRunVcsGhRetriesAnUncachedReadThatFailedOnATLSHandshakeTimeout(t *testing.T) {
+	remoteRetryWaits = []time.Duration{time.Millisecond, time.Millisecond, time.Millisecond}
+	t.Cleanup(func() { remoteRetryWaits = []time.Duration{2 * time.Second, 5 * time.Second, 15 * time.Second} })
+	cmd, out := ghGatewayFixture(t)
+	failed := filepath.Join(t.TempDir(), "failed")
+	flaky := filepath.Join(t.TempDir(), "gh")
+	execstub.Write(t, flaky, `#!/bin/sh
+if [ ! -e "`+failed+`" ]; then
+  touch "`+failed+`"
+  echo 'Get "https://api.github.com/repos/o/r/compare/a...b": net/http: TLS handshake timeout' >&2
+  exit 1
+fi
+echo the diff
+`)
+	t.Setenv("CCX_GH", flaky)
+	if err := runVcsGh(cmd, []string{"pr", "view", "1", "--repo", "o/r", "--json", "files"}, 0); err != nil {
+		t.Fatalf("runVcsGh = %v, want the read retried past its TLS handshake timeout", err)
+	}
+	if got := out.String(); got != "the diff\n" {
+		t.Errorf("gh printed %q, want the retried read's answer alone", got)
+	}
+}
+
 func TestRunVcsGhKeepsATokenCallerOutOfTheCache(t *testing.T) {
 	cmd, out := ghGatewayFixture(t)
 	cmd.SetContext(render.WithEnv(cmd.Context(), "GH_TOKEN=other"))

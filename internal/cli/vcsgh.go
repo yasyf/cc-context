@@ -117,8 +117,12 @@ terminal escape sequence from what they print, so gh never refuses a log,
 file, diff, gist, or asset for carrying one and no saved read keeps one.
 Output whose first 512 bytes read as binary to gh's own content sniff, once
 their escape sequences are gone, passes verbatim. Standard streams otherwise
-pass through, and ccx exits with gh's code. A read that fails once its token
-has expired, such as a watch that outlived it, runs again on a fresh one.`,
+pass through, and ccx exits with gh's code. A read that is neither a watch nor
+on a terminal passes its output on once gh exits, and one that failed on a
+transient network error, such as an HTTP 5xx or 429, a reset connection, or a
+TLS handshake timeout, runs again after 2, 5, and 15 seconds. A read that
+fails once its token has expired, such as a watch that outlived it, runs again
+on a fresh one.`,
 		Example: "  ccx vcs gh -- pr checks 123\n  ccx vcs gh --max-age 5m -- pr view 123 --json state\n" +
 			"  GH_REPO=o/r ccx vcs gh --max-age 1m -- api graphql -f query='{ repository(owner: \"o\", name: \"r\") { name } }'\n" +
 			"  ccx vcs gh -- run watch 456 --exit-status",
@@ -176,7 +180,6 @@ func runVcsGh(cmd *cobra.Command, argv []string, maxAge time.Duration) (err erro
 			return err
 		}
 	}
-	capture := cacheable || resource == ghapi.ResourceGraphQL && argv[0] == "api"
 	live := watches || interactive
 	args := argv
 	spilled := false
@@ -223,14 +226,10 @@ func runVcsGh(cmd *cobra.Command, argv []string, maxAge time.Duration) (err erro
 			ghNoteLedgerError(cmd, err)
 		}
 		started := time.Now()
-		if !capture {
+		if live {
 			var stderr bytes.Buffer
-			sink := io.Writer(&stderr)
-			if live {
-				sink = io.MultiWriter(cmd.ErrOrStderr(), &stderr)
-			}
 			var sent []string
-			sent, err = ghRun(ctx, cmd, dir, args, env, stdin, out, sink)
+			sent, err = ghRun(ctx, cmd, dir, args, env, stdin, out, io.MultiWriter(cmd.ErrOrStderr(), &stderr))
 			ghNoteLedgerError(cmd, api.Sent(ctx, identity, sent))
 			if err != nil && identity == ghapi.IdentityApp && ghAppRateLimited(nil, stderr.Bytes()) {
 				userToken, spilled = true, true
@@ -239,9 +238,6 @@ func runVcsGh(cmd *cobra.Command, argv []string, maxAge time.Duration) (err erro
 			if err != nil && identity == ghapi.IdentityApp && ghAppRefused(stderr.Bytes()) {
 				userToken = true
 				continue
-			}
-			if !live {
-				_, _ = cmd.ErrOrStderr().Write(stderr.Bytes())
 			}
 		} else {
 			var stdout, stderr bytes.Buffer

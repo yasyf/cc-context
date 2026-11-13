@@ -23,6 +23,7 @@ func TestTransientRemoteRetriesOnlyARefusalTheRemoteMayNotRepeat(t *testing.T) {
 		{"an early EOF", "fetch-pack: unexpected disconnect while reading sideband packet\nfatal: early EOF", true},
 		{"a network timeout", "ssh: connect to host github.com port 22: Operation timed out", true},
 		{"gh answering 503", "HTTP 503: Service Unavailable (https://api.github.com/graphql)", true},
+		{"gh timing out its TLS handshake", `Get "https://api.github.com/repos/o/r/compare/a...b": net/http: TLS handshake timeout`, true},
 		{"an overloaded server", "remote: the server is overloaded, try again later", true},
 		{"a non-fast-forward rejection", " ! [rejected]        main -> main (non-fast-forward)\nerror: failed to push some refs", false},
 		{"a stale lease", " ! [rejected]        main -> main (stale info)", false},
