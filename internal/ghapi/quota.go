@@ -343,39 +343,41 @@ func (l *ledger) pool(pools map[string]*poolState, identity, resource string) *p
 }
 
 func (l *ledger) charge(ctx context.Context, identity, resource, caller, target string, header http.Header) error {
+	return l.update(ctx, func(pools map[string]*poolState) { l.spend(pools, identity, resource, caller, target, header) })
+}
+
+func (l *ledger) spend(pools map[string]*poolState, identity, resource, caller, target string, header http.Header) {
 	if r := header.Get("X-RateLimit-Resource"); r != "" {
 		resource = r
 	}
-	return l.update(ctx, func(pools map[string]*poolState) {
-		now := l.now()
-		p := l.pool(pools, identity, resource)
-		limit, limitErr := strconv.Atoi(header.Get("X-RateLimit-Limit"))
-		remaining, remainingErr := strconv.Atoi(header.Get("X-RateLimit-Remaining"))
-		reset, resetErr := strconv.ParseInt(header.Get("X-RateLimit-Reset"), 10, 64)
-		w := p.newest(now)
-		switch {
-		case limitErr == nil && remainingErr == nil && resetErr == nil && now.Before(time.Unix(reset, 0)):
-			w = p.observe(now, limit, remaining, time.Unix(reset, 0), false)
-		case w == nil:
-			return
-		default:
-			w.Remaining = max(w.Remaining-1, 0)
-		}
-		if w.Callers == nil {
-			w.Callers = map[string]int{}
-		}
-		w.Callers[caller]++
-		if target == "" {
-			return
-		}
-		if w.Paths == nil {
-			w.Paths = map[string]map[string]int{}
-		}
-		if w.Paths[caller] == nil {
-			w.Paths[caller] = map[string]int{}
-		}
-		w.Paths[caller][FoldPath(target)]++
-	})
+	now := l.now()
+	p := l.pool(pools, identity, resource)
+	limit, limitErr := strconv.Atoi(header.Get("X-RateLimit-Limit"))
+	remaining, remainingErr := strconv.Atoi(header.Get("X-RateLimit-Remaining"))
+	reset, resetErr := strconv.ParseInt(header.Get("X-RateLimit-Reset"), 10, 64)
+	w := p.newest(now)
+	switch {
+	case limitErr == nil && remainingErr == nil && resetErr == nil && now.Before(time.Unix(reset, 0)):
+		w = p.observe(now, limit, remaining, time.Unix(reset, 0), false)
+	case w == nil:
+		return
+	default:
+		w.Remaining = max(w.Remaining-1, 0)
+	}
+	if w.Callers == nil {
+		w.Callers = map[string]int{}
+	}
+	w.Callers[caller]++
+	if target == "" {
+		return
+	}
+	if w.Paths == nil {
+		w.Paths = map[string]map[string]int{}
+	}
+	if w.Paths[caller] == nil {
+		w.Paths[caller] = map[string]int{}
+	}
+	w.Paths[caller][FoldPath(target)]++
 }
 
 var pathFolds = []struct {
@@ -565,18 +567,22 @@ func (c *Client) admit(ctx context.Context, identity, resource string, floor fun
 	return &FloorError{Windows: under}
 }
 
-// Charge counts one request by the calling process against identity's
-// resource pool, for a request ccx did not send itself, such as gh's. target
-// names what it asked for, a path or a gh command.
-func (c *Client) Charge(ctx context.Context, identity, resource, target string) error {
-	if c.quota == nil {
+// Sent charges each request a child of this process, such as gh, sent to urls
+// with identity's token to the pool its URL draws from, in one ledger update.
+func (c *Client) Sent(ctx context.Context, identity string, urls []string) error {
+	if c.quota == nil || len(urls) == 0 {
 		return nil
 	}
 	principal, err := c.principal(ctx, identity)
 	if err != nil {
 		return err
 	}
-	return c.quota.charge(ctx, principal, resource, CallerName(ctx), target, http.Header{})
+	caller := CallerName(ctx)
+	return c.quota.update(ctx, func(pools map[string]*poolState) {
+		for _, url := range urls {
+			c.quota.spend(pools, principal, Resource(url), caller, url, http.Header{})
+		}
+	})
 }
 
 // Record charges one request another client in this process sent to target

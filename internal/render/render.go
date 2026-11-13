@@ -106,12 +106,18 @@ const Ambient Dir = ""
 // returned context is where timedOut reads the guard back off; cancel must be
 // deferred.
 func newCmd(ctx context.Context, dir Dir, bin string, argv, extraEnv []string) (*exec.Cmd, context.Context, context.CancelFunc, error) {
+	var tap *Tap
 	if meter, ok := ctx.Value(meterKey{}).(Meter); ok {
-		if err := meter(ctx, bin, argv, slices.Concat(EnvFrom(ctx), extraEnv)); err != nil {
+		var err error
+		if tap, err = meter(ctx, bin, argv, slices.Concat(EnvFrom(ctx), extraEnv)); err != nil {
 			return nil, nil, nil, err
 		}
 	}
 	runCtx, cancel := withRunGuard(ctx)
+	if tap != nil {
+		extraEnv = slices.Concat(extraEnv, tap.Env)
+		runCtx = context.WithValue(runCtx, tapKey{}, tap)
+	}
 	env, resolve := childEnv(ctx, dir, extraEnv)
 	cmd := exec.CommandContext(runCtx, resolve.Bin(bin), argv...) //nolint:gosec // bin/argv come from trusted backend translation, not user free-text
 	cmd.WaitDelay = waitDelay
@@ -131,6 +137,17 @@ func newCmd(ctx context.Context, dir Dir, bin string, argv, extraEnv []string) (
 	}, nil
 }
 
+// run runs newCmd's child, its stderr through the Tap a Meter put on runCtx.
+func run(runCtx context.Context, cmd *exec.Cmd) error {
+	tap, ok := runCtx.Value(tapKey{}).(*Tap)
+	if !ok {
+		return cmd.Run()
+	}
+	cmd.Stderr = tap.Stderr(cmd.Stderr)
+	defer tap.Done()
+	return cmd.Run()
+}
+
 // ChildEnv marks every child ccx spawns, so a shim that routes a tool back into
 // ccx can tell ccx's own call from a caller's and pass it straight through.
 const ChildEnv = "CCX_CHILD=1"
@@ -145,9 +162,20 @@ func WithChildDone(ctx context.Context, done func(ctx context.Context, bin strin
 
 type meterKey struct{}
 
+type tapKey struct{}
+
 // Meter sees each child before it starts, with its binary, its arguments and
-// the environment ccx adds to the inherited one. An error refuses the child.
-type Meter func(ctx context.Context, bin string, argv, env []string) error
+// the environment ccx adds to the inherited one. An error refuses the child,
+// and a Tap it returns watches the child run.
+type Meter func(ctx context.Context, bin string, argv, env []string) (*Tap, error)
+
+// Tap watches one child a Meter let start: Env joins its environment, Stderr
+// wraps the writer its stderr goes to, and Done runs once it exits.
+type Tap struct {
+	Env    []string
+	Stderr func(io.Writer) io.Writer
+	Done   func()
+}
 
 // WithMeter returns ctx running meter before every child spawned through it.
 func WithMeter(ctx context.Context, meter Meter) context.Context {
@@ -401,7 +429,7 @@ func RunCLIEnv(ctx context.Context, dir Dir, bin string, argv, extraEnv []string
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	if err = cmd.Run(); err != nil {
+	if err = run(runCtx, cmd); err != nil {
 		return "", failure(runCtx, bin, err, stderr.String())
 	}
 	return stdout.String(), nil
@@ -425,7 +453,7 @@ func RunCLIStdinEnv(ctx context.Context, dir Dir, bin string, argv []string, std
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	if err = cmd.Run(); err != nil {
+	if err = run(runCtx, cmd); err != nil {
 		return "", failure(runCtx, bin, err, stderr.String())
 	}
 	return stdout.String(), nil
@@ -460,7 +488,7 @@ func RunCLIStreamSplitEnv(ctx context.Context, dir Dir, bin string, argv []strin
 	defer cancel()
 	cmd.Stdout = outW
 	cmd.Stderr = errW
-	if err = cmd.Run(); err != nil {
+	if err = run(runCtx, cmd); err != nil {
 		if signal := signalled(runCtx, bin, err); signal != nil {
 			return signal
 		}
@@ -489,7 +517,7 @@ func RunCLIAllowExit(ctx context.Context, dir Dir, bin string, argv []string, ok
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	err = cmd.Run()
+	err = run(runCtx, cmd)
 	if err == nil {
 		return stdout.String(), nil
 	}
@@ -523,7 +551,7 @@ func RunCLIExitCodeEnv(ctx context.Context, dir Dir, bin string, argv, extraEnv 
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	err = cmd.Run()
+	err = run(runCtx, cmd)
 	if err == nil {
 		return stdout.String(), 0, stderr.String(), nil
 	}
@@ -567,7 +595,7 @@ func RunCLIProbe(ctx context.Context, dir Dir, bin string, argv []string) (strin
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	err = cmd.Run()
+	err = run(runCtx, cmd)
 	if err == nil {
 		return stdout.String(), 0, stderr.String(), nil
 	}
@@ -597,7 +625,7 @@ func RunCLIKeepStderr(ctx context.Context, dir Dir, bin string, argv []string) (
 	var outBuf, errBuf bytes.Buffer
 	cmd.Stdout = &outBuf
 	cmd.Stderr = &errBuf
-	if err = cmd.Run(); err != nil {
+	if err = run(runCtx, cmd); err != nil {
 		return "", "", failure(runCtx, bin, err, errBuf.String())
 	}
 	return outBuf.String(), errBuf.String(), nil

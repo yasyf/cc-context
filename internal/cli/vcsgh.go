@@ -52,12 +52,16 @@ gh user, not the app. A gh api endpoint outside the installation, such as user
 or orgs/ORG/installations, runs on the user's token, and so does a GraphQL
 query the app is forbidden.
 
-Every request is charged to its pool (app or user, and core, graphql, or
-search) in a machine-wide ledger, under the caller CCX_CALLER names, else
-CCI_AGENT_ID, else the script or command that started ccx; set CCX_CALLER in
-every script and daemon. ccx vcs auth status prints each pool's remainder,
-reset, and top callers. Before a read, ccx reads its pool's standing from
-GitHub's free rate_limit when the ledger's is over a minute old. A pool under
+Every request gh sends is charged, once gh exits, to the pool its URL draws
+from (app or user, and core, graphql, or search) in a machine-wide ledger,
+under the caller CCX_CALLER names, else CCI_AGENT_ID, else the script or
+command that started ccx; set CCX_CALLER in every script and daemon. ccx reads
+what gh sent from the request lines GH_DEBUG=1 has it print, which never reach
+stderr, so gh api --paginate is charged a request a page, and a command that
+sends none, such as gh api 'repos/{owner}/{repo}' outside a checkout, nothing.
+ccx vcs auth status prints each pool's remainder, reset, and top callers.
+Before a read, ccx reads its pool's standing from GitHub's free rate_limit
+when the ledger's is over a minute old. A pool under
 1000 left in any open window takes no more reads: ccx serves the cached answer
 to the same read, however old, saying so on stderr; else a read on the app's
 pool runs on the user's pool instead while every window of that pool has over
@@ -151,12 +155,12 @@ func runVcsGh(cmd *cobra.Command, argv []string, maxAge time.Duration) (err erro
 	}
 	dir := workingDir(ctx)
 	if ghNoRequest(argv) {
-		return ghExit(ghRun(ctx, cmd, dir, argv, nil, stdin, out, cmd.ErrOrStderr()))
+		return ghExit(ghChild(ctx, cmd, dir, argv, nil, stdin, out, cmd.ErrOrStderr()).Run())
 	}
 	resource := ghResource(argv)
 	if !reads {
-		ghNoteLedgerError(cmd, reviewsAPI().Charge(ctx, ghapi.IdentityUser, resource, ghChargeTarget(argv)))
-		err := ghRun(ctx, cmd, dir, argv, nil, stdin, out, cmd.ErrOrStderr())
+		sent, err := ghRun(ctx, cmd, dir, argv, nil, stdin, out, cmd.ErrOrStderr())
+		ghNoteLedgerError(cmd, reviewsAPI().Sent(ctx, ghapi.IdentityUser, sent))
 		ghInvalidate(ghWrittenRepo(ctx, argv, func() string { return ghCheckoutRepo(ctx, dir) }))
 		return ghExit(err)
 	}
@@ -193,7 +197,11 @@ func runVcsGh(cmd *cobra.Command, argv []string, maxAge time.Duration) (err erro
 		}
 		api, identity := reviewsAPI().AsUser(), ghapi.IdentityUser
 		if len(env) > 0 {
-			api, identity = reviewsAPI().ForRepo(cmp.Or(scope, ghCheckoutRepo(ctx, dir))), ghapi.IdentityApp
+			repo := scope
+			if repo == "" {
+				repo = ghCheckoutRepo(ctx, dir)
+			}
+			api, identity = reviewsAPI().ForRepo(repo), ghapi.IdentityApp
 		}
 		admit := api.Admit(ctx, identity, resource)
 		if spilled && admit == nil {
@@ -214,7 +222,6 @@ func runVcsGh(cmd *cobra.Command, argv []string, maxAge time.Duration) (err erro
 			}
 			ghNoteLedgerError(cmd, err)
 		}
-		ghNoteLedgerError(cmd, api.Charge(ctx, identity, resource, ghChargeTarget(argv)))
 		started := time.Now()
 		if !capture {
 			var stderr bytes.Buffer
@@ -222,7 +229,9 @@ func runVcsGh(cmd *cobra.Command, argv []string, maxAge time.Duration) (err erro
 			if live {
 				sink = io.MultiWriter(cmd.ErrOrStderr(), &stderr)
 			}
-			err = ghRun(ctx, cmd, dir, args, env, stdin, out, sink)
+			var sent []string
+			sent, err = ghRun(ctx, cmd, dir, args, env, stdin, out, sink)
+			ghNoteLedgerError(cmd, api.Sent(ctx, identity, sent))
 			if err != nil && identity == ghapi.IdentityApp && ghAppRateLimited(nil, stderr.Bytes()) {
 				userToken, spilled = true, true
 				continue
@@ -240,7 +249,8 @@ func runVcsGh(cmd *cobra.Command, argv []string, maxAge time.Duration) (err erro
 			tries, err = retryTransient(ctx, func() error {
 				stdout.Reset()
 				stderr.Reset()
-				err := ghRun(ctx, cmd, dir, args, env, stdin, &stdout, &stderr)
+				sent, err := ghRun(ctx, cmd, dir, args, env, stdin, &stdout, &stderr)
+				ghNoteLedgerError(cmd, api.Sent(ctx, identity, sent))
 				if err == nil || stderr.Len() == 0 {
 					return err
 				}
@@ -273,7 +283,15 @@ func runVcsGh(cmd *cobra.Command, argv []string, maxAge time.Duration) (err erro
 
 const ghRunGuardedEnv = "CCX_GH_RUN_GUARDED"
 
-func ghRun(ctx context.Context, cmd *cobra.Command, dir string, args, env []string, stdin []byte, stdout, stderr io.Writer) error {
+// ghRun runs gh under GH_DEBUG=1 and returns the URL of each request it sent.
+func ghRun(ctx context.Context, cmd *cobra.Command, dir string, args, env []string, stdin []byte, stdout, stderr io.Writer) ([]string, error) {
+	sent := &ghSent{w: stderr}
+	err := ghChild(ctx, cmd, dir, args, slices.Concat(env, []string{ghDebugEnv}), stdin, stdout, sent).Run()
+	flushed := sent.flush()
+	return sent.urls, cmp.Or(err, flushed)
+}
+
+func ghChild(ctx context.Context, cmd *cobra.Command, dir string, args, env []string, stdin []byte, stdout, stderr io.Writer) *exec.Cmd {
 	childEnv := slices.Concat(os.Environ(), render.EnvFrom(ctx), env, []string{render.ChildEnv})
 	gh := exec.CommandContext(ctx, lookpath.For(childEnv).Bin("gh"), args...) //nolint:gosec // args is the caller's own gh command
 	gh.Dir = dir
@@ -282,7 +300,53 @@ func ghRun(ctx context.Context, cmd *cobra.Command, dir string, args, env []stri
 	if stdin != nil {
 		gh.Stdin = bytes.NewReader(stdin)
 	}
-	return gh.Run()
+	return gh
+}
+
+const ghDebugEnv = "GH_DEBUG=1"
+
+var ghDebugLine = regexp.MustCompile(`^(\* |\[git [^\n]*\]\n?$)`)
+
+// ghSent passes gh's stderr on without the lines GH_DEBUG adds, keeping the
+// URL each "* Request to" line names.
+type ghSent struct {
+	w    io.Writer
+	line []byte
+	urls []string
+}
+
+func (s *ghSent) Write(b []byte) (int, error) {
+	s.line = append(s.line, b...)
+	for {
+		end := bytes.IndexByte(s.line, '\n')
+		if end < 0 {
+			return len(b), nil
+		}
+		if err := s.take(s.line[:end+1]); err != nil {
+			return 0, err
+		}
+		s.line = s.line[end+1:]
+	}
+}
+
+func (s *ghSent) flush() error {
+	if len(s.line) == 0 {
+		return nil
+	}
+	line := s.line
+	s.line = nil
+	return s.take(line)
+}
+
+func (s *ghSent) take(line []byte) error {
+	if url, ok := bytes.CutPrefix(line, []byte("* Request to ")); ok {
+		s.urls = append(s.urls, string(bytes.TrimSpace(url)))
+	}
+	if ghDebugLine.Match(line) {
+		return nil
+	}
+	_, err := s.w.Write(line)
+	return err
 }
 
 func ghExit(err error) error {
@@ -532,10 +596,11 @@ type ghSpillKey struct{}
 
 // chargeGHChild admits a gh child's read through the floor of the pool its
 // token spends, AdmitSpill's for a read ghRead moved off the app's pool, and
-// charges every gh request to that pool. gh api rate_limit spends none.
-func chargeGHChild(ctx context.Context, bin string, argv, env []string) error {
+// charges each request the child sent to that pool once it exits. gh api
+// rate_limit spends none.
+func chargeGHChild(ctx context.Context, bin string, argv, env []string) (*render.Tap, error) {
 	if bin != "gh" || ghNoRequest(argv) || ghReadsRateLimit(argv) {
-		return nil
+		return nil, nil
 	}
 	ctx = render.WithEnv(ctx, env...)
 	api, resource := reviewsAPI(), ghResource(argv)
@@ -543,14 +608,23 @@ func chargeGHChild(ctx context.Context, bin string, argv, env []string) error {
 	case !ghReads(argv, nil):
 	case ctx.Value(ghSpillKey{}) != nil:
 		if err := api.AdmitSpill(ctx, resource); err != nil {
-			return err
+			return nil, err
 		}
 	default:
 		if err := api.Admit(ctx, ghapi.IdentityUser, resource); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	return api.Charge(ctx, ghapi.IdentityUser, resource, ghChargeTarget(argv))
+	sent := &ghSent{}
+	return &render.Tap{
+		Env:    []string{ghDebugEnv},
+		Stderr: func(w io.Writer) io.Writer { sent.w = w; return sent },
+		Done: func() {
+			if err := errors.Join(sent.flush(), api.Sent(ctx, ghapi.IdentityUser, sent.urls)); err != nil {
+				render.Announce(ctx, "%v", err)
+			}
+		},
+	}, nil
 }
 
 func ghReadsRateLimit(argv []string) bool {
@@ -559,14 +633,6 @@ func ghReadsRateLimit(argv []string) bool {
 	}
 	_, endpoint := ghAPIRequest(argv[1:])
 	return strings.TrimPrefix(endpoint, "/") == "rate_limit"
-}
-
-func ghChargeTarget(argv []string) string {
-	if argv[0] == "api" {
-		_, endpoint := ghAPIRequest(argv[1:])
-		return endpoint
-	}
-	return "gh " + strings.Join(argv[:min(2, len(argv))], " ")
 }
 
 // ghExpireForChild expires the cached reads a finished child's gh write or git

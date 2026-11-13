@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -358,22 +359,28 @@ func TestWithEnvPATHResolvesEveryBinary(t *testing.T) {
 	}
 }
 
-func TestAMeterSeesEachChildBeforeItRunsAndRefusesTheOnesItFails(t *testing.T) {
+func TestAMeterSeesEachChildBeforeItRunsTapsItAndRefusesTheOnesItFails(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("uses /bin/sh to log the child's arguments")
 	}
 	t.Parallel()
 	dir := t.TempDir()
 	ran := filepath.Join(dir, "ran")
-	execstub.Write(t, filepath.Join(dir, "gh"), "#!/bin/sh\necho \"$@\" >> "+ran+"\n")
+	execstub.Write(t, filepath.Join(dir, "gh"), "#!/bin/sh\necho \"$@ $TAPPED\" >> "+ran+"\necho said >&2\n")
 	refusal := errors.New("ledger refused")
 	var metered [][]string
-	meter := func(_ context.Context, bin string, argv, env []string) error {
+	var heard strings.Builder
+	done := 0
+	meter := func(_ context.Context, bin string, argv, env []string) (*Tap, error) {
 		metered = append(metered, append([]string{bin}, append(argv, env...)...))
 		if argv[0] == "refused" {
-			return refusal
+			return nil, refusal
 		}
-		return nil
+		return &Tap{
+			Env:    []string{"TAPPED=yes"},
+			Stderr: func(w io.Writer) io.Writer { return io.MultiWriter(w, &heard) },
+			Done:   func() { done++ },
+		}, nil
 	}
 	ctx := WithEnv(WithMeter(context.Background(), meter), "PATH="+dir)
 
@@ -388,8 +395,11 @@ func TestAMeterSeesEachChildBeforeItRunsAndRefusesTheOnesItFails(t *testing.T) {
 	if !slices.EqualFunc(metered, want, slices.Equal) {
 		t.Errorf("metered %q, want %q", metered, want)
 	}
-	if log, err := os.ReadFile(ran); err != nil || string(log) != "api user\n" {
-		t.Errorf("children ran %q (%v), want only the metered api user", log, err)
+	if log, err := os.ReadFile(ran); err != nil || string(log) != "api user yes\n" {
+		t.Errorf("children ran %q (%v), want only the metered api user, under its tap's env", log, err)
+	}
+	if heard.String() != "said\n" || done != 1 {
+		t.Errorf("tap heard %q and was done %d times, want the child's stderr and once", heard.String(), done)
 	}
 }
 
