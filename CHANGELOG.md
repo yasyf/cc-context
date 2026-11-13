@@ -23,6 +23,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ccx code grep` and the `ccx_code_grep` MCP tool answer "no matches" when
+  literal text with no hits, such as `f"cci:{`, fails as the regular
+  expression its automatic retry runs. The retry asks only Go's `regexp`
+  whether the text is a regular expression, while ripgrep and grep each read
+  their own dialect: ripgrep refused `f"cci:{` with `regex parse error:
+  repetition quantifier expects a valid decimal` (exit 2), GNU grep warned
+  `? at start of expression` on `(?i)zz` (exit 1), and the search returned
+  that error. Now any exit status the engine itself returns on the retry
+  keeps the literal pass's answer; an explicit `--regex` still returns the
+  engine's error.
+
 - `ccx vcs gh` retries every read that is neither a watch nor on a terminal
   when it fails on a transient network error, and a TLS handshake timeout now
   counts as one. Before, only a cached read or a `gh api graphql` query was

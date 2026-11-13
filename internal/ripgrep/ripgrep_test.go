@@ -695,6 +695,8 @@ func TestRunCore(t *testing.T) {
 		out string
 		err error
 	}
+	refused := fmt.Errorf("%w: rg: regex parse error: repetition quantifier expects a valid decimal", exec.Command("sh", "-c", "exit 2").Run())
+	warned := fmt.Errorf("%w: /usr/bin/grep: warning: ? at start of expression", exec.Command("sh", "-c", "exit 1").Run())
 
 	tests := []struct {
 		name        string
@@ -719,6 +721,11 @@ func TestRunCore(t *testing.T) {
 		{"forced regex miss does not rerun", engineRipgrep, backend.Args{Query: "foo|bar", Regex: true}, []runnerResult{{}}, false, false, 1, []string{`# grep: "foo|bar" — no matches`}, []string{"literal or regex"}, "", ""},
 		{"forced BRE regex miss has no hint", engineRipgrep, backend.Args{Query: `absent\|other`, Regex: true}, []runnerResult{{}}, false, false, 1, nil, nil, "# grep: \"absent\\\\|other\" — no matches\n", ""},
 		{"regex rerun error propagates", engineRipgrep, backend.Args{Query: "foo|bar"}, []runnerResult{{}, {err: errors.New("regex boom")}}, true, false, 2, nil, nil, "", ""},
+		{"regex rerun the engine refuses keeps the literal miss", engineRipgrep, backend.Args{Query: `f"cci:{`}, []runnerResult{{}, {err: refused}}, false, false, 2, nil, nil, NoMatch(`f"cci:{`), ""},
+		{"files with matches regex rerun the engine refuses keeps the literal miss", engineRipgrep, backend.Args{Query: `f"cci:{`, FilesWithMatches: true}, []runnerResult{{}, {err: refused}}, false, false, 2, nil, nil, NoMatch(`f"cci:{`), ""},
+		{"grep regex rerun the engine refuses keeps the literal miss", engineGrep, backend.Args{Query: "a{2"}, []runnerResult{{}, {err: refused}}, false, false, 2, []string{NoMatch("a{2")}, []string{"literal or regex"}, "", ""},
+		{"grep regex rerun the engine warns on keeps the literal miss", engineGrep, backend.Args{Query: "(?i)zz"}, []runnerResult{{}, {err: warned}}, false, false, 2, []string{NoMatch("(?i)zz")}, []string{"literal or regex", "warning"}, "", ""},
+		{"regex rerun killed by a signal propagates", engineRipgrep, backend.Args{Query: "foo|bar"}, []runnerResult{{}, {err: exec.Command("sh", "-c", "kill -9 $$").Run()}}, true, false, 2, nil, nil, "", ""},
 		{"BRE escape miss includes hint", engineRipgrep, backend.Args{Query: `\(foo\|bar\)`}, []runnerResult{{}, {}}, false, false, 2, []string{`# grep: "\\(foo\\|bar\\)" — no matches (literal or regex)`, regexHintLine}, nil, "", ""},
 		{"grep backslash miss does not escalate", engineGrep, backend.Args{Query: `\v`}, []runnerResult{{}}, false, false, 1, []string{`# grep: "\\v" — no matches`}, []string{"literal or regex", "auto-regex"}, "", ""},
 		{"rg backslash miss still escalates", engineRipgrep, backend.Args{Query: `\v`}, []runnerResult{{}, {}}, false, false, 2, []string{`# grep: "\\v" — no matches (literal or regex)`}, nil, "", ""},
