@@ -357,6 +357,44 @@ func TestWorktreeAddCutsASparseCone(t *testing.T) {
 	}
 }
 
+func TestWorktreeAddChecksOutTheModulesGoModReplaces(t *testing.T) {
+	f := vcstest.Repo(t)
+	f.Isolate(t)
+	files := map[string]string{
+		"go/sand/go.mod":         "module sand\n\nreplace forge-tunnel => ../forge-tunnel\n\nreplace llmclient v0.0.0 => ../llmclient // pinned\n\nreplace (\n\tcustomeredge => ../customeredge\n\tupstream => example.com/upstream v1.2.3\n)\n\n// replace retired => ../retired\n\nreplace outside => ../../../outside\n",
+		"go/ci/go.mod":           "module ci\n\nreplace llmclient => ../llmclient\n\nreplace ciclient => ../ciclient\n",
+		"go/sand/main.go":        "package main\n",
+		"go/forge-tunnel/go.mod": "module forge-tunnel\n",
+		"go/llmclient/go.mod":    "module llmclient\n",
+		"go/customeredge/go.mod": "module customeredge\n",
+		"go/ciclient/go.mod":     "module ciclient\n",
+		"go/retired/go.mod":      "module retired\n",
+		"go/other/go.mod":        "module other\n",
+	}
+	for file, body := range files {
+		writeShipFile(t, f.Dir, file, body)
+	}
+	mustRun(t, f.Env(), f.Dir, "git", "add", "-A")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "modules")
+
+	out, err := runWorktreeCmd(t, f, "add", "feat", "--include", "go/sand")
+	if err != nil {
+		t.Fatalf("add error = %v", err)
+	}
+	path := worktreeSummaryPath(t, out)
+	for _, file := range []string{"go/sand/main.go", "go/forge-tunnel/go.mod", "go/llmclient/go.mod", "go/customeredge/go.mod", "go/ciclient/go.mod"} {
+		if got := readFileStr(t, filepath.Join(path, file)); got == "" {
+			t.Errorf("%s is empty, want it checked out", file)
+		}
+	}
+	assertGone(t, filepath.Join(path, "go", "ci"))
+	assertGone(t, filepath.Join(path, "go", "retired"))
+	assertGone(t, filepath.Join(path, "go", "other"))
+	if got := mustRun(t, f.Env(), path, "git", "status", "--porcelain"); got != "" {
+		t.Errorf("status = %q, want a clean sparse checkout", got)
+	}
+}
+
 func TestLaneSparseByDefaultNeedsTheConfigAndALargeRepository(t *testing.T) {
 	t.Parallel()
 	f := vcstest.Repo(t)
