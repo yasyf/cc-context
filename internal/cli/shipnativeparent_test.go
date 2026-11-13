@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -595,19 +596,33 @@ func TestShipPlansOnlyTheMidStackBranchAnotherCheckoutRestacked(t *testing.T) {
 			args := append([]string{"-m", "fix: frobnicate", "--no-watch"}, tt.flags...)
 
 			report := dryRunReport(t, f, args...)
-			for _, label := range []string{"restack", "rewrites", "refuses"} {
+			for _, label := range []string{"rewrites", "refuses"} {
 				if got := dryRunValues(report, label); len(got) != 0 {
 					t.Errorf("%s = %q, want none: sand sits on plumbing's head and images stays where its pull request merges\n%s", label, got, report)
 				}
+			}
+			carried := !slices.Contains(tt.flags, "--tip-only")
+			var want []string
+			if carried {
+				want = []string{"anti-bot"}
+			}
+			if got := dryRunBranches(report, "restack"); !slices.Equal(got, want) {
+				t.Errorf("restack = %q, want %q\n%s", got, want, report)
 			}
 
 			if _, errStr, err := runShipCmdFull(f.Context(), t, args...); err != nil {
 				t.Fatalf("ship = %v (stderr=%q)", err, errStr)
 			}
-			for _, branch := range []string{"images", "plumbing", "anti-bot"} {
+			for _, branch := range []string{"images", "plumbing"} {
 				if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", branch); got != published[branch] {
 					t.Errorf("origin %s moved from %s to %s, want sand pushed alone", branch, published[branch], got)
 				}
+			}
+			if carried != stackOnto(t, f, "sand", "anti-bot") {
+				t.Errorf("anti-bot on the shipped sand = %t, want %t", !carried, carried)
+			}
+			if got, want := gitAt(t, f.Env(), f.WorktreePath("anti-bot"), "rev-parse", "HEAD"), gitAt(t, f.Env(), f.Dir, "rev-parse", "anti-bot"); got != want {
+				t.Errorf("the working copy holding anti-bot is at %s, want anti-bot's %s", got, want)
 			}
 			below := published["sand"]
 			if tt.amend {
