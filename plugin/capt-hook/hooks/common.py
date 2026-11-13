@@ -54,7 +54,20 @@ GH_READS = frozenset(
 )
 GH_API_WRITE_FLAGS = ("-X", "--method", "-f", "--raw-field", "-F", "--field", "--input")
 
-SHELL_WORD_EXECUTABLES = frozenset({"time", "command", "builtin", "exec", "eval", "source", "."})
+SHELL_WORD_EXECUTABLES = frozenset(
+    """
+    - : ! . [ [[ ]] { } alias autoload bg bind bindkey break builtin bye caller case cd chdir command
+    compadd comparguments compcall compctl compdescribe compfiles compgen compgroups complete compopt
+    compquote compset comptags comptry compvalues continue coproc declare dirs disable disown do done
+    echo echotc echoti elif else emulate enable end esac eval exec exit export false fc fg fi float for
+    foreach function functions getln getopts hash help history if in integer jobs kill let limit local
+    log logout mapfile nocorrect noglob popd print printf private pushd pushln pwd r read readarray
+    readonly rehash repeat return sched select set setopt shift shopt source suspend test then time
+    times trap true ttyctl type typeset ulimit umask unalias unfunction unhash unlimit unset unsetopt
+    until vared wait whence where which while zcompile zformat zle zmodload zparseopts zregexparse
+    zstyle
+    """.split()
+)
 
 SUBCOMMAND_TOKEN = re.compile(r"^[a-z][a-z0-9-]*$")
 
@@ -189,10 +202,16 @@ def has_streaming_flag(command: Command) -> bool:
 def spells_argv(command: Command, text: str, span: tuple[int, int] | None) -> bool:
     """Whether ``span`` of ``text`` holds only ``command``'s own words, separated by whitespace.
 
-    An env prefix, a shell-word executable, or anything the parser folded out of the
+    An env prefix, an executable the shell resolves before ``PATH`` (a zsh or bash builtin or
+    reserved word, or a function ``text`` defines), or anything the parser folded out of the
     words (a bare substitution, a redirect, a subshell paren) fails the check.
     """
-    if span is None or command.env or command.executable in SHELL_WORD_EXECUTABLES:
+    if (
+        span is None
+        or command.env
+        or command.executable in SHELL_WORD_EXECUTABLES
+        or defines_function(text, command.executable)
+    ):
         return False
     source = text.encode()
     cursor, end = span
@@ -201,6 +220,15 @@ def spells_argv(command: Command, text: str, span: tuple[int, int] | None) -> bo
             return False
         cursor = word.span[1]
     return not source[cursor:end].strip()
+
+
+def defines_function(text: str, name: str) -> bool:
+    """Whether ``text`` defines a shell function ``name``, as ``name()`` or ``function name``.
+
+    The parser keeps a definition's body as commands but drops its name, so the raw text is read.
+    """
+    word = re.escape(name)
+    return re.search(rf"(?:^|[\s;&|(){{}}])(?:function\s+{word}(?=[\s(){{]|$)|{word}\s*\(\s*\))", text) is not None
 
 
 def is_plain_argv(cl: CommandLine) -> bool:
