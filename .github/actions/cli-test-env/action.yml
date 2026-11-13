@@ -2,8 +2,8 @@ name: internal/cli test environment
 description: The external binaries internal/cli's tests drive as real subprocesses.
 
 # Go is not here: a shard runs a prebuilt binary and compiles nothing, and no
-# test in the package looks up `go` on PATH. The jobs that build add setup-go
-# themselves.
+# test in the package looks up `go` on PATH. The jobs that build add
+# ./.github/actions/go themselves.
 runs:
   using: composite
   steps:
