@@ -16,6 +16,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/yasyf/cc-context/internal/ghremote"
 	"github.com/yasyf/cc-context/internal/lookpath"
 )
 
@@ -106,10 +107,13 @@ const Ambient Dir = ""
 // returned context is where timedOut reads the guard back off; cancel must be
 // deferred.
 func newCmd(ctx context.Context, dir Dir, bin string, argv, extraEnv []string) (*exec.Cmd, context.Context, context.CancelFunc, error) {
+	origin, err := originRepoEnv(ctx, dir, bin, extraEnv)
+	if err != nil {
+		return nil, nil, nil, err
+	}
 	var tap *Tap
 	if meter, ok := ctx.Value(meterKey{}).(Meter); ok {
-		var err error
-		if tap, err = meter(ctx, bin, argv, slices.Concat(EnvFrom(ctx), extraEnv)); err != nil {
+		if tap, err = meter(ctx, bin, argv, slices.Concat(origin, EnvFrom(ctx), extraEnv)); err != nil {
 			return nil, nil, nil, err
 		}
 	}
@@ -118,7 +122,7 @@ func newCmd(ctx context.Context, dir Dir, bin string, argv, extraEnv []string) (
 		extraEnv = slices.Concat(extraEnv, tap.Env)
 		runCtx = context.WithValue(runCtx, tapKey{}, tap)
 	}
-	env, resolve := childEnv(ctx, dir, extraEnv)
+	env, resolve := childEnv(ctx, dir, origin, extraEnv)
 	cmd := exec.CommandContext(runCtx, resolve.Bin(bin), argv...) //nolint:gosec // bin/argv come from trusted backend translation, not user free-text
 	cmd.WaitDelay = waitDelay
 	cmd.Dir = string(dir)
@@ -237,20 +241,41 @@ func Getenv(ctx context.Context, key string) string {
 // picked, which is the child's business and not a vote on which binary ccx
 // spawns. Resolving against the reordered PATH would let the git directory
 // outrank a directory the caller put first on purpose.
-func childEnv(ctx context.Context, dir Dir, extraEnv []string) ([]string, lookpath.Env) {
+func childEnv(ctx context.Context, dir Dir, origin, extraEnv []string) ([]string, lookpath.Env) {
 	env := os.Environ()
 	if dir != Ambient {
 		env = slices.DeleteFunc(env, func(kv string) bool {
 			return strings.HasPrefix(kv, "GIT_DIR=") || strings.HasPrefix(kv, "GIT_WORK_TREE=") || strings.HasPrefix(kv, "GH_REPO=")
 		})
 	}
-	env = slices.Concat(env, EnvFrom(ctx))
+	env = slices.Concat(env, origin, EnvFrom(ctx))
 	resolve := lookpath.For(slices.Concat(env, extraEnv))
 	if path := resolve.GitPATH(); path != "" {
 		env = append(env, "PATH="+path)
 	}
 	env = slices.Concat(env, extraEnv, []string{ChildEnv})
 	return append(env, fetchConfig(env)...), resolve
+}
+
+// originRepoEnv names origin's GitHub repository in GH_REPO for a gh child in a
+// checkout, where gh would otherwise answer for the remote it ranks first, such
+// as the upstream remote gh repo clone adds for a fork's parent. A GH_REPO the
+// context or the call names outranks it, and a checkout whose origin names no
+// GitHub repository gets none.
+func originRepoEnv(ctx context.Context, dir Dir, bin string, extraEnv []string) ([]string, error) {
+	named := slices.ContainsFunc(slices.Concat(EnvFrom(ctx), extraEnv), func(kv string) bool { return strings.HasPrefix(kv, "GH_REPO=") })
+	if bin != "gh" || dir == Ambient || named {
+		return nil, nil
+	}
+	out, code, _, err := RunCLIExitCode(ctx, dir, "git", []string{"remote", "get-url", "origin"})
+	if err != nil {
+		return nil, fmt.Errorf("read origin for gh: %w", err)
+	}
+	owner, name, ok := ghremote.Repo(strings.TrimSpace(out))
+	if code != 0 || !ok {
+		return nil, nil
+	}
+	return []string{"GH_REPO=" + owner + "/" + name}, nil
 }
 
 // childFetchConfig holds for the child and every git it spawns. In a promisor
@@ -405,7 +430,7 @@ func RunCLI(ctx context.Context, dir Dir, bin string, argv []string) (string, er
 // StartDetached starts bin with argv in dir in a session of its own and
 // returns without waiting on it, for cleanup that must outlive this process.
 func StartDetached(ctx context.Context, dir Dir, bin string, argv []string) error {
-	env, resolve := childEnv(ctx, dir, nil)
+	env, resolve := childEnv(ctx, dir, nil, nil)
 	cmd := exec.Command(resolve.Bin(bin), argv...) //nolint:gosec // bin/argv come from trusted callers, not user free-text
 	cmd.Dir = string(dir)
 	cmd.Env = env

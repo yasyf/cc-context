@@ -60,7 +60,7 @@ func seedLaneRecords(ctx context.Context, t *testing.T, dir string, seed laneSee
 		}
 	}
 	write(repoPath, fmt.Sprintf(
-		`{"schema":3,"repo":{"name_with_owner":%q,"owner":%q,"is_private":%t,"viewer_login":"yasyf","viewer_permission":%q,"affiliated":%t,"default_branch":%q,"fetched_at":%q}}`,
+		`{"schema":4,"repo":{"name_with_owner":%q,"owner":%q,"is_private":%t,"viewer_login":"yasyf","viewer_permission":%q,"affiliated":%t,"default_branch":%q,"fetched_at":%q}}`,
 		seed.nameWithOwner, seed.owner, !seed.public, seed.permission, !seed.unaffiliated, seed.defaultBranch, now))
 	verdict := gtVerdictOK
 	if seed.unreachable {

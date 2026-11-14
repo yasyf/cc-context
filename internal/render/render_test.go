@@ -699,3 +699,59 @@ func TestPinnedRunDropsRepoLocation(t *testing.T) {
 		t.Errorf("ambient child env = %q, want the inherited GIT_DIR, GIT_WORK_TREE, and GH_REPO", got)
 	}
 }
+
+func TestGHChildNamesOriginsRepository(t *testing.T) {
+	git := func(t *testing.T, dir string, args ...string) {
+		t.Helper()
+		if _, err := RunCLI(context.Background(), Dir(dir), "git", args); err != nil {
+			t.Fatalf("git %v: %v", args, err)
+		}
+	}
+	forkClone := func(t *testing.T, origin string) Dir {
+		t.Helper()
+		dir := t.TempDir()
+		git(t, dir, "init", "-q")
+		git(t, dir, "remote", "add", "origin", origin)
+		git(t, dir, "remote", "add", "upstream", "https://github.com/benbjohnson/litestream.git")
+		git(t, dir, "config", "remote.upstream.gh-resolved", "base")
+		return Dir(dir)
+	}
+	t.Setenv("GH_REPO", "wrong/repo")
+	fork := forkClone(t, "git@github.com:Forge-AI/litestream.git")
+	for _, tt := range []struct {
+		name     string
+		ctx      context.Context
+		dir      Dir
+		bin      string
+		extraEnv []string
+		want     string
+	}{
+		{name: "gh in a fork's clone names origin", dir: fork, bin: "gh", want: "Forge-AI/litestream"},
+		{name: "the context's GH_REPO outranks origin", ctx: WithEnv(context.Background(), "GH_REPO=benbjohnson/litestream"), dir: fork, bin: "gh", want: "benbjohnson/litestream"},
+		{name: "the call's GH_REPO outranks origin", dir: fork, bin: "gh", extraEnv: []string{"GH_REPO=yasyf/litestream"}, want: "yasyf/litestream"},
+		{name: "an origin on disk names none", dir: forkClone(t, t.TempDir()), bin: "gh"},
+		{name: "git is not pinned", dir: fork, bin: "git"},
+		{name: "an ambient gh keeps the process's", dir: Ambient, bin: "gh", want: "wrong/repo"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := tt.ctx
+			if ctx == nil {
+				ctx = context.Background()
+			}
+			cmd, _, cancel, err := newCmd(ctx, tt.dir, tt.bin, nil, tt.extraEnv)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer cancel()
+			got := ""
+			for _, kv := range cmd.Env {
+				if repo, ok := strings.CutPrefix(kv, "GH_REPO="); ok {
+					got = repo
+				}
+			}
+			if got != tt.want {
+				t.Errorf("child GH_REPO = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

@@ -24,7 +24,7 @@ var ErrNoGitHub = errors.New("github metadata unavailable")
 
 // githubSchema is the on-disk format version of the cached repo record; a
 // mismatch reads as a miss.
-const githubSchema = 3
+const githubSchema = 4
 
 // githubTTL bounds how long a cached record is served before a refetch.
 const githubTTL = 24 * time.Hour
@@ -77,13 +77,6 @@ func (r Repo) Writable() bool {
 // role, so a branch push would be refused. An unknown role is not a denial.
 func (r Repo) PushDenied() bool {
 	return !r.Installation && (r.ViewerPermission == "READ" || r.ViewerPermission == "TRIAGE")
-}
-
-// PushesThroughFork reports whether a branch for a pull request here belongs on
-// the viewer's fork: GitHub refuses the viewer's push, or the repository is not
-// theirs.
-func (r Repo) PushesThroughFork() bool {
-	return r.NameWithOwner != "" && (r.PushDenied() || !r.Mine())
 }
 
 // Mine reports whether the repository is the viewer's own to run a stacking

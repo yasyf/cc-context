@@ -160,7 +160,7 @@ func TestShipCommitPushWatch(t *testing.T) {
 			name: "jj happy path",
 			jj:   true,
 			want: func(sha string) [][]string {
-				return [][]string{
+				return append([][]string{
 					{"jj", "--ignore-working-copy", "log", "-r", "trunk()", "--no-graph", "-T", jjTrunkBookmarkTemplate},
 					{"jj", "--ignore-working-copy", "log", "-r", jjNearestBookmarkRevset, "--no-graph", "-T", jjBookmarkTemplate},
 					{"jj", "--ignore-working-copy", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
@@ -175,17 +175,13 @@ func TestShipCommitPushWatch(t *testing.T) {
 					{"jj", "--ignore-working-copy", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
 					{"jj", "git", "push", "--bookmark", vcs.JJExactPattern("main")},
 					{"jj", "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T", "commit_id"},
-					ghRunListArgvFor(sha),
-					ghRunViewArgv,
-					ghRunListArgvFor(sha),
-					ghRunListArgvFor(sha),
-				}
+				}, ghCIWatchInv(sha)...)
 			},
 		},
 		{
 			name: "git happy path",
 			want: func(sha string) [][]string {
-				return [][]string{
+				return append([][]string{
 					{"git", "branch", "--show-current"},
 					gitTrunkArgv,
 					{"git", "diff", "--cached", "--name-status", "--no-renames", "-z"},
@@ -201,11 +197,7 @@ func TestShipCommitPushWatch(t *testing.T) {
 					{"git", "push", "--no-follow-tags", "--quiet", "--no-thin", "origin", "main"},
 					gitRecordPushArgv,
 					{"git", "rev-parse", "HEAD"},
-					ghRunListArgvFor(sha),
-					ghRunViewArgv,
-					ghRunListArgvFor(sha),
-					ghRunListArgvFor(sha),
-				}
+				}, ghCIWatchInv(sha)...)
 			},
 		},
 	}
@@ -4445,10 +4437,8 @@ func TestShipGTStackedHappyPath(t *testing.T) {
 			}
 			want = append(want, submit...)
 			want = append(want, tt.receiptInv...)
-			want = append(want,
-				[]string{"git", "rev-parse", "HEAD"},
-				ghRunListArgv, ghRunViewArgv, ghRunListArgv, ghRunListArgv,
-			)
+			want = append(want, []string{"git", "rev-parse", "HEAD"})
+			want = append(want, ghCIWatchInv(fakeHeadSHA)...)
 			assertInvocations(t, gtDropTrunkInv(t, readInvocations(t, log), "main", tt.prBranches...), want)
 		})
 	}
@@ -4497,8 +4487,7 @@ func TestShipGTTrunkStacksBranch(t *testing.T) {
 		gtPushInv(gtHead("fix-frobnicate", vcstest.GraphiteLeafSHA)),
 	}, gtReceiptInv("fix-frobnicate"), [][]string{
 		{"git", "rev-parse", "HEAD"},
-		ghRunListArgv, ghRunViewArgv, ghRunListArgv, ghRunListArgv,
-	})
+	}, ghCIWatchInv(fakeHeadSHA))
 	assertInvocations(t, gtDropTrunkInv(t, readInvocations(t, log), "main", "fix-frobnicate"), wantInv)
 }
 
