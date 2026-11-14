@@ -150,7 +150,9 @@ func TestShipPRCrossRepo(t *testing.T) {
 		t.Fatalf("shipPR: %v", err)
 	}
 	assertInvocations(t, vcstest.Invocations(t, f.ArgvLog), [][]string{
+		originURLArgv,
 		append([]string{"gh"}, ghPullsByHeadArgv(fakePRRepo, "viewer:feature", "open")...),
+		originURLArgv,
 		append([]string{"gh"}, prCreateArgv(fakePRRepo, "viewer:feature", "main", "fix: frobnicate", "", false)...),
 	})
 	if want := "opened PR #" + strconv.Itoa(created.Number) + " " + created.URL; seg != want {

@@ -223,10 +223,12 @@ func TestShipPRCreateGitLane(t *testing.T) {
 	}
 	invocations := vcstest.Invocations(t, f.ArgvLog)
 	assertInvocations(t, invocations, append(shipPRPushed("feature"),
+		originURLArgv,
 		append([]string{"gh"}, ghPullsByHeadArgv(fakePRRepo, "feature", "open")...),
 		[]string{"git", "ls-remote", "--heads", "origin", "refs/heads/main"},
 		gitForEachRefStdinArgv,
 		shipPRBaseArgv,
+		originURLArgv,
 		[]string{"gh", "api", "-X", "POST", "repos/" + fakePRRepo + "/pulls", "-f", "head=feature", "-f", "base=main", "-f", "title=Better title", "-F", "body=@" + body},
 	))
 	assertNoGraphQLArgv(t, invocations)
@@ -327,11 +329,14 @@ func TestShipPRCreateRefused(t *testing.T) {
 		}
 		lookup := append([]string{"gh"}, ghPullsByHeadArgv(fakePRRepo, "feature", "open")...)
 		assertInvocations(t, vcstest.Invocations(t, f.ArgvLog), append(shipPRPushed("feature"),
+			originURLArgv,
 			lookup,
 			[]string{"git", "ls-remote", "--heads", "origin", "refs/heads/main"},
 			gitForEachRefStdinArgv,
 			shipPRBaseArgv,
+			originURLArgv,
 			[]string{"gh", "api", "-X", "POST", "repos/" + fakePRRepo + "/pulls", "-f", "head=feature", "-f", "base=main", "-f", "title=Better title", "-F", "body=@" + body},
+			originURLArgv,
 			lookup,
 		))
 		if want := fmt.Sprintf(" · opened PR #%d %s", pr.Number, pr.URL); !strings.HasSuffix(got, want) {
@@ -390,13 +395,18 @@ func TestShipPRCreateRateLimitedFallsBackToGraphQL(t *testing.T) {
 		}
 		lookup := append([]string{"gh"}, ghPullsByHeadArgv(fakePRRepo, "feature", "open")...)
 		assertInvocations(t, vcstest.Invocations(t, f.ArgvLog), append(shipPRPushed("feature"),
+			originURLArgv,
 			lookup,
 			[]string{"git", "ls-remote", "--heads", "origin", "refs/heads/main"},
 			gitForEachRefStdinArgv,
 			shipPRBaseArgv,
+			originURLArgv,
 			[]string{"gh", "api", "-X", "POST", "repos/" + fakePRRepo + "/pulls", "-f", "head=feature", "-f", "base=main", "-f", "title=Better title", "-F", "body=@" + body, "-F", "draft=true"},
+			originURLArgv,
 			lookup,
+			originURLArgv,
 			[]string{"gh", "api", "graphql", "-f", "owner=yasyf", "-f", "repo=cc-context", "-f", "query=" + repoQuery, "--jq", ".data.repository.id"},
+			originURLArgv,
 			[]string{
 				"gh", "api", "graphql", "-f", "query=" + mutation, "-f", "head=feature", "-f", "base=main", "-f", "title=Better title",
 				"-F", "body=@" + body, "-F", "draft=true", "--jq", ".data.createPullRequest.pullRequest", "-f", "id=" + repoNodeID,
@@ -640,7 +650,9 @@ func TestShipPRCreateGitLaneOnAParentBranch(t *testing.T) {
 		t.Fatalf("ship error = %v", err)
 	}
 	assertInvocations(t, vcstest.Invocations(t, f.ArgvLog), append(shipPRPushed("feature"),
+		originURLArgv,
 		append([]string{"gh"}, ghPullsByHeadArgv(fakePRRepo, "feature", "open")...),
+		originURLArgv,
 		[]string{"gh", "api", "-X", "POST", "repos/" + fakePRRepo + "/pulls", "-f", "head=feature", "-f", "base=base", "-f", "title=Better title", "-F", "body=@" + body},
 	))
 	if want := fmt.Sprintf(" · opened PR #%d %s", created.Number, created.URL); !strings.HasSuffix(got, want) {

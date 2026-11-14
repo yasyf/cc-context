@@ -3,9 +3,9 @@ package vcs
 import (
 	"context"
 	"fmt"
-	"net/url"
 	"strings"
 
+	"github.com/yasyf/cc-context/internal/ghremote"
 	"github.com/yasyf/cc-context/internal/render"
 )
 
@@ -56,28 +56,6 @@ func RemoteOwner(ctx context.Context, dir render.Dir, remote string) (owner stri
 	if err != nil {
 		return "", false, fmt.Errorf("git remote get-url %s: %w", remote, err)
 	}
-	owner, ok = urlOwner(strings.TrimSpace(out))
+	owner, _, ok = ghremote.Repo(strings.TrimSpace(out))
 	return owner, ok, nil
-}
-
-func urlOwner(raw string) (string, bool) {
-	var path string
-	if strings.Contains(raw, "://") {
-		u, err := url.Parse(raw)
-		if err != nil || u.Host == "" {
-			return "", false
-		}
-		path = u.Path
-	} else {
-		host, rest, found := strings.Cut(raw, ":")
-		if !found || strings.Contains(host, "/") {
-			return "", false
-		}
-		path = rest
-	}
-	segments := strings.Split(strings.Trim(strings.TrimSuffix(strings.Trim(path, "/"), ".git"), "/"), "/")
-	if len(segments) != 2 {
-		return "", false
-	}
-	return segments[0], true
 }

@@ -461,7 +461,7 @@ func runShip(cmd *cobra.Command, o shipOpts) (err error) {
 		if prRun {
 			prNWO = repo.NameWithOwner
 		}
-		if kind == vcs.Git && !gtLane && repo.PushesThroughFork() {
+		if kind == vcs.Git && !gtLane && repo.PushDenied() {
 			if o.pushRemote, o.headOwner, err = shipForkRemote(ctx, dir, plan.name, repo); err != nil {
 				return err
 			}

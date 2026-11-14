@@ -1386,14 +1386,23 @@ func shipFetchArgv(remote, branch string) []string {
 }
 
 var (
-	ghRunListArgv = ghRunListArgvFor(fakeHeadSHA)
 	ghRunViewArgv = []string{"gh", "run", "view", "42", "--json", "workflowName,conclusion,startedAt,updatedAt,url,jobs"}
+	originURLArgv = []string{"git", "remote", "get-url", "origin"}
 )
 
 // ghRunListArgvFor is the CI watch's registration poll for the commit ship
 // pushed, which on a real repository is a sha only the repository can name.
 func ghRunListArgvFor(sha string) []string {
 	return []string{"gh", "run", "list", "--commit", sha, "--limit", "50", "--json", "databaseId,workflowName,status,url"}
+}
+
+func ghCIWatchInv(sha string) [][]string {
+	return [][]string{
+		originURLArgv, ghRunListArgvFor(sha),
+		originURLArgv, ghRunViewArgv,
+		originURLArgv, ghRunListArgvFor(sha),
+		originURLArgv, ghRunListArgvFor(sha),
+	}
 }
 
 // ghDownstackPRArgv is the one batched pull request lookup a gt-lane report

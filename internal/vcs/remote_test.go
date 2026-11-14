@@ -8,30 +8,6 @@ import (
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
 
-func TestURLOwner(t *testing.T) {
-	for _, tt := range []struct {
-		url   string
-		owner string
-		ok    bool
-	}{
-		{url: "https://github.com/maximhq/bifrost.git", owner: "maximhq", ok: true},
-		{url: "https://github.com/maximhq/bifrost", owner: "maximhq", ok: true},
-		{url: "git@github.com:yasyf/bifrost.git", owner: "yasyf", ok: true},
-		{url: "ssh://git@github.com/yasyf/bifrost.git", owner: "yasyf", ok: true},
-		{url: "/tmp/remotes/origin.git"},
-		{url: "file:///tmp/yasyf/bifrost.git"},
-		{url: "https://github.com/bifrost"},
-		{url: "https://github.com/a/b/c.git"},
-	} {
-		t.Run(tt.url, func(t *testing.T) {
-			owner, ok := urlOwner(tt.url)
-			if owner != tt.owner || ok != tt.ok {
-				t.Errorf("urlOwner(%q) = %q, %v; want %q, %v", tt.url, owner, ok, tt.owner, tt.ok)
-			}
-		})
-	}
-}
-
 func TestGitPushRemote(t *testing.T) {
 	for _, tt := range []struct {
 		name   string
@@ -91,27 +67,6 @@ func TestRepoPushDenied(t *testing.T) {
 	} {
 		if got := tt.repo.PushDenied(); got != tt.want {
 			t.Errorf("%+v.PushDenied() = %v, want %v", tt.repo, got, tt.want)
-		}
-	}
-}
-
-func TestRepoPushesThroughFork(t *testing.T) {
-	const nwo = "stablyai/orca"
-	for _, tt := range []struct {
-		repo Repo
-		want bool
-	}{
-		{repo: Repo{NameWithOwner: nwo, ViewerPermission: "READ"}, want: true},
-		{repo: Repo{NameWithOwner: nwo, ViewerPermission: "WRITE"}, want: true},
-		{repo: Repo{NameWithOwner: nwo, ViewerPermission: "WRITE", Affiliated: true}},
-		{repo: Repo{NameWithOwner: nwo, ViewerPermission: "READ", IsPrivate: true}, want: true},
-		{repo: Repo{NameWithOwner: nwo, ViewerPermission: "WRITE", IsPrivate: true}},
-		{repo: Repo{NameWithOwner: nwo, ViewerPermission: "ADMIN"}},
-		{repo: Repo{NameWithOwner: nwo, ViewerPermission: "READ", Installation: true}},
-		{repo: Repo{}},
-	} {
-		if got := tt.repo.PushesThroughFork(); got != tt.want {
-			t.Errorf("%+v.PushesThroughFork() = %v, want %v", tt.repo, got, tt.want)
 		}
 	}
 }
