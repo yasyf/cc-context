@@ -597,6 +597,7 @@ func TestShipTipOnlyPublishesATipCutOnAnEmptyBase(t *testing.T) {
 	f := shipGTRepo(t)
 	api := stubGTAPI(t)
 	f.Decorate(api.ctx)
+	cut := gitAt(t, f.Env(), f.Dir, "rev-parse", "main")
 	shipGTLevel(t, f, "base")
 	shipGTStack(t, f, "feature")
 	stackForeignPush(t, f, "main", "trunk.txt", false)
@@ -618,8 +619,8 @@ func TestShipTipOnlyPublishesATipCutOnAnEmptyBase(t *testing.T) {
 	if gitBranchExists(t, f.Env(), f.RemoteDir, "base") {
 		t.Error("origin carries the empty base")
 	}
-	if feature := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature"); !stackOnto(t, f, "origin/main", feature) {
-		t.Errorf("published feature %s does not sit on the fetched trunk", feature)
+	if base := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature^"); base != cut {
+		t.Errorf("published feature sits on %s, want the trunk commit it was cut at %s", base, cut)
 	}
 }
 

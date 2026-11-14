@@ -20,6 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   token near expiry keeps the read on the user's token. Before, a cc-remote
   worker read everything on the user's token, uncached and unfloored, since
   its `GH_TOKEN` pinned it and no app key was there to mint with.
+- `ccx vcs worktree add <name> --at <commit>` cuts `<name>` at that commit of
+  the freshly fetched remote trunk instead of its head, and tracks it on trunk
+  there, so a branch can start on the commit a deploy serves. It refuses a
+  commit the remote trunk lacks, a `<name>` that exists locally or on the
+  remote, a repository with no remote, and a jj workspace.
 
 ### Fixed
 
@@ -34,6 +39,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gateway read retried the 429 within 22 seconds, an app read spilled onto the
   user's token and was refused there too, and every caller got the refusal
   back.
+- `ccx vcs ship` keeps a branch on trunk at the commit it sits on. Its own work
+  stays on that trunk commit with or without commits of its own and with or
+  without `--no-push`, and the stack rebase keeps a never-published trunk
+  branch on its base while it merges cleanly, as it already kept a published
+  one. Only `--restack` or a conflict with the fetched trunk moves it. Before,
+  a `--no-push` ship, a ship of a branch with no commit of its own, and the
+  first push of a new branch each replayed it onto trunk's head, so a branch
+  cut at the commit staging serves left that commit on its first ship.
 - `ccx vcs ship` no longer force-pushes a rewrite no flag asked for. In the
   gt and github-stack lanes a published branch, the tip included, that the
   run would replay onto a new base while its local head still holds its

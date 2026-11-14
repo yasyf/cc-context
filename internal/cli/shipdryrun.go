@@ -575,6 +575,11 @@ func dryRunStack(ctx context.Context, l lane, o shipOpts, c *gtCache, r *shipDry
 		if moveState, err = gtHoldPublished(ctx, l.dir(), state, chain); err != nil {
 			return err
 		}
+		if !o.restack {
+			if moveState, err = gtHoldOnTrunk(ctx, l.dir(), moveState, chain, r.trunk); err != nil {
+				return err
+			}
+		}
 	}
 	if moveState, err = dryRunKeepMergeable(ctx, l, o, moveState, chain, r); err != nil {
 		return err

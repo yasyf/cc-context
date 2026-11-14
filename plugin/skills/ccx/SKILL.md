@@ -291,7 +291,10 @@ title becomes the commit subject and an unscoped `--pr-body-file` its body, with
 `<details>` wrapper dropped and each `## Heading` folded into a `Heading:` paragraph.
 On the gt lane a pushing ship whose branch needs a restack or whose base is off
 the fetched trunk runs the stack rebase machinery over its downstack after the
-commit, reported as `restacked in isolation`. Published branches stacked above
+commit, reported as `restacked in isolation`. A branch on trunk, published or
+not, stays on the trunk commit it sits on while it merges cleanly with the
+fetched trunk, in a `--no-push` ship too; only `--restack` or a conflict moves
+it onto trunk's head. Published branches stacked above
 it join that run: an amend or a new commit mid-stack replays them onto the new
 head and resubmits them under their leases, reported as
 `resubmitted <branches> above <branch>`, wherever they are checked out. Ship
@@ -600,6 +603,10 @@ dependencies. Regeneration stages its output; review it and run
 Keep dependency installation out of generator commands. Shared downloads and
 compiler caches remain shared; mutable
 `node_modules`, install state, and build outputs belong to each workspace.
+
+To start a branch on the commit a deploy serves, such as a staging soak, cut it
+with `ccx vcs worktree add <name> --at <commit>`: it is cut at that commit of
+the fetched remote trunk and tracked on trunk there, so ship keeps it there.
 
 Remove an authorized unused tree with `ccx vcs worktree rm <name>` or
 `ccx vcs worktree rm --path <absolute-path>`. Preview with `--dry-run`.

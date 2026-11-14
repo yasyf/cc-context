@@ -822,7 +822,7 @@ func TestStackSubmitRestacksARejectedParentRevision(t *testing.T) {
 	sources := stackRebaseSourceSnapshot(t, f, "base", "feature")
 	restackAdvanceRemote(t, f, "main", "upstream.txt", "upstream\n")
 
-	_, _, err = runStackCmd(t, f, "submit")
+	_, _, err = runStackCmd(t, f, "submit", "--restack")
 	if err != nil {
 		t.Fatalf("stack submit: %v", err)
 	}
@@ -1504,7 +1504,7 @@ func TestStackSubmitShipsTheParentPastAConflictingChildLane(t *testing.T) {
 	feature := gitAt(t, f.Env(), f.Dir, "rev-parse", "feature")
 	shipResetLog(t, f)
 
-	out, _, err := runStackCmd(t, f, "submit")
+	out, _, err := runStackCmd(t, f, "submit", "--restack")
 	if err != nil {
 		t.Fatalf("stack submit: %v", err)
 	}

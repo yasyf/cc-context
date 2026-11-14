@@ -911,7 +911,7 @@ func gtStuck(prefix, problem, suffix string) string {
 	return prefix + ": " + problem + suffix
 }
 
-func gtRestack(ctx context.Context, l lane, suffix, branch string, c *gtCache) (string, error) {
+func gtRestack(ctx context.Context, l lane, suffix, branch string, restack bool, c *gtCache) (string, error) {
 	state, chain, err := gtStackChain(ctx, c, branch)
 	if err != nil {
 		return "", err
@@ -920,11 +920,20 @@ func gtRestack(ctx context.Context, l lane, suffix, branch string, c *gtCache) (
 	if err != nil {
 		return "", err
 	}
+	trunk, err := gtTrunkBranch("ship", state)
+	if err != nil {
+		return "", err
+	}
 	if state, err = gtOnParentHead(ctx, l.dir(), state, chain); err != nil {
 		return "", err
 	}
 	if state, err = gtHoldPublished(ctx, l.dir(), state, chain); err != nil {
 		return "", err
+	}
+	if !restack {
+		if state, err = gtHoldOnTrunk(ctx, l.dir(), state, chain, trunk); err != nil {
+			return "", err
+		}
 	}
 	result, err := gtRestackChain(ctx, "ship", l.checkout, l.dir(), commonDir, state, gtBottomUp(chain), false)
 	c.forget()
@@ -948,6 +957,8 @@ func gtRestack(ctx context.Context, l lane, suffix, branch string, c *gtCache) (
 			continue
 		}
 		switch held := result.held[b]; {
+		case held == gtHeldOnTrunk:
+			segs = append(segs, fmt.Sprintf("kept %s on %s@%.12s — --restack replays it onto %s's head", b, trunk, state[b].Parents[0].SHA, trunk))
 		case b == branch && held == gtHeldPublished:
 			segs = append(segs, gtKeptOffMovedParent(b, state[b].Parents[0].Ref))
 		case strings.HasPrefix(held, gtHeldElsewhere) || held == gtHeldPublished:
@@ -1826,8 +1837,8 @@ func gtStackedParent(state gtState, branch string) gtRef {
 // gtOntoMove is the replay that puts a branch on its parent's head, computed
 // without moving anything: git replay writes objects, never refs. A zero head
 // means the branch stays where it is: it already carries the parent's head, or
-// a pushing ship found its own commits on a commit the remote trunk holds,
-// which onto then names.
+// its own work starts on a commit the remote trunk holds, which onto then
+// names.
 type gtOntoMove struct {
 	onto    string
 	fork    string
@@ -1842,10 +1853,11 @@ type gtOntoMove struct {
 // parent's, a conflicting replay, and one that would overwrite uncommitted
 // work where the branch is held. Only the commits parent has no patch of, the
 // branch's own, are replayed; a branch moving off the stacked parent from names
-// none of from's commits as its own either. Trunk only moves forward, so a
-// pushing ship replays nothing onto it while the branch's own commits sit on a
-// commit the remote trunk holds: the stack rebase that follows decides that
-// base, keeping a published branch on it while it merges cleanly.
+// none of from's commits as its own either. Trunk only moves forward, so ship
+// replays nothing onto it while the branch's own work starts on a commit the
+// remote trunk holds, a branch with no commit of its own yet included: the step
+// after the commit decides that base, keeping the branch on it unless
+// --restack asks to move it or it conflicts with trunk.
 func gtOntoPlan(ctx context.Context, l lane, o shipOpts, branch, parent, trunk string, from gtRef) (gtOntoMove, error) {
 	if stackRebasing(ctx, l.dir()) {
 		return gtOntoMove{}, refuse("ship: a rebase is in progress in %s: finish it with ccx vcs stack continue or drop it with git rebase --abort, then ship again", l.root)
@@ -1882,7 +1894,7 @@ func gtOntoPlan(ctx context.Context, l lane, o shipOpts, branch, parent, trunk s
 	if err != nil {
 		return gtOntoMove{}, err
 	}
-	if parent == trunk && !o.noPush && own > 0 {
+	if parent == trunk {
 		onTrunk, err := gitIsAncestor(ctx, l.dir(), "ship", fork, onto)
 		if err != nil {
 			return gtOntoMove{}, err

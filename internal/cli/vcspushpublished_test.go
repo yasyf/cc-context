@@ -14,7 +14,7 @@ func TestVcsPushTakesOverItsOwnIsolatedPublication(t *testing.T) {
 	f := stackRebaseRepo(t, "feature")
 	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
 	writeShipFile(t, f.Dir, "scratch.txt", "keeps feature on its source\n")
-	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+	if _, _, err := runStackCmd(t, f, "submit", "--restack"); err != nil {
 		t.Fatalf("stack submit: %v", err)
 	}
 	if err := os.Remove(filepath.Join(f.Dir, "scratch.txt")); err != nil {

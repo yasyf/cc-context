@@ -44,7 +44,7 @@ func TestShipPublishesOverAGraphiteRecordTheReceiptOutran(t *testing.T) {
 	f := stackRebaseRepo(t, "feature")
 	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
 	stale := gtmeta.Version{HeadSha: gitAt(t, f.Env(), f.Dir, "rev-parse", "feature"), BaseSha: gitAt(t, f.Env(), f.Dir, "rev-parse", "feature~1"), BaseName: "main"}
-	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+	if _, _, err := runStackCmd(t, f, "submit", "--restack"); err != nil {
 		t.Fatalf("stack submit: %v", err)
 	}
 	if receipt := healReceipt(t, f, "feature"); stale.HeadSha == receipt.Head || stale.BaseSha == receipt.Base {

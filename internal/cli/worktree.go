@@ -118,6 +118,7 @@ func newWorktreeAddCmd() *cobra.Command {
 	var (
 		mode     string
 		includes []string
+		at       string
 	)
 	cmd := &cobra.Command{
 		Use:   "add <name>",
@@ -150,7 +151,10 @@ the remote holds <name>, ccx fetches it and checks it out at the remote head
 without setting an upstream. This lets a removed lane resume at its published
 head. In a Graphite repository a remote branch Graphite does not track is
 adopted as stack submit adopts one, with the untracked branches below it. Otherwise, ccx cuts <name> from the freshly fetched remote trunk, or from
-HEAD when the repository has no remote. An existing branch on the gt stack of
+HEAD when the repository has no remote. --at <commit> cuts <name> at that
+commit of the freshly fetched remote trunk instead, and refuses a commit the
+trunk does not hold or a <name> that already exists; ship then keeps the branch
+there unless --restack asks or it conflicts. An existing branch on the gt stack of
 the branch checked out here joins this working copy's lane, so stack submit
 from either submits it. In a Graphite repository a newly cut branch is tracked
 on the branch it was cut from, trunk or the branch checked out here, so ship
@@ -158,11 +162,12 @@ and stack submit reach it without a gt track. A jj workspace starts on trunk() a
 on the caller's parents with no remote. The summary names the base commit.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runWorktreeAdd(cmd, args[0], mode, includes)
+			return runWorktreeAdd(cmd, args[0], mode, includes, at)
 		},
 	}
 	cmd.Flags().StringVar(&mode, "jj", "", "how the new working copy attaches: none|workspace|colocate")
 	cmd.Flags().StringArrayVar(&includes, "include", nil, "also check out this directory in the sparse git worktree (repeatable)")
+	cmd.Flags().StringVar(&at, "at", "", "cut <name> at this commit of the remote trunk instead of its head, tracked on trunk there")
 	return cmd
 }
 
@@ -496,7 +501,7 @@ func worktreeSegments(e worktreeEntry) []string {
 	return segs
 }
 
-func runWorktreeAdd(cmd *cobra.Command, name, requested string, includes []string) error {
+func runWorktreeAdd(cmd *cobra.Command, name, requested string, includes []string, at string) error {
 	ctx := cmd.Context()
 	l, err := resolveLane(ctx, "worktree add", workingDir(ctx), true)
 	if err != nil {
@@ -509,6 +514,9 @@ func runWorktreeAdd(cmd *cobra.Command, name, requested string, includes []strin
 	sparseLane := mode != jjModeWorkspace && l.checkout.Kind == vcs.Git
 	if len(includes) > 0 && !sparseLane {
 		return errors.New("worktree add: --include checks out directories in a sparse git worktree, which needs a Git checkout")
+	}
+	if at != "" && mode == jjModeWorkspace {
+		return errors.New("worktree add: --at cuts a git branch, which a jj workspace does not")
 	}
 	if sparseLane && len(includes) == 0 {
 		if sparseLane, err = laneSparseByDefault(ctx, l.dir()); err != nil {
@@ -552,7 +560,7 @@ func runWorktreeAdd(cmd *cobra.Command, name, requested string, includes []strin
 		if err := refuseHeldBranch(ctx, l, name); err != nil {
 			return err
 		}
-		if base, err = worktreeGitBase(ctx, l.dir(), name); err != nil {
+		if base, err = worktreeGitBase(ctx, l.dir(), name, at); err != nil {
 			return err
 		}
 		var chain []gtChainLink
@@ -806,10 +814,13 @@ func (b worktreeBase) segment() string {
 	return "from " + b.label + " " + strings.Join(short, "+")
 }
 
-func worktreeGitBase(ctx context.Context, dir render.Dir, name string) (worktreeBase, error) {
+func worktreeGitBase(ctx context.Context, dir render.Dir, name, at string) (worktreeBase, error) {
 	existing, err := gitRefExists(ctx, dir, "worktree add", "refs/heads/"+name)
 	if err != nil {
 		return worktreeBase{}, err
+	}
+	if existing && at != "" {
+		return worktreeBase{}, fmt.Errorf("worktree add: --at cuts a new branch, and %s already exists", name)
 	}
 	if existing {
 		sha, err := worktreeRevParse(ctx, dir, "refs/heads/"+name)
@@ -828,6 +839,8 @@ func worktreeGitBase(ctx context.Context, dir render.Dir, name string) (worktree
 	switch {
 	case err != nil:
 		return worktreeBase{}, fmt.Errorf("worktree add: git config %s: %w", key, err)
+	case code == 1 && at != "":
+		return worktreeBase{}, fmt.Errorf("worktree add: --at names a commit of the remote trunk, and %s has no remote", remote)
 	case code == 1:
 		sha, err := worktreeRevParse(ctx, dir, "HEAD")
 		return worktreeBase{rev: sha, label: "HEAD", parent: branch, shas: []string{sha}}, err
@@ -845,14 +858,30 @@ func worktreeGitBase(ctx context.Context, dir render.Dir, name string) (worktree
 	if err != nil {
 		return worktreeBase{}, err
 	}
+	if published != "" && at != "" {
+		return worktreeBase{}, fmt.Errorf("worktree add: --at cuts a new branch, and %s already holds %s", remote, name)
+	}
 	from := cmp.Or(published, trunk)
 	tracking := string(vcs.RemoteBranchRef(remote, from))
 	if err := gitFetch(ctx, dir, "--no-tags", "--no-write-fetch-head", remote, "+refs/heads/"+from+":"+tracking); err != nil {
 		return worktreeBase{}, fmt.Errorf("worktree add: git fetch %s %s: %w", remote, from, err)
 	}
-	sha, err := worktreeRevParse(ctx, dir, tracking)
+	rev := tracking
+	if at != "" {
+		rev = at + "^{commit}"
+	}
+	sha, err := worktreeRevParse(ctx, dir, rev)
 	if err != nil {
 		return worktreeBase{}, err
+	}
+	if at != "" {
+		on, err := gitIsAncestor(ctx, dir, "worktree add", sha, tracking)
+		if err != nil {
+			return worktreeBase{}, err
+		}
+		if !on {
+			return worktreeBase{}, fmt.Errorf("worktree add: --at %s is not on %s/%s, so %s cannot be cut on trunk there", at, remote, trunk, name)
+		}
 	}
 	return worktreeBase{rev: sha, label: remote + "/" + from, parent: from, shas: []string{sha}, existing: published != ""}, nil
 }
