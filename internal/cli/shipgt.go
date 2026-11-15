@@ -3020,7 +3020,10 @@ func gtSubmitStack(ctx context.Context, l lane, errW io.Writer, s gtSubmit, comm
 		}
 	}
 	if s.publication != nil {
-		plan = slices.DeleteFunc(plan, func(b gtSubmitBranch) bool { return s.publication.branch(b.name).Pinned })
+		plan = slices.DeleteFunc(plan, func(b gtSubmitBranch) bool {
+			published := s.publication.branch(b.name)
+			return published != nil && published.Pinned
+		})
 	}
 	for i, b := range plan {
 		if lease, ok := s.leases[b.name]; ok {
@@ -4012,7 +4015,7 @@ func gtCreateMeta(ctx context.Context, dir render.Dir, prefix, branch, head, rev
 	}
 	fields := strings.Split(out, "\x00")
 	if len(fields) < 3 {
-		return "", "", fmt.Errorf("%s: %s holds no commit above %s to derive a PR title from", prefix, branch, base)
+		return "", "", fmt.Errorf("%s: %s holds no commit of its own above %s, and GitHub opens no pull request without one — commit to %s first", prefix, branch, base, branch)
 	}
 	title := strings.TrimPrefix(fields[0], "\n")
 	if title == "" {

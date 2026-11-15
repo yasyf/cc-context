@@ -312,9 +312,14 @@ outside `--amend`, a bookmark whose remote head `@-` dropped is refused, naming
 `jj git push --bookmark`. One
 whose working copy holds uncommitted work refuses the ship before the commit
 forms, unless the branch has no commit of its own, and `--tip-only` leaves them
-all where they are. `--parent` keeps each branch below the tip at its published
-head, except one this working copy checked out and amended, which publishes with
-the run, and one `--include <branch>` takes into it. A pushing ship keeps a
+all where they are. A ship on a parent another clone published, one this
+working copy never checked out, or with `--parent`, keeps each branch below the
+tip at its published head, neither
+restacked nor pushed, except one this working copy checked out and amended,
+which publishes with the run, and one `--include <branch>` takes into it;
+`--restack` or `ccx vcs stack submit` restacks the rest. A tip holding no commit
+of its own above its parent opens no pull request, so ship refuses it naming
+why. A pushing ship keeps a
 branch below the tip that another lane's worktree holds at its published head,
 with every branch below it, and names it; `--include <branch>` takes that one
 into the run. `--tip-only` reads every ancestor at its published head and never locks or

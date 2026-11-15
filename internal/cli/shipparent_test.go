@@ -755,8 +755,8 @@ func TestShipStacksABranchCutFromAPublishedParentOnThatHead(t *testing.T) {
 	if creates := dryRunValues(report, "pr new"); len(creates) != 0 {
 		t.Errorf("pr new = %q, want no pull request opened below c", creates)
 	}
-	if notes := dryRunValues(report, "note"); !slices.ContainsFunc(notes, func(n string) bool { return strings.Contains(n, "cut from p's published head") }) {
-		t.Errorf("notes = %q, want one saying c was cut from p's published head", notes)
+	if notes := dryRunValues(report, "note"); !slices.ContainsFunc(notes, func(n string) bool { return strings.Contains(n, "cut from p, which another clone published") }) {
+		t.Errorf("notes = %q, want one saying c was cut from p, which another clone published", notes)
 	}
 	shipResetLog(t, f)
 

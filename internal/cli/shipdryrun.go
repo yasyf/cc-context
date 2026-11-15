@@ -642,7 +642,7 @@ func dryRunOnPublishedParent(ctx context.Context, l lane, o shipOpts, state gtSt
 	if err != nil {
 		return false, err
 	}
-	return shipOnPublishedParent(ctx, l.dir(), tr, state, r.parent, gtRestackRef(r.branch))
+	return shipOnPublishedParent(ctx, l.dir(), tr, state, r.branch, r.parent, gtRestackRef(r.branch))
 }
 
 // dryRunAnchor is the branch whose stack this ship publishes. For a tracked
@@ -669,7 +669,7 @@ func dryRunAnchor(state gtState, tipOnly, parentNamed, onPublished bool, r *ship
 	case parentNamed:
 		r.notes = append(r.notes, r.branch+" is untracked; --parent records it on "+r.parent+" and moves neither "+r.parent+" nor a branch below it")
 	case onPublished:
-		r.notes = append(r.notes, r.branch+" is untracked and cut from "+r.parent+"'s published head, which local "+r.parent+" lacks, so ship records it on "+r.parent+" and moves neither "+r.parent+" nor a branch below it")
+		r.notes = append(r.notes, r.branch+" is untracked and cut from "+r.parent+", which another clone published, so ship records it on "+r.parent+" and moves neither "+r.parent+" nor a branch below it")
 	default:
 		r.notes = append(r.notes, r.branch+" is untracked, so the submit publishes the downstack of "+r.parent+" along with it")
 	}
@@ -829,8 +829,8 @@ func dryRunMoves(ctx context.Context, l lane, pin gtTrunkPinned, state gtState, 
 		}
 		planned = slices.DeleteFunc(planned, func(branch string) bool { return tipOnlyAncestor(o.tipOnly, r.branch, branch) })
 	}
+	planned = slices.DeleteFunc(planned, func(branch string) bool { return slices.Contains(parentLine, branch) })
 	movers, held := gtRestackPlan(state, planned)
-	movers = slices.DeleteFunc(movers, func(branch string) bool { return slices.Contains(parentLine, branch) })
 	for _, branch := range movers {
 		why := "its parent moves under it"
 		if state[branch].NeedsRestack {
@@ -972,7 +972,7 @@ func dryRunHeads(ctx context.Context, l lane, o shipOpts, state gtState, chain, 
 			continue
 		}
 		open[pr.HeadRefName] = true
-		if tipOnlyAncestor(o.tipOnly, r.branch, pr.HeadRefName) {
+		if tipOnlyAncestor(o.tipOnly, r.branch, pr.HeadRefName) || slices.Contains(parentLine, pr.HeadRefName) {
 			continue
 		}
 		r.prs = append(r.prs, dryRunPR{
@@ -1055,7 +1055,7 @@ func dryRunCreates(ctx context.Context, l lane, o shipOpts, state gtState, chain
 		if title == "" || meta.bodyPath == "" {
 			derivedTitle, derivedBody, err := gtCreateMeta(ctx, l.dir(), "ship", branch, branch, from, base)
 			if err != nil {
-				r.notes = append(r.notes, err.Error())
+				r.refusals = append(r.refusals, err.Error())
 				continue
 			}
 			title = cmp.Or(title, derivedTitle)
