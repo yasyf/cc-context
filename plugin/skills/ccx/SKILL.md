@@ -271,7 +271,12 @@ demoting to jj/git with the reason in a leading `lane <kind> (<reason>)` segment
 and a cached probe of whether Graphite can actually submit here (a probe that
 times out or cannot reach Graphite demotes too, and each verdict caches for its
 own span: a yes a day, a no an hour, an unanswered probe a minute). `--no-gt`
-opts out. Ship owns the pull
+opts out. A branch the `gh-stack` catalog records, or a repository whose
+`ccx.stack` is `github`, routes ship to the github-stack lane instead: the same
+stack machinery, submitting one native GitHub stack through the GitHub API, its
+report opening on `lane github-stack`. `--tip-only`, `--restack`, `--landed`,
+`--new-pr`, `--all-lanes` and `--include` apply in these two lanes alone; the git
+and jj lanes refuse them before anything moves. Ship owns the pull
 request in every lane: `--pr-title`/`--pr-body-file` (repeatable, branch-scoped as
 `<branch>=<value>`, a bare value applying to the tip, `-` reading stdin) create the
 branch's PR. On an open PR ship keeps a title or body it already has and warns,
@@ -289,7 +294,19 @@ the fetched trunk runs the stack rebase machinery over its downstack after the
 commit, reported as `restacked in isolation`. Published branches stacked above
 it join that run: an amend or a new commit mid-stack replays them onto the new
 head and resubmits them under their leases, reported as
-`resubmitted <branches> above <branch>`, wherever they are checked out. One
+`resubmitted <branches> above <branch>`, wherever they are checked out. Ship
+refuses to replay any other published branch, the tip included, whose local
+head still holds its published head when nothing of its own changed (trunk
+moved, a parent landed); a local head that no longer holds its published one is
+its author's own rewrite and publishes as before. The refusal names each
+branch's published head and the head it would push; `--restack` replays them,
+and `--tip-only` ships the tip alone when the tip itself stays put. `--amend`,
+`--parent` and `--expect-remote` ask for the tip's rewrite and the branches
+above it, `--include` for the branch it names, `--landed` for the branches
+stacked on the branch it names. On the git lane a HEAD
+that rewrote its own `origin/<branch>` is refused, naming `ccx vcs push`; on jj,
+outside `--amend`, a bookmark whose remote head `@-` dropped is refused, naming
+`jj git push --bookmark`. One
 whose working copy holds uncommitted work refuses the ship before the commit
 forms, unless the branch has no commit of its own, and `--tip-only` leaves them
 all where they are. `--parent` keeps each branch below the tip at its published
@@ -301,9 +318,9 @@ into the run. `--tip-only` reads every ancestor at its published head and never 
 writes an ancestor's local ref, so it ships while another worktree amends the
 parent. It moves no ancestor: when the parent's published head has moved past
 the tip's base, the tip is pushed on that base as it is, and when the parent was
-rewritten without that base, only the tip's own commits are replayed onto that
-published head, so a child lane follows a parent another lane amended, or one
-the merge queue holds, without a raw `git rebase --onto`. Every working copy holding a moved
+rewritten without that base, `--tip-only --restack` replays only the tip's own
+commits onto that published head, so a child lane follows a parent another lane
+amended, or one the merge queue holds, without a raw `git rebase --onto`. Every working copy holding a moved
 branch must be clean and is moved onto its new head, still on its branch. A branch `gt freeze` is holding is left
 where it is. A conflict stops in a conflict workspace with rerere off;
 `ccx vcs stack continue` finishes the rebase, pushes, submits, and restates the PR

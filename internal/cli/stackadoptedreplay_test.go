@@ -94,7 +94,6 @@ func adoptedNativeReplayRepo(t *testing.T, change string) (*vcstest.Fixture, str
 	api.openPRs("base", "feature", "child")
 	f.Decorate(api.ctx)
 	stubOpenPRs(t, f, nil, "base", "feature", "child")
-	stubStackStanding(t, f, nil)
 	return f, replayBase, originalBase
 }
 

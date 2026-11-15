@@ -60,7 +60,6 @@ func TestNativeStackReplaysAChildFromItsPublishedBaseAfterItsParentsSquashLand(t
 		"a": {Number: 41, Title: "a", State: "MERGED", Landed: true, Head: a},
 		"b": {Number: 42, Title: "b", State: "MERGED", Landed: true, Head: b},
 	}, "c")
-	stubStackStanding(t, f, nil)
 	l, err := resolveLane(f.Context(), "stack rebase", f.Dir, false)
 	if err != nil {
 		t.Fatal(err)
@@ -130,7 +129,6 @@ func TestNativeStackParentIsTheOpenMemberGitHubHoldsThePullRequestOn(t *testing.
 				"a": {Number: 9000, Title: "a", State: "OPEN", Base: "main", Head: a, NativeStack: tt.stack},
 				"b": {Number: 9001, Title: "b", State: "OPEN", Base: "a", Head: shipped, NativeStack: tt.stack},
 			})
-			stubStackStanding(t, f, nil)
 			l, err := resolveLane(f.Context(), "stack rebase", f.Dir, false)
 			if err != nil {
 				t.Fatal(err)
@@ -195,7 +193,6 @@ func TestNativeStackTakesALocalAmendOverGitHubsRestackOfItsLastPush(t *testing.T
 		"a": {Number: 41, Title: "a", State: "MERGED", Landed: true, Head: a},
 		"b": {Number: 42, Title: "b", State: "OPEN", Base: "main", Head: restacked, NativeStack: 46},
 	})
-	stubStackStanding(t, f, nil)
 	l, err := resolveLane(f.Context(), "stack rebase", f.Dir, false)
 	if err != nil {
 		t.Fatal(err)

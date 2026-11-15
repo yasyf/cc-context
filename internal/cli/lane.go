@@ -116,6 +116,16 @@ type lane struct {
 
 func (l lane) dir() render.Dir { return render.Dir(l.root) }
 
+func (l lane) label() string {
+	switch {
+	case l.gt && l.native:
+		return "github-stack"
+	case l.gt:
+		return "gt"
+	}
+	return kindLabel(l.kind)
+}
+
 func (l lane) reportSegment() string {
 	if l.note == "" || l.note == gtDisabledNote || strings.HasPrefix(l.note, gtNoAccessNote) {
 		return ""

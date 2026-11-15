@@ -283,6 +283,7 @@ type stackRebaseOpts struct {
 	tipOnly     bool
 	dropCommits bool
 	restack     bool
+	rewriteTip  bool
 	stayClean   bool
 	allLanes    bool
 	otherLanes  bool
@@ -557,17 +558,17 @@ func stackBegin(ctx context.Context, cmd *cobra.Command, l lane, commonDir strin
 	if err := stackRefusePins(ctx, cmd.ErrOrStderr(), l.dir(), run); err != nil {
 		return err
 	}
-	if o.tip != "" && !o.restack {
-		if err := stackRefuseGreenRestack(ctx, l, run); err != nil {
-			return err
-		}
-	}
 	if line := stackLineBase(run); !o.noPush && line != "" {
 		if _, err := fmt.Fprintf(cmd.ErrOrStderr(), "stack rebase: %s has no pull request and the pull request above it is based on it, so the run takes it as trunk, rebases onto its published head, and leaves it and the branches below it where they are\n", line); err != nil {
 			return err
 		}
 		o.trunk = line
 		return stackBegin(ctx, cmd, l, commonDir, others, o)
+	}
+	if o.tip != "" && !o.restack {
+		if err := stackRefuseRewrite(ctx, l.dir(), run, o.rewriteTip, o.include, o.landed); err != nil {
+			return err
+		}
 	}
 	switch {
 	case !o.submit && !o.noPush && run.NoPush:

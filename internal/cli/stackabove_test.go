@@ -170,7 +170,6 @@ func stackNativePRs(t *testing.T, f *vcstest.Fixture, bottom string, above ...st
 	}
 	f.Decorate(api.ctx)
 	stubOpenPRs(t, f, prs)
-	stubStackStanding(t, f, nil)
 	common := filepath.Join(f.Dir, ".git")
 	if err := nativemeta.Init(f.Context(), common, "main"); err != nil {
 		t.Fatal(err)
@@ -311,7 +310,6 @@ func stackLineBehindItsPublishedHead(t *testing.T, open bool) (*vcstest.Fixture,
 	}
 	f.Decorate(api.ctx)
 	stubOpenPRs(t, f, prs)
-	stubStackStanding(t, f, nil)
 	return f, shared
 }
 

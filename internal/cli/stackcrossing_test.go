@@ -55,7 +55,6 @@ func graphiteChildOnNativeParentRepo(t *testing.T) *vcstest.Fixture {
 	api.openPRs("base", "feature")
 	f.Decorate(api.ctx)
 	stubOpenPRs(t, f, nil, "base", "feature")
-	stubStackStanding(t, f, nil)
 	return f
 }
 

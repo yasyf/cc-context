@@ -171,6 +171,8 @@ func TestShipCommitPushWatch(t *testing.T) {
 					{"jj", "git", "fetch"},
 					{"jj", "--ignore-working-copy", "log", "-r", `bookmarks(exact:"main")`, "--no-graph", "-T", jjStackLineTemplate},
 					{"jj", "--ignore-working-copy", "log", "-r", jjAncestorRevset("main"), "--no-graph", "-T", jjBookmarkTemplate},
+					{"jj", "--ignore-working-copy", "config", "get", "git.push"},
+					{"jj", "--ignore-working-copy", "log", "-r", jjRewrittenRevset("main", "origin"), "--no-graph", "-T", jjStackLineTemplate},
 					{"jj", "bookmark", "move", vcs.JJExactPattern("main"), "--to", "@-"},
 					{"jj", "--ignore-working-copy", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
 					{"jj", "git", "push", "--bookmark", vcs.JJExactPattern("main")},
@@ -900,7 +902,7 @@ func TestShipJJNeverInvokesGitCommit(t *testing.T) {
 		t.Fatalf("ship error = %v", err)
 	}
 	for _, inv := range vcstest.Invocations(t, f.ArgvLog) {
-		if inv[0] == "git" {
+		if inv[0] == "git" && !slices.Equal(inv, originURLArgv) {
 			t.Errorf("jj path invoked git: %v", inv)
 		}
 	}
@@ -2519,8 +2521,14 @@ func TestShipJJRebase(t *testing.T) {
 			{"jj", "git", "push", "--bookmark", vcs.JJExactPattern(target)},
 		}
 	}
+	unrewritten := func(target, remote string) [][]string {
+		return [][]string{
+			{"jj", "--ignore-working-copy", "config", "get", "git.push"},
+			{"jj", "--ignore-working-copy", "log", "-r", jjRewrittenRevset(target, remote), "--no-graph", "-T", jjStackLineTemplate},
+		}
+	}
 	plainAttempt := func(target string) [][]string {
-		return slices.Concat([][]string{fetch, stack(target), ancestors(target)}, advance(target))
+		return slices.Concat([][]string{fetch, stack(target), ancestors(target)}, unrewritten(target, "origin"), advance(target))
 	}
 	replay := func(target string) [][]string {
 		return [][]string{
@@ -2531,7 +2539,7 @@ func TestShipJJRebase(t *testing.T) {
 		}
 	}
 	rebasingAttempt := func(target string) [][]string {
-		return slices.Concat([][]string{fetch, stack(target), ancestors(target)}, replay(target), advance(target))
+		return slices.Concat([][]string{fetch, stack(target), ancestors(target)}, replay(target), unrewritten(target, "origin"), advance(target))
 	}
 
 	tests := []struct {
@@ -2571,7 +2579,8 @@ func TestShipJJRebase(t *testing.T) {
 			want: slices.Concat(prologue("main"), [][]string{
 				{"jj", "--ignore-working-copy", "config", "get", "git.push"},
 				{"jj", "bookmark", "track", vcs.JJExactPattern("main"), "--remote=backup"},
-			}, plainAttempt("main")),
+				fetch, stack("main"), ancestors("main"),
+			}, unrewritten("main", "backup"), advance("main")),
 		},
 		{
 			name: "diverged trunk rebases",
@@ -2595,6 +2604,22 @@ func TestShipJJRebase(t *testing.T) {
 			rebased: 1,
 			want: slices.Concat(prologue("someone/probe"), rebasingAttempt("someone/probe"),
 				[][]string{describe}),
+		},
+		{
+			name: "rewritten published bookmark refuses",
+			args: []string{"--bookmark", "someone/probe"},
+			opts: []vcstest.Opt{vcstest.Remote()},
+			build: func(t *testing.T, f *vcstest.Fixture) {
+				mustRun(t, f.Env(), f.Dir, "jj", "commit", "-m", "probe work")
+				mustRun(t, f.Env(), f.Dir, "jj", "bookmark", "create", "someone/probe", "-r", "@-")
+				mustRun(t, f.Env(), f.Dir, "jj", "git", "push", "--bookmark", "someone/probe")
+				mustRun(t, f.Env(), f.Dir, "jj", "describe", "-r", "@-", "-m", "probe work reworded")
+				writeShipFile(t, f.Dir, "g.txt", "more\n")
+			},
+			target: "someone/probe",
+			want: slices.Concat(prologue("someone/probe"), [][]string{fetch, stack("someone/probe"), ancestors("someone/probe")},
+				unrewritten("someone/probe", "origin")),
+			wantErr: []string{"@- no longer holds someone/probe@origin", "probe work", "jj git push --bookmark"},
 		},
 		{
 			name:    "conflicted target refuses",
@@ -2677,7 +2702,8 @@ func TestShipJJRebase(t *testing.T) {
 				{"jj", "squash", "-m", "fix: frobnicate"},
 				describe,
 				{"jj", "bookmark", "list", vcs.JJExactPattern("main"), "--all-remotes", "-T", jjRemoteBookmarkTemplate},
-			}, plainAttempt("main"), [][]string{revert}),
+				fetch, stack("main"), ancestors("main"),
+			}, advance("main"), [][]string{revert}),
 			wantErr: []string{"not force-retrying over their work"},
 		},
 		{
@@ -3337,6 +3363,8 @@ func TestShipJJBookmarkOverride(t *testing.T) {
 		{"jj", "git", "fetch"},
 		{"jj", "--ignore-working-copy", "log", "-r", `bookmarks(exact:"someone/probe")`, "--no-graph", "-T", jjStackLineTemplate},
 		{"jj", "--ignore-working-copy", "log", "-r", jjAncestorRevset("someone/probe"), "--no-graph", "-T", jjBookmarkTemplate},
+		{"jj", "--ignore-working-copy", "config", "get", "git.push"},
+		{"jj", "--ignore-working-copy", "log", "-r", jjRewrittenRevset("someone/probe", "origin"), "--no-graph", "-T", jjStackLineTemplate},
 		{"jj", "bookmark", "move", vcs.JJExactPattern("someone/probe"), "--to", "@-"},
 		{"jj", "--ignore-working-copy", "op", "log", "-n", "1", "--no-graph", "-T", jjOpIDTemplate},
 		{"jj", "git", "push", "--bookmark", vcs.JJExactPattern("someone/probe")},
@@ -3407,6 +3435,47 @@ func TestShipGitBookmarkFlagFails(t *testing.T) {
 		t.Errorf("no VCS command should run when --bookmark is rejected, got %v", inv)
 	}
 	assertShipRefusedClean(t, f, head)
+}
+
+func TestShipRefusesGraphiteFlagsOutsideTheGraphiteLane(t *testing.T) {
+	t.Parallel()
+	for _, lane := range []struct {
+		name string
+		opts []vcstest.Opt
+	}{
+		{"git", nil},
+		{"jj", []vcstest.Opt{vcstest.JJ()}},
+	} {
+		for _, flag := range [][]string{
+			{"--tip-only"},
+			{"--restack"},
+			{"--landed", "base"},
+			{"--new-pr", "base"},
+			{"--all-lanes"},
+			{"--include", "base"},
+		} {
+			t.Run(lane.name+" "+flag[0], func(t *testing.T) {
+				t.Parallel()
+				f := shipRepo(t, append([]vcstest.Opt{vcstest.Remote(), vcstest.Dirty()}, lane.opts...)...)
+				head := shipHead(t, f)
+				shipResetLog(t, f)
+
+				_, err := runShipCmd(f.Context(), t, append([]string{"-m", "fix: frobnicate"}, flag...)...)
+				want := "ship: " + flag[0] + " applies only in the gt and github-stack lanes, and this ship runs in the " + lane.name + " lane — drop it"
+				if err == nil || err.Error() != want {
+					t.Fatalf("ship = %v, want %q", err, want)
+				}
+				for _, inv := range vcstest.Invocations(t, f.ArgvLog) {
+					if len(inv) > 1 && slices.Contains([]string{"commit", "push", "git"}, inv[1]) {
+						t.Errorf("ship ran %v before refusing %s", inv, flag[0])
+					}
+				}
+				if got := shipHead(t, f); got != head {
+					t.Errorf("HEAD moved to %s, want the pre-ship %s", got, head)
+				}
+			})
+		}
+	}
 }
 
 // TestShipBookmarkGuardReadsTheSpelling pins the guard to the flag the caller
@@ -7869,11 +7938,13 @@ func TestShipRefusesToReplayALandedTrunkCommitOntoItsBranch(t *testing.T) {
 	}
 }
 
-// TestShipLeasesOverItsOwnRewrittenHistory pins the ship that put a parent's
-// commit into its child's pull request: viewed is pushed, rebased locally onto
-// its updated parent, and shipped. Replaying onto the stale origin/viewed drops
-// the copy of its own commit and re-proposes the parent's as viewed's work.
-func TestShipLeasesOverItsOwnRewrittenHistory(t *testing.T) {
+// TestShipRefusesToForcePushItsOwnRewrittenHistory is the ship that put a
+// parent's commit into its child's pull request, and then the one that
+// force-pushed a rewrite no flag asked for: viewed is pushed, rebased locally
+// onto its updated parent, and shipped. Ship neither replays onto the stale
+// origin/viewed nor forces over it; it names ccx vcs push, which publishes a
+// rewrite under a lease.
+func TestShipRefusesToForcePushItsOwnRewrittenHistory(t *testing.T) {
 	for _, tt := range []struct {
 		name   string
 		build  func(t *testing.T) (f *vcstest.Fixture, args []string, want []string)
@@ -7895,28 +7966,26 @@ func TestShipLeasesOverItsOwnRewrittenHistory(t *testing.T) {
 			pushed := gitAt(t, f.Env(), f.Dir, "rev-parse", "refs/remotes/origin/"+tt.branch)
 			shipResetLog(t, f)
 
-			out, err := runShipCmd(f.Context(), t, append(args, "--no-watch", "--no-pr")...)
-			if err != nil {
-				t.Fatalf("ship error = %v, want the rewrite published over origin/%s", err, tt.branch)
+			_, err := runShipCmd(f.Context(), t, append(args, "--no-watch", "--no-pr")...)
+			if got := gitAt(t, f.Env(), f.Dir, "--git-dir="+f.RemoteDir, "rev-parse", "refs/heads/"+tt.branch); got != pushed {
+				t.Errorf("remote %s = %s, want its published head %s left alone", tt.branch, got, pushed)
 			}
-			head := shipHead(t, f)
-			if got := gitAt(t, f.Env(), f.Dir, "--git-dir="+f.RemoteDir, "rev-parse", "refs/heads/"+tt.branch); got != head {
-				t.Errorf("remote %s = %s, want the local head %s", tt.branch, got, head)
-			}
-			if got := gitLogSubjects(t, f, "refs/remotes/origin/main.."+head); !slices.Equal(got, want) {
-				t.Errorf("shipped history = %v, want %v", got, want)
-			}
-			lease := "--force-with-lease=" + tt.branch + ":" + pushed
-			if !slices.ContainsFunc(vcstest.Invocations(t, f.ArgvLog), func(inv []string) bool {
-				return len(inv) > 1 && inv[1] == "push" && slices.Contains(inv, lease)
+			if slices.ContainsFunc(vcstest.Invocations(t, f.ArgvLog), func(inv []string) bool {
+				return len(inv) > 1 && (inv[1] == "push" || inv[1] == "rebase")
 			}) {
-				t.Errorf("invocations lack a push carrying %s", lease)
+				t.Error("ship pushed or rebased over the published head it no longer holds")
 			}
-			if slices.ContainsFunc(vcstest.Invocations(t, f.ArgvLog), func(inv []string) bool { return len(inv) > 1 && inv[1] == "rebase" }) {
-				t.Error("ship rebased onto its own rewritten history")
+			var refusal *shipRefusal
+			if !errors.As(err, &refusal) {
+				t.Fatalf("ship = %v, want a refusal", err)
 			}
-			if wantSeg := "force-pushed " + tt.branch + " → origin · replaced " + shortOID(pushed) + " under a lease"; !strings.Contains(out, wantSeg) {
-				t.Errorf("summary = %q, want it to contain %q", out, wantSeg)
+			for _, part := range []string{"rewrote origin/" + tt.branch, "published head " + pushed[:12], "ccx vcs push"} {
+				if !strings.Contains(err.Error(), part) {
+					t.Errorf("refusal = %q, want it to contain %q", err, part)
+				}
+			}
+			if got := gitLogSubjects(t, f, "refs/remotes/origin/main..HEAD"); !slices.Equal(got, want) {
+				t.Errorf("local history = %v, want %v kept for ccx vcs push", got, want)
 			}
 		})
 	}

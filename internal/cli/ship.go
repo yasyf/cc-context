@@ -214,19 +214,19 @@ func newShipCmd() *cobra.Command {
 
 With no paths, ship commits exactly the index when anything is staged: untracked files stay in the working copy, named in the summary as left uncommitted, and a hook's fixes to a staged file are staged with it. A tracked file with changes the index does not stage, whole or in part, refuses that ship before anything moves, naming the file: the commit would otherwise carry out a stale copy, or half of what git rm or git mv began, and leave the rest behind unnoticed. Stage it to ship everything, name the paths to ship, or pass --only-hunk for part of a file. With nothing staged it stages the whole working copy and names what it swept, holding back untracked machine-local files (*.local.*, .env*) unless they are named. A ship that fails before its commit lands, a hook's refusal included, unstages what it staged: the whole index after a sweep, the named paths after a path-scoped ship, so the ship after a fix stages the fixed file. An index-only ship leaves your staging in place.
 
-Ship refuses an empty working copy only when the branch carries nothing above trunk either. Where it does carry commits trunk does not — work a delegate's worktree, a hand-made commit, or a codex lane already landed — there is nothing to cut and everything to submit, so ship skips the commit and goes on to push and the pull request, reporting "nothing to commit — shipping as --no-commit". A path-scoped ship whose scoped paths are clean takes that same path, naming them: scoping already declared everything else out, so finding them clean over a branch ahead of trunk means the work landed. --no-commit states the path outright and refuses a working copy holding changes to tracked files, which would otherwise be left out of the branch and the pull request this same run updates; git's untracked paths do not refuse it, since a run that cuts no commit was never going to carry a worktree's scratch into one, and the report names them as "left untracked: <paths>" instead. Under jj there is nothing to exempt: a new file is already part of the working-copy commit --no-commit pushes. --no-commit is refused alongside paths, where the two spellings contradict each other. Where the branch carries nothing above trunk there is nothing to submit either, and the refusal says so. Ship resolves the push target before committing, so a refusal leaves the working copy untouched. In the graphite lane that includes a branch whose pull request sits in Graphite's merge queue: the push would evict it, so ship refuses before the commit forms, unless --evict-queued asks for the eviction. After committing, ship fetches from the remote first and, when the target is no longer an ancestor of the local stack, rebases the stack onto it (jj: the target bookmark; git: origin/<branch>). On git, an origin/<branch> that is the branch's own history rewritten locally — a head its reflog reaches, its last publication, or commits the stack carries patch for patch — is not rebased onto: ship force-pushes over it with a lease on that exact head and reports "force-pushed … replaced <sha> under a lease". A rebase that would conflict is rolled back and reported instead of pushed. Uncommitted work the rebase has to move — every hunk a scoped ship deliberately left in the tree — is kept as a commit of its own rather than on refs/stash, which every working copy of a repository shares, and put back afterwards; work that will not go back leaves the commit holding it and the files in it named in the refusal. A push the remote rejects because it advanced again mid-ship re-fetches, re-rebases, and retries up to 3 attempts before failing with the manual recovery steps. --amend never retries a rejected push: the force-with-lease refusal is reported for manual reconciliation instead of overwriting the concurrent push.
+Ship refuses an empty working copy only when the branch carries nothing above trunk either. Where it does carry commits trunk does not — work a delegate's worktree, a hand-made commit, or a codex lane already landed — there is nothing to cut and everything to submit, so ship skips the commit and goes on to push and the pull request, reporting "nothing to commit — shipping as --no-commit". A path-scoped ship whose scoped paths are clean takes that same path, naming them: scoping already declared everything else out, so finding them clean over a branch ahead of trunk means the work landed. --no-commit states the path outright and refuses a working copy holding changes to tracked files, which would otherwise be left out of the branch and the pull request this same run updates; git's untracked paths do not refuse it, since a run that cuts no commit was never going to carry a worktree's scratch into one, and the report names them as "left untracked: <paths>" instead. Under jj there is nothing to exempt: a new file is already part of the working-copy commit --no-commit pushes. --no-commit is refused alongside paths, where the two spellings contradict each other. Where the branch carries nothing above trunk there is nothing to submit either, and the refusal says so. Ship resolves the push target before committing, so a refusal leaves the working copy untouched. In the graphite lane that includes a branch whose pull request sits in Graphite's merge queue: the push would evict it, so ship refuses before the commit forms, unless --evict-queued asks for the eviction. After committing, ship fetches from the remote first and, when the target is no longer an ancestor of the local stack, rebases the stack onto it (jj: the target bookmark; git: origin/<branch>). On git, an origin/<branch> that is the branch's own history rewritten locally — a head its reflog reaches, its last publication, or commits the stack carries patch for patch — is not rebased onto, and ship force-pushes no rewrite no flag asked for: it refuses, naming the published head HEAD no longer holds and ccx vcs push, which moves origin/<branch> onto HEAD under a lease on that exact head. --amend asks for its own rewrite and pushes it under a lease on the head it amended. Under jj, outside --amend, a target bookmark whose remote head @- no longer holds is refused the same way, naming the jj bookmark move and jj git push that publish it. A rebase that would conflict is rolled back and reported instead of pushed. Uncommitted work the rebase has to move — every hunk a scoped ship deliberately left in the tree — is kept as a commit of its own rather than on refs/stash, which every working copy of a repository shares, and put back afterwards; work that will not go back leaves the commit holding it and the files in it named in the refusal. A push the remote rejects because it advanced again mid-ship re-fetches, re-rebases, and retries up to 3 attempts before failing with the manual recovery steps. --amend never retries a rejected push: the force-with-lease refusal is reported for manual reconciliation instead of overwriting the concurrent push.
 
 Where the commit goes is one decision, resolved before any mutation and reported as a branch <name> or created <name> segment. On a non-trunk branch or bookmark, ship appends to it. On trunk it appends in your own repositories — direct-to-main is deliberate there — and starts a branch named from the commit subject when GitHub says the repository is someone else's, since an org trunk rejects the commit through its protect-<trunk> hook and leaves it dangling; the graphite lane always starts a branch on trunk, because gt has no verb that commits onto it. A detached HEAD is refused rather than guessed at, unless --new-branch names a branch to cut there, and so are several trunk candidates unless --branch names one of them. --branch <name> commits onto that branch: an existing one is checked out for the commit, carrying the working copy's changes, and the working copy goes back to the branch it was on afterwards, git refusing before anything changes when a change would not carry over or another working copy holds the branch; a missing one is created here; in the graphite lane, --branch <name> --tip-only --no-commit instead ships that branch as it stands from any working copy of the repository, without checking it out, whichever working copy holds it, and leaves this working copy's own changes out of it; --new-branch [<name>] always starts one, deriving the name from the commit subject when bare; --new-branch name and --new-branch=name both name it, the positional after a bare --new-branch being its name unless -- separates the two, a name that is also a path on disk is refused as ambiguous, and a value word (true, false, null, none) is refused for both flags rather than cut as a branch; --append refuses on trunk; --allow-trunk lets --branch advance a trunk you do not own. --bookmark is a jj-only alias of --branch, --create a deprecated alias of --new-branch. A new branch is cut with gt create (graphite), git switch -c (git), or jj bookmark create -r @- (jj).
 
 Ship runs the repository's hooks on every commit it makes, wherever the commit lands, a pull request's branch included: CI and the hooks both own formatting, and a hook skipped locally only resurfaces as a red check after the push. Where a prek config exists, ship runs the suite itself through uvx prek; auto-fixes fold into the commit, and the commit verb then carries --no-verify so git's own pre-commit hook does not repeat the same checks. Every push ship makes runs git's pre-push hook. --no-verify skips them all, the commit's and the push's; --verify states the default.
 
-A live Graphite config (.git/.graphite_repo_config, or the git common dir's copy in a linked worktree) routes ship to the gt lane instead, even in colocated jj repos; --no-gt falls back to the jj/git detection above. Ship declines that lane, reporting a leading lane <kind> (<reason>) segment, when the repo sets ccx.nogt or when GitHub says the repo is someone else's — a public repo you neither administer nor share an owner or organization with. A lookup that cannot be made at all (gh off PATH, not signed in, no GitHub remote) keeps the gt lane. Ship also asks Graphite itself, before any commit forms, whether this repo is submittable — a live config only proves gt init once ran — and declines the lane when Graphite answers no (no auth token, no permissions); a probe that times out or cannot reach the Graphite server is asked once more and then fails the ship without committing, since an unanswered probe says nothing about the lane and demoting on one would drop a stacked branch out of its stack. Every verdict is cached between ships, keyed by the Graphite token it was probed with so a rotated token is asked afresh: a yes for a day, a no for an hour, an unanswered probe for a minute. The gt lane commits through gt: gt create <name> starts a stacked branch — cut from an untracked branch the remote trunk already contains, such as a worktree's base branch, it is cut with git instead and recorded on trunk, leaving that base untracked — gt modify -c appends to one, and --amend amends the branch tip; an untracked branch is adopted first onto the parent ship names itself — trunk for a branch with no tracked branch among its commits above the remote trunk, otherwise its nearest tracked ancestor, never one gt records as stacked on it — or onto --parent when given, through gt track --parent (gt track -f only when no remote trunk ref exists to measure against), and a tracked branch --parent names another parent for is moved onto it; an untracked --parent is tracked first onto the base of its open pull request, cut locally at origin's head when only origin holds it, and refused when it has no open pull request or neither this checkout nor origin holds it; a parent no longer in the branch's history, rewritten after the branch was cut from it, first has the branch's own commits replayed onto its head, never a commit the remote trunk holds — trunk only moves forward, so a pushing ship replays nothing onto it while the branch's own commits sit on a commit the remote trunk holds, and the stack rebase keeps a published branch on that base while it merges cleanly — and a branch whose own commits sit among copies of the parent's or among commits the remote trunk holds is refused instead; the resolved parent is reported. Untracked local branches between the branch and that parent are adopted first, bottom-up, each onto the one below it; two at one commit, or one off the first-parent line, form no single chain, and ship refuses naming them. A branch only the remote holds is never adopted as a parent unless --parent names it, whatever commit it sits at. A tracked branch counts as an ancestor at its head, its published head, or a head its reflog shows it held before a rewrite, never at the commit it was created or reset at, which is its parent's and not its own. The nearest tracked ancestor is read from the branch's commits above the remote trunk, never above a local trunk left behind it, so a tracked branch the remote trunk already contains, routine in a repository carrying stale branches, is never a candidate: every submit built on it would propose a pull request holding no commits, which Graphite refuses, and a branch level with the remote trunk is recorded on trunk whatever untracked branches sit below it. A --parent naming such a branch is refused before any commit forms, pointing at ccx vcs prune. A tracked branch whose recorded parent is another lane's, which the submit leaves out of its push, moves onto trunk before any commit forms when that parent's pull request landed, as --parent <trunk> would, replaying only the commits above the head it was cut from, and says so on stderr; one whose parent's pull request closed without landing is refused there. Both checks read the remote-tracking trunk as it stands, without a fetch, since containment only grows; a repository with no such ref at all has nothing to measure against, and the submit fetches one before it needs the answer. Instead of a plain push, the lane submits the downstack itself, over Graphite's API, anchored on the remote trunk: the submit fetches that one ref first — origin/<trunk>, moving no local branch and no working copy — because the local trunk can sit behind it, and against a trunk left behind a branch whose commits are already upstream reads as a stack member, and Graphite refuses the empty pull request that follows. Every branch of the downstack whose head the remote trunk already contains is therefore dropped from the submit and named as skipped, having nothing left to push and no pull request to open, and the ship refuses outright when the branch being shipped is itself already contained, pointing at ccx vcs prune. A branch left carrying a commit whose patch the remote trunk already holds is refused there too, before the push, since its pull request would propose work the branch does not own. Before it pushes, every branch whose parent has an open pull request must hold that parent's head, the one this push moves it to or else the one the remote holds; a branch off it is refused, naming the parent's pull request and head and the ccx vcs stack rebase that replays it. Of the rest, one atomic git push carries every branch's refspec at once, each under the lease of its last submitted version, so every branch moves or none does, and then each branch goes to Graphite in a submit call of its own, in stack order: a new pull request opens published unless --draft, and an open one keeps its draft state unless --draft or --publish converts it. A branch that already has an open pull request is updated without restating its title or body, so a description someone hand-edited survives; a branch without one gets a pull request titled and bodied from its first commit above the base, and the branch shipped is refused before the push when that body, or the --pr-body-file standing in for it, is blank — for a branch stacked on trunk, or on a branch this submit dropped, that base is the remote trunk's head, which is also the base sha the submit records for it in place of the one gt's local state holds. A submit deeper than one branch names every branch it is about to force-push before it runs, since a submit force-pushes every branch of the downstack it kept. A downstack branch of another lane, one whose name differs from the shipped branch's before the last slash and that this working copy has never checked out, is neither pushed nor submitted, and is named; --all-lanes pushes it too, and --include <branch> pushes that one. A branch this working copy has checked out, now or earlier by its HEAD reflog, is this lane's whichever lane cut it. A ship whose parent is fixed, by --parent or by a cut from the parent's published head, keeps each branch below it at its published head, except one --include names or one this lane checked out whose local head holds work its published head lacks, such as an amend, which publishes with the run. A pushing ship keeps a branch below it that another lane's working copy holds, or another lane's cci claim names, at its published head, with every branch below that one, and names it; --include <branch> takes that one into the run. Past that one trunk ref ship never fetches in the gt lane, and it never retries there. A pushing ship whose branch needs a restack or whose base is off the fetched trunk runs the stack rebase machinery over its downstack after the commit, reported as "restacked in isolation". A branch with published branches stacked above it brings them into that run, so an amend or a new commit mid-stack replays them onto the new head and resubmits them under their leases, named in a "resubmitted <branches> above <branch>" segment. A branch above it that another working copy has checked out is carried the same way, and that working copy is moved onto its new head; one with uncommitted work there refuses the ship before the commit forms, unless the branch has no commit of its own, which stays where it is with the branches above it. --tip-only leaves them all where they are, and reads every ancestor at its published head without locking or writing the ancestor's local ref, so it ships while another worktree amends the parent. That restack refuses to move a pull request below the tip that is green or approved when nothing of its own changed — trunk moved under it, a parent landed, or a parent moved for either reason — because the force-push restarts its CI and dismisses its approvals; the refusal names each one, --tip-only ships the tip alone on the base it sits on, and --restack moves them anyway. A --tip-only ship moves no ancestor: a tip whose parent's published head moved past its base is refused while that parent's pull request is open, since the tip's pull request would sit on the parent's old commits, and --tip-only --restack replays it onto that published head instead; with no open pull request on the parent the tip stays on its base, named in a "kept <tip> on <base> though <parent> moved" segment; one whose parent was rewritten without that base has its own commits replayed onto that published head, leaving the parent's local ref alone. A branch carrying local commits its published head lacks still moves, and so does one GitHub reports as conflicting. A --no-push ship still restacks with the older in-place replay, after fetching that one trunk ref, so a branch restacked onto a trunk this clone has not fetched is never replayed back onto the stale ref as a second copy of itself. That replay leaves every published branch off its own parent, named in the report, since a ship that pushes nothing has no reason to rewrite a head its pull request carries; the shipped branch is one of them, so a published branch whose parent moved takes the commit on its own head, and a "kept <branch> on its published base though <parent> moved" segment names the ccx vcs stack rebase that replays it. A branch already sitting on its parent is left exactly where it is, keeping the shas its pull request was pushed as. A published branch on trunk also retains its base and shas when its head, and every head stacked on it, merges cleanly with the fetched trunk under that trunk's .gitattributes; --restack moves it onto that trunk instead. The working copy holding a moved branch must be clean and is moved onto its new head; a branch below it that another working copy holds is that lane's, so it is left where it is, with the branches above it, and named in the report. A branch gt is holding — gt freeze, or a merge in progress — is left where it is whatever its parent did, and a refusal names the hold rather than calling it a branch off its parent. A conflict during a pushing ship stops in a conflict workspace with rerere off; ccx vcs stack continue finishes the rebase, pushes, submits, and restates the PR flags this invocation carried. A --no-push ship's conflict refusal names ccx vcs stack rebase. A branch whose commits are already in its parent is named as merged instead, with the gt untrack that clears it. The lane still refuses up front on a branch gt track cannot adopt and on --amend on trunk; a failed submit reports the recovery step instead of retrying — gt auth for a rejected token — a push the remote refuses is reported by the remote's own lines and each ref's verdict, and a submit Graphite refused in part names both the branches that landed and the ones it refused. The report names the submitted branch and its PR, from Graphite's own answer rather than a GitHub lookup: submitted <branch> → PR #<n> <url>.
+A live Graphite config (.git/.graphite_repo_config, or the git common dir's copy in a linked worktree) routes ship to the gt lane instead, even in colocated jj repos; --no-gt falls back to the jj/git detection above. A branch the gh-stack catalog in the git common dir records, a --parent it records, or a repository whose ccx.stack setting (git config, or .claude/ccx.toml's [vcs] stack) is github routes ship to the github-stack lane: the gt lane's stack machinery below, submitting one native GitHub stack through the GitHub API rather than through gt. Its report opens on a lane github-stack segment, the label ccx vcs info and ccx vcs status give it. --tip-only, --restack, --landed, --new-pr, --all-lanes and --include apply in these two lanes alone, and ship refuses each of them before anything moves in the git or jj lane, naming the lane it runs in. Ship declines that lane, reporting a leading lane <kind> (<reason>) segment, when the repo sets ccx.nogt or when GitHub says the repo is someone else's — a public repo you neither administer nor share an owner or organization with. A lookup that cannot be made at all (gh off PATH, not signed in, no GitHub remote) keeps the gt lane. Ship also asks Graphite itself, before any commit forms, whether this repo is submittable — a live config only proves gt init once ran — and declines the lane when Graphite answers no (no auth token, no permissions); a probe that times out or cannot reach the Graphite server is asked once more and then fails the ship without committing, since an unanswered probe says nothing about the lane and demoting on one would drop a stacked branch out of its stack. Every verdict is cached between ships, keyed by the Graphite token it was probed with so a rotated token is asked afresh: a yes for a day, a no for an hour, an unanswered probe for a minute. The gt lane commits through gt: gt create <name> starts a stacked branch — cut from an untracked branch the remote trunk already contains, such as a worktree's base branch, it is cut with git instead and recorded on trunk, leaving that base untracked — gt modify -c appends to one, and --amend amends the branch tip; an untracked branch is adopted first onto the parent ship names itself — trunk for a branch with no tracked branch among its commits above the remote trunk, otherwise its nearest tracked ancestor, never one gt records as stacked on it — or onto --parent when given, through gt track --parent (gt track -f only when no remote trunk ref exists to measure against), and a tracked branch --parent names another parent for is moved onto it; an untracked --parent is tracked first onto the base of its open pull request, cut locally at origin's head when only origin holds it, and refused when it has no open pull request or neither this checkout nor origin holds it; a parent no longer in the branch's history, rewritten after the branch was cut from it, first has the branch's own commits replayed onto its head, never a commit the remote trunk holds — trunk only moves forward, so a pushing ship replays nothing onto it while the branch's own commits sit on a commit the remote trunk holds, and the stack rebase keeps a published branch on that base while it merges cleanly — and a branch whose own commits sit among copies of the parent's or among commits the remote trunk holds is refused instead; the resolved parent is reported. Untracked local branches between the branch and that parent are adopted first, bottom-up, each onto the one below it; two at one commit, or one off the first-parent line, form no single chain, and ship refuses naming them. A branch only the remote holds is never adopted as a parent unless --parent names it, whatever commit it sits at. A tracked branch counts as an ancestor at its head, its published head, or a head its reflog shows it held before a rewrite, never at the commit it was created or reset at, which is its parent's and not its own. The nearest tracked ancestor is read from the branch's commits above the remote trunk, never above a local trunk left behind it, so a tracked branch the remote trunk already contains, routine in a repository carrying stale branches, is never a candidate: every submit built on it would propose a pull request holding no commits, which Graphite refuses, and a branch level with the remote trunk is recorded on trunk whatever untracked branches sit below it. A --parent naming such a branch is refused before any commit forms, pointing at ccx vcs prune. A tracked branch whose recorded parent is another lane's, which the submit leaves out of its push, moves onto trunk before any commit forms when that parent's pull request landed, as --parent <trunk> would, replaying only the commits above the head it was cut from, and says so on stderr; one whose parent's pull request closed without landing is refused there. Both checks read the remote-tracking trunk as it stands, without a fetch, since containment only grows; a repository with no such ref at all has nothing to measure against, and the submit fetches one before it needs the answer. Instead of a plain push, the lane submits the downstack itself, over Graphite's API, anchored on the remote trunk: the submit fetches that one ref first — origin/<trunk>, moving no local branch and no working copy — because the local trunk can sit behind it, and against a trunk left behind a branch whose commits are already upstream reads as a stack member, and Graphite refuses the empty pull request that follows. Every branch of the downstack whose head the remote trunk already contains is therefore dropped from the submit and named as skipped, having nothing left to push and no pull request to open, and the ship refuses outright when the branch being shipped is itself already contained, pointing at ccx vcs prune. A branch left carrying a commit whose patch the remote trunk already holds is refused there too, before the push, since its pull request would propose work the branch does not own. Before it pushes, every branch whose parent has an open pull request must hold that parent's head, the one this push moves it to or else the one the remote holds; a branch off it is refused, naming the parent's pull request and head and the ccx vcs stack rebase that replays it. Of the rest, one atomic git push carries every branch's refspec at once, each under the lease of its last submitted version, so every branch moves or none does, and then each branch goes to Graphite in a submit call of its own, in stack order: a new pull request opens published unless --draft, and an open one keeps its draft state unless --draft or --publish converts it. A branch that already has an open pull request is updated without restating its title or body, so a description someone hand-edited survives; a branch without one gets a pull request titled and bodied from its first commit above the base, and the branch shipped is refused before the push when that body, or the --pr-body-file standing in for it, is blank — for a branch stacked on trunk, or on a branch this submit dropped, that base is the remote trunk's head, which is also the base sha the submit records for it in place of the one gt's local state holds. A submit deeper than one branch names every branch it is about to force-push before it runs, since a submit force-pushes every branch of the downstack it kept. A downstack branch of another lane, one whose name differs from the shipped branch's before the last slash and that this working copy has never checked out, is neither pushed nor submitted, and is named; --all-lanes pushes it too, and --include <branch> pushes that one. A branch this working copy has checked out, now or earlier by its HEAD reflog, is this lane's whichever lane cut it. A ship whose parent is fixed, by --parent or by a cut from the parent's published head, keeps each branch below it at its published head, except one --include names or one this lane checked out whose local head holds work its published head lacks, such as an amend, which publishes with the run. A pushing ship keeps a branch below it that another lane's working copy holds, or another lane's cci claim names, at its published head, with every branch below that one, and names it; --include <branch> takes that one into the run. Past that one trunk ref ship never fetches in the gt lane, and it never retries there. A pushing ship whose branch needs a restack or whose base is off the fetched trunk runs the stack rebase machinery over its downstack after the commit, reported as "restacked in isolation". A branch with published branches stacked above it brings them into that run, so an amend or a new commit mid-stack replays them onto the new head and resubmits them under their leases, named in a "resubmitted <branches> above <branch>" segment. A branch above it that another working copy has checked out is carried the same way, and that working copy is moved onto its new head; one with uncommitted work there refuses the ship before the commit forms, unless the branch has no commit of its own, which stays where it is with the branches above it. --tip-only leaves them all where they are, and reads every ancestor at its published head without locking or writing the ancestor's local ref, so it ships while another worktree amends the parent. That restack refuses to replay any published branch, the tip included, whose local head still holds its published head when no flag asked for the rewrite — trunk moved under it, a parent landed, or a parent moved for either reason — because the force-push rewrites commits a reviewer already saw, restarts its CI and dismisses its approvals; a local head that no longer holds its published head is its author's own rewrite, which ship publishes as it did before. A branch replayed onto a parent this run rewrote for work of its own, such as a new commit or an amend, is carried as asked. --amend, --parent and --expect-remote ask for the rewrite of the tip and the branches above it, --include for each branch it names, and --landed for the branches stacked on the branch it names. The refusal names each branch with its published head and the head it would push; --tip-only ships the tip alone when the tip itself would stay where it is, and --restack replays them anyway. A --tip-only ship moves no ancestor: a tip whose parent's published head moved past its base is refused while that parent's pull request is open, since the tip's pull request would sit on the parent's old commits, and --tip-only --restack replays it onto that published head instead; with no open pull request on the parent the tip stays on its base, named in a "kept <tip> on <base> though <parent> moved" segment; one whose parent was rewritten without that base is refused as a rewrite no flag asked for, and --tip-only --restack replays its own commits onto that published head, leaving the parent's local ref alone. A branch carrying local commits its published head lacks still moves, and so does one GitHub reports as conflicting. A --no-push ship still restacks with the older in-place replay, after fetching that one trunk ref, so a branch restacked onto a trunk this clone has not fetched is never replayed back onto the stale ref as a second copy of itself. That replay leaves every published branch off its own parent, named in the report, since a ship that pushes nothing has no reason to rewrite a head its pull request carries; the shipped branch is one of them, so a published branch whose parent moved takes the commit on its own head, and a "kept <branch> on its published base though <parent> moved" segment names the ccx vcs stack rebase that replays it. A branch already sitting on its parent is left exactly where it is, keeping the shas its pull request was pushed as. A published branch on trunk also retains its base and shas when its head, and every head stacked on it, merges cleanly with the fetched trunk under that trunk's .gitattributes; --restack moves it onto that trunk instead. The working copy holding a moved branch must be clean and is moved onto its new head; a branch below it that another working copy holds is that lane's, so it is left where it is, with the branches above it, and named in the report. A branch gt is holding — gt freeze, or a merge in progress — is left where it is whatever its parent did, and a refusal names the hold rather than calling it a branch off its parent. A conflict during a pushing ship stops in a conflict workspace with rerere off; ccx vcs stack continue finishes the rebase, pushes, submits, and restates the PR flags this invocation carried. A --no-push ship's conflict refusal names ccx vcs stack rebase. A branch whose commits are already in its parent is named as merged instead, with the gt untrack that clears it. The lane still refuses up front on a branch gt track cannot adopt and on --amend on trunk; a failed submit reports the recovery step instead of retrying — gt auth for a rejected token — a push the remote refuses is reported by the remote's own lines and each ref's verdict, and a submit Graphite refused in part names both the branches that landed and the ones it refused. The report names the submitted branch and its PR, from Graphite's own answer rather than a GitHub lookup: submitted <branch> → PR #<n> <url>.
 
 Ship owns the pull request in every lane. --pr-title, --pr-title-file and --pr-body-file are repeatable and branch-scoped — <branch>=<value>, a bare value applying to the tip — because one submit covers every branch in the downstack, and in the graphite lane a branch below the tip with no pull request opens one only when both name it, and is otherwise pushed, not submitted; --pr-title-file reads a one-line title from a file instead of an argument, one per branch and never beside --pr-title for the same branch, so a title naming git next to a quote never sits in the command line a sandbox screens; --pr-body-file and --pr-title-file between them take "-" once to read piped stdin. Outside the graphite lane ship opens the branch's PR when there is none (never with --fill, which would publish the commit's Claude-Session-Id trailer into the description) and, when there is, keeps a title or body it already has, warning on stderr, unless --replace-pr-text is given, so a ship from the wrong branch cannot rewrite what a reviewer reads and a description someone hand-edited survives a re-ship; a blank live body is filled without the flag; a body that does land replaces the live one wholesale, except that each Release-* or Readers-First trailer closing the live body is carried forward onto its end unless the given body's closing trailers name its key, which replaces every carried line of that key; a closing trailer of the form <Key>: - retracts that key, dropping both the marker and the live lines of that key from the body. A refused write's retry names a temp file holding that carried body. There --parent names the pull request's base: a new pull request opens against that branch rather than trunk, and an open one is retargeted onto it; without it a new pull request opens against the nearest ancestor the remote trunk does not carry that is both a local branch and a pushed one, and against trunk when there is none; a branch only the remote holds is never that base. On trunk it reports no PR (on trunk). In the graphite lane a PR the submit opens carries the stated title and body from its first version, never the commit message, and ship restates the named branches whose PR was already open, under the same --replace-pr-text rule. A commit about to land on a branch with a child another working copy holds warns on stderr, naming that tree, and still lands: stack new leaves its calling tree on the parent, so the child's work may belong there. Every body file is read before the commit forms, so an unreadable path refuses with the working copy untouched, and a ship that names no PR flag makes no gh pr call. --draft and --publish apply in every lane, converting an existing PR in either direction; --no-pr skips the step. -m is optional when an unscoped --pr-title is given: the title becomes the commit subject, and an unscoped --pr-body-file its body, with the <details> wrapper dropped, each ## Heading folded into a Heading: paragraph, and blank runs collapsed. Only an unscoped value can feed it — the tip's name is the branch plan, which that message is an input to. In a Claude Code or Codex session with cci on the PATH, each pull request the graphite submit or the pull request step opens or updates is claimed for the session with cci claim --rel opened or --rel updated, so cci who --pr names it; outside the graphite lane a ship naming no PR flag looks up the branch's open pull request and claims it --rel updated.
 
 --dry-run is the opposite switch, and between them they spell the whole risk axis. It prints the decisions the run has already resolved and then stops before the first mutation: the branch the commit lands on, the parent a track would record and why that branch and not another, the named paths beside the staged ones that make a graphite commit refuse, every ref a restack would rewrite with the commits it replays and the working copy holding it — each base read as the restack reads it, the furthest of the parent's head and the recorded base that the branch still holds, and every branch below the tip the restack keeps at its published head left where it is — the open pull request heads a submit would force-push over, the titles it would derive for the ones it opens, and the paths the replay resolves anew. It fetches what the run fetches, a missing base into origin's remote-tracking refs and the history a shallow clone lacks below it, but cuts no branch, runs no gt verb and writes nothing else, so the local branches and the working copy are byte for byte what they were; --budget caps the report.
 
---yolo is the one switch for "skip the checks": it implies --no-verify, so ship's own prek pass never runs and the commit gt cuts carries --no-verify, and it drops every guard ship adds of its own, now and as more are added. It drops none today — the multi-branch gt submit --dry-run probe it was written for is gone, replaced by the branch list ship already holds — so against this version it is exactly --no-verify. It never drops a refusal git or gt would make anyway, never the auto-restack, which is recovery rather than a guard, and never the auto-restack's refusal to move a green or approved pull request, which only --restack lifts.
+--yolo is the one switch for "skip the checks": it implies --no-verify, so ship's own prek pass never runs and the commit gt cuts carries --no-verify, and it drops every guard ship adds of its own, now and as more are added. It drops none today — the multi-branch gt submit --dry-run probe it was written for is gone, replaced by the branch list ship already holds — so against this version it is exactly --no-verify. It never drops a refusal git or gt would make anyway, never the auto-restack, which is recovery rather than a guard, and never the refusal to replay published commits no flag asked to rewrite, which only --restack lifts.
 
 --reviews keeps listening after the CI watch: each new review comment on the pushed branch's PR — every submitted PR, in the gt lane — streams to stdout until all are merged or closed. The standalone surface, with attach and replay knobs (--since, --interval, --budget, --stack), is ccx vcs reviews.`,
 		Args: cobra.ArbitraryArgs,
@@ -268,12 +268,12 @@ Ship owns the pull request in every lane. --pr-title, --pr-title-file and --pr-b
 	cmd.Flags().StringArrayVar(&o.prBodyFile, "pr-body-file", nil, `set the pull request body from a file; repeatable as <branch>=<path>, bare applies to the tip ("-" reads stdin)`)
 	cmd.Flags().BoolVar(&o.replacePRText, "replace-pr-text", false, replacePRTextUsage)
 	cmd.Flags().BoolVar(&o.noPR, "no-pr", false, "push only; never create or update a pull request")
-	cmd.Flags().StringArrayVar(&o.landed, "landed", nil, "treat <branch> as landed and drop it from the downstack (repeatable; graphite lane only)")
-	cmd.Flags().StringArrayVar(&o.newPRs, "new-pr", nil, "open a new pull request for <branch>, whose last one closed without merging, instead of dropping it (repeatable; graphite lane only)")
-	cmd.Flags().BoolVar(&o.tipOnly, "tip-only", false, "ship only this branch, pushing no ancestor and leaving the branches above it where they are: it stays on its base while its parent's published head holds that base, and replays onto that published head when the parent was rewritten (graphite lane only)")
-	cmd.Flags().BoolVar(&o.allLanes, "all-lanes", false, "push the downstack branches of other lanes too, a lane being the branch name before its last slash (graphite lane only)")
-	cmd.Flags().StringArrayVar(&o.include, "include", nil, "push this branch below the one shipped with the run instead of keeping it at its published head or leaving it as another lane's (repeatable; graphite lane only)")
-	cmd.Flags().BoolVar(&o.restack, "restack", false, "rebase published branches onto the fetched trunk, including clean, green or approved pull requests; with --tip-only, replay only the tip onto its parent's published head even when the parent only moved past its base (graphite lane only)")
+	cmd.Flags().StringArrayVar(&o.landed, "landed", nil, "treat <branch> as landed and drop it from the downstack (repeatable; gt and github-stack lanes only)")
+	cmd.Flags().StringArrayVar(&o.newPRs, "new-pr", nil, "open a new pull request for <branch>, whose last one closed without merging, instead of dropping it (repeatable; gt and github-stack lanes only)")
+	cmd.Flags().BoolVar(&o.tipOnly, "tip-only", false, "ship only this branch, pushing no ancestor and leaving the branches above it where they are: it stays on its base while its parent's published head holds that base, and with --restack replays onto that published head when the parent was rewritten (gt and github-stack lanes only)")
+	cmd.Flags().BoolVar(&o.allLanes, "all-lanes", false, "push the downstack branches of other lanes too, a lane being the branch name before its last slash (gt and github-stack lanes only)")
+	cmd.Flags().StringArrayVar(&o.include, "include", nil, "push this branch below the one shipped with the run instead of keeping it at its published head or leaving it as another lane's (repeatable; gt and github-stack lanes only)")
+	cmd.Flags().BoolVar(&o.restack, "restack", false, "replay published branches whose commits no flag asked to rewrite, onto the fetched trunk or their parents' new heads, including clean, green or approved pull requests; with --tip-only, replay only the tip onto its parent's published head (gt and github-stack lanes only)")
 	cmd.Flags().BoolVar(&o.dropCommits, "drop-commits", false, stackDropCommitsUsage)
 	cmd.Flags().BoolVar(&o.evictQueued, "evict-queued", false, stackEvictQueuedUsage)
 	for _, group := range [][]string{
@@ -353,6 +353,13 @@ func runShip(cmd *cobra.Command, o shipOpts) (err error) {
 		}
 		if l.kind != vcs.JJ {
 			return errors.New("ship: --bookmark applies only to jj repositories")
+		}
+	}
+	if !gtLane {
+		for _, flag := range []string{"tip-only", "restack", "landed", "new-pr", "all-lanes", "include"} {
+			if cmd.Flags().Changed(flag) {
+				return fmt.Errorf("ship: --%s applies only in the gt and github-stack lanes, and this ship runs in the %s lane — drop it", flag, l.label())
+			}
 		}
 	}
 	if o.yolo {
@@ -621,7 +628,7 @@ func runShip(cmd *cobra.Command, o shipOpts) (err error) {
 			if err != nil {
 				return err
 			}
-			if err := runStackRebase(cmd, stackRebaseOpts{members: append(gtBottomUp(chain), upstack...), parents: parents, pinned: pinned, include: o.include, landed: o.landed, newPRs: o.newPRs, draft: shipDraft(o), draftAll: o.draft || o.publish, noVerify: o.noVerify, deferPush: true, result: &gtc.restack, ship: intent, submit: true, owners: map[string]string{}, heldBelow: held, tip: branch, tipOnly: o.tipOnly, restack: o.restack, stayClean: !o.restack, dropCommits: o.dropCommits || o.yolo, evictQueued: o.evictQueued, otherLanes: o.allLanes, target: &target}); err != nil {
+			if err := runStackRebase(cmd, stackRebaseOpts{members: append(gtBottomUp(chain), upstack...), parents: parents, pinned: pinned, include: o.include, landed: o.landed, newPRs: o.newPRs, draft: shipDraft(o), draftAll: o.draft || o.publish, noVerify: o.noVerify, deferPush: true, result: &gtc.restack, ship: intent, submit: true, owners: map[string]string{}, heldBelow: held, tip: branch, tipOnly: o.tipOnly, restack: o.restack, rewriteTip: o.amend || o.expectRemote != "" || o.parent != "", stayClean: !o.restack, dropCommits: o.dropCommits || o.yolo, evictQueued: o.evictQueued, otherLanes: o.allLanes, target: &target}); err != nil {
 				if preAmendSHA != "" && gtc.restack == nil {
 					return shipAmendKept(ctx, dir, preAmendSHA, err)
 				}
@@ -655,8 +662,11 @@ func runShip(cmd *cobra.Command, o shipOpts) (err error) {
 		return shipSettleRestack(ctx, l, gtc, err)
 	}
 	segments := make([]string, 0, 8)
-	if seg := l.reportSegment(); seg != "" {
+	switch seg := l.reportSegment(); {
+	case seg != "":
 		segments = append(segments, seg)
+	case l.native:
+		segments = append(segments, "lane "+l.label())
 	}
 	for _, seg := range []string{planSeg, landedSeg, hookSeg} {
 		if seg != "" {
@@ -691,7 +701,6 @@ func runShip(cmd *cobra.Command, o shipOpts) (err error) {
 
 	var remote string
 	var rebased int
-	var replaced string
 	var prSeg string
 	var bodylessSegs []string
 	var gtStack []stackEntry
@@ -699,7 +708,7 @@ func runShip(cmd *cobra.Command, o shipOpts) (err error) {
 	if gtLane {
 		prSeg, bodylessSegs, gtStack, err = shipPushGT(ctx, cmd.ErrOrStderr(), l, o, meta, trunkFetch, branch, stuck, gtc, target)
 	} else {
-		remote, rebased, replaced, err = shipPush(ctx, dir, kind, o, branch, plan.trunk, preAmendSHA)
+		remote, rebased, err = shipPush(ctx, dir, kind, o, branch, plan.trunk, preAmendSHA)
 	}
 	if err != nil {
 		return shipSettleRestack(ctx, l, gtc, err)
@@ -729,8 +738,6 @@ func runShip(cmd *cobra.Command, o shipOpts) (err error) {
 			segments = append(segments, fmt.Sprintf("published %.12s", gtc.restack.branch(branch).NewHead), movedSeg)
 		}
 		segments = append(segments, prSeg)
-	} else if replaced != "" {
-		segments = append(segments, fmt.Sprintf("force-pushed %s → %s · replaced %s under a lease", branch, remote, shortOID(replaced)))
 	} else {
 		segments = append(segments, fmt.Sprintf("pushed %s → %s", branch, remote))
 	}
@@ -2094,15 +2101,15 @@ func branchSegment(plan branchPlan, branch string, noPush bool) string {
 	}
 }
 
-func shipPush(ctx context.Context, dir render.Dir, kind vcs.Kind, o shipOpts, target, trunk, preAmendSHA string) (remote string, rebased int, replaced string, err error) {
+func shipPush(ctx context.Context, dir render.Dir, kind vcs.Kind, o shipOpts, target, trunk, preAmendSHA string) (string, int, error) {
 	switch kind {
 	case vcs.JJ:
-		rebased, err = shipPushJJ(ctx, dir, target, o.amend)
-		return "origin", rebased, "", err
+		rebased, err := shipPushJJ(ctx, dir, target, o.amend)
+		return "origin", rebased, err
 	case vcs.Git:
 		return shipPushGit(ctx, dir, o, target, trunk, preAmendSHA)
 	default:
-		return "", 0, "", errors.New("ship: push: unsupported vcs")
+		return "", 0, errors.New("ship: push: unsupported vcs")
 	}
 }
 
@@ -2267,6 +2274,11 @@ func shipPushJJOnce(ctx context.Context, dir render.Dir, target string, amend bo
 			return 0, err
 		}
 	}
+	if !amend {
+		if err := jjRefuseRewrite(ctx, dir, target); err != nil {
+			return 0, err
+		}
+	}
 
 	if err := jjMoveBookmark(ctx, dir, target); err != nil {
 		return 0, err
@@ -2279,6 +2291,24 @@ func shipPushJJOnce(ctx context.Context, dir render.Dir, target string, amend bo
 		return rebased, shipPushJJReject(ctx, dir, target, moveOp, amend, err)
 	}
 	return rebased, nil
+}
+
+func jjRefuseRewrite(ctx context.Context, dir render.Dir, target string) error {
+	remote, err := jjPushRemote(ctx, dir)
+	if err != nil {
+		return err
+	}
+	published, err := jjLogLines(ctx, dir, "ship", jjRewrittenRevset(target, remote))
+	if err != nil || len(published) == 0 {
+		return err
+	}
+	pat := shellSingleQuote(vcs.JJExactPattern(target))
+	return refuse("ship: @- no longer holds %s@%s at its published head %s, and ship force-pushes no rewrite no flag asked for — publish it with jj bookmark move %s --to @- && jj git push --bookmark %s, which moves %s@%s under jj's own lease",
+		target, remote, published[0], pat, pat, target, remote)
+}
+
+func jjRewrittenRevset(name, remote string) string {
+	return `remote_bookmarks(` + vcs.JJExactPattern(name) + `, ` + vcs.JJExactPattern(remote) + `) ~ ::@-`
 }
 
 // shipPushJJReject classifies a failed jj push. A remote-advanced rejection undoes
@@ -2300,31 +2330,28 @@ func shipPushJJReject(ctx context.Context, dir render.Dir, target, moveOp string
 	return &pushRejectedError{err: raw}
 }
 
-func shipPushGit(ctx context.Context, dir render.Dir, o shipOpts, branch, trunk, preAmendSHA string) (string, int, string, error) {
+func shipPushGit(ctx context.Context, dir render.Dir, o shipOpts, branch, trunk, preAmendSHA string) (string, int, error) {
 	remote := o.pushRemote
 	if remote == "" {
 		var err error
 		if remote, err = vcs.GitRemoteFor(ctx, dir, branch); err != nil {
-			return "", 0, "", fmt.Errorf("ship: %w", err)
+			return "", 0, fmt.Errorf("ship: %w", err)
 		}
 	}
 	if err := thinRefuseAdoptedPush(ctx, dir, "ship", []string{branch}); err != nil {
-		return "", 0, "", err
+		return "", 0, err
 	}
 	if o.expectRemote != "" {
-		return remote, 0, "", shipPushGitExpected(ctx, dir, remote, branch, o.expectRemote, o.noVerify)
+		return remote, 0, shipPushGitExpected(ctx, dir, remote, branch, o.expectRemote, o.noVerify)
 	}
 	if o.amend {
-		return remote, 0, "", shipPushGitAmend(ctx, dir, remote, branch, preAmendSHA, o.noVerify)
+		return remote, 0, shipPushGitAmend(ctx, dir, remote, branch, preAmendSHA, o.noVerify)
 	}
 	hint := fmt.Sprintf("git fetch %s && git rebase --autostash %s/%s && git push %s %s", remote, remote, branch, remote, branch)
-	var replaced string
 	rebased, err := shipPushRetry(ctx, branch, hint, func(ctx context.Context) (int, error) {
-		n, tip, err := shipPushGitOnce(ctx, dir, remote, branch, trunk, o.noVerify)
-		replaced = tip
-		return n, err
+		return shipPushGitOnce(ctx, dir, remote, branch, trunk, o.noVerify)
 	})
-	return remote, rebased, replaced, err
+	return remote, rebased, err
 }
 
 // pushArgv opens every push ccx runs. Following tags makes git resolve every
@@ -2415,63 +2442,65 @@ func shipAmendLease(ctx context.Context, dir render.Dir, remote, branch, preAmen
 	return tip, nil
 }
 
-// shipPushGitOnce fetches, rebases onto an advanced <remote>/<branch> or
-// leases over one HEAD rewrote, and pushes. A rejected push moves no local
-// ref, so it re-enters as a *pushRejectedError.
-func shipPushGitOnce(ctx context.Context, dir render.Dir, remote, branch, trunk string, noVerify bool) (rebased int, replaced string, err error) {
+// shipPushGitOnce fetches, rebases onto an advanced <remote>/<branch>, and
+// pushes. A rejected push moves no local ref, so it re-enters as a
+// *pushRejectedError.
+func shipPushGitOnce(ctx context.Context, dir render.Dir, remote, branch, trunk string, noVerify bool) (int, error) {
 	fetch := []string{branch}
 	if trunk != "" && trunk != branch {
 		fetch = append(fetch, trunk)
 	}
 	heads, err := stackRemoteHeads(ctx, dir, "ship", remote, fetch, "HEAD")
 	if err != nil {
-		return 0, "", err
+		return 0, err
 	}
 	trunkRef := ""
 	if trunk != "" && trunk != branch {
 		if err := stackRequireHistory(ctx, dir, "ship", remote, trunk, map[string]string{branch: "HEAD", remote + "/" + branch: heads[branch]}); err != nil {
-			return 0, "", err
+			return 0, err
 		}
 		if heads[trunk] != "" {
 			trunkRef = "refs/remotes/" + remote + "/" + trunk
 		}
 	}
-	argv := gitPushArgv(noVerify, remote, branch)
+	rebased := 0
 	if tip := heads[branch]; tip != "" {
 		ancestor, err := gitIsAncestor(ctx, dir, "ship", "refs/remotes/"+remote+"/"+branch, "HEAD")
 		if err != nil {
-			return 0, "", err
+			return 0, err
 		}
-		rewritten := false
 		if !ancestor {
-			if rewritten, err = gitRemoteRewritten(ctx, dir, "ship", branch, tip, "HEAD", trunkRef); err != nil {
-				return 0, "", err
+			rewritten, err := gitRemoteRewritten(ctx, dir, "ship", branch, tip, "HEAD", trunkRef)
+			if err != nil {
+				return 0, err
 			}
-		}
-		switch {
-		case rewritten:
-			if err := refuseEmptyPR(ctx, dir, "ship", remote, branch, "HEAD", heads, []string{trunk}); err != nil {
-				return 0, "", err
+			if rewritten {
+				if err := refuseEmptyPR(ctx, dir, "ship", remote, branch, "HEAD", heads, []string{trunk}); err != nil {
+					return 0, err
+				}
+				head, err := gitRevParse(ctx, dir, "ship", "HEAD")
+				if err != nil {
+					return 0, err
+				}
+				return 0, refuse("ship: HEAD %.12s rewrote %s/%s, whose published head %.12s it no longer holds, and ship force-pushes no rewrite no flag asked for — publish it with ccx vcs push, which moves %s/%s onto HEAD under a lease",
+					head, remote, branch, tip, remote, branch)
 			}
-			replaced = tip
-			argv = gitPushArgv(noVerify, remote, fmt.Sprintf("--force-with-lease=%s:%s", branch, tip), branch)
-		case !ancestor:
 			if err := gitRefuseTrunkReplay(ctx, dir, remote, branch, trunk); err != nil {
-				return 0, "", err
+				return 0, err
 			}
 			if rebased, err = gitRebaseOnto(ctx, dir, "ship", remote, branch); err != nil {
-				return 0, "", err
+				return 0, err
 			}
 		}
 	}
-	if _, err := runRemoteGit(ctx, dir, argv); err != nil {
+	if _, err := runRemoteGit(ctx, dir, gitPushArgv(noVerify, remote, branch)); err != nil {
 		raw := fmt.Errorf("ship: git push: %w", err)
 		if gitPushRejected(raw) || gitPushStaleLease(raw) {
-			return rebased, "", &pushRejectedError{err: raw}
+			return rebased, &pushRejectedError{err: raw}
 		}
-		return rebased, "", raw
+		return rebased, raw
 	}
-	return rebased, replaced, gitRecordBranchPush(ctx, dir, remote, branch)
+	return rebased, gitRecordBranchPush(ctx, dir, remote, branch)
 }
 
 // gitRefuseTrunkReplay refuses a rebase onto the remote branch that would

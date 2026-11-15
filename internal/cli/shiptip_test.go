@@ -631,7 +631,7 @@ func TestShipTipOnlyMovesNoAncestorAndRefusesATipOffItsParentsAdvancedHead(t *te
 		restack bool
 	}{
 		{"parent advanced", "f.txt", false, false},
-		{"parent rewritten", "g.txt", true, false},
+		{"parent rewritten, restacked", "g.txt", true, true},
 		{"parent advanced, restacked", "g.txt", false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

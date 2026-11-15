@@ -30,9 +30,8 @@ func newVcsPushCmd() *cobra.Command {
 
 A branch rebased onto a new base, amended, or reordered no longer descends from
 the head its remote holds, and git refuses a plain push of it as non-fast-forward.
-Ship answers that by rebasing the local branch onto the remote, which for a
-deliberate rewrite is backwards — it replays the new commits onto the history
-they replaced. Push is the other answer: it moves the remote to the local head.
+Ship refuses it too, since ship force-pushes no rewrite no flag asked for, and
+names push, which is the deliberate answer: it moves the remote to the local head.
 
 Push fetches the branch and the remote's trunk, and only those, then grades what
 it finds. A branch the remote does not hold is created. A remote head that is an
@@ -100,7 +99,7 @@ func runVcsPush(cmd *cobra.Command, o vcsPushOpts) error {
 	case vcs.None:
 		return errors.New("push: no git repository in the working directory")
 	case vcs.JJ:
-		return errors.New("push: jj git push already moves a rewritten bookmark under a lease of its own — run ccx vcs ship")
+		return errors.New("push: jj git push already moves a rewritten bookmark under a lease of its own — run jj git push --bookmark <name>")
 	}
 	if err := stackRefuseStopped(cmd.ErrOrStderr(), ck, "push", slices.Concat(gitRebaseStops, gitCommitStops), false); err != nil {
 		return err

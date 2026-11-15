@@ -23,6 +23,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ccx vcs ship` no longer force-pushes a rewrite no flag asked for. In the
+  gt and github-stack lanes a published branch, the tip included, that the
+  run would replay onto a new base while its local head still holds its
+  published head is refused before the push, naming each branch's published
+  head and the head it would push; `--restack` replays them, and `--tip-only`
+  ships the tip alone when it stays put. `--amend`, `--parent` and
+  `--expect-remote` ask for the tip's rewrite and the branches above it,
+  `--include` for the branch it names, and `--landed` for the branches stacked
+  on the branch it names. On the git lane a HEAD that rewrote its own
+  `origin/<branch>` is refused, naming `ccx vcs push`, and on jj a bookmark
+  whose remote head `@-` dropped, naming `jj git push --bookmark`. Before,
+  shipping one commit on a native-stack branch whose parent had landed
+  replayed the branch onto trunk and force-pushed it, and a git-lane branch
+  amended after its push was force-pushed under a lease, both rewriting
+  commits a reviewer had already seen. `--tip-only`, `--restack`, `--landed`,
+  `--new-pr`, `--all-lanes` and `--include` are refused outside the gt and
+  github-stack lanes instead of being ignored, and a github-stack ship's
+  report opens on `lane github-stack`.
 - A fresh machine's first `ccx vcs ship` in cc-context commits instead of
   being killed mid-hooks. `scripts/build-chunk-grammars.sh` builds its 23
   tree-sitter grammars at once, one single-threaded zig link per core, in 227
