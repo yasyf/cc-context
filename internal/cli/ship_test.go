@@ -902,7 +902,7 @@ func TestShipJJNeverInvokesGitCommit(t *testing.T) {
 		t.Fatalf("ship error = %v", err)
 	}
 	for _, inv := range vcstest.Invocations(t, f.ArgvLog) {
-		if inv[0] == "git" {
+		if inv[0] == "git" && !slices.Equal(inv, originURLArgv) {
 			t.Errorf("jj path invoked git: %v", inv)
 		}
 	}

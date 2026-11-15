@@ -295,14 +295,15 @@ commit, reported as `restacked in isolation`. Published branches stacked above
 it join that run: an amend or a new commit mid-stack replays them onto the new
 head and resubmits them under their leases, reported as
 `resubmitted <branches> above <branch>`, wherever they are checked out. Ship
-refuses to force-push any other published branch, the tip included, whose new
-head drops commits its published head holds: a replay when nothing of its own
-changed (trunk moved, a parent landed) or a local head that no longer holds its
-published one. The refusal names each branch's published head and the head it
-would push; `--restack` replays them, `--drop-commits` publishes a local head as
-it stands, and `--tip-only` ships the tip alone when the tip itself stays put.
-`--amend`, `--parent` and `--expect-remote` ask for the tip's rewrite and the
-branches above it, `--include` for the branch it names. On the git lane a HEAD
+refuses to replay any other published branch, the tip included, whose local
+head still holds its published head when nothing of its own changed (trunk
+moved, a parent landed); a local head that no longer holds its published one is
+its author's own rewrite and publishes as before. The refusal names each
+branch's published head and the head it would push; `--restack` replays them,
+and `--tip-only` ships the tip alone when the tip itself stays put. `--amend`,
+`--parent` and `--expect-remote` ask for the tip's rewrite and the branches
+above it, `--include` for the branch it names, `--landed` for the branches
+stacked on the branch it names. On the git lane a HEAD
 that rewrote its own `origin/<branch>` is refused, naming `ccx vcs push`; on jj,
 outside `--amend`, a bookmark whose remote head `@-` dropped is refused, naming
 `jj git push --bookmark`. One

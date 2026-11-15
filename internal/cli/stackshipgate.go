@@ -12,10 +12,15 @@ import (
 	"github.com/yasyf/cc-context/internal/vcs"
 )
 
-func stackRefuseRewrite(ctx context.Context, dir render.Dir, run *stackRebaseRun, rewriteTip bool, include []string) error {
+func stackRefuseRewrite(ctx context.Context, dir render.Dir, run *stackRebaseRun, rewriteTip bool, include, landed []string) error {
 	asked := map[string]bool{}
 	for _, name := range include {
 		asked[name] = true
+	}
+	for _, b := range run.Branches {
+		if slices.Contains(landed, b.WasParent) {
+			asked[b.Name] = true
+		}
 	}
 	if rewriteTip {
 		for _, name := range append([]string{run.Tip}, stackAbove(run, run.Tip)...) {
@@ -27,20 +32,16 @@ func stackRefuseRewrite(ctx context.Context, dir render.Dir, run *stackRebaseRun
 		return err
 	}
 	named := make([]string, len(rewrites))
-	replays, tipOnly := false, !run.TipOnly
+	tipOnly := !run.TipOnly
 	for i, r := range rewrites {
 		pr := ""
 		if r.PR != nil {
 			pr = fmt.Sprintf(" (#%d)", r.PR.Number)
 		}
 		named[i] = fmt.Sprintf("%s%s from its published head %.12s to %s", r.Name, pr, r.Remote, r.pushed)
-		replays = replays || r.replayed
 		tipOnly = tipOnly && (r.Name != run.Tip || r.parentMoved)
 	}
-	rerun := "--drop-commits to publish them as they stand"
-	if replays {
-		rerun = "--restack to replay them"
-	}
+	rerun := "--restack to replay them"
 	if tipOnly {
 		rerun += ", or with --tip-only to ship " + run.Tip + " alone"
 	}
@@ -51,7 +52,6 @@ func stackRefuseRewrite(ctx context.Context, dir render.Dir, run *stackRebaseRun
 type stackRewrite struct {
 	*stackRebaseBranch
 	pushed      string
-	replayed    bool
 	parentMoved bool
 }
 
@@ -74,11 +74,20 @@ func stackRewrites(ctx context.Context, dir render.Dir, run *stackRebaseRun, ask
 		}
 		replayed := b.Held == "" && !b.Stays && (moved[b.Parent] || heads[b.Parent] != b.OldBase)
 		moved[b.Name], fresh[b.Name] = replayed, asked[b.Name] || own || (replayed && fresh[b.Parent])
-		if b.Held != "" || b.LocalOnly || b.Remote == "" || asked[b.Name] {
+		if !replayed || fresh[b.Parent] || b.LocalOnly || b.Remote == "" || asked[b.Name] {
 			continue
 		}
-		r := stackRewrite{stackRebaseBranch: b, replayed: replayed && !fresh[b.Parent], parentMoved: moved[b.Parent]}
-		if r.pushed, err = stackPushedHead(ctx, dir, run, r, heads[b.Parent]); err != nil {
+		if b.Head != b.Remote {
+			held, err := gitIsAncestor(ctx, dir, stackRebasePrefix, b.Remote, b.Head)
+			if err != nil {
+				return nil, err
+			}
+			if !held {
+				continue
+			}
+		}
+		r := stackRewrite{stackRebaseBranch: b, parentMoved: moved[b.Parent]}
+		if r.pushed, err = stackReplayedHead(ctx, dir, r, heads[b.Parent]); err != nil {
 			return nil, err
 		}
 		if r.pushed != "" {
@@ -88,31 +97,21 @@ func stackRewrites(ctx context.Context, dir render.Dir, run *stackRebaseRun, ask
 	return rewrites, nil
 }
 
-func stackPushedHead(ctx context.Context, dir render.Dir, run *stackRebaseRun, r stackRewrite, parentHead string) (string, error) {
-	if r.replayed {
-		commits := "commits"
-		if r.Replays == 1 {
-			commits = "commit"
-		}
-		if r.parentMoved {
-			return fmt.Sprintf("its %d %s replayed onto %s's new head", r.Replays, commits, r.Parent), nil
-		}
-		onto := *r.stackRebaseBranch
-		onto.NewBase = parentHead
-		past, err := stackRemoteRestack(ctx, dir, &onto)
-		if err != nil || past != "" {
-			return "", err
-		}
-		return fmt.Sprintf("its %d %s replayed onto %s@%.12s", r.Replays, commits, r.Parent, parentHead), nil
+func stackReplayedHead(ctx context.Context, dir render.Dir, r stackRewrite, parentHead string) (string, error) {
+	commits := "commits"
+	if r.Replays == 1 {
+		commits = "commit"
 	}
-	if run.DropCommits || r.Head == r.Remote {
-		return "", nil
+	if r.parentMoved {
+		return fmt.Sprintf("its %d %s replayed onto %s's new head", r.Replays, commits, r.Parent), nil
 	}
-	held, err := gitIsAncestor(ctx, dir, stackRebasePrefix, r.Remote, r.Head)
-	if err != nil || held {
+	onto := *r.stackRebaseBranch
+	onto.NewBase = parentHead
+	past, err := stackRemoteRestack(ctx, dir, &onto)
+	if err != nil || past != "" {
 		return "", err
 	}
-	return fmt.Sprintf("its local head %.12s", r.Head), nil
+	return fmt.Sprintf("its %d %s replayed onto %s@%.12s", r.Replays, commits, r.Parent, parentHead), nil
 }
 
 // stackCarriesOwnWork reports whether a branch's local head holds work its

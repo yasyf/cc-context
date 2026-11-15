@@ -138,8 +138,8 @@ func TestShipTipOnlyLeavesAnAncestorsUntrackedGraphiteParentAlone(t *testing.T) 
 	stackCommit(t, f, "tip.txt")
 	shipResetLog(t, f)
 
-	if _, errStr, err := runShipCmdFull(f.Context(), t, "--no-commit", "--no-watch", "--tip-only"); err != nil {
-		t.Fatalf("ship --tip-only = %v (stderr=%q), want top shipped onto mid's published head", err, errStr)
+	if _, errStr, err := runShipCmdFull(f.Context(), t, "--no-commit", "--no-watch", "--tip-only", "--restack"); err != nil {
+		t.Fatalf("ship --tip-only --restack = %v (stderr=%q), want top replayed onto mid's published head", err, errStr)
 	}
 	if refs := gtPushedRefs(shipGTInvocations(t, f)); !slices.Equal(refs, []string{"top"}) {
 		t.Errorf("pushed refs = %v, want only top", refs)

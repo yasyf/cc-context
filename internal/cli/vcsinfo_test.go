@@ -949,7 +949,7 @@ func TestInfoDownstackGHFromContext(t *testing.T) {
 		t.Fatalf("resolveLane error = %v", err)
 	}
 
-	entries := infoDownstack(render.WithEnv(f.Context(), "PATH="+bin), l, []string{"child", "main"})
+	entries := infoDownstack(render.WithEnv(f.Context(), "PATH="+bin+string(filepath.ListSeparator)+f.ShimBin), l, []string{"child", "main"})
 	if want := []stackEntry{{Branch: "main"}, {Branch: "child"}}; !slices.Equal(entries, want) {
 		t.Errorf("entries = %+v, want %+v", entries, want)
 	}

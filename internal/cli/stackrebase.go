@@ -566,7 +566,7 @@ func stackBegin(ctx context.Context, cmd *cobra.Command, l lane, commonDir strin
 		return stackBegin(ctx, cmd, l, commonDir, others, o)
 	}
 	if o.tip != "" && !o.restack {
-		if err := stackRefuseRewrite(ctx, l.dir(), run, o.rewriteTip, o.include); err != nil {
+		if err := stackRefuseRewrite(ctx, l.dir(), run, o.rewriteTip, o.include, o.landed); err != nil {
 			return err
 		}
 	}

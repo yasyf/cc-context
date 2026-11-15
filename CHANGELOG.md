@@ -23,15 +23,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `ccx vcs ship` no longer force-pushes a rewrite no flag asked for. A
-  published branch, the tip included, whose new head would drop commits its
-  published head holds is refused before the push, naming each branch's
-  published head and the head it would push: in the gt and github-stack lanes
-  `--restack` replays them, `--drop-commits` publishes a local head as it
-  stands, and `--tip-only` ships the tip alone when it stays put; on the git
-  lane the refusal names `ccx vcs push`, and on jj `jj git push --bookmark`.
-  `--amend`, `--parent` and `--expect-remote` ask for the tip's rewrite and
-  the branches above it, and `--include` for the branch it names. Before,
+- `ccx vcs ship` no longer force-pushes a rewrite no flag asked for. In the
+  gt and github-stack lanes a published branch, the tip included, that the
+  run would replay onto a new base while its local head still holds its
+  published head is refused before the push, naming each branch's published
+  head and the head it would push; `--restack` replays them, and `--tip-only`
+  ships the tip alone when it stays put. `--amend`, `--parent` and
+  `--expect-remote` ask for the tip's rewrite and the branches above it,
+  `--include` for the branch it names, and `--landed` for the branches stacked
+  on the branch it names. On the git lane a HEAD that rewrote its own
+  `origin/<branch>` is refused, naming `ccx vcs push`, and on jj a bookmark
+  whose remote head `@-` dropped, naming `jj git push --bookmark`. Before,
   shipping one commit on a native-stack branch whose parent had landed
   replayed the branch onto trunk and force-pushed it, and a git-lane branch
   amended after its push was force-pushed under a lease, both rewriting
