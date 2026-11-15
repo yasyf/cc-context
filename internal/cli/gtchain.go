@@ -39,7 +39,7 @@ func gtUntrackedChain(ctx context.Context, dir render.Dir, prefix string, state 
 	}
 	tipHead := strings.TrimSpace(out)
 	if base != trunk {
-		if floor, err = gtHeadUnder(ctx, dir, prefix, base, trunkFloor, tipHead); err != nil {
+		if floor, err = gtHeadUnder(ctx, dir, prefix, remote, base, trunkFloor, tipHead); err != nil {
 			return nil, err
 		}
 	}
@@ -251,12 +251,27 @@ func gtAdoptBelow(ctx context.Context, dir render.Dir, prefix string, state gtSt
 	return tip.parent, chained, nil
 }
 
-func gtHeadUnder(ctx context.Context, dir render.Dir, prefix, branch, floor, tip string) (string, error) {
+func gtHeadUnder(ctx context.Context, dir render.Dir, prefix, remote, branch, floor, tip string) (string, error) {
 	former, err := gtReflogHeads(ctx, dir, prefix, []string{branch}, false)
 	if err != nil {
 		return "", err
 	}
-	held, err := gtNearestHeld(ctx, dir, prefix, former[branch], floor, tip)
+	heads := former[branch]
+	if remote != "" {
+		published := "refs/remotes/" + remote + "/" + branch
+		present, err := gitRefExists(ctx, dir, prefix, published)
+		if err != nil {
+			return "", err
+		}
+		if present {
+			head, err := gitRevParse(ctx, dir, prefix, published)
+			if err != nil {
+				return "", err
+			}
+			heads = append(heads, head)
+		}
+	}
+	held, err := gtNearestHeld(ctx, dir, prefix, heads, floor, tip)
 	return cmp.Or(held, gtRestackRef(branch)), err
 }
 

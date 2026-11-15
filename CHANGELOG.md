@@ -28,6 +28,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ccx vcs ship`, `ccx vcs stack new --parent` and `ccx vcs stack submit` read
+  a tracked base whose local head trails its published one, behind it or
+  rebased since by another clone, at that published head when the branch sits
+  on it. The chain they adopt starts there, so untracked branches at trunk
+  commits below it are never counted as stack members, and ship records the
+  branch on it without replaying its commits. In the github-stack lane ship
+  also stacks a branch on the nearest pushed branch below it that has no pull
+  request, and `--parent` takes such a branch, tracking it onto its own
+  nearest tracked ancestor. Before, `stack new` refused a branch on a rebased
+  base as sitting on untracked branches that form no single chain, and ship
+  skipped the branch with no pull request, picked the base's stale local head,
+  and refused because the branch's commits did not replay onto it.
 - GitHub's secondary rate limit no longer fails a `ccx vcs gh` read, write, or
   merge, or moves an app read onto the user's token. A 403 or 429 that names
   it, on the app's token or the user's, writes a hold for that token into the

@@ -66,21 +66,26 @@ func TestShipGTDryRunPlansTheUntrackedBranchBelowAnUntrackedBranch(t *testing.T)
 	}
 }
 
-func TestShipGTRefusesAnUntrackedParentGraphiteHasNoRecordOf(t *testing.T) {
+func TestShipGTTracksAnUntrackedParentGraphiteHasNoRecordOfOnItsNearestTrackedAncestor(t *testing.T) {
 	f := shipGTRepo(t)
 	api := stubGTAPI(t)
 	f.Decorate(api.ctx)
 	shipGTUntracked(t, f, "parent")
 	shipGTUntracked(t, f, "feature")
 	shipGTReady(t, f)
-	head := shipHead(t, f)
 
-	_, _, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--no-push", "--parent", "parent")
-	want := "ship: parent is a branch graphite does not track here, and Graphite records no open pull request for it — track it with gt track parent --parent <its parent>, or pass --no-gt"
-	if err == nil || err.Error() != want {
-		t.Fatalf("ship error = %v, want %q", err, want)
+	out, errOut, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--no-push", "--parent", "parent")
+	if err != nil {
+		t.Fatalf("ship error = %v; stdout = %s; stderr = %s", err, out, errOut)
 	}
-	assertShipRefusedClean(t, f, head)
+	for branch, want := range map[string]string{"parent": "main", "feature": "parent"} {
+		if got := thinGTParent(t, f, f.Dir, branch); got != want {
+			t.Errorf("%s's gt parent = %q, want %s", branch, got, want)
+		}
+	}
+	if !strings.Contains(out, "tracked parent onto main"+shipSep) {
+		t.Errorf("stdout = %q, want it to name the adoption", out)
+	}
 }
 
 // TestShipGTReparentsOntoAParentAnotherLanePushedWithPlainGit is

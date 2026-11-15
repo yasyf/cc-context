@@ -1098,7 +1098,7 @@ func gtTrack(ctx context.Context, errW io.Writer, l lane, o shipOpts, branch str
 			if replayed, onto, _, err = gtOnto(ctx, l, o, branch, o.parent, trunk, gtRef{}); err != nil {
 				return nil, "", err
 			}
-			if o.tipOnly {
+			if o.tipOnly || o.parent != trunk {
 				if published, err := gtAdoptOntoPublished(ctx, c, state, branch, o.parent, onto); err != nil || published != nil {
 					at := "'s published head "
 					if o.parent == trunk {
@@ -1255,16 +1255,38 @@ type gtRecordedParent struct {
 }
 
 func (p gtRecordedParent) onBase() string {
+	if p.pr == 0 {
+		return p.name + " onto " + p.base
+	}
 	return fmt.Sprintf("%s onto %s, the base of its open #%d", p.name, p.base, p.pr)
 }
 
 func gtAdoptRecordedParent(ctx context.Context, errW io.Writer, l lane, c *gtCache, state gtState, branch, parent string) (string, error) {
 	chain, err := gtRecordedChain(ctx, l, state, branch, parent, true)
+	if err != nil || len(chain) == 0 {
+		return "", err
+	}
+	trunk, err := gtTrunkBranch("ship", state)
 	if err != nil {
 		return "", err
 	}
 	var segs []string
 	for _, b := range slices.Backward(chain) {
+		if b.pr == 0 {
+			links, err := gtUntrackedChain(ctx, c.dir, "ship", state, trunk, b.base, b.name, gtRestackRef(b.name), true)
+			if err != nil {
+				return "", err
+			}
+			adopted, err := gtAdoptChain(ctx, c.dir, "ship", links)
+			c.forget()
+			if err != nil {
+				return "", err
+			}
+			for _, seg := range adopted {
+				segs = append(segs, seg+shipSep)
+			}
+			continue
+		}
 		r, runErr := gtRun(ctx, c.dir, []string{"track", b.name, "--parent", b.base, "--no-interactive"}, errW)
 		c.forget()
 		if err := gtReport(ctx, errW, r); err != nil {
@@ -1288,10 +1310,11 @@ func gtRecordedChain(ctx context.Context, l lane, state gtState, branch, parent 
 		if _, tracked := state[name]; tracked {
 			break
 		}
-		local, err := gitRefExists(ctx, l.dir(), "ship", gtRestackRef(name))
+		here, err := gitRefExists(ctx, l.dir(), "ship", gtRestackRef(name))
 		if err != nil {
 			return nil, err
 		}
+		local := here
 		if !local {
 			if local, err = gtBaseFromRemote(ctx, l.dir(), "ship", "origin", name, cut); err != nil {
 				return nil, err
@@ -1308,7 +1331,12 @@ func gtRecordedChain(ctx context.Context, l lane, state gtState, branch, parent 
 			return nil, err
 		}
 		if recorded.base == "" {
-			return nil, refuse("ship: %s is a branch graphite does not track here, and Graphite records no open pull request for it — track it with gt track %s --parent <its parent>, or pass --no-gt", name, name)
+			tip := gtRestackRef(name)
+			if !here && !cut {
+				tip = "refs/remotes/origin/" + name
+			}
+			base, err := gtNearestTrackedAt(ctx, l.dir(), state, trunk, name, tip)
+			return append(chain, gtRecordedParent{name: name, base: base}), err
 		}
 		chain = append(chain, recorded)
 		name, child = recorded.base, name
@@ -1367,8 +1395,8 @@ func gtTrackFailed(l lane, branch, advice string, runErr error) error {
 
 // gtNativeTrackParent is the parent an untracked branch is tracked onto on the
 // native lane when no --parent names one: the base of its open pull request
-// when that is not trunk, else the nearest branch below it whose published head
-// is an open pull request's. A branch cut from another lane's push carries no
+// when that is not trunk, else the nearest branch below it pushed with an open
+// pull request or none, since a closed or landed one bases nothing. A branch cut from another lane's push carries no
 // commit of a branch this checkout tracks, so history alone reads it as cut
 // from trunk and a restack replays the other lane's commits into it.
 func gtNativeTrackParent(ctx context.Context, l lane, branch string) (gtRecordedParent, error) {
@@ -1392,7 +1420,9 @@ func gtNativeTrackParent(ctx context.Context, l lane, branch string) (gtRecorded
 		return gtRecordedParent{}, fmt.Errorf("ship: read the pull request of %s: %w", branch, err)
 	}
 	open := map[string]gtapi.PullRequestInfo{}
+	proposed := map[string]bool{}
 	for _, info := range infos {
+		proposed[info.HeadRefName] = true
 		if info.State == gtapi.PROpen {
 			open[info.HeadRefName] = info
 		}
@@ -1400,7 +1430,7 @@ func gtNativeTrackParent(ctx context.Context, l lane, branch string) (gtRecorded
 	recorded := gtRecordedParent{}
 	if info, ok := open[branch]; ok {
 		recorded = gtRecordedParent{name: branch, base: info.BaseRefName, pr: info.PRNumber}
-	} else if i := slices.IndexFunc(below, func(name string) bool { _, ok := open[name]; return ok }); i >= 0 {
+	} else if i := slices.IndexFunc(below, func(name string) bool { _, ok := open[name]; return ok || !proposed[name] }); i >= 0 {
 		recorded = gtRecordedParent{name: branch, base: below[i], pr: open[below[i]].PRNumber, published: true}
 	}
 	if recorded.base == "" || recorded.base == trunk {
@@ -1426,7 +1456,7 @@ func gtPublishedBelow(ctx context.Context, dir render.Dir, trunk, branch string)
 	at := map[string][]string{}
 	for line := range strings.Lines(out) {
 		head, name, _ := strings.Cut(strings.TrimSpace(line), " ")
-		if name != branch && name != trunk && name != "HEAD" {
+		if name != branch && name != trunk && name != "HEAD" && !strings.HasPrefix(name, "graphite-base/") && !strings.HasPrefix(name, gtSegmentPrefix) {
 			at[head] = append(at[head], name)
 		}
 	}
@@ -1862,7 +1892,7 @@ func gtOntoPlan(ctx context.Context, l lane, o shipOpts, branch, parent, trunk s
 	if stackRebasing(ctx, l.dir()) {
 		return gtOntoMove{}, refuse("ship: a rebase is in progress in %s: finish it with ccx vcs stack continue or drop it with git rebase --abort, then ship again", l.root)
 	}
-	onto, err := gtOntoHead(ctx, l.dir(), o, parent)
+	onto, err := gtOntoHead(ctx, l.dir(), o, branch, parent, trunk)
 	if err != nil {
 		return gtOntoMove{}, err
 	}
@@ -2004,10 +2034,16 @@ func gtOnto(ctx context.Context, l lane, o shipOpts, branch, parent, trunk strin
 // gtOntoHead is the parent head a branch moves onto: under --tip-only, which
 // pushes no ancestor, the parent's published head when it has one, read from
 // the remote and fetched, since a clone whose fetch refspec names only trunk
-// never refreshes the parent's tracking ref; else the head gtPlanHead reads.
-func gtOntoHead(ctx context.Context, dir render.Dir, o shipOpts, parent string) (string, error) {
+// never refreshes the parent's tracking ref; else the head gtPlanHead reads,
+// or, off trunk, the published head branch sits on when that head trails it.
+func gtOntoHead(ctx context.Context, dir render.Dir, o shipOpts, branch, parent, trunk string) (string, error) {
 	if !o.tipOnly {
-		return gtPlanHead(ctx, dir, parent)
+		head, err := gtPlanHead(ctx, dir, parent)
+		if err != nil || parent == trunk {
+			return head, err
+		}
+		published, err := gtOnPublished(ctx, dir, "origin", parent, head, gtRestackRef(branch))
+		return cmp.Or(published, head), err
 	}
 	remote, err := vcs.GitRemoteFor(ctx, dir, "HEAD")
 	if err != nil {
@@ -2026,6 +2062,31 @@ func gtOntoHead(ctx context.Context, dir render.Dir, o shipOpts, parent string) 
 		return "", fmt.Errorf("ship: fetch %s's published head: %w", parent, err)
 	}
 	return tip, nil
+}
+
+func gtOnPublished(ctx context.Context, dir render.Dir, remote, parent, local, tip string) (string, error) {
+	published := "refs/remotes/" + remote + "/" + parent
+	if present, err := gitRefExists(ctx, dir, "ship", published); err != nil || !present {
+		return "", err
+	}
+	if held, err := gitIsAncestor(ctx, dir, "ship", published, local); err != nil || held {
+		return "", err
+	}
+	if trails, err := gtTrailsPublished(ctx, dir, "ship", published, local); err != nil || !trails {
+		return "", err
+	}
+	if on, err := gitIsAncestor(ctx, dir, "ship", published, tip); err != nil || !on {
+		return "", err
+	}
+	return gitRevParse(ctx, dir, "ship", published)
+}
+
+func gtTrailsPublished(ctx context.Context, dir render.Dir, prefix, published, local string) (bool, error) {
+	behind, err := gitIsAncestor(ctx, dir, prefix, local, published)
+	if err != nil || behind {
+		return behind, err
+	}
+	return gitReflogHolds(ctx, dir, prefix, published, local)
 }
 
 // gtRemoteTrunkOnto is the ref a replay onto trunk measures the branch's own
