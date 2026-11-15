@@ -242,7 +242,7 @@ func TestShipLeavesNoRunWhenItsRestackIsNotPublished(t *testing.T) {
 				unsynced.synced = gtapi.RepoNotSyncedAddable
 				f.Decorate(unsynced.ctx)
 			}
-			if _, err := runShipCmd(f.Context(), t, "--no-commit", "--no-watch", "--no-pr"); err == nil {
+			if _, err := runShipCmd(f.Context(), t, "--no-commit", "--no-watch", "--no-pr", "--restack"); err == nil {
 				t.Fatal("ship published through a refused submit")
 			}
 			stackAssertNoRun(t, f)
@@ -253,7 +253,7 @@ func TestShipLeavesNoRunWhenItsRestackIsNotPublished(t *testing.T) {
 			restore()
 			api := stubGTAPI(t)
 			f.Decorate(api.ctx)
-			if _, err := runShipCmd(f.Context(), t, "--no-commit", "--no-watch", "--no-pr"); err != nil {
+			if _, err := runShipCmd(f.Context(), t, "--no-commit", "--no-watch", "--no-pr", "--restack"); err != nil {
 				t.Fatalf("ship after the refusal cleared = %v, want it published", err)
 			}
 			if remote := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature"); !stackOnto(t, f, "origin/main", remote) {

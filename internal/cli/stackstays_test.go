@@ -229,17 +229,31 @@ func TestStackSubmitKeepsNewWorkOnAPublishedTrunkBranch(t *testing.T) {
 	}
 }
 
-func TestStackSubmitReplaysANeverPublishedBranch(t *testing.T) {
-	f := shipGTRepo(t)
-	shipGTStack(t, f, "feature")
-	local := shipHead(t, f)
-	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
-	if _, errStr, err := runStackCmd(t, f, "submit"); err != nil {
-		t.Fatalf("first submit = %v (stderr=%q)", err, errStr)
-	}
-	published := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature")
-	if published == local || !stackOnto(t, f, "origin/main", published) {
-		t.Errorf("first publication = %s, want %s replayed onto trunk", published, local)
+func TestStackSubmitLeavesANeverPublishedBranchOnItsTrunkBase(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		args    []string
+		restack bool
+	}{
+		{"stays", nil, false},
+		{"restack", []string{"--restack"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := shipGTRepo(t)
+			shipGTStack(t, f, "feature")
+			local := shipHead(t, f)
+			stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+			if _, errStr, err := runStackCmd(t, f, append([]string{"submit"}, tc.args...)...); err != nil {
+				t.Fatalf("first submit %v = %v (stderr=%q)", tc.args, err, errStr)
+			}
+			published := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature")
+			if moved := published != local; moved != tc.restack {
+				t.Errorf("first publication = %s from local %s, moved = %t, want %t", published, local, moved, tc.restack)
+			}
+			if onTrunk := stackOnto(t, f, "origin/main", published); onTrunk != tc.restack {
+				t.Errorf("origin feature on the fetched trunk = %t, want %t", onTrunk, tc.restack)
+			}
+		})
 	}
 }
 

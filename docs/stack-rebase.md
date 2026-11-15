@@ -104,7 +104,7 @@ Graphite reads any other way has no restack coming, so the submit moves
 `ccx vcs stack restack` selects the repository's backend: stack replay for
 Graphite, branch replay for plain Git, and fetch plus rebase for jj.
 `ccx vcs stack submit` restacks and submits the whole stack, except that a
-published branch on trunk that still merges cleanly keeps its old base. The
+branch on trunk that still merges cleanly keeps its old base. The
 plan names such branches on an `old base kept` line; pass `--restack` to
 replay them onto the fetched trunk, such as when the stack needs a fix that
 landed there.

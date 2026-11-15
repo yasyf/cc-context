@@ -26,7 +26,7 @@ func TestStackSubmitLeavesDirtyTrunkAndItsIndexLockUntouched(t *testing.T) {
 		t.Fatal(err)
 	}
 	stackAdvanceTrunk(t, f, "upstream.txt", "new trunk\n")
-	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+	if _, _, err := runStackCmd(t, f, "submit", "--restack"); err != nil {
 		t.Fatal(err)
 	}
 	if got := gitAt(t, f.Env(), trunk, "rev-parse", "HEAD"); got != old {
@@ -193,7 +193,7 @@ func TestShipPreservesAnotherStacksConflictRun(t *testing.T) {
 	shipGTStack(t, f, "other")
 	source := gitAt(t, f.Env(), f.Dir, "rev-parse", "other")
 	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
-	if _, err := runShipCmd(f.Context(), t, "--no-commit", "--no-watch", "--no-pr"); err != nil {
+	if _, err := runShipCmd(f.Context(), t, "--no-commit", "--no-watch", "--no-pr", "--restack"); err != nil {
 		t.Fatal(err)
 	}
 	after, err := os.ReadFile(stackStatePath(first.dir))

@@ -5725,7 +5725,7 @@ func shipGTHeldParent(t *testing.T) (*vcstest.Fixture, string) {
 func TestShipGTRestacksAcrossWorktrees(t *testing.T) {
 	f, held := shipGTHeldParent(t)
 	before := gitAt(t, f.Env(), held, "rev-parse", "HEAD")
-	got, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push")
+	got, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push", "--restack")
 	if err != nil {
 		t.Fatalf("ship = %v", err)
 	}
@@ -5792,7 +5792,7 @@ func TestShipGTRestackAppliesPrintedRefUpdates(t *testing.T) {
 	mustRun(t, f.Env(), f.Dir, "git", "config", "replay.refAction", "print")
 	shipResetLog(t, f)
 
-	got, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push")
+	got, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push", "--restack")
 	if err != nil {
 		t.Fatalf("ship error = %v", err)
 	}

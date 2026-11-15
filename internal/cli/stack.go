@@ -186,16 +186,16 @@ func newStackSubmitCmd() *cobra.Command {
 	var to string
 	cmd := &cobra.Command{
 		Use:   "submit",
-		Short: "Submit the stack, retaining published branches that merge cleanly",
-		Long: `Submit this lane's branches, retaining clean published heads.
+		Short: "Submit the stack, retaining trunk branches that merge cleanly",
+		Long: `Submit this lane's branches, retaining clean heads on trunk.
 
-Submit fetches the remote trunk and keeps a published branch on its recorded
+Submit fetches the remote trunk and keeps a branch on its recorded
 trunk base when its head, and every head stacked on it, still merges cleanly
 with that trunk under the trunk's own .gitattributes; otherwise the plan names
 the files each branch's head conflicts in. New commits above that
-base are pushed as they stand. A conflicting branch, an unpublished branch, or a child
-whose parent landed is replayed onto its current parent; --restack also replays
-clean published branches. The plan closes with an "old base kept" line naming
+base are pushed as they stand. A conflicting branch or a child whose parent
+landed is replayed onto its current parent; --restack also replays clean
+branches. The plan closes with an "old base kept" line naming
 every branch left on an older trunk and --restack. The local trunk branch and other working copies are
 left untouched. A branch here Graphite does not track is adopted first, with
 every untracked local branch below it down to its nearest tracked ancestor,
@@ -346,7 +346,7 @@ head. --all-lanes takes in the branches those working copies hold. On a branch,
 	cmd.Flags().StringArrayVar(&o.newPRs, "new-pr", nil, stackNewPRUsage)
 	cmd.Flags().StringArrayVar(&o.moves, "move", nil, stackMoveUsage)
 	cmd.Flags().BoolVar(&o.dropCommits, "drop-commits", false, stackDropCommitsUsage)
-	cmd.Flags().BoolVar(&o.restack, "restack", false, "rebase published branches onto the fetched trunk even when they merge cleanly")
+	cmd.Flags().BoolVar(&o.restack, "restack", false, "rebase branches onto the fetched trunk even when they merge cleanly")
 	cmd.Flags().BoolVar(&o.evictQueued, "evict-queued", false, stackEvictQueuedUsage)
 	cmd.Flags().StringVar(&to, "to", "", stackToUsage)
 	return cmd

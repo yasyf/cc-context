@@ -308,27 +308,47 @@ func shipBehindTrunk(t *testing.T, f *vcstest.Fixture) {
 
 // TestShipGTCommitsABranchWithNoCommitOfItsOwn is the standup-skill ship: a
 // branch holding nothing above trunk was refused before ship committed the
-// edits that would have become its own commit.
+// edits that would have become its own commit. A staging soak cut at a chosen
+// commit is the same shape, so the commit lands on the commit b was cut at.
 func TestShipGTCommitsABranchWithNoCommitOfItsOwn(t *testing.T) {
-	f := shipGTRepo(t)
-	shipBehindTrunk(t, f)
+	tests := []struct {
+		name    string
+		restack bool
+		summary string
+	}{
+		{name: "stays on the commit it was cut at", summary: "kept b on main@"},
+		{name: "moves up to main under --restack", restack: true, summary: "restacked 1 branch"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := shipGTRepo(t)
+			shipBehindTrunk(t, f)
+			onto := gitAt(t, f.Env(), f.Dir, "rev-parse", "b")
+			args := []string{"-m", "fix: frobnicate", "--no-push"}
+			if tt.restack {
+				onto = gitAt(t, f.Env(), f.Dir, "rev-parse", "main")
+				args = append(args, "--restack")
+			}
 
-	shipGTReady(t, f)
-	got, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--no-push")
-	if err != nil {
-		t.Fatalf("ship error = %v", err)
-	}
-	if want := "tracked b onto main (moved up to main, holding no commit of its own until this one)"; !strings.Contains(got, want) {
-		t.Errorf("summary = %q, want it to carry %q", got, want)
-	}
-	if parent := shipParentOf(t, f, "b"); parent != "main" {
-		t.Errorf("b's parent = %s, want main", parent)
-	}
-	if behind := gitAt(t, f.Env(), f.Dir, "rev-list", "--count", "b..main"); behind != "0" {
-		t.Errorf("main holds %s commit(s) b does not, want b on main's head", behind)
-	}
-	if subjects := gitAt(t, f.Env(), f.Dir, "log", "--format=%s", "main..b"); subjects != "fix: frobnicate" {
-		t.Errorf("b carries %q above main, want the commit ship made alone", subjects)
+			shipGTReady(t, f)
+			got, err := runShipCmd(f.Context(), t, args...)
+			if err != nil {
+				t.Fatalf("ship error = %v", err)
+			}
+			if !strings.Contains(got, tt.summary) {
+				t.Errorf("summary = %q, want it to carry %q", got, tt.summary)
+			}
+			if parent := shipParentOf(t, f, "b"); parent != "main" {
+				t.Errorf("b's parent = %s, want main", parent)
+			}
+			if parent := gitAt(t, f.Env(), f.Dir, "rev-parse", "b^"); parent != onto {
+				t.Errorf("b's commit sits on %s, want %s", parent, onto)
+			}
+			if subjects := gitAt(t, f.Env(), f.Dir, "log", "--format=%s", onto+"..b"); subjects != "fix: frobnicate" {
+				t.Errorf("b carries %q above %s, want the commit ship made alone", subjects, onto)
+			}
+		})
 	}
 }
 
@@ -377,6 +397,10 @@ func TestShipGTAutoTrackMovesNothingWhenALaterCheckRefuses(t *testing.T) {
 	}
 }
 
+// shipBehindTrunkUnder cuts b on a copy of a commit main then landed under
+// another sha and moves main past it with an edit to each of names, leaving b
+// with no commit of its own and an edit of its own to each name uncommitted, so
+// ship has to replay b over those edits.
 func shipBehindTrunkUnder(t *testing.T, f *vcstest.Fixture, names ...string) {
 	t.Helper()
 	for _, name := range names {
@@ -385,7 +409,10 @@ func shipBehindTrunkUnder(t *testing.T, f *vcstest.Fixture, names ...string) {
 	mustRun(t, f.Env(), f.Dir, "git", "add", ".")
 	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "base")
 	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "main")
-	mustRun(t, f.Env(), f.Dir, "git", "branch", "b")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "b")
+	pushCommit(t, f, "landed.txt", "landed\n", "landed")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
+	pushCommit(t, f, "landed.txt", "landed\n", "landed (#1)")
 	for _, name := range names {
 		writeShipFile(t, f.Dir, name, "ONE\ntwo\nthree\nfour\nfive\n")
 	}
@@ -446,13 +473,19 @@ func TestShipGTRefusesAReplayOverEditsItLeavesOut(t *testing.T) {
 	}
 }
 
+// TestShipGTAdoptsOntoTheRemoteTrunkNotALocalTrunkLeftBehindIt starts b's own
+// work on a copy of a commit trunk landed under another sha, which ship
+// replays off.
 func TestShipGTAdoptsOntoTheRemoteTrunkNotALocalTrunkLeftBehindIt(t *testing.T) {
 	f := shipGTRepo(t)
 	writeShipFile(t, f.Dir, "base.txt", "base\n")
 	mustRun(t, f.Env(), f.Dir, "git", "add", ".")
 	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "base")
 	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "main")
-	mustRun(t, f.Env(), f.Dir, "git", "branch", "b")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "b")
+	pushCommit(t, f, "landed.txt", "landed\n", "landed")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "main")
+	pushCommit(t, f, "landed.txt", "landed\n", "landed (#1)")
 	writeShipFile(t, f.Dir, "trunk.txt", "remote\n")
 	mustRun(t, f.Env(), f.Dir, "git", "add", ".")
 	mustRun(t, f.Env(), f.Dir, "git", "commit", "-qm", "remote trunk")

@@ -161,6 +161,35 @@ func gtHoldPublished(ctx context.Context, dir render.Dir, state gtState, chain [
 	return held, nil
 }
 
+const gtHeldOnTrunk = "kept on its trunk base"
+
+// gtHoldOnTrunk holds every chain branch gt records on trunk: ship moves no
+// branch off the trunk commit it sits on unless --restack asks, and a
+// commit-only ship pushes nothing that could find it conflicting. A branch
+// whose own commits trunk already holds has landed, so it stays a mover and
+// the replay carries its children onto trunk.
+func gtHoldOnTrunk(ctx context.Context, dir render.Dir, state gtState, chain []string, trunk string) (gtState, error) {
+	held := maps.Clone(state)
+	for _, name := range chain {
+		s := held[name]
+		if s.State != "" || s.Parents[0].Ref != trunk {
+			continue
+		}
+		if s.Head != s.Parents[0].SHA {
+			landed, err := gitIsAncestor(ctx, dir, "ship", s.Head, state[trunk].Head)
+			if err != nil {
+				return nil, err
+			}
+			if landed {
+				continue
+			}
+		}
+		s.State = gtHeldOnTrunk
+		held[name] = s
+	}
+	return held, nil
+}
+
 func gtOnParentHead(ctx context.Context, dir render.Dir, state gtState, chain []string) (gtState, error) {
 	read := maps.Clone(state)
 	for _, name := range chain {

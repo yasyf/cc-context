@@ -209,7 +209,7 @@ func TestStackPublicationNextShipUsesOwnedReceipt(t *testing.T) {
 	f := stackRebaseRepo(t, "feature")
 	source := shipHead(t, f)
 	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
-	if _, _, err := runStackCmd(t, f, "submit"); err != nil {
+	if _, _, err := runStackCmd(t, f, "submit", "--restack"); err != nil {
 		t.Fatal(err)
 	}
 	published := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "feature")

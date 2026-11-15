@@ -1778,7 +1778,7 @@ func stackPlan(ctx context.Context, l lane, commonDir string, o stackRebaseOpts)
 				}
 			}
 			b.Bump = slices.Contains(o.bump, name)
-			if o.stayClean && !b.Bump && !inherits[name] && b.Parent == trunk && b.WasParent == trunk && b.Remote != "" && b.OldBase != pin && queue[name] != prQueueEvicted && (b.PR == nil || b.PR.Mergeable != "CONFLICTING") {
+			if o.stayClean && !b.Bump && !inherits[name] && b.Parent == trunk && b.WasParent == trunk && b.OldBase != pin && queue[name] != prQueueEvicted && (b.PR == nil || b.PR.Mergeable != "CONFLICTING") {
 				if b.Stays, err = stackMergesClean(ctx, l.dir(), pin, stackUpstack(order, byName, name)); err != nil {
 					return nil, err
 				}
