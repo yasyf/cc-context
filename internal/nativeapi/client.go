@@ -113,6 +113,11 @@ func (c *Client) request(ctx context.Context, base, token, identity, method, pat
 		limitWaits = c.limitWaits
 	}
 	for {
+		if c.gh != nil && base == c.base {
+			if err := c.gh.AwaitHold(ctx, identity); err != nil {
+				return nil, err
+			}
+		}
 		payload, retryAfter, err := c.attempt(ctx, base, token, identity, method, path, body)
 		var wait time.Duration
 		switch {
@@ -177,6 +182,11 @@ func (c *Client) attempt(ctx context.Context, base, token, identity, method, pat
 		refusal.Header = resp.Header
 		if base != c.base {
 			return nil, -1, refusal
+		}
+		if c.gh != nil && ghapi.SecondaryLimit(statusMessage(payload)) {
+			if err := c.gh.Hold(ctx, identity, resp.Header); err != nil {
+				return nil, -1, err
+			}
 		}
 		return nil, limitWait(resp, payload), refusal
 	}

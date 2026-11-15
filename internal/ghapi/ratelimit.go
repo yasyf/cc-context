@@ -14,8 +14,8 @@ import (
 // maxRateLimitWait caps how long a rate-limited request waits before retrying.
 // A reset further out than this is not waited on at all: the error goes back to
 // the caller, whose own cadence — a 30s review poll — decides what an hour-long
-// primary-limit reset means. Only a secondary limit, which GitHub answers with a
-// Retry-After of seconds, is short enough to sit out inside one call.
+// primary-limit reset means. A secondary limit is sat out through the ledger's
+// hold instead, however long it names.
 const maxRateLimitWait = 60 * time.Second
 
 // maxRateLimitRetries bounds the waits one request may sit through, so a server
@@ -41,6 +41,16 @@ func LimitWait(status int, header http.Header, now time.Time) (time.Duration, bo
 	if status != http.StatusForbidden && status != http.StatusTooManyRequests {
 		return 0, false
 	}
+	return namedWait(header, now)
+}
+
+// SecondaryLimit reports whether text, a refusal's message or gh's report of
+// one, is GitHub's secondary rate limit, which it answers with a 403 or 429.
+func SecondaryLimit(text string) bool {
+	return strings.Contains(strings.ToLower(text), "secondary rate limit")
+}
+
+func namedWait(header http.Header, now time.Time) (time.Duration, bool) {
 	if after := strings.TrimSpace(header.Get("Retry-After")); after != "" {
 		if seconds, err := strconv.Atoi(after); err == nil {
 			return max(time.Duration(seconds)*time.Second, 0), true

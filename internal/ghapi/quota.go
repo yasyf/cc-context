@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -111,8 +112,48 @@ func heaviest(requests map[string]int) []Caller {
 
 type poolState struct {
 	Windows []*window `json:"windows,omitempty"`
+	Hold    *hold     `json:"hold,omitempty"`
 
 	closed []window
+}
+
+// ResourceSecondary keys a principal's hold in the ledger: GitHub's secondary
+// rate limit refuses an identity across every pool at once.
+const ResourceSecondary = "secondary"
+
+// secondaryBackoff is how long GitHub asks a secondary-limited identity to wait
+// when its refusal names no wait; each refusal that follows the hold doubles it.
+const secondaryBackoff = time.Minute
+
+// holdSpread is the most a held request waits past the hold, so the requests
+// one hold held do not all reach GitHub in the same second.
+const holdSpread = 30 * time.Second
+
+// hold is when GitHub lets a principal's requests in again after refusing one
+// for a secondary rate limit, and the wait its last refusal naming none took.
+type hold struct {
+	Until   time.Time     `json:"until"`
+	Backoff time.Duration `json:"backoff,omitempty"`
+}
+
+// refused is h after a refusal at now: until the wait it named, else, once the
+// hold has lifted, a minute, doubled when the refusal came within one backoff
+// of the lift. A refusal inside the hold is one the hold already counts.
+func (h hold) refused(now time.Time, wait time.Duration, named bool) hold {
+	switch {
+	case named:
+		if until := now.Add(wait); until.After(h.Until) {
+			h.Until = until
+		}
+	case now.Before(h.Until):
+	case now.Before(h.Until.Add(h.Backoff)):
+		h.Backoff *= 2
+		h.Until = now.Add(h.Backoff)
+	default:
+		h.Backoff = secondaryBackoff
+		h.Until = now.Add(h.Backoff)
+	}
+	return h
 }
 
 type window struct {
@@ -181,8 +222,9 @@ func (p *poolState) admits(now time.Time, floor func(*window) int) bool {
 }
 
 type ledger struct {
-	dir string
-	now func() time.Time
+	dir    string
+	now    func() time.Time
+	spread time.Duration
 
 	mu   sync.Mutex
 	open *ledgerBatch
@@ -212,7 +254,7 @@ func defaultLedger() *ledger {
 	if err != nil {
 		return nil
 	}
-	return &ledger{dir: dir, now: time.Now}
+	return &ledger{dir: dir, now: time.Now, spread: holdSpread}
 }
 
 func poolKey(identity, resource string) string { return identity + ":" + resource }
@@ -597,6 +639,78 @@ func (c *Client) Record(ctx context.Context, identity, target string, header htt
 		return err
 	}
 	return c.quota.charge(ctx, principal, Resource(target), CallerName(ctx), target, header)
+}
+
+// HoldNotice opens the line a request held for GitHub's secondary rate limit
+// writes to stderr before it waits.
+const HoldNotice = "GitHub secondary rate limit: "
+
+// Hold makes every request on identity wait once GitHub refused one for a
+// secondary rate limit with header, nil when gh reported the refusal: until its
+// Retry-After, else its spent pool's reset, else a minute that doubles while
+// refusals keep following the hold.
+func (c *Client) Hold(ctx context.Context, identity string, header http.Header) error {
+	if c.quota == nil {
+		return nil
+	}
+	principal, err := c.principal(ctx, identity)
+	if err != nil {
+		return err
+	}
+	return c.quota.hold(ctx, principal, header)
+}
+
+func (l *ledger) hold(ctx context.Context, principal string, header http.Header) error {
+	return l.update(ctx, func(pools map[string]*poolState) {
+		now := l.now()
+		wait, named := namedWait(header, now)
+		p := l.pool(pools, principal, ResourceSecondary)
+		h := hold{}
+		if p.Hold != nil {
+			h = *p.Hold
+		}
+		h = h.refused(now, wait, named)
+		p.Hold = &h
+	})
+}
+
+// AwaitHold sleeps while a hold stands on identity's requests and up to
+// holdSpread past it, saying so once.
+func (c *Client) AwaitHold(ctx context.Context, identity string) error {
+	if c.quota == nil {
+		return nil
+	}
+	principal, err := c.principal(ctx, identity)
+	if err != nil {
+		return err
+	}
+	return c.quota.await(ctx, principal)
+}
+
+func (l *ledger) await(ctx context.Context, principal string) error {
+	said := false
+	for {
+		pools, err := l.load()
+		if err != nil {
+			return err
+		}
+		p, now := pools[poolKey(principal, ResourceSecondary)], l.now()
+		if p == nil || p.Hold == nil || !now.Before(p.Hold.Until) {
+			return nil
+		}
+		wake := p.Hold.Until
+		if l.spread > 0 {
+			wake = wake.Add(rand.N(l.spread)) //nolint:gosec // the spread only staggers held requests; nothing relies on it being unguessable
+		}
+		if !said {
+			kind, _, _ := strings.Cut(principal, "#")
+			render.Announce(ctx, "%s%s requests wait until %s (%s)", HoldNotice, kind, wake.Local().Format(time.Kitchen), wake.Local().Format(time.RFC3339))
+			said = true
+		}
+		if err := sleep(ctx, wake.Sub(now)); err != nil {
+			return err
+		}
+	}
 }
 
 // Pools reads identity's pools fresh from rate_limit and returns each open

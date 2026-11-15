@@ -110,8 +110,9 @@ func (c *Client) spill() *Client {
 }
 
 // Unwaiting returns a copy of c that hands a rate-limited or failed response
-// straight back instead of sitting out a short Retry-After or retrying a 5xx,
-// for a caller that keeps its own backoff across processes.
+// straight back instead of sitting out a short Retry-After, a secondary-limit
+// hold, or a 5xx retry, for a caller that keeps its own backoff across
+// processes.
 func (c *Client) Unwaiting() *Client {
 	unwaiting := *c
 	unwaiting.retries = 0
@@ -240,6 +241,11 @@ func (c *Client) do(ctx context.Context, method, ref string, body []byte, read b
 		if err != nil {
 			return nil, nil, false, err
 		}
+		if c.quota != nil && c.retries > 0 {
+			if err := c.quota.await(ctx, principal); err != nil {
+				return nil, nil, false, err
+			}
+		}
 		stop := render.Slow(ctx, "GitHub "+method+" "+target)
 		status, header, payload, err := c.send(ctx, method, target, body, token)
 		stop()
@@ -268,6 +274,15 @@ func (c *Client) do(ctx context.Context, method, ref string, body []byte, read b
 		if asApp && status == http.StatusForbidden && integrationDenied(payload) {
 			cred = c.tokens
 			continue
+		}
+		if c.quota != nil && (status == http.StatusForbidden || status == http.StatusTooManyRequests) && SecondaryLimit(string(payload)) {
+			if err := c.quota.hold(ctx, principal, header); err != nil {
+				return nil, nil, false, err
+			}
+			if waits < c.retries {
+				waits++
+				continue
+			}
 		}
 		if wait, ok := retryDelay(status, header, time.Now()); ok && waits < c.retries {
 			waits++

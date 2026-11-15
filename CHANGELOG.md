@@ -23,6 +23,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- GitHub's secondary rate limit no longer fails a `ccx vcs gh` read, write, or
+  merge, or moves an app read onto the user's token. A 403 or 429 that names
+  it, on the app's token or the user's, writes a hold for that token into the
+  machine's quota ledger: until the refusal's Retry-After, else its spent
+  pool's reset, else a minute doubled on each refusal that follows. Every
+  request on that token from any ccx, `ccx vcs merge` included, waits until the
+  hold lifts plus up to 30 seconds, prints one `ccx: GitHub secondary rate
+  limit:` line, and runs, the refused request again included. Before, a
+  gateway read retried the 429 within 22 seconds, an app read spilled onto the
+  user's token and was refused there too, and every caller got the refusal
+  back.
 - `ccx vcs ship` no longer force-pushes a rewrite no flag asked for. In the
   gt and github-stack lanes a published branch, the tip included, that the
   run would replay onto a new base while its local head still holds its

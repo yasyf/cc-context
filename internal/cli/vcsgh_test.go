@@ -208,8 +208,8 @@ echo out
 		t.Fatal(err)
 	}
 	want := []string{"https://api.github.com/repos/o/r/pulls?page=1", "https://api.github.com/repos/o/r/pulls?page=2"}
-	if !slices.Equal(sent, want) || stdout.String() != "out\n" || stderr.String() != "warning: kept\nunfinished" {
-		t.Errorf("ghRun sent %q, printed %q and %q, want %q, %q and %q", sent, stdout.String(), stderr.String(), want, "out\n", "warning: kept\nunfinished")
+	if !slices.Equal(sent.urls, want) || stdout.String() != "out\n" || stderr.String() != "warning: kept\nunfinished" {
+		t.Errorf("ghRun sent %q, printed %q and %q, want %q, %q and %q", sent.urls, stdout.String(), stderr.String(), want, "out\n", "warning: kept\nunfinished")
 	}
 }
 
@@ -460,6 +460,49 @@ echo the diff
 	}
 	if got := out.String(); got != "the diff\n" {
 		t.Errorf("gh printed %q, want the retried read's answer alone", got)
+	}
+}
+
+// secondaryLimitedGH writes a gh that GitHub refuses once for its secondary
+// rate limit, printing refused first, and then runs, echoing its stdin.
+func secondaryLimitedGH(t *testing.T) string {
+	t.Helper()
+	refused := filepath.Join(t.TempDir(), "refused")
+	gh := filepath.Join(t.TempDir(), "gh")
+	execstub.Write(t, gh, `#!/bin/sh
+body=$(cat)
+if [ ! -e "`+refused+`" ]; then
+  touch "`+refused+`"
+  echo refused
+  echo 'gh: You have exceeded a secondary rate limit. Please wait a few minutes before you try again. (HTTP 429)' >&2
+  exit 1
+fi
+printf 'ran %s\n' "$body"
+`)
+	return gh
+}
+
+func TestRunVcsGhRunsAReadAgainPastGitHubsSecondaryLimit(t *testing.T) {
+	cmd, out := ghGatewayFixture(t)
+	cmd.SetIn(strings.NewReader(""))
+	t.Setenv("CCX_GH", secondaryLimitedGH(t))
+	if err := runVcsGh(cmd, []string{"pr", "view", "1", "--repo", "o/r", "--json", "files"}, 0); err != nil {
+		t.Fatalf("runVcsGh = %v, want the read run again past the secondary limit", err)
+	}
+	if got := out.String(); got != "ran \n" {
+		t.Errorf("gh printed %q, want the second run's answer alone", got)
+	}
+}
+
+func TestRunVcsGhSendsAWriteAgainWithItsInputPastGitHubsSecondaryLimit(t *testing.T) {
+	cmd, out := ghGatewayFixture(t)
+	cmd.SetIn(strings.NewReader("the body"))
+	t.Setenv("CCX_GH", secondaryLimitedGH(t))
+	if err := runVcsGh(cmd, []string{"api", "-X", "POST", "repos/o/r/issues/1/comments", "--input", "-"}, 0); err != nil {
+		t.Fatalf("runVcsGh = %v, want the write sent again past the secondary limit", err)
+	}
+	if got := out.String(); got != "ran the body\n" {
+		t.Errorf("gh printed %q, want the second run's answer to the same input alone", got)
 	}
 }
 

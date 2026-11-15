@@ -92,14 +92,24 @@ label, cache, ruleset, repo view, and search. So does gh pr, issue, or repo view
 with no --json, since the app's token reads a requested team reviewer's name as
 empty. So does a read with its stdout on
 a terminal, unless it watches. A read the app token is refused runs again on the
-user's, and one GitHub refuses for rate there moves to the user's pool on the
-same terms as a spent app pool. gh auth, config, alias, extension, completion,
+user's, and one GitHub refuses for its primary rate limit there moves to the
+user's pool on the same terms as a spent app pool. gh auth, config, alias, extension, completion,
 help, and --help send no request ccx charges. A child ccx spawns carries
 CCX_CHILD=1, so a shim can pass it straight to the real gh; ccx admits and
 charges that child itself.
 
+GitHub's secondary rate limit, a 403 or 429 naming it, on the app's token or
+the user's, holds every request on that token from every ccx on the machine,
+reads, writes, and merges alike: until the refusal's Retry-After, else its
+spent pool's reset, else a minute doubled each time a refusal follows the hold.
+gh hides those headers, so a refusal gh reports holds by the minute. Each
+command waits until the hold lifts, plus up to 30 seconds, saying so once on
+stderr in a line starting "ccx: GitHub secondary rate limit:", then runs, the
+refused request again included, and never moves to the user's pool for it.
+
 Anything else, such as gh pr close or a gh api write, runs on the user's
-token as plain gh would, charged to its pool but never refused or cached. It
+token as plain gh would, charged to its pool but never refused or cached, its
+output passed on once gh exits when it is off a terminal. It
 expires the cached reads of the repository it names, else of the checkout's,
 and of every repository when it is a GraphQL mutation naming none. Any write
 expires a cached read that names no one repository. A
@@ -119,8 +129,9 @@ Output whose first 512 bytes read as binary to gh's own content sniff, once
 their escape sequences are gone, passes verbatim. Standard streams otherwise
 pass through, and ccx exits with gh's code. A read that is neither a watch nor
 on a terminal passes its output on once gh exits, and one that failed on a
-transient network error, such as an HTTP 5xx or 429, a reset connection, or a
-TLS handshake timeout, runs again after 2, 5, and 15 seconds. A read that
+transient network error, such as an HTTP 5xx, a 429 other than the secondary
+limit, a reset connection, or a TLS handshake timeout, runs again after 2, 5,
+and 15 seconds. A read that
 fails once its token has expired, such as a watch that outlived it, runs again
 on a fresh one.`,
 		Example: "  ccx vcs gh -- pr checks 123\n  ccx vcs gh --max-age 5m -- pr view 123 --json state\n" +
@@ -161,10 +172,10 @@ func runVcsGh(cmd *cobra.Command, argv []string, maxAge time.Duration) (err erro
 	if ghNoRequest(argv) {
 		return ghExit(ghChild(ctx, cmd, dir, argv, nil, stdin, out, cmd.ErrOrStderr()).Run())
 	}
+	ctx = render.WithSlowWriter(ctx, cmd.ErrOrStderr())
 	resource := ghResource(argv)
 	if !reads {
-		sent, err := ghRun(ctx, cmd, dir, argv, nil, stdin, out, cmd.ErrOrStderr())
-		ghNoteLedgerError(cmd, reviewsAPI().Sent(ctx, ghapi.IdentityUser, sent))
+		err := ghWrite(ctx, cmd, dir, argv, stdin, out)
 		ghInvalidate(ghWrittenRepo(ctx, argv, func() string { return ghCheckoutRepo(ctx, dir) }))
 		return ghExit(err)
 	}
@@ -225,12 +236,17 @@ func runVcsGh(cmd *cobra.Command, argv []string, maxAge time.Duration) (err erro
 			}
 			ghNoteLedgerError(cmd, err)
 		}
+		ghNoteLedgerError(cmd, api.AwaitHold(ctx, identity))
 		started := time.Now()
 		if live {
 			var stderr bytes.Buffer
-			var sent []string
+			var sent *ghSent
 			sent, err = ghRun(ctx, cmd, dir, args, env, stdin, out, io.MultiWriter(cmd.ErrOrStderr(), &stderr))
-			ghNoteLedgerError(cmd, api.Sent(ctx, identity, sent))
+			ghNoteLedgerError(cmd, api.Sent(ctx, identity, sent.urls))
+			if err != nil && sent.secondary {
+				ghNoteLedgerError(cmd, api.Hold(ctx, identity, nil))
+				continue
+			}
 			if err != nil && identity == ghapi.IdentityApp && ghAppRateLimited(nil, stderr.Bytes()) {
 				userToken, spilled = true, true
 				continue
@@ -242,16 +258,22 @@ func runVcsGh(cmd *cobra.Command, argv []string, maxAge time.Duration) (err erro
 		} else {
 			var stdout, stderr bytes.Buffer
 			var tries int
+			secondary := false
 			tries, err = retryTransient(ctx, func() error {
 				stdout.Reset()
 				stderr.Reset()
 				sent, err := ghRun(ctx, cmd, dir, args, env, stdin, &stdout, &stderr)
-				ghNoteLedgerError(cmd, api.Sent(ctx, identity, sent))
-				if err == nil || stderr.Len() == 0 {
+				ghNoteLedgerError(cmd, api.Sent(ctx, identity, sent.urls))
+				secondary = err != nil && sent.secondary
+				if err == nil || stderr.Len() == 0 || secondary {
 					return err
 				}
 				return fmt.Errorf("%w: %s", err, stderr.Bytes())
 			})
+			if secondary {
+				ghNoteLedgerError(cmd, api.Hold(ctx, identity, nil))
+				continue
+			}
 			if err != nil && tries > 1 {
 				_, _ = fmt.Fprintf(&stderr, "ccx: gh failed after %d tries\n", tries)
 			}
@@ -277,14 +299,40 @@ func runVcsGh(cmd *cobra.Command, argv []string, maxAge time.Duration) (err erro
 	}
 }
 
+// ghWrite runs a write on the user's token, again once its hold lifts each
+// time GitHub refuses it for a secondary rate limit, which it does before it
+// writes anything. Off a terminal, only the last run's output passes on.
+func ghWrite(ctx context.Context, cmd *cobra.Command, dir string, argv []string, stdin []byte, out io.Writer) error {
+	api, terminal := reviewsAPI(), ghTerminal(out)
+	for {
+		ghNoteLedgerError(cmd, api.AwaitHold(ctx, ghapi.IdentityUser))
+		var heldOut, heldErr bytes.Buffer
+		stdout, stderr := io.Writer(&heldOut), io.Writer(&heldErr)
+		if terminal {
+			stdout, stderr = out, cmd.ErrOrStderr()
+		}
+		sent, err := ghRun(ctx, cmd, dir, argv, nil, stdin, stdout, stderr)
+		ghNoteLedgerError(cmd, api.Sent(ctx, ghapi.IdentityUser, sent.urls))
+		if err != nil && sent.secondary {
+			ghNoteLedgerError(cmd, api.Hold(ctx, ghapi.IdentityUser, nil))
+			continue
+		}
+		_, _ = cmd.ErrOrStderr().Write(heldErr.Bytes())
+		if _, werr := out.Write(heldOut.Bytes()); werr != nil {
+			return werr
+		}
+		return err
+	}
+}
+
 const ghRunGuardedEnv = "CCX_GH_RUN_GUARDED"
 
-// ghRun runs gh under GH_DEBUG=1 and returns the URL of each request it sent.
-func ghRun(ctx context.Context, cmd *cobra.Command, dir string, args, env []string, stdin []byte, stdout, stderr io.Writer) ([]string, error) {
+// ghRun runs gh under GH_DEBUG=1 and returns the requests it sent.
+func ghRun(ctx context.Context, cmd *cobra.Command, dir string, args, env []string, stdin []byte, stdout, stderr io.Writer) (*ghSent, error) {
 	sent := &ghSent{w: stderr}
 	err := ghChild(ctx, cmd, dir, args, slices.Concat(env, []string{ghDebugEnv}), stdin, stdout, sent).Run()
 	flushed := sent.flush()
-	return sent.urls, cmp.Or(err, flushed)
+	return sent, cmp.Or(err, flushed)
 }
 
 func ghChild(ctx context.Context, cmd *cobra.Command, dir string, args, env []string, stdin []byte, stdout, stderr io.Writer) *exec.Cmd {
@@ -304,11 +352,13 @@ const ghDebugEnv = "GH_DEBUG=1"
 var ghDebugLine = regexp.MustCompile(`^(\* |\[git [^\n]*\]\n?$)`)
 
 // ghSent passes gh's stderr on without the lines GH_DEBUG adds, keeping the
-// URL each "* Request to" line names.
+// URL each "* Request to" line names and whether gh reported GitHub's
+// secondary rate limit.
 type ghSent struct {
-	w    io.Writer
-	line []byte
-	urls []string
+	w         io.Writer
+	line      []byte
+	urls      []string
+	secondary bool
 }
 
 func (s *ghSent) Write(b []byte) (int, error) {
@@ -338,6 +388,7 @@ func (s *ghSent) take(line []byte) error {
 	if url, ok := bytes.CutPrefix(line, []byte("* Request to ")); ok {
 		s.urls = append(s.urls, string(bytes.TrimSpace(url)))
 	}
+	s.secondary = s.secondary || ghapi.SecondaryLimit(string(line))
 	if ghDebugLine.Match(line) {
 		return nil
 	}
@@ -591,9 +642,10 @@ func ghResource(argv []string) string {
 type ghSpillKey struct{}
 
 // chargeGHChild admits a gh child's read through the floor of the pool its
-// token spends, AdmitSpill's for a read ghRead moved off the app's pool, and
-// charges each request the child sent to that pool once it exits. gh api
-// rate_limit spends none.
+// token spends, AdmitSpill's for a read ghRead moved off the app's pool, waits
+// out the hold on that token, charges each request the child sent to that pool
+// once it exits, and holds the token when GitHub refused the child for a
+// secondary rate limit. gh api rate_limit spends none.
 func chargeGHChild(ctx context.Context, bin string, argv, env []string) (*render.Tap, error) {
 	if bin != "gh" || ghNoRequest(argv) || ghReadsRateLimit(argv) {
 		return nil, nil
@@ -611,12 +663,19 @@ func chargeGHChild(ctx context.Context, bin string, argv, env []string) (*render
 			return nil, err
 		}
 	}
+	if err := api.AwaitHold(ctx, ghapi.IdentityUser); err != nil {
+		render.Announce(ctx, "%v", err)
+	}
 	sent := &ghSent{}
 	return &render.Tap{
 		Env:    []string{ghDebugEnv},
 		Stderr: func(w io.Writer) io.Writer { sent.w = w; return sent },
 		Done: func() {
-			if err := errors.Join(sent.flush(), api.Sent(ctx, ghapi.IdentityUser, sent.urls)); err != nil {
+			err := errors.Join(sent.flush(), api.Sent(ctx, ghapi.IdentityUser, sent.urls))
+			if sent.secondary {
+				err = errors.Join(err, api.Hold(ctx, ghapi.IdentityUser, nil))
+			}
+			if err != nil {
 				render.Announce(ctx, "%v", err)
 			}
 		},
@@ -649,8 +708,17 @@ func ghNoRequest(argv []string) bool {
 	return ghOffline[argv[0]] || slices.Contains(argv, "--help")
 }
 
+// ghStdin reads the stdin argv names, gh api's input or a field read from -,
+// or another command's file flag given -, so a run held for GitHub's secondary
+// rate limit can send it again.
 func ghStdin(cmd *cobra.Command, argv []string) ([]byte, error) {
-	if argv[0] != "api" || !slices.ContainsFunc(argv, func(arg string) bool { return arg == "-" || arg == "--input=-" || strings.HasSuffix(arg, "=@-") }) {
+	names := func(arg string) bool {
+		if argv[0] == "api" {
+			return arg == "-" || arg == "--input=-" || strings.HasSuffix(arg, "=@-")
+		}
+		return arg == "-" || strings.HasSuffix(arg, "-file=-")
+	}
+	if !slices.ContainsFunc(argv, names) {
 		return nil, nil
 	}
 	body, err := io.ReadAll(cmd.InOrStdin())

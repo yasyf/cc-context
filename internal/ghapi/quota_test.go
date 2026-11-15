@@ -1,6 +1,7 @@
 package ghapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,7 +12,9 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -511,4 +514,92 @@ func TestAnOpenWindowFromHeadersSparesRateLimitReads(t *testing.T) {
 	if rateReads != 0 {
 		t.Errorf("rate_limit read %d times, want none while a window read under a minute ago has 4000 left", rateReads)
 	}
+}
+
+func TestHoldDoublesWhileRefusalsFollowItAndKeepsTheLongerNamedWait(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 15, 8, 0, 0, 0, time.UTC)
+	minute := hold{Until: now.Add(time.Minute), Backoff: time.Minute}
+	for _, tt := range []struct {
+		name  string
+		h     hold
+		at    time.Time
+		wait  time.Duration
+		named bool
+		want  hold
+	}{
+		{name: "a first refusal waits a minute", at: now, want: minute},
+		{name: "a refusal inside the hold is one it counts", h: minute, at: now.Add(30 * time.Second), want: minute},
+		{name: "a refusal within a backoff of the lift doubles it", h: minute, at: now.Add(90 * time.Second), want: hold{Until: now.Add(210 * time.Second), Backoff: 2 * time.Minute}},
+		{name: "a refusal long after the lift waits a minute again", h: hold{Until: now, Backoff: 8 * time.Minute}, at: now.Add(time.Hour), want: hold{Until: now.Add(61 * time.Minute), Backoff: time.Minute}},
+		{name: "a named wait holds until it", at: now, wait: 5 * time.Minute, named: true, want: hold{Until: now.Add(5 * time.Minute)}},
+		{name: "a named wait never shortens the hold", h: minute, at: now, wait: 10 * time.Second, named: true, want: minute},
+	} {
+		if got := tt.h.refused(tt.at, tt.wait, tt.named); got != tt.want {
+			t.Errorf("%s: refused = %+v, want %+v", tt.name, got, tt.want)
+		}
+	}
+}
+
+func secondaryLimitServer(t *testing.T, refusals int32, retryAfter string) (*Client, *ledger, *atomic.Int32) {
+	t.Helper()
+	var requests atomic.Int32
+	reset := time.Now().Add(time.Hour)
+	c, l := quotaClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/rate_limit" {
+			_, _ = fmt.Fprint(w, rateLimitBody(5000, 5000, reset))
+			return
+		}
+		if requests.Add(1) <= refusals {
+			w.Header().Set("Retry-After", retryAfter)
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = fmt.Fprint(w, `{"message":"You have exceeded a secondary rate limit."}`)
+			return
+		}
+		_, _ = fmt.Fprint(w, `{"number":1}`)
+	})
+	return c, l, &requests
+}
+
+func TestDoHoldsTheIdentityOnASecondaryLimitAndSendsAgainOnceItLifts(t *testing.T) {
+	t.Parallel()
+	c, _, requests := secondaryLimitServer(t, 1, "1")
+	var said bytes.Buffer
+	start := time.Now()
+	got, err := Get[map[string]any](render.WithSlowWriter(t.Context(), &said), c, "/repos/o/r/pulls/1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["number"] != float64(1) || requests.Load() != 2 {
+		t.Errorf("Get = %v after %d requests, want the second request's answer", got, requests.Load())
+	}
+	if waited := time.Since(start); waited < time.Second {
+		t.Errorf("Get sent again after %s, want after the 1s Retry-After", waited)
+	}
+	if n := strings.Count(said.String(), HoldNotice); n != 1 {
+		t.Errorf("Get said %q, want one hold notice", said.String())
+	}
+}
+
+func TestUnwaitingHandsASecondaryLimitBackAndLeavesTheHoldForEveryoneElse(t *testing.T) {
+	t.Parallel()
+	c, l, requests := secondaryLimitServer(t, 2, "600")
+	for range 2 {
+		if _, err := Get[map[string]any](t.Context(), c.Unwaiting(), "/repos/o/r/pulls/1"); err == nil {
+			t.Fatal("Get = nil, want the secondary limit's refusal")
+		}
+	}
+	if n := requests.Load(); n != 2 {
+		t.Errorf("requests = %d, want each Unwaiting call sent at once", n)
+	}
+	pools, err := l.load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for key, p := range pools {
+		if strings.HasSuffix(key, ":"+ResourceSecondary) && p.Hold != nil && p.Hold.Until.After(time.Now().Add(9*time.Minute)) {
+			return
+		}
+	}
+	t.Errorf("ledger = %+v, want a hold until the 600s Retry-After", pools)
 }
