@@ -760,3 +760,89 @@ func TestShipNoPushReadsABranchHoldingItsParentHeadAsOnItsParent(t *testing.T) {
 		t.Errorf("bottom moved from %s to %s, want it left where it is", bottom, after)
 	}
 }
+
+// TestShipPushesOnlyABranchCutAtAnotherBuildersPublishedHead is a drive
+// builder's ship of mine, cut on a Sprite at the head of theirs, another
+// builder's pushed branch whose pull request #9000 native stack #47 bases on
+// main, after main moved on. Nothing named theirs as another's, so the dry run
+// planned theirs' restack and an unchanged force-push of #9000, the ship pushed
+// theirs with mine, and with no commit of its own mine refused for want of a PR
+// title.
+func TestShipPushesOnlyABranchCutAtAnotherBuildersPublishedHead(t *testing.T) {
+	noPR := "ship: mine holds no commit of its own above theirs, and GitHub opens no pull request without one"
+	for _, tt := range []struct {
+		name      string
+		args      []string
+		openPR    bool
+		refuse    string
+		dryRefuse string
+	}{
+		{name: "own commit", args: []string{"-m", "fix: frobnicate", "--no-pr", "--no-watch"}},
+		{name: "no commit for a pull request", args: []string{"--no-commit", "--no-watch"}, refuse: noPR, dryRefuse: noPR},
+		{name: "no commit under an open pull request", args: []string{"--no-commit", "--no-watch"}, openPR: true, refuse: "ship: mine sits at theirs's head"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := shipRepo(t, vcstest.Remote())
+			f.Decorate(func(ctx context.Context) context.Context { return withStackProvider(ctx, true) })
+			mustRun(t, f.Env(), f.Dir, "git", "config", "ccx.stack", "github")
+			mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "main:theirs")
+			restackAdvanceRemote(t, f, "theirs", "theirs.txt", "theirs\n")
+			mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
+			mustRun(t, f.Env(), f.Dir, "git", "branch", "-q", "theirs", "origin/theirs")
+			mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "mine", "theirs")
+			theirs := gitAt(t, f.Env(), f.Dir, "rev-parse", "theirs")
+			if err := nativemeta.Init(f.Context(), filepath.Join(f.Dir, ".git"), "main"); err != nil {
+				t.Fatal(err)
+			}
+			restackAdvanceRemote(t, f, "main", "main2.txt", "main2\n")
+			mustRun(t, f.Env(), f.Dir, "git", "fetch", "-q", "origin")
+			api := stubGTAPI(t)
+			api.openPRs("theirs")
+			api.bases["theirs"], api.stacks["theirs"], api.recorded["theirs"] = "main", 47, "main"
+			if tt.openPR {
+				api.prs["mine"] = 9001
+				api.bases["mine"], api.stacks["mine"], api.recorded["mine"] = "theirs", 47, "theirs"
+			}
+			f.Decorate(api.ctx)
+			stubStackPRs(t, f, nil)
+			if slices.Contains(tt.args, "-m") {
+				shipGTReady(t, f)
+			}
+
+			report := dryRunReport(t, f, tt.args...)
+			if moved := dryRunBranches(report, "restack"); len(moved) != 0 {
+				t.Errorf("restack = %q, want theirs left at its published head and mine on it\n%s", moved, report)
+			}
+			for _, head := range dryRunValues(report, "pr head") {
+				if strings.Contains(head, "theirs") {
+					t.Errorf("pr head = %q, want theirs' pull request left alone\n%s", head, report)
+				}
+			}
+			if refusals := dryRunValues(report, "refuses"); tt.dryRefuse == "" && len(refusals) != 0 || tt.dryRefuse != "" && !slices.ContainsFunc(refusals, func(r string) bool { return strings.HasPrefix(r, tt.dryRefuse) }) {
+				t.Errorf("refuses = %q, want %q\n%s", refusals, tt.dryRefuse, report)
+			}
+			shipResetLog(t, f)
+
+			_, errStr, err := runShipCmdFull(f.Context(), t, tt.args...)
+			switch {
+			case tt.refuse != "" && (err == nil || !strings.Contains(err.Error(), tt.refuse)):
+				t.Errorf("ship = %v (stderr=%q), want the refusal %q", err, errStr, tt.refuse)
+			case tt.refuse == "" && err != nil:
+				t.Fatalf("ship = %v (stderr=%q), want mine shipped alone", err, errStr)
+			}
+			want := []string{"mine"}
+			if tt.refuse != "" {
+				want = nil
+			}
+			if refs := gtPushedRefs(shipGTInvocations(t, f)); !slices.Equal(refs, want) {
+				t.Errorf("pushed %v, want %v", refs, want)
+			}
+			if got := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "theirs"); got != theirs {
+				t.Errorf("origin theirs = %.12s, want it left at %.12s", got, theirs)
+			}
+			if tt.refuse == "" && !stackOnto(t, f, theirs, gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "mine")) {
+				t.Error("origin mine does not sit on theirs' published head")
+			}
+		})
+	}
+}

@@ -28,6 +28,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ccx vcs ship` pushes the branch it ships and never restacks or pushes a
+  parent another clone published. When the parent has a published head and
+  this working copy never checked it out, ship keeps it and every branch below
+  it there, as `--parent` does, unless this working copy holds unpublished work
+  on one, and the dry run plans the same: no restack line and no pull request
+  head for them. A branch with no commit of its own above its parent refuses in
+  the dry run as in the ship, saying GitHub opens no pull request without one.
+  Before, a builder's ship of a branch cut at another builder's pushed branch
+  planned that branch's restack once trunk moved and force-pushed and
+  resubmitted it with the tip; with no commit of its own the branch refused
+  for want of a pull request title, a refusal the dry run showed only as a note.
 - `ccx vcs ship`, `ccx vcs stack new --parent` and `ccx vcs stack submit` read
   a tracked base whose local head trails its published one, behind it or
   rebased since by another clone, at that published head when the branch sits

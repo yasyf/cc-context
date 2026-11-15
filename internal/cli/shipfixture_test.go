@@ -920,7 +920,18 @@ exit 0
     if [ -n "$GIT_AUTOSTASH_WARN" ]; then printf 'Created autostash: 54f649e\nYour local changes are stashed, however applying them\nresulted in conflicts.  You can either resolve the conflicts\nand then discard the stash with "git stash drop".\nSuccessfully rebased and updated refs/heads/main.\n' >&2; fi ;;
   "rebase --abort") : ;;
   "diff --name-only") printf 'f.txt\n' ;;
-  "reflog show") printf 'cafecafecafecafecafecafecafecafecafecafe fetch: fast-forward\n' ;;
+  # HEAD's reflog reads every tracked branch of the current branch's lane as
+  # checked out here; another lane's branch never was.
+  "reflog show")
+    if [ "$3 $4" = "--format=%gs HEAD" ] && [ -r "$GIT_COMMON_DIR/` + vcstest.GraphiteRefsFile + `" ]; then
+      case "$GIT_BRANCH" in */*) lane=${GIT_BRANCH%/*} ;; *) lane= ;; esac
+      while read -r branch _; do
+        case "$branch" in */*) branchlane=${branch%/*} ;; *) branchlane= ;; esac
+        if [ "$branchlane" = "$lane" ]; then printf 'checkout: moving from main to %s\n' "$branch"; fi
+      done < "$GIT_COMMON_DIR/` + vcstest.GraphiteRefsFile + `"
+    else
+      printf 'cafecafecafecafecafecafecafecafecafecafe fetch: fast-forward\n'
+    fi ;;
   "ls-remote --heads") : ;;
   "push"*)
     case "$*" in
