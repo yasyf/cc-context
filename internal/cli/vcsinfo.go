@@ -139,16 +139,10 @@ func runVcsInfo(cmd *cobra.Command, o vcsInfoOpts) error {
 
 func collectVcsInfo(ctx context.Context, l lane, o vcsInfoOpts) (vcsInfo, error) {
 	info := vcsInfo{
-		Lane:       kindLabel(l.kind),
+		Lane:       l.label(),
 		VCS:        kindLabel(l.kind),
 		Root:       l.root,
 		BranchKind: "branch",
-	}
-	if l.gt {
-		info.Lane = "gt"
-		if l.native {
-			info.Lane = "github-stack"
-		}
 	}
 	if l.note != "" {
 		info.LaneReason = infoDeclinedPrefix + l.note

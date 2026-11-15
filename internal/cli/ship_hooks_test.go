@@ -794,7 +794,6 @@ exit 0
 	api := stubGTAPI(t)
 	f.Decorate(api.ctx)
 	stubStackPRs(t, f, nil)
-	stubStackStanding(t, f, nil)
 
 	out, errStr, err := runShipCmdFull(f.Context(), t, "-m", "fix: frobnicate", "--new-branch", "feat", "--no-push")
 	if err != nil {

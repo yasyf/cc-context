@@ -203,13 +203,7 @@ func runVcsStatus(cmd *cobra.Command, o vcsStatusOpts) error {
 
 func collectVcsStatus(ctx context.Context, l lane, o vcsStatusOpts) (vcsStatus, error) {
 	ctx = withStackProvider(ctx, l.native)
-	st := vcsStatus{Lane: kindLabel(l.kind), Root: l.root}
-	if l.gt {
-		st.Lane = "gt"
-		if l.native {
-			st.Lane = "github-stack"
-		}
-	}
+	st := vcsStatus{Lane: l.label(), Root: l.root}
 	if l.broken != nil {
 		return st, nil
 	}

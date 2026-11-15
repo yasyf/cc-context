@@ -23,6 +23,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ccx vcs ship` no longer force-pushes a rewrite no flag asked for. A
+  published branch, the tip included, whose new head would drop commits its
+  published head holds is refused before the push, naming each branch's
+  published head and the head it would push: in the gt and github-stack lanes
+  `--restack` replays them, `--drop-commits` publishes a local head as it
+  stands, and `--tip-only` ships the tip alone when it stays put; on the git
+  lane the refusal names `ccx vcs push`, and on jj `jj git push --bookmark`.
+  `--amend`, `--parent` and `--expect-remote` ask for the tip's rewrite and
+  the branches above it, and `--include` for the branch it names. Before,
+  shipping one commit on a native-stack branch whose parent had landed
+  replayed the branch onto trunk and force-pushed it, and a git-lane branch
+  amended after its push was force-pushed under a lease, both rewriting
+  commits a reviewer had already seen. `--tip-only`, `--restack`, `--landed`,
+  `--new-pr`, `--all-lanes` and `--include` are refused outside the gt and
+  github-stack lanes instead of being ignored, and a github-stack ship's
+  report opens on `lane github-stack`.
 - A fresh machine's first `ccx vcs ship` in cc-context commits instead of
   being killed mid-hooks. `scripts/build-chunk-grammars.sh` builds its 23
   tree-sitter grammars at once, one single-threaded zig link per core, in 227

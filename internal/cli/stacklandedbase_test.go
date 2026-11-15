@@ -67,7 +67,6 @@ func TestStackPlanReplaysAChildPastAParentRewrittenBeforeItLanded(t *testing.T) 
 			api.bases["b"], api.stacks["b"] = "main", 46
 			f.Decorate(api.ctx)
 			stubOpenPRs(t, f, prs)
-			stubStackStanding(t, f, nil)
 			l, err := resolveLane(f.Context(), "stack rebase", f.Dir, false)
 			if err != nil {
 				t.Fatal(err)
@@ -238,7 +237,6 @@ func TestStackPlanReplaysAChildFromTheParentHeadGitHubRecordedBeforeItsRewrite(t
 		"a": {Number: 41, Title: "a", State: "OPEN", Base: "x", Head: rewritten, NativeStack: 46},
 		"b": {Number: 42, Title: "b", State: "OPEN", Base: "a", Head: b, NativeStack: 46, BaseHeads: []string{cut, rewritten}},
 	})
-	stubStackStanding(t, f, nil)
 	l, err := resolveLane(f.Context(), "stack rebase", f.Dir, false)
 	if err != nil {
 		t.Fatal(err)

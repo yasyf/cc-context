@@ -124,7 +124,6 @@ func TestStackMoveOntoABranchOutsideTheStackPrintsTheReparentAndWritesNothing(t 
 		prs[name] = &stackPR{Number: api.prs[name], Title: name, State: "OPEN", Base: "main"}
 	}
 	stubStackPRs(t, f, prs)
-	stubStackStanding(t, f, nil)
 	published := gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "fix")
 
 	out, errOut, err := runStackCmd(t, f, "move", "--onto", "other", "--dry-run")
@@ -202,7 +201,6 @@ func dryRunNativeRepo(t *testing.T) *vcstest.Fixture {
 	}
 	f.Decorate(stubGTAPI(t).ctx)
 	stubStackPRs(t, f, nil)
-	stubStackStanding(t, f, nil)
 	return f
 }
 

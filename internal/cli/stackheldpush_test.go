@@ -48,7 +48,6 @@ func heldPushNativeStack(t *testing.T) *vcstest.Fixture {
 	api.bases["feature"], api.stacks["feature"] = "base", 47
 	f.Decorate(api.ctx)
 	stubStackPRs(t, f, nil)
-	stubStackStanding(t, f, nil)
 	if _, errOut, err := runStackCmd(t, f, "submit"); err != nil {
 		t.Fatalf("stack submit = %v (stderr=%q)", err, errOut)
 	}

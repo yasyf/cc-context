@@ -28,7 +28,6 @@ func TestStackRebaseAdoptsAnUntrackedBranchOntoItsNativeStackBase(t *testing.T) 
 	api.stacks["base"], api.stacks["mid"] = 46, 46
 	f.Decorate(api.ctx)
 	stubStackPRs(t, f, nil)
-	stubStackStanding(t, f, nil)
 	heads := map[string]string{}
 	for _, name := range []string{"base", "mid"} {
 		heads[name] = gitAt(t, f.Env(), f.Dir, "rev-parse", name)
@@ -102,7 +101,6 @@ func TestStackRebaseAdoptsAnUntrackedParentFromGitAncestry(t *testing.T) {
 			api.bases["base"], api.bases["mid"] = "main", "base"
 			f.Decorate(api.ctx)
 			stubStackPRs(t, f, nil)
-			stubStackStanding(t, f, nil)
 			recorded := func() gtState {
 				t.Helper()
 				state, err := gtStateQuery(f.Context(), render.Dir(f.Dir), "test")
@@ -159,7 +157,6 @@ func TestStackRebaseTakesTheNativeLaneOverAGraphiteRowItDoesNotTrack(t *testing.
 	api.bases["mid"] = "main"
 	f.Decorate(api.ctx)
 	stubStackPRs(t, f, nil)
-	stubStackStanding(t, f, nil)
 
 	plan, errOut, err := runStackCmd(t, f, "rebase", "--dry-run")
 	if err != nil {

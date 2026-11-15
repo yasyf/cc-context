@@ -51,7 +51,6 @@ func shipNativeStaleParent(t *testing.T, trackBase, remoteBase bool) *vcstest.Fi
 	api.stacks["base"], api.stacks["mid"] = 46, 46
 	f.Decorate(api.ctx)
 	stubStackPRs(t, f, nil)
-	stubStackStanding(t, f, nil)
 	return f
 }
 
@@ -164,7 +163,6 @@ func TestShipNewBranchStacksOnTheBranchItWasCutFrom(t *testing.T) {
 			api.bases["parent"], api.stacks["parent"] = "main", 47
 			f.Decorate(api.ctx)
 			stubStackPRs(t, f, nil)
-			stubStackStanding(t, f, nil)
 			shipGTReady(t, f)
 
 			if _, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--new-branch=child", "--no-push"); err != nil {
@@ -223,7 +221,6 @@ func TestShipTracksABranchCutFromAnotherLaneOnItsPullRequestBase(t *testing.T) {
 			api.recorded["theirs"], api.recorded["mine"] = "main", "theirs"
 			f.Decorate(api.ctx)
 			stubStackPRs(t, f, nil)
-			stubStackStanding(t, f, nil)
 			shipGTReady(t, f)
 			refs := dryRunRefs(t, f)
 			report := dryRunReport(t, f, "-m", "fix: frobnicate", "--no-push")
@@ -294,7 +291,6 @@ func TestShipTracksABranchCutFromAnotherLanesPublishedHead(t *testing.T) {
 			api.bases["theirs"], api.recorded["theirs"] = "main", "main"
 			f.Decorate(api.ctx)
 			stubStackPRs(t, f, nil)
-			stubStackStanding(t, f, nil)
 			shipGTReady(t, f)
 			refs := dryRunRefs(t, f)
 			for _, parent := range [][]string{nil, {"--parent", "theirs"}} {
@@ -371,7 +367,6 @@ func TestShipDeepensAShallowCloneToShipOnABaseOnlyOriginHolds(t *testing.T) {
 	api.recorded["theirs"], api.recorded["mine"] = "main", "theirs"
 	f.Decorate(api.ctx)
 	stubStackPRs(t, f, nil)
-	stubStackStanding(t, f, nil)
 	heads := gitAt(t, f.Env(), shallow, "for-each-ref", "--format=%(refname) %(objectname)", "refs/heads")
 
 	out, errOut, err := runShipCmdFull(f.ContextIn(shallow), t, "--dry-run", "--no-commit")
@@ -422,7 +417,6 @@ func TestShipTipOnlyParentReportsTheNativeStackRefusal(t *testing.T) {
 	api.bases["theirs"], api.stacks["theirs"] = "main", 48
 	f.Decorate(api.ctx)
 	stubStackPRs(t, f, nil)
-	stubStackStanding(t, f, nil)
 	shipGTReady(t, f)
 
 	_, err := runShipCmd(f.Context(), t, "-m", "fix: frobnicate", "--tip-only", "--parent", "theirs", "--no-push")
@@ -462,7 +456,6 @@ func TestShipParentOnANativeBranchShipsOnTheNativeLane(t *testing.T) {
 	api.stacks["base"] = 46
 	f.Decorate(api.ctx)
 	stubStackPRs(t, f, nil)
-	stubStackStanding(t, f, nil)
 
 	report := dryRunReport(t, f, "--no-commit", "--parent", "base")
 
@@ -498,7 +491,6 @@ func TestShipOnTrunkPastALoneNativeStackOnAPullRequestBranch(t *testing.T) {
 			api := stubGTAPI(t)
 			f.Decorate(api.ctx)
 			stubStackPRs(t, f, nil)
-			stubStackStanding(t, f, nil)
 
 			report := dryRunReport(t, f, append([]string{"--no-commit"}, args...)...)
 
@@ -569,7 +561,6 @@ func shipNativeRestackedElsewhere(t *testing.T) *vcstest.Fixture {
 	}
 	f.Decorate(api.ctx)
 	stubStackPRs(t, f, prs)
-	stubStackStanding(t, f, nil)
 	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "sand")
 	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", f.WorktreePath("anti-bot"), "anti-bot")
@@ -667,7 +658,6 @@ func shipNativeRewrittenBelow(t *testing.T) *vcstest.Fixture {
 	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "bottom")
 	f.Decorate(api.ctx)
 	stubStackPRs(t, f, nil)
-	stubStackStanding(t, f, nil)
 	return f
 }
 
@@ -756,6 +746,9 @@ func TestShipNoPushReadsABranchHoldingItsParentHeadAsOnItsParent(t *testing.T) {
 	got, errStr, err := runShipCmdFull(f.Context(), t, args...)
 	if err != nil {
 		t.Fatalf("ship = %v (stderr=%q)", err, errStr)
+	}
+	if !strings.HasPrefix(got, "lane github-stack"+shipSep) {
+		t.Errorf("summary = %q, want it to open on the native-stack lane it shipped in", got)
 	}
 	if strings.Contains(got, "kept middle") {
 		t.Errorf("summary = %q, want no rebase named for middle: it already holds bottom's head", got)
