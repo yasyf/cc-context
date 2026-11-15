@@ -333,6 +333,8 @@ func dryRunTrack(ctx context.Context, l lane, o shipOpts, c *gtCache, state gtSt
 		replay += adopted
 		r.because = "untracked, so gt track --parent records it (ship drops -f, which would outrank it)" + replay
 		switch {
+		case recorded.published && recorded.pr == 0:
+			r.because = "untracked, so ship tracks it on " + recorded.base + ", the pushed branch with no pull request it was cut from" + replay
 		case recorded.published:
 			r.because = fmt.Sprintf("untracked, so ship tracks it on the branch of open #%d it was cut from", recorded.pr) + replay
 		case recorded.base != "":

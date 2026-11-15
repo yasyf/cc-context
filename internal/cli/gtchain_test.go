@@ -2,12 +2,14 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
 
+	"github.com/yasyf/cc-context/internal/nativemeta"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
@@ -230,6 +232,148 @@ func TestStackSubmitRefusesAnUntrackedBranchAtTheTipsCommitWithNoCutRecorded(t *
 	err := stackAdoptChain(cmd, render.Dir(f.Dir))
 	if err == nil || !strings.Contains(err.Error(), "c sits at the same commit as untracked x") {
 		t.Fatalf("adopt = %v, want a refusal naming x", err)
+	}
+}
+
+// gtRewrittenBaseRepo is base, a native stack member with an open pull request
+// that another clone rebased onto a newer main after this one pushed it, so its
+// local head, which another worktree holds, trails origin's; lane, an
+// untracked branch at the main commit between; and routes, a pushed branch
+// with no pull request cut from base's published head, which only origin holds.
+func gtRewrittenBaseRepo(t *testing.T) (*vcstest.Fixture, map[string]string) {
+	t.Helper()
+	f := shipRepo(t, vcstest.Remote())
+	f.Decorate(func(ctx context.Context) context.Context { return withStackProvider(ctx, true) })
+	mustRun(t, f.Env(), f.Dir, "git", "config", "ccx.stack", "github")
+	trunk := shipHead(t, f)
+	shipGTUntracked(t, f, "base")
+	heads := map[string]string{"stale": shipHead(t, f)}
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "base")
+	common := filepath.Join(f.Dir, ".git")
+	if err := nativemeta.Init(f.Context(), common, "main"); err != nil {
+		t.Fatal(err)
+	}
+	if err := nativemeta.AdoptRoot(f.Context(), common, "base", "main", trunk, heads["stale"]); err != nil {
+		t.Fatal(err)
+	}
+	stackAdvanceTrunk(t, f, "lane.txt", "lane\n")
+	mustRun(t, f.Env(), f.Dir, "git", "branch", "lane", "origin/main")
+	stackAdvanceTrunk(t, f, "upstream.txt", "upstream\n")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "--detach", "origin/main")
+	writeShipFile(t, f.Dir, "base.txt", "base, rebased elsewhere\n")
+	mustRun(t, f.Env(), f.Dir, "git", "add", "base.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "commit", "-q", "-m", "base", "-m", "why base")
+	heads["published"] = shipHead(t, f)
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-qf", "origin", "HEAD:refs/heads/base")
+	shipGTUntracked(t, f, "routes")
+	heads["routes"] = shipHead(t, f)
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "routes")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "--detach")
+	mustRun(t, f.Env(), f.Dir, "git", "branch", "-qD", "routes")
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", f.WorktreePath("base"), "base")
+	api := newGTAPIStub(t)
+	api.openPRs("base")
+	api.bases["base"], api.stacks["base"] = "main", 46
+	f.Decorate(api.ctx)
+	stubStackPRs(t, f, map[string]*stackPR{"base": {Number: api.prs["base"], Title: "base", State: "OPEN", Base: "main", Head: heads["published"], Mergeable: "MERGEABLE"}})
+	return f, heads
+}
+
+func assertGTOnPublishedBase(t *testing.T, f *vcstest.Fixture, heads map[string]string, records map[string]string) {
+	t.Helper()
+	state, err := gtStateQuery(t.Context(), render.Dir(f.Dir), "test")
+	if err != nil {
+		t.Fatalf("gt state: %v", err)
+	}
+	for branch, parent := range records {
+		if s := state[branch]; len(s.Parents) != 1 || s.Parents[0].Ref != parent {
+			t.Errorf("gt state %s parents = %v, want %s", branch, s.Parents, parent)
+		}
+	}
+	for branch := range records {
+		if s := state[branch]; s.Parents[0].Ref == "base" && s.Parents[0].SHA != heads["published"] {
+			t.Errorf("gt state %s sits on base at %s, want base's published head %s", branch, shortOID(s.Parents[0].SHA), shortOID(heads["published"]))
+		}
+	}
+	if _, tracked := state["lane"]; tracked {
+		t.Error("gt tracks lane, a branch at a main commit below base's published head")
+	}
+	for where, dir := range map[string]string{"local": f.Dir, "origin": f.RemoteDir} {
+		want := heads["stale"]
+		if where == "origin" {
+			want = heads["published"]
+		}
+		if got := gitAt(t, f.Env(), dir, "rev-parse", "base"); got != want {
+			t.Errorf("%s base = %s, want it left at %s", where, shortOID(got), shortOID(want))
+		}
+	}
+}
+
+func TestStackSubmitAdoptsOntoTheHeadAnotherCloneRebasedItsBaseTo(t *testing.T) {
+	f, heads := gtRewrittenBaseRepo(t)
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "routes")
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&out)
+	cmd.SetContext(f.Context())
+
+	if err := stackAdoptChain(cmd, render.Dir(f.Dir)); err != nil {
+		t.Fatalf("adopt: %v", err)
+	}
+	if want := "tracked routes onto base\n"; out.String() != want {
+		t.Errorf("report = %q, want %q", out.String(), want)
+	}
+	assertGTOnPublishedBase(t, f, heads, map[string]string{"routes": "base"})
+}
+
+func TestStackNewStacksOnAPushedBranchOnTheHeadAnotherCloneRebasedItsBaseTo(t *testing.T) {
+	f, heads := gtRewrittenBaseRepo(t)
+	child := filepath.Join(t.TempDir(), "sidecar")
+
+	out, errOut, err := runStackCmd(t, f, "new", "sidecar", "--parent", "routes", "--full-history", "--path", child)
+	if err != nil {
+		t.Fatalf("stack new --parent routes: %v\n%s%s", err, out, errOut)
+	}
+	assertGTOnPublishedBase(t, f, heads, map[string]string{"routes": "base", "sidecar": "routes"})
+}
+
+func TestShipTracksABranchOnTheHeadAnotherCloneRebasedItsBaseTo(t *testing.T) {
+	for _, tt := range []struct {
+		name, from, parent string
+		flags              []string
+	}{
+		{name: "cut from a pushed branch with no pull request", from: "origin/routes", parent: "routes"},
+		{name: "--parent names that branch", from: "origin/routes", parent: "routes", flags: []string{"--parent", "routes"}},
+		{name: "cut from base's published head", from: "origin/base", parent: "base"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f, heads := gtRewrittenBaseRepo(t)
+			mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "--detach", tt.from)
+			shipGTUntracked(t, f, "links")
+			links := shipHead(t, f)
+			shipGTReady(t, f)
+			args := append([]string{"-m", "fix: frobnicate", "--no-pr", "--no-watch"}, tt.flags...)
+
+			report := dryRunReport(t, f, args...)
+			if refusals := dryRunValues(report, "refuses"); len(refusals) != 0 {
+				t.Errorf("dry run refuses = %q, want none\n%s", refusals, report)
+			}
+			if got := dryRunValues(report, "parent"); len(got) != 1 || !strings.HasPrefix(got[0], tt.parent+shipSep) {
+				t.Errorf("dry run parent = %q, want links on %s\n%s", got, tt.parent, report)
+			}
+
+			if _, errStr, err := runShipCmdFull(f.Context(), t, args...); err != nil {
+				t.Fatalf("ship = %v (stderr=%q)", err, errStr)
+			}
+			if got := gitAt(t, f.Env(), f.Dir, "rev-parse", "links~1"); got != links {
+				t.Errorf("links was replayed: its commit before the new one is %s, want %s", shortOID(got), shortOID(links))
+			}
+			records := map[string]string{"links": tt.parent}
+			if tt.parent == "routes" {
+				records["routes"] = "base"
+			}
+			assertGTOnPublishedBase(t, f, heads, records)
+		})
 	}
 }
 
