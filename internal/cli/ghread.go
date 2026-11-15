@@ -14,19 +14,25 @@ import (
 	"github.com/yasyf/cc-context/internal/vcs"
 )
 
-// ghRead runs a gh read on the app installation's token, and again on the
+// ghRead runs a gh read on the app installation's token, again on it once its
+// hold lifts each time GitHub refuses it for a secondary rate limit, and on the
 // user's under AdmitSpill when the installation's pool is under its floor or
-// GitHub answers it with a rate limit.
+// GitHub answers it with its primary rate limit.
 func ghRead(ctx context.Context, dir render.Dir, argv []string) (string, error) {
 	env, _, err := ghReadEnv(ctx, dir, 0)
 	if err != nil {
 		return "", err
 	}
-	out, err := render.RunCLIEnv(ctx, dir, "gh", argv, env)
-	if len(env) > 0 && (errors.As(err, new(*ghapi.FloorError)) || ghRateLimited(err)) {
-		return render.RunCLIEnv(context.WithValue(ctx, ghSpillKey{}, true), dir, "gh", argv, nil)
+	for {
+		out, err := render.RunCLIEnv(ctx, dir, "gh", argv, env)
+		switch {
+		case err != nil && ghapi.SecondaryLimit(err.Error()):
+			continue
+		case len(env) > 0 && (errors.As(err, new(*ghapi.FloorError)) || ghRateLimited(err)):
+			return render.RunCLIEnv(context.WithValue(ctx, ghSpillKey{}, true), dir, "gh", argv, nil)
+		}
+		return out, err
 	}
-	return out, err
 }
 
 func ghReadEnv(ctx context.Context, dir render.Dir, margin time.Duration) ([]string, time.Time, error) {

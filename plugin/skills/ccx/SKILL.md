@@ -484,14 +484,19 @@ the other has left, so a pool with any open window under 1000 left takes no
 more reads, after one fresh read of `rate_limit` confirms it. `vcs gh` then
 serves the cached answer to the same read, however old. Without one it moves
 an app read onto the user's pool while every open window of that pool has over
-half its limit left, and so does a read GitHub answers with a rate limit on the
-app's token. ccx's own native stack reads take the same path and then read
+half its limit left, and so does a read GitHub answers with its primary rate
+limit on the app's token. ccx's own native stack reads take the same path and then read
 REST. A read on a `GH_TOKEN` ccx minted for an installation is charged to that
 installation's pool.
 Past that, it
 exits 1 without calling GitHub and prints one line starting
 `ccx: GitHub rate limit floor:`, naming the pool, its reset time, and the top
-callers. Back off until that reset. `ccx vcs pr status` and `pr state` read through REST when GraphQL is
+callers. Back off until that reset. GitHub's secondary rate limit on either
+token instead holds every ccx request on that token, reads, writes, and merges
+alike, until its Retry-After, else a minute doubled on each repeat: each
+command prints one line starting `ccx: GitHub secondary rate limit:`, waits out
+the hold plus up to 30 seconds, and runs, so a caller needs no retry of its
+own. `ccx vcs pr status` and `pr state` read through REST when GraphQL is
 refused, and stop when REST is at its floor too. `ccx vcs auth status` prints
 each pool's remainder, reset, and top callers; `--json` carries them as
 `pools`. `ccx vcs quota` prints who spent each open pool on this machine, and
