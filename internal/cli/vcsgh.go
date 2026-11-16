@@ -66,7 +66,11 @@ The latest response headers take precedence over differing regional windows;
 older observations remain available for accounting but do not veto a healthy
 current balance. Foreground reads run while quota remains. No one caller may spend more than a quarter of a pool's hourly
 limit: past it, its reads are refused like a spent pool's until the reset, and
-never move to another pool. A gh run watch or gh pr checks --watch polls no faster than every 30 seconds,
+never move to another pool. A gh run view <id> --json or gh run list --commit <sha> --json read whose
+flags and fields GraphQL answers (no jobs, --log, --web, --template, or a
+workflow named by file) runs as one gh api graphql query on the GraphQL pool
+instead of three to five REST requests, its --jq shaping the answer into gh's
+fields. A gh run watch or gh pr checks --watch polls no faster than every 30 seconds,
 whatever --interval asks. Watch commands retain
 two percent of their pool, capped at 100 requests. An exhausted pool or a watch
 under its reserve serves an eligible cached answer, else an app read may use the
@@ -162,6 +166,7 @@ const ghFloorPrefix = "ccx: GitHub rate limit floor: "
 
 func runVcsGh(cmd *cobra.Command, argv []string, maxAge time.Duration) (err error) {
 	ctx := cmd.Context()
+	argv = ghRunViaGraphQL(argv, func() string { return cmp.Or(ghTargetRepo(ctx, argv), ghCheckoutRepo(ctx, workingDir(ctx))) })
 	stdin, err := ghStdin(cmd, argv)
 	if err != nil {
 		return err
