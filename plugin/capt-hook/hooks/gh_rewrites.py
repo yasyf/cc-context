@@ -51,7 +51,7 @@ rewrite_command_occurrences(
         Input(command="gh pr checks 12 && gh pr merge 12 --squash"): Rewrite(
             pattern="vcs gh -- pr checks 12 && gh pr merge 12 --squash"
         ),
-        Input(command="while true; do gh pr checks 12; sleep 60; done"): Rewrite(pattern="do /"),
+        Input(command="for n in 1 2; do gh pr checks $n; done"): Rewrite(pattern="do /"),
         Input(command="gh pr merge 12 --squash"): Allow(),
         Input(command="gh pr comment 12 --body hi"): Allow(),
         Input(command="gh api -X POST repos/o/r/issues/12/comments -f body=hi"): Allow(),
