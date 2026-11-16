@@ -225,7 +225,7 @@ func (c *Client) do(ctx context.Context, method, ref string, body []byte, read b
 			identity = IdentityApp
 		}
 		if read {
-			floor := (*window).floor
+			floor := readFloor(ctx)
 			if c.spilled {
 				floor = spillFloor
 			}
