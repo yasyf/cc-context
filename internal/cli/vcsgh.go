@@ -64,7 +64,9 @@ ccx vcs auth status prints each pool's remainder, reset, and top callers.
 Before a read, ccx refreshes observations older than a minute through rate_limit.
 The latest response headers take precedence over differing regional windows;
 older observations remain available for accounting but do not veto a healthy
-current balance. Foreground reads run while quota remains. A gh run watch or gh pr checks --watch polls no faster than every 30 seconds,
+current balance. Foreground reads run while quota remains. No one caller may spend more than a quarter of a pool's hourly
+limit: past it, its reads are refused like a spent pool's until the reset, and
+never move to another pool. A gh run watch or gh pr checks --watch polls no faster than every 30 seconds,
 whatever --interval asks. Watch commands retain
 two percent of their pool, capped at 100 requests. An exhausted pool or a watch
 under its reserve serves an eligible cached answer, else an app read may use the
@@ -240,7 +242,7 @@ func runVcsGh(cmd *cobra.Command, argv []string, maxAge time.Duration) (err erro
 				_, werr := out.Write(hit.Stdout)
 				return werr
 			}
-			if identity == ghapi.IdentityApp && errors.As(err, new(*ghapi.FloorError)) {
+			if identity == ghapi.IdentityApp && ghapi.PoolSpent(err) {
 				userToken, spilled = true, true
 				continue
 			}

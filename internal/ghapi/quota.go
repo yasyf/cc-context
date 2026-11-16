@@ -68,6 +68,8 @@ type Caller struct {
 // FloorError reports the current quota observation that refused a read.
 type FloorError struct {
 	Windows []Pool
+	Caller  string
+	Spent   int
 }
 
 // Until is when the last window under the floor resets, the soonest the pool
@@ -77,6 +79,11 @@ func (e *FloorError) Until() time.Time {
 }
 
 func (e *FloorError) Error() string {
+	if e.Caller != "" {
+		w := e.Windows[0]
+		reset := w.ResetAt.Local()
+		return fmt.Sprintf("%s %s: %s spent %d of the %d a caller may spend of %d an hour, until %s (%s)", w.Identity, w.Resource, e.Caller, e.Spent, w.Limit/CallerShare, w.Limit, reset.Format(time.Kitchen), reset.Format(time.RFC3339))
+	}
 	parts := make([]string, 0, len(e.Windows))
 	for _, w := range e.Windows {
 		reset := w.ResetAt.Local()
@@ -178,6 +185,11 @@ type closedWindow struct {
 	Pool string `json:"pool"`
 	window
 }
+
+// CallerShare divides a pool among its callers: no one caller may spend more than
+// a CallerShare-th of a window's limit, so one runaway loop cannot drain a
+// token every other caller on the machine shares.
+const CallerShare = 4
 
 func (w *window) floor() int { return Floor }
 
@@ -625,7 +637,7 @@ func (c *Client) admit(ctx context.Context, identity, resource string, floor fun
 	now := c.quota.now()
 	key := poolKey(principal, resource)
 	if p := states[key]; p != nil && !p.stale(now) && (p.admits(now, floor) || !p.newest(now).ResponseAt.IsZero()) {
-		return p.admission(identity, resource, now, floor)
+		return p.admission(identity, resource, CallerName(ctx), now, floor)
 	}
 	if err := c.readQuota(ctx, identity, principal); err != nil {
 		return err
@@ -637,15 +649,18 @@ func (c *Client) admit(ctx context.Context, identity, resource string, floor fun
 	if p == nil {
 		return nil
 	}
-	return p.admission(identity, resource, now, floor)
+	return p.admission(identity, resource, CallerName(ctx), now, floor)
 }
 
-func (p *poolState) admission(identity, resource string, now time.Time, floor func(*window) int) error {
+func (p *poolState) admission(identity, resource, caller string, now time.Time, floor func(*window) int) error {
+	w := p.newest(now)
+	kind, _, _ := strings.Cut(identity, "#")
+	if w != nil && w.Limit >= CallerShare && w.Callers[caller] >= w.Limit/CallerShare {
+		return &FloorError{Windows: []Pool{{Identity: kind, Resource: resource, Limit: w.Limit, Remaining: w.Remaining, Floor: floor(w), ResetAt: w.ResetAt, ReadAt: w.ReadAt, Callers: heaviest(w.Callers)}}, Caller: caller, Spent: w.Callers[caller]}
+	}
 	if p.admits(now, floor) {
 		return nil
 	}
-	w := p.newest(now)
-	kind, _, _ := strings.Cut(identity, "#")
 	return &FloorError{Windows: []Pool{{Identity: kind, Resource: resource, Limit: w.Limit, Remaining: w.Remaining, Floor: floor(w), ResetAt: w.ResetAt, ReadAt: w.ReadAt, Callers: heaviest(w.Callers)}}}
 }
 
@@ -869,4 +884,12 @@ func scriptName(argv []string) string {
 		}
 	}
 	return base
+}
+
+// PoolSpent reports whether err is a floor refusal of the pool as a whole,
+// which a read may move to another pool for, and not one caller over its
+// share, which would only move that caller's spending onto another pool.
+func PoolSpent(err error) bool {
+	var floor *FloorError
+	return errors.As(err, &floor) && floor.Caller == ""
 }

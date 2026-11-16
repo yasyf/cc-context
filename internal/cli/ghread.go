@@ -28,7 +28,7 @@ func ghRead(ctx context.Context, dir render.Dir, argv []string) (string, error) 
 		switch {
 		case err != nil && ghapi.SecondaryLimit(err.Error()):
 			continue
-		case len(env) > 0 && (errors.As(err, new(*ghapi.FloorError)) || ghRateLimited(err)):
+		case len(env) > 0 && (ghapi.PoolSpent(err) || ghRateLimited(err)):
 			return render.RunCLIEnv(context.WithValue(ctx, ghSpillKey{}, true), dir, "gh", argv, nil)
 		}
 		return out, err

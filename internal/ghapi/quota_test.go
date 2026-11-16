@@ -75,6 +75,34 @@ func TestAdmitRefusesAPoolUnderTheFloorAndNamesItsCallers(t *testing.T) {
 	}
 }
 
+func TestAdmitRefusesACallerPastItsShareOfThePool(t *testing.T) {
+	reset := time.Now().Add(30 * time.Minute).Truncate(time.Second)
+	c, l := quotaClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprint(w, rateLimitBody(5000, 3000, reset))
+	})
+	loop := render.WithEnv(t.Context(), "CCX_CALLER=poll-loop")
+	for range 5000 / CallerShare {
+		if err := l.charge(loop, IdentityUser, ResourceCore, CallerName(loop), "", rateHeader(3000, reset)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	err := c.Admit(loop, IdentityUser, ResourceCore)
+	var floor *FloorError
+	if !errors.As(err, &floor) || floor.Caller != "poll-loop" || floor.Spent != 5000/CallerShare {
+		t.Fatalf("Admit(poll-loop) after %d requests = %v, want a *FloorError naming poll-loop", 5000/CallerShare, err)
+	}
+	if PoolSpent(err) {
+		t.Errorf("PoolSpent(%v) = true, want false: a caller over its share must not move to another pool", err)
+	}
+	if wait, limited := RateLimited(err); !limited || wait <= 0 {
+		t.Errorf("RateLimited(share) = %s, %v; want a wait until the reset", wait, limited)
+	}
+	if err := c.Admit(render.WithEnv(t.Context(), "CCX_CALLER=other"), IdentityUser, ResourceCore); err != nil {
+		t.Errorf("Admit(other) = %v, want it admitted while the pool has 3000 left", err)
+	}
+}
+
 func TestAdmitSpillKeepsHalfTheUsersPool(t *testing.T) {
 	reset := time.Now().Add(30 * time.Minute).Truncate(time.Second)
 	for remaining, refused := range map[int]bool{2499: true, 2500: false} {
