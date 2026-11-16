@@ -28,6 +28,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `gh run watch <id>` and `gh run view <id>` through `ccx vcs gh` no longer
+  spend the REST core pool. A watch made four core requests a poll (the run,
+  its jobs, its workflow, and annotations), about 700 an hour across this
+  Mac's lanes; ccx now runs it itself as one GraphQL query a poll, admitted,
+  charged as it is sent, and cached for 30 seconds like any read of one run, so
+  a watch `timeout` kills is still charged and two lanes watching one run share
+  a query. It prints a line each time the run or a job changes status and
+  exits once the run completes, 1 under `--exit-status` unless it succeeded.
+  `gh run view <id>` with no flag but `--repo` is one GraphQL query too,
+  printed as a title line, its trigger, and a line per job. A
+  `gh run view <id> --json` read rewritten to GraphQL is now cached for at
+  most 30 seconds, as its REST form was.
 - `ccx vcs ship` pushes the branch it ships and never restacks or pushes a
   parent another clone published. When the parent has a published head and
   this working copy never checked it out, ship keeps it and every branch below
