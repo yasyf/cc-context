@@ -60,15 +60,16 @@ what gh sent from the request lines GH_DEBUG=1 has it print, which never reach
 stderr, so gh api --paginate is charged a request a page, and a command that
 sends none, such as gh api 'repos/{owner}/{repo}' outside a checkout, nothing.
 ccx vcs auth status prints each pool's remainder, reset, and top callers.
-Before a read, ccx reads its pool's standing from GitHub's free rate_limit
-when the ledger's is over a minute old. A pool under
-1000 left in any open window takes no more reads: ccx serves the cached answer
-to the same read, however old, saying so on stderr; else a read on the app's
-pool runs on the user's pool instead while every window of that pool has over
-half its limit left; else ccx exits 1 without calling GitHub
-and prints one line starting "ccx: GitHub rate limit floor:" naming the pool,
-its remainder and limit, its reset time, and the top callers. Back off until
-that reset.
+Before a read, ccx refreshes observations older than a minute through rate_limit.
+The latest response headers take precedence over differing regional windows;
+older observations remain available for accounting but do not veto a healthy
+current balance. Foreground reads run while quota remains. Watch commands retain
+two percent of their pool, capped at 100 requests. An exhausted pool or a watch
+under its reserve serves an eligible cached answer, else an app read may use the
+user's pool while its latest balance has at least half its limit left, else
+ccx exits 1 with the current balance, reset time, and top callers.
+Actual primary exhaustion waits for its reset; secondary throttling honors
+Retry-After and the shared token hold. Core, GraphQL, and search stay separate.
 
 --max-age serves an identical read (same repository, arguments, and stdin)
 from the machine-wide cache while its stored answer is younger than DUR. Only
@@ -181,6 +182,9 @@ func runVcsGh(cmd *cobra.Command, argv []string, maxAge time.Duration) (err erro
 	}
 	scope := cmp.Or(ghTargetRepo(ctx, argv), ghGraphQLRepo(argv))
 	watches := ghWatches(argv)
+	if watches {
+		ctx = ghapi.BackgroundQuota(ctx)
+	}
 	interactive := !watches && ghTerminal(out)
 	userToken := interactive || ghReadsOutsideInstallation(argv) || ghQueryReadsViewer(argv, stdin)
 	cacheable := maxAge > 0 && !interactive && !ghOtherIdentity(ctx) && ghCacheable(argv, stdin, scope)
@@ -651,6 +655,9 @@ func chargeGHChild(ctx context.Context, bin string, argv, env []string) (*render
 		return nil, nil
 	}
 	ctx = render.WithEnv(ctx, env...)
+	if ghWatches(argv) {
+		ctx = ghapi.BackgroundQuota(ctx)
+	}
 	api, resource := reviewsAPI(), ghResource(argv)
 	switch {
 	case !ghReads(argv, nil):

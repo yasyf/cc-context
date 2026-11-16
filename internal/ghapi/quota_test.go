@@ -203,7 +203,7 @@ func TestAdmitScalesTheFloorToASmallPool(t *testing.T) {
 	}
 }
 
-func TestALateResponseNeverRaisesTheBalanceWithinAWindow(t *testing.T) {
+func TestNewResponseCanRaiseTheBalanceWithinAWindow(t *testing.T) {
 	reset := time.Now().Add(time.Hour).Truncate(time.Second)
 	l := &ledger{dir: t.TempDir(), now: time.Now}
 	for _, remaining := range []string{"4000", "4100"} {
@@ -219,8 +219,8 @@ func TestALateResponseNeverRaisesTheBalanceWithinAWindow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(pools) != 1 || pools[0].Remaining != 4000 || pools[0].Callers[0].Requests != 2 {
-		t.Errorf("pools = %+v, want 4000 left after a late 4100 and two requests charged", pools)
+	if len(pools) != 1 || pools[0].Remaining != 4100 || pools[0].Callers[0].Requests != 2 {
+		t.Errorf("pools = %+v, want the latest header balance of 4100 and two requests charged", pools)
 	}
 }
 
@@ -398,54 +398,102 @@ func TestObserveKeepsEachWindowByItsReset(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(pools) != 2 ||
-		pools[0].Remaining != 3498 || !pools[0].ResetAt.Equal(rateLimit) || pools[0].Callers[0] != (Caller{Caller: "ccx", Requests: 2}) ||
+		pools[0].Remaining != 3510 || !pools[0].ResetAt.Equal(rateLimit) || pools[0].Callers[0] != (Caller{Caller: "ccx", Requests: 2}) ||
 		pools[1].Remaining != 540 || !pools[1].ResetAt.Equal(headers) || pools[1].Callers[0] != (Caller{Caller: "cc-review", Requests: 2}) {
-		t.Errorf("pools = %+v, want 3498 left until %s for ccx and 540 left until %s for cc-review", pools, rateLimit, headers)
+		t.Errorf("pools = %+v, want latest 3510 left until %s for ccx and 540 left until %s for cc-review", pools, rateLimit, headers)
 	}
 }
 
-func TestAdmitRefusesWhenAnyOpenWindowIsUnderTheFloor(t *testing.T) {
+func TestAdmitUsesLatestResponseRatherThanLowestRegionalWindow(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
-	rateLimit, headers := now.Add(3*time.Minute), now.Add(8*time.Minute)
-	listed, listedReset := 5791, rateLimit
+	olderReset, latestReset := now.Add(8*time.Minute), now.Add(3*time.Minute)
 	rateReads := 0
 	c, l := quotaClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		rateReads++
-		_, _ = fmt.Fprint(w, rateLimitBody(listed, 5000, listedReset))
+		_, _ = fmt.Fprint(w, rateLimitBody(5000, 5000, olderReset))
 	})
 	l.now = func() time.Time { return now }
 	ctx := t.Context()
-	if err := l.charge(ctx, IdentityUser, ResourceGraphQL, "landing_guard.py", "", rateHeader(0, headers)); err != nil {
+	for _, observation := range []struct {
+		remaining int
+		reset     time.Time
+	}{{0, olderReset}, {373, latestReset}} {
+		now = now.Add(time.Second)
+		if err := l.charge(ctx, IdentityUser, ResourceGraphQL, "watch", "", rateHeader(observation.remaining, observation.reset)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := c.Admit(ctx, IdentityUser, ResourceGraphQL); err != nil {
+		t.Fatalf("healthy latest headers refused by an older regional window: %v", err)
+	}
+	now = now.Add(time.Second)
+	if err := l.charge(ctx, IdentityUser, ResourceGraphQL, "watch", "", rateHeader(0, latestReset)); err != nil {
 		t.Fatal(err)
 	}
-	err := c.Admit(ctx, IdentityUser, ResourceGraphQL)
-	var floor *FloorError
-	if !errors.As(err, &floor) {
-		t.Fatalf("Admit with 0 left in the headers' window and %d in rate_limit's = %v, want a *FloorError", listed, err)
+	if err := c.Sent(ctx, IdentityUser, []string{"https://api.github.com/graphql"}); err != nil {
+		t.Fatal(err)
 	}
-	if len(floor.Windows) != 1 || !floor.Windows[0].ResetAt.Equal(headers) || !floor.Until().Equal(headers) {
-		t.Errorf("refused windows = %+v, want the spent one alone, resetting at %s", floor.Windows, headers)
+	pools, err := c.Pools(ctx, IdentityUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	under := 0
+	for _, pool := range pools {
+		if pool.Remaining < pool.Floor {
+			under++
+		}
+	}
+	if under != 1 {
+		t.Fatalf("status reports %d refusing windows, want only the current response", under)
+	}
+	var floor *FloorError
+	if err := c.Admit(ctx, IdentityUser, ResourceGraphQL); !errors.As(err, &floor) || !floor.Until().Equal(latestReset) {
+		t.Fatalf("exhausted latest response should hold until %s: %v", latestReset, err)
 	}
 	if rateReads != 1 {
-		t.Errorf("rate_limit read %d times, want once before the refusal", rateReads)
+		t.Fatalf("rate_limit reads = %d, want only the explicit Pools read", rateReads)
 	}
-
-	listed = 900
-	if err := l.charge(ctx, IdentityUser, ResourceGraphQL, "ccx", "", rateHeader(listed, rateLimit)); err != nil {
-		t.Fatal(err)
-	}
-	err = c.Admit(ctx, IdentityUser, ResourceGraphQL)
-	if !errors.As(err, &floor) || len(floor.Windows) != 2 || !floor.Windows[0].ResetAt.Equal(rateLimit) || !floor.Until().Equal(headers) {
-		t.Fatalf("Admit with 900 and 0 left = %v, want both windows refused until %s", err, headers)
-	}
-	if wait, limited := RateLimited(err); !limited || wait <= 3*time.Minute {
-		t.Errorf("RateLimited(floor) = %s, %v; want a wait until the later reset", wait, limited)
-	}
-
-	now = headers.Add(time.Second)
-	listed, listedReset = 5000, rateLimit.Add(time.Hour)
+	now = latestReset.Add(time.Second)
 	if err := c.Admit(ctx, IdentityUser, ResourceGraphQL); err != nil {
-		t.Errorf("Admit once both windows reset = %v, want rate_limit read and its new window to admit", err)
+		t.Fatalf("expired response should refresh and admit: %v", err)
+	}
+}
+
+func TestBackgroundReserveLeavesForegroundAndOtherResourcesAvailable(t *testing.T) {
+	for _, resource := range []string{ResourceCore, ResourceGraphQL, ResourceSearch} {
+		t.Run(resource, func(t *testing.T) {
+			now := time.Now().UTC().Truncate(time.Second)
+			c, l := quotaClient(t, func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = fmt.Fprint(w, rateLimitBody(5000, 5000, now.Add(time.Hour)))
+			})
+			l.now = func() time.Time { return now }
+			header := rateHeader(99, now.Add(time.Hour))
+			limit, remaining := 5000, 99
+			if resource == ResourceSearch {
+				limit, remaining = 30, 0
+				header.Set("X-RateLimit-Limit", "30")
+				header.Set("X-RateLimit-Remaining", "0")
+			}
+			ctx := t.Context()
+			if err := l.charge(ctx, IdentityUser, resource, "watch", "", header); err != nil {
+				t.Fatal(err)
+			}
+			if err := c.Admit(BackgroundQuota(ctx), IdentityUser, resource); !errors.As(err, new(*FloorError)) {
+				t.Fatalf("background admitted %d/%d: %v", remaining, limit, err)
+			}
+			if remaining > 0 {
+				if err := c.Admit(ctx, IdentityUser, resource); err != nil {
+					t.Fatalf("foreground refused remaining quota: %v", err)
+				}
+			}
+			other := ResourceCore
+			if resource == other {
+				other = ResourceGraphQL
+			}
+			if err := c.Admit(ctx, IdentityUser, other); err != nil {
+				t.Fatalf("other resource refused: %v", err)
+			}
+		})
 	}
 }
 

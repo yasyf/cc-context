@@ -21,10 +21,22 @@ import (
 	"github.com/yasyf/cc-context/internal/render"
 )
 
-// Floor is how much of a pool ccx leaves unread: a read that finds any open
-// window of its pool under Floor, or a fifth of a smaller window's limit, is
-// refused, so the rest stays for writes.
-const Floor = 1000
+// Floor is the minimum available quota for a foreground read.
+const Floor = 1
+
+type backgroundQuotaKey struct{}
+
+// BackgroundQuota reserves two percent of a pool, at most 100 requests, for foreground work.
+func BackgroundQuota(ctx context.Context) context.Context {
+	return context.WithValue(ctx, backgroundQuotaKey{}, true)
+}
+
+func readFloor(ctx context.Context) func(*window) int {
+	if ctx.Value(backgroundQuotaKey{}) != nil {
+		return func(w *window) int { return max(1, min(100, w.Limit/50)) }
+	}
+	return (*window).floor
+}
 
 const quotaStale = time.Minute
 
@@ -35,10 +47,7 @@ const (
 	ResourceSearch  = "search"
 )
 
-// Pool is one rate-limit window of one identity's GitHub resource, and the
-// callers charged against it since it opened, most requests first. GitHub can
-// count one resource in more than one window at once, each with its own reset,
-// and refuses a request counted in a spent window whatever another has left.
+// Pool is one observed rate-limit window and its callers, most requests first.
 type Pool struct {
 	Identity  string    `json:"identity"`
 	Resource  string    `json:"resource"`
@@ -56,8 +65,7 @@ type Caller struct {
 	Requests int    `json:"requests"`
 }
 
-// FloorError is a read refused because an open window of its pool is under
-// its floor. Windows lists those under it, the soonest reset first.
+// FloorError reports the current quota observation that refused a read.
 type FloorError struct {
 	Windows []Pool
 }
@@ -157,12 +165,13 @@ func (h hold) refused(now time.Time, wait time.Duration, named bool) hold {
 }
 
 type window struct {
-	Limit     int                       `json:"limit"`
-	Remaining int                       `json:"remaining"`
-	ResetAt   time.Time                 `json:"resetAt"`
-	ReadAt    time.Time                 `json:"readAt"`
-	Callers   map[string]int            `json:"callers,omitempty"`
-	Paths     map[string]map[string]int `json:"paths,omitempty"`
+	ResponseAt time.Time                 `json:"responseAt,omitempty"`
+	Limit      int                       `json:"limit"`
+	Remaining  int                       `json:"remaining"`
+	ResetAt    time.Time                 `json:"resetAt"`
+	ReadAt     time.Time                 `json:"readAt"`
+	Callers    map[string]int            `json:"callers,omitempty"`
+	Paths      map[string]map[string]int `json:"paths,omitempty"`
 }
 
 type closedWindow struct {
@@ -170,7 +179,7 @@ type closedWindow struct {
 	window
 }
 
-func (w *window) floor() int { return min(Floor, w.Limit/5) }
+func (w *window) floor() int { return Floor }
 
 func (p *poolState) roll(now time.Time) {
 	p.Windows = slices.DeleteFunc(p.Windows, func(w *window) bool {
@@ -190,16 +199,29 @@ func (p *poolState) open(now time.Time) []*window {
 
 func (p *poolState) observe(now time.Time, limit, remaining int, reset time.Time, authoritative bool) *window {
 	reset = reset.UTC()
+	if !authoritative {
+		for _, w := range p.Windows {
+			if reset.Sub(w.ResetAt).Abs() > time.Second {
+				w.ResponseAt = time.Time{}
+			}
+		}
+	}
 	for _, w := range p.Windows {
 		if reset.Sub(w.ResetAt).Abs() <= time.Second {
-			if !authoritative {
-				remaining = min(w.Remaining, remaining)
+			if authoritative && !w.ResponseAt.IsZero() && (w.Remaining == 0 || now.Sub(w.ResponseAt) <= quotaStale) {
+				return w
 			}
 			w.Limit, w.Remaining, w.ReadAt = limit, remaining, now.UTC()
+			if !authoritative {
+				w.ResponseAt = now.UTC()
+			}
 			return w
 		}
 	}
 	w := &window{Limit: limit, Remaining: remaining, ResetAt: reset, ReadAt: now.UTC()}
+	if !authoritative {
+		w.ResponseAt = now.UTC()
+	}
 	p.Windows = append(p.Windows, w)
 	return w
 }
@@ -208,6 +230,12 @@ func (p *poolState) newest(now time.Time) *window {
 	open := p.open(now)
 	if len(open) == 0 {
 		return nil
+	}
+	responses := slices.DeleteFunc(slices.Clone(open), func(w *window) bool {
+		return w.ResponseAt.IsZero() || (w.Remaining != 0 && now.Sub(w.ResponseAt) > quotaStale)
+	})
+	if len(responses) > 0 {
+		return slices.MaxFunc(responses, func(a, b *window) int { return a.ResponseAt.Compare(b.ResponseAt) })
 	}
 	return slices.MaxFunc(open, func(a, b *window) int { return a.ReadAt.Compare(b.ReadAt) })
 }
@@ -218,7 +246,8 @@ func (p *poolState) stale(now time.Time) bool {
 }
 
 func (p *poolState) admits(now time.Time, floor func(*window) int) bool {
-	return !slices.ContainsFunc(p.open(now), func(w *window) bool { return w.Remaining < floor(w) })
+	w := p.newest(now)
+	return w == nil || w.Remaining >= floor(w)
 }
 
 type ledger struct {
@@ -404,6 +433,9 @@ func (l *ledger) spend(pools map[string]*poolState, identity, resource, caller, 
 	case w == nil:
 		return
 	default:
+		if w.Remaining > 0 {
+			w.ResponseAt = time.Time{}
+		}
 		w.Remaining = max(w.Remaining-1, 0)
 	}
 	if w.Callers == nil {
@@ -533,8 +565,13 @@ func (p *poolState) public(principal, resource string, now time.Time, floor func
 	kind, _, _ := strings.Cut(principal, "#")
 	open := p.open(now)
 	out := make([]Pool, 0, len(open))
+	current := p.newest(now)
 	for _, w := range open {
-		out = append(out, Pool{Identity: kind, Resource: resource, Limit: w.Limit, Remaining: w.Remaining, Floor: floor(w), ResetAt: w.ResetAt, ReadAt: w.ReadAt, Callers: heaviest(w.Callers)})
+		reserve := 0
+		if w == current {
+			reserve = floor(w)
+		}
+		out = append(out, Pool{Identity: kind, Resource: resource, Limit: w.Limit, Remaining: w.Remaining, Floor: reserve, ResetAt: w.ResetAt, ReadAt: w.ReadAt, Callers: heaviest(w.Callers)})
 	}
 	slices.SortFunc(out, func(a, b Pool) int { return a.ResetAt.Compare(b.ResetAt) })
 	return out
@@ -560,18 +597,13 @@ func Resource(target string) string {
 	}
 }
 
-// Admit refuses a read from identity's resource pool with a *FloorError when
-// any open window of the pool is under its floor. It reads rate_limit first
-// when the pool is stale, and before any refusal, so a window that reset since
-// the last read is seen.
-// The app identity is the installation on c's repository.
+// Admit checks the latest response for identity's resource, refreshing stale
+// observations through rate_limit. BackgroundQuota retains a small polling reserve.
 func (c *Client) Admit(ctx context.Context, identity, resource string) error {
-	return c.admit(ctx, identity, resource, (*window).floor)
+	return c.admit(ctx, identity, resource, readFloor(ctx))
 }
 
-// AdmitSpill refuses an app read moved onto the user's resource pool once any
-// open window of that pool is under half its limit, so one spent installation
-// cannot also spend the user's own quota down to Floor.
+// AdmitSpill preserves half the user quota when an app read changes identity.
 func (c *Client) AdmitSpill(ctx context.Context, resource string) error {
 	return c.admit(ctx, IdentityUser, resource, spillFloor)
 }
@@ -592,8 +624,8 @@ func (c *Client) admit(ctx context.Context, identity, resource string, floor fun
 	}
 	now := c.quota.now()
 	key := poolKey(principal, resource)
-	if p := states[key]; p != nil && !p.stale(now) && p.admits(now, floor) {
-		return nil
+	if p := states[key]; p != nil && !p.stale(now) && (p.admits(now, floor) || !p.newest(now).ResponseAt.IsZero()) {
+		return p.admission(identity, resource, now, floor)
 	}
 	if err := c.readQuota(ctx, identity, principal); err != nil {
 		return err
@@ -602,11 +634,19 @@ func (c *Client) admit(ctx context.Context, identity, resource string, floor fun
 		return err
 	}
 	p := states[key]
-	if p == nil || p.admits(now, floor) {
+	if p == nil {
 		return nil
 	}
-	under := slices.DeleteFunc(p.public(principal, resource, now, floor), func(w Pool) bool { return w.Remaining >= w.Floor })
-	return &FloorError{Windows: under}
+	return p.admission(identity, resource, now, floor)
+}
+
+func (p *poolState) admission(identity, resource string, now time.Time, floor func(*window) int) error {
+	if p.admits(now, floor) {
+		return nil
+	}
+	w := p.newest(now)
+	kind, _, _ := strings.Cut(identity, "#")
+	return &FloorError{Windows: []Pool{{Identity: kind, Resource: resource, Limit: w.Limit, Remaining: w.Remaining, Floor: floor(w), ResetAt: w.ResetAt, ReadAt: w.ReadAt, Callers: heaviest(w.Callers)}}}
 }
 
 // Sent charges each request a child of this process, such as gh, sent to urls
