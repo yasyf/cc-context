@@ -876,3 +876,20 @@ func TestGhPlainWriter(t *testing.T) {
 		})
 	}
 }
+
+func TestGhFloorWatchInterval(t *testing.T) {
+	tests := []struct {
+		argv, want []string
+	}{
+		{argv: []string{"run", "watch", "1"}, want: []string{"run", "watch", "1", "--interval", "30"}},
+		{argv: []string{"run", "watch", "1", "-i", "3"}, want: []string{"run", "watch", "1", "-i", "30"}},
+		{argv: []string{"pr", "checks", "1", "--watch", "--interval=10"}, want: []string{"pr", "checks", "1", "--watch", "--interval=30"}},
+		{argv: []string{"pr", "checks", "1", "--watch", "--interval", "60"}, want: []string{"pr", "checks", "1", "--watch", "--interval", "60"}},
+		{argv: []string{"pr", "view", "1", "--watch"}, want: []string{"pr", "view", "1", "--watch"}},
+	}
+	for _, tt := range tests {
+		if got := ghFloorWatchInterval(tt.argv); !slices.Equal(got, tt.want) {
+			t.Errorf("ghFloorWatchInterval(%q) = %q, want %q", tt.argv, got, tt.want)
+		}
+	}
+}

@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -63,7 +64,8 @@ ccx vcs auth status prints each pool's remainder, reset, and top callers.
 Before a read, ccx refreshes observations older than a minute through rate_limit.
 The latest response headers take precedence over differing regional windows;
 older observations remain available for accounting but do not veto a healthy
-current balance. Foreground reads run while quota remains. Watch commands retain
+current balance. Foreground reads run while quota remains. A gh run watch or gh pr checks --watch polls no faster than every 30 seconds,
+whatever --interval asks. Watch commands retain
 two percent of their pool, capped at 100 requests. An exhausted pool or a watch
 under its reserve serves an eligible cached answer, else an app read may use the
 user's pool while its latest balance has at least half its limit left, else
@@ -186,6 +188,7 @@ func runVcsGh(cmd *cobra.Command, argv []string, maxAge time.Duration) (err erro
 	scope := cmp.Or(ghTargetRepo(ctx, argv), ghGraphQLRepo(argv))
 	watches := ghWatches(argv)
 	if watches {
+		argv = ghFloorWatchInterval(argv)
 		ctx = ghapi.BackgroundQuota(ctx)
 	}
 	interactive := !watches && ghTerminal(out)
@@ -651,6 +654,39 @@ func ghReadsFiles(argv []string) bool {
 
 func ghWatches(argv []string) bool {
 	return len(argv) > 1 && argv[1] == "watch" || slices.Contains(argv, "--watch")
+}
+
+// ghWatchFloor is the least refresh interval, in seconds, ccx lets gh run watch
+// or gh pr checks --watch poll at: gh's own 3 and 10 second defaults spend a
+// request or more a second for as long as a lane watches.
+const ghWatchFloor = 30
+
+// ghFloorWatchInterval raises a run or check watch's --interval to ghWatchFloor,
+// adding it when argv sets none.
+func ghFloorWatchInterval(argv []string) []string {
+	if len(argv) < 2 || argv[0] != "run" && argv[0] != "pr" || argv[0] == "run" && argv[1] != "watch" || argv[0] == "pr" && argv[1] != "checks" {
+		return argv
+	}
+	floored := slices.Clone(argv)
+	for i, arg := range floored {
+		flag, value, inline := strings.Cut(arg, "=")
+		if flag != "--interval" && flag != "-i" {
+			continue
+		}
+		if !inline && i+1 < len(floored) {
+			value = floored[i+1]
+		}
+		if seconds, err := strconv.Atoi(value); err == nil && seconds >= ghWatchFloor {
+			return floored
+		}
+		if inline {
+			floored[i] = flag + "=" + strconv.Itoa(ghWatchFloor)
+		} else if i+1 < len(floored) {
+			floored[i+1] = strconv.Itoa(ghWatchFloor)
+		}
+		return floored
+	}
+	return append(floored, "--interval", strconv.Itoa(ghWatchFloor))
 }
 
 var ghCoreCommands = map[string]bool{"run": true, "workflow": true, "release": true, "cache": true, "secret": true, "variable": true, "gist": true, "ruleset": true, "attestation": true}
