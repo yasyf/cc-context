@@ -26,7 +26,7 @@ var ghRunGraphQLFields = map[string]string{
 const ghRunGraphQLSelection = `databaseId runNumber url createdAt updatedAt event workflow { name databaseId } checkSuite { status conclusion commit { oid } branch { name } }`
 
 var (
-	ghRunID40   = regexp.MustCompile(`^[0-9a-f]{40}$`)
+	ghCommitSHA = regexp.MustCompile(`^[0-9a-f]{7,40}$`)
 	ghRepoShape = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
 )
 
@@ -86,7 +86,7 @@ func ghParseRunRead(argv []string) (ghRunRead, bool) {
 		read.run = positional[0]
 		return read, true
 	}
-	if len(positional) != 0 || !ghRunID40.MatchString(read.commit) || strings.HasSuffix(read.workflow, ".yml") || strings.HasSuffix(read.workflow, ".yaml") || ghRunID.MatchString(read.workflow) {
+	if len(positional) != 0 || !ghCommitSHA.MatchString(read.commit) || strings.HasSuffix(read.workflow, ".yml") || strings.HasSuffix(read.workflow, ".yaml") || ghRunID.MatchString(read.workflow) {
 		return ghRunRead{}, false
 	}
 	return read, true
@@ -105,7 +105,7 @@ func (r ghRunRead) argv(repo string) []string {
 			owner, name, fmt.Sprintf("https://github.com/%s/actions/runs/%s", repo, r.run), ghRunGraphQLSelection)
 		jq = fmt.Sprintf(`if .data.run == null or .data.run.databaseId == null then error("could not find any workflow run with ID %s") else .data.run | %s end`, r.run, shape)
 	} else {
-		query = fmt.Sprintf(`query { repository(owner: %q, name: %q) { object(oid: %q) { ... on Commit { checkSuites(first: 100) { nodes { workflowRun { %s } } } } } } }`,
+		query = fmt.Sprintf(`query { repository(owner: %q, name: %q) { object(expression: %q) { ... on Commit { checkSuites(first: 100) { nodes { workflowRun { %s } } } } } } }`,
 			owner, name, r.commit, ghRunGraphQLSelection)
 		filter := ""
 		if r.workflow != "" {

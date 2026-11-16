@@ -26,7 +26,7 @@ func TestGhRunViaGraphQL(t *testing.T) {
 		},
 		{
 			name: "run list on a commit", argv: []string{"run", "list", "--repo=o/r", "--commit", strings.Repeat("a", 40), "--limit", "5", "--json", "databaseId,workflowName,status,url", "--workflow", "CI"}, rewritten: true,
-			query: []string{`object(oid: "` + strings.Repeat("a", 40) + `")`, `checkSuites(first: 100)`}, jq: []string{`select(.workflow.name == "CI")`, `.[:5]`},
+			query: []string{`object(expression: "` + strings.Repeat("a", 40) + `")`, `checkSuites(first: 100)`}, jq: []string{`select(.workflow.name == "CI")`, `.[:5]`},
 		},
 		{name: "run view log", argv: []string{"run", "view", "123", "--log-failed"}},
 		{name: "run view jobs", argv: []string{"run", "view", "123", "--json", "status,jobs"}},
