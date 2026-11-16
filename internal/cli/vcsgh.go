@@ -84,7 +84,10 @@ check-runs, check-suites, or statuses, actions runs or jobs, or any argument or
 stdin naming statusCheckRollup, checkRuns, checkSuites, or a GraphQL status
 field. That state changes on a push or a finishing job, with no write here to
 expire it, and gh pr checks exits 0 only when every check passed, so a cached
-answer would be a green that outlives the head it graded.
+answer would be a green that outlives the head it graded. A read of one run, job, or check run
+it names by id, such as gh run view 123 or gh api repos/OWNER/REPO/actions/runs/123/jobs,
+is the exception: its id never moves to another head, so it is cached for at
+most 30 seconds whatever --max-age asks.
 
 A command that reads as a person rather than a repository runs on the user's
 token: gh's status commands, gh repo list, gh search with no --repo, anything
@@ -187,6 +190,9 @@ func runVcsGh(cmd *cobra.Command, argv []string, maxAge time.Duration) (err erro
 	}
 	interactive := !watches && ghTerminal(out)
 	userToken := interactive || ghReadsOutsideInstallation(argv) || ghQueryReadsViewer(argv, stdin)
+	if ghReadsCIState(argv, stdin) {
+		maxAge = min(maxAge, ghRunStateMaxAge)
+	}
 	cacheable := maxAge > 0 && !interactive && !ghOtherIdentity(ctx) && ghCacheable(argv, stdin, scope)
 	key := ghCacheKey(cmp.Or(scope, dir), argv, stdin)
 	if cacheable {
@@ -571,7 +577,7 @@ func ghGuarded(argv []string, stdin []byte) bool {
 }
 
 func ghCacheable(argv []string, stdin []byte, scope string) bool {
-	if ghWatches(argv) || ghReadsFiles(argv) || ghReadsCIState(argv, stdin) || slices.ContainsFunc(argv, ghUncachedFlag) || slices.ContainsFunc(argv, ghCheckoutPlaceholder) {
+	if ghWatches(argv) || ghReadsFiles(argv) || ghReadsCIState(argv, stdin) && !ghReadsOneRun(argv) || slices.ContainsFunc(argv, ghUncachedFlag) || slices.ContainsFunc(argv, ghCheckoutPlaceholder) {
 		return false
 	}
 	if argv[0] != "api" {
@@ -585,6 +591,8 @@ var (
 	ghCIStateCommands = map[string]bool{"pr checks": true, "pr status": true, "workflow view": true}
 	ghCIStateEndpoint = regexp.MustCompile(`(^|/)repos/[^/]+/[^/]+/(commits/[^/]+/(check-runs|check-suites|status|statuses)|statuses/[^/?]+|check-runs|check-suites|actions/(runs|jobs|workflows/[^/]+/runs))(/|$|\?)`)
 	ghCIStateField    = regexp.MustCompile(`(?i)statusCheckRollup|checkRuns|checkSuites|\bstatus\s*\{`)
+	ghOneRunEndpoint  = regexp.MustCompile(`(^|/)repos/[^/]+/[^/]+/(actions/(runs|jobs)/\d+|check-runs/\d+)(/|$|\?)`)
+	ghRunID           = regexp.MustCompile(`^\d+$`)
 )
 
 // ghReadsCIState reports whether argv, given stdin, reads check, commit status,
@@ -599,6 +607,24 @@ func ghReadsCIState(argv []string, stdin []byte) bool {
 		}
 	}
 	return slices.ContainsFunc(argv, ghCIStateField.MatchString) || ghCIStateField.Match(stdin)
+}
+
+// ghRunStateMaxAge caps how long a cached read of one run, job, or check run
+// serves: its id never moves to another head, so a cached answer can only
+// trail that run's progress, and this long at most.
+const ghRunStateMaxAge = 30 * time.Second
+
+// ghReadsOneRun reports whether argv reads one workflow run, job, or check run
+// it names by id.
+func ghReadsOneRun(argv []string) bool {
+	if len(argv) > 2 && argv[0] == "run" && argv[1] == "view" {
+		return slices.ContainsFunc(argv[2:], ghRunID.MatchString)
+	}
+	if argv[0] != "api" {
+		return false
+	}
+	_, endpoint := ghAPIRequest(argv[1:])
+	return ghOneRunEndpoint.MatchString(endpoint)
 }
 
 func ghUncachedFlag(arg string) bool {
