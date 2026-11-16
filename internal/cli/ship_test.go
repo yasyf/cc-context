@@ -8309,3 +8309,27 @@ func TestShipGTNoPushRestacksOntoTheFetchedTrunk(t *testing.T) {
 		t.Errorf("origin/main = %s, want the fetched trunk %s", got, trunk)
 	}
 }
+
+func TestShipNoWatchDefaultsFromTheEnvironmentUnlessTheFlagIsNamed(t *testing.T) {
+	tests := []struct {
+		name    string
+		env     string
+		named   bool
+		noWatch bool
+		want    bool
+	}{
+		{"unset watches", "", false, false, false},
+		{"env set skips the watch", "1", false, false, true},
+		{"other env value watches", "0", false, false, false},
+		{"named --no-watch=false watches despite env", "1", true, false, false},
+		{"named --no-watch skips without env", "", true, true, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := render.WithEnv(t.Context(), envShipNoWatch+"="+tt.env)
+			if got := shipNoWatch(ctx, tt.named, tt.noWatch); got != tt.want {
+				t.Errorf("shipNoWatch() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
