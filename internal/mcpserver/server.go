@@ -5,6 +5,7 @@ package mcpserver
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"path/filepath"
@@ -263,8 +264,17 @@ const serverInstructions = "Single question → the matching ccx_* tool; pipelin
 
 // Serve creates the proxy (engines connect lazily on first use) and the
 // resident sandbox engine, registers the static ccx_* tools, and serves them
-// over stdio until ctx is cancelled or the transport closes.
+// over stdio until ctx is cancelled or the transport closes, handing the
+// session on its stdio to a newer installed ccx once it sits idle.
 func Serve(ctx context.Context) error {
+	ss, err := serve(ctx)
+	if !errors.Is(err, errResume) {
+		return err
+	}
+	return reexec(ss)
+}
+
+func serve(ctx context.Context) (*mcp.ServerSession, error) {
 	dispatch.ConfineIndexBuilds()
 	p := proxy.New()
 	defer func() { _ = p.Close(context.WithoutCancel(ctx)) }()
@@ -279,7 +289,7 @@ func Serve(ctx context.Context) error {
 	if codeexec.Supported(ctx) {
 		inventories, err := codeexec.NewDiskInventoryStore(ctx)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		eng = codeexec.NewEngine(p, codeexec.NewMemoryStore(), codeexec.WithInventoryStore(inventories))
 		defer func() { _ = eng.Close() }()
@@ -288,7 +298,7 @@ func Serve(ctx context.Context) error {
 	s := newServer(newRootTracker())
 	register(s, p, eng)
 
-	return s.Run(ctx, &mcp.StdioTransport{})
+	return serveResumable(ctx, s)
 }
 
 func newServer(roots *rootTracker) *mcp.Server {
