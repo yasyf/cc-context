@@ -64,7 +64,8 @@ ccx vcs auth status prints each pool's remainder, reset, and top callers.
 Before a read, ccx refreshes observations older than a minute through rate_limit.
 The latest response headers take precedence over differing regional windows;
 older observations remain available for accounting but do not veto a healthy
-current balance. Foreground reads run while quota remains. No one caller may spend more than a quarter of a pool's hourly
+current balance. Foreground reads on the app's token run while quota remains; reads on the
+user's token stop with a fifth of its pool left, which writes keep. No one caller may spend more than a quarter of a pool's hourly
 limit: past it, its reads are refused like a spent pool's until the reset, and
 never move to another pool. A gh run view <id> --json or gh run list --commit <sha> --json read whose
 flags and fields GraphQL answers (no jobs, --log, --web, --template, or a

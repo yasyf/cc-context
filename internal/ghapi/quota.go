@@ -31,11 +31,20 @@ func BackgroundQuota(ctx context.Context) context.Context {
 	return context.WithValue(ctx, backgroundQuotaKey{}, true)
 }
 
-func readFloor(ctx context.Context) func(*window) int {
+// UserWriteReserve keeps a fifth of the user's pool for writes: a read on the
+// user's token is refused once a fifth of a window is left, so a push, a
+// merge or a stack submit still has quota after reads spend the rest.
+const UserWriteReserve = 5
+
+func readFloor(ctx context.Context, identity string) func(*window) int {
+	base := (*window).floor
 	if ctx.Value(backgroundQuotaKey{}) != nil {
-		return func(w *window) int { return max(1, min(100, w.Limit/50)) }
+		base = func(w *window) int { return max(1, min(100, w.Limit/50)) }
 	}
-	return (*window).floor
+	if identity != IdentityUser {
+		return base
+	}
+	return func(w *window) int { return max(base(w), w.Limit/UserWriteReserve) }
 }
 
 const quotaStale = time.Minute
@@ -612,7 +621,7 @@ func Resource(target string) string {
 // Admit checks the latest response for identity's resource, refreshing stale
 // observations through rate_limit. BackgroundQuota retains a small polling reserve.
 func (c *Client) Admit(ctx context.Context, identity, resource string) error {
-	return c.admit(ctx, identity, resource, readFloor(ctx))
+	return c.admit(ctx, identity, resource, readFloor(ctx, identity))
 }
 
 // AdmitSpill preserves half the user quota when an app read changes identity.

@@ -49,7 +49,7 @@ func TestAdmitRefusesAPoolUnderTheFloorAndNamesItsCallers(t *testing.T) {
 	rateReads := 0
 	c, l := quotaClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		rateReads++
-		_, _ = fmt.Fprint(w, rateLimitBody(Floor-1, Floor, reset))
+		_, _ = fmt.Fprint(w, rateLimitBody(Floor-1, 5000/UserWriteReserve, reset))
 	})
 	ctx := render.WithEnv(t.Context(), "CCX_CALLER=desk-runner.py")
 	if err := l.charge(ctx, IdentityUser, ResourceGraphQL, CallerName(ctx), "", rateHeader(Floor-1, reset)); err != nil {
@@ -68,7 +68,7 @@ func TestAdmitRefusesAPoolUnderTheFloorAndNamesItsCallers(t *testing.T) {
 		t.Errorf("RateLimited(floor) = %s, %v; want a wait until the reset", wait, limited)
 	}
 	if err := c.Admit(ctx, IdentityUser, ResourceCore); err != nil {
-		t.Errorf("Admit(user core) at exactly the floor = %v, want it admitted", err)
+		t.Errorf("Admit(user core) at exactly the write reserve = %v, want it admitted", err)
 	}
 	if rateReads != 1 {
 		t.Errorf("rate_limit read %d times, want once: the refusal reads it, and the core Admit reads the ledger it left", rateReads)
@@ -678,4 +678,17 @@ func TestUnwaitingHandsASecondaryLimitBackAndLeavesTheHoldForEveryoneElse(t *tes
 		}
 	}
 	t.Errorf("ledger = %+v, want a hold until the 600s Retry-After", pools)
+}
+
+func TestAdmitKeepsAFifthOfTheUsersPoolForWrites(t *testing.T) {
+	reset := time.Now().Add(30 * time.Minute).Truncate(time.Second)
+	for remaining, refused := range map[int]bool{5000/UserWriteReserve - 1: true, 5000 / UserWriteReserve: false} {
+		c, _ := quotaClient(t, func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = fmt.Fprint(w, rateLimitBody(5000, remaining, reset))
+		})
+		err := c.Admit(t.Context(), IdentityUser, ResourceCore)
+		if (err != nil) != refused || refused && !PoolSpent(err) {
+			t.Errorf("Admit(user core) at %d left = %v, want refused=%v as a spent pool", remaining, err, refused)
+		}
+	}
 }
