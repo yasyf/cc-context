@@ -221,7 +221,6 @@ func statusResolvePRs(ctx context.Context, l lane, st *vcsStatus) {
 		st.Branches[i].PR = pr
 		st.Required = statusMerge(st.Required, required)
 	}
-	statusFillAlerts(ctx, st, nodes)
 }
 
 func statusRESTPRs(ctx context.Context, l lane, st *vcsStatus) {
