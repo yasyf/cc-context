@@ -4,6 +4,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/yasyf/cc-context/internal/ghapi"
 )
 
 func TestGhRunViaGraphQL(t *testing.T) {
@@ -30,7 +33,18 @@ func TestGhRunViaGraphQL(t *testing.T) {
 		},
 		{name: "run view log", argv: []string{"run", "view", "123", "--log-failed"}},
 		{name: "run view jobs", argv: []string{"run", "view", "123", "--json", "status,jobs"}},
-		{name: "run view without json", argv: []string{"run", "view", "123"}},
+		{
+			name: "run view printed", argv: []string{"run", "view", "123", "-R", "o/r"}, rewritten: true,
+			query: []string{`resource(url: "https://github.com/o/r/actions/runs/123")`, `checkRuns(first: 100) { nodes { databaseId name status conclusion detailsUrl } }`},
+			jq:    []string{`def sym:`, `could not find any workflow run with ID 123`, `"JOBS"`, `join("\n")`},
+		},
+		{name: "run view exit status", argv: []string{"run", "view", "123", "--exit-status"}},
+		{name: "run view verbose", argv: []string{"run", "view", "123", "-v"}},
+		{name: "run view one job", argv: []string{"run", "view", "--job", "456"}},
+		{name: "run view an attempt", argv: []string{"run", "view", "123", "--attempt", "2"}},
+		{name: "run view web", argv: []string{"run", "view", "123", "--web"}},
+		{name: "run view without an id", argv: []string{"run", "view"}},
+		{name: "run view jq without json", argv: []string{"run", "view", "123", "-q", ".status"}},
 		{name: "run view template", argv: []string{"run", "view", "123", "--json", "status", "-t", "{{.status}}"}},
 		{name: "run list on a branch", argv: []string{"run", "list", "-b", "main", "--json", "status"}},
 		{name: "run list by workflow file", argv: []string{"run", "list", "-c", strings.Repeat("a", 40), "-w", "ci.yml", "--json", "status"}},
@@ -63,5 +77,53 @@ func TestGhRunViaGraphQL(t *testing.T) {
 				t.Errorf("ghGraphQLRepo(%q) = \"\", want the read's repository so the app token and cache scope it", got)
 			}
 		})
+	}
+}
+
+func TestGhParseRunWatch(t *testing.T) {
+	tests := []struct {
+		name string
+		argv []string
+		ok   bool
+		want ghRunWatch
+	}{
+		{name: "bare", argv: []string{"run", "watch", "123"}, ok: true, want: ghRunWatch{run: "123", interval: 30 * time.Second}},
+		{
+			name: "every flag", argv: []string{"run", "watch", "123", "-R", "o/r", "--exit-status", "--compact", "-i", "90"}, ok: true,
+			want: ghRunWatch{repo: "o/r", run: "123", interval: 90 * time.Second, exitStatus: true},
+		},
+		{name: "interval under the floor", argv: []string{"run", "watch", "--interval=3", "123", "--repo=o/r"}, ok: true, want: ghRunWatch{repo: "o/r", run: "123", interval: 30 * time.Second}},
+		{name: "glued short flags", argv: []string{"run", "watch", "123", "-Ro/r", "-i60"}, ok: true, want: ghRunWatch{repo: "o/r", run: "123", interval: 60 * time.Second}},
+		{name: "no run id", argv: []string{"run", "watch"}},
+		{name: "run picked by prompt", argv: []string{"run", "watch", "--exit-status"}},
+		{name: "two ids", argv: []string{"run", "watch", "1", "2"}},
+		{name: "interval not a number", argv: []string{"run", "watch", "123", "-i", "soon"}},
+		{name: "interval with no value", argv: []string{"run", "watch", "123", "-i"}},
+		{name: "unknown flag", argv: []string{"run", "watch", "123", "--web"}},
+		{name: "exit status with a value", argv: []string{"run", "watch", "123", "--exit-status=false"}},
+		{name: "run view", argv: []string{"run", "view", "123"}},
+		{name: "pr checks watch", argv: []string{"pr", "checks", "1", "--watch"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := ghParseRunWatch(tt.argv)
+			if ok != tt.ok || got != tt.want {
+				t.Fatalf("ghParseRunWatch(%q) = %+v, %v; want %+v, %v", tt.argv, got, ok, tt.want, tt.ok)
+			}
+		})
+	}
+}
+
+func TestGhRunWatchArgvReadsOneRun(t *testing.T) {
+	watch := ghRunWatch{run: "123", interval: 30 * time.Second}
+	argv := watch.argv("o/r")
+	if !ghReadsOneRun(argv) || !ghReadsCIState(argv, nil) || !ghCacheable(argv, nil, ghGraphQLRepo(argv)) {
+		t.Errorf("watch query %q: want a read of one run, cacheable for ghRunStateMaxAge", argv)
+	}
+	if repo := ghGraphQLRepo(argv); repo != "o/r" {
+		t.Errorf("ghGraphQLRepo(%q) = %q, want o/r", argv, repo)
+	}
+	if ghWatches(argv) || ghResource(argv) != ghapi.ResourceGraphQL {
+		t.Errorf("watch query %q: want a GraphQL read that is no gh watch", argv)
 	}
 }

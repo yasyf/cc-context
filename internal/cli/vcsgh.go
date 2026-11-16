@@ -71,8 +71,14 @@ never move to another pool. A gh run view <id> --json or gh run list --commit <s
 flags and fields GraphQL answers (no jobs, --log, --web, --template, or a
 workflow named by file) runs as one gh api graphql query on the GraphQL pool
 instead of three to five REST requests, its --jq shaping the answer into gh's
-fields. A gh run watch or gh pr checks --watch polls no faster than every 30 seconds,
-whatever --interval asks. Watch commands retain
+fields. So does gh run view <id> with no flag but --repo, printed as a title line,
+its trigger, and a line per job. ccx runs gh run watch <id> itself, with any of
+--repo, --exit-status, --interval, and --compact: that one query every
+--interval seconds but no faster than every 30, each admitted, charged as it is
+sent, and cached as a read of one run, printing a line each time the run or a
+job changes status, and exiting once the run completes, 1 under --exit-status
+unless it succeeded. Any other gh run watch, and gh pr checks --watch, polls no
+faster than every 30 seconds, whatever --interval asks. Watch commands retain
 two percent of their pool, capped at 100 requests. An exhausted pool or a watch
 under its reserve serves an eligible cached answer, else an app read may use the
 user's pool while its latest balance has at least half its limit left, else
@@ -84,7 +90,7 @@ Retry-After and the shared token hold. Core, GraphQL, and search stay separate.
 from the machine-wide cache while its stored answer is younger than DUR. Only
 a read that exited 0 is stored, nothing expires a stored answer but a later
 read, a later write to its repository, or an hour's age, and a watch is never
-cached. GH_TOKEN or GITHUB_TOKEN while it pins the user's token, or GH_HOST, keeps a read out of the cache. A read is cached only when its answer cannot depend on the checkout: it
+cached, though each query of a gh run watch ccx runs itself is. GH_TOKEN or GITHUB_TOKEN while it pins the user's token, or GH_HOST, keeps a read out of the cache. A read is cached only when its answer cannot depend on the checkout: it
 names its repository, or it is a gh api call with no {owner}, {repo}, or {branch}
 placeholder. --web, --log, --log-failed, gh api rate_limit, and an answer over
 1 MiB are never cached. Nor is a read of check, commit status, or workflow run
@@ -167,7 +173,13 @@ const ghFloorPrefix = "ccx: GitHub rate limit floor: "
 
 func runVcsGh(cmd *cobra.Command, argv []string, maxAge time.Duration) (err error) {
 	ctx := cmd.Context()
-	argv = ghRunViaGraphQL(argv, func() string { return cmp.Or(ghTargetRepo(ctx, argv), ghCheckoutRepo(ctx, workingDir(ctx))) })
+	checkoutRepo := func() string { return cmp.Or(ghTargetRepo(ctx, argv), ghCheckoutRepo(ctx, workingDir(ctx))) }
+	if watch, ok := ghParseRunWatch(argv); ok {
+		if repo := cmp.Or(watch.repo, checkoutRepo()); ghRepoShape.MatchString(repo) {
+			return ghWatchRun(cmd, watch, repo)
+		}
+	}
+	argv = ghRunViaGraphQL(argv, checkoutRepo)
 	stdin, err := ghStdin(cmd, argv)
 	if err != nil {
 		return err
@@ -603,13 +615,14 @@ var (
 	ghCIStateEndpoint = regexp.MustCompile(`(^|/)repos/[^/]+/[^/]+/(commits/[^/]+/(check-runs|check-suites|status|statuses)|statuses/[^/?]+|check-runs|check-suites|actions/(runs|jobs|workflows/[^/]+/runs))(/|$|\?)`)
 	ghCIStateField    = regexp.MustCompile(`(?i)statusCheckRollup|checkRuns|checkSuites|\bstatus\s*\{`)
 	ghOneRunEndpoint  = regexp.MustCompile(`(^|/)repos/[^/]+/[^/]+/(actions/(runs|jobs)/\d+|check-runs/\d+)(/|$|\?)`)
+	ghOneRunResource  = regexp.MustCompile(`resource\(url: "https://github\.com/[^/"]+/[^/"]+/actions/runs/\d+"\)`)
 	ghRunID           = regexp.MustCompile(`^\d+$`)
 )
 
 // ghReadsCIState reports whether argv, given stdin, reads check, commit status,
 // or workflow run state.
 func ghReadsCIState(argv []string, stdin []byte) bool {
-	if argv[0] == "run" || len(argv) > 1 && ghCIStateCommands[argv[0]+" "+argv[1]] {
+	if argv[0] == "run" || ghReadsOneRun(argv) || len(argv) > 1 && ghCIStateCommands[argv[0]+" "+argv[1]] {
 		return true
 	}
 	if argv[0] == "api" {
@@ -633,6 +646,9 @@ func ghReadsOneRun(argv []string) bool {
 	}
 	if argv[0] != "api" {
 		return false
+	}
+	if query, ok := ghGraphQLQuery(argv[1:], nil); ok && ghOneRunResource.MatchString(query) {
+		return true
 	}
 	_, endpoint := ghAPIRequest(argv[1:])
 	return ghOneRunEndpoint.MatchString(endpoint)
