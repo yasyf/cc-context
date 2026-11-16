@@ -239,7 +239,7 @@ Ship owns the pull request in every lane. --pr-title, --pr-title-file and --pr-b
 	cmd.Flags().BoolVar(&o.noPush, "no-push", false, "commit only; do not push or watch CI")
 	cmd.Flags().BoolVar(&o.noCommit, "no-commit", false, "push and update the PR for the commit already in place; cut no commit, and refuse a dirty working copy — implied when there is nothing to commit and the branch is ahead of trunk")
 	cmd.Flags().StringVar(&o.expectRemote, "expect-remote", "", "push only if the remote branch still has this full commit ID, replacing it: the plain Git lane publishes an existing commit and requires --no-commit, and the graphite lane leases the shipped branch's push on it, so a lane can take over a branch another working copy pushed")
-	cmd.Flags().BoolVar(&o.noWatch, "no-watch", false, "push but do not watch CI")
+	cmd.Flags().BoolVar(&o.noWatch, "no-watch", false, "push but do not watch CI; CCX_SHIP_NO_WATCH=1 makes it the default, and --no-watch=false watches anyway")
 	cmd.Flags().BoolVar(&o.noVerify, "no-verify", false, "skip the repository's hooks (uvx prek, and git's own) on the commit and every push")
 	cmd.Flags().BoolVar(&o.verify, "verify", false, "run the repository's hooks on the commit and every push (the default)")
 	cmd.Flags().BoolVar(&o.yolo, "yolo", false, "skip every hook and ship-side guard: implies --no-verify, and drops any guard ship adds of its own")
@@ -312,6 +312,7 @@ func runShip(cmd *cobra.Command, o shipOpts) (err error) {
 		ctx = render.WithEnv(ctx, "GH_REPO="+repo)
 	}
 	o.message = strings.Join(o.messages, "\n\n")
+	o.noWatch = shipNoWatch(ctx, cmd.Flags().Changed("no-watch"), o.noWatch)
 	if err := resolveBranchFlags(cmd, &o); err != nil {
 		return err
 	}
@@ -929,7 +930,15 @@ func shipReviewsWatch(ctx context.Context, w io.Writer, branches []string) error
 const (
 	envClaudeSessionKey = "CLAUDE_CODE_SESSION_ID"
 	envClaudeConfigDir  = "CLAUDE_CONFIG_DIR"
+	envShipNoWatch      = "CCX_SHIP_NO_WATCH"
 )
+
+func shipNoWatch(ctx context.Context, named, noWatch bool) bool {
+	if named {
+		return noWatch
+	}
+	return render.Getenv(ctx, envShipNoWatch) == "1"
+}
 
 func withSessionTrailer(ctx context.Context, root, message string) (string, error) {
 	id := render.Getenv(ctx, envClaudeSessionKey)
