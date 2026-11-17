@@ -1,12 +1,14 @@
 package cli
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/yasyf/cc-context/internal/nativemeta"
 	"github.com/yasyf/cc-context/internal/render"
 	"github.com/yasyf/cc-context/internal/vcstest"
 )
@@ -95,6 +97,110 @@ func TestShipGTParentTracksAcrossARewrittenParent(t *testing.T) {
 		t.Errorf("c's parent = %s, want p", parent)
 	}
 	assertOnlyOwnCommit(t, f)
+}
+
+func shipParentRewrittenElsewhere(t *testing.T, f *vcstest.Fixture, publishChild bool) string {
+	t.Helper()
+	stackCommit(t, f, "p2.txt")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "p")
+	cutOn := gitAt(t, f.Env(), f.Dir, "rev-parse", "p")
+	shipGTUntracked(t, f, "c")
+	if publishChild {
+		mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "c")
+	}
+	clone := filepath.Join(t.TempDir(), "other")
+	mustRun(t, f.Env(), filepath.Dir(clone), "git", "clone", "-q", "--branch", "p", f.RemoteDir, clone)
+	mustRun(t, f.Env(), clone, "git", "config", "user.email", "o@o.o")
+	mustRun(t, f.Env(), clone, "git", "config", "user.name", "o")
+	mustRun(t, f.Env(), clone, "git", "reset", "-q", "--hard", "origin/main")
+	writeShipFile(t, clone, "p.txt", "p rewritten\n")
+	mustRun(t, f.Env(), clone, "git", "add", "p.txt")
+	mustRun(t, f.Env(), clone, "git", "commit", "-qm", "p")
+	mustRun(t, f.Env(), clone, "git", "cherry-pick", cutOn)
+	mustRun(t, f.Env(), clone, "git", "push", "-qf", "origin", "p")
+	return gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "p")
+}
+
+func shipGTParentToRewrite(t *testing.T) *vcstest.Fixture {
+	t.Helper()
+	f := shipGTRepo(t)
+	shipGTStack(t, f, "p")
+	stubStackPRs(t, f, map[string]*stackPR{"p": {Number: 6, Title: "p", State: "OPEN", Base: "main"}})
+	return f
+}
+
+func shipNativeParentToRewrite(t *testing.T) *vcstest.Fixture {
+	t.Helper()
+	f := shipRepo(t, vcstest.Remote())
+	f.Decorate(func(ctx context.Context) context.Context { return withStackProvider(ctx, true) })
+	mustRun(t, f.Env(), f.Dir, "git", "config", "ccx.stack", "github")
+	trunk := shipHead(t, f)
+	shipGTUntracked(t, f, "p")
+	common := filepath.Join(f.Dir, ".git")
+	if err := nativemeta.Init(f.Context(), common, "main"); err != nil {
+		t.Fatal(err)
+	}
+	if err := nativemeta.AdoptRoot(f.Context(), common, "p", "main", trunk, shipHead(t, f)); err != nil {
+		t.Fatal(err)
+	}
+	api := stubGTAPI(t)
+	api.openPRs("p")
+	api.bases["p"], api.stacks["p"] = "main", 46
+	f.Decorate(api.ctx)
+	stubStackPRs(t, f, nil)
+	return f
+}
+
+func TestShipTipOnlyReplaysOntoAParentRewrittenOnTheRemote(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		fixture   func(*testing.T) *vcstest.Fixture
+		published bool
+	}{
+		{name: "graphite", fixture: shipGTParentToRewrite},
+		{name: "native", fixture: shipNativeParentToRewrite},
+		{name: "graphite, child published", fixture: shipGTParentToRewrite, published: true},
+		{name: "native, child published", fixture: shipNativeParentToRewrite, published: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := tt.fixture(t)
+			rewritten := shipParentRewrittenElsewhere(t, f, tt.published)
+			before := gitAt(t, f.Env(), f.Dir, "rev-parse", "c")
+			shipResetLog(t, f)
+			args := []string{"--no-commit", "--no-watch", "--tip-only", "--parent", "p"}
+
+			report := dryRunReport(t, f, args...)
+			refusals := dryRunValues(report, "refuses")
+			_, errStr, err := runShipCmdFull(f.Context(), t, args...)
+			if tt.published {
+				if len(refusals) != 1 || !strings.Contains(refusals[0], "interleaves copies of p's commits") {
+					t.Errorf("dry run refuses = %q, want the interleaved copies named\n%s", refusals, report)
+				}
+				if err == nil || !strings.Contains(err.Error(), "interleaves copies of p's commits") {
+					t.Errorf("ship = %v, want the interleaved copies refused", err)
+				}
+				if after := gitAt(t, f.Env(), f.Dir, "rev-parse", "c"); after != before {
+					t.Errorf("c moved from %s to %s on a refusal", before, after)
+				}
+				return
+			}
+			if len(refusals) != 0 {
+				t.Errorf("dry run refuses = %q, want none\n%s", refusals, report)
+			}
+			if err != nil {
+				t.Fatalf("ship = %v (stderr=%q), want c replayed onto p's rewritten head", err, errStr)
+			}
+			if subjects := gitAt(t, f.Env(), f.Dir, "log", "--format=%s", rewritten+"..c"); subjects != "c" {
+				t.Errorf("c carries %q above p's rewritten head, want its own commit alone", subjects)
+			}
+			if !gitContains(t, f, "c", rewritten) {
+				t.Errorf("c does not hold p's rewritten head %s", rewritten)
+			}
+			if local, remote := gitAt(t, f.Env(), f.Dir, "rev-parse", "c"), gitAt(t, f.Env(), f.RemoteDir, "rev-parse", "c"); remote != local {
+				t.Errorf("origin's c = %s, want the replayed head %s pushed", remote, local)
+			}
+		})
+	}
 }
 
 // shipParentInterleaved leaves c carrying a copy of a commit p gained after c

@@ -1883,11 +1883,13 @@ type gtOntoMove struct {
 // parent's, a conflicting replay, and one that would overwrite uncommitted
 // work where the branch is held. Only the commits parent has no patch of, the
 // branch's own, are replayed; a branch moving off the stacked parent from names
-// none of from's commits as its own either. Trunk only moves forward, so ship
-// replays nothing onto it while the branch's own work starts on a commit the
-// remote trunk holds, a branch with no commit of its own yet included: the step
-// after the commit decides that base, keeping the branch on it unless
-// --restack asks to move it or it conflicts with trunk.
+// none of from's commits as its own either, and an untracked branch cut from a
+// parent rewritten since names only its commits above the head it was cut on,
+// unless a remote holds one of them. Trunk only moves forward, so ship replays
+// nothing onto it while the branch's own work starts on a commit the remote
+// trunk holds, a branch with no commit of its own yet included: the step after
+// the commit decides that base, keeping the branch on it unless --restack asks
+// to move it or it conflicts with trunk.
 func gtOntoPlan(ctx context.Context, l lane, o shipOpts, branch, parent, trunk string, from gtRef) (gtOntoMove, error) {
 	if stackRebasing(ctx, l.dir()) {
 		return gtOntoMove{}, refuse("ship: a rebase is in progress in %s: finish it with ccx vcs stack continue or drop it with git rebase --abort, then ship again", l.root)
@@ -1912,6 +1914,9 @@ func gtOntoPlan(ctx context.Context, l lane, o shipOpts, branch, parent, trunk s
 		upstream, onto, err = gtRemoteTrunkOnto(ctx, l.dir(), parent, upstream, onto)
 	} else {
 		offTrunk, err = gtOffTrunk(ctx, l.dir(), trunk, branch)
+		if err == nil && from.Ref == "" {
+			from, err = gtRewrittenParent(ctx, l.dir(), branch, parent)
+		}
 	}
 	if err != nil {
 		return gtOntoMove{}, err
@@ -2156,6 +2161,28 @@ func gtOwnAbove(ctx context.Context, dir render.Dir, branch string, from gtRef) 
 		above = own
 	}
 	return above, nil
+}
+
+func gtRewrittenParent(ctx context.Context, dir render.Dir, branch, parent string) (gtRef, error) {
+	refs, err := stackParentRefs(ctx, dir, "origin", parent)
+	if err != nil {
+		return gtRef{}, err
+	}
+	head := gtRestackRef(branch)
+	fork, err := stackFurthestFork(ctx, dir, head, refs)
+	if err != nil || fork == "" {
+		return gtRef{}, err
+	}
+	span := fork + ".." + head
+	own, err := gtRevCount(ctx, "ship", dir, span)
+	if err != nil {
+		return gtRef{}, err
+	}
+	unpublished, err := gtRevCount(ctx, "ship", dir, span, "--not", "--remotes")
+	if err != nil || unpublished != own {
+		return gtRef{}, err
+	}
+	return gtRef{Ref: parent, SHA: fork}, nil
 }
 
 // gtOwnFork finds where branch's own work starts above parent: the commit below
