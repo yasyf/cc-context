@@ -107,63 +107,73 @@ func runVcsPush(cmd *cobra.Command, o vcsPushOpts) error {
 	if err := refuseSharedBranch(ctx, "push", ck); err != nil {
 		return err
 	}
-	dir := render.Dir(ck.Root)
-	branch, detached, err := vcsPushBranch(ctx, dir, o.branch)
+	branch, detached, err := vcsPushBranch(ctx, render.Dir(ck.Root), o.branch)
 	if err != nil {
 		return err
 	}
+	summary, err := vcsPushHead(ctx, ck, branch, detached, o.noVerify)
+	if err != nil {
+		return err
+	}
+	cmd.Println(summary)
+	return nil
+}
+
+// vcsPushHead moves branch on its remote to HEAD, grading the move as push's
+// long help describes, and returns the report line. detached says HEAD is not
+// branch itself, so the local branch stays where it is.
+func vcsPushHead(ctx context.Context, ck vcs.Checkout, branch string, detached, noVerify bool) (string, error) {
+	dir := render.Dir(ck.Root)
 	if present, err := stackMetadataPresent(ck); err != nil {
-		return fmt.Errorf("push: %w", err)
+		return "", fmt.Errorf("push: %w", err)
 	} else if present {
 		provider, err := gtmeta.Provider(ctx, ck.CommonDir, branch)
 		if err != nil {
-			return fmt.Errorf("push: %w", err)
+			return "", fmt.Errorf("push: %w", err)
 		}
 		ctx = withStackProvider(ctx, provider == gtmeta.ProviderGitHub)
-		cmd.SetContext(ctx)
 	}
 
 	remote, err := vcs.GitRemoteFor(ctx, dir, branch)
 	if err != nil {
-		return fmt.Errorf("push: %w", err)
+		return "", fmt.Errorf("push: %w", err)
 	}
 	head, err := gitRevParse(ctx, dir, "push", "HEAD")
 	if err != nil {
-		return err
+		return "", err
 	}
 	retracked, err := vcsPushRetrack(ctx, ck, dir, remote, branch, head)
 	if err != nil {
-		return err
+		return "", err
 	}
 	parent, err := vcsPushRefuseOffParent(ctx, ck, dir, remote, branch, head)
 	if err != nil {
-		return err
+		return "", err
 	}
 	receipt, prior, err := vcsPushPublication(ctx, dir, remote, branch, head, detached)
 	if err != nil {
-		return err
+		return "", err
 	}
-	summary, err := vcsPushGit(ctx, dir, remote, branch, parent, head, o.noVerify, detached)
+	summary, err := vcsPushGit(ctx, dir, remote, branch, parent, head, noVerify, detached)
 	if err != nil {
-		return err
+		return "", err
 	}
 	summary += retracked
 	if receipt != nil {
 		var tx strings.Builder
 		tx.WriteString("start\n")
 		if err := stackReceiptTx(ctx, dir, &tx, *receipt, prior); err != nil {
-			return err
+			return "", err
 		}
 		tx.WriteString("commit\n")
 		if _, err := render.RunCLIStdin(ctx, dir, "git", []string{"update-ref", "--stdin"}, []byte(tx.String())); err != nil {
-			return fmt.Errorf("push: record %s's publication at %s: %w", branch, shortOID(head), err)
+			return "", fmt.Errorf("push: record %s's publication at %s: %w", branch, shortOID(head), err)
 		}
 		if err := vcsPushSubmitted(ctx, dir, *receipt); err != nil {
-			return err
+			return "", err
 		}
 	}
-	cmd.Println(summary)
-	return nil
+	return summary, nil
 }
 
 func vcsPushBranch(ctx context.Context, dir render.Dir, named string) (string, bool, error) {

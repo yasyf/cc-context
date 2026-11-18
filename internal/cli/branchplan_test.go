@@ -72,7 +72,7 @@ func TestResolveBranchPlan(t *testing.T) {
 		{
 			name: "detached HEAD refuses", lane: gitLane, repo: personalRepo,
 			o: shipOpts{message: msg}, current: "", trunk: "main",
-			wantErr: "ship: detached HEAD — check out a branch before shipping",
+			wantErr: "ship: detached HEAD — check out a branch before shipping, or name the one to push HEAD as with --branch <name>",
 		},
 		{
 			name: "detached HEAD with --new-branch creates the branch there", lane: gitLane, repo: personalRepo,
