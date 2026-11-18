@@ -37,6 +37,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ccx vcs push --branch <name>` and `ccx vcs ship --branch <name>` from a
+  detached HEAD refuse to force over commits the worktree holding `<name>`
+  pushed. A rewrite from a detached HEAD is now graded by HEAD's own reflog
+  only; before, `<name>`'s reflog, which records the holding worktree's
+  commits, made that worktree's pushed work read as this one's history, and
+  the push dropped it.
 - `gh run watch <id>` and `gh run view <id>` through `ccx vcs gh` no longer
   spend the REST core pool. A watch made four core requests a poll (the run,
   its jobs, its workflow, and annotations), about 700 an hour across this

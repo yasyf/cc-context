@@ -122,6 +122,34 @@ func TestVcsPushNamedBranchRewritesItsOwnDetachedPush(t *testing.T) {
 	}
 }
 
+func TestVcsPushNamedBranchRefusesWorkTheHoldingWorktreePushed(t *testing.T) {
+	f := shipRepo(t, vcstest.Remote())
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-qc", "feature")
+	pushCommit(t, f, "feature.txt", "feature\n", "test: 🧪 feature")
+	mustRun(t, f.Env(), f.Dir, "git", "push", "-q", "origin", "feature")
+	mustRun(t, f.Env(), f.Dir, "git", "switch", "-q", "--detach")
+	holder := filepath.Join(t.TempDir(), "feature")
+	mustRun(t, f.Env(), f.Dir, "git", "worktree", "add", "-q", holder, "feature")
+	writeShipFile(t, holder, "other.txt", "other\n")
+	mustRun(t, f.Env(), holder, "git", "add", "-A")
+	mustRun(t, f.Env(), holder, "git", "commit", "-qm", "test: 🧪 other lane")
+	mustRun(t, f.Env(), holder, "git", "push", "-q", "origin", "feature")
+	other := gitAt(t, f.Env(), holder, "rev-parse", "HEAD")
+	pushCommit(t, f, "b.txt", "b\n", "test: 🧪 b")
+	shipResetLog(t, f)
+
+	_, err := runVcsPushCmd(f.Context(), t, "--branch", "feature")
+	if err == nil || !strings.Contains(err.Error(), "carries 1 commit(s) HEAD has never held") {
+		t.Fatalf("push error = %v, want a divergence refusal naming the holder's commit", err)
+	}
+	if n := pushCount(t, f); n != 0 {
+		t.Errorf("pushes = %d, want none", n)
+	}
+	if remote := shipRemoteTip(t, f, "origin", "feature"); remote != other {
+		t.Errorf("origin feature = %s, want the holding worktree's %s kept", remote, other)
+	}
+}
+
 func TestVcsPushRefusesANamedBranchOtherThanTheCheckedOutOne(t *testing.T) {
 	f := shipRepo(t, vcstest.Remote())
 	detachFromHeldBranch(t, f, "feature")
