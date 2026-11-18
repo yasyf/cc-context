@@ -78,7 +78,10 @@ move in its report.
 --branch <name> pushes HEAD as <name> from a detached HEAD, the state a working
 copy is left in when another working copy has <name> checked out. The local
 <name> stays where it is, since moving it would change the files under that
-other working copy. On a branch, --branch must name that branch.`,
+other working copy. A rewrite there is graded by HEAD's own reflog, not
+<name>'s: the branch's reflog and publication record the holding working
+copy's commits, and a force over those would drop that working copy's pushed
+work. On a branch, --branch must name that branch.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runVcsPush(cmd, o)
@@ -456,14 +459,18 @@ func vcsPushGit(ctx context.Context, dir render.Dir, remote, branch, parent, hea
 		}
 		return fmt.Sprintf("pushed %s → %s · %s..%s", branch, remote, shortOID(tip), shortOID(head)), nil
 	}
-	rewrite, err := gitRemoteRewritten(ctx, dir, "push", branch, tip, head, trunk)
+	rewrite, holder := false, branch
+	if detached {
+		holder = "HEAD"
+		rewrite, err = gitReflogHolds(ctx, dir, "push", "HEAD", tip)
+		if err == nil && !rewrite {
+			rewrite, err = gitOnlyCopies(ctx, dir, "push", tip, head, trunk)
+		}
+	} else {
+		rewrite, err = gitRemoteRewritten(ctx, dir, "push", branch, tip, head, trunk)
+	}
 	if err != nil {
 		return "", err
-	}
-	if !rewrite && detached {
-		if rewrite, err = gitReflogHolds(ctx, dir, "push", "HEAD", tip); err != nil {
-			return "", err
-		}
 	}
 	if !rewrite {
 		unheld, err := gitCommitsNotIn(ctx, dir, "push", tip, head)
@@ -471,7 +478,7 @@ func vcsPushGit(ctx context.Context, dir render.Dir, remote, branch, parent, hea
 			return "", err
 		}
 		return "", fmt.Errorf("push: %s/%s carries %d commit(s) %s has never held, so this is a divergence, not a rewrite, and the force would drop them:\n%s\nfetch and reconcile first: git fetch %s && git rebase %s/%s",
-			remote, branch, len(unheld), branch, strings.Join(unheld, "\n"), remote, remote, branch)
+			remote, branch, len(unheld), holder, strings.Join(unheld, "\n"), remote, remote, branch)
 	}
 	if err := refuseEmptyPR(ctx, dir, "push", remote, branch, head, heads, bases); err != nil {
 		return "", err
