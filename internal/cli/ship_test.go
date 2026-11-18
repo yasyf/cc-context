@@ -1492,7 +1492,7 @@ func TestShipGitDetachedHeadRefusesBeforeCommit(t *testing.T) {
 			before := gitAt(t, f.Env(), f.Dir, "rev-parse", "HEAD")
 
 			_, err := runShipCmd(f.Context(), t, append([]string{"-m", "fix: frobnicate"}, args...)...)
-			if err == nil || err.Error() != "ship: detached HEAD — check out a branch before shipping" {
+			if err == nil || err.Error() != "ship: detached HEAD — check out a branch before shipping, or name the one to push HEAD as with --branch <name>" {
 				t.Fatalf("ship error = %v, want detached HEAD refusal", err)
 			}
 			assertNoShipMutation(t, vcstest.Invocations(t, f.ArgvLog))

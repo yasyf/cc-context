@@ -243,7 +243,7 @@ session's edits included — stays put. Where the commit goes is one decision,
 resolved before any mutation and reported as a `branch <name>` or `created <name>`
 segment: a non-trunk branch or bookmark gets appended to, trunk stays direct in your
 own repositories and becomes a branch named from the commit subject when GitHub says
-the repository is someone else's, and a detached HEAD or an ambiguous trunk refuses.
+the repository is someone else's, and an ambiguous trunk refuses, and so does a detached HEAD unless `--branch <name>` names an existing local branch — typically one another working copy holds — which ship then commits at HEAD and pushes HEAD as under `ccx vcs push`'s lease, leaving that branch's local ref and the working copy holding it untouched and naming that working copy as stale.
 `--branch <name>`, `--new-branch[=<name>]`, `--append`, and `--allow-trunk` state
 intent explicitly (`--bookmark` is the jj-only alias of `--branch`, `--create` the
 deprecated alias of `--new-branch`).

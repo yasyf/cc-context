@@ -84,7 +84,7 @@ func resolveBranchPlan(l lane, r vcs.Repo, o shipOpts, current, trunk string) (b
 	// A jj working copy always has somewhere to commit, bookmark or not; only a
 	// git-backed lane can be sitting on nothing.
 	if current == "" && gitBacked(l) && (o.newBranch == "" || o.amend) {
-		return branchPlan{}, errors.New("ship: detached HEAD — check out a branch before shipping")
+		return branchPlan{}, errors.New("ship: detached HEAD — check out a branch before shipping, or name the one to push HEAD as with --branch <name>")
 	}
 
 	// An amend forms no new commit, so no rule that exists to keep a new commit

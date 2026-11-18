@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ccx vcs ship -m <msg> --branch <name>` ships from a detached HEAD, the state
+  a lane's worktree is in when another worktree holds the pull request's
+  branch. It commits at HEAD and pushes HEAD as `<name>` under the same lease
+  `ccx vcs push --branch` grades, `--amend` included, so the lane no longer
+  falls back to a raw `git push --force-with-lease`. The local `<name>` and the
+  worktree holding it stay untouched, and ship names that worktree as stale. It
+  refuses `--branch` naming trunk or no local branch, and the flags that place,
+  restack, or describe a pull request, before anything changes. Before, ship
+  refused every detached HEAD.
 - A machine with no GitHub App key reads on the app's quota through a token
   another machine minted. `ccx vcs auth token --json o/r` prints the app's
   read-only installation token for the repository's account, with its app,
