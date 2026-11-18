@@ -445,7 +445,7 @@ func TestAdmitUsesLatestResponseRatherThanLowestRegionalWindow(t *testing.T) {
 	for _, observation := range []struct {
 		remaining int
 		reset     time.Time
-	}{{0, olderReset}, {373, latestReset}} {
+	}{{0, olderReset}, {5000 / UserWriteReserve, latestReset}} {
 		now = now.Add(time.Second)
 		if err := l.charge(ctx, IdentityUser, ResourceGraphQL, "watch", "", rateHeader(observation.remaining, observation.reset)); err != nil {
 			t.Fatal(err)
@@ -503,14 +503,14 @@ func TestBackgroundReserveLeavesForegroundAndOtherResourcesAvailable(t *testing.
 				header.Set("X-RateLimit-Remaining", "0")
 			}
 			ctx := t.Context()
-			if err := l.charge(ctx, IdentityUser, resource, "watch", "", header); err != nil {
+			if err := l.charge(ctx, IdentityApp, resource, "watch", "", header); err != nil {
 				t.Fatal(err)
 			}
-			if err := c.Admit(BackgroundQuota(ctx), IdentityUser, resource); !errors.As(err, new(*FloorError)) {
+			if err := c.Admit(BackgroundQuota(ctx), IdentityApp, resource); !errors.As(err, new(*FloorError)) {
 				t.Fatalf("background admitted %d/%d: %v", remaining, limit, err)
 			}
 			if remaining > 0 {
-				if err := c.Admit(ctx, IdentityUser, resource); err != nil {
+				if err := c.Admit(ctx, IdentityApp, resource); err != nil {
 					t.Fatalf("foreground refused remaining quota: %v", err)
 				}
 			}
@@ -518,7 +518,7 @@ func TestBackgroundReserveLeavesForegroundAndOtherResourcesAvailable(t *testing.
 			if resource == other {
 				other = ResourceGraphQL
 			}
-			if err := c.Admit(ctx, IdentityUser, other); err != nil {
+			if err := c.Admit(ctx, IdentityApp, other); err != nil {
 				t.Fatalf("other resource refused: %v", err)
 			}
 		})
