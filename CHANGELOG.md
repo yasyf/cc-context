@@ -37,6 +37,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The `enumerator` agent returns within a budget of 30 tool calls. It gathers
+  each lane for every name in one call and reads about ten candidate sites per
+  call, and at the budget it returns the proven set plus the candidates it
+  didn't reach, under **Unverified**. It answers membership only, listing any
+  per-member analysis a brief asks for under **Not covered**. Before, its prompt
+  ranked exhaustiveness above everything and named no exit, so it read one site
+  per model turn. In one session, the runs that made 60 to 200 tool calls took
+  10 to 27 minutes while the caller's lane sat blocked, though no single tool
+  call took longer than six seconds.
 - `ccx vcs push --branch <name>` and `ccx vcs ship --branch <name>` from a
   detached HEAD refuse to force over commits the worktree holding `<name>`
   pushed. A rewrite from a detached HEAD is now graded by HEAD's own reflog

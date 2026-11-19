@@ -803,7 +803,7 @@ verification loop.
 
 ## Reader subagents
 
-The plugin ships five read-only agents that run the flows above in their own
+The plugin ships six read-only agents that run the flows above in their own
 context and return only conclusions. Spawn them as `cc-context:<name>` whenever
 the raw material — a web page, a CI log, a dependency's source — has no business
 entering yours:
@@ -818,9 +818,14 @@ entering yours:
   step. `ccx vcs ship`'s red-run report points at it.
 - `dep-reader` — "how does `<pkg>` implement X"; resolves the installed source
   with `ccx repo locate` and returns the answer with `path:line#hash` cites.
+- `pr-review-triage` — a PR number; pulls its review threads and diff, reads
+  the cited code, and returns a verdict, the change, and a draft reply per
+  comment.
 - `enumerator` — complete-set questions ("every subclass of X"); sweeps LSP,
-  call-graph, and textual lanes, verifies each candidate by reading it, and
-  returns the proven set with its blind spots named.
+  call-graph, and textual lanes in batches, verifies each candidate by reading
+  it, and returns within 30 tool calls the proven set, its blind spots, and any
+  candidates left unverified. Give it the membership question only; analyze
+  the members yourself once the set is back.
 
-All five default to `model: sonnet`; pass `model: opus` (or higher) at spawn
+All six default to `model: sonnet`; pass `model: opus` (or higher) at spawn
 time when the page, log, or set warrants it.
