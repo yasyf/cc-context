@@ -18,7 +18,7 @@ The captain-hook marketplace comes first: the plugin declares [captain-hook](htt
 
 <img src="docs/assets/demo.png" alt="Terminal running 'ccx code outline internal/astgrep/run.go --budget 60' — a syntax-highlighted file outline cut at the budget, ending in '+5 lines, ~111 tokens omitted'" width="700">
 
-The plugin arrives wired together. The `ccx` binary self-provisions, the MCP server auto-registers its `mcp__cc-context__ccx_*` tools plus `BashFormat`, the guard hooks turn on, the `ccx` skill teaches the reach-for-`ccx`-first workflow, and five read-only reader agents (`web-fetch`, `web-researcher`, `ci-triage`, `dep-reader`, `enumerator`) stand by to read pages, logs, and dependency source in their own context and hand back only cited conclusions. It needs [`uv`](https://docs.astral.sh/uv/) on `PATH`, since the hooks run through `uvx capt-hook`.
+The plugin arrives wired together. The `ccx` binary self-provisions, the MCP server auto-registers its `mcp__cc-context__ccx_*` tools plus `BashFormat`, the guard hooks turn on, the `ccx` skill teaches the reach-for-`ccx`-first workflow, and six read-only reader agents (`web-fetch`, `web-researcher`, `ci-triage`, `dep-reader`, `pr-review-triage`, `enumerator`) stand by to read pages, logs, and dependency source in their own context and hand back only cited conclusions. It needs [`uv`](https://docs.astral.sh/uv/) on `PATH`, since the hooks run through `uvx capt-hook`.
 
 Driving with an agent? Paste this:
 
