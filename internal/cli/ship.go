@@ -210,7 +210,7 @@ func newShipCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "ship [paths...]",
 		Short: "Commit, push, and watch CI in one step",
-		Long: `Commit, push, and watch CI in one step.
+		Long: `Commit, push, and watch CI in one step. In a Claude Code or Codex session ship returns once the pull request is open, and the session follows CI through the cci claim ship makes; --no-watch=false watches there too.
 
 With no paths, ship commits exactly the index when anything is staged: untracked files stay in the working copy, named in the summary as left uncommitted, and a hook's fixes to a staged file are staged with it. A tracked file with changes the index does not stage, whole or in part, refuses that ship before anything moves, naming the file: the commit would otherwise carry out a stale copy, or half of what git rm or git mv began, and leave the rest behind unnoticed. Stage it to ship everything, name the paths to ship, or pass --only-hunk for part of a file. With nothing staged it stages the whole working copy and names what it swept, holding back untracked machine-local files (*.local.*, .env*) unless they are named. A ship that fails before its commit lands, a hook's refusal included, unstages what it staged: the whole index after a sweep, the named paths after a path-scoped ship, so the ship after a fix stages the fixed file. An index-only ship leaves your staging in place.
 
@@ -239,7 +239,7 @@ Ship owns the pull request in every lane. --pr-title, --pr-title-file and --pr-b
 	cmd.Flags().BoolVar(&o.noPush, "no-push", false, "commit only; do not push or watch CI")
 	cmd.Flags().BoolVar(&o.noCommit, "no-commit", false, "push and update the PR for the commit already in place; cut no commit, and refuse a dirty working copy — implied when there is nothing to commit and the branch is ahead of trunk")
 	cmd.Flags().StringVar(&o.expectRemote, "expect-remote", "", "push only if the remote branch still has this full commit ID, replacing it: the plain Git lane publishes an existing commit and requires --no-commit, and the graphite lane leases the shipped branch's push on it, so a lane can take over a branch another working copy pushed")
-	cmd.Flags().BoolVar(&o.noWatch, "no-watch", false, "push but do not watch CI; CCX_SHIP_NO_WATCH=1 makes it the default, and --no-watch=false watches anyway")
+	cmd.Flags().BoolVar(&o.noWatch, "no-watch", false, "push but do not watch CI; the default in a Claude Code or Codex session, which follows the pull request through cci instead, and wherever CCX_SHIP_NO_WATCH=1; --no-watch=false watches anyway")
 	cmd.Flags().BoolVar(&o.noVerify, "no-verify", false, "skip the repository's hooks (uvx prek, and git's own) on the commit and every push")
 	cmd.Flags().BoolVar(&o.verify, "verify", false, "run the repository's hooks on the commit and every push (the default)")
 	cmd.Flags().BoolVar(&o.yolo, "yolo", false, "skip every hook and ship-side guard: implies --no-verify, and drops any guard ship adds of its own")
@@ -944,7 +944,7 @@ func shipNoWatch(ctx context.Context, named, noWatch bool) bool {
 	if named {
 		return noWatch
 	}
-	return render.Getenv(ctx, envShipNoWatch) == "1"
+	return render.Getenv(ctx, envShipNoWatch) == "1" || inAgentSession(ctx)
 }
 
 func withSessionTrailer(ctx context.Context, root, message string) (string, error) {

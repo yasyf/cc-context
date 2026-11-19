@@ -8313,20 +8313,23 @@ func TestShipGTNoPushRestacksOntoTheFetchedTrunk(t *testing.T) {
 func TestShipNoWatchDefaultsFromTheEnvironmentUnlessTheFlagIsNamed(t *testing.T) {
 	tests := []struct {
 		name    string
-		env     string
+		env     []string
 		named   bool
 		noWatch bool
 		want    bool
 	}{
-		{"unset watches", "", false, false, false},
-		{"env set skips the watch", "1", false, false, true},
-		{"other env value watches", "0", false, false, false},
-		{"named --no-watch=false watches despite env", "1", true, false, false},
-		{"named --no-watch skips without env", "", true, true, true},
+		{"a person's shell watches", nil, false, false, false},
+		{"env set skips the watch", []string{envShipNoWatch + "=1"}, false, false, true},
+		{"other env value watches", []string{envShipNoWatch + "=0"}, false, false, false},
+		{"a Claude Code session skips the watch", []string{envClaudeSessionKey + "=s1"}, false, false, true},
+		{"a Codex session skips the watch", []string{envCodexThreadKey + "=t1"}, false, false, true},
+		{"named --no-watch=false watches in an agent session", []string{envClaudeSessionKey + "=s1", envShipNoWatch + "=1"}, true, false, false},
+		{"named --no-watch skips in a person's shell", nil, true, true, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx := render.WithEnv(t.Context(), envShipNoWatch+"="+tt.env)
+			env := append([]string{envShipNoWatch + "=", envClaudeSessionKey + "=", envCodexThreadKey + "="}, tt.env...)
+			ctx := render.WithEnv(t.Context(), env...)
 			if got := shipNoWatch(ctx, tt.named, tt.noWatch); got != tt.want {
 				t.Errorf("shipNoWatch() = %v, want %v", got, tt.want)
 			}
