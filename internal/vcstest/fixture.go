@@ -405,6 +405,7 @@ func fixtureEnv(t *testing.T, base, home string, tools []resolvedTool) []string 
 		"JJ_CONFIG=" + jjCfg,
 		"CLAUDE_PLUGIN_DATA=" + pluginData,
 		"CLAUDE_CODE_SESSION_ID=",
+		"CODEX_THREAD_ID=",
 		"CCI_DRIVE=",
 		"CCI_LANE=",
 		"CCI_AGENT_ID=",

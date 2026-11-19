@@ -12,11 +12,12 @@ import (
 
 const envCodexThreadKey = "CODEX_THREAD_ID"
 
+func inAgentSession(ctx context.Context) bool {
+	return render.Getenv(ctx, envClaudeSessionKey) != "" || render.Getenv(ctx, envCodexThreadKey) != ""
+}
+
 func cciClaimable(ctx context.Context) bool {
-	if render.Getenv(ctx, envClaudeSessionKey) == "" && render.Getenv(ctx, envCodexThreadKey) == "" {
-		return false
-	}
-	return render.LookPath(ctx, "cci") != ""
+	return inAgentSession(ctx) && render.LookPath(ctx, "cci") != ""
 }
 
 type cciOpened struct {
